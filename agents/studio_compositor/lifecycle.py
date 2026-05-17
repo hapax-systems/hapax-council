@@ -135,6 +135,22 @@ def _record_watchdog_ping_metrics(compositor: Any) -> None:
         pass
 
 
+def _start_3d_director_runtime(compositor: Any) -> bool:
+    """Start the director/source runtime when the 3D path bypasses FX setup."""
+
+    if os.environ.get("HAPAX_3D_COMPOSITOR") != "1":
+        return False
+    if getattr(compositor, "_sierpinski_loader", None) is not None:
+        return False
+
+    from .sierpinski_loader import SierpinskiLoader
+
+    compositor._sierpinski_loader = SierpinskiLoader()
+    compositor._sierpinski_loader.start()
+    log.info("3D compositor director runtime started via local visual source loader")
+    return True
+
+
 def _hero_effect_target_for_prefx(compositor: Any) -> tuple[str, Any] | None:
     """Return the hero camera role and tile rect for the pre-FX effect."""
     try:
@@ -440,6 +456,11 @@ def start_compositor(compositor: Any) -> None:
     # Publishes all camera JPEG snapshots as RGBA to the source protocol
     # so the 3D SceneRenderer can display them as textured quads.
     # Independent of GStreamer pipeline state.
+    try:
+        _start_3d_director_runtime(compositor)
+    except Exception:
+        log.warning("3D director runtime start failed", exc_info=True)
+
     try:
         from agents.studio_compositor.camera_publisher import CameraSourcePublisher
 
