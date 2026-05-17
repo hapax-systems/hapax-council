@@ -1296,7 +1296,12 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                         log.warning("Vocal chain activation failed", exc_info=True)
 
                 try:
-                    candidates = await asyncio.to_thread(daemon._affordance_pipeline.select, imp)
+                    from shared.audio_performance_context import build_performance_context
+
+                    _perf_ctx = build_performance_context()
+                    candidates = await asyncio.to_thread(
+                        daemon._affordance_pipeline.select, imp, context=_perf_ctx
+                    )
                     for c in candidates:
                         # --- Notification dispatch ---
                         if c.capability_name == "system.notify_operator":
@@ -1699,10 +1704,12 @@ async def sidechat_consumer_loop(daemon: VoiceDaemon) -> None:
                     interrupt_token="operator_sidechat",
                 )
                 try:
-                    # Dispatch through the affordance pipeline on a thread
-                    # so the async loop doesn't block on embedding /
-                    # Qdrant I/O. Mirrors the main impingement loop.
-                    candidates = await asyncio.to_thread(daemon._affordance_pipeline.select, imp)
+                    from shared.audio_performance_context import build_performance_context
+
+                    _perf_ctx = build_performance_context()
+                    candidates = await asyncio.to_thread(
+                        daemon._affordance_pipeline.select, imp, context=_perf_ctx
+                    )
                     log.info(
                         "Sidechat → %d candidate(s): %s",
                         len(candidates),
