@@ -49,14 +49,45 @@ def test_pyright_safety_net_workflow_exists_for_pyproject_claim() -> None:
     assert "uv run pyright" in workflow_text
 
 
-def test_auto_fix_typecheck_guidance_matches_pyrefly_and_pyright_split() -> None:
+def test_auto_fix_workflow_escalates_without_privileged_pr_checkout() -> None:
     workflow_text = _read(".github/workflows/auto-fix.yml")
+    auto_fix_job = _workflow_job_block(workflow_text, "auto-fix")
 
-    assert "(pyrefly|pyright)" in workflow_text
-    assert (
-        "If PR typecheck failed: `uv run --no-project --with pyrefly==0.62.0 pyrefly check`"
-    ) in workflow_text
-    assert "If pyright safety-net failed: `uv run pyright`" in workflow_text
+    assert "contents: read" in workflow_text
+    assert "issues: write" in workflow_text
+    assert "actions/checkout" not in auto_fix_job
+    assert "anthropics/claude-code-action" not in auto_fix_job
+    assert "ANTHROPIC_API_KEY" not in workflow_text
+    assert "HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}" in auto_fix_job
+    assert 'BRANCH="${{ github.event.workflow_run.head_branch }}"' not in auto_fix_job
+    assert "Privileged workflow auto-mutation is disabled" in auto_fix_job
+    assert 'gh run view "$RUN_ID"' in auto_fix_job
+
+
+def test_sdlc_implement_shell_uses_validated_issue_env_not_inline_payload() -> None:
+    workflow_text = _read(".github/workflows/sdlc-implement.yml")
+    plan_job = _workflow_job_block(workflow_text, "plan-and-implement")
+
+    assert "ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}" in plan_job
+    assert 'case "$ISSUE_NUMBER"' in plan_job
+    assert "gh issue edit ${{ github.event.client_payload.issue_number }}" not in plan_job
+    assert "--issue-number ${{ github.event.client_payload.issue_number }}" not in plan_job
+    assert "ISSUE=${{ github.event.client_payload.issue_number }}" not in plan_job
+    assert 'printf \'BRANCH=%s\\n\' "$BRANCH" >> "$GITHUB_ENV"' in plan_job
+    assert 'echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"' not in plan_job
+
+
+def test_sdlc_fix_round_guards_agent_branch_before_checkout() -> None:
+    workflow_text = _read(".github/workflows/sdlc-implement.yml")
+    fix_job = _workflow_job_block(workflow_text, "fix-round")
+
+    assert "Validate agent-authored PR source" in fix_job
+    assert "HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}" in fix_job
+    assert '[[ "$HEAD_REF" == agent/issue-* ]]' in fix_job
+    assert "if: steps.review_pr.outputs.safe == 'true'" in fix_job
+    assert "persist-credentials: false" in fix_job
+    assert "printf '%s\\n' \"$REVIEW_BODY\" > /tmp/review-body.txt" in fix_job
+    assert 'git push origin "HEAD:${HEAD_REF}"' in fix_job
 
 
 def test_auto_fix_keeps_real_failure_remediation_but_skips_auto_fix_recursion() -> None:
@@ -69,8 +100,8 @@ def test_auto_fix_keeps_real_failure_remediation_but_skips_auto_fix_recursion() 
         "!contains(github.event.workflow_run.head_commit.message || '', '[auto-fix]')"
         in auto_fix_job
     )
-    assert "real CI failures can be remediated" in auto_fix_job
-    assert "recursively ask Claude to fix Claude's fix" in auto_fix_job
+    assert "real CI failures route to governed remediation" in auto_fix_job
+    assert "recursively trigger the privileged classifier" in auto_fix_job
 
 
 def test_readme_typecheck_commands_match_ci_and_safety_net() -> None:
