@@ -60,3 +60,38 @@ def test_activity_preserves_real_value() -> None:
     pd: dict[str, str] = {"production_activity": "production"}
     activity = str(pd.get("production_activity", "") or "idle")
     assert activity == "production"
+
+
+def test_persistent_log_writes_to_disk(tmp_path: Path) -> None:
+    """Eigenform should write to persistent path in addition to SHM."""
+    from shared.eigenform_logger import log_state_vector
+
+    persistent = tmp_path / "persistent" / "eigenform-log.jsonl"
+    shm = tmp_path / "shm" / "state-log.jsonl"
+    log_state_vector(
+        presence=0.8,
+        imagination_salience=0.3,
+        path=shm,
+        persistent_path=persistent,
+    )
+    assert shm.exists()
+    assert persistent.exists()
+    shm_data = json.loads(shm.read_text().strip())
+    persistent_data = json.loads(persistent.read_text().strip())
+    assert shm_data["presence"] == persistent_data["presence"] == 0.8
+
+
+def test_persistent_max_entries() -> None:
+    """Persistent ring buffer should be 50_000 entries."""
+    from shared.eigenform_logger import PERSISTENT_MAX_ENTRIES
+
+    assert PERSISTENT_MAX_ENTRIES == 50_000
+
+
+def test_persistent_log_absent_does_not_crash(tmp_path: Path) -> None:
+    """persistent_path=None should silently skip persistent write."""
+    from shared.eigenform_logger import log_state_vector
+
+    shm = tmp_path / "shm" / "state-log.jsonl"
+    log_state_vector(presence=0.5, path=shm, persistent_path=None)
+    assert shm.exists()

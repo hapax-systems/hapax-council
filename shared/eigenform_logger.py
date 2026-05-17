@@ -12,7 +12,23 @@ import time
 from pathlib import Path
 
 EIGENFORM_LOG = Path("/dev/shm/hapax-eigenform/state-log.jsonl")
-MAX_ENTRIES = 500  # ring buffer in JSONL
+PERSISTENT_LOG = Path.home() / "hapax-state/research/eigenform-log.jsonl"
+MAX_ENTRIES = 500  # ring buffer for SHM
+PERSISTENT_MAX_ENTRIES = 50_000  # ~4 months at 3s tick rate
+
+
+def _append_and_trim(line: str, path: Path, max_entries: int) -> None:
+    """Append a JSONL line and trim if over 2x max_entries."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line)
+    try:
+        lines = path.read_text(encoding="utf-8").strip().split("\n")
+        if len(lines) > max_entries * 2:
+            trimmed = lines[-max_entries:]
+            path.write_text("\n".join(trimmed) + "\n", encoding="utf-8")
+    except OSError:
+        pass
 
 
 def log_state_vector(
@@ -29,6 +45,7 @@ def log_state_vector(
     e_mesh: float = 1.0,
     restriction_residual_rms: float = 0.0,
     path: Path = EIGENFORM_LOG,
+    persistent_path: Path | None = PERSISTENT_LOG,
 ) -> None:
     """Append state vector to JSONL log for eigenform analysis."""
     entry = {
@@ -45,15 +62,10 @@ def log_state_vector(
         "e_mesh": e_mesh,
         "restriction_residual_rms": restriction_residual_rms,
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
-
-    # Trim to MAX_ENTRIES (read all, keep last N, rewrite)
-    try:
-        lines = path.read_text(encoding="utf-8").strip().split("\n")
-        if len(lines) > MAX_ENTRIES * 2:  # only trim when 2x over
-            trimmed = lines[-MAX_ENTRIES:]
-            path.write_text("\n".join(trimmed) + "\n", encoding="utf-8")
-    except OSError:
-        pass
+    line = json.dumps(entry) + "\n"
+    _append_and_trim(line, path, MAX_ENTRIES)
+    if persistent_path is not None:
+        try:
+            _append_and_trim(line, persistent_path, PERSISTENT_MAX_ENTRIES)
+        except OSError:
+            pass
