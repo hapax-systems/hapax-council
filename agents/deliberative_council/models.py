@@ -25,6 +25,7 @@ class CouncilInput(BaseModel):
 
     text: str = Field(min_length=1)
     source_ref: str = Field(min_length=1)
+    source_context: str = Field(default="")
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
