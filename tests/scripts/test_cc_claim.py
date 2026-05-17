@@ -230,6 +230,67 @@ def test_explicit_read_only_intake_without_parent_spec_allows_claim(
     assert "status: claimed" in note.read_text(encoding="utf-8")
 
 
+def test_assigned_to_unassigned_allows_claim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "unassigned-owner", assigned_to="unassigned")
+
+    result = _claim(home, "unassigned-owner")
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_assigned_to_null_scalar_allows_claim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "null-owner", assigned_to="null")
+
+    result = _claim(home, "null-owner")
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_assigned_to_tilde_allows_claim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "tilde-owner", assigned_to="~")
+
+    result = _claim(home, "tilde-owner")
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_assigned_to_none_allows_claim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "none-owner", assigned_to="none")
+
+    result = _claim(home, "none-owner")
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_empty_assigned_to_scalar_allows_claim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "empty-owner", assigned_to="")
+
+    result = _claim(home, "empty-owner")
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_assigned_to_other_role_blocks_claim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "owned-task", assigned_to="cx-other")
+
+    result = _claim(home, "owned-task")
+
+    assert result.returncode == 4
+    assert "already assigned to 'cx-other'" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
+
+
 def test_depends_on_null_scalar_means_no_dependencies(tmp_path: Path) -> None:
     home = tmp_path / "home"
     note = _write_task(home, "active", "null-dep", depends_on="null")
