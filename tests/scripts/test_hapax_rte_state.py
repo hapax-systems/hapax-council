@@ -9,6 +9,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-rte-state"
+CAPACITY_ROUTING_NOW = "2026-05-17T08:00:00Z"
 
 
 def _write_tick(relay: Path, status: str = "green") -> None:
@@ -30,7 +31,7 @@ def _write_planning_feed(path: Path) -> None:
     path.write_text(
         json.dumps(
             {
-                "generated_at": "2026-05-17T08:00:00Z",
+                "generated_at": CAPACITY_ROUTING_NOW,
                 "dispatch": {
                     "route_metadata_summary": {
                         "explicit": 0,
@@ -66,7 +67,7 @@ def _run(
         **os.environ,
         "HAPAX_RELAY_DIR": str(relay),
         "HAPAX_PLANNING_FEED_STATE": str(feed),
-        "HAPAX_CAPACITY_ROUTING_NOW": "2026-05-17T08:00:00Z",
+        "HAPAX_CAPACITY_ROUTING_NOW": CAPACITY_ROUTING_NOW,
     }
     if extra_env:
         env.update(extra_env)
@@ -105,12 +106,11 @@ def test_json_includes_rollback_receipt_warning_when_ledger_supplied(tmp_path: P
     _write_tick(tmp_path / "relay", "green")
     _write_planning_feed(tmp_path / "planning-feed-state.json")
     route_ledger = tmp_path / "route-decisions.jsonl"
-    capacity_now = "2026-05-09T21:00:00Z"
     route_ledger.write_text(
         json.dumps(
             {
                 "decision_id": "rd-20260509T210000Z-rollback-test-aaaaaaaaaaaa",
-                "created_at": capacity_now,
+                "created_at": CAPACITY_ROUTING_NOW,
                 "task_id": "rollback-test",
                 "route_id": "codex.headless.full",
                 "route_policy_green": False,
@@ -126,10 +126,7 @@ def test_json_includes_rollback_receipt_warning_when_ledger_supplied(tmp_path: P
     result = _run(
         tmp_path,
         "--json",
-        extra_env={
-            "HAPAX_ROUTE_DECISION_LEDGER": str(route_ledger),
-            "HAPAX_CAPACITY_ROUTING_NOW": capacity_now,
-        },
+        extra_env={"HAPAX_ROUTE_DECISION_LEDGER": str(route_ledger)},
     )
 
     assert result.returncode == 0
