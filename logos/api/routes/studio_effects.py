@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json as _json_mod
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ log = logging.getLogger(__name__)
 
 _BUILTIN_PRESETS = Path(__file__).parent.parent.parent.parent / "presets"
 _USER_PRESETS = Path.home() / ".config" / "hapax" / "effect-presets"
+_VALID_PRESET_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 COMPOSITOR_LAYER_DIR = Path("/dev/shm/hapax-compositor")
 COMPOSITOR_STATUS_PATH = Path("/dev/shm/hapax-compositor/status.json")
@@ -106,11 +108,28 @@ def _get_registry():
     return _shader_registry
 
 
+def _sanitize_preset_name(name: str) -> str:
+    return "".join(c for c in name if c.isalnum() or c in "-_").strip()
+
+
+def _preset_path(directory: Path, name: str) -> Path:
+    if not _VALID_PRESET_NAME_RE.fullmatch(name):
+        raise ValueError("preset name must be a bounded filename component")
+    base = directory.resolve(strict=False)
+    path = (base / f"{name}.json").resolve(strict=False)
+    if not path.is_relative_to(base):
+        raise ValueError("preset path escaped preset directory")
+    return path
+
+
 def _load_preset(name: str) -> object:
     from agents.effect_graph.types import EffectGraph
 
-    for d in (_USER_PRESETS, _BUILTIN_PRESETS):
-        p = d / f"{name}.json"
+    try:
+        preset_paths = (_preset_path(_USER_PRESETS, name), _preset_path(_BUILTIN_PRESETS, name))
+    except ValueError:
+        return None
+    for p in preset_paths:
         if p.is_file():
             return EffectGraph(**_json_mod.loads(p.read_text()))
     return None
@@ -317,11 +336,11 @@ async def create_preset(request: dict[str, object]):
     if not name or not isinstance(name, str):
         raise HTTPException(400, "Missing or invalid 'name' field")
     # Sanitize filename
-    safe_name = "".join(c for c in name if c.isalnum() or c in "-_").strip()
+    safe_name = _sanitize_preset_name(name)
     if not safe_name:
         raise HTTPException(400, "Invalid preset name")
     _USER_PRESETS.mkdir(parents=True, exist_ok=True)
-    path = _USER_PRESETS / f"{safe_name}.json"
+    path = _preset_path(_USER_PRESETS, safe_name)
     try:
         path.write_text(_json_mod.dumps(request, indent=2))
     except OSError as e:
@@ -387,16 +406,22 @@ async def save_preset(name: str, body: dict[str, object]):
             raise HTTPException(400, "No graph data provided and no active graph")
 
     _USER_PRESETS.mkdir(parents=True, exist_ok=True)
-    preset_path = _USER_PRESETS / f"{name}.json"
+    try:
+        preset_path = _preset_path(_USER_PRESETS, name)
+    except ValueError as e:
+        raise HTTPException(400, "Invalid preset name") from e
     preset_path.write_text(_json_mod.dumps(graph.model_dump(), indent=2))
     return {"status": "saved", "name": name, "path": str(preset_path)}
 
 
 @router.delete("/studio/presets/{name}")
 async def delete_preset(name: str):
-    preset_path = _USER_PRESETS / f"{name}.json"
+    try:
+        preset_path = _preset_path(_USER_PRESETS, name)
+        builtin = _preset_path(_BUILTIN_PRESETS, name)
+    except ValueError as e:
+        raise HTTPException(400, "Invalid preset name") from e
     if not preset_path.is_file():
-        builtin = _BUILTIN_PRESETS / f"{name}.json"
         if builtin.is_file():
             raise HTTPException(403, "Cannot delete built-in preset")
         raise HTTPException(404, f"Preset not found: {name}")

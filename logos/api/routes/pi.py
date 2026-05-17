@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import tempfile
 import time
 from pathlib import Path
 
@@ -23,6 +25,7 @@ EDGE_STATE_DIR = HAPAX_HOME / "hapax-state" / "edge"
 
 _VALID_ROLES = {"desk", "room", "overhead"}
 _VALID_CAM_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+_VALID_HOSTNAME_RE = re.compile(r"^hapax-pi[a-z0-9_-]{0,31}$")
 _last_post_time: dict[str, float] = {}
 # #143 — HOT-cadence Pis post at 0.5s; tighten the rate limit to accommodate.
 _RATE_LIMIT_S = 0.4
@@ -95,25 +98,47 @@ def _safe_cam_id(raw: object) -> str:
     return "primary"
 
 
+def _bounded_child_path(base_dir: Path, filename: str) -> Path:
+    if not filename or "\x00" in filename or Path(filename).name != filename:
+        raise ValueError("filename must be a single path component")
+    base = base_dir.resolve(strict=False)
+    target = base / filename
+    if not target.parent.resolve(strict=False).is_relative_to(base):
+        raise ValueError("path escaped state directory")
+    return target
+
+
 def _write_json_atomic(path: Path, body: str) -> None:
-    tmp_file = path.with_suffix(path.suffix + ".tmp")
-    tmp_file.write_text(body)
-    tmp_file.rename(path)
+    target = _bounded_child_path(path.parent, path.name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(target.parent),
+        prefix=f".{target.stem}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            file.write(body)
+        os.replace(tmp_path, target)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 @router.post("/{hostname}/heartbeat")
 async def receive_heartbeat(hostname: str, request: Request) -> JSONResponse:
     """Receive heartbeat from a Pi edge device."""
-    if not hostname.startswith("hapax-pi"):
+    if not _VALID_HOSTNAME_RE.fullmatch(hostname):
         raise HTTPException(status_code=422, detail="Invalid hostname")
 
     body = await request.json()
     EDGE_STATE_DIR.mkdir(parents=True, exist_ok=True)
-    state_file = EDGE_STATE_DIR / f"{hostname}.json"
-    tmp_file = state_file.with_suffix(".tmp")
+    state_file = _bounded_child_path(EDGE_STATE_DIR, f"{hostname}.json")
     try:
-        tmp_file.write_text(json.dumps(body))
-        tmp_file.rename(state_file)
+        _write_json_atomic(state_file, json.dumps(body))
     except OSError as exc:
         log.warning("Failed to write heartbeat for %s", hostname, exc_info=True)
         raise HTTPException(status_code=500, detail="Write failed") from exc
@@ -127,9 +152,9 @@ async def receive_heartbeat(hostname: str, request: Request) -> JSONResponse:
         if role in _VALID_ROLES and "cadence_state" in body:
             try:
                 IR_STATE_DIR.mkdir(parents=True, exist_ok=True)
-                cadence_file = IR_STATE_DIR / f"{role}-cadence.json"
-                cadence_tmp = cadence_file.with_suffix(".tmp")
-                cadence_tmp.write_text(
+                cadence_file = _bounded_child_path(IR_STATE_DIR, f"{role}-cadence.json")
+                _write_json_atomic(
+                    cadence_file,
                     json.dumps(
                         {
                             "role": role,
@@ -138,9 +163,8 @@ async def receive_heartbeat(hostname: str, request: Request) -> JSONResponse:
                             "source": "heartbeat",
                             "hostname": hostname,
                         }
-                    )
+                    ),
                 )
-                cadence_tmp.rename(cadence_file)
             except OSError:
                 log.debug("heartbeat cadence snapshot failed", exc_info=True)
 

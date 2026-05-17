@@ -20,10 +20,39 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
 from logos._revocation_wiring import get_revocation_propagator
+from logos.api.routes._config import HAPAX_HOME
 
 _log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/consent", tags=["consent"])
+
+_TRACE_ALLOWED_BASES = (
+    Path(__file__).resolve().parents[3],
+    HAPAX_HOME / "Documents" / "Personal",
+    HAPAX_HOME / "documents",
+    HAPAX_HOME / "projects" / "hapax-council",
+)
+
+
+def _resolve_trace_source(source: str) -> Path | None:
+    decoded = unquote(source).strip()
+    if not decoded or "\x00" in decoded:
+        return None
+    candidate = Path(decoded).expanduser()
+    if not candidate.is_absolute():
+        return None
+    try:
+        resolved = candidate.resolve(strict=False)
+    except OSError:
+        return None
+    for base in _TRACE_ALLOWED_BASES:
+        try:
+            resolved_base = base.resolve(strict=False)
+        except OSError:
+            continue
+        if resolved.is_relative_to(resolved_base):
+            return resolved
+    return None
 
 
 class ConsentCreateRequest(BaseModel):
@@ -144,14 +173,15 @@ async def trace_consent(
     Shows: consent label, provenance contracts, flow constraints,
     and revocation impact. This is the IFC claim made visible.
     """
-    source_path = Path(unquote(source))
+    decoded_source = unquote(source).strip()
+    source_path = _resolve_trace_source(source)
 
     # Extract consent metadata from the file
     label_data = None
     provenance_data: list[str] = []
     body_preview = ""
 
-    if source_path.exists():
+    if source_path is not None and source_path.exists():
         try:
             from logos._frontmatter import (
                 extract_consent_label,
@@ -245,8 +275,8 @@ async def trace_consent(
             _log.warning("Qdrant point count failed", exc_info=True)
 
     return {
-        "source": str(source_path),
-        "exists": source_path.exists(),
+        "source": str(source_path) if source_path is not None else decoded_source,
+        "exists": source_path.exists() if source_path is not None else False,
         "body_preview": body_preview,
         "consent_label": label_data,
         "provenance": provenance_data,

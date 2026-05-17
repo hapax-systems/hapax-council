@@ -7,6 +7,7 @@ search over the studio_moments Qdrant collection.
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -123,12 +124,24 @@ _OFFLINE_PLACEHOLDER = Path(__file__).parent.parent / "static" / "camera-offline
 
 
 _COMPOSITOR_DIR = Path("/dev/shm/hapax-compositor")
+_VALID_COMPOSITOR_FEED_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 def _safe_compositor_path(name: str) -> Path | None:
     """Resolve a camera/feed name to a compositor path, rejecting traversal."""
-    candidate = (_COMPOSITOR_DIR / f"{name}.jpg").resolve()
-    if not candidate.is_relative_to(_COMPOSITOR_DIR):
+    if not _VALID_COMPOSITOR_FEED_RE.fullmatch(name):
+        return None
+    base = _COMPOSITOR_DIR.resolve(strict=False)
+    candidate = (base / f"{name}.jpg").resolve(strict=False)
+    if not candidate.is_relative_to(base):
+        return None
+    return candidate
+
+
+def _safe_compositor_stream_path(path: Path) -> Path | None:
+    base = _COMPOSITOR_DIR.resolve(strict=False)
+    candidate = path.resolve(strict=False)
+    if not candidate.is_relative_to(base):
         return None
     return candidate
 
@@ -284,13 +297,16 @@ MJPEG_BOUNDARY = "hapax-frame"
 
 
 async def _mjpeg_generator(path: Path, fps: float = 12.0):  # noqa: ANN201
+    stream_path = _safe_compositor_stream_path(path)
+    if stream_path is None:
+        return
     interval = 1.0 / fps
     last_mtime_ns = 0
     while True:
         try:
-            st = path.stat()
+            st = stream_path.stat()
             if st.st_mtime_ns != last_mtime_ns:
-                data = path.read_bytes()
+                data = stream_path.read_bytes()
                 last_mtime_ns = st.st_mtime_ns
                 if len(data) > 100 and data[:2] == b"\xff\xd8":  # valid JPEG SOI
                     yield (
@@ -320,11 +336,14 @@ async def mjpeg_stream(feed: str, fps: float = 12.0):
         path = _safe_compositor_path(feed)
         if path is None:
             return JSONResponse({"error": "invalid feed name"}, status_code=400)
-    if not path.exists():
+    stream_path = _safe_compositor_stream_path(path)
+    if stream_path is None:
+        return JSONResponse({"error": "invalid feed path"}, status_code=400)
+    if not stream_path.exists():
         return JSONResponse({"error": f"feed '{feed}' not available"}, status_code=404)
     fps = min(max(fps, 1.0), 30.0)
     return StreamingResponse(
-        _mjpeg_generator(path, fps),
+        _mjpeg_generator(stream_path, fps),
         media_type=f"multipart/x-mixed-replace; boundary={MJPEG_BOUNDARY}",
     )
 
