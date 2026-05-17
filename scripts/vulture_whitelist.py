@@ -3363,8 +3363,8 @@ except ImportError:
 # Information density field
 try:
     from shared.information_density import (  # noqa: F401, E402
-        BOCPDModel,
         BayesianSurpriseModel,
+        BOCPDModel,
         EntropyModel,
         InformationDensityField,
         SourceDensity,
