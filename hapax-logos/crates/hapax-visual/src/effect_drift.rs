@@ -1678,11 +1678,53 @@ mod tests {
         );
         assert!(
             high_impingement_count >= MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS,
-            "active set needs at least one high-impingement anchor; got {:?}",
+            "active set needs multiple high-impingement anchors; got {:?}",
             active.iter().map(|def| def.name).collect::<Vec<&str>>()
         );
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn configured_allowed_set_must_sustain_live_surface_invariants() {
+        let valid = configured_shader_indices_from_raw("drift,halftone,color_map,slitscan,warp")
+            .expect("valid constrained set should be accepted");
+        let mut rng = SimpleRng::new(42);
+        let pool = choose_initial_pool(&mut rng, &valid);
+        let active = pool.iter().take(ACTIVE_SLOT_TARGET);
+        let active_groups: std::collections::HashSet<&str> = active
+            .clone()
+            .map(|idx| visibility_group(&SHADERS[*idx]))
+            .collect();
+        let active_high_impingement = pool
+            .iter()
+            .take(ACTIVE_SLOT_TARGET)
+            .filter(|idx| is_high_impingement_anchor(&SHADERS[**idx]))
+            .count();
+
+        for group in VISIBLE_BASELINE_GROUPS {
+            assert!(
+                active_groups.contains(group),
+                "accepted allowed set must still initialize visible {group} coverage; got {active_groups:?}"
+            );
+        }
+        assert!(
+            active_high_impingement >= MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS,
+            "accepted allowed set must retain high-impingement anchors"
+        );
+    }
+
+    #[test]
+    fn configured_allowed_set_falls_back_when_too_thin_or_too_quiet() {
+        assert!(
+            configured_shader_indices_from_raw("blend,crossfade,chroma_key,luma_key,breathing")
+                .is_none(),
+            "five legal nodes are not enough if they cannot provide visible anchor coverage"
+        );
+        assert!(
+            configured_shader_indices_from_raw("drift,warp,mirror,kaleidoscope,fisheye").is_none(),
+            "a narrow spatial-only set would satisfy count but collapse visible group coverage"
+        );
     }
 
     #[test]
@@ -1724,6 +1766,49 @@ mod tests {
             !plan.contains("\"node_id\": \"solid\""),
             "autonomous drift plan must not spend the fifth slot on a no-op solid pass"
         );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn autonomous_drift_plan_is_effect_slots_plus_bookends() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-shape-{}.json",
+            std::process::id()
+        ));
+        let _engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+
+        let plan: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read plan"))
+                .expect("effect drift plan should be valid JSON");
+        let passes = plan["targets"]["main"]["passes"]
+            .as_array()
+            .expect("v2 plan should expose main passes");
+        let node_ids: Vec<&str> = passes
+            .iter()
+            .map(|pass| {
+                pass["node_id"]
+                    .as_str()
+                    .expect("each pass should carry node_id")
+            })
+            .collect();
+
+        assert_eq!(
+            passes.len(),
+            POOL_SIZE + 2,
+            "SlotDrift owns five effect slots plus feedback/postprocess bookends"
+        );
+        assert_eq!(
+            &node_ids[POOL_SIZE..],
+            &["fb", "post"],
+            "feedback and postprocess are required bookends after the rotating slots"
+        );
+        for content_node in ["content_layer", "sierpinski_content", "sierpinski_lines"] {
+            assert!(
+                !node_ids.contains(&content_node),
+                "{content_node} is scene/content infrastructure, not a SlotDrift effect slot"
+            );
+        }
 
         let _ = std::fs::remove_file(path);
     }
@@ -1833,6 +1918,51 @@ mod tests {
         assert!(
             is_high_impingement_anchor(&SHADERS[engine.slots[4].shader_idx]),
             "recycling must restore a high-impingement anchor when the active set is otherwise quiet"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn recycle_restores_missing_visible_group_even_when_recently_used() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-missing-group-recycle-{}.json",
+            std::process::id()
+        ));
+        let mut engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+
+        for (slot, shader_name) in
+            engine
+                .slots
+                .iter_mut()
+                .take(4)
+                .zip(["drift", "halftone", "color_map", "thermal"])
+        {
+            slot.shader_idx = shader_idx_by_name(shader_name).unwrap();
+            slot.phase = Phase::Peak;
+            slot.needs_recycle = false;
+        }
+        engine.slots[4].shader_idx = shader_idx_by_name("mirror").unwrap();
+        engine.slots[4].phase = Phase::Falling;
+        engine.slots[4].needs_recycle = true;
+        engine.recently_used = [
+            "trail",
+            "echo",
+            "diff",
+            "slitscan",
+            "fluid_sim",
+            "reaction_diffusion",
+        ]
+        .iter()
+        .map(|name| shader_idx_by_name(name).unwrap())
+        .collect();
+
+        engine.recycle_slot(4);
+
+        assert_eq!(
+            visibility_group(&SHADERS[engine.slots[4].shader_idx]),
+            "temporal",
+            "visible-group repair must outrank recency so the live surface cannot rotate into a legal but non-temporal stack"
         );
 
         let _ = std::fs::remove_file(path);
@@ -2637,8 +2767,8 @@ fn is_high_impingement_anchor(def: &ShaderDef) -> bool {
     matches!(
         def.name,
         // Bounded, source-gated treatments that still read immediately.
-        // At least one must be active so group coverage cannot collapse into
-        // a legal but visually quiet chain.
+        // Multiple anchors must be active so group coverage cannot collapse
+        // into a legal but visually quiet chain.
         "ascii"
             | "chromatic_aberration"
             | "color_map"
@@ -2722,8 +2852,59 @@ fn shader_idx_by_name(name: &str) -> Option<usize> {
     SHADERS.iter().position(|def| def.name == name)
 }
 
-fn configured_shader_indices_from_env() -> Option<Vec<usize>> {
-    let raw = std::env::var("HAPAX_EFFECT_DRIFT_ALLOWED_SET").ok()?;
+fn drift_pool_invariant_failures(indices: &[usize]) -> Vec<String> {
+    let mut failures = Vec::new();
+    if indices.len() < POOL_SIZE {
+        failures.push(format!(
+            "has {} valid node(s), need at least {}",
+            indices.len(),
+            POOL_SIZE
+        ));
+    }
+
+    let visible_anchor_count = indices
+        .iter()
+        .filter(|idx| is_visible_anchor(&SHADERS[**idx]))
+        .count();
+    if visible_anchor_count < MIN_ACTIVE_ANCHOR_EFFECTS {
+        failures.push(format!(
+            "has {} visible anchor(s), need at least {}",
+            visible_anchor_count, MIN_ACTIVE_ANCHOR_EFFECTS
+        ));
+    }
+
+    let high_impingement_count = indices
+        .iter()
+        .filter(|idx| is_high_impingement_anchor(&SHADERS[**idx]))
+        .count();
+    if high_impingement_count < MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS {
+        failures.push(format!(
+            "has {} high-impingement anchor(s), need at least {}",
+            high_impingement_count, MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS
+        ));
+    }
+
+    let missing_groups: Vec<&str> = VISIBLE_BASELINE_GROUPS
+        .iter()
+        .copied()
+        .filter(|group| {
+            !indices.iter().any(|idx| {
+                let def = &SHADERS[*idx];
+                is_visible_anchor(def) && visibility_group(def) == *group
+            })
+        })
+        .collect();
+    if !missing_groups.is_empty() {
+        failures.push(format!(
+            "missing visible anchor coverage for group(s): {:?}",
+            missing_groups
+        ));
+    }
+
+    failures
+}
+
+fn configured_shader_indices_from_raw(raw: &str) -> Option<Vec<usize>> {
     let mut indices = Vec::new();
     let mut unknown = Vec::new();
     let mut non_autonomous = Vec::new();
@@ -2755,11 +2936,11 @@ fn configured_shader_indices_from_env() -> Option<Vec<usize>> {
             non_autonomous
         );
     }
-    if indices.len() < POOL_SIZE {
+    let failures = drift_pool_invariant_failures(&indices);
+    if !failures.is_empty() {
         log::warn!(
-            "SlotDrift: HAPAX_EFFECT_DRIFT_ALLOWED_SET has {} valid node(s), need at least {}; using full library",
-            indices.len(),
-            POOL_SIZE
+            "SlotDrift: HAPAX_EFFECT_DRIFT_ALLOWED_SET cannot satisfy live-surface drift invariants ({:?}); using full library",
+            failures
         );
         return None;
     }
@@ -2773,6 +2954,11 @@ fn configured_shader_indices_from_env() -> Option<Vec<usize>> {
             .collect::<Vec<&str>>()
     );
     Some(indices)
+}
+
+fn configured_shader_indices_from_env() -> Option<Vec<usize>> {
+    let raw = std::env::var("HAPAX_EFFECT_DRIFT_ALLOWED_SET").ok()?;
+    configured_shader_indices_from_raw(&raw)
 }
 
 fn choose_initial_pool(rng: &mut SimpleRng, selectable: &[usize]) -> Vec<usize> {
@@ -3272,22 +3458,23 @@ impl SlotDriftEngine {
                     .filter(|idx| is_autonomous_drift_candidate(&SHADERS[*idx]))
                     .collect()
             });
-        let candidates: Vec<usize> = base_candidates
+        let non_current_candidates: Vec<usize> = base_candidates
             .iter()
             .copied()
             .filter(|i| is_autonomous_drift_candidate(&SHADERS[*i]))
-            .filter(|i| !current_types.contains(i) && !recently.contains(i))
+            .filter(|i| !current_types.contains(i))
             .collect();
-        let candidates = if candidates.is_empty() {
-            base_candidates
-                .iter()
-                .copied()
-                .filter(|i| !current_types.contains(i))
-                .collect::<Vec<_>>()
+        let fresh_candidates: Vec<usize> = non_current_candidates
+            .iter()
+            .copied()
+            .filter(|i| !recently.contains(i))
+            .collect();
+        let candidates = if fresh_candidates.is_empty() {
+            non_current_candidates.clone()
         } else {
-            candidates
+            fresh_candidates
         };
-        if candidates.is_empty() {
+        if non_current_candidates.is_empty() {
             self.slots[idx].needs_recycle = false;
             return;
         }
@@ -3334,7 +3521,7 @@ impl SlotDriftEngine {
                     && is_high_impingement_anchor(&SHADERS[slot.shader_idx])
             })
             .count();
-        let preferred: Vec<usize> = candidates
+        let preferred: Vec<usize> = non_current_candidates
             .iter()
             .copied()
             .filter(|i| {
@@ -3345,7 +3532,7 @@ impl SlotDriftEngine {
         let preferred: Vec<usize> = if preferred.is_empty()
             && active_high_impingement_count < MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS
         {
-            candidates
+            non_current_candidates
                 .iter()
                 .copied()
                 .filter(|i| is_high_impingement_anchor(&SHADERS[*i]))
