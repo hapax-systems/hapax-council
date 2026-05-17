@@ -112,6 +112,9 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
 
         threading.Thread(target=_presynth, daemon=True, name="bridge-presynth").start()
 
+    silence_timeout = _resolve_silence_timeout(daemon)
+    daemon.session.silence_timeout_s = int(silence_timeout)
+
     daemon._conversation_pipeline = ConversationPipeline(
         stt=daemon._resident_stt,
         tts_manager=daemon.tts,
@@ -121,6 +124,7 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
         llm_model=daemon.cfg.llm_model,
         event_log=daemon.event_log,
         conversation_buffer=daemon._conversation_buffer,
+        timeout_s=silence_timeout,
         consent_reader=daemon._precomputed_consent_reader,
         env_context_fn=daemon._env_context_fn,
         ambient_fn=daemon._ambient_fn,
@@ -183,6 +187,28 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
 
     # Wake greeting
     _play_wake_greeting(daemon)
+
+
+def _resolve_silence_timeout(daemon: VoiceDaemon) -> float:
+    """Read active programme role and return appropriate silence timeout."""
+    from agents.hapax_daimonion.conversation_helpers import (
+        _PROGRAMME_SILENCE_TIMEOUT,
+        _SILENCE_TIMEOUT_S,
+    )
+
+    try:
+        pm = getattr(daemon, "programme_manager", None)
+        if pm is not None:
+            active = pm.store.active_programme()
+            if active is not None:
+                role_val = getattr(active.role, "value", str(active.role))
+                timeout = _PROGRAMME_SILENCE_TIMEOUT.get(role_val)
+                if timeout is not None:
+                    log.info("Programme role '%s' → silence_timeout=%.0fs", role_val, timeout)
+                    return timeout
+    except Exception:
+        log.debug("Programme silence timeout resolution failed, using default", exc_info=True)
+    return _SILENCE_TIMEOUT_S
 
 
 def _resolve_tools(daemon, _exp, get_working_mode):
