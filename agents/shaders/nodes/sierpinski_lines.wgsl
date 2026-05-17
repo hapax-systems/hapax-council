@@ -57,7 +57,7 @@ fn main_1() {
     let base_sample = textureSample(tex, tex_sampler, uv);
     let base = base_sample.rgb;
 
-    let pixel = 1.0 / 1080.0;
+    let pixel = max(max(fwidth(uv.x), fwidth(uv.y)), 1.0 / 2160.0);
     let line_w = global.u_line_width * pixel * (1.0 + global.u_intensity * 0.5);
     let glow_r = global.u_glow_radius * pixel * (1.0 + global.u_intensity * 0.3);
 
@@ -112,8 +112,9 @@ fn main_1() {
     min_d = min(min_d, dist_tri(uv, c2_m01x, c2_m01y, c2_m12x, c2_m12y, c2_m02x, c2_m02y));
 
     // Line + glow
-    let line_alpha = 1.0 - smoothstep(0.0, line_w, min_d);
-    let glow_alpha = (1.0 - smoothstep(line_w, line_w + glow_r, min_d)) * 0.4;
+    let aa = max(fwidth(min_d) * 1.5, pixel * 0.75);
+    let line_alpha = 1.0 - smoothstep(line_w, line_w + aa, min_d);
+    let glow_alpha = (1.0 - smoothstep(line_w + glow_r, line_w + glow_r + aa, min_d)) * 0.4;
     let total_alpha = max(line_alpha, glow_alpha) * global.u_opacity;
 
     let color_t = global.u_spectral_color + min_d * 50.0;

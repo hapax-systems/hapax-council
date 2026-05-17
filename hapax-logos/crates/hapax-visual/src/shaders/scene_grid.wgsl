@@ -35,6 +35,20 @@ fn stipple_hash(p: vec2<f32>) -> f32 {
     return fract(sin(q.x + q.y) * 43758.5453);
 }
 
+fn aa_feather(value: f32, floor_value: f32) -> f32 {
+    return max(fwidth(value) * 1.75, floor_value);
+}
+
+fn grid_line_mask(dist: f32, core_width: f32, outer_width: f32) -> f32 {
+    let feather = aa_feather(dist, 0.0025);
+    return 1.0 - smoothstep(core_width, outer_width + feather, dist);
+}
+
+fn aa_disc_mask(dist: f32, radius: f32) -> f32 {
+    let feather = aa_feather(dist, 0.0015);
+    return 1.0 - smoothstep(radius - feather, radius + feather, dist);
+}
+
 fn scroom_material_pattern(gc: vec2<f32>, plane_kind: f32) -> f32 {
     // Persistent low-frequency nebulous scroom material. This is attached
     // to room planes, not to the output pane, so it reads as spatial
@@ -220,8 +234,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let sp = vec2<f32>(2.5, 1.8);
     let lx = abs(fract(gc.x / sp.x + 0.5) - 0.5) * sp.x;
     let ly = abs(fract(gc.y / sp.y + 0.5) - 0.5) * sp.y;
-    let major_x = smoothstep(0.090, 0.006, lx);
-    let major_y = smoothstep(0.090, 0.006, ly);
+    let major_x = grid_line_mask(lx, 0.006, 0.090);
+    let major_y = grid_line_mask(ly, 0.006, 0.090);
     let is_horizontal_plane = abs(in.normal.y) > 0.5;
     let is_mid_field = abs(wp.y - 0.35) < 0.02;
     let is_floor_or_ceiling = is_horizontal_plane && !is_mid_field;
@@ -239,7 +253,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             0.30 + 0.40 * stipple_hash(cell + vec2<f32>(53.0, 19.0))
         );
         let density_gate = step(0.74, stipple_hash(cell));
-        let dot_alpha = density_gate * smoothstep(0.155, 0.0, length(local - center));
+        let dot_alpha = density_gate * aa_disc_mask(length(local - center), 0.155);
         let material = scroom_material_pattern(gc, in.plane_kind);
         let weave = 0.5 + 0.5 * sin(gc.x * 2.1 + gc.y * 1.7);
         let shadow = soft_shadow_at(wp, grid.light_position.xyz);

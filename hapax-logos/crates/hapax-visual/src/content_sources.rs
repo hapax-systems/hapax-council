@@ -13,6 +13,37 @@ const LEGACY_CAIRO_IMPLICIT_TTL_MS: u64 = 10_000;
 const RECRUITED_CONTENT_IMPLICIT_TTL_MS: u64 = 30_000;
 const IMAGINATION_IMPLICIT_TTL_MS: u64 = 60_000;
 const MAX_SOURCES: usize = 64;
+const CONTENT_SOURCE_MIP_WGSL: &str = r#"
+@group(0) @binding(0)
+var src_texture: texture_2d<f32>;
+@group(0) @binding(1)
+var src_sampler: sampler;
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
+    var positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 3.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
+    );
+    let p = positions[vi];
+
+    var out: VertexOutput;
+    out.position = vec4<f32>(p, 0.0, 1.0);
+    out.uv = p * 0.5 + vec2<f32>(0.5, 0.5);
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(src_texture, src_sampler, in.uv);
+}
+"#;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SourceManifest {
@@ -67,6 +98,156 @@ fn expected_rgba_size(width: u32, height: u32) -> Option<usize> {
         .checked_mul(height)?
         .checked_mul(4)
         .map(|bytes| bytes as usize)
+}
+
+fn source_mip_level_count(width: u32, height: u32) -> u32 {
+    let max_dim = width.max(height).max(1);
+    u32::BITS - max_dim.leading_zeros()
+}
+
+struct MipGenerator {
+    pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+}
+
+impl MipGenerator {
+    fn new(device: &wgpu::Device) -> Self {
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("content source mip bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("content source mip sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("content_source_mip"),
+            source: wgpu::ShaderSource::Wgsl(CONTENT_SOURCE_MIP_WGSL.into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("content source mip pipeline layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("content source mip pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        Self {
+            pipeline,
+            bind_group_layout,
+            sampler,
+        }
+    }
+
+    fn encode_mips(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        let mip_count = source_mip_level_count(width, height);
+        if mip_count <= 1 {
+            return false;
+        }
+
+        for level in 1..mip_count {
+            let src_view = texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("content source mip src view"),
+                base_mip_level: level - 1,
+                mip_level_count: Some(1),
+                ..Default::default()
+            });
+            let dst_view = texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("content source mip dst view"),
+                base_mip_level: level,
+                mip_level_count: Some(1),
+                ..Default::default()
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("content source mip bind group"),
+                layout: &self.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&src_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            });
+
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("content source mip pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &dst_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+        }
+
+        true
+    }
 }
 
 fn rgba_frame_matches_manifest(pixels: &[u8], manifest: &SourceManifest) -> bool {
@@ -193,11 +374,13 @@ pub struct ContentSourceManager {
     scan_interval_ms: u64,
     placeholder_view: wgpu::TextureView,
     _placeholder_texture: wgpu::Texture,
+    mip_generator: MipGenerator,
 }
 
 impl ContentSourceManager {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         let (placeholder_texture, placeholder_view) = Self::create_placeholder(device, queue);
+        let mip_generator = MipGenerator::new(device);
         Self {
             sources: HashMap::new(),
             sources_dir: PathBuf::from(SOURCES_DIR),
@@ -205,6 +388,7 @@ impl ContentSourceManager {
             scan_interval_ms: 100,
             placeholder_view,
             _placeholder_texture: placeholder_texture,
+            mip_generator,
         }
     }
 
@@ -261,6 +445,10 @@ impl ContentSourceManager {
         };
 
         let mut seen = Vec::new();
+        let mut mip_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("content source mip batch encoder"),
+        });
+        let mut has_mip_work = false;
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_dir() {
@@ -292,10 +480,20 @@ impl ContentSourceManager {
             }
 
             if manifest.content_type == "rgba" {
-                self.update_rgba_source(device, queue, &source_id, manifest, &frame_path);
+                has_mip_work |= self.update_rgba_source(
+                    device,
+                    queue,
+                    &mut mip_encoder,
+                    &source_id,
+                    manifest,
+                    &frame_path,
+                );
             }
 
             seen.push(source_id);
+        }
+        if has_mip_work {
+            queue.submit(std::iter::once(mip_encoder.finish()));
         }
 
         // Expire sources not seen or past TTL, clean up shm directories
@@ -349,18 +547,20 @@ impl ContentSourceManager {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        mip_encoder: &mut wgpu::CommandEncoder,
         source_id: &str,
         manifest: SourceManifest,
         frame_path: &Path,
-    ) {
+    ) -> bool {
         let Some(pixels) = read_complete_rgba_frame(frame_path, source_id, &manifest) else {
-            return;
+            return false;
         };
         if !rgba_frame_matches_manifest(&pixels, &manifest) {
-            return;
+            return false;
         }
 
         let target_opacity = manifest.opacity;
+        let mut generated_mips = false;
 
         if let Some(source) = self.sources.get_mut(source_id) {
             if source.manifest.width != manifest.width || source.manifest.height != manifest.height
@@ -378,8 +578,15 @@ impl ContentSourceManager {
                 manifest.height,
                 source_id,
             ) {
-                return;
+                return false;
             }
+            generated_mips |= self.mip_generator.encode_mips(
+                device,
+                mip_encoder,
+                &source.texture,
+                manifest.width,
+                manifest.height,
+            );
             source.manifest = manifest;
             source.target_opacity = target_opacity;
             source.last_refresh = Instant::now();
@@ -395,8 +602,15 @@ impl ContentSourceManager {
                 manifest.height,
                 source_id,
             ) {
-                return;
+                return false;
             }
+            generated_mips |= self.mip_generator.encode_mips(
+                device,
+                mip_encoder,
+                &texture,
+                manifest.width,
+                manifest.height,
+            );
             self.sources.insert(
                 source_id.to_string(),
                 ContentSource {
@@ -410,6 +624,7 @@ impl ContentSourceManager {
                 },
             );
         }
+        generated_mips
     }
 
     fn create_source_texture(
@@ -425,11 +640,13 @@ impl ContentSourceManager {
                 height,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
+            mip_level_count: source_mip_level_count(width, height),
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
@@ -645,8 +862,8 @@ impl ContentSourceManager {
 mod family_classification_tests {
     use super::{
         effective_ttl_ms, expected_rgba_size, modified_age_exceeds_ttl, read_complete_rgba_frame,
-        rgba_frame_matches_manifest, ContentSourceManager, SourceManifest,
-        CAMERA_SNAPSHOT_IMPLICIT_TTL_MS,
+        rgba_frame_matches_manifest, source_mip_level_count, ContentSourceManager, SourceManifest,
+        CAMERA_SNAPSHOT_IMPLICIT_TTL_MS, CONTENT_SOURCE_MIP_WGSL,
     };
     use std::time::{Duration, SystemTime};
 
@@ -671,6 +888,21 @@ mod family_classification_tests {
     fn expected_rgba_size_rejects_overflow() {
         assert_eq!(expected_rgba_size(640, 360), Some(921_600));
         assert_eq!(expected_rgba_size(u32::MAX, u32::MAX), None);
+    }
+
+    #[test]
+    fn source_mip_level_count_tracks_largest_dimension() {
+        assert_eq!(source_mip_level_count(0, 0), 1);
+        assert_eq!(source_mip_level_count(1, 1), 1);
+        assert_eq!(source_mip_level_count(2, 1), 2);
+        assert_eq!(source_mip_level_count(4, 4), 3);
+        assert_eq!(source_mip_level_count(1920, 1080), 11);
+    }
+
+    #[test]
+    fn content_source_mip_shader_parses() {
+        naga::front::wgsl::parse_str(CONTENT_SOURCE_MIP_WGSL)
+            .expect("content source mipmap WGSL must parse before live compositor deployment");
     }
 
     #[test]

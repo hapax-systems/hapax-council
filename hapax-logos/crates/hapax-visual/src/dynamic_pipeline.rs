@@ -602,6 +602,7 @@ impl DynamicPipeline {
             label: Some("dynamic pipeline sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
 
