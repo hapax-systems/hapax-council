@@ -22,6 +22,19 @@ _STANCE_DENSITY: dict[str, float] = {
 }
 
 _PREVIOUS_VALUES: dict[str, float] = {}
+_STALE_COUNTS: dict[str, int] = {}
+
+# Number of consecutive identical ticks before ALARM fires
+_ALARM_THRESHOLD: int = 10
+
+# ALARM density — absence is informative, not empty
+_ALARM_DENSITY: float = 0.7
+
+
+def reset_state() -> None:
+    """Reset all tracking state. Use in tests to avoid pollution."""
+    _PREVIOUS_VALUES.clear()
+    _STALE_COUNTS.clear()
 
 
 def _change_density(key: str, current: float, threshold: float = 0.05) -> tuple[float, str]:
@@ -29,8 +42,19 @@ def _change_density(key: str, current: float, threshold: float = 0.05) -> tuple[
     prev = _PREVIOUS_VALUES.get(key, current)
     _PREVIOUS_VALUES[key] = current
     delta = abs(current - prev)
+
     if delta > threshold:
+        # Signal changed — reset stale counter, mode is NEWS
+        _STALE_COUNTS[key] = 0
         return min(1.0, delta / max(threshold * 10, 0.01)), "NEWS"
+
+    # Signal didn't change — increment stale counter
+    _STALE_COUNTS[key] = _STALE_COUNTS.get(key, 0) + 1
+
+    if _STALE_COUNTS[key] >= _ALARM_THRESHOLD:
+        # Stale beyond expected cadence — ALARM
+        return _ALARM_DENSITY, "ALARM"
+
     return max(0.0, 1.0 - delta / max(threshold, 0.01)) * 0.1, "ROUTINE"
 
 
@@ -53,11 +77,21 @@ def compute_density_state(
     if activity != _PREVIOUS_VALUES.get("_last_activity", "idle"):
         perc_density = max(perc_density, 0.5)
         perc_mode = "NEWS"
+        _STALE_COUNTS["perception"] = 0
     _PREVIOUS_VALUES["_last_activity"] = activity
 
     stimmung_density = _STANCE_DENSITY.get(stimmung_stance, 0.1)
     stim_prev = _PREVIOUS_VALUES.get("stimmung_stance_str", stimmung_stance)
-    stim_mode = "NEWS" if stimmung_stance != stim_prev else "ROUTINE"
+    if stimmung_stance != stim_prev:
+        stim_mode = "NEWS"
+        _STALE_COUNTS["stimmung"] = 0
+    else:
+        _STALE_COUNTS["stimmung"] = _STALE_COUNTS.get("stimmung", 0) + 1
+        if _STALE_COUNTS["stimmung"] >= _ALARM_THRESHOLD:
+            stim_mode = "ALARM"
+            stimmung_density = max(stimmung_density, _ALARM_DENSITY)
+        else:
+            stim_mode = "ROUTINE"
     _PREVIOUS_VALUES["stimmung_stance_str"] = stimmung_stance
 
     voice_density, voice_mode = _change_density("audio_energy", audio_energy, threshold=0.02)
