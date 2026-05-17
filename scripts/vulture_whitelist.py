@@ -3359,3 +3359,23 @@ try:
     NarrativeQualityRubric
 except ImportError:
     pass
+
+# Information density field
+try:
+    from shared.information_density import (  # noqa: F401, E402
+        BOCPDModel,
+        BayesianSurpriseModel,
+        EntropyModel,
+        InformationDensityField,
+        SourceDensity,
+        SourceModel,
+    )
+
+    BOCPDModel
+    BayesianSurpriseModel
+    EntropyModel
+    InformationDensityField
+    SourceDensity
+    SourceModel
+except ImportError:
+    pass
