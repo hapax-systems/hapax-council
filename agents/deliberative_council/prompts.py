@@ -11,12 +11,17 @@ def phase1_prompt(rubric: Rubric, text: str, source_ref: str, seed: int | None =
         rng = random.Random(seed)
         rng.shuffle(axes)
 
-    axis_block = "\n".join(
-        f"- **{a.name}** ({a.min_score}-{a.max_score}): {a.description}\n"
-        f"  Strong example: {a.strong_example}\n"
-        f"  Weak example: {a.weak_example}"
-        for a in axes
-    )
+    def _format_axis(a: object) -> str:
+        lines = [
+            f"- **{a.name}** ({a.min_score}-{a.max_score}): {a.description}",
+            f"  Strong example: {a.strong_example}",
+            f"  Weak example: {a.weak_example}",
+        ]
+        if getattr(a, "floor_example", ""):
+            lines.append(f"  Floor boundary: {a.floor_example}")
+        return "\n".join(lines)
+
+    axis_block = "\n".join(_format_axis(a) for a in axes)
 
     return (
         "You are a member of a deliberative council evaluating text.\n\n"

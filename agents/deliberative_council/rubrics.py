@@ -12,6 +12,7 @@ class RubricAxis(BaseModel):
     max_score: int = 5
     strong_example: str
     weak_example: str
+    floor_example: str = ""
 
 
 class Rubric(BaseModel):
@@ -76,6 +77,11 @@ class DisconfirmationRubric(Rubric):
             description="Does the evidence actually support the claim as stated?",
             strong_example="Multiple independent sources converge on the same conclusion.",
             weak_example="Single self-referential source or circular reasoning.",
+            floor_example=(
+                "Score 1: No evidence cited at all, or evidence is fabricated/hallucinated. "
+                "Score 2: Evidence exists but does not actually support THIS claim — "
+                "tangential reference or metadata-only (file exists ≠ file supports claim)."
+            ),
         ),
         RubricAxis(
             name="counter_evidence_resilience",
