@@ -8,7 +8,10 @@ Stage pairs probed:
 - broadcast-master ⇄ broadcast-normalized
 - broadcast-normalized ⇄ obs-broadcast-remap
 
-Drop below 0.7 with both stages above silence floor → signal lost.
+Downstream silence after upstream signal → signal lost. Low correlation
+while both stages carry signal is diagnostic only: normalization, remap,
+and capture-window skew can legitimately alter envelope shape without
+dropping the broadcast signal.
 
 Read-only invariant: never modifies PipeWire state.
 
@@ -56,6 +59,7 @@ class PairState:
     last_correlation: float | None = None
     breach_start: float | None = None
     breach_count: int = 0
+    low_correlation_count: int = 0
     both_silent: bool = False
     last_error: str | None = None
     analyzer_error_count: int = 0
@@ -131,6 +135,19 @@ def _emit_textfile(pairs: dict[str, PairState]) -> None:
 
     lines.extend(
         [
+            "# HELP hapax_audio_health_inter_stage_corr_low_correlation_count "
+            "Sustained low-correlation diagnostic events where both stages carried signal",
+            "# TYPE hapax_audio_health_inter_stage_corr_low_correlation_count counter",
+        ]
+    )
+    for pair_name, state in pairs.items():
+        lines.append(
+            f'hapax_audio_health_inter_stage_corr_low_correlation_count{{pair="{pair_name}"}} '
+            f"{state.low_correlation_count}"
+        )
+
+    lines.extend(
+        [
             "# HELP hapax_audio_health_inter_stage_corr_both_silent 1 if both stages silent",
             "# TYPE hapax_audio_health_inter_stage_corr_both_silent gauge",
         ]
@@ -184,6 +201,7 @@ def _emit_snapshot(pairs: dict[str, PairState], *, now: float, path: Path) -> No
             name: {
                 "correlation": s.last_correlation,
                 "breach_count": s.breach_count,
+                "low_correlation_count": s.low_correlation_count,
                 "both_silent": s.both_silent,
                 "analyzer_error": s.last_error,
                 "analyzer_error_count": s.analyzer_error_count,
@@ -293,16 +311,28 @@ def _probe_pair(
             if state.breach_start is None:
                 state.breach_start = now
             elif (now - state.breach_start) >= config.breach_sustain_s:
-                state.breach_count += 1
-                log.warning(
-                    "Inter-stage correlation breach between %s: corr=%.3f (rms_a=%.6f, rms_b=%.6f)",
-                    key,
-                    corr,
-                    rms_a,
-                    rms_b,
-                )
-                if config.enable_ntfy and _is_downstream_signal_loss(rms_a, rms_b, config):
-                    _send_ntfy(key, corr)
+                if _is_downstream_signal_loss(rms_a, rms_b, config):
+                    state.breach_count += 1
+                    log.warning(
+                        "Inter-stage downstream signal loss between %s: "
+                        "corr=%.3f (rms_a=%.6f, rms_b=%.6f)",
+                        key,
+                        corr,
+                        rms_a,
+                        rms_b,
+                    )
+                    if config.enable_ntfy:
+                        _send_ntfy(key, corr)
+                else:
+                    state.low_correlation_count += 1
+                    log.info(
+                        "Inter-stage low-correlation diagnostic between %s: "
+                        "corr=%.3f (rms_a=%.6f, rms_b=%.6f)",
+                        key,
+                        corr,
+                        rms_a,
+                        rms_b,
+                    )
                 state.breach_start = now
         else:
             state.breach_start = None
