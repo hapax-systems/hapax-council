@@ -53,3 +53,8 @@ class TestBuildMember:
     def test_default_tool_level_for_local(self) -> None:
         agent = build_member("local-fast")
         assert agent is not None
+
+    def test_none_tool_level_no_tools(self) -> None:
+        agent = build_member("opus", ToolLevel.NONE)
+        assert agent is not None
+        assert agent._function_toolset.tools == {}
