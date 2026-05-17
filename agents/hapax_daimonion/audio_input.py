@@ -18,16 +18,11 @@ log = logging.getLogger(__name__)
 # Preferred source when echo-cancellation is known to be active.
 # See docs/runbooks/audio-topology.md and spec 2026-04-18-audio-pathways-audit-design.md.
 _AEC_SOURCE_NAME = "echo_cancel_capture"
-# Fallback when HAPAX_AEC_ACTIVE is not set — the raw Yeti source.
-# Users keep this until the PipeWire drop-in is installed and verified.
+_RODE_WIRELESS_PATTERN = "alsa_input.usb-R__DE_Wireless_PRO_RX"
 _RAW_YETI_PATTERN = "alsa_input.usb-Blue_Microphones_Yeti"
 
-# YT bundle / audio-pathways Phase 2: priority list resolver. Production
-# config writes a list[str] of candidate sources in operator-preferred
-# order; resolve_source walks the list and picks the first source that
-# pw-cli reports as live. Fall-through to the raw Yeti pattern if every
-# entry misses.
-DEFAULT_SOURCE_PRIORITY: list[str] = [_AEC_SOURCE_NAME, _RAW_YETI_PATTERN]
+# Priority: Rode wireless (if plugged in) > AEC > Yeti fallback.
+DEFAULT_SOURCE_PRIORITY: list[str] = [_RODE_WIRELESS_PATTERN, _AEC_SOURCE_NAME, _RAW_YETI_PATTERN]
 
 
 PwCliRunner = Callable[[], str]
@@ -130,7 +125,11 @@ class AudioInputStream:
         # *cmd-unpacked into asyncio.create_subprocess_exec, which raises
         # "expected str, bytes or os.PathLike object, not list" every retry
         # and silently kills audio capture.
-        if source_name is None:
+        env_override = os.environ.get("HAPAX_AUDIO_INPUT_TARGET", "").strip()
+        if env_override:
+            self._source_name = env_override
+            log.info("audio input overridden by HAPAX_AUDIO_INPUT_TARGET: %s", env_override)
+        elif source_name is None:
             self._source_name = _resolve_default_source()
         elif isinstance(source_name, list):
             self._source_name = resolve_source(source_name)
