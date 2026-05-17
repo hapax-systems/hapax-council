@@ -81,10 +81,17 @@ async def run_phase1(
         try:
             member = build_member(alias)
 
+            source_ctx_block = ""
+            if inp.source_context:
+                source_ctx_block = (
+                    f"\n\n## Source Context\n```\n{inp.source_context}\n```\n"
+                )
+
             investigate_prompt = (
                 "You are a council member. FIRST, investigate the source material "
                 "using your research tools. Do NOT score yet — only gather evidence.\n\n"
-                f"**Source ref:** {inp.source_ref}\n\n**Text:**\n{inp.text}\n\n"
+                f"**Source ref:** {inp.source_ref}\n\n**Text:**\n{inp.text}"
+                f"{source_ctx_block}\n\n"
                 "Use tools to verify claims, check sources, and gather evidence. "
                 "Report your findings as a JSON list:\n"
                 '{"research_findings": ["finding 1", "finding 2", ...]}'
@@ -127,6 +134,13 @@ async def deliberate(
 ) -> CouncilVerdict:
     if config is None:
         config = CouncilConfig()
+
+    if not inp.source_context:
+        from agents.deliberative_council.source_context import populate_source_context
+
+        ctx = populate_source_context(inp.text, inp.source_ref, inp.metadata)
+        if ctx:
+            inp = inp.model_copy(update={"source_context": ctx})
 
     input_hash = hashlib.sha256(
         json.dumps({"text": inp.text, "source_ref": inp.source_ref}, sort_keys=True).encode()
