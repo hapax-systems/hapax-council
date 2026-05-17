@@ -37,6 +37,10 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
         "platform",
         "mode",
         "profile",
+        "sanctioned_wrapper",
+        "approval_posture",
+        "capability_tier",
+        "worker_tier",
         "model_or_engine",
         "auth_surface",
         "capacity_pool",
@@ -69,6 +73,12 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
         "support_only",
         "read_only",
     }
+    assert "worker" in set(schema["$defs"]["profile"]["enum"])
+    assert "plan_mode_read_only" in set(schema["$defs"]["approval_posture"]["enum"])
+    assert "programmatic_auto_approve_task_scoped" in set(
+        schema["$defs"]["approval_posture"]["enum"]
+    )
+    assert "read_only_sidecar" in set(schema["$defs"]["worker_tier"]["enum"])
     assert "evidence" in schema["$defs"]["freshness"]["required"]
 
 

@@ -183,12 +183,45 @@ def test_read_only_routes_cannot_declare_mutation_access() -> None:
     gemini = registry.require("gemini/headless/full")
 
     assert gemini.authority_ceiling is AuthorityCeiling.READ_ONLY
+    assert gemini.approval_posture.value == "plan_mode_read_only"
+    assert gemini.worker_tier.value == "read_only_sidecar"
     assert gemini.mutability.source is False
     assert gemini.tool_access.filesystem.value == "read_only"
 
     payload = gemini.model_dump(mode="json")
     payload["mutability"]["source"] = True
     with pytest.raises(ValidationError, match="read-only routes cannot declare mutation"):
+        PlatformCapabilityRoute.model_validate(payload)
+
+
+def test_gemini_plan_and_worker_profiles_are_split() -> None:
+    registry = load_platform_capability_registry()
+    plan = registry.require("gemini.headless.full")
+    worker = registry.require("gemini.headless.worker")
+
+    assert plan.approval_posture.value == "plan_mode_read_only"
+    assert plan.worker_tier.value == "read_only_sidecar"
+    assert plan.mutability.source is False
+    assert plan.tool_access.filesystem.value == "read_only"
+    assert "read_only_support_route" in plan.freshness.evidence.capability.blocked_reasons
+
+    assert worker.approval_posture.value == "auto_edit_policy_firewalled"
+    assert worker.worker_tier.value == "full_worker"
+    assert worker.mutability.source is True
+    assert worker.tool_access.filesystem.value == "read_write"
+    assert "quality_equivalence_record_absent" in worker.blocked_reasons
+
+
+def test_risky_auto_approval_routes_cannot_be_unrestricted_authoritative() -> None:
+    registry = load_platform_capability_registry()
+    vibe = registry.require("vibe.headless.full")
+
+    assert vibe.approval_posture.value == "programmatic_auto_approve_task_scoped"
+    assert vibe.worker_tier.value == "bounded_worker"
+
+    payload = vibe.model_dump(mode="json")
+    payload["authority_ceiling"] = "authoritative"
+    with pytest.raises(ValidationError, match="auto-approval posture cannot"):
         PlatformCapabilityRoute.model_validate(payload)
 
 
@@ -251,6 +284,9 @@ def test_supply_vector_projects_dimensional_scores_and_tool_state() -> None:
     assert supply.supply_vector_schema == 1
     assert supply.route.route_id == "codex.headless.full"
     assert supply.route.lane_id == "cx-green"
+    assert supply.route.approval_posture.value == "no_ask_hooks_enforced"
+    assert supply.route.worker_tier.value == "full_worker"
+    assert supply.route.sanctioned_wrapper == "scripts/hapax-codex"
     assert supply.capability_scores.source_editing.score == 5
     assert any(tool.tool_id == "local_shell" for tool in supply.tool_state)
     assert "source" in supply.authority.supported_mutation_surfaces
