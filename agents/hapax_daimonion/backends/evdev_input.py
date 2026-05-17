@@ -47,8 +47,13 @@ def _compute_idle(last_event_ts: float, now: float) -> tuple[bool, float]:
 class EvdevInputBackend:
     """Perception backend reading physical keyboard/mouse via evdev."""
 
+    _WARMUP_S: float = 10.0
+
     def __init__(self) -> None:
         self._last_event_ts: float = 0.0
+        self._start_ts: float = 0.0
+        self._events_received: int = 0
+        self._disabled: bool = False
         self._b_active: Behavior[bool] = Behavior(False)
         self._b_idle: Behavior[float] = Behavior(9999.0)
         self._devices: list[evdev.InputDevice] = []
@@ -88,6 +93,7 @@ class EvdevInputBackend:
                 ", ".join(f"{d.name} ({d.path})" for d in self._devices),
             )
             self._stop_event.clear()
+            self._start_ts = time.monotonic()
             self._thread = threading.Thread(
                 target=self._monitor_loop, daemon=True, name="evdev-input"
             )
@@ -110,8 +116,31 @@ class EvdevInputBackend:
         log.info("EvdevInputBackend stopped")
 
     def contribute(self, behaviors: dict[str, Behavior]) -> None:  # type: ignore[type-arg]
-        """Write real_keyboard_active and real_idle_seconds into behaviors dict."""
+        """Write real_keyboard_active and real_idle_seconds into behaviors dict.
+
+        During warmup (first 10s) or when disabled (no events ever received
+        on KWin Wayland), do NOT write behaviors — let the logind-based
+        InputActivityBackend handle keyboard detection instead.
+        """
+        if self._disabled:
+            return
+
         now = time.monotonic()
+        elapsed = now - self._start_ts if self._start_ts > 0 else 0.0
+
+        if elapsed < self._WARMUP_S:
+            return
+
+        if self._events_received == 0:
+            log.warning(
+                "EvdevInputBackend: zero events after %.0fs warmup — "
+                "disabling (KWin Wayland holds exclusive libinput access). "
+                "Falling through to logind InputActivityBackend.",
+                elapsed,
+            )
+            self._disabled = True
+            return
+
         active, idle_s = _compute_idle(self._last_event_ts, now)
         self._b_active.update(active, now)
         self._b_idle.update(idle_s, now)
@@ -130,6 +159,7 @@ class EvdevInputBackend:
                         continue
                     for _event in device.read():
                         self._last_event_ts = time.monotonic()
+                        self._events_received += 1
             except Exception:
                 if self._stop_event.is_set():
                     break
