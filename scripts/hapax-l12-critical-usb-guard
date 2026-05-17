@@ -101,9 +101,43 @@ def power_ancestors(device: Path, sysfs_root: Path) -> list[Path]:
     return out
 
 
+def associated_port_nodes(device: Path, sysfs_root: Path) -> list[Path]:
+    """Return physical USB port nodes associated with the L-12 device.
+
+    Linux exposes the port that owns a USB device via ``<device>/port``. That
+    port is not an ancestor of the USB device in sysfs, so ancestry-only
+    guarding can leave the physical port runtime-managed even while the leaf
+    L-12 device and upstream xHCI controller are pinned.
+    """
+
+    root = (sysfs_root / "devices").resolve(strict=False)
+    port_link = device / "port"
+    if not port_link.exists():
+        return []
+    port = port_link.resolve(strict=False)
+    try:
+        port.relative_to(root)
+    except ValueError:
+        return []
+    if not (port / "power").is_dir():
+        return []
+    return [port]
+
+
+def guard_nodes(device: Path, sysfs_root: Path) -> list[Path]:
+    nodes: list[Path] = []
+    seen: set[Path] = set()
+    for node in [*associated_port_nodes(device, sysfs_root), *power_ancestors(device, sysfs_root)]:
+        if node in seen:
+            continue
+        seen.add(node)
+        nodes.append(node)
+    return nodes
+
+
 def guard_device(device: Path, sysfs_root: Path, *, dry_run: bool) -> dict[str, Any]:
     actions: list[dict[str, Any]] = []
-    for node in power_ancestors(device, sysfs_root):
+    for node in guard_nodes(device, sysfs_root):
         power = node / "power"
         node_record: dict[str, Any] = {"node": str(node), "writes": []}
         control = power / "control"

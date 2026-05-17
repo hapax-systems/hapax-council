@@ -31,9 +31,13 @@ def _write(path: Path, value: str) -> None:
 def _make_l12_sysfs(root: Path) -> dict[str, Path]:
     sysroot = root / "sys"
     device = sysroot / "devices/pci0000:00/0000:00:08.3/0000:74:00.0/usb9/9-1"
+    port = sysroot / "devices/pci0000:00/0000:00:08.3/0000:74:00.0/usb9/9-0:1.0/usb9-port1"
+    device.mkdir(parents=True)
+    port.mkdir(parents=True)
     bus_link = sysroot / "bus/usb/devices/9-1"
     bus_link.parent.mkdir(parents=True, exist_ok=True)
     bus_link.symlink_to(device)
+    (device / "port").symlink_to(port)
 
     _write(device / "idVendor", "1686\n")
     _write(device / "idProduct", "03d5\n")
@@ -43,6 +47,7 @@ def _make_l12_sysfs(root: Path) -> dict[str, Path]:
         "root_port": sysroot / "devices/pci0000:00/0000:00:08.3",
         "xhci": sysroot / "devices/pci0000:00/0000:00:08.3/0000:74:00.0",
         "usb_root": sysroot / "devices/pci0000:00/0000:00:08.3/0000:74:00.0/usb9",
+        "port": port,
         "device": device,
     }
     for node in nodes.values():
@@ -63,7 +68,7 @@ def test_guard_pins_l12_device_and_parent_chain(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    for key in ("root_port", "xhci", "usb_root", "device"):
+    for key in ("root_port", "xhci", "usb_root", "port", "device"):
         assert (paths[key] / "power/control").read_text(encoding="utf-8").strip() == "on"
         assert (paths[key] / "power/autosuspend_delay_ms").read_text(
             encoding="utf-8"
@@ -77,6 +82,7 @@ def test_guard_pins_l12_device_and_parent_chain(tmp_path: Path) -> None:
         for result_payload in payload["results"]
         for action in result_payload["actions"]
     }
+    assert str(paths["port"]) in guarded_nodes
     assert str(paths["device"]) in guarded_nodes
     assert str(paths["usb_root"]) in guarded_nodes
     assert str(paths["xhci"]) in guarded_nodes
