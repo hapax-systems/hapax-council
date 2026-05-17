@@ -37,6 +37,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +63,9 @@ OPERATIONAL_PROCS: tuple[str, ...] = (
 )
 
 TEAM_SESSION_PATTERN = re.compile(r"^hapax-(claude|codex|gemini|vibe|antigrav)-(\S+)$")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 @dataclass
@@ -130,11 +134,9 @@ def proc_cpu_sample(pids: list[int], duration: float = 0.5) -> dict[int, float]:
 
     def jiffies(pid: int) -> int | None:
         try:
-            with open(f"/proc/{pid}/stat") as fh:
-                parts = fh.read().split()
             # utime + stime (fields 14, 15 0-indexed) — but the "comm" field can
             # contain spaces/parens, so re-parse from end of last `)`.
-            stat = open(f"/proc/{pid}/stat").read()
+            stat = Path(f"/proc/{pid}/stat").read_text()
             paren_end = stat.rfind(")")
             if paren_end < 0:
                 return None
@@ -247,6 +249,30 @@ def list_operational_pids() -> list[int]:
     return pids
 
 
+def collect_mq_health() -> dict[str, Any]:
+    """Collect relay MQ health without making team-load depend on SQLite."""
+
+    try:
+        from shared.relay_mq_health import tick_health
+
+        health = tick_health(last_tick_at=datetime.now(UTC))
+    except Exception as exc:
+        return {"label": "UNKNOWN", "available": False, "summary": f"UNKNOWN: {exc}"}
+    if health is None:
+        return {"label": "UNKNOWN", "available": False, "summary": "UNKNOWN: health failed"}
+    return {
+        "label": health.label,
+        "available": health.available,
+        "pending_count": health.pending_count,
+        "stale_count": health.stale_count,
+        "dead_letter_count": health.dead_letter_count,
+        "retry_candidate_count": health.retry_candidate_count,
+        "escalation_candidate_count": health.escalation_candidate_count,
+        "degraded": health.degraded,
+        "summary": health.summary(),
+    }
+
+
 def aggregate(pids: list[int], cpu_samples: dict[int, float]) -> tuple[float, int, int]:
     """Sum cpu_pct, rss_kb, swap_kb across pids."""
     cpu = 0.0
@@ -326,6 +352,7 @@ def collect() -> dict[str, Any]:
             "swap_kb": op_swap_kb,
             "process_count": len(op_pids),
         },
+        "relay_mq": collect_mq_health(),
         "sessions": [
             {
                 "interface": a.interface,
@@ -429,6 +456,7 @@ def render(snapshot: dict[str, Any], level: str, reasons: list[str], use_color: 
     sys_ = snapshot["system"]
     team = snapshot["team"]
     op = snapshot["operational"]
+    relay_mq = snapshot.get("relay_mq", {})
 
     out.append(
         f"{c['bold']}TEAM LOAD SNAPSHOT — {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(snapshot['ts']))} — mode={snapshot['working_mode']}{c['reset']}"
@@ -453,6 +481,10 @@ def render(snapshot: dict[str, Any], level: str, reasons: list[str], use_color: 
     out.append(
         f"  {c['dim']}OPERATIONAL{c['reset']}              {op['cpu_pct']:>5.1f}% {fmt_kb(op['rss_kb']):>7} {fmt_kb(op['swap_kb']):>7} {op['process_count']:>5}"
     )
+    if isinstance(relay_mq, dict):
+        out.append(
+            f"  {c['dim']}RELAY MQ{c['reset']}                 {relay_mq.get('summary', 'UNKNOWN')}"
+        )
     out.append("")
     color = c.get(level, "")
     out.append(f"  {color}{c['bold']}STATUS: {level.upper()}{c['reset']}")

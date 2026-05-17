@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from shared.relay_mq import MessageFilters, list_messages
+
 REPO_ROOT = Path(__file__).parent.parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "hapax-relay-inbox"
 
@@ -113,3 +115,47 @@ def test_unaddressed_note_is_ignored(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
+
+
+def test_dual_write_maps_addressed_note_to_mq_envelope(tmp_path: Path) -> None:
+    relay = tmp_path / "relay"
+    relay.mkdir()
+    note = relay / "dispatch-to-cx-red.md"
+    note.write_text(
+        "\n".join(
+            [
+                "---",
+                "from: alpha",
+                "to: cx-red",
+                "message_type: dispatch",
+                "priority: 0",
+                "authority_case: CASE-1",
+                "authority_item: task-1",
+                "---",
+                "# Dispatch Task One",
+                "",
+                "Body.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "messages.db"
+
+    result = _run_inbox(
+        relay,
+        "cx-red",
+        "--dual-write-mq",
+        "--mq-db",
+        str(db_path),
+        "--mark-seen",
+    )
+
+    assert result.returncode == 0, result.stderr
+    rows = list_messages(db_path, MessageFilters(recipient="cx-red", limit=5))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["message_type"] == "dispatch"
+    assert row["priority"] == 0
+    assert row["authority_case"] == "CASE-1"
+    assert row["authority_item"] == "task-1"
+    assert row["recipient_state"] == "offered"

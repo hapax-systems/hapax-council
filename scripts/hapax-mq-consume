@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Fail-open SessionStart consumer for the relay SQLite message queue."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import signal
+import sqlite3
+import sys
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Literal
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+Freshness = Literal["fresh", "stale", "expired"]
+
+
+@dataclass(frozen=True)
+class PendingMessage:
+    row: dict[str, object]
+    freshness: Freshness
+    payload_preview: str
+
+
+def _default_db_path() -> Path:
+    if os.environ.get("HAPAX_MQ_CONSUME_FORCE_IMPORT_ERROR"):
+        raise ImportError("forced import failure")
+    from shared.relay_mq import DEFAULT_DB_PATH
+
+    return DEFAULT_DB_PATH
+
+
+def _normalize_role(role: str) -> str:
+    return role.strip().lower().replace("_", "-")
+
+
+def _parse_utc(raw: object) -> datetime | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        value = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _payload_preview(row: dict[str, object], *, max_chars: int = 600) -> str:
+    payload = row.get("payload")
+    if isinstance(payload, str):
+        text = payload
+    else:
+        payload_path = row.get("payload_path")
+        if not isinstance(payload_path, str) or not payload_path:
+            return ""
+        try:
+            text = Path(payload_path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return f"(payload file unavailable: {payload_path})"
+    text = text.strip()
+    if len(text) > max_chars:
+        return text[: max_chars - 1].rstrip() + "..."
+    return text
+
+
+def _connect_readwrite(db_path: Path, *, busy_timeout_ms: int) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(db_path), timeout=max(busy_timeout_ms / 1000, 0.001))
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def _select_pending(
+    conn: sqlite3.Connection,
+    *,
+    role: str,
+    limit: int,
+    now: datetime,
+) -> list[PendingMessage]:
+    rows = conn.execute(
+        """
+        SELECT m.*, r.state AS recipient_state, r.retry_count
+        FROM messages m
+        JOIN recipients r ON r.message_id = m.message_id
+        WHERE r.recipient = :role
+          AND r.state = 'offered'
+          AND (
+              m.parent_message_id IS NULL
+              OR EXISTS (
+                  SELECT 1 FROM recipients r2
+                  WHERE r2.message_id = m.parent_message_id
+                    AND r2.recipient = :role
+                    AND r2.state != 'offered'
+              )
+          )
+        ORDER BY m.id
+        LIMIT :limit
+        """,
+        {"role": role, "limit": max(limit, 0)},
+    ).fetchall()
+
+    pending: list[PendingMessage] = []
+    for sqlite_row in rows:
+        row = dict(sqlite_row)
+        expires_at = _parse_utc(row.get("expires_at"))
+        stale_after = _parse_utc(row.get("stale_after"))
+        if expires_at is not None and expires_at < now:
+            freshness: Freshness = "expired"
+        elif stale_after is not None and stale_after < now:
+            freshness = "stale"
+        else:
+            freshness = "fresh"
+        pending.append(
+            PendingMessage(
+                row=row,
+                freshness=freshness,
+                payload_preview=_payload_preview(row),
+            )
+        )
+    return pending
+
+
+def format_messages(role: str, messages: list[PendingMessage]) -> str:
+    if not messages:
+        return ""
+    lines = [f"MQ INBOX ({role}):"]
+    for message in messages:
+        row = message.row
+        message_id = str(row.get("message_id", ""))
+        mtype = str(row.get("message_type", "?")).upper()
+        priority = row.get("priority", "?")
+        subject = str(row.get("subject", "(untitled)"))
+        sender = str(row.get("sender", "unknown"))
+        created_at = str(row.get("created_at", ""))
+        lines.append(f"  - [{message.freshness.upper()} {mtype}/P{priority}] {subject}")
+        meta = [f"id: {message_id}", f"from: {sender}"]
+        if created_at:
+            meta.append(f"created: {created_at}")
+        lines.append(f"    {' | '.join(meta)}")
+        authority_case = row.get("authority_case")
+        authority_item = row.get("authority_item")
+        if authority_case:
+            if authority_item:
+                lines.append(f"    authority: {authority_case} / {authority_item}")
+            else:
+                lines.append(f"    authority: {authority_case}")
+        if message.payload_preview:
+            for payload_line in message.payload_preview.splitlines()[:8]:
+                lines.append(f"    {payload_line}")
+    return "\n".join(lines) + "\n"
+
+
+def _mark_messages(
+    conn: sqlite3.Connection,
+    *,
+    role: str,
+    messages: list[PendingMessage],
+    now_iso: str,
+) -> None:
+    for message in messages:
+        message_id = str(message.row.get("message_id", ""))
+        retry_count = int(message.row.get("retry_count") or 0)
+        if message.freshness == "expired":
+            conn.execute(
+                "INSERT INTO dead_letters "
+                "(message_id, recipient, reason, original_state, retry_count, moved_at) "
+                "VALUES (:mid, :role, 'expired', 'offered', :retry_count, :now)",
+                {
+                    "mid": message_id,
+                    "role": role,
+                    "retry_count": retry_count,
+                    "now": now_iso,
+                },
+            )
+            conn.execute(
+                "DELETE FROM recipients WHERE message_id = :mid AND recipient = :role",
+                {"mid": message_id, "role": role},
+            )
+            continue
+        conn.execute(
+            "UPDATE recipients SET state = 'read', updated_at = :now "
+            "WHERE message_id = :mid AND recipient = :role AND state = 'offered'",
+            {"mid": message_id, "role": role, "now": now_iso},
+        )
+
+
+def consume_and_surface(
+    db_path: Path,
+    *,
+    role: str,
+    limit: int,
+    busy_timeout_ms: int,
+    write_output: Callable[[str], None] | None = None,
+) -> int:
+    role = _normalize_role(role)
+    write = write_output or sys.stdout.write
+    if not db_path.exists():
+        return 0
+
+    conn = _connect_readwrite(db_path, busy_timeout_ms=busy_timeout_ms)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        now = datetime.now(UTC)
+        messages = _select_pending(conn, role=role, limit=limit, now=now)
+        rendered = format_messages(role, messages)
+        if rendered:
+            write(rendered)
+            sys.stdout.flush()
+        if messages:
+            _mark_messages(conn, role=role, messages=messages, now_iso=now.isoformat())
+        conn.commit()
+        return len(messages)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _timeout_handler(_signum: int, _frame: object) -> None:
+    raise TimeoutError("mq consume timed out")
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--role", required=True)
+    parser.add_argument("--limit", type=int, default=8)
+    parser.add_argument("--timeout", type=float, default=2.0)
+    parser.add_argument("--db", type=Path, default=None)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    try:
+        if args.db is not None:
+            db_path = args.db
+        elif os.environ.get("HAPAX_RELAY_MQ_DB"):
+            db_path = Path(os.environ["HAPAX_RELAY_MQ_DB"])
+        else:
+            db_path = _default_db_path()
+    except Exception:
+        return 0
+
+    timeout_s = max(float(args.timeout), 0.0)
+    busy_timeout_ms = max(int(timeout_s * 1000), 1)
+    old_handler = signal.getsignal(signal.SIGALRM)
+    if timeout_s > 0:
+        signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.setitimer(signal.ITIMER_REAL, timeout_s)
+    try:
+        sleep_s = float(os.environ.get("HAPAX_MQ_CONSUME_TEST_SLEEP", "0") or 0)
+        if sleep_s > 0:
+            time.sleep(sleep_s)
+        consume_and_surface(
+            Path(db_path).expanduser(),
+            role=args.role,
+            limit=args.limit,
+            busy_timeout_ms=busy_timeout_ms,
+        )
+    except Exception:
+        return 0
+    finally:
+        if timeout_s > 0:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, old_handler)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

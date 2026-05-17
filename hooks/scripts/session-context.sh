@@ -497,6 +497,13 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
     fi
   done
 
+  # Durable relay MQ consumption. This is fail-open by contract: SQLite
+  # missing/locked/corrupt/import failures must not block SessionStart.
+  MQ_CONSUMER="$SCRIPT_DIR/../../scripts/hapax-mq-consume"
+  if [ -x "$MQ_CONSUMER" ]; then
+    "$MQ_CONSUMER" --role "$ROLE" --limit 8 --timeout 2 2>/dev/null || true
+  fi
+
   # Interim bridge for REQ-20260508154442: relay markdown notes can be
   # addressed directly to a coordinator via frontmatter (`to: alpha`) or
   # filename (`codex-to-alpha-...md`). Surface them on wake/tick and write a
