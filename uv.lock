@@ -2149,6 +2149,7 @@ dependencies = [
     { name = "sdnotify" },
     { name = "soundcloud-lib" },
     { name = "uvloop" },
+    { name = "werkzeug" },
 ]
 
 [package.optional-dependencies]
@@ -2370,6 +2371,7 @@ requires-dist = [
     { name = "vulture", marker = "extra == 'ci'", specifier = ">=2.16" },
     { name = "watchdog", marker = "extra == 'ci'", specifier = ">=6.0.0" },
     { name = "watchdog", marker = "extra == 'logos-api'", specifier = ">=6.0.0" },
+    { name = "werkzeug", specifier = ">=3.1.0" },
 ]
 provides-extras = ["logos-api", "sync-pipeline", "mail-monitor", "audio", "ci", "studio", "tui", "host"]
 

@@ -7,6 +7,8 @@ search over the studio_moments Qdrant collection.
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +22,8 @@ if TYPE_CHECKING:
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
+from werkzeug.security import safe_join
+from werkzeug.utils import secure_filename
 
 from logos.api.cache import cache
 from logos.api.deps.stream_redaction import (
@@ -123,14 +127,36 @@ _OFFLINE_PLACEHOLDER = Path(__file__).parent.parent / "static" / "camera-offline
 
 
 _COMPOSITOR_DIR = Path("/dev/shm/hapax-compositor")
+_VALID_COMPOSITOR_FEED_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 def _safe_compositor_path(name: str) -> Path | None:
     """Resolve a camera/feed name to a compositor path, rejecting traversal."""
-    candidate = (_COMPOSITOR_DIR / f"{name}.jpg").resolve()
-    if not candidate.is_relative_to(_COMPOSITOR_DIR):
+    safe_name = secure_filename(name)
+    if safe_name != name or not _VALID_COMPOSITOR_FEED_RE.fullmatch(safe_name):
         return None
-    return candidate
+    joined = safe_join(str(_COMPOSITOR_DIR), f"{safe_name}.jpg")
+    if joined is None:
+        return None
+    resolved_base = os.path.realpath(_COMPOSITOR_DIR)
+    resolved_candidate = os.path.realpath(joined)
+    if os.path.commonpath([resolved_base, resolved_candidate]) != resolved_base:
+        return None
+    return Path(joined)
+
+
+def _safe_compositor_stream_path(path: Path) -> Path | None:
+    safe_name = secure_filename(path.name)
+    if safe_name != path.name:
+        return None
+    joined = safe_join(str(_COMPOSITOR_DIR), safe_name)
+    if joined is None:
+        return None
+    resolved_base = os.path.realpath(_COMPOSITOR_DIR)
+    resolved_candidate = os.path.realpath(joined)
+    if os.path.commonpath([resolved_base, resolved_candidate]) != resolved_base:
+        return None
+    return Path(joined)
 
 
 @router.get("/studio/stream/camera/{role}")
@@ -284,13 +310,16 @@ MJPEG_BOUNDARY = "hapax-frame"
 
 
 async def _mjpeg_generator(path: Path, fps: float = 12.0):  # noqa: ANN201
+    stream_path = _safe_compositor_stream_path(path)
+    if stream_path is None:
+        return
     interval = 1.0 / fps
     last_mtime_ns = 0
     while True:
         try:
-            st = path.stat()
+            st = stream_path.stat()
             if st.st_mtime_ns != last_mtime_ns:
-                data = path.read_bytes()
+                data = stream_path.read_bytes()
                 last_mtime_ns = st.st_mtime_ns
                 if len(data) > 100 and data[:2] == b"\xff\xd8":  # valid JPEG SOI
                     yield (
@@ -320,11 +349,14 @@ async def mjpeg_stream(feed: str, fps: float = 12.0):
         path = _safe_compositor_path(feed)
         if path is None:
             return JSONResponse({"error": "invalid feed name"}, status_code=400)
-    if not path.exists():
+    stream_path = _safe_compositor_stream_path(path)
+    if stream_path is None:
+        return JSONResponse({"error": "invalid feed path"}, status_code=400)
+    if not stream_path.exists():
         return JSONResponse({"error": f"feed '{feed}' not available"}, status_code=404)
     fps = min(max(fps, 1.0), 30.0)
     return StreamingResponse(
-        _mjpeg_generator(path, fps),
+        _mjpeg_generator(stream_path, fps),
         media_type=f"multipart/x-mixed-replace; boundary={MJPEG_BOUNDARY}",
     )
 

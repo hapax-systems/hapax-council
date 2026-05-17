@@ -23,6 +23,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, HTTPException
 from pydantic import BaseModel, Field
+from werkzeug.security import safe_join
+from werkzeug.utils import secure_filename
 
 HAPAX_HOME: Path = Path(os.environ.get("HAPAX_HOME", str(Path.home())))
 
@@ -80,7 +82,7 @@ class SensorPayload(BaseModel):
 
 class HealthSummaryPayload(BaseModel):
     device_id: str
-    date: str  # YYYY-MM-DD
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")  # YYYY-MM-DD
     resting_hr: float | None = None
     hr_min: float | None = None
     hr_max: float | None = None
@@ -128,9 +130,9 @@ def _atomic_write(path: Path, data: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=f".{path.stem}_")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
-        os.rename(tmp_path, str(path))
+        os.replace(tmp_path, str(path))
     except Exception:
         try:
             os.unlink(tmp_path)
@@ -144,15 +146,34 @@ def _atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=f".{path.stem}_")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
-        os.rename(tmp_path, str(path))
+        os.replace(tmp_path, str(path))
     except Exception:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
         raise
+
+
+def _bounded_child_path(base_dir: Path, filename: str) -> Path:
+    safe_name = secure_filename(filename)
+    if not filename or "\x00" in filename or safe_name != filename:
+        raise ValueError("filename must be a single path component")
+    joined = safe_join(str(base_dir), safe_name)
+    if joined is None:
+        raise ValueError("path escaped base directory")
+    return Path(joined)
+
+
+def _watch_state_path(filename: str) -> Path:
+    return _bounded_child_path(_get_watch_state_dir(), filename)
+
+
+def _health_connect_path(day: str) -> Path:
+    base = HAPAX_HOME / "documents" / "rag-sources" / "health-connect"
+    return _bounded_child_path(base, f"health-{day}.md")
 
 
 def _prune_window(window: deque[tuple[float, float]], now: float) -> None:
@@ -187,7 +208,7 @@ def _handle_heart_rate(reading: SensorReading, now: float, source: str = "pixel_
         _hr_window.append((now, reading.bpm))
         stats = _window_stats(_hr_window)
     _atomic_write(
-        _get_watch_state_dir() / "heartrate.json",
+        _watch_state_path("heartrate.json"),
         {
             "source": source,
             "updated_at": datetime.now(UTC).isoformat(),
@@ -209,7 +230,7 @@ def _handle_hrv(reading: SensorReading, now: float, source: str = "pixel_watch_4
         _hrv_window.append((now, reading.rmssd_ms))
         stats = _window_stats(_hrv_window)
     _atomic_write(
-        _get_watch_state_dir() / "hrv.json",
+        _watch_state_path("hrv.json"),
         {
             "source": source,
             "updated_at": datetime.now(UTC).isoformat(),
@@ -231,7 +252,7 @@ def _handle_respiration(reading: SensorReading, now: float, source: str = "pixel
         _respiration_window.append((now, breaths_per_min))
         stats = _window_stats(_respiration_window)
     _atomic_write(
-        _get_watch_state_dir() / "respiration.json",
+        _watch_state_path("respiration.json"),
         {
             "source": source,
             "updated_at": datetime.now(UTC).isoformat(),
@@ -244,7 +265,7 @@ def _handle_respiration(reading: SensorReading, now: float, source: str = "pixel
 def _handle_eda(reading: SensorReading, source: str = "pixel_watch_4") -> None:
     """Process EDA reading."""
     _atomic_write(
-        _get_watch_state_dir() / "eda.json",
+        _watch_state_path("eda.json"),
         {
             "source": source,
             "updated_at": datetime.now(UTC).isoformat(),
@@ -259,7 +280,7 @@ def _handle_eda(reading: SensorReading, source: str = "pixel_watch_4") -> None:
 def _handle_skin_temp(reading: SensorReading, source: str = "pixel_watch_4") -> None:
     """Process skin temperature reading."""
     _atomic_write(
-        _get_watch_state_dir() / "skin_temp.json",
+        _watch_state_path("skin_temp.json"),
         {
             "source": source,
             "updated_at": datetime.now(UTC).isoformat(),
@@ -271,7 +292,7 @@ def _handle_skin_temp(reading: SensorReading, source: str = "pixel_watch_4") -> 
 def _handle_activity(reading: SensorReading, source: str = "pixel_watch_4") -> None:
     """Process activity state reading."""
     _atomic_write(
-        _get_watch_state_dir() / "activity.json",
+        _watch_state_path("activity.json"),
         {
             "source": source,
             "updated_at": datetime.now(UTC).isoformat(),
@@ -295,7 +316,7 @@ def _update_connection(device_id: str, battery_pct: int | None = None) -> None:
     """Update connection file on every POST. Phone writes phone_connection.json."""
     filename = "phone_connection.json" if device_id == "pixel10" else "connection.json"
     _atomic_write(
-        _get_watch_state_dir() / filename,
+        _watch_state_path(filename),
         {
             "last_seen_epoch": time.time(),
             "device_id": device_id,
@@ -352,7 +373,7 @@ def create_router() -> APIRouter:
 
     @_router.get("/watch/status")
     async def watch_status() -> dict[str, object]:
-        conn_file = _get_watch_state_dir() / "connection.json"
+        conn_file = _watch_state_path("connection.json")
         conn = {}
         if conn_file.exists():
             try:
@@ -370,7 +391,7 @@ def create_router() -> APIRouter:
         summary_data = payload.model_dump()
         summary_data["source"] = DEVICE_NAMES.get(payload.device_id, payload.device_id)
         summary_data["updated_at"] = datetime.now(UTC).isoformat()
-        _atomic_write(_get_watch_state_dir() / "phone_health_summary.json", summary_data)
+        _atomic_write(_watch_state_path("phone_health_summary.json"), summary_data)
 
         # Write RAG markdown using health_connect_parser formatter
         from agents.health_connect_parser import format_daily_summary
@@ -388,9 +409,7 @@ def create_router() -> APIRouter:
             "source_device: pixel_watch_4",
             f"source_device: {DEVICE_NAMES.get(payload.device_id, payload.device_id)}",
         )
-        rag_dir = HAPAX_HOME / "documents" / "rag-sources" / "health-connect"
-        rag_dir.mkdir(parents=True, exist_ok=True)
-        rag_file = rag_dir / f"health-{payload.date}.md"
+        rag_file = _health_connect_path(payload.date)
         _atomic_write_text(rag_file, md_content)
         return {"status": "ok", "date": payload.date}
 
@@ -399,7 +418,7 @@ def create_router() -> APIRouter:
         if payload.device_id not in ALLOWED_DEVICE_IDS:
             raise HTTPException(status_code=403, detail="Unknown device")
         _atomic_write(
-            _get_watch_state_dir() / "voice_trigger.json",
+            _watch_state_path("voice_trigger.json"),
             {
                 "triggered_at": datetime.now(UTC).isoformat(),
                 "device_id": payload.device_id,
@@ -413,7 +432,7 @@ def create_router() -> APIRouter:
         if payload.device_id not in ALLOWED_DEVICE_IDS:
             raise HTTPException(status_code=403, detail="Unknown device")
         _atomic_write(
-            _get_watch_state_dir() / "gesture.json",
+            _watch_state_path("gesture.json"),
             {
                 "gesture": payload.gesture,
                 "timestamp": payload.timestamp,
@@ -431,7 +450,7 @@ def create_router() -> APIRouter:
             raise HTTPException(status_code=403, detail="Unknown device")
         _update_connection(payload.device_id, payload.battery_pct)
         _atomic_write(
-            _get_watch_state_dir() / "phone_context.json",
+            _watch_state_path("phone_context.json"),
             {
                 "source": DEVICE_NAMES.get(payload.device_id, payload.device_id),
                 "updated_at": datetime.now(UTC).isoformat(),
