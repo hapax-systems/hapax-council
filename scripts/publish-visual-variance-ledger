@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Publish the visual variance state vector and novelty ledger."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.visual_variance_ledger import (
+    DEFAULT_DURABLE_DIR,
+    DEFAULT_HISTORY_LIMIT,
+    DEFAULT_LEDGER_PATH,
+    VisualVarianceRuntimePaths,
+    build_visual_variance_ledger_from_runtime,
+    read_visual_variance_history,
+    write_visual_variance_ledger,
+)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ledger-path", type=Path, default=DEFAULT_LEDGER_PATH)
+    parser.add_argument("--durable-dir", type=Path, default=DEFAULT_DURABLE_DIR)
+    parser.add_argument("--history-limit", type=int, default=DEFAULT_HISTORY_LIMIT)
+    parser.add_argument("--public-claim-requested", action="store_true")
+    parser.add_argument(
+        "--public-aperture-ref",
+        action="append",
+        default=[],
+        help="Explicit public-safe aperture ref. Repeat for multiple refs.",
+    )
+    parser.add_argument("--no-camera-salience", action="store_true")
+    parser.add_argument("--no-write", action="store_true")
+    parser.add_argument("--pretty", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    history = read_visual_variance_history(
+        path=args.ledger_path,
+        durable_dir=args.durable_dir,
+        limit=max(0, args.history_limit),
+    )
+    ledger = build_visual_variance_ledger_from_runtime(
+        paths=VisualVarianceRuntimePaths(),
+        prior_vectors=history,
+        public_claim_requested=args.public_claim_requested,
+        public_aperture_refs=tuple(args.public_aperture_ref),
+        include_camera_salience=not args.no_camera_salience,
+    )
+    if not args.no_write:
+        write_visual_variance_ledger(
+            ledger,
+            path=args.ledger_path,
+            durable_dir=args.durable_dir,
+        )
+    print(
+        json.dumps(
+            ledger.model_dump(mode="json"),
+            indent=2 if args.pretty else None,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
