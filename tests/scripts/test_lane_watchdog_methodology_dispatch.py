@@ -162,3 +162,37 @@ def test_rate_limit_watchdog_sends_hold_not_assignment_when_lane_has_no_task(
     assert "hapax-methodology-dispatch --launch" in sent
     assert "Task:" not in sent
     assert "cc-claim" not in sent
+
+
+def test_rate_limit_watchdog_does_not_restart_dead_lane_for_terminal_task(
+    tmp_path: Path,
+) -> None:
+    env = _base_env(
+        tmp_path,
+        session="hapax-claude-alpha",
+        pane="blocked\nbypass permissions on",
+    )
+    home = Path(env["HOME"])
+    (home / "projects" / "hapax-council--beta").mkdir(parents=True)
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    headless_called = tmp_path / "headless-called.txt"
+    _write_executable(
+        local_bin / "hapax-claude-headless",
+        f"""
+        #!/usr/bin/env bash
+        printf '%s\n' "$*" >> {headless_called}
+        """,
+    )
+    task_dir = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+    task_dir.mkdir(parents=True)
+    (task_dir / "terminal-task.md").write_text(
+        "---\nstatus: done\nassigned_to: beta\ntitle: Terminal task\n---\n# Done\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run([str(RATE_LIMIT_WATCHDOG)], env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert not headless_called.exists()
+    assert "DEAD with no active task" in result.stdout

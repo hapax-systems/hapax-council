@@ -53,7 +53,28 @@ for lane in $EXPECTED_LANES; do
 
         if [ -x "$HEADLESS_BIN" ]; then
             vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
-            assigned=$(grep -rl "^assigned_to: $lane" "$vault_root/active/" 2>/dev/null | head -1)
+            assigned=$(python3 - "$vault_root" "$lane" 2>/dev/null <<'PY' || true
+from pathlib import Path
+import re
+import sys
+
+vault_root = Path(sys.argv[1])
+lane = sys.argv[2]
+
+for path in sorted((vault_root / "active").glob("*.md")):
+    text = path.read_text(errors="replace")
+    assigned = re.search(r"^assigned_to:\s*(\S+)", text, re.MULTILINE)
+    status = re.search(r"^status:\s*(\S+)", text, re.MULTILINE)
+    if (
+        assigned
+        and assigned.group(1) == lane
+        and status
+        and status.group(1) in {"claimed", "in_progress"}
+    ):
+        print(path)
+        break
+PY
+)
             if [ -n "$assigned" ]; then
                 task_id=$(basename "$assigned" .md)
                 task_title=$(grep -m1 "^title:" "$assigned" | sed 's/^title:\s*//' | tr -d '"')
