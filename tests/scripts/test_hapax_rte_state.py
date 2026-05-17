@@ -30,7 +30,7 @@ def _write_planning_feed(path: Path) -> None:
     path.write_text(
         json.dumps(
             {
-                "generated_at": "2026-05-09T21:00:00Z",
+                "generated_at": "2026-05-17T08:00:00Z",
                 "dispatch": {
                     "route_metadata_summary": {
                         "explicit": 0,
@@ -62,7 +62,7 @@ def _run(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
         **os.environ,
         "HAPAX_RELAY_DIR": str(relay),
         "HAPAX_PLANNING_FEED_STATE": str(feed),
-        "HAPAX_CAPACITY_ROUTING_NOW": "2026-05-09T21:00:00Z",
+        "HAPAX_CAPACITY_ROUTING_NOW": "2026-05-17T08:00:00Z",
     }
     return subprocess.run(
         [str(SCRIPT), *args],
@@ -89,7 +89,7 @@ def test_json_includes_capacity_routing_warnings_without_changing_green_gate(
     assert capacity["observe_only"] is True
     assert capacity["route_metadata_summary"]["hold"] == 1
     assert "route_metadata_hold" in states
-    assert "support_artifacts_waiting_for_review" in states
+    assert "support_artifacts_waiting_for_review" not in states
 
     gate = _run(tmp_path, "--gate")
     assert gate.returncode == 0

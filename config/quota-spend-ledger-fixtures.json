@@ -1,12 +1,13 @@
 {
   "schema_version": 1,
-  "ledger_id": "quota-spend-ledger-claude-active-20260510",
-  "captured_at": "2026-05-10T18:00:00Z",
+  "ledger_id": "quota-spend-ledger-reconciled-20260517",
+  "captured_at": "2026-05-17T07:42:00Z",
   "authority_source": "isap:quota-spend-ledger-20260509",
   "generated_from": [
     "shared/quota_spend_ledger.py",
     "config/quota-spend-ledger-fixtures.json",
-    "litellm-api-dashboard-2026-05-10"
+    "litellm-api-dashboard-2026-05-10",
+    "capacity-routing-quota-spend-ledger-reconciliation"
   ],
   "privacy_scope": "private",
   "consumer_permission_after": "private_capacity_routing_tests_only",
@@ -76,9 +77,9 @@
         "blocker_to_remove": "quota-observability-incomplete",
         "exit_criterion": "subscription route can satisfy quality floor without paid/API spend"
       },
-      "ledger_owner": "cx-indigo",
+      "ledger_owner": "cx-quota-ledger",
       "dashboard_visibility": "required",
-      "lifecycle_state": "active"
+      "lifecycle_state": "retired"
     },
     {
       "budget_schema": 1,
@@ -145,6 +146,9 @@
       "cap_remaining_usd": null,
       "created_at": "2026-05-09T19:30:00Z",
       "reconcile_by": "2026-05-09T20:30:00Z",
+      "reconciliation_state": "frozen_refused",
+      "reconciled_at": "2026-05-17T07:42:00Z",
+      "reconciliation_reason": "bootstrap budget expired before trustworthy cost evidence was available; receipt remains estimated support-only and blocks reopening this budget",
       "artifact_refs": [
         "artifacts/support/bootstrap-draft.md"
       ],
@@ -154,8 +158,8 @@
   "spend_gate_decisions": [
     {
       "decision_schema": 1,
-      "decision_id": "sgd-20260509-expired-bootstrap-refusal",
-      "created_at": "2026-05-09T20:45:00Z",
+      "decision_id": "sgd-20260517-bootstrap-frozen-refusal",
+      "created_at": "2026-05-17T07:42:00Z",
       "route_id": "opaque.route.bootstrap",
       "provider": "opaque-provider-a",
       "profile": "opaque-profile-full",
@@ -163,14 +167,16 @@
       "quality_floor": "frontier_required",
       "capacity_pool": "bootstrap_budget",
       "requested_cost_usd": "1.00",
-      "decision_state": "refused_expired_budget",
+      "decision_state": "refused_unreconciled_spend",
       "eligible": false,
       "budget_id": "tb-20260509-bootstrap-expired",
       "blocking_reasons": [
+        "spend receipt frozen_refused under retired bootstrap budget",
         "matching TransitionBudget expired or inactive"
       ],
       "evidence_refs": [
-        "tb-20260509-bootstrap-expired"
+        "tb-20260509-bootstrap-expired",
+        "spend-20260509T193000Z-opaque-route"
       ]
     }
   ],
@@ -181,18 +187,21 @@
       "route_id": "opaque.route.bootstrap",
       "provider": "opaque-provider-a",
       "capacity_pool": "bootstrap_budget",
-      "dependency_state": "active",
+      "dependency_state": "replaced",
       "recurring": false,
-      "critical_path": true,
+      "critical_path": false,
       "transition_budget_id": "tb-20260509-bootstrap-expired",
       "first_seen_at": "2026-05-09T19:00:00Z",
-      "review_by": "2026-05-09T20:10:00Z",
-      "replacement_route_id": null,
+      "review_by": "2026-06-09T00:00:00Z",
+      "last_reviewed_at": "2026-05-17T07:42:00Z",
+      "replacement_route_id": "litellm.anthropic.claude-opus-4",
       "bootstrap_dependency": true,
       "evidence_refs": [
-        "ledger:bootstrap-dependency-fixture"
+        "ledger:bootstrap-dependency-fixture",
+        "tb-20260510-anthropic-api-steady-state",
+        "capacity-routing-quota-spend-ledger-reconciliation"
       ],
-      "operator_visible_reason": "bootstrap dependency remains active but its budget is expired"
+      "operator_visible_reason": "expired bootstrap dependency replaced by steady-state route evidence; retired bootstrap budget cannot be reopened"
     }
   ],
   "artifact_provenance": [
@@ -208,12 +217,16 @@
         "spend-20260509T193000Z-opaque-route"
       ],
       "support_artifact_authority": "support_non_authoritative",
+      "artifact_disposition": "retired",
       "accepted_by_route_id": null,
       "accepted_at": null,
+      "disposition_reviewed_at": "2026-05-17T07:42:00Z",
+      "disposition_reason": "support-only bootstrap draft was not accepted by an eligible route and is retired from authoritative use",
       "evidence_refs": [
-        "spend-20260509T193000Z-opaque-route"
+        "spend-20260509T193000Z-opaque-route",
+        "capacity-routing-quota-spend-ledger-reconciliation"
       ],
-      "operator_visible_reason": "support artifact is not authoritative until reviewed by an eligible route"
+      "operator_visible_reason": "support artifact remains non-authoritative and retired; no eligible route accepted it"
     }
   ],
   "renewal_records": [
@@ -239,6 +252,7 @@
     "CASE-CAPACITY-ROUTING-001",
     "CASE-CAPACITY-ROUTING-002-STEADY-STATE",
     "litellm:gateway-4000-anthropic-route-healthy",
-    "ledger:anthropic-api-key-active"
+    "ledger:anthropic-api-key-active",
+    "capacity-routing-quota-spend-ledger-reconciliation"
   ]
 }
