@@ -703,6 +703,39 @@ def create_interview_agent(model_alias: str = "balanced") -> Agent[InterviewDeps
         return "\n".join(lines)
 
     @agent.tool
+    async def check_contradictions(
+        ctx: RunContext[InterviewDeps],
+        claim: str,
+        dimension: str,
+    ) -> str:
+        """Check if a claim from the operator contradicts existing profile facts.
+
+        Call this when the operator says something that might conflict
+        with what the system already knows. Returns any contradicting
+        facts so the interviewer can surface them non-judgmentally.
+
+        Args:
+            claim: What the operator just stated.
+            dimension: The profile dimension to check against.
+        """
+        try:
+            from logos._context_tools import search_profile
+
+            results = await search_profile(None, claim, dimension)
+            if not results or "No results" in results:
+                return f"No existing facts in [{dimension}] to compare against."
+
+            return (
+                f"## Existing facts in [{dimension}] related to this claim:\n"
+                f"{results}\n\n"
+                "If any of these contradict the operator's statement, surface it "
+                "non-judgmentally: 'Previous record indicates X. You described Y. "
+                "Which reflects your current position?'"
+            )
+        except Exception as e:
+            return f"Profile check unavailable: {e}"
+
+    @agent.tool
     async def read_goals(ctx: RunContext[InterviewDeps]) -> str:
         """Read operator goals from operator.json."""
         try:
