@@ -50,6 +50,15 @@ def test_parse_classifies_github():
     assert event.platform == "github"
 
 
+def test_parse_rejects_github_lookalike_origin():
+    payload = {
+        "source": "https://github.com.evil.test/github.com/alice/repo/issues/42",
+        "target": "https://hapax.weblog.lol/post/x",
+        "timestamp": "2026-04-26T20:00:00Z",
+    }
+    assert parse_webmention_payload(payload) is None
+
+
 def test_parse_returns_none_on_missing_fields():
     assert parse_webmention_payload({}) is None
     assert parse_webmention_payload({"source": "https://x"}) is None

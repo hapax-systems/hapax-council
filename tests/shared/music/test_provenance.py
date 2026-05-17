@@ -115,6 +115,16 @@ def test_non_operator_soundcloud_without_license_fails_unknown() -> None:
     assert license_slug is None
 
 
+def test_soundcloud_lookalike_track_origin_is_not_soundcloud() -> None:
+    provenance, license_slug = classify_music_provenance(
+        source="external",
+        track_id="https://soundcloud.com.evil.test/soundcloud.com/oudepode/track",
+        license="CC-BY-4.0",
+    )
+    assert provenance == "hapax-pool"
+    assert license_slug == "cc-by"
+
+
 def test_manifest_projection_has_token_and_tier() -> None:
     rec = MusicTrackProvenance(
         track_id="/pool/track.flac",

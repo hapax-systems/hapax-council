@@ -11,6 +11,7 @@ import importlib.util
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 import yaml
@@ -126,7 +127,7 @@ class TestClassifyApply:
         assert slug in [a.stem for a in applied]
         fm = _read_fm(vault / "closed" / f"{slug}.md")
         assert fm["evaluation_trigger"] == ["structural"]
-        assert "bandcamp.com" in fm["evaluation_probe"]["url"]
+        assert urlparse(fm["evaluation_probe"]["url"]).hostname == "bandcamp.com"
 
     def test_warns_on_missing_slug(self, tmp_path: Path, classify_module, caplog):
         vault = _vault_with_dirs(tmp_path)

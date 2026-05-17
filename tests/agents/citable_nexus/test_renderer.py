@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from agents.citable_nexus.renderer import (
+    CANONICAL_BASE_URL,
     PAGE_PATHS,
     V5_BYLINE,
     PageMeta,
@@ -86,7 +87,8 @@ class TestCitePage:
         assert "Hapax" in body
         assert "Oudepode" in body
         assert "2026" in body
-        assert "https://hapax.research" in body
+        tokens = {token.strip(".,)") for token in body.split()}
+        assert CANONICAL_BASE_URL in tokens
 
     def test_cff_pointer(self):
         body = render_cite_page().body_html

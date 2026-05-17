@@ -38,6 +38,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from shared.url_safety import host_matches_domain
+
 # Pass-store keys per service
 KEYS = {
     "zenodo": ["zenodo/api-token"],
@@ -61,6 +63,7 @@ class ServiceResult:
 
 
 log = logging.getLogger("bootstrap-cred-tokens")
+_PHILARCHIVE_HOST = "philarchive.org"
 
 
 def pass_has(key: str) -> bool:
@@ -88,6 +91,10 @@ def pass_insert(key: str, token_bytes: bytes) -> None:
     if proc.returncode != 0:
         # Don't include stderr — it might echo token bytes
         raise RuntimeError(f"pass insert failed for {key} (rc={proc.returncode})")
+
+
+def _is_philarchive_cookie_domain(domain: object) -> bool:
+    return host_matches_domain(domain, _PHILARCHIVE_HOST)
 
 
 # ── Per-service bootstrap functions ─────────────────────────────────
@@ -242,7 +249,9 @@ async def bootstrap_philarchive(page, *, dry_run: bool, force: bool) -> ServiceR
         cookies = await page.context.cookies("https://philarchive.org")
         # Keep the session/login cookies; pack as Cookie: header value
         rendered = "; ".join(
-            f"{c['name']}={c['value']}" for c in cookies if c["domain"].endswith("philarchive.org")
+            f"{c['name']}={c['value']}"
+            for c in cookies
+            if _is_philarchive_cookie_domain(c.get("domain"))
         )
         if not rendered or len(rendered) < 10:
             return ServiceResult(

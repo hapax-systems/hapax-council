@@ -61,6 +61,15 @@ def test_signal_finished_survives_missing_shm(tmp_path):
     slot._signal_finished(rc=-1)  # must not raise
 
 
+def test_youtube_url_validation_rejects_embedded_trusted_strings(tmp_path):
+    yt = _load_yt_player(tmp_path)
+
+    assert yt._is_youtube_url("https://www.youtube.com/watch?v=ok")
+    assert yt._is_youtube_url("https://youtu.be/abc123")
+    assert not yt._is_youtube_url("https://youtube.com.evil.test/watch?v=ok")
+    assert not yt._is_youtube_url("https://evil.test/watch?next=https://youtu.be/abc123")
+
+
 def test_extract_urls_timeout_is_45_seconds(tmp_path):
     """All three yt-dlp subprocess calls must use a 45s timeout (was 15s)."""
     yt = _load_yt_player(tmp_path)

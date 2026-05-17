@@ -37,6 +37,7 @@ from typing import Final, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from shared.affordance import ContentRisk
+from shared.url_safety import url_matches_domain
 
 #: The five provenance values. Order is informational, not policy-
 #: ranked — broadcast safety is decided by :func:`is_broadcast_safe`,
@@ -282,6 +283,14 @@ def normalize_music_license(raw: str | None) -> str | None:
     return None
 
 
+def _is_soundcloud_source_label(source: str) -> bool:
+    return source == "soundcloud" or source.startswith("soundcloud-")
+
+
+def _is_soundcloud_track_url(track_id: str) -> bool:
+    return url_matches_domain(track_id, "soundcloud.com")
+
+
 def build_music_provenance_token(
     track_id: str,
     provenance: MusicProvenance,
@@ -316,7 +325,7 @@ def classify_music_provenance(
     if source_norm in {"vinyl", "operator-vinyl"}:
         return "operator-vinyl", None
 
-    if "soundcloud" in source_norm or "soundcloud.com/" in track_norm:
+    if _is_soundcloud_source_label(source_norm) or _is_soundcloud_track_url(track_norm):
         if license_norm is not None:
             return "soundcloud-licensed", license_norm
         if source_norm == _SOUNDCLOUD_OPERATOR_SOURCE:

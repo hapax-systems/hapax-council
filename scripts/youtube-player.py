@@ -31,6 +31,8 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from shared.url_safety import url_matches_domain
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("youtube-player")
 
@@ -42,6 +44,14 @@ SHM_DIR = Path("/dev/shm/hapax-compositor")
 # Legacy compat
 V4L2_DEVICE = V4L2_DEVICES[0]
 lock = threading.Lock()
+
+
+def _is_youtube_url(url: object) -> bool:
+    return url_matches_domain(url, "youtube.com") or url_matches_domain(
+        url,
+        "youtu.be",
+        include_subdomains=False,
+    )
 
 
 def _playback_rate() -> float:
@@ -958,7 +968,7 @@ def kde_connect_listener() -> None:
 
         def on_share_received(url: str) -> None:
             log.info("KDE Connect share received: %s", url)
-            if "youtube.com" in url or "youtu.be" in url:
+            if _is_youtube_url(url):
                 with lock:
                     add_to_queue(url)
             else:
