@@ -4,6 +4,10 @@
 This helper is intentionally narrow. It lets a session create the governance
 object that makes ordinary work claimable, but only as a new request or offered
 cc-task note in the Obsidian governance vault.
+
+Keep this dependency-light: hooks run under the system Python before repo
+PYTHONPATH or the project venv is guaranteed, so importing shared.frontmatter
+would make a safety gate depend on optional runtime packaging.
 """
 
 from __future__ import annotations

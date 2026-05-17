@@ -22,6 +22,8 @@ def _run_hook(
         "HOME": str(tmp_path),
         "HAPAX_CC_TASK_GATE_BOOTSTRAP_LEDGER": str(tmp_path / "ledger.jsonl"),
     }
+    for bypass in ("HAPAX_CC_TASK_GATE_OFF", "HAPAX_METHODOLOGY_EMERGENCY"):
+        env.pop(bypass, None)
     if role is not None:
         env["HAPAX_AGENT_ROLE"] = role
     else:
