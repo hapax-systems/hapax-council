@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/visual-variance-ledger.schema.json",
+  "title": "Visual variance ledger",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ledger_id",
+    "schema_ref",
+    "generated_at",
+    "authority_case",
+    "parent_spec",
+    "state_vector",
+    "selected_move",
+    "rendered_witnesses",
+    "novelty",
+    "claim_gate",
+    "evidence_refs",
+    "camera_salience_projection",
+    "warnings",
+    "prior_ledger_refs"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "ledger_id": { "type": "string", "minLength": 1 },
+    "schema_ref": { "const": "schemas/visual-variance-ledger.schema.json" },
+    "generated_at": { "type": "string", "minLength": 1 },
+    "authority_case": { "type": "string", "minLength": 1 },
+    "parent_spec": { "type": "string", "minLength": 1 },
+    "state_vector": { "$ref": "#/$defs/state_vector" },
+    "selected_move": { "$ref": "#/$defs/selected_move" },
+    "rendered_witnesses": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/rendered_witness" }
+    },
+    "novelty": { "$ref": "#/$defs/novelty" },
+    "claim_gate": { "$ref": "#/$defs/claim_gate" },
+    "evidence_refs": { "$ref": "#/$defs/string_array" },
+    "camera_salience_projection": {
+      "anyOf": [{ "type": "object" }, { "type": "null" }]
+    },
+    "warnings": { "$ref": "#/$defs/string_array" },
+    "prior_ledger_refs": { "$ref": "#/$defs/string_array" }
+  },
+  "$defs": {
+    "string_array": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "state_vector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "programme_role",
+        "programme_format",
+        "active_source_set",
+        "source_provenance_posture",
+        "camera_hero",
+        "camera_layout",
+        "camera_roles",
+        "graph_family",
+        "graph_topology_variant",
+        "active_node_set",
+        "unused_node_exploration",
+        "parameter_regions",
+        "homage_package",
+        "homage_artefact",
+        "video_emissive_pair_role",
+        "scrim_profile",
+        "scrim_permeability",
+        "depth_parallax_profile",
+        "ward_set",
+        "ward_motion_state",
+        "audio_role",
+        "audio_source_attribution",
+        "transition_type",
+        "color_palette_role",
+        "archive_replay_public_event_status",
+        "camera_salience_refs",
+        "cross_camera_time_evidence",
+        "ir_evidence_refs",
+        "livestream_self_classification_refs"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "programme_role": { "type": "string" },
+        "programme_format": { "type": "string" },
+        "active_source_set": { "$ref": "#/$defs/string_array" },
+        "source_provenance_posture": { "$ref": "#/$defs/string_array" },
+        "camera_hero": { "type": "string" },
+        "camera_layout": { "type": "string" },
+        "camera_roles": { "$ref": "#/$defs/string_array" },
+        "graph_family": { "type": "string" },
+        "graph_topology_variant": { "type": "string" },
+        "active_node_set": { "$ref": "#/$defs/string_array" },
+        "unused_node_exploration": { "$ref": "#/$defs/string_array" },
+        "parameter_regions": { "$ref": "#/$defs/string_array" },
+        "homage_package": { "type": "string" },
+        "homage_artefact": { "type": "string" },
+        "video_emissive_pair_role": { "type": "string" },
+        "scrim_profile": { "type": "string" },
+        "scrim_permeability": { "type": "string" },
+        "depth_parallax_profile": { "type": "string" },
+        "ward_set": { "$ref": "#/$defs/string_array" },
+        "ward_motion_state": { "$ref": "#/$defs/string_array" },
+        "audio_role": { "$ref": "#/$defs/string_array" },
+        "audio_source_attribution": { "$ref": "#/$defs/string_array" },
+        "transition_type": { "type": "string" },
+        "color_palette_role": { "type": "string" },
+        "archive_replay_public_event_status": { "type": "string" },
+        "camera_salience_refs": { "$ref": "#/$defs/string_array" },
+        "cross_camera_time_evidence": { "$ref": "#/$defs/string_array" },
+        "ir_evidence_refs": { "$ref": "#/$defs/string_array" },
+        "livestream_self_classification_refs": { "$ref": "#/$defs/string_array" }
+      }
+    },
+    "selected_move": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selected_at",
+        "move_id",
+        "selected_by",
+        "selected_effect_nodes",
+        "selected_graph_family",
+        "selected_source_refs",
+        "selected_camera_refs",
+        "evidence_refs",
+        "selection_allowed"
+      ],
+      "properties": {
+        "selected_at": { "type": "string" },
+        "move_id": { "type": "string" },
+        "selected_by": { "type": "string" },
+        "selected_effect_nodes": { "$ref": "#/$defs/string_array" },
+        "selected_graph_family": { "type": "string" },
+        "selected_source_refs": { "$ref": "#/$defs/string_array" },
+        "selected_camera_refs": { "$ref": "#/$defs/string_array" },
+        "evidence_refs": { "$ref": "#/$defs/string_array" },
+        "selection_allowed": { "type": "boolean" }
+      }
+    },
+    "rendered_witness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "witness_id",
+        "status",
+        "path",
+        "source_ref",
+        "checked_at",
+        "ttl_s",
+        "observed_age_s",
+        "byte_size",
+        "evidence_refs"
+      ],
+      "properties": {
+        "witness_id": { "type": "string" },
+        "status": { "enum": ["fresh", "stale", "missing", "blocked"] },
+        "path": { "type": "string" },
+        "source_ref": { "type": "string" },
+        "checked_at": { "type": "string" },
+        "ttl_s": { "type": "number", "minimum": 0 },
+        "observed_age_s": { "anyOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }] },
+        "byte_size": { "type": "integer", "minimum": 0 },
+        "evidence_refs": { "$ref": "#/$defs/string_array" }
+      }
+    },
+    "novelty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "score",
+        "band",
+        "history_window_count",
+        "axis_scores",
+        "repeated_axes",
+        "novelty_pressure_axes",
+        "missing_axes"
+      ],
+      "properties": {
+        "score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "band": { "enum": ["high", "medium", "low", "starved", "unknown"] },
+        "history_window_count": { "type": "integer", "minimum": 0 },
+        "axis_scores": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/axis_score" }
+        },
+        "repeated_axes": { "$ref": "#/$defs/string_array" },
+        "novelty_pressure_axes": { "$ref": "#/$defs/string_array" },
+        "missing_axes": { "$ref": "#/$defs/string_array" }
+      }
+    },
+    "axis_score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "axis",
+        "distance",
+        "weight",
+        "immediate_repeat",
+        "recent_repeat",
+        "missing_or_unknown",
+        "basis"
+      ],
+      "properties": {
+        "axis": { "type": "string" },
+        "distance": { "type": "number", "minimum": 0, "maximum": 1 },
+        "weight": { "type": "number", "minimum": 0 },
+        "immediate_repeat": { "type": "boolean" },
+        "recent_repeat": { "type": "boolean" },
+        "missing_or_unknown": { "type": "boolean" },
+        "basis": { "type": "string" }
+      }
+    },
+    "claim_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selected_move_recorded",
+        "rendered_witness_status",
+        "success_claim_allowed",
+        "public_claim_requested",
+        "public_claim_allowed",
+        "public_safe",
+        "claim_status",
+        "blockers",
+        "public_aperture_refs",
+        "evidence_refs"
+      ],
+      "properties": {
+        "selected_move_recorded": { "type": "boolean" },
+        "rendered_witness_status": { "enum": ["fresh", "stale", "missing", "blocked"] },
+        "success_claim_allowed": { "type": "boolean" },
+        "public_claim_requested": { "type": "boolean" },
+        "public_claim_allowed": { "type": "boolean" },
+        "public_safe": { "type": "boolean" },
+        "claim_status": {
+          "enum": [
+            "witnessed_rendered",
+            "selected_not_witnessed",
+            "stale_witness_blocked",
+            "missing_witness_blocked",
+            "public_claim_blocked"
+          ]
+        },
+        "blockers": { "$ref": "#/$defs/string_array" },
+        "public_aperture_refs": { "$ref": "#/$defs/string_array" },
+        "evidence_refs": { "$ref": "#/$defs/string_array" }
+      }
+    }
+  }
+}
