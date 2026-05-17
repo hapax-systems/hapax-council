@@ -12,6 +12,8 @@ import pytest
 from shared.programme import (
     SEGMENTED_CONTENT_FORMAT_SPECS,
     SEGMENTED_CONTENT_ROLE_VALUES,
+    DensityTemporalMode,
+    DensityTrigger,
     Programme,
     ProgrammeAssetAttribution,
     ProgrammeConstraintEnvelope,
@@ -690,3 +692,105 @@ class TestProgramme:
             round_trip.content.role_contract["tier_criteria"] == "source-backed placement criteria"
         )
         assert round_trip.content.asset_attributions[0].source_ref == "vault:alpha.md"
+
+
+class TestDensityTemporalMode:
+    def test_enum_has_news_routine_alarm(self) -> None:
+        assert DensityTemporalMode.NEWS == "news"
+        assert DensityTemporalMode.ROUTINE == "routine"
+        assert DensityTemporalMode.ALARM == "alarm"
+
+    def test_enum_is_strenum(self) -> None:
+        assert isinstance(DensityTemporalMode.NEWS, str)
+
+
+class TestDensityTrigger:
+    def test_validates_with_required_fields(self) -> None:
+        trigger = DensityTrigger(
+            temporal_mode=DensityTemporalMode.NEWS,
+            source_id="rag-ingest",
+            observed_density=0.72,
+            observed_at=1715900000.0,
+        )
+        assert trigger.temporal_mode is DensityTemporalMode.NEWS
+        assert trigger.source_id == "rag-ingest"
+        assert trigger.observed_density == 0.72
+        assert trigger.observed_at == 1715900000.0
+        assert trigger.subject_cluster is None
+
+    def test_accepts_subject_cluster(self) -> None:
+        trigger = DensityTrigger(
+            temporal_mode=DensityTemporalMode.ALARM,
+            source_id="perception",
+            observed_density=0.95,
+            observed_at=1715900100.0,
+            subject_cluster="operator-arrival",
+        )
+        assert trigger.subject_cluster == "operator-arrival"
+
+    def test_density_below_zero_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            DensityTrigger(
+                temporal_mode=DensityTemporalMode.ROUTINE,
+                source_id="test",
+                observed_density=-0.1,
+                observed_at=1715900000.0,
+            )
+
+    def test_density_above_one_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            DensityTrigger(
+                temporal_mode=DensityTemporalMode.ROUTINE,
+                source_id="test",
+                observed_density=1.1,
+                observed_at=1715900000.0,
+            )
+
+    def test_empty_source_id_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            DensityTrigger(
+                temporal_mode=DensityTemporalMode.NEWS,
+                source_id="",
+                observed_density=0.5,
+                observed_at=1715900000.0,
+            )
+
+
+class TestConstraintEnvelopeDensityTrigger:
+    def test_envelope_accepts_density_trigger(self) -> None:
+        trigger = DensityTrigger(
+            temporal_mode=DensityTemporalMode.NEWS,
+            source_id="rag-ingest",
+            observed_density=0.72,
+            observed_at=1715900000.0,
+        )
+        env = ProgrammeConstraintEnvelope(density_trigger=trigger)
+        assert env.density_trigger is trigger
+
+    def test_backward_compat_no_density_trigger(self) -> None:
+        """Existing envelopes without density_trigger deserialize with None."""
+        env = ProgrammeConstraintEnvelope()
+        assert env.density_trigger is None
+
+    def test_backward_compat_json_without_density_trigger(self) -> None:
+        """JSON without density_trigger key deserializes cleanly."""
+        raw = '{"capability_bias_negative": {}, "capability_bias_positive": {}}'
+        env = ProgrammeConstraintEnvelope.model_validate_json(raw)
+        assert env.density_trigger is None
+
+    def test_density_trigger_round_trip(self) -> None:
+        trigger = DensityTrigger(
+            temporal_mode=DensityTemporalMode.ROUTINE,
+            source_id="vault-sync",
+            observed_density=0.33,
+            observed_at=1715900500.0,
+            subject_cluster="daily-review",
+        )
+        env = ProgrammeConstraintEnvelope(density_trigger=trigger)
+        serialized = env.model_dump_json()
+        restored = ProgrammeConstraintEnvelope.model_validate_json(serialized)
+        assert restored.density_trigger is not None
+        assert restored.density_trigger.temporal_mode is DensityTemporalMode.ROUTINE
+        assert restored.density_trigger.source_id == "vault-sync"
+        assert restored.density_trigger.observed_density == 0.33
+        assert restored.density_trigger.subject_cluster == "daily-review"

@@ -16,9 +16,11 @@ Three core functions:
 from __future__ import annotations
 
 import enum
+import json
 import logging
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -281,3 +283,31 @@ class GroundingLedger:
     def ungrounded_count(self) -> int:
         """Number of DUs that ended ungrounded or abandoned."""
         return sum(1 for du in self._units if du.state in (DUState.UNGROUNDED, DUState.ABANDONED))
+
+    def session_summary(self) -> dict[str, object]:
+        """Session-end summary for CHI evidence persistence."""
+        grounded = sum(1 for du in self._units if du.state == DUState.GROUNDED)
+        repair = sum(1 for du in self._units if du.state in (DUState.REPAIR_1, DUState.REPAIR_2))
+        return {
+            "final_gqi": round(self.compute_gqi(), 4),
+            "total_dus": len(self._units),
+            "grounded_count": grounded,
+            "ungrounded_count": self.ungrounded_count,
+            "repair_count": repair,
+            "effort_level": self._effort_level,
+            "acceptance_trajectory": list(self._acceptance_history),
+        }
+
+    def persist_session_summary(
+        self, path: Path | None = None,
+    ) -> None:
+        """Append session summary to JSONL file for CHI evidence."""
+        import time as _time
+
+        if path is None:
+            path = Path.home() / "hapax-state/research/gqi-sessions.jsonl"
+        summary = self.session_summary()
+        summary["timestamp"] = _time.time()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(summary) + "\n")

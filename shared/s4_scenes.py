@@ -303,6 +303,42 @@ SCENES: Final[dict[str, S4Scene]] = {
         space="None",
         ccs={},
     ),
+    "VOICE-SELF-MOD": S4Scene(
+        name="VOICE-SELF-MOD",
+        description=(
+            "Non-human intelligible voice via Mosaic granular + Ring filter. "
+            "Self-modulation target: CC 69 (Mosaic wet) driven by information "
+            "density. Baseline: 35% granular, 40% filter, 30% color. "
+            "Intelligibility floor: 0.85. Importance drives processing "
+            "REDUCTION — critical speech gets cleaner, ambient gets textural."
+        ),
+        program_number=11,
+        material="Bypass",
+        granular="Mosaic",
+        filter="Ring",
+        color="Deform",
+        space="Vast",
+        ccs={
+            62: 58,  # Pitch: -2 semitones
+            63: 50,  # Rate: moderate grain spawn
+            64: 60,  # Size: ~30ms (phoneme-preserving)
+            65: 64,  # Contour: neutral envelope
+            67: 20,  # Spray: light positional randomization
+            69: 45,  # Mosaic wet: 35%
+            78: 90,  # Ring cutoff: ~2.2 kHz
+            79: 40,  # Resonance: gentle metallic peak
+            80: 25,  # Decay: short ring
+            85: 50,  # Ring wet: 40%
+            94: 20,  # Drive: subtle harmonic generation
+            95: 50,  # Compress: moderate (flattens prosodic dynamics)
+            96: 15,  # Crush: light bit-reduction
+            101: 38,  # Deform wet: 30%
+            112: 30,  # Reverb: moderate
+            113: 25,  # Size: small room (mechanism interior)
+            116: 40,  # Tone: dark
+            117: 30,  # Decay: short tail
+        },
+    ),
 }
 
 

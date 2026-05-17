@@ -193,6 +193,44 @@ def _gather_profile() -> dict | None:
     return None
 
 
+def _gather_density_field() -> dict | None:
+    """Read the information density field for planner context.
+
+    Returns a compact summary of current density state, or None if the
+    density field daemon is not running or the state is stale (>60s).
+    Graceful degradation: any failure returns None silently.
+    """
+    try:
+        import json as _json
+        import time
+        from pathlib import Path as _Path
+
+        field_path = _Path("/dev/shm/hapax-density-field/state.json")
+        if not field_path.exists():
+            return None
+        data = _json.loads(field_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        staleness = time.time() - data.get("computed_at", 0)
+        if staleness > 60.0:
+            return None
+        return {
+            "aggregate_density": data.get("aggregate_density"),
+            "dominant_zone": data.get("dominant_zone"),
+            "dominant_mode": data.get("dominant_mode"),
+            "zones": {
+                zone: {
+                    "density": z.get("density"),
+                    "mode": z.get("mode"),
+                    "top_signal": z.get("top_signal"),
+                }
+                for zone, z in (data.get("zones") or {}).items()
+            },
+        }
+    except Exception:
+        return None
+
+
 def _gather_content_state(store: ProgrammePlanStore) -> dict | None:
     """Read chat state + recent programme history for planner context."""
     import json as _json
@@ -549,6 +587,7 @@ def _maybe_author_plan(
     vault_state = _gather_vault_state()
     profile = _gather_profile()
     content_state = _gather_content_state(manager.store)
+    density_field = _gather_density_field()
 
     try:
         plan = planner.plan(
@@ -558,6 +597,7 @@ def _maybe_author_plan(
             vault_state=vault_state,
             profile=profile,
             content_state=content_state,
+            density_field=density_field,
         )
     except Exception:
         log.warning("ProgrammePlanner.plan raised", exc_info=True)
@@ -807,8 +847,9 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
             log.debug("beat transition check failed", exc_info=True)
 
         try:
-            planner, last_plan_attempt_ts = _maybe_author_plan(
-                manager, planner, last_plan_attempt_ts
+            loop = asyncio.get_running_loop()
+            planner, last_plan_attempt_ts = await loop.run_in_executor(
+                None, _maybe_author_plan, manager, planner, last_plan_attempt_ts
             )
         except Exception:
             log.warning("_maybe_author_plan raised", exc_info=True)

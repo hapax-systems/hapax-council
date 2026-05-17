@@ -53,7 +53,9 @@ class TTSManager:
             self._pipeline = KPipeline(lang_code="a", device="cpu")
         return self._pipeline
 
-    def synthesize(self, text: str, use_case: str = "conversation") -> bytes:
+    def synthesize(
+        self, text: str, use_case: str = "conversation", *, speed: float = 1.0
+    ) -> bytes:
         """Synthesize text to raw PCM int16 24kHz mono bytes.
 
         The input passes through :func:`shared.speech_safety.censor`
@@ -74,14 +76,14 @@ class TTSManager:
             )
         lexicon = _speech_lexicon_apply(redaction.text)
         tier = select_tier(use_case)
-        log.debug("TTS tier=%s for use_case=%s", tier, use_case)
-        return self._synthesize_kokoro(lexicon.text)
+        log.debug("TTS tier=%s for use_case=%s (speed=%.2f)", tier, use_case, speed)
+        return self._synthesize_kokoro(lexicon.text, speed=speed)
 
-    def _synthesize_kokoro(self, text: str) -> bytes:
+    def _synthesize_kokoro(self, text: str, *, speed: float = 1.0) -> bytes:
         """Synthesize via Kokoro, returning PCM int16 bytes."""
         pipeline = self._get_pipeline()
         chunks: list[bytes] = []
-        for _graphemes, _phonemes, audio in pipeline(text, voice=self._voice_id):
+        for _graphemes, _phonemes, audio in pipeline(text, voice=self._voice_id, speed=speed):
             if audio is not None:
                 # audio is a float32 tensor/array in [-1, 1]
                 # Convert torch tensor to numpy if needed

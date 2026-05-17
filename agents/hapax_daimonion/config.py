@@ -186,7 +186,7 @@ class DaimonionConfig(BaseModel):
     # Observability
     observability_events_enabled: bool = True
     observability_langfuse_enabled: bool = True
-    observability_events_retention_days: int = 14
+    observability_events_retention_days: int = 180
 
     # Tools
     tools_enabled: bool = True

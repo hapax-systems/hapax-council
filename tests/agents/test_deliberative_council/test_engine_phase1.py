@@ -43,6 +43,11 @@ class TestParsePhase1Output:
         assert result.scores == {}
         assert result.model_alias == "local-fast"
 
+    def test_parse_phase1_handles_literal_control_chars(self) -> None:
+        raw = '{"scores": {"scope_honesty": 2}, "rationale": {"scope_honesty": "has\ttabs\nand\nnewlines"}, "research_findings": []}'
+        result = _parse_phase1_output("mistral-large", raw)
+        assert result.scores["scope_honesty"] == 2
+
 
 class TestRunPhase1:
     @pytest.mark.asyncio

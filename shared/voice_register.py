@@ -32,9 +32,17 @@ class VoiceRegister(StrEnum):
     ANNOUNCING = "announcing"
     CONVERSING = "conversing"
     TEXTMODE = "textmode"
+    AMBIENT = "ambient"
 
 
 DEFAULT_REGISTER: VoiceRegister = VoiceRegister.CONVERSING
+
+DENSITY_SPEED_MAP: dict[str, float] = {
+    "presenting": 0.85,
+    "focused": 0.92,
+    "ambient": 1.0,
+    "receptive": 1.05,
+}
 """Fallback when no HomagePackage has written a preference and
 ``stream_mode`` does not force ``ANNOUNCING``."""
 

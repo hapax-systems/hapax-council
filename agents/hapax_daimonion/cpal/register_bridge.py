@@ -136,23 +136,43 @@ def textmode_prompt_prefix() -> str:
     )
 
 
+def ambient_prompt_prefix() -> str:
+    """Style directive prepended to TTS text when register is AMBIENT.
+
+    The AMBIENT register is a density-modulated observation voice —
+    sparse, factual, no engagement. It reports system state without
+    narrating or interpreting. TTS speed is modulated externally via
+    DENSITY_SPEED_MAP; this prefix governs *content* framing only.
+    """
+    return (
+        "Observation register. Terse factual state reports only. "
+        "No commentary, no hedging, no engagement with the operator. "
+        "Report what is happening in the system — metrics, transitions, states. "
+        "Never address anyone. Never narrate your own process."
+    )
+
+
 def frame_text_for_register(text: str, register: VoiceRegister) -> str:
     """Prepend register-appropriate framing to LLM-bound prompt text.
 
     CPAL calls this before handing spontaneous-speech prompts to the
     pipeline. ``ANNOUNCING`` and ``CONVERSING`` fall through unchanged —
-    the default persona already frames those registers. Only ``TEXTMODE``
+    the default persona already frames those registers. ``TEXTMODE``
     needs an explicit shim because the BitchX lineage refuses the hedging
-    that the default persona favours.
+    that the default persona favours. ``AMBIENT`` uses a sparse observation
+    voice driven by visual-layer density.
     """
     if register == VoiceRegister.TEXTMODE:
         return f"{textmode_prompt_prefix()}\n\n{text}"
+    if register == VoiceRegister.AMBIENT:
+        return f"{ambient_prompt_prefix()}\n\n{text}"
     return text
 
 
 __all__ = [
     "REGISTER_FILE",
     "VoiceRegisterBridge",
+    "ambient_prompt_prefix",
     "current_register",
     "frame_text_for_register",
     "textmode_prompt_prefix",

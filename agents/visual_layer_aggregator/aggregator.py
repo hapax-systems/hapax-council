@@ -1162,13 +1162,13 @@ class VisualLayerAggregator:
                 flow_score=float(_pd.get("flow_score", self._flow_score)),
                 audio_energy=float(_pd.get("audio_energy_rms", self._audio_energy)),
                 stimmung_stance=stimmung_stance,
-                imagination_salience=0.0,
+                imagination_salience=self._read_imagination_salience(),
                 visual_brightness=float(state.ambient_params.brightness),
                 heart_rate=float(_pd.get("heart_rate_bpm", 0)),
                 operator_stress=float(self._stimmung.operator_stress.value)
                 if self._stimmung
                 else 0.0,
-                activity=str(_pd.get("production_activity", "idle")),
+                activity=str(_pd.get("production_activity", "") or "idle"),
                 e_mesh=float(_mesh.get("e_mesh", 1.0)),
                 restriction_residual_rms=float(
                     _sheaf.get("consistency_radius", _sheaf.get("restriction_residual_rms", 0.0))
@@ -1177,7 +1177,38 @@ class VisualLayerAggregator:
         except Exception:
             pass  # eigenform logging is observational — never block the VLA
 
+        try:
+            self._write_density_field(stimmung_stance)
+        except Exception:
+            pass  # density field is observational — never block the VLA
+
         return state
+
+    def _write_density_field(self, stimmung_stance: str) -> None:
+        """Write density field state to /dev/shm for downstream consumers."""
+        from agents.density_field import compute_density_state
+
+        state = compute_density_state(
+            perception_data=self._last_perception_data,
+            stimmung_stance=stimmung_stance,
+            audio_energy=self._audio_energy,
+            epoch=self._epoch,
+        )
+        out_dir = Path("/dev/shm/hapax-density-field")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / "state.json"
+        tmp = out_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        tmp.rename(out_file)
+
+    def _read_imagination_salience(
+        self, path: Path = Path("/dev/shm/hapax-imagination/current.json"),
+    ) -> float:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return float(data.get("salience", 0.0))
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            return 0.0
 
     def _read_watershed_events(self) -> list[WatershedEvent]:
         """Read and prune watershed events from shared file."""

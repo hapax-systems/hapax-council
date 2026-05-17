@@ -31,9 +31,11 @@ from .rubrics import Rubric
 
 _log = logging.getLogger(__name__)
 
+_MEMBER_TIMEOUT_S = 120.0
+
 
 async def _call_member(member: Agent[None, str], prompt: str) -> tuple[str, list[str]]:
-    result = await member.run(prompt)
+    result = await asyncio.wait_for(member.run(prompt), timeout=_MEMBER_TIMEOUT_S)
     tool_calls: list[str] = []
     try:
         for msg in result.all_messages():
@@ -60,7 +62,7 @@ def _parse_phase1_output(model_alias: str, raw: str) -> PhaseOneResult:
             text = text.split("```json", 1)[1].split("```", 1)[0].strip()
         elif "```" in text:
             text = text.split("```", 1)[1].split("```", 1)[0].strip()
-        data = json.loads(text)
+        data = json.loads(text, strict=False)
     except (json.JSONDecodeError, IndexError):
         _log.warning("Model %s returned non-JSON, using empty scores", model_alias)
         data = {"scores": {}, "rationale": {}, "research_findings": []}
@@ -263,7 +265,7 @@ async def _run_phase2(
             text = text.split("```json", 1)[1].split("```", 1)[0].strip()
         elif "```" in text:
             text = text.split("```", 1)[1].split("```", 1)[0].strip()
-        data = json.loads(text)
+        data = json.loads(text, strict=False)
 
         matrix_axes = {}
         for axis, info in data.get("axes", {}).items():
@@ -402,7 +404,7 @@ async def _run_phase4(
                 text = text.split("```json", 1)[1].split("```", 1)[0].strip()
             elif "```" in text:
                 text = text.split("```", 1)[1].split("```", 1)[0].strip()
-            data = json.loads(text)
+            data = json.loads(text, strict=False)
             revised_scores = {k: int(v) for k, v in data.get("revised_scores", {}).items()}
             if revised_scores:
                 return PhaseOneResult(
