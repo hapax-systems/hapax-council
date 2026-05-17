@@ -3375,7 +3375,29 @@ try:
     BayesianSurpriseModel
     EntropyModel
     InformationDensityField
+    InformationDensityField.get_density
+    InformationDensityField.read_shm
     SourceDensity
     SourceModel
+except ImportError:
+    pass
+
+# angle_resolver properties
+try:
+    from agents.hapax_daimonion.angle_resolver import AngleHypothesis  # noqa: F401, E402
+
+    AngleHypothesis.has_tension
+except ImportError:
+    pass
+
+# interview tools (pydantic-ai registered, vulture can't see dynamic dispatch)
+analyze_answer_delta
+check_contradictions
+
+# CPAL interview silence
+try:
+    from agents.hapax_daimonion.cpal.runner import CpalRunner  # noqa: F401, E402
+
+    CpalRunner.begin_interview_silence
 except ImportError:
     pass
