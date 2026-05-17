@@ -1,10 +1,10 @@
 [Unit]
-Description=Periodic pulse to keep L-12 mixer from auto power off
+Description=Periodic inaudible pulse to keep L-12 USB path active
 
 [Timer]
-OnBootSec=10min
-OnUnitActiveSec=2h
-AccuracySec=5min
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
 
 [Install]
 WantedBy=timers.target

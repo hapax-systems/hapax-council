@@ -1,9 +1,11 @@
 [Unit]
-Description=Send sub-audible pulse to Studio 24c to keep L-12 alive
-After=pipewire.service
+Description=Send inaudible keepalive pulse to the ZOOM L-12 USB path
+After=pipewire.service wireplumber.service
+Wants=pipewire.service wireplumber.service
 
 [Service]
 Type=oneshot
-# 10Hz @ -80dB — inaudible, below monitor noise floor
-# No longer mutes/unmutes — voice daemon needs the sink active
-ExecStart=/usr/bin/pw-play --target=alsa_output.usb-PreSonus_Studio_24c_SC1E24390244-00.analog-stereo /home/hapax/.local/share/mixer-keepalive.wav
+# 1s 10Hz @ -80dB. This is a presence pulse, not a routing fallback.
+Environment=HAPAX_L12_KEEPALIVE_PULSE=%h/.local/share/mixer-keepalive.wav
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-l12-keepalive-pulse
+MemoryMax=64M
