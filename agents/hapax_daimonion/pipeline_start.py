@@ -131,6 +131,9 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
         tool_recruitment_gate=tool_recruitment_gate,
     )
 
+    # Per-programme thread persistence: INTERVIEW disables mid-session compression
+    daemon._conversation_pipeline._message_drop_threshold = _resolve_message_drop_threshold(daemon)
+
     # Wire callbacks
     daemon._conversation_pipeline._goals_fn = daemon._goals_fn
     daemon._conversation_pipeline._health_fn = daemon._health_fn
@@ -183,6 +186,30 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
 
     # Wake greeting
     _play_wake_greeting(daemon)
+
+
+_PROGRAMME_MESSAGE_DROP_THRESHOLD: dict[str, int] = {
+    "interview": 999,
+    "lecture": 50,
+    "tutorial": 30,
+}
+
+
+def _resolve_message_drop_threshold(daemon: VoiceDaemon) -> int:
+    """INTERVIEW programmes keep full thread — set threshold impossibly high."""
+    try:
+        pm = getattr(daemon, "programme_manager", None)
+        if pm is not None:
+            active = pm.store.active_programme()
+            if active is not None:
+                role_val = getattr(active.role, "value", str(active.role))
+                threshold = _PROGRAMME_MESSAGE_DROP_THRESHOLD.get(role_val)
+                if threshold is not None:
+                    log.info("Programme role '%s' → message_drop_threshold=%d", role_val, threshold)
+                    return threshold
+    except Exception:
+        log.debug("Programme message drop threshold resolution failed", exc_info=True)
+    return 12
 
 
 def _resolve_tools(daemon, _exp, get_working_mode):
