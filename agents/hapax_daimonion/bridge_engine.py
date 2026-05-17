@@ -163,9 +163,9 @@ def _current_time_of_day() -> str:
 
 
 def _deterministic_index(response_type: str, turn_count: int, session_id: str) -> int:
-    """Deterministic hash-based index — varies per session, no randomness."""
-    key = f"{response_type}:{turn_count}:{session_id}"
-    digest = hashlib.md5(key.encode(), usedforsecurity=False).hexdigest()
+    """Deterministic strong-hash index - varies per session, no randomness."""
+    key = f"bridge-index-v1:{response_type}:{turn_count}:{session_id}"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
     return int(digest[:8], 16)
 
 

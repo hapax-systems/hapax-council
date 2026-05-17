@@ -39,6 +39,7 @@ title, and thumbnail; deferred to keep this PR tight.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -187,11 +188,10 @@ class BlueskyPoster:
                 pass
 
         log.info(
-            "bluesky poster starting, port=%d tick=%.1fs dry_run=%s handle=%s",
+            "bluesky poster starting, port=%d tick=%.1fs dry_run=%s",
             METRICS_PORT,
             self._tick_s,
             self._dry_run,
-            self._handle or "<unset>",
         )
         while not self._stop_evt.is_set():
             try:
@@ -387,7 +387,11 @@ class BlueskyPoster:
         text = text[:BLUESKY_TEXT_LIMIT]
 
         if self._dry_run:
-            log.info("DRY RUN — would post to bluesky: text=%r", text)
+            log.info(
+                "DRY RUN - would post to bluesky: text_sha256=%s text_length=%d",
+                _text_sha256(text),
+                len(text),
+            )
             self.posts_total.labels(result="dry_run").inc()
             return _post_receipt(event, result="dry_run", text=text)
 
@@ -545,12 +549,17 @@ def _post_receipt(
         "recorded_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
     if text:
-        receipt["text"] = text
+        receipt["text_sha256"] = _text_sha256(text)
+        receipt["text_length"] = len(text)
     if uri:
         receipt["uri"] = uri
     if public_url:
         receipt["public_url"] = public_url
     return receipt
+
+
+def _text_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _allowlist_payload(event: ResearchVehiclePublicEvent) -> dict[str, Any]:

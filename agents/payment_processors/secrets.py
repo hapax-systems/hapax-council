@@ -25,6 +25,17 @@ LIBERAPAY_USERNAME_KEY = "liberapay/username"
 LIBERAPAY_PASSWORD_KEY = "liberapay/password"
 
 
+def _credential_ref(key: str) -> str:
+    refs = {
+        LIGHTNING_ALBY_KEY: "pass-key:lightning-alby-credential",
+        NOSTR_NSEC_KEY: "pass-key:nostr-private-credential",
+        NOSTR_NPUB_KEY: "pass-key:nostr-public-key",
+        LIBERAPAY_USERNAME_KEY: "pass-key:liberapay-username",
+        LIBERAPAY_PASSWORD_KEY: "pass-key:liberapay-credential",
+    }
+    return refs.get(key, "pass-key:redacted")
+
+
 def pass_show(key: str, *, timeout_s: float = 5.0) -> str | None:
     """Read ``pass show <key>`` and return the stripped first line.
 
@@ -40,15 +51,14 @@ def pass_show(key: str, *, timeout_s: float = 5.0) -> str | None:
             timeout=timeout_s,
             check=False,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
-        log.warning("pass show %s failed: %s", key, e)
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        log.warning("pass show failed for %s (%s)", _credential_ref(key), type(exc).__name__)
         return None
     if result.returncode != 0:
         log.debug(
-            "pass show %s returned %d: %s",
-            key,
+            "pass show returned %d for %s",
             result.returncode,
-            result.stderr.strip(),
+            _credential_ref(key),
         )
         return None
     value = result.stdout.strip().split("\n", 1)[0].strip()

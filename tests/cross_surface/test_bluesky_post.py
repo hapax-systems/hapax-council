@@ -12,6 +12,7 @@ from agents.cross_surface.bluesky_post import (
     BLUESKY_TEXT_LIMIT,
     BlueskyPoster,
     _credentials_from_env,
+    _text_sha256,
 )
 from agents.publication_bus.publisher_kit import PublisherResult
 from shared.research_vehicle_public_event import (
@@ -243,10 +244,34 @@ class TestCursor:
                 "public_url": "https://bsky.app/profile/did:plc:example/post/3proof",
                 "recorded_at": state["posts"][0]["recorded_at"],
                 "result": "ok",
-                "text": "proof post",
+                "text_length": len("proof post"),
+                "text_sha256": _text_sha256("proof post"),
                 "uri": "at://did:plc:example/app.bsky.feed.post/3proof",
             }
         ]
+
+    def test_dry_run_logs_and_receipts_do_not_store_post_text(self, tmp_path, caplog):
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        secret_text = "post body containing app-password-secret"
+        _write_events(bus, [_public_event(event_id="rvpe:broadcast_boundary:dry-run")])
+        poster, _ = _make_poster(
+            event_path=bus,
+            cursor_path=cursor,
+            compose_fn=mock.Mock(return_value=secret_text),
+            dry_run=True,
+        )
+
+        with caplog.at_level("INFO"):
+            assert poster.run_once() == 1
+
+        state = json.loads(cursor.with_name("posted-event-ids.json").read_text())
+        post = state["posts"][0]
+        assert secret_text not in caplog.text
+        assert secret_text not in json.dumps(state)
+        assert post["text_sha256"] == _text_sha256(secret_text)
+        assert post["text_length"] == len(secret_text)
+        assert "text" not in post
 
 
 # ── Event filtering ──────────────────────────────────────────────────
