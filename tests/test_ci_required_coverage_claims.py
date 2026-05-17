@@ -117,6 +117,32 @@ def test_ci_docs_only_prs_trigger_required_jobs_with_sentinels() -> None:
         assert "needs.docs_only_filter.outputs.docs_only != 'true'" in job_block
 
 
+def test_required_frontend_build_jobs_are_path_gated_without_absent_checks() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+    web_block = _workflow_job_block(ci_text, "web-build")
+    vscode_block = _workflow_job_block(ci_text, "vscode-build")
+
+    assert "pull-requests: read" in ci_text
+
+    assert "Detect web-build input changes" in web_block
+    assert "dorny/paths-filter@v3" in web_block
+    assert "web_build:" in web_block
+    assert "'hapax-logos/**'" in web_block
+    assert "Non-web required-check sentinel" in web_block
+    assert "steps.filter.outputs.web_build != 'true'" in web_block
+    assert "steps.filter.outputs.web_build == 'true'" in web_block
+    assert "No web-build inputs changed; web-build reports success" in web_block
+
+    assert "Detect vscode-build input changes" in vscode_block
+    assert "dorny/paths-filter@v3" in vscode_block
+    assert "vscode_build:" in vscode_block
+    assert "'vscode/**'" in vscode_block
+    assert "Non-vscode required-check sentinel" in vscode_block
+    assert "steps.filter.outputs.vscode_build != 'true'" in vscode_block
+    assert "steps.filter.outputs.vscode_build == 'true'" in vscode_block
+    assert "No vscode-build inputs changed; vscode-build reports success" in vscode_block
+
+
 def test_claude_review_docs_only_prs_trigger_review_sentinel() -> None:
     review_text = _read(".github/workflows/claude-review.yml")
     review_job = _workflow_job_block(review_text, "review")

@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
   security-events: write
 
 concurrency:
@@ -504,21 +505,38 @@ jobs:
         run: echo "Docs-only change set; web-build reports success without running pnpm."
       - uses: actions/checkout@v6
         if: needs.docs_only_filter.outputs.docs_only != 'true'
-      - uses: pnpm/action-setup@v6
+      - name: Detect web-build input changes
+        id: filter
         if: needs.docs_only_filter.outputs.docs_only != 'true'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            web_build:
+              - '.github/workflows/ci.yml'
+              - 'hapax-logos/**'
+      - name: Non-web required-check sentinel
+        if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build != 'true'
+        working-directory: .
+        run: |
+          echo "No web-build inputs changed; web-build reports success without running pnpm."
+          echo "Inputs:"
+          echo "  - .github/workflows/ci.yml"
+          echo "  - hapax-logos/**"
+      - uses: pnpm/action-setup@v6
+        if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
         with:
           version: 9
       - uses: actions/setup-node@v6
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: hapax-logos/pnpm-lock.yaml
-      - if: needs.docs_only_filter.outputs.docs_only != 'true'
+      - if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
         run: pnpm install --frozen-lockfile
-      - if: needs.docs_only_filter.outputs.docs_only != 'true'
+      - if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
         run: pnpm lint
-      - if: needs.docs_only_filter.outputs.docs_only != 'true'
+      - if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
         run: pnpm build
 
   rust-check:
@@ -587,19 +605,36 @@ jobs:
         run: echo "Docs-only change set; vscode-build reports success without running pnpm."
       - uses: actions/checkout@v6
         if: needs.docs_only_filter.outputs.docs_only != 'true'
-      - uses: pnpm/action-setup@v6
+      - name: Detect vscode-build input changes
+        id: filter
         if: needs.docs_only_filter.outputs.docs_only != 'true'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            vscode_build:
+              - '.github/workflows/ci.yml'
+              - 'vscode/**'
+      - name: Non-vscode required-check sentinel
+        if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build != 'true'
+        working-directory: .
+        run: |
+          echo "No vscode-build inputs changed; vscode-build reports success without running pnpm."
+          echo "Inputs:"
+          echo "  - .github/workflows/ci.yml"
+          echo "  - vscode/**"
+      - uses: pnpm/action-setup@v6
+        if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build == 'true'
         with:
           version: 9
       - uses: actions/setup-node@v6
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build == 'true'
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: vscode/pnpm-lock.yaml
-      - if: needs.docs_only_filter.outputs.docs_only != 'true'
+      - if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build == 'true'
         run: pnpm install --frozen-lockfile
-      - if: needs.docs_only_filter.outputs.docs_only != 'true'
+      - if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build == 'true'
         run: pnpm run build
 
   secrets-scan:
