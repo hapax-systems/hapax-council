@@ -23,6 +23,29 @@ if TYPE_CHECKING:
 log = logging.getLogger("visual_layer_aggregator")
 
 
+def _read_fresh_json(
+    path: Path,
+    *,
+    max_age_s: float,
+    timestamp_key: str | None = "timestamp",
+) -> tuple[dict[str, object], float] | None:
+    """Read a JSON object when its producer timestamp or mtime is fresh."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        timestamp = data.get(timestamp_key) if timestamp_key else None
+        if isinstance(timestamp, (int, float)):
+            age_s = time.time() - float(timestamp)
+        else:
+            age_s = time.time() - path.stat().st_mtime
+        if age_s >= max_age_s:
+            return None
+        return data, age_s
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def update_stimmung_sources(agg: VisualLayerAggregator) -> None:
     """Collect stimmung readings from all available data sources."""
     # 1. Health history
@@ -163,29 +186,75 @@ def update_stimmung_sources(agg: VisualLayerAggregator) -> None:
     except Exception:
         log.debug("Audience engagement read failed", exc_info=True)
 
-    # 6e. Audio self-perception — AVSDLC-002
+    # 6e. Audio self-perception — AVSDLC-002 + dynamic audio environment
     try:
-        if _c.AUDIO_SELF_PERCEPTION_FILE.exists():
-            audio_data = json.loads(_c.AUDIO_SELF_PERCEPTION_FILE.read_text(encoding="utf-8"))
-            audio_age = time.time() - audio_data.get("timestamp", 0)
-            if audio_age < 30:
-                agg._stimmung_collector.update_audio_perception(
-                    rms_dbfs=float(audio_data.get("rms_dbfs", -120.0)),
-                    spectral_centroid_hz=float(audio_data.get("spectral_centroid_hz", 0.0)),
-                    low_high_ratio=float(audio_data.get("low_high_ratio", 1.0)),
-                    voice_ratio=float(audio_data.get("voice_ratio", 0.0)),
-                    music_ratio=float(audio_data.get("music_ratio", 0.0)),
-                    env_ratio=float(audio_data.get("env_ratio", 0.0)),
-                    sample_rate=int(audio_data.get("sample_rate", 48000)),
-                )
-                log.debug(
-                    "Audio self-perception: rms=%.1f centroid=%.0f (age %.1fs)",
-                    audio_data.get("rms_dbfs", -120),
-                    audio_data.get("spectral_centroid_hz", 0),
-                    audio_age,
-                )
-            else:
-                log.debug("Audio self-perception stale (age %.1fs > 30s)", audio_age)
+        audio_read = _read_fresh_json(_c.AUDIO_SELF_PERCEPTION_FILE, max_age_s=30)
+        scene_read = _read_fresh_json(
+            _c.AUDIO_PERCEPTION_FILE,
+            max_age_s=30,
+            timestamp_key=None,
+        )
+        audio_data = audio_read[0] if audio_read else {}
+        audio_age = audio_read[1] if audio_read else 0.0
+        scene_data = scene_read[0] if scene_read else {}
+        perception_data = (
+            agg._last_perception_data if isinstance(agg._last_perception_data, dict) else {}
+        )
+
+        mixer_active = (
+            bool(perception_data["mixer_active"]) if "mixer_active" in perception_data else None
+        )
+        phone_media_playing = (
+            bool(perception_data["phone_media_playing"])
+            if "phone_media_playing" in perception_data
+            else None
+        )
+        is_speech = bool(scene_data["is_speech"]) if "is_speech" in scene_data else None
+        music_playing = bool(scene_data["music_playing"]) if "music_playing" in scene_data else None
+        audio_kwargs = {
+            "rms_dbfs": float(audio_data.get("rms_dbfs", scene_data.get("rms_dbfs", -120.0))),
+            "voice_ratio": float(audio_data.get("voice_ratio", scene_data.get("voice_ratio", 0.0))),
+            "music_ratio": float(audio_data.get("music_ratio", scene_data.get("music_ratio", 0.0))),
+            "env_ratio": float(audio_data.get("env_ratio", scene_data.get("env_ratio", 0.0))),
+            "scene": str(scene_data.get("scene", "")) or None,
+            "is_speech": is_speech,
+            "music_playing": music_playing,
+            "audio_confidence": float(scene_data["confidence"])
+            if "confidence" in scene_data
+            else None,
+            "production_activity": str(perception_data.get("production_activity", "")) or None,
+            "audio_energy_rms": float(perception_data.get("audio_energy_rms", 0.0) or 0.0),
+            "mixer_energy": float(perception_data.get("mixer_energy", 0.0) or 0.0),
+            "mixer_active": mixer_active,
+            "desk_activity": str(perception_data.get("desk_activity", "")) or None,
+            "midi_clock_transport": str(perception_data.get("midi_clock_transport", "")) or None,
+            "phone_media_playing": phone_media_playing,
+        }
+
+        if audio_read:
+            agg._stimmung_collector.update_audio_perception(
+                spectral_centroid_hz=float(audio_data.get("spectral_centroid_hz", 0.0)),
+                low_high_ratio=float(audio_data.get("low_high_ratio", 1.0)),
+                sample_rate=int(audio_data.get("sample_rate", 48000)),
+                **audio_kwargs,
+            )
+            log.debug(
+                "Audio self-perception: rms=%.1f centroid=%.0f scene=%s (age %.1fs)",
+                audio_data.get("rms_dbfs", -120),
+                audio_data.get("spectral_centroid_hz", 0),
+                scene_data.get("scene", ""),
+                audio_age,
+            )
+        elif scene_read or perception_data:
+            agg._stimmung_collector.update_audio_content_mix(**audio_kwargs)
+            log.debug(
+                "Audio environment: scene=%s mixer_active=%s production=%s",
+                scene_data.get("scene", ""),
+                mixer_active,
+                perception_data.get("production_activity", ""),
+            )
+        elif _c.AUDIO_SELF_PERCEPTION_FILE.exists():
+            log.debug("Audio self-perception stale or invalid")
     except Exception:
         log.debug("Audio self-perception read failed", exc_info=True)
 

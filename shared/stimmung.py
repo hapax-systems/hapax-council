@@ -285,6 +285,123 @@ def stance_transition_salience(to_stance: str) -> float:
 _ENGINE_EVENTS_PER_MIN_BASELINE = 500.0  # expected events/min at nominal load (inotify is chatty)
 
 
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _audio_ratio_entropy_pressure(
+    *,
+    voice_ratio: float,
+    music_ratio: float,
+    env_ratio: float,
+) -> float:
+    """Legacy V/M/E entropy fallback for audio_content_mix."""
+    ratios = [max(1e-10, _clamp01(r)) for r in [voice_ratio, music_ratio, env_ratio]]
+    total = sum(ratios)
+    probs = [r / total for r in ratios]
+    entropy = -sum(p * math.log2(p) for p in probs if p > 0)
+    max_entropy = math.log2(3.0)
+    return 1.0 - min(1.0, entropy / max_entropy)
+
+
+def _audio_content_mix_value(
+    *,
+    rms_dbfs: float = -120.0,
+    voice_ratio: float = 0.0,
+    music_ratio: float = 0.0,
+    env_ratio: float = 0.0,
+    scene: str | None = None,
+    is_speech: bool | None = None,
+    music_playing: bool | None = None,
+    audio_confidence: float | None = None,
+    production_activity: str | None = None,
+    audio_energy_rms: float = 0.0,
+    mixer_energy: float = 0.0,
+    mixer_active: bool | None = None,
+    desk_activity: str | None = None,
+    midi_clock_transport: str | None = None,
+    phone_media_playing: bool | None = None,
+) -> float:
+    """Map live audio perception to a 0-1 occupancy/performance dimension.
+
+    ``audio_content_mix`` is consumed by permission gates as "how occupied is
+    the sound field?" rather than as an infrastructure fault. The legacy
+    entropy pressure stays as the fallback for callers that only know
+    voice/music/environment ratios.
+    """
+    fallback = _audio_ratio_entropy_pressure(
+        voice_ratio=voice_ratio,
+        music_ratio=music_ratio,
+        env_ratio=env_ratio,
+    )
+
+    scores: list[float] = []
+    scene_norm = (scene or "").strip().lower()
+    if scene_norm:
+        scene_scores = {
+            "capture_failed": 0.0,
+            "silence": 0.0,
+            "idle": 0.0,
+            "ambient": 0.2,
+            "room_tone": 0.2,
+            "music": 0.4,
+            "passive_music": 0.4,
+            "speech": 0.95,
+            "voice": 0.95,
+            "conversation": 0.9,
+            "speech_over_music": 1.0,
+        }
+        if scene_norm in scene_scores:
+            scene_score = scene_scores[scene_norm]
+            if audio_confidence is not None and scene_score > 0:
+                scene_score *= 0.5 + 0.5 * _clamp01(float(audio_confidence))
+            scores.append(scene_score)
+
+    if is_speech is True:
+        scores.append(0.95)
+    if music_playing is True:
+        scores.append(0.4)
+    if phone_media_playing is True:
+        scores.append(0.35)
+
+    production_norm = (production_activity or "").strip().lower()
+    if production_norm == "idle":
+        scores.append(0.0)
+    elif production_norm == "conversation":
+        scores.append(0.8)
+    elif production_norm == "production":
+        scores.append(0.72)
+
+    if mixer_active is True:
+        scores.append(0.55 + 0.3 * _clamp01(float(mixer_energy) / 0.1))
+    elif mixer_energy > 0:
+        scores.append(min(0.7, float(mixer_energy) * 10.0))
+
+    if audio_energy_rms > 0.01:
+        scores.append(min(0.5, float(audio_energy_rms) * 8.0))
+
+    desk_norm = (desk_activity or "").strip().lower()
+    if desk_norm in {"scratching", "drumming"}:
+        scores.append(0.82)
+    elif desk_norm in {"tapping", "playing"}:
+        scores.append(0.55)
+
+    transport_norm = (midi_clock_transport or "").strip().lower()
+    if transport_norm in {"playing", "play", "running"}:
+        scores.append(0.65)
+
+    audible = rms_dbfs > -55.0
+    if scores and audible:
+        if voice_ratio >= 0.45:
+            scores.append(0.75)
+        elif music_ratio >= 0.25:
+            scores.append(0.4)
+
+    if not scores:
+        return _clamp01(fallback)
+    return _clamp01(max(scores))
+
+
 # ── StimmungCollector ────────────────────────────────────────────────────────
 
 
@@ -549,6 +666,17 @@ class StimmungCollector:
         music_ratio: float = 0.0,
         env_ratio: float = 0.0,
         sample_rate: int = 48000,
+        scene: str | None = None,
+        is_speech: bool | None = None,
+        music_playing: bool | None = None,
+        audio_confidence: float | None = None,
+        production_activity: str | None = None,
+        audio_energy_rms: float = 0.0,
+        mixer_energy: float = 0.0,
+        mixer_active: bool | None = None,
+        desk_activity: str | None = None,
+        midi_clock_transport: str | None = None,
+        phone_media_playing: bool | None = None,
     ) -> None:
         """Update audio self-perception dimensions from broadcast egress tap.
 
@@ -559,7 +687,9 @@ class StimmungCollector:
         - signal_presence: silence = bad (1.0), healthy signal = good (0.0)
         - spectral_centroid: extreme deviation from voice band = bad
         - spectral_balance: skewed low/high ratio = bad
-        - content_mix: monotonic single-source = bad, diverse mix = good
+        - content_mix: 0 idle, ~0.4 passive music, ~0.7 active performance,
+          ~1.0 speech/speech-over-music. With no scene/activity signals,
+          falls back to the legacy V/M/E entropy pressure.
         """
         # Signal presence: map RMS from dBFS to 0-1 pressure.
         # -25 dBFS or louder = 0.0 (healthy), -55 dBFS or quieter = 1.0 (silent)
@@ -596,20 +726,64 @@ class StimmungCollector:
             balance_pressure = min(1.0, log_ratio / 3.0)
         self._record("audio_spectral_balance", balance_pressure)
 
-        # Content mix: Shannon entropy of V/M/E ratios.
-        # Max entropy (equal mix) = 0.0 (good), zero entropy (single source) = 1.0.
-        import math as _math
+        self.update_audio_content_mix(
+            rms_dbfs=rms_dbfs,
+            voice_ratio=voice_ratio,
+            music_ratio=music_ratio,
+            env_ratio=env_ratio,
+            scene=scene,
+            is_speech=is_speech,
+            music_playing=music_playing,
+            audio_confidence=audio_confidence,
+            production_activity=production_activity,
+            audio_energy_rms=audio_energy_rms,
+            mixer_energy=mixer_energy,
+            mixer_active=mixer_active,
+            desk_activity=desk_activity,
+            midi_clock_transport=midi_clock_transport,
+            phone_media_playing=phone_media_playing,
+        )
 
-        ratios = [max(1e-10, r) for r in [voice_ratio, music_ratio, env_ratio]]
-        total = sum(ratios)
-        if total > 0:
-            probs = [r / total for r in ratios]
-            entropy = -sum(p * _math.log2(p) for p in probs if p > 0)
-            max_entropy = _math.log2(3.0)
-            mix_pressure = 1.0 - min(1.0, entropy / max_entropy)
-        else:
-            mix_pressure = 0.5
-        self._record("audio_content_mix", mix_pressure)
+    def update_audio_content_mix(
+        self,
+        *,
+        rms_dbfs: float = -120.0,
+        voice_ratio: float = 0.0,
+        music_ratio: float = 0.0,
+        env_ratio: float = 0.0,
+        scene: str | None = None,
+        is_speech: bool | None = None,
+        music_playing: bool | None = None,
+        audio_confidence: float | None = None,
+        production_activity: str | None = None,
+        audio_energy_rms: float = 0.0,
+        mixer_energy: float = 0.0,
+        mixer_active: bool | None = None,
+        desk_activity: str | None = None,
+        midi_clock_transport: str | None = None,
+        phone_media_playing: bool | None = None,
+    ) -> None:
+        """Update only ``audio_content_mix`` from live audio environment signals."""
+        self._record(
+            "audio_content_mix",
+            _audio_content_mix_value(
+                rms_dbfs=rms_dbfs,
+                voice_ratio=voice_ratio,
+                music_ratio=music_ratio,
+                env_ratio=env_ratio,
+                scene=scene,
+                is_speech=is_speech,
+                music_playing=music_playing,
+                audio_confidence=audio_confidence,
+                production_activity=production_activity,
+                audio_energy_rms=audio_energy_rms,
+                mixer_energy=mixer_energy,
+                mixer_active=mixer_active,
+                desk_activity=desk_activity,
+                midi_clock_transport=midi_clock_transport,
+                phone_media_playing=phone_media_playing,
+            ),
+        )
 
     def snapshot(self, now: float | None = None) -> SystemStimmung:
         """Produce a SystemStimmung from current readings."""

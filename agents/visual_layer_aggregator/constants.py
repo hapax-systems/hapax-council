@@ -25,6 +25,7 @@ INFRA_SNAPSHOT_PATH = Path("profiles/infra-snapshot.json")
 LANGFUSE_STATE_PATH = Path.home() / ".cache" / "langfuse-sync" / "state.json"
 WATCH_STATE_DIR = Path.home() / "hapax-state" / "watch"
 AUDIO_SELF_PERCEPTION_FILE = Path("/dev/shm/hapax-audio-self-perception/state.json")
+AUDIO_PERCEPTION_FILE = Path("/dev/shm/hapax-perception/audio.json")
 
 # ── Cadences ─────────────────────────────────────────────────────────────────
 
