@@ -78,6 +78,10 @@ def _metric_positive(value: float | None) -> bool:
     return value is not None and value > 0
 
 
+def _imagination_producer_active(metrics: Mapping[str, float]) -> bool:
+    return _metric_positive(metrics.get("hapax_imagination_output_frames_total"))
+
+
 def _metric_fresh(value: float | None, *, max_age_seconds: float) -> bool:
     return value is not None and 0 <= value <= max_age_seconds
 
@@ -382,8 +386,11 @@ def _egress_mode_from_metrics(
     *,
     bridge_expected: bool,
 ) -> V4l2EgressMode:
-    if bool(metrics.get("hapax_imagination_v4l2_output_enabled", 0)):
-        return V4l2EgressMode.DIRECT
+    if "hapax_imagination_v4l2_output_enabled" in metrics:
+        if bool(metrics.get("hapax_imagination_v4l2_output_enabled", 0)):
+            return V4l2EgressMode.DIRECT
+        if _imagination_producer_active(metrics):
+            return V4l2EgressMode.DISABLED
     if bool(metrics.get("studio_compositor_runtime_feature_active:feature:v4l2_output", 1)):
         if bool(metrics.get("studio_compositor_runtime_feature_active:feature:shmsink_bridge", 0)):
             return V4l2EgressMode.BRIDGE
