@@ -2144,6 +2144,14 @@ class StudioCompositor:
                 log.exception("director_segment_runner stop failed")
                 StudioCompositor._record_stop_error("director_segment_runner", exc)
             self._director_segment_runner = None
+        loader = getattr(self, "_sierpinski_loader", None)
+        if loader is not None:
+            try:
+                loader.stop()
+            except Exception as exc:
+                log.exception("sierpinski_loader stop failed")
+                StudioCompositor._record_stop_error("sierpinski_loader", exc)
+            self._sierpinski_loader = None
         if self._command_server is not None:
             try:
                 self._command_server.stop()
