@@ -439,6 +439,28 @@ try:
         **_metric_kwargs,
     )
 
+    # T4 Ownership Gate (CASE-PERSPECTIVE-001) — Bayesian presence-posterior
+    # gate on director emissions. Three metrics: pass/fail counters and a
+    # histogram of raw posterior scores for distribution analysis.
+    _t4_ownership_pass_total = Counter(
+        "hapax_t4_ownership_pass_total",
+        "Director emissions that passed the T4 ownership gate.",
+        ("condition_id",),
+        **_metric_kwargs,
+    )
+    _t4_ownership_fail_total = Counter(
+        "hapax_t4_ownership_fail_total",
+        "Director emissions suppressed by the T4 ownership gate.",
+        ("condition_id",),
+        **_metric_kwargs,
+    )
+    _t4_ownership_score_histogram = Histogram(
+        "hapax_t4_ownership_score_histogram",
+        "Distribution of presence_probability values seen by the T4 gate.",
+        buckets=(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+        **_metric_kwargs,
+    )
+
     _METRICS_AVAILABLE = True
 except Exception:  # pragma: no cover — prometheus_client missing at install time
     log.info("prometheus_client unavailable — director observability metrics are no-ops")
@@ -1025,6 +1047,36 @@ def emit_transition_pick(transition_name: str) -> None:
         log.warning("emit_transition_pick failed", exc_info=True)
 
 
+def emit_t4_ownership_pass(condition_id: str) -> None:
+    """Increment T4 ownership pass counter."""
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        _t4_ownership_pass_total.labels(condition_id=condition_id).inc()
+    except Exception:
+        log.debug("emit_t4_ownership_pass failed", exc_info=True)
+
+
+def emit_t4_ownership_fail(condition_id: str) -> None:
+    """Increment T4 ownership fail counter."""
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        _t4_ownership_fail_total.labels(condition_id=condition_id).inc()
+    except Exception:
+        log.debug("emit_t4_ownership_fail failed", exc_info=True)
+
+
+def emit_t4_ownership_score(score: float) -> None:
+    """Observe a presence_probability value in the T4 histogram."""
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        _t4_ownership_score_histogram.observe(score)
+    except Exception:
+        log.debug("emit_t4_ownership_score failed", exc_info=True)
+
+
 __all__ = [
     "canonicalize_grounding_signal",
     "emit_director_intent",
@@ -1043,6 +1095,9 @@ __all__ = [
     "emit_move_grounding",
     "emit_parse_failure",
     "emit_random_mode_pick",
+    "emit_t4_ownership_fail",
+    "emit_t4_ownership_pass",
+    "emit_t4_ownership_score",
     "emit_transition_pick",
     "emit_ungrounded_audit",
     "emit_ungrounded_rejection",

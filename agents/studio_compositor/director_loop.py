@@ -176,6 +176,145 @@ def _director_model_legacy_mode() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
+# ── T4 Ownership Gate (CASE-PERSPECTIVE-001) ─────────────────────────────
+# Bayesian presence-posterior gate on director emissions. Suppresses
+# compositional impingements when operator ownership confidence is below
+# threshold. Fail-open: if perception-state is unreadable, emissions pass.
+
+TAU_OWNERSHIP: float = float(os.environ.get("HAPAX_TAU_OWNERSHIP", "0.60"))
+_PERCEPTION_STATE_PATH: Path = Path(
+    os.path.expanduser("~/.cache/hapax-daimonion/perception-state.json")
+)
+_PRESENCE_CACHE: dict[str, Any] = {}  # keys: "value", "ts"
+_PRESENCE_CACHE_TTL: float = 5.0  # seconds
+
+# Diagnostic intent families pass even in the UNCERTAIN zone.
+_DIAGNOSTIC_FAMILIES: frozenset[str] = frozenset(
+    {
+        "diagnostic.heartbeat",
+        "diagnostic.liveness",
+        "diagnostic.watchdog",
+        "silence.hold",
+    }
+)
+
+
+def _read_presence_posterior() -> tuple[float, str]:
+    """Read presence_probability and presence_state from perception-state.json.
+
+    Returns (probability, state_string). On any failure returns (0.0, "UNKNOWN").
+    Results are cached for _PRESENCE_CACHE_TTL seconds to avoid per-tick IO.
+    """
+    now = time.monotonic()
+    cached_ts = _PRESENCE_CACHE.get("ts", 0.0)
+    if _PRESENCE_CACHE.get("value") is not None and (now - cached_ts) < _PRESENCE_CACHE_TTL:
+        return _PRESENCE_CACHE["value"]
+
+    try:
+        if not _PERCEPTION_STATE_PATH.exists():
+            result = (0.0, "UNKNOWN")
+            _PRESENCE_CACHE["value"] = result
+            _PRESENCE_CACHE["ts"] = now
+            return result
+        data = json.loads(_PERCEPTION_STATE_PATH.read_text(encoding="utf-8"))
+        prob = float(data.get("presence_probability", 0.0))
+        state = str(data.get("presence_state", "UNKNOWN"))
+        result = (prob, state)
+        _PRESENCE_CACHE["value"] = result
+        _PRESENCE_CACHE["ts"] = now
+        return result
+    except Exception:
+        log.debug("t4-ownership: perception-state read failed", exc_info=True)
+        result = (0.0, "UNKNOWN")
+        _PRESENCE_CACHE["value"] = result
+        _PRESENCE_CACHE["ts"] = now
+        return result
+
+
+def _ownership_gate_passes(intent: DirectorIntent, condition_id: str) -> bool:
+    """T4 ownership gate — returns True if director emissions should proceed.
+
+    Decision tiers:
+      PASS:      posterior >= TAU_OWNERSHIP → True
+      UNCERTAIN: 0.40 <= posterior < TAU_OWNERSHIP → only diagnostic families pass
+      FAIL:      posterior < 0.40 → False (log suppression)
+
+    Kill switch: HAPAX_BAYESIAN_BYPASS=1 → always True.
+    Fail-open:   file missing/unreadable → True (observational gate, not safety-critical).
+    """
+    # Kill switch
+    if os.environ.get("HAPAX_BAYESIAN_BYPASS", "").strip() in {"1", "true", "yes"}:
+        return True
+
+    posterior, state = _read_presence_posterior()
+
+    # Fail-open: if state is UNKNOWN (file missing/corrupt), allow emissions
+    if state == "UNKNOWN":
+        return True
+
+    # Emit Prometheus metrics
+    try:
+        from shared.director_observability import (
+            emit_t4_ownership_score,
+        )
+
+        emit_t4_ownership_score(posterior)
+    except Exception:
+        pass
+
+    if posterior >= TAU_OWNERSHIP:
+        try:
+            from shared.director_observability import emit_t4_ownership_pass
+
+            emit_t4_ownership_pass(condition_id)
+        except Exception:
+            pass
+        return True
+
+    if posterior >= 0.40:
+        # UNCERTAIN zone — only diagnostic impingements pass
+        is_diagnostic = False
+        if intent.compositional_impingements:
+            families = {imp.intent_family for imp in intent.compositional_impingements}
+            is_diagnostic = bool(families & _DIAGNOSTIC_FAMILIES)
+        if is_diagnostic:
+            try:
+                from shared.director_observability import emit_t4_ownership_pass
+
+                emit_t4_ownership_pass(condition_id)
+            except Exception:
+                pass
+            return True
+        # Non-diagnostic in uncertain zone → suppress
+        try:
+            from shared.director_observability import emit_t4_ownership_fail
+
+            emit_t4_ownership_fail(condition_id)
+        except Exception:
+            pass
+        log.debug(
+            "t4-ownership: UNCERTAIN suppression (posterior=%.3f, condition=%s)",
+            posterior,
+            condition_id,
+        )
+        return False
+
+    # FAIL zone — posterior < 0.40
+    try:
+        from shared.director_observability import emit_t4_ownership_fail
+
+        emit_t4_ownership_fail(condition_id)
+    except Exception:
+        pass
+    log.debug(
+        "t4-ownership: FAIL suppression (posterior=%.3f, state=%s, condition=%s)",
+        posterior,
+        state,
+        condition_id,
+    )
+    return False
+
+
 def _slot_uses_external_frames(slot: Any) -> bool:
     """True when a slot's frame source is managed outside the playlist path."""
     return bool(getattr(slot, "externally_managed_frames", False))
@@ -688,6 +827,11 @@ def _emit_intent_artifacts(intent: DirectorIntent, condition_id: str) -> None:
     # compositional feedback so the rollback is a true rollback of
     # behavior, not of observability.
     if not _director_model_legacy_mode():
+        # T4 ownership gate (CASE-PERSPECTIVE-001): suppress compositional
+        # emissions when operator ownership confidence is below threshold.
+        # Fail-open by design — observational gate, not safety-critical.
+        if not _ownership_gate_passes(intent, condition_id=condition_id):
+            return
         _emit_compositional_impingements(intent, condition_id=condition_id)
         # Cascade-delta (2026-04-18) — dispatch the narrative-tier
         # structural intent straight to ward-properties + the homage
