@@ -6,6 +6,7 @@ from hypothesis import strategies as st
 
 from agentgov.consent_label import ConsentLabel
 from agentgov.labeled import Labeled
+from agentgov.primitives import Veto, VetoChain
 from agentgov.principal import Principal, PrincipalKind
 
 safe_ids = st.text(min_size=1, max_size=20, alphabet=st.characters(whitelist_categories=("L",)))
@@ -62,3 +63,17 @@ def st_labeled(draw, value_strategy=None):
     label = draw(st_consent_label())
     provenance = draw(st.frozensets(safe_ids, min_size=0, max_size=5))
     return Labeled(value=value, label=label, provenance=provenance)
+
+
+@st.composite
+def st_veto(draw, allow_prob=0.5):
+    name = draw(safe_ids)
+    allows = draw(st.floats(min_value=0, max_value=1)) < allow_prob
+    axiom = draw(st.one_of(st.none(), safe_ids))
+    return Veto(name=name, predicate=lambda _ctx, a=allows: a, axiom=axiom)
+
+
+@st.composite
+def st_veto_chain(draw, min_vetoes=0, max_vetoes=5):
+    vetoes = draw(st.lists(st_veto(), min_size=min_vetoes, max_size=max_vetoes))
+    return VetoChain(vetoes)
