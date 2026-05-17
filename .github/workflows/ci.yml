@@ -9,6 +9,7 @@ on:
     types: [checks_requested]
 
 permissions:
+  actions: read
   contents: read
   pull-requests: read
   security-events: write
@@ -18,6 +19,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  post_merge_duplicate_filter:
+    runs-on: ubuntu-latest
+    outputs:
+      duplicate_merge_group: ${{ steps.detect.outputs.duplicate_merge_group }}
+    steps:
+      - name: Detect duplicate post-merge push
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          duplicate_merge_group=false
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            if run_count="$(
+              gh api \
+                "/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=merge_group&status=success&per_page=1" \
+                --jq '.total_count'
+            )"; then
+              if [ "${run_count:-0}" -gt 0 ]; then
+                duplicate_merge_group=true
+              fi
+            else
+              echo "Could not query prior merge-group CI runs; running full CI."
+            fi
+          fi
+
+          echo "duplicate_merge_group=$duplicate_merge_group" >> "$GITHUB_OUTPUT"
+          if [ "$duplicate_merge_group" = true ]; then
+            echo "Merge queue already validated this SHA; push run will report sentinels."
+          else
+            echo "No prior successful merge-group CI found for this SHA."
+          fi
+
   docs_only_filter:
     runs-on: ubuntu-latest
     outputs:
@@ -30,20 +68,33 @@ jobs:
       - name: Detect docs-only change set
         id: diff
         env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
 
           changed_files="$(mktemp)"
+          merge_group_base_sha=""
+          if [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then
+            merge_group_base_sha="$(
+              printf '%s\n' "$GITHUB_REF_NAME" \
+                | sed -n 's/.*-\([0-9a-f]\{40\}\)$/\1/p'
+            )"
+          fi
+
           if [ -n "$PR_BASE_SHA" ]; then
             git fetch --quiet origin "$PR_BASE_SHA" || true
             git diff --name-only "$PR_BASE_SHA"...HEAD > "$changed_files"
+          elif [ -n "$merge_group_base_sha" ]; then
+            git fetch --quiet origin "$merge_group_base_sha" || true
+            git diff --name-only "$merge_group_base_sha"..HEAD > "$changed_files"
           else
             if [ -z "$PUSH_BEFORE_SHA" ] || [ "$PUSH_BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
               echo "docs_only=false" >> "$GITHUB_OUTPUT"
               echo "changed_count=0" >> "$GITHUB_OUTPUT"
-              echo "No stable push base SHA; running full CI."
+              echo "No stable base SHA for $GITHUB_EVENT_NAME; running full CI."
               exit 0
             fi
             git fetch --quiet origin "$PUSH_BEFORE_SHA" || true
@@ -91,38 +142,41 @@ jobs:
           fi
 
   lint:
-    needs: docs_only_filter
+    needs: [docs_only_filter, post_merge_duplicate_filter]
     runs-on: ubuntu-latest
     steps:
+      - name: Post-merge duplicate required-check sentinel
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'
+        run: echo "Merge queue already validated this SHA; lint reports success."
       - name: Docs-only required-check sentinel
-        if: needs.docs_only_filter.outputs.docs_only == 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only == 'true'
         run: echo "Docs-only change set; lint reports success without running heavy gates."
       - uses: actions/checkout@v6
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
       - uses: astral-sh/setup-uv@v7
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           enable-cache: true
       - uses: astral-sh/ruff-action@v3
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           args: "check"
       - uses: astral-sh/ruff-action@v3
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           args: "format --check"
       # Task #155 Stage 5 — anti-personification fail-loud CI gate.
       # Scans axioms/**/*.md and prompt-surface modules; exits non-zero
       # on any deny-list finding that survives the carve-out windows.
       - name: Install system deps (cairo, gobject)
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection
-      - if: needs.docs_only_filter.outputs.docs_only != 'true'
+      - if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv sync --extra ci
       - name: Unused-function gate
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
@@ -139,7 +193,7 @@ jobs:
             uv run python scripts/check-unused-functions.py --diff-range "$PUSH_BEFORE_SHA..HEAD"
           fi
       - name: Anti-personification linter
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run python scripts/lint_personification.py
       # audit-F — audio yaml ↔ conf consistency. Fails when a yaml-
       # declared LADSPA chain has no corresponding hapax-*.conf on
@@ -148,14 +202,14 @@ jobs:
       # chain but forgot the conf" drift class that silently breaks
       # the live audio graph.
       - name: Audio yaml conf consistency verify
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run python scripts/check-audio-conf-consistency.py
       # ytb-AUTH1 — aesthetic library integrity. Verifies _manifest.yaml
       # and _NOTICES.md match on-disk bytes and every asset's SHA-256
       # still agrees with its manifest entry. Fail-loud if a regenerated
       # asset bypassed the manifest refresh.
       - name: Aesthetic library verify
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run python scripts/verify-aesthetic-library.py
       # AUDIT-22 Phase B-2 — publication-contract redaction linter.
       # Validates every contract `redactions:` entry is either a
@@ -164,7 +218,7 @@ jobs:
       # unregistered transforms that would silently no-op in the
       # _apply_redactions wire-in.
       - name: Publication redaction transforms verify
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run python scripts/verify-redaction-transforms.py
       # V5 weave wk1 d4 — polysemic-audit CI gate (epsilon-owned).
       # Walks docs/audience/ + docs/published-artifacts/ for any *.md
@@ -173,7 +227,7 @@ jobs:
       # invariant 5: every artifact passes this gate before approval-
       # queue entry.
       - name: Polysemic audit verify
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run python scripts/verify-polysemic-audit.py
       # Bayesian Phase 0 FULL — HPX003 + HPX004 claim/LR registry gates.
       # HPX003: every signal in shared/lr_registry.yaml validates against
@@ -182,7 +236,7 @@ jobs:
       # (verbatim): "Lack of priors is itself a prior; priors must be
       # derivations of invariants, not ad-hoc."
       - name: HPX003+HPX004 claim/LR registry validators
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run python scripts/check-claim-registry.py
 
       # Preset-family affordance closure (categories A + B from
@@ -195,7 +249,7 @@ jobs:
       # (TestEveryFamilyHasCapability, PR #2832) covers the
       # family-capability invariant from the other direction.
       - name: Preset-family affordance closure
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run python scripts/audit-preset-affordances.py --no-qdrant
 
       # Operator legal-name leak guard. Per `interpersonal_transparency`
@@ -207,7 +261,7 @@ jobs:
       # SHAs are not user-input but env: pattern is used per safe-CI
       # idiom regardless.
       - name: Operator legal-name leak guard
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -227,37 +281,43 @@ jobs:
 
 
   typecheck:
-    needs: docs_only_filter
+    needs: [docs_only_filter, post_merge_duplicate_filter]
     runs-on: ubuntu-latest
     steps:
+      - name: Post-merge duplicate required-check sentinel
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'
+        run: echo "Merge queue already validated this SHA; typecheck reports success."
       - name: Docs-only required-check sentinel
-        if: needs.docs_only_filter.outputs.docs_only == 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only == 'true'
         run: echo "Docs-only change set; typecheck reports success without running pyrefly."
       - uses: actions/checkout@v6
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
       - uses: astral-sh/setup-uv@v7
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           enable-cache: true
       # Keep the typecheck path independent of the full CI environment.
       # Pyrefly does not need the cairo/gobject runtime deps or uv sync, and
       # the previous analysis-cache restore did not materially shorten this
       # check.
-      - if: needs.docs_only_filter.outputs.docs_only != 'true'
+      - if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run --no-project --with pyrefly==0.62.0 pyrefly check
 
   test:
-    needs: docs_only_filter
+    needs: [docs_only_filter, post_merge_duplicate_filter]
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
+      - name: Post-merge duplicate required-check sentinel
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'
+        run: echo "Merge queue already validated this SHA; test reports success."
       - name: Docs-only required-check sentinel
-        if: needs.docs_only_filter.outputs.docs_only == 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only == 'true'
         run: echo "Docs-only change set; test reports success without running pytest."
       - uses: actions/checkout@v6
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
       - name: Install system deps (cairo, gobject, gst, pango, hook transports)
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -266,7 +326,7 @@ jobs:
             gir1.2-pango-1.0 \
             socat
       - name: Install Px437 IBM VGA 8x16 font (HARDM aesthetic dependency, audit 4.7 PR #1109)
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         run: |
           # Install system-wide so fontconfig's /usr/share/fonts scan picks it up.
           sudo mkdir -p /usr/share/fonts/TTF
@@ -281,13 +341,13 @@ jobs:
           fc-list | grep -i 'Px437.*IBM VGA 8x16' \
             || (echo "font install failed (fc-list)" >&2; exit 1)
       - uses: astral-sh/setup-uv@v7
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           enable-cache: true
-      - if: needs.docs_only_filter.outputs.docs_only != 'true'
+      - if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv sync --extra ci
       - name: Verify Pango can resolve Px437 IBM VGA 8x16
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         # Pango consults fontconfig but has its own per-process cache; a
         # Pango-level probe confirms the HARDM render path will see the
         # font, not just fontconfig. If this fails, HARDM tests render
@@ -295,7 +355,7 @@ jobs:
         run: |
           uv run python scripts/ci_verify_pango_font.py "Px437 IBM VGA 8x16"
       - name: Run tests
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         env:
           LITELLM_BASE_URL: "http://0.0.0.0:1"
           QDRANT_URL: "http://0.0.0.0:1"
@@ -380,6 +440,8 @@ jobs:
           exit 1
 
   homage-visual-regression:
+    needs: post_merge_duplicate_filter
+    if: github.event_name != 'push' || needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Visual-regression goldens are generated on the operator's workstation
@@ -493,21 +555,25 @@ jobs:
           echo "Diff artifacts (if any) are attached to this run for review."
 
   web-build:
-    needs: docs_only_filter
+    needs: [docs_only_filter, post_merge_duplicate_filter]
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: hapax-logos
     steps:
+      - name: Post-merge duplicate required-check sentinel
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'
+        working-directory: .
+        run: echo "Merge queue already validated this SHA; web-build reports success."
       - name: Docs-only required-check sentinel
-        if: needs.docs_only_filter.outputs.docs_only == 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only == 'true'
         working-directory: .
         run: echo "Docs-only change set; web-build reports success without running pnpm."
       - uses: actions/checkout@v6
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
       - name: Detect web-build input changes
         id: filter
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         uses: dorny/paths-filter@v3
         with:
           filters: |
@@ -515,7 +581,7 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'hapax-logos/**'
       - name: Non-web required-check sentinel
-        if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build != 'true'
         working-directory: .
         run: |
           echo "No web-build inputs changed; web-build reports success without running pnpm."
@@ -523,23 +589,25 @@ jobs:
           echo "  - .github/workflows/ci.yml"
           echo "  - hapax-logos/**"
       - uses: pnpm/action-setup@v6
-        if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
         with:
           version: 9
       - uses: actions/setup-node@v6
-        if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: hapax-logos/pnpm-lock.yaml
-      - if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
+      - if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
         run: pnpm install --frozen-lockfile
-      - if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
+      - if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
         run: pnpm lint
-      - if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
+      - if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.web_build == 'true'
         run: pnpm build
 
   rust-check:
+    needs: post_merge_duplicate_filter
+    if: github.event_name != 'push' || needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -593,21 +661,25 @@ jobs:
         run: echo "Skipped — this change does not touch hapax-logos Rust crate inputs."
 
   vscode-build:
-    needs: docs_only_filter
+    needs: [docs_only_filter, post_merge_duplicate_filter]
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: vscode
     steps:
+      - name: Post-merge duplicate required-check sentinel
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'
+        working-directory: .
+        run: echo "Merge queue already validated this SHA; vscode-build reports success."
       - name: Docs-only required-check sentinel
-        if: needs.docs_only_filter.outputs.docs_only == 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only == 'true'
         working-directory: .
         run: echo "Docs-only change set; vscode-build reports success without running pnpm."
       - uses: actions/checkout@v6
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
       - name: Detect vscode-build input changes
         id: filter
-        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         uses: dorny/paths-filter@v3
         with:
           filters: |
@@ -615,7 +687,7 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'vscode/**'
       - name: Non-vscode required-check sentinel
-        if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build != 'true'
         working-directory: .
         run: |
           echo "No vscode-build inputs changed; vscode-build reports success without running pnpm."
@@ -623,21 +695,23 @@ jobs:
           echo "  - .github/workflows/ci.yml"
           echo "  - vscode/**"
       - uses: pnpm/action-setup@v6
-        if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build == 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build == 'true'
         with:
           version: 9
       - uses: actions/setup-node@v6
-        if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build == 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build == 'true'
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: vscode/pnpm-lock.yaml
-      - if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build == 'true'
+      - if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build == 'true'
         run: pnpm install --frozen-lockfile
-      - if: needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build == 'true'
+      - if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.filter.outputs.vscode_build == 'true'
         run: pnpm run build
 
   secrets-scan:
+    needs: post_merge_duplicate_filter
+    if: github.event_name != 'push' || needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -648,12 +722,26 @@ jobs:
       - name: Run Gitleaks CLI
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_SHA: ${{ github.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           log_opts="--max-count=50"
           if [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then
             # Merge queue uses a synthetic squash commit; scanning 50 linear
             # ancestors there walks unrelated parent history.
             log_opts="--max-count=1"
+          elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            if [ -n "$PUSH_BEFORE_SHA" ] && [ "$PUSH_BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+              git fetch --quiet origin "$PUSH_BEFORE_SHA" || true
+              if git cat-file -e "$PUSH_BEFORE_SHA^{commit}" 2>/dev/null; then
+                log_opts="$PUSH_BEFORE_SHA..$GITHUB_SHA"
+              else
+                echo "Push before SHA is unavailable in checkout; scanning current commit only."
+                log_opts="--max-count=1"
+              fi
+            else
+              log_opts="--max-count=1"
+            fi
           fi
           docker run --rm \
             --entrypoint sh \
@@ -664,6 +752,8 @@ jobs:
             -c 'git config --global --add safe.directory /repo && gitleaks git --redact --log-opts="$GITLEAKS_LOG_OPTS" /repo'
 
   security:
+    needs: post_merge_duplicate_filter
+    if: github.event_name != 'push' || needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
