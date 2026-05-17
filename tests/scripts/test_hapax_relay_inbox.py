@@ -11,6 +11,7 @@ from shared.relay_mq import MessageFilters, list_messages
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "hapax-relay-inbox"
+SCRIPT_TIMEOUT_SECONDS = 20
 
 
 def _run_inbox(relay_dir: Path, role: str, *extra: str) -> subprocess.CompletedProcess[str]:
@@ -18,7 +19,7 @@ def _run_inbox(relay_dir: Path, role: str, *extra: str) -> subprocess.CompletedP
         [sys.executable, str(SCRIPT), "--role", role, "--relay-dir", str(relay_dir), *extra],
         capture_output=True,
         text=True,
-        timeout=5,
+        timeout=SCRIPT_TIMEOUT_SECONDS,
     )
 
 

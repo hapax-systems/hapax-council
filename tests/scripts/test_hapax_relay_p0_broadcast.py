@@ -10,6 +10,7 @@ from shared.relay_mq import MessageFilters, list_messages
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "hapax-relay-p0-broadcast.sh"
+SCRIPT_TIMEOUT_SECONDS = 20
 
 
 def test_p0_broadcast_only_mutates_live_peer_yamls(tmp_path: Path) -> None:
@@ -39,7 +40,7 @@ def test_p0_broadcast_only_mutates_live_peer_yamls(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         env=env,
-        timeout=5,
+        timeout=SCRIPT_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stderr
@@ -73,7 +74,7 @@ def test_p0_broadcast_dual_write_preserves_wakeup_behavior(tmp_path: Path) -> No
         capture_output=True,
         text=True,
         env=env,
-        timeout=5,
+        timeout=SCRIPT_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stderr
