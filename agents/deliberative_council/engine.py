@@ -80,15 +80,34 @@ async def run_phase1(
     async def _run_one(alias: str, seed: int) -> PhaseOneResult | None:
         try:
             member = build_member(alias)
-            prompt = phase1_prompt(rubric, inp.text, inp.source_ref, seed=seed)
-            raw, tool_calls = await _call_member(member, prompt)
-            result = _parse_phase1_output(alias, raw)
+
+            investigate_prompt = (
+                "You are a council member. FIRST, investigate the source material "
+                "using your research tools. Do NOT score yet — only gather evidence.\n\n"
+                f"**Source ref:** {inp.source_ref}\n\n**Text:**\n{inp.text}\n\n"
+                "Use tools to verify claims, check sources, and gather evidence. "
+                "Report your findings as a JSON list:\n"
+                '{"research_findings": ["finding 1", "finding 2", ...]}'
+            )
+            investigate_raw, tool_calls = await _call_member(member, investigate_prompt)
+
+            findings_text = investigate_raw[:2000]
+
+            score_prompt = phase1_prompt(rubric, inp.text, inp.source_ref, seed=seed)
+            score_prompt += (
+                f"\n\n## Your Prior Research Findings\n{findings_text}\n\n"
+                "Score based on your research above. Do NOT re-investigate."
+            )
+            score_raw, score_tools = await _call_member(member, score_prompt)
+            all_tools = tool_calls + score_tools
+
+            result = _parse_phase1_output(alias, score_raw)
             return PhaseOneResult(
                 model_alias=result.model_alias,
                 scores=result.scores,
                 rationale=result.rationale,
                 research_findings=result.research_findings,
-                tool_calls_log=tool_calls,
+                tool_calls_log=all_tools,
             )
         except Exception as e:
             _log.error("Phase 1 failure for %s: %s", alias, e)
