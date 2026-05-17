@@ -12,6 +12,7 @@ from .tools import FULL_TOOLS, RESTRICTED_TOOLS
 class ToolLevel(StrEnum):
     FULL = "full"
     RESTRICTED = "restricted"
+    NONE = "none"
 
 
 MODEL_TOOL_LEVELS: dict[str, ToolLevel] = {
@@ -40,7 +41,12 @@ def build_member(
     if tool_level is None:
         tool_level = MODEL_TOOL_LEVELS.get(model_alias, ToolLevel.FULL)
 
-    tools = list(FULL_TOOLS if tool_level == ToolLevel.FULL else RESTRICTED_TOOLS)
+    if tool_level == ToolLevel.NONE:
+        tools = []
+    elif tool_level == ToolLevel.FULL:
+        tools = list(FULL_TOOLS)
+    else:
+        tools = list(RESTRICTED_TOOLS)
 
     return Agent(
         get_model(model_alias),
