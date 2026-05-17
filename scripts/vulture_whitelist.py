@@ -3317,3 +3317,87 @@ from shared.segment_disconfirmation import (  # noqa: F401, E402
 apply_council_verdicts
 extract_claims
 run_council_disconfirmation
+
+# Angle resolver — multi-source angle resolution for segment prep
+try:
+    from agents.hapax_daimonion.angle_resolver import (  # noqa: F401, E402
+        AngleHypothesis,
+        format_angle_for_composer,
+        resolve_angle,
+    )
+
+    AngleHypothesis
+    format_angle_for_composer
+    resolve_angle
+except ImportError:
+    pass
+
+# segment_narrative_critique
+try:
+    from shared.segment_narrative_critique import (  # noqa: F401, E402
+        format_narrative_verdict_for_composer,
+        run_narrative_critique,
+    )
+
+    format_narrative_verdict_for_composer
+    run_narrative_critique
+except ImportError:
+    pass
+
+# NarrativeQualityRubric + NarrativeVerdict
+try:
+    from agents.deliberative_council.models import (  # noqa: F401, E402
+        NarrativeVerdict,
+        NarrativeVerdictStatus,
+    )
+    from agents.deliberative_council.rubrics import (  # noqa: F401, E402
+        NarrativeQualityRubric,
+    )
+
+    NarrativeVerdict
+    NarrativeVerdictStatus
+    NarrativeQualityRubric
+except ImportError:
+    pass
+
+# Information density field
+try:
+    from shared.information_density import (  # noqa: F401, E402
+        BayesianSurpriseModel,
+        BOCPDModel,
+        EntropyModel,
+        InformationDensityField,
+        SourceDensity,
+        SourceModel,
+    )
+
+    BOCPDModel
+    BayesianSurpriseModel
+    EntropyModel
+    InformationDensityField
+    InformationDensityField.get_density
+    InformationDensityField.read_shm
+    SourceDensity
+    SourceModel
+except ImportError:
+    pass
+
+# angle_resolver properties
+try:
+    from agents.hapax_daimonion.angle_resolver import AngleHypothesis  # noqa: F401, E402
+
+    AngleHypothesis.has_tension
+except ImportError:
+    pass
+
+# interview tools (pydantic-ai registered, vulture can't see dynamic dispatch)
+analyze_answer_delta
+check_contradictions
+
+# CPAL interview silence
+try:
+    from agents.hapax_daimonion.cpal.runner import CpalRunner  # noqa: F401, E402
+
+    CpalRunner.begin_interview_silence
+except ImportError:
+    pass

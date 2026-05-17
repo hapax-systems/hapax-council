@@ -707,7 +707,36 @@ def _build_seed(context: Any) -> str:
     triad_summary = render_triad_prompt_context(getattr(context, "triad_continuity", None))
     if triad_summary:
         parts.append("Narration continuity ledger:\n" + triad_summary)
+
+    drive_ctx = _read_drive_context()
+    if drive_ctx:
+        parts.append(drive_ctx)
+
     return "\n".join(parts)
+
+
+def _read_drive_context() -> str:
+    """Read the narrative drive's latest context from SHM."""
+    try:
+        import json as _json
+        from pathlib import Path as _P
+
+        p = _P("/dev/shm/hapax-daimonion/drive-context.json")
+        if not p.exists():
+            return ""
+        data = _json.loads(p.read_text(encoding="utf-8"))
+        parts = ["Narrative drive context:"]
+        if data.get("chronicle_event_count"):
+            parts.append(f"  Chronicle events (600s window): {data['chronicle_event_count']}")
+        if data.get("stimmung_stance"):
+            parts.append(f"  Stimmung stance: {data['stimmung_stance']}")
+        if data.get("operator_presence_score"):
+            parts.append(f"  Operator presence: {data['operator_presence_score']}")
+        if data.get("programme_role"):
+            parts.append(f"  Programme role: {data['programme_role']}")
+        return "\n".join(parts) if len(parts) > 1 else ""
+    except Exception:
+        return ""
 
 
 def _summarize_vault_context(vault_context: Any) -> str:

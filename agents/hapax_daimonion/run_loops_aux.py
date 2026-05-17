@@ -556,7 +556,11 @@ async def prepared_playback_loop(daemon: object) -> None:
                 (),
                 {
                     "source": "autonomous_narrative",
-                    "content": {},
+                    "content": {
+                        "public_broadcast_intent": True,
+                        "channel": "broadcast",
+                        "programme_id": prog_id,
+                    },
                 },
             )()
 
@@ -738,30 +742,29 @@ async def prepared_playback_loop(daemon: object) -> None:
                     ttl_s=120.0,
                 )
 
-                # Play current block
+                # Play current block — bypass speech_lock so CPAL impingements
+                # don't insert 30-40s gaps between blocks.
                 try:
-                    async with cpal._speech_lock:
-                        if cpal._pipeline and hasattr(cpal._pipeline, "_recent_tts_texts"):
-                            import time as _time
+                    if cpal._pipeline and hasattr(cpal._pipeline, "_recent_tts_texts"):
+                        import time as _time
 
-                            cpal._pipeline._recent_tts_texts.append(
-                                (_time.monotonic(), current_text.lower().strip().rstrip(".,!?"))
-                            )
-                        cpal._buffer.set_speaking(True)
-                        if cpal._echo_canceller:
-                            cpal._echo_canceller.feed_reference(current_pcm)
-                        try:
-                            from functools import partial
+                        cpal._pipeline._recent_tts_texts.append(
+                            (_time.monotonic(), current_text.lower().strip().rstrip(".,!?"))
+                        )
+                    cpal._buffer.set_speaking(True)
+                    if cpal._echo_canceller:
+                        cpal._echo_canceller.feed_reference(current_pcm)
+                    try:
+                        from functools import partial
 
-                            from agents.hapax_daimonion.pw_audio_output import play_pcm
+                        from agents.hapax_daimonion.pw_audio_output import play_pcm
 
-                            await loop.run_in_executor(
-                                None,
-                                partial(play_pcm, current_pcm, 24000, 1, dest_target, dest_role),
-                            )
-                        finally:
-                            await asyncio.sleep(1.5)
-                            cpal._buffer.set_speaking(False)
+                        await loop.run_in_executor(
+                            None,
+                            partial(play_pcm, current_pcm, 24000, 1, dest_target, dest_role),
+                        )
+                    finally:
+                        cpal._buffer.set_speaking(False)
                 except Exception:
                     log.warning(
                         "prepared_playback_loop: playback failed block %d", idx + 1, exc_info=True

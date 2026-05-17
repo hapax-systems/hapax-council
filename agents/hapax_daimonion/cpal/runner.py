@@ -278,6 +278,12 @@ class CpalRunner:
             # voice must always come up; envelope is a visual side-channel.
             log.debug("TTS envelope publisher init failed", exc_info=True)
 
+        # Interview silence window: after system asks a question, suppress
+        # backchannels and T1/T2 corrections for this many seconds.
+        self._interview_silence_until: float = 0.0
+        _INTERVIEW_SILENCE_DEFAULT_S = 15.0
+        self._interview_silence_duration_s = _INTERVIEW_SILENCE_DEFAULT_S
+
         # D-18 (proof-of-wiring): music policy evaluator. Default is
         # NullMusicDetector → always returns detected=False → no behavior
         # change. Operator swaps in a real detector when one exists; the
@@ -608,21 +614,25 @@ class CpalRunner:
             log.info("CPAL barge-in: operator interrupted production")
 
         # 9. Backchannel selection (independent of T3)
-        bc = self._formulation.select_backchannel(
-            region=ConversationalRegion.from_gain(self._evaluator.gain_controller.gain),
-            speech_active=signals.speech_active,
-            speech_duration_s=signals.speech_duration_s,
-            trp_probability=signals.trp_probability,
-        )
-        if bc is not None and not self._processing_utterance:
-            self._execute_backchannel(bc)
+        # Interview silence gate: suppress backchannels while waiting for operator
+        if not self._interview_silence_active():
+            bc = self._formulation.select_backchannel(
+                region=ConversationalRegion.from_gain(self._evaluator.gain_controller.gain),
+                speech_active=signals.speech_active,
+                speech_duration_s=signals.speech_duration_s,
+                trp_probability=signals.trp_probability,
+            )
+            if bc is not None and not self._processing_utterance:
+                self._execute_backchannel(bc)
 
         # 10. Compose and execute tiered action for non-utterance triggers
+        # Interview silence gate: suppress T1/T2 corrections while waiting
         if (
             not self._production.is_producing
             and not self._processing_utterance
             and signals.trp_probability > 0.5
             and result.action_tier.value >= CorrectionTier.T1_PRESYNTHESIZED.value
+            and not self._interview_silence_active()
         ):
             composed = self._tier_composer.compose(
                 action_tier=result.action_tier,
@@ -813,6 +823,16 @@ class CpalRunner:
 
         self._audio_output.write = _wrapped_write  # type: ignore[assignment]
         self._envelope_wrap_done = True
+
+    def _interview_silence_active(self) -> bool:
+        """Return True while the interview silence window is active."""
+        return time.monotonic() < self._interview_silence_until
+
+    def begin_interview_silence(self, duration_s: float | None = None) -> None:
+        """Begin a productive silence window after asking a question."""
+        d = duration_s if duration_s is not None else self._interview_silence_duration_s
+        self._interview_silence_until = time.monotonic() + d
+        log.info("CPAL: interview silence window started (%.0fs)", d)
 
     def _execute_backchannel(self, bc) -> None:
         """Execute a backchannel decision from the formulation stream."""

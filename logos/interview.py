@@ -640,6 +640,102 @@ def create_interview_agent(model_alias: str = "balanced") -> Agent[InterviewDeps
         return "\n".join(lines)
 
     @agent.tool
+    async def analyze_answer_delta(
+        ctx: RunContext[InterviewDeps],
+        answer_text: str,
+        topic: str,
+    ) -> str:
+        """Analyze what an operator's answer changed in the knowledge model.
+
+        Call this after recording facts from the answer. It identifies:
+        - New gaps created by the answer (things referenced but not explained)
+        - Contradictions with existing profile facts
+        - Suggested follow-up questions from genuine information needs
+
+        Args:
+            answer_text: The operator's answer text.
+            topic: The current interview topic.
+        """
+        state = ctx.deps.state
+        recent_facts = state.facts[-5:] if state.facts else []
+        existing_dims = set()
+        for f in state.facts:
+            existing_dims.add(f.dimension)
+
+        lines = [f"## Answer Delta Analysis for: {topic}"]
+        lines.append(f"Facts recorded this session: {len(state.facts)}")
+
+        if recent_facts:
+            lines.append("\n### Recently recorded facts:")
+            for f in recent_facts:
+                lines.append(f"  - [{f.dimension}] {f.key}: {f.value} (conf={f.confidence})")
+
+        contradictions = [i for i in state.insights if i.category == "contradiction"]
+        if contradictions:
+            lines.append("\n### Contradictions detected:")
+            for c in contradictions:
+                lines.append(f"  - {c.description}")
+
+        new_references = []
+        for word in answer_text.lower().split():
+            if len(word) > 6 and word not in topic.lower():
+                if not any(f.key.lower() == word for f in state.facts):
+                    new_references.append(word)
+        if new_references:
+            lines.append(
+                f"\n### Terms referenced but not yet explored: {', '.join(new_references[:5])}"
+            )
+
+        lines.append("\n### Suggested follow-ups (from genuine gaps):")
+        if contradictions:
+            lines.append(
+                "  - Resolve the contradiction: ask which statement reflects current state"
+            )
+        low_conf = [f for f in recent_facts if f.confidence < 0.6]
+        if low_conf:
+            lines.append(
+                f"  - Clarify low-confidence fact: {low_conf[0].key} "
+                f"(recorded at {low_conf[0].confidence})"
+            )
+        if not recent_facts:
+            lines.append("  - Answer yielded no recordable facts — ask for specifics")
+
+        return "\n".join(lines)
+
+    @agent.tool
+    async def check_contradictions(
+        ctx: RunContext[InterviewDeps],
+        claim: str,
+        dimension: str,
+    ) -> str:
+        """Check if a claim from the operator contradicts existing profile facts.
+
+        Call this when the operator says something that might conflict
+        with what the system already knows. Returns any contradicting
+        facts so the interviewer can surface them non-judgmentally.
+
+        Args:
+            claim: What the operator just stated.
+            dimension: The profile dimension to check against.
+        """
+        try:
+            from logos._context_tools import search_profile
+
+            results = await search_profile(None, claim, dimension)
+            if not results or "No results" in results:
+                return f"No existing facts in [{dimension}] to compare against."
+
+            return (
+                f"## Existing facts in [{dimension}] related to this claim:\n"
+                f"{results}\n\n"
+                "If any of these contradict the operator's statement, surface it "
+                "non-judgmentally: 'Previous record indicates X. You described Y. "
+                "Which reflects your current position?'"
+            )
+        except Exception as e:
+            return f"Profile check unavailable: {e}"
+
+    @agent.tool
     async def read_goals(ctx: RunContext[InterviewDeps]) -> str:
         """Read operator goals from operator.json."""
         try:

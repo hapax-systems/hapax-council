@@ -56,7 +56,7 @@ class TestRunPhase1:
         )
 
         async def _mock_call(member, prompt):
-            return mock_output
+            return mock_output, []
 
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
             config = CouncilConfig(model_aliases=("opus", "balanced"))
@@ -81,7 +81,7 @@ class TestRunPhase1:
                     "rationale": {"a": "ok"},
                     "research_findings": [],
                 }
-            )
+            ), []
 
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
             config = CouncilConfig(model_aliases=("opus", "balanced"))
