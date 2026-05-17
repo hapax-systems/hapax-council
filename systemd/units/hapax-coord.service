@@ -1,0 +1,15 @@
+[Unit]
+Description=Hapax SBCL+CLOG coordination dashboard (source-only)
+Documentation=/home/hapax/projects/hapax-coord/README.md
+ConditionPathExists=/home/hapax/projects/hapax-coord/scripts/run-dev.sh
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hapax/projects/hapax-coord
+ExecStart=/home/hapax/projects/hapax-coord/scripts/run-dev.sh --daemon
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
