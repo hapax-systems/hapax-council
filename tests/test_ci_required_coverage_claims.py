@@ -111,10 +111,79 @@ def test_ci_docs_only_prs_trigger_required_jobs_with_sentinels() -> None:
 
     for job_name in REQUIRED_BRANCH_PROTECTION_JOBS:
         job_block = _workflow_job_block(ci_text, job_name)
-        assert "needs: docs_only_filter" in job_block
+        assert "needs: [docs_only_filter, post_merge_duplicate_filter]" in job_block
         assert "Docs-only required-check sentinel" in job_block
         assert "needs.docs_only_filter.outputs.docs_only == 'true'" in job_block
         assert "needs.docs_only_filter.outputs.docs_only != 'true'" in job_block
+
+
+def test_ci_merge_group_docs_only_filter_has_stable_base_sha() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+    docs_filter_block = _workflow_job_block(ci_text, "docs_only_filter")
+
+    assert "GITHUB_EVENT_NAME: ${{ github.event_name }}" in docs_filter_block
+    assert "GITHUB_REF_NAME: ${{ github.ref_name }}" in docs_filter_block
+    assert 'if [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then' in docs_filter_block
+    assert "merge_group_base_sha" in docs_filter_block
+    assert "sed -n 's/.*-\\([0-9a-f]\\{40\\}\\)$/\\1/p'" in docs_filter_block
+    assert 'git diff --name-only "$merge_group_base_sha"..HEAD' in docs_filter_block
+
+
+def test_ci_post_merge_pushes_reuse_successful_merge_group_validation() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+    duplicate_filter = _workflow_job_block(ci_text, "post_merge_duplicate_filter")
+
+    assert "actions: read" in ci_text
+    assert "actions/workflows/ci.yml/runs" in duplicate_filter
+    assert "head_sha=$GITHUB_SHA" in duplicate_filter
+    assert "event=merge_group" in duplicate_filter
+    assert "status=success" in duplicate_filter
+    assert "duplicate_merge_group=true" in duplicate_filter
+
+    for job_name in REQUIRED_BRANCH_PROTECTION_JOBS:
+        job_block = _workflow_job_block(ci_text, job_name)
+        assert "Post-merge duplicate required-check sentinel" in job_block
+        assert (
+            "needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'" in job_block
+        )
+        assert (
+            "needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'" in job_block
+        )
+
+
+def test_ci_non_required_jobs_skip_duplicate_post_merge_push_work() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+
+    for job_name in (
+        "homage-visual-regression",
+        "rust-check",
+        "secrets-scan",
+        "security",
+    ):
+        job_block = _workflow_job_block(ci_text, job_name)
+        assert "needs: post_merge_duplicate_filter" in job_block
+        assert (
+            "github.event_name != 'push' || "
+            "needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'"
+        ) in job_block
+
+    secrets_block = _workflow_job_block(ci_text, "secrets-scan")
+    assert "PUSH_BEFORE_SHA: ${{ github.event.before }}" in secrets_block
+    assert "GITHUB_SHA: ${{ github.sha }}" in secrets_block
+    assert 'log_opts="$PUSH_BEFORE_SHA..$GITHUB_SHA"' in secrets_block
+
+
+def test_security_extras_push_keeps_only_lightweight_actionlint() -> None:
+    security_text = _read(".github/workflows/security-extras.yml")
+    actionlint_block = _workflow_job_block(security_text, "actionlint")
+    rust_audit_block = _workflow_job_block(security_text, "rust-audit")
+    scorecard_block = _workflow_job_block(security_text, "scorecard")
+
+    assert "push:" in security_text
+    assert "rhysd/actionlint:1.7.12" in actionlint_block
+    assert "if: github.event_name == 'schedule'" in rust_audit_block
+    assert "if: github.event_name == 'schedule'" in scorecard_block
+    assert "ossf/scorecard-action@v2.4.3" in scorecard_block
 
 
 def test_required_frontend_build_jobs_are_path_gated_without_absent_checks() -> None:
