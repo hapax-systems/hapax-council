@@ -1,15 +1,20 @@
 """Unix-domain-socket server exposing the in-process TTSManager.
 
 Lets out-of-process callers (the studio compositor director loop, primarily)
-delegate synthesis to the daimonion's already-loaded Kokoro pipeline instead
-of loading torch themselves. Mirrors the existing ``HotkeyServer`` pattern
-(asyncio.start_unix_server, 0o600 socket perms, idempotent start/stop).
+delegate synthesis to the daimonion's already-loaded TTS backend (Kokoro or
+Chatterbox) instead of loading torch themselves. Mirrors the existing
+``HotkeyServer`` pattern (asyncio.start_unix_server, 0o600 socket perms,
+idempotent start/stop).
 
 Wire format: request is a single ``\\n``-terminated JSON object with
 ``text`` and optional ``use_case``. Response is a ``\\n``-terminated JSON
-header followed by ``pcm_len`` bytes of raw 24 kHz mono int16 PCM:
+header followed by ``pcm_len`` bytes of raw PCM (int16 mono):
 
-    {"status": "ok", "sample_rate": 24000, "pcm_len": N}\\n<N bytes>
+    {"status": "ok", "sample_rate": 24000, "pcm_len": N, "channels": 1}\\n<N bytes>
+
+The sample_rate field reflects the active backend (24000 for both Kokoro
+and Chatterbox Turbo). Clients MUST read sample_rate from the response
+header rather than hardcoding it.
 
 On error, the header is ``{"status": "error", "error": "..."}`` with
 ``pcm_len == 0``. Each client connection is handled in a single
@@ -42,12 +47,15 @@ class TtsServer:
         self,
         socket_path: Path,
         tts_manager: TTSManager,
+        *,
+        sample_rate: int = 24000,
+        channels: int = 1,
     ) -> None:
         self.socket_path = socket_path
         self._tts_manager = tts_manager
+        self._sample_rate = sample_rate
+        self._channels = channels
         self._server: asyncio.AbstractServer | None = None
-        # Serialize calls against the daimonion's own CPAL usage of the same
-        # TTSManager. Kokoro per-pipeline inference is not multi-call safe.
         self._lock = asyncio.Lock()
 
     async def start(self) -> None:
@@ -117,9 +125,14 @@ class TtsServer:
             await _write_error(writer, f"synthesis failed: {exc}")
             return
 
-        header = json.dumps({"status": "ok", "sample_rate": 24000, "pcm_len": len(pcm)}).encode(
-            "utf-8"
-        )
+        header = json.dumps(
+            {
+                "status": "ok",
+                "sample_rate": self._sample_rate,
+                "channels": self._channels,
+                "pcm_len": len(pcm),
+            }
+        ).encode("utf-8")
         try:
             writer.write(header + b"\n" + pcm)
             await writer.drain()
@@ -135,7 +148,7 @@ class TtsServer:
 
 async def _write_error(writer: asyncio.StreamWriter, message: str) -> None:
     header = json.dumps(
-        {"status": "error", "error": message, "sample_rate": 24000, "pcm_len": 0}
+        {"status": "error", "error": message, "sample_rate": 24000, "channels": 1, "pcm_len": 0}
     ).encode("utf-8")
     try:
         writer.write(header + b"\n")
