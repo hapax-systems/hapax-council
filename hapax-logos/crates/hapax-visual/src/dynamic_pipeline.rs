@@ -243,11 +243,9 @@ fn bounded_bookend_override(node_id: &str, param: &str, value: f64) -> Option<f3
         ("fb", "rotate") => Some(value.clamp(-0.006, 0.006)),
         ("fb", "blend_mode") => Some(value.clamp(0.0, 3.0)),
 
-        // Postprocess bookend controls remain restrained and never expose
-        // master opacity as an external override; that would reintroduce
-        // the whole-frame pumping failure mode.
-        ("post", "vignette_strength") => Some(value.clamp(-0.08, 0.14)),
-        ("post", "sediment_strength") => Some(value.clamp(0.0, 0.075)),
+        // SlotDrift owns the postprocess bookend. External post overrides
+        // have repeatedly reintroduced whole-frame dimming/pumping even
+        // when numerically bounded, so the render boundary rejects them.
         _ => None,
     }
 }
@@ -2708,7 +2706,13 @@ mod tests {
         assert_eq!(bounded_bookend_override("fb", "decay", 9.0), Some(0.16));
         assert_eq!(
             bounded_bookend_override("post", "sediment_strength", 1.0),
-            Some(0.075)
+            None,
+            "external post overrides must not reintroduce whole-frame pumping"
+        );
+        assert_eq!(
+            bounded_bookend_override("post", "vignette_strength", 0.11),
+            None,
+            "external post overrides must not reintroduce whole-frame pumping"
         );
         assert_eq!(
             bounded_bookend_override("post", "master_opacity", 0.2),
