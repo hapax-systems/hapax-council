@@ -17,6 +17,7 @@ const SCENE_QUAD_WGSL: &str = include_str!("shaders/scene_quad.wgsl");
 // GRID_SHADER_VERSION: 1778811160
 const SCENE_GRID_WGSL: &str = include_str!("shaders/scene_grid.wgsl");
 const MAX_GRID_SHADOW_OCCLUDERS: usize = 16;
+const DEFAULT_SCENE_SAMPLE_COUNT: u32 = 4;
 
 /// GPU-side uniform data for a single quad draw call.
 /// Must match the `SceneUniforms` struct in `scene_quad.wgsl`.
@@ -63,6 +64,27 @@ const MAX_SCENE_NODES: usize = 128;
 /// back-to-front without writing depth, otherwise alpha-transparent regions
 /// become invisible occluding panes.
 const CONTENT_QUAD_DEPTH_WRITE_ENABLED: bool = false;
+
+fn sanitized_scene_sample_count(raw: Option<&str>) -> u32 {
+    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        Some("0" | "1" | "off" | "false" | "disabled") => 1,
+        Some("4" | "on" | "true" | "enabled") | None => DEFAULT_SCENE_SAMPLE_COUNT,
+        Some(other) => {
+            log::warn!(
+                "Ignoring unsupported HAPAX_VISUAL_SCENE_MSAA_SAMPLES={other:?}; using {DEFAULT_SCENE_SAMPLE_COUNT}x scene MSAA"
+            );
+            DEFAULT_SCENE_SAMPLE_COUNT
+        }
+    }
+}
+
+fn configured_scene_sample_count() -> u32 {
+    sanitized_scene_sample_count(
+        std::env::var("HAPAX_VISUAL_SCENE_MSAA_SAMPLES")
+            .ok()
+            .as_deref(),
+    )
+}
 
 fn build_live_scene_from_active(
     active: &[(&str, f32, i32, u32, u32)],
@@ -146,8 +168,11 @@ pub struct SceneRenderer {
     uniform_bind_group: wgpu::BindGroup,
     texture_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    sample_count: u32,
     output_texture: wgpu::Texture,
     output_view: wgpu::TextureView,
+    _msaa_color_texture: Option<wgpu::Texture>,
+    msaa_color_view: Option<wgpu::TextureView>,
     depth_texture: wgpu::Texture,
     depth_view: wgpu::TextureView,
     /// Placeholder 1x1 white texture for nodes without content sources.
@@ -164,6 +189,7 @@ pub struct SceneRenderer {
 impl SceneRenderer {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32) -> Self {
         let camera = Camera3D::new(width, height);
+        let sample_count = configured_scene_sample_count();
 
         // Uniform buffer (per-quad, updated each draw call)
         let min_align = device.limits().min_uniform_buffer_offset_alignment as usize;
@@ -236,6 +262,7 @@ impl SceneRenderer {
             label: Some("scene sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
 
@@ -271,6 +298,26 @@ impl SceneRenderer {
             view_formats: &[],
         });
         let output_view = output_texture.create_view(&Default::default());
+        let (msaa_color_texture, msaa_color_view) = if sample_count > 1 {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("scene msaa color"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count,
+                dimension: wgpu::TextureDimension::D2,
+                format: output_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            (Some(texture), Some(view))
+        } else {
+            (None, None)
+        };
 
         // Depth texture for proper occlusion
         let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -281,7 +328,7 @@ impl SceneRenderer {
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
-            sample_count: 1,
+            sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth32Float,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -320,7 +367,10 @@ impl SceneRenderer {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: sample_count,
+                ..Default::default()
+            },
             multiview: None,
             cache: None,
         });
@@ -435,16 +485,20 @@ impl SceneRenderer {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: sample_count,
+                ..Default::default()
+            },
             multiview: None,
             cache: None,
         });
 
         log::info!(
-            "SceneRenderer initialized: {}x{}, fov={:.0}°",
+            "SceneRenderer initialized: {}x{}, fov={:.0}°, scene_msaa={}x",
             width,
             height,
-            camera.fov_y_radians.to_degrees()
+            camera.fov_y_radians.to_degrees(),
+            sample_count
         );
 
         Self {
@@ -456,8 +510,11 @@ impl SceneRenderer {
             uniform_bind_group,
             texture_bind_group_layout,
             sampler,
+            sample_count,
             output_texture,
             output_view,
+            _msaa_color_texture: msaa_color_texture,
+            msaa_color_view,
             depth_texture,
             depth_view,
             placeholder_texture,
@@ -498,11 +555,17 @@ impl SceneRenderer {
         });
 
         {
+            let color_view = self.msaa_color_view.as_ref().unwrap_or(&self.output_view);
+            let resolve_target = if self.sample_count > 1 {
+                Some(&self.output_view)
+            } else {
+                None
+            };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene render pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.output_view,
-                    resolve_target: None,
+                    view: color_view,
+                    resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: 0.0,
@@ -510,7 +573,11 @@ impl SceneRenderer {
                             b: 0.0,
                             a: 0.0,
                         }),
-                        store: wgpu::StoreOp::Store,
+                        store: if self.sample_count > 1 {
+                            wgpu::StoreOp::Discard
+                        } else {
+                            wgpu::StoreOp::Store
+                        },
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -637,6 +704,10 @@ impl SceneRenderer {
     pub fn output_texture(&self) -> &wgpu::Texture {
         &self.output_texture
     }
+
+    pub fn sample_count(&self) -> u32 {
+        self.sample_count
+    }
 }
 
 #[cfg(test)]
@@ -666,6 +737,30 @@ mod tests {
         assert!(
             !CONTENT_QUAD_DEPTH_WRITE_ENABLED,
             "alpha-blended livestream quads must not turn transparent regions into occluding panes"
+        );
+    }
+
+    #[test]
+    fn scene_msaa_defaults_to_four_x_but_can_be_disabled() {
+        assert_eq!(sanitized_scene_sample_count(None), 4);
+        assert_eq!(sanitized_scene_sample_count(Some("4")), 4);
+        assert_eq!(sanitized_scene_sample_count(Some("enabled")), 4);
+        assert_eq!(sanitized_scene_sample_count(Some("1")), 1);
+        assert_eq!(sanitized_scene_sample_count(Some("off")), 1);
+    }
+
+    #[test]
+    fn unsupported_scene_msaa_values_fail_closed_to_default() {
+        assert_eq!(sanitized_scene_sample_count(Some("2")), 4);
+        assert_eq!(sanitized_scene_sample_count(Some("8")), 4);
+        assert_eq!(sanitized_scene_sample_count(Some("garbage")), 4);
+    }
+
+    #[test]
+    fn scene_quad_shader_uses_derivative_aware_edge_coverage() {
+        assert!(
+            SCENE_QUAD_WGSL.contains("fwidth"),
+            "AoA and pane geometry should use derivative-aware AA, not fixed output-plane smoothing"
         );
     }
 

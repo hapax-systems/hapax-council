@@ -142,14 +142,24 @@ fn pane_information_uv_from_barycentric(bary: vec3<f32>) -> vec2<f32> {
     return vec2<f32>(bary.y + bary.z * 0.5, bary.z * 0.8660254);
 }
 
+fn aa_feather(value: f32, floor_value: f32) -> f32 {
+    return max(fwidth(value) * 1.75, floor_value);
+}
+
+fn aa_line_mask(dist: f32, core_width: f32, outer_width: f32) -> f32 {
+    let feather = aa_feather(dist, 0.0015);
+    return 1.0 - smoothstep(core_width, max(outer_width, core_width + feather), dist);
+}
+
 fn pane_information_grid(local_uv: vec2<f32>, inside: f32) -> f32 {
     let grid = fract(local_uv * vec2<f32>(7.0, 7.0));
     let edge_dist = min(min(grid.x, 1.0 - grid.x), min(grid.y, 1.0 - grid.y));
-    return inside * (1.0 - smoothstep(0.010, 0.026, edge_dist));
+    return inside * aa_line_mask(edge_dist, 0.010, 0.026);
 }
 
 fn line_mask(dist: f32, width: f32, feather: f32) -> f32 {
-    return 1.0 - smoothstep(width, width + feather, dist);
+    let derivative = aa_feather(dist, feather);
+    return 1.0 - smoothstep(width, width + derivative, dist);
 }
 
 fn aoa_face_vertex(a: vec3<f32>, b: vec3<f32>, c: vec3<f32>, d: vec3<f32>, face_idx: u32, corner_idx: u32) -> vec3<f32> {
@@ -252,12 +262,12 @@ fn aoa_face_tint(face: f32, inner_pane: f32, local_pos: vec3<f32>) -> vec3<f32> 
 fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
     let bary = in.barycentric;
     let edge_dist = min(min(bary.x, bary.y), bary.z);
-    let edge = 1.0 - smoothstep(0.012, 0.045, edge_dist);
+    let edge = aa_line_mask(edge_dist, 0.012, 0.045);
     let inner_pane = in.pane_info.y;
     let info_uv = pane_information_uv_from_barycentric(bary);
     let info_grid = pane_information_grid(info_uv, 1.0);
-    let local_lattice = (1.0 - smoothstep(0.018, 0.042, abs(bary.x - bary.y)))
-        * (1.0 - smoothstep(0.018, 0.042, bary.z));
+    let local_lattice = aa_line_mask(abs(bary.x - bary.y), 0.018, 0.042)
+        * aa_line_mask(bary.z, 0.018, 0.042);
     let tint = aoa_face_tint(in.pane_info.x, inner_pane, in.local_pos);
     let fill = 0.052 + inner_pane * 0.014;
     let line = edge * (0.76 - inner_pane * 0.11);
