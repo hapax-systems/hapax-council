@@ -50,6 +50,7 @@ if str(REPO_ROOT) not in sys.path:
 from shared.capacity_routing_dashboard import (  # noqa: E402
     build_capacity_routing_dashboard,
     parse_optional_utc,
+    route_decision_items_from_jsonl,
     route_metadata_items_from_planning_queue,
 )
 
@@ -171,6 +172,15 @@ def _capacity_now() -> datetime | None:
     return parse_optional_utc(os.environ.get("HAPAX_CAPACITY_ROUTING_NOW"))
 
 
+def _route_decision_ledger_path() -> Path | None:
+    value = os.environ.get("HAPAX_ROUTE_DECISION_LEDGER")
+    if value:
+        return Path(value)
+    if os.environ.get("HAPAX_CAPACITY_ROUTING_NOW"):
+        return None
+    return Path.home() / ".cache" / "hapax" / "orchestration" / "route-decisions.jsonl"
+
+
 def _planning_feed_route_metadata() -> tuple[
     Mapping[str, object] | None,
     tuple[dict[str, object], ...],
@@ -200,9 +210,16 @@ def collect_capacity_routing_dashboard() -> dict[str, Any]:
     """Build warning-only capacity routing state for RTE consumers."""
 
     summary, items, generated_at = _planning_feed_route_metadata()
+    capacity_now = _capacity_now()
+    route_decision_path = _route_decision_ledger_path()
     dashboard = build_capacity_routing_dashboard(
         route_metadata_summary=summary,
         route_metadata_items=items,
+        route_decision_items=(
+            route_decision_items_from_jsonl(route_decision_path, now=capacity_now)
+            if route_decision_path is not None
+            else ()
+        ),
         route_metadata_generated_at=generated_at,
         registry_path=_env_path(
             "HAPAX_PLATFORM_CAPABILITY_REGISTRY",
@@ -212,7 +229,7 @@ def collect_capacity_routing_dashboard() -> dict[str, Any]:
             "HAPAX_QUOTA_SPEND_LEDGER",
             REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json",
         ),
-        now=_capacity_now(),
+        now=capacity_now,
     )
     return dashboard.model_dump(mode="json")
 

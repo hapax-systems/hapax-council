@@ -640,6 +640,27 @@ printf '%s\\n' "$@" > {launcher_args}
     route_receipt = json.loads(route_decisions.read_text(encoding="utf-8").splitlines()[-1])
     assert route_receipt["action"] == "launch"
     assert "rollback_full_profile_launch" in route_receipt["reason_codes"]
+    assert route_receipt["route_policy_green"] is False
+    assert route_receipt["clog_state"] == "compatibility_degraded"
+    assert route_receipt["compatibility_mode"] == "rollback_full_profile"
+    assert route_receipt["degraded_state"] == "compatibility_rollback"
+    assert route_receipt["registry_freshness_green"] is False
+    assert route_receipt["quota_freshness_green"] is False
+    assert route_receipt["resource_freshness_green"] is False
+    assert route_receipt["route_selection_authority"] is False
+    dispatch_receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert dispatch_receipt["route_policy_green"] is False
+    assert dispatch_receipt["route_policy_clog_state"] == "compatibility_degraded"
+    assert dispatch_receipt["route_policy_compatibility_mode"] == "rollback_full_profile"
+    assert dispatch_receipt["route_policy_degraded_state"] == "compatibility_rollback"
+    assert dispatch_receipt["route_policy_registry_freshness_green"] is False
+    assert dispatch_receipt["route_policy_quota_freshness_green"] is False
+    assert dispatch_receipt["route_policy_resource_freshness_green"] is False
+    assert dispatch_receipt["route_policy_route_selection_authority"] is False
 
 
 def test_policy_rollback_holds_non_full_profile_before_launcher(tmp_path: Path) -> None:
@@ -696,6 +717,8 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["platform"] == "codex"
     assert receipt["profile"] == "spark"
     assert receipt["route_policy_action"] == "hold"
+    assert receipt["route_policy_green"] is False
+    assert receipt["route_policy_clog_state"] == "held"
 
 
 def test_claude_sonnet_fallback_refuses_authoritative_dispatch(tmp_path: Path) -> None:

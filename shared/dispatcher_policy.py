@@ -87,6 +87,14 @@ class DominanceRelation(StrEnum):
     NOT_EVALUATED = "not_evaluated"
 
 
+class ClogRouteState(StrEnum):
+    POLICY_GREEN = "policy_green"
+    COMPATIBILITY_DEGRADED = "compatibility_degraded"
+    HELD = "held"
+    REFUSED = "refused"
+    SUPPORT_ONLY = "support_only"
+
+
 class _PolicyModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -257,6 +265,14 @@ class RouteDecision(_PolicyModel):
     policy_outcome: str
     launch_allowed: bool
     prompt_allowed: bool
+    route_policy_green: bool = False
+    clog_state: ClogRouteState = ClogRouteState.HELD
+    compatibility_mode: Literal["none", "rollback_full_profile"] = "none"
+    degraded_state: str | None = None
+    registry_freshness_green: bool = False
+    quota_freshness_green: bool = False
+    resource_freshness_green: bool = False
+    route_selection_authority: Literal[False] = False
     quality_floor_satisfied: bool
     authority_allowed: bool
     reason_codes: tuple[str, ...] = Field(default=())
@@ -446,6 +462,8 @@ def evaluate_dispatch_policy(
             checked_at,
             quality_floor_satisfied=True,
             authority_allowed=True,
+            compatibility_mode="rollback_full_profile",
+            degraded_state="compatibility_rollback",
         )
 
     if request.route_metadata_status == "hold":
@@ -614,6 +632,14 @@ def route_decision_receipt_payload(decision: RouteDecision) -> dict[str, Any]:
         "route_policy_outcome": decision.policy_outcome,
         "route_policy_reason_codes": list(decision.reason_codes),
         "route_policy_launch_allowed": decision.launch_allowed,
+        "route_policy_green": decision.route_policy_green,
+        "route_policy_clog_state": decision.clog_state.value,
+        "route_policy_compatibility_mode": decision.compatibility_mode,
+        "route_policy_degraded_state": decision.degraded_state,
+        "route_policy_registry_freshness_green": decision.registry_freshness_green,
+        "route_policy_quota_freshness_green": decision.quota_freshness_green,
+        "route_policy_resource_freshness_green": decision.resource_freshness_green,
+        "route_policy_route_selection_authority": decision.route_selection_authority,
         "route_policy_quality_floor_satisfied": decision.quality_floor_satisfied,
         "route_policy_authority_allowed": decision.authority_allowed,
     }
@@ -1415,7 +1441,11 @@ def _decision(
     selected_route_id: str | None = None,
     degraded_mode: bool = False,
     degraded_authority_ref: str | None = None,
+    compatibility_mode: Literal["none", "rollback_full_profile"] = "none",
+    degraded_state: str | None = None,
 ) -> RouteDecision:
+    compatibility_degraded = compatibility_mode != "none" or degraded_state is not None
+    route_policy_green = action is DispatchAction.LAUNCH and not compatibility_degraded
     decision = RouteDecision(
         decision_id=_decision_id(request, action, reasons, created_at),
         created_at=created_at,
@@ -1429,6 +1459,18 @@ def _decision(
         policy_outcome=action.value,
         launch_allowed=action is DispatchAction.LAUNCH,
         prompt_allowed=action is DispatchAction.LAUNCH,
+        route_policy_green=route_policy_green,
+        clog_state=_clog_state(action, compatibility_degraded=compatibility_degraded),
+        compatibility_mode=compatibility_mode,
+        degraded_state=degraded_state,
+        registry_freshness_green=False
+        if compatibility_degraded
+        else _registry_freshness_green(request),
+        quota_freshness_green=False if compatibility_degraded else _quota_freshness_green(request),
+        resource_freshness_green=False
+        if compatibility_degraded
+        else _resource_freshness_green(request),
+        route_selection_authority=False,
         quality_floor_satisfied=quality_floor_satisfied,
         authority_allowed=authority_allowed,
         reason_codes=tuple(reason for reason in reasons if reason),
@@ -1444,6 +1486,40 @@ def _decision(
         degraded_authority_ref=degraded_authority_ref,
     )
     return decision
+
+
+def _clog_state(action: DispatchAction, *, compatibility_degraded: bool) -> ClogRouteState:
+    if compatibility_degraded:
+        return ClogRouteState.COMPATIBILITY_DEGRADED
+    if action is DispatchAction.LAUNCH:
+        return ClogRouteState.POLICY_GREEN
+    if action is DispatchAction.SUPPORT_ONLY:
+        return ClogRouteState.SUPPORT_ONLY
+    if action is DispatchAction.REFUSE:
+        return ClogRouteState.REFUSED
+    return ClogRouteState.HELD
+
+
+def _registry_freshness_green(request: DispatchRequest) -> bool:
+    capability = request.capability
+    return bool(capability is not None and capability.supported and capability.freshness_ok)
+
+
+def _quota_freshness_green(request: DispatchRequest) -> bool:
+    quota = request.quota
+    if quota is None or not quota.available:
+        return False
+    return quota.budget_ledger_stale is False
+
+
+def _resource_freshness_green(request: DispatchRequest) -> bool:
+    capability = request.capability
+    quota = request.quota
+    if capability is None or not capability.freshness_ok:
+        return False
+    if any("resource" in error for error in capability.freshness_errors):
+        return False
+    return bool(quota is not None and quota.local_resource_state == "green")
 
 
 def _quality_or_authority_failure_decision(
@@ -1683,6 +1759,7 @@ _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
 
 __all__ = [
     "CandidateStatus",
+    "ClogRouteState",
     "ConfidenceReceipt",
     "DemandVectorRef",
     "DimensionalCandidateReceipt",

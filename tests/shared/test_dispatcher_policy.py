@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from shared.dispatcher_policy import (
+    ClogRouteState,
     DispatchAction,
     DispatchRequest,
     QuotaSpendState,
@@ -390,11 +391,17 @@ def test_review_eligible_support_route_returns_support_only() -> None:
 def test_writes_route_decision_jsonl_receipt(tmp_path: Path) -> None:
     decision = evaluate_dispatch_policy(_request(), now=NOW)
 
+    assert decision.route_policy_green is True
+    assert decision.clog_state is ClogRouteState.POLICY_GREEN
+    assert decision.compatibility_mode == "none"
+
     path = write_route_decision_receipt(decision, ledger_dir=tmp_path)
 
     line = path.read_text(encoding="utf-8").splitlines()[-1]
     assert '"action": "launch"' in line
     assert '"dimensional_route_receipt_schema": 1' in line
+    assert '"route_policy_green": true' in line
+    assert '"clog_state": "policy_green"' in line
     assert decision.decision_id in line
 
 
@@ -459,3 +466,49 @@ def test_dimensional_policy_vetoes_missing_required_tool() -> None:
     assert decision.dimensional_receipt is not None
     [candidate] = decision.dimensional_receipt.candidates
     assert any(veto.code == "required_tool_unavailable" for veto in candidate.vetoes)
+
+
+def test_policy_rollback_launch_is_compatibility_degraded_not_green() -> None:
+    request = _request(rollback_mode=True)
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.launch_allowed is True
+    assert decision.route_policy_green is False
+    assert decision.clog_state is ClogRouteState.COMPATIBILITY_DEGRADED
+    assert decision.compatibility_mode == "rollback_full_profile"
+    assert decision.degraded_state == "compatibility_rollback"
+    assert decision.registry_freshness_green is False
+    assert decision.quota_freshness_green is False
+    assert decision.resource_freshness_green is False
+    assert decision.route_selection_authority is False
+    assert "rollback_full_profile_launch" in decision.reason_codes
+
+
+def test_policy_rollback_refuses_unsupported_routes() -> None:
+    request = _request(
+        rollback_mode=True,
+        legacy_route_supported=False,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert decision.route_policy_green is False
+    assert decision.clog_state is ClogRouteState.REFUSED
+    assert "rollback_unsupported_route_refused" in decision.reason_codes
+
+
+def test_policy_rollback_refuses_read_only_mutation_route() -> None:
+    request = _request(
+        rollback_mode=True,
+        legacy_route_mutable=False,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert decision.route_policy_green is False
+    assert decision.clog_state is ClogRouteState.REFUSED
+    assert "rollback_read_only_mutation_refused" in decision.reason_codes

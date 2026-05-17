@@ -7,6 +7,7 @@ budget, refresh quota, repair fixtures, or call providers.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -49,7 +50,12 @@ class RouteMetadataSummary(StrictModel):
 
 
 class CapacityRoutingNonGreenState(StrictModel):
-    source: Literal["route_metadata", "platform_registry", "quota_spend_ledger"]
+    source: Literal[
+        "route_metadata",
+        "platform_registry",
+        "quota_spend_ledger",
+        "route_decision_receipt",
+    ]
     state: str = Field(min_length=1)
     severity: Literal["warning", "blocked", "unknown"]
     summary: str = Field(min_length=1)
@@ -90,6 +96,7 @@ class CapacityRoutingDashboard(StrictModel):
     budget_ledger_stale: bool
     next_budget_review_at: datetime | None = None
     paid_api_route_eligible: bool
+    rollback_compatibility_count: int = Field(default=0, ge=0)
     transition_budget_refs: tuple[str, ...] = Field(default=())
     unreconciled_spend_refs: tuple[str, ...] = Field(default=())
     provider_dependency_refs: tuple[str, ...] = Field(default=())
@@ -103,6 +110,7 @@ def build_capacity_routing_dashboard(
     *,
     route_metadata_summary: Mapping[str, object] | None = None,
     route_metadata_items: Sequence[Mapping[str, object]] = (),
+    route_decision_items: Sequence[Mapping[str, object]] = (),
     route_metadata_generated_at: datetime | None = None,
     route_metadata_stale_after_s: int = ROUTE_METADATA_STALE_AFTER_S,
     registry_path: Path = PLATFORM_CAPABILITY_REGISTRY,
@@ -122,6 +130,10 @@ def build_capacity_routing_dashboard(
         route_metadata_generated_at=route_metadata_generated_at,
         route_metadata_stale_after_s=route_metadata_stale_after_s,
         now=generated_at,
+    )
+    rollback_compatibility_count = _append_route_decision_warnings(
+        non_green=non_green,
+        route_decision_items=route_decision_items,
     )
 
     registry_ok, registry_route_count, registry_routes = _registry_dashboard_state(
@@ -144,6 +156,7 @@ def build_capacity_routing_dashboard(
         registry_route_count=registry_route_count,
         registry_non_green_route_count=len(registry_routes),
         registry_non_green_routes=tuple(registry_routes),
+        rollback_compatibility_count=rollback_compatibility_count,
         warning_count=len(non_green),
         non_green_states=tuple(non_green),
         **quota_state,
@@ -175,6 +188,44 @@ def route_metadata_items_from_planning_queue(
             }
         )
     return tuple(items)
+
+
+def route_decision_items_from_jsonl(
+    path: Path,
+    *,
+    now: datetime | None = None,
+    max_age_s: int | None = 86_400,
+    limit: int = 100,
+) -> tuple[dict[str, object], ...]:
+    """Read recent route-decision receipt rows for observe-only dashboards."""
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ()
+
+    checked_at = _coerce_now(now) if now is not None else None
+    rows: list[dict[str, object]] = []
+    for line in reversed(lines):
+        if len(rows) >= limit:
+            break
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        created_at = parse_optional_utc(row.get("created_at"))
+        if checked_at is not None and created_at is not None:
+            age_s = (checked_at - created_at).total_seconds()
+            if age_s < 0:
+                continue
+            if max_age_s is not None and age_s > max_age_s:
+                continue
+        rows.append(row)
+    return tuple(reversed(rows))
 
 
 def parse_utc(value: str) -> datetime:
@@ -250,6 +301,55 @@ def _append_route_metadata_warnings(
                 evidence_refs=_route_metadata_evidence_refs(route_metadata_items, status),
             )
         )
+
+
+def _append_route_decision_warnings(
+    *,
+    non_green: list[CapacityRoutingNonGreenState],
+    route_decision_items: Sequence[Mapping[str, object]],
+) -> int:
+    rollback_count = 0
+    for item in route_decision_items:
+        compatibility_mode = (
+            _optional_text(
+                item.get("compatibility_mode", item.get("route_policy_compatibility_mode"))
+            )
+            or "none"
+        )
+        clog_state = _optional_text(item.get("clog_state", item.get("route_policy_clog_state")))
+        degraded_state = _optional_text(
+            item.get("degraded_state", item.get("route_policy_degraded_state"))
+        )
+        route_policy_green = item.get("route_policy_green") is True
+        is_rollback = compatibility_mode == "rollback_full_profile"
+        is_degraded = clog_state == "compatibility_degraded" or bool(degraded_state)
+        if not is_rollback and not is_degraded:
+            continue
+
+        rollback_count += 1
+        route_id = str(item.get("route_id", "unknown-route")).strip() or "unknown-route"
+        task_id = str(item.get("task_id", "unknown-task")).strip() or "unknown-task"
+        if route_policy_green:
+            state = "route_policy_degraded_marked_green"
+            severity = "blocked"
+            summary = f"route decision {task_id} is degraded but still marked policy-green"
+        else:
+            state = f"route_policy_compatibility_degraded:{compatibility_mode}"
+            severity = "warning"
+            summary = (
+                f"route decision {task_id} launched {route_id} in degraded "
+                f"{compatibility_mode} compatibility mode"
+            )
+        non_green.append(
+            CapacityRoutingNonGreenState(
+                source="route_decision_receipt",
+                state=state,
+                severity=severity,
+                summary=summary,
+                evidence_refs=_route_decision_evidence_refs(item),
+            )
+        )
+    return rollback_count
 
 
 def _registry_dashboard_state(
@@ -500,6 +600,27 @@ def _quota_summary(state: str) -> str:
     return state.replace("_", " ")
 
 
+def _route_decision_evidence_refs(item: Mapping[str, object]) -> tuple[str, ...]:
+    refs = []
+    decision_id = str(item.get("decision_id", "")).strip()
+    task_id = str(item.get("task_id", "")).strip()
+    route_id = str(item.get("route_id", "")).strip()
+    if decision_id:
+        refs.append(f"route-decision:{decision_id}")
+    if task_id:
+        refs.append(f"cc-task:{task_id}")
+    if route_id:
+        refs.append(f"route:{route_id}")
+    return _dedupe(refs) or ("route-decisions.jsonl",)
+
+
+def _optional_text(value: object) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() in {"", "none", "null", "~"} else text
+
+
 def _string_tuple(value: object) -> tuple[str, ...]:
     if isinstance(value, str):
         return (value,) if value else ()
@@ -554,5 +675,6 @@ __all__ = [
     "build_capacity_routing_dashboard",
     "parse_optional_utc",
     "parse_utc",
+    "route_decision_items_from_jsonl",
     "route_metadata_items_from_planning_queue",
 ]
