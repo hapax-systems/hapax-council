@@ -1,0 +1,38 @@
+{
+    "schema_version": 1,
+    "programme_role": "interview",
+    "target_duration_s": 3600,
+    "wind_down_at_s": 3000,
+    "reverie": {
+        "intensity": "subdued",
+        "palette": "warm_ambient",
+        "drift_gain": 0.2,
+        "breath_gain": 0.3,
+        "feedback_gain": 0.1,
+        "noise_gain": 0.05
+    },
+    "audio": {
+        "music_bed_gain_db": -30,
+        "speech_duck_threshold_db": -24,
+        "speech_priority": "maximum",
+        "reverb_wet": 0.02,
+        "noise_gate_threshold_db": -50
+    },
+    "compositor": {
+        "layout_mode": "interview",
+        "wards": [
+            "question_card",
+            "transcript_card",
+            "unknowns_card"
+        ],
+        "camera_mode": "balanced",
+        "overlay_opacity": 0.6
+    },
+    "conversation": {
+        "max_turns": 120,
+        "silence_timeout_s": 180,
+        "model_tier": "STRONG",
+        "grounding_directive": true,
+        "effort_modulation": true
+    }
+}
