@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.request
 from collections.abc import Sequence
 
@@ -36,12 +37,24 @@ def tabby_model_url(chat_url: str | None = None) -> str:
     return chat_url.rstrip("/") + "/model"
 
 
+_tabby_unavailable_until: float = 0.0
+_TABBY_UNAVAILABLE_CACHE_S: float = 300.0
+
+
 def loaded_tabby_model(chat_url: str | None = None) -> str | None:
-    req = urllib.request.Request(tabby_model_url(chat_url), method="GET")
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        data = json.loads(resp.read())
-    loaded = data.get("id") or data.get("model_name")
-    return str(loaded) if loaded else None
+    global _tabby_unavailable_until
+    now = time.monotonic()
+    if now < _tabby_unavailable_until:
+        return None
+    try:
+        req = urllib.request.Request(tabby_model_url(chat_url), method="GET")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        loaded = data.get("id") or data.get("model_name")
+        return str(loaded) if loaded else None
+    except Exception:
+        _tabby_unavailable_until = now + _TABBY_UNAVAILABLE_CACHE_S
+        return None
 
 
 def assert_resident_command_r(chat_url: str | None = None) -> str:
