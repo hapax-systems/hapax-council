@@ -386,6 +386,14 @@ class DynamicRouter:
         except Exception:
             log.debug("S-4 reachability probe failed", exc_info=True)
             self._last_s4_reachable = False
+
+        try:
+            from shared.s4_audio_witness import probe_and_publish
+
+            probe_and_publish()
+        except Exception:
+            log.debug("S-4 audio witness publish failed", exc_info=True)
+
         return self._last_s4_reachable
 
     def tick(self, *, now: float | None = None) -> RoutingIntent:

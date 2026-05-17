@@ -572,7 +572,8 @@ class VocalChainCapability:
         # Resolve the sink from the loaded path config.
         try:
             paths = load_paths()
-            sink = paths[path].sink
+            path_cfg = paths[path]
+            sink = path_cfg.sink
         except Exception:
             log.debug("voice_path sink lookup failed", exc_info=True)
             return False
@@ -586,6 +587,18 @@ class VocalChainCapability:
         try:
             switcher(sink)
         except Exception:
+            if path_cfg.dry_bypass_sink:
+                try:
+                    switcher(path_cfg.dry_bypass_sink)
+                    self._current_path = path
+                    log.info(
+                        "vocal_chain dry bypass: %s unavailable, using %s",
+                        sink,
+                        path_cfg.dry_bypass_sink,
+                    )
+                    return True
+                except Exception:
+                    pass
             log.warning("pactl route switch failed; continuing with MIDI", exc_info=True)
             return True
         self._current_path = path
