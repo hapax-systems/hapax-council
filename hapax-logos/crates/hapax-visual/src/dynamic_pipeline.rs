@@ -81,6 +81,8 @@ struct PlanFile {
     passes: Vec<PlanPass>,
     #[serde(default)]
     targets: HashMap<String, PlanTarget>,
+    #[serde(default)]
+    slotdrift_coverage: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,6 +192,18 @@ struct PlanPass {
     full_surface: bool,
     #[serde(default)]
     effect_aliases: Vec<String>,
+    #[serde(default)]
+    slot_index: Option<usize>,
+    #[serde(default)]
+    slot_phase: String,
+    #[serde(default)]
+    slot_intensity: f64,
+    #[serde(default)]
+    selection_count: u32,
+    #[serde(default)]
+    coverage_window_count: u64,
+    #[serde(default)]
+    parameter_regions: Vec<serde_json::Value>,
 }
 
 fn default_output() -> String {
@@ -241,7 +255,7 @@ fn bounded_bookend_override(node_id: &str, param: &str, value: f64) -> Option<f3
         ("fb", "trace_center_y") => Some(value.clamp(0.18, 0.82)),
         ("fb", "zoom") => Some(value.clamp(0.96, 1.04)),
         ("fb", "rotate") => Some(value.clamp(-0.006, 0.006)),
-        ("fb", "blend_mode") => Some(value.clamp(0.0, 3.0)),
+        ("fb", "blend_mode") => Some(3.0),
 
         // SlotDrift owns the postprocess bookend. External post overrides
         // have repeatedly reintroduced whole-frame dimming/pumping even
@@ -291,6 +305,12 @@ struct DynamicPass {
     source_bound: bool,
     full_surface: bool,
     effect_aliases: Vec<String>,
+    slot_index: Option<usize>,
+    slot_phase: String,
+    slot_intensity: f64,
+    selection_count: u32,
+    coverage_window_count: u64,
+    parameter_regions: Vec<serde_json::Value>,
 }
 
 /// Rewrite a texture name to be target-namespaced when appropriate.
@@ -535,6 +555,7 @@ pub struct DynamicPipeline {
     /// legacy low-bandwidth compatibility.
     output_half_rate: bool,
     drift_engine: Option<SlotDriftEngine>,
+    slotdrift_coverage: Option<serde_json::Value>,
     /// Phase 3 3D: true when an external texture was injected as @live
     /// this frame; suppresses the procedural noise fallback.
     live_texture_overridden: bool,
@@ -726,6 +747,7 @@ impl DynamicPipeline {
                 "/dev/shm/hapax-imagination/pipeline/plan.json",
                 42,
             )),
+            slotdrift_coverage: None,
             live_texture_overridden: false,
             shader_rollback_total: Arc::new(AtomicU64::new(0)),
         };
@@ -775,6 +797,7 @@ impl DynamicPipeline {
 
         if by_target.values().all(|v| v.is_empty()) {
             self.passes.clear();
+            self.slotdrift_coverage = plan.slotdrift_coverage.clone();
             clear_temporal_accumulators(
                 &mut self.temporal_textures,
                 &mut self.temporal_textures_primed,
@@ -989,6 +1012,12 @@ impl DynamicPipeline {
                     source_bound: plan_pass.source_bound,
                     full_surface: plan_pass.full_surface,
                     effect_aliases: plan_pass.effect_aliases.clone(),
+                    slot_index: plan_pass.slot_index,
+                    slot_phase: plan_pass.slot_phase.clone(),
+                    slot_intensity: plan_pass.slot_intensity,
+                    selection_count: plan_pass.selection_count,
+                    coverage_window_count: plan_pass.coverage_window_count,
+                    parameter_regions: plan_pass.parameter_regions.clone(),
                 });
             } else {
                 // Render pass
@@ -1137,6 +1166,12 @@ impl DynamicPipeline {
                     source_bound: plan_pass.source_bound,
                     full_surface: plan_pass.full_surface,
                     effect_aliases: plan_pass.effect_aliases.clone(),
+                    slot_index: plan_pass.slot_index,
+                    slot_phase: plan_pass.slot_phase.clone(),
+                    slot_intensity: plan_pass.slot_intensity,
+                    selection_count: plan_pass.selection_count,
+                    coverage_window_count: plan_pass.coverage_window_count,
+                    parameter_regions: plan_pass.parameter_regions.clone(),
                 });
             }
         }
@@ -1144,6 +1179,7 @@ impl DynamicPipeline {
         self.input_bind_group_layouts = input_layouts;
         let count = new_passes.len();
         self.passes = new_passes;
+        self.slotdrift_coverage = plan.slotdrift_coverage.clone();
         log::info!("dynamic_pipeline: loaded {} passes", count);
         true
     }
@@ -1830,6 +1866,12 @@ impl DynamicPipeline {
                     "source_bound": pass.source_bound,
                     "full_surface": pass.full_surface,
                     "effect_aliases": pass.effect_aliases,
+                    "slot_index": pass.slot_index,
+                    "slot_phase": pass.slot_phase,
+                    "slot_intensity": pass.slot_intensity,
+                    "selection_count": pass.selection_count,
+                    "coverage_window_count": pass.coverage_window_count,
+                    "parameter_regions": pass.parameter_regions,
                     "max_delta": max_delta,
                     "non_neutral": max_delta > 0.0001,
                     "params": params,
@@ -1846,6 +1888,7 @@ impl DynamicPipeline {
             "frame_count": self.frame_count,
             "non_neutral_pass_count": non_neutral_pass_count,
             "pass_count": self.passes.len(),
+            "slotdrift_coverage": self.slotdrift_coverage,
             "passes": passes,
         });
 
@@ -2503,6 +2546,7 @@ mod tests {
     fn parses_v2_targets_format_with_main() {
         let json = r#"{
             "version": 2,
+            "slotdrift_coverage": {"schema": "slotdrift-coverage-v1", "recent_effects": ["noise"]},
             "targets": {
                 "main": {
                     "passes": [
@@ -2525,6 +2569,7 @@ mod tests {
     fn parses_live_surface_effect_metadata_fields() {
         let json = r#"{
             "version": 2,
+            "slotdrift_coverage": {"schema": "slotdrift-coverage-v1", "recent_effects": ["noise"]},
             "targets": {
                 "main": {
                     "passes": [
@@ -2671,6 +2716,7 @@ mod tests {
         // uniforms, param_order) survive the v2 → main_passes() round-trip.
         let json = r#"{
             "version": 2,
+            "slotdrift_coverage": {"schema": "slotdrift-coverage-v1", "recent_effects": ["noise"]},
             "targets": {
                 "main": {
                     "passes": [
@@ -2682,13 +2728,26 @@ mod tests {
                             "output": "final",
                             "uniforms": {"amplitude": 0.5},
                             "param_order": ["amplitude"],
-                            "requires_content_slots": false
+                            "requires_content_slots": false,
+                            "slot_index": 2,
+                            "slot_phase": "peak",
+                            "slot_intensity": 0.73,
+                            "selection_count": 9,
+                            "coverage_window_count": 3,
+                            "parameter_regions": [{"param": "amplitude", "region": "high", "target": 0.5}]
                         }
                     ]
                 }
             }
         }"#;
         let plan: PlanFile = serde_json::from_str(json).expect("rich v2 plan parses");
+        assert_eq!(
+            plan.slotdrift_coverage
+                .as_ref()
+                .and_then(|v| v.get("schema"))
+                .and_then(|v| v.as_str()),
+            Some("slotdrift-coverage-v1")
+        );
         let passes = plan.main_passes();
         assert_eq!(passes.len(), 1);
         let p = &passes[0];
@@ -2698,12 +2757,23 @@ mod tests {
         assert_eq!(p.uniforms.get("amplitude").copied(), Some(0.5));
         assert_eq!(p.param_order, vec!["amplitude"]);
         assert!(!p.requires_content_slots);
+        assert_eq!(p.slot_index, Some(2));
+        assert_eq!(p.slot_phase, "peak");
+        assert_eq!(p.slot_intensity, 0.73);
+        assert_eq!(p.selection_count, 9);
+        assert_eq!(p.coverage_window_count, 3);
+        assert_eq!(p.parameter_regions.len(), 1);
     }
 
     #[test]
     fn bookend_overrides_are_bounded_and_narrow() {
         assert_eq!(bounded_bookend_override("fb", "decay", 0.012), Some(0.012));
         assert_eq!(bounded_bookend_override("fb", "decay", 9.0), Some(0.16));
+        assert_eq!(
+            bounded_bookend_override("fb", "blend_mode", 1.0),
+            Some(3.0),
+            "external feedback control must use energy-preserving blend semantics"
+        );
         assert_eq!(
             bounded_bookend_override("post", "sediment_strength", 1.0),
             None,
@@ -2869,6 +2939,12 @@ mod tests {
             source_bound: false,
             full_surface: false,
             effect_aliases: Vec::new(),
+            slot_index: None,
+            slot_phase: String::new(),
+            slot_intensity: 0.0,
+            selection_count: 0,
+            coverage_window_count: 0,
+            parameter_regions: Vec::new(),
         }
     }
 
@@ -2902,6 +2978,12 @@ mod tests {
             source_bound: false,
             full_surface: false,
             effect_aliases: Vec::new(),
+            slot_index: None,
+            slot_phase: String::new(),
+            slot_intensity: 0.0,
+            selection_count: 0,
+            coverage_window_count: 0,
+            parameter_regions: Vec::new(),
         }
     }
 
