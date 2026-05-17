@@ -51,13 +51,6 @@ class VisualVarianceLedgerError(ValueError):
     """Raised when a visual variance ledger cannot be parsed or emitted."""
 
 
-class FreshnessState(StrEnum):
-    FRESH = "fresh"
-    STALE = "stale"
-    MISSING = "missing"
-    UNKNOWN = "unknown"
-
-
 class RenderedWitnessStatus(StrEnum):
     FRESH = "fresh"
     STALE = "stale"
@@ -155,25 +148,6 @@ _UNKNOWN_MARKERS = frozenset({"", "unknown", "none", "null", "missing"})
 
 class LedgerModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
-
-
-class VisualFreshness(LedgerModel):
-    state: FreshnessState
-    checked_at: str
-    ttl_s: float = Field(ge=0.0)
-    observed_age_s: float | None = Field(default=None, ge=0.0)
-    source_ref: str | None = None
-
-    @model_validator(mode="after")
-    def _fresh_requires_source_and_age(self) -> Self:
-        if self.state is FreshnessState.FRESH:
-            if self.observed_age_s is None or self.source_ref is None:
-                raise ValueError("fresh visual evidence requires observed_age_s and source_ref")
-            if self.observed_age_s > self.ttl_s:
-                raise ValueError("fresh visual evidence cannot exceed ttl_s")
-        if self.state is FreshnessState.STALE and not self.source_ref:
-            raise ValueError("stale visual evidence requires source_ref")
-        return self
 
 
 class RenderedWitness(LedgerModel):

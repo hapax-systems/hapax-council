@@ -255,6 +255,21 @@ from shared.scrim_wcs_claim_posture import (
 from shared.scrim_wcs_claim_posture import (
     ScrimWCSClaimPostureInput as _LivestreamRoleScrimWCSClaimPostureInput,
 )
+from shared.visual_variance_ledger import (
+    RenderedWitness as _VisualVarianceRenderedWitness,
+)
+from shared.visual_variance_ledger import (
+    VisualClaimGate as _VisualVarianceClaimGate,
+)
+from shared.visual_variance_ledger import (
+    VisualSelectedMove as _VisualVarianceSelectedMove,
+)
+from shared.visual_variance_ledger import (
+    VisualStateVector as _VisualVarianceStateVector,
+)
+from shared.visual_variance_ledger import (
+    VisualVarianceLedger as _VisualVarianceLedger,
+)
 
 # Livestream role binding: Pydantic invokes these validators dynamically, and
 # downstream impulse consumers use the property as a stable compatibility field.
@@ -658,6 +673,15 @@ AudioMarkerProbeFixture._validate_mode_and_witness
 VisualPoolSidecar._normalize_source
 VisualPoolSidecar._normalize_aesthetic_tags
 VisualPoolSidecar._normalize_color_palette
+
+# Visual variance ledger models are validated by Pydantic and consumed by the
+# executable publisher / director projection path. Vulture cannot see the
+# validator decorators as call sites.
+_VisualVarianceRenderedWitness._fresh_requires_real_file_evidence
+_VisualVarianceStateVector._normalise_tuple
+_VisualVarianceSelectedMove._normalise_tuple
+_VisualVarianceClaimGate._claimability_is_fail_closed
+_VisualVarianceLedger._ledger_claim_gate_matches_witnesses
 
 # World Surface Health envelope helpers are the public contract for downstream
 # audio, visual, control, provider/tool, public-event, and no-false-grounding
