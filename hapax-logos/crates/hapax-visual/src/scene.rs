@@ -71,6 +71,7 @@ pub const AOA_COMPAT_SOURCE_IDS: &[&str] = &[
 ];
 pub const AOA_BASE_GRID_UNITS: f32 = 2.0;
 pub const AOA_TETRIX_RENDER_DEPTH: u32 = 2;
+const NEBULOUS_SCROOM_CAMERA_SIDE_DEPTH_FACTOR: f32 = 0.30;
 
 pub fn aoa_leaf_tetrahedron_count(depth: u32) -> usize {
     4usize.pow(depth)
@@ -405,6 +406,7 @@ fn push_deoccluded_grid(
     y_spacing: f32,
     z_spacing: f32,
     opacity_multiplier: f32,
+    side_depth_factor: f32,
 ) {
     if columns == 0 {
         return;
@@ -415,7 +417,13 @@ fn push_deoccluded_grid(
         let row = local_idx / columns;
         let x = (col as f32 - (columns.saturating_sub(1) as f32 * 0.5)) * x_spacing;
         let y = -(row as f32) * y_spacing;
-        let z = -(row as f32) * z_spacing + (col as f32 - columns as f32 * 0.5) * 0.04;
+        let lateral_arc = if columns > 1 && side_depth_factor > 0.0 {
+            x.abs() * side_depth_factor
+        } else {
+            0.0
+        };
+        let z =
+            -(row as f32) * z_spacing + (col as f32 - columns as f32 * 0.5) * 0.04 - lateral_arc;
         let rotation_y = (col as f32 - (columns.saturating_sub(1) as f32 * 0.5)) * -0.08;
         nodes.push(make_node(
             active_sources,
@@ -543,6 +551,7 @@ pub fn build_scene_from_sources(
         0.72,
         0.42,
         1.12,
+        NEBULOUS_SCROOM_CAMERA_SIDE_DEPTH_FACTOR,
     );
     push_deoccluded_grid(
         &mut nodes,
@@ -559,6 +568,7 @@ pub fn build_scene_from_sources(
         0.46,
         0.30,
         0.98,
+        NEBULOUS_SCROOM_CAMERA_SIDE_DEPTH_FACTOR,
     );
     push_deoccluded_grid(
         &mut nodes,
@@ -575,6 +585,7 @@ pub fn build_scene_from_sources(
         0.24,
         0.18,
         0.18,
+        0.0,
     );
 
     let mut remaining = source_indices_except(active_sources, &used_indices);
@@ -601,6 +612,7 @@ pub fn build_scene_from_sources(
         0.58,
         0.38,
         0.96,
+        0.0,
     );
 
     let mid_band = source_indices_except(active_sources, &used_indices);
@@ -619,6 +631,7 @@ pub fn build_scene_from_sources(
         0.35,
         0.25,
         0.32,
+        0.0,
     );
 
     let mut far_excluded = used_indices.clone();
@@ -639,6 +652,7 @@ pub fn build_scene_from_sources(
         0.30,
         0.21,
         0.16,
+        0.0,
     );
 
     apply_spatial_drift(&mut nodes, time);
@@ -1140,6 +1154,39 @@ mod tests {
         assert!(
             ward.position.z < aoa_z && ward.position.z > -2.75,
             "primary wards should be near but still behind the AoA anchor"
+        );
+    }
+
+    #[test]
+    fn camera_arc_sides_recede_into_nebulous_scroom() {
+        let sources = vec![
+            (AOA_NODE_LABEL, 0.9f32, 4i32, 1280u32, 720u32),
+            ("camera-pi-noir-left", 0.8, 5, 640, 360),
+            ("camera-pi-noir-center", 0.8, 5, 640, 360),
+            ("camera-pi-noir-right", 0.8, 5, 640, 360),
+        ];
+        let scene = build_scene_from_sources(&sources, 0.0);
+        let left = scene
+            .iter()
+            .find(|n| n.label == "camera-pi-noir-left")
+            .unwrap();
+        let center = scene
+            .iter()
+            .find(|n| n.label == "camera-pi-noir-center")
+            .unwrap();
+        let right = scene
+            .iter()
+            .find(|n| n.label == "camera-pi-noir-right")
+            .unwrap();
+
+        let required_side_recession = 0.96 * NEBULOUS_SCROOM_CAMERA_SIDE_DEPTH_FACTOR - 0.05;
+        assert!(
+            left.position.z < center.position.z - required_side_recession,
+            "left side of camera arc should recede into the nebulous scroom"
+        );
+        assert!(
+            right.position.z < center.position.z - required_side_recession,
+            "right side of camera arc should recede into the nebulous scroom"
         );
     }
 
