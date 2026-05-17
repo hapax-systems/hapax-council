@@ -246,6 +246,7 @@ class MixerInputBackend:
         now = time.monotonic()
         data = self._cache.read()
 
+        prev_active = self._b_active.value
         self._b_energy.update(float(data["mixer_energy"]), now)
         self._b_beat.update(float(data["mixer_beat"]), now)
         self._b_bass.update(float(data["mixer_bass"]), now)
@@ -259,6 +260,25 @@ class MixerInputBackend:
         behaviors["mixer_mid"] = self._b_mid
         behaviors["mixer_high"] = self._b_high
         behaviors["mixer_active"] = self._b_active
+
+        new_active = self._b_active.value
+        if new_active != prev_active:
+            try:
+                from shared.bayesian_impingement_emitter import (
+                    emit_state_transition_impingement,
+                )
+
+                emit_state_transition_impingement(
+                    source="audio.mixer_input",
+                    claim_name="mixer-active",
+                    from_state="ACTIVE" if prev_active else "INACTIVE",
+                    to_state="ACTIVE" if new_active else "INACTIVE",
+                    posterior=float(data["mixer_energy"]),
+                    prev_posterior=None,
+                    active_signals={"energy": data["mixer_energy"]},
+                )
+            except Exception:
+                pass
 
     def _capture_loop(self) -> None:
         """Background thread: capture audio via pw-record, compute DSP, update cache."""
