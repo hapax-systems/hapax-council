@@ -14,6 +14,8 @@ from agents.studio_compositor.preset_policy import (
 )
 from shared.live_surface_effect_policy import (
     LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES,
+    LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES,
+    live_surface_glsl_requires_source_bound_repair,
     live_surface_policy_kind,
     live_surface_unclassified_node_types,
 )
@@ -158,10 +160,10 @@ def test_camera_legible_graph_policy_blocks_unrepaired_glsl_pane_nodes() -> None
 def test_live_surface_graph_policy_allows_repaired_source_bound_nodes_by_default() -> None:
     graph = _graph(
         {
-            "nightvision": NodeInstance(type="nightvision_tint", params={"green_intensity": 0.8}),
+            "grade": NodeInstance(type="colorgrade", params={"saturation": 1.2}),
             "out": NodeInstance(type="output"),
         },
-        [["@live", "nightvision"], ["nightvision", "out"]],
+        [["@live", "grade"], ["grade", "out"]],
     )
 
     decision = evaluate_preset_graph_policy(
@@ -171,8 +173,8 @@ def test_live_surface_graph_policy_allows_repaired_source_bound_nodes_by_default
     )
 
     assert decision.allowed is True
-    bounded = apply_live_surface_param_bounds("nightvision_tint", {"green_intensity": 0.8})
-    assert bounded["green_intensity"] == 0.7
+    bounded = apply_live_surface_param_bounds("colorgrade", {"saturation": 2.0})
+    assert bounded["saturation"] == 1.35
 
 
 def test_live_surface_graph_policy_can_be_disabled_for_offline_tools() -> None:
@@ -316,6 +318,51 @@ def test_glsl_pending_repair_nodes_still_have_live_surface_bounds() -> None:
         for node in LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES
         if live_surface_policy_kind(node) != "bounded"
     } == set()
+
+
+def test_legacy_glsl_activation_fails_closed_for_unverified_nodes() -> None:
+    registry = _registry()
+    graph = _graph(
+        {
+            "thermal": NodeInstance(type="thermal", params={"intensity": 0.3}),
+            "out": NodeInstance(type="output"),
+        },
+        [["@live", "thermal"], ["thermal", "out"]],
+    )
+
+    decision = evaluate_preset_graph_policy(
+        graph,
+        registry=registry,
+        env=_camera_legible_env(),
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "camera_legible_glsl_pending_source_bound_repair"
+    assert decision.matched == ("thermal", "thermal")
+    assert live_surface_policy_kind("thermal") == "bounded"
+
+
+def test_legacy_glsl_source_bound_allowlist_is_explicit() -> None:
+    registry = _registry()
+
+    assert LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES
+    for node_type in LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES:
+        node_def = registry.get(node_type)
+        assert node_def is not None
+        assert node_def.glsl_source
+        assert not live_surface_glsl_requires_source_bound_repair(
+            node_type,
+            has_glsl_source=True,
+        )
+
+    assert live_surface_glsl_requires_source_bound_repair(
+        "thermal",
+        has_glsl_source=True,
+    )
+    assert not live_surface_glsl_requires_source_bound_repair(
+        "thermal",
+        has_glsl_source=False,
+    )
 
 
 def test_source_preserving_repaired_nodes_are_bounded_not_blocked() -> None:
