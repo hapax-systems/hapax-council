@@ -87,3 +87,51 @@ def test_load_state_missing_file_returns_default(tmp_path: Path) -> None:
     path = tmp_path / "missing.json"
     with patch.object(flow_journal, "STATE_FILE", path):
         assert flow_journal._load_state() == _expected_default()
+
+
+def test_sync_redacts_private_signals_from_logs_and_artifacts(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    perception_path = tmp_path / "perception.json"
+    stimmung_path = tmp_path / "stimmung.json"
+    state_path = tmp_path / "state.json"
+    rag_dir = tmp_path / "rag"
+
+    perception_path.write_text(
+        json.dumps(
+            {
+                "flow_state": "deep",
+                "activity_mode": "secret-activity-value",
+                "flow_score": 0.734,
+                "heart_rate_bpm": 123,
+                "operator_present": True,
+            }
+        )
+    )
+    stimmung_path.write_text(json.dumps({"overall_stance": "critical"}))
+
+    with (
+        patch.object(flow_journal, "PERCEPTION_STATE", perception_path),
+        patch.object(flow_journal, "STIMMUNG_STATE", stimmung_path),
+        patch.object(flow_journal, "STATE_FILE", state_path),
+        patch.object(flow_journal, "CACHE_DIR", tmp_path),
+        patch.object(flow_journal, "RAG_DIR", rag_dir),
+        caplog.at_level("INFO", logger=flow_journal.__name__),
+    ):
+        assert flow_journal.sync() is True
+
+    persisted_state = json.loads(state_path.read_text())
+    daily_doc = next(rag_dir.glob("flow-*.md")).read_text()
+    combined = "\n".join([caplog.text, state_path.read_text(), daily_doc])
+
+    assert "secret-activity-value" not in combined
+    assert "0.734" not in combined
+    assert "123bpm" not in combined
+    assert "heart_rate_bpm" not in combined
+    assert "operator_present" not in combined
+    assert persisted_state["transitions"][0]["flow_score_band"] == "high"
+    assert persisted_state["transitions"][0]["activity_mode"] == "other"
+    assert persisted_state["transitions"][0]["heart_rate_band"] == "critical"
+    assert "score_band=high" in daily_doc
+    assert "hr_band=critical" in daily_doc

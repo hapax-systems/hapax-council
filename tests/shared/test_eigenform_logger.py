@@ -63,6 +63,7 @@ class TestEntryShape:
             "activity",
             "e_mesh",
             "restriction_residual_rms",
+            "sensitive_fields_redacted",
         }
         assert set(entry.keys()) == expected_keys
 
@@ -94,8 +95,30 @@ class TestEntryShape:
         entry = json.loads(target.read_text().strip())
         assert entry["presence"] == 0.8
         assert entry["stimmung_stance"] == "cautious"
-        assert entry["heart_rate"] == 72.0
+        assert entry["heart_rate"] == 0.0
+        assert entry["operator_stress"] == 0.0
+        assert entry["sensitive_fields_redacted"] == ["heart_rate", "operator_stress"]
         assert entry["activity"] == "speaking"
+
+    def test_sensitive_numeric_fields_are_not_serialised(self, tmp_path: Path) -> None:
+        target = tmp_path / "log.jsonl"
+        log_state_vector(
+            heart_rate=123.0,
+            operator_stress=0.87,
+            activity="secret-activity-value",
+            stimmung_stance="secret-stimmung-value",
+            path=target,
+        )
+        raw = target.read_text()
+        entry = json.loads(raw.strip())
+        assert "123" not in raw
+        assert "0.87" not in raw
+        assert "secret-activity-value" not in raw
+        assert "secret-stimmung-value" not in raw
+        assert entry["heart_rate"] == 0.0
+        assert entry["operator_stress"] == 0.0
+        assert entry["activity"] == "unknown"
+        assert entry["stimmung_stance"] == "nominal"
 
     def test_timestamp_is_float(self, tmp_path: Path) -> None:
         target = tmp_path / "log.jsonl"

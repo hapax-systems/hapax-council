@@ -104,6 +104,15 @@ for _result in ("success", "revoked", "transport_error", "missing_credential"):
     OAUTH_REFRESH_COUNTER.labels(result=_result)
 
 
+def _credential_ref(key: str) -> str:
+    refs = {
+        CLIENT_ID_PASS_KEY: "pass-key:mail-monitor-client-id",
+        CLIENT_SECRET_PASS_KEY: "pass-key:mail-monitor-client-credential",
+        REFRESH_TOKEN_PASS_KEY: "pass-key:mail-monitor-refresh-credential",
+    }
+    return refs.get(key, "pass-key:redacted")
+
+
 def _pass_show(key: str, *, timeout_s: float = 5.0) -> str | None:
     """Return ``pass show <key>`` first line stripped, or ``None`` on failure.
 
@@ -119,14 +128,13 @@ def _pass_show(key: str, *, timeout_s: float = 5.0) -> str | None:
             check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-        log.warning("pass show %s failed: %s", key, exc)
+        log.warning("pass show failed for %s (%s)", _credential_ref(key), type(exc).__name__)
         return None
     if result.returncode != 0:
         log.debug(
-            "pass show %s returned %d: %s",
-            key,
+            "pass show returned %d for %s",
             result.returncode,
-            result.stderr.strip(),
+            _credential_ref(key),
         )
         return None
     value = result.stdout.strip().split("\n", 1)[0].strip()
@@ -149,14 +157,13 @@ def _pass_insert(key: str, value: str, *, timeout_s: float = 5.0) -> bool:
             check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-        log.error("pass insert %s failed: %s", key, exc)
+        log.error("pass insert failed for %s (%s)", _credential_ref(key), type(exc).__name__)
         return False
     if result.returncode != 0:
         log.error(
-            "pass insert %s returned %d: %s",
-            key,
+            "pass insert returned %d for %s",
             result.returncode,
-            result.stderr.strip(),
+            _credential_ref(key),
         )
         return False
     return True
@@ -299,14 +306,14 @@ def load_credentials() -> Credentials | None:
         msg = str(exc).lower()
         if "invalid_grant" in msg or "revoked" in msg or "expired" in msg:
             OAUTH_REFRESH_COUNTER.labels(result="revoked").inc()
-            log.warning("OAuth refresh token rejected (revoked): %s", exc)
+            log.warning("OAuth refresh token rejected (revoked): %s", type(exc).__name__)
         else:
             OAUTH_REFRESH_COUNTER.labels(result="transport_error").inc()
-            log.warning("OAuth refresh failed: %s", exc)
+            log.warning("OAuth refresh failed: %s", type(exc).__name__)
         return None
     except TransportError as exc:
         OAUTH_REFRESH_COUNTER.labels(result="transport_error").inc()
-        log.warning("OAuth refresh transport error: %s", exc)
+        log.warning("OAuth refresh transport error: %s", type(exc).__name__)
         return None
 
     OAUTH_REFRESH_COUNTER.labels(result="success").inc()

@@ -29,6 +29,61 @@ STATE_FILE = CACHE_DIR / "state.json"
 PERCEPTION_STATE = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
 STIMMUNG_STATE = Path("/dev/shm/hapax-stimmung/state.json")
 
+_FLOW_STATES = frozenset({"idle", "warming", "active", "deep", "flow", "blocked", "unknown"})
+_ACTIVITY_MODES = frozenset(
+    {"unknown", "idle", "coding", "research", "production", "meeting", "conversation", "away"}
+)
+_STIMMUNG_STANCES = frozenset({"unknown", "nominal", "seeking", "cautious", "degraded", "critical"})
+
+
+def _allowed_label(value: object, *, allowed: frozenset[str], default: str) -> str:
+    if not isinstance(value, str):
+        return default
+    label = value.strip().lower()
+    return label if label in allowed else "other"
+
+
+def _flow_state_label(value: object) -> str:
+    return _allowed_label(value, allowed=_FLOW_STATES, default="idle")
+
+
+def _activity_mode_label(value: object) -> str:
+    return _allowed_label(value, allowed=_ACTIVITY_MODES, default="unknown")
+
+
+def _stimmung_label(value: object) -> str:
+    return _allowed_label(value, allowed=_STIMMUNG_STANCES, default="unknown")
+
+
+def _score_band(value: object) -> str:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if score < 0.3:
+        return "low"
+    if score < 0.6:
+        return "medium"
+    if score < 0.8:
+        return "high"
+    return "very_high"
+
+
+def _heart_rate_band(value: object) -> str:
+    try:
+        bpm = float(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if bpm <= 0:
+        return "unknown"
+    if bpm < 60:
+        return "low"
+    if bpm < 90:
+        return "nominal"
+    if bpm < 110:
+        return "elevated"
+    return "critical"
+
 
 def _read_perception() -> dict | None:
     """Read current perception state (flow_state, activity_mode, etc.)."""
@@ -89,9 +144,9 @@ def sync() -> bool:
     today = _today_str()
 
     # Detect flow state transition
-    current_flow = perc.get("flow_state", "idle")
-    current_activity = perc.get("activity_mode", "unknown")
-    last_flow = state.get("last_flow_state", "idle")
+    current_flow = _flow_state_label(perc.get("flow_state", "idle"))
+    current_activity = _activity_mode_label(perc.get("activity_mode", "unknown"))
+    last_flow = _flow_state_label(state.get("last_flow_state", "idle"))
 
     changed = False
 
@@ -100,22 +155,16 @@ def sync() -> bool:
             "timestamp": now_iso,
             "from_state": last_flow,
             "to_state": current_flow,
-            "flow_score": perc.get("flow_score", 0.0),
+            "flow_score_band": _score_band(perc.get("flow_score", 0.0)),
             "activity_mode": current_activity,
-            "heart_rate_bpm": perc.get("heart_rate_bpm", 0),
-            "stimmung_stance": _read_stimmung(),
-            "operator_present": perc.get("operator_present", False),
+            "heart_rate_band": _heart_rate_band(perc.get("heart_rate_bpm", 0)),
+            "stimmung_stance": _stimmung_label(_read_stimmung()),
         }
         state.setdefault("transitions", []).append(transition)
         state["last_flow_state"] = current_flow
         state["last_activity_mode"] = current_activity
         changed = True
-        log.info(
-            "Flow transition: %s → %s (score=%.2f)",
-            last_flow,
-            current_flow,
-            transition["flow_score"],
-        )
+        log.info("Flow transition recorded")
 
     # Write daily summary if we have transitions
     day_transitions = [t for t in state.get("transitions", []) if t["timestamp"].startswith(today)]
@@ -143,6 +192,7 @@ def _write_daily_doc(
     """Write or update the daily flow journal document."""
     RAG_DIR.mkdir(parents=True, exist_ok=True)
     path = RAG_DIR / f"flow-{date_str}.md"
+    current_state = _flow_state_label(current_state)
 
     # Compute time-in-state summary
     state_durations: dict[str, float] = {}
@@ -153,7 +203,8 @@ def _write_daily_doc(
             start = dt.fromisoformat(t["timestamp"])
             end = dt.fromisoformat(transitions[i + 1]["timestamp"])
             dur_min = (end - start).total_seconds() / 60.0
-            state_durations[t["to_state"]] = state_durations.get(t["to_state"], 0.0) + dur_min
+            state_name = _flow_state_label(t.get("to_state"))
+            state_durations[state_name] = state_durations.get(state_name, 0.0) + dur_min
 
     frontmatter = {
         "source_service": "flow_journal",
@@ -181,11 +232,16 @@ def _write_daily_doc(
     lines.append("## Transitions\n")
     for t in transitions:
         ts = t["timestamp"][11:16]  # HH:MM
+        from_state = _flow_state_label(t.get("from_state"))
+        to_state = _flow_state_label(t.get("to_state"))
+        score_band = t.get("flow_score_band") or _score_band(t.get("flow_score", 0.0))
+        activity_mode = _activity_mode_label(t.get("activity_mode"))
+        heart_rate_band = t.get("heart_rate_band") or _heart_rate_band(t.get("heart_rate_bpm", 0))
         lines.append(
-            f"- **{ts}** {t['from_state']} → {t['to_state']} "
-            f"(score={t.get('flow_score', 0):.2f}, "
-            f"activity={t.get('activity_mode', '?')}, "
-            f"hr={t.get('heart_rate_bpm', '?')}bpm)"
+            f"- **{ts}** {from_state} -> {to_state} "
+            f"(score_band={score_band}, "
+            f"activity={activity_mode}, "
+            f"hr_band={heart_rate_band})"
         )
 
     path.write_text("\n".join(lines) + "\n")
