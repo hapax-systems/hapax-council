@@ -164,6 +164,26 @@ DENY_PATTERNS: dict[str, list[tuple[str, re.Pattern[str]]]] = {
     "anthropic_pronouns": [
         ("hapax_gendered", re.compile(r"\bHapax,? (he|she|his|her|him)\b")),
     ],
+    "voice_posture_violations": [
+        (
+            "social_performance",
+            re.compile(
+                r"\b(happy|glad|pleased|delighted)\s+to\s+(help|assist|be here|serve)\b",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "availability_performance",
+            re.compile(r"\b(here for you|always (here|ready|listening|available))\b", re.IGNORECASE),
+        ),
+        (
+            "inner_experience_claim",
+            re.compile(
+                r"\bHapax (experiences?|senses?|notices?)\s+(a|the|some)\s+"
+                r"(sense|feeling|warmth|wonder|joy|satisfaction)\b"
+            ),
+        ),
+    ],
     # GEAL-scoped face-iconography rule family (spec §11 #1 of
     # docs/superpowers/specs/2026-04-23-geal-spec.md). Only applied to
     # files whose path matches ``_GEAL_PATH_GLOB`` — word-boundary
