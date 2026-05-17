@@ -56,6 +56,49 @@ class ProgrammeDisplayDensity(StrEnum):
     DENSE = "dense"
 
 
+class DensityTemporalMode(StrEnum):
+    """Temporal mode of an information-density observation.
+
+    Maps to the three cadences the density field operates on:
+    - NEWS: novel event burst (new RAG content, vault update)
+    - ROUTINE: periodic background density (scheduled sync, ambient)
+    - ALARM: high-urgency spike (operator arrival, system event)
+    """
+
+    NEWS = "news"
+    ROUTINE = "routine"
+    ALARM = "alarm"
+
+
+class DensityTrigger(BaseModel):
+    """Observation from the information-density field that triggers programme planning.
+
+    Bridges the density-field subsystem to the programme planner by
+    carrying the temporal mode, source identity, observed density
+    magnitude, timestamp, and optional subject cluster. Enables the
+    planner to decide programme role/constraints based on WHAT caused
+    the density spike rather than hardcoded cadence rules.
+
+    Reference: project_information_density_field memory.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    temporal_mode: DensityTemporalMode
+    source_id: str = Field(min_length=1)
+    observed_density: float = Field(ge=0.0, le=1.0)
+    observed_at: float
+    subject_cluster: str | None = None
+
+    @field_validator("source_id")
+    @classmethod
+    def _source_id_nonempty(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("source_id must be non-empty")
+        return stripped
+
+
 class ProgrammeRole(StrEnum):
     """Programme roles spanning the operator's livestream content space.
 
@@ -295,6 +338,16 @@ class ProgrammeConstraintEnvelope(BaseModel):
     # exclusion). Research §2.2 of 2026-04-20-voice-tier-director-
     # integration.md.
     voice_tier_band_prior: tuple[int, int] | None = None
+
+    # Density-field trigger — carries the observation that prompted the
+    # planner to emit this programme. When set, the planner used a
+    # density spike (news, routine, or alarm) to select the role and
+    # bias the constraints. When None, the programme was emitted by
+    # cadence or operator request, not a density observation. Enables
+    # graceful degradation: if the density reader is offline the planner
+    # still plans, just without density context.
+    # Reference: CASE-PERSPECTIVE-001, project_information_density_field.
+    density_trigger: DensityTrigger | None = None
 
     # Monetization opt-ins — Phase 5 of the demonet plan. The set of
     # capability names the programme has explicitly opted in to
