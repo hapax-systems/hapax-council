@@ -16,9 +16,10 @@ paths:
     default_for_tiers: []
   radio:
     description: S-4 USB-direct pitched/reverb FX; no granular.
-    sink: alsa_output.usb-Torso_Electronics_S-4
+    sink: hapax-tts-s4-send
     via_evil_pet: false
     via_s4: true
+    dry_bypass_sink: hapax-voice-fx
     default_for_tiers: [radio]
   evil_pet:
     description: Ryzen → L6 ch 5 → AUX 1 → Evil Pet → return.
