@@ -106,5 +106,41 @@ async def vault_read(ctx: Any, note_path: str) -> str:
         return f"Error reading vault note: {e}"
 
 
-FULL_TOOLS = (read_source, grep_evidence, git_provenance, web_verify, qdrant_lookup, vault_read)
+async def git_diff(ctx: Any, ref: str = "HEAD~1") -> str:
+    """Show git diff against a reference (default: last commit)."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--stat", ref],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=str(HAPAX_COUNCIL_DIR),
+        )
+        stat = result.stdout.strip()
+        detail = subprocess.run(
+            ["git", "diff", ref, "--", "*.py"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=str(HAPAX_COUNCIL_DIR),
+        )
+        diff_text = detail.stdout.strip()
+        if len(diff_text) > MAX_READ_CHARS:
+            diff_text = (
+                diff_text[:MAX_READ_CHARS] + f"\n... [{len(diff_text) - MAX_READ_CHARS} more chars]"
+            )
+        return f"## Diff stat vs {ref}\n{stat}\n\n## Python changes\n{diff_text}"
+    except Exception as e:
+        return f"Git diff error: {e}"
+
+
+FULL_TOOLS = (
+    read_source,
+    grep_evidence,
+    git_provenance,
+    git_diff,
+    web_verify,
+    qdrant_lookup,
+    vault_read,
+)
 RESTRICTED_TOOLS = (read_source, grep_evidence)
