@@ -56,9 +56,10 @@ def test_render_uses_explicit_args_over_env(monkeypatch: pytest.MonkeyPatch) -> 
         research_home_url="explicit.example.com",
     )
 
-    assert "explicit_name" in text
-    assert "explicit.example.com" in text
-    assert "env_name" not in text
+    assert text == FOOTER_TEMPLATE.format(
+        operator_name="explicit_name",
+        research_home_url="explicit.example.com",
+    )
 
 
 def test_render_reads_env_when_args_unset(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -67,8 +68,10 @@ def test_render_reads_env_when_args_unset(monkeypatch: pytest.MonkeyPatch) -> No
 
     text = render_footer_text()
 
-    assert "env_name" in text
-    assert "env.example.com" in text
+    assert text == FOOTER_TEMPLATE.format(
+        operator_name="env_name",
+        research_home_url="env.example.com",
+    )
 
 
 def test_render_falls_back_to_safe_defaults(monkeypatch: pytest.MonkeyPatch) -> None:

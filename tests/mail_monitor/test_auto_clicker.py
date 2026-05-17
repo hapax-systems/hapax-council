@@ -372,7 +372,7 @@ def test_process_message_skips_when_gate_fails(
 def test_allowlists_file_loads_clean() -> None:
     al = auto_clicker._load_allowlists()
     assert "noreply@zenodo.org" in al["allow_senders"]
-    assert "zenodo.org" in al["allow_link_domains"]
+    assert any(domain == "zenodo.org" for domain in al["allow_link_domains"])
 
 
 def test_allowlists_lowercased_on_load() -> None:

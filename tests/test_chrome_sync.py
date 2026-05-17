@@ -140,7 +140,8 @@ def test_generate_chrome_profile_facts():
     assert "browsing_top_domains" in keys
     # Check the top domains fact contains our domains
     top_fact = next(f for f in facts if f["key"] == "browsing_top_domains")
-    assert "github.com" in top_fact["value"]
+    domains = {entry.rsplit(" ", 1)[0] for entry in top_fact["value"].split(", ")}
+    assert any(domain == "github.com" for domain in domains)
     assert top_fact["confidence"] == 0.85
 
 

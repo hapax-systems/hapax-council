@@ -101,9 +101,9 @@ class TestRing2Verdict:
 
 class TestFormatUserPrompt:
     def test_includes_capability_name(self) -> None:
-        prompt = format_user_prompt("knowledge.web_search", "Top result: example.com")
+        prompt = format_user_prompt("knowledge.web_search", "Top result: source alpha")
         assert "knowledge.web_search" in prompt
-        assert "example.com" in prompt
+        assert "source alpha" in prompt
 
     def test_handles_none_payload(self) -> None:
         prompt = format_user_prompt("x", None)
