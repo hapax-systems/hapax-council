@@ -1170,7 +1170,10 @@ class ConversationPipeline:
             # dropped turns — no lossy LLMLingua-2 compression needed.
             # Walk backward counting 5 user messages to preserve tool sequences
             # (assistant+tool_calls, tool result, follow-up) as complete exchanges.
-            if self._experiment_flags.get("message_drop", True) and len(self.messages) > 12:
+            # INTERVIEW programmes disable message_drop — full thread needed for
+            # callbacks, follow-ups, and avoiding re-asks across 120 turns.
+            _drop_threshold = getattr(self, "_message_drop_threshold", 12)
+            if self._experiment_flags.get("message_drop", True) and len(self.messages) > _drop_threshold:
                 system_msg = self.messages[0]
                 user_count = 0
                 cut_idx = len(self.messages)
