@@ -88,6 +88,53 @@ for peer_yaml in "$RELAY_DIR"/*.yaml; do
     esac
     PEERS+=("$peer")
 done
+
+if [[ "${HAPAX_P0_BROADCAST_DUAL_WRITE_MQ:-0}" == "1" ]]; then
+    RECIPIENTS_CSV=""
+    for peer in "${PEERS[@]}"; do
+        [[ "$peer" == "$SOURCE_SESSION" ]] && continue
+        if [[ -z "$RECIPIENTS_CSV" ]]; then
+            RECIPIENTS_CSV="$peer"
+        else
+            RECIPIENTS_CSV="${RECIPIENTS_CSV},${peer}"
+        fi
+    done
+    if [[ -n "$RECIPIENTS_CSV" ]]; then
+        python3 - "$SCRIPT_DIR" "${HAPAX_RELAY_MQ_DB:-$RELAY_DIR/messages.db}" "$RECIPIENTS_CSV" "$SOURCE_SESSION" "$SEVERITY" "$INFLECTION_PATH" <<'PY' || true
+import sys
+from pathlib import Path
+
+script_dir = Path(sys.argv[1])
+repo_root = script_dir.parent
+db_path = Path(sys.argv[2]).expanduser()
+recipients = sys.argv[3]
+source = sys.argv[4]
+severity = sys.argv[5]
+inflection_path = Path(sys.argv[6])
+
+sys.path.insert(0, str(repo_root))
+
+try:
+    from shared.relay_mq import send_message
+    from shared.relay_mq_envelope import Envelope
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    envelope = Envelope(
+        sender=source,
+        message_type="escalation",
+        priority=0 if severity == "P0" else 1,
+        subject=f"{severity} broadcast from {source}",
+        recipients_spec=recipients,
+        payload_path=str(inflection_path),
+        tags=["p0-broadcast", "legacy-relay"],
+    )
+    send_message(db_path, envelope)
+except Exception:
+    pass
+PY
+    fi
+fi
+
 APPENDED_COUNT=0
 for peer in "${PEERS[@]}"; do
     [[ "$peer" == "$SOURCE_SESSION" ]] && continue  # don't write to own yaml

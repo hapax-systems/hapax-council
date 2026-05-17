@@ -99,8 +99,11 @@ class CapacityRoutingDashboard(StrictModel):
     rollback_compatibility_count: int = Field(default=0, ge=0)
     transition_budget_refs: tuple[str, ...] = Field(default=())
     unreconciled_spend_refs: tuple[str, ...] = Field(default=())
+    frozen_spend_refs: tuple[str, ...] = Field(default=())
     provider_dependency_refs: tuple[str, ...] = Field(default=())
+    closed_provider_dependency_refs: tuple[str, ...] = Field(default=())
     support_artifact_refs: tuple[str, ...] = Field(default=())
+    closed_support_artifact_refs: tuple[str, ...] = Field(default=())
     renewal_review_refs: tuple[str, ...] = Field(default=())
     non_green_states: tuple[CapacityRoutingNonGreenState, ...] = Field(default=())
     warning_count: int = Field(ge=0)
@@ -434,8 +437,11 @@ def _quota_dashboard_state(
             "paid_api_route_eligible": False,
             "transition_budget_refs": (),
             "unreconciled_spend_refs": (),
+            "frozen_spend_refs": (),
             "provider_dependency_refs": (),
+            "closed_provider_dependency_refs": (),
             "support_artifact_refs": (),
+            "closed_support_artifact_refs": (),
             "renewal_review_refs": (),
         }
 
@@ -459,8 +465,11 @@ def _quota_dashboard_state(
         "paid_api_route_eligible": dashboard.paid_api_route_eligible,
         "transition_budget_refs": dashboard.transition_budget_refs,
         "unreconciled_spend_refs": dashboard.unreconciled_spend_refs,
+        "frozen_spend_refs": dashboard.frozen_spend_refs,
         "provider_dependency_refs": dashboard.provider_dependency_refs,
+        "closed_provider_dependency_refs": dashboard.closed_provider_dependency_refs,
         "support_artifact_refs": dashboard.support_artifact_refs,
+        "closed_support_artifact_refs": dashboard.closed_support_artifact_refs,
         "renewal_review_refs": dashboard.renewal_review_refs,
     }
 

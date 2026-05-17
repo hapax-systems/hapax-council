@@ -9,7 +9,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "check-quota-spend-ledger"
 FIXTURE = REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json"
-NOW = "2026-05-09T21:00:00Z"
+NOW = "2026-05-17T08:00:00Z"
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -22,15 +22,18 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_dashboard_json_exposes_non_green_bootstrap_state() -> None:
+def test_dashboard_json_exposes_reconciled_bootstrap_state() -> None:
     result = _run("--fixture", str(FIXTURE), "--dashboard-json", "--now", NOW)
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["paid_api_budget_state"] == "unknown"
-    assert payload["bootstrap_dependency_state"] == "expired"
-    assert payload["paid_api_route_eligible"] is False
-    assert "bootstrap_dependency_state:expired" in payload["non_green_states"]
+    assert payload["paid_api_budget_state"] == "active"
+    assert payload["bootstrap_dependency_state"] == "none"
+    assert payload["provider_dependency_count"] == 0
+    assert payload["support_artifacts_waiting_for_review"] == 0
+    assert payload["frozen_spend_refs"] == ["spend-20260509T193000Z-opaque-route"]
+    assert payload["paid_api_route_eligible"] is True
+    assert "bootstrap_dependency_state:expired" not in payload["non_green_states"]
 
 
 def test_paid_route_check_refuses_default_fixture() -> None:
@@ -60,6 +63,7 @@ def test_paid_route_check_refuses_default_fixture() -> None:
     payload = json.loads(result.stdout)
     assert payload["eligible"] is False
     assert payload["state"] == "refused_expired_budget"
+    assert any("frozen/refused spend receipts" in reason for reason in payload["blocking_reasons"])
     assert "tb-20260509-bootstrap-expired" in payload["evidence_refs"]
 
 
@@ -89,7 +93,7 @@ def test_dashboard_json_and_paid_route_check_emit_combined_payload() -> None:
 
     assert result.returncode == 1
     payload = json.loads(result.stdout)
-    assert payload["dashboard"]["paid_api_budget_state"] == "unknown"
+    assert payload["dashboard"]["paid_api_budget_state"] == "active"
     assert payload["eligibility"]["eligible"] is False
 
 

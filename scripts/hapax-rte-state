@@ -39,7 +39,7 @@ import re
 import sys
 import time
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +52,11 @@ from shared.capacity_routing_dashboard import (  # noqa: E402
     parse_optional_utc,
     route_decision_items_from_jsonl,
     route_metadata_items_from_planning_queue,
+)
+from shared.relay_mq_health import (  # noqa: E402
+    execute_escalations,
+    execute_retries,
+    tick_health,
 )
 
 RELAY_DIR = (
@@ -234,21 +239,73 @@ def collect_capacity_routing_dashboard() -> dict[str, Any]:
     return dashboard.model_dump(mode="json")
 
 
+def collect_relay_mq_health(last_tick_at: datetime | None) -> dict[str, Any]:
+    """Return fail-open relay MQ health for RTE state consumers."""
+
+    try:
+        health = tick_health(last_tick_at=last_tick_at)
+    except Exception as exc:
+        return {"label": "UNKNOWN", "available": False, "summary": f"UNKNOWN: {exc}"}
+    if health is None:
+        return {"label": "UNKNOWN", "available": False, "summary": "UNKNOWN: health failed"}
+    return {
+        "label": health.label,
+        "available": health.available,
+        "pending_count": health.pending_count,
+        "stale_count": health.stale_count,
+        "dead_letter_count": health.dead_letter_count,
+        "retry_candidate_count": health.retry_candidate_count,
+        "escalation_candidate_count": health.escalation_candidate_count,
+        "degraded": health.degraded,
+        "summary": health.summary(),
+    }
+
+
+def execute_requested_mq_maintenance(*, retry: bool, escalate: bool) -> dict[str, Any]:
+    """Run optional fail-open MQ maintenance actions for RTE operators."""
+
+    results: dict[str, Any] = {}
+    if retry:
+        try:
+            result = execute_retries()
+            results["retry"] = {
+                "label": result.label,
+                "changed_count": result.changed_count,
+                "reason": result.reason,
+            }
+        except Exception as exc:
+            results["retry"] = {"label": "UNKNOWN", "changed_count": 0, "reason": str(exc)}
+    if escalate:
+        try:
+            result = execute_escalations()
+            results["escalate"] = {
+                "label": result.label,
+                "changed_count": result.changed_count,
+                "reason": result.reason,
+            }
+        except Exception as exc:
+            results["escalate"] = {"label": "UNKNOWN", "changed_count": 0, "reason": str(exc)}
+    return results
+
+
 def evaluate() -> dict[str, Any]:
     """Read latest tick, derive current authority state."""
     capacity_routing = collect_capacity_routing_dashboard()
     latest = find_latest_tick()
     now = time.time()
     if latest is None:
+        relay_mq = collect_relay_mq_health(None)
         return {
             "status": "unknown",
             "reasons": ["no RTE tick log found in ~/.cache/hapax/relay/"],
             "tick_age_s": None,
             "tick_path": None,
             "capacity_routing": capacity_routing,
+            "relay_mq": relay_mq,
         }
     tick_mtime = latest.stat().st_mtime
     tick_age_s = now - tick_mtime
+    relay_mq = collect_relay_mq_health(datetime.fromtimestamp(tick_mtime, UTC))
     parsed = read_tick(latest)
 
     # Status: prefer team_load.status if embedded, else fall back to a
@@ -274,6 +331,7 @@ def evaluate() -> dict[str, Any]:
             "tick_path": str(latest),
             "tick_summary": parsed.get("summary", ""),
             "capacity_routing": capacity_routing,
+            "relay_mq": relay_mq,
         }
 
     if not reasons:
@@ -287,6 +345,7 @@ def evaluate() -> dict[str, Any]:
         "tick_summary": parsed.get("summary", ""),
         "rte": parsed.get("rte", "unknown"),
         "capacity_routing": capacity_routing,
+        "relay_mq": relay_mq,
     }
 
 
@@ -311,9 +370,25 @@ def main() -> int:
         action="store_true",
         help="exit-code-only (0=green/yellow, 1=red, 2=ops-distress, 3=unknown)",
     )
+    ap.add_argument(
+        "--mq-retry",
+        action="store_true",
+        help="fail-open re-offer read MQ messages past retry interval before reporting state",
+    )
+    ap.add_argument(
+        "--mq-escalate",
+        action="store_true",
+        help="fail-open escalate MQ messages past deadline before reporting state",
+    )
     args = ap.parse_args()
 
+    mq_maintenance = execute_requested_mq_maintenance(
+        retry=args.mq_retry,
+        escalate=args.mq_escalate,
+    )
     state = evaluate()
+    if mq_maintenance:
+        state["relay_mq_maintenance"] = mq_maintenance
     status = state["status"]
 
     if args.gate:
@@ -334,6 +409,17 @@ def main() -> int:
     print(f"  tick: {state.get('tick_path', '(none)')}")
     print(f"  tick age: {age_str}")
     print(f"  summary: {state.get('tick_summary', '')}")
+    relay_mq = state.get("relay_mq")
+    if isinstance(relay_mq, dict):
+        print(f"  relay mq: {relay_mq.get('summary', 'UNKNOWN')}")
+    maintenance = state.get("relay_mq_maintenance")
+    if isinstance(maintenance, dict):
+        for action, result in maintenance.items():
+            if isinstance(result, dict):
+                print(
+                    "  relay mq "
+                    f"{action}: {result.get('label')} changed={result.get('changed_count')}"
+                )
     for r in state["reasons"]:
         print(f"  • {r}")
     capacity_routing = state.get("capacity_routing")

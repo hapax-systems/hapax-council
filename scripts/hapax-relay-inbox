@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -71,6 +72,7 @@ class RelayMessage:
     modified_utc: str
     size: int
     mtime_ns: int
+    frontmatter: dict[str, Any]
 
 
 def _utc_from_timestamp(timestamp: float) -> str:
@@ -200,6 +202,7 @@ def _load_message(path: Path, role: str) -> RelayMessage | None:
         modified_utc=_utc_from_timestamp(stat.st_mtime),
         size=size,
         mtime_ns=mtime_ns,
+        frontmatter=frontmatter,
     )
 
 
@@ -246,6 +249,65 @@ def _append_receipts(receipt_log: Path, role: str, messages: list[RelayMessage])
             handle.write(json.dumps(receipt, sort_keys=True) + "\n")
 
 
+def _priority_from_frontmatter(frontmatter: dict[str, Any]) -> int:
+    try:
+        priority = int(frontmatter.get("priority", 2))
+    except (TypeError, ValueError):
+        return 2
+    return min(max(priority, 0), 3)
+
+
+def _message_type_from_frontmatter(frontmatter: dict[str, Any]) -> str:
+    raw = str(frontmatter.get("message_type") or frontmatter.get("type") or "advisory")
+    candidate = _normalize_token(raw)
+    if candidate in {"dispatch", "advisory", "escalation", "query"}:
+        return candidate
+    return "advisory"
+
+
+def _dual_write_mq(db_path: Path, role: str, messages: list[RelayMessage]) -> int:
+    if not messages:
+        return 0
+    try:
+        from shared.relay_mq import send_message
+        from shared.relay_mq_envelope import Envelope
+    except Exception:
+        return 0
+
+    written = 0
+    db_path = db_path.expanduser()
+    try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return 0
+
+    for message in messages:
+        frontmatter = message.frontmatter
+        message_type = _message_type_from_frontmatter(frontmatter)
+        authority_case = _string_field(
+            frontmatter.get("authority_case") or frontmatter.get("case_id")
+        )
+        if message_type == "dispatch" and not authority_case:
+            message_type = "advisory"
+        try:
+            envelope = Envelope(
+                sender=message.sender or "relay-inbox",
+                message_type=message_type,
+                priority=_priority_from_frontmatter(frontmatter),
+                subject=message.title,
+                authority_case=authority_case or None,
+                authority_item=_string_field(frontmatter.get("authority_item")) or None,
+                recipients_spec=role,
+                payload_path=str(message.path),
+                tags=["relay-inbox", "legacy-relay"],
+            )
+            send_message(db_path, envelope)
+            written += 1
+        except Exception:
+            continue
+    return written
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--role", required=True, help="current coordinator role")
@@ -270,6 +332,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=8, help="maximum unseen notes to print")
     parser.add_argument("--mark-seen", action="store_true", help="record printed notes as read")
     parser.add_argument("--include-seen", action="store_true", help="print already-seen notes too")
+    parser.add_argument(
+        "--dual-write-mq",
+        action="store_true",
+        help="also enqueue surfaced relay notes into the durable SQLite MQ",
+    )
+    parser.add_argument(
+        "--mq-db",
+        type=Path,
+        default=None,
+        help="SQLite MQ path; defaults to HAPAX_RELAY_MQ_DB or ~/.cache/hapax/relay/messages.db",
+    )
     return parser.parse_args()
 
 
@@ -288,6 +361,15 @@ def main() -> int:
     if not args.include_seen:
         messages = [message for message in messages if message.key not in seen]
     messages = messages[: max(args.limit, 0)]
+
+    if args.dual_write_mq or os.environ.get("HAPAX_RELAY_INBOX_DUAL_WRITE_MQ") == "1":
+        mq_db = args.mq_db or Path(
+            os.environ.get(
+                "HAPAX_RELAY_MQ_DB",
+                str(Path.home() / ".cache" / "hapax" / "relay" / "messages.db"),
+            )
+        )
+        _dual_write_mq(mq_db, role, messages)
 
     _print_messages(role, messages)
 

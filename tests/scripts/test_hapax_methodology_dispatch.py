@@ -5,6 +5,9 @@ import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
 
+from shared.relay_mq import send_message
+from shared.relay_mq_envelope import Envelope
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
@@ -181,8 +184,56 @@ def _worktree(path: Path, *, guarded: bool = True, close_guarded: bool = True) -
     return path
 
 
+def _arg_value(args: tuple[str, ...], name: str) -> str | None:
+    if name not in args:
+        return None
+    index = args.index(name)
+    if index + 1 >= len(args):
+        return None
+    return args[index + 1]
+
+
+def _frontmatter_scalar(path: Path, key: str) -> str:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{key}:"):
+            return line.split(":", 1)[1].strip().strip('"')
+    return ""
+
+
+def _maybe_write_durable_mq_binding(tmp_path: Path, args: tuple[str, ...]) -> Path:
+    db_path = tmp_path / "relay" / "messages.db"
+    task_id = _arg_value(args, "--task")
+    lane = _arg_value(args, "--lane")
+    if not task_id or not lane:
+        return db_path
+    task_path = tmp_path / "tasks" / "active" / f"{task_id}.md"
+    if not task_path.exists():
+        return db_path
+    authority_case = _frontmatter_scalar(task_path, "authority_case")
+    if not authority_case or authority_case in {"null", "None", "~"}:
+        return db_path
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    send_message(
+        db_path,
+        Envelope(
+            sender="test-dispatcher",
+            message_type="dispatch",
+            priority=0,
+            subject=task_id,
+            authority_case=authority_case,
+            authority_item=task_id,
+            recipients_spec=lane,
+            payload="durable dispatch binding",
+        ),
+    )
+    return db_path
+
+
 def _run(
-    tmp_path: Path, *args: str, extra_env: dict[str, str] | None = None
+    tmp_path: Path,
+    *args: str,
+    extra_env: dict[str, str] | None = None,
+    durable_mq: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(tmp_path / "home")
@@ -190,6 +241,10 @@ def _run(
     env["HAPAX_DISPATCH_WORKTREE"] = str(tmp_path / "worktree")
     env["HAPAX_ORCHESTRATION_LEDGER_DIR"] = str(tmp_path / "ledger")
     env["HAPAX_PLATFORM_CAPABILITY_REGISTRY"] = str(_fresh_registry(tmp_path))
+    if durable_mq:
+        env["HAPAX_RELAY_MQ_DB"] = str(_maybe_write_durable_mq_binding(tmp_path, args))
+    else:
+        env["HAPAX_RELAY_MQ_DB"] = str(tmp_path / "relay" / "missing.db")
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -512,6 +567,56 @@ printf '%s\\n' "$@" > {launcher_args}
     )
     assert dispatch_receipt["prompt"] is None
     assert dispatch_receipt["route_policy_action"] == "hold"
+
+
+def test_launch_blocks_without_durable_mq_authority_binding(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher)},
+        durable_mq=False,
+    )
+
+    assert result.returncode == 10
+    assert not launcher_args.exists()
+    assert "durable MQ authority binding required" in result.stderr
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["durable_mq_dispatch_bound"] is False
+    assert receipt["advisory_only"] is True
 
 
 def test_launches_codex_headless_through_codex_launcher(tmp_path: Path) -> None:

@@ -66,10 +66,23 @@ class SpendReason(StrEnum):
     QUALITY_ESCALATION = "quality_escalation"
 
 
+class SpendReconciliationState(StrEnum):
+    PENDING = "pending"
+    RECONCILED = "reconciled"
+    FROZEN_REFUSED = "frozen_refused"
+
+
 class SupportArtifactAuthority(StrEnum):
     NONE = "none"
     SUPPORT_NON_AUTHORITATIVE = "support_non_authoritative"
     ACCEPTED_AUTHORITATIVE = "accepted_authoritative"
+
+
+class SupportArtifactDisposition(StrEnum):
+    PENDING_REVIEW = "pending_review"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    RETIRED = "retired"
 
 
 class DependencyState(StrEnum):
@@ -228,6 +241,9 @@ class SpendReceipt(StrictModel):
     cap_remaining_usd: Decimal | None = Field(default=None)
     created_at: datetime
     reconcile_by: datetime | None = None
+    reconciliation_state: SpendReconciliationState = SpendReconciliationState.PENDING
+    reconciled_at: datetime | None = None
+    reconciliation_reason: str | None = None
     artifact_refs: tuple[str, ...] = Field(default=())
     support_artifact_authority: SupportArtifactAuthority = SupportArtifactAuthority.NONE
 
@@ -248,6 +264,23 @@ class SpendReceipt(StrictModel):
                 raise ValueError(f"{self.spend_id} estimated spend requires reconcile_by")
         if self.actual_cost_usd is not None and self.cap_remaining_usd is None:
             raise ValueError(f"{self.spend_id} reconciled spend requires cap_remaining_usd")
+        if self.reconciled_at is not None:
+            _require_aware(self.reconciled_at, "reconciled_at")
+        if self.reconciliation_state is SpendReconciliationState.PENDING:
+            if self.actual_cost_usd is not None:
+                raise ValueError(f"{self.spend_id} actual spend requires reconciled state")
+            if self.reconciled_at is not None or self.reconciliation_reason:
+                raise ValueError(f"{self.spend_id} pending spend cannot carry reconciliation")
+        elif self.reconciliation_state is SpendReconciliationState.RECONCILED:
+            if self.actual_cost_usd is None:
+                raise ValueError(f"{self.spend_id} reconciled spend requires actual cost")
+            if self.reconciled_at is None or not self.reconciliation_reason:
+                raise ValueError(f"{self.spend_id} reconciled spend requires review evidence")
+        elif self.reconciliation_state is SpendReconciliationState.FROZEN_REFUSED:
+            if self.actual_cost_usd is not None:
+                raise ValueError(f"{self.spend_id} frozen/refused spend cannot claim actual cost")
+            if self.reconciled_at is None or not self.reconciliation_reason:
+                raise ValueError(f"{self.spend_id} frozen/refused spend requires review evidence")
         _reject_private_or_identity_refs(
             _refs(
                 self.spend_id,
@@ -259,6 +292,7 @@ class SpendReceipt(StrictModel):
                 self.model_or_engine,
                 self.quality_floor,
                 self.quality_preservation_reason,
+                self.reconciliation_reason,
                 *self.artifact_refs,
             ),
             "spend receipt",
@@ -270,11 +304,15 @@ class SpendReceipt(StrictModel):
 
     def is_unreconciled_overdue(self, now: datetime) -> bool:
         return (
-            self.actual_cost_usd is None
+            self.reconciliation_state is SpendReconciliationState.PENDING
+            and self.actual_cost_usd is None
             and self.estimated_cost_usd is not None
             and self.reconcile_by is not None
             and self.reconcile_by <= now
         )
+
+    def is_frozen_refused(self) -> bool:
+        return self.reconciliation_state is SpendReconciliationState.FROZEN_REFUSED
 
 
 class ProviderDependencyRecord(StrictModel):
@@ -289,6 +327,7 @@ class ProviderDependencyRecord(StrictModel):
     transition_budget_id: str | None = None
     first_seen_at: datetime
     review_by: datetime
+    last_reviewed_at: datetime | None = None
     replacement_route_id: str | None = None
     bootstrap_dependency: bool
     evidence_refs: tuple[str, ...] = Field(min_length=1)
@@ -300,6 +339,12 @@ class ProviderDependencyRecord(StrictModel):
         _require_aware(self.review_by, "review_by")
         if self.review_by <= self.first_seen_at:
             raise ValueError(f"{self.dependency_id} review_by must be after first_seen_at")
+        if self.last_reviewed_at is not None:
+            _require_aware(self.last_reviewed_at, "last_reviewed_at")
+        if self.dependency_state is DependencyState.REPLACED and not self.replacement_route_id:
+            raise ValueError(f"{self.dependency_id} replaced dependencies need replacement route")
+        if self.dependency_state is not DependencyState.ACTIVE and self.last_reviewed_at is None:
+            raise ValueError(f"{self.dependency_id} closed dependencies need review timestamp")
         if self.bootstrap_dependency:
             if self.capacity_pool is not CapacityPool.BOOTSTRAP_BUDGET:
                 raise ValueError(f"{self.dependency_id} bootstrap dependencies need bootstrap pool")
@@ -328,8 +373,11 @@ class ArtifactProvenanceRecord(StrictModel):
     produced_under_budget_id: str | None = None
     source_spend_receipt_ids: tuple[str, ...] = Field(default=())
     support_artifact_authority: SupportArtifactAuthority
+    artifact_disposition: SupportArtifactDisposition = SupportArtifactDisposition.PENDING_REVIEW
     accepted_by_route_id: str | None = None
     accepted_at: datetime | None = None
+    disposition_reviewed_at: datetime | None = None
+    disposition_reason: str | None = None
     evidence_refs: tuple[str, ...] = Field(min_length=1)
     operator_visible_reason: str = Field(min_length=1)
 
@@ -337,14 +385,30 @@ class ArtifactProvenanceRecord(StrictModel):
     def _provenance_contract(self) -> Self:
         if self.accepted_at is not None:
             _require_aware(self.accepted_at, "accepted_at")
+        if self.disposition_reviewed_at is not None:
+            _require_aware(self.disposition_reviewed_at, "disposition_reviewed_at")
         if self.support_artifact_authority is SupportArtifactAuthority.ACCEPTED_AUTHORITATIVE:
             if not self.accepted_by_route_id or self.accepted_at is None:
                 raise ValueError(f"{self.provenance_id} accepted artifacts require acceptor")
+            if self.artifact_disposition is not SupportArtifactDisposition.ACCEPTED:
+                raise ValueError(
+                    f"{self.provenance_id} accepted artifacts need accepted disposition"
+                )
         else:
             if self.accepted_by_route_id or self.accepted_at is not None:
                 raise ValueError(
                     f"{self.provenance_id} non-authoritative artifacts cannot carry acceptance"
                 )
+            if self.artifact_disposition is SupportArtifactDisposition.ACCEPTED:
+                raise ValueError(
+                    f"{self.provenance_id} accepted disposition requires authoritative acceptance"
+                )
+        if self.artifact_disposition in {
+            SupportArtifactDisposition.REJECTED,
+            SupportArtifactDisposition.RETIRED,
+        }:
+            if self.disposition_reviewed_at is None or not self.disposition_reason:
+                raise ValueError(f"{self.provenance_id} closed artifacts require disposition")
         if (
             self.produced_under_budget_id
             and self.support_artifact_authority is SupportArtifactAuthority.NONE
@@ -360,6 +424,7 @@ class ArtifactProvenanceRecord(StrictModel):
                 self.produced_under_budget_id,
                 *self.source_spend_receipt_ids,
                 self.accepted_by_route_id,
+                self.disposition_reason,
                 *self.evidence_refs,
                 self.operator_visible_reason,
             ),
@@ -372,6 +437,7 @@ class ArtifactProvenanceRecord(StrictModel):
             self.produced_under_budget_id is not None
             and self.support_artifact_authority
             is SupportArtifactAuthority.SUPPORT_NON_AUTHORITATIVE
+            and self.artifact_disposition is SupportArtifactDisposition.PENDING_REVIEW
         )
 
 
@@ -540,8 +606,11 @@ class QuotaSpendDashboard(StrictModel):
     non_green_states: tuple[str, ...] = Field(default=())
     transition_budget_refs: tuple[str, ...] = Field(default=())
     unreconciled_spend_refs: tuple[str, ...] = Field(default=())
+    frozen_spend_refs: tuple[str, ...] = Field(default=())
     provider_dependency_refs: tuple[str, ...] = Field(default=())
+    closed_provider_dependency_refs: tuple[str, ...] = Field(default=())
     support_artifact_refs: tuple[str, ...] = Field(default=())
+    closed_support_artifact_refs: tuple[str, ...] = Field(default=())
     renewal_review_refs: tuple[str, ...] = Field(default=())
 
 
@@ -667,6 +736,9 @@ class QuotaSpendLedger(StrictModel):
             receipt.is_unreconciled_overdue(now) for receipt in self._budget_receipts(budget)
         )
 
+    def budget_has_frozen_refused_spend(self, budget: TransitionBudget) -> bool:
+        return any(receipt.is_frozen_refused() for receipt in self._budget_receipts(budget))
+
     def ledger_stale(self, now: datetime | None = None) -> bool:
         when = _coerce_now(now)
         age_s = (when - self.captured_at).total_seconds()
@@ -705,6 +777,11 @@ def evaluate_paid_route_eligibility(
     if overdue:
         blocking.append(
             "unreconciled spend receipts overdue for " + ", ".join(b.budget_id for b in overdue)
+        )
+    frozen = tuple(budget for budget in matching if ledger.budget_has_frozen_refused_spend(budget))
+    if frozen:
+        blocking.append(
+            "frozen/refused spend receipts for " + ", ".join(b.budget_id for b in frozen)
         )
 
     unexpired = tuple(
@@ -779,10 +856,25 @@ def build_dashboard(
     overdue_receipts = tuple(
         receipt for receipt in ledger.spend_receipts if receipt.is_unreconciled_overdue(when)
     )
+    frozen_receipts = tuple(
+        receipt for receipt in ledger.spend_receipts if receipt.is_frozen_refused()
+    )
     active_dependency_refs = tuple(
         dependency.dependency_id
         for dependency in ledger.provider_dependencies
         if dependency.dependency_state is DependencyState.ACTIVE
+    )
+    closed_dependency_refs = tuple(
+        dependency.dependency_id
+        for dependency in ledger.provider_dependencies
+        if dependency.dependency_state is not DependencyState.ACTIVE
+    )
+    closed_support_artifact_refs = tuple(
+        ref
+        for record in ledger.artifact_provenance
+        if record.artifact_disposition
+        in {SupportArtifactDisposition.REJECTED, SupportArtifactDisposition.RETIRED}
+        for ref in record.artifact_refs
     )
     non_green = _non_green_states(
         ledger_stale=ledger_stale,
@@ -813,10 +905,13 @@ def build_dashboard(
         non_green_states=tuple(non_green),
         transition_budget_refs=tuple(budget.budget_id for budget in ledger.transition_budgets),
         unreconciled_spend_refs=tuple(receipt.spend_id for receipt in overdue_receipts),
+        frozen_spend_refs=tuple(receipt.spend_id for receipt in frozen_receipts),
         provider_dependency_refs=active_dependency_refs,
+        closed_provider_dependency_refs=closed_dependency_refs,
         support_artifact_refs=tuple(
             ref for record in support_waiting for ref in record.artifact_refs
         ),
+        closed_support_artifact_refs=closed_support_artifact_refs,
         renewal_review_refs=tuple(record.renewal_id for record in ledger.renewal_records),
     )
 
@@ -900,8 +995,16 @@ def _subscription_quota_state(ledger: QuotaSpendLedger) -> SubscriptionQuotaStat
 
 def _next_budget_review_at(ledger: QuotaSpendLedger) -> datetime | None:
     candidates: list[datetime] = []
-    candidates.extend(budget.expires_at for budget in ledger.transition_budgets)
-    candidates.extend(dependency.review_by for dependency in ledger.provider_dependencies)
+    candidates.extend(
+        budget.expires_at
+        for budget in ledger.transition_budgets
+        if budget.lifecycle_state is BudgetLifecycleState.ACTIVE
+    )
+    candidates.extend(
+        dependency.review_by
+        for dependency in ledger.provider_dependencies
+        if dependency.dependency_state is DependencyState.ACTIVE
+    )
     candidates.extend(record.hard_expiry_review_at for record in ledger.renewal_records)
     return min(candidates) if candidates else None
 
