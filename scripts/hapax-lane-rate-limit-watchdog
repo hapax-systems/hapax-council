@@ -13,6 +13,16 @@ set -euo pipefail
 
 COOLDOWN_DIR="/tmp/hapax-lane-watchdog"
 COOLDOWN_S=90
+TASK_ROOT="$HOME/Documents/Personal/20-projects/hapax-cc-tasks/active"
+METHODOLOGY_DISPATCH="${HAPAX_METHODOLOGY_DISPATCH:-$(command -v hapax-methodology-dispatch 2>/dev/null || true)}"
+if [ -z "$METHODOLOGY_DISPATCH" ]; then
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [ -x "$script_dir/hapax-methodology-dispatch" ]; then
+    METHODOLOGY_DISPATCH="$script_dir/hapax-methodology-dispatch"
+  else
+    METHODOLOGY_DISPATCH="$HOME/projects/hapax-council/scripts/hapax-methodology-dispatch"
+  fi
+fi
 
 mkdir -p "$COOLDOWN_DIR"
 now=$(date +%s)
@@ -26,6 +36,76 @@ if [[ -x "$GOVERNANCE_SCRIPT" ]]; then
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) watchdog: governance violations detected — check cc-governance-sweep output"
   fi
 fi
+
+list_candidate_tasks() {
+    local lane_platform="${1:-claude}"
+    if [ ! -d "$TASK_ROOT" ]; then
+        return 1
+    fi
+    python3 -c "
+import re
+from pathlib import Path
+
+task_root = Path('$TASK_ROOT')
+lane_platform = '$lane_platform'
+candidates = []
+
+for p in task_root.glob('*.md'):
+    text = p.read_text(errors='replace')
+    status_m = re.search(r'^status:\s*(\S+)', text, re.MULTILINE)
+    if not status_m:
+        continue
+    status = status_m.group(1)
+    if status not in ('offered', 'unassigned', 'ready'):
+        continue
+    assigned_m = re.search(r'^assigned_to:\s*(\S+)', text, re.MULTILINE)
+    if assigned_m and assigned_m.group(1) not in ('unassigned', 'null', 'None', ''):
+        continue
+    blocked_m = re.search(r'^blocked_reason:\s*(.*)', text, re.MULTILINE)
+    if blocked_m and blocked_m.group(1).strip().lower() not in ('', 'null', 'none', '~'):
+        continue
+    plat_m = re.search(r'^platform_suitability:\s*\[([^\]]*)\]', text, re.MULTILINE)
+    if plat_m:
+        platforms = [s.strip() for s in plat_m.group(1).split(',')]
+        if 'any' not in platforms and lane_platform not in platforms:
+            continue
+    wsjf_m = re.search(r'^wsjf:\s*([0-9.]+)', text, re.MULTILINE)
+    wsjf = float(wsjf_m.group(1)) if wsjf_m else 0.0
+    candidates.append((wsjf, p.stem))
+
+for _wsjf, task_id in sorted(candidates, reverse=True):
+    print(task_id)
+" 2>/dev/null
+}
+
+governed_dispatch_msg() {
+    local lane="$1"
+    local err_file="$COOLDOWN_DIR/${lane}-methodology-dispatch.err"
+    local task_id prompt
+
+    if [ ! -x "$METHODOLOGY_DISPATCH" ]; then
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $lane: methodology dispatcher unavailable at $METHODOLOGY_DISPATCH" >&2
+        printf 'Governed dispatch is unavailable. Do not claim work from the pool. Wait for an explicit hapax-methodology-dispatch assignment from the parent/RTE.\n'
+        return 0
+    fi
+
+    while IFS= read -r task_id; do
+        [ -n "$task_id" ] || continue
+        if prompt=$("$METHODOLOGY_DISPATCH" \
+            --task "$task_id" \
+            --lane "$lane" \
+            --platform claude \
+            --mode headless \
+            --profile full \
+            --print-prompt 2>"$err_file"); then
+            printf '%s\n' "$prompt" | sed '/^eligible: /d'
+            return 0
+        fi
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $lane: governed dispatch rejected $task_id: $(tr '\n' ' ' < "$err_file" | sed 's/[[:space:]]\+/ /g' | cut -c1-220)" >&2
+    done < <(list_candidate_tasks claude)
+
+    printf 'No governed dispatch candidate passed. Do not claim work from the pool. Wait for an explicit hapax-methodology-dispatch assignment from the parent/RTE.\n'
+}
 
 # Dead-lane auto-restart: if a lane worktree exists but the process is dead,
 # relaunch it. Lanes must NEVER be idle — operator directive.
@@ -59,7 +139,7 @@ for lane in $EXPECTED_LANES; do
                 task_title=$(grep -m1 "^title:" "$assigned" | sed 's/^title:\s*//' | tr -d '"')
                 msg="Resume your assigned task: $task_id — $task_title. Ship a PR and cc-close --pr N after merge."
             else
-                msg="Claim the highest-WSJF offered task from ~/Documents/Personal/20-projects/hapax-cc-tasks/active/ and start work. Ship a PR and cc-close --pr N after merge."
+                msg="$(governed_dispatch_msg "$lane")"
             fi
 
             echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $lane: DEAD — auto-restarting via setsid"
@@ -193,8 +273,8 @@ for p in Path('$vault_root/active').glob('${claimed_task}*'):
             fi
         fi
     fi
-    # No claimed task or task is completed — prompt to claim next
-    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $best_lane: idle past cooldown, no active task — kicking (1 of 1)"
-    send_msg "Claim the highest-WSJF offered cc-task: cc-claim <task_id>. Tasks are at ~/Documents/Personal/20-projects/hapax-cc-tasks/. Run: ls ~/Documents/Personal/20-projects/hapax-cc-tasks/active/ | head -10 to find offered tasks. Then do the work and ship a PR."
+    # No claimed task or task is completed: request a governed assignment.
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $best_lane: idle past cooldown, no active task — governed kick (1 of 1)"
+    send_msg "$(governed_dispatch_msg "$best_lane")"
     echo "$now" > "$COOLDOWN_DIR/$best_lane"
 fi

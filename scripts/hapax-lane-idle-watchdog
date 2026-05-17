@@ -28,6 +28,15 @@ NTFY_TOPIC="${HAPAX_NTFY_TOPIC:-hapax}"
 NTFY_URL="${HAPAX_NTFY_URL:-http://localhost:8092}"
 CLAUDE_SEND="${HOME}/projects/hapax-council/scripts/hapax-claude-send"
 CODEX_SEND="${HOME}/projects/hapax-council/scripts/hapax-codex-send"
+METHODOLOGY_DISPATCH="${HAPAX_METHODOLOGY_DISPATCH:-$(command -v hapax-methodology-dispatch 2>/dev/null || true)}"
+if [ -z "$METHODOLOGY_DISPATCH" ]; then
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -x "$script_dir/hapax-methodology-dispatch" ]; then
+        METHODOLOGY_DISPATCH="$script_dir/hapax-methodology-dispatch"
+    else
+        METHODOLOGY_DISPATCH="${HOME}/projects/hapax-council/scripts/hapax-methodology-dispatch"
+    fi
+fi
 
 # Skip alpha (integrator, always has operator) and RTE
 SKIP_LANES="${HAPAX_IDLE_SKIP_LANES:-alpha}"
@@ -208,7 +217,7 @@ find_claimed_task() {
     return 1
 }
 
-find_next_wsjf_task() {
+list_candidate_tasks() {
     local lane_platform="${1:-any}"
     if [ ! -d "$TASK_ROOT" ]; then
         return 1
@@ -219,8 +228,7 @@ from pathlib import Path
 
 task_root = Path('$TASK_ROOT')
 lane_platform = '$lane_platform'
-best_id = None
-best_wsjf = -1.0
+candidates = []
 
 for p in task_root.glob('*.md'):
     text = p.read_text(errors='replace')
@@ -233,8 +241,8 @@ for p in task_root.glob('*.md'):
     assigned_m = re.search(r'^assigned_to:\s*(\S+)', text, re.MULTILINE)
     if assigned_m and assigned_m.group(1) not in ('unassigned', 'null', 'None', ''):
         continue
-    blocked_m = re.search(r'^blocked_reason:', text, re.MULTILINE)
-    if blocked_m:
+    blocked_m = re.search(r'^blocked_reason:\s*(.*)', text, re.MULTILINE)
+    if blocked_m and blocked_m.group(1).strip().lower() not in ('', 'null', 'none', '~'):
         continue
     plat_m = re.search(r'^platform_suitability:\s*\[([^\]]*)\]', text, re.MULTILINE)
     if plat_m:
@@ -243,13 +251,47 @@ for p in task_root.glob('*.md'):
             continue
     wsjf_m = re.search(r'^wsjf:\s*([0-9.]+)', text, re.MULTILINE)
     wsjf = float(wsjf_m.group(1)) if wsjf_m else 0.0
-    if wsjf > best_wsjf:
-        best_wsjf = wsjf
-        best_id = p.stem
+    candidates.append((wsjf, p.stem))
 
-if best_id:
-    print(best_id)
+for _wsjf, task_id in sorted(candidates, reverse=True):
+    print(task_id)
 " 2>/dev/null
+}
+
+GOVERNED_DISPATCH_TASK=""
+
+build_governed_dispatch_msg() {
+    local session="$1"
+    local lane="$2"
+    local platform="$3"
+    local err_file="$STATE_DIR/${session}.methodology-dispatch.err"
+    local task_id prompt
+
+    GOVERNED_DISPATCH_TASK=""
+
+    if [ ! -x "$METHODOLOGY_DISPATCH" ]; then
+        log "methodology dispatcher unavailable at $METHODOLOGY_DISPATCH" >&2
+        printf 'IDLE WATCHDOG: You are idle, but governed dispatch is unavailable. Do not claim work from the pool. Wait for an explicit hapax-methodology-dispatch assignment from the parent/RTE.\n'
+        return 0
+    fi
+
+    while IFS= read -r task_id; do
+        [ -n "$task_id" ] || continue
+        if prompt=$("$METHODOLOGY_DISPATCH" \
+            --task "$task_id" \
+            --lane "$lane" \
+            --platform "$platform" \
+            --mode headless \
+            --profile full \
+            --print-prompt 2>"$err_file"); then
+            GOVERNED_DISPATCH_TASK="$task_id"
+            printf '%s\n' "$prompt" | sed '/^eligible: /d'
+            return 0
+        fi
+        log "governed dispatch rejected $task_id for $platform/$lane: $(tr '\n' ' ' < "$err_file" | sed 's/[[:space:]]\\+/ /g' | cut -c1-220)" >&2
+    done < <(list_candidate_tasks "$platform")
+
+    printf 'IDLE WATCHDOG: You are idle, but no governed dispatch candidate passed. Do not claim work from the pool. Wait for an explicit hapax-methodology-dispatch assignment from the parent/RTE.\n'
 }
 
 dispatched=0
@@ -277,19 +319,13 @@ for session in "${!IDLE_LANES[@]}"; do
 
     dispatch_msg=""
     claimed=$(find_claimed_task "$lane" 2>/dev/null || true)
+    dispatch_target=""
     if [ -n "$claimed" ]; then
         dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with an active task: $claimed. Resume work immediately. Ship a PR and cc-close --pr N after merge."
+        dispatch_target="$claimed"
     else
-        next_task=$(find_next_wsjf_task "$platform" || true)
-        if [ -n "$next_task" ]; then
-            dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. Claim and start: cc-claim $next_task. Do the work, ship a PR, then cc-close --pr N."
-        else
-            if [ -d "$REQUEST_ROOT" ] && [ "$(ls "$REQUEST_ROOT"/*.md 2>/dev/null | wc -l)" -gt 0 ]; then
-                dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. No offered cc-tasks available. Check ~/Documents/Personal/20-projects/hapax-requests/active/ for request backlog items."
-            else
-                dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. No tasks available. Run: ls ~/Documents/Personal/20-projects/hapax-cc-tasks/active/ and find the highest-WSJF offered task to claim."
-            fi
-        fi
+        dispatch_msg="$(build_governed_dispatch_msg "$session" "$lane" "$platform")"
+        dispatch_target="${GOVERNED_DISPATCH_TASK:-governed-hold}"
     fi
 
     send_success=false
@@ -316,7 +352,7 @@ for session in "${!IDLE_LANES[@]}"; do
     echo "$now" > "$STATE_DIR/${session}.last_kick"
 
     if [ "$send_success" = true ]; then
-        log "DISPATCHED $session ($platform/$lane): idle ${idle_s}s → ${claimed:-${next_task:-generic}}"
+        log "DISPATCHED $session ($platform/$lane): idle ${idle_s}s -> $dispatch_target"
         rm -f "$STATE_DIR/${session}.idle_since" 2>/dev/null
         dispatched=$((dispatched + 1))
     else
