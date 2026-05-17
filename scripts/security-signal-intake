@@ -1,0 +1,700 @@
+#!/usr/bin/env python3
+"""Generate Hapax request notes from security/remediation signals."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+DEFAULT_REPO = "hapax-systems/hapax-council"
+DEFAULT_REQUESTS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-requests/active"
+DEFAULT_STATE_PATH = Path.home() / ".cache/hapax/security-signal-intake-state.json"
+PLANNING_CASE = "CASE-SDLC-SECURITY-REMEDIATION-001"
+GENERATOR_ID = "security-signal-intake"
+DEFAULT_SOURCES = ("dependabot", "code-scanning", "secret-scanning")
+ACTION_EVENTS = frozenset({"push", "merge_group", "workflow_run"})
+
+
+@dataclass(frozen=True)
+class Signal:
+    kind: str
+    source_signal_id: str
+    request_id: str
+    title: str
+    priority_hint: str
+    risk_guess: str
+    severity: str
+    source_url: str
+    surfaces: tuple[str, ...]
+    principle_flags: tuple[str, ...]
+    tags: tuple[str, ...]
+    evidence_lines: tuple[str, ...]
+    constraints: tuple[str, ...]
+    generated_from: str
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    signal: Signal
+    path: Path
+    status: str
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC).replace(microsecond=0)
+
+
+def isoformat_z(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_github_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return None
+
+
+def slug_token(value: str, *, upper: bool = False, max_len: int | None = None) -> str:
+    token = re.sub(r"[^A-Za-z0-9]+", "-", value).strip("-")
+    if max_len is not None:
+        token = token[:max_len].strip("-")
+    return token.upper() if upper else token.lower()
+
+
+def repo_token(repo: str) -> str:
+    return slug_token(repo, upper=True, max_len=64)
+
+
+def request_id_for(repo: str, source: str, number_or_hash: int | str) -> str:
+    if isinstance(number_or_hash, int):
+        suffix = f"{number_or_hash:06d}"
+    else:
+        suffix = slug_token(number_or_hash, upper=True, max_len=16)
+    return f"REQ-GH-{slug_token(source, upper=True)}-{repo_token(repo)}-{suffix}"
+
+
+def _frontmatter_scalar(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+    return json.dumps(str(value), ensure_ascii=True)
+
+
+def _frontmatter_lines(fields: dict[str, Any]) -> list[str]:
+    lines = ["---"]
+    for key, value in fields.items():
+        if isinstance(value, (list, tuple)):
+            if not value:
+                lines.append(f"{key}: []")
+            else:
+                lines.append(f"{key}:")
+                for item in value:
+                    lines.append(f"  - {_frontmatter_scalar(item)}")
+        else:
+            lines.append(f"{key}: {_frontmatter_scalar(value)}")
+    lines.append("---")
+    return lines
+
+
+def render_request(signal: Signal, generated_at: datetime) -> str:
+    now = isoformat_z(generated_at)
+    fields: dict[str, Any] = {
+        "type": "hapax-request",
+        "request_id": signal.request_id,
+        "title": signal.title,
+        "status": "captured",
+        "created_at": now,
+        "updated_at": now,
+        "source": signal.kind,
+        "source_signal_id": signal.source_signal_id,
+        "source_signal_url": signal.source_url,
+        "source_signal_severity": signal.severity,
+        "source_signal_generator": GENERATOR_ID,
+        "priority_hint": signal.priority_hint,
+        "requested_by": GENERATOR_ID,
+        "requester": GENERATOR_ID,
+        "intake_owner": "unassigned",
+        "authority_requested": "research_to_implementation",
+        "risk_guess": signal.risk_guess,
+        "requires_research": True,
+        "planning_case_hint": PLANNING_CASE,
+        "route_metadata_schema": 1,
+        "quality_floor": "deterministic_ok",
+        "authority_level": "support_non_authoritative",
+        "mutation_surface": "source",
+        "surfaces": signal.surfaces,
+        "principle_flags": signal.principle_flags,
+        "constraints": signal.constraints,
+        "evidence_refs": (signal.source_url, signal.source_signal_id),
+        "tags": signal.tags,
+    }
+    body = [
+        f"# {signal.title}",
+        "",
+        "## Request",
+        "",
+        "Create the appropriate remediation plan and downstream cc-task(s) for this security signal.",
+        "",
+        "## Signal Evidence",
+        "",
+        *[f"- {line}" for line in signal.evidence_lines],
+        "",
+        "## Required Handling",
+        "",
+        "- Preserve this request as intake evidence; do not treat it as direct implementation authority.",
+        "- Convert through WSJF and cc-task planning before mutating source/runtime surfaces.",
+        "- Verify the GitHub alert or recurring failure clears after remediation.",
+    ]
+    return "\n".join(_frontmatter_lines(fields) + [""] + body) + "\n"
+
+
+def severity_priority(severity: str, *, kind: str, runtime: bool = False) -> tuple[str, str]:
+    normalized = severity.lower().strip()
+    if kind == "secret-scanning":
+        return "p0", "high"
+    if normalized == "critical":
+        return "p0", "high"
+    if normalized == "high":
+        return "p0" if runtime else "p1", "high"
+    if normalized in {"medium", "moderate", "error"}:
+        return "p1", "medium"
+    if normalized in {"low", "warning"}:
+        return "p2", "low"
+    return "p2", "medium"
+
+
+def dependabot_signal(repo: str, alert: dict[str, Any]) -> Signal:
+    number = int(alert["number"])
+    advisory = alert.get("security_advisory") or {}
+    vulnerability = alert.get("security_vulnerability") or {}
+    dependency = alert.get("dependency") or {}
+    package = dependency.get("package") or {}
+    package_name = str(package.get("name") or "unknown-package")
+    ecosystem = str(package.get("ecosystem") or "unknown-ecosystem")
+    manifest = str(dependency.get("manifest_path") or "unknown-manifest")
+    scope = str(dependency.get("scope") or "unknown-scope")
+    severity = str(advisory.get("severity") or "unknown")
+    runtime = scope == "runtime"
+    priority, risk = severity_priority(severity, kind="dependabot", runtime=runtime)
+    ghsa = str(advisory.get("ghsa_id") or "none")
+    cve = str(advisory.get("cve_id") or "none")
+    patched = (vulnerability.get("first_patched_version") or {}).get("identifier") or "none"
+    vulnerable_range = str(vulnerability.get("vulnerable_version_range") or "unknown")
+    url = str(alert.get("html_url") or "")
+    title = f"Remediate {severity} Dependabot alert #{number}: {ecosystem} {package_name}"
+    return Signal(
+        kind="github-dependabot-alert",
+        source_signal_id=f"github:{repo}:dependabot:{number}",
+        request_id=request_id_for(repo, "dependabot", number),
+        title=title,
+        priority_hint=priority,
+        risk_guess=risk,
+        severity=severity,
+        source_url=url,
+        surfaces=("github-security", "dependabot-alerts", "dependency-lockfiles", ecosystem),
+        principle_flags=(
+            "no-known-vulnerabilities",
+            "evidence-backed-remediation",
+            "preserve-merge-queue-quality",
+        ),
+        tags=("hapax-request", "security", "dependabot", ecosystem, priority),
+        evidence_lines=(
+            f"GitHub Dependabot alert: {url}",
+            f"Package: {ecosystem} / {package_name}",
+            f"Manifest: {manifest}",
+            f"Dependency scope: {scope}",
+            f"Advisory: {ghsa}; CVE: {cve}",
+            f"Vulnerable range: {vulnerable_range}",
+            f"First patched version: {patched}",
+        ),
+        constraints=(
+            "Prefer the minimum safe dependency or lockfile update that clears the alert.",
+            "Run affected package-manager and CI checks before closing remediation.",
+            "If no patch exists, create a mitigation/upgrade-path cc-task instead of dismissing the alert.",
+        ),
+        generated_from="dependabot",
+    )
+
+
+def code_scanning_signal(repo: str, alert: dict[str, Any]) -> Signal:
+    number = int(alert["number"])
+    rule = alert.get("rule") or {}
+    instance = alert.get("most_recent_instance") or {}
+    location = instance.get("location") or {}
+    message = instance.get("message") or {}
+    rule_id = str(rule.get("id") or rule.get("name") or "unknown-rule")
+    severity = str(rule.get("security_severity_level") or rule.get("severity") or "unknown")
+    priority, risk = severity_priority(severity, kind="code-scanning")
+    path = str(location.get("path") or "unknown-path")
+    start_line = location.get("start_line")
+    tool = (alert.get("tool") or {}).get("name") or "code-scanning"
+    url = str(alert.get("html_url") or "")
+    title = f"Remediate {severity} code scanning alert #{number}: {rule_id}"
+    evidence = [
+        f"GitHub code scanning alert: {url}",
+        f"Tool: {tool}",
+        f"Rule: {rule_id}",
+        f"Path: {path}",
+    ]
+    if start_line:
+        evidence.append(f"Start line: {start_line}")
+    if message.get("text"):
+        evidence.append(f"Message: {message['text']}")
+    return Signal(
+        kind="github-code-scanning-alert",
+        source_signal_id=f"github:{repo}:code-scanning:{number}",
+        request_id=request_id_for(repo, "code-scanning", number),
+        title=title,
+        priority_hint=priority,
+        risk_guess=risk,
+        severity=severity,
+        source_url=url,
+        surfaces=("github-security", "code-scanning-alerts", "source", path),
+        principle_flags=(
+            "secure-source-by-default",
+            "evidence-backed-remediation",
+            "preserve-merge-queue-quality",
+        ),
+        tags=("hapax-request", "security", "code-scanning", tool, priority),
+        evidence_lines=tuple(evidence),
+        constraints=(
+            "Use the code scanning rule and most recent instance as the remediation evidence anchor.",
+            "Add or preserve tests that prevent recurrence where the finding is source-reachable.",
+            "Do not dismiss without a documented false-positive or risk-acceptance decision.",
+        ),
+        generated_from="code-scanning",
+    )
+
+
+def secret_scanning_signal(repo: str, alert: dict[str, Any]) -> Signal:
+    number = int(alert["number"])
+    secret_type = str(alert.get("secret_type_display_name") or alert.get("secret_type") or "secret")
+    validity = str(alert.get("validity") or "unknown")
+    publicly_leaked = bool(alert.get("publicly_leaked"))
+    severity = "critical" if publicly_leaked else "high"
+    priority, risk = severity_priority(severity, kind="secret-scanning")
+    url = str(alert.get("html_url") or "")
+    title = f"Resolve secret scanning alert #{number}: {secret_type}"
+    return Signal(
+        kind="github-secret-scanning-alert",
+        source_signal_id=f"github:{repo}:secret-scanning:{number}",
+        request_id=request_id_for(repo, "secret-scanning", number),
+        title=title,
+        priority_hint=priority,
+        risk_guess=risk,
+        severity=severity,
+        source_url=url,
+        surfaces=("github-security", "secret-scanning-alerts", "credential-hygiene"),
+        principle_flags=(
+            "no-secret-disclosure",
+            "credential-rotation-required",
+            "evidence-backed-remediation",
+        ),
+        tags=("hapax-request", "security", "secret-scanning", priority),
+        evidence_lines=(
+            f"GitHub secret scanning alert: {url}",
+            f"Secret type: {secret_type}",
+            f"Validity: {validity}",
+            f"Publicly leaked: {str(publicly_leaked).lower()}",
+            "Secret value: intentionally omitted by intake generator.",
+        ),
+        constraints=(
+            "Never paste or persist the secret value in requests, tasks, commits, logs, or chat.",
+            "Rotate or revoke the credential before closing the alert where applicable.",
+            "Record only provider, type, location evidence, and revocation proof.",
+        ),
+        generated_from="secret-scanning",
+    )
+
+
+def actions_failure_signals(
+    repo: str,
+    runs: list[dict[str, Any]],
+    *,
+    now: datetime,
+    lookback_hours: int,
+    min_count: int,
+) -> list[Signal]:
+    cutoff = now - timedelta(hours=lookback_hours)
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for run in runs:
+        if run.get("conclusion") != "failure":
+            continue
+        event = str(run.get("event") or "")
+        if event not in ACTION_EVENTS:
+            continue
+        created = parse_github_time(run.get("created_at"))
+        if created is not None and created < cutoff:
+            continue
+        name = str(run.get("name") or "unknown-workflow")
+        branch = str(run.get("head_branch") or "unknown-branch")
+        groups.setdefault((name, event, branch), []).append(run)
+
+    signals: list[Signal] = []
+    for (name, event, branch), group in sorted(groups.items()):
+        if len(group) < min_count:
+            continue
+        latest = sorted(group, key=lambda item: str(item.get("created_at") or ""), reverse=True)[0]
+        digest = hashlib.sha1(
+            f"{repo}|{name}|{event}|{branch}".encode(),
+            usedforsecurity=False,
+        ).hexdigest()[:12]
+        title = f"Investigate recurring GitHub Actions failure: {name} on {branch}"
+        evidence = [
+            f"Workflow: {name}",
+            f"Event: {event}",
+            f"Branch: {branch}",
+            f"Recent failures in window: {len(group)}",
+            f"Latest failed run: {latest.get('html_url') or 'unknown'}",
+            f"Latest head SHA: {latest.get('head_sha') or 'unknown'}",
+        ]
+        signals.append(
+            Signal(
+                kind="github-actions-recurring-failure",
+                source_signal_id=f"github:{repo}:actions-recurring-failure:{digest}",
+                request_id=request_id_for(repo, "actions", digest),
+                title=title,
+                priority_hint="p1" if event == "merge_group" else "p2",
+                risk_guess="medium",
+                severity="recurring-failure",
+                source_url=str(latest.get("html_url") or ""),
+                surfaces=("github-actions", "ci-cd", "merge-queue", name),
+                principle_flags=(
+                    "preserve-merge-queue-quality",
+                    "avoid-alert-spam",
+                    "evidence-backed-remediation",
+                ),
+                tags=("hapax-request", "sdlc", "ci", "github-actions"),
+                evidence_lines=tuple(evidence),
+                constraints=(
+                    "Do not generate one request per transient run; this request represents a repeated failure group.",
+                    "Fix the underlying recurring failure or document the external blocker.",
+                    "Keep branch-protection and merge-queue guarantees intact.",
+                ),
+                generated_from="actions",
+            )
+        )
+    return signals
+
+
+def run_gh_api(endpoint: str, *, gh_bin: str = "gh", paginate: bool = True) -> Any:
+    cmd = [gh_bin, "api"]
+    if paginate:
+        cmd.extend(["--paginate", "--slurp"])
+    cmd.append(endpoint)
+    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    if not result.stdout.strip():
+        return []
+    return json.loads(result.stdout)
+
+
+def flatten_pages(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        rows: list[dict[str, Any]] = []
+        for page in payload:
+            if isinstance(page, list):
+                rows.extend(item for item in page if isinstance(item, dict))
+            elif isinstance(page, dict):
+                rows.append(page)
+        return rows
+    if isinstance(payload, dict):
+        return [payload]
+    return []
+
+
+def fetch_dependabot(repo: str, *, gh_bin: str) -> list[Signal]:
+    rows = flatten_pages(
+        run_gh_api(
+            f"repos/{repo}/dependabot/alerts?state=open&per_page=100",
+            gh_bin=gh_bin,
+        )
+    )
+    return [dependabot_signal(repo, row) for row in rows]
+
+
+def fetch_code_scanning(repo: str, *, gh_bin: str) -> list[Signal]:
+    rows = flatten_pages(
+        run_gh_api(
+            f"repos/{repo}/code-scanning/alerts?state=open&per_page=100",
+            gh_bin=gh_bin,
+        )
+    )
+    return [code_scanning_signal(repo, row) for row in rows]
+
+
+def fetch_secret_scanning(repo: str, *, gh_bin: str) -> list[Signal]:
+    rows = flatten_pages(
+        run_gh_api(
+            f"repos/{repo}/secret-scanning/alerts?state=open&per_page=100",
+            gh_bin=gh_bin,
+        )
+    )
+    return [secret_scanning_signal(repo, row) for row in rows]
+
+
+def fetch_actions_failures(
+    repo: str,
+    *,
+    gh_bin: str,
+    now: datetime,
+    max_runs: int,
+    lookback_hours: int,
+    min_count: int,
+) -> list[Signal]:
+    payload = run_gh_api(
+        f"repos/{repo}/actions/runs?status=failure&per_page={max_runs}",
+        gh_bin=gh_bin,
+        paginate=False,
+    )
+    runs = payload.get("workflow_runs", []) if isinstance(payload, dict) else []
+    return actions_failure_signals(
+        repo,
+        [run for run in runs if isinstance(run, dict)],
+        now=now,
+        lookback_hours=lookback_hours,
+        min_count=min_count,
+    )
+
+
+def unquote_frontmatter_scalar(value: str) -> str:
+    stripped = value.strip()
+    if stripped in {"null", "~"}:
+        return ""
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] == '"':
+        try:
+            return str(json.loads(stripped))
+        except json.JSONDecodeError:
+            return stripped.strip('"')
+    return stripped.strip("'\"")
+
+
+def existing_signal_paths(request_roots: tuple[Path, ...]) -> dict[str, Path]:
+    paths: dict[str, Path] = {}
+    for root in request_roots:
+        if not root.is_dir():
+            continue
+        for path in root.glob("*.md"):
+            try:
+                for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if line.startswith("source_signal_id:"):
+                        paths[unquote_frontmatter_scalar(line.split(":", 1)[1])] = path
+                        break
+            except OSError:
+                continue
+    return paths
+
+
+def existing_signal_ids(request_roots: tuple[Path, ...]) -> set[str]:
+    return set(existing_signal_paths(request_roots))
+
+
+def write_atomic(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
+
+
+def write_requests(
+    signals: list[Signal],
+    *,
+    requests_dir: Path,
+    generated_at: datetime,
+    write: bool,
+    refresh_existing: bool = False,
+) -> list[WriteResult]:
+    root = requests_dir.resolve()
+    closed_root = root.parent / "closed"
+    existing = existing_signal_paths((root, closed_root))
+    results: list[WriteResult] = []
+    for signal in signals:
+        path = root / f"{signal.request_id}.md"
+        existing_path = existing.get(signal.source_signal_id)
+        if existing_path is not None or path.exists():
+            if (
+                write
+                and refresh_existing
+                and existing_path is not None
+                and existing_path.is_relative_to(root)
+            ):
+                write_atomic(existing_path, render_request(signal, generated_at))
+                results.append(
+                    WriteResult(signal=signal, path=existing_path, status="refreshed_existing")
+                )
+                continue
+            results.append(WriteResult(signal=signal, path=path, status="skipped_existing"))
+            continue
+        if write:
+            write_atomic(path, render_request(signal, generated_at))
+        results.append(
+            WriteResult(
+                signal=signal,
+                path=path,
+                status="created" if write else "would_create",
+            )
+        )
+    return results
+
+
+def summary_payload(
+    *,
+    repo: str,
+    generated_at: datetime,
+    sources: list[str],
+    results: list[WriteResult],
+    errors: dict[str, str],
+    write: bool,
+) -> dict[str, Any]:
+    by_source: dict[str, dict[str, int]] = {}
+    for result in results:
+        bucket = by_source.setdefault(
+            result.signal.generated_from,
+            {
+                "signals": 0,
+                "created": 0,
+                "would_create": 0,
+                "refreshed_existing": 0,
+                "skipped_existing": 0,
+            },
+        )
+        bucket["signals"] += 1
+        bucket[result.status] = bucket.get(result.status, 0) + 1
+    return {
+        "generated_at": isoformat_z(generated_at),
+        "repo": repo,
+        "mode": "write" if write else "dry-run",
+        "sources": sources,
+        "source_summary": by_source,
+        "total_signals": len(results),
+        "created": sum(1 for result in results if result.status == "created"),
+        "would_create": sum(1 for result in results if result.status == "would_create"),
+        "refreshed_existing": sum(1 for result in results if result.status == "refreshed_existing"),
+        "skipped_existing": sum(1 for result in results if result.status == "skipped_existing"),
+        "errors": errors,
+        "requests": [
+            {
+                "request_id": result.signal.request_id,
+                "source_signal_id": result.signal.source_signal_id,
+                "kind": result.signal.kind,
+                "priority_hint": result.signal.priority_hint,
+                "status": result.status,
+                "path": str(result.path),
+                "url": result.signal.source_url,
+            }
+            for result in results
+        ],
+    }
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Convert GitHub security/remediation signals into Hapax request notes."
+    )
+    parser.add_argument(
+        "--repo", default=os.environ.get("HAPAX_SECURITY_SIGNAL_REPO", DEFAULT_REPO)
+    )
+    parser.add_argument(
+        "--requests-dir",
+        type=Path,
+        default=Path(os.environ.get("HAPAX_REQUESTS_ACTIVE_DIR", DEFAULT_REQUESTS_DIR)),
+    )
+    parser.add_argument("--state-path", type=Path, default=DEFAULT_STATE_PATH)
+    parser.add_argument("--source", action="append", choices=(*DEFAULT_SOURCES, "actions"))
+    parser.add_argument("--include-actions-failures", action="store_true")
+    parser.add_argument("--actions-max-runs", type=int, default=100)
+    parser.add_argument("--actions-lookback-hours", type=int, default=24)
+    parser.add_argument("--actions-min-count", type=int, default=3)
+    parser.add_argument("--limit", type=int, default=0, help="Limit total generated signals.")
+    parser.add_argument("--gh-bin", default=os.environ.get("GH_BIN", "gh"))
+    parser.add_argument("--write", action="store_true", help="Write request notes.")
+    parser.add_argument(
+        "--refresh-existing",
+        action="store_true",
+        help="Rewrite active generated requests for matching source_signal_id values.",
+    )
+    parser.add_argument(
+        "--strict", action="store_true", help="Fail when any selected source fails."
+    )
+    return parser.parse_args(argv)
+
+
+def collect_signals(
+    args: argparse.Namespace, now: datetime
+) -> tuple[list[Signal], dict[str, str], list[str]]:
+    sources = list(args.source or DEFAULT_SOURCES)
+    if args.include_actions_failures and "actions" not in sources:
+        sources.append("actions")
+
+    signals: list[Signal] = []
+    errors: dict[str, str] = {}
+    collectors = {
+        "dependabot": lambda: fetch_dependabot(args.repo, gh_bin=args.gh_bin),
+        "code-scanning": lambda: fetch_code_scanning(args.repo, gh_bin=args.gh_bin),
+        "secret-scanning": lambda: fetch_secret_scanning(args.repo, gh_bin=args.gh_bin),
+        "actions": lambda: fetch_actions_failures(
+            args.repo,
+            gh_bin=args.gh_bin,
+            now=now,
+            max_runs=args.actions_max_runs,
+            lookback_hours=args.actions_lookback_hours,
+            min_count=args.actions_min_count,
+        ),
+    }
+    for source in sources:
+        try:
+            signals.extend(collectors[source]())
+        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, ValueError) as exc:
+            errors[source] = str(exc)
+
+    signals.sort(key=lambda signal: (signal.priority_hint, signal.kind, signal.request_id))
+    if args.limit > 0:
+        signals = signals[: args.limit]
+    return signals, errors, sources
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    now = utc_now()
+    signals, errors, sources = collect_signals(args, now)
+    if errors and (args.strict or not signals):
+        print(json.dumps({"errors": errors, "signals": len(signals)}, indent=2), file=sys.stderr)
+        return 1
+
+    results = write_requests(
+        signals,
+        requests_dir=args.requests_dir,
+        generated_at=now,
+        write=args.write,
+        refresh_existing=args.refresh_existing,
+    )
+    payload = summary_payload(
+        repo=args.repo,
+        generated_at=now,
+        sources=sources,
+        results=results,
+        errors=errors,
+        write=args.write,
+    )
+    if args.state_path:
+        write_atomic(args.state_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
