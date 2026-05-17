@@ -78,6 +78,8 @@ fn main_1() {
     var tone: f32;
     var tone_jitter: f32;
     var idx: f32;
+    var idx_next: f32;
+    var idx_mix: f32;
     var palette_color: vec3<f32>;
     var mapped: vec3<f32>;
     var final_rgb: vec3<f32>;
@@ -95,7 +97,7 @@ fn main_1() {
     n = _e26;
     let _e28 = global.u_time;
     let _e29 = global.u_cycle_rate;
-    time_offset = floor((_e28 * _e29));
+    time_offset = _e28 * _e29;
     surface_presence = smoothstep(0.035f, 0.18f, intensity);
 
     // Palette remap must attach to the scene's own signal, not to a
@@ -111,9 +113,9 @@ fn main_1() {
     let _e41 = (_e39 + _e40);
     let _e42 = n;
     idx = (_e41 - (floor((_e41 / _e42)) * _e42));
-    let _e48 = idx;
-    let _e49 = synthwavePalette(_e48);
-    palette_color = _e49;
+    idx_next = ((floor(idx) + 1.0f) - (floor(((floor(idx) + 1.0f) / _e42)) * _e42));
+    idx_mix = smoothstep(0.0f, 1.0f, fract(idx));
+    palette_color = mix(synthwavePalette(floor(idx)), synthwavePalette(idx_next), vec3<f32>(idx_mix));
     let _e51 = palette_color;
     let _e52 = intensity;
     mapped = (_e51 * _e52);

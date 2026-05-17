@@ -193,8 +193,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let d = length(in.local_pos);
             let core = smoothstep(0.34, 0.02, d);
             let halo = smoothstep(1.0, 0.08, d);
-            let pulse = 0.88 + 0.12 * sin(t * 0.9);
-            let alpha = clamp(core * 0.58 + halo * 0.22, 0.0, 0.72) * pulse;
+            let alpha = clamp(core * 0.58 + halo * 0.22, 0.0, 0.72);
             let color = light_color * (0.85 + core * 1.4);
             return vec4<f32>(color, alpha);
         }
@@ -203,7 +202,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let progress = (in.local_pos.y + 1.0) * 0.5;
         let center = smoothstep(1.0, 0.0, across);
         let taper = (1.0 - progress * 0.82);
-        let shimmer = 0.78 + 0.22 * sin(t * 0.35 + progress * 8.0 + in.plane_kind);
+        let shimmer = 0.88;
         let alpha = center * taper * shimmer * 0.22;
         let color = light_color * (0.36 + 0.42 * center);
         return vec4<f32>(color, alpha);
@@ -242,7 +241,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let density_gate = step(0.74, stipple_hash(cell));
         let dot_alpha = density_gate * smoothstep(0.155, 0.0, length(local - center));
         let material = scroom_material_pattern(gc, in.plane_kind);
-        let weave = 0.5 + 0.5 * sin(gc.x * 2.1 + gc.y * 1.7 + t * 0.010);
+        let weave = 0.5 + 0.5 * sin(gc.x * 2.1 + gc.y * 1.7);
         let shadow = soft_shadow_at(wp, grid.light_position.xyz);
         let room_light = point_light_at(wp, in.normal) * shadow;
         var base_alpha = 0.092;
@@ -278,11 +277,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let glow = 1.0 + major_x * major_y * 2.6;
 
     // Luminescence
-    let pulse = 0.96 + 0.04 * sin(t * 0.18 + gc.y * 0.2);
     let shadow = soft_shadow_at(wp, grid.light_position.xyz);
     let room_light = point_light_at(wp, in.normal) * shadow;
 
-    color = color * 0.72 * glow * dist_fade * pulse;
+    color = color * 0.72 * glow * dist_fade;
     color = color * (0.66 + 0.34 * shadow) + light_color * room_light * 0.22;
     var alpha = major * 0.50 * dist_fade * (0.82 + 0.18 * shadow + 0.12 * room_light);
     if is_mid_field {

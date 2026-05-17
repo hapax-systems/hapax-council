@@ -1558,6 +1558,45 @@ mod tests {
     }
 
     #[test]
+    fn postprocess_default_mediation_is_static_not_time_pumped() {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../agents/shaders/nodes/postprocess.wgsl"),
+        )
+        .expect("read postprocess shader");
+
+        assert!(
+            source.contains("u_anonymize"),
+            "postprocess must retain stable mediation for anti-parasocial surface treatment"
+        );
+        assert!(
+            !source.contains("uniforms.time"),
+            "default postprocess mediation must not carry time-varying scan/hash pumping"
+        );
+    }
+
+    #[test]
+    fn strobe_is_soft_sine_with_luma_floor() {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../agents/shaders/nodes/strobe.wgsl"),
+        )
+        .expect("read strobe shader");
+
+        assert!(
+            source.contains("soft_wave = 0.86 + 0.14 * sin"),
+            "strobe may modulate as a soft sine, not as a hard flash gate"
+        );
+        assert!(
+            !source.contains("0.5 + (0.5 * sin"),
+            "strobe must not swing from zero to full authority"
+        );
+        assert!(
+            source.contains("source.xyz * 0.92"),
+            "strobe tint must preserve a source luminance floor instead of dark-pulsing"
+        );
+    }
+
+    #[test]
     fn autonomous_drift_uses_five_slots_with_four_active_initially() {
         let path = std::env::temp_dir().join(format!(
             "hapax-effect-drift-test-plan-{}.json",
@@ -2493,6 +2532,10 @@ mod tests {
         assert!(
             source.contains("surface_presence") && source.contains("effective_blend"),
             "palette remap must gate recoloring by existing scene/content energy"
+        );
+        assert!(
+            !source.contains("time_offset = floor") && source.contains("idx_mix = smoothstep"),
+            "palette remap cycle must be continuous, not a frame-wide stepped palette pump"
         );
         assert!(
             !source.contains("floor((_e33.x * _e35))")
