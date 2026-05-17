@@ -322,6 +322,11 @@ fn retain_temporal_priming_for_required_names(
     primed.retain(|name| required_temporal_names.contains(name));
 }
 
+fn clear_temporal_accumulators<T>(textures: &mut HashMap<String, T>, primed: &mut HashSet<String>) {
+    textures.clear();
+    primed.clear();
+}
+
 /// LRR Phase 0 item 4 / FINDING-Q step 2 — validate every pass's shader
 /// against naga BEFORE the wgpu hot-reload swap.
 ///
@@ -772,6 +777,10 @@ impl DynamicPipeline {
 
         if by_target.values().all(|v| v.is_empty()) {
             self.passes.clear();
+            clear_temporal_accumulators(
+                &mut self.temporal_textures,
+                &mut self.temporal_textures_primed,
+            );
             log::info!("dynamic_pipeline: loaded empty plan (renders black)");
             return true;
         }
@@ -2986,6 +2995,24 @@ mod tests {
         assert!(
             !primed.contains("fluid_sim"),
             "new temporal nodes start unprimed and get explicitly initialized"
+        );
+    }
+
+    #[test]
+    fn empty_plan_reload_clears_temporal_accumulator_state() {
+        let mut textures =
+            HashMap::from([("fb".to_string(), 1_u8), ("slitscan".to_string(), 2_u8)]);
+        let mut primed = HashSet::from(["fb".to_string(), "slitscan".to_string()]);
+
+        clear_temporal_accumulators(&mut textures, &mut primed);
+
+        assert!(
+            textures.is_empty(),
+            "empty plans must not leave retired accumulator textures alive for later reuse"
+        );
+        assert!(
+            primed.is_empty(),
+            "empty plans must not preserve priming marks for retired accumulators"
         );
     }
 
