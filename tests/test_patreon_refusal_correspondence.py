@@ -76,3 +76,43 @@ class TestReceiveOnlyBoundary:
         pub_src = (REPO_ROOT / "agents" / "publication_bus" / "patreon_publisher.py").read_text()
         for forbidden in ["perk_delivery", "role_sync", "discord_role", "early_access_gate"]:
             assert forbidden not in pub_src.lower(), f"Perk-related code found: {forbidden}"
+
+
+class TestSourceOfTruthAlignment:
+    """Validate that refusal brief, code constants, and registry agree on Patreon policy."""
+
+    def test_runtime_axiom_tag_matches_publisher_constant(self):
+        from agents.payment_processors.refusal_annex import RAIL_REFUSAL_AXIOM
+        from agents.publication_bus._rail_publisher_helpers import CANCELLATION_REFUSAL_AXIOM
+
+        assert CANCELLATION_REFUSAL_AXIOM == RAIL_REFUSAL_AXIOM
+
+    def test_directive_slug_matches_refusal_brief_header(self):
+        from agents.publication_bus._rail_publisher_helpers import CANCELLATION_REFUSAL_DIRECTIVE
+
+        brief = (REPO_ROOT / "docs" / "refusal-briefs" / "leverage-patreon.md").read_text()
+        assert CANCELLATION_REFUSAL_DIRECTIVE in brief
+
+    def test_runtime_tag_documented_in_brief(self):
+        from agents.publication_bus._rail_publisher_helpers import CANCELLATION_REFUSAL_AXIOM
+
+        brief = (REPO_ROOT / "docs" / "refusal-briefs" / "leverage-patreon.md").read_text()
+        assert CANCELLATION_REFUSAL_AXIOM in brief
+
+    def test_publisher_auto_links_under_documented_axiom(self):
+        from agents.publication_bus._rail_publisher_helpers import CANCELLATION_REFUSAL_AXIOM
+        from agents.publication_bus.patreon_publisher import CANCELLATION_REFUSAL_SURFACE
+
+        assert "patreon" in CANCELLATION_REFUSAL_SURFACE
+        assert CANCELLATION_REFUSAL_AXIOM == "full_auto_or_nothing"
+
+    def test_refusal_registry_receive_only_exception_matches_surface(self):
+        import yaml
+
+        from agents.publication_bus.patreon_publisher import PATREON_PUBLISHER_SURFACE
+
+        registry = yaml.safe_load(
+            (REPO_ROOT / "docs" / "refusal-briefs" / "_registry.yaml").read_text()
+        )
+        entry = registry["refusals"]["patreon-account"]
+        assert entry["receive_only_exception"] == PATREON_PUBLISHER_SURFACE
