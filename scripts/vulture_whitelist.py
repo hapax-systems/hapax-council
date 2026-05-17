@@ -3401,3 +3401,22 @@ try:
     CpalRunner.begin_interview_silence
 except ImportError:
     pass
+
+# Frontier triage officer — Pydantic validators and maintenance helper are
+# invoked dynamically by model validation / operator repair commands.
+try:
+    from agents.triage_officer.core import (  # noqa: F401, E402
+        TaskTriageAnnotation,
+        repair_required_frontmatter,
+    )
+
+    TaskTriageAnnotation._coerce_quality_floor
+    TaskTriageAnnotation._coerce_mutation_surface
+    TaskTriageAnnotation._coerce_authority_level
+    TaskTriageAnnotation._coerce_effort_class
+    TaskTriageAnnotation._coerce_platforms
+    TaskTriageAnnotation._platforms_are_unique
+    TaskTriageAnnotation._support_artifacts_are_non_authoritative
+    repair_required_frontmatter
+except ImportError:
+    pass
