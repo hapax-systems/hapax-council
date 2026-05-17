@@ -5,11 +5,14 @@ from pydantic import ValidationError
 
 from shared.route_metadata_schema import (
     AuthorityLevel,
+    FreshnessState,
     MutationSurface,
     QualityFloor,
     RouteMetadata,
     RouteMetadataStatus,
     assess_route_metadata,
+    build_demand_vector,
+    check_demand_vector_freshness,
     validate_route_metadata,
 )
 
@@ -151,3 +154,48 @@ def test_support_artifact_requires_independent_frontier_review() -> None:
     payload["authority_level"] = "authoritative"
     with pytest.raises(ValidationError, match="cannot be authoritative directly"):
         RouteMetadata.model_validate(payload)
+
+
+def test_demand_vector_hashes_frontmatter_and_source_refs(tmp_path) -> None:
+    task_note = tmp_path / "task.md"
+    parent_spec = tmp_path / "spec.md"
+    parent_spec.write_text("---\ncase_id: CASE-TEST-001\n---\n", encoding="utf-8")
+    task_note.write_text("---\ntask_id: source-task\n---\n", encoding="utf-8")
+    frontmatter = {
+        **_explicit_metadata(),
+        "task_id": "source-task",
+        "authority_case": "CASE-TEST-001",
+        "parent_spec": str(parent_spec),
+        "priority": "p0",
+        "wsjf": 14.0,
+    }
+
+    demand = build_demand_vector(frontmatter, note_path=task_note)
+
+    assert demand.demand_vector_schema == 1
+    assert demand.routing_model_version == "capacity-dimensional-v1"
+    assert demand.work_item.frontmatter_hash.startswith("sha256:")
+    assert demand.work_item.authority_case == "CASE-TEST-001"
+    assert demand.task_demand.authority_class == "source_mutation"
+    assert {ref.source_id for ref in demand.source_refs} >= {"task_note", "parent_spec"}
+
+
+def test_demand_vector_freshness_stales_when_frontmatter_changes(tmp_path) -> None:
+    task_note = tmp_path / "task.md"
+    task_note.write_text("---\ntask_id: source-task\n---\n", encoding="utf-8")
+    frontmatter = {
+        **_explicit_metadata(),
+        "task_id": "source-task",
+        "authority_case": "CASE-TEST-001",
+        "title": "Original",
+    }
+    demand = build_demand_vector(frontmatter, note_path=task_note)
+
+    freshness = check_demand_vector_freshness(
+        demand,
+        {**frontmatter, "title": "Changed"},
+        note_path=task_note,
+    )
+
+    assert freshness.freshness_state is FreshnessState.STALE
+    assert "frontmatter_hash_changed" in freshness.stale_reasons

@@ -631,7 +631,9 @@ def policy_task_fields(validation: Validation) -> dict[str, Any]:
     if validation.task is None:
         return {}
     fields, _body = parse_document_frontmatter(validation.task.path)
-    return dict(fields or validation.task.fields)
+    payload = dict(fields or validation.task.fields)
+    payload["__task_note_path"] = str(validation.task.path)
+    return payload
 
 
 def launch_codex_headless(
