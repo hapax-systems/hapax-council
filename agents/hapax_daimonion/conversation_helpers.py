@@ -173,7 +173,17 @@ _DENSITY_WORD_LIMITS: dict[str, int] = {
     "receptive": 50,
 }
 _MAX_TURNS = 20
+_PROGRAMME_MAX_TURNS: dict[str, int] = {
+    "interview": 120,
+    "lecture": 60,
+    "tutorial": 40,
+}
 _SILENCE_TIMEOUT_S = 30.0
+_PROGRAMME_SILENCE_TIMEOUT: dict[str, float] = {
+    "interview": 180.0,
+    "lecture": 60.0,
+    "tutorial": 45.0,
+}
 
 _VLS_PATH = "/dev/shm/hapax-compositor/visual-layer-state.json"
 
