@@ -208,6 +208,33 @@ where
 // We parse as HashMap and route signal.* to shared uniforms, node.* to per-pass params.
 type UniformsOverride = HashMap<String, f64>;
 
+fn bounded_bookend_override(node_id: &str, param: &str, value: f64) -> Option<f32> {
+    if !value.is_finite() {
+        return None;
+    }
+    let value = value as f32;
+    match (node_id, param) {
+        // Feedback is allowed to contribute short-lived depth and trace
+        // pressure, but not to own the surface or hide the scene.
+        ("fb", "decay") => Some(value.clamp(0.0, 0.16)),
+        ("fb", "hue_shift") => Some(value.clamp(-4.0, 4.0)),
+        ("fb", "trace_strength") => Some(value.clamp(0.0, 0.24)),
+        ("fb", "trace_radius") => Some(value.clamp(0.0, 0.70)),
+        ("fb", "trace_center_x") => Some(value.clamp(0.18, 0.82)),
+        ("fb", "trace_center_y") => Some(value.clamp(0.18, 0.82)),
+        ("fb", "zoom") => Some(value.clamp(0.96, 1.04)),
+        ("fb", "rotate") => Some(value.clamp(-0.006, 0.006)),
+        ("fb", "blend_mode") => Some(value.clamp(0.0, 3.0)),
+
+        // Postprocess bookend controls remain restrained and never expose
+        // master opacity as an external override; that would reintroduce
+        // the whole-frame pumping failure mode.
+        ("post", "vignette_strength") => Some(value.clamp(-0.08, 0.14)),
+        ("post", "sediment_strength") => Some(value.clamp(0.0, 0.075)),
+        _ => None,
+    }
+}
+
 // --- Pipeline types ---
 
 /// A single pass in the dynamic pipeline.
@@ -1064,120 +1091,118 @@ impl DynamicPipeline {
 
         // Apply uniforms.json signal overrides (flat dict from Python modulator)
         // Format: {"signal.key": val, "node.param": val}
-        if let Ok(data) = std::fs::read_to_string(UNIFORMS_JSON) {
-            if let Ok(overrides) = serde_json::from_str::<UniformsOverride>(&data) {
-                // F7 — signal.{9dim} is a dormant override hook.
-                // ``signal.color_warmth`` is the only key Python
-                // currently writes (``agents/reverie/_uniforms.py``);
-                // the other 12 arms exist so the visual chain *could*
-                // override DMN-state-sourced dimensions when the
-                // reverie mixer has an opinion. The primary path for
-                // the 9 dimensions is alive via
-                // ``UniformBuffer::from_state`` reading from
-                // ``StateReader.imagination.dimensions`` — these arms
-                // would override that read on a per-frame basis if
-                // anything wrote them. They are kept rather than
-                // pruned because the override capability is part of
-                // the chain → GPU contract; pruning would require
-                // re-adding them when the visual chain wants to drive
-                // a dimension directly. See F7 in the 2026-04-12
-                // beta session 3 retirement handoff.
-                for (key, &val) in &overrides {
-                    if let Some(signal) = key.strip_prefix("signal.") {
-                        let v = val as f32;
-                        match signal {
-                            "color_warmth" => uniform_data.color_warmth = v,
-                            "speed" => uniform_data.speed = v,
-                            "turbulence" => uniform_data.turbulence = v,
-                            "brightness" => uniform_data.brightness = v,
-                            "intensity" => uniform_data.intensity = v,
-                            "tension" => uniform_data.tension = v,
-                            "depth" => uniform_data.depth = v,
-                            "coherence" => uniform_data.coherence = v,
-                            "spectral_color" => uniform_data.spectral_color = v,
-                            "temporal_distortion" => uniform_data.temporal_distortion = v,
-                            "degradation" => uniform_data.degradation = v,
-                            "pitch_displacement" => uniform_data.pitch_displacement = v,
-                            "diffusion" => uniform_data.diffusion = v,
-                            _ => {
-                                if let Some(rest) = signal.strip_prefix("homage_custom_") {
-                                    let mut parts = rest.splitn(2, '_');
-                                    if let (Some(slot_s), Some(comp_s)) =
-                                        (parts.next(), parts.next())
+        let uniform_overrides = std::fs::read_to_string(UNIFORMS_JSON)
+            .ok()
+            .and_then(|data| serde_json::from_str::<UniformsOverride>(&data).ok());
+        if let Some(overrides) = uniform_overrides.as_ref() {
+            // F7 — signal.{9dim} is a dormant override hook.
+            // ``signal.color_warmth`` is the only key Python
+            // currently writes (``agents/reverie/_uniforms.py``);
+            // the other 12 arms exist so the visual chain *could*
+            // override DMN-state-sourced dimensions when the
+            // reverie mixer has an opinion. The primary path for
+            // the 9 dimensions is alive via
+            // ``UniformBuffer::from_state`` reading from
+            // ``StateReader.imagination.dimensions`` — these arms
+            // would override that read on a per-frame basis if
+            // anything wrote them. They are kept rather than
+            // pruned because the override capability is part of
+            // the chain → GPU contract; pruning would require
+            // re-adding them when the visual chain wants to drive
+            // a dimension directly. See F7 in the 2026-04-12
+            // beta session 3 retirement handoff.
+            for (key, &val) in overrides {
+                if let Some(signal) = key.strip_prefix("signal.") {
+                    let v = val as f32;
+                    match signal {
+                        "color_warmth" => uniform_data.color_warmth = v,
+                        "speed" => uniform_data.speed = v,
+                        "turbulence" => uniform_data.turbulence = v,
+                        "brightness" => uniform_data.brightness = v,
+                        "intensity" => uniform_data.intensity = v,
+                        "tension" => uniform_data.tension = v,
+                        "depth" => uniform_data.depth = v,
+                        "coherence" => uniform_data.coherence = v,
+                        "spectral_color" => uniform_data.spectral_color = v,
+                        "temporal_distortion" => uniform_data.temporal_distortion = v,
+                        "degradation" => uniform_data.degradation = v,
+                        "pitch_displacement" => uniform_data.pitch_displacement = v,
+                        "diffusion" => uniform_data.diffusion = v,
+                        _ => {
+                            if let Some(rest) = signal.strip_prefix("homage_custom_") {
+                                let mut parts = rest.splitn(2, '_');
+                                if let (Some(slot_s), Some(comp_s)) = (parts.next(), parts.next()) {
+                                    if let (Ok(slot), Ok(comp)) =
+                                        (slot_s.parse::<usize>(), comp_s.parse::<usize>())
                                     {
-                                        if let (Ok(slot), Ok(comp)) =
-                                            (slot_s.parse::<usize>(), comp_s.parse::<usize>())
-                                        {
-                                            if slot < 8 && comp < 4 {
-                                                uniform_data.custom[slot][comp] = v;
-                                            }
+                                        if slot < 8 && comp < 4 {
+                                            uniform_data.custom[slot][comp] = v;
                                         }
                                     }
                                 }
                             }
                         }
-                    } else if let Some(content) = key.strip_prefix("content.") {
-                        // F8: content_layer.wgsl has no @group(2) Params
-                        // binding (it composites 4 content slots and
-                        // reads its material/salience/intensity knobs
-                        // from uniforms.custom[0]). The per-node
-                        // params_buffer path skips it. Route the three
-                        // content.* keys into custom[0][0..2] so
-                        // Bachelard Amendment 3 (material quality) is
-                        // actually reachable at runtime. Python writes
-                        // these keys as floats already (see
-                        // agents/reverie/_uniforms.py MATERIAL_MAP).
+                    }
+                } else if let Some(content) = key.strip_prefix("content.") {
+                    // F8: content_layer.wgsl has no @group(2) Params
+                    // binding (it composites 4 content slots and
+                    // reads its material/salience/intensity knobs
+                    // from uniforms.custom[0]). The per-node
+                    // params_buffer path skips it. Route the three
+                    // content.* keys into custom[0][0..2] so
+                    // Bachelard Amendment 3 (material quality) is
+                    // actually reachable at runtime. Python writes
+                    // these keys as floats already (see
+                    // agents/reverie/_uniforms.py MATERIAL_MAP).
+                    let v = val as f32;
+                    match content {
+                        "material" => uniform_data.custom[0][0] = v,
+                        "salience" => uniform_data.custom[0][1] = v,
+                        "intensity" => uniform_data.custom[0][2] = v,
+                        _ => {}
+                    }
+                }
+            }
+
+            // Apply per-node param overrides from uniforms.json
+            // Skip passes managed by drift engine — it has full authority
+            let drift_managed: std::collections::HashSet<&str> = if self.drift_engine.is_some() {
+                let mut set: std::collections::HashSet<&str> = crate::effect_drift::SHADERS
+                    .iter()
+                    .map(|s| s.name)
+                    .collect();
+                set.insert("fb"); // feedback bookend — drift engine owns
+                set.insert("post"); // postprocess bookend — drift engine owns
+                set.insert("colorgrade"); // colorgrade — drift engine owns
+                set
+            } else {
+                std::collections::HashSet::new()
+            };
+            for pass in &mut self.passes {
+                if pass.params_buffer.is_none() || pass.param_order.is_empty() {
+                    continue;
+                }
+                // Drift engine owns these passes — skip uniforms.json overrides
+                if drift_managed.contains(pass.node_id.as_str()) {
+                    continue;
+                }
+                let mut updated = false;
+                for (i, name) in pass.param_order.iter().enumerate() {
+                    if i >= pass.current_params.len() {
+                        break;
+                    }
+                    let key = format!("{}.{}", pass.node_id, name);
+                    if let Some(&val) = overrides.get(&key) {
                         let v = val as f32;
-                        match content {
-                            "material" => uniform_data.custom[0][0] = v,
-                            "salience" => uniform_data.custom[0][1] = v,
-                            "intensity" => uniform_data.custom[0][2] = v,
-                            _ => {}
+                        if (pass.current_params[i] - v).abs() > f32::EPSILON {
+                            pass.current_params[i] = v;
+                            updated = true;
                         }
                     }
                 }
-
-                // Apply per-node param overrides from uniforms.json
-                // Skip passes managed by drift engine — it has full authority
-                let drift_managed: std::collections::HashSet<&str> = if self.drift_engine.is_some()
-                {
-                    let mut set: std::collections::HashSet<&str> = crate::effect_drift::SHADERS
-                        .iter()
-                        .map(|s| s.name)
-                        .collect();
-                    set.insert("fb"); // feedback bookend — drift engine owns
-                    set.insert("post"); // postprocess bookend — drift engine owns
-                    set.insert("colorgrade"); // colorgrade — drift engine owns
-                    set
-                } else {
-                    std::collections::HashSet::new()
-                };
-                for pass in &mut self.passes {
-                    if pass.params_buffer.is_none() || pass.param_order.is_empty() {
-                        continue;
-                    }
-                    // Drift engine owns these passes — skip uniforms.json overrides
-                    if drift_managed.contains(pass.node_id.as_str()) {
-                        continue;
-                    }
-                    let mut updated = false;
-                    for (i, name) in pass.param_order.iter().enumerate() {
-                        if i >= pass.current_params.len() {
-                            break;
-                        }
-                        let key = format!("{}.{}", pass.node_id, name);
-                        if let Some(&val) = overrides.get(&key) {
-                            let v = val as f32;
-                            if (pass.current_params[i] - v).abs() > f32::EPSILON {
-                                pass.current_params[i] = v;
-                                updated = true;
-                            }
-                        }
-                    }
-                    if updated {
-                        if let Some(ref buf) = pass.params_buffer {
-                            queue.write_buffer(buf, 0, bytemuck::cast_slice(&pass.current_params));
-                        }
+                if updated {
+                    if let Some(ref buf) = pass.params_buffer {
+                        queue.write_buffer(buf, 0, bytemuck::cast_slice(&pass.current_params));
                     }
                 }
             }
@@ -1213,6 +1238,9 @@ impl DynamicPipeline {
                     }
                 }
             }
+        }
+        if let Some(overrides) = uniform_overrides.as_ref() {
+            self.apply_bounded_bookend_overrides(queue, overrides);
         }
         self.publish_effect_state();
 
@@ -1638,6 +1666,45 @@ impl DynamicPipeline {
             total_allocations: self.intermediate_pool.total_allocations(),
             reuse_ratio: self.intermediate_pool.reuse_ratio(),
             slot_count: self.intermediate_slots.len(),
+        }
+    }
+
+    fn apply_bounded_bookend_overrides(
+        &mut self,
+        queue: &wgpu::Queue,
+        overrides: &UniformsOverride,
+    ) {
+        for pass in &mut self.passes {
+            if pass.params_buffer.is_none()
+                || pass.param_order.is_empty()
+                || (pass.node_id != "fb" && pass.node_id != "post")
+            {
+                continue;
+            }
+
+            let mut updated = false;
+            for (i, name) in pass.param_order.iter().enumerate() {
+                if i >= pass.current_params.len() {
+                    break;
+                }
+                let key = format!("{}.{}", pass.node_id, name);
+                let Some(&value) = overrides.get(&key) else {
+                    continue;
+                };
+                let Some(bounded) = bounded_bookend_override(&pass.node_id, name, value) else {
+                    continue;
+                };
+                if (pass.current_params[i] - bounded).abs() > 0.0001 {
+                    pass.current_params[i] = bounded;
+                    updated = true;
+                }
+            }
+
+            if updated {
+                if let Some(ref buf) = pass.params_buffer {
+                    queue.write_buffer(buf, 0, bytemuck::cast_slice(&pass.current_params));
+                }
+            }
         }
     }
 
@@ -2510,6 +2577,23 @@ mod tests {
         assert_eq!(p.uniforms.get("amplitude").copied(), Some(0.5));
         assert_eq!(p.param_order, vec!["amplitude"]);
         assert!(!p.requires_content_slots);
+    }
+
+    #[test]
+    fn bookend_overrides_are_bounded_and_narrow() {
+        assert_eq!(bounded_bookend_override("fb", "decay", 0.012), Some(0.012));
+        assert_eq!(bounded_bookend_override("fb", "decay", 9.0), Some(0.16));
+        assert_eq!(
+            bounded_bookend_override("post", "sediment_strength", 1.0),
+            Some(0.075)
+        );
+        assert_eq!(
+            bounded_bookend_override("post", "master_opacity", 0.2),
+            None,
+            "external post overrides must not reintroduce whole-frame pumping"
+        );
+        assert_eq!(bounded_bookend_override("drift", "amplitude", 0.2), None);
+        assert_eq!(bounded_bookend_override("fb", "decay", f64::NAN), None);
     }
 
     // ----- B4: TransientTexturePool wiring — pool-key bookkeeping -----
