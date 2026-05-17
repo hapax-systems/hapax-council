@@ -1,0 +1,12 @@
+[Unit]
+Description=Hapax security signal request intake generator
+Documentation=file://%h/.cache/hapax/source-activation/worktree/docs/runbooks/security-signal-intake.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/security-signal-intake
+
+[Service]
+Type=oneshot
+Environment=HAPAX_AGENT_NAME=security-signal-intake
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/security-signal-intake --write --state-path %h/.cache/hapax/security-signal-intake-state.json
