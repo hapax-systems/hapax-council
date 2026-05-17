@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Populate the Qdrant assertions collection from all extraction sources.
+
+Run: uv run python scripts/populate-assertions [--dry-run] [--output-json PATH]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from shared.assertion_model import (
+    Assertion,
+    extract_from_axiom_registry,
+    extract_from_implications,
+)
+from shared.code_assertion_extractor import extract_from_directory as extract_code
+from shared.prose_assertion_extractor import extract_from_directory as extract_prose
+
+log = logging.getLogger(__name__)
+
+CONSTITUTION = Path("/home/hapax/projects/hapax-constitution")
+MEMORY_DIR = Path.home() / ".claude/projects/-home-hapax-projects/memory"
+ASSERTIONS_COLLECTION = "assertions"
+
+
+def extract_all() -> list[Assertion]:
+    all_assertions: list[Assertion] = []
+
+    for dirname in ("agents", "shared"):
+        dirpath = ROOT / dirname
+        if dirpath.is_dir():
+            batch = extract_code(dirpath)
+            log.info("Code (%s): %d assertions", dirname, len(batch))
+            all_assertions.extend(batch)
+
+    registry = CONSTITUTION / "axioms/registry.yaml"
+    if registry.exists():
+        axioms = extract_from_axiom_registry(str(registry))
+        log.info("Axioms: %d", len(axioms))
+        all_assertions.extend(axioms)
+
+    implications_dir = CONSTITUTION / "axioms/implications"
+    if implications_dir.is_dir():
+        impls = extract_from_implications(str(implications_dir))
+        log.info("Implications: %d", len(impls))
+        all_assertions.extend(impls)
+
+    for source_kind, search_dir in [
+        ("claude_md", ROOT),
+        ("memory", MEMORY_DIR),
+    ]:
+        if search_dir.is_dir():
+            batch = extract_prose(search_dir, source_kind=source_kind)
+            log.info("Prose (%s): %d", source_kind, len(batch))
+            all_assertions.extend(batch)
+
+    return all_assertions
+
+
+def dedup(assertions: list[Assertion]) -> list[Assertion]:
+    seen: dict[str, Assertion] = {}
+    for a in assertions:
+        if a.assertion_id not in seen:
+            seen[a.assertion_id] = a
+    deduped = list(seen.values())
+    log.info("Dedup: %d -> %d (-%d)", len(assertions), len(deduped), len(assertions) - len(deduped))
+    return deduped
+
+
+def upsert_to_qdrant(assertions: list[Assertion], *, dry_run: bool = False) -> int:
+    if dry_run:
+        log.info("DRY RUN: would upsert %d points", len(assertions))
+        return len(assertions)
+
+    from qdrant_client.models import Distance, PayloadSchemaType, PointStruct, VectorParams
+
+    from shared.config import EXPECTED_EMBED_DIMENSIONS, embed_batch_safe, get_qdrant
+
+    client = get_qdrant()
+    collections = [c.name for c in client.get_collections().collections]
+    if ASSERTIONS_COLLECTION not in collections:
+        client.create_collection(
+            collection_name=ASSERTIONS_COLLECTION,
+            vectors_config=VectorParams(
+                size=EXPECTED_EMBED_DIMENSIONS, distance=Distance.COSINE
+            ),
+        )
+        for field, schema_type in [
+            ("assertion_id", PayloadSchemaType.KEYWORD),
+            ("source_type", PayloadSchemaType.KEYWORD),
+            ("assertion_type", PayloadSchemaType.KEYWORD),
+            ("confidence", PayloadSchemaType.FLOAT),
+        ]:
+            client.create_payload_index(
+                collection_name=ASSERTIONS_COLLECTION,
+                field_name=field,
+                field_schema=schema_type,
+            )
+        log.info("Created collection '%s'", ASSERTIONS_COLLECTION)
+
+    texts = [a.text for a in assertions]
+    log.info("Embedding %d assertions...", len(texts))
+    batch_size = 100
+    all_embeddings: list[list[float]] = []
+    for i in range(0, len(texts), batch_size):
+        result = embed_batch_safe(texts[i : i + batch_size])
+        if result is None:
+            log.error("Embedding failed at batch %d", i)
+            return 0
+        all_embeddings.extend(result)
+
+    points = []
+    for a, emb in zip(assertions, all_embeddings, strict=True):
+        point_id = int(a.assertion_id[:15], 16) % (2**63)
+        payload = {
+            "assertion_id": a.assertion_id,
+            "text": a.text,
+            "source_type": a.source_type.value if hasattr(a.source_type, "value") else str(a.source_type),
+            "assertion_type": a.assertion_type.value if hasattr(a.assertion_type, "value") else str(a.assertion_type),
+            "confidence": a.confidence,
+            "source_uri": a.source_uri,
+        }
+        points.append(PointStruct(id=point_id, vector=emb, payload=payload))
+
+    for i in range(0, len(points), batch_size):
+        client.upsert(collection_name=ASSERTIONS_COLLECTION, points=points[i : i + batch_size])
+
+    log.info("Upserted %d points to '%s'", len(points), ASSERTIONS_COLLECTION)
+    return len(points)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Populate assertions Qdrant collection")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--output-json", type=Path)
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    assertions = extract_all()
+    log.info("Total raw: %d", len(assertions))
+
+    assertions = dedup(assertions)
+
+    if args.output_json:
+        data = [a.model_dump(mode="json") for a in assertions]
+        args.output_json.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+        log.info("Wrote JSON to %s", args.output_json)
+
+    count = upsert_to_qdrant(assertions, dry_run=args.dry_run)
+    log.info("Done. %d assertions.", count)
+
+
+if __name__ == "__main__":
+    main()
