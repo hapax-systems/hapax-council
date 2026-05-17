@@ -26,7 +26,7 @@ from shared.platform_capability_registry import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DISPATCHER = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
 FRESH_NOW = datetime(2026, 5, 9, 21, 0, tzinfo=UTC)
-CLAUDE_FULL_FRESH_NOW = datetime(2026, 5, 11, 1, 57, tzinfo=UTC)
+ROUTE_EVIDENCE_NOW = datetime(2026, 5, 17, 8, 14, tzinfo=UTC)
 
 
 def _dispatcher_module() -> ModuleType:
@@ -55,6 +55,24 @@ def _mark_fresh(route: dict) -> None:
     route["freshness"]["quota_checked_at"] = "2026-05-09T20:55:00Z"
     route["freshness"]["resource_checked_at"] = "2026-05-09T20:55:00Z"
     route["freshness"]["provider_docs_checked_at"] = "2026-05-09T20:55:00Z"
+    route["freshness"]["evidence"] = {
+        "capability": {
+            "evidence_refs": ["test:fresh-capability"],
+            "blocked_reasons": [],
+        },
+        "quota": {
+            "evidence_refs": ["test:fresh-quota"],
+            "blocked_reasons": [],
+        },
+        "resource": {
+            "evidence_refs": ["test:fresh-resource"],
+            "blocked_reasons": [],
+        },
+        "provider_docs": {
+            "evidence_refs": ["test:fresh-provider-docs"],
+            "blocked_reasons": [],
+        },
+    }
     for score in route["capability_scores"].values():
         score["observed_at"] = "2026-05-09T20:55:00Z"
     for tool in route["tool_state"]:
@@ -85,17 +103,23 @@ def test_registry_route_ids_match_dispatcher_platform_paths() -> None:
     assert set(registry.route_map()) == dispatcher_routes
 
 
-def test_seed_registry_uses_null_evidence_and_fails_closed() -> None:
+def test_seed_registry_uses_explicit_surface_blockers_and_fails_closed() -> None:
     registry = load_platform_capability_registry()
 
     assert any(route.freshness.capability_checked_at is None for route in registry.routes)
-    result = check_registry_freshness(registry, route_ids=["codex.headless.full"], now=FRESH_NOW)
+    result = check_registry_freshness(
+        registry,
+        route_ids=["codex.headless.full"],
+        now=ROUTE_EVIDENCE_NOW,
+    )
 
     assert result.ok is False
     errors = "\n".join(result.routes[0].errors)
     assert "blocked:" in errors
-    assert "capability freshness is unknown" in errors
-    assert "provider_docs freshness is unknown" in errors
+    assert "quota blocked: account_live_quota_receipt_absent" in errors
+    assert "freshness is unknown" not in errors
+    assert "account_live_quota_receipt_absent" in result.routes[0].blocked_reasons
+    assert result.routes[0].evidence_refs
 
 
 def test_fresh_row_passes_when_evidence_is_present() -> None:
@@ -110,19 +134,20 @@ def test_fresh_row_passes_when_evidence_is_present() -> None:
     assert result.routes[0].errors == ()
 
 
-def test_seeded_claude_headless_full_route_is_dispatch_fresh() -> None:
+def test_claude_headless_full_route_is_blocked_with_exact_reasons() -> None:
     registry = load_platform_capability_registry()
 
     result = check_registry_freshness(
         registry,
         route_ids=["claude.headless.full"],
-        now=CLAUDE_FULL_FRESH_NOW,
+        now=ROUTE_EVIDENCE_NOW,
     )
 
-    assert result.ok is True
+    assert result.ok is False
     route = registry.require("claude.headless.full")
-    assert route.route_state is RouteState.ACTIVE
-    assert route.blocked_reasons == []
+    assert route.route_state is RouteState.BLOCKED
+    assert "account_live_quota_receipt_absent" in route.blocked_reasons
+    assert "freshness is unknown" not in "\n".join(result.routes[0].errors)
 
 
 def test_stale_capability_quota_and_resource_state_fail_closed() -> None:
@@ -192,6 +217,29 @@ def test_provider_doc_expiry_blocks_route() -> None:
     assert result.ok is False
     assert result.routes[0].errors
     assert "provider_docs stale" in result.routes[0].errors[0]
+
+
+def test_null_freshness_without_surface_blocker_is_invalid() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "codex.headless.full")
+    route["freshness"]["capability_checked_at"] = None
+    route["freshness"]["evidence"]["capability"] = {
+        "evidence_refs": [],
+        "blocked_reasons": [],
+    }
+
+    with pytest.raises(ValidationError, match="freshness surface requires"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+def test_active_route_cannot_carry_surface_blocker() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route)
+    route["freshness"]["evidence"]["quota"]["blocked_reasons"] = ["quota_blocker"]
+
+    with pytest.raises(ValidationError, match="active routes cannot carry freshness"):
+        PlatformCapabilityRegistry.model_validate(payload)
 
 
 def test_supply_vector_projects_dimensional_scores_and_tool_state() -> None:

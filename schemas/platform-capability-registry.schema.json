@@ -108,6 +108,36 @@
       "type": "string",
       "pattern": "^[1-9][0-9]*[smhd]$"
     },
+    "freshness_surface_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_refs", "blocked_reasons"],
+      "anyOf": [
+        {"required": ["evidence_refs"], "properties": {"evidence_refs": {"minItems": 1}}},
+        {"required": ["blocked_reasons"], "properties": {"blocked_reasons": {"minItems": 1}}}
+      ],
+      "properties": {
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "blocked_reasons": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "freshness_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability", "quota", "resource", "provider_docs"],
+      "properties": {
+        "capability": {"$ref": "#/$defs/freshness_surface_evidence"},
+        "quota": {"$ref": "#/$defs/freshness_surface_evidence"},
+        "resource": {"$ref": "#/$defs/freshness_surface_evidence"},
+        "provider_docs": {"$ref": "#/$defs/freshness_surface_evidence"}
+      }
+    },
     "score_confidence": {
       "type": "object",
       "additionalProperties": false,
@@ -257,7 +287,8 @@
         "resource_checked_at",
         "resource_stale_after",
         "provider_docs_checked_at",
-        "provider_docs_stale_after"
+        "provider_docs_stale_after",
+        "evidence"
       ],
       "properties": {
         "capability_checked_at": {"$ref": "#/$defs/timestamp_or_null"},
@@ -267,7 +298,8 @@
         "resource_checked_at": {"$ref": "#/$defs/timestamp_or_null"},
         "resource_stale_after": {"$ref": "#/$defs/duration"},
         "provider_docs_checked_at": {"$ref": "#/$defs/timestamp_or_null"},
-        "provider_docs_stale_after": {"$ref": "#/$defs/duration"}
+        "provider_docs_stale_after": {"$ref": "#/$defs/duration"},
+        "evidence": {"$ref": "#/$defs/freshness_evidence"}
       }
     },
     "platform_capability_route": {

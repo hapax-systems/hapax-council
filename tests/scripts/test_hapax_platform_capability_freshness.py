@@ -35,17 +35,43 @@ def _mark_fresh(route: dict) -> None:
     route["freshness"]["quota_checked_at"] = "2026-05-09T20:55:00Z"
     route["freshness"]["resource_checked_at"] = "2026-05-09T20:55:00Z"
     route["freshness"]["provider_docs_checked_at"] = "2026-05-09T20:55:00Z"
+    route["freshness"]["evidence"] = {
+        "capability": {
+            "evidence_refs": ["test:fresh-capability"],
+            "blocked_reasons": [],
+        },
+        "quota": {
+            "evidence_refs": ["test:fresh-quota"],
+            "blocked_reasons": [],
+        },
+        "resource": {
+            "evidence_refs": ["test:fresh-resource"],
+            "blocked_reasons": [],
+        },
+        "provider_docs": {
+            "evidence_refs": ["test:fresh-provider-docs"],
+            "blocked_reasons": [],
+        },
+    }
+    for score in route["capability_scores"].values():
+        score["observed_at"] = "2026-05-09T20:55:00Z"
+    for tool in route["tool_state"]:
+        tool["observed_at"] = "2026-05-09T20:55:00Z"
 
 
 def test_json_reports_blocked_seed_registry_nonzero() -> None:
-    result = _run("--json", "--now", FRESH_NOW, "--route", "codex.headless.full")
+    result = _run("--json", "--now", "2026-05-17T08:14:00Z", "--route", "codex.headless.full")
 
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     assert payload["ok"] is False
     assert payload["route_count"] == 11
     assert payload["routes"][0]["route_id"] == "codex.headless.full"
-    assert "capability freshness is unknown" in "\n".join(payload["routes"][0]["errors"])
+    errors = "\n".join(payload["routes"][0]["errors"])
+    assert "quota blocked: account_live_quota_receipt_absent" in errors
+    assert "freshness is unknown" not in errors
+    assert "account_live_quota_receipt_absent" in payload["routes"][0]["blocked_reasons"]
+    assert payload["routes"][0]["evidence_refs"]
 
 
 def test_json_fails_nonzero_for_unsupported_route() -> None:

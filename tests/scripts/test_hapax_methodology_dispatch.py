@@ -23,6 +23,24 @@ def _fresh_registry(tmp_path: Path) -> Path:
         route["freshness"]["quota_checked_at"] = checked_at
         route["freshness"]["resource_checked_at"] = checked_at
         route["freshness"]["provider_docs_checked_at"] = checked_at
+        route["freshness"]["evidence"] = {
+            "capability": {
+                "evidence_refs": [f"test:{route['route_id']}:capability"],
+                "blocked_reasons": [],
+            },
+            "quota": {
+                "evidence_refs": [f"test:{route['route_id']}:quota"],
+                "blocked_reasons": [],
+            },
+            "resource": {
+                "evidence_refs": [f"test:{route['route_id']}:resource"],
+                "blocked_reasons": [],
+            },
+            "provider_docs": {
+                "evidence_refs": [f"test:{route['route_id']}:provider_docs"],
+                "blocked_reasons": [],
+            },
+        }
         for score in route["capability_scores"].values():
             score["observed_at"] = checked_at
         for tool in route["tool_state"]:

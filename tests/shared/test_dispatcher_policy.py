@@ -159,6 +159,24 @@ def _route_with_scores(
     payload["freshness"]["quota_checked_at"] = "2026-05-09T22:00:00Z"
     payload["freshness"]["resource_checked_at"] = "2026-05-09T22:00:00Z"
     payload["freshness"]["provider_docs_checked_at"] = "2026-05-09T22:00:00Z"
+    payload["freshness"]["evidence"] = {
+        "capability": {
+            "evidence_refs": [f"test:{route_id}:capability"],
+            "blocked_reasons": [],
+        },
+        "quota": {
+            "evidence_refs": [f"test:{route_id}:quota"],
+            "blocked_reasons": [],
+        },
+        "resource": {
+            "evidence_refs": [f"test:{route_id}:resource"],
+            "blocked_reasons": [],
+        },
+        "provider_docs": {
+            "evidence_refs": [f"test:{route_id}:provider_docs"],
+            "blocked_reasons": [],
+        },
+    }
     for item in payload["capability_scores"].values():
         item["score"] = score
         item["confidence"] = confidence

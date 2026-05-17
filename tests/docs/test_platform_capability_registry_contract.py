@@ -10,7 +10,6 @@ import jsonschema
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = REPO_ROOT / "schemas" / "platform-capability-registry.schema.json"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
-SEEDED_ACTIVE_ROUTE_IDS = {"claude.headless.full"}
 
 
 def _json(path: Path) -> dict[str, object]:
@@ -70,6 +69,7 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
         "support_only",
         "read_only",
     }
+    assert "evidence" in schema["$defs"]["freshness"]["required"]
 
 
 def test_seed_registry_keeps_absent_evidence_blocked_unless_explicitly_seeded() -> None:
@@ -77,21 +77,15 @@ def test_seed_registry_keeps_absent_evidence_blocked_unless_explicitly_seeded() 
 
     for route in registry["routes"]:
         freshness = route["freshness"]
-        if route["route_id"] in SEEDED_ACTIVE_ROUTE_IDS:
-            assert route["route_state"] == "active"
-            assert route["blocked_reasons"] == []
-            assert freshness["capability_checked_at"] is not None
-            assert freshness["quota_checked_at"] is not None
-            assert freshness["resource_checked_at"] is not None
-            assert freshness["provider_docs_checked_at"] is not None
-            continue
-
         assert route["route_state"] == "blocked"
         assert route["blocked_reasons"]
-        assert freshness["capability_checked_at"] is None
-        assert freshness["quota_checked_at"] is None
-        assert freshness["resource_checked_at"] is None
-        assert freshness["provider_docs_checked_at"] is None
+        for surface in ("capability", "quota", "resource", "provider_docs"):
+            surface_evidence = freshness["evidence"][surface]
+            assert surface_evidence["evidence_refs"] or surface_evidence["blocked_reasons"]
+            if freshness[f"{surface}_checked_at"] is None:
+                assert surface_evidence["blocked_reasons"]
+            else:
+                assert surface_evidence["evidence_refs"]
 
 
 def test_seed_registry_names_no_dispatcher_policy_integration() -> None:
