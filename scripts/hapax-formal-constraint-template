@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""Print or write a draft formal-constraint markdown template."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.formal_governance_runtime import parse_utc, template_frontmatter  # noqa: E402
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--constraint-id", required=True)
+    parser.add_argument("--title", required=True)
+    parser.add_argument("--scope-type", required=True)
+    parser.add_argument("--scope-ref", required=True)
+    parser.add_argument("--effect", required=True)
+    parser.add_argument("--reason", required=True)
+    parser.add_argument("--created-at", default=None)
+    parser.add_argument("--expires-at", default=None)
+    parser.add_argument("--output", type=Path, default=None)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    text = template_frontmatter(
+        constraint_id=args.constraint_id,
+        title=args.title,
+        scope_type=args.scope_type,
+        scope_ref=args.scope_ref,
+        effect=args.effect,
+        reason=args.reason,
+        created_at=parse_utc(args.created_at) if args.created_at else None,
+        expires_at=parse_utc(args.expires_at) if args.expires_at else None,
+    )
+    if args.output is None:
+        print(text, end="")
+    else:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text, encoding="utf-8")
+        print(f"wrote {args.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hapax Formal Governance Runtime Snapshot",
+  "type": "object",
+  "required": ["schema", "contract_version", "generated_at", "stale_after", "source", "operations"],
+  "properties": {
+    "schema": { "const": "hapax.formal_governance.runtime.v0" },
+    "contract_version": { "const": "2026-05-17" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "stale_after": { "type": "string" },
+    "source": { "type": "object" },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["subject", "operation", "authority_class", "gate_state", "source", "children", "reasons"],
+        "properties": {
+          "authority_class": { "enum": ["observation", "recommendation", "control"] },
+          "gate_state": {
+            "enum": ["ready", "blocked", "stale", "degraded", "unknown", "forbidden", "operator_held"]
+          }
+        }
+      }
+    },
+    "errors": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}
