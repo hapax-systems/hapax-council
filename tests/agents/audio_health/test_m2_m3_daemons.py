@@ -164,7 +164,7 @@ class TestM2RawSampleContract:
         assert result.samples_mono.size == 48000
         assert state.last_error is None
         assert state.last_lufs == pytest.approx(-120.0)
-        assert state.in_band is False
+        assert state.in_band is True  # silence gate suppresses band check
 
     def test_tone_input_updates_lufs_without_samples_mono_attribute_error(self) -> None:
         t = np.linspace(0, 1, 48000, endpoint=False)

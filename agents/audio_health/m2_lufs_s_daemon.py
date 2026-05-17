@@ -50,6 +50,7 @@ DEFAULT_BANDS: dict[str, tuple[float, float]] = {
 DEFAULT_PROBE_INTERVAL_S: float = 5.0
 DEFAULT_CAPTURE_DURATION_S: float = 3.0
 DEFAULT_BREACH_SUSTAIN_S: float = 15.0  # 3 consecutive probes at 5s
+DEFAULT_SILENCE_FLOOR_LUFS: float = -35.0  # suppress alerts when source below this
 
 # SHM + textfile paths
 DEFAULT_SNAPSHOT_PATH: Path = Path("/dev/shm/hapax-audio-health/lufs-s.json")
@@ -85,6 +86,7 @@ class M2DaemonConfig:
     probe_interval_s: float = DEFAULT_PROBE_INTERVAL_S
     capture_duration_s: float = DEFAULT_CAPTURE_DURATION_S
     breach_sustain_s: float = DEFAULT_BREACH_SUSTAIN_S
+    silence_floor_lufs: float = DEFAULT_SILENCE_FLOOR_LUFS
     snapshot_path: Path = DEFAULT_SNAPSHOT_PATH
     enable_ntfy: bool = True
     bands: dict[str, LufsBand] = field(default_factory=dict)
@@ -114,6 +116,7 @@ class M2DaemonConfig:
             probe_interval_s=_fenv("PROBE_INTERVAL_S", DEFAULT_PROBE_INTERVAL_S),
             capture_duration_s=_fenv("CAPTURE_DURATION_S", DEFAULT_CAPTURE_DURATION_S),
             breach_sustain_s=_fenv("BREACH_SUSTAIN_S", DEFAULT_BREACH_SUSTAIN_S),
+            silence_floor_lufs=_fenv("SILENCE_FLOOR_LUFS", DEFAULT_SILENCE_FLOOR_LUFS),
             bands=bands,
         )
 
@@ -252,7 +255,14 @@ def _mark_error(state: StageState, exc: BaseException | str | None) -> None:
     state.analyzer_error_count += 1
 
 
-def _probe_stage(stage: str, state: StageState, config: M2DaemonConfig, *, now: float) -> None:
+def _probe_stage(
+    stage: str,
+    state: StageState,
+    config: M2DaemonConfig,
+    *,
+    now: float,
+    suppress_alert: bool = False,
+) -> None:
     """Run one M2 stage probe and record failures as health evidence."""
 
     try:
@@ -271,6 +281,11 @@ def _probe_stage(stage: str, state: StageState, config: M2DaemonConfig, *, now: 
 
         band = config.bands.get(stage)
         if band is None:
+            return
+
+        if suppress_alert or lufs < config.silence_floor_lufs:
+            state.in_band = True
+            state.breach_start = None
             return
 
         state.in_band = band.low <= lufs <= band.high
@@ -323,8 +338,11 @@ def run_daemon(config: M2DaemonConfig | None = None) -> None:
     while not shutdown:
         now = time.time()
 
+        source_quiet = False
         for stage in cfg.stages:
-            _probe_stage(stage, states[stage], cfg, now=now)
+            _probe_stage(stage, states[stage], cfg, now=now, suppress_alert=source_quiet)
+            if stage == cfg.stages[0] and states[stage].last_lufs < cfg.silence_floor_lufs:
+                source_quiet = True
 
         _emit_textfile(states, cfg)
         _emit_snapshot(states, cfg, now=now)

@@ -62,7 +62,7 @@ class TestM4Config:
     def test_defaults(self) -> None:
         cfg = M4DaemonConfig()
         assert cfg.probe_interval_s == 5.0
-        assert cfg.correlation_min == 0.7
+        assert cfg.correlation_min == 0.3
         assert len(cfg.stage_pairs) == 2
 
     def test_from_env_override(self) -> None:
