@@ -35,6 +35,24 @@ fn stipple_hash(p: vec2<f32>) -> f32 {
     return fract(sin(q.x + q.y) * 43758.5453);
 }
 
+fn scroom_material_pattern(gc: vec2<f32>, plane_kind: f32) -> f32 {
+    // Persistent low-frequency nebulous scroom material. This is attached
+    // to room planes, not to the output pane, so it reads as spatial
+    // structure rather than as a fourth-wall overlay.
+    let bias = plane_kind * 0.173;
+    let p = gc * 0.34 + vec2<f32>(bias, -bias * 0.71);
+    let diag_a = abs(fract(p.x + p.y * 0.50) - 0.5);
+    let diag_b = abs(fract(p.x - p.y * 0.50 + 0.21) - 0.5);
+    let cross = abs(fract(p.y * 0.62 + bias) - 0.5);
+    let tri = max(
+        max(smoothstep(0.040, 0.010, diag_a), smoothstep(0.040, 0.010, diag_b)),
+        smoothstep(0.048, 0.014, cross) * 0.58,
+    );
+    let cell = floor(p);
+    let facet = 0.5 + 0.5 * sin((cell.x * 1.37 + cell.y * 1.91) + plane_kind * 2.3);
+    return clamp(0.22 + tri * 0.58 + facet * 0.10, 0.0, 1.0);
+}
+
 fn soft_shadow_at(world_pos: vec3<f32>, light_pos: vec3<f32>) -> f32 {
     let ray = light_pos - world_pos;
     var shadow = 1.0;
@@ -223,21 +241,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         );
         let density_gate = step(0.74, stipple_hash(cell));
         let dot_alpha = density_gate * smoothstep(0.155, 0.0, length(local - center));
-        let weave = 0.5 + 0.5 * sin(gc.x * 3.7 + gc.y * 2.9 + t * 0.025);
+        let material = scroom_material_pattern(gc, in.plane_kind);
+        let weave = 0.5 + 0.5 * sin(gc.x * 2.1 + gc.y * 1.7 + t * 0.010);
         let shadow = soft_shadow_at(wp, grid.light_position.xyz);
         let room_light = point_light_at(wp, in.normal) * shadow;
-        var base_alpha = 0.074;
+        var base_alpha = 0.092;
         if is_mid_field {
-            base_alpha = 0.044;
+            base_alpha = 0.056;
         } else if abs(in.normal.z) > 0.5 {
-            base_alpha = 0.105;
+            base_alpha = 0.138;
         } else if is_floor_or_ceiling {
-            base_alpha = 0.088;
+            base_alpha = 0.118;
         }
-        let texture_signal = 0.54 + 0.20 * weave + 0.38 * dot_alpha;
+        let texture_signal = 0.42 + 0.34 * material + 0.12 * weave + 0.22 * dot_alpha;
         var plane_color = vec3<f32>(0.095, 0.110, 0.165)
-            + light_color * (0.048 + room_light * 0.18)
-            + vec3<f32>(0.028, 0.040, 0.060) * stipple_hash(cell + vec2<f32>(3.0, 7.0));
+            + light_color * (0.052 + room_light * 0.18)
+            + vec3<f32>(0.036, 0.050, 0.068) * material
+            + vec3<f32>(0.018, 0.026, 0.038) * stipple_hash(cell + vec2<f32>(3.0, 7.0));
         plane_color = plane_color * (0.70 + 0.30 * shadow);
         let alpha = base_alpha * texture_signal * dist_fade * (0.86 + 0.14 * shadow);
         return vec4<f32>(plane_color * texture_signal, alpha);

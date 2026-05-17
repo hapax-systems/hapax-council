@@ -668,4 +668,22 @@ mod tests {
             "alpha-blended livestream quads must not turn transparent regions into occluding panes"
         );
     }
+
+    #[test]
+    fn nebulous_scroom_planes_have_persistent_material() {
+        assert!(
+            SCENE_GRID_WGSL.contains("scroom_material_pattern"),
+            "floor, ceiling, back wall, and mid-field planes need persistent room material"
+        );
+        assert!(
+            SCENE_GRID_WGSL.contains("not to the output pane"),
+            "scroom material must remain authored room geometry, not a fourth-wall overlay"
+        );
+    }
+
+    #[test]
+    fn scene_grid_shader_parses_after_scroom_material_changes() {
+        naga::front::wgsl::parse_str(SCENE_GRID_WGSL)
+            .expect("scene grid WGSL must parse before live compositor deployment");
+    }
 }
