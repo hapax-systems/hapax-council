@@ -77,6 +77,19 @@ path, role, task_id = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 text = path.read_text(encoding="utf-8")
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+
+def _strip_scalar(value: str) -> str:
+    return value.strip().strip('"').strip("'")
+
+
+_YAML_NULLS = frozenset({"", "null", "none", "~", "[]"})
+
+
+def _is_claimable_assignee(value: str) -> bool:
+    stripped = _strip_scalar(value)
+    return stripped == "unassigned" or stripped.lower() in _YAML_NULLS
+
+
 # Sanity: bail if status isn't offered (operator may have already claimed it
 # manually, or it's in_progress from another session).
 status_match = re.search(r"^status:\s*(\S+)$", text, flags=re.MULTILINE)
@@ -87,19 +100,14 @@ if status_match and status_match.group(1) not in ("offered",):
     )
     sys.exit(4)
 
-assigned_match = re.search(r"^assigned_to:\s*(\S+)$", text, flags=re.MULTILINE)
-if assigned_match and assigned_match.group(1) not in ("unassigned",):
+assigned_match = re.search(r"^assigned_to:[ \t]*(.*)$", text, flags=re.MULTILINE)
+if assigned_match and not _is_claimable_assignee(assigned_match.group(1)):
+    assigned_to = _strip_scalar(assigned_match.group(1))
     print(
-        f"cc-claim: refusing to claim '{task_id}' — already assigned to '{assigned_match.group(1)}'",
+        f"cc-claim: refusing to claim '{task_id}' — already assigned to '{assigned_to}'",
         file=sys.stderr,
     )
     sys.exit(4)
-
-def _strip_scalar(value: str) -> str:
-    return value.strip().strip('"').strip("'")
-
-
-_YAML_NULLS = frozenset({"null", "none", "~"})
 
 
 def _frontmatter_lines(note_text: str) -> list[str]:
