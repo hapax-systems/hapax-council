@@ -807,8 +807,9 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
             log.debug("beat transition check failed", exc_info=True)
 
         try:
-            planner, last_plan_attempt_ts = _maybe_author_plan(
-                manager, planner, last_plan_attempt_ts
+            loop = asyncio.get_running_loop()
+            planner, last_plan_attempt_ts = await loop.run_in_executor(
+                None, _maybe_author_plan, manager, planner, last_plan_attempt_ts
             )
         except Exception:
             log.warning("_maybe_author_plan raised", exc_info=True)
