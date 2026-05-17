@@ -316,8 +316,44 @@ jobs:
         run: echo "Docs-only change set; test reports success without running pytest."
       - uses: actions/checkout@v6
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
-      - name: Install system deps (cairo, gobject, gst, pango, hook transports)
+      - name: Determine Python test mode
+        id: test_mode
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            echo "mode=pr-admission" >> "$GITHUB_OUTPUT"
+            echo "Pull request: running fast Python admission slice."
+            echo "Merge queue and main push events keep the full pytest gate."
+          else
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+            echo "Non-PR event: running full pytest gate."
+          fi
+      - uses: astral-sh/setup-uv@v7
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+        with:
+          enable-cache: true
+      - name: Run PR Python admission slice
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'pr-admission'
+        env:
+          LITELLM_BASE_URL: "http://0.0.0.0:1"
+          QDRANT_URL: "http://0.0.0.0:1"
+          OLLAMA_HOST: "http://0.0.0.0:1"
+          OTEL_SDK_DISABLED: "true"
+          LANGFUSE_HOST: "http://0.0.0.0:1"
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          uv run --no-project --with pytest==9.0.2 --with pyyaml pytest \
+            --confcutdir=tests \
+            tests/ci/test_self_hosted_runner_experiment.py \
+            tests/ci/test_python_test_throughput_policy.py \
+            tests/test_ci_required_coverage_claims.py \
+            tests/shared/test_ci_discovery.py \
+            -q --tb=line
+      - name: Install system deps (cairo, gobject, gst, pango, hook transports)
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -326,7 +362,7 @@ jobs:
             gir1.2-pango-1.0 \
             socat
       - name: Install Px437 IBM VGA 8x16 font (HARDM aesthetic dependency, audit 4.7 PR #1109)
-        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         run: |
           # Install system-wide so fontconfig's /usr/share/fonts scan picks it up.
           sudo mkdir -p /usr/share/fonts/TTF
@@ -340,14 +376,11 @@ jobs:
           # fc-list probe confirms fontconfig sees the font.
           fc-list | grep -i 'Px437.*IBM VGA 8x16' \
             || (echo "font install failed (fc-list)" >&2; exit 1)
-      - uses: astral-sh/setup-uv@v7
-        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
-        with:
-          enable-cache: true
-      - if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+      - name: Sync uv ci extras for full pytest
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         run: uv sync --extra ci
       - name: Verify Pango can resolve Px437 IBM VGA 8x16
-        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         # Pango consults fontconfig but has its own per-process cache; a
         # Pango-level probe confirms the HARDM render path will see the
         # font, not just fontconfig. If this fails, HARDM tests render
@@ -355,7 +388,7 @@ jobs:
         run: |
           uv run python scripts/ci_verify_pango_font.py "Px437 IBM VGA 8x16"
       - name: Run tests
-        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         env:
           LITELLM_BASE_URL: "http://0.0.0.0:1"
           QDRANT_URL: "http://0.0.0.0:1"
