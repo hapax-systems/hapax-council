@@ -32,7 +32,11 @@ jobs:
 
           # pull_request.synchronize is not a push payload; look up the PR head
           # commit explicitly instead of reading github.event.head_commit.
-          message="$(gh api "repos/$HEAD_REPOSITORY/commits/$HEAD_SHA" --jq '.commit.message' 2>/dev/null || true)"
+          if ! message="$(gh api "repos/$HEAD_REPOSITORY/commits/$HEAD_SHA" --jq '.commit.message' 2>/dev/null)"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Could not read PR head commit; failing closed by skipping Claude review."
+            exit 0
+          fi
           if printf '%s\n' "$message" | grep -Fq '[auto-fix]'; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Detected [auto-fix] marker at PR head; skipping Claude review."

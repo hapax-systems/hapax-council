@@ -248,6 +248,8 @@ def test_claude_review_auto_fix_debounce_uses_pr_head_commit_lookup() -> None:
     assert "HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in review_job
     assert "HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}" in review_job
     assert 'gh api "repos/$HEAD_REPOSITORY/commits/$HEAD_SHA"' in review_job
+    assert 'if ! message="$(gh api "repos/$HEAD_REPOSITORY/commits/$HEAD_SHA"' in review_job
+    assert "failing closed by skipping Claude review" in review_job
     assert "grep -Fq '[auto-fix]'" in review_job
     assert "Auto-fix review sentinel" in review_job
     assert "steps.auto_fix.outputs.skip == 'true'" in review_job
