@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 const FADE_IN_S: f32 = 18.0;
 const PEAK_HOLD_S: f32 = 9.0;
 const FADE_OUT_S: f32 = 18.0;
-const FAST_FADE_IN_S: f32 = 5.0;
-const FAST_PEAK_HOLD_S: f32 = 2.5;
-const FAST_FADE_OUT_S: f32 = 5.0;
+const FAST_FADE_IN_S: f32 = 8.0;
+const FAST_PEAK_HOLD_S: f32 = 4.5;
+const FAST_FADE_OUT_S: f32 = 8.0;
 const STAGGER_S: f32 = 9.0;
 const POOL_SIZE: usize = 5; // Five visible slots: four active, one rotating/recruiting.
 const ACTIVE_SLOT_TARGET: usize = 4;
@@ -21,9 +21,9 @@ const TICK_DIVISOR: u64 = 5; // ~6Hz at 30fps
 const SPATIAL_PEAK_RANGE: (f32, f32) = (0.78, 0.94);
 const NONSPATIAL_PEAK_RANGE: (f32, f32) = (0.96, 1.0);
 const RETIRE_INTENSITY_FLOOR: f32 = 0.22;
-const FAST_RETIRE_INTENSITY_FLOOR: f32 = 0.30;
+const FAST_RETIRE_INTENSITY_FLOOR: f32 = 0.24;
 const RECRUIT_WARM_PROGRESS: f32 = 0.42;
-const FAST_RECRUIT_WARM_PROGRESS: f32 = 0.58;
+const FAST_RECRUIT_WARM_PROGRESS: f32 = 0.35;
 const INITIAL_VISIBLE_FLOOR: f32 = 0.36;
 const ASSERTIVE_TARGET_DEPARTURE_FRACTION: f32 = 0.45;
 const MIN_ACTIVE_ANCHOR_EFFECTS: usize = 3;
@@ -1137,6 +1137,13 @@ fn eviction_cadence(def: &ShaderDef) -> EvictionCadence {
     }
 }
 
+fn eviction_cadence_label(def: &ShaderDef) -> &'static str {
+    match eviction_cadence(def) {
+        EvictionCadence::Slow => "slow",
+        EvictionCadence::Fast => "fast",
+    }
+}
+
 fn is_fast_evict(def: &ShaderDef) -> bool {
     eviction_cadence(def) == EvictionCadence::Fast
 }
@@ -1375,6 +1382,102 @@ mod tests {
     }
 
     #[test]
+    fn dramatic_temporal_effects_are_high_impingement_anchors() {
+        for name in ["slitscan", "fluid_sim"] {
+            let def = SHADERS
+                .iter()
+                .find(|def| def.name == name)
+                .unwrap_or_else(|| panic!("missing dramatic temporal effect {name}"));
+            assert!(
+                is_high_impingement_anchor(def),
+                "{name} must count as a high-impingement anchor so intensity repair can actively restore it"
+            );
+        }
+    }
+
+    #[test]
+    fn operator_facing_dramatic_aliases_are_discoverable() {
+        for name in ["fluid_sim", "tunnel", "droste", "kaleidoscope"] {
+            let def = SHADERS
+                .iter()
+                .find(|def| def.name == name)
+                .unwrap_or_else(|| panic!("missing vortex-capable effect {name}"));
+            assert!(
+                effect_aliases(def).contains(&"vortex"),
+                "{name} must be discoverable as an operator-facing vortex behavior"
+            );
+        }
+    }
+
+    #[test]
+    fn slot_drift_plan_exposes_live_surface_effect_metadata() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-metadata-{}.json",
+            std::process::id()
+        ));
+        let _engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+        let raw = std::fs::read_to_string(&path).expect("read SlotDrift plan");
+        let plan: serde_json::Value = serde_json::from_str(&raw).expect("plan json parses");
+        let passes = plan["targets"]["main"]["passes"]
+            .as_array()
+            .expect("main passes are present");
+
+        let effect_passes: Vec<&serde_json::Value> = passes
+            .iter()
+            .filter(|pass| {
+                let node = pass["node_id"].as_str().unwrap_or_default();
+                node != "fb" && node != "post"
+            })
+            .collect();
+
+        assert_eq!(
+            effect_passes.len(),
+            POOL_SIZE,
+            "SlotDrift should publish one metadata-bearing pass per effect slot"
+        );
+
+        for pass in effect_passes {
+            assert_eq!(
+                pass["effect_scope"].as_str(),
+                Some("composed_live_surface"),
+                "effect passes must declare that they operate on the composed livestream surface"
+            );
+            assert_eq!(
+                pass["source_bound"].as_bool(),
+                Some(true),
+                "effect passes must declare source-bound semantics"
+            );
+            assert_eq!(
+                pass["full_surface"].as_bool(),
+                Some(true),
+                "effect passes must declare full-surface execution"
+            );
+            assert!(
+                pass["effect_family"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty()),
+                "effect family must be machine-checkable"
+            );
+            assert!(
+                pass["visibility_group"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty()),
+                "visibility group must be machine-checkable"
+            );
+            assert!(
+                matches!(pass["eviction_cadence"].as_str(), Some("fast" | "slow")),
+                "eviction cadence must be machine-checkable"
+            );
+            assert!(
+                pass["effect_aliases"].as_array().is_some(),
+                "operator-facing aliases must be present even when empty"
+            );
+        }
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn dramatic_effects_have_short_dwell_authority_not_polite_caps() {
         let required = [
             ("chromatic_aberration", "intensity", 0.70),
@@ -1448,17 +1551,52 @@ mod tests {
             + fade_out_duration(slow, &mut slow_rng);
 
         assert!(
-            fast_total < slow_total * 0.4,
+            fast_total < slow_total * 0.55,
             "fast-evict effects should be brief inflections, not full-dwell layers"
+        );
+        assert!(
+            fast_total > slow_total * 0.25,
+            "fast-evict effects should not churn fast enough to read as periodic whole-frame pumping"
         );
         assert!(
             retire_intensity_floor(fast) > retire_intensity_floor(slow),
             "fast-evict effects should retire earlier on the fade-down"
         );
         assert!(
-            recruit_warm_progress(fast) > recruit_warm_progress(slow),
-            "fast-evict effects should enter visibly but leave quickly"
+            recruit_warm_progress(fast) < recruit_warm_progress(slow),
+            "fast-evict replacement should warm near its retirement floor, not jump over it"
         );
+    }
+
+    #[test]
+    fn fast_evict_replacement_matches_retirement_energy() {
+        let fast_floor = FAST_RETIRE_INTENSITY_FLOOR;
+        let warm_progress = FAST_RECRUIT_WARM_PROGRESS;
+        let warm_smooth = warm_progress * warm_progress * (3.0 - 2.0 * warm_progress);
+
+        for def in SHADERS.iter().filter(|def| is_fast_evict(def)) {
+            let peak_range = if def.is_spatial {
+                SPATIAL_PEAK_RANGE
+            } else {
+                NONSPATIAL_PEAK_RANGE
+            };
+            let min_warm_intensity = peak_range.0 * warm_smooth;
+            let max_warm_intensity = peak_range.1 * warm_smooth;
+            assert!(
+                min_warm_intensity + 0.05 >= fast_floor,
+                "{} warm-start minimum {:.3} falls too far below fast retire floor {:.3}",
+                def.name,
+                min_warm_intensity,
+                fast_floor
+            );
+            assert!(
+                max_warm_intensity <= fast_floor + 0.06,
+                "{} warm-start maximum {:.3} jumps above fast retire floor {:.3}",
+                def.name,
+                max_warm_intensity,
+                fast_floor
+            );
+        }
     }
 
     #[test]
@@ -2782,6 +2920,19 @@ fn visibility_group(def: &ShaderDef) -> &'static str {
     }
 }
 
+fn effect_aliases(def: &ShaderDef) -> &'static [&'static str] {
+    match def.name {
+        // "Vortex" is an operator-facing dramatic-effect identity, not a
+        // single historical shader name. Keep the behavior discoverable
+        // without cloning another effect node.
+        "fluid_sim" | "tunnel" | "droste" | "kaleidoscope" => &["vortex"],
+        "chromatic_aberration" | "glitch_block" => &["rgba_separation"],
+        "warp" | "slitscan" => &["slicing"],
+        "mirror" => &["reflection"],
+        _ => &[],
+    }
+}
+
 fn is_conditionally_low_salience(def: &ShaderDef) -> bool {
     matches!(
         def.name,
@@ -2830,6 +2981,8 @@ fn is_high_impingement_anchor(def: &ShaderDef) -> bool {
             | "particle_system"
             | "posterize"
             | "scanlines"
+            | "slitscan"
+            | "fluid_sim"
             | "thermal"
             | "threshold"
             | "transform"
@@ -3732,6 +3885,13 @@ impl SlotDriftEngine {
                 "output": layer,
                 "uniforms": uniforms_map,
                 "param_order": param_order,
+                "effect_scope": "composed_live_surface",
+                "effect_family": def.family,
+                "visibility_group": visibility_group(def),
+                "eviction_cadence": eviction_cadence_label(def),
+                "source_bound": true,
+                "full_surface": true,
+                "effect_aliases": effect_aliases(def),
             });
             if temporal {
                 pass.as_object_mut()
