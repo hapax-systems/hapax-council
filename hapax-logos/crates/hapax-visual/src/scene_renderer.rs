@@ -682,6 +682,21 @@ mod tests {
     }
 
     #[test]
+    fn scene_grid_material_is_stable_not_luma_pumped() {
+        for forbidden in [
+            "0.88 + 0.12 * sin",
+            "0.78 + 0.22 * sin",
+            "0.96 + 0.04 * sin",
+            "t * 0.010",
+        ] {
+            assert!(
+                !SCENE_GRID_WGSL.contains(forbidden),
+                "scroom grid/light material must not use time-driven alpha or luma pumping"
+            );
+        }
+    }
+
+    #[test]
     fn scene_grid_shader_parses_after_scroom_material_changes() {
         naga::front::wgsl::parse_str(SCENE_GRID_WGSL)
             .expect("scene grid WGSL must parse before live compositor deployment");
