@@ -63,6 +63,7 @@ class PathConfig:
     via_s4: bool
     public_expression_allowed: bool
     default_for_tiers: frozenset[str]
+    dry_bypass_sink: str | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,7 @@ def load_paths(path: Path | None = None) -> dict[VoicePath, PathConfig]:
             via_s4=bool(raw.get("via_s4", False)),
             public_expression_allowed=bool(raw.get("public_expression_allowed", True)),
             default_for_tiers=frozenset(raw.get("default_for_tiers", [])),
+            dry_bypass_sink=raw.get("dry_bypass_sink"),
         )
     return out
 
