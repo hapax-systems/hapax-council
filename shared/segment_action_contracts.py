@@ -28,6 +28,9 @@ class InterviewActionKind(StrEnum):
     REFUSAL_OFF_RECORD = "refusal_off_record"
     ANSWER_SCOPE_READBACK = "answer_scope_readback"
     FOLLOWUP_SELECTION = "followup_selection"
+    SILENCE_TIMEOUT = "silence_timeout"
+    OPERATOR_SKIP = "operator_skip"
+    ANSWER_DELTA_REPORT = "answer_delta_report"
 
 
 class ActionContract(BaseModel):
