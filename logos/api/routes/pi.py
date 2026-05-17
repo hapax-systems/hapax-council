@@ -12,6 +12,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+from werkzeug.security import safe_join
+from werkzeug.utils import secure_filename
 
 from agents.hapax_daimonion.ir_signals import IR_STATE_DIR
 from logos._ir_models import IrDetectionReport
@@ -99,13 +101,13 @@ def _safe_cam_id(raw: object) -> str:
 
 
 def _bounded_child_path(base_dir: Path, filename: str) -> Path:
-    if not filename or "\x00" in filename or Path(filename).name != filename:
+    safe_name = secure_filename(filename)
+    if not filename or "\x00" in filename or safe_name != filename:
         raise ValueError("filename must be a single path component")
-    base = base_dir.resolve(strict=False)
-    target = base / filename
-    if not target.parent.resolve(strict=False).is_relative_to(base):
+    joined = safe_join(str(base_dir), safe_name)
+    if joined is None:
         raise ValueError("path escaped state directory")
-    return target
+    return Path(joined)
 
 
 def _write_json_atomic(path: Path, body: str) -> None:

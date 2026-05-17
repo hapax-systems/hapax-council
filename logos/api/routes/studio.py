@@ -7,6 +7,7 @@ search over the studio_moments Qdrant collection.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
+from werkzeug.security import safe_join
+from werkzeug.utils import secure_filename
 
 from logos.api.cache import cache
 from logos.api.deps.stream_redaction import (
@@ -129,21 +132,31 @@ _VALID_COMPOSITOR_FEED_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 def _safe_compositor_path(name: str) -> Path | None:
     """Resolve a camera/feed name to a compositor path, rejecting traversal."""
-    if not _VALID_COMPOSITOR_FEED_RE.fullmatch(name):
+    safe_name = secure_filename(name)
+    if safe_name != name or not _VALID_COMPOSITOR_FEED_RE.fullmatch(safe_name):
         return None
-    base = _COMPOSITOR_DIR.resolve(strict=False)
-    candidate = (base / f"{name}.jpg").resolve(strict=False)
-    if not candidate.is_relative_to(base):
+    joined = safe_join(str(_COMPOSITOR_DIR), f"{safe_name}.jpg")
+    if joined is None:
         return None
-    return candidate
+    resolved_base = os.path.realpath(_COMPOSITOR_DIR)
+    resolved_candidate = os.path.realpath(joined)
+    if os.path.commonpath([resolved_base, resolved_candidate]) != resolved_base:
+        return None
+    return Path(joined)
 
 
 def _safe_compositor_stream_path(path: Path) -> Path | None:
-    base = _COMPOSITOR_DIR.resolve(strict=False)
-    candidate = path.resolve(strict=False)
-    if not candidate.is_relative_to(base):
+    safe_name = secure_filename(path.name)
+    if safe_name != path.name:
         return None
-    return candidate
+    joined = safe_join(str(_COMPOSITOR_DIR), safe_name)
+    if joined is None:
+        return None
+    resolved_base = os.path.realpath(_COMPOSITOR_DIR)
+    resolved_candidate = os.path.realpath(joined)
+    if os.path.commonpath([resolved_base, resolved_candidate]) != resolved_base:
+        return None
+    return Path(joined)
 
 
 @router.get("/studio/stream/camera/{role}")

@@ -99,6 +99,18 @@ def test_studio_preset_paths_reject_absolute_and_traversal_names(tmp_path: Path)
         _preset_path(tmp_path, "/tmp/escape")
 
 
+def test_studio_create_preset_maps_rejected_sanitized_name_to_400() -> None:
+    from fastapi import HTTPException
+
+    from logos.api.routes.studio_effects import create_preset
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(create_preset({"name": "_"}))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Invalid preset name"
+
+
 def test_watch_health_summary_date_is_bounded_filename_component() -> None:
     from agents.watch_receiver import HealthSummaryPayload
 

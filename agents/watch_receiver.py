@@ -22,7 +22,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
+from werkzeug.security import safe_join
+from werkzeug.utils import secure_filename
 
 HAPAX_HOME: Path = Path(os.environ.get("HAPAX_HOME", str(Path.home())))
 
@@ -80,7 +82,7 @@ class SensorPayload(BaseModel):
 
 class HealthSummaryPayload(BaseModel):
     device_id: str
-    date: str  # YYYY-MM-DD
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")  # YYYY-MM-DD
     resting_hr: float | None = None
     hr_min: float | None = None
     hr_max: float | None = None
@@ -96,17 +98,6 @@ class HealthSummaryPayload(BaseModel):
     spo2_mean: float | None = None
     skin_temp_deviation_c: float | None = None
     eda_events: int | None = None
-
-    @field_validator("date")
-    @classmethod
-    def _date_must_be_iso_day(cls, value: str) -> str:
-        try:
-            parsed = datetime.strptime(value, "%Y-%m-%d")
-        except ValueError as exc:
-            raise ValueError("date must be YYYY-MM-DD") from exc
-        if parsed.strftime("%Y-%m-%d") != value:
-            raise ValueError("date must be YYYY-MM-DD")
-        return value
 
 
 class VoiceTriggerPayload(BaseModel):
@@ -167,13 +158,13 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 def _bounded_child_path(base_dir: Path, filename: str) -> Path:
-    if not filename or "\x00" in filename or Path(filename).name != filename:
+    safe_name = secure_filename(filename)
+    if not filename or "\x00" in filename or safe_name != filename:
         raise ValueError("filename must be a single path component")
-    base = base_dir.resolve(strict=False)
-    target = base / filename
-    if not target.parent.resolve(strict=False).is_relative_to(base):
+    joined = safe_join(str(base_dir), safe_name)
+    if joined is None:
         raise ValueError("path escaped base directory")
-    return target
+    return Path(joined)
 
 
 def _watch_state_path(filename: str) -> Path:

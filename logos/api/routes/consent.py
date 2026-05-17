@@ -13,11 +13,13 @@ GET /consent/overhead — governance overhead measurement
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
+from werkzeug.security import safe_join
 
 from logos._revocation_wiring import get_revocation_propagator
 from logos.api.routes._config import HAPAX_HOME
@@ -38,20 +40,20 @@ def _resolve_trace_source(source: str) -> Path | None:
     decoded = unquote(source).strip()
     if not decoded or "\x00" in decoded:
         return None
-    candidate = Path(decoded).expanduser()
-    if not candidate.is_absolute():
-        return None
-    try:
-        resolved = candidate.resolve(strict=False)
-    except OSError:
+    candidate = os.path.expanduser(decoded)
+    if not os.path.isabs(candidate):
         return None
     for base in _TRACE_ALLOWED_BASES:
         try:
             resolved_base = base.resolve(strict=False)
         except OSError:
             continue
-        if resolved.is_relative_to(resolved_base):
-            return resolved
+        rel = os.path.relpath(candidate, resolved_base)
+        if rel == os.pardir or rel.startswith(f"{os.pardir}{os.sep}"):
+            continue
+        joined = safe_join(str(resolved_base), rel)
+        if joined is not None:
+            return Path(joined)
     return None
 
 

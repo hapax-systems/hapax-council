@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from werkzeug.security import safe_join
+from werkzeug.utils import secure_filename
 
 log = logging.getLogger(__name__)
 
@@ -38,13 +40,13 @@ def _contract_id_component(value: str) -> str:
 
 
 def _contract_path(directory: Path, contract_id: str) -> Path:
-    if not _CONTRACT_ID_RE.fullmatch(contract_id):
+    safe_id = secure_filename(contract_id)
+    if safe_id != contract_id or not _CONTRACT_ID_RE.fullmatch(safe_id):
         raise ValueError("contract_id must be a bounded filename component")
-    base = directory.resolve(strict=False)
-    target = (base / f"{contract_id}.yaml").resolve(strict=False)
-    if not target.is_relative_to(base):
+    joined = safe_join(str(directory), f"{safe_id}.yaml")
+    if joined is None:
         raise ValueError("contract path escaped contracts directory")
-    return target
+    return Path(joined)
 
 
 @dataclass(frozen=True)

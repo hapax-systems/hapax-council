@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from werkzeug.security import safe_join
 
 router = APIRouter(prefix="/api/engine", tags=["engine"])
 
@@ -19,11 +20,11 @@ def _resolve_engine_audit_file(audit_dir: Path, target_date: str) -> Path | None
         return None
     if parsed.isoformat() != target_date:
         return None
-    base = audit_dir.resolve(strict=False)
-    audit_file = (base / f"engine-audit-{target_date}.jsonl").resolve(strict=False)
-    if not audit_file.is_relative_to(base):
+    audit_name = f"engine-audit-{parsed.isoformat()}.jsonl"
+    joined = safe_join(str(audit_dir), audit_name)
+    if joined is None:
         return None
-    return audit_file
+    return Path(joined)
 
 
 def _get_engine(request: Request):

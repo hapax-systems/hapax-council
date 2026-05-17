@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from werkzeug.security import safe_join
+from werkzeug.utils import secure_filename
 
 from agents.studio_compositor.graph_mutation_bus import write_graph_mutation
 
@@ -113,13 +115,13 @@ def _sanitize_preset_name(name: str) -> str:
 
 
 def _preset_path(directory: Path, name: str) -> Path:
-    if not _VALID_PRESET_NAME_RE.fullmatch(name):
+    safe_name = secure_filename(name)
+    if safe_name != name or not _VALID_PRESET_NAME_RE.fullmatch(safe_name):
         raise ValueError("preset name must be a bounded filename component")
-    base = directory.resolve(strict=False)
-    path = (base / f"{name}.json").resolve(strict=False)
-    if not path.is_relative_to(base):
+    joined = safe_join(str(directory), f"{safe_name}.json")
+    if joined is None:
         raise ValueError("preset path escaped preset directory")
-    return path
+    return Path(joined)
 
 
 def _load_preset(name: str) -> object:
@@ -340,7 +342,10 @@ async def create_preset(request: dict[str, object]):
     if not safe_name:
         raise HTTPException(400, "Invalid preset name")
     _USER_PRESETS.mkdir(parents=True, exist_ok=True)
-    path = _preset_path(_USER_PRESETS, safe_name)
+    try:
+        path = _preset_path(_USER_PRESETS, safe_name)
+    except ValueError as e:
+        raise HTTPException(400, "Invalid preset name") from e
     try:
         path.write_text(_json_mod.dumps(request, indent=2))
     except OSError as e:
