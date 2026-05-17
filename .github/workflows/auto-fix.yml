@@ -38,11 +38,13 @@ concurrency:
 
 jobs:
   auto-fix:
-    # Gate: CI failed, not on main, not an auto-fix commit (immediate loop check)
+    # workflow_run carries the failed CI run's head_commit. Keep this gate so
+    # real CI failures can be remediated, but failed [auto-fix] commits do not
+    # recursively ask Claude to fix Claude's fix.
     if: >-
       github.event.workflow_run.conclusion == 'failure' &&
       github.event.workflow_run.head_branch != 'main' &&
-      !contains(github.event.workflow_run.head_commit.message, '[auto-fix]')
+      !contains(github.event.workflow_run.head_commit.message || '', '[auto-fix]')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

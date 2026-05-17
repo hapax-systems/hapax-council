@@ -59,6 +59,20 @@ def test_auto_fix_typecheck_guidance_matches_pyrefly_and_pyright_split() -> None
     assert "If pyright safety-net failed: `uv run pyright`" in workflow_text
 
 
+def test_auto_fix_keeps_real_failure_remediation_but_skips_auto_fix_recursion() -> None:
+    workflow_text = _read(".github/workflows/auto-fix.yml")
+    auto_fix_job = _workflow_job_block(workflow_text, "auto-fix")
+
+    assert "github.event.workflow_run.conclusion == 'failure'" in auto_fix_job
+    assert "github.event.workflow_run.head_branch != 'main'" in auto_fix_job
+    assert (
+        "!contains(github.event.workflow_run.head_commit.message || '', '[auto-fix]')"
+        in auto_fix_job
+    )
+    assert "real CI failures can be remediated" in auto_fix_job
+    assert "recursively ask Claude to fix Claude's fix" in auto_fix_job
+
+
 def test_readme_typecheck_commands_match_ci_and_safety_net() -> None:
     readme_text = _read("README.md")
 
@@ -220,9 +234,26 @@ def test_claude_review_docs_only_prs_trigger_review_sentinel() -> None:
     assert "Detect docs-only review change set" in review_job
     assert "Docs-only review sentinel" in review_job
     assert "steps.docs.outputs.docs_only == 'true'" in review_job
-    assert (
-        "env.CLAUDE_REVIEW_CONFIGURED == 'true' && steps.docs.outputs.docs_only != 'true'"
-    ) in review_job
+    assert "env.CLAUDE_REVIEW_CONFIGURED == 'true'" in review_job
+    assert "steps.docs.outputs.docs_only != 'true'" in review_job
+
+
+def test_claude_review_auto_fix_debounce_uses_pr_head_commit_lookup() -> None:
+    review_text = _read(".github/workflows/claude-review.yml")
+    review_job = _workflow_job_block(review_text, "review")
+
+    assert "github.event.head_commit.message" not in review_job
+    assert "Detect auto-fix head commit" in review_job
+    assert "pull_request.synchronize is not a push payload" in review_job
+    assert "HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in review_job
+    assert "HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}" in review_job
+    assert 'gh api "repos/$HEAD_REPOSITORY/commits/$HEAD_SHA"' in review_job
+    assert 'if ! message="$(gh api "repos/$HEAD_REPOSITORY/commits/$HEAD_SHA"' in review_job
+    assert "failing closed by skipping Claude review" in review_job
+    assert "grep -Fq '[auto-fix]'" in review_job
+    assert "Auto-fix review sentinel" in review_job
+    assert "steps.auto_fix.outputs.skip == 'true'" in review_job
+    assert "steps.auto_fix.outputs.skip != 'true'" in review_job
 
 
 def test_docs_only_warning_no_longer_recommends_carrier_workaround() -> None:
