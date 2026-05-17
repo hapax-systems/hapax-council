@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-UNIT = Path(__file__).resolve().parents[2] / "systemd/units/hapax-triage-officer.service"
+UNIT = Path(__file__).resolve().parents[2] / "systemd/units/hapax-frontier-triage-officer.service"
 
 
 def test_triage_officer_unit_runs_frontier_annotator() -> None:
