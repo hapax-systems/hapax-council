@@ -253,4 +253,20 @@ def precompute_pipeline_deps(daemon: VoiceDaemon) -> None:
         "system_critical", "system_awareness", "hapax_daimonion"
     )
 
+    # Seed context associations for audio performance mode modulation.
+    # active_performance boosts expression/fx, dampens speech.
+    # speaking boosts speech, dampens expression.
+    _PERFORMANCE_SEEDS: list[tuple[str, str, float]] = [
+        ("active_performance", "speech_production", -0.3),
+        ("active_performance", "vocal_chain.intensity", 0.4),
+        ("active_performance", "vocal_chain.diffusion", 0.3),
+        ("active_performance", "vocal_chain.depth", 0.3),
+        ("passive_music", "vocal_chain.diffusion", 0.2),
+        ("passive_music", "vocal_chain.depth", 0.2),
+        ("speaking", "speech_production", 0.3),
+        ("speaking", "vocal_chain.intensity", -0.2),
+    ]
+    for cue, cap, delta in _PERFORMANCE_SEEDS:
+        daemon._affordance_pipeline.update_context_association(cue, cap, delta=delta)
+
     log.info("Pipeline dependencies precomputed (batch-indexed %d capabilities)", _indexed)

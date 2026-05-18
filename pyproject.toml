@@ -31,6 +31,7 @@ dependencies = [
     "openwakeword>=0.4.0",
     "litellm>=1.83.10",
     "kokoro>=0.9",
+    "chatterbox-tts",
     "mistralai>=2.1.0",
     "python-toon>=0.1.3",
     "llmlingua>=0.2.2",
@@ -194,6 +195,7 @@ markers = [
 ]
 
 [tool.uv]
+environments = ["sys_platform == 'linux'"]
 constraint-dependencies = [
     "authlib>=1.6.9",
     "fastmcp>=3.2.0",
@@ -206,6 +208,7 @@ constraint-dependencies = [
     "urllib3>=2.7.0",
 ]
 override-dependencies = [
+    "numpy>=2.0.0",
     # moviepy 2.2.1 still declares pillow<12, but the patched Pillow floor is
     # required for the high-severity Dependabot alerts covered by this task.
     "pillow>=12.2.0",
@@ -213,3 +216,4 @@ override-dependencies = [
 
 [tool.uv.sources]
 hapax-agentgov = { path = "packages/agentgov", editable = true }
+chatterbox-tts = { git = "https://github.com/resemble-ai/chatterbox.git" }
