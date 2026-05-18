@@ -89,6 +89,9 @@ def compute_interruptibility(
     emotion: str = "neutral",
     posture: str = "unknown",
     ir_drowsiness_score: float = 0.0,
+    audio_content_mix: float = 0.0,
+    production_activity: str = "idle",
+    flow_state_score: float = 0.0,
 ) -> float:
     """Compute an interruptibility score from perception signals.
 
@@ -115,6 +118,33 @@ def compute_interruptibility(
     # Production activity reduces interruptibility
     activity_penalties = {"production": 0.5, "meeting": 0.6, "coding": 0.3}
     score -= activity_penalties.get(activity_mode, 0.0)
+
+    # Audio scene pressure reduces interruptibility. The Stimmung convention is
+    # 0.0 = balanced/low pressure, 1.0 = single-source or performance-heavy.
+    audio_pressure = max(0.0, min(1.0, audio_content_mix))
+    score -= 0.3 * audio_pressure
+
+    # Audio-derived performance activity adds a separate real-world occupancy
+    # signal, so it can stack with workspace-derived activity_mode.
+    normalized_activity = production_activity.strip().lower().replace("-", "_").replace(" ", "_")
+    performance_penalties = {
+        "production": 0.35,
+        "music_production": 0.35,
+        "recording": 0.35,
+        "mixing": 0.35,
+        "beat_making": 0.35,
+        "performance": 0.35,
+        "conversation": 0.2,
+        "meeting": 0.2,
+        "coding": 0.15,
+        "writing": 0.15,
+        "email": 0.05,
+    }
+    score -= performance_penalties.get(normalized_activity, 0.0)
+
+    # Continuous flow confidence nudges the same direction without dominating
+    # the explicit activity label.
+    score -= 0.2 * max(0.0, min(1.0, flow_state_score))
 
     # Phone media playing — mild reduction
     if phone_media_playing:
@@ -244,6 +274,7 @@ class PerceptionEngine:
         self._b_operator_visible: Behavior[bool] = Behavior(False)
         self._b_face_detected: Behavior[bool] = Behavior(False)
         self._b_guest_count: Behavior[int] = Behavior(0)
+        self._b_interruptibility_score: Behavior[float] = Behavior(1.0)
 
         # Phase 2 extension point: all behaviors by name
         self.behaviors: dict[str, Behavior] = {
@@ -258,6 +289,7 @@ class PerceptionEngine:
             "operator_visible": self._b_operator_visible,
             "face_detected": self._b_face_detected,
             "guest_count": self._b_guest_count,
+            "interruptibility_score": self._b_interruptibility_score,
         }
 
         # Impingement drain (R3) — accumulates impingements for daemon consumption
@@ -450,7 +482,11 @@ class PerceptionEngine:
             emotion=self._sval("top_emotion", "neutral"),
             posture=self._sval("posture", "unknown"),
             ir_drowsiness_score=self._fval("ir_drowsiness_score", 0.0),
+            audio_content_mix=self._fval("audio_content_mix", 0.0),
+            production_activity=self._sval("production_activity", "idle"),
+            flow_state_score=self._fval("flow_state_score", 0.0),
         )
+        self._b_interruptibility_score.update(interruptibility, now)
 
         presence_score = getattr(self._presence, "score", "likely_absent")
 
