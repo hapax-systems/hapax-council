@@ -1,0 +1,336 @@
+"""Tests for ``scripts/cc-pr-autoqueue.py``."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import subprocess
+import sys
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+_SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+
+def _load_module() -> ModuleType:
+    if "cc_pr_autoqueue" in sys.modules:
+        return sys.modules["cc_pr_autoqueue"]
+    path = _SCRIPTS / "cc-pr-autoqueue.py"
+    spec = importlib.util.spec_from_file_location("cc_pr_autoqueue", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["cc_pr_autoqueue"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+autoqueue = _load_module()
+
+
+def _make_vault(tmp_path: Path) -> Path:
+    vault = tmp_path / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+    (vault / "active").mkdir(parents=True, exist_ok=True)
+    (vault / "closed").mkdir(parents=True, exist_ok=True)
+    return vault
+
+
+def _write_task(
+    vault: Path,
+    *,
+    task_id: str,
+    folder: str = "closed",
+    status: str = "done",
+    pr: int | None = None,
+    branch: str | None = None,
+    authority_case: str | None = "CASE-TEST",
+    parent_spec: str | None = "docs/spec.md",
+    route_metadata_schema: int | None = 1,
+) -> Path:
+    path = vault / folder / f"{task_id}.md"
+    pr_line = f"pr: {pr}" if pr is not None else "pr: null"
+    branch_line = f"branch: {branch}" if branch is not None else "branch: null"
+    authority_line = (
+        f"authority_case: {authority_case}"
+        if authority_case is not None
+        else "authority_case: null"
+    )
+    parent_line = f"parent_spec: {parent_spec}" if parent_spec is not None else "parent_spec: null"
+    route_line = (
+        f"route_metadata_schema: {route_metadata_schema}"
+        if route_metadata_schema is not None
+        else "route_metadata_schema: null"
+    )
+    path.write_text(
+        f"""---
+type: cc-task
+task_id: {task_id}
+title: "{task_id}"
+status: {status}
+assigned_to: alpha
+{pr_line}
+{branch_line}
+{authority_line}
+{parent_line}
+{route_line}
+---
+
+# {task_id}
+
+## Session log
+""",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _check(name: str, state: str = "SUCCESS") -> dict[str, Any]:
+    return {"__typename": "CheckRun", "name": name, "conclusion": state}
+
+
+def _pr(
+    number: int,
+    *,
+    branch: str | None = None,
+    title: str | None = None,
+    body: str = "",
+    draft: bool = False,
+    merge_state: str = "CLEAN",
+    checks: list[dict[str, Any]] | None = None,
+    labels: list[str] | None = None,
+    review_decision: str | None = None,
+    auto_merge: bool = False,
+) -> dict[str, Any]:
+    return {
+        "number": number,
+        "title": title or f"PR {number}",
+        "body": body,
+        "headRefName": branch or f"feat/{number}",
+        "isDraft": draft,
+        "mergeStateStatus": merge_state,
+        "labels": [{"name": label} for label in labels or []],
+        "reviewDecision": review_decision,
+        "autoMergeRequest": {"enabledAt": "now"} if auto_merge else None,
+        "statusCheckRollup": checks if checks is not None else [_check("lint"), _check("test")],
+    }
+
+
+class _FakeRunner:
+    def __init__(self) -> None:
+        self.open_prs: list[dict[str, Any]] = []
+        self.queued_prs: set[int] = set()
+        self.calls: list[list[str]] = []
+
+    def __call__(
+        self,
+        cmd: list[str],
+        *,
+        cwd: str | None = None,
+        capture_output: bool = False,
+        text: bool = False,
+        check: bool = False,
+        timeout: int | None = None,
+        **_: Any,
+    ) -> subprocess.CompletedProcess:
+        self.calls.append(list(cmd))
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(self.open_prs), "")
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            nodes = [{"pullRequest": {"number": number}} for number in sorted(self.queued_prs)]
+            payload = {
+                "data": {
+                    "repository": {
+                        "mergeQueue": {
+                            "entries": {
+                                "nodes": nodes,
+                            },
+                        },
+                    },
+                },
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if cmd[:3] == ["gh", "pr", "merge"]:
+            return subprocess.CompletedProcess(cmd, 0, f"merged {cmd[3]}\n", "")
+        return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+
+def test_queue_green_governed_pr(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=42)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert report["mutations"][0]["ok"] is True
+    assert ["gh", "pr", "merge", "42", "--repo", "owner/repo", "--merge"] in runner.calls
+
+
+def test_enable_auto_merge_for_pending_governed_pr(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=43)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(43, checks=[_check("lint"), {"name": "test", "status": "IN_PROGRESS"}])]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["enable_auto_merge"] == 1
+    assert ["gh", "pr", "merge", "43", "--repo", "owner/repo", "--auto", "--merge"] in runner.calls
+
+
+def test_blocks_failed_dirty_draft_and_hold_prs(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    for number in (1, 2, 3, 4):
+        _write_task(vault, task_id=f"task-{number}", pr=number)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(1, checks=[_check("lint", "FAILURE")]),
+        _pr(2, merge_state="DIRTY"),
+        _pr(3, draft=True),
+        _pr(4, labels=["do-not-merge"]),
+    ]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 4
+    assert not any(call[:4] == ["gh", "pr", "merge", "1"] for call in runner.calls)
+    reasons = {item["pr"]: item["reasons"] for item in report["decisions"]}
+    assert any(reason.startswith("failed_checks:") for reason in reasons[1])
+    assert "merge_state:DIRTY" in reasons[2]
+    assert "draft" in reasons[3]
+    assert "hold_labels:do-not-merge" in reasons[4]
+
+
+def test_blocks_missing_or_legacy_task_metadata(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="legacy", pr=50, route_metadata_schema=None)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(50), _pr(51)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    reasons = {item["pr"]: item["reasons"] for item in report["decisions"]}
+    assert "task_missing_route_metadata_schema_1" in reasons[50]
+    assert "missing_cc_task_link" in reasons[51]
+
+
+def test_blocks_unchecked_pr_checklist_items(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="costed-validation", pr=55)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(
+            55,
+            body="- [x] CI green\n- [ ] Full validation run (operator-triggered, ~$3 cost)\n",
+        )
+    ]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    assert any(
+        reason.startswith("unchecked_pr_checklist:") for reason in report["decisions"][0]["reasons"]
+    )
+
+
+def test_allows_optional_unchecked_pr_checklist_items(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="optional-validation", pr=56)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(56, body="- [ ] Optional benchmark rerun\n")]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+
+
+def test_branch_link_can_identify_task_when_pr_frontmatter_missing(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="branch-task", branch="alpha/branch-task")
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(60, branch="alpha/branch-task")]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert report["decisions"][0]["task_id"] == "branch-task"
+
+
+def test_skips_prs_already_in_queue_or_auto_merge_enabled(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="queued", pr=70)
+    _write_task(vault, task_id="armed", pr=71)
+    runner = _FakeRunner()
+    runner.queued_prs = {70}
+    runner.open_prs = [_pr(70), _pr(71, auto_merge=True)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["already_queued"] == 1
+    assert report["counts"]["already_auto_merge_enabled"] == 1
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+
+
+def test_disables_auto_merge_when_armed_pr_is_now_blocked(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="blocked-armed", pr=80)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(80, auto_merge=True, checks=[_check("lint", "FAILURE")])]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["disable_auto_merge"] == 1
+    assert ["gh", "pr", "merge", "80", "--repo", "owner/repo", "--disable-auto"] in runner.calls

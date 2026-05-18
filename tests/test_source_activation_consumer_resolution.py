@@ -143,6 +143,18 @@ class TestSymlinkSweepInSourceActivate:
 
 
 class TestCcPrMergeWatcherSourceResolution:
+    def test_pr_autoqueue_unit_uses_activation_worktree(self) -> None:
+        text = (UNITS_DIR / "hapax-cc-pr-autoqueue.service").read_text()
+        execution_lines = [
+            line
+            for line in text.splitlines()
+            if line.startswith(("ExecStart=", "WorkingDirectory=", "Environment=PYTHONPATH="))
+        ]
+        assert execution_lines
+        assert all("%h/projects/hapax-council" not in line for line in execution_lines)
+        assert any("%h/.cache/hapax/source-activation/worktree" in line for line in execution_lines)
+        assert any("scripts/cc-pr-autoqueue.py" in line for line in execution_lines)
+
     def test_pr_merge_watcher_unit_uses_activation_worktree(self) -> None:
         text = (UNITS_DIR / "hapax-cc-pr-merge-watcher.service").read_text()
         execution_lines = [
