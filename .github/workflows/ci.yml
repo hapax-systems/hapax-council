@@ -379,12 +379,11 @@ jobs:
           # the prior 15m wrapper killed otherwise-successful runs at 99%.
           #
           # Merge-queue throughput: full pytest remains mandatory before
-          # release, but the queue runs it in four test-count-balanced
-          # file-level shards and keeps the required `test` check as an
-          # aggregate gate. The shard list is derived from the same
-          # collect/ignore/deselect expression used by the actual test command,
-          # preserving the existing release surface while reducing
-          # longest-runner wall time.
+          # release, but the queue runs it in four runtime-weighted file-level
+          # shards and keeps the required `test` check as an aggregate gate.
+          # The shard list is derived from the same collect/ignore/deselect
+          # expression used by the actual test command, preserving the
+          # existing release surface while reducing longest-runner wall time.
           collect_output="$(mktemp)"
           shard_files="$(mktemp)"
           uv run pytest tests/ --collect-only -q \
@@ -398,6 +397,7 @@ jobs:
             --ignore=tests/fortress \
             --ignore=tests/test_demo_screenshots.py \
             --ignore=tests/test_demo_screencasts.py \
+            --ignore=tests/test_demo_title_cards.py \
             --ignore=tests/test_demo_video.py \
             --ignore=tests/test_demo_timeline.py \
             --ignore=tests/test_event_log_trace_id.py \
@@ -417,60 +417,11 @@ jobs:
             --deselect=tests/studio_compositor/test_overlay_zones_research_gate.py::TestZoneGate::test_default_always_on \
             -m "not llm" -k "not golden and not goldens" \
             -p no:cacheprovider > "$collect_output"
-          awk -v shard="$PYTEST_SHARD" -v shards="$PYTEST_SHARD_COUNT" '
-            /^tests\/.*::/ {
-              file=$0
-              sub(/::.*/, "", file)
-              if (!(file in seen)) {
-                files[++count]=file
-                seen[file]=1
-              }
-              test_count[file]++
-            }
-            END {
-              for (i=1; i<=count; i++) {
-                for (j=i+1; j<=count; j++) {
-                  heavier=test_count[files[j]] > test_count[files[i]]
-                  same_weight=test_count[files[j]] == test_count[files[i]]
-                  lexically_first=files[j] < files[i]
-                  if (heavier || (same_weight && lexically_first)) {
-                    tmp=files[i]
-                    files[i]=files[j]
-                    files[j]=tmp
-                  }
-                }
-              }
-
-              for (s=1; s<=shards; s++) {
-                shard_load[s]=0
-                shard_file_count[s]=0
-              }
-
-              for (i=1; i<=count; i++) {
-                target=1
-                for (s=2; s<=shards; s++) {
-                  if (shard_load[s] < shard_load[target]) {
-                    target=s
-                  }
-                }
-                assigned_shard[files[i]]=target
-                shard_load[target]+=test_count[files[i]]
-                shard_file_count[target]++
-              }
-
-              printf "Shard plan by collected test count:" > "/dev/stderr"
-              for (s=1; s<=shards; s++) {
-                printf " %d=%d-tests/%d-files", s, shard_load[s], shard_file_count[s] > "/dev/stderr"
-              }
-              printf "\n" > "/dev/stderr"
-
-              for (i=1; i<=count; i++) {
-                if (assigned_shard[files[i]] == shard) {
-                  print files[i]
-                }
-              }
-            }
-          ' "$collect_output" > "$shard_files"
+          uv run python scripts/ci_select_pytest_shard.py \
+            --collect-output "$collect_output" \
+            --weights config/ci/python-test-runtime-weights.yaml \
+            --shard "$PYTEST_SHARD" \
+            --shards "$PYTEST_SHARD_COUNT" > "$shard_files"
           file_count="$(wc -l < "$shard_files" | tr -d ' ')"
           echo "Shard $PYTEST_SHARD/$PYTEST_SHARD_COUNT selected $file_count test files."
           if [ "$file_count" -eq 0 ]; then
@@ -491,6 +442,7 @@ jobs:
               --ignore=tests/fortress \
               --ignore=tests/test_demo_screenshots.py \
               --ignore=tests/test_demo_screencasts.py \
+              --ignore=tests/test_demo_title_cards.py \
               --ignore=tests/test_demo_video.py \
               --ignore=tests/test_demo_timeline.py \
               --ignore=tests/test_event_log_trace_id.py \
@@ -536,8 +488,33 @@ jobs:
           echo "Tests failed (pytest exit $PYTEST_EXIT)"
           exit 1
 
+  test-title-cards:
+    needs: [docs_only_filter, post_merge_duplicate_filter]
+    if: github.event_name == 'merge_group' && needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install system deps for serial title-card tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection
+      - name: Sync uv ci extras for serial title-card tests
+        run: uv sync --extra ci
+      - name: Run serial title-card tests
+        env:
+          LITELLM_BASE_URL: "http://0.0.0.0:1"
+          QDRANT_URL: "http://0.0.0.0:1"
+          OLLAMA_HOST: "http://0.0.0.0:1"
+          OTEL_SDK_DISABLED: "true"
+          LANGFUSE_HOST: "http://0.0.0.0:1"
+        run: uv run pytest tests/test_demo_title_cards.py -q --tb=line --benchmark-disable
+
   test:
-    needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard]
+    needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard, test-title-cards]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -572,13 +549,15 @@ jobs:
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'merge-group-shards'
         env:
           TEST_FULL_SHARD_RESULT: ${{ needs.test-full-shard.result }}
+          TEST_TITLE_CARDS_RESULT: ${{ needs.test-title-cards.result }}
         run: |
           set -euo pipefail
-          if [ "$TEST_FULL_SHARD_RESULT" = "success" ]; then
-            echo "All full pytest shards passed; required test check reports success."
+          if [ "$TEST_FULL_SHARD_RESULT" = "success" ] && [ "$TEST_TITLE_CARDS_RESULT" = "success" ]; then
+            echo "All full pytest shards and serial title-card tests passed; required test check reports success."
             exit 0
           fi
           echo "Full pytest shard result: $TEST_FULL_SHARD_RESULT"
+          echo "Serial title-card result: $TEST_TITLE_CARDS_RESULT"
           exit 1
       - uses: astral-sh/setup-uv@v7
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode != 'merge-group-shards'
@@ -636,6 +615,15 @@ jobs:
         # blank cells silently, so fail loud here with diagnostic output.
         run: |
           uv run python scripts/ci_verify_pango_font.py "Px437 IBM VGA 8x16"
+      - name: Run serial title-card tests
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
+        env:
+          LITELLM_BASE_URL: "http://0.0.0.0:1"
+          QDRANT_URL: "http://0.0.0.0:1"
+          OLLAMA_HOST: "http://0.0.0.0:1"
+          OTEL_SDK_DISABLED: "true"
+          LANGFUSE_HOST: "http://0.0.0.0:1"
+        run: uv run pytest tests/test_demo_title_cards.py -q --tb=line --benchmark-disable
       - name: Run tests
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         env:
@@ -676,6 +664,7 @@ jobs:
               --ignore=tests/fortress \
               --ignore=tests/test_demo_screenshots.py \
               --ignore=tests/test_demo_screencasts.py \
+              --ignore=tests/test_demo_title_cards.py \
               --ignore=tests/test_demo_video.py \
               --ignore=tests/test_demo_timeline.py \
               --ignore=tests/test_event_log_trace_id.py \

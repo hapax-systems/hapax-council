@@ -9,6 +9,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 EVIDENCE = REPO_ROOT / "config/ci/python-test-throughput-evidence.yaml"
+RUNTIME_WEIGHTS = REPO_ROOT / "config/ci/python-test-runtime-weights.yaml"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -32,11 +33,15 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
     ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
     test_block = _workflow_job_block(ci_text, "test")
     shard_block = _workflow_job_block(ci_text, "test-full-shard")
+    title_card_block = _workflow_job_block(ci_text, "test-title-cards")
 
     assert "merge_group:" in ci_text
     assert "push:" in ci_text
     assert "branches: [main]" in ci_text
-    assert "needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard]" in test_block
+    assert (
+        "needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard, "
+        "test-title-cards]" in test_block
+    )
     assert "if: always()" in test_block
     assert "Determine Python test mode" in test_block
     assert 'if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then' in test_block
@@ -45,9 +50,13 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
     assert 'echo "mode=full" >> "$GITHUB_OUTPUT"' in test_block
     assert "Verify merge-queue full pytest shards" in test_block
     assert "needs.test-full-shard.result" in test_block
+    assert "needs.test-title-cards.result" in test_block
+    assert "Serial title-card result" in test_block
     assert "steps.test_mode.outputs.mode == 'full'" in test_block
     assert "timeout -s KILL 1200" in test_block
     assert "uv run pytest tests/ -q --tb=line --durations=25" in test_block
+    assert "--ignore=tests/test_demo_title_cards.py" in test_block
+    assert "Run serial title-card tests" in test_block
 
     assert "github.event_name == 'merge_group'" in shard_block
     assert "strategy:" in shard_block
@@ -55,10 +64,17 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
     assert "shard_count: [4]" in shard_block
     assert "Run full pytest shard" in shard_block
     assert "--collect-only -q" in shard_block
-    assert "test_count[file]++" in shard_block
-    assert "shard_load[target]+=test_count[files[i]]" in shard_block
-    assert "Shard plan by collected test count" in shard_block
+    assert "scripts/ci_select_pytest_shard.py" in shard_block
+    assert "config/ci/python-test-runtime-weights.yaml" in shard_block
     assert 'xargs -a "$shard_files" uv run pytest -q --tb=line --durations=25' in shard_block
+    assert "--ignore=tests/test_demo_title_cards.py" in shard_block
+
+    assert "github.event_name == 'merge_group'" in title_card_block
+    assert "Install system deps for serial title-card tests" in title_card_block
+    assert (
+        "sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection"
+    ) in title_card_block
+    assert "uv run pytest tests/test_demo_title_cards.py -q --tb=line" in title_card_block
 
 
 def test_pull_request_test_job_uses_fast_admission_slice_without_self_hosted() -> None:
@@ -87,8 +103,38 @@ def test_python_test_throughput_evidence_records_gated_decision() -> None:
     assert evidence["self_hosted_comparison"]["observed_manual_runs"] == 0
     assert evidence["rollout_policy"]["pull_request"] == "pr_admission_slice"
     assert evidence["rollout_policy"]["merge_group"] == "full_pytest_sharded"
+    assert evidence["rollout_policy"]["merge_group_shards"] == 4
+    assert (
+        evidence["rollout_policy"]["merge_group_shard_selector"]
+        == "scripts/ci_select_pytest_shard.py"
+    )
+    assert (
+        evidence["rollout_policy"]["runtime_weight_source"]
+        == "config/ci/python-test-runtime-weights.yaml"
+    )
     assert evidence["rollout_policy"]["push_main"] == "full_pytest"
     assert (
         evidence["rollout_policy"]["workflow_level_path_filters_for_required_check"] == "forbidden"
     )
     assert evidence["parity_status"]["self_hosted_vs_hosted"] == "unavailable_no_self_hosted_runs"
+
+
+def test_python_runtime_weights_record_merge_queue_evidence() -> None:
+    weights = _load_yaml(RUNTIME_WEIGHTS)
+
+    assert weights["task_id"] == "ci-merge-queue-runtime-weighted-pytest-shards-20260518"
+    assert weights["weight_units"] == "collected_test_equivalent"
+    assert weights["unknown_file_fallback"] == "collected_test_count"
+    assert weights["assignment_policy"]["selector"] == "scripts/ci_select_pytest_shard.py"
+    evidence = weights["evidence"][0]
+    assert evidence["pr"] == 3444
+    assert evidence["run_id"] == 26035987726
+    assert evidence["shard_pytest_seconds"] == {
+        "1": 246.32,
+        "2": 250.29,
+        "3": 236.20,
+        "4": 884.43,
+    }
+    slow_file = weights["files"]["tests/studio_compositor/test_compositor_wiring.py"]
+    assert slow_file["collected_test_equivalent_weight"] == 9000
+    assert slow_file["evidence"]["top_25_duration_seconds_for_file"] == 192.90

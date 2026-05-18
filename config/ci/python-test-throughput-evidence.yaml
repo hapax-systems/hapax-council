@@ -48,7 +48,9 @@ rollout_policy:
   required_check_name: test
   pull_request: pr_admission_slice
   merge_group: full_pytest_sharded
-  merge_group_shards: 2
+  merge_group_shards: 4
+  merge_group_shard_selector: scripts/ci_select_pytest_shard.py
+  runtime_weight_source: config/ci/python-test-runtime-weights.yaml
   push_main: full_pytest
   docs_only: sentinel_success
   duplicate_post_merge_push: sentinel_success_after_successful_merge_group

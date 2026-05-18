@@ -7,6 +7,7 @@ import os
 import stat
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from shared.dispatcher_policy import (
@@ -21,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 NOW = "2026-05-17T19:55:00Z"
+NOW_DT = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
 SECRET = "sk-live-secret-value"
 
 
@@ -83,7 +85,7 @@ def test_fresh_receipt_overlays_registry_with_explicit_quota_blocker(tmp_path: P
 
     assert result.returncode == 0, result.stderr
     assert SECRET not in (tmp_path / "codex.json").read_text(encoding="utf-8")
-    registry = load_platform_capability_registry(REGISTRY, receipt_dir=tmp_path)
+    registry = load_platform_capability_registry(REGISTRY, receipt_dir=tmp_path, now=NOW_DT)
     route = registry.require("codex.headless.full")
 
     assert route.freshness.quota_checked_at is not None
