@@ -46,10 +46,15 @@ def test_service_unit_has_consumer_contract_and_unit_condition() -> None:
     service_text = SERVICE_UNIT.read_text(encoding="utf-8")
 
     assert parser.get("Service", "Type") == "oneshot"
-    assert (
-        parser.get("Unit", "ConditionPathExists")
-        == "%h/.cache/hapax/source-activation/worktree/scripts/request-intake-consumer"
-    )
+    condition_paths = [
+        line.removeprefix("ConditionPathExists=")
+        for line in service_text.splitlines()
+        if line.startswith("ConditionPathExists=")
+    ]
+    assert condition_paths == [
+        "%h/.cache/hapax/source-activation/worktree/scripts/request-intake-consumer",
+        "%h/.cache/hapax/source-activation/worktree/scripts/request-fulfillment-reconciler",
+    ]
     assert parser.get("Service", "ConditionPathExists", fallback=None) is None
     assert [
         line.removeprefix("Environment=")
@@ -58,6 +63,7 @@ def test_service_unit_has_consumer_contract_and_unit_condition() -> None:
     ] == [
         "HAPAX_REQUEST_RECEIPTS=%h/.cache/hapax/request-receipts",
         "HAPAX_REQUEST_INTAKE_STATE=%h/.cache/hapax/request-intake-state.json",
+        "HAPAX_REQUEST_FULFILLMENT_REPORT=%h/.cache/hapax/request-fulfillment-reconciler.json",
         "HAPAX_AGENT_NAME=request-intake-consumer",
     ]
 
@@ -67,6 +73,11 @@ def test_service_unit_has_consumer_contract_and_unit_condition() -> None:
     )
     for flag in ("--write-receipt", "--write-state", "--write-planning-feed"):
         assert flag in exec_start
+
+    exec_start_post = parser.get("Service", "ExecStartPost")
+    assert "scripts/request-fulfillment-reconciler" in exec_start_post
+    for flag in ("--apply", "--write-report", "--quiet"):
+        assert flag in exec_start_post
 
 
 def test_timer_preserves_periodic_consumer_sweep() -> None:

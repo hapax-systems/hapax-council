@@ -185,3 +185,19 @@ if [[ -n "$role" ]]; then
     echo "cc-close: cleared claim file for role '$role'"
   fi
 fi
+
+# Best-effort request lifecycle reconciliation. `request-intake-consumer`
+# remains read-only; this writer is explicit and conservative, and only runs
+# after a successful fulfilling cc-task close.
+if [[ "$final_status" == "done" && "${HAPAX_REQUEST_RECONCILER_OFF:-0}" != "1" && "${HAPAX_CC_HYGIENE_OFF:-0}" != "1" ]]; then
+  reconciler="$SCRIPT_DIR/request-fulfillment-reconciler"
+  if [[ -x "$reconciler" ]]; then
+    set +e
+    "$reconciler" --apply --task-id "$task_id" --write-report --quiet
+    reconcile_rc=$?
+    set -e
+    if [[ "$reconcile_rc" -ne 0 ]]; then
+      echo "cc-close: request fulfillment reconciler failed rc=$reconcile_rc" >&2
+    fi
+  fi
+fi
