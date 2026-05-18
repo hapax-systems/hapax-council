@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from agents.visual_pool.repository import LocalVisualPoolSelector
 
 from .cairo_source import CairoSourceRunner
+from .homage import get_active_package
 from .homage.transitional_source import HomageTransitionalSource
 from .image_loader import get_image_loader
 
@@ -76,13 +77,40 @@ FEATURED_OPACITY_BOOST = 1.0  # max opacity when featured (vs 0.9 active, 0.4 id
 FEATURED_FALLBACK_OPACITY = 0.9  # active-slot opacity (legacy default)
 FEATURED_IDLE_OPACITY = 0.4  # non-active opacity (legacy default)
 
-# Synthwave palette (neon pink, cyan, purple)
-COLORS = [
+# Synthwave palette — fallback when no HOMAGE package is active.
+# At render time _sierpinski_colors() resolves from the active package.
+_FALLBACK_COLORS: list[tuple[float, float, float]] = [
     (1.0, 0.2, 0.6),  # neon pink
     (0.0, 0.9, 1.0),  # cyan
     (0.7, 0.3, 1.0),  # purple
     (1.0, 0.4, 0.8),  # hot pink
 ]
+
+
+def _sierpinski_colors() -> list[tuple[float, float, float]]:
+    """Resolve the 4-color Sierpinski line palette from the active HOMAGE package.
+
+    Maps: accent_red → neon pink slot, accent_cyan → cyan slot,
+    accent_magenta → purple slot, accent_red (bright variant) → hot pink slot.
+    Falls back to the hardcoded synthwave palette when no package is active.
+    """
+    pkg = get_active_package()
+    if pkg is None:
+        return _FALLBACK_COLORS
+    r, g, b, _a = pkg.resolve_colour("accent_red")
+    c_r, c_g, c_b, _c_a = pkg.resolve_colour("accent_cyan")
+    m_r, m_g, m_b, _m_a = pkg.resolve_colour("accent_magenta")
+    y_r, y_g, y_b, _y_a = pkg.resolve_colour("accent_yellow")
+    return [
+        (r, g, b),  # neon pink → accent_red
+        (c_r, c_g, c_b),  # cyan → accent_cyan
+        (m_r, m_g, m_b),  # purple → accent_magenta
+        (y_r, y_g, y_b),  # hot pink → accent_yellow
+    ]
+
+
+# Legacy alias for any external consumers that reference COLORS directly
+COLORS = _FALLBACK_COLORS
 
 AUDIO_LINE_WIDTH_BASE_PX = 3.0
 AUDIO_LINE_WIDTH_SCALE_PX = 3.5
@@ -750,6 +778,7 @@ class SierpinskiCairoSource(HomageTransitionalSource):
         _Z_SCALE_STEP = 0.012
         _Z_ALPHA_DECAY = 0.55
 
+        colors = _sierpinski_colors()
         for z in range(_Z_LAYERS):
             scale_offset = 1.0 + z * _Z_SCALE_STEP
             alpha_mult = _Z_ALPHA_DECAY**z
@@ -764,8 +793,8 @@ class SierpinskiCairoSource(HomageTransitionalSource):
             cr.translate(-cx, -cy)
 
             for i, tri in enumerate(triangles):
-                color_idx = (i + int(t * 0.5) + color_shift) % len(COLORS)
-                r, g, b = COLORS[color_idx]
+                color_idx = (i + int(t * 0.5) + color_shift) % len(colors)
+                r, g, b = colors[color_idx]
 
                 cr.set_line_width(line_width * 3.5)
                 cr.set_source_rgba(r, g, b, 0.28 * alpha_mult)
@@ -831,13 +860,20 @@ class SierpinskiCairoSource(HomageTransitionalSource):
         bar_w = (rw - total_gap) / bar_count
         start_x = rx
 
+        # Waveform color — accent_cyan from active HOMAGE package
+        pkg = get_active_package()
+        if pkg is not None:
+            wf_r, wf_g, wf_b, _wf_a = pkg.resolve_colour("accent_cyan")
+        else:
+            wf_r, wf_g, wf_b = 0.0, 0.9, 1.0
+
         for i in range(bar_count):
             amp = (energy * 0.5 + 0.1) * (0.5 + 0.5 * math.sin(i * 0.8 + t * 2.0))
             bar_h = amp * rh * 0.85
             x = start_x + i * (bar_w + gap)
             y = cy - bar_h * 0.5
 
-            cr.set_source_rgba(0.0, 0.9, 1.0, 0.9)  # cyan
+            cr.set_source_rgba(wf_r, wf_g, wf_b, 0.9)
             cr.rectangle(x, y, bar_w, bar_h)
             cr.fill()
 

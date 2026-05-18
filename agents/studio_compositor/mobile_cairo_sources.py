@@ -14,6 +14,7 @@ from typing import Any
 import cairo
 
 from agents.studio_compositor.cairo_source import CairoSource
+from agents.studio_compositor.homage import get_active_package
 from agents.studio_compositor.mobile_layout import (
     MOBILE_HEIGHT,
     MOBILE_WIDTH,
@@ -93,12 +94,21 @@ class _MobileSourceBase(CairoSource):
         return _SPEC_BY_SOURCE[self.source_id]
 
     def _draw_bg(self, cr: cairo.Context, canvas_w: int, canvas_h: int) -> None:
+        pkg = get_active_package()
         cr.save()
-        cr.set_source_rgba(0.08, 0.09, 0.09, 0.74)
+        if pkg is not None:
+            bg_r, bg_g, bg_b, _bg_a = pkg.resolve_colour("background")
+            cr.set_source_rgba(bg_r, bg_g, bg_b, 0.74)
+        else:
+            cr.set_source_rgba(0.08, 0.09, 0.09, 0.74)
         cr.rectangle(0, 0, canvas_w, canvas_h)
         cr.fill()
         cr.set_line_width(2)
-        cr.set_source_rgba(0.45, 0.50, 0.42, 0.78)
+        if pkg is not None:
+            mu_r, mu_g, mu_b, _mu_a = pkg.resolve_colour("muted")
+            cr.set_source_rgba(mu_r, mu_g, mu_b, 0.78)
+        else:
+            cr.set_source_rgba(0.45, 0.50, 0.42, 0.78)
         cr.rectangle(1, 1, max(0, canvas_w - 2), max(0, canvas_h - 2))
         cr.stroke()
         cr.restore()
@@ -113,13 +123,21 @@ class _MobileSourceBase(CairoSource):
         max_width_px: int = 1020,
     ) -> None:
         spec = self._spec()
+        pkg = get_active_package()
+        if pkg is not None:
+            text_color = pkg.resolve_colour("bright")
+            bg_r, bg_g, bg_b, _bg_a = pkg.resolve_colour("background")
+            outline_color = (bg_r, bg_g, bg_b, 0.88)
+        else:
+            text_color = (0.92, 0.94, 0.86, 0.98)
+            outline_color = (0.0, 0.0, 0.0, 0.88)
         render_text(
             cr,
             TextStyle(
                 text=text,
                 font_description=spec.font_description,
-                color_rgba=(0.92, 0.94, 0.86, 0.98),
-                outline_color_rgba=(0.0, 0.0, 0.0, 0.88),
+                color_rgba=text_color,
+                outline_color_rgba=outline_color,
                 outline_offsets=((-2, 0), (2, 0), (0, -2), (0, 2)),
                 max_width_px=max_width_px,
                 wrap="word_char",
@@ -185,8 +203,13 @@ class MobileStanceIndicatorCairoSource(_MobileSourceBase):
         narrative = state.get("narrative") if isinstance(state.get("narrative"), dict) else {}
         stance = str(narrative.get("stance") or narrative.get("overall_stance") or "nominal")
         del t
+        pkg = get_active_package()
         cr.save()
-        cr.set_source_rgba(0.32, 0.58, 0.56, 0.66)
+        if pkg is not None:
+            ac_r, ac_g, ac_b, _ac_a = pkg.resolve_colour("accent_cyan")
+        else:
+            ac_r, ac_g, ac_b = 0.32, 0.58, 0.56
+        cr.set_source_rgba(ac_r, ac_g, ac_b, 0.66)
         cr.rectangle(26, 42, 18, 84)
         cr.fill()
         cr.restore()
@@ -232,11 +255,20 @@ class MobileTokenPoleCairoSource(_MobileSourceBase):
         scores = salience.get("scores") if isinstance(salience.get("scores"), dict) else {}
         progress = max([float(v) for v in scores.values()] or [0.0])
         progress = max(0.0, min(1.0, progress))
+        pkg = get_active_package()
         cr.save()
-        cr.set_source_rgba(0.18, 0.20, 0.18, 0.95)
+        if pkg is not None:
+            bg_r, bg_g, bg_b, _bg_a = pkg.resolve_colour("background")
+            cr.set_source_rgba(bg_r, bg_g, bg_b, 0.95)
+        else:
+            cr.set_source_rgba(0.18, 0.20, 0.18, 0.95)
         cr.rectangle(30, 32, 1020, 32)
         cr.fill()
-        cr.set_source_rgba(0.70, 0.62, 0.30, 0.95)
+        if pkg is not None:
+            yl_r, yl_g, yl_b, _yl_a = pkg.resolve_colour("accent_yellow")
+            cr.set_source_rgba(yl_r, yl_g, yl_b, 0.95)
+        else:
+            cr.set_source_rgba(0.70, 0.62, 0.30, 0.95)
         cr.rectangle(30, 32, 1020 * progress, 32)
         cr.fill()
         cr.restore()
@@ -411,16 +443,25 @@ class MobileCairoRunner:
 
     def _draw_footer(self, cr: cairo.Context, selection: Any) -> None:
         footer = self.layout.metadata_footer
+        pkg = get_active_package()
         cr.save()
-        cr.set_source_rgba(0.05, 0.055, 0.05, 0.86)
+        if pkg is not None:
+            bg_r, bg_g, bg_b, _bg_a = pkg.resolve_colour("background")
+            cr.set_source_rgba(bg_r, bg_g, bg_b, 0.86)
+        else:
+            cr.set_source_rgba(0.05, 0.055, 0.05, 0.86)
         cr.rectangle(0, footer.y_top, MOBILE_WIDTH, footer.y_bottom - footer.y_top)
         cr.fill()
+        if pkg is not None:
+            footer_color = pkg.resolve_colour("terminal_default")
+        else:
+            footer_color = (0.82, 0.86, 0.78, 0.95)
         render_text(
             cr,
             TextStyle(
                 text=f"{selection.claim_posture} / {selection.density_mode}",
                 font_description=f"Px437 IBM VGA 8x16 {footer.font_size_pt}",
-                color_rgba=(0.82, 0.86, 0.78, 0.95),
+                color_rgba=footer_color,
                 max_width_px=1020,
             ),
             28,

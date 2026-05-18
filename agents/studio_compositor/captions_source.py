@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .homage import get_active_package
 from .homage.transitional_source import HomageTransitionalSource
 
 if TYPE_CHECKING:
@@ -82,6 +83,31 @@ class CaptionStyle:
 # Pango + fontconfig. Sizes bumped (public 32 → 36, scientific 18 → 22)
 # to compensate for the bitmap-esque raster cell vs. the previous
 # anti-aliased proportional display face.
+def _caption_color_public() -> tuple[float, float, float, float]:
+    """Resolve public caption color from active HOMAGE package (bright role)."""
+    pkg = get_active_package()
+    if pkg is not None:
+        return pkg.resolve_colour("bright")
+    return (1.0, 0.97, 0.88, 1.0)
+
+
+def _caption_color_scientific() -> tuple[float, float, float, float]:
+    """Resolve scientific caption color from active HOMAGE package (accent_cyan role)."""
+    pkg = get_active_package()
+    if pkg is not None:
+        return pkg.resolve_colour("accent_cyan")
+    return (0.80, 0.88, 0.95, 0.95)
+
+
+def _caption_outline_color() -> tuple[float, float, float, float]:
+    """Resolve caption outline color from active HOMAGE package (background role)."""
+    pkg = get_active_package()
+    if pkg is not None:
+        bg_r, bg_g, bg_b, _bg_a = pkg.resolve_colour("background")
+        return (bg_r, bg_g, bg_b, 0.9)
+    return (0.0, 0.0, 0.0, 0.9)
+
+
 STYLE_PUBLIC: CaptionStyle = CaptionStyle(
     font_description="Px437 IBM VGA 8x16 36",
     color_rgba=(1.0, 0.97, 0.88, 1.0),
@@ -219,11 +245,19 @@ class CaptionsCairoSource(HomageTransitionalSource):
         except ImportError:  # pragma: no cover — test envs without text_render
             return
 
+        # Resolve caption colors at render time from active HOMAGE package.
+        # The style.color_rgba is the static fallback; runtime resolution
+        # derives from the package palette so the ward tracks homage swaps.
+        if style is STYLE_PUBLIC:
+            resolved_color = _caption_color_public()
+        else:
+            resolved_color = _caption_color_scientific()
+
         text_style = TextStyle(
             text=text,
             font_description=style.font_description,
-            color_rgba=style.color_rgba,
-            outline_color_rgba=(0.0, 0.0, 0.0, 0.9),
+            color_rgba=resolved_color,
+            outline_color_rgba=_caption_outline_color(),
             outline_offsets=OUTLINE_OFFSETS_8,
             max_width_px=style.max_width_px,
             wrap="word_char",

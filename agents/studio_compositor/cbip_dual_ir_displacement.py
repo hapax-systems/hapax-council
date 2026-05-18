@@ -26,6 +26,7 @@ import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .cairo_source import CairoSource
+from .homage import get_active_package
 
 log = logging.getLogger(__name__)
 
@@ -247,6 +248,24 @@ def compose_displacement_rgba(
     return np.dstack((red, gb, blue, alpha))
 
 
+def _cbip_palette() -> dict[str, tuple[float, float, float, float]] | None:
+    """Resolve CBIP-relevant palette roles from the active HOMAGE package.
+
+    Returns None when no package is active (callers fall back to hardcoded values).
+    """
+    pkg = get_active_package()
+    if pkg is None:
+        return None
+    return {
+        "background": pkg.resolve_colour("background"),
+        "accent_cyan": pkg.resolve_colour("accent_cyan"),
+        "accent_red": pkg.resolve_colour("accent_red"),
+        "accent_yellow": pkg.resolve_colour("accent_yellow"),
+        "muted": pkg.resolve_colour("muted"),
+        "bright": pkg.resolve_colour("bright"),
+    }
+
+
 class CBIPDualIrDisplacementCairoSource(CairoSource):
     """Render a dual-Pi-NoIR displacement source for the CBIP platter."""
 
@@ -368,12 +387,21 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
         cr.restore()
 
     def _paint_backdrop(self, cr: cairo.Context, canvas_w: int, canvas_h: int, t: float) -> None:
+        pal = _cbip_palette()
         cr.save()
-        cr.set_source_rgb(0.015, 0.018, 0.02)
+        if pal:
+            bg_r, bg_g, bg_b, _bg_a = pal["background"]
+            cr.set_source_rgb(bg_r, bg_g, bg_b)
+        else:
+            cr.set_source_rgb(0.015, 0.018, 0.02)
         cr.paint()
         line_opacity = 0.045
+        if pal:
+            sl_r, sl_g, sl_b, _sl_a = pal["accent_cyan"]
+        else:
+            sl_r, sl_g, sl_b = 0.1, 0.55, 0.62
         for i in range(0, canvas_w, max(12, canvas_w // 40)):
-            cr.set_source_rgba(0.1, 0.55, 0.62, line_opacity)
+            cr.set_source_rgba(sl_r, sl_g, sl_b, line_opacity)
             cr.rectangle(i, 0, 1, canvas_h)
             cr.fill()
         cr.restore()
@@ -387,6 +415,7 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
         canvas_h: int,
         t: float,
     ) -> None:
+        pal = _cbip_palette()
         motion = max(primary.motion_delta, secondary.motion_delta)
         brightness_a = min(1.0, primary.brightness / 255.0)
         brightness_b = min(1.0, secondary.brightness / 255.0)
@@ -396,16 +425,22 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
         cell_w = canvas_w / cols
         cell_h = canvas_h / rows
         warp = disparity * cell_w * 0.75
+        if pal:
+            pr_r, pr_g, pr_b, _pr_a = pal["accent_red"]
+            sc_r, sc_g, sc_b, _sc_a = pal["accent_cyan"]
+        else:
+            pr_r, pr_g, pr_b = 0.85, 0.12, 0.08
+            sc_r, sc_g, sc_b = 0.04, 0.78, 0.72
         for row in range(rows):
             y = row * cell_h
             for col in range(cols):
                 x = col * cell_w
                 drift = math.sin(t * 0.4 + row * 0.55 + col * 0.12) * warp
                 pulse = 0.16 + 0.28 * min(1.0, motion * 12.0)
-                cr.set_source_rgba(0.85, 0.12, 0.08, pulse * (0.45 + brightness_a * 0.55))
+                cr.set_source_rgba(pr_r, pr_g, pr_b, pulse * (0.45 + brightness_a * 0.55))
                 cr.rectangle(x + drift, y, cell_w * 0.46, cell_h * 0.76)
                 cr.fill()
-                cr.set_source_rgba(0.04, 0.78, 0.72, pulse * (0.45 + brightness_b * 0.55))
+                cr.set_source_rgba(sc_r, sc_g, sc_b, pulse * (0.45 + brightness_b * 0.55))
                 cr.rectangle(
                     x - drift + cell_w * 0.36, y + cell_h * 0.16, cell_w * 0.46, cell_h * 0.76
                 )
@@ -433,15 +468,25 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
             cr.paint_with_alpha(0.70)
         else:
             self._paint_procedural_pair(cr, snapshot, snapshot, canvas_w, canvas_h, t)
+        pal = _cbip_palette()
         cr.save()
-        cr.set_source_rgba(0.95, 0.72, 0.18, 0.18)
+        if pal:
+            yl_r, yl_g, yl_b, _yl_a = pal["accent_yellow"]
+        else:
+            yl_r, yl_g, yl_b = 0.95, 0.72, 0.18
+        cr.set_source_rgba(yl_r, yl_g, yl_b, 0.18)
         cr.rectangle(0, 0, canvas_w, canvas_h)
         cr.fill()
         cr.restore()
 
     def _paint_offline(self, cr: cairo.Context, canvas_w: int, canvas_h: int) -> None:
+        pal = _cbip_palette()
         cr.save()
-        cr.set_source_rgba(0.20, 0.24, 0.25, 0.30)
+        if pal:
+            mu_r, mu_g, mu_b, _mu_a = pal["muted"]
+        else:
+            mu_r, mu_g, mu_b = 0.20, 0.24, 0.25
+        cr.set_source_rgba(mu_r, mu_g, mu_b, 0.30)
         for y in range(0, canvas_h, max(18, canvas_h // 18)):
             cr.rectangle(0, y, canvas_w, 1)
             cr.fill()
@@ -462,6 +507,7 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
             f"CBIP DUAL IR  {status.upper()}  {self.mode.upper()}  "
             f"P:{primary.reason} S:{secondary.reason} SYNC:{sync}"
         )
+        pal = _cbip_palette()
         cr.save()
         cr.select_font_face("monospace", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
         cr.set_font_size(max(10.0, min(16.0, canvas_h * 0.035)))
@@ -469,10 +515,18 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
         pad = 6.0
         x = 8.0
         y = canvas_h - 10.0
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.48)
+        if pal:
+            sbg_r, sbg_g, sbg_b, _sbg_a = pal["background"]
+        else:
+            sbg_r, sbg_g, sbg_b = 0.0, 0.0, 0.0
+        cr.set_source_rgba(sbg_r, sbg_g, sbg_b, 0.48)
         cr.rectangle(x - pad, y - th - pad + yb, min(tw + pad * 2, canvas_w - 16), th + pad * 2)
         cr.fill()
-        cr.set_source_rgba(0.72, 0.92, 0.88, 0.92)
+        if pal:
+            st_r, st_g, st_b, _st_a = pal["bright"]
+        else:
+            st_r, st_g, st_b = 0.72, 0.92, 0.88
+        cr.set_source_rgba(st_r, st_g, st_b, 0.92)
         cr.move_to(x, y)
         cr.show_text(text[:140])
         cr.restore()
