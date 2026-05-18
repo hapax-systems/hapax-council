@@ -10,8 +10,10 @@
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 
-use crate::content_sources::ContentSourceManager;
-use crate::scene::{build_proof_scene, build_scene_from_sources, Camera3D, SceneNode};
+use crate::content_sources::{ActiveContentSourceInfo, ContentSourceManager};
+use crate::scene::{
+    build_proof_scene, build_scene_from_source_records, BuiltScene, Camera3D, SceneNode,
+};
 
 const SCENE_QUAD_WGSL: &str = include_str!("shaders/scene_quad.wgsl");
 // GRID_SHADER_VERSION: 1778811160
@@ -86,14 +88,15 @@ fn configured_scene_sample_count() -> u32 {
     )
 }
 
-fn build_live_scene_from_active(
-    active: &[(&str, f32, i32, u32, u32)],
-    time: f32,
-) -> Vec<SceneNode> {
+fn build_live_scene_from_active(active: &[ActiveContentSourceInfo], time: f32) -> BuiltScene {
     if active.is_empty() {
-        Vec::new()
+        BuiltScene {
+            nodes: Vec::new(),
+            aoa_pane_sources: Vec::new(),
+            rejected_pane_sources: Vec::new(),
+        }
     } else {
-        build_scene_from_sources(active, time)
+        build_scene_from_source_records(active, time)
     }
 }
 
@@ -538,8 +541,8 @@ impl SceneRenderer {
     ) -> &wgpu::TextureView {
         // Build scene from live content sources
         let scene = if let Some(mgr) = content_source_mgr {
-            let active = mgr.active_source_info();
-            build_live_scene_from_active(&active, time)
+            let active = mgr.active_source_records();
+            build_live_scene_from_active(&active, time).nodes
         } else {
             build_proof_scene()
         };
@@ -719,7 +722,7 @@ mod tests {
         let scene = build_live_scene_from_active(&[], 0.0);
 
         assert!(
-            scene.is_empty(),
+            scene.nodes.is_empty(),
             "live compositor startup/source gaps must not synthesize proof-scene quads"
         );
     }

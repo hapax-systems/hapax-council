@@ -1,7 +1,8 @@
 //! Content source manager — scans shm for arbitrary RGBA/text content sources,
 //! manages GPU textures, composites onto ground field.
 
-use serde::Deserialize;
+use crate::aoa_panes::{aoa_active_pane_manifest, AoaPaneBindingMode, AoaPanePrivacyClass};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -69,6 +70,171 @@ pub struct SourceManifest {
     pub ttl_ms: u64,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub pane_binding: Option<AoaPaneBindingMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AoaPaneClipPolicy {
+    BarycentricInsideRequired,
+}
+
+impl Default for AoaPaneClipPolicy {
+    fn default() -> Self {
+        Self::BarycentricInsideRequired
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AoaPaneEffectScope {
+    PaneEntityOnly,
+}
+
+impl Default for AoaPaneEffectScope {
+    fn default() -> Self {
+        Self::PaneEntityOnly
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AoaPanePrivacyPosture {
+    PublicSafe,
+    PublicReviewRequired,
+    PrivateOnly,
+    Blocked,
+}
+
+impl Default for AoaPanePrivacyPosture {
+    fn default() -> Self {
+        Self::PublicReviewRequired
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AoaPaneSourcePosture {
+    Synthetic,
+    SystemWard,
+    OperatorCamera,
+    ExternalMedia,
+    Unknown,
+}
+
+impl Default for AoaPaneSourcePosture {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AoaPaneBindingMetadata {
+    pub pane_id: String,
+    #[serde(default = "default_aoa_pane_route")]
+    pub route: String,
+    #[serde(default = "default_aoa_pane_binding_mode")]
+    pub mode: AoaPaneBindingMode,
+    #[serde(default)]
+    pub clip_policy: AoaPaneClipPolicy,
+    #[serde(default)]
+    pub effect_scope: AoaPaneEffectScope,
+    #[serde(default)]
+    pub privacy_posture: AoaPanePrivacyPosture,
+    #[serde(default)]
+    pub source_posture: AoaPaneSourcePosture,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AoaPaneBindingRejectionReason {
+    InvalidRoute(String),
+    UnknownPaneId(String),
+    ModeNotAllowed {
+        pane_id: String,
+        mode: AoaPaneBindingMode,
+    },
+    PrivacyBlocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AoaValidatedPaneBinding {
+    pub pane_id: String,
+    pub pane_ordinal: u32,
+    pub mode: AoaPaneBindingMode,
+    pub privacy_posture: AoaPanePrivacyPosture,
+    pub source_posture: AoaPaneSourcePosture,
+    pub pane_privacy_class: AoaPanePrivacyClass,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveContentSourceInfo {
+    pub source_id: String,
+    pub current_opacity: f32,
+    pub z_order: i32,
+    pub width: u32,
+    pub height: u32,
+    pub content_type: String,
+    pub tags: Vec<String>,
+    pub pane_binding: Option<AoaPaneBindingMetadata>,
+}
+
+impl ActiveContentSourceInfo {
+    pub fn new(
+        source_id: impl Into<String>,
+        current_opacity: f32,
+        z_order: i32,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        Self {
+            source_id: source_id.into(),
+            current_opacity,
+            z_order,
+            width,
+            height,
+            content_type: "rgba".to_string(),
+            tags: Vec::new(),
+            pane_binding: None,
+        }
+    }
+
+    fn from_source(id: &str, source: &ContentSource) -> Self {
+        Self {
+            source_id: id.to_string(),
+            current_opacity: source.current_opacity,
+            z_order: source.manifest.z_order,
+            width: source.manifest.width,
+            height: source.manifest.height,
+            content_type: source.manifest.content_type.clone(),
+            tags: source.manifest.tags.clone(),
+            pane_binding: source.manifest.pane_binding.clone(),
+        }
+    }
+
+    pub fn with_pane_binding(mut self, binding: AoaPaneBindingMetadata) -> Self {
+        self.pane_binding = Some(binding);
+        self
+    }
+
+    pub fn scene_tuple(&self) -> (&str, f32, i32, u32, u32) {
+        (
+            self.source_id.as_str(),
+            self.current_opacity,
+            self.z_order,
+            self.width,
+            self.height,
+        )
+    }
+
+    pub fn validated_pane_binding(
+        &self,
+    ) -> Result<Option<AoaValidatedPaneBinding>, AoaPaneBindingRejectionReason> {
+        self.pane_binding
+            .as_ref()
+            .map(validate_aoa_pane_binding)
+            .transpose()
+    }
 }
 
 fn default_width() -> u32 {
@@ -91,6 +257,60 @@ fn default_opacity() -> f32 {
 }
 fn default_ttl() -> u64 {
     DEFAULT_TTL_MS
+}
+
+fn default_aoa_pane_route() -> String {
+    "aoa_pane".to_string()
+}
+
+fn default_aoa_pane_binding_mode() -> AoaPaneBindingMode {
+    AoaPaneBindingMode::TriTextureMasked
+}
+
+fn normalized_pane_route(route: &str) -> String {
+    route.trim().to_ascii_lowercase().replace(['-', ' '], "_")
+}
+
+pub fn validate_aoa_pane_binding(
+    binding: &AoaPaneBindingMetadata,
+) -> Result<AoaValidatedPaneBinding, AoaPaneBindingRejectionReason> {
+    let route = normalized_pane_route(&binding.route);
+    if route != "aoa_pane" {
+        return Err(AoaPaneBindingRejectionReason::InvalidRoute(
+            binding.route.clone(),
+        ));
+    }
+
+    if binding.privacy_posture == AoaPanePrivacyPosture::Blocked {
+        return Err(AoaPaneBindingRejectionReason::PrivacyBlocked);
+    }
+
+    let manifest = aoa_active_pane_manifest();
+    let pane = manifest
+        .panes
+        .iter()
+        .find(|pane| pane.pane_id == binding.pane_id)
+        .ok_or_else(|| AoaPaneBindingRejectionReason::UnknownPaneId(binding.pane_id.clone()))?;
+
+    if !pane
+        .content_eligibility
+        .allowed_modes
+        .contains(&binding.mode)
+    {
+        return Err(AoaPaneBindingRejectionReason::ModeNotAllowed {
+            pane_id: binding.pane_id.clone(),
+            mode: binding.mode,
+        });
+    }
+
+    Ok(AoaValidatedPaneBinding {
+        pane_id: pane.pane_id.clone(),
+        pane_ordinal: pane.pane_ordinal,
+        mode: binding.mode,
+        privacy_posture: binding.privacy_posture.clone(),
+        source_posture: binding.source_posture.clone(),
+        pane_privacy_class: pane.content_eligibility.privacy_class,
+    })
 }
 
 fn expected_rgba_size(width: u32, height: u32) -> Option<usize> {
@@ -717,11 +937,19 @@ impl ContentSourceManager {
         }
     }
 
+    fn source_is_visible(source: &ContentSource) -> bool {
+        source.current_opacity > 0.001
+    }
+
+    fn source_is_generic_routable(source: &ContentSource) -> bool {
+        Self::source_is_visible(source) && source.manifest.pane_binding.is_none()
+    }
+
     pub fn active_sources(&self) -> Vec<(&str, &wgpu::TextureView, f32)> {
         let mut result: Vec<_> = self
             .sources
             .iter()
-            .filter(|(_, s)| s.current_opacity > 0.001)
+            .filter(|(_, s)| Self::source_is_generic_routable(s))
             .map(|(id, s)| (id.as_str(), &s.view, s.current_opacity))
             .collect();
         result.sort_by_key(|(id, _, _)| {
@@ -739,12 +967,14 @@ impl ContentSourceManager {
 
     /// Phase 1 3D scene: return source info tuples for dynamic scene building.
     /// Returns (source_id, current_opacity, z_order, width, height) for each
-    /// active source. The scene builder uses this to position textured quads.
+    /// active generic source. Pane-bound sources are intentionally excluded;
+    /// `active_source_records` exposes them to the AoA path without letting
+    /// them fall through as ordinary scene quads.
     pub fn active_source_info(&self) -> Vec<(&str, f32, i32, u32, u32)> {
         let mut result: Vec<_> = self
             .sources
             .iter()
-            .filter(|(_, s)| s.current_opacity > 0.001)
+            .filter(|(_, s)| Self::source_is_generic_routable(s))
             .map(|(id, s)| {
                 (
                     id.as_str(),
@@ -756,6 +986,20 @@ impl ContentSourceManager {
             })
             .collect();
         result.sort_by_key(|&(_, _, z, _, _)| z);
+        result
+    }
+
+    /// Rich source records for scene routing. This includes pane-bound
+    /// sources so the scene builder can consume them into AoA-internal records
+    /// instead of re-projecting them as fourth-wall quads.
+    pub fn active_source_records(&self) -> Vec<ActiveContentSourceInfo> {
+        let mut result: Vec<_> = self
+            .sources
+            .iter()
+            .filter(|(_, s)| Self::source_is_visible(s))
+            .map(|(id, s)| ActiveContentSourceInfo::from_source(id, s))
+            .collect();
+        result.sort_by_key(|source| source.z_order);
         result
     }
 
@@ -790,7 +1034,9 @@ impl ContentSourceManager {
         let mut sorted: Vec<&ContentSource> = self
             .sources
             .iter()
-            .filter(|(id, s)| s.current_opacity > 0.001 && Self::classify_family(id) == family)
+            .filter(|(id, s)| {
+                Self::source_is_generic_routable(s) && Self::classify_family(id) == family
+            })
             .map(|(_, s)| s)
             .collect();
         sorted.sort_by_key(|s| s.manifest.z_order);
@@ -808,7 +1054,9 @@ impl ContentSourceManager {
         let mut sorted: Vec<&ContentSource> = self
             .sources
             .iter()
-            .filter(|(id, s)| s.current_opacity > 0.001 && Self::classify_family(id) == family)
+            .filter(|(id, s)| {
+                Self::source_is_generic_routable(s) && Self::classify_family(id) == family
+            })
             .map(|(_, s)| s)
             .collect();
         sorted.sort_by_key(|s| s.manifest.z_order);
@@ -832,7 +1080,7 @@ impl ContentSourceManager {
         let mut sorted: Vec<&ContentSource> = self
             .sources
             .values()
-            .filter(|s| s.current_opacity > 0.001)
+            .filter(|s| Self::source_is_generic_routable(s))
             .collect();
         sorted.sort_by_key(|s| s.manifest.z_order);
         if let Some(source) = sorted.get(index) {
@@ -847,7 +1095,7 @@ impl ContentSourceManager {
         let mut sorted: Vec<&ContentSource> = self
             .sources
             .values()
-            .filter(|s| s.current_opacity > 0.001)
+            .filter(|s| Self::source_is_generic_routable(s))
             .collect();
         sorted.sort_by_key(|s| s.manifest.z_order);
         let mut opacities = [0.0f32; 4];
@@ -862,9 +1110,12 @@ impl ContentSourceManager {
 mod family_classification_tests {
     use super::{
         effective_ttl_ms, expected_rgba_size, modified_age_exceeds_ttl, read_complete_rgba_frame,
-        rgba_frame_matches_manifest, source_mip_level_count, ContentSourceManager, SourceManifest,
+        rgba_frame_matches_manifest, source_file_age_exceeds_ttl, source_mip_level_count,
+        validate_aoa_pane_binding, AoaPaneBindingMetadata, AoaPaneBindingRejectionReason,
+        AoaPanePrivacyPosture, AoaPaneSourcePosture, ContentSourceManager, SourceManifest,
         CAMERA_SNAPSHOT_IMPLICIT_TTL_MS, CONTENT_SOURCE_MIP_WGSL,
     };
+    use crate::aoa_panes::AoaPaneBindingMode;
     use std::time::{Duration, SystemTime};
 
     fn manifest(width: u32, height: u32) -> SourceManifest {
@@ -881,6 +1132,19 @@ mod family_classification_tests {
             z_order: 0,
             ttl_ms: 0,
             tags: Vec::new(),
+            pane_binding: None,
+        }
+    }
+
+    fn valid_root_binding() -> AoaPaneBindingMetadata {
+        AoaPaneBindingMetadata {
+            pane_id: "aoa:pane:v1:r:abd".to_string(),
+            route: "aoa_pane".to_string(),
+            mode: AoaPaneBindingMode::TriTextureMasked,
+            clip_policy: Default::default(),
+            effect_scope: Default::default(),
+            privacy_posture: AoaPanePrivacyPosture::PublicReviewRequired,
+            source_posture: AoaPaneSourcePosture::SystemWard,
         }
     }
 
@@ -928,6 +1192,118 @@ mod family_classification_tests {
                 .unwrap()
                 .len(),
             48
+        );
+    }
+
+    #[test]
+    fn missing_pane_binding_deserializes_as_generic_source() {
+        let parsed: SourceManifest = serde_json::from_str(
+            r#"{
+                "source_id": "ward-a",
+                "content_type": "rgba",
+                "width": 64,
+                "height": 64
+            }"#,
+        )
+        .unwrap();
+
+        assert!(parsed.pane_binding.is_none());
+    }
+
+    #[test]
+    fn valid_pane_binding_deserializes_and_validates_against_registry() {
+        let parsed: SourceManifest = serde_json::from_str(
+            r#"{
+                "source_id": "ward-a",
+                "content_type": "rgba",
+                "width": 64,
+                "height": 64,
+                "pane_binding": {
+                    "pane_id": "aoa:pane:v1:r:abd",
+                    "route": "aoa_pane",
+                    "mode": "tri_texture_masked",
+                    "privacy_posture": "public_review_required",
+                    "source_posture": "system_ward"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let binding = parsed.pane_binding.as_ref().unwrap();
+        assert_eq!(binding.pane_id, "aoa:pane:v1:r:abd");
+        assert_eq!(binding.source_posture, AoaPaneSourcePosture::SystemWard);
+
+        let validated = validate_aoa_pane_binding(binding).unwrap();
+        assert_eq!(validated.pane_id, "aoa:pane:v1:r:abd");
+        assert_eq!(validated.pane_ordinal, 0);
+        assert_eq!(validated.mode, AoaPaneBindingMode::TriTextureMasked);
+    }
+
+    #[test]
+    fn invalid_pane_routes_fail_closed_before_quad_routing() {
+        for route in [
+            "fullscreen",
+            "screen_rect",
+            "canvas rect",
+            "overlay_zones_full",
+        ] {
+            let mut binding = valid_root_binding();
+            binding.route = route.to_string();
+            assert_eq!(
+                validate_aoa_pane_binding(&binding),
+                Err(AoaPaneBindingRejectionReason::InvalidRoute(
+                    route.to_string()
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_pane_id_fails_closed() {
+        let mut binding = valid_root_binding();
+        binding.pane_id = "aoa:pane:v1:not-real:abd".to_string();
+
+        assert_eq!(
+            validate_aoa_pane_binding(&binding),
+            Err(AoaPaneBindingRejectionReason::UnknownPaneId(
+                "aoa:pane:v1:not-real:abd".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn pane_binding_carries_privacy_and_source_posture() {
+        let mut binding = valid_root_binding();
+        binding.privacy_posture = AoaPanePrivacyPosture::PrivateOnly;
+        binding.source_posture = AoaPaneSourcePosture::OperatorCamera;
+
+        let validated = validate_aoa_pane_binding(&binding).unwrap();
+        assert_eq!(
+            validated.privacy_posture,
+            AoaPanePrivacyPosture::PrivateOnly
+        );
+        assert_eq!(
+            validated.source_posture,
+            AoaPaneSourcePosture::OperatorCamera
+        );
+    }
+
+    #[test]
+    fn pane_bound_stale_source_files_fail_closed_by_existing_ttl_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("manifest.json");
+        let frame_path = dir.path().join("frame.rgba");
+        let mut manifest = manifest(2, 2);
+        manifest.ttl_ms = 1;
+        manifest.pane_binding = Some(valid_root_binding());
+
+        std::fs::write(&manifest_path, b"{}").unwrap();
+        std::fs::write(&frame_path, vec![0u8; 16]).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+
+        assert!(
+            source_file_age_exceeds_ttl(&manifest_path, &frame_path, &manifest),
+            "pane-bound sources should still be expired before any binding route can render"
         );
     }
 
