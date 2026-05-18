@@ -159,6 +159,9 @@ async def deliberate(
                 "shortcircuited": True,
                 "models_used": [r.model_alias for r in phase1_results],
                 "phases_completed": [1],
+                "phase1_transcript": [
+                    {"model": r.model_alias, "tool_calls": r.tool_calls_log} for r in phase1_results
+                ],
             },
         )
 
@@ -201,6 +204,9 @@ async def deliberate(
             "shortcircuited": False,
             "models_used": [r.model_alias for r in phase1_results],
             "phases_completed": [1, 2, 3, 4, 5],
+            "phase1_transcript": [
+                {"model": r.model_alias, "tool_calls": r.tool_calls_log} for r in phase1_results
+            ],
         },
     )
 
