@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# hapax-notify-failure — KDE-native failure notification with deduplication.
+# Called by notify-failure@.service with the failed unit name as $1.
+# Uses gdbus to call org.freedesktop.Notifications.Notify directly,
+# providing a stable replaces_id per unit to coalesce repeated failures
+# instead of stacking duplicate popups.
+set -euo pipefail
+
+UNIT="${1:-unknown.service}"
+APP_NAME="Hapax System"
+ICON="dialog-error"
+SUMMARY="Service Failed: ${UNIT}"
+BODY="Check: journalctl --user -u ${UNIT} --no-pager -n 20"
+
+# Stable replace-id: hash unit name to a 31-bit positive integer
+# This ensures repeated failures for the same unit replace the existing notification
+REPLACE_ID=$(printf '%s' "$UNIT" | cksum | awk '{print $1 % 2147483647}')
+
+# Use gdbus to call KDE Plasma's notification daemon directly
+# This gives us proper replaces_id support for notification coalescing
+gdbus call --session \
+  --dest org.freedesktop.Notifications \
+  --object-path /org/freedesktop/Notifications \
+  --method org.freedesktop.Notifications.Notify \
+  "$APP_NAME" \
+  "$REPLACE_ID" \
+  "$ICON" \
+  "$SUMMARY" \
+  "$BODY" \
+  '[]' \
+  '{"urgency": <byte 2>, "desktop-entry": <"org.kde.plasma-systemmonitor">}' \
+  0
+
+exit 0

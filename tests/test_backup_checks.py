@@ -11,7 +11,7 @@ from shared import sufficiency_probes
 
 
 def test_restic_repo_matches_live_local_backup_target():
-    assert str(RESTIC_REPO) == "/store/hapax-backups/restic"
+    assert str(RESTIC_REPO) == "/mnt/nas/backups/restic"
     assert str(sufficiency_probes.RUNTIME_RESTIC_REPO) == str(RESTIC_REPO)
 
 

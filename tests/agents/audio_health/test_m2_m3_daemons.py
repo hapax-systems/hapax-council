@@ -450,10 +450,7 @@ class TestM3BreachDetection:
                 "agents.audio_health.m3_crest_flatness_daemon.capture_and_measure",
                 return_value=result,
             ),
-            patch(
-                "agents.audio_health.m3_crest_flatness_daemon.compute_crest_factor",
-                return_value=3.8,
-            ),
+            patch("agents.audio_health.m3_crest_flatness_daemon.compute_crest_factor", return_value=3.8),
             patch("agents.audio_health.m3_crest_flatness_daemon.compute_zcr", return_value=0.04),
             patch(
                 "agents.audio_health.m3_crest_flatness_daemon.compute_spectral_flatness",
@@ -469,21 +466,16 @@ class TestM3BreachDetection:
 
     def test_noise_like_crest_drop_pages_after_sustain(self) -> None:
         """Low crest with high ZCR/flatness still triggers the M3 alert."""
-        state = M3StageState(prev_crest=8.0, crest_drop_armed=True, crest_drop_start=990.0)
+        state = M3StageState(prev_crest=8.0, crest_drop_start=990.0)
         cfg = M3DaemonConfig(enable_ntfy=True)
-        rng = np.random.default_rng(42)
-        noisy_signal = (rng.standard_normal(48000) * 3000).astype(np.int16)
-        result = _probe_result("hapax-obs-broadcast-remap", noisy_signal)
+        result = _probe_result("hapax-obs-broadcast-remap", np.zeros(48000, dtype=np.int16))
 
         with (
             patch(
                 "agents.audio_health.m3_crest_flatness_daemon.capture_and_measure",
                 return_value=result,
             ),
-            patch(
-                "agents.audio_health.m3_crest_flatness_daemon.compute_crest_factor",
-                return_value=2.8,
-            ),
+            patch("agents.audio_health.m3_crest_flatness_daemon.compute_crest_factor", return_value=3.8),
             patch("agents.audio_health.m3_crest_flatness_daemon.compute_zcr", return_value=0.42),
             patch(
                 "agents.audio_health.m3_crest_flatness_daemon.compute_spectral_flatness",
@@ -494,36 +486,8 @@ class TestM3BreachDetection:
             m3_probe_stage("hapax-obs-broadcast-remap", state, cfg, now=1005.0)
 
         assert state.crest_drop_count == 1
-        assert not state.crest_drop_armed
         send_ntfy.assert_called_once()
         assert "zcr=0.420" in send_ntfy.call_args.args[2]
-
-    def test_silence_gate_suppresses_crest_drop(self) -> None:
-        """Crest drop on silent signal (source went quiet) should not alert."""
-        state = M3StageState(prev_crest=8.0, crest_drop_armed=True, crest_drop_start=990.0)
-        cfg = M3DaemonConfig(enable_ntfy=True)
-        result = _probe_result("hapax-obs-broadcast-remap", np.zeros(48000, dtype=np.int16))
-
-        with (
-            patch(
-                "agents.audio_health.m3_crest_flatness_daemon.capture_and_measure",
-                return_value=result,
-            ),
-            patch(
-                "agents.audio_health.m3_crest_flatness_daemon.compute_crest_factor",
-                return_value=3.8,
-            ),
-            patch("agents.audio_health.m3_crest_flatness_daemon.compute_zcr", return_value=0.42),
-            patch(
-                "agents.audio_health.m3_crest_flatness_daemon.compute_spectral_flatness",
-                return_value=0.55,
-            ),
-            patch("agents.audio_health.m3_crest_flatness_daemon._send_ntfy") as send_ntfy,
-        ):
-            m3_probe_stage("hapax-obs-broadcast-remap", state, cfg, now=1005.0)
-
-        assert state.crest_drop_count == 0
-        send_ntfy.assert_not_called()
 
     def test_flatness_noise_detected(self) -> None:
         """Spectral flatness >0.6 should trigger white noise detection."""

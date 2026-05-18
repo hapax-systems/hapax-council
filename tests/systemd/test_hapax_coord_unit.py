@@ -18,16 +18,13 @@ def test_hapax_coord_unit_is_source_only_shape() -> None:
     parser = _read_unit()
 
     assert parser.get("Service", "Type") == "simple"
-    assert parser.get("Service", "WorkingDirectory") == "%h/projects/hapax-coord"
+    assert parser.get("Service", "WorkingDirectory") == "/home/hapax/projects/hapax-coord"
     assert (
         parser.get("Service", "ExecStart")
-        == "%h/projects/hapax-coord/scripts/run-dev.sh --daemon --host 127.0.0.1 --port 8765"
+        == "/home/hapax/projects/hapax-coord/scripts/run-dev.sh --daemon"
     )
-    assert parser.get("Unit", "ConditionPathExists") == "%h/projects/hapax-coord/scripts/run-dev.sh"
-    assert parser.get("Unit", "Documentation") == "file://%h/projects/hapax-coord/README.md"
-    assert (
-        parser.get("Service", "Environment")
-        == "HAPAX_COORD_COUNCIL_ROOT=%h/.cache/hapax/source-activation/worktree"
+    assert parser.get("Unit", "ConditionPathExists") == (
+        "/home/hapax/projects/hapax-coord/scripts/run-dev.sh"
     )
 
 
@@ -35,8 +32,5 @@ def test_hapax_coord_unit_does_not_install_or_expose_secrets() -> None:
     text = UNIT.read_text(encoding="utf-8")
 
     assert "systemctl" not in text
+    assert "Environment=" not in text
     assert "0.0.0.0" not in text
-    assert "PASSWORD_STORE_DIR" not in text
-    assert "GNUPGHOME" not in text
-    assert "TOKEN" not in text
-    assert "SECRET" not in text

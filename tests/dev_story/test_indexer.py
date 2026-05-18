@@ -13,6 +13,7 @@ from agents.dev_story.indexer import (
     discover_sessions,
     index_git,
     index_session,
+    run_correlations,
 )
 from agents.dev_story.schema import create_tables
 
@@ -150,3 +151,35 @@ def test_index_git_inserts_commits(mock_extract):
 
     cursor = conn.execute("SELECT file_path FROM commit_files")
     assert cursor.fetchone()[0] == "foo.py"
+
+
+def test_run_correlations_streams_matching_file_paths():
+    conn = _make_db()
+    conn.execute(
+        """INSERT INTO sessions (id, project_path, project_name, started_at)
+           VALUES ('sess-1', '/tmp/test', 'test', '2026-03-10T15:00:00Z')"""
+    )
+    conn.execute(
+        """INSERT INTO messages (id, session_id, role, timestamp, content_text)
+           VALUES ('msg-1', 'sess-1', 'assistant', '2026-03-10T15:05:00Z', 'edit')"""
+    )
+    conn.execute(
+        """INSERT INTO file_changes
+           (message_id, file_path, version, change_type, timestamp)
+           VALUES ('msg-1', 'foo.py', 1, 'edit', '2026-03-10T15:05:00Z')"""
+    )
+    conn.execute(
+        """INSERT INTO commits
+           (hash, author_date, message, files_changed, insertions, deletions)
+           VALUES ('abc', '2026-03-10 10:00:00 -0500', 'feat: test', 1, 1, 0)"""
+    )
+    conn.execute(
+        """INSERT INTO commit_files (commit_hash, file_path, operation)
+           VALUES ('abc', 'foo.py', 'M')"""
+    )
+    conn.commit()
+
+    assert run_correlations(conn) == 1
+
+    row = conn.execute("SELECT message_id, commit_hash, method FROM correlations").fetchone()
+    assert tuple(row) == ("msg-1", "abc", "file_and_timestamp")

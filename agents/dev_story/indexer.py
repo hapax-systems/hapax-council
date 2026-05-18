@@ -14,7 +14,7 @@ from agents.dev_story.classifier import (
     classify_session_scale,
     classify_work_type,
 )
-from agents.dev_story.correlator import correlate
+from agents.dev_story.correlator import _time_diff_minutes
 from agents.dev_story.critical_moments import (
     detect_churn_moments,
     detect_high_token_sessions,
@@ -25,7 +25,7 @@ from agents.dev_story.git_extractor import (
     extract_commits,
     extract_commits_from_bundle,
 )
-from agents.dev_story.models import CommitFile, FileChange
+from agents.dev_story.models import Correlation
 from agents.dev_story.parser import (
     discover_archived_sessions,
     extract_project_path,
@@ -263,27 +263,54 @@ def run_correlations(conn: sqlite3.Connection) -> int:
     # Clear existing correlations
     conn.execute("DELETE FROM correlations")
 
-    # Load file changes
     cursor = conn.execute(
-        "SELECT message_id, file_path, version, change_type, timestamp FROM file_changes"
+        """SELECT fc.message_id, fc.timestamp, cf.commit_hash, c.author_date
+           FROM file_changes fc
+           JOIN commit_files cf ON cf.file_path = fc.file_path
+           JOIN commits c ON c.hash = cf.commit_hash
+           ORDER BY fc.id"""
     )
-    file_changes = [
-        FileChange(message_id=r[0], file_path=r[1], version=r[2], change_type=r[3], timestamp=r[4])
-        for r in cursor.fetchall()
-    ]
 
-    # Load commit files
-    cursor = conn.execute("SELECT commit_hash, file_path, operation FROM commit_files")
-    commit_files_list = [
-        CommitFile(commit_hash=r[0], file_path=r[1], operation=r[2]) for r in cursor.fetchall()
-    ]
+    best: dict[tuple[str, str], Correlation] = {}
+    diff_cache: dict[tuple[str, str], float | None] = {}
 
-    # Load commit dates
-    cursor = conn.execute("SELECT hash, author_date FROM commits")
-    commit_dates = {r[0]: r[1] for r in cursor.fetchall()}
+    for message_id, change_ts, commit_hash, commit_ts in cursor:
+        pair = (message_id, commit_hash)
+        diff_key = (change_ts, commit_ts)
+        if diff_key in diff_cache:
+            diff = diff_cache[diff_key]
+        else:
+            diff = _time_diff_minutes(change_ts, commit_ts)
+            diff_cache[diff_key] = diff
 
-    # Run correlation
-    correlations = correlate(file_changes, commit_files_list, commit_dates)
+        if diff is not None and diff <= 30.0:
+            confidence = 0.95 - (diff / 30.0) * 0.1
+            method = "file_and_timestamp"
+        elif diff is not None and diff <= 12.0 * 60:
+            confidence = 0.7 - (diff / (12.0 * 60)) * 0.2
+            method = "file_match"
+        else:
+            continue
+
+        existing = best.get(pair)
+        if existing:
+            boosted = min(existing.confidence + 0.05, 1.0)
+            if boosted > existing.confidence:
+                best[pair] = Correlation(
+                    message_id=pair[0],
+                    commit_hash=pair[1],
+                    confidence=boosted,
+                    method=existing.method,
+                )
+        else:
+            best[pair] = Correlation(
+                message_id=pair[0],
+                commit_hash=pair[1],
+                confidence=confidence,
+                method=method,
+            )
+
+    correlations = list(best.values())
 
     for cor in correlations:
         conn.execute(

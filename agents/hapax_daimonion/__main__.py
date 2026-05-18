@@ -35,6 +35,8 @@ log = logging.getLogger("hapax_daimonion")
 _PID_FILE = (
     Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "hapax-daimonion.pid"
 )
+_FAST_EXIT_AFTER_SHUTDOWN_ENV = "HAPAX_DAIMONION_FAST_EXIT_AFTER_SHUTDOWN"
+_FALSEY_ENV_VALUES = {"0", "false", "no", "off"}
 
 
 def _enforce_single_instance() -> None:
@@ -68,6 +70,21 @@ def _cleanup_pid_file() -> None:
             _PID_FILE.unlink()
     except Exception:
         pass
+
+
+def _fast_exit_after_shutdown_enabled() -> bool:
+    value = os.environ.get(_FAST_EXIT_AFTER_SHUTDOWN_ENV, "1")
+    return value.strip().lower() not in _FALSEY_ENV_VALUES
+
+
+def _exit_after_clean_shutdown() -> None:
+    if not _fast_exit_after_shutdown_enabled():
+        return
+
+    # The daemon owns cleanup in VoiceDaemon.run(). After that returns, native
+    # ML/audio worker pools can still crash in CPython finalizers during restart.
+    logging.shutdown()
+    os._exit(0)
 
 
 def main() -> None:
@@ -125,11 +142,15 @@ def main() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, daemon.stop)
     loop.add_signal_handler(signal.SIGHUP, daemon.workspace_monitor.reload_context)
+    run_completed = False
     try:
         loop.run_until_complete(daemon.run())
+        run_completed = True
     finally:
         _cleanup_pid_file()
         loop.close()
+        if run_completed:
+            _exit_after_clean_shutdown()
 
 
 if __name__ == "__main__":
