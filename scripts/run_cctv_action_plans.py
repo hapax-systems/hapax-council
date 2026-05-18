@@ -116,7 +116,7 @@ async def run_cctv() -> None:
         ),
     )
 
-    print(f"\n=== CCTV: Action Plan Antagonistic Shakeup ===")
+    print("\n=== CCTV: Action Plan Antagonistic Shakeup ===")
     print(f"Claims: {len(CLAIMS)} from 6 action plans")
     print(f"Models: {config.model_aliases}\n")
 

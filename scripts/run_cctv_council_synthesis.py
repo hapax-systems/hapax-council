@@ -133,7 +133,7 @@ async def run_cctv() -> None:
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n=== CCTV: Council Synthesis Disconfirmation ===")
+    print("\n=== CCTV: Council Synthesis Disconfirmation ===")
     print(f"Claims: {len(CLAIMS)}")
     print(f"Models: {config.model_aliases}")
     print(f"Output: {OUTPUT_FILE}\n")

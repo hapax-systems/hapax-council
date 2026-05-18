@@ -9,7 +9,7 @@ from pathlib import Path
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Pt, RGBColor
+from docx.shared import Pt
 
 PLANS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-research"
 COUNCIL_VERDICTS = PLANS_DIR / "datasets/epistemic-quality/cctv-council-synthesis-verdicts.jsonl"
