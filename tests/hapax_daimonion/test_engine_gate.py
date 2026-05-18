@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from agents.hapax_daimonion.engine_gate import (
+    activate_from_impingement_gated,
     activate_mode_d_gated,
     apply_tier_gated,
     deactivate_mode_d_gated,
@@ -249,3 +250,88 @@ class TestBlockedCalleesUntouched:
         )
         assert result.accepted is False
         vinyl.activate_mode_d.assert_not_called()
+
+
+class TestActivateFromImpingementGated:
+    """Tests for pipeline-recruited vocal chain dimension activation."""
+
+    def _make_impingement(self) -> MagicMock:
+        imp = MagicMock()
+        imp.source = "stimmung.evaluative"
+        imp.content = {"dimensions": {"intensity": 0.7}}
+        imp.strength = 0.6
+        return imp
+
+    def test_accepts_on_free_engine(self, tmp_paths: tuple[Path, Path]) -> None:
+        state_path, _legacy = tmp_paths
+        chain = MagicMock()
+        imp = self._make_impingement()
+        result = activate_from_impingement_gated(
+            chain, imp, pipeline_score=0.55, state_path=state_path, now=1000.0
+        )
+        assert result.accepted is True
+        chain.activate_from_impingement.assert_called_once_with(imp)
+
+    def test_blocked_by_mode_d(self, tmp_paths: tuple[Path, Path]) -> None:
+        state_path, legacy = tmp_paths
+        write_state(
+            EvilPetState(
+                mode=EvilPetMode.MODE_D,
+                active_since=1000.0,
+                writer="operator",
+                heartbeat=1000.0,
+            ),
+            path=state_path,
+            legacy_flag=legacy,
+        )
+        chain = MagicMock()
+        imp = self._make_impingement()
+        result = activate_from_impingement_gated(
+            chain, imp, pipeline_score=0.8, state_path=state_path, now=1001.0
+        )
+        assert result.accepted is False
+        assert "mode_d" in result.reason
+        chain.activate_from_impingement.assert_not_called()
+
+    def test_refreshes_existing_voice_tier(self, tmp_paths: tuple[Path, Path]) -> None:
+        state_path, legacy = tmp_paths
+        write_state(
+            EvilPetState(
+                mode=EvilPetMode.VOICE_TIER_3,
+                active_since=999.0,
+                writer="director",
+                heartbeat=999.5,
+            ),
+            path=state_path,
+            legacy_flag=legacy,
+        )
+        chain = MagicMock()
+        imp = self._make_impingement()
+        result = activate_from_impingement_gated(
+            chain, imp, pipeline_score=0.4, state_path=state_path, now=1000.0
+        )
+        assert result.accepted is True
+        assert result.reason == "heartbeat_refresh"
+        chain.activate_from_impingement.assert_called_once()
+        loaded = read_state(state_path, now=1000.0)
+        assert loaded.mode == EvilPetMode.VOICE_TIER_3
+
+    def test_stale_mode_d_allows_activation(self, tmp_paths: tuple[Path, Path]) -> None:
+        state_path, legacy = tmp_paths
+        write_state(
+            EvilPetState(
+                mode=EvilPetMode.MODE_D,
+                active_since=900.0,
+                writer="operator",
+                heartbeat=900.0,
+            ),
+            path=state_path,
+            legacy_flag=legacy,
+        )
+        chain = MagicMock()
+        imp = self._make_impingement()
+        result = activate_from_impingement_gated(
+            chain, imp, pipeline_score=0.5, state_path=state_path, now=1000.0
+        )
+        assert result.accepted is True
+        chain.activate_from_impingement.assert_called_once()
