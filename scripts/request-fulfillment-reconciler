@@ -1,0 +1,467 @@
+#!/usr/bin/env python3
+"""request-fulfillment-reconciler — close fulfilled request notes.
+
+This is intentionally separate from ``request-intake-consumer``. Intake remains
+read-only; this tool is the explicit writer for request lifecycle hygiene.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+DEFAULT_REQUESTS_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-requests"
+DEFAULT_TASKS_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+DEFAULT_REPORT_PATH = Path.home() / ".cache" / "hapax" / "request-fulfillment-reconciler.json"
+
+ACTIVE_TASK_STATUSES = {
+    "offered",
+    "claimed",
+    "in_progress",
+    "pr_open",
+    "ci_green",
+    "blocked",
+}
+FULFILLING_TASK_STATUSES = {"done", "closed", "complete"}
+NON_FULFILLING_TASK_STATUSES = {"withdrawn", "superseded", "rejected"}
+REQUEST_TERMINAL_SKIP_STATUSES = {
+    "rejected",
+    "deferred",
+    "superseded",
+    "withdrawn",
+    "closed",
+}
+REQUEST_CLOSEABLE_STATUSES = {
+    "",
+    "captured",
+    "triage",
+    "clarification_needed",
+    "clarification_answered",
+    "normalized",
+    "operator_confirmation",
+    "accepted_for_planning",
+    "planned",
+}
+REQUEST_ID_RE = re.compile(r"\b(REQ-[A-Z0-9][A-Z0-9-]*(?:-\d{6})?)\b")
+
+
+@dataclass(frozen=True)
+class MarkdownNote:
+    path: Path
+    frontmatter: dict[str, Any]
+    body: str
+    raw: str
+
+
+@dataclass
+class TaskRecord:
+    task_id: str
+    path: Path
+    status: str
+    directory: str
+    request_keys: set[str] = field(default_factory=set)
+    covered_request_ids: set[str] = field(default_factory=set)
+
+    @property
+    def fulfilling(self) -> bool:
+        return self.directory == "closed" and self.status in FULFILLING_TASK_STATUSES
+
+    @property
+    def blocking(self) -> bool:
+        if self.directory == "active":
+            return True
+        return (
+            self.status in NON_FULFILLING_TASK_STATUSES
+            or self.status not in FULFILLING_TASK_STATUSES
+        )
+
+
+@dataclass
+class ReconcileDecision:
+    request_id: str
+    request_key: str
+    path: str
+    eligible: bool
+    reason: str
+    linked_tasks: list[str]
+    fulfilling_tasks: list[str]
+    blocking_tasks: list[str]
+    missing_tasks: list[str]
+    destination: str | None = None
+    applied: bool = False
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_frontmatter(path: Path) -> MarkdownNote | None:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not raw.startswith("---"):
+        return None
+    end = raw.find("\n---", 3)
+    if end == -1:
+        return None
+    yaml_text = raw[3:end].strip()
+    body = raw[end + 4 :].lstrip("\n")
+    data = yaml.safe_load(yaml_text) if yaml_text else {}
+    if not isinstance(data, dict):
+        return None
+    return MarkdownNote(path=path, frontmatter=data, body=body, raw=raw)
+
+
+def scalar(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ""
+    text = str(value).strip()
+    return "" if text in {"null", "None", "~"} else text
+
+
+def list_value(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [scalar(item) for item in value if scalar(item)]
+    text = scalar(value)
+    if not text:
+        return []
+    if text.startswith("[") and text.endswith("]"):
+        return [part.strip().strip("'\"") for part in text[1:-1].split(",") if part.strip()]
+    return [text]
+
+
+def request_files_by_key(active_dir: Path, closed_dir: Path) -> dict[str, Path]:
+    files: dict[str, Path] = {}
+    for root in (active_dir, closed_dir):
+        if not root.is_dir():
+            continue
+        for path in sorted(root.glob("*.md")):
+            files.setdefault(path.name, path)
+            note = parse_frontmatter(path)
+            if note and scalar(note.frontmatter.get("request_id")):
+                files.setdefault(scalar(note.frontmatter.get("request_id")), path)
+    return files
+
+
+def resolve_request_key(ref: str, active_dir: Path, request_index: dict[str, Path]) -> str | None:
+    if not ref:
+        return None
+    expanded = Path(os.path.expanduser(ref))
+    if expanded.is_file():
+        note = parse_frontmatter(expanded)
+        if note and scalar(note.frontmatter.get("type")) == "hapax-request":
+            return expanded.name
+    name = Path(ref).name
+    if name in request_index:
+        return request_index[name].name
+    if name.endswith(".md") and (active_dir / name).is_file():
+        return name
+    if name.startswith("REQ-"):
+        for candidate in sorted(active_dir.glob(f"{name}*.md")):
+            note = parse_frontmatter(candidate)
+            if note and scalar(note.frontmatter.get("type")) == "hapax-request":
+                return candidate.name
+    return None
+
+
+def extract_covered_request_ids(body: str) -> set[str]:
+    covered: set[str] = set()
+    in_section = False
+    for line in body.splitlines():
+        if line.startswith("## "):
+            in_section = "covered request" in line.lower()
+            continue
+        if not in_section:
+            continue
+        if line.startswith("# "):
+            break
+        covered.update(match.group(1) for match in REQUEST_ID_RE.finditer(line))
+    return covered
+
+
+def task_id_for(path: Path, frontmatter: dict[str, Any]) -> str:
+    return scalar(frontmatter.get("task_id")) or scalar(frontmatter.get("id")) or path.stem
+
+
+def build_task_records(
+    tasks_root: Path, active_dir: Path, closed_dir: Path, request_index: dict[str, Path]
+) -> dict[str, TaskRecord]:
+    records: dict[str, TaskRecord] = {}
+    for task_dir_name in ("active", "closed"):
+        task_dir = tasks_root / task_dir_name
+        if not task_dir.is_dir():
+            continue
+        for path in sorted(task_dir.glob("*.md")):
+            note = parse_frontmatter(path)
+            if not note or scalar(note.frontmatter.get("type")) != "cc-task":
+                continue
+            task_id = task_id_for(path, note.frontmatter)
+            record = TaskRecord(
+                task_id=task_id,
+                path=path,
+                status=scalar(note.frontmatter.get("status")),
+                directory=task_dir_name,
+            )
+            for field_name in ("parent_request", "parent_plan", "parent_spec"):
+                for ref in list_value(note.frontmatter.get(field_name)):
+                    key = resolve_request_key(ref, active_dir, request_index)
+                    if key:
+                        record.request_keys.add(key)
+            record.covered_request_ids.update(extract_covered_request_ids(note.body))
+            records[task_id] = record
+            records[path.stem] = record
+    return records
+
+
+def task_ids_for_request(
+    request_note: MarkdownNote,
+    request_key: str,
+    records: dict[str, TaskRecord],
+) -> tuple[set[str], set[str]]:
+    request_id = scalar(request_note.frontmatter.get("request_id"))
+    explicit = set(list_value(request_note.frontmatter.get("downstream_tasks")))
+    linked = set(explicit)
+    seen_task_ids: set[str] = set()
+    for record in records.values():
+        if record.task_id in seen_task_ids:
+            continue
+        seen_task_ids.add(record.task_id)
+        if request_id in record.covered_request_ids:
+            explicit.add(record.task_id)
+            linked.add(record.task_id)
+        elif request_key in record.request_keys:
+            linked.add(record.task_id)
+    return linked, explicit
+
+
+def decide_request(
+    request_note: MarkdownNote,
+    records: dict[str, TaskRecord],
+    closed_dir: Path,
+    *,
+    task_id_filter: set[str],
+) -> ReconcileDecision:
+    frontmatter = request_note.frontmatter
+    request_id = scalar(frontmatter.get("request_id")) or request_note.path.stem
+    request_key = request_note.path.name
+    status = scalar(frontmatter.get("status"))
+    linked_tasks, explicit_fulfillment_tasks = task_ids_for_request(
+        request_note, request_key, records
+    )
+
+    if task_id_filter and not (linked_tasks & task_id_filter):
+        return ReconcileDecision(
+            request_id=request_id,
+            request_key=request_key,
+            path=str(request_note.path),
+            eligible=False,
+            reason="filtered",
+            linked_tasks=sorted(linked_tasks),
+            fulfilling_tasks=[],
+            blocking_tasks=[],
+            missing_tasks=[],
+        )
+
+    destination = closed_dir / request_note.path.name
+    if destination.exists():
+        reason = "closed_destination_exists"
+    elif scalar(frontmatter.get("type")) != "hapax-request":
+        reason = "not_hapax_request"
+    elif status == "fulfilled":
+        reason = "eligible"
+    elif status in REQUEST_TERMINAL_SKIP_STATUSES:
+        reason = f"request_status:{status}"
+    elif status not in REQUEST_CLOSEABLE_STATUSES:
+        reason = f"request_status_not_closeable:{status}"
+    elif not linked_tasks:
+        reason = "no_linked_tasks"
+    elif not explicit_fulfillment_tasks:
+        reason = "implicit_linkage_requires_explicit_fulfillment"
+    else:
+        reason = ""
+
+    fulfilling: list[str] = []
+    blocking: list[str] = []
+    missing: list[str] = []
+    for linked_id in sorted(linked_tasks):
+        record = records.get(linked_id)
+        if record is None:
+            missing.append(linked_id)
+        elif record.fulfilling:
+            fulfilling.append(record.task_id)
+        elif record.blocking:
+            blocking.append(f"{record.task_id}:{record.status or 'unknown'}:{record.directory}")
+
+    if not reason:
+        explicit_missing = [task_id for task_id in missing if task_id in explicit_fulfillment_tasks]
+        if explicit_missing:
+            reason = "missing_linked_tasks"
+        elif blocking:
+            reason = "linked_tasks_not_fulfilled"
+        elif status != "fulfilled" and not (set(fulfilling) & explicit_fulfillment_tasks):
+            reason = "no_fulfilling_task_evidence"
+        else:
+            reason = "eligible"
+
+    return ReconcileDecision(
+        request_id=request_id,
+        request_key=request_key,
+        path=str(request_note.path),
+        eligible=reason == "eligible",
+        reason=reason,
+        linked_tasks=sorted(linked_tasks),
+        fulfilling_tasks=sorted(set(fulfilling)),
+        blocking_tasks=blocking,
+        missing_tasks=missing,
+        destination=str(destination) if reason == "eligible" else None,
+    )
+
+
+def render_note(frontmatter: dict[str, Any], body: str) -> str:
+    yaml_text = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=False).strip()
+    return f"---\n{yaml_text}\n---\n\n{body.rstrip()}\n"
+
+
+def apply_decision(note: MarkdownNote, decision: ReconcileDecision, now: str) -> None:
+    if not decision.destination:
+        raise ValueError("eligible decision is missing a destination")
+    updated = dict(note.frontmatter)
+    updated["status"] = "fulfilled"
+    updated["fulfilled_at"] = now
+    updated["updated_at"] = now
+    if decision.fulfilling_tasks:
+        updated["resolution_ref"] = ";".join(
+            f"cc-task:{task_id}" for task_id in decision.fulfilling_tasks
+        )
+    else:
+        updated.setdefault("resolution_ref", f"request:{decision.request_id}:preexisting-fulfilled")
+    updated["fulfillment_reconciler"] = "request-fulfillment-reconciler-v0"
+
+    destination = Path(decision.destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp = destination.with_suffix(destination.suffix + ".tmp")
+    tmp.write_text(render_note(updated, note.body), encoding="utf-8")
+    tmp.replace(destination)
+    note.path.unlink()
+    decision.applied = True
+
+
+def reconcile(
+    *,
+    requests_root: Path,
+    tasks_root: Path,
+    apply: bool,
+    task_id_filter: set[str],
+    now: str,
+) -> dict[str, Any]:
+    active_dir = requests_root / "active"
+    closed_dir = requests_root / "closed"
+    request_index = request_files_by_key(active_dir, closed_dir)
+    records = build_task_records(tasks_root, active_dir, closed_dir, request_index)
+
+    decisions: list[ReconcileDecision] = []
+    for path in sorted(active_dir.glob("*.md")) if active_dir.is_dir() else []:
+        note = parse_frontmatter(path)
+        if not note:
+            continue
+        decision = decide_request(note, records, closed_dir, task_id_filter=task_id_filter)
+        if decision.reason != "filtered":
+            if apply and decision.eligible:
+                apply_decision(note, decision, now)
+            decisions.append(decision)
+
+    eligible = [decision for decision in decisions if decision.eligible]
+    blocked = [decision for decision in decisions if not decision.eligible]
+    return {
+        "generated_at": now,
+        "mode": "apply" if apply else "dry-run",
+        "requests_root": str(requests_root),
+        "tasks_root": str(tasks_root),
+        "task_id_filter": sorted(task_id_filter),
+        "eligible_count": len(eligible),
+        "applied_count": sum(1 for decision in eligible if decision.applied),
+        "blocked_count": len(blocked),
+        "eligible": [decision.__dict__ for decision in eligible],
+        "blocked": [decision.__dict__ for decision in blocked],
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--requests-root", type=Path, default=DEFAULT_REQUESTS_ROOT)
+    parser.add_argument("--tasks-root", type=Path, default=DEFAULT_TASKS_ROOT)
+    parser.add_argument("--dry-run", action="store_true", help="Report only; this is the default.")
+    parser.add_argument(
+        "--apply", action="store_true", help="Move eligible active requests to closed/."
+    )
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    parser.add_argument(
+        "--quiet", action="store_true", help="Suppress human summary unless errors occur."
+    )
+    parser.add_argument(
+        "--task-id",
+        action="append",
+        default=[],
+        help="Only evaluate requests linked to this task id.",
+    )
+    parser.add_argument("--now", default="", help="Override UTC timestamp for deterministic tests.")
+    parser.add_argument(
+        "--write-report", action="store_true", help="Write JSON report to the report path."
+    )
+    parser.add_argument("--report-path", type=Path, default=DEFAULT_REPORT_PATH)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.dry_run and args.apply:
+        print(
+            "request-fulfillment-reconciler: choose only one of --dry-run or --apply",
+            file=sys.stderr,
+        )
+        return 2
+
+    report = reconcile(
+        requests_root=args.requests_root.expanduser(),
+        tasks_root=args.tasks_root.expanduser(),
+        apply=bool(args.apply),
+        task_id_filter=set(args.task_id),
+        now=args.now or utc_now(),
+    )
+
+    if args.write_report:
+        args.report_path.expanduser().parent.mkdir(parents=True, exist_ok=True)
+        args.report_path.expanduser().write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    elif not args.quiet:
+        print(
+            "request fulfillment reconciler "
+            f"{report['mode']}: eligible={report['eligible_count']} "
+            f"applied={report['applied_count']} blocked={report['blocked_count']}"
+        )
+        for item in report["eligible"][:20]:
+            prefix = "APPLIED" if item["applied"] else "ELIGIBLE"
+            print(f"  {prefix} {item['request_id']} -> {item['destination']}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
