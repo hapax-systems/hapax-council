@@ -127,7 +127,7 @@ class TestHappyPath:
 
 class TestIdempotency:
     def test_existing_pr_not_overwritten(self, tmp_path: Path) -> None:
-        _vault, note = _make_vault(tmp_path, task_id="test-001", pr="100", status="pr_open")
+        _vault, note = _make_vault(tmp_path, task_id="test-001", pr="100", status="claimed")
         _write_claim(tmp_path, "beta", "test-001")
         result = _run_hook(
             bash_cmd="gh pr create",
@@ -139,6 +139,30 @@ class TestIdempotency:
         # Original PR retained.
         assert "pr: 100" in text
         assert "pr: 200" not in text
+        assert "status: claimed" in text
+        assert "status: pr_open" not in text
+
+    def test_matching_existing_pr_still_advances_status(self, tmp_path: Path) -> None:
+        _vault, note = _make_vault(
+            tmp_path,
+            task_id="test-001",
+            pr="4242",
+            status="claimed",
+            branch=None,
+        )
+        _write_claim(tmp_path, "beta", "test-001")
+        result = _run_hook(
+            bash_cmd="gh pr create",
+            bash_output="https://github.com/ryanklee/hapax-council/pull/4242\n",
+            home=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        text = note.read_text(encoding="utf-8")
+        assert "pr: 4242" in text
+        assert "pr: 200" not in text
+        assert "status: pr_open" in text
+        assert "branch: null" not in text
+        assert "auto-linked PR #4242" in text
 
 
 class TestGracefulSkips:

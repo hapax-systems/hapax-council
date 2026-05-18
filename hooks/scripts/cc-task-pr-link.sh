@@ -8,9 +8,11 @@
 #   status: pr_open
 # and appends a Session-log line documenting the auto-link.
 #
-# Idempotent — if the active task already has a non-empty `pr:` value,
-# the hook is a no-op (so re-runs don't double-write or clobber a manual
-# value).
+# Idempotent — if the active task already has a different non-empty `pr:`
+# value, the hook is a no-op so it never clobbers a manual link. If the
+# existing value already matches the PR just created, the hook still advances
+# the task to `status: pr_open`; pre-populated PR numbers should not leave
+# ready PRs stuck in `claimed`.
 #
 # Graceful — exits 0 with a stderr log line on every soft failure
 # (no claim file, no PR URL in output, vault note missing, etc.).
@@ -166,7 +168,7 @@ if [[ -z "$branch_name" ]] || [[ "$branch_name" == "HEAD" ]]; then
   branch_name="unknown"
 fi
 
-# --- 10. Rewrite frontmatter (idempotent: skip if pr already set) ---
+# --- 10. Rewrite frontmatter (idempotent: never overwrite a different PR) ---
 if ! command -v python3 &>/dev/null; then
   echo "cc-task-pr-link: python3 missing; cannot rewrite frontmatter" >&2
   exit 0
@@ -188,13 +190,17 @@ note_path, pr_number, branch_name, role, pr_url = (
 )
 text = note_path.read_text(encoding="utf-8")
 
-# Idempotency: if `pr:` already has a non-null/non-empty value, no-op.
+# Idempotency: if `pr:` already has a different non-null/non-empty value, no-op.
+# A matching existing value is safe and should still drive the status/branch/log
+# transition. This covers sessions that pre-populate `pr:` before the PostToolUse
+# hook observes `gh pr create`.
 m = re.search(r"^pr:\s*(.*)$", text, flags=re.MULTILINE)
 if m:
     existing = m.group(1).strip()
     if existing and existing.lower() not in ("null", "none", "~", '""', "''"):
-        # Already linked — preserve existing value, exit silently.
-        sys.exit(0)
+        if existing != str(pr_number):
+            # Already linked to another PR — preserve existing value, exit silently.
+            sys.exit(0)
 
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
