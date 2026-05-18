@@ -81,10 +81,6 @@ class CheckSummary:
     failed: list[str] = field(default_factory=list)
 
     @property
-    def has_failed(self) -> bool:
-        return bool(self.failed)
-
-    @property
     def has_pending(self) -> bool:
         return bool(self.pending)
 
