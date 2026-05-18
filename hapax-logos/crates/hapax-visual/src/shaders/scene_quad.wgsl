@@ -164,6 +164,14 @@ fn pane_payload_sample_uv(local_uv: vec2<f32>) -> vec2<f32> {
     );
 }
 
+fn quantized_payload_sample_uv(uv: vec2<f32>, cells: f32) -> vec2<f32> {
+    return (floor(uv * cells) + vec2<f32>(0.5, 0.5)) / cells;
+}
+
+fn payload_luma(color: vec3<f32>) -> f32 {
+    return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
 fn line_mask(dist: f32, width: f32, feather: f32) -> f32 {
     let derivative = aa_feather(dist, feather);
     return 1.0 - smoothstep(width, width + derivative, dist);
@@ -280,9 +288,44 @@ fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
         if current_pane != target_pane {
             return vec4<f32>(0.0, 0.0, 0.0, 0.0);
         }
-        let payload = textureSample(quad_texture, quad_sampler, pane_payload_sample_uv(info_uv));
+        let sample_uv = pane_payload_sample_uv(info_uv);
+        let payload = textureSample(quad_texture, quad_sampler, sample_uv);
         let tint = aoa_face_tint(in.pane_info.x, inner_pane, in.local_pos);
-        let edge_emphasis = edge * 0.18 + pane_information_grid(info_uv, inside) * 0.10;
+        let info_grid = pane_information_grid(info_uv, inside);
+        let luma = payload_luma(payload.rgb);
+
+        if scene.payload_mode < 1.5 {
+            let accent = edge * 0.42 + info_grid * 0.18 + smoothstep(0.42, 0.72, luma) * 0.10;
+            let color = tint * accent + vec3<f32>(0.95, 0.32, 0.82) * edge * 0.16;
+            let alpha = inside * scene.opacity * payload.a * clamp(accent, 0.0, 0.62);
+            return vec4<f32>(color, alpha);
+        }
+
+        if scene.payload_mode < 2.5 {
+            let glyph_payload = textureSample(
+                quad_texture,
+                quad_sampler,
+                quantized_payload_sample_uv(sample_uv, 4.0),
+            );
+            let glyph = smoothstep(0.32, 0.68, payload_luma(glyph_payload.rgb));
+            let color = mix(tint * (0.42 + info_grid * 0.22), glyph_payload.rgb, 0.32) + tint * edge * 0.16;
+            let alpha = inside * scene.opacity * glyph_payload.a * (0.20 + glyph * 0.34 + edge * 0.12);
+            return vec4<f32>(color, alpha);
+        }
+
+        if scene.payload_mode < 3.5 {
+            let data_payload = textureSample(
+                quad_texture,
+                quad_sampler,
+                quantized_payload_sample_uv(sample_uv, 8.0),
+            );
+            let color = mix(tint * (0.24 + info_grid * 0.18), data_payload.rgb, 0.52)
+                + tint * (edge * 0.18 + info_grid * 0.08);
+            let alpha = data_payload.a * inside * scene.opacity * (0.42 + edge * 0.14);
+            return vec4<f32>(color, alpha);
+        }
+
+        let edge_emphasis = edge * 0.18 + info_grid * 0.10;
         let color = payload.rgb * (0.82 + edge * 0.12) + tint * edge_emphasis;
         let alpha = payload.a * inside * scene.opacity * 0.78;
         return vec4<f32>(color, alpha);

@@ -5,6 +5,7 @@
 //! each active content source to a positioned 3D quad.
 
 use glam::{Mat4, Vec3};
+use std::collections::HashMap;
 
 use crate::content_sources::{
     ActiveContentSourceInfo, AoaPaneBindingRejectionReason, AoaPaneStreamPosture,
@@ -12,9 +13,11 @@ use crate::content_sources::{
 };
 
 pub use crate::aoa_panes::{
-    aoa_active_pane_manifest, aoa_leaf_tetrahedron_count, aoa_observe_panes,
+    aoa_active_pane_manifest, aoa_leaf_tetrahedron_count, aoa_min_lod_for_binding_mode,
+    aoa_observe_panes, aoa_pane_lod_alpha_for_binding_mode, aoa_pane_lod_supports_binding_mode,
     aoa_raw_edge_segment_count, aoa_raw_triangular_pane_count, aoa_total_tetrahedron_count,
-    AoaPaneFrameObservation, AoaPaneLodClass, AoaPaneObservationFrame, AOA_TETRIX_RENDER_DEPTH,
+    AoaPaneBindingMode, AoaPaneFrameObservation, AoaPaneLodClass, AoaPaneObservationFrame,
+    AoaPaneRecord, AOA_TETRIX_RENDER_DEPTH,
 };
 
 // ─── Z-plane constants ────────────────────────────────────────────
@@ -127,12 +130,16 @@ pub struct SceneNode {
     /// AoA pane ordinal targeted by this node's bound content source.
     /// None means the authored AoA anchor renders only its structural geometry.
     pub aoa_payload_pane_ordinal: Option<u32>,
+    /// AoA payload density/rendering mode. Only set when the node is a pane-local payload.
+    pub aoa_payload_mode: Option<AoaPaneBindingMode>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AoaPaneSceneSource {
     pub source_id: String,
     pub binding: AoaValidatedPaneBinding,
+    pub observation: AoaPaneFrameObservation,
+    pub lod_alpha: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,7 +158,9 @@ pub struct BuiltScene {
 #[derive(Debug, Clone, PartialEq)]
 struct AoaPanePayloadNodeSpec {
     source_id: String,
+    pane_id: String,
     pane_ordinal: u32,
+    mode: AoaPaneBindingMode,
     opacity: f32,
 }
 
@@ -166,6 +175,7 @@ impl SceneNode {
             shader: SceneNodeShader::Textured,
             content_source_id: None,
             aoa_payload_pane_ordinal: None,
+            aoa_payload_mode: None,
         }
     }
 
@@ -348,10 +358,11 @@ fn push_authored_aoa(nodes: &mut Vec<SceneNode>) {
 fn push_aoa_pane_payload_nodes(nodes: &mut Vec<SceneNode>, specs: &[AoaPanePayloadNodeSpec]) {
     for spec in specs {
         let mut node = authored_aoa_scene_node();
-        node.label = format!("aoa-pane-payload-{}", spec.pane_ordinal);
+        node.label = format!("aoa-pane-payload-{}-{}", spec.pane_ordinal, spec.pane_id);
         node.opacity = spec.opacity.clamp(0.0, 1.0);
         node.content_source_id = Some(spec.source_id.clone());
         node.aoa_payload_pane_ordinal = Some(spec.pane_ordinal);
+        node.aoa_payload_mode = Some(spec.mode);
         nodes.push(node);
     }
 }
@@ -556,10 +567,55 @@ pub fn build_scene_from_source_records_for_stream_posture(
     time: f32,
     stream_posture: AoaPaneStreamPosture,
 ) -> BuiltScene {
+    let mut camera = Camera3D::new(1920, 1080);
+    camera.apply_orbital_drift(time);
+    build_scene_from_source_records_for_stream_posture_with_camera(
+        active_sources,
+        time,
+        stream_posture,
+        &camera,
+        1920,
+        1080,
+    )
+}
+
+pub fn build_scene_from_source_records_for_stream_posture_with_camera(
+    active_sources: &[ActiveContentSourceInfo],
+    time: f32,
+    stream_posture: AoaPaneStreamPosture,
+    camera: &Camera3D,
+    viewport_width: u32,
+    viewport_height: u32,
+) -> BuiltScene {
+    let observations = observe_authored_aoa_panes(camera, viewport_width, viewport_height);
+    build_scene_from_source_records_for_stream_posture_with_observations(
+        active_sources,
+        time,
+        stream_posture,
+        &observations,
+    )
+}
+
+fn build_scene_from_source_records_for_stream_posture_with_observations(
+    active_sources: &[ActiveContentSourceInfo],
+    time: f32,
+    stream_posture: AoaPaneStreamPosture,
+    observations: &[AoaPaneFrameObservation],
+) -> BuiltScene {
     let mut ordinary_sources = Vec::new();
-    let mut aoa_pane_sources = Vec::new();
-    let mut aoa_pane_payload_specs = Vec::new();
     let mut rejected_pane_sources = Vec::new();
+    let mut candidates = Vec::new();
+    let manifest = aoa_active_pane_manifest();
+    let pane_by_ordinal = manifest
+        .panes
+        .iter()
+        .cloned()
+        .map(|pane| (pane.pane_ordinal, pane))
+        .collect::<HashMap<_, _>>();
+    let observation_by_ordinal = observations
+        .iter()
+        .map(|observation| (observation.pane_ordinal, observation))
+        .collect::<HashMap<_, _>>();
 
     for source in active_sources {
         if source.current_opacity <= 0.001 {
@@ -568,14 +624,54 @@ pub fn build_scene_from_source_records_for_stream_posture(
 
         match source.validated_pane_binding_for_stream_posture(stream_posture) {
             Ok(Some(binding)) => {
-                aoa_pane_payload_specs.push(AoaPanePayloadNodeSpec {
-                    source_id: source.source_id.clone(),
-                    pane_ordinal: binding.pane_ordinal,
-                    opacity: source.current_opacity,
-                });
-                aoa_pane_sources.push(AoaPaneSceneSource {
+                let Some(observation) = observation_by_ordinal.get(&binding.pane_ordinal) else {
+                    rejected_pane_sources.push(RejectedAoaPaneSceneSource {
+                        source_id: source.source_id.clone(),
+                        reason: AoaPaneBindingRejectionReason::PaneLodNotPermitted {
+                            pane_id: binding.pane_id.clone(),
+                            mode: binding.mode,
+                            required: aoa_min_lod_for_binding_mode(binding.mode),
+                            actual: AoaPaneLodClass::Culled,
+                        },
+                    });
+                    continue;
+                };
+                let required = aoa_min_lod_for_binding_mode(binding.mode);
+                if !aoa_pane_lod_supports_binding_mode(observation.lod_class, binding.mode) {
+                    rejected_pane_sources.push(RejectedAoaPaneSceneSource {
+                        source_id: source.source_id.clone(),
+                        reason: AoaPaneBindingRejectionReason::PaneLodNotPermitted {
+                            pane_id: binding.pane_id.clone(),
+                            mode: binding.mode,
+                            required,
+                            actual: observation.lod_class,
+                        },
+                    });
+                    continue;
+                }
+                let lod_alpha = aoa_pane_lod_alpha_for_binding_mode(observation, binding.mode);
+                if lod_alpha <= 0.001 {
+                    rejected_pane_sources.push(RejectedAoaPaneSceneSource {
+                        source_id: source.source_id.clone(),
+                        reason: AoaPaneBindingRejectionReason::PaneLodNotPermitted {
+                            pane_id: binding.pane_id.clone(),
+                            mode: binding.mode,
+                            required,
+                            actual: observation.lod_class,
+                        },
+                    });
+                    continue;
+                }
+                let pane = pane_by_ordinal
+                    .get(&binding.pane_ordinal)
+                    .expect("validated pane binding should exist in active manifest");
+                candidates.push(AoaPanePayloadCandidate {
                     source_id: source.source_id.clone(),
                     binding,
+                    observation: (*observation).clone(),
+                    pane: pane.clone(),
+                    source_opacity: source.current_opacity,
+                    lod_alpha,
                 });
             }
             Err(reason) => rejected_pane_sources.push(RejectedAoaPaneSceneSource {
@@ -586,6 +682,13 @@ pub fn build_scene_from_source_records_for_stream_posture(
         }
     }
 
+    let AoaPanePayloadPlan {
+        pane_sources: aoa_pane_sources,
+        payload_specs: aoa_pane_payload_specs,
+        rejected_sources: subtree_rejections,
+    } = plan_aoa_pane_payloads(candidates);
+    rejected_pane_sources.extend(subtree_rejections);
+
     let force_aoa_anchor = !aoa_pane_sources.is_empty();
     let mut nodes = build_scene_from_source_refs(&ordinary_sources, time, force_aoa_anchor);
     push_aoa_pane_payload_nodes(&mut nodes, &aoa_pane_payload_specs);
@@ -594,6 +697,122 @@ pub fn build_scene_from_source_records_for_stream_posture(
         aoa_pane_sources,
         rejected_pane_sources,
     }
+}
+
+#[derive(Debug, Clone)]
+struct AoaPanePayloadCandidate {
+    source_id: String,
+    binding: AoaValidatedPaneBinding,
+    observation: AoaPaneFrameObservation,
+    pane: AoaPaneRecord,
+    source_opacity: f32,
+    lod_alpha: f32,
+}
+
+#[derive(Debug, Clone)]
+struct AoaPanePayloadPlan {
+    pane_sources: Vec<AoaPaneSceneSource>,
+    payload_specs: Vec<AoaPanePayloadNodeSpec>,
+    rejected_sources: Vec<RejectedAoaPaneSceneSource>,
+}
+
+fn plan_aoa_pane_payloads(candidates: Vec<AoaPanePayloadCandidate>) -> AoaPanePayloadPlan {
+    let mut accepted: Vec<AoaPanePayloadCandidate> = Vec::new();
+    let mut rejected_sources = Vec::new();
+
+    let mut normal = Vec::new();
+    let mut accents = Vec::new();
+    for candidate in candidates {
+        if candidate.binding.mode == AoaPaneBindingMode::EdgeAccent {
+            accents.push(candidate);
+        } else {
+            normal.push(candidate);
+        }
+    }
+    normal.sort_by(|a, b| {
+        b.pane
+            .depth
+            .cmp(&a.pane.depth)
+            .then(b.observation.lod_class.cmp(&a.observation.lod_class))
+            .then_with(|| {
+                b.lod_alpha
+                    .partial_cmp(&a.lod_alpha)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then(a.source_id.cmp(&b.source_id))
+    });
+
+    for candidate in normal {
+        if let Some(selected) = accepted
+            .iter()
+            .find(|selected| pane_payloads_conflict(&candidate.pane, &selected.pane))
+        {
+            rejected_sources.push(RejectedAoaPaneSceneSource {
+                source_id: candidate.source_id,
+                reason: AoaPaneBindingRejectionReason::PaneSubtreeConflict {
+                    pane_id: candidate.binding.pane_id,
+                    selected_pane_id: selected.binding.pane_id.clone(),
+                },
+            });
+        } else {
+            accepted.push(candidate);
+        }
+    }
+
+    accepted.extend(accents);
+    accepted.sort_by(|a, b| a.pane.pane_ordinal.cmp(&b.pane.pane_ordinal));
+
+    let pane_sources = accepted
+        .iter()
+        .map(|candidate| AoaPaneSceneSource {
+            source_id: candidate.source_id.clone(),
+            binding: candidate.binding.clone(),
+            observation: candidate.observation.clone(),
+            lod_alpha: candidate.lod_alpha,
+        })
+        .collect::<Vec<_>>();
+    let payload_specs = accepted
+        .iter()
+        .map(|candidate| AoaPanePayloadNodeSpec {
+            source_id: candidate.source_id.clone(),
+            pane_id: candidate.binding.pane_id.clone(),
+            pane_ordinal: candidate.binding.pane_ordinal,
+            mode: candidate.binding.mode,
+            opacity: pane_payload_opacity(
+                candidate.source_opacity,
+                candidate.lod_alpha,
+                candidate.binding.mode,
+            ),
+        })
+        .collect::<Vec<_>>();
+
+    AoaPanePayloadPlan {
+        pane_sources,
+        payload_specs,
+        rejected_sources,
+    }
+}
+
+fn pane_payloads_conflict(candidate: &AoaPaneRecord, selected: &AoaPaneRecord) -> bool {
+    candidate.pane_id == selected.pane_id
+        || candidate
+            .ancestor_pane_ids
+            .iter()
+            .any(|ancestor| ancestor == &selected.pane_id)
+        || selected
+            .ancestor_pane_ids
+            .iter()
+            .any(|ancestor| ancestor == &candidate.pane_id)
+}
+
+fn pane_payload_opacity(source_opacity: f32, lod_alpha: f32, mode: AoaPaneBindingMode) -> f32 {
+    let mode_cap = match mode {
+        AoaPaneBindingMode::EdgeAccent => 0.28,
+        AoaPaneBindingMode::SignalGlyph => 0.42,
+        AoaPaneBindingMode::DataGlyph => 0.56,
+        AoaPaneBindingMode::TriTextureMasked => 0.88,
+    };
+    (source_opacity * lod_alpha * mode_cap).clamp(0.0, 1.0)
 }
 
 fn build_scene_from_source_refs(
@@ -835,7 +1054,7 @@ pub fn build_proof_scene() -> Vec<SceneNode> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aoa_panes::AoaPaneBindingMode;
+    use crate::aoa_panes::AoaPaneOcclusionState;
     use crate::content_sources::{
         ActiveContentSourceInfo, AoaPaneBindingMetadata, AoaPaneBindingRejectionReason,
         AoaPaneCompositionPosture, AoaPanePrivacyPosture, AoaPaneSourcePosture,
@@ -859,8 +1078,52 @@ mod tests {
         }
     }
 
+    fn pane_binding_for(pane_id: &str, mode: AoaPaneBindingMode) -> AoaPaneBindingMetadata {
+        let mut binding = root_pane_binding_for(pane_id);
+        binding.mode = mode;
+        binding
+    }
+
     fn root_pane_binding() -> AoaPaneBindingMetadata {
         root_pane_binding_for("aoa:pane:v1:r:abd")
+    }
+
+    fn pane_record_for(pane_id: &str) -> AoaPaneRecord {
+        aoa_active_pane_manifest()
+            .panes
+            .into_iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .expect("test pane should exist")
+    }
+
+    fn pane_observation_for(pane_id: &str, lod_class: AoaPaneLodClass) -> AoaPaneFrameObservation {
+        let pane = pane_record_for(pane_id);
+        let (projected_area_px2, min_projected_edge_px, facing_dot, visible_fraction) =
+            match lod_class {
+                AoaPaneLodClass::Text => (12_000.0, 96.0, 0.34, 0.9),
+                AoaPaneLodClass::CompactData => (4_800.0, 58.0, 0.26, 0.78),
+                AoaPaneLodClass::Glyph => (1_600.0, 32.0, 0.12, 0.68),
+                AoaPaneLodClass::Accent => (380.0, 14.0, 0.08, 0.5),
+                AoaPaneLodClass::EdgeOnly => (220.0, 7.0, 0.08, 0.5),
+                AoaPaneLodClass::Culled => (0.0, 0.0, 0.0, 0.0),
+            };
+        AoaPaneFrameObservation {
+            pane_id: pane.pane_id,
+            pane_ordinal: pane.pane_ordinal,
+            viewport_px: [1920, 1080],
+            screen_bbox_px: [100.0, 100.0, 220.0, 220.0],
+            projected_area_px2,
+            min_projected_edge_px,
+            facing_dot,
+            visible_fraction,
+            occlusion_state: if lod_class == AoaPaneLodClass::Culled {
+                AoaPaneOcclusionState::Hidden
+            } else {
+                AoaPaneOcclusionState::Visible
+            },
+            lod_class,
+            gate_reasons: Vec::new(),
+        }
     }
 
     #[test]
@@ -1063,7 +1326,8 @@ mod tests {
             "payload_pane_ordinal",
             "payload_mode",
             "pane_payload_sample_uv",
-            "textureSample(quad_texture, quad_sampler, pane_payload_sample_uv(info_uv))",
+            "quantized_payload_sample_uv",
+            "textureSample(quad_texture, quad_sampler, sample_uv)",
             "current_pane != target_pane",
             "triangle_inside_mask_from_barycentric",
         ] {
@@ -1293,8 +1557,17 @@ mod tests {
                     .with_pane_binding(root_pane_binding_for(pane_id))
             })
             .collect::<Vec<_>>();
+        let observations = root_panes
+            .iter()
+            .map(|(_, pane_id, _)| pane_observation_for(pane_id, AoaPaneLodClass::Text))
+            .collect::<Vec<_>>();
 
-        let built = build_scene_from_source_records(&records, 0.0);
+        let built = build_scene_from_source_records_for_stream_posture_with_observations(
+            &records,
+            0.0,
+            AoaPaneStreamPosture::Public,
+            &observations,
+        );
         let mut payload_ordinals = built
             .nodes
             .iter()
@@ -1320,6 +1593,156 @@ mod tests {
                 .count(),
             1,
             "payload passes should supplement, not replace or duplicate, the authored anchor"
+        );
+    }
+
+    #[test]
+    fn inner_pane_payload_is_consumed_but_rejected_until_lod_gate_permits_it() {
+        let inner_pane_id = "aoa:pane:v1:a.d:bcd";
+        let records = vec![
+            ActiveContentSourceInfo::new("inner-accent", 0.9, 9, 320, 180).with_pane_binding(
+                pane_binding_for(inner_pane_id, AoaPaneBindingMode::EdgeAccent),
+            ),
+            ActiveContentSourceInfo::new("camera-brio", 0.8, 5, 1280, 720),
+        ];
+        let blocked = build_scene_from_source_records_for_stream_posture_with_observations(
+            &records,
+            0.0,
+            AoaPaneStreamPosture::Public,
+            &[pane_observation_for(
+                inner_pane_id,
+                AoaPaneLodClass::EdgeOnly,
+            )],
+        );
+
+        assert!(blocked.aoa_pane_sources.is_empty());
+        assert_eq!(
+            blocked.rejected_pane_sources[0].reason,
+            AoaPaneBindingRejectionReason::PaneLodNotPermitted {
+                pane_id: inner_pane_id.to_string(),
+                mode: AoaPaneBindingMode::EdgeAccent,
+                required: AoaPaneLodClass::Accent,
+                actual: AoaPaneLodClass::EdgeOnly,
+            }
+        );
+        assert!(
+            blocked
+                .nodes
+                .iter()
+                .all(|node| node.content_source_id.as_deref() != Some("inner-accent")),
+            "LOD-rejected inner pane content must be consumed, not projected as a fallback quad"
+        );
+
+        let accepted = build_scene_from_source_records_for_stream_posture_with_observations(
+            &records,
+            0.0,
+            AoaPaneStreamPosture::Public,
+            &[pane_observation_for(inner_pane_id, AoaPaneLodClass::Accent)],
+        );
+
+        assert_eq!(accepted.aoa_pane_sources.len(), 1);
+        assert!(
+            accepted.aoa_pane_sources[0].lod_alpha > 0.0,
+            "accepted inner pane payload should carry a smooth LOD alpha"
+        );
+        let payload = accepted
+            .nodes
+            .iter()
+            .find(|node| node.content_source_id.as_deref() == Some("inner-accent"))
+            .expect("LOD-permitted inner pane should produce a pane payload node");
+        assert_eq!(
+            payload.aoa_payload_mode,
+            Some(AoaPaneBindingMode::EdgeAccent)
+        );
+        assert_eq!(
+            payload.aoa_payload_pane_ordinal,
+            Some(pane_record_for(inner_pane_id).pane_ordinal)
+        );
+        assert!(
+            payload.opacity <= 0.9 * 0.28,
+            "inner accents must stay low-alpha rather than becoming full pane cards"
+        );
+    }
+
+    #[test]
+    fn normal_parent_and_child_payloads_are_mutually_exclusive() {
+        let root_id = "aoa:pane:v1:r:abd";
+        let child_id = "aoa:pane:v1:a:abd";
+        let records = vec![
+            ActiveContentSourceInfo::new("root-full", 0.9, 9, 640, 360).with_pane_binding(
+                pane_binding_for(root_id, AoaPaneBindingMode::TriTextureMasked),
+            ),
+            ActiveContentSourceInfo::new("child-data", 0.9, 9, 320, 180)
+                .with_pane_binding(pane_binding_for(child_id, AoaPaneBindingMode::DataGlyph)),
+        ];
+
+        let built = build_scene_from_source_records_for_stream_posture_with_observations(
+            &records,
+            0.0,
+            AoaPaneStreamPosture::Public,
+            &[
+                pane_observation_for(root_id, AoaPaneLodClass::Text),
+                pane_observation_for(child_id, AoaPaneLodClass::CompactData),
+            ],
+        );
+
+        assert_eq!(built.aoa_pane_sources.len(), 1);
+        assert_eq!(built.aoa_pane_sources[0].source_id, "child-data");
+        assert_eq!(
+            built.rejected_pane_sources[0].reason,
+            AoaPaneBindingRejectionReason::PaneSubtreeConflict {
+                pane_id: root_id.to_string(),
+                selected_pane_id: child_id.to_string(),
+            }
+        );
+        assert!(
+            built
+                .nodes
+                .iter()
+                .all(|node| node.content_source_id.as_deref() != Some("root-full")),
+            "excluded parent payload must not leak back as a residual surface"
+        );
+    }
+
+    #[test]
+    fn low_alpha_child_accents_can_coexist_with_parent_payloads() {
+        let root_id = "aoa:pane:v1:r:abd";
+        let child_id = "aoa:pane:v1:a.d:abd";
+        let records = vec![
+            ActiveContentSourceInfo::new("root-full", 0.9, 9, 640, 360).with_pane_binding(
+                pane_binding_for(root_id, AoaPaneBindingMode::TriTextureMasked),
+            ),
+            ActiveContentSourceInfo::new("child-accent", 0.9, 9, 320, 180)
+                .with_pane_binding(pane_binding_for(child_id, AoaPaneBindingMode::EdgeAccent)),
+        ];
+
+        let built = build_scene_from_source_records_for_stream_posture_with_observations(
+            &records,
+            0.0,
+            AoaPaneStreamPosture::Public,
+            &[
+                pane_observation_for(root_id, AoaPaneLodClass::Text),
+                pane_observation_for(child_id, AoaPaneLodClass::Accent),
+            ],
+        );
+        let payload_sources = built
+            .nodes
+            .iter()
+            .filter_map(|node| node.content_source_id.as_deref())
+            .collect::<Vec<_>>();
+
+        assert!(built.rejected_pane_sources.is_empty());
+        assert!(payload_sources.contains(&"root-full"));
+        assert!(payload_sources.contains(&"child-accent"));
+        assert!(
+            built
+                .nodes
+                .iter()
+                .find(|node| node.content_source_id.as_deref() == Some("child-accent"))
+                .unwrap()
+                .opacity
+                < 0.28,
+            "child accent exception must remain a low-alpha accent"
         );
     }
 

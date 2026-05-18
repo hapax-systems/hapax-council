@@ -12,7 +12,8 @@ use glam::Vec3;
 
 use crate::content_sources::{ActiveContentSourceInfo, ContentSourceManager};
 use crate::scene::{
-    build_proof_scene, build_scene_from_source_records, BuiltScene, Camera3D, SceneNode,
+    build_proof_scene, build_scene_from_source_records_for_stream_posture_with_camera, BuiltScene,
+    Camera3D, SceneNode,
 };
 
 const SCENE_QUAD_WGSL: &str = include_str!("shaders/scene_quad.wgsl");
@@ -89,7 +90,13 @@ fn configured_scene_sample_count() -> u32 {
     )
 }
 
-fn build_live_scene_from_active(active: &[ActiveContentSourceInfo], time: f32) -> BuiltScene {
+fn build_live_scene_from_active(
+    active: &[ActiveContentSourceInfo],
+    time: f32,
+    camera: &Camera3D,
+    width: u32,
+    height: u32,
+) -> BuiltScene {
     if active.is_empty() {
         BuiltScene {
             nodes: Vec::new(),
@@ -97,7 +104,14 @@ fn build_live_scene_from_active(active: &[ActiveContentSourceInfo], time: f32) -
             rejected_pane_sources: Vec::new(),
         }
     } else {
-        build_scene_from_source_records(active, time)
+        build_scene_from_source_records_for_stream_posture_with_camera(
+            active,
+            time,
+            crate::content_sources::AoaPaneStreamPosture::current(),
+            camera,
+            width,
+            height,
+        )
     }
 }
 
@@ -540,16 +554,17 @@ impl SceneRenderer {
         time: f32,
         content_source_mgr: Option<&ContentSourceManager>,
     ) -> &wgpu::TextureView {
+        // Update camera before scene construction so AoA pane LOD gates match the drawn frame.
+        self.camera.apply_orbital_drift(time);
+
         // Build scene from live content sources
         let scene = if let Some(mgr) = content_source_mgr {
             let active = mgr.active_source_records();
-            build_live_scene_from_active(&active, time).nodes
+            build_live_scene_from_active(&active, time, &self.camera, self.width, self.height).nodes
         } else {
             build_proof_scene()
         };
 
-        // Update camera with orbital drift
-        self.camera.apply_orbital_drift(time);
         let view = self.camera.view_matrix();
         let proj = self.camera.projection_matrix();
         let (occluders, occluder_count) = grid_shadow_occluders(&scene);
@@ -646,11 +661,9 @@ impl SceneRenderer {
                     payload_pane_ordinal: node
                         .aoa_payload_pane_ordinal
                         .map_or(-1.0, |ordinal| ordinal as f32),
-                    payload_mode: if node.aoa_payload_pane_ordinal.is_some() {
-                        1.0
-                    } else {
-                        0.0
-                    },
+                    payload_mode: node
+                        .aoa_payload_mode
+                        .map_or(0.0, |mode| mode.shader_payload_mode()),
                 };
                 let offset = (slot as u64) * (self.uniform_align as u64);
                 queue.write_buffer(
@@ -727,7 +740,8 @@ mod tests {
 
     #[test]
     fn live_empty_sources_do_not_render_proof_quads() {
-        let scene = build_live_scene_from_active(&[], 0.0);
+        let camera = Camera3D::new(1920, 1080);
+        let scene = build_live_scene_from_active(&[], 0.0, &camera, 1920, 1080);
 
         assert!(
             scene.nodes.is_empty(),
