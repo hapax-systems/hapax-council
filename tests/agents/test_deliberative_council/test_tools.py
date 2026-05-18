@@ -9,6 +9,7 @@ from agents.deliberative_council.members import MODEL_TOOL_LEVELS, ToolLevel, bu
 from agents.deliberative_council.tools import (
     FULL_TOOLS,
     RESTRICTED_TOOLS,
+    git_diff,
     git_provenance,
     grep_evidence,
     qdrant_lookup,
@@ -136,5 +137,6 @@ class TestBuildMember:
         assert MODEL_TOOL_LEVELS.get("local-fast") == ToolLevel.RESTRICTED
 
     def test_tool_counts(self) -> None:
-        assert len(FULL_TOOLS) == 6
+        assert git_diff in FULL_TOOLS
+        assert len(FULL_TOOLS) == 7
         assert len(RESTRICTED_TOOLS) == 2
