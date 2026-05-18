@@ -123,6 +123,9 @@ pub struct SceneNode {
     /// Index into ContentSourceManager's ordered source list.
     /// When None, the renderer uses a placeholder texture.
     pub content_source_id: Option<String>,
+    /// AoA pane ordinal targeted by this node's bound content source.
+    /// None means the authored AoA anchor renders only its structural geometry.
+    pub aoa_payload_pane_ordinal: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +147,13 @@ pub struct BuiltScene {
     pub rejected_pane_sources: Vec<RejectedAoaPaneSceneSource>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct AoaPanePayloadNodeSpec {
+    source_id: String,
+    pane_ordinal: u32,
+    opacity: f32,
+}
+
 impl SceneNode {
     pub fn new(label: &str) -> Self {
         Self {
@@ -154,6 +164,7 @@ impl SceneNode {
             opacity: 1.0,
             shader: SceneNodeShader::Textured,
             content_source_id: None,
+            aoa_payload_pane_ordinal: None,
         }
     }
 
@@ -331,6 +342,17 @@ pub fn authored_aoa_scene_node() -> SceneNode {
 fn push_authored_aoa(nodes: &mut Vec<SceneNode>) {
     let node = authored_aoa_scene_node();
     nodes.push(node);
+}
+
+fn push_aoa_pane_payload_nodes(nodes: &mut Vec<SceneNode>, specs: &[AoaPanePayloadNodeSpec]) {
+    for spec in specs {
+        let mut node = authored_aoa_scene_node();
+        node.label = format!("aoa-pane-payload-{}", spec.pane_ordinal);
+        node.opacity = spec.opacity.clamp(0.0, 1.0);
+        node.content_source_id = Some(spec.source_id.clone());
+        node.aoa_payload_pane_ordinal = Some(spec.pane_ordinal);
+        nodes.push(node);
+    }
 }
 
 pub fn authored_aoa_observation_frame(
@@ -523,6 +545,7 @@ pub fn build_scene_from_source_records(
 ) -> BuiltScene {
     let mut ordinary_sources = Vec::new();
     let mut aoa_pane_sources = Vec::new();
+    let mut aoa_pane_payload_specs = Vec::new();
     let mut rejected_pane_sources = Vec::new();
 
     for source in active_sources {
@@ -531,10 +554,17 @@ pub fn build_scene_from_source_records(
         }
 
         match source.validated_pane_binding() {
-            Ok(Some(binding)) => aoa_pane_sources.push(AoaPaneSceneSource {
-                source_id: source.source_id.clone(),
-                binding,
-            }),
+            Ok(Some(binding)) => {
+                aoa_pane_payload_specs.push(AoaPanePayloadNodeSpec {
+                    source_id: source.source_id.clone(),
+                    pane_ordinal: binding.pane_ordinal,
+                    opacity: source.current_opacity,
+                });
+                aoa_pane_sources.push(AoaPaneSceneSource {
+                    source_id: source.source_id.clone(),
+                    binding,
+                });
+            }
             Err(reason) => rejected_pane_sources.push(RejectedAoaPaneSceneSource {
                 source_id: source.source_id.clone(),
                 reason,
@@ -544,8 +574,10 @@ pub fn build_scene_from_source_records(
     }
 
     let force_aoa_anchor = !aoa_pane_sources.is_empty();
+    let mut nodes = build_scene_from_source_refs(&ordinary_sources, time, force_aoa_anchor);
+    push_aoa_pane_payload_nodes(&mut nodes, &aoa_pane_payload_specs);
     BuiltScene {
-        nodes: build_scene_from_source_refs(&ordinary_sources, time, force_aoa_anchor),
+        nodes,
         aoa_pane_sources,
         rejected_pane_sources,
     }
@@ -796,9 +828,9 @@ mod tests {
         AoaPanePrivacyPosture, AoaPaneSourcePosture,
     };
 
-    fn root_pane_binding() -> AoaPaneBindingMetadata {
+    fn root_pane_binding_for(pane_id: &str) -> AoaPaneBindingMetadata {
         AoaPaneBindingMetadata {
-            pane_id: "aoa:pane:v1:r:abd".to_string(),
+            pane_id: pane_id.to_string(),
             route: "aoa_pane".to_string(),
             mode: AoaPaneBindingMode::TriTextureMasked,
             clip_policy: Default::default(),
@@ -806,6 +838,10 @@ mod tests {
             privacy_posture: AoaPanePrivacyPosture::PublicReviewRequired,
             source_posture: AoaPaneSourcePosture::SystemWard,
         }
+    }
+
+    fn root_pane_binding() -> AoaPaneBindingMetadata {
+        root_pane_binding_for("aoa:pane:v1:r:abd")
     }
 
     #[test]
@@ -1002,6 +1038,24 @@ mod tests {
     }
 
     #[test]
+    fn aoa_shader_samples_payloads_only_as_pane_local_content() {
+        let shader = include_str!("shaders/scene_quad.wgsl");
+        for required in [
+            "payload_pane_ordinal",
+            "payload_mode",
+            "pane_payload_sample_uv",
+            "textureSample(quad_texture, quad_sampler, pane_payload_sample_uv(info_uv))",
+            "current_pane != target_pane",
+            "triangle_inside_mask_from_barycentric",
+        ] {
+            assert!(
+                shader.contains(required),
+                "AoA payload shader should stay pane-local and source-bound: missing {required}"
+            );
+        }
+    }
+
+    #[test]
     fn aoa_shader_declares_usable_triangular_pane_topology() {
         let shader = include_str!("shaders/scene_quad.wgsl");
         for required in [
@@ -1180,12 +1234,73 @@ mod tests {
         assert_eq!(built.aoa_pane_sources[0].binding.pane_ordinal, 0);
         assert!(built.rejected_pane_sources.is_empty());
         assert!(
-            built.nodes.iter().all(|node| node.label != "pane-source"),
-            "pane-bound source must not fall through as an ordinary quad"
+            built.nodes.iter().all(|node| {
+                node.content_source_id.as_deref() != Some("pane-source")
+                    || (node.shader == SceneNodeShader::ApertureOfApertures
+                        && node.aoa_payload_pane_ordinal == Some(0))
+            }),
+            "pane-bound source must only appear as a selected AoA pane payload"
         );
         assert!(
             built.nodes.iter().any(|node| node.label == AOA_NODE_LABEL),
             "a valid pane-bound source should keep the authored AoA anchor active"
+        );
+        let payload = built
+            .nodes
+            .iter()
+            .find(|node| node.aoa_payload_pane_ordinal == Some(0))
+            .expect("valid pane-bound source should produce a pane payload node");
+        assert_eq!(payload.shader, SceneNodeShader::ApertureOfApertures);
+        assert_eq!(payload.content_source_id.as_deref(), Some("pane-source"));
+        assert_eq!(
+            payload.model_matrix(),
+            authored_aoa_scene_node().model_matrix(),
+            "pane payloads must ride the authored AoA transform, not viewport coordinates"
+        );
+    }
+
+    #[test]
+    fn four_root_panes_can_receive_distinct_source_bound_payloads() {
+        let root_panes = [
+            ("pane-abd", "aoa:pane:v1:r:abd", 0u32),
+            ("pane-bcd", "aoa:pane:v1:r:bcd", 1u32),
+            ("pane-cad", "aoa:pane:v1:r:cad", 2u32),
+            ("pane-acb", "aoa:pane:v1:r:acb", 3u32),
+        ];
+        let records = root_panes
+            .iter()
+            .map(|(source_id, pane_id, _)| {
+                ActiveContentSourceInfo::new(*source_id, 0.9, 9, 320, 180)
+                    .with_pane_binding(root_pane_binding_for(pane_id))
+            })
+            .collect::<Vec<_>>();
+
+        let built = build_scene_from_source_records(&records, 0.0);
+        let mut payload_ordinals = built
+            .nodes
+            .iter()
+            .filter_map(|node| node.aoa_payload_pane_ordinal)
+            .collect::<Vec<_>>();
+        payload_ordinals.sort_unstable();
+
+        assert_eq!(payload_ordinals, vec![0, 1, 2, 3]);
+        for (source_id, _, ordinal) in root_panes {
+            let payload = built
+                .nodes
+                .iter()
+                .find(|node| node.aoa_payload_pane_ordinal == Some(ordinal))
+                .expect("each root pane should have a payload node");
+            assert_eq!(payload.content_source_id.as_deref(), Some(source_id));
+            assert_eq!(payload.shader, SceneNodeShader::ApertureOfApertures);
+        }
+        assert_eq!(
+            built
+                .nodes
+                .iter()
+                .filter(|node| node.label == AOA_NODE_LABEL)
+                .count(),
+            1,
+            "payload passes should supplement, not replace or duplicate, the authored anchor"
         );
     }
 

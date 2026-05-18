@@ -31,7 +31,8 @@ struct SceneUniformData {
     projection: [[f32; 4]; 4],
     opacity: f32,
     shader_kind: f32,
-    _pad: [f32; 2],
+    payload_pane_ordinal: f32,
+    payload_mode: f32,
 }
 
 /// Single rectangle that can cast a soft shadow onto room planes.
@@ -642,7 +643,14 @@ impl SceneRenderer {
                     projection: proj.to_cols_array_2d(),
                     opacity: node.opacity,
                     shader_kind: node.shader.as_f32(),
-                    _pad: [0.0; 2],
+                    payload_pane_ordinal: node
+                        .aoa_payload_pane_ordinal
+                        .map_or(-1.0, |ordinal| ordinal as f32),
+                    payload_mode: if node.aoa_payload_pane_ordinal.is_some() {
+                        1.0
+                    } else {
+                        0.0
+                    },
                 };
                 let offset = (slot as u64) * (self.uniform_align as u64);
                 queue.write_buffer(
