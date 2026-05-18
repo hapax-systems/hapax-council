@@ -4,6 +4,7 @@
 use crate::aoa_panes::{aoa_active_pane_manifest, AoaPaneBindingMode, AoaPanePrivacyClass};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -101,6 +102,7 @@ impl Default for AoaPaneEffectScope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AoaPanePrivacyPosture {
+    Unspecified,
     PublicSafe,
     PublicReviewRequired,
     PrivateOnly,
@@ -109,7 +111,7 @@ pub enum AoaPanePrivacyPosture {
 
 impl Default for AoaPanePrivacyPosture {
     fn default() -> Self {
-        Self::PublicReviewRequired
+        Self::Unspecified
     }
 }
 
@@ -130,6 +132,46 @@ impl Default for AoaPaneSourcePosture {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AoaPaneCompositionPosture {
+    PaneBoundDeidentified,
+    AmbientObjectView,
+    StableOperatorPortrait,
+    HostFraming,
+    Unknown,
+}
+
+impl Default for AoaPaneCompositionPosture {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AoaPaneStreamPosture {
+    Private,
+    Public,
+}
+
+impl AoaPaneStreamPosture {
+    pub fn current() -> Self {
+        Self::from_stream_mode_token(current_stream_mode_token().as_deref())
+    }
+
+    pub fn from_stream_mode_token(token: Option<&str>) -> Self {
+        match token {
+            Some("off" | "private") => Self::Private,
+            Some("public" | "public_research") => Self::Public,
+            _ => Self::Public,
+        }
+    }
+
+    pub fn is_public(self) -> bool {
+        self == Self::Public
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AoaPaneBindingMetadata {
     pub pane_id: String,
     #[serde(default = "default_aoa_pane_route")]
@@ -144,6 +186,16 @@ pub struct AoaPaneBindingMetadata {
     pub privacy_posture: AoaPanePrivacyPosture,
     #[serde(default)]
     pub source_posture: AoaPaneSourcePosture,
+    #[serde(default)]
+    pub composition_posture: AoaPaneCompositionPosture,
+    #[serde(default)]
+    pub privacy_gate_refs: Vec<String>,
+    #[serde(default)]
+    pub face_obscure_upstream_ref: Option<String>,
+    #[serde(default)]
+    pub anti_recognition_ref: Option<String>,
+    #[serde(default)]
+    pub anti_recognition_passed: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,7 +206,15 @@ pub enum AoaPaneBindingRejectionReason {
         pane_id: String,
         mode: AoaPaneBindingMode,
     },
+    MissingPrivacyPosture,
     PrivacyBlocked,
+    PrivacyGateRefsMissing,
+    PrivateOnlyInPublicMode,
+    UnknownSourcePosture,
+    OperatorCameraFaceObscureMissing,
+    OperatorCameraAntiRecognitionMissing,
+    OperatorCameraAntiRecognitionFailed,
+    AntiParasocialComposition(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,6 +224,7 @@ pub struct AoaValidatedPaneBinding {
     pub mode: AoaPaneBindingMode,
     pub privacy_posture: AoaPanePrivacyPosture,
     pub source_posture: AoaPaneSourcePosture,
+    pub composition_posture: AoaPaneCompositionPosture,
     pub pane_privacy_class: AoaPanePrivacyClass,
 }
 
@@ -230,9 +291,16 @@ impl ActiveContentSourceInfo {
     pub fn validated_pane_binding(
         &self,
     ) -> Result<Option<AoaValidatedPaneBinding>, AoaPaneBindingRejectionReason> {
+        self.validated_pane_binding_for_stream_posture(AoaPaneStreamPosture::current())
+    }
+
+    pub fn validated_pane_binding_for_stream_posture(
+        &self,
+        stream_posture: AoaPaneStreamPosture,
+    ) -> Result<Option<AoaValidatedPaneBinding>, AoaPaneBindingRejectionReason> {
         self.pane_binding
             .as_ref()
-            .map(validate_aoa_pane_binding)
+            .map(|binding| validate_aoa_pane_binding_for_stream_posture(binding, stream_posture))
             .transpose()
     }
 }
@@ -271,6 +339,21 @@ fn normalized_pane_route(route: &str) -> String {
     route.trim().to_ascii_lowercase().replace(['-', ' '], "_")
 }
 
+fn current_stream_mode_token() -> Option<String> {
+    if let Ok(raw) = env::var("HAPAX_STREAM_MODE") {
+        return Some(raw.trim().to_ascii_lowercase());
+    }
+    if let Ok(path) = env::var("HAPAX_STREAM_MODE_FILE") {
+        return std::fs::read_to_string(path)
+            .ok()
+            .map(|raw| raw.trim().to_ascii_lowercase());
+    }
+    let home = env::var("HOME").ok()?;
+    std::fs::read_to_string(Path::new(&home).join(".cache/hapax/stream-mode"))
+        .ok()
+        .map(|raw| raw.trim().to_ascii_lowercase())
+}
+
 pub fn validate_aoa_pane_binding(
     binding: &AoaPaneBindingMetadata,
 ) -> Result<AoaValidatedPaneBinding, AoaPaneBindingRejectionReason> {
@@ -281,8 +364,46 @@ pub fn validate_aoa_pane_binding(
         ));
     }
 
+    if binding.privacy_posture == AoaPanePrivacyPosture::Unspecified {
+        return Err(AoaPaneBindingRejectionReason::MissingPrivacyPosture);
+    }
     if binding.privacy_posture == AoaPanePrivacyPosture::Blocked {
         return Err(AoaPaneBindingRejectionReason::PrivacyBlocked);
+    }
+    if binding.privacy_posture == AoaPanePrivacyPosture::PublicReviewRequired
+        && binding.privacy_gate_refs.is_empty()
+    {
+        return Err(AoaPaneBindingRejectionReason::PrivacyGateRefsMissing);
+    }
+    if binding.source_posture == AoaPaneSourcePosture::Unknown {
+        return Err(AoaPaneBindingRejectionReason::UnknownSourcePosture);
+    }
+    if matches!(
+        binding.composition_posture,
+        AoaPaneCompositionPosture::StableOperatorPortrait | AoaPaneCompositionPosture::HostFraming
+    ) {
+        return Err(AoaPaneBindingRejectionReason::AntiParasocialComposition(
+            format!("{:?}", binding.composition_posture),
+        ));
+    }
+    if binding.source_posture == AoaPaneSourcePosture::OperatorCamera {
+        if binding
+            .face_obscure_upstream_ref
+            .as_deref()
+            .is_none_or(str::is_empty)
+        {
+            return Err(AoaPaneBindingRejectionReason::OperatorCameraFaceObscureMissing);
+        }
+        if binding
+            .anti_recognition_ref
+            .as_deref()
+            .is_none_or(str::is_empty)
+        {
+            return Err(AoaPaneBindingRejectionReason::OperatorCameraAntiRecognitionMissing);
+        }
+        if binding.anti_recognition_passed != Some(true) {
+            return Err(AoaPaneBindingRejectionReason::OperatorCameraAntiRecognitionFailed);
+        }
     }
 
     let manifest = aoa_active_pane_manifest();
@@ -309,8 +430,21 @@ pub fn validate_aoa_pane_binding(
         mode: binding.mode,
         privacy_posture: binding.privacy_posture.clone(),
         source_posture: binding.source_posture.clone(),
+        composition_posture: binding.composition_posture.clone(),
         pane_privacy_class: pane.content_eligibility.privacy_class,
     })
+}
+
+pub fn validate_aoa_pane_binding_for_stream_posture(
+    binding: &AoaPaneBindingMetadata,
+    stream_posture: AoaPaneStreamPosture,
+) -> Result<AoaValidatedPaneBinding, AoaPaneBindingRejectionReason> {
+    let validated = validate_aoa_pane_binding(binding)?;
+    if stream_posture.is_public() && validated.privacy_posture == AoaPanePrivacyPosture::PrivateOnly
+    {
+        return Err(AoaPaneBindingRejectionReason::PrivateOnlyInPublicMode);
+    }
+    Ok(validated)
 }
 
 fn expected_rgba_size(width: u32, height: u32) -> Option<usize> {
@@ -1108,11 +1242,13 @@ impl ContentSourceManager {
 
 #[cfg(test)]
 mod family_classification_tests {
+    use super::validate_aoa_pane_binding_for_stream_posture;
     use super::{
         effective_ttl_ms, expected_rgba_size, modified_age_exceeds_ttl, read_complete_rgba_frame,
         rgba_frame_matches_manifest, source_file_age_exceeds_ttl, source_mip_level_count,
         validate_aoa_pane_binding, AoaPaneBindingMetadata, AoaPaneBindingRejectionReason,
-        AoaPanePrivacyPosture, AoaPaneSourcePosture, ContentSourceManager, SourceManifest,
+        AoaPaneCompositionPosture, AoaPanePrivacyPosture, AoaPaneSourcePosture,
+        AoaPaneStreamPosture, ContentSourceManager, SourceManifest,
         CAMERA_SNAPSHOT_IMPLICIT_TTL_MS, CONTENT_SOURCE_MIP_WGSL,
     };
     use crate::aoa_panes::AoaPaneBindingMode;
@@ -1145,6 +1281,11 @@ mod family_classification_tests {
             effect_scope: Default::default(),
             privacy_posture: AoaPanePrivacyPosture::PublicReviewRequired,
             source_posture: AoaPaneSourcePosture::SystemWard,
+            composition_posture: AoaPaneCompositionPosture::PaneBoundDeidentified,
+            privacy_gate_refs: vec!["fixture:public-review".to_string()],
+            face_obscure_upstream_ref: None,
+            anti_recognition_ref: None,
+            anti_recognition_passed: None,
         }
     }
 
@@ -1223,6 +1364,7 @@ mod family_classification_tests {
                     "route": "aoa_pane",
                     "mode": "tri_texture_masked",
                     "privacy_posture": "public_review_required",
+                    "privacy_gate_refs": ["fixture:public-review"],
                     "source_posture": "system_ward"
                 }
             }"#,
@@ -1237,6 +1379,32 @@ mod family_classification_tests {
         assert_eq!(validated.pane_id, "aoa:pane:v1:r:abd");
         assert_eq!(validated.pane_ordinal, 0);
         assert_eq!(validated.mode, AoaPaneBindingMode::TriTextureMasked);
+    }
+
+    #[test]
+    fn missing_pane_privacy_posture_fails_closed() {
+        let parsed: SourceManifest = serde_json::from_str(
+            r#"{
+                "source_id": "ward-a",
+                "content_type": "rgba",
+                "width": 64,
+                "height": 64,
+                "pane_binding": {
+                    "pane_id": "aoa:pane:v1:r:abd",
+                    "route": "aoa_pane",
+                    "mode": "tri_texture_masked",
+                    "source_posture": "system_ward"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let binding = parsed.pane_binding.as_ref().unwrap();
+        assert_eq!(binding.privacy_posture, AoaPanePrivacyPosture::Unspecified);
+        assert_eq!(
+            validate_aoa_pane_binding(binding),
+            Err(AoaPaneBindingRejectionReason::MissingPrivacyPosture)
+        );
     }
 
     #[test]
@@ -1279,6 +1447,9 @@ mod family_classification_tests {
         let mut binding = valid_root_binding();
         binding.privacy_posture = AoaPanePrivacyPosture::PrivateOnly;
         binding.source_posture = AoaPaneSourcePosture::OperatorCamera;
+        binding.face_obscure_upstream_ref = Some("face-obscure:fixture".to_string());
+        binding.anti_recognition_ref = Some("anti-recognition:fixture".to_string());
+        binding.anti_recognition_passed = Some(true);
 
         let validated = validate_aoa_pane_binding(&binding).unwrap();
         assert_eq!(
@@ -1288,6 +1459,90 @@ mod family_classification_tests {
         assert_eq!(
             validated.source_posture,
             AoaPaneSourcePosture::OperatorCamera
+        );
+    }
+
+    #[test]
+    fn public_review_pane_payloads_require_gate_refs() {
+        let mut binding = valid_root_binding();
+        binding.privacy_gate_refs.clear();
+
+        assert_eq!(
+            validate_aoa_pane_binding(&binding),
+            Err(AoaPaneBindingRejectionReason::PrivacyGateRefsMissing)
+        );
+    }
+
+    #[test]
+    fn stream_posture_maps_public_research_and_unknown_to_public() {
+        assert_eq!(
+            AoaPaneStreamPosture::from_stream_mode_token(Some("public_research")),
+            AoaPaneStreamPosture::Public
+        );
+        assert_eq!(
+            AoaPaneStreamPosture::from_stream_mode_token(Some("unexpected")),
+            AoaPaneStreamPosture::Public
+        );
+        assert_eq!(
+            AoaPaneStreamPosture::from_stream_mode_token(None),
+            AoaPaneStreamPosture::Public
+        );
+        assert_eq!(
+            AoaPaneStreamPosture::from_stream_mode_token(Some("private")),
+            AoaPaneStreamPosture::Private
+        );
+    }
+
+    #[test]
+    fn private_pane_payloads_fail_closed_in_public_stream_posture() {
+        let mut binding = valid_root_binding();
+        binding.privacy_posture = AoaPanePrivacyPosture::PrivateOnly;
+
+        assert_eq!(
+            validate_aoa_pane_binding_for_stream_posture(&binding, AoaPaneStreamPosture::Public),
+            Err(AoaPaneBindingRejectionReason::PrivateOnlyInPublicMode)
+        );
+        assert!(validate_aoa_pane_binding_for_stream_posture(
+            &binding,
+            AoaPaneStreamPosture::Private
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn operator_camera_pane_payloads_require_upstream_privacy_evidence() {
+        let mut binding = valid_root_binding();
+        binding.source_posture = AoaPaneSourcePosture::OperatorCamera;
+
+        assert_eq!(
+            validate_aoa_pane_binding(&binding),
+            Err(AoaPaneBindingRejectionReason::OperatorCameraFaceObscureMissing)
+        );
+        binding.face_obscure_upstream_ref = Some("face-obscure:fixture".to_string());
+        assert_eq!(
+            validate_aoa_pane_binding(&binding),
+            Err(AoaPaneBindingRejectionReason::OperatorCameraAntiRecognitionMissing)
+        );
+        binding.anti_recognition_ref = Some("anti-recognition:fixture".to_string());
+        binding.anti_recognition_passed = Some(false);
+        assert_eq!(
+            validate_aoa_pane_binding(&binding),
+            Err(AoaPaneBindingRejectionReason::OperatorCameraAntiRecognitionFailed)
+        );
+        binding.anti_recognition_passed = Some(true);
+        assert!(validate_aoa_pane_binding(&binding).is_ok());
+    }
+
+    #[test]
+    fn stable_operator_portrait_pane_payloads_are_rejected() {
+        let mut binding = valid_root_binding();
+        binding.composition_posture = AoaPaneCompositionPosture::StableOperatorPortrait;
+
+        assert_eq!(
+            validate_aoa_pane_binding(&binding),
+            Err(AoaPaneBindingRejectionReason::AntiParasocialComposition(
+                "StableOperatorPortrait".to_string()
+            ))
         );
     }
 

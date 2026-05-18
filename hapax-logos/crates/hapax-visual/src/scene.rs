@@ -7,7 +7,8 @@
 use glam::{Mat4, Vec3};
 
 use crate::content_sources::{
-    ActiveContentSourceInfo, AoaPaneBindingRejectionReason, AoaValidatedPaneBinding,
+    ActiveContentSourceInfo, AoaPaneBindingRejectionReason, AoaPaneStreamPosture,
+    AoaValidatedPaneBinding,
 };
 
 pub use crate::aoa_panes::{
@@ -543,6 +544,18 @@ pub fn build_scene_from_source_records(
     active_sources: &[ActiveContentSourceInfo],
     time: f32,
 ) -> BuiltScene {
+    build_scene_from_source_records_for_stream_posture(
+        active_sources,
+        time,
+        AoaPaneStreamPosture::current(),
+    )
+}
+
+pub fn build_scene_from_source_records_for_stream_posture(
+    active_sources: &[ActiveContentSourceInfo],
+    time: f32,
+    stream_posture: AoaPaneStreamPosture,
+) -> BuiltScene {
     let mut ordinary_sources = Vec::new();
     let mut aoa_pane_sources = Vec::new();
     let mut aoa_pane_payload_specs = Vec::new();
@@ -553,7 +566,7 @@ pub fn build_scene_from_source_records(
             continue;
         }
 
-        match source.validated_pane_binding() {
+        match source.validated_pane_binding_for_stream_posture(stream_posture) {
             Ok(Some(binding)) => {
                 aoa_pane_payload_specs.push(AoaPanePayloadNodeSpec {
                     source_id: source.source_id.clone(),
@@ -825,7 +838,8 @@ mod tests {
     use crate::aoa_panes::AoaPaneBindingMode;
     use crate::content_sources::{
         ActiveContentSourceInfo, AoaPaneBindingMetadata, AoaPaneBindingRejectionReason,
-        AoaPanePrivacyPosture, AoaPaneSourcePosture,
+        AoaPaneCompositionPosture, AoaPanePrivacyPosture, AoaPaneSourcePosture,
+        AoaPaneStreamPosture,
     };
 
     fn root_pane_binding_for(pane_id: &str) -> AoaPaneBindingMetadata {
@@ -837,6 +851,11 @@ mod tests {
             effect_scope: Default::default(),
             privacy_posture: AoaPanePrivacyPosture::PublicReviewRequired,
             source_posture: AoaPaneSourcePosture::SystemWard,
+            composition_posture: AoaPaneCompositionPosture::PaneBoundDeidentified,
+            privacy_gate_refs: vec!["fixture:public-review".to_string()],
+            face_obscure_upstream_ref: None,
+            anti_recognition_ref: None,
+            anti_recognition_passed: None,
         }
     }
 
@@ -1329,6 +1348,98 @@ mod tests {
                 .iter()
                 .all(|node| node.label != "bad-pane-source"),
             "rejected pane bindings must fail closed rather than becoming residual quads"
+        );
+    }
+
+    #[test]
+    fn private_pane_bound_source_is_blocked_in_public_without_residual_quad() {
+        let mut private_binding = root_pane_binding();
+        private_binding.privacy_posture = AoaPanePrivacyPosture::PrivateOnly;
+        let records = vec![
+            ActiveContentSourceInfo::new("private-sentinel-pane", 0.9, 9, 320, 180)
+                .with_pane_binding(private_binding),
+            ActiveContentSourceInfo::new("camera-brio", 0.8, 5, 1280, 720),
+        ];
+
+        let built = build_scene_from_source_records_for_stream_posture(
+            &records,
+            0.0,
+            AoaPaneStreamPosture::Public,
+        );
+
+        assert!(built.aoa_pane_sources.is_empty());
+        assert_eq!(built.rejected_pane_sources.len(), 1);
+        assert_eq!(
+            built.rejected_pane_sources[0].reason,
+            AoaPaneBindingRejectionReason::PrivateOnlyInPublicMode
+        );
+        assert!(
+            built
+                .nodes
+                .iter()
+                .all(|node| node.label != "private-sentinel-pane"),
+            "private sentinel content must fail closed in public mode, not become a fallback quad"
+        );
+    }
+
+    #[test]
+    fn operator_camera_pane_bound_source_requires_face_obscure_and_anti_recognition() {
+        let mut camera_binding = root_pane_binding();
+        camera_binding.source_posture = AoaPaneSourcePosture::OperatorCamera;
+        let records = vec![
+            ActiveContentSourceInfo::new("operator-camera-pane", 0.9, 9, 320, 180)
+                .with_pane_binding(camera_binding),
+            ActiveContentSourceInfo::new("camera-brio", 0.8, 5, 1280, 720),
+        ];
+
+        let built = build_scene_from_source_records_for_stream_posture(
+            &records,
+            0.0,
+            AoaPaneStreamPosture::Public,
+        );
+
+        assert!(built.aoa_pane_sources.is_empty());
+        assert_eq!(built.rejected_pane_sources.len(), 1);
+        assert_eq!(
+            built.rejected_pane_sources[0].reason,
+            AoaPaneBindingRejectionReason::OperatorCameraFaceObscureMissing
+        );
+        assert!(
+            built
+                .nodes
+                .iter()
+                .all(|node| node.label != "operator-camera-pane"),
+            "camera-derived pane payloads must not bypass upstream privacy evidence"
+        );
+    }
+
+    #[test]
+    fn host_framed_pane_bound_source_is_rejected_not_projected() {
+        let mut host_binding = root_pane_binding();
+        host_binding.composition_posture = AoaPaneCompositionPosture::HostFraming;
+        let records = vec![
+            ActiveContentSourceInfo::new("host-framed-pane", 0.9, 9, 320, 180)
+                .with_pane_binding(host_binding),
+            ActiveContentSourceInfo::new("camera-brio", 0.8, 5, 1280, 720),
+        ];
+
+        let built = build_scene_from_source_records_for_stream_posture(
+            &records,
+            0.0,
+            AoaPaneStreamPosture::Public,
+        );
+
+        assert!(built.aoa_pane_sources.is_empty());
+        assert_eq!(
+            built.rejected_pane_sources[0].reason,
+            AoaPaneBindingRejectionReason::AntiParasocialComposition("HostFraming".to_string())
+        );
+        assert!(
+            built
+                .nodes
+                .iter()
+                .all(|node| node.label != "host-framed-pane"),
+            "host-framed pane content must not degrade into a residual viewer-address tile"
         );
     }
 
