@@ -8,7 +8,7 @@
 //! module is compiled but never instantiated — zero runtime cost.
 
 use bytemuck::{Pod, Zeroable};
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 
 use crate::content_sources::{ActiveContentSourceInfo, ContentSourceManager};
 use crate::scene::{
@@ -180,6 +180,20 @@ fn grid_shadow_occluders(
     }
 
     (occluders, count as u32)
+}
+
+fn scene_node_view_z(view: Mat4, node: &SceneNode) -> f32 {
+    (view * node.position.extend(1.0)).z
+}
+
+fn sorted_scene_indices_back_to_front(scene: &[SceneNode], view: Mat4) -> Vec<usize> {
+    let mut sorted_indices: Vec<usize> = (0..scene.len()).collect();
+    sorted_indices.sort_by(|a, b| {
+        scene_node_view_z(view, &scene[*a])
+            .partial_cmp(&scene_node_view_z(view, &scene[*b]))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    sorted_indices
 }
 
 pub struct SceneRenderer {
@@ -636,15 +650,8 @@ impl SceneRenderer {
             // ── Draw content quads ───────────────────────────────────
             pass.set_pipeline(&self.render_pipeline);
 
-            // Sort nodes back-to-front for proper alpha blending
-            let mut sorted_indices: Vec<usize> = (0..scene.len()).collect();
-            sorted_indices.sort_by(|a, b| {
-                scene[*a]
-                    .position
-                    .z
-                    .partial_cmp(&scene[*b].position.z)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+            // Sort nodes back-to-front in camera space for proper alpha blending.
+            let sorted_indices = sorted_scene_indices_back_to_front(&scene, view);
 
             // Pre-upload ALL node uniforms before the render pass draws
             let mut draw_list: Vec<(u32, wgpu::BindGroup, u32)> = Vec::new();
@@ -792,6 +799,39 @@ mod tests {
         assert_eq!(occluders[0].center[0], anchor.position.x);
         assert_eq!(occluders[0].center[1], anchor.position.y);
         assert_eq!(occluders[0].center[2], anchor.position.z);
+    }
+
+    #[test]
+    fn alpha_sort_uses_view_space_depth_after_camera_drift() {
+        let mut camera = Camera3D::new(1920, 1080);
+        camera.apply_orbital_drift(18.0);
+        let view = camera.view_matrix();
+
+        let mut left = SceneNode::new("left-same-world-z");
+        left.position = Vec3::new(-3.0, 0.0, -4.0);
+        let mut right = SceneNode::new("right-same-world-z");
+        right.position = Vec3::new(3.0, 0.0, -4.0);
+        let scene = vec![left, right];
+
+        assert_eq!(
+            scene[0].position.z, scene[1].position.z,
+            "the regression case must be ambiguous under old world-z sorting"
+        );
+
+        let left_view_z = scene_node_view_z(view, &scene[0]);
+        let right_view_z = scene_node_view_z(view, &scene[1]);
+        assert!(
+            (left_view_z - right_view_z).abs() > 0.01,
+            "drifted camera should make same-world-z nodes differ in view-space depth"
+        );
+
+        let expected_first = if left_view_z < right_view_z { 0 } else { 1 };
+        let sorted = sorted_scene_indices_back_to_front(&scene, view);
+
+        assert_eq!(
+            sorted[0], expected_first,
+            "translucent scene quads must sort back-to-front by camera-space depth"
+        );
     }
 
     #[test]
