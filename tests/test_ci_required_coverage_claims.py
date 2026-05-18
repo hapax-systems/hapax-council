@@ -156,8 +156,8 @@ def test_ci_docs_only_prs_trigger_required_jobs_with_sentinels() -> None:
         job_block = _workflow_job_block(ci_text, job_name)
         if job_name == "test":
             assert (
-                "needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard]"
-                in job_block
+                "needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard, "
+                "test-title-cards]" in job_block
             )
         else:
             assert "needs: [docs_only_filter, post_merge_duplicate_filter]" in job_block
