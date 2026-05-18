@@ -1,6 +1,7 @@
 // Tech debt: 5 pre-existing warnings in dynamic_pipeline.rs and state.rs.
 // Remove once dead fields/methods are cleaned up or used.
 #![allow(dead_code, clippy::too_many_arguments)]
+pub mod aoa_panes;
 pub mod content_sources;
 pub mod control;
 pub mod dynamic_pipeline;
