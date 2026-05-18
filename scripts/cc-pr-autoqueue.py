@@ -34,6 +34,12 @@ from typing import Any
 
 import yaml
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.merge_queue_lineage import DEFAULT_LEDGER_PATH, read_jsonl_records  # noqa: E402
+
 LOG = logging.getLogger("cc-pr-autoqueue")
 
 DEFAULT_REPO = "hapax-systems/hapax-council"
@@ -69,6 +75,12 @@ DEFAULT_REQUIRED_CHECKS = ("lint", "test", "typecheck", "web-build", "vscode-bui
 CI_REPAIR_KINDS = {"cicd-speedup", "ci-repair", "ci-speedup", "merge-queue-repair"}
 CI_REPAIR_TAGS = {"cicd", "ci", "autoqueue"}
 INDEPENDENT_QUEUE_ADMISSION = {"independent", "independent_route"}
+DEFAULT_STORM_OPEN_PR_THRESHOLD = 8
+DEFAULT_STORM_FAILED_MERGE_GROUP_THRESHOLD = 1
+DEFAULT_STORM_RECENT_RUN_LIMIT = 20
+STORM_MAX_ENTRIES_TO_BUILD = 1
+STEADY_MAX_ENTRIES_TO_BUILD = 6
+FAILED_MERGE_GROUP_CONCLUSIONS = {"failure", "timed_out", "startup_failure", "cancelled"}
 
 
 def default_repo_root() -> Path:
@@ -152,6 +164,64 @@ class Decision:
         if self.reasons:
             out["reasons"] = list(self.reasons)
         return out
+
+
+@dataclass(frozen=True)
+class StormMode:
+    active: bool
+    reasons: tuple[str, ...]
+    open_pr_count: int
+    queued_pr_count: int
+    blocked_queued_pr_count: int
+    blocked_queued_prs: tuple[dict[str, Any], ...]
+    failed_recent_merge_group_runs: tuple[dict[str, Any], ...]
+    recommended_max_entries_to_build: int
+    recommended_throttle_state: str
+
+    def as_dict(self, *, repo: str) -> dict[str, Any]:
+        return {
+            "active": self.active,
+            "mode": "storm" if self.active else "normal",
+            "reasons": list(self.reasons),
+            "open_pr_count": self.open_pr_count,
+            "queued_pr_count": self.queued_pr_count,
+            "blocked_queued_pr_count": self.blocked_queued_pr_count,
+            "blocked_queued_prs": list(self.blocked_queued_prs),
+            "failed_recent_merge_group_run_count": len(self.failed_recent_merge_group_runs),
+            "failed_recent_merge_group_runs": list(self.failed_recent_merge_group_runs),
+            "recommended_throttle": {
+                "state": self.recommended_throttle_state,
+                "max_entries_to_build": self.recommended_max_entries_to_build,
+                "mutation_performed": False,
+                "coordinator_action": self._coordinator_action(repo=repo),
+            },
+        }
+
+    def _coordinator_action(self, *, repo: str) -> dict[str, Any] | None:
+        if not self.active:
+            return None
+        return {
+            "reason": "storm mode is non-mutating; ruleset updates replace live rule definitions",
+            "api": {
+                "method": "PATCH",
+                "path": f"/repos/{repo}/rulesets/<ruleset_id>",
+                "payload_patch": {
+                    "rules": [
+                        {
+                            "type": "merge_queue",
+                            "parameters": {
+                                "max_entries_to_build": self.recommended_max_entries_to_build,
+                            },
+                        }
+                    ]
+                },
+            },
+            "risks": [
+                "fetch the current ruleset first and patch the full existing payload",
+                "do not remove required checks, required reviews, or branch protection rules",
+                "restore steady-state max_entries_to_build only after storm reasons clear",
+            ],
+        }
 
 
 def _scalar(value: Any) -> str | None:
@@ -463,6 +533,10 @@ def _active_ci_repair_task_ids(tasks: list[TaskNote]) -> tuple[str, ...]:
     return tuple(task.task_id for task in tasks if _is_ci_repair_task(task))
 
 
+def _is_storm_exempt_task(task: TaskNote) -> bool:
+    return _is_ci_repair_task(task) or _has_independent_queue_admission(task)
+
+
 def unchecked_blocking_checkboxes(body: str) -> list[str]:
     blockers: list[str] = []
     for line in body.splitlines():
@@ -485,6 +559,8 @@ def classify_pr(
     include_pending_auto: bool = True,
     required_checks: tuple[str, ...] = DEFAULT_REQUIRED_CHECKS,
     active_ci_repair_task_ids: tuple[str, ...] = (),
+    storm_admission_active: bool = False,
+    storm_reasons: tuple[str, ...] = (),
 ) -> Decision:
     reasons: list[str] = []
     if pr.is_draft:
@@ -543,6 +619,15 @@ def classify_pr(
         reasons.append(
             "admission_stabilization_hold:active_ci_repair:" + ",".join(active_ci_repair_task_ids)
         )
+
+    if (
+        storm_admission_active
+        and not queued
+        and not reasons
+        and matches
+        and not any(_is_storm_exempt_task(matched_task) for matched_task in matches)
+    ):
+        reasons.append("storm_admission_hold:" + ",".join(storm_reasons or ("admission_pressure",)))
 
     if queued:
         if reasons:
@@ -642,6 +727,90 @@ def merge_pr(
     return True, output
 
 
+def _decision_is_non_ready(decision: Decision) -> bool:
+    return decision.action in {"blocked", "dequeue", "disable_auto_merge"} and bool(
+        decision.reasons
+    )
+
+
+def _recent_failed_non_ready_merge_group_runs(
+    *,
+    lineage_ledger_path: Path | None,
+    decisions: list[Decision],
+    recent_limit: int,
+) -> tuple[dict[str, Any], ...]:
+    if lineage_ledger_path is None:
+        return ()
+    decisions_by_pr = {decision.pr.number: decision for decision in decisions}
+    records = read_jsonl_records(lineage_ledger_path)
+    ordered = sorted(records, key=lambda item: item.queue_entry_time or item.observed_at)
+    failed: list[dict[str, Any]] = []
+    for record in ordered[-max(1, recent_limit) :]:
+        conclusion = str(record.run_conclusion or record.run_outcome or "").lower()
+        if conclusion not in FAILED_MERGE_GROUP_CONCLUSIONS:
+            continue
+        if record.pr_number is None:
+            continue
+        decision = decisions_by_pr.get(record.pr_number)
+        if decision is None or not _decision_is_non_ready(decision):
+            continue
+        failed.append(
+            {
+                "run_id": record.merge_group_run_id,
+                "pr": record.pr_number,
+                "run_outcome": record.run_outcome,
+                "run_conclusion": record.run_conclusion,
+                "decision_action": decision.action,
+                "reasons": list(decision.reasons),
+                "bottleneck": record.bottleneck.model_dump(mode="json")
+                if record.bottleneck is not None
+                else None,
+            }
+        )
+    return tuple(failed)
+
+
+def _build_storm_mode(
+    *,
+    prs: list[PullRequest],
+    queued_prs: set[int],
+    decisions: list[Decision],
+    active_ci_repair_task_ids: tuple[str, ...],
+    failed_recent_merge_group_runs: tuple[dict[str, Any], ...],
+    storm_open_pr_threshold: int,
+    storm_failed_merge_group_threshold: int,
+) -> StormMode:
+    blocked_queued = tuple(
+        decision.as_dict()
+        for decision in decisions
+        if decision.pr.number in queued_prs and decision.action == "dequeue"
+    )
+    reasons: list[str] = []
+    if len(prs) >= storm_open_pr_threshold:
+        reasons.append(f"open_pr_count:{len(prs)}>=threshold:{storm_open_pr_threshold}")
+    if active_ci_repair_task_ids:
+        reasons.append("active_ci_repair:" + ",".join(active_ci_repair_task_ids))
+    if blocked_queued:
+        reasons.append(f"blocked_queued_prs:{len(blocked_queued)}")
+    if len(failed_recent_merge_group_runs) >= storm_failed_merge_group_threshold:
+        reasons.append(f"failed_recent_merge_group_runs:{len(failed_recent_merge_group_runs)}")
+
+    active = bool(reasons)
+    return StormMode(
+        active=active,
+        reasons=tuple(reasons),
+        open_pr_count=len(prs),
+        queued_pr_count=len(queued_prs),
+        blocked_queued_pr_count=len(blocked_queued),
+        blocked_queued_prs=blocked_queued,
+        failed_recent_merge_group_runs=failed_recent_merge_group_runs,
+        recommended_max_entries_to_build=STORM_MAX_ENTRIES_TO_BUILD
+        if active
+        else STEADY_MAX_ENTRIES_TO_BUILD,
+        recommended_throttle_state="storm" if active else "steady",
+    )
+
+
 def run_reconciler(
     *,
     repo: str = DEFAULT_REPO,
@@ -652,6 +821,11 @@ def run_reconciler(
     include_pending_auto: bool = True,
     required_checks: tuple[str, ...] = DEFAULT_REQUIRED_CHECKS,
     limit: int = 100,
+    lineage_ledger_path: Path | None = DEFAULT_LEDGER_PATH,
+    storm_mode_enabled: bool = True,
+    storm_open_pr_threshold: int = DEFAULT_STORM_OPEN_PR_THRESHOLD,
+    storm_failed_merge_group_threshold: int = DEFAULT_STORM_FAILED_MERGE_GROUP_THRESHOLD,
+    storm_recent_run_limit: int = DEFAULT_STORM_RECENT_RUN_LIMIT,
     runner: Any = None,
 ) -> dict[str, Any]:
     if any(os.environ.get(name) == "1" for name in KILLSWITCH_ENVS):
@@ -668,7 +842,7 @@ def run_reconciler(
     active_ci_repair_task_ids = _active_ci_repair_task_ids(tasks)
     queued_prs = fetch_merge_queue_pr_numbers(repo=repo, repo_root=repo_root, runner=runner)
     prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
-    decisions = [
+    preliminary_decisions = [
         classify_pr(
             pr,
             tasks=tasks,
@@ -680,6 +854,50 @@ def run_reconciler(
         )
         for pr in prs
     ]
+    failed_recent_merge_group_runs = _recent_failed_non_ready_merge_group_runs(
+        lineage_ledger_path=lineage_ledger_path,
+        decisions=preliminary_decisions,
+        recent_limit=storm_recent_run_limit,
+    )
+    storm_mode = _build_storm_mode(
+        prs=prs,
+        queued_prs=queued_prs,
+        decisions=preliminary_decisions,
+        active_ci_repair_task_ids=active_ci_repair_task_ids,
+        failed_recent_merge_group_runs=failed_recent_merge_group_runs,
+        storm_open_pr_threshold=storm_open_pr_threshold,
+        storm_failed_merge_group_threshold=storm_failed_merge_group_threshold,
+    )
+    decisions = preliminary_decisions
+    if storm_mode_enabled and storm_mode.active:
+        decisions = [
+            classify_pr(
+                pr,
+                tasks=tasks,
+                queued_prs=queued_prs,
+                require_route_metadata=require_route_metadata,
+                include_pending_auto=include_pending_auto,
+                required_checks=required_checks,
+                active_ci_repair_task_ids=active_ci_repair_task_ids,
+                storm_admission_active=True,
+                storm_reasons=storm_mode.reasons,
+            )
+            for pr in prs
+        ]
+        failed_recent_merge_group_runs = _recent_failed_non_ready_merge_group_runs(
+            lineage_ledger_path=lineage_ledger_path,
+            decisions=decisions,
+            recent_limit=storm_recent_run_limit,
+        )
+        storm_mode = _build_storm_mode(
+            prs=prs,
+            queued_prs=queued_prs,
+            decisions=decisions,
+            active_ci_repair_task_ids=active_ci_repair_task_ids,
+            failed_recent_merge_group_runs=failed_recent_merge_group_runs,
+            storm_open_pr_threshold=storm_open_pr_threshold,
+            storm_failed_merge_group_threshold=storm_failed_merge_group_threshold,
+        )
 
     mutation_results: list[dict[str, Any]] = []
     if apply:
@@ -707,6 +925,9 @@ def run_reconciler(
         "include_pending_auto": include_pending_auto,
         "required_checks": list(required_checks),
         "active_ci_repair_task_ids": list(active_ci_repair_task_ids),
+        "storm_mode_enabled": storm_mode_enabled,
+        "storm_mode": storm_mode.as_dict(repo=repo),
+        "lineage_ledger_path": str(lineage_ledger_path) if lineage_ledger_path else None,
         "open_pr_count": len(prs),
         "queued_prs": sorted(queued_prs),
         "decisions": [decision.as_dict() for decision in decisions],
@@ -762,6 +983,35 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Do not block PRs that lack the default required check contexts.",
     )
+    parser.add_argument(
+        "--lineage-ledger-path",
+        type=Path,
+        default=DEFAULT_LEDGER_PATH,
+        help="Merge queue lineage JSONL used to classify recent failed non-ready runs.",
+    )
+    parser.add_argument(
+        "--disable-storm-mode",
+        action="store_true",
+        help="Report storm/admission pressure but do not add storm admission holds.",
+    )
+    parser.add_argument(
+        "--storm-open-pr-threshold",
+        type=int,
+        default=DEFAULT_STORM_OPEN_PR_THRESHOLD,
+        help="Open PR count at or above which storm admission pressure is active.",
+    )
+    parser.add_argument(
+        "--storm-failed-merge-group-threshold",
+        type=int,
+        default=DEFAULT_STORM_FAILED_MERGE_GROUP_THRESHOLD,
+        help="Recent failed non-ready merge-group run count that activates storm mode.",
+    )
+    parser.add_argument(
+        "--storm-recent-run-limit",
+        type=int,
+        default=DEFAULT_STORM_RECENT_RUN_LIMIT,
+        help="Recent lineage records considered for failed non-ready merge-group runs.",
+    )
     parser.add_argument("--verbose", "-v", action="count", default=0)
     args = parser.parse_args(argv)
 
@@ -787,6 +1037,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.no_required_checks
         else tuple(args.required_checks or DEFAULT_REQUIRED_CHECKS),
         limit=args.limit,
+        lineage_ledger_path=args.lineage_ledger_path,
+        storm_mode_enabled=not args.disable_storm_mode,
+        storm_open_pr_threshold=args.storm_open_pr_threshold,
+        storm_failed_merge_group_threshold=args.storm_failed_merge_group_threshold,
+        storm_recent_run_limit=args.storm_recent_run_limit,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0
