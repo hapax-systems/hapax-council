@@ -83,9 +83,7 @@ async def run_phase1(
 
             source_ctx_block = ""
             if inp.source_context:
-                source_ctx_block = (
-                    f"\n\n## Source Context\n```\n{inp.source_context}\n```\n"
-                )
+                source_ctx_block = f"\n\n## Source Context\n```\n{inp.source_context}\n```\n"
 
             investigate_prompt = (
                 "You are a council member. FIRST, investigate the source material "
