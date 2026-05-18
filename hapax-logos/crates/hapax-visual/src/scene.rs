@@ -6,6 +6,10 @@
 
 use glam::{Mat4, Vec3};
 
+use crate::content_sources::{
+    ActiveContentSourceInfo, AoaPaneBindingRejectionReason, AoaValidatedPaneBinding,
+};
+
 pub use crate::aoa_panes::{
     aoa_leaf_tetrahedron_count, aoa_raw_edge_segment_count, aoa_raw_triangular_pane_count,
     aoa_total_tetrahedron_count, AOA_TETRIX_RENDER_DEPTH,
@@ -118,6 +122,25 @@ pub struct SceneNode {
     /// Index into ContentSourceManager's ordered source list.
     /// When None, the renderer uses a placeholder texture.
     pub content_source_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AoaPaneSceneSource {
+    pub source_id: String,
+    pub binding: AoaValidatedPaneBinding,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedAoaPaneSceneSource {
+    pub source_id: String,
+    pub reason: AoaPaneBindingRejectionReason,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuiltScene {
+    pub nodes: Vec<SceneNode>,
+    pub aoa_pane_sources: Vec<AoaPaneSceneSource>,
+    pub rejected_pane_sources: Vec<RejectedAoaPaneSceneSource>,
 }
 
 impl SceneNode {
@@ -458,6 +481,48 @@ pub fn build_scene_from_sources(
     active_sources: &[(&str, f32, i32, u32, u32)], // (id, opacity, z_order, width, height)
     time: f32,
 ) -> Vec<SceneNode> {
+    build_scene_from_source_refs(active_sources, time, false)
+}
+
+pub fn build_scene_from_source_records(
+    active_sources: &[ActiveContentSourceInfo],
+    time: f32,
+) -> BuiltScene {
+    let mut ordinary_sources = Vec::new();
+    let mut aoa_pane_sources = Vec::new();
+    let mut rejected_pane_sources = Vec::new();
+
+    for source in active_sources {
+        if source.current_opacity <= 0.001 {
+            continue;
+        }
+
+        match source.validated_pane_binding() {
+            Ok(Some(binding)) => aoa_pane_sources.push(AoaPaneSceneSource {
+                source_id: source.source_id.clone(),
+                binding,
+            }),
+            Err(reason) => rejected_pane_sources.push(RejectedAoaPaneSceneSource {
+                source_id: source.source_id.clone(),
+                reason,
+            }),
+            Ok(None) => ordinary_sources.push(source.scene_tuple()),
+        }
+    }
+
+    let force_aoa_anchor = !aoa_pane_sources.is_empty();
+    BuiltScene {
+        nodes: build_scene_from_source_refs(&ordinary_sources, time, force_aoa_anchor),
+        aoa_pane_sources,
+        rejected_pane_sources,
+    }
+}
+
+fn build_scene_from_source_refs(
+    active_sources: &[(&str, f32, i32, u32, u32)], // (id, opacity, z_order, width, height)
+    time: f32,
+    force_aoa_anchor: bool,
+) -> Vec<SceneNode> {
     let mut nodes = Vec::new();
     let primary_forward = 0.55;
     let on_ring_forward = 0.82;
@@ -471,9 +536,10 @@ pub fn build_scene_from_sources(
     // rogue scene reprojections or fake reflections.
     mark_projection_capable_sources(&mut used_indices, active_sources);
 
-    if active_sources
-        .iter()
-        .any(|(_, opacity, _, _, _)| *opacity > 0.001)
+    if force_aoa_anchor
+        || active_sources
+            .iter()
+            .any(|(_, opacity, _, _, _)| *opacity > 0.001)
     {
         push_authored_aoa(&mut nodes);
         // Legacy AoA source aliases have historically carried
@@ -691,6 +757,23 @@ pub fn build_proof_scene() -> Vec<SceneNode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::aoa_panes::AoaPaneBindingMode;
+    use crate::content_sources::{
+        ActiveContentSourceInfo, AoaPaneBindingMetadata, AoaPaneBindingRejectionReason,
+        AoaPanePrivacyPosture, AoaPaneSourcePosture,
+    };
+
+    fn root_pane_binding() -> AoaPaneBindingMetadata {
+        AoaPaneBindingMetadata {
+            pane_id: "aoa:pane:v1:r:abd".to_string(),
+            route: "aoa_pane".to_string(),
+            mode: AoaPaneBindingMode::TriTextureMasked,
+            clip_policy: Default::default(),
+            effect_scope: Default::default(),
+            privacy_posture: AoaPanePrivacyPosture::PublicReviewRequired,
+            source_posture: AoaPaneSourcePosture::SystemWard,
+        }
+    }
 
     #[test]
     fn z_plane_mapping_matches_python_constants() {
@@ -1004,6 +1087,58 @@ mod tests {
             .collect();
         assert!(ids.contains(&"content-recall"));
         assert!(ids.contains(&"camera-brio"));
+    }
+
+    #[test]
+    fn pane_bound_source_is_consumed_by_aoa_not_residual_quad() {
+        let records = vec![
+            ActiveContentSourceInfo::new("pane-source", 0.9, 9, 320, 180)
+                .with_pane_binding(root_pane_binding()),
+            ActiveContentSourceInfo::new("camera-brio", 0.8, 5, 1280, 720),
+        ];
+
+        let built = build_scene_from_source_records(&records, 0.0);
+
+        assert_eq!(built.aoa_pane_sources.len(), 1);
+        assert_eq!(built.aoa_pane_sources[0].source_id, "pane-source");
+        assert_eq!(built.aoa_pane_sources[0].binding.pane_ordinal, 0);
+        assert!(built.rejected_pane_sources.is_empty());
+        assert!(
+            built.nodes.iter().all(|node| node.label != "pane-source"),
+            "pane-bound source must not fall through as an ordinary quad"
+        );
+        assert!(
+            built.nodes.iter().any(|node| node.label == AOA_NODE_LABEL),
+            "a valid pane-bound source should keep the authored AoA anchor active"
+        );
+    }
+
+    #[test]
+    fn rejected_pane_bound_source_is_still_consumed_not_residual_quad() {
+        let mut bad_binding = root_pane_binding();
+        bad_binding.route = "fullscreen".to_string();
+        let records = vec![
+            ActiveContentSourceInfo::new("bad-pane-source", 0.9, 9, 320, 180)
+                .with_pane_binding(bad_binding),
+            ActiveContentSourceInfo::new("camera-brio", 0.8, 5, 1280, 720),
+        ];
+
+        let built = build_scene_from_source_records(&records, 0.0);
+
+        assert!(built.aoa_pane_sources.is_empty());
+        assert_eq!(built.rejected_pane_sources.len(), 1);
+        assert_eq!(built.rejected_pane_sources[0].source_id, "bad-pane-source");
+        assert_eq!(
+            built.rejected_pane_sources[0].reason,
+            AoaPaneBindingRejectionReason::InvalidRoute("fullscreen".to_string())
+        );
+        assert!(
+            built
+                .nodes
+                .iter()
+                .all(|node| node.label != "bad-pane-source"),
+            "rejected pane bindings must fail closed rather than becoming residual quads"
+        );
     }
 
     #[test]
