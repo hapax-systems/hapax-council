@@ -219,6 +219,27 @@ async def deliberate(
             "phase1_transcript": [
                 {"model": r.model_alias, "tool_calls": r.tool_calls_log} for r in phase1_results
             ],
+            "phase2_transcript": {
+                "built_by": evidence_matrix.built_by if evidence_matrix else None,
+                "contested_axes": (list(evidence_matrix.axes.keys()) if evidence_matrix else []),
+            },
+            "phase3_transcript": [
+                {
+                    "axis": e.axis,
+                    "high_scorer": e.high_scorer,
+                    "high_score": e.high_score,
+                    "low_scorer": e.low_scorer,
+                    "low_score": e.low_score,
+                }
+                for e in adversarial_exchanges
+            ],
+            "phase4_transcript": [
+                {"model": r.model_alias, "scores": r.scores} for r in final_results
+            ],
+            "phase5_convergence": {
+                a: {"status": v.status.value, "iqr": v.iqr, "score": v.score}
+                for a, v in agg.items()
+            },
         },
     )
 
