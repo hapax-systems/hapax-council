@@ -103,10 +103,12 @@ def _broadcast_imp(*, now: float) -> SimpleNamespace:
         source="director.narrative",
         content={
             "public_broadcast_intent": True,
+            "programme_role": "work_block",
             "programme_authorization": {
                 "authorized": True,
                 "authorized_at": now,
                 "programme_id": "programme:test-public",
+                "programme_role": "work_block",
                 "evidence_ref": "programme:test-public:broadcast-voice",
             },
             "narrative": "Authorized public narration.",
@@ -125,12 +127,14 @@ def _bridge_broadcast_imp(*, now: float, source: str = "autonomous_narrative") -
             "route_posture": "broadcast_authorized",
             "claim_ceiling": "public_gate_required",
             "programme_id": "programme:test-public",
+            "programme_role": "work_block",
             "programme_authorization_ref": "programme:programme:test-public",
             "programme_authorization": {
                 "authorized": True,
                 "authorized_at": now,
                 "expires_at": now + 90.0,
                 "programme_id": "programme:test-public",
+                "programme_role": "work_block",
                 "evidence_ref": "programme:programme:test-public",
             },
         },

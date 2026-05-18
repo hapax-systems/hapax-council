@@ -152,3 +152,53 @@ def test_missing_stimmung_damps_permission_instead_of_minting_full_score(
     assert decision.scalar == 0.5
     assert "stimmung_state_missing" in decision.blockers
     assert decision.evidence["stimmung"]["factor"] == 0.5
+
+
+def test_omitted_eligible_roles_fails_closed(tmp_path: Path) -> None:
+    stimmung = tmp_path / "stimmung.json"
+    _write_stimmung(stimmung)
+
+    decision = resolve_broadcast_tts_permission(
+        content={"programme_role": "work_block"},
+        programme_auth=_auth(),
+        audio_health=_health(),
+        stimmung_state_path=stimmung,
+    )
+
+    assert decision.allowed is False
+    assert decision.components["programme"] == 0.0
+    assert "programme_tts_eligible_roles_missing" in decision.blockers
+
+
+def test_empty_eligible_roles_fails_closed(tmp_path: Path) -> None:
+    stimmung = tmp_path / "stimmung.json"
+    _write_stimmung(stimmung)
+
+    decision = resolve_broadcast_tts_permission(
+        content={"programme_role": "work_block"},
+        programme_auth=_auth(),
+        audio_health=_health(),
+        stimmung_state_path=stimmung,
+        eligible_roles=set(),
+    )
+
+    assert decision.allowed is False
+    assert decision.components["programme"] == 0.0
+    assert "programme_role_not_tts_eligible" in decision.blockers
+
+
+def test_missing_programme_role_fails_closed(tmp_path: Path) -> None:
+    stimmung = tmp_path / "stimmung.json"
+    _write_stimmung(stimmung)
+
+    decision = resolve_broadcast_tts_permission(
+        content={},
+        programme_auth=_auth(),
+        audio_health=_health(),
+        stimmung_state_path=stimmung,
+        eligible_roles={"work_block", "ambient"},
+    )
+
+    assert decision.allowed is False
+    assert decision.components["programme"] == 0.0
+    assert "programme_role_missing" in decision.blockers

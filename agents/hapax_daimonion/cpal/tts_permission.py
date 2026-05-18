@@ -16,11 +16,15 @@ from pathlib import Path
 from typing import Any
 
 from shared.broadcast_audio_health import BroadcastAudioHealth
+from shared.stimmung import DimensionReading, SystemStimmung
 
 DEFAULT_STIMMUNG_STATE_PATH = Path("/dev/shm/hapax-stimmung/state.json")
 MIN_BROADCAST_TTS_PERMISSION = 0.25
 STIMMUNG_DIMENSION_MAX_FRESHNESS_S = 120.0
 
+_AUDIO_CONTENT_MIX_DIMENSION = "audio_content_mix"
+_OVERALL_STANCE_FIELD = "overall_stance"
+_LEGACY_STANCE_FIELD = "stance"
 _UNKNOWN_STIMMUNG_FACTOR = 0.5
 _STANCE_FACTORS: dict[str, float] = {
     "nominal": 1.0,
@@ -61,7 +65,7 @@ def resolve_broadcast_tts_permission(
     programme_auth: Mapping[str, Any],
     audio_health: BroadcastAudioHealth,
     stimmung_state_path: Path = DEFAULT_STIMMUNG_STATE_PATH,
-    eligible_roles: Iterable[str] = (),
+    eligible_roles: Iterable[str] | None = None,
     threshold: float = MIN_BROADCAST_TTS_PERMISSION,
 ) -> TTSPermissionDecision:
     """Resolve the public-TTS permission scalar from live state.
@@ -115,7 +119,7 @@ def _programme_factor(
     *,
     content: Mapping[str, Any],
     programme_auth: Mapping[str, Any],
-    eligible_roles: Iterable[str],
+    eligible_roles: Iterable[str] | None,
     blockers: list[str],
     evidence: dict[str, Any],
 ) -> float:
@@ -125,20 +129,46 @@ def _programme_factor(
         return 0.0
 
     role = _normalise_role(content.get("programme_role") or programme_auth.get("programme_role"))
-    eligible = {_normalise_role(role_value) for role_value in eligible_roles}
-    if role and role != "none" and eligible and role not in eligible:
+    if eligible_roles is None:
+        blockers.append("programme_tts_eligible_roles_missing")
+        evidence["programme"] = {
+            "authorized": True,
+            "role": role,
+            "eligible": False,
+            "eligible_roles_declared": False,
+        }
+        return 0.0
+
+    eligible = {
+        normalised
+        for role_value in eligible_roles
+        if (normalised := _normalise_role(role_value)) is not None
+    }
+    if not role or role == "none":
+        blockers.append("programme_role_missing")
+        evidence["programme"] = {
+            "authorized": True,
+            "role": role,
+            "eligible": False,
+            "eligible_roles_declared": True,
+        }
+        return 0.0
+
+    if role not in eligible:
         blockers.append("programme_role_not_tts_eligible")
         evidence["programme"] = {
             "authorized": True,
             "role": role,
             "eligible": False,
+            "eligible_roles_declared": True,
         }
         return 0.0
 
     evidence["programme"] = {
         "authorized": True,
         "role": role,
-        "eligible": True if role else None,
+        "eligible": True,
+        "eligible_roles_declared": True,
     }
     return 1.0
 
@@ -172,12 +202,19 @@ def _stimmung_factor(
         evidence["stimmung"] = {"read": "missing_or_invalid", "factor": _UNKNOWN_STIMMUNG_FACTOR}
         return _UNKNOWN_STIMMUNG_FACTOR
 
-    stance = _normalise_stance(raw.get("overall_stance") or raw.get("stance"))
+    snapshot = _coerce_stimmung_snapshot(raw)
+    if snapshot is None:
+        blockers.append("stimmung_state_invalid")
+        evidence["stimmung"] = {"read": "missing_or_invalid", "factor": _UNKNOWN_STIMMUNG_FACTOR}
+        return _UNKNOWN_STIMMUNG_FACTOR
+
+    stance = _normalise_stance(snapshot.overall_stance)
     stance_factor = _STANCE_FACTORS.get(stance, _UNKNOWN_STIMMUNG_FACTOR)
-    dim = raw.get("audio_content_mix")
+    raw_mix_value = _dimension_value(raw.get(_AUDIO_CONTENT_MIX_DIMENSION))
+    dim = snapshot.audio_content_mix
     mix_value = _dimension_value(dim)
     mix_freshness_s = _dimension_freshness(dim)
-    if mix_value is None:
+    if raw_mix_value is None or mix_value is None:
         blockers.append("stimmung_audio_content_mix_missing")
         mix_factor = _UNKNOWN_STIMMUNG_FACTOR
     elif mix_freshness_s is not None and mix_freshness_s > STIMMUNG_DIMENSION_MAX_FRESHNESS_S:
@@ -197,6 +234,19 @@ def _stimmung_factor(
         "factor": round(factor, 3),
     }
     return factor
+
+
+def _coerce_stimmung_snapshot(raw: Mapping[str, Any]) -> SystemStimmung | None:
+    prepared = dict(raw)
+    if _OVERALL_STANCE_FIELD not in prepared and _LEGACY_STANCE_FIELD in prepared:
+        prepared[_OVERALL_STANCE_FIELD] = prepared[_LEGACY_STANCE_FIELD]
+    dim = prepared.get(_AUDIO_CONTENT_MIX_DIMENSION)
+    if dim is not None and not isinstance(dim, (Mapping, DimensionReading)):
+        prepared[_AUDIO_CONTENT_MIX_DIMENSION] = {"value": dim}
+    try:
+        return SystemStimmung.model_validate(prepared)
+    except ValueError:
+        return None
 
 
 def _read_stimmung_state(
@@ -232,12 +282,16 @@ def _read_stimmung_state(
 
 
 def _dimension_value(value: object) -> float | None:
+    if isinstance(value, DimensionReading):
+        return value.value
     if isinstance(value, Mapping):
         return _float_or_none(value.get("value"))
     return _float_or_none(value)
 
 
 def _dimension_freshness(value: object) -> float | None:
+    if isinstance(value, DimensionReading):
+        return value.freshness_s
     if isinstance(value, Mapping):
         return _float_or_none(value.get("freshness_s"))
     return None
