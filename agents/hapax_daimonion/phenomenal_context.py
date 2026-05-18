@@ -43,6 +43,7 @@ import logging
 from pathlib import Path
 
 from agents.hapax_daimonion.phenomenal_layers import (
+    render_audio_context,
     render_impression,
     render_self_state,
     render_situation,
@@ -60,12 +61,16 @@ log = logging.getLogger(__name__)
 _TEMPORAL_PATH = Path("/dev/shm/hapax-temporal/bands.json")
 _APPERCEPTION_PATH = Path("/dev/shm/hapax-apperception/self-band.json")
 _STIMMUNG_PATH = Path("/dev/shm/hapax-stimmung/state.json")
+_PERCEPTION_STATE_PATH = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
+_AUDIO_PERCEPTION_PATH = Path("/dev/shm/hapax-perception/audio.json")
+_ACTIVE_SEGMENT_PATH = Path("/dev/shm/hapax-compositor/active-segment.json")
 
 # Re-exports for backward compatibility with tests
 _read_json = read_json
 _parse_temporal_snapshot = parse_temporal_snapshot
 _render_stimmung = render_stimmung
 _render_situation = render_situation
+_render_audio_context = render_audio_context
 _render_impression = render_impression
 _render_surprise = render_surprise
 _render_temporal_depth = render_temporal_depth
@@ -88,6 +93,9 @@ def render(tier: str = "CAPABLE") -> str:
     stimmung_data = read_json(_STIMMUNG_PATH)
     _raw_temporal = read_json(_TEMPORAL_PATH)
     apperception_data = read_json(_APPERCEPTION_PATH)
+    perception_data = read_json(_PERCEPTION_STATE_PATH)
+    audio_data = read_json(_AUDIO_PERCEPTION_PATH)
+    segment_data = read_json(_ACTIVE_SEGMENT_PATH)
 
     temporal_data = parse_temporal_snapshot(_raw_temporal)
 
@@ -99,6 +107,10 @@ def render(tier: str = "CAPABLE") -> str:
 
     # ── Layer 2: Situation coupling ──────────────────────────────
     if s := render_situation(temporal_data):
+        lines.append(s)
+
+    # ── Layer 2a: Audio activity + segment binding ───────────────
+    if s := render_audio_context(stimmung_data, perception_data, audio_data, segment_data):
         lines.append(s)
 
     # ── Layer 3: Temporal impression + horizon ───────────────────

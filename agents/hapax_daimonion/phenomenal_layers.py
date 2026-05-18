@@ -12,6 +12,8 @@ from agents.hapax_daimonion.phenomenal_parsing import APPERCEPTION_STALE_S, STIM
 
 _EMPTY = ""
 _UNKNOWN_TERMS = {"unknown", "none", "n/a", ""}
+_AUDIO_CONTEXT_STALE_S = 60.0
+_SEGMENT_CONTEXT_STALE_S = 180.0
 
 
 def render_stimmung(data: dict | None) -> str:
@@ -67,6 +69,165 @@ def render_situation(temporal: dict | None) -> str:
         return f"{period.capitalize()}, {activity}."
 
     return f"{period.capitalize()}, idle."
+
+
+def _fresh_enough(data: dict | None, *, max_age_s: float, timestamp_key: str = "timestamp") -> bool:
+    if data is None:
+        return False
+    timestamp = data.get(timestamp_key)
+    if isinstance(timestamp, (int, float)):
+        return (time.time() - float(timestamp)) <= max_age_s
+    return True
+
+
+def _dim_value(data: dict | None, name: str) -> float | None:
+    if not _fresh_enough(data, max_age_s=STIMMUNG_STALE_S):
+        return None
+    raw = data.get(name, {}) if data else {}
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("value")
+    if not isinstance(value, (int, float)):
+        return None
+    return max(0.0, min(1.0, float(value)))
+
+
+def _readable_audio_scene(value: object) -> str:
+    scene = str(value or "").strip().lower()
+    return {
+        "speech_over_music": "speech over music",
+        "speech": "speech",
+        "music": "music",
+        "ambient": "ambient audio",
+        "silence": "",
+        "capture_failed": "",
+    }.get(scene, scene.replace("_", " ") if scene not in _UNKNOWN_TERMS else "")
+
+
+def _audio_activity_label(
+    *,
+    perception: dict | None,
+    audio: dict | None,
+    mix_value: float | None,
+) -> str:
+    perception = perception if _fresh_enough(perception, max_age_s=_AUDIO_CONTEXT_STALE_S) else {}
+    audio = audio if audio is not None else {}
+
+    voice_session = perception.get("voice_session", {}) if isinstance(perception, dict) else {}
+    if isinstance(voice_session, dict) and voice_session.get("active"):
+        voice_state = str(voice_session.get("state", "")).lower()
+        if voice_state == "speaking":
+            return "system voice speaking"
+        if voice_state in {"listening", "transcribing"}:
+            return "operator speech channel open"
+
+    scene = _readable_audio_scene(audio.get("scene") if isinstance(audio, dict) else "")
+    if scene in {"speech", "speech over music"}:
+        return scene
+
+    production = str(perception.get("production_activity", "")).lower()
+    desk_activity = str(perception.get("desk_activity", "")).lower()
+    midi_transport = str(perception.get("midi_clock_transport", "")).lower()
+    mixer_active = bool(perception.get("mixer_active", False))
+    mixer_energy = perception.get("mixer_energy", 0.0)
+    phone_media = bool(perception.get("phone_media_playing", False))
+
+    if (
+        production == "production"
+        or desk_activity in {"scratching", "drumming"}
+        or midi_transport in {"playing", "play", "running"}
+        or mixer_active
+    ):
+        return "active performance"
+    if scene:
+        return scene
+    if phone_media or (isinstance(mixer_energy, (int, float)) and float(mixer_energy) > 0.01):
+        return "music in the room"
+    if production == "conversation":
+        return "conversation"
+
+    if mix_value is not None:
+        if mix_value >= 0.75:
+            return "occupied audio field"
+        if mix_value >= 0.35:
+            return "present audio bed"
+        if mix_value >= 0.1:
+            return "light room tone"
+    return ""
+
+
+def _audio_density_label(value: float | None) -> str:
+    if value is None:
+        return ""
+    if value >= 0.75:
+        return "dense"
+    if value >= 0.45:
+        return "present"
+    if value >= 0.15:
+        return "light"
+    return "quiet"
+
+
+def _segment_binding(segment: dict | None) -> str:
+    if not _fresh_enough(
+        segment,
+        max_age_s=_SEGMENT_CONTEXT_STALE_S,
+        timestamp_key="updated_at",
+    ):
+        return ""
+    programme_id = str(segment.get("programme_id", "")).strip() if segment else ""
+    if not programme_id:
+        return ""
+
+    beat_index_raw = segment.get("current_beat_index", 0)
+    total_raw = segment.get("total_beats", 0)
+    try:
+        beat_index = int(beat_index_raw) + 1
+        total_beats = int(total_raw)
+    except (TypeError, ValueError):
+        beat_index = 1
+        total_beats = 0
+
+    topic = str(segment.get("topic", "") or "").strip()
+    beat = str(segment.get("current_beat_text", "") or "").strip()
+    subject = beat or topic
+    if len(subject) > 90:
+        subject = subject[:87].rstrip() + "..."
+
+    if total_beats > 0:
+        binding = f"bound to segment beat {beat_index}/{total_beats}"
+    else:
+        binding = "bound to the active segment"
+    if subject:
+        binding += f", {subject}"
+    return binding
+
+
+def render_audio_context(
+    stimmung: dict | None,
+    perception: dict | None,
+    audio: dict | None,
+    segment: dict | None,
+) -> str:
+    """Layer 2a: Audio activity and its active segment binding."""
+    mix_value = _dim_value(stimmung, "audio_content_mix")
+    activity = _audio_activity_label(perception=perception, audio=audio, mix_value=mix_value)
+    density = _audio_density_label(mix_value)
+    binding = _segment_binding(segment)
+
+    if not activity and not binding:
+        return _EMPTY
+
+    if activity and density:
+        head = f"Audio field {density} with {activity}"
+    elif activity:
+        head = f"Audio field with {activity}"
+    else:
+        head = "Audio field quiet"
+
+    if binding:
+        return f"{head}; {binding}."
+    return f"{head}."
 
 
 def render_impression(temporal: dict | None) -> str:
