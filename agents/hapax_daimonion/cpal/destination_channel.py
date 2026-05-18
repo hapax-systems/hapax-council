@@ -65,9 +65,19 @@ from shared.voice_output_router import (
     resolve_voice_output_route,
     target_for_route,
 )
+from shared.stream_mode import StreamMode, get_stream_mode_or_off
 from shared.voice_register import VoiceRegister
 
 log = logging.getLogger(__name__)
+
+
+def _stream_mode_is_public() -> bool:
+    """True when operator has set stream mode to PUBLIC or PUBLIC_RESEARCH.
+
+    Uses get_stream_mode_or_off (defaults OFF) so missing/unreadable mode
+    files don't accidentally activate the broadcast bypass.
+    """
+    return get_stream_mode_or_off() in (StreamMode.PUBLIC, StreamMode.PUBLIC_RESEARCH)
 
 
 DESTINATION_ROUTING_ENV: str = "HAPAX_TTS_DESTINATION_ROUTING_ACTIVE"
