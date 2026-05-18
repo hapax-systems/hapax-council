@@ -141,8 +141,12 @@ async def run_cctv() -> None:
             "disagreement_log": verdict.disagreement_log,
             "research_findings": verdict.research_findings,
             "adversarial_exchanges": [
-                {"axis": e.axis, "high_scorer": e.high_scorer, "low_scorer": e.low_scorer,
-                 "response_text": e.response_text[:500]}
+                {
+                    "axis": e.axis,
+                    "high_scorer": e.high_scorer,
+                    "low_scorer": e.low_scorer,
+                    "response_text": e.response_text[:500],
+                }
                 for e in verdict.adversarial_exchanges
             ],
             "phases_completed": verdict.receipt.get("phases_completed", []),

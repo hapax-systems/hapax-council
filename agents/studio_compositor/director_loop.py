@@ -524,8 +524,10 @@ def _emit_compositional_impingements(intent: DirectorIntent, condition_id: str) 
     if not intent.compositional_impingements:
         return
     if not _t4_ownership_gate():
-        log.debug("T4 ownership gate: suppressing %d impingements (low presence)",
-                   len(intent.compositional_impingements))
+        log.debug(
+            "T4 ownership gate: suppressing %d impingements (low presence)",
+            len(intent.compositional_impingements),
+        )
         return
     try:
         from shared.impingement import Impingement, ImpingementType

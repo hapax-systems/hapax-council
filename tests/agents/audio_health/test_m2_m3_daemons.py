@@ -450,7 +450,10 @@ class TestM3BreachDetection:
                 "agents.audio_health.m3_crest_flatness_daemon.capture_and_measure",
                 return_value=result,
             ),
-            patch("agents.audio_health.m3_crest_flatness_daemon.compute_crest_factor", return_value=3.8),
+            patch(
+                "agents.audio_health.m3_crest_flatness_daemon.compute_crest_factor",
+                return_value=3.8,
+            ),
             patch("agents.audio_health.m3_crest_flatness_daemon.compute_zcr", return_value=0.04),
             patch(
                 "agents.audio_health.m3_crest_flatness_daemon.compute_spectral_flatness",
@@ -475,7 +478,10 @@ class TestM3BreachDetection:
                 "agents.audio_health.m3_crest_flatness_daemon.capture_and_measure",
                 return_value=result,
             ),
-            patch("agents.audio_health.m3_crest_flatness_daemon.compute_crest_factor", return_value=3.8),
+            patch(
+                "agents.audio_health.m3_crest_flatness_daemon.compute_crest_factor",
+                return_value=3.8,
+            ),
             patch("agents.audio_health.m3_crest_flatness_daemon.compute_zcr", return_value=0.42),
             patch(
                 "agents.audio_health.m3_crest_flatness_daemon.compute_spectral_flatness",

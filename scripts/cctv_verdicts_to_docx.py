@@ -39,14 +39,20 @@ def build_report(verdicts_path: Path, output_path: Path) -> None:
         f"Protocol: 5-phase adversarial deliberation (blind scoring → evidence matrix → adversarial challenge → revision → convergence)"
     )
 
-    survived = sum(1 for v in verdicts if v["convergence_status"] == "converged" and all(
-        s is not None and s > 2 for s in v["scores"].values()
-    ))
+    survived = sum(
+        1
+        for v in verdicts
+        if v["convergence_status"] == "converged"
+        and all(s is not None and s > 2 for s in v["scores"].values())
+    )
     contested = sum(1 for v in verdicts if v["convergence_status"] == "contested")
     hung = sum(1 for v in verdicts if v["convergence_status"] == "hung")
-    refuted = sum(1 for v in verdicts if v["convergence_status"] == "converged" and any(
-        s is not None and s <= 2 for s in v["scores"].values()
-    ))
+    refuted = sum(
+        1
+        for v in verdicts
+        if v["convergence_status"] == "converged"
+        and any(s is not None and s <= 2 for s in v["scores"].values())
+    )
 
     doc.add_heading("Executive Summary", level=1)
     doc.add_paragraph(

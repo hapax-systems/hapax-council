@@ -20,8 +20,7 @@ from pathlib import Path
 SYNTHESIS_2 = Path("/data/downloads/council_synthesis_2.md")
 SYNTHESIS_3 = Path("/data/downloads/council_synthesis_3.md")
 OUTPUT_DIR = (
-    Path.home()
-    / "Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality"
+    Path.home() / "Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality"
 )
 OUTPUT_FILE = OUTPUT_DIR / "cctv-council-synthesis-verdicts.jsonl"
 

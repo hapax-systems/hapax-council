@@ -87,11 +87,7 @@ class DensityFieldCompute:
             sources = data.get("sources", {})
             if not sources:
                 return 0.0
-            densities = [
-                s.get("density", 0.0)
-                for s in sources.values()
-                if isinstance(s, dict)
-            ]
+            densities = [s.get("density", 0.0) for s in sources.values() if isinstance(s, dict)]
             return sum(densities) / len(densities) if densities else 0.0
         except (OSError, json.JSONDecodeError, ValueError):
             return 0.0

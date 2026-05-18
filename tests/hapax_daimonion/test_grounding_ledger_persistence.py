@@ -27,9 +27,7 @@ def sessions_dir(tmp_path: Path) -> Path:
 
 
 class TestSaveSession:
-    def test_creates_directory_and_file(
-        self, ledger: GroundingLedger, sessions_dir: Path
-    ) -> None:
+    def test_creates_directory_and_file(self, ledger: GroundingLedger, sessions_dir: Path) -> None:
         assert not sessions_dir.exists()
         path = ledger.save_session("sess-001", directory=sessions_dir)
         assert path == sessions_dir / "sess-001.json"
@@ -54,25 +52,19 @@ class TestSaveSession:
         ):
             assert key in data, f"missing key: {key}"
 
-    def test_session_id_in_snapshot(
-        self, ledger: GroundingLedger, sessions_dir: Path
-    ) -> None:
+    def test_session_id_in_snapshot(self, ledger: GroundingLedger, sessions_dir: Path) -> None:
         ledger.save_session("my-session", directory=sessions_dir)
         data = json.loads((sessions_dir / "my-session.json").read_text(encoding="utf-8"))
         assert data["session_id"] == "my-session"
 
-    def test_units_serialised(
-        self, ledger: GroundingLedger, sessions_dir: Path
-    ) -> None:
+    def test_units_serialised(self, ledger: GroundingLedger, sessions_dir: Path) -> None:
         ledger.save_session("sess-units", directory=sessions_dir)
         data = json.loads((sessions_dir / "sess-units.json").read_text(encoding="utf-8"))
         assert len(data["units"]) == 2
         assert data["units"][0]["state"] == "GROUNDED"
         assert data["units"][1]["state"] == "REPAIR-1"
 
-    def test_overwrites_existing(
-        self, ledger: GroundingLedger, sessions_dir: Path
-    ) -> None:
+    def test_overwrites_existing(self, ledger: GroundingLedger, sessions_dir: Path) -> None:
         ledger.save_session("dup", directory=sessions_dir)
         ledger.add_du(3, "third point")
         ledger.update_from_acceptance("ACCEPT")
@@ -89,9 +81,7 @@ class TestSaveSession:
 
 
 class TestLoadSession:
-    def test_round_trip(
-        self, ledger: GroundingLedger, sessions_dir: Path
-    ) -> None:
+    def test_round_trip(self, ledger: GroundingLedger, sessions_dir: Path) -> None:
         ledger.save_session("rt", directory=sessions_dir)
         loaded = GroundingLedger.load_session("rt", directory=sessions_dir)
         assert loaded["session_id"] == "rt"

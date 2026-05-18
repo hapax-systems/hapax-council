@@ -1205,9 +1205,7 @@ class VisualLayerAggregator:
     def _read_imagination_salience() -> float:
         """Read current imagination salience from SHM. Returns 0.0 on any error."""
         try:
-            data = json.loads(
-                Path("/dev/shm/hapax-imagination/current.json").read_text()
-            )
+            data = json.loads(Path("/dev/shm/hapax-imagination/current.json").read_text())
             return float(data.get("salience", 0.0))
         except (OSError, json.JSONDecodeError, ValueError, TypeError):
             return 0.0

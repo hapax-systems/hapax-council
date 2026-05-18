@@ -530,21 +530,15 @@ class TestPlaybackDecision:
         assert decision.reason_code == "bridge_programme_authorization_soft_prior"
 
     def test_stream_mode_public_classifies_no_intent_as_livestream(self, monkeypatch):
-        monkeypatch.setattr(
-            destination_channel, "_stream_mode_is_public", lambda: True
-        )
+        monkeypatch.setattr(destination_channel, "_stream_mode_is_public", lambda: True)
         imp = SimpleNamespace(
             source="conversation.response",
             content={"narrative": "No explicit broadcast intent here."},
         )
         assert classify_destination(imp) == DestinationChannel.LIVESTREAM
 
-    def test_stream_mode_public_allows_playback_with_programme_auth(
-        self, monkeypatch, tmp_path
-    ):
-        monkeypatch.setattr(
-            destination_channel, "_stream_mode_is_public", lambda: True
-        )
+    def test_stream_mode_public_allows_playback_with_programme_auth(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(destination_channel, "_stream_mode_is_public", lambda: True)
         now = time.time()
         health_path = tmp_path / "audio-safe-for-broadcast.json"
         _write_broadcast_health(health_path, safe=True)

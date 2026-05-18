@@ -249,9 +249,7 @@ async def run_cctv() -> None:
         )
 
         try:
-            verdict = await deliberate(
-                inp, CouncilMode.DISCONFIRMATION, rubric, config
-            )
+            verdict = await deliberate(inp, CouncilMode.DISCONFIRMATION, rubric, config)
 
             result = {
                 "claim_id": claim["id"],
@@ -259,9 +257,7 @@ async def run_cctv() -> None:
                 "claim_text": claim["text"],
                 "source_ref": claim["source_ref"],
                 "scores": verdict.scores,
-                "confidence_bands": {
-                    k: list(v) for k, v in verdict.confidence_bands.items()
-                },
+                "confidence_bands": {k: list(v) for k, v in verdict.confidence_bands.items()},
                 "convergence_status": verdict.convergence_status.value,
                 "disagreement_log": verdict.disagreement_log,
                 "research_findings": verdict.research_findings,
@@ -301,12 +297,8 @@ async def run_cctv() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="CCTV: Perspective Requests Disconfirmation"
-    )
-    parser.add_argument(
-        "--limit", type=int, default=0, help="Max claims to process (0=all)"
-    )
+    parser = argparse.ArgumentParser(description="CCTV: Perspective Requests Disconfirmation")
+    parser.add_argument("--limit", type=int, default=0, help="Max claims to process (0=all)")
     args = parser.parse_args()
 
     if args.limit > 0:

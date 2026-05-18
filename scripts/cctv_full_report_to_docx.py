@@ -69,11 +69,15 @@ def build_report():
 
     council_verdicts = []
     if COUNCIL_VERDICTS.exists():
-        council_verdicts = [json.loads(l) for l in COUNCIL_VERDICTS.read_text().splitlines() if l.strip()]
+        council_verdicts = [
+            json.loads(l) for l in COUNCIL_VERDICTS.read_text().splitlines() if l.strip()
+        ]
 
     action_verdicts = []
     if ACTION_VERDICTS.exists():
-        action_verdicts = [json.loads(l) for l in ACTION_VERDICTS.read_text().splitlines() if l.strip()]
+        action_verdicts = [
+            json.loads(l) for l in ACTION_VERDICTS.read_text().splitlines() if l.strip()
+        ]
 
     doc.add_paragraph(
         f"Council synthesis claims evaluated: {len(council_verdicts)}\n"
@@ -111,7 +115,9 @@ def build_report():
     add_verdict_table(doc, action_verdicts)
 
     for v in action_verdicts:
-        doc.add_heading(f"{v['claim_id']} ({v.get('domain','')}): {v['convergence_status'].upper()}", level=3)
+        doc.add_heading(
+            f"{v['claim_id']} ({v.get('domain', '')}): {v['convergence_status'].upper()}", level=3
+        )
         p = doc.add_paragraph()
         p.add_run("Claim: ").bold = True
         p.add_run(v.get("claim_text", "")[:300])
