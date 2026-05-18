@@ -51,10 +51,13 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
 
     assert "github.event_name == 'merge_group'" in shard_block
     assert "strategy:" in shard_block
-    assert "shard: [1, 2]" in shard_block
-    assert "shard_count: [2]" in shard_block
+    assert "shard: [1, 2, 3, 4]" in shard_block
+    assert "shard_count: [4]" in shard_block
     assert "Run full pytest shard" in shard_block
     assert "--collect-only -q" in shard_block
+    assert "test_count[file]++" in shard_block
+    assert "shard_load[target]+=test_count[files[i]]" in shard_block
+    assert "Shard plan by collected test count" in shard_block
     assert 'xargs -a "$shard_files" uv run pytest -q --tb=line --durations=25' in shard_block
 
 
