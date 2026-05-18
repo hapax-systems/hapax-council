@@ -48,7 +48,7 @@ def build_report(verdicts_path: Path, output_path: Path) -> None:
         s is not None and s <= 2 for s in v["scores"].values()
     ))
 
-    summary = doc.add_heading("Executive Summary", level=1)
+    doc.add_heading("Executive Summary", level=1)
     doc.add_paragraph(
         f"Survived: {survived}  |  Contested: {contested}  |  Hung: {hung}  |  Weakened: {refuted}"
     )

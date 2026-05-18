@@ -1095,7 +1095,6 @@ _TURNTABLE_ACTIVE_STALE_S = 120.0
 _VINYL_OPERATOR_OVERRIDE_FLAG = Path("/dev/shm/hapax-compositor/vinyl-operator-active.flag")
 
 
-def _hand_on_turntable_recent() -> bool:
 _TAU_OWNERSHIP = 0.60
 _PERCEPTION_STATE_PATH = Path.home() / ".cache/hapax-daimonion/perception-state.json"
 
