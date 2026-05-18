@@ -34,6 +34,7 @@ EXPECTED_COLLECTIONS: dict[str, dict[str, object]] = {
     "hapax-apperceptions": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
     "operator-patterns": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
     "source-consequences": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
+    "assertions": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
 }
 
 
