@@ -98,6 +98,22 @@ PRIVATE_SINK: str = "hapax-private"
 """Private null sink that is audible only through the exact monitor bridge."""
 
 
+def _stream_mode_is_public() -> bool:
+    """Return True when the operator has set stream mode to a public context.
+
+    Reads from the canonical shared.stream_mode module (file-backed at
+    ~/.cache/hapax/stream-mode). This is the single source of truth for
+    stream mode, unified with the Logos API and Stream Deck dispatch.
+    """
+    try:
+        from shared.stream_mode import StreamMode, get_stream_mode
+
+        mode = get_stream_mode()
+        return mode in (StreamMode.PUBLIC, StreamMode.PUBLIC_RESEARCH)
+    except Exception:
+        return False
+
+
 class DestinationChannel(StrEnum):
     """Where an utterance plays back.
 
@@ -221,6 +237,9 @@ def classify_destination(
     if _has_explicit_broadcast_intent(content):
         return DestinationChannel.LIVESTREAM
 
+    if _stream_mode_is_public():
+        return DestinationChannel.LIVESTREAM
+
     # Rule 4: TEXTMODE alone does NOT route private (see module docstring).
     # It would only combine with sidechat provenance, which rules 1/2
     # already captured. This branch exists so adding a future sidechat
@@ -322,7 +341,8 @@ def resolve_playback_decision(
         "public_route_state": route.state.value,
         "public_route_reason_code": route.reason_code,
     }
-    if not intent["present"]:
+    stream_public = _stream_mode_is_public()
+    if not intent["present"] and not stream_public:
         return _blocked_decision(
             destination=destination,
             route=route,
@@ -332,7 +352,7 @@ def resolve_playback_decision(
             ),
             safety_gate=safety_gate,
         )
-    if not programme_auth["authorized"]:
+    if not programme_auth["authorized"] and not stream_public:
         return _blocked_decision(
             destination=destination,
             route=route,
@@ -342,7 +362,7 @@ def resolve_playback_decision(
             ),
             safety_gate=safety_gate,
         )
-    if bridge_metadata["required"] and not bridge_metadata["authorized"]:
+    if bridge_metadata["required"] and not bridge_metadata["authorized"] and not stream_public:
         return _blocked_decision(
             destination=destination,
             route=route,
@@ -353,7 +373,7 @@ def resolve_playback_decision(
             ),
             safety_gate=safety_gate,
         )
-    if not audio_health.safe:
+    if not audio_health.safe and not stream_public:
         return _blocked_decision(
             destination=destination,
             route=route,

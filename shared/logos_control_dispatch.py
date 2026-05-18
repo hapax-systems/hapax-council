@@ -76,6 +76,18 @@ def route_logos_control_command(command: str, args: dict[str, Any]) -> LogosCont
         )
         return _logos_api("PUT", "/api/stream/mode", {"mode": mode}, command)
 
+    if command == "studio.stream_mode.toggle":
+        from shared.stream_mode import StreamMode, get_stream_mode, set_stream_mode
+
+        current = get_stream_mode()
+        toggled = (
+            StreamMode.PRIVATE
+            if current in (StreamMode.PUBLIC, StreamMode.PUBLIC_RESEARCH)
+            else StreamMode.PUBLIC_RESEARCH
+        )
+        set_stream_mode(toggled)
+        return _logos_api("PUT", "/api/stream/mode", {"mode": toggled.value}, command)
+
     if command == "mode.set":
         return _logos_api(
             "PUT",
