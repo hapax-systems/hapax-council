@@ -358,6 +358,8 @@ def _decompose_filter_chain_module(
     # Channels declared at args-level (pre-capture).
     chan_count_outer = _AUDIO_CHANNELS_RE.search(args_section)
     chan_pos_outer = _AUDIO_POSITION_RE.search(args_section)
+    format_outer = _AUDIO_FORMAT_RE.search(args_section)
+    rate_outer = _AUDIO_RATE_RE.search(args_section)
     if chan_count_outer:
         outer_count = int(chan_count_outer.group(1))
         outer_positions = _parse_position_list(chan_pos_outer.group(1)) if chan_pos_outer else []
@@ -366,9 +368,33 @@ def _decompose_filter_chain_module(
     outer_channels = ChannelMap(
         count=outer_count, positions=outer_positions or [f"CH{i}" for i in range(outer_count)]
     )
+    outer_format = None
+    if format_outer or rate_outer:
+        try:
+            outer_format = FormatSpec(
+                rate_hz=int(rate_outer.group(1)) if rate_outer else 48000,
+                format=_parse_format_token(format_outer.group(1) if format_outer else "S32"),
+                channels=outer_channels.count,
+            )
+        except Exception:  # noqa: BLE001
+            outer_format = None
 
     stages = _parse_filter_graph_stages(filter_graph_body) if filter_graph_body else []
     template = _classify_filter_chain_template(stages)
+
+    if not capture_section and not playback_section and parent_name and filter_graph_body:
+        nodes.append(
+            _ParsedNode(
+                node_id=_kebab_node_id_from_pipewire_name(parent_name),
+                pipewire_name=parent_name,
+                kind=NodeKind.FILTER_CHAIN,
+                description=parent_desc,
+                channels=outer_channels,
+                format_spec=outer_format,
+                filter_chain_template=template,
+                filter_graph_stages=stages,
+            )
+        )
 
     if capture_section:
         cap_name_m = _NODE_NAME_RE.search(capture_section)

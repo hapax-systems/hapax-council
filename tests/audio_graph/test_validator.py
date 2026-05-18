@@ -141,6 +141,55 @@ def test_validator_extracts_alsa_profile_pin(tmp_path: Path) -> None:
     assert pin.api_alsa_use_acp is False
 
 
+def test_validator_decomposes_args_level_filter_chain_sink(tmp_path: Path) -> None:
+    pw_dir = tmp_path / "pipewire.conf.d"
+    pw_dir.mkdir()
+    _write_conf(
+        pw_dir,
+        "hapax-voice-s4-emulation.conf",
+        """\
+        context.modules = [
+            {
+                name = libpipewire-module-filter-chain
+                args = {
+                    node.name = "hapax-voice-s4-emu"
+                    node.description = "Hapax S-4 Voice Emulation"
+                    media.class = "Audio/Sink"
+                    audio.rate = 48000
+                    audio.channels = 2
+                    audio.position = [ FL FR ]
+
+                    filter.graph = {
+                        nodes = [
+                            { type = builtin  name = ring_l  label = bq_bandpass
+                              control = { "Freq" = 2200.0  "Q" = 1.8 } }
+                            { type = builtin  name = dark_l  label = bq_lowpass
+                              control = { "Freq" = 6000.0  "Q" = 0.707 } }
+                        ]
+                        links = [
+                            { output = "ring_l:Out" input = "dark_l:In" }
+                        ]
+                        inputs = [ "ring_l:In" ]
+                        outputs = [ "dark_l:Out" ]
+                    }
+                }
+            }
+        ]
+        """,
+    )
+
+    v = AudioGraphValidator(pw_dir, tmp_path / "wp.conf.d-empty")
+    result = v.decompose_confs()
+
+    node = next(n for n in result.graph.nodes if n.id == "hapax-voice-s4-emu")
+    assert node.kind.value == "filter_chain"
+    assert node.channels.count == 2
+    assert node.format is not None
+    assert node.format.rate_hz == 48000
+    assert len(node.filter_graph_stages) == 2
+    assert "hapax-voice-s4-emulation.conf" not in result.gaps.untyped_confs
+
+
 def test_validator_detects_role_loopback_infra(tmp_path: Path) -> None:
     wp_dir = tmp_path / "wp.conf.d"
     wp_dir.mkdir()

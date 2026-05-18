@@ -207,9 +207,6 @@ def classify_destination(
     -------
     DestinationChannel
     """
-    if _stream_mode_is_public():
-        return DestinationChannel.LIVESTREAM
-
     if impingement is None:
         return DestinationChannel.PRIVATE
 
@@ -234,6 +231,9 @@ def classify_destination(
         return DestinationChannel.PRIVATE
 
     if _has_explicit_broadcast_intent(content):
+        return DestinationChannel.LIVESTREAM
+
+    if _stream_mode_is_public():
         return DestinationChannel.LIVESTREAM
 
     # Rule 4: TEXTMODE alone does NOT route private (see module docstring).
