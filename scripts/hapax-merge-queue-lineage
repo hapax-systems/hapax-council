@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Collect merge queue lineage into a durable JSONL ledger.
+
+Default outputs:
+
+* ~/.cache/hapax/post-merge-traces/merge-queue-lineage.jsonl
+* ~/.cache/hapax/post-merge-traces/merge-queue-summary.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.merge_queue_lineage import (  # noqa: E402
+    DEFAULT_LEDGER_PATH,
+    DEFAULT_MAX_RECORDS,
+    DEFAULT_SUMMARY_PATH,
+    annotate_run_counts,
+    build_lineage_record,
+    build_summary,
+    pr_number_from_run,
+    read_jsonl_records,
+    write_jsonl_records,
+    write_summary,
+)
+
+RUN_LIST_FIELDS = (
+    "databaseId,attempt,conclusion,createdAt,displayTitle,event,headBranch,"
+    "headSha,name,number,startedAt,status,updatedAt,url,workflowName"
+)
+RUN_VIEW_FIELDS = RUN_LIST_FIELDS + ",jobs"
+PR_FIELDS = (
+    "number,headRefName,headRefOid,state,mergeStateStatus,statusCheckRollup,"
+    "autoMergeRequest,isDraft,body,title,mergedAt,updatedAt,url"
+)
+DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+
+
+def run_json(cmd: list[str], *, cwd: Path = REPO_ROOT) -> Any:
+    """Run a GitHub CLI command and parse JSON output."""
+    proc = subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=90,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"{' '.join(cmd)} failed: {proc.stderr.strip() or proc.stdout.strip()}")
+    try:
+        return json.loads(proc.stdout or "null")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{' '.join(cmd)} emitted non-JSON: {exc}") from exc
+
+
+def load_json_file(path: Path) -> Any:
+    """Load JSON test/input fixture."""
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_task_notes_by_pr(vault_root: Path) -> dict[int, dict[str, str | int | None]]:
+    """Read active cc-task note lifecycle state keyed by linked PR number."""
+    active = vault_root / "active"
+    if not active.is_dir():
+        return {}
+    out: dict[int, dict[str, str | int | None]] = {}
+    for path in sorted(active.glob("*.md")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if not text.startswith("---"):
+            continue
+        end = text.find("\n---", 3)
+        if end == -1:
+            continue
+        try:
+            frontmatter = yaml.safe_load(text[3:end]) or {}
+        except yaml.YAMLError:
+            continue
+        if not isinstance(frontmatter, dict):
+            continue
+        pr_number = _safe_int(frontmatter.get("pr"))
+        if pr_number is None:
+            continue
+        out[pr_number] = {
+            "cc_task_id": _blank_to_none(frontmatter.get("task_id")),
+            "cc_task_status": _blank_to_none(frontmatter.get("status")),
+            "cc_task_assigned_to": _blank_to_none(frontmatter.get("assigned_to")),
+            "cc_task_note_path": str(path),
+        }
+    return out
+
+
+def enrich_prs_with_task_notes(
+    prs: list[dict[str, Any]], task_notes_by_pr: dict[int, dict[str, str | int | None]]
+) -> list[dict[str, Any]]:
+    """Attach cc-task note state to PR dictionaries when available."""
+    enriched: list[dict[str, Any]] = []
+    for pr in prs:
+        number = _safe_int(pr.get("number"))
+        if number is not None and number in task_notes_by_pr:
+            enriched.append({**pr, **task_notes_by_pr[number]})
+        else:
+            enriched.append(pr)
+    return enriched
+
+
+def fetch_runs(*, limit: int, repo: str | None, include_jobs: bool) -> list[dict[str, Any]]:
+    """Fetch recent merge_group workflow runs via GitHub CLI."""
+    base = ["gh", "run", "list", "--event", "merge_group", "--limit", str(limit), "--json"]
+    cmd = [*base, RUN_LIST_FIELDS]
+    if repo:
+        cmd.extend(["--repo", repo])
+    runs = run_json(cmd)
+    if not include_jobs:
+        return list(runs)
+
+    hydrated: list[dict[str, Any]] = []
+    for run in runs:
+        run_id = run.get("databaseId")
+        if not run_id:
+            hydrated.append(run)
+            continue
+        view_cmd = ["gh", "run", "view", str(run_id), "--json", RUN_VIEW_FIELDS]
+        if repo:
+            view_cmd.extend(["--repo", repo])
+        hydrated.append(run_json(view_cmd))
+    return hydrated
+
+
+def fetch_prs(
+    *,
+    limit: int,
+    repo: str | None,
+    pr_numbers: set[int],
+) -> list[dict[str, Any]]:
+    """Fetch PR state for open holds and run-specific lineage correlation."""
+    cmd = ["gh", "pr", "list", "--state", "open", "--limit", str(limit), "--json", PR_FIELDS]
+    if repo:
+        cmd.extend(["--repo", repo])
+    try:
+        prs = list(run_json(cmd))
+    except RuntimeError as exc:
+        print(f"warning: open PR query failed: {exc}", file=sys.stderr)
+        prs = []
+
+    seen = {int(pr["number"]) for pr in prs if pr.get("number") is not None}
+    for number in sorted(pr_numbers - seen):
+        view_cmd = ["gh", "pr", "view", str(number), "--json", PR_FIELDS]
+        if repo:
+            view_cmd.extend(["--repo", repo])
+        try:
+            prs.append(run_json(view_cmd))
+        except RuntimeError as exc:
+            print(f"warning: PR #{number} query failed: {exc}", file=sys.stderr)
+    return prs
+
+
+def collect(args: argparse.Namespace) -> int:
+    """Collect runs, update the ledger, and write the summary."""
+    observed_at = datetime.now(UTC)
+    runs = (
+        load_json_file(args.runs_json)
+        if args.runs_json is not None
+        else fetch_runs(limit=args.run_limit, repo=args.repo, include_jobs=not args.skip_jobs)
+    )
+    prs = (
+        load_json_file(args.prs_json)
+        if args.prs_json is not None
+        else fetch_prs(
+            limit=args.pr_limit,
+            repo=args.repo,
+            pr_numbers={number for run in runs if (number := pr_number_from_run(run)) is not None},
+        )
+    )
+    prs = enrich_prs_with_task_notes(prs, load_task_notes_by_pr(args.vault_root))
+    pr_by_number = {int(pr["number"]): pr for pr in prs if pr.get("number") is not None}
+    records = [
+        build_lineage_record(run, pr_by_number=pr_by_number, observed_at=observed_at)
+        for run in runs
+    ]
+    records = annotate_run_counts(records)
+    write_jsonl_records(args.ledger_path, records, max_records=args.max_records)
+    combined_records = annotate_run_counts(read_jsonl_records(args.ledger_path))
+    summary = build_summary(
+        combined_records,
+        open_prs=[pr for pr in prs if str(pr.get("state") or "").upper() == "OPEN"],
+        observed_at=observed_at,
+    )
+    write_summary(args.summary_path, summary)
+    print(f"merge queue lineage: wrote {len(records)} record(s) to {args.ledger_path}")
+    print(f"merge queue lineage: wrote summary to {args.summary_path}")
+    if summary.latest_run_id is not None:
+        print(
+            "latest: "
+            f"run={summary.latest_run_id} pr={summary.latest_pr_number} "
+            f"outcome={summary.latest_run_outcome}"
+        )
+    if summary.current_queue_hold_reasons:
+        print(f"hold reasons: {len(summary.current_queue_hold_reasons)}")
+    return 0
+
+
+def status(args: argparse.Namespace) -> int:
+    """Print the current summary in compact terminal form."""
+    if not args.summary_path.exists():
+        print(f"merge queue lineage: no summary at {args.summary_path}")
+        return 1
+    summary = json.loads(args.summary_path.read_text(encoding="utf-8"))
+    print(f"observed_at: {summary.get('observed_at')}")
+    print(f"records_considered: {summary.get('records_considered')}")
+    print(f"latest_run_id: {summary.get('latest_run_id')}")
+    print(f"latest_pr_number: {summary.get('latest_pr_number')}")
+    print(f"latest_run_outcome: {summary.get('latest_run_outcome')}")
+    bottleneck = summary.get("latest_bottleneck") or {}
+    if bottleneck:
+        print(f"latest_bottleneck: {bottleneck.get('kind')} - {bottleneck.get('reason')}")
+    reasons = summary.get("current_queue_hold_reasons") or []
+    print(f"hold_reasons: {len(reasons)}")
+    for reason in reasons[:10]:
+        print(f"- PR {reason.get('pr_number') or '-'} {reason.get('kind')}: {reason.get('reason')}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    collect_parser = sub.add_parser("collect", help="Collect merge queue lineage from GitHub")
+    collect_parser.add_argument("--repo", default=None, help="GitHub repo, e.g. owner/name")
+    collect_parser.add_argument("--run-limit", type=int, default=40)
+    collect_parser.add_argument("--pr-limit", type=int, default=100)
+    collect_parser.add_argument("--skip-jobs", action="store_true", help="Do not hydrate job steps")
+    collect_parser.add_argument("--runs-json", type=Path, default=None)
+    collect_parser.add_argument("--prs-json", type=Path, default=None)
+    collect_parser.add_argument("--ledger-path", type=Path, default=DEFAULT_LEDGER_PATH)
+    collect_parser.add_argument("--summary-path", type=Path, default=DEFAULT_SUMMARY_PATH)
+    collect_parser.add_argument("--vault-root", type=Path, default=DEFAULT_VAULT_ROOT)
+    collect_parser.add_argument("--max-records", type=int, default=DEFAULT_MAX_RECORDS)
+    collect_parser.set_defaults(fn=collect)
+
+    status_parser = sub.add_parser("status", help="Read the current summary")
+    status_parser.add_argument("--summary-path", type=Path, default=DEFAULT_SUMMARY_PATH)
+    status_parser.set_defaults(fn=status)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.fn(args)
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _blank_to_none(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    return str(value)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
