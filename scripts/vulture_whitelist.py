@@ -1288,6 +1288,12 @@ from logos.api.routes.x402 import demo_payment_required
 
 demo_payment_required
 
+# Governance refusal registry route — FastAPI dispatches via @router.get;
+# vulture cannot see decorator-registered route handlers.
+from logos.api.routes.governance import refusal_registry as governance_refusal_registry
+
+governance_refusal_registry
+
 # Canonical precedent loader — mirrors load_implications. No
 # downstream consumer yet (substrate for future governance reports);
 # whitelisted so vulture doesn't flag while a consumer is wired.

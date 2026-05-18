@@ -81,3 +81,31 @@ async def carrier_flow() -> dict:
 
     cf = collect_carrier_flow()
     return dataclasses.asdict(cf)
+
+
+@router.get("/refusals")
+async def refusal_registry(
+    axiom: str | None = None,
+    status: str | None = None,
+    surface: str | None = None,
+) -> dict:
+    """Typed queryable refusal registry — 47 briefs indexed."""
+    from shared.refusal_registry import (
+        RefusalStatus,
+        load_registry,
+        query_by_axiom,
+        query_by_status,
+        query_by_surface,
+    )
+
+    entries = load_registry()
+    if axiom:
+        entries = query_by_axiom(axiom, registry=entries)
+    if status:
+        entries = query_by_status(RefusalStatus(status), registry=entries)
+    if surface:
+        entries = query_by_surface(surface, registry=entries)
+    return {
+        "count": len(entries),
+        "entries": [e.model_dump() for e in entries],
+    }
