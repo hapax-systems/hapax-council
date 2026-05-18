@@ -2,6 +2,7 @@
 
 **Slug:** `leverage-REFUSED-patreon-sponsorship`
 **Axiom tag:** `feedback_full_automation_or_no_engagement`, `single_user`
+**Runtime refusal tag:** `full_auto_or_nothing` (RefusalEvent.axiom field value)
 **Refusal classification:** Subscriber-relationship management + tier-perks delivery — operator-physical
 **Status:** REFUSED — no Patreon account, no `agents/payment_processors/patreon.py`.
 **Date:** 2026-04-26

@@ -47,11 +47,20 @@ from agents.publication_bus.publisher_kit import (
 )
 
 CANCELLATION_REFUSAL_AXIOM: str = "full_auto_or_nothing"
-"""Canonical axiom under which cancellation events route into the
-refusal-as-data log. All 5 cancellation-aware rails (Sponsors,
+"""Canonical runtime axiom tag under which cancellation events route
+into the refusal-as-data log. All 5 cancellation-aware rails (Sponsors,
 Liberapay, Stripe Payment Link, Patreon, BMaC) emit under this
 axiom; the per-rail surface string disambiguates which rail's
-cancellation fired."""
+cancellation fired.
+
+Implements operator directive ``feedback_full_automation_or_no_engagement``
+(memory slug). The short form is authoritative for RefusalEvent.axiom
+fields; the long form is authoritative for refusal-brief headers and
+governance cross-references."""
+
+CANCELLATION_REFUSAL_DIRECTIVE: str = "feedback_full_automation_or_no_engagement"
+"""Operator directive (memory slug) that this axiom tag implements.
+Used for governance cross-references and refusal-brief § Axiom tag."""
 
 
 def default_output_dir(rail_slug: str) -> Path:
