@@ -31,16 +31,31 @@ def _workflow_job_block(workflow_text: str, job_name: str) -> str:
 def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None:
     ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
     test_block = _workflow_job_block(ci_text, "test")
+    shard_block = _workflow_job_block(ci_text, "test-full-shard")
 
     assert "merge_group:" in ci_text
     assert "push:" in ci_text
     assert "branches: [main]" in ci_text
+    assert "needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard]" in test_block
+    assert "if: always()" in test_block
     assert "Determine Python test mode" in test_block
     assert 'if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then' in test_block
+    assert 'elif [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then' in test_block
+    assert 'echo "mode=merge-group-shards" >> "$GITHUB_OUTPUT"' in test_block
     assert 'echo "mode=full" >> "$GITHUB_OUTPUT"' in test_block
+    assert "Verify merge-queue full pytest shards" in test_block
+    assert "needs.test-full-shard.result" in test_block
     assert "steps.test_mode.outputs.mode == 'full'" in test_block
     assert "timeout -s KILL 1200" in test_block
     assert "uv run pytest tests/ -q --tb=line --durations=25" in test_block
+
+    assert "github.event_name == 'merge_group'" in shard_block
+    assert "strategy:" in shard_block
+    assert "shard: [1, 2]" in shard_block
+    assert "shard_count: [2]" in shard_block
+    assert "Run full pytest shard" in shard_block
+    assert "--collect-only -q" in shard_block
+    assert 'xargs -a "$shard_files" uv run pytest -q --tb=line --durations=25' in shard_block
 
 
 def test_pull_request_test_job_uses_fast_admission_slice_without_self_hosted() -> None:
@@ -64,11 +79,11 @@ def test_python_test_throughput_evidence_records_gated_decision() -> None:
     evidence = _load_yaml(EVIDENCE)
 
     assert evidence["task_id"] == "ci-python-test-throughput-evidence-gate"
-    assert evidence["decision"] == "fast_pr_admission_slice"
+    assert evidence["decision"] == "fast_pr_admission_slice_and_merge_queue_shards"
     assert evidence["self_hosted_comparison"]["required_test_adoption"] == "defer"
     assert evidence["self_hosted_comparison"]["observed_manual_runs"] == 0
     assert evidence["rollout_policy"]["pull_request"] == "pr_admission_slice"
-    assert evidence["rollout_policy"]["merge_group"] == "full_pytest"
+    assert evidence["rollout_policy"]["merge_group"] == "full_pytest_sharded"
     assert evidence["rollout_policy"]["push_main"] == "full_pytest"
     assert (
         evidence["rollout_policy"]["workflow_level_path_filters_for_required_check"] == "forbidden"

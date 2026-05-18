@@ -1,13 +1,15 @@
 schema_version: 1
 task_id: ci-python-test-throughput-evidence-gate
 status: implemented
-decision: fast_pr_admission_slice
-decision_time: 2026-05-17T21:45:00Z
+decision: fast_pr_admission_slice_and_merge_queue_shards
+decision_time: 2026-05-18T00:35:00Z
 decision_reason: >-
   Self-hosted required-test adoption is deferred because the bounded experiment
   policy has no observed manual green runs. The required test check can still
   reduce PR wait by running a deterministic admission slice on pull_request
-  while preserving full pytest on merge_group and main push.
+  while preserving full pytest on merge_group and main push. Merge queue full
+  pytest is run in required-check shards under the stable aggregate `test`
+  check name to reduce queue wall time without changing release coverage.
 
 self_hosted_comparison:
   policy: config/ci/self-hosted-runner-experiment.yaml
@@ -45,7 +47,8 @@ hosted_reference:
 rollout_policy:
   required_check_name: test
   pull_request: pr_admission_slice
-  merge_group: full_pytest
+  merge_group: full_pytest_sharded
+  merge_group_shards: 2
   push_main: full_pytest
   docs_only: sentinel_success
   duplicate_post_merge_push: sentinel_success_after_successful_merge_group
@@ -63,7 +66,7 @@ pr_admission_slice:
     tests/shared/test_ci_discovery.py -q --tb=line
   preserves:
     - required test job name remains present on pull_request and merge_group
-    - merge_group runs full pytest before merge
+    - merge_group runs full pytest before merge via required-check shards
     - main push runs full pytest unless duplicate merge-group validation exists
     - self-hosted runner remains outside required checks
   local_receipt:

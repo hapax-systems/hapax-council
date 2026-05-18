@@ -121,9 +121,7 @@ def test_pyrefly_config_keeps_optional_dependency_override_noise_suppressed() ->
 
 def test_ci_typecheck_uses_minimal_pyrefly_fast_path() -> None:
     ci_text = _read(".github/workflows/ci.yml")
-    typecheck_start = ci_text.index("\n  typecheck:")
-    test_start = ci_text.index("\n  test:", typecheck_start)
-    typecheck_block = ci_text[typecheck_start:test_start]
+    typecheck_block = _workflow_job_block(ci_text, "typecheck")
 
     assert "astral-sh/setup-uv@v7" in typecheck_block
     assert "enable-cache: true" in typecheck_block
@@ -156,7 +154,13 @@ def test_ci_docs_only_prs_trigger_required_jobs_with_sentinels() -> None:
 
     for job_name in REQUIRED_BRANCH_PROTECTION_JOBS:
         job_block = _workflow_job_block(ci_text, job_name)
-        assert "needs: [docs_only_filter, post_merge_duplicate_filter]" in job_block
+        if job_name == "test":
+            assert (
+                "needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard]"
+                in job_block
+            )
+        else:
+            assert "needs: [docs_only_filter, post_merge_duplicate_filter]" in job_block
         assert "Docs-only required-check sentinel" in job_block
         assert "needs.docs_only_filter.outputs.docs_only == 'true'" in job_block
         assert "needs.docs_only_filter.outputs.docs_only != 'true'" in job_block
@@ -225,6 +229,7 @@ def test_security_extras_push_keeps_only_lightweight_actionlint() -> None:
     scorecard_block = _workflow_job_block(security_text, "scorecard")
 
     assert "push:" in security_text
+    assert "merge_group:" not in security_text
     assert "rhysd/actionlint:1.7.12" in actionlint_block
     assert "if: github.event_name == 'schedule'" in rust_audit_block
     assert "if: github.event_name == 'schedule'" in scorecard_block
