@@ -3530,3 +3530,25 @@ from shared.ward_spatial_affordance import get_fishbowl_defaults, get_ward_affor
 
 get_ward_affordance
 get_fishbowl_defaults
+
+# Request decomposer — Pydantic model validators invoked by framework
+from agents.request_decomposer.models import RequestDecomposition, TaskSpec
+
+TaskSpec._blocked_needs_reason
+TaskSpec._needs_acceptance_criteria
+RequestDecomposition._validate_dag
+RequestDecomposition._validate_unique_ids
+RequestDecomposition._validate_parent_request
+
+# Atomic writer — called by request-decompose script
+from agents.request_decomposer.writer import write_decomposition
+
+write_decomposition
+
+# CI shard selection — called by CI workflow
+try:
+    from scripts.ci_select_pytest_shard import load_runtime_weights, parse_collect_output
+    parse_collect_output
+    load_runtime_weights
+except ImportError:
+    pass
