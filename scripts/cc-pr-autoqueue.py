@@ -59,11 +59,16 @@ ACTIVE_READY_STATUSES = {
     "done",
     "completed",
 }
+ACTIVE_WORK_STATUSES = ACTIVE_READY_STATUSES | {"claimed", "in_progress"}
 CLOSED_READY_STATUSES = {"done", "completed", "complete", "closed", "fulfilled"}
 HOLD_LABEL_RE = re.compile(
     r"(?:^|[-_\s])(hold|do[-_\s]?not[-_\s]?merge|manual[-_\s]?merge|blocked|wip)(?:$|[-_\s])",
     re.IGNORECASE,
 )
+DEFAULT_REQUIRED_CHECKS = ("lint", "test", "typecheck", "web-build", "vscode-build")
+CI_REPAIR_KINDS = {"cicd-speedup", "ci-repair", "ci-speedup", "merge-queue-repair"}
+CI_REPAIR_TAGS = {"cicd", "ci", "autoqueue"}
+INDEPENDENT_QUEUE_ADMISSION = {"independent", "independent_route"}
 
 
 def default_repo_root() -> Path:
@@ -84,6 +89,10 @@ class CheckSummary:
     @property
     def has_pending(self) -> bool:
         return bool(self.pending)
+
+    @property
+    def observed(self) -> set[str]:
+        return set(self.passed) | set(self.pending) | set(self.failed)
 
 
 @dataclass(frozen=True)
@@ -112,6 +121,10 @@ class TaskNote:
     authority_case: str | None
     parent_spec: str | None
     route_metadata_schema: int | None
+    priority: str | None
+    kind: str | None
+    tags: tuple[str, ...] = ()
+    queue_admission: str | None = None
 
 
 @dataclass(frozen=True)
@@ -157,6 +170,15 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, list):
+        return tuple(text for item in value if (text := _scalar(item)))
+    text = _scalar(value)
+    return (text,) if text else ()
 
 
 def _check_name(item: dict[str, Any]) -> str:
@@ -388,6 +410,10 @@ def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
                     authority_case=_scalar(fm.get("authority_case") or fm.get("case_id")),
                     parent_spec=_scalar(fm.get("parent_spec")),
                     route_metadata_schema=_int_or_none(fm.get("route_metadata_schema")),
+                    priority=(_scalar(fm.get("priority")) or "").lower() or None,
+                    kind=(_scalar(fm.get("kind")) or "").lower() or None,
+                    tags=tuple(tag.lower() for tag in _string_tuple(fm.get("tags"))),
+                    queue_admission=((_scalar(fm.get("queue_admission")) or "").lower() or None),
                 )
             )
     return notes
@@ -417,6 +443,26 @@ def _task_blockers(task: TaskNote, *, require_route_metadata: bool) -> list[str]
     return blockers
 
 
+def _is_ci_repair_task(task: TaskNote) -> bool:
+    if task.folder != "active":
+        return False
+    if task.status not in ACTIVE_WORK_STATUSES:
+        return False
+    if task.priority not in {"p0", "p1"}:
+        return False
+    if task.kind in CI_REPAIR_KINDS:
+        return True
+    return bool(set(task.tags) & CI_REPAIR_TAGS)
+
+
+def _has_independent_queue_admission(task: TaskNote) -> bool:
+    return task.route_metadata_schema == 1 and task.queue_admission in INDEPENDENT_QUEUE_ADMISSION
+
+
+def _active_ci_repair_task_ids(tasks: list[TaskNote]) -> tuple[str, ...]:
+    return tuple(task.task_id for task in tasks if _is_ci_repair_task(task))
+
+
 def unchecked_blocking_checkboxes(body: str) -> list[str]:
     blockers: list[str] = []
     for line in body.splitlines():
@@ -437,6 +483,8 @@ def classify_pr(
     queued_prs: set[int],
     require_route_metadata: bool = True,
     include_pending_auto: bool = True,
+    required_checks: tuple[str, ...] = DEFAULT_REQUIRED_CHECKS,
+    active_ci_repair_task_ids: tuple[str, ...] = (),
 ) -> Decision:
     reasons: list[str] = []
     if pr.is_draft:
@@ -459,6 +507,11 @@ def classify_pr(
         reasons.append("unchecked_pr_checklist:" + " | ".join(unchecked))
     if not pr.check_summary.passed and not pr.check_summary.pending and not pr.check_summary.failed:
         reasons.append("no_status_checks")
+    missing_required = [
+        check for check in required_checks if check not in pr.check_summary.observed
+    ]
+    if missing_required:
+        reasons.append("missing_required_checks:" + ",".join(missing_required))
     if pr.check_summary.failed:
         reasons.append("failed_checks:" + ",".join(pr.check_summary.failed))
 
@@ -479,6 +532,17 @@ def classify_pr(
                 reasons.extend(
                     f"task_blocker:{matched_task.task_id}:{blocker}" for blocker in blockers
                 )
+
+    if (
+        active_ci_repair_task_ids
+        and not queued
+        and matches
+        and not any(_is_ci_repair_task(matched_task) for matched_task in matches)
+        and not any(_has_independent_queue_admission(matched_task) for matched_task in matches)
+    ):
+        reasons.append(
+            "admission_stabilization_hold:active_ci_repair:" + ",".join(active_ci_repair_task_ids)
+        )
 
     if queued:
         if reasons:
@@ -586,6 +650,7 @@ def run_reconciler(
     apply: bool = False,
     require_route_metadata: bool = True,
     include_pending_auto: bool = True,
+    required_checks: tuple[str, ...] = DEFAULT_REQUIRED_CHECKS,
     limit: int = 100,
     runner: Any = None,
 ) -> dict[str, Any]:
@@ -600,6 +665,7 @@ def run_reconciler(
 
     repo_root = repo_root or default_repo_root()
     tasks = load_task_notes(vault_root)
+    active_ci_repair_task_ids = _active_ci_repair_task_ids(tasks)
     queued_prs = fetch_merge_queue_pr_numbers(repo=repo, repo_root=repo_root, runner=runner)
     prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
     decisions = [
@@ -609,6 +675,8 @@ def run_reconciler(
             queued_prs=queued_prs,
             require_route_metadata=require_route_metadata,
             include_pending_auto=include_pending_auto,
+            required_checks=required_checks,
+            active_ci_repair_task_ids=active_ci_repair_task_ids,
         )
         for pr in prs
     ]
@@ -637,6 +705,8 @@ def run_reconciler(
         "apply": apply,
         "require_route_metadata": require_route_metadata,
         "include_pending_auto": include_pending_auto,
+        "required_checks": list(required_checks),
+        "active_ci_repair_task_ids": list(active_ci_repair_task_ids),
         "open_pr_count": len(prs),
         "queued_prs": sorted(queued_prs),
         "decisions": [decision.as_dict() for decision in decisions],
@@ -678,6 +748,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Do not arm auto-merge for governed PRs with pending checks.",
     )
+    parser.add_argument(
+        "--required-check",
+        action="append",
+        dest="required_checks",
+        help=(
+            "Required branch-protection check context. Repeat to override the "
+            "default Hapax main required checks."
+        ),
+    )
+    parser.add_argument(
+        "--no-required-checks",
+        action="store_true",
+        help="Do not block PRs that lack the default required check contexts.",
+    )
     parser.add_argument("--verbose", "-v", action="count", default=0)
     args = parser.parse_args(argv)
 
@@ -699,6 +783,9 @@ def main(argv: list[str] | None = None) -> int:
         apply=args.apply,
         require_route_metadata=not args.allow_legacy_task_metadata,
         include_pending_auto=not args.no_pending_auto,
+        required_checks=()
+        if args.no_required_checks
+        else tuple(args.required_checks or DEFAULT_REQUIRED_CHECKS),
         limit=args.limit,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
