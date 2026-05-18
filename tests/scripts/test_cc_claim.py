@@ -316,6 +316,31 @@ def test_pr_open_assigned_to_same_role_resumes_without_status_change(
     ).strip() == "review-fix"
 
 
+def test_ready_state_resume_uses_existing_session_log_heading_case(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "active",
+        "capital-log",
+        status="pr_open",
+        assigned_to="cx-test",
+    )
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("## Session log", "## Session Log"),
+        encoding="utf-8",
+    )
+
+    result = _claim(home, "capital-log")
+
+    assert result.returncode == 0, result.stderr
+    text = note.read_text(encoding="utf-8")
+    assert "## Session Log\n- " in text
+    assert "resumed ready-state task (cc-claim)" in text
+    assert "## Session log" not in text
+
+
 def test_merge_queue_assigned_to_same_role_resumes_without_status_change(
     tmp_path: Path,
 ) -> None:

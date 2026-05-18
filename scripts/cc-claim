@@ -404,10 +404,15 @@ def _check_pr_merged(pr_number: str) -> str:
 
 
 def _insert_session_log(note_text: str, log_line: str) -> str:
-    if "## Session log\n" in note_text:
-        return note_text.replace("## Session log\n", f"## Session log\n{log_line}", 1)
-    if note_text.endswith("## Session log"):
-        return f"{note_text}\n{log_line.rstrip()}\n"
+    heading = re.search(
+        r"^## Session [Ll]og[ \t]*(?:\n|$)", note_text, flags=re.MULTILINE
+    )
+    if heading:
+        prefix = note_text[: heading.end()]
+        suffix = note_text[heading.end() :]
+        if not prefix.endswith("\n"):
+            prefix = f"{prefix}\n"
+        return f"{prefix}{log_line}{suffix}"
     return f"{note_text.rstrip()}\n\n## Session log\n{log_line}"
 
 
