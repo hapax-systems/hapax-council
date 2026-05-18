@@ -156,7 +156,7 @@ Expected: Compiles with no new errors.
 
 ```bash
 cd ~/projects/hapax-council
-git add hapax-logos/src-tauri/Cargo.toml hapax-logos/src-tauri/Cargo.lock hapax-logos/src-tauri/src/visual/output.rs
+git add hapax-logos/src-tauri/Cargo.toml hapax-logos/Cargo.lock hapax-logos/src-tauri/src/visual/output.rs
 git commit -m "feat: add turbojpeg JPEG encoding to ShmOutput"
 ```
 
@@ -285,7 +285,7 @@ Expected: Compiles.
 
 ```bash
 cd ~/projects/hapax-council
-git add hapax-logos/src-tauri/Cargo.toml hapax-logos/src-tauri/Cargo.lock \
+git add hapax-logos/src-tauri/Cargo.toml hapax-logos/Cargo.lock \
   hapax-logos/src-tauri/src/visual/http_server.rs \
   hapax-logos/src-tauri/src/visual/mod.rs \
   hapax-logos/src-tauri/src/main.rs \

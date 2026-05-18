@@ -113,8 +113,8 @@ Three wgpu validation errors were also crashing the visual surface:
 1. **Check versions:**
    ```bash
    pacman -Q gtk4 gtk3 webkit2gtk-4.1 webkit2gtk nvidia-open-dkms
-   grep -A2 'name = "wry"' ~/projects/hapax-council/hapax-logos/src-tauri/Cargo.lock
-   grep -A2 'name = "tauri"' ~/projects/hapax-council/hapax-logos/src-tauri/Cargo.lock | head -5
+   grep -A2 'name = "wry"' ~/projects/hapax-council/hapax-logos/Cargo.lock
+   grep -A2 'name = "tauri"' ~/projects/hapax-council/hapax-logos/Cargo.lock | head -5
    ```
 
 2. **Check if this is a known Tauri issue:**
@@ -167,6 +167,6 @@ Three wgpu validation errors were also crashing the visual surface:
 - `hapax-logos/src-tauri/src/main.rs` — Tauri app entry point
 - `hapax-logos/src-tauri/tauri.conf.json` — Window config (no `transparent: true`)
 - `hapax-logos/src-tauri/Cargo.toml` — Dependencies
-- `hapax-logos/src-tauri/Cargo.lock` — Exact versions
+- `hapax-logos/Cargo.lock` — Exact workspace versions
 - Memory: `feedback_nvidia_595_crash.md` — Prior NVIDIA driver issue
 - Memory: `feedback_vrr_flicker.md` — VRR/FreeSync issues on same hardware
