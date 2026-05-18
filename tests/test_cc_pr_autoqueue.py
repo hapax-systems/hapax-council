@@ -48,6 +48,10 @@ def _write_task(
     authority_case: str | None = "CASE-TEST",
     parent_spec: str | None = "docs/spec.md",
     route_metadata_schema: int | None = 1,
+    priority: str = "p2",
+    kind: str = "implementation",
+    tags: list[str] | None = None,
+    queue_admission: str | None = None,
 ) -> Path:
     path = vault / folder / f"{task_id}.md"
     pr_line = f"pr: {pr}" if pr is not None else "pr: null"
@@ -63,6 +67,12 @@ def _write_task(
         if route_metadata_schema is not None
         else "route_metadata_schema: null"
     )
+    tags_line = f"tags: [{', '.join(tags or [])}]"
+    queue_admission_line = (
+        f"queue_admission: {queue_admission}"
+        if queue_admission is not None
+        else "queue_admission: null"
+    )
     path.write_text(
         f"""---
 type: cc-task
@@ -70,11 +80,15 @@ task_id: {task_id}
 title: "{task_id}"
 status: {status}
 assigned_to: alpha
+priority: {priority}
+kind: {kind}
 {pr_line}
 {branch_line}
 {authority_line}
 {parent_line}
 {route_line}
+{tags_line}
+{queue_admission_line}
 ---
 
 # {task_id}
@@ -114,7 +128,15 @@ def _pr(
         "labels": [{"name": label} for label in labels or []],
         "reviewDecision": review_decision,
         "autoMergeRequest": {"enabledAt": "now"} if auto_merge else None,
-        "statusCheckRollup": checks if checks is not None else [_check("lint"), _check("test")],
+        "statusCheckRollup": checks
+        if checks is not None
+        else [
+            _check("lint"),
+            _check("test"),
+            _check("typecheck"),
+            _check("web-build"),
+            _check("vscode-build"),
+        ],
     }
 
 
@@ -184,7 +206,18 @@ def test_enable_auto_merge_for_pending_governed_pr(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="task-a", pr=43)
     runner = _FakeRunner()
-    runner.open_prs = [_pr(43, checks=[_check("lint"), {"name": "test", "status": "IN_PROGRESS"}])]
+    runner.open_prs = [
+        _pr(
+            43,
+            checks=[
+                _check("lint"),
+                {"name": "test", "status": "IN_PROGRESS"},
+                _check("typecheck"),
+                _check("web-build"),
+                _check("vscode-build"),
+            ],
+        )
+    ]
 
     report = autoqueue.run_reconciler(
         repo="owner/repo",
@@ -206,7 +239,13 @@ def test_enable_auto_merge_for_unknown_pending_governed_pr(tmp_path: Path) -> No
         _pr(
             44,
             merge_state="UNKNOWN",
-            checks=[_check("lint"), {"name": "test", "status": "IN_PROGRESS"}],
+            checks=[
+                _check("lint"),
+                {"name": "test", "status": "IN_PROGRESS"},
+                _check("typecheck"),
+                _check("web-build"),
+                _check("vscode-build"),
+            ],
         )
     ]
 
@@ -529,3 +568,121 @@ def test_disables_auto_merge_when_armed_pr_is_now_blocked(tmp_path: Path) -> Non
 
     assert report["counts"]["disable_auto_merge"] == 1
     assert ["gh", "pr", "merge", "80", "--repo", "owner/repo", "--disable-auto"] in runner.calls
+
+
+def test_disables_auto_merge_when_required_checks_are_absent(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="missing-required", pr=81)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(81, auto_merge=True, checks=[_check("CodeQL")])]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        required_checks=("lint", "test"),
+        runner=runner,
+    )
+
+    assert report["counts"]["disable_auto_merge"] == 1
+    assert "missing_required_checks:lint,test" in report["decisions"][0]["reasons"]
+    assert ["gh", "pr", "merge", "81", "--repo", "owner/repo", "--disable-auto"] in runner.calls
+
+
+def test_dequeues_queued_pr_when_required_checks_are_absent(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="queued-missing-required", pr=82)
+    runner = _FakeRunner()
+    runner.queued_prs = {82}
+    runner.open_prs = [_pr(82, checks=[_check("CodeQL")])]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        required_checks=("lint", "test"),
+        runner=runner,
+    )
+
+    assert report["counts"]["dequeue"] == 1
+    assert "missing_required_checks:lint,test" in report["decisions"][0]["reasons"]
+    assert any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
+
+
+def test_stabilization_holds_downstream_prs_while_ci_repair_is_active(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="ci-repair",
+        folder="active",
+        status="ready",
+        pr=90,
+        priority="p0",
+        kind="cicd-speedup",
+        tags=["cicd", "merge-queue"],
+    )
+    _write_task(vault, task_id="downstream", folder="active", status="ready", pr=91)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(90), _pr(91)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decisions = {item["pr"]: item for item in report["decisions"]}
+    assert decisions[90]["action"] == "queue"
+    assert decisions[91]["action"] == "blocked"
+    assert "admission_stabilization_hold:active_ci_repair:ci-repair" in decisions[91]["reasons"]
+    assert ["gh", "pr", "merge", "90", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert not any(call[:4] == ["gh", "pr", "merge", "91"] for call in runner.calls)
+
+
+def test_stabilization_allows_governed_independent_route(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="ci-repair",
+        folder="active",
+        status="ready",
+        pr=92,
+        priority="p0",
+        kind="cicd-speedup",
+        tags=["cicd"],
+    )
+    _write_task(
+        vault,
+        task_id="independent",
+        folder="active",
+        status="ready",
+        pr=93,
+        queue_admission="independent",
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(92), _pr(93)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decisions = {item["pr"]: item for item in report["decisions"]}
+    assert decisions[92]["action"] == "queue"
+    assert decisions[93]["action"] == "queue"
+    assert not any(
+        reason.startswith("admission_stabilization_hold:")
+        for reason in decisions[93].get("reasons", [])
+    )
