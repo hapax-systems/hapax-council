@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts.ci_select_pytest_shard import (
     RuntimeWeightConfig,
@@ -12,6 +13,7 @@ from scripts.ci_select_pytest_shard import (
     load_runtime_weights,
     main,
     parse_collect_output,
+    parse_pytest_duration_output,
     selected_paths,
 )
 
@@ -157,6 +159,102 @@ def test_load_runtime_weights_rejects_missing_numeric_weight(tmp_path: Path) -> 
 
     with pytest.raises(ValueError, match="collected_test_equivalent_weight"):
         load_runtime_weights(weights_path)
+
+
+def test_parse_pytest_duration_output_extracts_nodeid_phase_and_seconds() -> None:
+    output = "\n".join(
+        [
+            "============================= slowest 3 durations =============================",
+            "30.11s call     tests/scripts/test_post_merge_smoke.py::test_one[param]",
+            "2.58s setup    tests/studio_compositor/test_compositor_wiring.py::TestA::test_two",
+            "not a duration line",
+            "0.04s teardown tests/a/test_alpha.py::test_three",
+        ]
+    )
+
+    durations = parse_pytest_duration_output(output)
+
+    assert [(item.seconds, item.phase, item.nodeid) for item in durations] == [
+        (30.11, "call", "tests/scripts/test_post_merge_smoke.py::test_one[param]"),
+        (
+            2.58,
+            "setup",
+            "tests/studio_compositor/test_compositor_wiring.py::TestA::test_two",
+        ),
+        (0.04, "teardown", "tests/a/test_alpha.py::test_three"),
+    ]
+
+
+def test_cli_writes_pytest_duration_artifact(
+    tmp_path: Path,
+) -> None:
+    pytest_output = tmp_path / "pytest-output.txt"
+    selected_units = tmp_path / "selected.txt"
+    duration_artifact = tmp_path / "durations.yaml"
+    pytest_output.write_text(
+        "\n".join(
+            [
+                "============================= slowest durations =============================",
+                "1.25s call     tests/a/test_alpha.py::test_one",
+                "0.75s setup    tests/a/test_alpha.py::test_one",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    selected_units.write_text("tests/a/test_alpha.py::test_one\n", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "--pytest-output",
+            str(pytest_output),
+            "--duration-artifact",
+            str(duration_artifact),
+            "--selected-units",
+            str(selected_units),
+            "--shard",
+            "2",
+            "--shards",
+            "4",
+            "--run-id",
+            "26065012238",
+            "--run-attempt",
+            "1",
+            "--head-sha",
+            "78aba7d",
+            "--event-name",
+            "merge_group",
+            "--require-durations",
+        ]
+    )
+
+    loaded = yaml.safe_load(duration_artifact.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert loaded["artifact_type"] == "pytest_node_durations"
+    assert loaded["duration_source"] == "pytest --durations=0 --durations-min=0"
+    assert loaded["run"] == {
+        "id": "26065012238",
+        "attempt": "1",
+        "head_sha": "78aba7d",
+        "event_name": "merge_group",
+    }
+    assert loaded["shard"] == {
+        "index": 2,
+        "count": 4,
+        "selected_unit_count": 1,
+    }
+    assert loaded["selected_units"] == ["tests/a/test_alpha.py::test_one"]
+    assert loaded["durations"] == [
+        {
+            "nodeid": "tests/a/test_alpha.py::test_one",
+            "phase": "call",
+            "seconds": 1.25,
+        },
+        {
+            "nodeid": "tests/a/test_alpha.py::test_one",
+            "phase": "setup",
+            "seconds": 0.75,
+        },
+    ]
 
 
 def test_cli_prints_selected_files_and_runtime_weight_plan(

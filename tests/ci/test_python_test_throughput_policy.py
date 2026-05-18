@@ -76,9 +76,15 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
     assert "uv run --no-sync pytest tests/ --collect-only -q" in shard_block
     assert "uv run --no-sync python scripts/ci_select_pytest_shard.py" in shard_block
     assert "selected $unit_count test units" in shard_block
-    assert (
-        "xargs -d '\\n' -a \"$shard_files\" uv run --no-sync pytest -q --tb=line "
-        "--durations=25" in shard_block
+    assert "xargs -d '\\n' -a \"$shard_files\" uv run --no-sync pytest -q --tb=line" in shard_block
+    assert "--durations=0 --durations-min=0" in shard_block
+    assert "--pytest-output /tmp/pytest-output.txt" in shard_block
+    assert '--duration-artifact "$duration_artifact"' in shard_block
+    assert "--require-durations" in shard_block
+    assert "Upload pytest node duration artifacts" in shard_block
+    assert "actions/upload-artifact@v7" in shard_block
+    assert "pytest-node-durations-shard-${{ matrix.shard }}-of-${{ matrix.shard_count }}" in (
+        shard_block
     )
     assert "--ignore=tests/test_demo_title_cards.py" in shard_block
     assert "--ignore=tests/test_demo_video_integration.py" in shard_block
@@ -133,6 +139,14 @@ def test_python_test_throughput_evidence_records_gated_decision() -> None:
         evidence["rollout_policy"]["runtime_weight_source"]
         == "config/ci/python-test-runtime-weights.yaml"
     )
+    assert (
+        evidence["rollout_policy"]["merge_group_duration_artifact"]
+        == "pytest-node-durations-shard-N-of-4"
+    )
+    assert (
+        evidence["rollout_policy"]["merge_group_duration_artifact_schema"]
+        == "pytest_node_durations/v1"
+    )
     assert evidence["rollout_policy"]["merge_group_uv_policy"] == "frozen_sync_then_no_sync_run"
     assert evidence["rollout_policy"]["push_main"] == "full_pytest"
     assert (
@@ -172,6 +186,25 @@ def test_python_runtime_weights_record_merge_queue_evidence() -> None:
         "3": 265.32,
         "4": 258.48,
     }
+    assert recent_evidence[26065012238]["shard_pytest_seconds"] == {
+        "1": 221.25,
+        "2": 265.57,
+        "3": 263.52,
+        "4": 415.06,
+    }
+    predictions = weights["prediction_receipts"]
+    assert predictions["before_refresh"]["predicted_shard_weights"] == {
+        "1": 11587,
+        "2": 11586,
+        "3": 11586,
+        "4": 11586,
+    }
+    assert predictions["after_refresh"]["predicted_shard_weights"] == {
+        "1": 13831,
+        "2": 13830,
+        "3": 13830,
+        "4": 13830,
+    }
     split_groups = weights["split_groups"]
     assert (
         split_groups[
@@ -184,6 +217,20 @@ def test_python_runtime_weights_record_merge_queue_evidence() -> None:
             "collected_test_equivalent_weight"
         ]
         == 1800
+    )
+    assert (
+        split_groups[
+            "tests/scripts/test_post_merge_smoke.py::"
+            "TestM8MidiClockPeerGate::test_skips_when_m8_absent"
+        ]["collected_test_equivalent_weight"]
+        == 2800
+    )
+    assert (
+        split_groups[
+            "tests/studio_compositor/test_preset_family_selector_deprecation.py::"
+            "TestPresetFamilySelectorDeprecation::test_no_new_importers"
+        ]["collected_test_equivalent_weight"]
+        == 3200
     )
     slow_file = weights["files"]["tests/studio_compositor/test_compositor_wiring.py"]
     assert slow_file["collected_test_equivalent_weight"] == 9000

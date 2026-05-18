@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -29,6 +30,21 @@ class ShardSummary:
     index: int
     load: float
     files: tuple[WeightedTestFile, ...]
+
+
+@dataclass(frozen=True)
+class PytestDuration:
+    nodeid: str
+    phase: str
+    seconds: float
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_DURATION_LINE_RE = re.compile(
+    r"(?P<seconds>\d+(?:\.\d+)?)s\s+"
+    r"(?P<phase>setup|call|teardown)\s+"
+    r"(?P<nodeid>tests/.+)$"
+)
 
 
 def parse_collect_output(collect_output: str) -> dict[str, int]:
@@ -187,6 +203,77 @@ def write_plan(plan: tuple[ShardSummary, ...], stream: TextIO) -> None:
     stream.write("Shard plan by runtime weight: " + " ".join(parts) + "\n")
 
 
+def parse_pytest_duration_output(pytest_output: str) -> tuple[PytestDuration, ...]:
+    durations: list[PytestDuration] = []
+    for raw_line in pytest_output.splitlines():
+        line = _ANSI_RE.sub("", raw_line).strip()
+        match = _DURATION_LINE_RE.search(line)
+        if match is None:
+            continue
+        durations.append(
+            PytestDuration(
+                nodeid=match.group("nodeid").strip(),
+                phase=match.group("phase"),
+                seconds=float(match.group("seconds")),
+            )
+        )
+    return tuple(
+        sorted(
+            durations,
+            key=lambda item: (-item.seconds, item.phase, item.nodeid),
+        )
+    )
+
+
+def build_pytest_duration_artifact(
+    durations: tuple[PytestDuration, ...],
+    *,
+    selected_units: tuple[str, ...],
+    shard: int,
+    shard_count: int,
+    run_id: str,
+    run_attempt: str,
+    head_sha: str,
+    event_name: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "artifact_type": "pytest_node_durations",
+        "duration_source": "pytest --durations=0 --durations-min=0",
+        "run": {
+            "id": run_id,
+            "attempt": run_attempt,
+            "head_sha": head_sha,
+            "event_name": event_name,
+        },
+        "shard": {
+            "index": shard,
+            "count": shard_count,
+            "selected_unit_count": len(selected_units),
+        },
+        "selected_units": list(selected_units),
+        "durations": [
+            {
+                "nodeid": item.nodeid,
+                "phase": item.phase,
+                "seconds": item.seconds,
+            }
+            for item in durations
+        ],
+    }
+
+
+def write_pytest_duration_artifact(
+    artifact: Mapping[str, Any],
+    path: Path,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump(dict(artifact), sort_keys=False),
+        encoding="utf-8",
+    )
+
+
 def _format_weight(weight: float) -> str:
     if weight.is_integer():
         return str(int(weight))
@@ -197,12 +284,64 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Select pytest test units for one deterministic runtime-weighted shard."
     )
-    parser.add_argument("--collect-output", type=Path, required=True)
-    parser.add_argument("--weights", type=Path, required=True)
-    parser.add_argument("--shard", type=int, required=True)
-    parser.add_argument("--shards", type=int, required=True)
+    parser.add_argument("--collect-output", type=Path)
+    parser.add_argument("--weights", type=Path)
+    parser.add_argument("--shard", type=int)
+    parser.add_argument("--shards", type=int)
+    parser.add_argument("--pytest-output", type=Path)
+    parser.add_argument("--duration-artifact", type=Path)
+    parser.add_argument("--selected-units", type=Path)
+    parser.add_argument("--run-id", default="")
+    parser.add_argument("--run-attempt", default="")
+    parser.add_argument("--head-sha", default="")
+    parser.add_argument("--event-name", default="")
+    parser.add_argument("--require-durations", action="store_true")
     args = parser.parse_args(argv)
 
+    if args.pytest_output is not None or args.duration_artifact is not None:
+        if args.pytest_output is None:
+            parser.error("--pytest-output is required with --duration-artifact")
+        if args.duration_artifact is None:
+            parser.error("--duration-artifact is required with --pytest-output")
+        if args.shard is None or args.shards is None:
+            parser.error("--shard and --shards are required with --duration-artifact")
+        if args.shards < 1:
+            parser.error("--shards must be positive")
+        if args.shard < 1 or args.shard > args.shards:
+            parser.error("--shard must be between 1 and --shards")
+
+        pytest_output = args.pytest_output.read_text(encoding="utf-8")
+        durations = parse_pytest_duration_output(pytest_output)
+        if args.require_durations and not durations:
+            parser.error("no pytest duration lines were found")
+        selected_units: tuple[str, ...] = ()
+        if args.selected_units is not None and args.selected_units.exists():
+            selected_units = tuple(
+                line.strip()
+                for line in args.selected_units.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            )
+        artifact = build_pytest_duration_artifact(
+            durations,
+            selected_units=selected_units,
+            shard=args.shard,
+            shard_count=args.shards,
+            run_id=args.run_id,
+            run_attempt=args.run_attempt,
+            head_sha=args.head_sha,
+            event_name=args.event_name,
+        )
+        write_pytest_duration_artifact(artifact, args.duration_artifact)
+        return 0
+
+    if args.collect_output is None:
+        parser.error("--collect-output is required unless writing a duration artifact")
+    if args.weights is None:
+        parser.error("--weights is required unless writing a duration artifact")
+    if args.shard is None:
+        parser.error("--shard is required")
+    if args.shards is None:
+        parser.error("--shards is required")
     if args.shards < 1:
         parser.error("--shards must be positive")
     if args.shard < 1 or args.shard > args.shards:

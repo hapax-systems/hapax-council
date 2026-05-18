@@ -55,6 +55,72 @@ evidence:
       "2": 253.82
       "3": 265.32
       "4": 258.48
+  - source: github_actions_merge_group
+    pr: 3456
+    run_id: 26065012238
+    merge_commit: 78aba7d389635e947f1c0e77e587c564dca733b5
+    captured_at: 2026-05-18T23:45:00Z
+    summary: >-
+      Successful run after class-prefix compositor splitting showed the
+      checked-in prediction was balanced, but shard 4 remained the tail because
+      several node-level scan/smoke tests were underestimated and co-located.
+    selected_unit_counts:
+      "1": 500
+      "2": 503
+      "3": 503
+      "4": 503
+    shard_pytest_seconds:
+      "1": 221.25
+      "2": 265.57
+      "3": 263.52
+      "4": 415.06
+    shard_4_slowest_visible_call_seconds:
+      tests/scripts/test_post_merge_smoke.py::TestM8MidiClockPeerGate::test_skips_when_m8_absent: 30.11
+      tests/studio_compositor/test_preset_family_selector_deprecation.py::TestPresetFamilySelectorDeprecation::test_no_new_importers: 28.19
+      tests/studio_compositor/test_preset_family_selector_deprecation.py::TestPresetFamilySelectorDeprecation::test_known_importers_still_import: 21.94
+      tests/studio_compositor/test_compositor_wiring.py::TestStartLayoutOnly::test_start_layout_only_wires_autosaver_and_file_watcher: 11.93
+      tests/studio_compositor/test_compositor_wiring.py::TestStartDelegatesThroughStartLayoutOnly::test_start_invokes_layout_loader_before_lifecycle: 11.54
+      tests/test_forbidden_payment_imports.py::TestForbiddenPaymentImportGuard::test_codebase_has_no_forbidden_payment_imports: 8.47
+prediction_receipts:
+  before_refresh:
+    source: local_merge_group_collect_with_ci_filters
+    captured_at: 2026-05-18T23:45:00Z
+    collected_shard_unit_count: 1994
+    predicted_shard_weights:
+      "1": 11587
+      "2": 11586
+      "3": 11586
+      "4": 11586
+    predicted_unit_counts:
+      "1": 497
+      "2": 499
+      "3": 499
+      "4": 499
+    observed_pytest_seconds_from_run_26065012238:
+      "1": 221.25
+      "2": 265.57
+      "3": 263.52
+      "4": 415.06
+    conclusion: >-
+      The old weights looked balanced but hid the shard-4 concentration of
+      slow exact nodes and read-only repo scans.
+  after_refresh:
+    source: local_merge_group_collect_with_ci_filters
+    captured_at: 2026-05-18T23:45:00Z
+    collected_shard_unit_count: 2021
+    predicted_shard_weights:
+      "1": 13831
+      "2": 13830
+      "3": 13830
+      "4": 13830
+    predicted_unit_counts:
+      "1": 505
+      "2": 505
+      "3": 505
+      "4": 506
+    conclusion: >-
+      Exact-node splits redistribute the observed shard-4 long pole across all
+      four shards while keeping deterministic greedy placement.
 split_groups:
   tests/studio_compositor/test_compositor_wiring.py::TestStudioCompositorBudgetWiring:
     collected_test_equivalent_weight: 4200
@@ -75,19 +141,20 @@ split_groups:
       collected_tests_after_deselect: 1
       latest_top_duration_seconds_for_group: 29.69
   tests/studio_compositor/test_compositor_wiring.py::TestStartLayoutOnly:
-    collected_test_equivalent_weight: 1400
+    collected_test_equivalent_weight: 2600
     evidence:
       collected_tests_after_deselect: 12
-      latest_top_duration_seconds_for_group: 25.16
+      latest_visible_duration_seconds_for_group: 25.21
       note: >-
         One StartLayoutOnly test is deselected by the existing release-surface
         command; this weight covers the remaining collected class node prefix.
-        The duration value is the subset visible in the latest top-25 log.
+        The duration value is the visible call/setup subset from run
+        26065012238.
   tests/studio_compositor/test_compositor_wiring.py::TestStartDelegatesThroughStartLayoutOnly:
-    collected_test_equivalent_weight: 700
+    collected_test_equivalent_weight: 1500
     evidence:
       collected_tests_after_deselect: 1
-      latest_top_duration_seconds_for_group: 10.30
+      latest_visible_duration_seconds_for_group: 14.01
   tests/studio_compositor/test_compositor_wiring.py::TestResearchMarkerOverlayRegistered:
     collected_test_equivalent_weight: 100
     evidence:
@@ -96,6 +163,43 @@ split_groups:
         Not present in the latest top-25 duration log; kept as an explicit
         split unit so the configured file is fully covered without whole-file
         fallback duplication.
+  tests/scripts/test_post_merge_smoke.py::TestM8MidiClockPeerGate::test_skips_when_m8_absent:
+    collected_test_equivalent_weight: 2800
+    evidence:
+      collected_tests_after_deselect: 1
+      latest_visible_call_seconds: 30.11
+      source_run_id: 26065012238
+      stateful_test_risk: >-
+        Low: this test constructs an isolated temporary git repository and
+        stubs amidi on PATH, so splitting it from the rest of the file does not
+        share process or filesystem state.
+  tests/studio_compositor/test_preset_family_selector_deprecation.py::TestPresetFamilySelectorDeprecation::test_no_new_importers:
+    collected_test_equivalent_weight: 3200
+    evidence:
+      collected_tests_after_deselect: 1
+      latest_visible_call_seconds: 28.19
+      source_run_id: 26065012238
+      stateful_test_risk: >-
+        Low: this is a read-only repository import scan with no shared fixture
+        state.
+  tests/studio_compositor/test_preset_family_selector_deprecation.py::TestPresetFamilySelectorDeprecation::test_known_importers_still_import:
+    collected_test_equivalent_weight: 2400
+    evidence:
+      collected_tests_after_deselect: 1
+      latest_visible_call_seconds: 21.94
+      source_run_id: 26065012238
+      stateful_test_risk: >-
+        Low: this is a read-only repository import scan with no shared fixture
+        state.
+  tests/test_forbidden_payment_imports.py::TestForbiddenPaymentImportGuard::test_codebase_has_no_forbidden_payment_imports:
+    collected_test_equivalent_weight: 1000
+    evidence:
+      collected_tests_after_deselect: 1
+      latest_visible_call_seconds: 8.47
+      source_run_id: 26065012238
+      stateful_test_risk: >-
+        Low: this is a read-only source tree scan; the remaining unit tests in
+        the file use tmp_path fixtures.
 files:
   tests/studio_compositor/test_compositor_wiring.py:
     collected_test_equivalent_weight: 9000
@@ -108,20 +212,26 @@ files:
         The configured split_groups above take precedence for collected class
         node prefixes so this file no longer has to remain one shard unit.
   tests/scripts/test_post_merge_smoke.py:
-    collected_test_equivalent_weight: 1200
+    collected_test_equivalent_weight: 3000
     evidence:
-      shard: 2
-      top_25_duration_seconds_for_file: 30.10
+      shard: 4
+      top_25_duration_seconds_for_file: 30.11
+      note: >-
+        Exact slow M8-absent node is configured above so the file no longer has
+        to travel as one coarse shard unit.
   tests/scripts/test_hapax_post_merge_deploy.py:
     collected_test_equivalent_weight: 900
     evidence:
       shard: 1
       top_25_duration_seconds_for_file: 22.87
   tests/studio_compositor/test_preset_family_selector_deprecation.py:
-    collected_test_equivalent_weight: 900
+    collected_test_equivalent_weight: 5600
     evidence:
-      shard: 3
-      top_25_duration_seconds_for_file: 28.90
+      shard: 4
+      top_25_duration_seconds_for_file: 50.13
+      note: >-
+        Two read-only repository scan tests are split as exact node units above
+        to avoid co-locating the whole deprecation scan file on one shard.
   tests/studio_compositor/test_no_blink.py:
     collected_test_equivalent_weight: 900
     evidence:
@@ -153,10 +263,13 @@ files:
       shard: 2
       top_25_duration_seconds_for_file: 7.58
   tests/test_forbidden_payment_imports.py:
-    collected_test_equivalent_weight: 350
+    collected_test_equivalent_weight: 1000
     evidence:
-      shard: 2
-      top_25_duration_seconds_for_file: 5.95
+      shard: 4
+      top_25_duration_seconds_for_file: 8.47
+      note: >-
+        Codebase scan node is split exactly above; fixture-local scanner tests
+        fall back to individual collected node IDs.
   tests/test_agent_registry.py:
     collected_test_equivalent_weight: 300
     evidence:
