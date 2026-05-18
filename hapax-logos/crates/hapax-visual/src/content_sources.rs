@@ -1245,6 +1245,9 @@ mod family_classification_tests {
             "fullscreen",
             "screen_rect",
             "canvas rect",
+            "output_plane",
+            "viewport_fixed",
+            "post_projection_screen_coordinates",
             "overlay_zones_full",
         ] {
             let mut binding = valid_root_binding();

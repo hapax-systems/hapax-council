@@ -938,6 +938,7 @@ mod tests {
             "aoa_face_vertex",
             "grandchild_idx",
             "triangle_barycentric",
+            "triangle_inside_mask_from_barycentric",
             "pane_information_uv_from_barycentric",
             "pane_information_grid",
             "aoa_fragment",

@@ -13,6 +13,9 @@ pub const AOA_GEOMETRY_REVISION: &str = "aoa-tetrix-v1";
 pub const AOA_PANE_SCHEMA_VERSION: u32 = 1;
 pub const AOA_PANE_ID_VERSION: &str = "v1";
 pub const AOA_TETRIX_RENDER_DEPTH: u32 = 2;
+pub const AOA_PANE_CLIP_TOLERANCE: f32 = 0.001;
+pub const AOA_PANE_MIN_VISIBLE_EDGE_PX: f32 = 4.0;
+pub const AOA_PANE_MIN_FRONT_FACING_DOT: f32 = 0.02;
 
 pub const AOA_ROOT_MODEL_VERTICES: [[f32; 3]; 4] = [
     [-0.58, -0.44, 0.34],
@@ -203,6 +206,43 @@ pub struct AoaPaneManifest {
     pub panes: Vec<AoaPaneRecord>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AoaPanePayloadBlockReason {
+    MissingPaneBinding,
+    MissingPaneTransform,
+    MissingBarycentricMask,
+    PaneHidden,
+    BackFacing,
+    BelowVisibilityThreshold,
+    OutsideTriangle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AoaPanePayloadGate {
+    pub has_valid_pane_binding: bool,
+    pub has_pane_transform: bool,
+    pub has_barycentric_mask: bool,
+    pub pane_visible: bool,
+    pub facing_dot: f32,
+    pub min_projected_edge_px: f32,
+    pub barycentric: [f32; 3],
+}
+
+impl AoaPanePayloadGate {
+    pub fn visible_inside(barycentric: [f32; 3]) -> Self {
+        Self {
+            has_valid_pane_binding: true,
+            has_pane_transform: true,
+            has_barycentric_mask: true,
+            pane_visible: true,
+            facing_dot: 1.0,
+            min_projected_edge_px: AOA_PANE_MIN_VISIBLE_EDGE_PX,
+            barycentric,
+        }
+    }
+}
+
 pub fn aoa_leaf_tetrahedron_count(depth: u32) -> usize {
     4usize.pow(depth)
 }
@@ -274,6 +314,66 @@ pub fn aoa_triangular_uv_from_barycentric(barycentric: [f32; 3]) -> [f32; 2] {
         barycentric[1] + 0.5 * barycentric[2],
         (3.0f32).sqrt() * 0.5 * barycentric[2],
     ]
+}
+
+pub fn aoa_barycentric_inside_triangle(barycentric: [f32; 3], tolerance: f32) -> bool {
+    if !barycentric.iter().all(|component| component.is_finite()) {
+        return false;
+    }
+    let tolerance = tolerance.max(0.0);
+    let sum = barycentric[0] + barycentric[1] + barycentric[2];
+    (sum - 1.0).abs() <= tolerance * 3.0
+        && barycentric.iter().all(|component| *component >= -tolerance)
+}
+
+pub fn aoa_pane_payload_alpha(source_alpha: f32, barycentric: [f32; 3], tolerance: f32) -> f32 {
+    if !source_alpha.is_finite() {
+        return 0.0;
+    }
+    if aoa_barycentric_inside_triangle(barycentric, tolerance) {
+        source_alpha.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+pub fn aoa_pane_payload_block_reason(
+    gate: AoaPanePayloadGate,
+) -> Option<AoaPanePayloadBlockReason> {
+    if !gate.has_valid_pane_binding {
+        return Some(AoaPanePayloadBlockReason::MissingPaneBinding);
+    }
+    if !gate.has_pane_transform {
+        return Some(AoaPanePayloadBlockReason::MissingPaneTransform);
+    }
+    if !gate.has_barycentric_mask {
+        return Some(AoaPanePayloadBlockReason::MissingBarycentricMask);
+    }
+    if !gate.pane_visible {
+        return Some(AoaPanePayloadBlockReason::PaneHidden);
+    }
+    if !gate.facing_dot.is_finite() || gate.facing_dot < AOA_PANE_MIN_FRONT_FACING_DOT {
+        return Some(AoaPanePayloadBlockReason::BackFacing);
+    }
+    if !gate.min_projected_edge_px.is_finite()
+        || gate.min_projected_edge_px < AOA_PANE_MIN_VISIBLE_EDGE_PX
+    {
+        return Some(AoaPanePayloadBlockReason::BelowVisibilityThreshold);
+    }
+    if !aoa_barycentric_inside_triangle(gate.barycentric, AOA_PANE_CLIP_TOLERANCE) {
+        return Some(AoaPanePayloadBlockReason::OutsideTriangle);
+    }
+    None
+}
+
+pub fn aoa_pane_payload_alpha_after_gate(source_alpha: f32, gate: AoaPanePayloadGate) -> f32 {
+    if aoa_pane_payload_block_reason(gate).is_some() {
+        0.0
+    } else if !source_alpha.is_finite() {
+        0.0
+    } else {
+        source_alpha.clamp(0.0, 1.0)
+    }
 }
 
 pub fn aoa_pane_records(render_depth: u32) -> Vec<AoaPaneRecord> {
@@ -584,6 +684,128 @@ mod tests {
         assert_eq!(right, [1.0, 0.0]);
         assert!((top[0] - 0.5).abs() < 1e-6);
         assert!(top[1] > 0.866 && top[1] < 0.867);
+    }
+
+    #[test]
+    fn high_contrast_pane_payload_clips_to_triangle_bounds() {
+        for inside in [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.2, 0.3, 0.5],
+            [-0.0005, 0.50025, 0.50025],
+        ] {
+            assert!(aoa_barycentric_inside_triangle(
+                inside,
+                AOA_PANE_CLIP_TOLERANCE
+            ));
+            assert_eq!(
+                aoa_pane_payload_alpha(1.0, inside, AOA_PANE_CLIP_TOLERANCE),
+                1.0
+            );
+        }
+
+        for outside in [
+            [-0.01, 0.50, 0.51],
+            [0.50, -0.01, 0.51],
+            [0.50, 0.51, -0.01],
+            [0.25, 0.25, 0.25],
+            [f32::NAN, 0.5, 0.5],
+        ] {
+            assert!(!aoa_barycentric_inside_triangle(
+                outside,
+                AOA_PANE_CLIP_TOLERANCE
+            ));
+            assert!(
+                aoa_pane_payload_alpha(1.0, outside, AOA_PANE_CLIP_TOLERANCE)
+                    <= AOA_PANE_CLIP_TOLERANCE,
+                "outside samples must not leak a high-contrast pane card"
+            );
+        }
+
+        assert_eq!(
+            aoa_pane_payload_alpha(f32::NAN, [0.2, 0.3, 0.5], AOA_PANE_CLIP_TOLERANCE),
+            0.0
+        );
+    }
+
+    #[test]
+    fn pane_payload_requires_binding_transform_and_mask() {
+        let mut gate = AoaPanePayloadGate::visible_inside([0.2, 0.3, 0.5]);
+
+        gate.has_valid_pane_binding = false;
+        assert_eq!(
+            aoa_pane_payload_block_reason(gate),
+            Some(AoaPanePayloadBlockReason::MissingPaneBinding)
+        );
+
+        gate = AoaPanePayloadGate::visible_inside([0.2, 0.3, 0.5]);
+        gate.has_pane_transform = false;
+        assert_eq!(
+            aoa_pane_payload_block_reason(gate),
+            Some(AoaPanePayloadBlockReason::MissingPaneTransform)
+        );
+
+        gate = AoaPanePayloadGate::visible_inside([0.2, 0.3, 0.5]);
+        gate.has_barycentric_mask = false;
+        assert_eq!(
+            aoa_pane_payload_block_reason(gate),
+            Some(AoaPanePayloadBlockReason::MissingBarycentricMask)
+        );
+    }
+
+    #[test]
+    fn pane_payload_fails_closed_when_not_geometrically_observable() {
+        let mut gate = AoaPanePayloadGate::visible_inside([0.2, 0.3, 0.5]);
+
+        gate.pane_visible = false;
+        assert_eq!(
+            aoa_pane_payload_block_reason(gate),
+            Some(AoaPanePayloadBlockReason::PaneHidden)
+        );
+        assert_eq!(aoa_pane_payload_alpha_after_gate(1.0, gate), 0.0);
+
+        gate = AoaPanePayloadGate::visible_inside([0.2, 0.3, 0.5]);
+        gate.facing_dot = -0.1;
+        assert_eq!(
+            aoa_pane_payload_block_reason(gate),
+            Some(AoaPanePayloadBlockReason::BackFacing)
+        );
+        assert_eq!(aoa_pane_payload_alpha_after_gate(1.0, gate), 0.0);
+
+        gate = AoaPanePayloadGate::visible_inside([0.2, 0.3, 0.5]);
+        gate.facing_dot = f32::NAN;
+        assert_eq!(
+            aoa_pane_payload_block_reason(gate),
+            Some(AoaPanePayloadBlockReason::BackFacing)
+        );
+        assert_eq!(aoa_pane_payload_alpha_after_gate(1.0, gate), 0.0);
+
+        gate = AoaPanePayloadGate::visible_inside([0.2, 0.3, 0.5]);
+        gate.min_projected_edge_px = AOA_PANE_MIN_VISIBLE_EDGE_PX - 0.1;
+        assert_eq!(
+            aoa_pane_payload_block_reason(gate),
+            Some(AoaPanePayloadBlockReason::BelowVisibilityThreshold)
+        );
+        assert_eq!(aoa_pane_payload_alpha_after_gate(1.0, gate), 0.0);
+
+        gate = AoaPanePayloadGate::visible_inside([0.2, 0.3, 0.5]);
+        gate.min_projected_edge_px = f32::INFINITY;
+        assert_eq!(
+            aoa_pane_payload_block_reason(gate),
+            Some(AoaPanePayloadBlockReason::BelowVisibilityThreshold)
+        );
+        assert_eq!(aoa_pane_payload_alpha_after_gate(1.0, gate), 0.0);
+
+        gate = AoaPanePayloadGate::visible_inside([0.2, 0.3, 0.5]);
+        assert_eq!(aoa_pane_payload_alpha_after_gate(f32::NAN, gate), 0.0);
+
+        gate = AoaPanePayloadGate::visible_inside([-0.01, 0.50, 0.51]);
+        assert_eq!(
+            aoa_pane_payload_block_reason(gate),
+            Some(AoaPanePayloadBlockReason::OutsideTriangle)
+        );
+        assert_eq!(aoa_pane_payload_alpha_after_gate(1.0, gate), 0.0);
     }
 
     #[test]
