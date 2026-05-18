@@ -19,6 +19,10 @@ function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function attr(s: string): string {
+  return esc(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 function pct(n: number): string {
   return (n * 100).toFixed(1) + "%";
 }
@@ -31,7 +35,7 @@ function section(title: string, body: string, open = true): string {
 }
 
 function actionBtn(label: string, action: string, cls = ""): string {
-  return `<button class="hapax-action ${cls}" data-action="${esc(action)}">${esc(label)}</button>`;
+  return `<button class="hapax-action ${attr(cls)}" data-action="${attr(action)}">${esc(label)}</button>`;
 }
 
 // ─── Sprint ───────────────────────────────────────────────────────────────────
@@ -52,7 +56,7 @@ export function renderSprintStatus(sprint: SprintState): string {
 
 export function renderStimmungBadge(stimmung: StimmungState): string {
   const stance = stimmung.overall_stance;
-  const body = `<span class="hapax-stimmung-dot hapax-stance-${esc(stance)}"></span>
+  const body = `<span class="hapax-stimmung-dot hapax-stance-${attr(stance)}"></span>
   <span class="hapax-stance-label">${esc(stance)}</span>`;
   return section("Stimmung", body);
 }

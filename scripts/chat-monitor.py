@@ -25,6 +25,7 @@ import re
 import subprocess
 import threading
 import time
+import unicodedata
 import urllib.request
 from collections import deque
 from pathlib import Path
@@ -63,17 +64,21 @@ def _get_litellm_key() -> str:
 
 
 # --- Simple tokenizer for chat text ---
-_EMOJI_RE = re.compile(
-    "[\U0001f600-\U0001f64f\U0001f300-\U0001f5ff\U0001f680-\U0001f6ff"
-    "\U0001f1e0-\U0001f1ff\U00002702-\U000027b0\U0001fa00-\U0001fa6f"
-    "\U0001fa70-\U0001faff\U00002600-\U000026ff\U0000fe0f]+",
-    flags=re.UNICODE,
-)
+_EMOJI_JOINERS = frozenset({"\ufe0f", "\u200d"})
+
+
+def _strip_emoji(text: str) -> str:
+    """Remove emoji-style symbols without broad regex ranges."""
+    return "".join(
+        ch
+        for ch in text
+        if ch not in _EMOJI_JOINERS and unicodedata.category(ch) not in {"So", "Sk"}
+    )
 
 
 def tokenize_chat(text: str) -> list[str]:
     """Simple whitespace tokenizer for chat. Strips emoji, lowercases, normalizes."""
-    text = _EMOJI_RE.sub("", text)
+    text = _strip_emoji(text)
     text = re.sub(r"(.)\1{3,}", r"\1\1", text)  # collapse repeated chars (lmaooooo → lmao)
     text = text.lower().strip()
     return [w for w in text.split() if len(w) > 1]

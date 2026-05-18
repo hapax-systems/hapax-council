@@ -23,9 +23,9 @@ async def get_related_notes(
     try:
         results = await asyncio.to_thread(_search_related, q, limit)
         return JSONResponse(content={"results": results})
-    except Exception as e:
-        log.warning("Related notes search failed: %s", e)
-        return JSONResponse(content={"results": [], "error": str(e)})
+    except Exception:
+        log.warning("Related notes search failed", exc_info=True)
+        return JSONResponse(content={"results": [], "error": "related notes search failed"})
 
 
 def _search_related(query: str, limit: int) -> list[dict]:
