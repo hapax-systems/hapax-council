@@ -57,6 +57,7 @@ class BridgeRequest(FrozenModel):
     schema_version: Literal[1] = 1
     narrative_text: str = Field(min_length=1)
     programme_id: str | None = None
+    programme_role: str | None = None
     speech_event_id: str | None = None
     impulse_id: str | None = None
     triad_ids: tuple[str, ...] = Field(default_factory=tuple)
@@ -116,6 +117,7 @@ def _format_impingement_content(request: BridgeRequest, result: BridgeResult) ->
     content: dict = {
         "narrative": result.narrative_text,
         "programme_id": programme_id,
+        "programme_role": request.programme_role,
         "operator_referent": request.operator_referent,
         "impulse_id": request.impulse_id,
         "speech_event_id": request.speech_event_id,
@@ -152,6 +154,8 @@ def _programme_authorization_payload(
         "programme_id": request.programme_id or request.envelope.programme_id,
         "evidence_ref": result.programme_authorization,
     }
+    if request.programme_role:
+        payload["programme_role"] = request.programme_role
     if request.envelope.programme_expires_at:
         payload["expires_at"] = request.envelope.programme_expires_at
     return payload
@@ -227,6 +231,12 @@ def evaluate_bridge(request: BridgeRequest) -> BridgeResult:
                 outcome=BridgeOutcome.HELD,
                 narrative_text=request.narrative_text,
                 blockers=("programme_authorization_inconsistent",),
+            )
+        if not request.programme_role:
+            return BridgeResult(
+                outcome=BridgeOutcome.HELD,
+                narrative_text=request.narrative_text,
+                blockers=("programme_role_missing",),
             )
 
         return BridgeResult(

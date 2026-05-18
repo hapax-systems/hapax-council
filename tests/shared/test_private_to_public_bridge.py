@@ -16,6 +16,7 @@ Validates:
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -229,6 +230,7 @@ def test_all_gates_pass_public_proposal() -> None:
     request = BridgeRequest(
         narrative_text="Hapax observes the research instrument stabilizing.",
         programme_id="prog:test",
+        programme_role="work_block",
         envelope=_full_gates_envelope(),
         explicit_public_intent=True,
     )
@@ -247,6 +249,7 @@ def test_public_proposal_uses_envelope_programme_when_request_omits_it() -> None
 
     request = BridgeRequest(
         narrative_text="Hapax observes the research instrument stabilizing.",
+        programme_role="work_block",
         envelope=_full_gates_envelope(),
         explicit_public_intent=True,
     )
@@ -254,6 +257,21 @@ def test_public_proposal_uses_envelope_programme_when_request_omits_it() -> None
 
     assert result.outcome is BridgeOutcome.PUBLIC_ACTION_PROPOSAL
     assert result.programme_authorization == "programme:prog:test"
+
+
+def test_public_proposal_holds_without_programme_role() -> None:
+    """Public proposal must carry a role that CPAL can re-check."""
+
+    request = BridgeRequest(
+        narrative_text="Hapax observes the research instrument stabilizing.",
+        envelope=_full_gates_envelope(),
+        explicit_public_intent=True,
+    )
+    result = evaluate_bridge(request)
+
+    assert result.outcome is BridgeOutcome.HELD
+    assert result.blockers == ("programme_role_missing",)
+    assert result.public_broadcast_intent is False
 
 
 def test_public_proposal_holds_on_programme_id_mismatch() -> None:
@@ -323,6 +341,7 @@ def test_impingement_content_has_broadcast_intent() -> None:
     request = BridgeRequest(
         narrative_text="Hapax observes the research instrument stabilizing.",
         programme_id="prog:test",
+        programme_role="work_block",
         speech_event_id="speech:001",
         envelope=_full_gates_envelope(),
         explicit_public_intent=True,
@@ -334,12 +353,14 @@ def test_impingement_content_has_broadcast_intent() -> None:
     assert content["destination"] == "broadcast"
     assert content["bridge_outcome"] == "public_action_proposal"
     assert content["route_posture"] == "broadcast_authorized"
+    assert content["programme_role"] == "work_block"
     assert content["programme_authorization_ref"] == "programme:prog:test"
     assert content["programme_authorization"] == {
         "authorized": True,
         "authorized_at": "2026-04-30T16:00:00Z",
         "expires_at": "2026-04-30T17:00:00Z",
         "programme_id": "prog:test",
+        "programme_role": "work_block",
         "evidence_ref": "programme:prog:test",
     }
 
@@ -361,16 +382,28 @@ def test_bridge_impingement_content_passes_playback_gate(tmp_path) -> None:
     request = BridgeRequest(
         narrative_text="Hapax observes the research instrument stabilizing.",
         programme_id="prog:test",
+        programme_role="work_block",
         speech_event_id="speech:001",
         envelope=_full_gates_envelope(),
         explicit_public_intent=True,
     )
     result = evaluate_bridge(request)
     content = _format_impingement_content(request, result)
+    stimmung_path = tmp_path / "stimmung.json"
+    stimmung_path.write_text(
+        json.dumps(
+            {
+                "overall_stance": "nominal",
+                "audio_content_mix": {"value": 0.0, "freshness_s": 0.0},
+            }
+        ),
+        encoding="utf-8",
+    )
 
     decision = resolve_playback_decision(
         SimpleNamespace(source="autonomous_narrative", content=content),
         broadcast_audio_health_path=health_path,
+        stimmung_state_path=stimmung_path,
         now=_timestamp("2026-04-30T16:01:00Z"),
     )
 
@@ -474,6 +507,7 @@ def test_evidence_refs_propagate_to_public_proposal() -> None:
     request = BridgeRequest(
         narrative_text="Hapax observes stabilization.",
         programme_id="prog:test",
+        programme_role="work_block",
         envelope=_full_gates_envelope(),
         explicit_public_intent=True,
     )
