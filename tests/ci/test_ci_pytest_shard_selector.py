@@ -5,7 +5,10 @@ from pathlib import Path
 import pytest
 
 from scripts.ci_select_pytest_shard import (
+    RuntimeWeightConfig,
     build_shard_plan,
+    build_shard_plan_from_collect,
+    load_runtime_weight_config,
     load_runtime_weights,
     main,
     parse_collect_output,
@@ -77,6 +80,53 @@ def test_equal_weights_are_ordered_lexically_for_determinism() -> None:
     assert selected_paths(plan, 2) == ["tests/b.py"]
 
 
+def test_configured_split_groups_are_selected_as_node_prefix_units() -> None:
+    collected = "\n".join(
+        [
+            "tests/slow.py::TestSlowA::test_one",
+            "tests/slow.py::TestSlowA::test_two",
+            "tests/slow.py::TestSlowB::test_one",
+            "tests/other.py::test_one",
+            "tests/other.py::test_two",
+        ]
+    )
+    runtime_config = RuntimeWeightConfig(
+        file_weights={"tests/slow.py": 99},
+        split_weights={
+            "tests/slow.py::TestSlowA": 9,
+            "tests/slow.py::TestSlowB": 8,
+        },
+    )
+
+    plan = build_shard_plan_from_collect(collected, runtime_config, shard_count=2)
+    all_selected = selected_paths(plan, 1) + selected_paths(plan, 2)
+
+    assert selected_paths(plan, 1) == ["tests/slow.py::TestSlowA"]
+    assert selected_paths(plan, 2) == ["tests/slow.py::TestSlowB", "tests/other.py"]
+    assert "tests/slow.py" not in all_selected
+    assert [summary.load for summary in plan] == [9, 10]
+
+
+def test_unsplit_nodes_from_partially_split_file_use_exact_nodeid_not_whole_file() -> None:
+    collected = "\n".join(
+        [
+            "tests/slow.py::TestSlowA::test_one",
+            "tests/slow.py::TestNewClass::test_new_path",
+        ]
+    )
+    runtime_config = RuntimeWeightConfig(
+        file_weights={"tests/slow.py": 99},
+        split_weights={"tests/slow.py::TestSlowA": 9},
+    )
+
+    plan = build_shard_plan_from_collect(collected, runtime_config, shard_count=2)
+    all_selected = selected_paths(plan, 1) + selected_paths(plan, 2)
+
+    assert "tests/slow.py::TestSlowA" in all_selected
+    assert "tests/slow.py::TestNewClass::test_new_path" in all_selected
+    assert "tests/slow.py" not in all_selected
+
+
 def test_load_runtime_weights_accepts_explicit_weight_alias(tmp_path: Path) -> None:
     weights_path = tmp_path / "weights.yaml"
     weights_path.write_text(
@@ -87,12 +137,18 @@ def test_load_runtime_weights_accepts_explicit_weight_alias(tmp_path: Path) -> N
                 "    collected_test_equivalent_weight: 42",
                 "  tests/b.py:",
                 "    weight: 3.5",
+                "split_groups:",
+                "  tests/a.py::TestA:",
+                "    collected_test_equivalent_weight: 11",
             ]
         ),
         encoding="utf-8",
     )
 
+    runtime_config = load_runtime_weight_config(weights_path)
     assert load_runtime_weights(weights_path) == {"tests/a.py": 42.0, "tests/b.py": 3.5}
+    assert runtime_config.file_weights == {"tests/a.py": 42.0, "tests/b.py": 3.5}
+    assert runtime_config.split_weights == {"tests/a.py::TestA": 11.0}
 
 
 def test_load_runtime_weights_rejects_missing_numeric_weight(tmp_path: Path) -> None:
@@ -142,4 +198,4 @@ def test_cli_prints_selected_files_and_runtime_weight_plan(
     captured = capsys.readouterr()
     assert exit_code == 0
     assert captured.out == "tests/slow.py\n"
-    assert "Shard plan by runtime weight: 1=10-weight/1-files 2=4-weight/2-files" in (captured.err)
+    assert "Shard plan by runtime weight: 1=10-weight/1-units 2=4-weight/2-units" in (captured.err)

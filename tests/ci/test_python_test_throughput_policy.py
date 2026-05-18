@@ -54,7 +54,11 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
     assert "Serial title-card result" in test_block
     assert "steps.test_mode.outputs.mode == 'full'" in test_block
     assert "timeout -s KILL 1200" in test_block
-    assert "uv run pytest tests/ -q --tb=line --durations=25" in test_block
+    assert "uv sync --extra ci --frozen" in test_block
+    assert (
+        'uv run --no-sync python scripts/ci_verify_pango_font.py "Px437 IBM VGA 8x16"' in test_block
+    )
+    assert "uv run --no-sync pytest tests/ -q --tb=line --durations=25" in test_block
     assert "--ignore=tests/test_demo_title_cards.py" in test_block
     assert "--ignore=tests/test_demo_video_integration.py" in test_block
     assert "Run serial title-card tests" in test_block
@@ -68,7 +72,14 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
     assert "--collect-only -q" in shard_block
     assert "scripts/ci_select_pytest_shard.py" in shard_block
     assert "config/ci/python-test-runtime-weights.yaml" in shard_block
-    assert 'xargs -a "$shard_files" uv run pytest -q --tb=line --durations=25' in shard_block
+    assert "uv sync --extra ci --frozen" in shard_block
+    assert "uv run --no-sync pytest tests/ --collect-only -q" in shard_block
+    assert "uv run --no-sync python scripts/ci_select_pytest_shard.py" in shard_block
+    assert "selected $unit_count test units" in shard_block
+    assert (
+        "xargs -d '\\n' -a \"$shard_files\" uv run --no-sync pytest -q --tb=line "
+        "--durations=25" in shard_block
+    )
     assert "--ignore=tests/test_demo_title_cards.py" in shard_block
     assert "--ignore=tests/test_demo_video_integration.py" in shard_block
 
@@ -77,6 +88,8 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
     assert (
         "sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection"
     ) in title_card_block
+    assert "uv sync --extra ci --frozen" in title_card_block
+    assert "uv run --no-sync pytest" in title_card_block
     assert "tests/test_demo_title_cards.py" in title_card_block
     assert "tests/test_demo_video_integration.py" in title_card_block
 
@@ -113,9 +126,14 @@ def test_python_test_throughput_evidence_records_gated_decision() -> None:
         == "scripts/ci_select_pytest_shard.py"
     )
     assert (
+        evidence["rollout_policy"]["merge_group_shard_unit"]
+        == "file_or_configured_pytest_node_prefix"
+    )
+    assert (
         evidence["rollout_policy"]["runtime_weight_source"]
         == "config/ci/python-test-runtime-weights.yaml"
     )
+    assert evidence["rollout_policy"]["merge_group_uv_policy"] == "frozen_sync_then_no_sync_run"
     assert evidence["rollout_policy"]["push_main"] == "full_pytest"
     assert (
         evidence["rollout_policy"]["workflow_level_path_filters_for_required_check"] == "forbidden"
@@ -130,15 +148,43 @@ def test_python_runtime_weights_record_merge_queue_evidence() -> None:
     assert weights["weight_units"] == "collected_test_equivalent"
     assert weights["unknown_file_fallback"] == "collected_test_count"
     assert weights["assignment_policy"]["selector"] == "scripts/ci_select_pytest_shard.py"
-    evidence = weights["evidence"][0]
-    assert evidence["pr"] == 3444
-    assert evidence["run_id"] == 26035987726
-    assert evidence["shard_pytest_seconds"] == {
+    assert weights["assignment_policy"]["unit"] == "file_or_configured_pytest_node_prefix"
+    assert weights["assignment_policy"]["partially_split_file_fallback"] == "exact_collected_nodeid"
+    first_pass_evidence = weights["evidence"][0]
+    assert first_pass_evidence["pr"] == 3444
+    assert first_pass_evidence["run_id"] == 26035987726
+    assert first_pass_evidence["shard_pytest_seconds"] == {
         "1": 246.32,
         "2": 250.29,
         "3": 236.20,
         "4": 884.43,
     }
+    recent_evidence = {item["run_id"]: item for item in weights["evidence"]}
+    assert recent_evidence[26059880890]["shard_pytest_seconds"] == {
+        "1": 801.17,
+        "2": 197.01,
+        "3": 290.09,
+        "4": 279.82,
+    }
+    assert recent_evidence[26060944340]["shard_pytest_seconds"] == {
+        "1": 799.43,
+        "2": 253.82,
+        "3": 265.32,
+        "4": 258.48,
+    }
+    split_groups = weights["split_groups"]
+    assert (
+        split_groups[
+            "tests/studio_compositor/test_compositor_wiring.py::TestStudioCompositorBudgetWiring"
+        ]["collected_test_equivalent_weight"]
+        == 4200
+    )
+    assert (
+        split_groups["tests/studio_compositor/test_compositor_wiring.py::TestFeatureProbeLog"][
+            "collected_test_equivalent_weight"
+        ]
+        == 1800
+    )
     slow_file = weights["files"]["tests/studio_compositor/test_compositor_wiring.py"]
     assert slow_file["collected_test_equivalent_weight"] == 9000
     assert slow_file["evidence"]["top_25_duration_seconds_for_file"] == 192.90
