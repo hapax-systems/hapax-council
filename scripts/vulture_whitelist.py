@@ -3511,3 +3511,22 @@ _hand_on_turntable
 from shared.audio_performance_context import build_performance_context_full
 
 build_performance_context_full
+
+# Session audit deliverables — runtime SHM readers, daemon entry points,
+# and API consumed by downstream compositor/choreographer integration.
+from shared.audio_topology_validator import ValidationResult
+
+ValidationResult.warning_count
+
+from shared.code_assertion_extractor import _PydanticFieldVisitor
+
+_PydanticFieldVisitor.visit_AnnAssign
+
+from shared.dynamic_audit import run_all_probes
+
+run_all_probes
+
+from shared.ward_spatial_affordance import get_fishbowl_defaults, get_ward_affordance
+
+get_ward_affordance
+get_fishbowl_defaults
