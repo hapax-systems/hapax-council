@@ -3495,15 +3495,19 @@ except ImportError:
 # PR #3447 extractions — runtime-invoked via SHM readers, systemd daemons, and
 # AffordancePipeline select() context injection.
 from agents.density_field import DensityFieldCompute, read_temporal_mode
+
 DensityFieldCompute
 read_temporal_mode
 
 from agents.hapax_daimonion.grounding_ledger import GroundingLedger
+
 GroundingLedger.save_session
 GroundingLedger.load_session
 
 from agents.studio_compositor.director_loop import _hand_on_turntable
+
 _hand_on_turntable
 
 from shared.audio_performance_context import build_performance_context_full
+
 build_performance_context_full
