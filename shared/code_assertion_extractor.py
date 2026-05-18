@@ -222,6 +222,78 @@ class _ValidatorVisitor(ast.NodeVisitor):
         self._visit_func(node)
 
 
+class _PydanticFieldVisitor(ast.NodeVisitor):
+    """Extract constraints from Pydantic Field() calls and Literal type hints."""
+
+    _CONSTRAINT_KWARGS = {"ge", "le", "gt", "lt", "min_length", "max_length", "pattern", "regex"}
+
+    def __init__(self, uri: str) -> None:
+        self.uri = uri
+        self.assertions: list[Assertion] = []
+        self._class_stack: list[str] = []
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._class_stack.append(node.name)
+        self.generic_visit(node)
+        self._class_stack.pop()
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if not self._class_stack:
+            return
+        cls = self._class_stack[-1]
+        field_name = _unparse_safe(node.target) if node.target else "?"
+
+        if (
+            node.value
+            and isinstance(node.value, ast.Call)
+            and _unparse_safe(node.value.func) in ("Field", "pydantic.Field")
+        ):
+            constraints = []
+            for kw in node.value.keywords:
+                if kw.arg in self._CONSTRAINT_KWARGS:
+                    constraints.append(f"{kw.arg}={_unparse_safe(kw.value)}")
+            if constraints:
+                text = f"{cls}.{field_name} constrained: {', '.join(constraints)}"
+                self.assertions.append(
+                    Assertion(
+                        text=text,
+                        source_type=SourceType.CODE,
+                        source_uri=self.uri,
+                        source_span=_source_lines(node),
+                        confidence=0.95,
+                        domain="code",
+                        assertion_type=AssertionType.CONSTRAINT,
+                        provenance=ProvenanceRecord(
+                            extraction_method="ast_pydantic_field_constraint",
+                            extraction_version=EXTRACTION_VERSION,
+                        ),
+                        tags=[f"field:{field_name}"] + [f"constraint:{c}" for c in constraints],
+                    )
+                )
+
+        annotation = _unparse_safe(node.annotation) if node.annotation else ""
+        if "Literal[" in annotation:
+            text = f"{cls}.{field_name} restricted to {annotation}"
+            self.assertions.append(
+                Assertion(
+                    text=text,
+                    source_type=SourceType.CODE,
+                    source_uri=self.uri,
+                    source_span=_source_lines(node),
+                    confidence=0.9,
+                    domain="code",
+                    assertion_type=AssertionType.CONSTRAINT,
+                    provenance=ProvenanceRecord(
+                        extraction_method="ast_literal_type",
+                        extraction_version=EXTRACTION_VERSION,
+                    ),
+                    tags=[f"field:{field_name}", "type:literal"],
+                )
+            )
+
+        self.generic_visit(node)
+
+
 def extract_from_python_file(path: Path) -> list[Assertion]:
     """Extract all assertion types from a single Python file."""
     try:
@@ -245,7 +317,10 @@ def extract_from_python_file(path: Path) -> list[Assertion]:
     val_v = _ValidatorVisitor(uri)
     val_v.visit(tree)
 
-    return assert_v.assertions + doc_v.assertions + val_v.assertions
+    field_v = _PydanticFieldVisitor(uri)
+    field_v.visit(tree)
+
+    return assert_v.assertions + doc_v.assertions + val_v.assertions + field_v.assertions
 
 
 def extract_from_directory(root: Path, *, exclude_tests: bool = True) -> list[Assertion]:
