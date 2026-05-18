@@ -50,6 +50,9 @@ paths = [
   '''agents/''',
   '''docs/superpowers/''',
   '''skills/''',
+  '''data/''',
+  '''shared/''',
+  '''config/''',
 ]
 
 [[rules]]

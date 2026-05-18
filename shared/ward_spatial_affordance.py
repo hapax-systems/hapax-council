@@ -12,7 +12,6 @@ Spec: docs/research/2026-04-20-homage-scrim-1-algorithmic-intelligence.md
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
 
 from pydantic import BaseModel, Field
 

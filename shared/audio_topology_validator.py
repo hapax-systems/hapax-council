@@ -117,7 +117,7 @@ def _check_port_compatibility(desc: TopologyDescriptor, result: ValidationResult
 
 def _check_protected_invariants(desc: TopologyDescriptor, result: ValidationResult) -> None:
     node_names = {n.name for n in desc.nodes}
-    edge_pairs = {(e.source, e.sink) for e in desc.edges}
+    {(e.source, e.sink) for e in desc.edges}
 
     if "hapax-livestream-tap" in node_names:
         for edge in desc.edges:
