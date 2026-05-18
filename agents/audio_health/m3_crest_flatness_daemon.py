@@ -52,6 +52,7 @@ DEFAULT_CAPTURE_DURATION_S: float = 5.0
 DEFAULT_BREACH_SUSTAIN_S: float = 10.0  # 2 consecutive 5s probes
 DEFAULT_CREST_DROP_ZCR_MIN: float = 0.25
 DEFAULT_CREST_DROP_FLATNESS_MIN: float = 0.30
+DEFAULT_SILENCE_GATE_DBFS: float = -50.0
 
 DEFAULT_SNAPSHOT_PATH: Path = Path("/dev/shm/hapax-audio-health/crest-flatness.json")
 DEFAULT_TEXTFILE_DIR: Path = Path("/var/lib/node_exporter/textfile_collector")
@@ -96,6 +97,7 @@ class StageMeasurement:
     crest: float
     zcr: float
     spectral_flatness: float
+    rms_dbfs: float = -120.0
 
 
 @dataclass
@@ -104,6 +106,7 @@ class StageState:
 
     last_measurement: StageMeasurement | None = None
     prev_crest: float | None = None
+    crest_drop_armed: bool = True
     crest_drop_start: float | None = None
     flatness_breach_start: float | None = None
     crest_drop_count: int = 0
@@ -124,9 +127,11 @@ class M3DaemonConfig:
     snapshot_path: Path = DEFAULT_SNAPSHOT_PATH
     enable_ntfy: bool = True
     # Thresholds
-    crest_drop_threshold: float = 5.0  # sudden drop from >5 to <5
+    crest_drop_threshold: float = 5.0  # arm when crest rises above this
+    crest_drop_alert_threshold: float = 3.5  # alert when crest drops below this (hysteresis)
     crest_drop_zcr_min: float = DEFAULT_CREST_DROP_ZCR_MIN
     crest_drop_flatness_min: float = DEFAULT_CREST_DROP_FLATNESS_MIN
+    silence_gate_dbfs: float = DEFAULT_SILENCE_GATE_DBFS
     crest_rise_threshold: float = 20.0  # rise from <10 to >20 = transient
     flatness_noise_threshold: float = 0.6  # sustained >0.6 = white noise
 
@@ -148,11 +153,13 @@ class M3DaemonConfig:
             capture_duration_s=_fenv("CAPTURE_DURATION_S", DEFAULT_CAPTURE_DURATION_S),
             breach_sustain_s=_fenv("BREACH_SUSTAIN_S", DEFAULT_BREACH_SUSTAIN_S),
             crest_drop_threshold=_fenv("CREST_DROP_THRESHOLD", 5.0),
+            crest_drop_alert_threshold=_fenv("CREST_DROP_ALERT_THRESHOLD", 3.5),
             crest_drop_zcr_min=_fenv("CREST_DROP_ZCR_MIN", DEFAULT_CREST_DROP_ZCR_MIN),
             crest_drop_flatness_min=_fenv(
                 "CREST_DROP_FLATNESS_MIN",
                 DEFAULT_CREST_DROP_FLATNESS_MIN,
             ),
+            silence_gate_dbfs=_fenv("SILENCE_GATE_DBFS", DEFAULT_SILENCE_GATE_DBFS),
             crest_rise_threshold=_fenv("CREST_RISE_THRESHOLD", 20.0),
             flatness_noise_threshold=_fenv("FLATNESS_NOISE_THRESHOLD", 0.6),
         )
@@ -332,33 +339,42 @@ def _probe_stage(stage: str, state: StageState, config: M3DaemonConfig, *, now: 
             crest=compute_crest_factor(samples),
             zcr=compute_zcr(samples),
             spectral_flatness=compute_spectral_flatness(samples),
+            rms_dbfs=result.measurement.rms_dbfs,
         )
         state.last_error = None
 
-        # Crest drop detection. Low crest alone is common for compressed
-        # program material, so only page when ZCR/flatness also look noisy.
-        if state.prev_crest is not None and state.prev_crest > config.crest_drop_threshold:
-            if measurement.crest < config.crest_drop_threshold and _is_noise_like_crest_drop(
-                measurement,
-                config,
-            ):
-                if state.crest_drop_start is None:
-                    state.crest_drop_start = now
-                elif (now - state.crest_drop_start) >= config.breach_sustain_s:
-                    state.crest_drop_count += 1
-                    if config.enable_ntfy:
-                        _send_ntfy(
-                            stage,
-                            "Crest drop",
-                            (
-                                f"{state.prev_crest:.1f} → {measurement.crest:.1f} "
-                                f"(zcr={measurement.zcr:.3f}, "
-                                f"flatness={measurement.spectral_flatness:.3f})"
-                            ),
-                        )
-                    state.crest_drop_start = now
-            else:
+        # Crest drop detection with hysteresis. Arms when crest rises above
+        # crest_drop_threshold (5.0); alerts when it drops below
+        # crest_drop_alert_threshold (3.5). Prevents oscillation at boundary.
+        # Silence gate: skip when RMS is below the floor (source went quiet).
+        signal_present = measurement.rms_dbfs > config.silence_gate_dbfs
+        if measurement.crest > config.crest_drop_threshold:
+            state.crest_drop_armed = True
+            state.crest_drop_start = None
+        if (
+            state.crest_drop_armed
+            and signal_present
+            and measurement.crest < config.crest_drop_alert_threshold
+            and _is_noise_like_crest_drop(measurement, config)
+        ):
+            if state.crest_drop_start is None:
+                state.crest_drop_start = now
+            elif (now - state.crest_drop_start) >= config.breach_sustain_s:
+                state.crest_drop_count += 1
+                if config.enable_ntfy:
+                    _send_ntfy(
+                        stage,
+                        "Crest drop",
+                        (
+                            f"{state.prev_crest:.1f} → {measurement.crest:.1f} "
+                            f"(zcr={measurement.zcr:.3f}, "
+                            f"flatness={measurement.spectral_flatness:.3f})"
+                        ),
+                    )
+                state.crest_drop_armed = False
                 state.crest_drop_start = None
+        elif measurement.crest >= config.crest_drop_alert_threshold:
+            state.crest_drop_start = None
 
         # Crest rise detection (transient / clipping)
         if state.prev_crest is not None and state.prev_crest < 10.0:
