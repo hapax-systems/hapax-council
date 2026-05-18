@@ -65,11 +65,20 @@ class EpistemicQualityRubric(Rubric):
 
 class DisconfirmationRubric(Rubric):
     name: str = "disconfirmation"
-    version: int = 1
+    version: int = 2
     instructions: str = (
         "Your job is to TRY TO BREAK the claim. Search for counter-evidence, "
         "alternative explanations, and unstated assumptions. Score how well "
-        "the claim survives adversarial scrutiny."
+        "the claim survives adversarial scrutiny. Use the full 1-5 scale: "
+        "1 means absent, fabricated, or effectively unsupported evidence; "
+        "2 means real but tangential, circular, metadata-only, or too narrow "
+        "for the stated claim; 3 means partial support with important missing "
+        "validation or unresolved objections; 4 means specific, bounded, "
+        "source-grounded support with limitations named; 5 means direct "
+        "measurement or independently corroborated support that addresses the "
+        "strongest counter-evidence. Score 4 does not require perfection; "
+        "known residual gaps can coexist with a strong score when they are "
+        "explicitly bounded and falsifiable."
     )
     axes: tuple[RubricAxis, ...] = (
         RubricAxis(
@@ -88,18 +97,37 @@ class DisconfirmationRubric(Rubric):
             description="Does the claim survive known counter-evidence and objections?",
             strong_example="Addresses and refutes the strongest known counter-argument.",
             weak_example="Ignores obvious counter-evidence or alternative explanations.",
+            floor_example=(
+                "Score 1: No counter-evidence is considered, or the text asserts certainty "
+                "where obvious objections exist. Score 2: Mentions an objection but does "
+                "not connect evidence to a mitigation. Score 4: Names a plausible "
+                "objection, gives concrete mitigation evidence, and preserves any "
+                "remaining gap instead of hiding it."
+            ),
         ),
         RubricAxis(
             name="scope_honesty",
             description="Does the claim accurately bound what it covers and what it doesn't?",
             strong_example="Explicitly states what is NOT claimed and what remains uncertain.",
             weak_example="Implies universal applicability from a narrow evidence base.",
+            floor_example=(
+                "Score 1: Universal or production-ready language from little/no evidence. "
+                "Score 2: A real source exists but the claim exceeds what that source can "
+                "show. Score 4: The claim states the exact covered behavior and the known "
+                "non-claims or unvalidated conditions."
+            ),
         ),
         RubricAxis(
             name="falsifiability",
             description="Could the claim be proven wrong? Is there a stated test?",
             strong_example="Names a specific observable that would falsify the claim.",
             weak_example="Claim is unfalsifiable or tautological.",
+            floor_example=(
+                "Score 1: No observable failure condition or testable prediction. "
+                "Score 2: A generic test direction exists but no concrete metric, fixture, "
+                "or observable. Score 4: A specific test, measurement, or observable "
+                "would prove the claim wrong even if that test has not been run yet."
+            ),
         ),
     )
 

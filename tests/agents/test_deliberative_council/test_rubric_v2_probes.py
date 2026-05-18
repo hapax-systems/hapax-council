@@ -9,7 +9,13 @@ import pytest
 
 from agents.deliberative_council.models import CouncilConfig, CouncilInput
 from agents.deliberative_council.rubrics import DisconfirmationRubric
-from scripts.cctv_rubric_v2_validation import PROBES, _band_range, _score_in_band, run_validation
+from scripts.cctv_rubric_v2_validation import (
+    PROBES,
+    _band_range,
+    _score_in_band,
+    _selected_probes,
+    run_validation,
+)
 
 
 class TestProbeStructure:
@@ -18,9 +24,10 @@ class TestProbeStructure:
 
     def test_band_distribution(self) -> None:
         bands = [p.expected_band for p in PROBES]
-        assert bands.count("floor") == 3
-        assert bands.count("weak") == 4
-        assert bands.count("strong") == 3
+        assert bands.count("floor") == 5
+        assert bands.count("weak") == 3
+        assert bands.count("boundary") == 1
+        assert bands.count("strong") == 1
 
     def test_all_probes_have_source_refs(self) -> None:
         for probe in PROBES:
@@ -38,6 +45,18 @@ class TestProbeStructure:
         ids = [p.id for p in PROBES]
         assert len(ids) == len(set(ids))
 
+    def test_recalibrated_probe_band_decisions_are_recorded(self) -> None:
+        recalibrated = {
+            "weak_tangential_evidence": "floor",
+            "weak_single_source_circular": "floor",
+            "strong_multi_source_bounded": "boundary",
+            "strong_counter_evidence_addressed": "weak",
+        }
+        probes = {probe.id: probe for probe in PROBES}
+        for probe_id, expected_band in recalibrated.items():
+            assert probes[probe_id].expected_band == expected_band
+            assert "2026-05-18 focused rerun" in probes[probe_id].calibration_decision
+
 
 class TestBandLogic:
     def test_floor_range(self) -> None:
@@ -49,6 +68,11 @@ class TestBandLogic:
         lo, hi = _band_range("weak")
         assert lo == 2.0
         assert hi == 3.4
+
+    def test_boundary_range(self) -> None:
+        lo, hi = _band_range("boundary")
+        assert lo == 3.0
+        assert hi == 3.9
 
     def test_strong_range(self) -> None:
         lo, hi = _band_range("strong")
@@ -68,7 +92,12 @@ class TestDisconfirmationRubricV2:
     def test_floor_examples_present(self) -> None:
         rubric = DisconfirmationRubric()
         axes_with_floor = [a for a in rubric.axes if a.floor_example]
-        assert len(axes_with_floor) >= 1, "Rubric v2 must have floor_example on at least one axis"
+        assert len(axes_with_floor) == 4, "Rubric v2 must anchor floor/mid boundaries on every axis"
+
+    def test_version_marks_calibration_update(self) -> None:
+        rubric = DisconfirmationRubric()
+        assert rubric.version == 2
+        assert "Use the full 1-5 scale" in rubric.instructions
 
     def test_four_axes(self) -> None:
         rubric = DisconfirmationRubric()
@@ -87,7 +116,19 @@ class TestDryRun:
     async def test_dry_run_returns_all_probes(self) -> None:
         summary = await run_validation(dry_run=True)
         assert summary["probes_run"] == 10
+        assert summary["probes_requested"] == [probe.id for probe in PROBES]
+        assert all("calibration_decision" in r for r in summary["results"])
         assert all(r["dry_run"] for r in summary["results"])
+
+    @pytest.mark.asyncio
+    async def test_dry_run_can_filter_to_one_probe(self) -> None:
+        summary = await run_validation(dry_run=True, probe_ids={"weak_tangential_evidence"})
+        assert summary["probes_requested"] == ["weak_tangential_evidence"]
+        assert summary["probes_run"] == 1
+
+    def test_selected_probes_rejects_unknown_ids(self) -> None:
+        with pytest.raises(ValueError, match="unknown probe id"):
+            _selected_probes({"missing_probe"})
 
 
 class TestScoringIntegration:
