@@ -397,6 +397,7 @@ jobs:
             --ignore=tests/fortress \
             --ignore=tests/test_demo_screenshots.py \
             --ignore=tests/test_demo_screencasts.py \
+            --ignore=tests/test_demo_title_cards.py \
             --ignore=tests/test_demo_video.py \
             --ignore=tests/test_demo_timeline.py \
             --ignore=tests/test_event_log_trace_id.py \
@@ -441,6 +442,7 @@ jobs:
               --ignore=tests/fortress \
               --ignore=tests/test_demo_screenshots.py \
               --ignore=tests/test_demo_screencasts.py \
+              --ignore=tests/test_demo_title_cards.py \
               --ignore=tests/test_demo_video.py \
               --ignore=tests/test_demo_timeline.py \
               --ignore=tests/test_event_log_trace_id.py \
@@ -486,8 +488,29 @@ jobs:
           echo "Tests failed (pytest exit $PYTEST_EXIT)"
           exit 1
 
+  test-title-cards:
+    needs: [docs_only_filter, post_merge_duplicate_filter]
+    if: github.event_name == 'merge_group' && needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Sync uv ci extras for serial title-card tests
+        run: uv sync --extra ci
+      - name: Run serial title-card tests
+        env:
+          LITELLM_BASE_URL: "http://0.0.0.0:1"
+          QDRANT_URL: "http://0.0.0.0:1"
+          OLLAMA_HOST: "http://0.0.0.0:1"
+          OTEL_SDK_DISABLED: "true"
+          LANGFUSE_HOST: "http://0.0.0.0:1"
+        run: uv run pytest tests/test_demo_title_cards.py -q --tb=line --benchmark-disable
+
   test:
-    needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard]
+    needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard, test-title-cards]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -522,13 +545,15 @@ jobs:
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'merge-group-shards'
         env:
           TEST_FULL_SHARD_RESULT: ${{ needs.test-full-shard.result }}
+          TEST_TITLE_CARDS_RESULT: ${{ needs.test-title-cards.result }}
         run: |
           set -euo pipefail
-          if [ "$TEST_FULL_SHARD_RESULT" = "success" ]; then
-            echo "All full pytest shards passed; required test check reports success."
+          if [ "$TEST_FULL_SHARD_RESULT" = "success" ] && [ "$TEST_TITLE_CARDS_RESULT" = "success" ]; then
+            echo "All full pytest shards and serial title-card tests passed; required test check reports success."
             exit 0
           fi
           echo "Full pytest shard result: $TEST_FULL_SHARD_RESULT"
+          echo "Serial title-card result: $TEST_TITLE_CARDS_RESULT"
           exit 1
       - uses: astral-sh/setup-uv@v7
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode != 'merge-group-shards'
@@ -586,6 +611,15 @@ jobs:
         # blank cells silently, so fail loud here with diagnostic output.
         run: |
           uv run python scripts/ci_verify_pango_font.py "Px437 IBM VGA 8x16"
+      - name: Run serial title-card tests
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
+        env:
+          LITELLM_BASE_URL: "http://0.0.0.0:1"
+          QDRANT_URL: "http://0.0.0.0:1"
+          OLLAMA_HOST: "http://0.0.0.0:1"
+          OTEL_SDK_DISABLED: "true"
+          LANGFUSE_HOST: "http://0.0.0.0:1"
+        run: uv run pytest tests/test_demo_title_cards.py -q --tb=line --benchmark-disable
       - name: Run tests
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         env:
@@ -626,6 +660,7 @@ jobs:
               --ignore=tests/fortress \
               --ignore=tests/test_demo_screenshots.py \
               --ignore=tests/test_demo_screencasts.py \
+              --ignore=tests/test_demo_title_cards.py \
               --ignore=tests/test_demo_video.py \
               --ignore=tests/test_demo_timeline.py \
               --ignore=tests/test_event_log_trace_id.py \
