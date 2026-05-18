@@ -17,6 +17,7 @@ from agents.hapax_daimonion.phenomenal_context import (
     _clear_cache,
     _parse_temporal_snapshot,
     _read_json,
+    _render_audio_context,
     _render_impression,
     _render_self_state,
     _render_situation,
@@ -31,7 +32,21 @@ from agents.hapax_daimonion.phenomenal_context import (
 def _clear_phenomenal_cache():
     """No-op cache clear fixture (cache globals removed in snapshot-isolation refactor)."""
     _clear_cache()
-    yield
+    with (
+        patch(
+            "agents.hapax_daimonion.phenomenal_context._PERCEPTION_STATE_PATH",
+            Path("/nonexistent-perception-state.json"),
+        ),
+        patch(
+            "agents.hapax_daimonion.phenomenal_context._AUDIO_PERCEPTION_PATH",
+            Path("/nonexistent-audio-perception.json"),
+        ),
+        patch(
+            "agents.hapax_daimonion.phenomenal_context._ACTIVE_SEGMENT_PATH",
+            Path("/nonexistent-active-segment.json"),
+        ),
+    ):
+        yield
     _clear_cache()
 
 
@@ -131,11 +146,87 @@ def _make_apperception_shm(
     return band_file
 
 
-def _make_stimmung_shm(tmp_path: Path, *, stance: str = "nominal") -> Path:
+def _make_stimmung_shm(
+    tmp_path: Path,
+    *,
+    stance: str = "nominal",
+    audio_content_mix: float | None = None,
+) -> Path:
     payload = {"overall_stance": stance, "timestamp": time.time()}
+    if audio_content_mix is not None:
+        payload["audio_content_mix"] = {
+            "value": audio_content_mix,
+            "trend": "stable",
+            "freshness_s": 0.0,
+        }
     stimmung_file = tmp_path / "state.json"
     stimmung_file.write_text(json.dumps(payload))
     return stimmung_file
+
+
+def _make_perception_shm(
+    tmp_path: Path,
+    *,
+    production_activity: str = "",
+    mixer_active: bool = False,
+    mixer_energy: float = 0.0,
+    desk_activity: str = "",
+    midi_clock_transport: str = "",
+    voice_session: dict | None = None,
+) -> Path:
+    payload = {
+        "production_activity": production_activity,
+        "mixer_active": mixer_active,
+        "mixer_energy": mixer_energy,
+        "desk_activity": desk_activity,
+        "midi_clock_transport": midi_clock_transport,
+        "voice_session": voice_session or {"active": False},
+        "timestamp": time.time(),
+    }
+    path = tmp_path / "perception-state.json"
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def _make_audio_shm(
+    tmp_path: Path,
+    *,
+    scene: str = "music",
+    is_speech: bool = False,
+    music_playing: bool = True,
+) -> Path:
+    payload = {
+        "scene": scene,
+        "is_speech": is_speech,
+        "music_playing": music_playing,
+        "confidence": 0.9,
+        "rms_dbfs": -18.0,
+    }
+    path = tmp_path / "audio.json"
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def _make_segment_shm(
+    tmp_path: Path,
+    *,
+    topic: str = "source-backed comparison",
+    beat: str = "compare the live source against the prepared claim",
+    beat_index: int = 1,
+    total_beats: int = 4,
+) -> Path:
+    payload = {
+        "programme_id": "prog-test",
+        "role": "tier_list",
+        "topic": topic,
+        "current_beat_index": beat_index,
+        "current_beat_text": beat,
+        "total_beats": total_beats,
+        "updated_at": time.time(),
+    }
+    path = tmp_path / "active-segment.json"
+    path.write_text(json.dumps(payload))
+    return path
 
 
 # ── Progressive Fidelity Tests ───────────────────────────────────────────────
@@ -193,6 +284,67 @@ class TestProgressiveFidelity:
         ):
             result = render(tier="CAPABLE")
             assert "activity recognition" in result  # self-state layer
+
+
+# ── Audio Layer Tests ────────────────────────────────────────────────────────
+
+
+class TestAudioLayer:
+    def test_audio_context_renders_activity_and_segment_binding(self, tmp_path):
+        stimmung = _read_json(_make_stimmung_shm(tmp_path, audio_content_mix=0.82))
+        perception = _read_json(
+            _make_perception_shm(
+                tmp_path,
+                production_activity="production",
+                mixer_active=True,
+                mixer_energy=0.08,
+                desk_activity="drumming",
+            )
+        )
+        audio = _read_json(_make_audio_shm(tmp_path, scene="speech_over_music", is_speech=True))
+        segment = _read_json(_make_segment_shm(tmp_path))
+
+        result = _render_audio_context(stimmung, perception, audio, segment)
+
+        assert "Audio field dense with speech over music" in result
+        assert "segment beat 2/4" in result
+        assert "compare the live source" in result
+
+    def test_audio_context_renders_quiet_active_segment(self, tmp_path):
+        stimmung = _read_json(_make_stimmung_shm(tmp_path, audio_content_mix=0.02))
+        segment = _read_json(_make_segment_shm(tmp_path, beat="open the source packet"))
+
+        result = _render_audio_context(stimmung, None, None, segment)
+
+        assert result.startswith("Audio field quiet;")
+        assert "open the source packet" in result
+
+    def test_local_tier_includes_audio_layer_2a(self, tmp_path):
+        bands = _make_temporal_shm(tmp_path, activity="coding", flow_state="active")
+        stimmung = _make_stimmung_shm(tmp_path, audio_content_mix=0.45)
+        perception = _make_perception_shm(tmp_path, mixer_active=True, mixer_energy=0.04)
+        audio = _make_audio_shm(tmp_path, scene="music")
+        segment = _make_segment_shm(tmp_path, topic="turntable source test")
+
+        with (
+            patch("agents.hapax_daimonion.phenomenal_context._TEMPORAL_PATH", bands),
+            patch("agents.hapax_daimonion.phenomenal_context._STIMMUNG_PATH", stimmung),
+            patch("agents.hapax_daimonion.phenomenal_context._PERCEPTION_STATE_PATH", perception),
+            patch("agents.hapax_daimonion.phenomenal_context._AUDIO_PERCEPTION_PATH", audio),
+            patch("agents.hapax_daimonion.phenomenal_context._ACTIVE_SEGMENT_PATH", segment),
+        ):
+            result = render(tier="LOCAL")
+
+        assert "Audio field present with active performance" in result
+        assert "segment beat 2/4" in result
+        assert "compare the live source" in result
+
+    def test_audio_context_empty_when_no_audio_or_segment(self, tmp_path):
+        stimmung = _read_json(_make_stimmung_shm(tmp_path, audio_content_mix=0.0))
+
+        result = _render_audio_context(stimmung, None, None, None)
+
+        assert result == ""
 
 
 # ── Orientation Tests (not information) ──────────────────────────────────────
