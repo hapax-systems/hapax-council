@@ -94,15 +94,15 @@ async def chronicle_query(
     """Return chronicle events matching the given filters, newest-first."""
     try:
         since_ts = _parse_time(since)
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=422)
+    except ValueError:
+        return JSONResponse({"error": "invalid since parameter"}, status_code=422)
 
     until_ts: float | None = None
     if until is not None:
         try:
             until_ts = _parse_time(until)
-        except ValueError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=422)
+        except ValueError:
+            return JSONResponse({"error": "invalid until parameter"}, status_code=422)
 
     events = query(
         since=since_ts,
@@ -129,15 +129,15 @@ async def chronicle_narrate(
     """Synthesise a narrative answer about chronicle events using an LLM."""
     try:
         since_ts = _parse_time(since)
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=422)
+    except ValueError:
+        return JSONResponse({"error": "invalid since parameter"}, status_code=422)
 
     until_ts: float | None = None
     if until is not None:
         try:
             until_ts = _parse_time(until)
-        except ValueError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=422)
+        except ValueError:
+            return JSONResponse({"error": "invalid until parameter"}, status_code=422)
 
     events = query(
         since=since_ts,

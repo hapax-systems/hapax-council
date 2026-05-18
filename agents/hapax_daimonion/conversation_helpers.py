@@ -8,47 +8,28 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
 log = logging.getLogger(__name__)
-
-# Emoji pattern: matches most emoji ranges
-_EMOJI_RE = re.compile(
-    "["
-    "\U0001f600-\U0001f64f"  # emoticons
-    "\U0001f300-\U0001f5ff"  # symbols & pictographs
-    "\U0001f680-\U0001f6ff"  # transport & map
-    "\U0001f1e0-\U0001f1ff"  # flags
-    "\U00002702-\U000027b0"  # dingbats
-    "\U0000fe00-\U0000fe0f"  # variation selectors
-    "\U0001f900-\U0001f9ff"  # supplemental symbols
-    "\U0001fa00-\U0001fa6f"  # chess symbols
-    "\U0001fa70-\U0001faff"  # symbols extended-A
-    "\U00002600-\U000026ff"  # misc symbols
-    "\U0000200d"  # zero width joiner
-    "\U0000231a-\U0000231b"  # watch/hourglass
-    "\U00002934-\U00002935"  # arrows
-    "\U000025aa-\U000025ab"  # squares
-    "\U000025fb-\U000025fe"  # squares
-    "\U00002b05-\U00002b07"  # arrows
-    "\U00002b1b-\U00002b1c"  # squares
-    "\U00002b50\U00002b55"  # star/circle
-    "\U00003030\U0000303d"  # wavy dash
-    "\U00003297\U00003299"  # ideographs
-    "]+",
-    flags=re.UNICODE,
-)
 
 _GREETING_PREFIX_RE = re.compile(
     r"^(?:hey|hi|hello|yo)\s+hapax[,;:\s]*",
     flags=re.IGNORECASE,
 )
 
+_EMOJI_JOINERS = frozenset({"\ufe0f", "\u200d"})
+
+
+def _is_emoji_like(char: str) -> bool:
+    """Return True for emoji-style symbols without broad regex ranges."""
+    return char in _EMOJI_JOINERS or unicodedata.category(char) in {"So", "Sk"}
+
 
 def _strip_emoji(text: str) -> str:
     """Remove emoji from text, preserving surrounding words."""
-    return _EMOJI_RE.sub("", text).strip()
+    return "".join(ch for ch in text if not _is_emoji_like(ch)).strip()
 
 
 @dataclass

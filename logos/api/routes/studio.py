@@ -7,6 +7,7 @@ search over the studio_moments Qdrant collection.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 from dataclasses import asdict
@@ -48,6 +49,7 @@ def set_shader_registry(registry: ShaderRegistry) -> None:
 
 
 router = APIRouter(prefix="/api", tags=["studio"])
+log = logging.getLogger(__name__)
 
 
 def _dict_factory(fields: list[tuple]) -> dict:
@@ -514,7 +516,8 @@ def _resolve_egress_state_json() -> dict[str, object]:
         from shared.livestream_egress_state import resolve_livestream_egress_state
 
         return resolve_livestream_egress_state().model_dump(mode="json")
-    except Exception as exc:
+    except Exception:
+        log.warning("Livestream egress resolver failed", exc_info=True)
         return {
             "state": "offline",
             "confidence": 0.0,
@@ -528,7 +531,7 @@ def _resolve_egress_state_json() -> dict[str, object]:
                 {
                     "source": "resolver",
                     "status": "fail",
-                    "summary": f"egress resolver failed: {exc}",
+                    "summary": "egress resolver failed",
                     "observed": {},
                     "age_s": None,
                     "stale": True,
@@ -547,7 +550,8 @@ def _resolve_audio_safe_for_broadcast_json() -> dict[str, object]:
         return {
             "audio_safe_for_broadcast": read_broadcast_audio_health_state().model_dump(mode="json")
         }
-    except Exception as exc:
+    except Exception:
+        log.warning("Broadcast audio safety resolver failed", exc_info=True)
         return {
             "audio_safe_for_broadcast": {
                 "safe": False,
@@ -559,7 +563,7 @@ def _resolve_audio_safe_for_broadcast_json() -> dict[str, object]:
                         "code": "audio_safe_for_broadcast_api_failed",
                         "severity": "blocking",
                         "owner": "logos/api/routes/studio.py",
-                        "message": f"audio safety state resolver failed: {exc}",
+                        "message": "audio safety state resolver failed",
                         "evidence_refs": ["api"],
                     }
                 ],
@@ -678,8 +682,9 @@ async def set_layout_mode(req: LayoutModeRequest):
         if legacy_alias is not None:
             payload["legacy_alias"] = legacy_alias
         return payload
-    except OSError as e:
-        return JSONResponse({"error": f"write failed: {e}"}, status_code=503)
+    except OSError:
+        log.warning("Layout mode write failed", exc_info=True)
+        return JSONResponse({"error": "write failed"}, status_code=503)
 
 
 @router.post("/studio/visual-layer/toggle")

@@ -328,8 +328,9 @@ async def list_contracts() -> dict:
                 }
             )
         return {"contracts": contracts, "active_count": sum(1 for c in contracts if c["active"])}
-    except Exception as e:
-        return {"contracts": [], "active_count": 0, "error": str(e)}
+    except Exception:
+        _log.warning("Failed to list consent contracts", exc_info=True)
+        return {"contracts": [], "active_count": 0, "error": "contract list unavailable"}
 
 
 @router.get("/coverage")
@@ -373,8 +374,9 @@ async def consent_coverage() -> dict:
                 "and provenance to the source file's YAML frontmatter."
             ),
         }
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception:
+        _log.warning("Failed to compute consent coverage", exc_info=True)
+        return {"error": "consent coverage unavailable"}
 
 
 @router.get("/precedents")
@@ -432,8 +434,13 @@ async def precedent_timeline(axiom_id: str | None = None) -> dict:
             "precedents": precedents,
             "filter": axiom_id,
         }
-    except Exception as e:
-        return {"error": str(e), "total_precedents": 0, "precedents": []}
+    except Exception:
+        _log.warning("Failed to load axiom precedents", exc_info=True)
+        return {
+            "error": "precedent timeline unavailable",
+            "total_precedents": 0,
+            "precedents": [],
+        }
 
 
 @router.get("/overhead")
