@@ -209,6 +209,12 @@ constraint-dependencies = [
 ]
 override-dependencies = [
     "numpy>=2.0.0",
+    # chatterbox-tts 0.1.7 pins diffusers==0.29.0, which is below the
+    # patched floor for GHSA-98h9-4798-4q5v / CVE-2026-44513.
+    "diffusers>=0.38.0",
+    # The patched diffusers floor requires newer safetensors than the same
+    # chatterbox-tts release declares.
+    "safetensors>=0.8.0rc0",
     # moviepy 2.2.1 still declares pillow<12, but the patched Pillow floor is
     # required for the high-severity Dependabot alerts covered by this task.
     "pillow>=12.2.0",
