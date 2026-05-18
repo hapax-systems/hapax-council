@@ -388,12 +388,114 @@ def test_merge_queue_status_is_ready_for_already_queued_pr(tmp_path: Path) -> No
     )
 
 
-def test_dequeues_queued_pr_that_loses_governance_gate(tmp_path: Path) -> None:
+def test_allows_already_queued_pr_with_multiple_ready_task_links(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
-    _write_task(vault, task_id="queued", pr=73, authority_case=None)
+    _write_task(vault, task_id="queued-primary", folder="active", status="merge_queue", pr=73)
+    _write_task(vault, task_id="queued-fix", folder="active", status="ready", pr=73)
     runner = _FakeRunner()
     runner.queued_prs = {73}
-    runner.open_prs = [_pr(73, merge_state="UNKNOWN", checks=[_check("lint")])]
+    runner.open_prs = [_pr(73)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["already_queued"] == 1
+    assert report["decisions"][0]["task_ids"] == ["queued-fix", "queued-primary"]
+    assert "reasons" not in report["decisions"][0]
+    assert not any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
+
+
+def test_queues_pr_with_multiple_ready_task_links(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="primary", folder="active", status="merge_queue", pr=74)
+    _write_task(vault, task_id="followup", folder="active", status="ready", pr=74)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(74)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert report["decisions"][0]["task_ids"] == ["followup", "primary"]
+    assert ["gh", "pr", "merge", "74", "--repo", "owner/repo", "--merge"] in runner.calls
+
+
+def test_dequeues_multiple_task_links_when_any_task_missing_metadata(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="valid", folder="active", status="merge_queue", pr=75)
+    _write_task(
+        vault,
+        task_id="missing-route",
+        folder="active",
+        status="ready",
+        pr=75,
+        route_metadata_schema=None,
+    )
+    runner = _FakeRunner()
+    runner.queued_prs = {75}
+    runner.open_prs = [_pr(75)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["dequeue"] == 1
+    assert (
+        "task_blocker:missing-route:task_missing_route_metadata_schema_1"
+        in report["decisions"][0]["reasons"]
+    )
+    assert any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
+
+
+def test_blocks_multiple_task_links_when_any_task_not_ready(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="valid", folder="active", status="merge_queue", pr=76)
+    _write_task(vault, task_id="not-ready", folder="active", status="claimed", pr=76)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(76)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    assert (
+        "task_blocker:not-ready:active_task_status_not_ready:claimed"
+        in report["decisions"][0]["reasons"]
+    )
+    assert not any(call[:4] == ["gh", "pr", "merge", "76"] for call in runner.calls)
+
+
+def test_dequeues_queued_pr_that_loses_governance_gate(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="queued", pr=77, authority_case=None)
+    runner = _FakeRunner()
+    runner.queued_prs = {77}
+    runner.open_prs = [_pr(77, merge_state="UNKNOWN", checks=[_check("lint")])]
 
     report = autoqueue.run_reconciler(
         repo="owner/repo",
