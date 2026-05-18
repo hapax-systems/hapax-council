@@ -121,15 +121,6 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         True,
         "Use only when full Codex quota is blocked and Spark is quality-equivalent for the bounded task.",
     ),
-    ("codex", "receipt-only", "full"): PlatformPath(
-        "codex",
-        "receipt-only",
-        "full",
-        "receipt-only: validate task authority and print governed prompt; do not launch",
-        "Codex receipt-only governed validation packet",
-        True,
-        "Validation-only path for handoff/receipt generation; it never claims or launches work.",
-    ),
     ("vibe", "headless", "full"): PlatformPath(
         "vibe",
         "headless",
@@ -194,6 +185,16 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "IDE-bound JR+ path; no headless lane contract exists.",
     ),
 }
+
+RECEIPT_ONLY_ROUTE = PlatformPath(
+    "codex",
+    "receipt-only",
+    "full",
+    "receipt-only: validate task authority and print governed prompt; do not launch",
+    "Codex receipt-only governed validation packet",
+    True,
+    "Validation-only path for handoff/receipt generation; it never claims or launches work.",
+)
 
 
 @dataclass
@@ -725,7 +726,14 @@ def normalize_profile(platform: str, profile: str) -> str:
 
 
 def route_for(platform: str, mode: str, profile: str) -> PlatformPath | None:
-    return PLATFORM_PATHS.get((platform, mode, normalize_profile(platform, profile)))
+    normalized_profile = normalize_profile(platform, profile)
+    if (platform, mode, normalized_profile) == (
+        RECEIPT_ONLY_ROUTE.platform,
+        RECEIPT_ONLY_ROUTE.mode,
+        RECEIPT_ONLY_ROUTE.profile,
+    ):
+        return RECEIPT_ONLY_ROUTE
+    return PLATFORM_PATHS.get((platform, mode, normalized_profile))
 
 
 def supported_route_lines() -> list[str]:
