@@ -1,0 +1,9 @@
+/home/hapax/.codex/log/codex-tui.log {
+    size 512M
+    rotate 5
+    copytruncate
+    compress
+    missingok
+    notifempty
+    create 0600 hapax hapax
+}

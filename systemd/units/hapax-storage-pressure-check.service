@@ -1,0 +1,15 @@
+[Unit]
+Description=Hapax root Btrfs and filesystem storage pressure check
+Documentation=file:%h/projects/hapax-council/scripts/hapax-storage-pressure-check
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/hapax-council/scripts/hapax-storage-pressure-check
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-storage-pressure
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

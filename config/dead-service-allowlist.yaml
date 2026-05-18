@@ -1,0 +1,5 @@
+---
+# Services that are legitimately inactive — do not alert on these.
+allowed_inactive:
+  - hapax-secrets.service  # oneshot, runs at boot only
+  - hapax-v4l2-bridge.service  # quarantined, tracked separately

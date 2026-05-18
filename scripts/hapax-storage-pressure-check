@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+bytes_to_gib() {
+  awk -v bytes="$1" 'BEGIN { printf "%.2f", bytes / 1024 / 1024 / 1024 }'
+}
+
+df_percent() {
+  df --output=pcent "$1" | tail -1 | tr -d ' %'
+}
+
+df_avail() {
+  df -h --output=avail "$1" | tail -1 | tr -d ' '
+}
+
+emit_notice() {
+  local severity="$1"
+  local message="$2"
+
+  logger -t hapax-storage-pressure "$severity: $message" || true
+  if [[ "${HAPAX_STORAGE_PRESSURE_NOTIFY:-1}" == "1" ]] && command -v notify-send >/dev/null 2>&1; then
+    notify-send -u "$severity" "Storage ${severity}" "$message" 2>/dev/null || true
+  fi
+}
+
+root_warn_pct="${HAPAX_ROOT_WARN_PCT:-80}"
+root_crit_pct="${HAPAX_ROOT_CRIT_PCT:-90}"
+data_warn_pct="${HAPAX_DATA_WARN_PCT:-85}"
+store_warn_pct="${HAPAX_STORE_WARN_PCT:-85}"
+metadata_warn_gib="${HAPAX_ROOT_METADATA_WARN_GIB:-85}"
+metadata_crit_gib="${HAPAX_ROOT_METADATA_CRIT_GIB:-95}"
+metadata_alloc_warn_gib="${HAPAX_ROOT_METADATA_ALLOC_WARN_GIB:-110}"
+unallocated_warn_gib="${HAPAX_ROOT_UNALLOCATED_WARN_GIB:-64}"
+report_path="${HAPAX_STORAGE_PRESSURE_REPORT:-$HOME/hapax-state/storage/storage-pressure-status.md}"
+
+root_pct="$(df_percent /)"
+root_avail="$(df_avail /)"
+data_pct="$(df_percent /data 2>/dev/null || printf '0')"
+data_avail="$(df_avail /data 2>/dev/null || printf 'unknown')"
+store_pct="$(df_percent /store 2>/dev/null || printf '0')"
+store_avail="$(df_avail /store 2>/dev/null || printf 'unknown')"
+
+btrfs_usage="$(btrfs filesystem usage -b / 2>&1 || true)"
+metadata_line="$(printf '%s\n' "$btrfs_usage" | awk '/^Metadata,/ { print; exit }')"
+unallocated_line="$(printf '%s\n' "$btrfs_usage" | awk '/Device unallocated:/ { print; exit }')"
+
+if [[ -z "$metadata_line" || -z "$unallocated_line" ]]; then
+  emit_notice critical "could not parse root Btrfs usage"
+  printf '%s\n' "$btrfs_usage" >&2
+  exit 2
+fi
+
+metadata_size_bytes="$(printf '%s\n' "$metadata_line" | sed -E 's/.*Size:([0-9]+), Used:([0-9]+).*/\1/')"
+metadata_used_bytes="$(printf '%s\n' "$metadata_line" | sed -E 's/.*Size:([0-9]+), Used:([0-9]+).*/\2/')"
+unallocated_bytes="$(printf '%s\n' "$unallocated_line" | awk '{ print $3 }')"
+
+metadata_size_gib="$(bytes_to_gib "$metadata_size_bytes")"
+metadata_used_gib="$(bytes_to_gib "$metadata_used_bytes")"
+metadata_raw_alloc_gib="$(awk -v gib="$metadata_size_gib" 'BEGIN { printf "%.2f", gib * 2 }')"
+unallocated_gib="$(bytes_to_gib "$unallocated_bytes")"
+
+severity="ok"
+findings=()
+
+add_finding() {
+  local level="$1"
+  local text="$2"
+  findings+=("$level: $text")
+  if [[ "$level" == "critical" || "$severity" == "ok" ]]; then
+    severity="$level"
+  elif [[ "$level" == "warning" && "$severity" != "critical" ]]; then
+    severity="warning"
+  fi
+}
+
+if ((root_pct >= root_crit_pct)); then
+  add_finding critical "root is ${root_pct}% used with ${root_avail} available"
+elif ((root_pct >= root_warn_pct)); then
+  add_finding warning "root is ${root_pct}% used with ${root_avail} available"
+fi
+
+if ((data_pct >= data_warn_pct)); then
+  add_finding warning "/data is ${data_pct}% used with ${data_avail} available"
+fi
+
+if ((store_pct >= store_warn_pct)); then
+  add_finding warning "/store is ${store_pct}% used with ${store_avail} available"
+fi
+
+metadata_used_limit_bytes="$(awk -v gib="$metadata_warn_gib" 'BEGIN { printf "%.0f", gib * 1024 * 1024 * 1024 }')"
+metadata_crit_limit_bytes="$(awk -v gib="$metadata_crit_gib" 'BEGIN { printf "%.0f", gib * 1024 * 1024 * 1024 }')"
+metadata_alloc_limit_bytes="$(awk -v gib="$metadata_alloc_warn_gib" 'BEGIN { printf "%.0f", gib * 1024 * 1024 * 1024 }')"
+unallocated_limit_bytes="$(awk -v gib="$unallocated_warn_gib" 'BEGIN { printf "%.0f", gib * 1024 * 1024 * 1024 }')"
+
+if ((metadata_used_bytes >= metadata_crit_limit_bytes)); then
+  add_finding critical "root Btrfs metadata is ${metadata_used_gib}GiB used"
+elif ((metadata_used_bytes >= metadata_used_limit_bytes)); then
+  add_finding warning "root Btrfs metadata is ${metadata_used_gib}GiB used"
+fi
+
+if ((metadata_size_bytes >= metadata_alloc_limit_bytes)); then
+  add_finding warning "root Btrfs metadata allocation is ${metadata_size_gib}GiB logical / ${metadata_raw_alloc_gib}GiB raw"
+fi
+
+if ((unallocated_bytes <= unallocated_limit_bytes)); then
+  add_finding warning "root Btrfs unallocated space is ${unallocated_gib}GiB"
+fi
+
+mkdir -p "$(dirname "$report_path")"
+{
+  printf '# Hapax Storage Pressure Status\n\n'
+  printf 'Generated: `%s`\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'Severity: `%s`\n\n' "$severity"
+  printf '## Filesystems\n\n'
+  printf '| Mount | Used | Available |\n'
+  printf '| --- | ---: | ---: |\n'
+  printf '| `/` | %s%% | %s |\n' "$root_pct" "$root_avail"
+  printf '| `/data` | %s%% | %s |\n' "$data_pct" "$data_avail"
+  printf '| `/store` | %s%% | %s |\n\n' "$store_pct" "$store_avail"
+  printf '## Root Btrfs\n\n'
+  printf -- '- Metadata DUP logical allocation: `%sGiB`\n' "$metadata_size_gib"
+  printf -- '- Metadata DUP logical used: `%sGiB`\n' "$metadata_used_gib"
+  printf -- '- Metadata DUP raw allocation: `%sGiB`\n' "$metadata_raw_alloc_gib"
+  printf -- '- Device unallocated: `%sGiB`\n\n' "$unallocated_gib"
+  printf '## Findings\n\n'
+  if ((${#findings[@]} == 0)); then
+    printf -- '- ok: thresholds are not crossed\n'
+  else
+    for finding in "${findings[@]}"; do
+      printf -- '- %s\n' "$finding"
+    done
+  fi
+} >"$report_path"
+
+if [[ "$severity" != "ok" ]]; then
+  emit_notice "$severity" "root=${root_pct}% metadata=${metadata_used_gib}GiB data=${data_pct}% store=${store_pct}%"
+fi
+
+printf 'hapax-storage-pressure-check: severity=%s root=%s%% metadata=%sGiB data=%s%% store=%s%% report=%s\n' \
+  "$severity" "$root_pct" "$metadata_used_gib" "$data_pct" "$store_pct" "$report_path"

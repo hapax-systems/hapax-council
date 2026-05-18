@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Hapax storage pressure check every 30 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+AccuracySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
