@@ -299,6 +299,48 @@ class TestComputeInterruptibility:
         )
         assert score >= 0.0
 
+    def test_audio_content_mix_reduces_score(self):
+        score = compute_interruptibility(
+            vad_confidence=0.0,
+            activity_mode="idle",
+            in_voice_session=False,
+            operator_present=True,
+            audio_content_mix=0.8,
+        )
+        assert score == pytest.approx(0.76)
+
+    def test_production_activity_reduces_score(self):
+        score = compute_interruptibility(
+            vad_confidence=0.0,
+            activity_mode="idle",
+            in_voice_session=False,
+            operator_present=True,
+            production_activity="production",
+        )
+        assert score == pytest.approx(0.65)
+
+    def test_flow_state_score_reduces_score(self):
+        score = compute_interruptibility(
+            vad_confidence=0.0,
+            activity_mode="idle",
+            in_voice_session=False,
+            operator_present=True,
+            flow_state_score=0.8,
+        )
+        assert score == pytest.approx(0.84)
+
+    def test_audio_performance_factors_stack_and_clamp(self):
+        score = compute_interruptibility(
+            vad_confidence=0.0,
+            activity_mode="idle",
+            in_voice_session=False,
+            operator_present=True,
+            audio_content_mix=2.0,
+            production_activity="music production",
+            flow_state_score=1.0,
+        )
+        assert score == pytest.approx(0.15)
+
 
 class TestPhysiologicalFactors:
     """Tests for physiological_load, circadian_alignment, system_health_ratio params."""
@@ -548,6 +590,34 @@ class TestSessionInterruptibility:
         state = engine.tick()
         # 1.0 - 0.3*0.5 = 0.85 (circadian_alignment defaults to 0.1 = no penalty)
         assert state.interruptibility_score == pytest.approx(0.85)
+
+    def test_tick_reads_audio_performance_behaviors(self):
+        """Backend audio mix + production activity reduce interruptibility."""
+        engine = PerceptionEngine(
+            presence=_make_mock_presence(),
+            workspace_monitor=_make_mock_workspace_monitor(),
+        )
+
+        class AudioPerformanceBackend(StubBackend):
+            def contribute(self, behaviors: dict[str, Behavior]) -> None:
+                behaviors["audio_content_mix"] = Behavior(0.8)
+                behaviors["production_activity"] = Behavior("production")
+                behaviors["flow_state_score"] = Behavior(0.5)
+
+        engine.register_backend(
+            AudioPerformanceBackend(
+                name="audio_performance",
+                provides=frozenset(
+                    {"audio_content_mix", "production_activity", "flow_state_score"}
+                ),
+            )
+        )
+        state = engine.tick()
+        # 1.0 - audio pressure 0.24 - production activity 0.35 - flow 0.10
+        assert state.interruptibility_score == pytest.approx(0.31)
+        assert engine.behaviors["interruptibility_score"].value == pytest.approx(
+            state.interruptibility_score
+        )
 
 
 # ------------------------------------------------------------------
