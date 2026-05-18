@@ -50,7 +50,7 @@ DEFAULT_BANDS: dict[str, tuple[float, float]] = {
 DEFAULT_PROBE_INTERVAL_S: float = 5.0
 DEFAULT_CAPTURE_DURATION_S: float = 3.0
 DEFAULT_BREACH_SUSTAIN_S: float = 15.0  # 3 consecutive probes at 5s
-DEFAULT_SILENCE_FLOOR_LUFS: float = -35.0  # suppress alerts when source below this
+DEFAULT_SILENCE_FLOOR_LUFS: float = -25.0  # suppress alerts when source below this (L-12 noise floor at broadcast-master idles ~-28 LUFS)
 
 # SHM + textfile paths
 DEFAULT_SNAPSHOT_PATH: Path = Path("/dev/shm/hapax-audio-health/lufs-s.json")
