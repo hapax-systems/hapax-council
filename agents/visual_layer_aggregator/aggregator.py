@@ -1185,21 +1185,12 @@ class VisualLayerAggregator:
         return state
 
     def _write_density_field(self, stimmung_stance: str) -> None:
-        """Write density field state to /dev/shm for downstream consumers."""
-        from agents.density_field import compute_density_state
+        """Write density field temporal mode to /dev/shm for downstream consumers."""
+        from agents.density_field import DensityFieldCompute
 
-        state = compute_density_state(
-            perception_data=self._last_perception_data,
-            stimmung_stance=stimmung_stance,
-            audio_energy=self._audio_energy,
-            epoch=self._epoch,
-        )
-        out_dir = Path("/dev/shm/hapax-density-field")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_file = out_dir / "state.json"
-        tmp = out_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state), encoding="utf-8")
-        tmp.rename(out_file)
+        if not hasattr(self, "_density_compute"):
+            self._density_compute = DensityFieldCompute()
+        self._density_compute.tick()
 
     @staticmethod
     def _read_imagination_salience() -> float:
