@@ -146,9 +146,7 @@ def _derive_directions(
 
     if highlights:
         top = highlights[0]
-        directions.append(
-            f"Chronicle: {top['source']} — {top['narrative'][:80]}"
-        )
+        directions.append(f"Chronicle: {top['source']} — {top['narrative'][:80]}")
 
     if threads:
         top_thread = threads[0]
@@ -191,8 +189,11 @@ def write_compass(compass: CompassDocument) -> Path:
     tmp = COMPASS_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(asdict(compass), indent=2, default=str))
     os.replace(tmp, COMPASS_PATH)
-    log.info("Interview compass written: %d directions, %d highlights",
-             len(compass.suggested_directions), len(compass.chronicle_highlights))
+    log.info(
+        "Interview compass written: %d directions, %d highlights",
+        len(compass.suggested_directions),
+        len(compass.chronicle_highlights),
+    )
     return COMPASS_PATH
 
 
