@@ -119,6 +119,7 @@ class Decision:
     pr: PullRequest
     action: str
     task: TaskNote | None = None
+    tasks: tuple[TaskNote, ...] = ()
     reasons: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
@@ -132,6 +133,9 @@ class Decision:
             out["task_id"] = self.task.task_id
             out["task_path"] = str(self.task.path)
             out["task_status"] = self.task.status
+        if len(self.tasks) > 1:
+            out["task_ids"] = [task.task_id for task in self.tasks]
+            out["task_paths"] = [str(task.path) for task in self.tasks]
         if self.reasons:
             out["reasons"] = list(self.reasons)
         return out
@@ -459,34 +463,73 @@ def classify_pr(
         reasons.append("failed_checks:" + ",".join(pr.check_summary.failed))
 
     matches = _matching_tasks(pr, tasks)
+    matched_tasks = tuple(matches)
     task: TaskNote | None = matches[0] if len(matches) == 1 else None
     if not matches:
         reasons.append("missing_cc_task_link")
-    elif len(matches) > 1:
-        reasons.append("multiple_cc_task_links:" + ",".join(task.task_id for task in matches))
     else:
-        reasons.extend(_task_blockers(matches[0], require_route_metadata=require_route_metadata))
+        for matched_task in matches:
+            blockers = _task_blockers(
+                matched_task,
+                require_route_metadata=require_route_metadata,
+            )
+            if len(matches) == 1:
+                reasons.extend(blockers)
+            else:
+                reasons.extend(
+                    f"task_blocker:{matched_task.task_id}:{blocker}" for blocker in blockers
+                )
 
     if queued:
         if reasons:
-            return Decision(pr=pr, task=task, action="dequeue", reasons=tuple(reasons))
-        return Decision(pr=pr, task=task, action="already_queued", reasons=tuple(reasons))
-    if reasons:
-        if pr.auto_merge_enabled:
-            return Decision(pr=pr, task=task, action="disable_auto_merge", reasons=tuple(reasons))
-        return Decision(pr=pr, task=task, action="blocked", reasons=tuple(reasons))
-    if pr.auto_merge_enabled:
-        return Decision(pr=pr, task=task, action="already_auto_merge_enabled")
-    if pr.check_summary.has_pending:
-        if include_pending_auto:
-            return Decision(pr=pr, task=task, action="enable_auto_merge")
+            return Decision(
+                pr=pr,
+                task=task,
+                tasks=matched_tasks,
+                action="dequeue",
+                reasons=tuple(reasons),
+            )
         return Decision(
             pr=pr,
             task=task,
+            tasks=matched_tasks,
+            action="already_queued",
+            reasons=tuple(reasons),
+        )
+    if reasons:
+        if pr.auto_merge_enabled:
+            return Decision(
+                pr=pr,
+                task=task,
+                tasks=matched_tasks,
+                action="disable_auto_merge",
+                reasons=tuple(reasons),
+            )
+        return Decision(
+            pr=pr,
+            task=task,
+            tasks=matched_tasks,
+            action="blocked",
+            reasons=tuple(reasons),
+        )
+    if pr.auto_merge_enabled:
+        return Decision(
+            pr=pr,
+            task=task,
+            tasks=matched_tasks,
+            action="already_auto_merge_enabled",
+        )
+    if pr.check_summary.has_pending:
+        if include_pending_auto:
+            return Decision(pr=pr, task=task, tasks=matched_tasks, action="enable_auto_merge")
+        return Decision(
+            pr=pr,
+            task=task,
+            tasks=matched_tasks,
             action="blocked",
             reasons=("pending_checks:" + ",".join(pr.check_summary.pending),),
         )
-    return Decision(pr=pr, task=task, action="queue")
+    return Decision(pr=pr, task=task, tasks=matched_tasks, action="queue")
 
 
 def merge_pr(
