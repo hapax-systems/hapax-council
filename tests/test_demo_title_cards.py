@@ -2,23 +2,19 @@
 
 from __future__ import annotations
 
-import warnings
-
 import pytest
 
 pytest.importorskip("PIL", reason="Pillow not installed")
 
-from PIL import Image  # noqa: E402
-
-from agents.demo_pipeline.title_cards import generate_scene_title, generate_title_card  # noqa: E402
+from agents.demo_pipeline.title_cards import (  # noqa: E402
+    _png_dimensions_from_bytes,
+    generate_scene_title,
+    generate_title_card,
+)
 
 
 def _assert_safe_png(path, expected_size):
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", Image.DecompressionBombWarning)
-        with Image.open(path) as img:
-            assert img.size == expected_size
-            img.load()
+    assert _png_dimensions_from_bytes(path.read_bytes()) == expected_size
 
 
 class TestGenerateTitleCard:

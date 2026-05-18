@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from io import BytesIO
 from pathlib import Path
 from struct import unpack
@@ -15,6 +17,7 @@ ACCENT_COLOR = (250, 189, 47)  # #fabd2f (yellow)
 SUBTLE_COLOR = (168, 153, 132)  # #a89984 (gray)
 MAX_TITLE_CARD_PIXELS = 7680 * 4320
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+PNG_IHDR_LENGTH = b"\x00\x00\x00\r"
 
 
 def _get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -52,21 +55,48 @@ def _validate_canvas_size(size: tuple[int, int]) -> tuple[int, int]:
     return width, height
 
 
+def _png_dimensions_from_bytes(data: bytes) -> tuple[int, int]:
+    if len(data) < 33 or not data.startswith(PNG_SIGNATURE):
+        raise RuntimeError("title card encoder did not produce a valid PNG header")
+    if data[8:12] != PNG_IHDR_LENGTH:
+        raise RuntimeError("title card encoder produced a PNG with an invalid IHDR length")
+    if data[12:16] != b"IHDR":
+        raise RuntimeError("title card encoder produced a PNG without an IHDR header")
+    return unpack(">II", data[16:24])
+
+
+def _verify_png_dimensions(data: bytes, expected_size: tuple[int, int]) -> None:
+    dimensions = _png_dimensions_from_bytes(data)
+    if dimensions != expected_size:
+        raise RuntimeError(f"title card encoder produced {dimensions}, expected {expected_size}")
+
+
 def _save_png_verified(img: Image.Image, output_path: Path) -> None:
     encoded = BytesIO()
     img.save(encoded, format="PNG")
     data = encoded.getvalue()
-    if len(data) < 33 or not data.startswith(PNG_SIGNATURE):
-        raise RuntimeError("title card encoder did not produce a valid PNG header")
-    if data[12:16] != b"IHDR":
-        raise RuntimeError("title card encoder produced a PNG without an IHDR header")
-    width, height = unpack(">II", data[16:24])
-    if (width, height) != img.size:
-        raise RuntimeError(f"title card encoder produced {(width, height)}, expected {img.size}")
+    _verify_png_dimensions(data, img.size)
 
-    tmp_path = output_path.with_name(f".{output_path.name}.tmp")
-    tmp_path.write_bytes(data)
-    tmp_path.replace(output_path)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "wb",
+            delete=False,
+            dir=output_path.parent,
+            prefix=f".{output_path.name}.",
+            suffix=".tmp",
+        ) as tmp:
+            tmp.write(data)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
+        _verify_png_dimensions(tmp_path.read_bytes(), img.size)
+        os.replace(tmp_path, output_path)
+        tmp_path = None
+        _verify_png_dimensions(output_path.read_bytes(), img.size)
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
 
 
 def generate_title_card(
