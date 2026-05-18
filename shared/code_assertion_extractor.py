@@ -306,7 +306,10 @@ def extract_from_python_file(path: Path) -> list[Assertion]:
     except SyntaxError:
         return []
 
-    uri = str(path)
+    try:
+        uri = str(path.relative_to(Path.cwd()))
+    except ValueError:
+        uri = str(path)
 
     assert_v = _AssertVisitor(uri)
     assert_v.visit(tree)
