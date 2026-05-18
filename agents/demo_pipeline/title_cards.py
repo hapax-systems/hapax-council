@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
+from struct import unpack
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -13,6 +14,7 @@ FG_COLOR = (235, 219, 178)  # #ebdbb2
 ACCENT_COLOR = (250, 189, 47)  # #fabd2f (yellow)
 SUBTLE_COLOR = (168, 153, 132)  # #a89984 (gray)
 MAX_TITLE_CARD_PIXELS = 7680 * 4320
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def _get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -54,10 +56,13 @@ def _save_png_verified(img: Image.Image, output_path: Path) -> None:
     encoded = BytesIO()
     img.save(encoded, format="PNG")
     data = encoded.getvalue()
-    with Image.open(BytesIO(data)) as check:
-        check.load()
-        if check.size != img.size:
-            raise RuntimeError(f"title card encoder produced {check.size}, expected {img.size}")
+    if len(data) < 33 or not data.startswith(PNG_SIGNATURE):
+        raise RuntimeError("title card encoder did not produce a valid PNG header")
+    if data[12:16] != b"IHDR":
+        raise RuntimeError("title card encoder produced a PNG without an IHDR header")
+    width, height = unpack(">II", data[16:24])
+    if (width, height) != img.size:
+        raise RuntimeError(f"title card encoder produced {(width, height)}, expected {img.size}")
 
     tmp_path = output_path.with_name(f".{output_path.name}.tmp")
     tmp_path.write_bytes(data)
