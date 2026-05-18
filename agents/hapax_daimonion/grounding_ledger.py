@@ -16,9 +16,12 @@ Three core functions:
 from __future__ import annotations
 
 import enum
+import json
 import logging
+import time as _time
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -281,3 +284,59 @@ class GroundingLedger:
     def ungrounded_count(self) -> int:
         """Number of DUs that ended ungrounded or abandoned."""
         return sum(1 for du in self._units if du.state in (DUState.UNGROUNDED, DUState.ABANDONED))
+
+    # ── Session persistence (CHI evidence trail) ────────────────────────
+
+    _SESSIONS_DIR = Path.home() / "hapax-state" / "research" / "grounding-sessions"
+
+    def _session_snapshot(self) -> dict[str, object]:
+        """Build a JSON-serialisable snapshot of the current session."""
+        grounded = sum(1 for du in self._units if du.state == DUState.GROUNDED)
+        repair = sum(1 for du in self._units if du.state in (DUState.REPAIR_1, DUState.REPAIR_2))
+        return {
+            "final_gqi": round(self.compute_gqi(), 4),
+            "total_dus": len(self._units),
+            "grounded_count": grounded,
+            "ungrounded_count": self.ungrounded_count,
+            "repair_count": repair,
+            "effort_level": self._effort_level,
+            "acceptance_trajectory": list(self._acceptance_history),
+            "units": [
+                {
+                    "turn": du.turn,
+                    "summary": du.content_summary,
+                    "state": du.state.value,
+                    "repair_count": du.repair_count,
+                    "concern_weight": du.concern_weight,
+                }
+                for du in self._units
+            ],
+        }
+
+    def save_session(self, session_id: str, *, directory: Path | None = None) -> Path:
+        """Persist session snapshot to ``{directory}/{session_id}.json``.
+
+        Creates the directory on first write. Returns the written path.
+        """
+        target_dir = directory or self._SESSIONS_DIR
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        snapshot = self._session_snapshot()
+        snapshot["session_id"] = session_id
+        snapshot["timestamp"] = _time.time()
+
+        path = target_dir / f"{session_id}.json"
+        path.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+        log.info("GQI session saved: %s", path)
+        return path
+
+    @classmethod
+    def load_session(cls, session_id: str, *, directory: Path | None = None) -> dict[str, object]:
+        """Load a previously saved session snapshot.
+
+        Returns the parsed JSON dict. Raises ``FileNotFoundError`` if no
+        snapshot exists for *session_id*.
+        """
+        target_dir = directory or cls._SESSIONS_DIR
+        path = target_dir / f"{session_id}.json"
+        return json.loads(path.read_text(encoding="utf-8"))  # type: ignore[return-value]
