@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 from datetime import UTC, datetime
@@ -19,6 +18,7 @@ from agents.deliberative_council.models import (
     CouncilVerdict,
 )
 from agents.deliberative_council.rubrics import EpistemicQualityRubric
+from scripts.epistemic_quality_dataset import file_sha256, read_jsonl, write_jsonl
 
 _log = logging.getLogger(__name__)
 
@@ -32,8 +32,12 @@ AXES = (
     "source_grounding",
 )
 
+HUMAN_LABEL_ORIGINS = frozenset({"operator", "human_annotator"})
+
 
 def _text_sha256(text: str) -> str:
+    import hashlib
+
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -138,12 +142,16 @@ async def run_labeling(
     config: CouncilConfig | None = None,
     concurrency: int = 4,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Label a manifest dataset; return (label_rows, review_rows)."""
+    """Label a manifest dataset; return (label_rows, review_rows).
+
+    review_queue_path is required when any contested/hung rows are expected.
+    If omitted and review rows are produced, a ValueError is raised.
+    """
     if config is None:
         config = CouncilConfig()
 
-    manifest_hash = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-    records: list[dict[str, Any]] = json.loads(manifest_path.read_text())
+    manifest_hash = file_sha256(manifest_path)
+    records: list[dict[str, Any]] = read_jsonl(manifest_path)
 
     sem = asyncio.Semaphore(concurrency)
 
@@ -158,12 +166,16 @@ async def run_labeling(
     label_rows = [lr for lr, _ in results if lr is not None]
     review_rows = [rr for _, rr in results if rr is not None]
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(label_rows, indent=2))
+    write_jsonl(output_path, label_rows)
 
-    if review_queue_path is not None:
-        review_queue_path.parent.mkdir(parents=True, exist_ok=True)
-        review_queue_path.write_text(json.dumps(review_rows, indent=2))
+    if review_rows:
+        if review_queue_path is None:
+            raise ValueError(
+                f"{len(review_rows)} contested/hung records require a review_queue_path"
+            )
+        write_jsonl(review_queue_path, review_rows)
+    elif review_queue_path is not None:
+        write_jsonl(review_queue_path, [])
 
     return label_rows, review_rows
 
@@ -176,16 +188,16 @@ def run_ratification(
     *,
     label_round: str = "round1",
 ) -> list[dict[str, Any]]:
-    """Read review queue + operator ratification rows; write final label rows.
+    """Read review queue + operator ratification rows (JSONL); write final label rows (JSONL).
 
-    Ratification file must be a JSON array of objects with:
+    Ratification file must be JSONL, one object per line, each with:
       manifest_id, labels (dict of axis -> int 1-5), rationale (str, optional)
     """
-    manifest_hash = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-    review_rows: list[dict[str, Any]] = json.loads(review_queue_path.read_text())
-    ratification_rows: list[dict[str, Any]] = json.loads(ratification_path.read_text())
+    manifest_hash = file_sha256(manifest_path)
+    review_rows: list[dict[str, Any]] = read_jsonl(review_queue_path)
+    ratification_rows: list[dict[str, Any]] = read_jsonl(ratification_path)
 
-    manifest_records: list[dict[str, Any]] = json.loads(manifest_path.read_text())
+    manifest_records: list[dict[str, Any]] = read_jsonl(manifest_path)
     record_by_id = {r["id"]: r for r in manifest_records}
     review_by_id = {r["manifest_id"]: r for r in review_rows}
 
@@ -224,6 +236,5 @@ def run_ratification(
             }
         )
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(ratified, indent=2))
+    write_jsonl(output_path, ratified)
     return ratified
