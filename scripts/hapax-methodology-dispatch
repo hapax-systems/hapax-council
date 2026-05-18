@@ -28,6 +28,7 @@ from shared.dispatcher_policy import (
     write_route_decision_receipt,
 )
 from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
+from shared.route_metadata_schema import assess_route_metadata
 
 MUTATION_TOKENS = {
     "build",
@@ -119,6 +120,15 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "Codex Spark quota-wall tmux lane with methodology bootstrap",
         True,
         "Use only when full Codex quota is blocked and Spark is quality-equivalent for the bounded task.",
+    ),
+    ("codex", "receipt-only", "full"): PlatformPath(
+        "codex",
+        "receipt-only",
+        "full",
+        "receipt-only: validate task authority and print governed prompt; do not launch",
+        "Codex receipt-only governed validation packet",
+        True,
+        "Validation-only path for handoff/receipt generation; it never claims or launches work.",
     ),
     ("vibe", "headless", "full"): PlatformPath(
         "vibe",
@@ -744,6 +754,19 @@ def platform_route_validation(
     return True, "eligible platform route"
 
 
+def route_metadata_validation_reason(validation: Validation) -> str | None:
+    assessment = assess_route_metadata(policy_task_fields(validation))
+    if assessment.dispatchable:
+        return None
+    details = [
+        *assessment.hold_reasons,
+        *assessment.missing_fields,
+        *assessment.validation_errors,
+    ]
+    detail_text = "; ".join(details) or assessment.status.value
+    return f"route metadata not dispatchable: {detail_text}"
+
+
 def env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -985,6 +1008,89 @@ def main(argv: list[str] | None = None) -> int:
             )
         print(f"BLOCKED: {validation.reason}", file=sys.stderr)
         return 10
+
+    if args.mode == "receipt-only":
+        ok, reason = platform_route_validation(route, validation)
+        if ok:
+            metadata_reason = route_metadata_validation_reason(validation)
+            if metadata_reason is not None:
+                ok = False
+                reason = metadata_reason
+        if not ok:
+            blocked = Validation(
+                False,
+                reason,
+                validation.task,
+                validation.parent_spec_path,
+                validation.exempt_read_only,
+            )
+            if not args.no_receipt:
+                write_receipt(
+                    task_id=args.task,
+                    lane=args.lane,
+                    platform=args.platform,
+                    mode=args.mode,
+                    profile=args.profile,
+                    route=route,
+                    validation=blocked,
+                    prompt=None,
+                    launched=False,
+                )
+            print(f"BLOCKED: {reason}", file=sys.stderr)
+            if route is None:
+                print("Supported governed routes:", file=sys.stderr)
+                print("\n".join(supported_route_lines()), file=sys.stderr)
+            return 10
+        assert route is not None
+        if args.launch:
+            reason = "receipt-only mode does not launch lanes"
+            blocked = Validation(
+                False,
+                reason,
+                validation.task,
+                validation.parent_spec_path,
+                validation.exempt_read_only,
+            )
+            if not args.no_receipt:
+                write_receipt(
+                    task_id=args.task,
+                    lane=args.lane,
+                    platform=args.platform,
+                    mode=args.mode,
+                    profile=args.profile,
+                    route=route,
+                    validation=blocked,
+                    prompt=None,
+                    launched=False,
+                )
+            print(f"BLOCKED: {reason}", file=sys.stderr)
+            return 10
+
+        prompt = build_prompt(
+            args.task,
+            args.lane,
+            args.platform,
+            args.mode,
+            args.profile,
+            validation,
+            route,
+        )
+        if args.print_prompt:
+            print(prompt)
+        if not args.no_receipt:
+            write_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                route=route,
+                validation=validation,
+                prompt=prompt,
+                launched=False,
+            )
+        print(f"eligible: {args.task} -> {args.platform}/{args.mode}/{args.profile}/{args.lane}")
+        return 0
 
     policy_sources = load_dispatch_policy_sources(
         registry_path=optional_env_path("HAPAX_PLATFORM_CAPABILITY_REGISTRY"),

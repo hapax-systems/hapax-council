@@ -33,7 +33,7 @@ for p in task_root.glob('*.md'):
     if not status_m:
         continue
     status = status_m.group(1)
-    if status not in ('offered', 'unassigned', 'ready'):
+    if status != 'offered':
         continue
     assigned_m = re.search(r'^assigned_to:\s*(\S+)', text, re.MULTILINE)
     if assigned_m and assigned_m.group(1) not in ('unassigned', 'null', 'None', ''):
@@ -76,6 +76,17 @@ def _write_task(task_dir: Path, name: str, wsjf: float, platforms: list[str]) ->
         f"---\n"
         f"# {name}\n"
     )
+
+
+def test_ready_status_is_not_directly_pickable(tmp_path: Path) -> None:
+    (tmp_path / "ready-task.md").write_text(
+        "---\nstatus: ready\nassigned_to: unassigned\nwsjf: 99.0\n---\n# task\n"
+    )
+    _write_task(tmp_path, "offered-task", 1.0, ["codex"])
+
+    result = _run_task_picker(tmp_path, "codex")
+
+    assert result == "offered-task"
 
 
 def test_claude_lane_skips_codex_only_task(tmp_path: Path) -> None:

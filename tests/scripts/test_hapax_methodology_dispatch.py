@@ -405,6 +405,118 @@ def test_blocks_claimed_task_assigned_to_unassigned(tmp_path: Path) -> None:
     assert "claimed/in_progress tasks may only be dispatched" in result.stderr
 
 
+def test_blocks_ready_task_even_for_receipt_only_dispatch(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "ready-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+        status="ready",
+        assigned_to="unassigned",
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "ready-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "receipt-only",
+        "--print-prompt",
+    )
+
+    assert result.returncode == 10
+    assert "task status 'ready' is not dispatchable" in result.stderr
+    assert "SDLC GOVERNED DISPATCH" not in result.stdout
+
+
+def test_codex_receipt_only_prints_governed_prompt_without_launch_route(
+    tmp_path: Path,
+) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "receipt-only",
+        "--print-prompt",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "SDLC GOVERNED DISPATCH." in result.stdout
+    assert "Mode: receipt-only" in result.stdout
+    assert "Task: governed-build" in result.stdout
+    assert "eligible: governed-build -> codex/receipt-only/full/cx-green" in result.stdout
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is True
+    assert receipt["mode"] == "receipt-only"
+    assert "route_policy_action" not in receipt
+
+
+def test_receipt_only_blocks_malformed_route_metadata(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "malformed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        route_metadata_schema: 1
+        quality_floor: deterministic_ok
+        authority_level: delegated
+        mutation_surface: planning
+        """,
+        route_metadata_defaults=False,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "malformed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "receipt-only",
+        "--print-prompt",
+    )
+
+    assert result.returncode == 10
+    assert "route metadata not dispatchable" in result.stderr
+    assert "SDLC GOVERNED DISPATCH" not in result.stdout
+
+
 def test_blocks_stale_worktree_cc_claim_before_launch(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree", guarded=False)
     spec = _spec(tmp_path / "isap-test.md")
