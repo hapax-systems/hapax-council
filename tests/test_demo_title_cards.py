@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
 pytest.importorskip("PIL", reason="Pillow not installed")
@@ -26,6 +28,17 @@ class TestGenerateTitleCard:
         path = generate_title_card("Small", tmp_path / "small.png", size=(1280, 720))
         img = Image.open(path)
         assert img.size == (1280, 720)
+
+    def test_output_reopens_without_decompression_bomb_warning(self, tmp_path):
+        path = generate_title_card("Safe", tmp_path / "safe.png")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            img = Image.open(path)
+            assert img.size == (1920, 1080)
+
+    def test_rejects_implausibly_large_size(self, tmp_path):
+        with pytest.raises(ValueError, match="pixel budget"):
+            generate_title_card("Too Large", tmp_path / "huge.png", size=(10000, 10000))
 
 
 class TestGenerateSceneTitle:
