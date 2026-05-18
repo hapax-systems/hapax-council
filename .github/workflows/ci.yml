@@ -379,12 +379,11 @@ jobs:
           # the prior 15m wrapper killed otherwise-successful runs at 99%.
           #
           # Merge-queue throughput: full pytest remains mandatory before
-          # release, but the queue runs it in four test-count-balanced
-          # file-level shards and keeps the required `test` check as an
-          # aggregate gate. The shard list is derived from the same
-          # collect/ignore/deselect expression used by the actual test command,
-          # preserving the existing release surface while reducing
-          # longest-runner wall time.
+          # release, but the queue runs it in four runtime-weighted file-level
+          # shards and keeps the required `test` check as an aggregate gate.
+          # The shard list is derived from the same collect/ignore/deselect
+          # expression used by the actual test command, preserving the
+          # existing release surface while reducing longest-runner wall time.
           collect_output="$(mktemp)"
           shard_files="$(mktemp)"
           uv run pytest tests/ --collect-only -q \
@@ -417,60 +416,11 @@ jobs:
             --deselect=tests/studio_compositor/test_overlay_zones_research_gate.py::TestZoneGate::test_default_always_on \
             -m "not llm" -k "not golden and not goldens" \
             -p no:cacheprovider > "$collect_output"
-          awk -v shard="$PYTEST_SHARD" -v shards="$PYTEST_SHARD_COUNT" '
-            /^tests\/.*::/ {
-              file=$0
-              sub(/::.*/, "", file)
-              if (!(file in seen)) {
-                files[++count]=file
-                seen[file]=1
-              }
-              test_count[file]++
-            }
-            END {
-              for (i=1; i<=count; i++) {
-                for (j=i+1; j<=count; j++) {
-                  heavier=test_count[files[j]] > test_count[files[i]]
-                  same_weight=test_count[files[j]] == test_count[files[i]]
-                  lexically_first=files[j] < files[i]
-                  if (heavier || (same_weight && lexically_first)) {
-                    tmp=files[i]
-                    files[i]=files[j]
-                    files[j]=tmp
-                  }
-                }
-              }
-
-              for (s=1; s<=shards; s++) {
-                shard_load[s]=0
-                shard_file_count[s]=0
-              }
-
-              for (i=1; i<=count; i++) {
-                target=1
-                for (s=2; s<=shards; s++) {
-                  if (shard_load[s] < shard_load[target]) {
-                    target=s
-                  }
-                }
-                assigned_shard[files[i]]=target
-                shard_load[target]+=test_count[files[i]]
-                shard_file_count[target]++
-              }
-
-              printf "Shard plan by collected test count:" > "/dev/stderr"
-              for (s=1; s<=shards; s++) {
-                printf " %d=%d-tests/%d-files", s, shard_load[s], shard_file_count[s] > "/dev/stderr"
-              }
-              printf "\n" > "/dev/stderr"
-
-              for (i=1; i<=count; i++) {
-                if (assigned_shard[files[i]] == shard) {
-                  print files[i]
-                }
-              }
-            }
-          ' "$collect_output" > "$shard_files"
+          uv run python scripts/ci_select_pytest_shard.py \
+            --collect-output "$collect_output" \
+            --weights config/ci/python-test-runtime-weights.yaml \
+            --shard "$PYTEST_SHARD" \
+            --shards "$PYTEST_SHARD_COUNT" > "$shard_files"
           file_count="$(wc -l < "$shard_files" | tr -d ' ')"
           echo "Shard $PYTEST_SHARD/$PYTEST_SHARD_COUNT selected $file_count test files."
           if [ "$file_count" -eq 0 ]; then

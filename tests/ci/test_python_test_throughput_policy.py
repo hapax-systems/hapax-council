@@ -9,6 +9,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 EVIDENCE = REPO_ROOT / "config/ci/python-test-throughput-evidence.yaml"
+RUNTIME_WEIGHTS = REPO_ROOT / "config/ci/python-test-runtime-weights.yaml"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -55,9 +56,8 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
     assert "shard_count: [4]" in shard_block
     assert "Run full pytest shard" in shard_block
     assert "--collect-only -q" in shard_block
-    assert "test_count[file]++" in shard_block
-    assert "shard_load[target]+=test_count[files[i]]" in shard_block
-    assert "Shard plan by collected test count" in shard_block
+    assert "scripts/ci_select_pytest_shard.py" in shard_block
+    assert "config/ci/python-test-runtime-weights.yaml" in shard_block
     assert 'xargs -a "$shard_files" uv run pytest -q --tb=line --durations=25' in shard_block
 
 
@@ -87,8 +87,38 @@ def test_python_test_throughput_evidence_records_gated_decision() -> None:
     assert evidence["self_hosted_comparison"]["observed_manual_runs"] == 0
     assert evidence["rollout_policy"]["pull_request"] == "pr_admission_slice"
     assert evidence["rollout_policy"]["merge_group"] == "full_pytest_sharded"
+    assert evidence["rollout_policy"]["merge_group_shards"] == 4
+    assert (
+        evidence["rollout_policy"]["merge_group_shard_selector"]
+        == "scripts/ci_select_pytest_shard.py"
+    )
+    assert (
+        evidence["rollout_policy"]["runtime_weight_source"]
+        == "config/ci/python-test-runtime-weights.yaml"
+    )
     assert evidence["rollout_policy"]["push_main"] == "full_pytest"
     assert (
         evidence["rollout_policy"]["workflow_level_path_filters_for_required_check"] == "forbidden"
     )
     assert evidence["parity_status"]["self_hosted_vs_hosted"] == "unavailable_no_self_hosted_runs"
+
+
+def test_python_runtime_weights_record_merge_queue_evidence() -> None:
+    weights = _load_yaml(RUNTIME_WEIGHTS)
+
+    assert weights["task_id"] == "ci-merge-queue-runtime-weighted-pytest-shards-20260518"
+    assert weights["weight_units"] == "collected_test_equivalent"
+    assert weights["unknown_file_fallback"] == "collected_test_count"
+    assert weights["assignment_policy"]["selector"] == "scripts/ci_select_pytest_shard.py"
+    evidence = weights["evidence"][0]
+    assert evidence["pr"] == 3444
+    assert evidence["run_id"] == 26035987726
+    assert evidence["shard_pytest_seconds"] == {
+        "1": 246.32,
+        "2": 250.29,
+        "3": 236.20,
+        "4": 884.43,
+    }
+    slow_file = weights["files"]["tests/studio_compositor/test_compositor_wiring.py"]
+    assert slow_file["collected_test_equivalent_weight"] == 9000
+    assert slow_file["evidence"]["top_25_duration_seconds_for_file"] == 192.90
