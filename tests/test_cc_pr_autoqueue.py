@@ -366,12 +366,34 @@ def test_skips_prs_already_in_queue_or_auto_merge_enabled(tmp_path: Path) -> Non
     assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
-def test_dequeues_queued_pr_that_loses_governance_gate(tmp_path: Path) -> None:
+def test_merge_queue_status_is_ready_for_already_queued_pr(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
-    _write_task(vault, task_id="queued", pr=72, authority_case=None)
+    _write_task(vault, task_id="queued-status", folder="active", status="merge_queue", pr=72)
     runner = _FakeRunner()
     runner.queued_prs = {72}
-    runner.open_prs = [_pr(72, merge_state="UNKNOWN", checks=[_check("lint")])]
+    runner.open_prs = [_pr(72)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["already_queued"] == 1
+    assert not any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
+
+
+def test_dequeues_queued_pr_that_loses_governance_gate(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="queued", pr=73, authority_case=None)
+    runner = _FakeRunner()
+    runner.queued_prs = {73}
+    runner.open_prs = [_pr(73, merge_state="UNKNOWN", checks=[_check("lint")])]
 
     report = autoqueue.run_reconciler(
         repo="owner/repo",

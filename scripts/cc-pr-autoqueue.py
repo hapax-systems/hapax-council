@@ -51,6 +51,7 @@ NON_BLOCKING_CHECKBOX_RE = re.compile(
 ACTIVE_READY_STATUSES = {
     "pr_open",
     "ci_green",
+    "merge_queue",
     "ready",
     "ready_for_review",
     "review_ready",
