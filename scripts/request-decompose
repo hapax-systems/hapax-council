@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""Decompose an accepted request into cc-tasks via LLM.
+
+Usage:
+    uv run python scripts/request-decompose <request_path> [--dry-run]
+    uv run python scripts/request-decompose --scan [--dry-run]
+
+Single request mode: reads the request, calls LLM for decomposition,
+writes tasks atomically.
+
+Scan mode: finds all accepted_for_planning requests with zero downstream
+tasks and decomposes each.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from agents.request_decomposer.models import RequestDecomposition, TaskSpec
+from agents.request_decomposer.writer import write_decomposition
+from shared.frontmatter import parse_frontmatter
+
+_log = logging.getLogger(__name__)
+
+REQUESTS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-requests/active"
+TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
+
+DECOMPOSITION_PROMPT = """\
+You are the Hapax request decomposition engine. Given a request note,
+produce the complete set of cc-tasks needed to fulfill it.
+
+Return a JSON object with key "tasks" containing an array of task objects.
+Each task object must have these fields:
+- task_id: slug (e.g., "req-slug-phase1-verb-noun")
+- title: concrete deliverable title
+- kind: "build" | "operator_action" | "research_packet" | "verification"
+- priority: "p0" | "p1" | "p2" | "p3"
+- wsjf: float (parent WSJF * 0.85^phase_index for unlisted phases)
+- depends_on: list of task_id strings from THIS decomposition
+- phase_index: int (0 = first phase)
+- intent: 1-3 sentences describing the work
+- acceptance_criteria: list of concrete, testable criteria strings
+- effort_class: "standard" | "high" | "max"
+- mutation_surface: "source" | "runtime" | "vault" | "system"
+- quality_floor: "deterministic_ok" | "frontier_review_required" | "frontier_required"
+
+Rules:
+1. EVERY task the request needs must appear. No stubs.
+2. Dependencies must be explicit via depends_on.
+3. Acceptance criteria must be observable/testable.
+4. If the request has explicit phases, use them. If not, infer from scope.
+5. Generate 1-8 tasks. If >8 needed, the request should be split.
+"""
+
+
+def _read_request(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8")
+    fm, body = parse_frontmatter(text)
+    return {
+        "path": str(path),
+        "filename": path.name,
+        "frontmatter": fm,
+        "body": body or text,
+    }
+
+
+def _find_undecomposed_requests() -> list[Path]:
+    task_parents = set()
+    for d in [TASKS_DIR / "active", TASKS_DIR / "closed"]:
+        if not d.is_dir():
+            continue
+        for f in d.iterdir():
+            if f.suffix != ".md":
+                continue
+            text = f.read_text(errors="replace")[:500]
+            for line in text.splitlines():
+                if line.strip().startswith("parent_request:"):
+                    val = line.split(":", 1)[1].strip().strip('"').strip("'")
+                    if val and val != "null":
+                        task_parents.add(val)
+
+    undecomposed = []
+    for f in sorted(REQUESTS_DIR.iterdir()):
+        if f.suffix != ".md":
+            continue
+        text = f.read_text(errors="replace")[:500]
+        if "status: accepted_for_planning" not in text:
+            continue
+        if f.name not in task_parents and f.stem not in task_parents:
+            has_linked = any(f.name in tp or f.stem in tp for tp in task_parents)
+            if not has_linked:
+                undecomposed.append(f)
+    return undecomposed
+
+
+def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
+    """Call LLM to decompose. Returns None on failure (fail-closed)."""
+    try:
+        from shared.config import get_model
+
+        model = get_model("balanced")
+    except Exception:
+        model = "balanced"
+
+    fm = request_data["frontmatter"]
+    fm.get("title", request_data["filename"])[:60]
+    req_wsjf = float(fm.get("wsjf", "5.0") or "5.0")
+    req_priority = fm.get("priority", "medium")
+    authority = fm.get("planning_case", "")
+    slug = request_data["filename"].replace(".md", "").replace("REQ-", "").lower()[:30]
+
+    try:
+        import litellm
+
+        response = litellm.completion(
+            model=f"litellm_proxy/{model}",
+            messages=[
+                {"role": "system", "content": DECOMPOSITION_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Request: {request_data['body'][:8000]}\n\n"
+                        f"Parent WSJF: {req_wsjf}\n"
+                        f"Priority: {req_priority}\n"
+                        f"Authority case: {authority}\n"
+                        f"Request filename: {request_data['filename']}\n"
+                        f"Slug prefix: {slug}\n"
+                    ),
+                },
+            ],
+            response_format={"type": "json_object"},
+            timeout=60,
+            api_base="http://localhost:4000",
+        )
+
+        content = response.choices[0].message.content
+        data = json.loads(content)
+        tasks_data = data.get("tasks", [])
+
+        tasks = []
+        for t in tasks_data:
+            tasks.append(
+                TaskSpec(
+                    task_id=t["task_id"],
+                    title=t["title"],
+                    kind=t.get("kind", "build"),
+                    priority=t.get("priority", "p2"),
+                    wsjf=float(t.get("wsjf", req_wsjf * 0.85)),
+                    depends_on=t.get("depends_on", []),
+                    phase_index=t.get("phase_index", 0),
+                    parent_request=request_data["filename"],
+                    authority_case=authority or f"CASE-{slug.upper()[:20]}",
+                    parent_spec=fm.get("parent_spec"),
+                    status="blocked" if t.get("depends_on") else "offered",
+                    blocked_reason=(
+                        f"Depends on: {', '.join(t['depends_on'])}" if t.get("depends_on") else None
+                    ),
+                    intent=t.get("intent", ""),
+                    acceptance_criteria=t.get("acceptance_criteria", ["TBD"]),
+                    effort_class=t.get("effort_class", "standard"),
+                    mutation_surface=t.get("mutation_surface", "source"),
+                    quality_floor=t.get("quality_floor", "deterministic_ok"),
+                )
+            )
+
+        return RequestDecomposition(
+            request_id=slug,
+            request_path=str(request_data["path"]),
+            decomposition_model=model,
+            tasks=tasks,
+        )
+
+    except Exception as e:
+        _log.error("LLM decomposition failed: %s", e)
+        return None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Decompose requests into cc-tasks")
+    parser.add_argument("request_path", nargs="?", help="Path to a specific request")
+    parser.add_argument(
+        "--scan", action="store_true", help="Find and decompose all undecomposed requests"
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Show what would be created")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    if args.scan:
+        undecomposed = _find_undecomposed_requests()
+        _log.info("Found %d undecomposed requests", len(undecomposed))
+        total_tasks = 0
+        for req_path in undecomposed:
+            req_data = _read_request(req_path)
+            decomp = _decompose_with_llm(req_data)
+            if decomp is None:
+                _log.warning("Failed to decompose %s (fail-closed)", req_path.name)
+                continue
+            if args.dry_run:
+                _log.info("DRY RUN: %s → %d tasks", req_path.name, len(decomp.tasks))
+                for t in decomp.tasks:
+                    _log.info("  %s (WSJF %.1f, %s)", t.task_id, t.wsjf, t.status)
+                total_tasks += len(decomp.tasks)
+            else:
+                paths = write_decomposition(decomp, TASKS_DIR)
+                _log.info("Wrote %d tasks for %s", len(paths), req_path.name)
+                total_tasks += len(paths)
+        _log.info("Total: %d tasks created from %d requests", total_tasks, len(undecomposed))
+        return 0
+
+    if args.request_path:
+        req_path = Path(args.request_path)
+        if not req_path.exists():
+            _log.error("Request not found: %s", req_path)
+            return 1
+        req_data = _read_request(req_path)
+        decomp = _decompose_with_llm(req_data)
+        if decomp is None:
+            _log.error("Decomposition failed (fail-closed)")
+            return 1
+        if args.dry_run:
+            _log.info("DRY RUN: %d tasks", len(decomp.tasks))
+            for t in decomp.tasks:
+                _log.info("  %s: %s (WSJF %.1f)", t.task_id, t.title, t.wsjf)
+            return 0
+        paths = write_decomposition(decomp, TASKS_DIR)
+        _log.info("Wrote %d tasks", len(paths))
+        return 0
+
+    parser.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
