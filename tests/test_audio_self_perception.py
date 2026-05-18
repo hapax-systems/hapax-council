@@ -244,6 +244,64 @@ class TestStimmungAudioUpdate:
         snap = c.snapshot()
         assert snap.audio_content_mix.value > 0.5
 
+    def test_idle_scene_maps_low_content_mix(self):
+        c = self._collector()
+        c.update_audio_perception(
+            rms_dbfs=-60.0,
+            scene="silence",
+            audio_confidence=0.95,
+        )
+        snap = c.snapshot()
+        assert snap.audio_content_mix.value < 0.1
+
+    def test_passive_music_maps_mid_content_mix(self):
+        c = self._collector()
+        c.update_audio_perception(
+            rms_dbfs=-18.0,
+            scene="music",
+            music_playing=True,
+            audio_confidence=0.9,
+        )
+        snap = c.snapshot()
+        assert 0.35 <= snap.audio_content_mix.value <= 0.45
+
+    def test_active_performance_maps_high_content_mix(self):
+        c = self._collector()
+        c.update_audio_perception(
+            rms_dbfs=-18.0,
+            scene="music",
+            music_playing=True,
+            audio_confidence=0.9,
+            production_activity="production",
+            mixer_active=True,
+            mixer_energy=0.08,
+            desk_activity="drumming",
+        )
+        snap = c.snapshot()
+        assert snap.audio_content_mix.value >= 0.8
+
+    def test_speech_maps_highest_content_mix(self):
+        c = self._collector()
+        c.update_audio_perception(
+            rms_dbfs=-18.0,
+            scene="speech",
+            is_speech=True,
+            audio_confidence=0.9,
+        )
+        snap = c.snapshot()
+        assert snap.audio_content_mix.value >= 0.9
+
+    def test_content_mix_can_update_without_spectral_audio(self):
+        c = self._collector()
+        c.update_audio_content_mix(
+            production_activity="production",
+            mixer_active=True,
+            mixer_energy=0.06,
+            midi_clock_transport="PLAYING",
+        )
+        snap = c.snapshot()
+        assert snap.audio_content_mix.value >= 0.7
+
 
 class TestStimmungAudioStance:
     def _collector(self):
