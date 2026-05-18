@@ -9,8 +9,8 @@ struct SceneUniforms {
     projection: mat4x4<f32>,
     opacity: f32,
     shader_kind: f32,
-    _pad1: f32,
-    _pad2: f32,
+    payload_pane_ordinal: f32,
+    payload_mode: f32,
 };
 
 @group(0) @binding(0)
@@ -157,6 +157,13 @@ fn pane_information_grid(local_uv: vec2<f32>, inside: f32) -> f32 {
     return inside * aa_line_mask(edge_dist, 0.010, 0.026);
 }
 
+fn pane_payload_sample_uv(local_uv: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(
+        clamp(local_uv.x, 0.0, 1.0),
+        clamp(1.0 - local_uv.y / 0.8660254, 0.0, 1.0),
+    );
+}
+
 fn line_mask(dist: f32, width: f32, feather: f32) -> f32 {
     let derivative = aa_feather(dist, feather);
     return 1.0 - smoothstep(width, width + derivative, dist);
@@ -265,6 +272,22 @@ fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
     let edge = aa_line_mask(edge_dist, 0.012, 0.045);
     let inner_pane = in.pane_info.y;
     let info_uv = pane_information_uv_from_barycentric(bary);
+    let inside = triangle_inside_mask_from_barycentric(bary);
+
+    if scene.payload_mode > 0.5 {
+        let target_pane = u32(max(scene.payload_pane_ordinal, 0.0) + 0.5);
+        let current_pane = u32(in.pane_info.z + 0.5);
+        if current_pane != target_pane {
+            return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        }
+        let payload = textureSample(quad_texture, quad_sampler, pane_payload_sample_uv(info_uv));
+        let tint = aoa_face_tint(in.pane_info.x, inner_pane, in.local_pos);
+        let edge_emphasis = edge * 0.18 + pane_information_grid(info_uv, inside) * 0.10;
+        let color = payload.rgb * (0.82 + edge * 0.12) + tint * edge_emphasis;
+        let alpha = payload.a * inside * scene.opacity * 0.78;
+        return vec4<f32>(color, alpha);
+    }
+
     let info_grid = pane_information_grid(info_uv, 1.0);
     let local_lattice = aa_line_mask(abs(bary.x - bary.y), 0.018, 0.042)
         * aa_line_mask(bary.z, 0.018, 0.042);
