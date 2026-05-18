@@ -53,6 +53,7 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
     assert "needs.test-title-cards.result" in test_block
     assert "Serial title-card result" in test_block
     assert "steps.test_mode.outputs.mode == 'full'" in test_block
+    assert "github.event_name != 'merge_group'" in test_block
     assert "timeout -s KILL 1200" in test_block
     assert "uv sync --extra ci --frozen" in test_block
     assert (
@@ -68,6 +69,8 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
     assert "strategy:" in shard_block
     assert "shard: [1, 2, 3, 4]" in shard_block
     assert "shard_count: [4]" in shard_block
+    assert "cache-dependency-glob:" in shard_block
+    assert "save-cache: false" in shard_block
     assert "Run full pytest shard" in shard_block
     assert "--collect-only -q" in shard_block
     assert "scripts/ci_select_pytest_shard.py" in shard_block
@@ -88,16 +91,26 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
     )
     assert "--ignore=tests/test_demo_title_cards.py" in shard_block
     assert "--ignore=tests/test_demo_video_integration.py" in shard_block
+    assert "Run serial title-card tests in shard 4" in shard_block
+    assert "if: matrix.shard == 4" in shard_block
+    assert "timeout -s KILL 600" in shard_block
+    assert "tests/test_demo_title_cards.py" in shard_block
+    assert "tests/test_demo_video_integration.py" in shard_block
 
     assert "github.event_name == 'merge_group'" in title_card_block
-    assert "Install system deps for serial title-card tests" in title_card_block
+    assert "needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard]" in (
+        title_card_block
+    )
+    assert "Report serial title-card shard result" in title_card_block
+    assert "Serial title-card tests ran inside test-full-shard shard 4." in title_card_block
     assert (
-        "sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection"
+        "Serial title-card coverage is included in shard 4, so this check fails with the "
+        "shard matrix."
     ) in title_card_block
-    assert "uv sync --extra ci --frozen" in title_card_block
-    assert "uv run --no-sync pytest" in title_card_block
-    assert "tests/test_demo_title_cards.py" in title_card_block
-    assert "tests/test_demo_video_integration.py" in title_card_block
+    assert "actions/checkout" not in title_card_block
+    assert "astral-sh/setup-uv" not in title_card_block
+    assert "sudo apt-get install" not in title_card_block
+    assert "uv sync --extra ci --frozen" not in title_card_block
 
 
 def test_pull_request_test_job_uses_fast_admission_slice_without_self_hosted() -> None:
@@ -152,11 +165,26 @@ def test_python_test_throughput_evidence_records_gated_decision() -> None:
         == "config/ci/python-test-runtime-weights.yaml"
     )
     assert evidence["rollout_policy"]["merge_group_uv_policy"] == "frozen_sync_then_no_sync_run"
+    assert evidence["rollout_policy"]["merge_group_shard_uv_cache"] == (
+        "restore_only_explicit_pyproject_uv_lock_key"
+    )
+    assert evidence["rollout_policy"]["merge_group_title_cards"] == (
+        "serial_in_shard_4_with_status_sentinel"
+    )
     assert evidence["rollout_policy"]["push_main"] == "full_pytest"
     assert (
         evidence["rollout_policy"]["workflow_level_path_filters_for_required_check"] == "forbidden"
     )
     assert evidence["parity_status"]["self_hosted_vs_hosted"] == "unavailable_no_self_hosted_runs"
+    setup_cost = evidence["setup_cost_elimination"]
+    assert setup_cost["task_id"] == "ci-setup-cost-elimination-prototype-20260518"
+    assert setup_cost["required_check_names_changed"] is False
+    assert setup_cost["cache_policy"]["matrix_shards"]["save_cache"] is False
+    assert setup_cost["cache_policy"]["matrix_shards"]["dependency_glob"] == [
+        "pyproject.toml",
+        "uv.lock",
+    ]
+    assert setup_cost["expected_setup_seconds"]["removed_per_merge_group_range"] == [58, 103]
 
 
 def test_python_runtime_weights_record_merge_queue_evidence() -> None:
