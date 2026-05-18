@@ -88,6 +88,9 @@ SCOPES: list[str] = [GMAIL_MODIFY_SCOPE, GMAIL_SETTINGS_BASIC_SCOPE]
 CLIENT_ID_PASS_KEY = "mail-monitor/google-client-id"
 CLIENT_SECRET_PASS_KEY = "mail-monitor/google-client-secret"
 REFRESH_TOKEN_PASS_KEY = "mail-monitor/google-refresh-token"
+CLIENT_ID_PASS_REF = "pass-key:mail-monitor-client-id"
+CLIENT_CREDENTIAL_PASS_REF = "pass-key:mail-monitor-client-credential"
+REFRESH_CREDENTIAL_PASS_REF = "pass-key:mail-monitor-refresh-credential"
 
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
@@ -106,9 +109,9 @@ for _result in ("success", "revoked", "transport_error", "missing_credential"):
 
 def _credential_ref(key: str) -> str:
     refs = {
-        CLIENT_ID_PASS_KEY: "pass-key:mail-monitor-client-id",
-        CLIENT_SECRET_PASS_KEY: "pass-key:mail-monitor-client-credential",
-        REFRESH_TOKEN_PASS_KEY: "pass-key:mail-monitor-refresh-credential",
+        CLIENT_ID_PASS_KEY: CLIENT_ID_PASS_REF,
+        CLIENT_SECRET_PASS_KEY: CLIENT_CREDENTIAL_PASS_REF,
+        REFRESH_TOKEN_PASS_KEY: REFRESH_CREDENTIAL_PASS_REF,
     }
     return refs.get(key, "pass-key:redacted")
 
@@ -218,12 +221,10 @@ def run_first_consent(*, port: int = 0, open_browser: bool = False) -> bool:
     config = _client_config()
     if config is None:
         log.error(
-            "Missing OAuth client credentials. Run:\n"
-            "    pass insert %s\n"
-            "    pass insert %s\n"
+            "Missing OAuth client credentials (%s, %s). "
             "See docs/specs/2026-04-25-mail-monitor.md §Bootstrap.",
-            CLIENT_ID_PASS_KEY,
-            CLIENT_SECRET_PASS_KEY,
+            CLIENT_ID_PASS_REF,
+            CLIENT_CREDENTIAL_PASS_REF,
         )
         return False
 

@@ -203,9 +203,18 @@ def test_run_first_consent_can_open_browser_when_requested() -> None:
     )
 
 
-def test_run_first_consent_aborts_when_client_creds_missing() -> None:
-    with mock.patch.object(oauth, "_client_config", return_value=None):
+def test_run_first_consent_aborts_when_client_creds_missing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        mock.patch.object(oauth, "_client_config", return_value=None),
+        caplog.at_level("ERROR", logger=oauth.__name__),
+    ):
         assert oauth.run_first_consent() is False
+    assert oauth.CLIENT_ID_PASS_KEY not in caplog.text
+    assert oauth.CLIENT_SECRET_PASS_KEY not in caplog.text
+    assert oauth.CLIENT_ID_PASS_REF in caplog.text
+    assert oauth.CLIENT_CREDENTIAL_PASS_REF in caplog.text
 
 
 def test_run_first_consent_aborts_when_flow_returns_no_refresh_token() -> None:
