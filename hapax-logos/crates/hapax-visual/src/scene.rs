@@ -6,6 +6,11 @@
 
 use glam::{Mat4, Vec3};
 
+pub use crate::aoa_panes::{
+    aoa_leaf_tetrahedron_count, aoa_raw_edge_segment_count, aoa_raw_triangular_pane_count,
+    aoa_total_tetrahedron_count, AOA_TETRIX_RENDER_DEPTH,
+};
+
 // ─── Z-plane constants ────────────────────────────────────────────
 // Must stay synchronised with agents/studio_compositor/z_plane_constants.py.
 // The Python floats (0.2, 0.5, 0.9, 1.0) are abstract layers; the real
@@ -70,24 +75,7 @@ pub const AOA_COMPAT_SOURCE_IDS: &[&str] = &[
     "sierpinski-lines",
 ];
 pub const AOA_BASE_GRID_UNITS: f32 = 2.0;
-pub const AOA_TETRIX_RENDER_DEPTH: u32 = 2;
 const NEBULOUS_SCROOM_CAMERA_SIDE_DEPTH_FACTOR: f32 = 0.30;
-
-pub fn aoa_leaf_tetrahedron_count(depth: u32) -> usize {
-    4usize.pow(depth)
-}
-
-pub fn aoa_total_tetrahedron_count(depth: u32) -> usize {
-    (0..=depth).map(aoa_leaf_tetrahedron_count).sum()
-}
-
-pub fn aoa_raw_edge_segment_count(depth: u32) -> usize {
-    aoa_total_tetrahedron_count(depth) * 6
-}
-
-pub fn aoa_raw_triangular_pane_count(depth: u32) -> usize {
-    aoa_total_tetrahedron_count(depth) * 4
-}
 
 /// GPU shader family used by a scene node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
