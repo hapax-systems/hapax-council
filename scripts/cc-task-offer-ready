@@ -1,0 +1,374 @@
+#!/usr/bin/env python3
+"""Promote a dependency-satisfied cc-task from ready to offered."""
+
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+NULLISH = {"", "null", "none", "~", "[]"}
+TERMINAL_DEPENDENCY_STATUSES = {"completed", "closed", "done"}
+QUALITY_FLOORS = {"frontier_required", "frontier_review_required", "deterministic_ok"}
+AUTHORITY_LEVELS = {
+    "authoritative",
+    "support_non_authoritative",
+    "evidence_receipt",
+    "relay_only",
+}
+MUTATION_SURFACES = {"none", "vault_docs", "source", "runtime", "public", "provider_spend"}
+ROUTE_METADATA_NORMALIZATIONS = {
+    "authority_level": {"delegated": "authoritative"},
+    "mutation_surface": {"planning": "vault_docs"},
+}
+
+
+def now_utc() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def strip_scalar(value: object) -> str:
+    text = str(value).strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        return text[1:-1]
+    return text
+
+
+def is_nullish(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, list):
+        return len(value) == 0
+    return strip_scalar(value).lower() in NULLISH
+
+
+def is_claimable_assignee(value: object) -> bool:
+    return is_nullish(value) or strip_scalar(value) == "unassigned"
+
+
+def normalize_list(value: object) -> list[str]:
+    if is_nullish(value):
+        return []
+    if isinstance(value, list):
+        return [strip_scalar(item) for item in value if not is_nullish(item)]
+    text = strip_scalar(value)
+    if text.startswith("[") and text.endswith("]"):
+        inner = text[1:-1].strip()
+        if not inner:
+            return []
+        return [strip_scalar(item) for item in inner.split(",") if strip_scalar(item)]
+    return [text]
+
+
+def locate_task(vault_root: Path, task_id: str, *, search_closed_first: bool = False) -> Path | None:
+    subdirs = ("closed", "active") if search_closed_first else ("active", "closed")
+    for subdir in subdirs:
+        root = vault_root / subdir
+        exact = root / f"{task_id}.md"
+        if exact.is_file():
+            return exact
+        for candidate in sorted(root.glob(f"{task_id}-*.md")):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def parse_fields(path: Path) -> dict[str, Any]:
+    lines, _suffix = split_frontmatter(path.read_text(encoding="utf-8"))
+    loaded = yaml.safe_load("\n".join(lines)) or {}
+    if not isinstance(loaded, dict):
+        return {}
+    return dict(loaded)
+
+
+def pr_number(fields: dict[str, Any]) -> str | None:
+    raw = fields.get("pr")
+    if is_nullish(raw):
+        return None
+    return strip_scalar(raw).lstrip("#")
+
+
+def check_pr_merged(number: str) -> str:
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "view",
+                number,
+                "--json",
+                "state,mergedAt",
+                "--jq",
+                '.state + "," + ((.mergedAt != null and .mergedAt != "") | tostring)',
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    if result.returncode != 0:
+        return "unknown"
+    parts = result.stdout.strip().split(",")
+    if len(parts) == 2 and parts[1] == "true":
+        return "merged"
+    if parts and parts[0] == "OPEN":
+        return "open"
+    if parts and parts[0] == "CLOSED":
+        return "closed_unmerged"
+    return "unknown"
+
+
+def dependency_blockers(vault_root: Path, fields: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    for dep_id in normalize_list(fields.get("depends_on")):
+        dep_path = locate_task(vault_root, dep_id, search_closed_first=True)
+        if dep_path is None:
+            blockers.append(f"{dep_id} (not found in vault)")
+            continue
+        dep_fields = parse_fields(dep_path)
+        dep_status = strip_scalar(dep_fields.get("status", "")).lower()
+        if dep_status not in TERMINAL_DEPENDENCY_STATUSES:
+            blockers.append(f"{dep_id} (status: {dep_status or 'unknown'})")
+            continue
+        number = pr_number(dep_fields)
+        if number is None:
+            continue
+        state = check_pr_merged(number)
+        if state == "open":
+            blockers.append(f"{dep_id} (PR #{number} still open)")
+        elif state == "closed_unmerged":
+            blockers.append(f"{dep_id} (PR #{number} closed without merge)")
+        elif state == "unknown":
+            blockers.append(f"{dep_id} (PR #{number} state unknown)")
+    return blockers
+
+
+def normalized_route_fields(fields: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    normalized = dict(fields)
+    changes: dict[str, str] = {}
+    for key, replacements in ROUTE_METADATA_NORMALIZATIONS.items():
+        current = strip_scalar(normalized.get(key, ""))
+        replacement = replacements.get(current)
+        if replacement:
+            normalized[key] = replacement
+            changes[key] = replacement
+    return normalized, changes
+
+
+def route_metadata_blocker(fields: dict[str, Any]) -> str | None:
+    values = metadata_payload(fields)
+    missing = [
+        key
+        for key in ("quality_floor", "authority_level", "mutation_surface")
+        if is_nullish(values.get(key))
+    ]
+    if missing:
+        return "; ".join(f"missing_{key}" for key in missing)
+
+    quality_floor = strip_scalar(values.get("quality_floor"))
+    authority_level = strip_scalar(values.get("authority_level"))
+    mutation_surface = strip_scalar(values.get("mutation_surface"))
+    if quality_floor not in QUALITY_FLOORS:
+        return f"quality_floor: invalid value {quality_floor!r}"
+    if authority_level not in AUTHORITY_LEVELS:
+        return f"authority_level: invalid value {authority_level!r}"
+    if mutation_surface not in MUTATION_SURFACES:
+        return f"mutation_surface: invalid value {mutation_surface!r}"
+
+    schema = values.get("route_metadata_schema")
+    if not is_nullish(schema) and strip_scalar(schema) != "1":
+        return f"route_metadata_schema: invalid value {strip_scalar(schema)!r}"
+    if quality_floor == "frontier_review_required" and authority_level == "authoritative":
+        return "frontier_review_required artifacts cannot be authoritative directly"
+    return None
+
+
+def metadata_payload(fields: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    nested = fields.get("route_metadata")
+    if isinstance(nested, dict):
+        payload.update({key: value for key, value in nested.items() if not is_nullish(value)})
+    for key in (
+        "route_metadata_schema",
+        "quality_floor",
+        "authority_level",
+        "mutation_surface",
+    ):
+        if key in fields and not is_nullish(fields[key]):
+            payload[key] = fields[key]
+    return payload
+
+
+def split_frontmatter(text: str) -> tuple[list[str], str]:
+    if not text.startswith("---"):
+        raise ValueError("missing YAML frontmatter")
+    end = text.find("\n---", 3)
+    if end < 0:
+        raise ValueError("missing closing YAML frontmatter marker")
+    frontmatter = text[3:end].lstrip("\n")
+    suffix = text[end + 1 :]
+    return frontmatter.splitlines(), suffix
+
+
+def replace_or_insert_scalar(lines: list[str], key: str, value: str) -> None:
+    for idx, line in enumerate(lines):
+        if re.match(rf"^{re.escape(key)}\s*:", line):
+            lines[idx] = f"{key}: {value}"
+            return
+
+    insert_at = len(lines)
+    for anchor in ("updated_at", "created_at", "status"):
+        for idx, line in enumerate(lines):
+            if re.match(rf"^{re.escape(anchor)}\s*:", line):
+                insert_at = idx + 1
+                break
+        if insert_at != len(lines):
+            break
+    lines.insert(insert_at, f"{key}: {value}")
+
+
+def rewrite_note(
+    *,
+    path: Path,
+    status: str,
+    route_changes: dict[str, str],
+    timestamp: str,
+    task_id: str,
+    dry_run: bool,
+) -> None:
+    text = path.read_text(encoding="utf-8")
+    lines, suffix = split_frontmatter(text)
+    replace_or_insert_scalar(lines, "status", status)
+    replace_or_insert_scalar(lines, "assigned_to", "unassigned")
+    replace_or_insert_scalar(lines, "updated_at", timestamp)
+    replace_or_insert_scalar(lines, "claimed_at", "null")
+    for key, value in route_changes.items():
+        replace_or_insert_scalar(lines, key, value)
+
+    next_text = "---\n" + "\n".join(lines).rstrip() + "\n" + suffix
+    log_line = f"- {timestamp} promoted ready -> offered by cc-task-offer-ready"
+    if "## Session log\n" in next_text:
+        next_text = next_text.replace("## Session log\n", f"## Session log\n{log_line}\n", 1)
+    else:
+        next_text = next_text.rstrip() + f"\n\n## Session log\n{log_line}\n"
+
+    if dry_run:
+        return
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(next_text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def promote(task_id: str, *, vault_root: Path, dry_run: bool) -> int:
+    task_path = locate_task(vault_root, task_id)
+    if task_path is None or task_path.parent.name != "active":
+        print(
+            f"cc-task-offer-ready: task '{task_id}' not found in {vault_root / 'active'}",
+            file=sys.stderr,
+        )
+        return 2
+
+    fields = parse_fields(task_path)
+    status = strip_scalar(fields.get("status", ""))
+    if status == "offered":
+        print(f"cc-task-offer-ready: task '{task_id}' is already offered")
+        return 0
+    if status != "ready":
+        print(
+            f"cc-task-offer-ready: refusing task '{task_id}' with status {status!r}; expected 'ready'",
+            file=sys.stderr,
+        )
+        return 4
+    if not is_claimable_assignee(fields.get("assigned_to")):
+        print(
+            f"cc-task-offer-ready: refusing task '{task_id}' assigned to "
+            f"{strip_scalar(fields.get('assigned_to'))!r}",
+            file=sys.stderr,
+        )
+        return 4
+    missing_authority = [
+        field for field in ("authority_case", "parent_spec") if is_nullish(fields.get(field))
+    ]
+    if missing_authority:
+        print(
+            f"cc-task-offer-ready: refusing task '{task_id}' missing "
+            + ", ".join(missing_authority),
+            file=sys.stderr,
+        )
+        return 6
+
+    blockers = dependency_blockers(vault_root, fields)
+    if blockers:
+        print(
+            f"cc-task-offer-ready: BLOCKED — task '{task_id}' has unmet dependencies:",
+            file=sys.stderr,
+        )
+        for blocker in blockers:
+            print(f"  - {blocker}", file=sys.stderr)
+        return 5
+
+    normalized_fields, route_changes = normalized_route_fields(fields)
+    candidate_fields = {
+        **normalized_fields,
+        "status": "offered",
+        "assigned_to": "unassigned",
+        "claimed_at": normalized_fields.get("claimed_at"),
+    }
+    route_blocker = route_metadata_blocker(candidate_fields)
+    if route_blocker:
+        print(
+            f"cc-task-offer-ready: refusing task '{task_id}' because route metadata is not "
+            f"dispatchable: {route_blocker}",
+            file=sys.stderr,
+        )
+        return 7
+
+    timestamp = now_utc()
+    rewrite_note(
+        path=task_path,
+        status="offered",
+        route_changes=route_changes,
+        timestamp=timestamp,
+        task_id=task_id,
+        dry_run=dry_run,
+    )
+    normalized = ""
+    if route_changes:
+        fields_text = ", ".join(f"{key}={value}" for key, value in sorted(route_changes.items()))
+        normalized = f" (normalized {fields_text})"
+    if dry_run:
+        print(f"cc-task-offer-ready: dry-run would promote '{task_id}' to offered{normalized}")
+    else:
+        print(f"cc-task-offer-ready: promoted task '{task_id}' to offered{normalized}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("task_id")
+    parser.add_argument(
+        "--vault-root",
+        type=Path,
+        default=Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks",
+        help="cc-task vault root containing active/ and closed/",
+    )
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+    return promote(args.task_id, vault_root=args.vault_root.expanduser(), dry_run=args.dry_run)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
