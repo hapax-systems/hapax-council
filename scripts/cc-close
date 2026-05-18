@@ -125,6 +125,22 @@ if [[ "$final_status" == "done" ]]; then
     fi
   fi
 
+  # PR-merge evidence gate — verify PR is merged before allowing done status.
+  # Prevents "status: done but PR is open" false-completion pattern.
+  # Bypass: HAPAX_PR_MERGE_GATE_OFF=1
+  if [[ "${HAPAX_PR_MERGE_GATE_OFF:-0}" != "1" ]]; then
+    PR_MERGE_CHECKER="$SCRIPT_DIR/cc-close-pr-merge-check.py"
+    if [[ -f "$PR_MERGE_CHECKER" ]]; then
+      set +e
+      python3 "$PR_MERGE_CHECKER" "$note_path" ${pr:+--pr "$pr"}
+      merge_rc=$?
+      set -e
+      if [[ "$merge_rc" -ne 0 ]]; then
+        exit "$merge_rc"
+      fi
+    fi
+  fi
+
   # Artifact disposition gate
   DISP_CHECKER="$SCRIPT_DIR/cc-task-artifact-disposition-check.py"
   if [[ -f "$DISP_CHECKER" ]]; then
