@@ -155,12 +155,8 @@ class TestRunPhase1:
         ]
 
         with (
-            patch(
-                "agents.deliberative_council.engine.run_phase1", return_value=high_iqr_results
-            ),
-            patch(
-                "agents.deliberative_council.engine._run_phase2", return_value=None
-            ) as p2,
+            patch("agents.deliberative_council.engine.run_phase1", return_value=high_iqr_results),
+            patch("agents.deliberative_council.engine._run_phase2", return_value=None) as p2,
             patch("agents.deliberative_council.engine._run_phase3", return_value=[]),
             patch("agents.deliberative_council.engine._run_phase4", return_value=None),
         ):
