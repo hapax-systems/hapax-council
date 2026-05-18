@@ -256,7 +256,10 @@ export HAPAX_AGENT_ROLE="$ROLE"
 export HAPAX_WORKTREE_ROLE="$ROLE"
 export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
 
+RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
+
 if [ "$TERMINAL" = "none" ]; then
+  trap '"$RELAY_RETIRE" "$ROLE" --reason "clean exit (terminal=none)" 2>/dev/null || true' EXIT
   cd "$WORKDIR"
   exec "$CLAUDE_BIN" "${CLAUDE_DEFAULT_ARGS[@]}" "${CLAUDE_EXTRA[@]}"
 fi
@@ -270,6 +273,7 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
 {
   printf '%s\n' '#!/usr/bin/env bash'
   printf '%s\n' 'set -euo pipefail'
+  printf 'trap '\''%q %q --reason "clean exit (tmux)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$ROLE"
   printf 'cd %q\n' "$WORKDIR"
   printf 'export HAPAX_AGENT_INTERFACE=claude\n'
   printf 'export HAPAX_AGENT_NAME=%q\n' "$ROLE"

@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import subprocess
 import sys
 import time
 from collections import Counter
@@ -87,6 +88,146 @@ def _relay_payload_is_retired(payload: dict[str, Any]) -> bool:
         if normalized.startswith(("RETIR", "SUPERSEDED", "CLOSED", "ANTIGRAVITY")):
             return True
     return False
+
+
+_AGENT_PGREP_PATTERN = (
+    r"claude-code/bin/claude|/\.local/bin/claude|/\.npm-global/bin/codex|(^|/)codex( |$)"
+    r"|(^|/)claude( |$)"
+)
+
+_WORKTREE_ROOT = Path.home() / "projects"
+
+
+def _lane_has_live_process(role: str) -> bool:
+    """Check if any claude/codex process is running for this lane role.
+
+    Detection strategy (ordered by reliability):
+    1. Process env vars (CLAUDE_ROLE, HAPAX_AGENT_ROLE, CODEX_ROLE) match role
+    2. Process cwd is inside the role's canonical worktree
+    3. For alpha only: process cwd is the workspace root (bare sessions)
+    Fails open: if pgrep fails or /proc is unreadable, assume alive.
+    """
+    try:
+        result = subprocess.run(
+            ["pgrep", "-af", _AGENT_PGREP_PATTERN],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return True
+    if result.returncode != 0:
+        return False
+
+    alpha_worktree = str(_WORKTREE_ROOT / "hapax-council")
+    role_worktrees = {
+        str(_WORKTREE_ROOT / f"hapax-council--{role}"),
+        str(_WORKTREE_ROOT / f"hapax-council--{role}-omg"),
+    }
+    if role == "alpha":
+        role_worktrees.add(alpha_worktree)
+
+    role_env_vars = (b"CLAUDE_ROLE=", b"HAPAX_AGENT_NAME=", b"HAPAX_AGENT_ROLE=", b"CODEX_ROLE=")
+
+    for line in result.stdout.strip().splitlines():
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        pid = parts[0]
+
+        try:
+            env_bytes = Path(f"/proc/{pid}/environ").read_bytes()
+        except OSError:
+            env_bytes = b""
+
+        for var in role_env_vars:
+            idx = env_bytes.find(var)
+            if idx >= 0:
+                val_start = idx + len(var)
+                try:
+                    val_end = env_bytes.index(b"\x00", val_start)
+                except ValueError:
+                    val_end = len(env_bytes)
+                if env_bytes[val_start:val_end].decode(errors="replace") == role:
+                    return True
+
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            continue
+        if cwd in role_worktrees:
+            return True
+        if role == "alpha" and cwd == str(_WORKTREE_ROOT):
+            return True
+
+    return False
+
+
+def reap_dead_lanes(relay_root: Path) -> list[str]:
+    """Retire relay YAMLs for lanes with no running process.
+
+    Returns list of roles that were reaped.
+    """
+    from cc_hygiene.checks import _read_relay_yaml
+
+    reaped: list[str] = []
+    retire_script = Path.home() / "projects" / "hapax-council" / "scripts" / "hapax-relay-retire"
+
+    for role in KNOWN_ROLES:
+        for suffix in (f"{role}-status.yaml", f"{role}.yaml"):
+            yaml_path = relay_root / suffix
+            if not yaml_path.exists():
+                continue
+            payload = _read_relay_yaml(yaml_path)
+            if payload is None or _relay_payload_is_retired(payload):
+                continue
+            if _lane_has_live_process(role):
+                continue
+            LOG.info("Reaping dead lane '%s' — no running process found", role)
+            try:
+                subprocess.run(
+                    [
+                        str(retire_script),
+                        role,
+                        "--reason",
+                        "reaped by hygiene sweeper (no running process)",
+                    ],
+                    timeout=5,
+                    check=False,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                LOG.warning("Failed to retire relay YAML for '%s'", role)
+                continue
+            reaped.append(role)
+            break  # only one file per role
+
+    for path in sorted(relay_root.glob("cx-*.yaml")):
+        session = path.stem
+        payload = _read_relay_yaml(path)
+        if payload is None or _relay_payload_is_retired(payload):
+            continue
+        if payload.get("session") != session:
+            continue
+        if _lane_has_live_process(session):
+            continue
+        LOG.info("Reaping dead cx lane '%s' — no running process found", session)
+        try:
+            subprocess.run(
+                [
+                    str(retire_script),
+                    session,
+                    "--reason",
+                    "reaped by hygiene sweeper (no running process)",
+                ],
+                timeout=5,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            LOG.warning("Failed to retire relay YAML for '%s'", session)
+        else:
+            reaped.append(session)
+
+    return reaped
 
 
 def _load_active_notes(vault_root: Path) -> list[TaskNote]:
@@ -204,6 +345,11 @@ def run_sweep(
     """Perform one sweep and return the snapshot. Does NOT write to disk."""
     now = now or datetime.now(UTC)
     started = time.monotonic()
+
+    reaped = reap_dead_lanes(relay_root)
+    if reaped:
+        LOG.info("Reaped %d dead lane(s): %s", len(reaped), ", ".join(reaped))
+
     notes = _load_active_notes(vault_root)
     closed_notes = _load_closed_notes(vault_root)
     relay_payloads = _load_relay_payloads(relay_root)

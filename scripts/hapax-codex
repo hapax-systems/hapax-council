@@ -806,9 +806,11 @@ fi
 CHILD_ARGS+=(--)
 CHILD_ARGS+=("${CODEX_EXTRA[@]}")
 
+RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 {
   printf '%s\n' '#!/usr/bin/env bash'
   printf '%s\n' 'set -euo pipefail'
+  printf 'trap '\''%q %q --reason "clean exit (codex)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$SESSION"
   printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
   printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
   printf 'cd %q\n' "$WORKDIR"

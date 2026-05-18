@@ -59,8 +59,10 @@ LOG_FILE="$LOG_DIR/output.jsonl"
 [[ -p "$STDIN_PIPE" ]] && rm -f "$STDIN_PIPE"
 mkfifo "$STDIN_PIPE"
 
+RELAY_RETIRE="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}/scripts/hapax-relay-retire"
 cleanup() {
   rm -f "$STDIN_PIPE" "$PID_FILE"
+  "$RELAY_RETIRE" "$ROLE" --reason "clean exit (headless)" 2>/dev/null || true
 }
 trap cleanup EXIT
 
