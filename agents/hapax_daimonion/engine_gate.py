@@ -167,7 +167,9 @@ def activate_from_impingement_gated(
             reason="blocked_by_mode_d",
         )
 
-    target = current.mode if current.mode.value.startswith("voice_tier_") else EvilPetMode.VOICE_TIER_0
+    target = (
+        current.mode if current.mode.value.startswith("voice_tier_") else EvilPetMode.VOICE_TIER_0
+    )
     result = acquire_engine(
         target_mode=target,
         writer=writer,
