@@ -1,6 +1,6 @@
 """Torso S-4 scene library schema pins (Phase B4).
 
-Verifies the 10-scene registry shape, per-scene slot semantics, and
+Verifies the 11-scene registry shape, per-scene slot semantics, and
 program-number uniqueness. CC values are operator-aesthetic and not
 pinned here; the spec §4.2 table documents the intended ranges.
 """
@@ -18,8 +18,8 @@ from shared.s4_scenes import (
 )
 
 
-def test_scene_count_is_10() -> None:
-    assert len(SCENES) == 10, f"expected 10 scenes, got {len(SCENES)}"
+def test_scene_count_is_11() -> None:
+    assert len(SCENES) == 11, f"expected 11 scenes, got {len(SCENES)}"
 
 
 def test_all_required_scenes_present() -> None:
@@ -34,6 +34,7 @@ def test_all_required_scenes_present() -> None:
         "BEAT-1",
         "RECORD-DRY",
         "BYPASS",
+        "VOICE-SELF-MOD",
     }
     assert set(SCENES.keys()) == required
 
@@ -139,11 +140,27 @@ def test_vocal_scenes_have_no_poly_material() -> None:
         "MEMORY-COMPANION",
         "UNDERWATER-COMPANION",
         "SONIC-RITUAL",
+        "VOICE-SELF-MOD",
     ):
         scene = get_scene(scene_name)
         assert scene.material == "Bypass", (
             f"{scene_name} should use Bypass material; Poly would resynthesize"
         )
+
+
+def test_voice_self_mod_scene() -> None:
+    """VOICE-SELF-MOD: non-human intelligible voice via self-modulation."""
+    scene = get_scene("VOICE-SELF-MOD")
+    assert scene.program_number == 11
+    assert scene.material == "Bypass"
+    assert scene.granular == "Mosaic"
+    assert scene.filter == "Ring"
+    assert scene.color == "Deform"
+    assert scene.space == "Vast"
+    # Self-modulation target CC 69 (Mosaic wet) must be present
+    assert 69 in scene.ccs, "CC 69 (Mosaic wet) is the self-modulation target"
+    # Must document intelligibility floor in description
+    assert "intelligibility" in scene.description.lower()
 
 
 def test_all_scenes_have_description() -> None:
