@@ -1,129 +1,120 @@
-"""Information density field compute module.
+"""Density field compute module — ALARM temporal mode detection.
 
-Computes per-source information density with three temporal modes:
-- NEWS: signal just changed (high surprise)
-- ROUTINE: expected staleness (stable, low surprise)
-- ALARM: should have changed but didn't (absence is informative)
+Reads the information density field from SHM and classifies temporal state
+into one of four modes: BASELINE, RISING, SUSTAINED, ALARM. Downstream
+consumers (programme planner, director loop) read this to modulate behavior
+during density spikes.
 
-Writes state to /dev/shm/hapax-density-field/state.json for consumption
-by the programme planner, director, and compositor.
+The InformationDensityField (shared/information_density.py) handles per-source
+density computation. This module adds temporal classification on top.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import time
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
 
-_STANCE_DENSITY: dict[str, float] = {
-    "nominal": 0.1,
-    "seeking": 0.6,
-    "cautious": 0.4,
-    "degraded": 0.8,
-    "critical": 1.0,
-}
+from shared.information_density import DENSITY_FIELD_SHM
 
-_PREVIOUS_VALUES: dict[str, float] = {}
-_STALE_COUNTS: dict[str, int] = {}
+log = logging.getLogger(__name__)
 
-# Number of consecutive identical ticks before ALARM fires
-_ALARM_THRESHOLD: int = 10
+TEMPORAL_STATE_PATH = Path("/dev/shm/hapax-density-field/temporal-mode.json")
 
-# ALARM density — absence is informative, not empty
-_ALARM_DENSITY: float = 0.7
+ALARM_THRESHOLD = 0.75
+SUSTAINED_THRESHOLD = 0.50
+RISING_THRESHOLD = 0.30
+ALARM_DURATION_S = 5.0
 
 
-def reset_state() -> None:
-    """Reset all tracking state. Use in tests to avoid pollution."""
-    _PREVIOUS_VALUES.clear()
-    _STALE_COUNTS.clear()
+class DensityTemporalMode(StrEnum):
+    BASELINE = "baseline"
+    RISING = "rising"
+    SUSTAINED = "sustained"
+    ALARM = "alarm"
 
 
-def _change_density(key: str, current: float, threshold: float = 0.05) -> tuple[float, str]:
-    """Compute change-based density and temporal mode for a signal."""
-    prev = _PREVIOUS_VALUES.get(key, current)
-    _PREVIOUS_VALUES[key] = current
-    delta = abs(current - prev)
+class DensityFieldCompute:
+    """Classifies temporal density mode from the running density field."""
 
-    if delta > threshold:
-        # Signal changed — reset stale counter, mode is NEWS
-        _STALE_COUNTS[key] = 0
-        return min(1.0, delta / max(threshold * 10, 0.01)), "NEWS"
+    def __init__(self) -> None:
+        self._above_sustained_since: float | None = None
+        self._last_density: float = 0.0
+        self._mode: DensityTemporalMode = DensityTemporalMode.BASELINE
 
-    # Signal didn't change — increment stale counter
-    _STALE_COUNTS[key] = _STALE_COUNTS.get(key, 0) + 1
+    def tick(self) -> DensityTemporalMode:
+        aggregate = self._read_aggregate_density()
+        now = time.time()
 
-    if _STALE_COUNTS[key] >= _ALARM_THRESHOLD:
-        # Stale beyond expected cadence — ALARM
-        return _ALARM_DENSITY, "ALARM"
-
-    return max(0.0, 1.0 - delta / max(threshold, 0.01)) * 0.1, "ROUTINE"
-
-
-def compute_density_state(
-    *,
-    perception_data: dict[str, object],
-    stimmung_stance: str,
-    audio_energy: float,
-    epoch: int = 0,
-) -> dict[str, object]:
-    """Compute the information density field state.
-
-    Returns a dict with aggregate_density, dominant_zone, dominant_mode,
-    and per-zone density/mode/top_signal.
-    """
-    presence = float(perception_data.get("presence_probability", 0.0) or 0.0)
-    activity = str(perception_data.get("production_activity", "idle") or "idle")
-
-    perc_density, perc_mode = _change_density("perception", presence)
-    if activity != _PREVIOUS_VALUES.get("_last_activity", "idle"):
-        perc_density = max(perc_density, 0.5)
-        perc_mode = "NEWS"
-        _STALE_COUNTS["perception"] = 0
-    _PREVIOUS_VALUES["_last_activity"] = activity
-
-    stimmung_density = _STANCE_DENSITY.get(stimmung_stance, 0.1)
-    stim_prev = _PREVIOUS_VALUES.get("stimmung_stance_str", stimmung_stance)
-    if stimmung_stance != stim_prev:
-        stim_mode = "NEWS"
-        _STALE_COUNTS["stimmung"] = 0
-    else:
-        _STALE_COUNTS["stimmung"] = _STALE_COUNTS.get("stimmung", 0) + 1
-        if _STALE_COUNTS["stimmung"] >= _ALARM_THRESHOLD:
-            stim_mode = "ALARM"
-            stimmung_density = max(stimmung_density, _ALARM_DENSITY)
+        if aggregate >= ALARM_THRESHOLD:
+            if self._above_sustained_since is None:
+                self._above_sustained_since = now
+            elapsed = now - self._above_sustained_since
+            self._mode = (
+                DensityTemporalMode.ALARM
+                if elapsed >= ALARM_DURATION_S
+                else DensityTemporalMode.SUSTAINED
+            )
+        elif aggregate >= SUSTAINED_THRESHOLD:
+            if self._above_sustained_since is None:
+                self._above_sustained_since = now
+            self._mode = DensityTemporalMode.SUSTAINED
+        elif aggregate >= RISING_THRESHOLD:
+            self._above_sustained_since = None
+            self._mode = DensityTemporalMode.RISING
         else:
-            stim_mode = "ROUTINE"
-    _PREVIOUS_VALUES["stimmung_stance_str"] = stimmung_stance
+            self._above_sustained_since = None
+            self._mode = DensityTemporalMode.BASELINE
 
-    voice_density, voice_mode = _change_density("audio_energy", audio_energy, threshold=0.02)
+        self._last_density = aggregate
+        self._write_state(now)
+        return self._mode
 
-    zones = {
-        "perception": {
-            "density": round(perc_density, 3),
-            "mode": perc_mode,
-            "top_signal": f"activity={activity} presence={presence:.2f}",
-        },
-        "stimmung": {
-            "density": round(stimmung_density, 3),
-            "mode": stim_mode,
-            "top_signal": f"stance={stimmung_stance}",
-        },
-        "voice": {
-            "density": round(voice_density, 3),
-            "mode": voice_mode,
-            "top_signal": f"audio_energy={audio_energy:.3f}",
-        },
-    }
+    @property
+    def mode(self) -> DensityTemporalMode:
+        return self._mode
 
-    densities = [z["density"] for z in zones.values()]
-    aggregate = sum(densities) / len(densities) if densities else 0.0
-    dominant_zone = max(zones, key=lambda z: zones[z]["density"])
-    dominant_mode = zones[dominant_zone]["mode"]
+    @property
+    def last_density(self) -> float:
+        return self._last_density
 
-    return {
-        "computed_at": time.time(),
-        "epoch": epoch,
-        "aggregate_density": round(aggregate, 3),
-        "dominant_zone": dominant_zone,
-        "dominant_mode": dominant_mode,
-        "zones": zones,
-    }
+    def _read_aggregate_density(self) -> float:
+        try:
+            data = json.loads(DENSITY_FIELD_SHM.read_text(encoding="utf-8"))
+            sources = data.get("sources", {})
+            if not sources:
+                return 0.0
+            densities = [
+                s.get("density", 0.0)
+                for s in sources.values()
+                if isinstance(s, dict)
+            ]
+            return sum(densities) / len(densities) if densities else 0.0
+        except (OSError, json.JSONDecodeError, ValueError):
+            return 0.0
+
+    def _write_state(self, now: float) -> None:
+        state: dict[str, Any] = {
+            "mode": self._mode.value,
+            "aggregate_density": self._last_density,
+            "timestamp": now,
+        }
+        try:
+            TEMPORAL_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp = TEMPORAL_STATE_PATH.with_suffix(".tmp")
+            tmp.write_text(json.dumps(state), encoding="utf-8")
+            tmp.rename(TEMPORAL_STATE_PATH)
+        except OSError:
+            log.debug("Failed to write temporal mode state", exc_info=True)
+
+
+def read_temporal_mode() -> DensityTemporalMode:
+    """Read the current temporal mode from SHM. Defaults BASELINE on error."""
+    try:
+        data = json.loads(TEMPORAL_STATE_PATH.read_text(encoding="utf-8"))
+        return DensityTemporalMode(data["mode"])
+    except (OSError, json.JSONDecodeError, KeyError, ValueError):
+        return DensityTemporalMode.BASELINE
