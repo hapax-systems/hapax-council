@@ -1162,7 +1162,7 @@ class VisualLayerAggregator:
                 flow_score=float(_pd.get("flow_score", self._flow_score)),
                 audio_energy=float(_pd.get("audio_energy_rms", self._audio_energy)),
                 stimmung_stance=stimmung_stance,
-                imagination_salience=0.0,
+                imagination_salience=self._read_imagination_salience(),
                 visual_brightness=float(state.ambient_params.brightness),
                 heart_rate=float(_pd.get("heart_rate_bpm", 0)),
                 operator_stress=float(self._stimmung.operator_stress.value)
@@ -1200,6 +1200,17 @@ class VisualLayerAggregator:
         tmp = out_file.with_suffix(".tmp")
         tmp.write_text(json.dumps(state), encoding="utf-8")
         tmp.rename(out_file)
+
+    @staticmethod
+    def _read_imagination_salience() -> float:
+        """Read current imagination salience from SHM. Returns 0.0 on any error."""
+        try:
+            data = json.loads(
+                Path("/dev/shm/hapax-imagination/current.json").read_text()
+            )
+            return float(data.get("salience", 0.0))
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            return 0.0
 
     def _read_watershed_events(self) -> list[WatershedEvent]:
         """Read and prune watershed events from shared file."""
