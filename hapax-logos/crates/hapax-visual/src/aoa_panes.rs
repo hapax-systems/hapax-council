@@ -4,7 +4,7 @@
 //! shader still renders the panes, but it should mirror this lineage/ordinal
 //! contract rather than being the only place where pane identity exists.
 
-use glam::Vec3;
+use glam::{Mat4, Vec2, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -16,6 +16,23 @@ pub const AOA_TETRIX_RENDER_DEPTH: u32 = 2;
 pub const AOA_PANE_CLIP_TOLERANCE: f32 = 0.001;
 pub const AOA_PANE_MIN_VISIBLE_EDGE_PX: f32 = 4.0;
 pub const AOA_PANE_MIN_FRONT_FACING_DOT: f32 = 0.02;
+pub const AOA_PANE_LOD_HYSTERESIS_RATIO: f32 = 0.12;
+pub const AOA_PANE_LOD_MIN_DWELL_MS: u32 = 500;
+pub const AOA_PANE_TEXT_AREA_PX2: f32 = 10_000.0;
+pub const AOA_PANE_TEXT_MIN_EDGE_PX: f32 = 80.0;
+pub const AOA_PANE_TEXT_MIN_FACING_DOT: f32 = 0.25;
+pub const AOA_PANE_TEXT_MIN_VISIBLE_FRACTION: f32 = 0.80;
+pub const AOA_PANE_COMPACT_AREA_PX2: f32 = 4_000.0;
+pub const AOA_PANE_COMPACT_MIN_EDGE_PX: f32 = 48.0;
+pub const AOA_PANE_COMPACT_MIN_FACING_DOT: f32 = 0.20;
+pub const AOA_PANE_COMPACT_MIN_VISIBLE_FRACTION: f32 = 0.70;
+pub const AOA_PANE_GLYPH_AREA_PX2: f32 = 1_200.0;
+pub const AOA_PANE_GLYPH_MIN_EDGE_PX: f32 = 24.0;
+pub const AOA_PANE_GLYPH_MIN_VISIBLE_FRACTION: f32 = 0.60;
+pub const AOA_PANE_ACCENT_AREA_PX2: f32 = 300.0;
+pub const AOA_PANE_ACCENT_MIN_EDGE_PX: f32 = 10.0;
+const AOA_CLIP_W_EPSILON: f32 = 0.000_001;
+const AOA_PANE_CLIPPED_UNKNOWN_VISIBLE_FRACTION: f32 = 0.5;
 
 pub const AOA_ROOT_MODEL_VERTICES: [[f32; 3]; 4] = [
     [-0.58, -0.44, 0.34],
@@ -229,6 +246,101 @@ pub struct AoaPanePayloadGate {
     pub barycentric: [f32; 3],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AoaPaneLodClass {
+    Culled,
+    EdgeOnly,
+    Accent,
+    Glyph,
+    CompactData,
+    Text,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AoaPaneOcclusionState {
+    Visible,
+    Partial,
+    Hidden,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AoaPaneObservationGateReason {
+    NonFiniteProjection,
+    BehindCamera,
+    Offscreen,
+    BackFacing,
+    Tiny,
+    MinimumDwellHold,
+    HysteresisHold,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AoaPaneLodConfig {
+    pub hysteresis_ratio: f32,
+    pub min_dwell_ms: u32,
+}
+
+impl Default for AoaPaneLodConfig {
+    fn default() -> Self {
+        Self {
+            hysteresis_ratio: AOA_PANE_LOD_HYSTERESIS_RATIO,
+            min_dwell_ms: AOA_PANE_LOD_MIN_DWELL_MS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AoaPaneObservationMetrics {
+    pub projected_area_px2: f32,
+    pub min_projected_edge_px: f32,
+    pub facing_dot: f32,
+    pub visible_fraction: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AoaPaneObservationFrame {
+    pub model_matrix: Mat4,
+    pub view_projection_matrix: Mat4,
+    pub camera_eye: Vec3,
+    pub viewport_px: [u32; 2],
+}
+
+impl AoaPaneObservationFrame {
+    pub fn new(
+        model_matrix: Mat4,
+        view_matrix: Mat4,
+        projection_matrix: Mat4,
+        camera_eye: Vec3,
+        viewport_width: u32,
+        viewport_height: u32,
+    ) -> Self {
+        Self {
+            model_matrix,
+            view_projection_matrix: projection_matrix * view_matrix,
+            camera_eye,
+            viewport_px: [viewport_width, viewport_height],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AoaPaneFrameObservation {
+    pub pane_id: String,
+    pub pane_ordinal: u32,
+    pub viewport_px: [u32; 2],
+    pub screen_bbox_px: [f32; 4],
+    pub projected_area_px2: f32,
+    pub min_projected_edge_px: f32,
+    pub facing_dot: f32,
+    pub visible_fraction: f32,
+    pub occlusion_state: AoaPaneOcclusionState,
+    pub lod_class: AoaPaneLodClass,
+    pub gate_reasons: Vec<AoaPaneObservationGateReason>,
+}
+
 impl AoaPanePayloadGate {
     pub fn visible_inside(barycentric: [f32; 3]) -> Self {
         Self {
@@ -374,6 +486,131 @@ pub fn aoa_pane_payload_alpha_after_gate(source_alpha: f32, gate: AoaPanePayload
     } else {
         source_alpha.clamp(0.0, 1.0)
     }
+}
+
+pub fn aoa_observe_pane(
+    pane: &AoaPaneRecord,
+    frame: AoaPaneObservationFrame,
+) -> AoaPaneFrameObservation {
+    aoa_observe_pane_with_lod_state(pane, frame, None, AOA_PANE_LOD_MIN_DWELL_MS)
+}
+
+pub fn aoa_observe_pane_with_lod_state(
+    pane: &AoaPaneRecord,
+    frame: AoaPaneObservationFrame,
+    previous_lod: Option<AoaPaneLodClass>,
+    millis_since_lod_change: u32,
+) -> AoaPaneFrameObservation {
+    let projected = match project_pane_vertices(pane, frame) {
+        Ok(projected) => projected,
+        Err(reason) => {
+            return empty_observation(pane, frame.viewport_px, reason);
+        }
+    };
+
+    let screen_bbox_px = screen_bbox(&projected.screen_vertices);
+    let projected_area_px2 = polygon_area_px2(&projected.screen_vertices);
+    let visible_fraction = projected.visible_fraction(projected_area_px2);
+    let min_projected_edge_px = min_edge_px(&projected.screen_vertices);
+    let facing_dot = facing_dot(frame.camera_eye, projected.world_vertices);
+    let metrics = AoaPaneObservationMetrics {
+        projected_area_px2,
+        min_projected_edge_px,
+        facing_dot,
+        visible_fraction,
+    };
+
+    let mut gate_reasons = observation_gate_reasons(metrics);
+    let occlusion_state = if visible_fraction <= 0.0 {
+        AoaPaneOcclusionState::Hidden
+    } else if visible_fraction < 0.999 {
+        AoaPaneOcclusionState::Partial
+    } else {
+        AoaPaneOcclusionState::Visible
+    };
+    let lod_class = aoa_lod_class_for_metrics_with_state(
+        metrics,
+        previous_lod,
+        millis_since_lod_change,
+        AoaPaneLodConfig::default(),
+        &mut gate_reasons,
+    );
+
+    AoaPaneFrameObservation {
+        pane_id: pane.pane_id.clone(),
+        pane_ordinal: pane.pane_ordinal,
+        viewport_px: frame.viewport_px,
+        screen_bbox_px,
+        projected_area_px2,
+        min_projected_edge_px,
+        facing_dot,
+        visible_fraction,
+        occlusion_state,
+        lod_class,
+        gate_reasons,
+    }
+}
+
+pub fn aoa_observe_panes(
+    panes: &[AoaPaneRecord],
+    frame: AoaPaneObservationFrame,
+) -> Vec<AoaPaneFrameObservation> {
+    panes
+        .iter()
+        .map(|pane| aoa_observe_pane(pane, frame))
+        .collect()
+}
+
+pub fn aoa_raw_lod_class_for_metrics(metrics: AoaPaneObservationMetrics) -> AoaPaneLodClass {
+    if !metrics_are_finite(metrics)
+        || metrics.visible_fraction <= 0.0
+        || metrics.facing_dot < AOA_PANE_MIN_FRONT_FACING_DOT
+        || metrics.min_projected_edge_px < AOA_PANE_MIN_VISIBLE_EDGE_PX
+    {
+        return AoaPaneLodClass::Culled;
+    }
+    for lod in [
+        AoaPaneLodClass::Text,
+        AoaPaneLodClass::CompactData,
+        AoaPaneLodClass::Glyph,
+        AoaPaneLodClass::Accent,
+    ] {
+        if metrics_support_lod(metrics, lod, 1.0) {
+            return lod;
+        }
+    }
+    AoaPaneLodClass::EdgeOnly
+}
+
+pub fn aoa_lod_class_for_metrics_with_state(
+    metrics: AoaPaneObservationMetrics,
+    previous_lod: Option<AoaPaneLodClass>,
+    millis_since_lod_change: u32,
+    config: AoaPaneLodConfig,
+    gate_reasons: &mut Vec<AoaPaneObservationGateReason>,
+) -> AoaPaneLodClass {
+    let raw = aoa_raw_lod_class_for_metrics(metrics);
+    let Some(previous) = previous_lod else {
+        return raw;
+    };
+    if previous == raw || raw == AoaPaneLodClass::Culled {
+        return raw;
+    }
+    if millis_since_lod_change < config.min_dwell_ms {
+        gate_reasons.push(AoaPaneObservationGateReason::MinimumDwellHold);
+        return previous;
+    }
+    if raw < previous
+        && metrics_support_lod(
+            metrics,
+            previous,
+            1.0 - config.hysteresis_ratio.clamp(0.0, 0.5),
+        )
+    {
+        gate_reasons.push(AoaPaneObservationGateReason::HysteresisHold);
+        return previous;
+    }
+    raw
 }
 
 pub fn aoa_pane_records(render_depth: u32) -> Vec<AoaPaneRecord> {
@@ -566,6 +803,342 @@ pub fn aoa_manifest_has_unique_identity(manifest: &AoaPaneManifest) -> bool {
         .all(|pane| ids.insert(pane.pane_id.as_str()) && ordinals.insert(pane.pane_ordinal))
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ClipPaneVertex {
+    clip: Vec4,
+    world: Vec3,
+}
+
+#[derive(Debug, Clone)]
+struct ProjectedPane {
+    screen_vertices: Vec<Vec2>,
+    world_vertices: [Vec3; 3],
+    original_projected_area_px2: Option<f32>,
+    was_clipped: bool,
+}
+
+impl ProjectedPane {
+    fn visible_fraction(&self, projected_area_px2: f32) -> f32 {
+        if projected_area_px2 <= 0.0 || !projected_area_px2.is_finite() {
+            return 0.0;
+        }
+        if let Some(original_area) = self.original_projected_area_px2 {
+            if original_area.is_finite() && original_area > 0.0 {
+                return (projected_area_px2 / original_area).clamp(0.0, 1.0);
+            }
+        }
+        if self.was_clipped {
+            return AOA_PANE_CLIPPED_UNKNOWN_VISIBLE_FRACTION;
+        }
+        1.0
+    }
+}
+
+fn empty_observation(
+    pane: &AoaPaneRecord,
+    viewport_px: [u32; 2],
+    reason: AoaPaneObservationGateReason,
+) -> AoaPaneFrameObservation {
+    AoaPaneFrameObservation {
+        pane_id: pane.pane_id.clone(),
+        pane_ordinal: pane.pane_ordinal,
+        viewport_px,
+        screen_bbox_px: [0.0; 4],
+        projected_area_px2: 0.0,
+        min_projected_edge_px: 0.0,
+        facing_dot: 0.0,
+        visible_fraction: 0.0,
+        occlusion_state: AoaPaneOcclusionState::Hidden,
+        lod_class: AoaPaneLodClass::Culled,
+        gate_reasons: vec![reason],
+    }
+}
+
+fn project_pane_vertices(
+    pane: &AoaPaneRecord,
+    frame: AoaPaneObservationFrame,
+) -> Result<ProjectedPane, AoaPaneObservationGateReason> {
+    if frame.viewport_px[0] == 0 || frame.viewport_px[1] == 0 {
+        return Err(AoaPaneObservationGateReason::NonFiniteProjection);
+    }
+
+    let mut clip_vertices = [ClipPaneVertex {
+        clip: Vec4::ZERO,
+        world: Vec3::ZERO,
+    }; 3];
+    let mut world_vertices = [Vec3::ZERO; 3];
+    for (idx, vertex) in pane.model_vertices.iter().enumerate() {
+        let model_vertex = Vec4::new(vertex[0], vertex[1], vertex[2], 1.0);
+        let world = frame.model_matrix * model_vertex;
+        let clip = frame.view_projection_matrix * world;
+        let world = world.truncate();
+        if !finite4(clip) || !finite3(world) {
+            return Err(AoaPaneObservationGateReason::NonFiniteProjection);
+        }
+        clip_vertices[idx] = ClipPaneVertex { clip, world };
+        world_vertices[idx] = world;
+    }
+
+    let original_screen_vertices = original_screen_vertices(clip_vertices, frame.viewport_px)?;
+    let original_projected_area_px2 =
+        original_screen_vertices.map(|vertices| polygon_area_px2(&vertices));
+    let mut clipped = clip_vertices.to_vec();
+    let original_len = clipped.len();
+    clipped = clip_polygon_against_plane(&clipped, |vertex| vertex.clip.w - AOA_CLIP_W_EPSILON);
+    if clipped.is_empty() {
+        return Err(AoaPaneObservationGateReason::BehindCamera);
+    }
+    clipped = clip_polygon_against_plane(&clipped, |vertex| vertex.clip.x + vertex.clip.w);
+    clipped = clip_polygon_against_plane(&clipped, |vertex| vertex.clip.w - vertex.clip.x);
+    clipped = clip_polygon_against_plane(&clipped, |vertex| vertex.clip.y + vertex.clip.w);
+    clipped = clip_polygon_against_plane(&clipped, |vertex| vertex.clip.w - vertex.clip.y);
+    // glam::Mat4::perspective_rh uses the wgpu/D3D/Vulkan NDC depth range [0, 1].
+    clipped = clip_polygon_against_plane(&clipped, |vertex| vertex.clip.z);
+    clipped = clip_polygon_against_plane(&clipped, |vertex| vertex.clip.w - vertex.clip.z);
+
+    if clipped.len() < 3 {
+        return Err(AoaPaneObservationGateReason::Offscreen);
+    }
+    let screen_vertices = clipped
+        .iter()
+        .map(|vertex| clip_vertex_to_screen(*vertex, frame.viewport_px))
+        .collect::<Result<Vec<_>, _>>()?;
+    if polygon_area_px2(&screen_vertices) <= 0.0 {
+        return Err(AoaPaneObservationGateReason::Offscreen);
+    }
+
+    Ok(ProjectedPane {
+        screen_vertices,
+        world_vertices,
+        original_projected_area_px2,
+        was_clipped: clipped.len() != original_len
+            || clipped.iter().zip(clip_vertices.iter()).any(|(a, b)| {
+                (a.clip - b.clip).length_squared() > 0.000_001
+                    || (a.world - b.world).length_squared() > 0.000_001
+            }),
+    })
+}
+
+fn original_screen_vertices(
+    vertices: [ClipPaneVertex; 3],
+    viewport_px: [u32; 2],
+) -> Result<Option<Vec<Vec2>>, AoaPaneObservationGateReason> {
+    let mut projected = Vec::with_capacity(3);
+    for vertex in vertices {
+        if vertex.clip.w <= AOA_CLIP_W_EPSILON {
+            return Ok(None);
+        }
+        projected.push(clip_vertex_to_screen(vertex, viewport_px)?);
+    }
+    Ok(Some(projected))
+}
+
+fn clip_vertex_to_screen(
+    vertex: ClipPaneVertex,
+    viewport_px: [u32; 2],
+) -> Result<Vec2, AoaPaneObservationGateReason> {
+    if vertex.clip.w <= AOA_CLIP_W_EPSILON {
+        return Err(AoaPaneObservationGateReason::BehindCamera);
+    }
+    let ndc = vertex.clip.truncate() / vertex.clip.w;
+    if !finite3(ndc) {
+        return Err(AoaPaneObservationGateReason::NonFiniteProjection);
+    }
+    let width = viewport_px[0] as f32;
+    let height = viewport_px[1] as f32;
+    Ok(Vec2::new(
+        (ndc.x * 0.5 + 0.5) * width,
+        (1.0 - (ndc.y * 0.5 + 0.5)) * height,
+    ))
+}
+
+fn clip_polygon_against_plane<F>(
+    vertices: &[ClipPaneVertex],
+    distance_to_inside: F,
+) -> Vec<ClipPaneVertex>
+where
+    F: Fn(ClipPaneVertex) -> f32,
+{
+    if vertices.is_empty() {
+        return Vec::new();
+    }
+    let mut output = Vec::with_capacity(vertices.len() + 1);
+    let mut previous = *vertices.last().expect("non-empty checked above");
+    let mut previous_distance = distance_to_inside(previous);
+    let mut previous_inside = previous_distance >= 0.0;
+
+    for current in vertices.iter().copied() {
+        let current_distance = distance_to_inside(current);
+        let current_inside = current_distance >= 0.0;
+        if current_inside != previous_inside {
+            output.push(intersect_clip_edge(
+                previous,
+                current,
+                previous_distance,
+                current_distance,
+            ));
+        }
+        if current_inside {
+            output.push(current);
+        }
+        previous = current;
+        previous_distance = current_distance;
+        previous_inside = current_inside;
+    }
+    output
+}
+
+fn intersect_clip_edge(
+    from: ClipPaneVertex,
+    to: ClipPaneVertex,
+    from_distance: f32,
+    to_distance: f32,
+) -> ClipPaneVertex {
+    let denominator = from_distance - to_distance;
+    let t = if denominator.abs() <= f32::EPSILON {
+        0.0
+    } else {
+        (from_distance / denominator).clamp(0.0, 1.0)
+    };
+    ClipPaneVertex {
+        clip: from.clip + (to.clip - from.clip) * t,
+        world: from.world + (to.world - from.world) * t,
+    }
+}
+
+fn finite4(value: Vec4) -> bool {
+    value
+        .to_array()
+        .iter()
+        .all(|component| component.is_finite())
+}
+
+fn finite3(value: Vec3) -> bool {
+    value
+        .to_array()
+        .iter()
+        .all(|component| component.is_finite())
+}
+
+fn screen_bbox(vertices: &[Vec2]) -> [f32; 4] {
+    let min_x = vertices
+        .iter()
+        .map(|vertex| vertex.x)
+        .fold(f32::INFINITY, f32::min);
+    let min_y = vertices
+        .iter()
+        .map(|vertex| vertex.y)
+        .fold(f32::INFINITY, f32::min);
+    let max_x = vertices
+        .iter()
+        .map(|vertex| vertex.x)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let max_y = vertices
+        .iter()
+        .map(|vertex| vertex.y)
+        .fold(f32::NEG_INFINITY, f32::max);
+    [min_x, min_y, max_x, max_y]
+}
+
+fn polygon_area_px2(vertices: &[Vec2]) -> f32 {
+    if vertices.len() < 3 {
+        return 0.0;
+    }
+    vertices
+        .iter()
+        .zip(vertices.iter().cycle().skip(1))
+        .take(vertices.len())
+        .map(|(a, b)| a.x * b.y - b.x * a.y)
+        .sum::<f32>()
+        .abs()
+        * 0.5
+}
+
+fn min_edge_px(vertices: &[Vec2]) -> f32 {
+    if vertices.len() < 2 {
+        return 0.0;
+    }
+    vertices
+        .iter()
+        .zip(vertices.iter().cycle().skip(1))
+        .take(vertices.len())
+        .map(|(a, b)| a.distance(*b))
+        .fold(f32::INFINITY, f32::min)
+}
+
+fn facing_dot(camera_eye: Vec3, world_vertices: [Vec3; 3]) -> f32 {
+    let a = world_vertices[0];
+    let b = world_vertices[1];
+    let c = world_vertices[2];
+    let normal = (b - a).cross(c - a).normalize_or_zero();
+    let centroid = (a + b + c) / 3.0;
+    let to_camera = (camera_eye - centroid).normalize_or_zero();
+    normal.dot(to_camera).clamp(-1.0, 1.0)
+}
+
+fn observation_gate_reasons(
+    metrics: AoaPaneObservationMetrics,
+) -> Vec<AoaPaneObservationGateReason> {
+    let mut reasons = Vec::new();
+    if !metrics_are_finite(metrics) {
+        reasons.push(AoaPaneObservationGateReason::NonFiniteProjection);
+        return reasons;
+    }
+    if metrics.visible_fraction <= 0.0 {
+        reasons.push(AoaPaneObservationGateReason::Offscreen);
+    }
+    if metrics.facing_dot < AOA_PANE_MIN_FRONT_FACING_DOT {
+        reasons.push(AoaPaneObservationGateReason::BackFacing);
+    }
+    if metrics.min_projected_edge_px < AOA_PANE_MIN_VISIBLE_EDGE_PX {
+        reasons.push(AoaPaneObservationGateReason::Tiny);
+    }
+    reasons
+}
+
+fn metrics_are_finite(metrics: AoaPaneObservationMetrics) -> bool {
+    metrics.projected_area_px2.is_finite()
+        && metrics.min_projected_edge_px.is_finite()
+        && metrics.facing_dot.is_finite()
+        && metrics.visible_fraction.is_finite()
+}
+
+fn metrics_support_lod(
+    metrics: AoaPaneObservationMetrics,
+    lod: AoaPaneLodClass,
+    scale: f32,
+) -> bool {
+    let scale = scale.clamp(0.0, 1.0);
+    match lod {
+        AoaPaneLodClass::Text => {
+            metrics.projected_area_px2 >= AOA_PANE_TEXT_AREA_PX2 * scale
+                && metrics.min_projected_edge_px >= AOA_PANE_TEXT_MIN_EDGE_PX * scale
+                && metrics.facing_dot >= AOA_PANE_TEXT_MIN_FACING_DOT * scale
+                && metrics.visible_fraction >= AOA_PANE_TEXT_MIN_VISIBLE_FRACTION * scale
+        }
+        AoaPaneLodClass::CompactData => {
+            metrics.projected_area_px2 >= AOA_PANE_COMPACT_AREA_PX2 * scale
+                && metrics.min_projected_edge_px >= AOA_PANE_COMPACT_MIN_EDGE_PX * scale
+                && metrics.facing_dot >= AOA_PANE_COMPACT_MIN_FACING_DOT * scale
+                && metrics.visible_fraction >= AOA_PANE_COMPACT_MIN_VISIBLE_FRACTION * scale
+        }
+        AoaPaneLodClass::Glyph => {
+            metrics.projected_area_px2 >= AOA_PANE_GLYPH_AREA_PX2 * scale
+                && metrics.min_projected_edge_px >= AOA_PANE_GLYPH_MIN_EDGE_PX * scale
+                && metrics.visible_fraction >= AOA_PANE_GLYPH_MIN_VISIBLE_FRACTION * scale
+        }
+        AoaPaneLodClass::Accent => {
+            metrics.projected_area_px2 >= AOA_PANE_ACCENT_AREA_PX2 * scale
+                && metrics.min_projected_edge_px >= AOA_PANE_ACCENT_MIN_EDGE_PX * scale
+        }
+        AoaPaneLodClass::EdgeOnly => {
+            metrics.visible_fraction > 0.0
+                && metrics.min_projected_edge_px >= AOA_PANE_MIN_VISIBLE_EDGE_PX * scale
+        }
+        AoaPaneLodClass::Culled => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,6 +1174,243 @@ mod tests {
         assert_eq!(manifest.pane_count, 84);
         assert_eq!(manifest.panes.len(), 84);
         assert!(aoa_manifest_has_unique_identity(&manifest));
+    }
+
+    fn default_observation_frame(model_matrix: Mat4) -> AoaPaneObservationFrame {
+        let camera_eye = Vec3::new(0.0, 0.0, 2.0);
+        let view = Mat4::look_at_rh(camera_eye, Vec3::new(0.0, 0.0, -4.0), Vec3::Y);
+        let projection = Mat4::perspective_rh(60.0f32.to_radians(), 16.0 / 9.0, 0.1, 50.0);
+        AoaPaneObservationFrame::new(model_matrix, view, projection, camera_eye, 1920, 1080)
+    }
+
+    fn root_pane(face_key: AoaFaceKey) -> AoaPaneRecord {
+        aoa_pane_record(&[], face_key)
+    }
+
+    fn clip_for_test(vertices: Vec<ClipPaneVertex>) -> Vec<ClipPaneVertex> {
+        let mut clipped =
+            clip_polygon_against_plane(&vertices, |vertex| vertex.clip.w - AOA_CLIP_W_EPSILON);
+        clipped = clip_polygon_against_plane(&clipped, |vertex| vertex.clip.x + vertex.clip.w);
+        clipped = clip_polygon_against_plane(&clipped, |vertex| vertex.clip.w - vertex.clip.x);
+        clipped = clip_polygon_against_plane(&clipped, |vertex| vertex.clip.y + vertex.clip.w);
+        clipped = clip_polygon_against_plane(&clipped, |vertex| vertex.clip.w - vertex.clip.y);
+        clipped = clip_polygon_against_plane(&clipped, |vertex| vertex.clip.z);
+        clip_polygon_against_plane(&clipped, |vertex| vertex.clip.w - vertex.clip.z)
+    }
+
+    #[test]
+    fn pane_observation_records_visible_root_pane_metrics() {
+        let frame = default_observation_frame(
+            Mat4::from_translation(Vec3::new(0.0, -0.08, -1.85))
+                * Mat4::from_scale(Vec3::splat(2.0)),
+        );
+        let observation = aoa_observe_pane(&root_pane(AoaFaceKey::Abd), frame);
+
+        assert_eq!(observation.pane_id, "aoa:pane:v1:r:abd");
+        assert_eq!(observation.viewport_px, [1920, 1080]);
+        assert!(observation.projected_area_px2 > 0.0);
+        assert!(observation.min_projected_edge_px > AOA_PANE_MIN_VISIBLE_EDGE_PX);
+        assert!(observation.facing_dot >= AOA_PANE_MIN_FRONT_FACING_DOT);
+        assert!(observation.visible_fraction > 0.0);
+        assert_ne!(observation.lod_class, AoaPaneLodClass::Culled);
+        assert!(observation.gate_reasons.is_empty());
+    }
+
+    #[test]
+    fn pane_observation_covers_back_facing_tiny_and_offscreen_cases() {
+        let base_model = Mat4::from_translation(Vec3::new(0.0, -0.08, -1.85))
+            * Mat4::from_scale(Vec3::splat(2.0));
+        let frame = default_observation_frame(base_model);
+        let back_facing = aoa_observe_pane(&root_pane(AoaFaceKey::Acb), frame);
+        assert_eq!(back_facing.lod_class, AoaPaneLodClass::Culled);
+        assert!(back_facing
+            .gate_reasons
+            .contains(&AoaPaneObservationGateReason::BackFacing));
+
+        let tiny_frame = default_observation_frame(
+            Mat4::from_translation(Vec3::new(0.0, -0.08, -1.85))
+                * Mat4::from_scale(Vec3::splat(0.002)),
+        );
+        let tiny = aoa_observe_pane(&root_pane(AoaFaceKey::Abd), tiny_frame);
+        assert_eq!(tiny.lod_class, AoaPaneLodClass::Culled);
+        assert!(tiny
+            .gate_reasons
+            .contains(&AoaPaneObservationGateReason::Tiny));
+
+        let offscreen_frame = default_observation_frame(
+            Mat4::from_translation(Vec3::new(100.0, -0.08, -1.85))
+                * Mat4::from_scale(Vec3::splat(2.0)),
+        );
+        let offscreen = aoa_observe_pane(&root_pane(AoaFaceKey::Abd), offscreen_frame);
+        assert_eq!(offscreen.lod_class, AoaPaneLodClass::Culled);
+        assert!(offscreen
+            .gate_reasons
+            .contains(&AoaPaneObservationGateReason::Offscreen));
+    }
+
+    #[test]
+    fn pane_observation_culls_geometry_outside_depth_range() {
+        let far_frame = default_observation_frame(
+            Mat4::from_translation(Vec3::new(0.0, -0.08, -100.0))
+                * Mat4::from_scale(Vec3::splat(2.0)),
+        );
+        let far = aoa_observe_pane(&root_pane(AoaFaceKey::Abd), far_frame);
+        assert_eq!(far.lod_class, AoaPaneLodClass::Culled);
+        assert_eq!(far.visible_fraction, 0.0);
+        assert!(far
+            .gate_reasons
+            .contains(&AoaPaneObservationGateReason::Offscreen));
+    }
+
+    #[test]
+    fn view_volume_clip_uses_triangle_geometry_not_bbox_overlap() {
+        let outside_corner = vec![
+            ClipPaneVertex {
+                clip: Vec4::new(0.8, 1.2, 0.5, 1.0),
+                world: Vec3::ZERO,
+            },
+            ClipPaneVertex {
+                clip: Vec4::new(1.2, 0.8, 0.5, 1.0),
+                world: Vec3::ZERO,
+            },
+            ClipPaneVertex {
+                clip: Vec4::new(1.2, 1.2, 0.5, 1.0),
+                world: Vec3::ZERO,
+            },
+        ];
+        let clipped = clip_for_test(outside_corner);
+        let screen_vertices = clipped
+            .iter()
+            .map(|vertex| clip_vertex_to_screen(*vertex, [1920, 1080]))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("clipped vertices should be projectable");
+
+        assert!(
+            polygon_area_px2(&screen_vertices) <= 0.001,
+            "bbox-overlap alone must not make a pane observable"
+        );
+    }
+
+    #[test]
+    fn view_volume_clip_preserves_camera_crossing_triangles() {
+        let camera_crossing = vec![
+            ClipPaneVertex {
+                clip: Vec4::new(-0.25, -0.25, 0.2, 1.0),
+                world: Vec3::ZERO,
+            },
+            ClipPaneVertex {
+                clip: Vec4::new(0.25, -0.25, 0.2, 1.0),
+                world: Vec3::ZERO,
+            },
+            ClipPaneVertex {
+                clip: Vec4::new(0.0, 0.35, 0.2, -0.5),
+                world: Vec3::ZERO,
+            },
+        ];
+        let clipped = clip_for_test(camera_crossing);
+
+        let tolerance = 0.000_1;
+        assert!(clipped.len() >= 3);
+        assert!(clipped.iter().all(|vertex| {
+            vertex.clip.w > 0.0
+                && vertex.clip.z >= -tolerance
+                && vertex.clip.z <= vertex.clip.w + tolerance
+                && vertex.clip.x.abs() <= vertex.clip.w + tolerance
+                && vertex.clip.y.abs() <= vertex.clip.w + tolerance
+        }));
+    }
+
+    #[test]
+    fn lod_thresholds_and_hysteresis_are_deterministic() {
+        let text = AoaPaneObservationMetrics {
+            projected_area_px2: AOA_PANE_TEXT_AREA_PX2,
+            min_projected_edge_px: AOA_PANE_TEXT_MIN_EDGE_PX,
+            facing_dot: AOA_PANE_TEXT_MIN_FACING_DOT,
+            visible_fraction: AOA_PANE_TEXT_MIN_VISIBLE_FRACTION,
+        };
+        assert_eq!(aoa_raw_lod_class_for_metrics(text), AoaPaneLodClass::Text);
+
+        let compact = AoaPaneObservationMetrics {
+            projected_area_px2: AOA_PANE_COMPACT_AREA_PX2,
+            min_projected_edge_px: AOA_PANE_COMPACT_MIN_EDGE_PX,
+            facing_dot: AOA_PANE_COMPACT_MIN_FACING_DOT,
+            visible_fraction: AOA_PANE_COMPACT_MIN_VISIBLE_FRACTION,
+        };
+        assert_eq!(
+            aoa_raw_lod_class_for_metrics(compact),
+            AoaPaneLodClass::CompactData
+        );
+
+        let glyph = AoaPaneObservationMetrics {
+            projected_area_px2: AOA_PANE_GLYPH_AREA_PX2,
+            min_projected_edge_px: AOA_PANE_GLYPH_MIN_EDGE_PX,
+            facing_dot: AOA_PANE_MIN_FRONT_FACING_DOT,
+            visible_fraction: AOA_PANE_GLYPH_MIN_VISIBLE_FRACTION,
+        };
+        assert_eq!(aoa_raw_lod_class_for_metrics(glyph), AoaPaneLodClass::Glyph);
+
+        let accent = AoaPaneObservationMetrics {
+            projected_area_px2: AOA_PANE_ACCENT_AREA_PX2,
+            min_projected_edge_px: AOA_PANE_ACCENT_MIN_EDGE_PX,
+            facing_dot: AOA_PANE_MIN_FRONT_FACING_DOT,
+            visible_fraction: 0.5,
+        };
+        assert_eq!(
+            aoa_raw_lod_class_for_metrics(accent),
+            AoaPaneLodClass::Accent
+        );
+
+        let edge_only = AoaPaneObservationMetrics {
+            projected_area_px2: AOA_PANE_ACCENT_AREA_PX2 - 1.0,
+            min_projected_edge_px: AOA_PANE_MIN_VISIBLE_EDGE_PX,
+            facing_dot: AOA_PANE_MIN_FRONT_FACING_DOT,
+            visible_fraction: 0.5,
+        };
+        assert_eq!(
+            aoa_raw_lod_class_for_metrics(edge_only),
+            AoaPaneLodClass::EdgeOnly
+        );
+
+        let culled = AoaPaneObservationMetrics {
+            min_projected_edge_px: AOA_PANE_MIN_VISIBLE_EDGE_PX - 0.01,
+            ..edge_only
+        };
+        assert_eq!(
+            aoa_raw_lod_class_for_metrics(culled),
+            AoaPaneLodClass::Culled
+        );
+
+        let mut reasons = Vec::new();
+        assert_eq!(
+            aoa_lod_class_for_metrics_with_state(
+                edge_only,
+                Some(AoaPaneLodClass::CompactData),
+                AOA_PANE_LOD_MIN_DWELL_MS - 1,
+                AoaPaneLodConfig::default(),
+                &mut reasons,
+            ),
+            AoaPaneLodClass::CompactData
+        );
+        assert!(reasons.contains(&AoaPaneObservationGateReason::MinimumDwellHold));
+
+        let mut reasons = Vec::new();
+        let text_exit_band = AoaPaneObservationMetrics {
+            projected_area_px2: AOA_PANE_TEXT_AREA_PX2 * 0.90,
+            min_projected_edge_px: AOA_PANE_TEXT_MIN_EDGE_PX * 0.90,
+            facing_dot: AOA_PANE_TEXT_MIN_FACING_DOT * 0.90,
+            visible_fraction: AOA_PANE_TEXT_MIN_VISIBLE_FRACTION * 0.90,
+        };
+        assert_eq!(
+            aoa_lod_class_for_metrics_with_state(
+                text_exit_band,
+                Some(AoaPaneLodClass::Text),
+                AOA_PANE_LOD_MIN_DWELL_MS,
+                AoaPaneLodConfig::default(),
+                &mut reasons,
+            ),
+            AoaPaneLodClass::Text
+        );
+        assert!(reasons.contains(&AoaPaneObservationGateReason::HysteresisHold));
     }
 
     #[test]

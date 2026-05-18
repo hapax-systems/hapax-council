@@ -11,8 +11,9 @@ use crate::content_sources::{
 };
 
 pub use crate::aoa_panes::{
-    aoa_leaf_tetrahedron_count, aoa_raw_edge_segment_count, aoa_raw_triangular_pane_count,
-    aoa_total_tetrahedron_count, AOA_TETRIX_RENDER_DEPTH,
+    aoa_active_pane_manifest, aoa_leaf_tetrahedron_count, aoa_observe_panes,
+    aoa_raw_edge_segment_count, aoa_raw_triangular_pane_count, aoa_total_tetrahedron_count,
+    AoaPaneFrameObservation, AoaPaneLodClass, AoaPaneObservationFrame, AOA_TETRIX_RENDER_DEPTH,
 };
 
 // ─── Z-plane constants ────────────────────────────────────────────
@@ -316,7 +317,7 @@ fn push_optional_node(
     true
 }
 
-fn push_authored_aoa(nodes: &mut Vec<SceneNode>) {
+pub fn authored_aoa_scene_node() -> SceneNode {
     let mut node = SceneNode::new(AOA_NODE_LABEL);
     node.position = Vec3::new(0.0, -0.08, ZPlane::SurfaceScrim.z_position() - 0.4 + 0.55);
     node.scale = Vec3::splat(AOA_BASE_GRID_UNITS);
@@ -324,7 +325,39 @@ fn push_authored_aoa(nodes: &mut Vec<SceneNode>) {
     node.opacity = 0.92;
     node.shader = SceneNodeShader::ApertureOfApertures;
     node.content_source_id = None;
+    node
+}
+
+fn push_authored_aoa(nodes: &mut Vec<SceneNode>) {
+    let node = authored_aoa_scene_node();
     nodes.push(node);
+}
+
+pub fn authored_aoa_observation_frame(
+    camera: &Camera3D,
+    viewport_width: u32,
+    viewport_height: u32,
+) -> AoaPaneObservationFrame {
+    AoaPaneObservationFrame::new(
+        authored_aoa_scene_node().model_matrix(),
+        camera.view_matrix(),
+        camera.projection_matrix(),
+        camera.eye,
+        viewport_width,
+        viewport_height,
+    )
+}
+
+pub fn observe_authored_aoa_panes(
+    camera: &Camera3D,
+    viewport_width: u32,
+    viewport_height: u32,
+) -> Vec<AoaPaneFrameObservation> {
+    let manifest = aoa_active_pane_manifest();
+    aoa_observe_panes(
+        &manifest.panes,
+        authored_aoa_observation_frame(camera, viewport_width, viewport_height),
+    )
 }
 
 fn mark_source_used(
@@ -810,6 +843,48 @@ mod tests {
                 assert!(view.col(col)[row].is_finite());
             }
         }
+    }
+
+    #[test]
+    fn authored_aoa_frame_observations_cover_active_manifest() {
+        let cam = Camera3D::new(1920, 1080);
+        let observations = observe_authored_aoa_panes(&cam, 1920, 1080);
+
+        assert_eq!(
+            observations.len(),
+            aoa_raw_triangular_pane_count(AOA_TETRIX_RENDER_DEPTH)
+        );
+        assert!(observations.iter().any(|observation| {
+            matches!(
+                observation.lod_class,
+                AoaPaneLodClass::Text
+                    | AoaPaneLodClass::CompactData
+                    | AoaPaneLodClass::Glyph
+                    | AoaPaneLodClass::Accent
+                    | AoaPaneLodClass::EdgeOnly
+            )
+        }));
+        assert!(observations.iter().all(|observation| {
+            observation
+                .screen_bbox_px
+                .iter()
+                .all(|value| value.is_finite())
+                && observation.projected_area_px2.is_finite()
+                && observation.min_projected_edge_px.is_finite()
+                && observation.facing_dot.is_finite()
+                && observation.visible_fraction.is_finite()
+        }));
+    }
+
+    #[test]
+    fn authored_aoa_observation_frame_uses_authored_anchor_model() {
+        let cam = Camera3D::new(1920, 1080);
+        let frame = authored_aoa_observation_frame(&cam, 1920, 1080);
+        let node = authored_aoa_scene_node();
+
+        assert_eq!(frame.model_matrix, node.model_matrix());
+        assert_eq!(frame.camera_eye, cam.eye);
+        assert_eq!(frame.viewport_px, [1920, 1080]);
     }
 
     #[test]
