@@ -2716,6 +2716,14 @@ _GP_module._reset_state_for_tests
 _GP_module.set_current_graph_provider
 _GP_module.process_graph_patch_recruitment
 
+# Density field state reset is a test-only helper used by
+# tests/test_density_field.py. The unused-function diff gate scans source
+# surfaces but not test callsites, so keep this explicit dynamic reference
+# rather than making runtime code call a test reset hook.
+from agents import density_field as _DF_module
+
+_DF_module.reset_state
+
 # ProgrammeContent Pydantic validators are invoked dynamically by model
 # validation. The segment helpers are also called by the daily segment
 # prep runner and the programme loop beat transition check.
