@@ -128,13 +128,17 @@ def query_by_axiom(axiom: str, *, registry: list[RefusalEntry] | None = None) ->
     return [e for e in entries if axiom in e.axiom_tags]
 
 
-def query_by_status(status: RefusalStatus, *, registry: list[RefusalEntry] | None = None) -> list[RefusalEntry]:
+def query_by_status(
+    status: RefusalStatus, *, registry: list[RefusalEntry] | None = None
+) -> list[RefusalEntry]:
     """Return all entries with the given status."""
     entries = registry if registry is not None else load_registry()
     return [e for e in entries if e.status == status]
 
 
-def query_by_surface(surface: str, *, registry: list[RefusalEntry] | None = None) -> list[RefusalEntry]:
+def query_by_surface(
+    surface: str, *, registry: list[RefusalEntry] | None = None
+) -> list[RefusalEntry]:
     """Return entries whose slug or classification contains the surface term."""
     entries = registry if registry is not None else load_registry()
     term = surface.lower()
