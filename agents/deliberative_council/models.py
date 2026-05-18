@@ -12,6 +12,8 @@ class CouncilMode(StrEnum):
     DISCONFIRMATION = "disconfirmation"
     AUDIT = "audit"
     NARRATIVE = "narrative"
+    INTAKE = "intake"
+    RESEARCH_ASSESSMENT = "research_assessment"
 
 
 class ConvergenceStatus(StrEnum):
