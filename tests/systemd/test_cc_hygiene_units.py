@@ -11,6 +11,7 @@ PRESET = SYSTEMD_ROOT / "user-preset.d" / "hapax.preset"
 
 CC_HYGIENE_UNITS = {
     "hapax-cc-hygiene.timer",
+    "hapax-cc-pr-autoqueue.timer",
     "hapax-cc-pr-merge-watcher.timer",
 }
 

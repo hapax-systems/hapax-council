@@ -1,0 +1,16 @@
+[Unit]
+Description=Hapax governed PR auto-queue reconciler
+Documentation=file://%h/projects/hapax-council/docs/research/2026-05-17-ci-merge-queue-required-check-audit.md
+After=hapax-secrets.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/cc-pr-autoqueue.py --repo-root %h/.cache/hapax/source-activation/worktree --apply
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+# Killswitch: set HAPAX_CC_PR_AUTOQUEUE_OFF=1 to stop PR queue mutations.
+# HAPAX_CC_HYGIENE_OFF=1 also skips this reconciler with the cc-task hygiene tools.
+
+[Install]
+WantedBy=default.target

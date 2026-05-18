@@ -1,0 +1,10 @@
+[Unit]
+Description=Hapax governed PR auto-queue reconciler timer (5 min)
+
+[Timer]
+OnBootSec=150s
+OnUnitActiveSec=5min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

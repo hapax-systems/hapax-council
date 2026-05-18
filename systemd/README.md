@@ -2,7 +2,7 @@
 
 All production services run as systemd user units under `user@1000.service` with lingering enabled. No process supervisors (process-compose, supervisord) in the boot chain.
 
-**Topology:** <!-- topology-inventory:services -->224<!-- /topology-inventory:services --> services, <!-- topology-inventory:timers -->114<!-- /topology-inventory:timers --> timers, 4 paths, 3 targets. Verify with `uv run python scripts/hapax_topology_inventory.py --check`.
+**Topology:** <!-- topology-inventory:services -->229<!-- /topology-inventory:services --> services, <!-- topology-inventory:timers -->116<!-- /topology-inventory:timers --> timers, 4 paths, 3 targets. Verify with `uv run python scripts/hapax_topology_inventory.py --check`.
 
 ## Directory Structure
 
@@ -185,6 +185,26 @@ systemctl --user daemon-reload
 **Newly installed timers are auto-enabled.** As of the audit-followups-e1 PR, `install-units.sh` runs `systemctl --user enable --now <name>.timer` for every timer file it sees for the first time. Existing timers are left alone (re-running is idempotent). To suppress this for a one-off install, set `SKIP_TIMER_ENABLE=1` before running the script (intentionally not a flag — disabling auto-enable is the rare case).
 
 `systemd/user-preset.d/hapax.preset` mirrors the timers that must be enabled by default when preset tooling is used. Timer units still belong in `systemd/units/`; root-level `systemd/*.timer` files are not install-visible and should be moved into `systemd/units/`.
+
+## CC Task Automation
+
+The cc-task automation timers run against the source-activation worktree, not
+the operator's interactive checkout:
+
+| Timer | Script | Purpose |
+|-------|--------|---------|
+| `hapax-cc-hygiene.timer` | `scripts/cc-hygiene-sweeper.py` | Read-only cc-task vault diagnostics. |
+| `hapax-cc-pr-autoqueue.timer` | `scripts/cc-pr-autoqueue.py --apply` | Governed PR auto-queue/auto-merge arming for task-linked PRs. |
+| `hapax-cc-pr-merge-watcher.timer` | `scripts/cc-pr-merge-watcher.py` | Auto-close active cc-tasks after linked PRs merge. |
+
+`cc-pr-autoqueue` fails closed: a PR must be linked to exactly one cc-task, the
+task must carry AuthorityCase/parent-spec metadata plus
+`route_metadata_schema: 1`, and the PR must not be draft, held, dirty, failed,
+already queued, or already auto-merge-armed. Green PRs are added to the merge
+queue; governed PRs with pending checks but no failures are armed with
+GitHub auto-merge so branch protection and the merge queue perform the final
+merge when requirements pass. Killswitch:
+`HAPAX_CC_PR_AUTOQUEUE_OFF=1` or the broader `HAPAX_CC_HYGIENE_OFF=1`.
 
 ## Development
 
