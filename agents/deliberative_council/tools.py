@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import subprocess
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 HAPAX_COUNCIL_DIR = Path(__file__).resolve().parent.parent.parent
 VAULT_DIR = Path.home() / "Documents" / "Personal"
@@ -11,6 +14,7 @@ MAX_READ_CHARS = 4000
 
 async def read_source(ctx: Any, path: str) -> str:
     """Read a source_ref file to verify it exists and check content."""
+    log.info("council_tool call: read_source(%s)", path)
     p = Path(path).expanduser()
     if not p.is_absolute():
         p = HAPAX_COUNCIL_DIR / p
@@ -27,6 +31,7 @@ async def read_source(ctx: Any, path: str) -> str:
 
 async def grep_evidence(ctx: Any, pattern: str, scope: str) -> str:
     """Search codebase for evidence."""
+    log.info("council_tool call: grep_evidence(%s, %s)", pattern, scope)
     search_dir = HAPAX_COUNCIL_DIR / scope
     if not search_dir.is_dir():
         search_dir = HAPAX_COUNCIL_DIR
@@ -47,6 +52,7 @@ async def grep_evidence(ctx: Any, pattern: str, scope: str) -> str:
 
 async def git_provenance(ctx: Any, path: str) -> str:
     """Authorship, date, and commit context for a source file."""
+    log.info("council_tool call: git_provenance(%s)", path)
     try:
         result = subprocess.run(
             ["git", "log", "--oneline", "-5", "--", path],
@@ -64,6 +70,7 @@ async def git_provenance(ctx: Any, path: str) -> str:
 
 async def web_verify(ctx: Any, query: str) -> str:
     """Web search via Perplexity Sonar for verifying external claims."""
+    log.info("council_tool call: web_verify(%s)", query[:100])
     from pydantic_ai import Agent
 
     from shared.config import get_model
@@ -75,6 +82,7 @@ async def web_verify(ctx: Any, query: str) -> str:
 
 async def qdrant_lookup(ctx: Any, query: str, collection: str = "affordances") -> str:
     """RAG search across ingested documents."""
+    log.info("council_tool call: qdrant_lookup(%s, %s)", query[:100], collection)
     try:
         from shared.config import embed
 
@@ -94,6 +102,7 @@ async def qdrant_lookup(ctx: Any, query: str, collection: str = "affordances") -
 
 async def vault_read(ctx: Any, note_path: str) -> str:
     """Read an Obsidian vault note."""
+    log.info("council_tool call: vault_read(%s)", note_path)
     p = VAULT_DIR / note_path
     if not p.exists():
         return f"Vault note not found: {note_path}"
