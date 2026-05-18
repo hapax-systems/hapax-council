@@ -140,3 +140,8 @@ class TestBuildMember:
         assert git_diff in FULL_TOOLS
         assert len(FULL_TOOLS) == 7
         assert len(RESTRICTED_TOOLS) == 2
+
+    def test_none_tool_level_no_tools(self) -> None:
+        agent = build_member("opus", ToolLevel.NONE)
+        assert agent is not None
+        assert agent._function_toolset.tools == {}
