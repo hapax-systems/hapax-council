@@ -165,7 +165,15 @@ fn pane_payload_sample_uv(local_uv: vec2<f32>) -> vec2<f32> {
 }
 
 fn quantized_payload_sample_uv(uv: vec2<f32>, cells: f32) -> vec2<f32> {
-    return (floor(uv * cells) + vec2<f32>(0.5, 0.5)) / cells;
+    let safe_cells = max(cells, 1.0);
+    let max_cell = safe_cells - 1.0;
+    let clamped_uv = clamp(uv, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
+    let cell = clamp(
+        floor(clamped_uv * safe_cells),
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(max_cell, max_cell),
+    );
+    return (cell + vec2<f32>(0.5, 0.5)) / safe_cells;
 }
 
 fn payload_luma(color: vec3<f32>) -> f32 {

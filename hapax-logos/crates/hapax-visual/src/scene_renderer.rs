@@ -142,7 +142,12 @@ fn grid_shadow_occluders(
     let mut occluders = [GridOccluderData::zeroed(); MAX_GRID_SHADOW_OCCLUDERS];
     let mut candidates = scene
         .iter()
-        .filter(|node| node.opacity > 0.04 && node.scale.x > 0.02 && node.scale.y > 0.02)
+        .filter(|node| {
+            node.opacity > 0.04
+                && node.scale.x > 0.02
+                && node.scale.y > 0.02
+                && node.aoa_payload_pane_ordinal.is_none()
+        })
         .collect::<Vec<_>>();
 
     candidates.sort_by(|a, b| {
@@ -763,6 +768,30 @@ mod tests {
             !CONTENT_QUAD_DEPTH_WRITE_ENABLED,
             "alpha-blended livestream quads must not turn transparent regions into occluding panes"
         );
+    }
+
+    #[test]
+    fn aoa_pane_payload_nodes_do_not_cast_grid_shadows() {
+        let mut payload = SceneNode::new("aoa-payload");
+        payload.position = Vec3::new(5.0, 2.0, -3.0);
+        payload.scale = Vec3::new(9.0, 9.0, 1.0);
+        payload.opacity = 1.0;
+        payload.aoa_payload_pane_ordinal = Some(12);
+
+        let mut anchor = SceneNode::new("aoa-anchor");
+        anchor.position = Vec3::new(-1.0, 0.5, -4.0);
+        anchor.scale = Vec3::new(2.0, 2.0, 1.0);
+        anchor.opacity = 0.8;
+
+        let (occluders, count) = grid_shadow_occluders(&[payload, anchor.clone()]);
+
+        assert_eq!(
+            count, 1,
+            "AoA pane payload passes are source-bound texture layers, not independent scroom occluders"
+        );
+        assert_eq!(occluders[0].center[0], anchor.position.x);
+        assert_eq!(occluders[0].center[1], anchor.position.y);
+        assert_eq!(occluders[0].center[2], anchor.position.z);
     }
 
     #[test]

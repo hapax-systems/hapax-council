@@ -1327,6 +1327,8 @@ mod tests {
             "payload_mode",
             "pane_payload_sample_uv",
             "quantized_payload_sample_uv",
+            "let safe_cells = max(cells, 1.0)",
+            "let cell = clamp(",
             "textureSample(quad_texture, quad_sampler, sample_uv)",
             "current_pane != target_pane",
             "triangle_inside_mask_from_barycentric",
