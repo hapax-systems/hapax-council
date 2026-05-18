@@ -42,7 +42,7 @@ KILLSWITCH_ENVS = ("HAPAX_CC_PR_AUTOQUEUE_OFF", "HAPAX_CC_HYGIENE_OFF")
 
 PASS_STATES = {"SUCCESS", "SKIPPED", "NEUTRAL"}
 FAIL_STATES = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}
-DIRTY_MERGE_STATES = {"DIRTY", "UNKNOWN"}
+DIRTY_MERGE_STATES = {"DIRTY"}
 UNCHECKED_PR_CHECKBOX_RE = re.compile(r"^\s*[-*]\s+\[\s\]\s+(?P<text>.+?)\s*$")
 NON_BLOCKING_CHECKBOX_RE = re.compile(
     r"\b(optional|non[-_\s]?blocking|informational|follow[-_\s]?up|stretch)\b",
@@ -88,6 +88,7 @@ class CheckSummary:
 @dataclass(frozen=True)
 class PullRequest:
     number: int
+    node_id: str | None
     title: str
     head_ref: str
     body: str
@@ -206,6 +207,7 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         return None
     return PullRequest(
         number=number,
+        node_id=_scalar(item.get("id")),
         title=_scalar(item.get("title")) or "",
         head_ref=_scalar(item.get("headRefName")) or "",
         body=str(item.get("body") or ""),
@@ -241,6 +243,7 @@ def fetch_open_prs(
         ",".join(
             [
                 "number",
+                "id",
                 "title",
                 "body",
                 "headRefName",
@@ -433,8 +436,11 @@ def classify_pr(
     reasons: list[str] = []
     if pr.is_draft:
         reasons.append("draft")
+    queued = pr.number in queued_prs
     if pr.merge_state_status in DIRTY_MERGE_STATES:
         reasons.append(f"merge_state:{pr.merge_state_status or 'missing'}")
+    elif pr.merge_state_status == "UNKNOWN" and not queued and not pr.check_summary.has_pending:
+        reasons.append("merge_state:UNKNOWN")
     if pr.review_decision and pr.review_decision.upper() in {
         "CHANGES_REQUESTED",
         "REVIEW_REQUIRED",
@@ -460,7 +466,9 @@ def classify_pr(
     else:
         reasons.extend(_task_blockers(matches[0], require_route_metadata=require_route_metadata))
 
-    if pr.number in queued_prs:
+    if queued:
+        if reasons:
+            return Decision(pr=pr, task=task, action="dequeue", reasons=tuple(reasons))
         return Decision(pr=pr, task=task, action="already_queued", reasons=tuple(reasons))
     if reasons:
         if pr.auto_merge_enabled:
@@ -489,14 +497,28 @@ def merge_pr(
 ) -> tuple[bool, str]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
-    cmd = ["gh", "pr", "merge", str(decision.pr.number), "--repo", repo]
+    if decision.action == "dequeue":
+        if not decision.pr.node_id:
+            return False, "missing_pull_request_node_id"
+        query = "mutation($id:ID!){dequeuePullRequest(input:{id:$id}){clientMutationId}}"
+        cmd = [
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-f",
+            f"id={decision.pr.node_id}",
+        ]
+    else:
+        cmd = ["gh", "pr", "merge", str(decision.pr.number), "--repo", repo]
     if decision.action == "enable_auto_merge":
         cmd.extend(["--auto", "--merge"])
     elif decision.action == "queue":
         cmd.append("--merge")
     elif decision.action == "disable_auto_merge":
         cmd.append("--disable-auto")
-    else:
+    elif decision.action != "dequeue":
         return False, f"unsupported_action:{decision.action}"
     proc = runner(
         cmd,
@@ -550,7 +572,12 @@ def run_reconciler(
     mutation_results: list[dict[str, Any]] = []
     if apply:
         for decision in decisions:
-            if decision.action not in {"queue", "enable_auto_merge", "disable_auto_merge"}:
+            if decision.action not in {
+                "queue",
+                "enable_auto_merge",
+                "disable_auto_merge",
+                "dequeue",
+            }:
                 continue
             ok, message = merge_pr(decision, repo=repo, repo_root=repo_root, runner=runner)
             mutation_results.append(
@@ -583,6 +610,7 @@ def run_reconciler(
             "disable_auto_merge": sum(
                 1 for decision in decisions if decision.action == "disable_auto_merge"
             ),
+            "dequeue": sum(1 for decision in decisions if decision.action == "dequeue"),
             "blocked": sum(1 for decision in decisions if decision.action == "blocked"),
         },
         "mutations": mutation_results,

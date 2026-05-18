@@ -105,6 +105,7 @@ def _pr(
 ) -> dict[str, Any]:
     return {
         "number": number,
+        "id": f"PR_test_{number}",
         "title": title or f"PR {number}",
         "body": body,
         "headRefName": branch or f"feat/{number}",
@@ -137,6 +138,10 @@ class _FakeRunner:
         self.calls.append(list(cmd))
         if cmd[:3] == ["gh", "pr", "list"]:
             return subprocess.CompletedProcess(cmd, 0, json.dumps(self.open_prs), "")
+        if cmd[:3] == ["gh", "api", "graphql"] and any(
+            "dequeuePullRequest" in part for part in cmd
+        ):
+            return subprocess.CompletedProcess(cmd, 0, '{"data":{"dequeuePullRequest":{}}}', "")
         if cmd[:3] == ["gh", "api", "graphql"]:
             nodes = [{"pullRequest": {"number": number}} for number in sorted(self.queued_prs)]
             payload = {
@@ -191,6 +196,49 @@ def test_enable_auto_merge_for_pending_governed_pr(tmp_path: Path) -> None:
 
     assert report["counts"]["enable_auto_merge"] == 1
     assert ["gh", "pr", "merge", "43", "--repo", "owner/repo", "--auto", "--merge"] in runner.calls
+
+
+def test_enable_auto_merge_for_unknown_pending_governed_pr(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=44)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(
+            44,
+            merge_state="UNKNOWN",
+            checks=[_check("lint"), {"name": "test", "status": "IN_PROGRESS"}],
+        )
+    ]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["enable_auto_merge"] == 1
+    assert ["gh", "pr", "merge", "44", "--repo", "owner/repo", "--auto", "--merge"] in runner.calls
+
+
+def test_blocks_unknown_merge_state_without_pending_checks(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=45)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(45, merge_state="UNKNOWN")]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    assert "merge_state:UNKNOWN" in report["decisions"][0]["reasons"]
+    assert not any(call[:4] == ["gh", "pr", "merge", "45"] for call in runner.calls)
 
 
 def test_blocks_failed_dirty_draft_and_hold_prs(tmp_path: Path) -> None:
@@ -316,6 +364,29 @@ def test_skips_prs_already_in_queue_or_auto_merge_enabled(tmp_path: Path) -> Non
     assert report["counts"]["already_queued"] == 1
     assert report["counts"]["already_auto_merge_enabled"] == 1
     assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+
+
+def test_dequeues_queued_pr_that_loses_governance_gate(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="queued", pr=72, authority_case=None)
+    runner = _FakeRunner()
+    runner.queued_prs = {72}
+    runner.open_prs = [_pr(72, merge_state="UNKNOWN", checks=[_check("lint")])]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["dequeue"] == 1
+    assert report["mutations"][0]["ok"] is True
+    assert any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
 
 
 def test_disables_auto_merge_when_armed_pr_is_now_blocked(tmp_path: Path) -> None:
