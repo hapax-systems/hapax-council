@@ -112,6 +112,8 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
 
         threading.Thread(target=_presynth, daemon=True, name="bridge-presynth").start()
 
+    max_turns = _resolve_max_turns(daemon)
+
     daemon._conversation_pipeline = ConversationPipeline(
         stt=daemon._resident_stt,
         tts_manager=daemon.tts,
@@ -129,6 +131,7 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
         echo_canceller=daemon._echo_canceller,
         bridge_engine=daemon._bridge_engine,
         tool_recruitment_gate=tool_recruitment_gate,
+        max_turns=max_turns,
     )
 
     # Wire callbacks
@@ -183,6 +186,25 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
 
     # Wake greeting
     _play_wake_greeting(daemon)
+
+
+def _resolve_max_turns(daemon: VoiceDaemon) -> int:
+    """Read active programme role and return appropriate max turns."""
+    from agents.hapax_daimonion.conversation_helpers import _MAX_TURNS, _PROGRAMME_MAX_TURNS
+
+    try:
+        pm = getattr(daemon, "programme_manager", None)
+        if pm is not None:
+            active = pm.store.active_programme()
+            if active is not None:
+                role_val = getattr(active.role, "value", str(active.role))
+                turns = _PROGRAMME_MAX_TURNS.get(role_val)
+                if turns is not None:
+                    log.info("Programme role '%s' → max_turns=%d", role_val, turns)
+                    return turns
+    except Exception:
+        log.debug("Programme max_turns resolution failed, using default", exc_info=True)
+    return _MAX_TURNS
 
 
 def _resolve_tools(daemon, _exp, get_working_mode):
