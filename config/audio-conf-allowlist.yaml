@@ -62,7 +62,7 @@ orphans:
   - hapax-s4-loopback.conf
   - hapax-s4-usb-sink.conf
   - hapax-voice-s4-emulation.conf  # S-4 voice emulation monitor path, not yaml-modeled broadcast graph.
-  - hapax-tts-to-s4.conf  # TTS-to-S-4 loopback send; runtime dry-bypass path is modeled in voice-paths.yaml, not audio-topology.yaml.
+  - hapax-voice-s4-hardware.conf  # S-4 hardware voice send (VPR D4), operator-monitor path.
 
   # ReSpeaker XVF3800 profile pin — WirePlumber/ALSA card rule that exposes
   # the optional array mic as a multichannel capture surface; topology models
