@@ -1,0 +1,86 @@
+schema_version: 1
+task_id: ci-python-test-throughput-evidence-gate
+status: implemented
+decision: fast_pr_admission_slice_and_merge_queue_shards
+decision_time: 2026-05-18T00:35:00Z
+decision_reason: >-
+  Self-hosted required-test adoption is deferred because the bounded experiment
+  policy has no observed manual green runs. The required test check can still
+  reduce PR wait by running a deterministic admission slice on pull_request
+  while preserving full pytest on merge_group and main push. Merge queue full
+  pytest is run in required-check shards under the stable aggregate `test`
+  check name to reduce queue wall time without changing release coverage.
+
+self_hosted_comparison:
+  policy: config/ci/self-hosted-runner-experiment.yaml
+  workflow: .github/workflows/self-hosted-runner-experiment.yml
+  required_test_adoption: defer
+  observed_manual_runs: 0
+  required_gate_before_adoption:
+    - three_consecutive_manual_green_runs
+    - non_secret_static_slice_at_least_3x_faster_than_hosted_baseline
+    - no_secret_runner_boundary_review_passed
+    - bounded_cache_and_teardown_verified
+
+hosted_reference:
+  source: docs/research/2026-05-17-ci-merge-queue-required-check-audit.md
+  merge_group_ci_duration_seconds_range: [833, 1031]
+  merge_group_required_test_seconds_range: [811, 995]
+  latest_pr_ci_samples:
+    - run_id: 26001532659
+      branch: codex/platform-quota-capability-receipts-20260517
+      conclusion: success
+      duration_seconds: 1025
+    - run_id: 26000458748
+      branch: codex/visual-variance-novelty-ledger
+      conclusion: success
+      duration_seconds: 974
+    - run_id: 26000236343
+      branch: codex/platform-route-registry-alignment-20260517
+      conclusion: success
+      duration_seconds: 914
+    - run_id: 25997730258
+      branch: codex/sbcl-clog-local-user-service-v0
+      conclusion: success
+      duration_seconds: 970
+
+rollout_policy:
+  required_check_name: test
+  pull_request: pr_admission_slice
+  merge_group: full_pytest_sharded
+  merge_group_shards: 2
+  push_main: full_pytest
+  docs_only: sentinel_success
+  duplicate_post_merge_push: sentinel_success_after_successful_merge_group
+  workflow_level_path_filters_for_required_check: forbidden
+  branch_protection_check_name_change: forbidden
+
+pr_admission_slice:
+  purpose: >-
+    Keep PR admission fast enough for queue throughput while validating the CI
+    policy files that make the fast/full split safe.
+  command: >-
+    PYTHONPATH=$PWD uv run --no-project --with pytest==9.0.2 --with pyyaml pytest
+    --confcutdir=tests tests/ci/test_self_hosted_runner_experiment.py
+    tests/ci/test_python_test_throughput_policy.py tests/test_ci_required_coverage_claims.py
+    tests/shared/test_ci_discovery.py -q --tb=line
+  preserves:
+    - required test job name remains present on pull_request and merge_group
+    - merge_group runs full pytest before merge via required-check shards
+    - main push runs full pytest unless duplicate merge-group validation exists
+    - self-hosted runner remains outside required checks
+  local_receipt:
+    command: >-
+      PYTHONPATH=$PWD uv run --no-project --with pytest==9.0.2 --with pyyaml pytest
+      --confcutdir=tests tests/ci/test_self_hosted_runner_experiment.py
+      tests/ci/test_python_test_throughput_policy.py tests/test_ci_required_coverage_claims.py
+      tests/shared/test_ci_discovery.py -q --tb=line
+    conclusion: pass
+    tests_passed: 45
+    pytest_reported_seconds: 0.70
+    shell_elapsed_seconds: 2
+
+parity_status:
+  self_hosted_vs_hosted: unavailable_no_self_hosted_runs
+  pull_request_vs_merge_group: intentionally_not_equivalent
+  safety_basis: merge_group_full_pytest_is_release_gate

@@ -86,15 +86,29 @@ def _write_broadcast_health(path: Path, *, safe: bool) -> None:
     )
 
 
+def _write_stimmung_permission(path: Path, *, audio_content_mix: float = 0.0) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "overall_stance": "nominal",
+                "audio_content_mix": {"value": audio_content_mix, "freshness_s": 0.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _broadcast_imp(*, now: float) -> SimpleNamespace:
     return SimpleNamespace(
         source="director.narrative",
         content={
             "public_broadcast_intent": True,
+            "programme_role": "work_block",
             "programme_authorization": {
                 "authorized": True,
                 "authorized_at": now,
                 "programme_id": "programme:test-public",
+                "programme_role": "work_block",
                 "evidence_ref": "programme:test-public:broadcast-voice",
             },
             "narrative": "Authorized public narration.",
@@ -113,12 +127,14 @@ def _bridge_broadcast_imp(*, now: float, source: str = "autonomous_narrative") -
             "route_posture": "broadcast_authorized",
             "claim_ceiling": "public_gate_required",
             "programme_id": "programme:test-public",
+            "programme_role": "work_block",
             "programme_authorization_ref": "programme:programme:test-public",
             "programme_authorization": {
                 "authorized": True,
                 "authorized_at": now,
                 "expires_at": now + 90.0,
                 "programme_id": "programme:test-public",
+                "programme_role": "work_block",
                 "evidence_ref": "programme:programme:test-public",
             },
         },
@@ -395,11 +411,14 @@ class TestPlaybackDecision:
     def test_explicit_broadcast_requires_fresh_programme_auth_and_audio_safe(self, tmp_path):
         now = time.time()
         health_path = tmp_path / "audio-safe-for-broadcast.json"
+        stimmung_path = tmp_path / "stimmung.json"
         _write_broadcast_health(health_path, safe=True)
+        _write_stimmung_permission(stimmung_path)
 
         decision = resolve_playback_decision(
             _broadcast_imp(now=now),
             broadcast_audio_health_path=health_path,
+            stimmung_state_path=stimmung_path,
             now=now,
         )
 
@@ -409,6 +428,7 @@ class TestPlaybackDecision:
         assert decision.target == "hapax-voice-fx-capture"
         assert decision.media_role == BROADCAST_MEDIA_ROLE
         assert decision.safety_gate["audio_safe_for_broadcast"]["safe"] is True
+        assert decision.safety_gate["tts_permission"]["allowed"] is True
 
     def test_explicit_broadcast_blocks_when_audio_safe_for_broadcast_false(self, tmp_path):
         now = time.time()
@@ -444,14 +464,37 @@ class TestPlaybackDecision:
         assert decision.allowed is False
         assert decision.reason_code == "programme_authorization_missing"
 
+    def test_explicit_broadcast_blocks_when_tts_permission_scalar_low(self, tmp_path):
+        now = time.time()
+        health_path = tmp_path / "audio-safe-for-broadcast.json"
+        stimmung_path = tmp_path / "stimmung.json"
+        _write_broadcast_health(health_path, safe=True)
+        _write_stimmung_permission(stimmung_path, audio_content_mix=0.95)
+
+        decision = resolve_playback_decision(
+            _broadcast_imp(now=now),
+            broadcast_audio_health_path=health_path,
+            stimmung_state_path=stimmung_path,
+            now=now,
+        )
+
+        assert decision.allowed is False
+        assert decision.destination is DestinationChannel.LIVESTREAM
+        assert decision.reason_code == "tts_permission_below_threshold"
+        assert decision.safety_gate["tts_permission"]["allowed"] is False
+        assert decision.safety_gate["tts_permission"]["scalar"] < 0.25
+
     def test_valid_bridge_metadata_allows_autonomous_livestream(self, tmp_path):
         now = time.time()
         health_path = tmp_path / "audio-safe-for-broadcast.json"
+        stimmung_path = tmp_path / "stimmung.json"
         _write_broadcast_health(health_path, safe=True)
+        _write_stimmung_permission(stimmung_path)
 
         decision = resolve_playback_decision(
             _bridge_broadcast_imp(now=now),
             broadcast_audio_health_path=health_path,
+            stimmung_state_path=stimmung_path,
             now=now,
         )
 
@@ -780,11 +823,14 @@ class TestBroadcastBias:
         )
         now = time.time()
         health_path = tmp_path / "audio-safe-for-broadcast.json"
+        stimmung_path = tmp_path / "stimmung.json"
         _write_broadcast_health(health_path, safe=True)
+        _write_stimmung_permission(stimmung_path)
 
         decision = resolve_playback_decision(
             _bridge_broadcast_imp(now=now, source="endogenous.narrative_drive"),
             broadcast_audio_health_path=health_path,
+            stimmung_state_path=stimmung_path,
             now=now,
         )
 

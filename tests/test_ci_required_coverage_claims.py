@@ -49,14 +49,59 @@ def test_pyright_safety_net_workflow_exists_for_pyproject_claim() -> None:
     assert "uv run pyright" in workflow_text
 
 
-def test_auto_fix_typecheck_guidance_matches_pyrefly_and_pyright_split() -> None:
+def test_auto_fix_workflow_escalates_without_privileged_pr_checkout() -> None:
     workflow_text = _read(".github/workflows/auto-fix.yml")
+    auto_fix_job = _workflow_job_block(workflow_text, "auto-fix")
 
-    assert "(pyrefly|pyright)" in workflow_text
+    assert "contents: read" in workflow_text
+    assert "issues: write" in workflow_text
+    assert "actions/checkout" not in auto_fix_job
+    assert "anthropics/claude-code-action" not in auto_fix_job
+    assert "ANTHROPIC_API_KEY" not in workflow_text
+    assert "HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}" in auto_fix_job
+    assert 'BRANCH="${{ github.event.workflow_run.head_branch }}"' not in auto_fix_job
+    assert "Privileged workflow auto-mutation is disabled" in auto_fix_job
+    assert 'gh run view "$RUN_ID"' in auto_fix_job
+
+
+def test_sdlc_implement_shell_uses_validated_issue_env_not_inline_payload() -> None:
+    workflow_text = _read(".github/workflows/sdlc-implement.yml")
+    plan_job = _workflow_job_block(workflow_text, "plan-and-implement")
+
+    assert "ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}" in plan_job
+    assert 'case "$ISSUE_NUMBER"' in plan_job
+    assert "gh issue edit ${{ github.event.client_payload.issue_number }}" not in plan_job
+    assert "--issue-number ${{ github.event.client_payload.issue_number }}" not in plan_job
+    assert "ISSUE=${{ github.event.client_payload.issue_number }}" not in plan_job
+    assert 'printf \'BRANCH=%s\\n\' "$BRANCH" >> "$GITHUB_ENV"' in plan_job
+    assert 'echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"' not in plan_job
+
+
+def test_sdlc_fix_round_guards_agent_branch_before_checkout() -> None:
+    workflow_text = _read(".github/workflows/sdlc-implement.yml")
+    fix_job = _workflow_job_block(workflow_text, "fix-round")
+
+    assert "Validate agent-authored PR source" in fix_job
+    assert "HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}" in fix_job
+    assert '[[ "$HEAD_REF" == agent/issue-* ]]' in fix_job
+    assert "if: steps.review_pr.outputs.safe == 'true'" in fix_job
+    assert "persist-credentials: false" in fix_job
+    assert "printf '%s\\n' \"$REVIEW_BODY\" > /tmp/review-body.txt" in fix_job
+    assert 'git push origin "HEAD:${HEAD_REF}"' in fix_job
+
+
+def test_auto_fix_keeps_real_failure_remediation_but_skips_auto_fix_recursion() -> None:
+    workflow_text = _read(".github/workflows/auto-fix.yml")
+    auto_fix_job = _workflow_job_block(workflow_text, "auto-fix")
+
+    assert "github.event.workflow_run.conclusion == 'failure'" in auto_fix_job
+    assert "github.event.workflow_run.head_branch != 'main'" in auto_fix_job
     assert (
-        "If PR typecheck failed: `uv run --no-project --with pyrefly==0.62.0 pyrefly check`"
-    ) in workflow_text
-    assert "If pyright safety-net failed: `uv run pyright`" in workflow_text
+        "!contains(github.event.workflow_run.head_commit.message || '', '[auto-fix]')"
+        in auto_fix_job
+    )
+    assert "real CI failures route to governed remediation" in auto_fix_job
+    assert "recursively trigger the privileged classifier" in auto_fix_job
 
 
 def test_readme_typecheck_commands_match_ci_and_safety_net() -> None:
@@ -76,9 +121,7 @@ def test_pyrefly_config_keeps_optional_dependency_override_noise_suppressed() ->
 
 def test_ci_typecheck_uses_minimal_pyrefly_fast_path() -> None:
     ci_text = _read(".github/workflows/ci.yml")
-    typecheck_start = ci_text.index("\n  typecheck:")
-    test_start = ci_text.index("\n  test:", typecheck_start)
-    typecheck_block = ci_text[typecheck_start:test_start]
+    typecheck_block = _workflow_job_block(ci_text, "typecheck")
 
     assert "astral-sh/setup-uv@v7" in typecheck_block
     assert "enable-cache: true" in typecheck_block
@@ -111,10 +154,112 @@ def test_ci_docs_only_prs_trigger_required_jobs_with_sentinels() -> None:
 
     for job_name in REQUIRED_BRANCH_PROTECTION_JOBS:
         job_block = _workflow_job_block(ci_text, job_name)
-        assert "needs: docs_only_filter" in job_block
+        if job_name == "test":
+            assert (
+                "needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard]"
+                in job_block
+            )
+        else:
+            assert "needs: [docs_only_filter, post_merge_duplicate_filter]" in job_block
         assert "Docs-only required-check sentinel" in job_block
         assert "needs.docs_only_filter.outputs.docs_only == 'true'" in job_block
         assert "needs.docs_only_filter.outputs.docs_only != 'true'" in job_block
+
+
+def test_ci_merge_group_docs_only_filter_has_stable_base_sha() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+    docs_filter_block = _workflow_job_block(ci_text, "docs_only_filter")
+
+    assert "GITHUB_EVENT_NAME: ${{ github.event_name }}" in docs_filter_block
+    assert "GITHUB_REF_NAME: ${{ github.ref_name }}" in docs_filter_block
+    assert 'if [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then' in docs_filter_block
+    assert "merge_group_base_sha" in docs_filter_block
+    assert "sed -n 's/.*-\\([0-9a-f]\\{40\\}\\)$/\\1/p'" in docs_filter_block
+    assert 'git diff --name-only "$merge_group_base_sha"..HEAD' in docs_filter_block
+
+
+def test_ci_post_merge_pushes_reuse_successful_merge_group_validation() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+    duplicate_filter = _workflow_job_block(ci_text, "post_merge_duplicate_filter")
+
+    assert "actions: read" in ci_text
+    assert "actions/workflows/ci.yml/runs" in duplicate_filter
+    assert "head_sha=$GITHUB_SHA" in duplicate_filter
+    assert "event=merge_group" in duplicate_filter
+    assert "status=success" in duplicate_filter
+    assert "duplicate_merge_group=true" in duplicate_filter
+
+    for job_name in REQUIRED_BRANCH_PROTECTION_JOBS:
+        job_block = _workflow_job_block(ci_text, job_name)
+        assert "Post-merge duplicate required-check sentinel" in job_block
+        assert (
+            "needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'" in job_block
+        )
+        assert (
+            "needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'" in job_block
+        )
+
+
+def test_ci_non_required_jobs_skip_duplicate_post_merge_push_work() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+
+    for job_name in (
+        "homage-visual-regression",
+        "rust-check",
+        "secrets-scan",
+        "security",
+    ):
+        job_block = _workflow_job_block(ci_text, job_name)
+        assert "needs: post_merge_duplicate_filter" in job_block
+        assert (
+            "github.event_name != 'push' || "
+            "needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'"
+        ) in job_block
+
+    secrets_block = _workflow_job_block(ci_text, "secrets-scan")
+    assert "PUSH_BEFORE_SHA: ${{ github.event.before }}" in secrets_block
+    assert "GITHUB_SHA: ${{ github.sha }}" in secrets_block
+    assert 'log_opts="$PUSH_BEFORE_SHA..$GITHUB_SHA"' in secrets_block
+
+
+def test_security_extras_push_keeps_only_lightweight_actionlint() -> None:
+    security_text = _read(".github/workflows/security-extras.yml")
+    actionlint_block = _workflow_job_block(security_text, "actionlint")
+    rust_audit_block = _workflow_job_block(security_text, "rust-audit")
+    scorecard_block = _workflow_job_block(security_text, "scorecard")
+
+    assert "push:" in security_text
+    assert "merge_group:" not in security_text
+    assert "rhysd/actionlint:1.7.12" in actionlint_block
+    assert "if: github.event_name == 'schedule'" in rust_audit_block
+    assert "if: github.event_name == 'schedule'" in scorecard_block
+    assert "ossf/scorecard-action@v2.4.3" in scorecard_block
+
+
+def test_required_frontend_build_jobs_are_path_gated_without_absent_checks() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+    web_block = _workflow_job_block(ci_text, "web-build")
+    vscode_block = _workflow_job_block(ci_text, "vscode-build")
+
+    assert "pull-requests: read" in ci_text
+
+    assert "Detect web-build input changes" in web_block
+    assert "dorny/paths-filter@v3" in web_block
+    assert "web_build:" in web_block
+    assert "'hapax-logos/**'" in web_block
+    assert "Non-web required-check sentinel" in web_block
+    assert "steps.filter.outputs.web_build != 'true'" in web_block
+    assert "steps.filter.outputs.web_build == 'true'" in web_block
+    assert "No web-build inputs changed; web-build reports success" in web_block
+
+    assert "Detect vscode-build input changes" in vscode_block
+    assert "dorny/paths-filter@v3" in vscode_block
+    assert "vscode_build:" in vscode_block
+    assert "'vscode/**'" in vscode_block
+    assert "Non-vscode required-check sentinel" in vscode_block
+    assert "steps.filter.outputs.vscode_build != 'true'" in vscode_block
+    assert "steps.filter.outputs.vscode_build == 'true'" in vscode_block
+    assert "No vscode-build inputs changed; vscode-build reports success" in vscode_block
 
 
 def test_claude_review_docs_only_prs_trigger_review_sentinel() -> None:
@@ -125,9 +270,26 @@ def test_claude_review_docs_only_prs_trigger_review_sentinel() -> None:
     assert "Detect docs-only review change set" in review_job
     assert "Docs-only review sentinel" in review_job
     assert "steps.docs.outputs.docs_only == 'true'" in review_job
-    assert (
-        "env.CLAUDE_REVIEW_CONFIGURED == 'true' && steps.docs.outputs.docs_only != 'true'"
-    ) in review_job
+    assert "env.CLAUDE_REVIEW_CONFIGURED == 'true'" in review_job
+    assert "steps.docs.outputs.docs_only != 'true'" in review_job
+
+
+def test_claude_review_auto_fix_debounce_uses_pr_head_commit_lookup() -> None:
+    review_text = _read(".github/workflows/claude-review.yml")
+    review_job = _workflow_job_block(review_text, "review")
+
+    assert "github.event.head_commit.message" not in review_job
+    assert "Detect auto-fix head commit" in review_job
+    assert "pull_request.synchronize is not a push payload" in review_job
+    assert "HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in review_job
+    assert "HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}" in review_job
+    assert 'gh api "repos/$HEAD_REPOSITORY/commits/$HEAD_SHA"' in review_job
+    assert 'if ! message="$(gh api "repos/$HEAD_REPOSITORY/commits/$HEAD_SHA"' in review_job
+    assert "failing closed by skipping Claude review" in review_job
+    assert "grep -Fq '[auto-fix]'" in review_job
+    assert "Auto-fix review sentinel" in review_job
+    assert "steps.auto_fix.outputs.skip == 'true'" in review_job
+    assert "steps.auto_fix.outputs.skip != 'true'" in review_job
 
 
 def test_docs_only_warning_no_longer_recommends_carrier_workaround() -> None:

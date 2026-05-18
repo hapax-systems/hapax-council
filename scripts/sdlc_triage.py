@@ -31,6 +31,26 @@ from sdlc.github import fetch_issue
 from sdlc.trace_export import TraceContext, is_file_export
 
 # ---------------------------------------------------------------------------
+# Model routing
+# ---------------------------------------------------------------------------
+
+DEFAULT_TRIAGE_MODEL = "balanced"
+
+
+def _litellm_route_name(model_name: str) -> str:
+    """Map legacy provider-prefixed model names to local LiteLLM routes."""
+    model_name = model_name.strip()
+    for prefix in ("anthropic:", "anthropic/"):
+        if model_name.startswith(prefix):
+            return model_name.removeprefix(prefix)
+    return model_name
+
+
+def _configured_triage_model() -> str:
+    return _litellm_route_name(os.environ.get("SDLC_TRIAGE_MODEL", DEFAULT_TRIAGE_MODEL))
+
+
+# ---------------------------------------------------------------------------
 # Structured output model
 # ---------------------------------------------------------------------------
 
@@ -95,6 +115,18 @@ Return a JSON object with:
 # ---------------------------------------------------------------------------
 
 
+def _build_triage_agent(model_name: str, system: str):
+    from pydantic_ai import Agent
+
+    from shared.config import get_model
+
+    return Agent(
+        get_model(model_name),
+        system_prompt=system,
+        output_type=TriageResult,
+    )
+
+
 def _call_llm(system: str, user: str, *, dry_run: bool = False) -> TriageResult:
     if dry_run:
         return TriageResult(
@@ -105,34 +137,9 @@ def _call_llm(system: str, user: str, *, dry_run: bool = False) -> TriageResult:
             file_hints=[],
         )
 
-    try:
-        import anthropic
-    except ImportError:
-        # Fall back to pydantic-ai via litellm for local dev.
-        from pydantic_ai import Agent
-
-        agent = Agent(
-            os.environ.get("SDLC_TRIAGE_MODEL", "anthropic:claude-sonnet-4-6"),
-            system_prompt=system,
-            output_type=TriageResult,
-        )
-        result = agent.run_sync(user)
-        return result.output
-
-    client = anthropic.Anthropic()
-    response = client.messages.create(
-        model=os.environ.get("SDLC_TRIAGE_MODEL", "claude-sonnet-4-6"),
-        max_tokens=1024,
-        system=system,
-        messages=[{"role": "user", "content": user}],
-    )
-    text = response.content[0].text
-    # Parse JSON from response (may be wrapped in ```json blocks).
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0]
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0]
-    return TriageResult.model_validate_json(text.strip())
+    agent = _build_triage_agent(_configured_triage_model(), system)
+    result = agent.run_sync(user)
+    return result.output
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +305,7 @@ def run_triage(
     if similar_context:
         user_prompt += similar_context
 
-    model = os.environ.get("SDLC_TRIAGE_MODEL", "claude-sonnet-4-6")
+    model = _configured_triage_model()
     t0 = time.monotonic()
 
     trace_id = f"sdlc-triage-{issue_number}"

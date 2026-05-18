@@ -23,6 +23,17 @@ LITELLM_BASE: str = os.environ.get(
 )
 LITELLM_KEY: str = os.environ.get("LITELLM_API_KEY", "")
 if not LITELLM_KEY:
+    _secrets_path = Path("/run/user/1000/hapax-secrets.env")
+    if _secrets_path.exists():
+        try:
+            for line in _secrets_path.read_text().splitlines():
+                if line.startswith("LITELLM_API_KEY="):
+                    LITELLM_KEY = line.split("=", 1)[1].strip()
+                    os.environ["LITELLM_API_KEY"] = LITELLM_KEY
+                    break
+        except OSError:
+            pass
+if not LITELLM_KEY:
     warnings.warn(
         "LITELLM_API_KEY is not set — LLM calls will fail until a valid key is provided",
         stacklevel=1,

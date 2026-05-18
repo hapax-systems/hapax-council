@@ -11,7 +11,7 @@
 # - Timer fires every 60s, so worst case a lane waits 90s for a retry
 set -euo pipefail
 
-COOLDOWN_DIR="/tmp/hapax-lane-watchdog"
+COOLDOWN_DIR="${HAPAX_LANE_WATCHDOG_COOLDOWN_DIR:-/tmp/hapax-lane-watchdog}"
 COOLDOWN_S=90
 
 mkdir -p "$COOLDOWN_DIR"
@@ -53,16 +53,39 @@ for lane in $EXPECTED_LANES; do
 
         if [ -x "$HEADLESS_BIN" ]; then
             vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
-            assigned=$(grep -rl "^assigned_to: $lane" "$vault_root/active/" 2>/dev/null | head -1)
+            assigned=$(python3 - "$vault_root" "$lane" 2>/dev/null <<'PY' || true
+from pathlib import Path
+import re
+import sys
+
+vault_root = Path(sys.argv[1])
+lane = sys.argv[2]
+
+for path in sorted((vault_root / "active").glob("*.md")):
+    text = path.read_text(errors="replace")
+    assigned = re.search(r"^assigned_to:\s*(\S+)", text, re.MULTILINE)
+    status = re.search(r"^status:\s*(\S+)", text, re.MULTILINE)
+    if (
+        assigned
+        and assigned.group(1) == lane
+        and status
+        and status.group(1) in {"claimed", "in_progress"}
+    ):
+        print(path)
+        break
+PY
+)
             if [ -n "$assigned" ]; then
                 task_id=$(basename "$assigned" .md)
                 task_title=$(grep -m1 "^title:" "$assigned" | sed 's/^title:\s*//' | tr -d '"')
                 msg="Resume your assigned task: $task_id — $task_title. Ship a PR and cc-close --pr N after merge."
             else
-                msg="Claim the highest-WSJF offered task from ~/Documents/Personal/20-projects/hapax-cc-tasks/active/ and start work. Ship a PR and cc-close --pr N after merge."
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $lane: DEAD with no active task — not restarting; run hapax-methodology-dispatch --launch for a governed assignment"
+                echo "$now" > "$restart_marker"
+                continue
             fi
 
-            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $lane: DEAD — auto-restarting via setsid"
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $lane: DEAD with active task — auto-restarting via setsid"
             setsid "$HEADLESS_BIN" "$lane" "$msg" > /tmp/hapax-headless-$lane.log 2>&1 &
             disown
             echo "$now" > "$restart_marker"
@@ -193,8 +216,8 @@ for p in Path('$vault_root/active').glob('${claimed_task}*'):
             fi
         fi
     fi
-    # No claimed task or task is completed — prompt to claim next
-    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $best_lane: idle past cooldown, no active task — kicking (1 of 1)"
-    send_msg "Claim the highest-WSJF offered cc-task: cc-claim <task_id>. Tasks are at ~/Documents/Personal/20-projects/hapax-cc-tasks/. Run: ls ~/Documents/Personal/20-projects/hapax-cc-tasks/active/ | head -10 to find offered tasks. Then do the work and ship a PR."
+    # No claimed task or task is completed: hold for governed assignment.
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $best_lane: idle past cooldown, no active task — governed kick (1 of 1)"
+    send_msg "You are idle with no active task. Do not claim work from the pool. Wait for an explicit parent/RTE assignment launched through hapax-methodology-dispatch --launch."
     echo "$now" > "$COOLDOWN_DIR/$best_lane"
 fi

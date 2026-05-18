@@ -111,6 +111,31 @@ def test_healthy_accepts_imagination_direct_egress_metrics() -> None:
     assert assessment.reasons == ()
 
 
+def test_imagination_producer_does_not_override_disabled_v4l2_output() -> None:
+    metrics = parse_prometheus_scalars(
+        """
+        studio_compositor_cameras_total 9
+        studio_compositor_cameras_healthy 9
+        hapax_imagination_output_frames_total 120
+        hapax_imagination_output_last_frame_seconds_ago 0.2
+        hapax_imagination_v4l2_output_enabled 0
+        hapax_imagination_v4l2_write_frames_total 118
+        hapax_imagination_v4l2_last_frame_seconds_ago 0.3
+        """
+    )
+    snapshot = snapshot_from_prometheus(
+        metrics,
+        service_active=True,
+        bridge_active=False,
+    )
+
+    assessment = assess_live_surface(snapshot)
+
+    assert snapshot.v4l2_egress_mode is V4l2EgressMode.DISABLED
+    assert assessment.state is LiveSurfaceState.DEGRADED_CONTAINMENT
+    assert "v4l2_output_disabled" in assessment.reasons
+
+
 def test_require_hls_degrades_when_playlist_missing() -> None:
     snapshot = LiveSurfaceSnapshot(
         service_active=True,

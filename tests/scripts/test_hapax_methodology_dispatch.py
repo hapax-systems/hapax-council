@@ -5,6 +5,9 @@ import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
 
+from shared.relay_mq import send_message
+from shared.relay_mq_envelope import Envelope
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
@@ -20,6 +23,28 @@ def _fresh_registry(tmp_path: Path) -> Path:
         route["freshness"]["quota_checked_at"] = checked_at
         route["freshness"]["resource_checked_at"] = checked_at
         route["freshness"]["provider_docs_checked_at"] = checked_at
+        route["freshness"]["evidence"] = {
+            "capability": {
+                "evidence_refs": [f"test:{route['route_id']}:capability"],
+                "blocked_reasons": [],
+            },
+            "quota": {
+                "evidence_refs": [f"test:{route['route_id']}:quota"],
+                "blocked_reasons": [],
+            },
+            "resource": {
+                "evidence_refs": [f"test:{route['route_id']}:resource"],
+                "blocked_reasons": [],
+            },
+            "provider_docs": {
+                "evidence_refs": [f"test:{route['route_id']}:provider_docs"],
+                "blocked_reasons": [],
+            },
+        }
+        for score in route["capability_scores"].values():
+            score["observed_at"] = checked_at
+        for tool in route["tool_state"]:
+            tool["observed_at"] = checked_at
     path = tmp_path / "fixtures" / "fresh-platform-capability-registry.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -177,8 +202,56 @@ def _worktree(path: Path, *, guarded: bool = True, close_guarded: bool = True) -
     return path
 
 
+def _arg_value(args: tuple[str, ...], name: str) -> str | None:
+    if name not in args:
+        return None
+    index = args.index(name)
+    if index + 1 >= len(args):
+        return None
+    return args[index + 1]
+
+
+def _frontmatter_scalar(path: Path, key: str) -> str:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{key}:"):
+            return line.split(":", 1)[1].strip().strip('"')
+    return ""
+
+
+def _maybe_write_durable_mq_binding(tmp_path: Path, args: tuple[str, ...]) -> Path:
+    db_path = tmp_path / "relay" / "messages.db"
+    task_id = _arg_value(args, "--task")
+    lane = _arg_value(args, "--lane")
+    if not task_id or not lane:
+        return db_path
+    task_path = tmp_path / "tasks" / "active" / f"{task_id}.md"
+    if not task_path.exists():
+        return db_path
+    authority_case = _frontmatter_scalar(task_path, "authority_case")
+    if not authority_case or authority_case in {"null", "None", "~"}:
+        return db_path
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    send_message(
+        db_path,
+        Envelope(
+            sender="test-dispatcher",
+            message_type="dispatch",
+            priority=0,
+            subject=task_id,
+            authority_case=authority_case,
+            authority_item=task_id,
+            recipients_spec=lane,
+            payload="durable dispatch binding",
+        ),
+    )
+    return db_path
+
+
 def _run(
-    tmp_path: Path, *args: str, extra_env: dict[str, str] | None = None
+    tmp_path: Path,
+    *args: str,
+    extra_env: dict[str, str] | None = None,
+    durable_mq: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(tmp_path / "home")
@@ -186,6 +259,10 @@ def _run(
     env["HAPAX_DISPATCH_WORKTREE"] = str(tmp_path / "worktree")
     env["HAPAX_ORCHESTRATION_LEDGER_DIR"] = str(tmp_path / "ledger")
     env["HAPAX_PLATFORM_CAPABILITY_REGISTRY"] = str(_fresh_registry(tmp_path))
+    if durable_mq:
+        env["HAPAX_RELAY_MQ_DB"] = str(_maybe_write_durable_mq_binding(tmp_path, args))
+    else:
+        env["HAPAX_RELAY_MQ_DB"] = str(tmp_path / "relay" / "missing.db")
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -450,6 +527,8 @@ def test_receipt_contains_task_and_authority(tmp_path: Path) -> None:
     assert receipt["parent_spec_path"] == str(spec)
     assert receipt["route_decision_id"].startswith("rd-")
     assert receipt["route_policy_action"] == "launch"
+    assert receipt["dimensional_route_receipt_schema"] == 1
+    assert receipt["dimensional_selected_route_id"] == "claude.headless.full"
 
 
 def test_policy_hold_writes_route_decision_before_prompt_or_launch(tmp_path: Path) -> None:
@@ -506,6 +585,56 @@ printf '%s\\n' "$@" > {launcher_args}
     )
     assert dispatch_receipt["prompt"] is None
     assert dispatch_receipt["route_policy_action"] == "hold"
+
+
+def test_launch_blocks_without_durable_mq_authority_binding(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher)},
+        durable_mq=False,
+    )
+
+    assert result.returncode == 10
+    assert not launcher_args.exists()
+    assert "durable MQ authority binding required" in result.stderr
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["durable_mq_dispatch_bound"] is False
+    assert receipt["advisory_only"] is True
 
 
 def test_launches_codex_headless_through_codex_launcher(tmp_path: Path) -> None:
@@ -634,6 +763,27 @@ printf '%s\\n' "$@" > {launcher_args}
     route_receipt = json.loads(route_decisions.read_text(encoding="utf-8").splitlines()[-1])
     assert route_receipt["action"] == "launch"
     assert "rollback_full_profile_launch" in route_receipt["reason_codes"]
+    assert route_receipt["route_policy_green"] is False
+    assert route_receipt["clog_state"] == "compatibility_degraded"
+    assert route_receipt["compatibility_mode"] == "rollback_full_profile"
+    assert route_receipt["degraded_state"] == "compatibility_rollback"
+    assert route_receipt["registry_freshness_green"] is False
+    assert route_receipt["quota_freshness_green"] is False
+    assert route_receipt["resource_freshness_green"] is False
+    assert route_receipt["route_selection_authority"] is False
+    dispatch_receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert dispatch_receipt["route_policy_green"] is False
+    assert dispatch_receipt["route_policy_clog_state"] == "compatibility_degraded"
+    assert dispatch_receipt["route_policy_compatibility_mode"] == "rollback_full_profile"
+    assert dispatch_receipt["route_policy_degraded_state"] == "compatibility_rollback"
+    assert dispatch_receipt["route_policy_registry_freshness_green"] is False
+    assert dispatch_receipt["route_policy_quota_freshness_green"] is False
+    assert dispatch_receipt["route_policy_resource_freshness_green"] is False
+    assert dispatch_receipt["route_policy_route_selection_authority"] is False
 
 
 def test_policy_rollback_holds_non_full_profile_before_launcher(tmp_path: Path) -> None:
@@ -690,6 +840,8 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["platform"] == "codex"
     assert receipt["profile"] == "spark"
     assert receipt["route_policy_action"] == "hold"
+    assert receipt["route_policy_green"] is False
+    assert receipt["route_policy_clog_state"] == "held"
 
 
 def test_claude_sonnet_fallback_refuses_authoritative_dispatch(tmp_path: Path) -> None:
@@ -872,6 +1024,56 @@ def test_gemini_mutation_task_fails_platform_fit(tmp_path: Path) -> None:
     assert "read_only_mutation_route" in result.stderr
 
 
+def test_gemini_worker_profile_sets_auto_edit_mode(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    _task(
+        tmp_path / "tasks",
+        "research-only",
+        """
+        kind: research
+        task_type: read-only
+        parent_spec: null
+        tags:
+          - research
+          - read-only
+        """,
+    )
+    launcher_args = tmp_path / "gemini-worker-args.txt"
+    launcher_env = tmp_path / "gemini-worker-env.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-gemini"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\n' "$HAPAX_GEMINI_APPROVAL_MODE" > {launcher_env}
+printf '%s\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "research-only",
+        "--lane",
+        "iota",
+        "--platform",
+        "gemini",
+        "--mode",
+        "headless",
+        "--profile",
+        "worker",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_GEMINI_LAUNCHER": str(fake_launcher)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert launcher_env.read_text(encoding="utf-8").strip() == "auto_edit"
+    args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert "--model" not in args
+    assert "-p" in args
+
+
 def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     result = _run(tmp_path, "--list-platform-paths")
 
@@ -881,6 +1083,7 @@ def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     assert "codex/headless/spark" in result.stdout
     assert "claude/headless/sonnet" in result.stdout
     assert "gemini/headless/flash" in result.stdout
+    assert "gemini/headless/worker" in result.stdout
     assert "antigrav/interactive/full" in result.stdout
 
 

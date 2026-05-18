@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
 from dataclasses import dataclass, field
@@ -7,7 +8,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from shared.config import HAPAX_CACHE_DIR
 from shared.relay_mq_envelope import (
     DiskPressureError,
     Envelope,
@@ -19,6 +19,8 @@ from shared.relay_mq_envelope import (
     validate_transition,
 )
 
+HAPAX_HOME: Path = Path(os.environ.get("HAPAX_HOME", str(Path.home())))
+HAPAX_CACHE_DIR: Path = HAPAX_HOME / ".cache"
 DEFAULT_DB_PATH: Path = HAPAX_CACHE_DIR / "hapax" / "relay" / "messages.db"
 BLOB_DIR: Path = HAPAX_CACHE_DIR / "hapax" / "relay" / "blobs"
 

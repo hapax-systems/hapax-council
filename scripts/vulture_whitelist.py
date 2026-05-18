@@ -140,6 +140,21 @@ from shared.director_world_surface_snapshot import (
 from shared.director_world_surface_snapshot import (
     Freshness as DirectorWorldSurfaceFreshness,
 )
+from shared.formal_governance_runtime import (
+    FormalConstraint as _FormalGovernanceFormalConstraint,
+)
+from shared.formal_governance_runtime import (
+    OperationRecord as _FormalGovernanceOperationRecord,
+)
+from shared.formal_governance_runtime import (
+    RuntimeSource as _FormalGovernanceRuntimeSource,
+)
+from shared.formal_governance_runtime import (
+    export_runtime as _export_formal_governance_runtime,
+)
+from shared.formal_governance_runtime import (
+    template_frontmatter as _formal_constraint_template_frontmatter,
+)
 from shared.format_wcs_requirement_matrix import (
     FormatWCSRequirementMatrix,
     FormatWCSRequirementRow,
@@ -240,6 +255,21 @@ from shared.scrim_wcs_claim_posture import (
 from shared.scrim_wcs_claim_posture import (
     ScrimWCSClaimPostureInput as _LivestreamRoleScrimWCSClaimPostureInput,
 )
+from shared.visual_variance_ledger import (
+    RenderedWitness as _VisualVarianceRenderedWitness,
+)
+from shared.visual_variance_ledger import (
+    VisualClaimGate as _VisualVarianceClaimGate,
+)
+from shared.visual_variance_ledger import (
+    VisualSelectedMove as _VisualVarianceSelectedMove,
+)
+from shared.visual_variance_ledger import (
+    VisualStateVector as _VisualVarianceStateVector,
+)
+from shared.visual_variance_ledger import (
+    VisualVarianceLedger as _VisualVarianceLedger,
+)
 
 # Livestream role binding: Pydantic invokes these validators dynamically, and
 # downstream impulse consumers use the property as a stable compatibility field.
@@ -252,6 +282,14 @@ _LivestreamRoleScrimWCSClaimPostureInput._role_state_must_match_scrim_posture
 _LayoutIdentityReport.agreement_count
 _LayoutIdentityReport.participating_count
 _validate_layout_identity
+
+# Formal governance runtime export is invoked by extensionless CLI scripts and
+# Pydantic validator discovery; vulture does not follow those dynamic paths.
+_FormalGovernanceRuntimeSource._aware
+_FormalGovernanceFormalConstraint._contract
+_FormalGovernanceOperationRecord._aware
+_export_formal_governance_runtime
+_formal_constraint_template_frontmatter
 
 # Public-API context manager. Called by the five per-outcome smoke tests
 # (vocal / programme_authoring / director_moves / chat_reactivity /
@@ -635,6 +673,15 @@ AudioMarkerProbeFixture._validate_mode_and_witness
 VisualPoolSidecar._normalize_source
 VisualPoolSidecar._normalize_aesthetic_tags
 VisualPoolSidecar._normalize_color_palette
+
+# Visual variance ledger models are validated by Pydantic and consumed by the
+# executable publisher / director projection path. Vulture cannot see the
+# validator decorators as call sites.
+_VisualVarianceRenderedWitness._fresh_requires_real_file_evidence
+_VisualVarianceStateVector._normalise_tuple
+_VisualVarianceSelectedMove._normalise_tuple
+_VisualVarianceClaimGate._claimability_is_fail_closed
+_VisualVarianceLedger._ledger_claim_gate_matches_witnesses
 
 # World Surface Health envelope helpers are the public contract for downstream
 # audio, visual, control, provider/tool, public-event, and no-false-grounding
@@ -3317,3 +3364,106 @@ from shared.segment_disconfirmation import (  # noqa: F401, E402
 apply_council_verdicts
 extract_claims
 run_council_disconfirmation
+
+# Angle resolver — multi-source angle resolution for segment prep
+try:
+    from agents.hapax_daimonion.angle_resolver import (  # noqa: F401, E402
+        AngleHypothesis,
+        format_angle_for_composer,
+        resolve_angle,
+    )
+
+    AngleHypothesis
+    format_angle_for_composer
+    resolve_angle
+except ImportError:
+    pass
+
+# segment_narrative_critique
+try:
+    from shared.segment_narrative_critique import (  # noqa: F401, E402
+        format_narrative_verdict_for_composer,
+        run_narrative_critique,
+    )
+
+    format_narrative_verdict_for_composer
+    run_narrative_critique
+except ImportError:
+    pass
+
+# NarrativeQualityRubric + NarrativeVerdict
+try:
+    from agents.deliberative_council.models import (  # noqa: F401, E402
+        NarrativeVerdict,
+        NarrativeVerdictStatus,
+    )
+    from agents.deliberative_council.rubrics import (  # noqa: F401, E402
+        NarrativeQualityRubric,
+    )
+
+    NarrativeVerdict
+    NarrativeVerdictStatus
+    NarrativeQualityRubric
+except ImportError:
+    pass
+
+# Information density field
+try:
+    from shared.information_density import (  # noqa: F401, E402
+        BayesianSurpriseModel,
+        BOCPDModel,
+        EntropyModel,
+        InformationDensityField,
+        SourceDensity,
+        SourceModel,
+    )
+
+    BOCPDModel
+    BayesianSurpriseModel
+    EntropyModel
+    InformationDensityField
+    InformationDensityField.get_density
+    InformationDensityField.read_shm
+    SourceDensity
+    SourceModel
+except ImportError:
+    pass
+
+# angle_resolver properties
+try:
+    from agents.hapax_daimonion.angle_resolver import AngleHypothesis  # noqa: F401, E402
+
+    AngleHypothesis.has_tension
+except ImportError:
+    pass
+
+# interview tools (pydantic-ai registered, vulture can't see dynamic dispatch)
+analyze_answer_delta
+check_contradictions
+
+# CPAL interview silence
+try:
+    from agents.hapax_daimonion.cpal.runner import CpalRunner  # noqa: F401, E402
+
+    CpalRunner.begin_interview_silence
+except ImportError:
+    pass
+
+# Frontier triage officer — Pydantic validators and maintenance helper are
+# invoked dynamically by model validation / operator repair commands.
+try:
+    from agents.triage_officer.core import (  # noqa: F401, E402
+        TaskTriageAnnotation,
+        repair_required_frontmatter,
+    )
+
+    TaskTriageAnnotation._coerce_quality_floor
+    TaskTriageAnnotation._coerce_mutation_surface
+    TaskTriageAnnotation._coerce_authority_level
+    TaskTriageAnnotation._coerce_effort_class
+    TaskTriageAnnotation._coerce_platforms
+    TaskTriageAnnotation._platforms_are_unique
+    TaskTriageAnnotation._support_artifacts_are_non_authoritative
+    repair_required_frontmatter
+except ImportError:
+    pass

@@ -88,6 +88,9 @@ SCOPES: list[str] = [GMAIL_MODIFY_SCOPE, GMAIL_SETTINGS_BASIC_SCOPE]
 CLIENT_ID_PASS_KEY = "mail-monitor/google-client-id"
 CLIENT_SECRET_PASS_KEY = "mail-monitor/google-client-secret"
 REFRESH_TOKEN_PASS_KEY = "mail-monitor/google-refresh-token"
+CLIENT_ID_PASS_REF = "pass-key:mail-monitor-client-id"
+CLIENT_CREDENTIAL_PASS_REF = "pass-key:mail-monitor-client-credential"
+REFRESH_CREDENTIAL_PASS_REF = "pass-key:mail-monitor-refresh-credential"
 
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
@@ -102,6 +105,15 @@ OAUTH_REFRESH_COUNTER = Counter(
 # render "no data" otherwise.
 for _result in ("success", "revoked", "transport_error", "missing_credential"):
     OAUTH_REFRESH_COUNTER.labels(result=_result)
+
+
+def _credential_ref(key: str) -> str:
+    refs = {
+        CLIENT_ID_PASS_KEY: CLIENT_ID_PASS_REF,
+        CLIENT_SECRET_PASS_KEY: CLIENT_CREDENTIAL_PASS_REF,
+        REFRESH_TOKEN_PASS_KEY: REFRESH_CREDENTIAL_PASS_REF,
+    }
+    return refs.get(key, "pass-key:redacted")
 
 
 def _pass_show(key: str, *, timeout_s: float = 5.0) -> str | None:
@@ -119,14 +131,13 @@ def _pass_show(key: str, *, timeout_s: float = 5.0) -> str | None:
             check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-        log.warning("pass show %s failed: %s", key, exc)
+        log.warning("pass show failed for %s (%s)", _credential_ref(key), type(exc).__name__)
         return None
     if result.returncode != 0:
         log.debug(
-            "pass show %s returned %d: %s",
-            key,
+            "pass show returned %d for %s",
             result.returncode,
-            result.stderr.strip(),
+            _credential_ref(key),
         )
         return None
     value = result.stdout.strip().split("\n", 1)[0].strip()
@@ -149,14 +160,13 @@ def _pass_insert(key: str, value: str, *, timeout_s: float = 5.0) -> bool:
             check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-        log.error("pass insert %s failed: %s", key, exc)
+        log.error("pass insert failed for %s (%s)", _credential_ref(key), type(exc).__name__)
         return False
     if result.returncode != 0:
         log.error(
-            "pass insert %s returned %d: %s",
-            key,
+            "pass insert returned %d for %s",
             result.returncode,
-            result.stderr.strip(),
+            _credential_ref(key),
         )
         return False
     return True
@@ -211,12 +221,10 @@ def run_first_consent(*, port: int = 0, open_browser: bool = False) -> bool:
     config = _client_config()
     if config is None:
         log.error(
-            "Missing OAuth client credentials. Run:\n"
-            "    pass insert %s\n"
-            "    pass insert %s\n"
+            "Missing OAuth client credentials (%s, %s). "
             "See docs/specs/2026-04-25-mail-monitor.md §Bootstrap.",
-            CLIENT_ID_PASS_KEY,
-            CLIENT_SECRET_PASS_KEY,
+            CLIENT_ID_PASS_REF,
+            CLIENT_CREDENTIAL_PASS_REF,
         )
         return False
 
@@ -299,14 +307,14 @@ def load_credentials() -> Credentials | None:
         msg = str(exc).lower()
         if "invalid_grant" in msg or "revoked" in msg or "expired" in msg:
             OAUTH_REFRESH_COUNTER.labels(result="revoked").inc()
-            log.warning("OAuth refresh token rejected (revoked): %s", exc)
+            log.warning("OAuth refresh token rejected (revoked): %s", type(exc).__name__)
         else:
             OAUTH_REFRESH_COUNTER.labels(result="transport_error").inc()
-            log.warning("OAuth refresh failed: %s", exc)
+            log.warning("OAuth refresh failed: %s", type(exc).__name__)
         return None
     except TransportError as exc:
         OAUTH_REFRESH_COUNTER.labels(result="transport_error").inc()
-        log.warning("OAuth refresh transport error: %s", exc)
+        log.warning("OAuth refresh transport error: %s", type(exc).__name__)
         return None
 
     OAUTH_REFRESH_COUNTER.labels(result="success").inc()

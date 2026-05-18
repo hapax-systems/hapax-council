@@ -74,7 +74,8 @@ class TestStructuredToFacts:
         facts = structured_to_facts(jsonl)
         assert len(facts) >= 1
         website_fact = next(f for f in facts if f["key"] == "frequent_websites")
-        assert "github.com" in website_fact["value"]
+        domains = {entry.rsplit(" ", 1)[0] for entry in website_fact["value"].split(", ")}
+        assert any(domain == "github.com" for domain in domains)
 
     def test_search_facts(self, tmp_path):
         jsonl = tmp_path / "structured.jsonl"

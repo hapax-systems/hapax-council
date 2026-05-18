@@ -31,6 +31,9 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
+from urllib.parse import urlparse
+
+from shared.url_safety import url_matches_domain
 
 log = logging.getLogger(__name__)
 
@@ -56,12 +59,17 @@ class BackfeedEvent:
 
 def _classify_platform(source_url: str) -> BackfeedPlatform | None:
     """Classify the originating platform from a webmention source URL."""
-    s = source_url.lower()
-    if "bsky.app" in s or "bsky.social" in s:
+    try:
+        parsed = urlparse(source_url)
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.lower()
+    if url_matches_domain(source_url, "bsky.app") or url_matches_domain(source_url, "bsky.social"):
         return "bluesky"
-    if "mastodon" in s or "/users/" in s or "/@" in s:
+    if "mastodon" in host or "/users/" in path or "/@" in path:
         return "mastodon"
-    if "github.com" in s:
+    if url_matches_domain(source_url, "github.com"):
         return "github"
     return None
 

@@ -53,7 +53,8 @@
         "lite",
         "opus",
         "sonnet",
-        "spark"
+        "spark",
+        "worker"
       ]
     },
     "route_state": {
@@ -98,6 +99,35 @@
     "resource_source": {
       "enum": ["infra_observation_spine", "local_probe", "none", "unknown"]
     },
+    "approval_posture": {
+      "enum": [
+        "auto_edit_policy_firewalled",
+        "default_deny_enable_latch",
+        "ide_terminal_auto_approve",
+        "no_ask_hooks_enforced",
+        "plan_mode_read_only",
+        "programmatic_auto_approve_task_scoped",
+        "unknown"
+      ]
+    },
+    "capability_tier": {
+      "enum": [
+        "audited_full_worker",
+        "frontier_fallback",
+        "frontier_full",
+        "jr_plus",
+        "read_only_support"
+      ]
+    },
+    "worker_tier": {
+      "enum": [
+        "audited_full_worker",
+        "bounded_worker",
+        "fallback_worker",
+        "full_worker",
+        "read_only_sidecar"
+      ]
+    },
     "timestamp_or_null": {
       "anyOf": [
         {"type": "string", "format": "date-time"},
@@ -107,6 +137,106 @@
     "duration": {
       "type": "string",
       "pattern": "^[1-9][0-9]*[smhd]$"
+    },
+    "freshness_surface_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_refs", "blocked_reasons"],
+      "anyOf": [
+        {"required": ["evidence_refs"], "properties": {"evidence_refs": {"minItems": 1}}},
+        {"required": ["blocked_reasons"], "properties": {"blocked_reasons": {"minItems": 1}}}
+      ],
+      "properties": {
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "blocked_reasons": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "freshness_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability", "quota", "resource", "provider_docs"],
+      "properties": {
+        "capability": {"$ref": "#/$defs/freshness_surface_evidence"},
+        "quota": {"$ref": "#/$defs/freshness_surface_evidence"},
+        "resource": {"$ref": "#/$defs/freshness_surface_evidence"},
+        "provider_docs": {"$ref": "#/$defs/freshness_surface_evidence"}
+      }
+    },
+    "score_confidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "confidence", "evidence_refs", "observed_at", "stale_after"],
+      "properties": {
+        "score": {"type": "integer", "minimum": 0, "maximum": 5},
+        "confidence": {"type": "integer", "minimum": 0, "maximum": 5},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "observed_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "stale_after": {"$ref": "#/$defs/duration"}
+      }
+    },
+    "capability_scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grounding",
+        "governance_reasoning",
+        "source_editing",
+        "architecture",
+        "ambiguity_resolution",
+        "long_context",
+        "current_docs_grounding",
+        "multimodal_verification",
+        "runtime_debugging",
+        "test_authoring",
+        "coordination_reliability",
+        "privacy_safety",
+        "public_claim_safety",
+        "local_calibration"
+      ],
+      "properties": {
+        "grounding": {"$ref": "#/$defs/score_confidence"},
+        "governance_reasoning": {"$ref": "#/$defs/score_confidence"},
+        "source_editing": {"$ref": "#/$defs/score_confidence"},
+        "architecture": {"$ref": "#/$defs/score_confidence"},
+        "ambiguity_resolution": {"$ref": "#/$defs/score_confidence"},
+        "long_context": {"$ref": "#/$defs/score_confidence"},
+        "current_docs_grounding": {"$ref": "#/$defs/score_confidence"},
+        "multimodal_verification": {"$ref": "#/$defs/score_confidence"},
+        "runtime_debugging": {"$ref": "#/$defs/score_confidence"},
+        "test_authoring": {"$ref": "#/$defs/score_confidence"},
+        "coordination_reliability": {"$ref": "#/$defs/score_confidence"},
+        "privacy_safety": {"$ref": "#/$defs/score_confidence"},
+        "public_claim_safety": {"$ref": "#/$defs/score_confidence"},
+        "local_calibration": {"$ref": "#/$defs/score_confidence"}
+      }
+    },
+    "tool_authority_use": {
+      "enum": ["read", "write", "execute", "verify"]
+    },
+    "tool_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool_id", "available", "authority_use", "observed_at", "stale_after", "evidence_ref"],
+      "properties": {
+        "tool_id": {"type": "string", "minLength": 1},
+        "available": {"type": "boolean"},
+        "authority_use": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/tool_authority_use"}
+        },
+        "observed_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "stale_after": {"$ref": "#/$defs/duration"},
+        "evidence_ref": {"type": "string", "minLength": 1}
+      }
     },
     "mutability": {
       "type": "object",
@@ -187,7 +317,8 @@
         "resource_checked_at",
         "resource_stale_after",
         "provider_docs_checked_at",
-        "provider_docs_stale_after"
+        "provider_docs_stale_after",
+        "evidence"
       ],
       "properties": {
         "capability_checked_at": {"$ref": "#/$defs/timestamp_or_null"},
@@ -197,7 +328,8 @@
         "resource_checked_at": {"$ref": "#/$defs/timestamp_or_null"},
         "resource_stale_after": {"$ref": "#/$defs/duration"},
         "provider_docs_checked_at": {"$ref": "#/$defs/timestamp_or_null"},
-        "provider_docs_stale_after": {"$ref": "#/$defs/duration"}
+        "provider_docs_stale_after": {"$ref": "#/$defs/duration"},
+        "evidence": {"$ref": "#/$defs/freshness_evidence"}
       }
     },
     "platform_capability_route": {
@@ -210,11 +342,15 @@
         "mode",
         "profile",
         "launcher",
+        "sanctioned_wrapper",
         "summary",
         "notes",
         "route_state",
         "blocked_reasons",
         "model_or_engine",
+        "approval_posture",
+        "capability_tier",
+        "worker_tier",
         "auth_surface",
         "capacity_pool",
         "mutability",
@@ -222,6 +358,8 @@
         "tool_access",
         "privacy_posture",
         "quality_envelope",
+        "capability_scores",
+        "tool_state",
         "context_limits",
         "telemetry",
         "freshness",
@@ -234,6 +372,7 @@
         "mode": {"$ref": "#/$defs/mode"},
         "profile": {"$ref": "#/$defs/profile"},
         "launcher": {"type": "string", "minLength": 1},
+        "sanctioned_wrapper": {"type": "string", "minLength": 1},
         "summary": {"type": "string", "minLength": 1},
         "notes": {"type": "string", "minLength": 1},
         "route_state": {"$ref": "#/$defs/route_state"},
@@ -244,6 +383,9 @@
         "model_or_engine": {
           "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
         },
+        "approval_posture": {"$ref": "#/$defs/approval_posture"},
+        "capability_tier": {"$ref": "#/$defs/capability_tier"},
+        "worker_tier": {"$ref": "#/$defs/worker_tier"},
         "auth_surface": {"$ref": "#/$defs/auth_surface"},
         "capacity_pool": {"$ref": "#/$defs/capacity_pool"},
         "mutability": {"$ref": "#/$defs/mutability"},
@@ -251,6 +393,11 @@
         "tool_access": {"$ref": "#/$defs/tool_access"},
         "privacy_posture": {"$ref": "#/$defs/privacy_posture"},
         "quality_envelope": {"$ref": "#/$defs/quality_envelope"},
+        "capability_scores": {"$ref": "#/$defs/capability_scores"},
+        "tool_state": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/tool_state"}
+        },
         "context_limits": {"$ref": "#/$defs/context_limits"},
         "telemetry": {"$ref": "#/$defs/telemetry"},
         "freshness": {"$ref": "#/$defs/freshness"},

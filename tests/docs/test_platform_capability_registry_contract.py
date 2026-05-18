@@ -10,7 +10,6 @@ import jsonschema
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = REPO_ROOT / "schemas" / "platform-capability-registry.schema.json"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
-SEEDED_ACTIVE_ROUTE_IDS = {"claude.headless.full"}
 
 
 def _json(path: Path) -> dict[str, object]:
@@ -38,6 +37,10 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
         "platform",
         "mode",
         "profile",
+        "sanctioned_wrapper",
+        "approval_posture",
+        "capability_tier",
+        "worker_tier",
         "model_or_engine",
         "auth_surface",
         "capacity_pool",
@@ -46,6 +49,8 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
         "tool_access",
         "privacy_posture",
         "quality_envelope",
+        "capability_scores",
+        "tool_state",
         "context_limits",
         "telemetry",
         "freshness",
@@ -68,6 +73,13 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
         "support_only",
         "read_only",
     }
+    assert "worker" in set(schema["$defs"]["profile"]["enum"])
+    assert "plan_mode_read_only" in set(schema["$defs"]["approval_posture"]["enum"])
+    assert "programmatic_auto_approve_task_scoped" in set(
+        schema["$defs"]["approval_posture"]["enum"]
+    )
+    assert "read_only_sidecar" in set(schema["$defs"]["worker_tier"]["enum"])
+    assert "evidence" in schema["$defs"]["freshness"]["required"]
 
 
 def test_seed_registry_keeps_absent_evidence_blocked_unless_explicitly_seeded() -> None:
@@ -75,21 +87,15 @@ def test_seed_registry_keeps_absent_evidence_blocked_unless_explicitly_seeded() 
 
     for route in registry["routes"]:
         freshness = route["freshness"]
-        if route["route_id"] in SEEDED_ACTIVE_ROUTE_IDS:
-            assert route["route_state"] == "active"
-            assert route["blocked_reasons"] == []
-            assert freshness["capability_checked_at"] is not None
-            assert freshness["quota_checked_at"] is not None
-            assert freshness["resource_checked_at"] is not None
-            assert freshness["provider_docs_checked_at"] is not None
-            continue
-
         assert route["route_state"] == "blocked"
         assert route["blocked_reasons"]
-        assert freshness["capability_checked_at"] is None
-        assert freshness["quota_checked_at"] is None
-        assert freshness["resource_checked_at"] is None
-        assert freshness["provider_docs_checked_at"] is None
+        for surface in ("capability", "quota", "resource", "provider_docs"):
+            surface_evidence = freshness["evidence"][surface]
+            assert surface_evidence["evidence_refs"] or surface_evidence["blocked_reasons"]
+            if freshness[f"{surface}_checked_at"] is None:
+                assert surface_evidence["blocked_reasons"]
+            else:
+                assert surface_evidence["evidence_refs"]
 
 
 def test_seed_registry_names_no_dispatcher_policy_integration() -> None:
@@ -98,3 +104,17 @@ def test_seed_registry_names_no_dispatcher_policy_integration() -> None:
     forbidden = ("route_choice_enabled", "auto_dispatch_policy", "paid_spend_authorized")
     for token in forbidden:
         assert token not in registry_text
+
+
+def test_seed_registry_records_dimensional_scores_with_evidence() -> None:
+    registry = _json(REGISTRY)
+
+    for route in registry["routes"]:
+        scores = route["capability_scores"]
+        assert set(scores) >= {"grounding", "source_editing", "test_authoring"}
+        for score in scores.values():
+            assert 0 <= score["score"] <= 5
+            assert 0 <= score["confidence"] <= 5
+            assert score["evidence_refs"]
+            assert score["stale_after"]
+        assert route["tool_state"]

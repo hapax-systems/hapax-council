@@ -66,9 +66,44 @@ LIVE_SURFACE_BLOCKED_NODE_TYPES = frozenset()
 LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES = frozenset(
     {
         "ascii",
+        "color_map",
+        "diff",
+        "dither",
+        "echo",
+        "feedback",
+        "fluid_sim",
+        "glitch_block",
         "halftone",
         "noise_gen",
+        "noise_overlay",
         "palette_extract",
+        "palette_remap",
+        "pixsort",
+        "reaction_diffusion",
+        "scanlines",
+        "slitscan",
+        "thermal",
+        "tile",
+        "trail",
+        "tunnel",
+        "voronoi_overlay",
+    }
+)
+
+# Legacy GLSL is a compatibility path, not the authoritative live-surface
+# compositor. Treat it as fail-closed: only fragments in this set have been
+# audited as source-preserving enough for live activation. Everything else
+# remains available through WGSL/autonomous drift, but not through legacy
+# graph-preset activation until fragment parity is proven.
+LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES = frozenset(
+    {
+        "bloom",
+        "chromatic_aberration",
+        "colorgrade",
+        "palette",
+        "posterize",
+        "postprocess",
+        "vignette",
     }
 )
 
@@ -426,6 +461,26 @@ def live_surface_policy_kind(node_type: str) -> str:
     return "unclassified"
 
 
+def live_surface_glsl_requires_source_bound_repair(
+    node_type: str,
+    *,
+    has_glsl_source: bool,
+) -> bool:
+    """Return whether legacy GLSL activation must fail closed for a node.
+
+    This is intentionally stricter than :func:`live_surface_policy_kind`.
+    ``bounded`` means the node is eligible in the modern WGSL path where the
+    repaired shader is loaded. It does not imply that the old GLSL fragment is
+    safe to put on the livestream surface.
+    """
+
+    if not has_glsl_source:
+        return False
+    if node_type in STRUCTURAL_NODE_TYPES or node_type in CONTENT_SLOT_GUARDED_NODE_TYPES:
+        return False
+    return node_type not in LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES
+
+
 def live_surface_unclassified_node_types(node_types: set[str] | frozenset[str]) -> set[str]:
     """Return shader node types not explicitly covered by live-surface policy."""
 
@@ -440,10 +495,12 @@ __all__ = [
     "CONTENT_SLOT_GUARDED_NODE_TYPES",
     "LIVE_SURFACE_BLOCKED_NODE_TYPES",
     "LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES",
+    "LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES",
     "LIVE_SURFACE_PARAM_BOUNDS",
     "ParamBound",
     "STRUCTURAL_NODE_TYPES",
     "apply_live_surface_param_bounds",
+    "live_surface_glsl_requires_source_bound_repair",
     "live_surface_policy_kind",
     "live_surface_unclassified_node_types",
 ]

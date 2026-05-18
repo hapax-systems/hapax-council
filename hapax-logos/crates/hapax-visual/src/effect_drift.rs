@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 const FADE_IN_S: f32 = 18.0;
 const PEAK_HOLD_S: f32 = 9.0;
 const FADE_OUT_S: f32 = 18.0;
-const FAST_FADE_IN_S: f32 = 5.0;
-const FAST_PEAK_HOLD_S: f32 = 2.5;
-const FAST_FADE_OUT_S: f32 = 5.0;
+const FAST_FADE_IN_S: f32 = 8.0;
+const FAST_PEAK_HOLD_S: f32 = 4.5;
+const FAST_FADE_OUT_S: f32 = 8.0;
 const STAGGER_S: f32 = 9.0;
 const POOL_SIZE: usize = 5; // Five visible slots: four active, one rotating/recruiting.
 const ACTIVE_SLOT_TARGET: usize = 4;
@@ -21,14 +21,18 @@ const TICK_DIVISOR: u64 = 5; // ~6Hz at 30fps
 const SPATIAL_PEAK_RANGE: (f32, f32) = (0.78, 0.94);
 const NONSPATIAL_PEAK_RANGE: (f32, f32) = (0.96, 1.0);
 const RETIRE_INTENSITY_FLOOR: f32 = 0.22;
-const FAST_RETIRE_INTENSITY_FLOOR: f32 = 0.30;
+const FAST_RETIRE_INTENSITY_FLOOR: f32 = 0.24;
 const RECRUIT_WARM_PROGRESS: f32 = 0.42;
-const FAST_RECRUIT_WARM_PROGRESS: f32 = 0.58;
+const FAST_RECRUIT_WARM_PROGRESS: f32 = 0.35;
 const INITIAL_VISIBLE_FLOOR: f32 = 0.36;
 const ASSERTIVE_TARGET_DEPARTURE_FRACTION: f32 = 0.45;
 const MIN_ACTIVE_ANCHOR_EFFECTS: usize = 3;
 const MAX_ACTIVE_CONDITIONAL_EFFECTS: usize = 1;
 const MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS: usize = 2;
+const RECENT_EFFECT_MEMORY: usize = 18;
+const COVERAGE_EVENT_MEMORY: usize = 96;
+const PARAM_ORBIT_BASE_RATE: f32 = 0.019;
+const PARAM_ORBIT_SECONDARY_RATE: f32 = 0.007;
 
 fn shader_nodes_dir() -> PathBuf {
     if let Ok(path) = std::env::var("HAPAX_SHADER_NODES_DIR") {
@@ -469,9 +473,9 @@ pub static SHADERS: &[ShaderDef] = &[
         ],
         active_ranges: &[
             ("palette_id", 0.0, 0.0),
-            ("cycle_rate", 0.015, 0.055),
+            ("cycle_rate", 0.006, 0.020),
             ("n_bands", 5.0, 12.0),
-            ("blend", 0.20, 0.44),
+            ("blend", 0.08, 0.18),
             ("time", 0.0, 120.0),
         ],
         param_order: &["palette_id", "cycle_rate", "n_bands", "blend", "time"],
@@ -1024,7 +1028,7 @@ pub static FEEDBACK_DEF: ShaderDef = ShaderDef {
         ("decay", 0.0),
         ("zoom", 1.0),
         ("rotate", 0.0),
-        ("blend_mode", 1.0),
+        ("blend_mode", 3.0),
         ("hue_shift", 0.0),
         ("trace_center_x", 0.5),
         ("trace_center_y", 0.5),
@@ -1035,7 +1039,7 @@ pub static FEEDBACK_DEF: ShaderDef = ShaderDef {
         ("decay", 0.012, 0.055),
         ("zoom", 1.000, 1.006),
         ("rotate", -0.004, 0.004),
-        ("blend_mode", 1.0, 1.0),
+        ("blend_mode", 3.0, 3.0),
         ("hue_shift", 0.002, 0.010),
     ],
     param_order: &[
@@ -1134,6 +1138,13 @@ fn eviction_cadence(def: &ShaderDef) -> EvictionCadence {
         | "warp"
         | "waveform_render" => EvictionCadence::Fast,
         _ => EvictionCadence::Slow,
+    }
+}
+
+fn eviction_cadence_label(def: &ShaderDef) -> &'static str {
+    match eviction_cadence(def) {
+        EvictionCadence::Slow => "slow",
+        EvictionCadence::Fast => "fast",
     }
 }
 
@@ -1375,6 +1386,142 @@ mod tests {
     }
 
     #[test]
+    fn dramatic_temporal_effects_are_high_impingement_anchors() {
+        for name in ["slitscan", "fluid_sim"] {
+            let def = SHADERS
+                .iter()
+                .find(|def| def.name == name)
+                .unwrap_or_else(|| panic!("missing dramatic temporal effect {name}"));
+            assert!(
+                is_high_impingement_anchor(def),
+                "{name} must count as a high-impingement anchor so intensity repair can actively restore it"
+            );
+        }
+    }
+
+    #[test]
+    fn operator_facing_dramatic_aliases_are_discoverable() {
+        for name in ["fluid_sim", "tunnel", "droste", "kaleidoscope"] {
+            let def = SHADERS
+                .iter()
+                .find(|def| def.name == name)
+                .unwrap_or_else(|| panic!("missing vortex-capable effect {name}"));
+            assert!(
+                effect_aliases(def).contains(&"vortex"),
+                "{name} must be discoverable as an operator-facing vortex behavior"
+            );
+        }
+    }
+
+    #[test]
+    fn slot_drift_plan_exposes_live_surface_effect_metadata() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-metadata-{}.json",
+            std::process::id()
+        ));
+        let _engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+        let raw = std::fs::read_to_string(&path).expect("read SlotDrift plan");
+        let plan: serde_json::Value = serde_json::from_str(&raw).expect("plan json parses");
+        let passes = plan["targets"]["main"]["passes"]
+            .as_array()
+            .expect("main passes are present");
+        let coverage = &plan["slotdrift_coverage"];
+        assert_eq!(
+            coverage["schema"].as_str(),
+            Some("slotdrift-coverage-v1"),
+            "SlotDrift plan must carry a machine-readable coverage ledger"
+        );
+        assert!(
+            coverage["effect_counts"]
+                .as_array()
+                .is_some_and(|counts| counts.len() >= SHADERS.len() - 1),
+            "coverage ledger must account for the autonomous effect inventory"
+        );
+        assert!(
+            coverage["family_counts"].as_array().is_some(),
+            "coverage ledger must expose family coverage debt"
+        );
+        assert!(
+            coverage["visibility_group_counts"].as_array().is_some(),
+            "coverage ledger must expose visibility-group coverage debt"
+        );
+        assert!(
+            coverage["alias_counts"].as_array().is_some(),
+            "coverage ledger must expose operator-facing alias coverage debt"
+        );
+        assert!(
+            coverage["parameter_region_counts"].as_array().is_some(),
+            "coverage ledger must expose parameter-region coverage debt"
+        );
+
+        let effect_passes: Vec<&serde_json::Value> = passes
+            .iter()
+            .filter(|pass| {
+                let node = pass["node_id"].as_str().unwrap_or_default();
+                node != "fb" && node != "post"
+            })
+            .collect();
+
+        assert_eq!(
+            effect_passes.len(),
+            POOL_SIZE,
+            "SlotDrift should publish one metadata-bearing pass per effect slot"
+        );
+
+        for pass in effect_passes {
+            assert_eq!(
+                pass["effect_scope"].as_str(),
+                Some("composed_live_surface"),
+                "effect passes must declare that they operate on the composed livestream surface"
+            );
+            assert_eq!(
+                pass["source_bound"].as_bool(),
+                Some(true),
+                "effect passes must declare source-bound semantics"
+            );
+            assert_eq!(
+                pass["full_surface"].as_bool(),
+                Some(true),
+                "effect passes must declare full-surface execution"
+            );
+            assert!(
+                pass["effect_family"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty()),
+                "effect family must be machine-checkable"
+            );
+            assert!(
+                pass["visibility_group"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty()),
+                "visibility group must be machine-checkable"
+            );
+            assert!(
+                matches!(pass["eviction_cadence"].as_str(), Some("fast" | "slow")),
+                "eviction cadence must be machine-checkable"
+            );
+            assert!(
+                pass["effect_aliases"].as_array().is_some(),
+                "operator-facing aliases must be present even when empty"
+            );
+            assert!(
+                pass["selection_count"].as_u64().is_some(),
+                "effect passes must publish selection counts for coverage-aware routing"
+            );
+            assert!(
+                pass["coverage_window_count"].as_u64().is_some(),
+                "effect passes must publish rolling coverage counts"
+            );
+            assert!(
+                pass["parameter_regions"].as_array().is_some(),
+                "effect passes must publish target parameter regions"
+            );
+        }
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn dramatic_effects_have_short_dwell_authority_not_polite_caps() {
         let required = [
             ("chromatic_aberration", "intensity", 0.70),
@@ -1448,17 +1595,52 @@ mod tests {
             + fade_out_duration(slow, &mut slow_rng);
 
         assert!(
-            fast_total < slow_total * 0.4,
+            fast_total < slow_total * 0.55,
             "fast-evict effects should be brief inflections, not full-dwell layers"
+        );
+        assert!(
+            fast_total > slow_total * 0.25,
+            "fast-evict effects should not churn fast enough to read as periodic whole-frame pumping"
         );
         assert!(
             retire_intensity_floor(fast) > retire_intensity_floor(slow),
             "fast-evict effects should retire earlier on the fade-down"
         );
         assert!(
-            recruit_warm_progress(fast) > recruit_warm_progress(slow),
-            "fast-evict effects should enter visibly but leave quickly"
+            recruit_warm_progress(fast) < recruit_warm_progress(slow),
+            "fast-evict replacement should warm near its retirement floor, not jump over it"
         );
+    }
+
+    #[test]
+    fn fast_evict_replacement_matches_retirement_energy() {
+        let fast_floor = FAST_RETIRE_INTENSITY_FLOOR;
+        let warm_progress = FAST_RECRUIT_WARM_PROGRESS;
+        let warm_smooth = warm_progress * warm_progress * (3.0 - 2.0 * warm_progress);
+
+        for def in SHADERS.iter().filter(|def| is_fast_evict(def)) {
+            let peak_range = if def.is_spatial {
+                SPATIAL_PEAK_RANGE
+            } else {
+                NONSPATIAL_PEAK_RANGE
+            };
+            let min_warm_intensity = peak_range.0 * warm_smooth;
+            let max_warm_intensity = peak_range.1 * warm_smooth;
+            assert!(
+                min_warm_intensity + 0.05 >= fast_floor,
+                "{} warm-start minimum {:.3} falls too far below fast retire floor {:.3}",
+                def.name,
+                min_warm_intensity,
+                fast_floor
+            );
+            assert!(
+                max_warm_intensity <= fast_floor + 0.06,
+                "{} warm-start maximum {:.3} jumps above fast retire floor {:.3}",
+                def.name,
+                max_warm_intensity,
+                fast_floor
+            );
+        }
     }
 
     #[test]
@@ -1555,6 +1737,45 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn postprocess_default_mediation_is_static_not_time_pumped() {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../agents/shaders/nodes/postprocess.wgsl"),
+        )
+        .expect("read postprocess shader");
+
+        assert!(
+            source.contains("u_anonymize"),
+            "postprocess must retain stable mediation for anti-parasocial surface treatment"
+        );
+        assert!(
+            !source.contains("uniforms.time"),
+            "default postprocess mediation must not carry time-varying scan/hash pumping"
+        );
+    }
+
+    #[test]
+    fn strobe_is_soft_sine_with_luma_floor() {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../agents/shaders/nodes/strobe.wgsl"),
+        )
+        .expect("read strobe shader");
+
+        assert!(
+            source.contains("soft_wave = 0.86 + 0.14 * sin"),
+            "strobe may modulate as a soft sine, not as a hard flash gate"
+        );
+        assert!(
+            !source.contains("0.5 + (0.5 * sin"),
+            "strobe must not swing from zero to full authority"
+        );
+        assert!(
+            source.contains("source.xyz * 0.92"),
+            "strobe tint must preserve a source luminance floor instead of dark-pulsing"
+        );
     }
 
     #[test]
@@ -1678,11 +1899,53 @@ mod tests {
         );
         assert!(
             high_impingement_count >= MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS,
-            "active set needs at least one high-impingement anchor; got {:?}",
+            "active set needs multiple high-impingement anchors; got {:?}",
             active.iter().map(|def| def.name).collect::<Vec<&str>>()
         );
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn configured_allowed_set_must_sustain_live_surface_invariants() {
+        let valid = configured_shader_indices_from_raw("drift,halftone,color_map,slitscan,warp")
+            .expect("valid constrained set should be accepted");
+        let mut rng = SimpleRng::new(42);
+        let pool = choose_initial_pool(&mut rng, &valid);
+        let active = pool.iter().take(ACTIVE_SLOT_TARGET);
+        let active_groups: std::collections::HashSet<&str> = active
+            .clone()
+            .map(|idx| visibility_group(&SHADERS[*idx]))
+            .collect();
+        let active_high_impingement = pool
+            .iter()
+            .take(ACTIVE_SLOT_TARGET)
+            .filter(|idx| is_high_impingement_anchor(&SHADERS[**idx]))
+            .count();
+
+        for group in VISIBLE_BASELINE_GROUPS {
+            assert!(
+                active_groups.contains(group),
+                "accepted allowed set must still initialize visible {group} coverage; got {active_groups:?}"
+            );
+        }
+        assert!(
+            active_high_impingement >= MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS,
+            "accepted allowed set must retain high-impingement anchors"
+        );
+    }
+
+    #[test]
+    fn configured_allowed_set_falls_back_when_too_thin_or_too_quiet() {
+        assert!(
+            configured_shader_indices_from_raw("blend,crossfade,chroma_key,luma_key,breathing")
+                .is_none(),
+            "five legal nodes are not enough if they cannot provide visible anchor coverage"
+        );
+        assert!(
+            configured_shader_indices_from_raw("drift,warp,mirror,kaleidoscope,fisheye").is_none(),
+            "a narrow spatial-only set would satisfy count but collapse visible group coverage"
+        );
     }
 
     #[test]
@@ -1724,6 +1987,49 @@ mod tests {
             !plan.contains("\"node_id\": \"solid\""),
             "autonomous drift plan must not spend the fifth slot on a no-op solid pass"
         );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn autonomous_drift_plan_is_effect_slots_plus_bookends() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-shape-{}.json",
+            std::process::id()
+        ));
+        let _engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+
+        let plan: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read plan"))
+                .expect("effect drift plan should be valid JSON");
+        let passes = plan["targets"]["main"]["passes"]
+            .as_array()
+            .expect("v2 plan should expose main passes");
+        let node_ids: Vec<&str> = passes
+            .iter()
+            .map(|pass| {
+                pass["node_id"]
+                    .as_str()
+                    .expect("each pass should carry node_id")
+            })
+            .collect();
+
+        assert_eq!(
+            passes.len(),
+            POOL_SIZE + 2,
+            "SlotDrift owns five effect slots plus feedback/postprocess bookends"
+        );
+        assert_eq!(
+            &node_ids[POOL_SIZE..],
+            &["fb", "post"],
+            "feedback and postprocess are required bookends after the rotating slots"
+        );
+        for content_node in ["content_layer", "sierpinski_content", "sierpinski_lines"] {
+            assert!(
+                !node_ids.contains(&content_node),
+                "{content_node} is scene/content infrastructure, not a SlotDrift effect slot"
+            );
+        }
 
         let _ = std::fs::remove_file(path);
     }
@@ -1834,6 +2140,225 @@ mod tests {
             is_high_impingement_anchor(&SHADERS[engine.slots[4].shader_idx]),
             "recycling must restore a high-impingement anchor when the active set is otherwise quiet"
         );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn recycle_restores_missing_visible_group_even_when_recently_used() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-missing-group-recycle-{}.json",
+            std::process::id()
+        ));
+        let mut engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+
+        for (slot, shader_name) in
+            engine
+                .slots
+                .iter_mut()
+                .take(4)
+                .zip(["drift", "halftone", "color_map", "thermal"])
+        {
+            slot.shader_idx = shader_idx_by_name(shader_name).unwrap();
+            slot.phase = Phase::Peak;
+            slot.needs_recycle = false;
+        }
+        engine.slots[4].shader_idx = shader_idx_by_name("mirror").unwrap();
+        engine.slots[4].phase = Phase::Falling;
+        engine.slots[4].needs_recycle = true;
+        engine.recently_used = [
+            "trail",
+            "echo",
+            "diff",
+            "slitscan",
+            "fluid_sim",
+            "reaction_diffusion",
+        ]
+        .iter()
+        .map(|name| shader_idx_by_name(name).unwrap())
+        .collect();
+
+        engine.recycle_slot(4);
+
+        assert_eq!(
+            visibility_group(&SHADERS[engine.slots[4].shader_idx]),
+            "temporal",
+            "visible-group repair must outrank recency so the live surface cannot rotate into a legal but non-temporal stack"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn recycle_prefers_undercovered_candidates_after_invariants_hold() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-novelty-debt-recycle-{}.json",
+            std::process::id()
+        ));
+        let mut engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+
+        for (slot, shader_name) in
+            engine
+                .slots
+                .iter_mut()
+                .take(4)
+                .zip(["drift", "halftone", "color_map", "slitscan"])
+        {
+            slot.shader_idx = shader_idx_by_name(shader_name).unwrap();
+            slot.phase = Phase::Peak;
+            slot.needs_recycle = false;
+        }
+        engine.slots[4].shader_idx = shader_idx_by_name("mirror").unwrap();
+        engine.slots[4].phase = Phase::Falling;
+        engine.slots[4].needs_recycle = true;
+
+        let warp = shader_idx_by_name("warp").unwrap();
+        let thermal = shader_idx_by_name("thermal").unwrap();
+        let edge_detect = shader_idx_by_name("edge_detect").unwrap();
+        engine.allowed_shader_indices = Some(
+            [
+                "drift",
+                "halftone",
+                "color_map",
+                "slitscan",
+                "mirror",
+                "warp",
+                "thermal",
+                "edge_detect",
+            ]
+            .iter()
+            .map(|name| shader_idx_by_name(name).unwrap())
+            .collect(),
+        );
+        engine.selection_counts[thermal] = 40;
+        engine.selection_counts[edge_detect] = 40;
+        engine.selection_counts[warp] = 0;
+        engine.coverage_events.clear();
+        for idx in [thermal, edge_detect].into_iter().cycle().take(60) {
+            engine.record_selection(idx, Vec::new());
+        }
+        engine.selection_counts[thermal] = 40;
+        engine.selection_counts[edge_detect] = 40;
+        engine.selection_counts[warp] = 0;
+
+        engine.recycle_slot(4);
+
+        assert_eq!(
+            engine.slots[4].shader_idx, warp,
+            "once hard live-surface invariants are satisfied, recycling should pay coverage debt instead of randomly reusing over-covered families"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn active_effect_parameters_orbit_safe_range_not_only_fixed_target_corridor() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-param-orbit-{}.json",
+            std::process::id()
+        ));
+        let mut engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+        let colorgrade = shader_idx_by_name("colorgrade").unwrap();
+        engine.slots[0].shader_idx = colorgrade;
+        engine.slots[0].phase = Phase::Peak;
+        engine.slots[0].intensity = 1.0;
+        engine.slots[0].peak_intensity = 1.0;
+        engine.slots[0].active_target = vec![
+            ("saturation".to_string(), 1.1),
+            ("brightness".to_string(), 1.05),
+            ("contrast".to_string(), 1.05),
+            ("sepia".to_string(), 0.2),
+            ("hue_rotate".to_string(), 0.3),
+        ];
+        engine.slots[0].current_params = SHADERS[colorgrade]
+            .passthrough
+            .iter()
+            .map(|&(n, v)| (n.to_string(), v))
+            .collect();
+
+        let mut saturation_values = Vec::new();
+        for step in 0..80 {
+            let uniforms = engine.interpolate_all(step as f32 * 12.0);
+            let saturation = uniforms
+                .iter()
+                .find(|(name, _)| name == "colorgrade.saturation")
+                .map(|(_, value)| *value)
+                .expect("colorgrade.saturation uniform present");
+            saturation_values.push(saturation);
+        }
+        let max_value = saturation_values
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        assert!(
+            max_value > 1.12,
+            "active effects should continuously travel through safe parameter volume instead of staying inside the original passthrough→target corridor; max={max_value}"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn palette_remap_has_bounded_luma_authority_and_free_running_time() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-palette-carrier-{}.json",
+            std::process::id()
+        ));
+        let mut engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+        let palette_remap = shader_idx_by_name("palette_remap").unwrap();
+        let def = &SHADERS[palette_remap];
+        let (_, _, blend_hi) = def
+            .active_ranges
+            .iter()
+            .find(|(name, _, _)| *name == "blend")
+            .copied()
+            .expect("palette_remap blend range");
+        let (_, cycle_lo, cycle_hi) = def
+            .active_ranges
+            .iter()
+            .find(|(name, _, _)| *name == "cycle_rate")
+            .copied()
+            .expect("palette_remap cycle range");
+
+        assert!(
+            blend_hi <= 0.18,
+            "palette_remap must not regain enough blend authority to brighten or darken the whole surface"
+        );
+        assert!(
+            cycle_hi <= 0.020 && cycle_lo >= 0.006,
+            "palette_remap cycle rate must stay slow enough to read as continuous variation"
+        );
+
+        engine.slots[0].shader_idx = palette_remap;
+        engine.slots[0].phase = Phase::Peak;
+        engine.slots[0].intensity = 1.0;
+        engine.slots[0].peak_intensity = 1.0;
+        engine.slots[0].active_target = vec![
+            ("palette_id".to_string(), 0.0),
+            ("cycle_rate".to_string(), 0.018),
+            ("n_bands".to_string(), 10.0),
+            ("blend".to_string(), 0.16),
+            ("time".to_string(), 120.0),
+        ];
+        engine.slots[0].current_params = def
+            .passthrough
+            .iter()
+            .map(|&(n, v)| (n.to_string(), v))
+            .collect();
+
+        for time in [10.0, 37.5, 96.0] {
+            let uniforms = engine.interpolate_all(time);
+            let observed_time = uniforms
+                .iter()
+                .find(|(name, _)| name == "palette_remap.time")
+                .map(|(_, value)| *value)
+                .expect("palette_remap.time uniform present");
+            assert_eq!(
+                observed_time, time,
+                "time is a free-running carrier; it must not be randomized or orbited as an effect target"
+            );
+        }
 
         let _ = std::fs::remove_file(path);
     }
@@ -2101,6 +2626,10 @@ mod tests {
             source.contains("current.a") && !source.contains("_e215.z, 1f"),
             "feedback must preserve current alpha; forcing alpha=1 turns empty space into a fourth-wall surface"
         );
+        assert!(
+            source.contains("feedback_weight") && source.contains("mix(current.xyz, r"),
+            "feedback must be bounded as source-bound entity treatment, not a screen/add glass pane"
+        );
     }
 
     #[test]
@@ -2365,6 +2894,10 @@ mod tests {
             "palette remap must gate recoloring by existing scene/content energy"
         );
         assert!(
+            !source.contains("time_offset = floor") && source.contains("idx_mix = smoothstep"),
+            "palette remap cycle must be continuous, not a frame-wide stepped palette pump"
+        );
+        assert!(
             !source.contains("floor((_e33.x * _e35))")
                 && !source.contains("floor((v_texcoord_1.x *"),
             "palette remap must not create vertical viewport-column panes"
@@ -2450,6 +2983,12 @@ pub struct SlotState {
     pub rerise_after: f32,
     pub active_target: Vec<(String, f32)>,
     pub current_params: Vec<(String, f32)>,
+}
+
+#[derive(Debug, Clone)]
+struct CoverageEvent {
+    shader_idx: usize,
+    parameter_regions: Vec<String>,
 }
 
 // ── Simple RNG ─────────────────────────────────────────────────
@@ -2609,6 +3148,117 @@ fn visibility_group(def: &ShaderDef) -> &'static str {
     }
 }
 
+fn effect_aliases(def: &ShaderDef) -> &'static [&'static str] {
+    match def.name {
+        // "Vortex" is an operator-facing dramatic-effect identity, not a
+        // single historical shader name. Keep the behavior discoverable
+        // without cloning another effect node.
+        "fluid_sim" | "tunnel" | "droste" | "kaleidoscope" => &["vortex"],
+        "chromatic_aberration" | "glitch_block" => &["rgba_separation"],
+        "warp" | "slitscan" => &["slicing"],
+        "mirror" => &["reflection"],
+        _ => &[],
+    }
+}
+
+fn phase_label(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Idle => "idle",
+        Phase::Rising => "rising",
+        Phase::Peak => "peak",
+        Phase::Falling => "falling",
+    }
+}
+
+fn active_range_for(def: &ShaderDef, param_name: &str) -> Option<(f32, f32)> {
+    def.active_ranges
+        .iter()
+        .find(|(name, _, _)| *name == param_name)
+        .map(|(_, lo, hi)| (*lo, *hi))
+}
+
+fn parameter_orbit_depth(def: &ShaderDef, param_name: &str) -> f32 {
+    match param_name {
+        // Brightness and opacity-like parameters can read as global pumping
+        // when their safe ranges are traversed too broadly. Keep those as
+        // target-local modulation; let the more structural parameters carry
+        // variety.
+        "brightness" | "alpha" | "opacity" | "time" => 0.0,
+        "strength" | "intensity" | "blend" => {
+            if def.is_spatial {
+                0.08
+            } else if is_fast_evict(def) {
+                0.12
+            } else {
+                0.10
+            }
+        }
+        _ if def.is_spatial => 0.14,
+        _ if is_fast_evict(def) => 0.22,
+        _ => 0.18,
+    }
+}
+
+fn parameter_region(def: &ShaderDef, param_name: &str, value: f32) -> &'static str {
+    let Some((lo, hi)) = active_range_for(def, param_name) else {
+        return "unranged";
+    };
+    if (hi - lo).abs() <= f32::EPSILON {
+        return "fixed";
+    }
+    let normalized = ((value - lo) / (hi - lo)).clamp(0.0, 1.0);
+    if normalized < 0.33 {
+        "low"
+    } else if normalized < 0.66 {
+        "mid"
+    } else {
+        "high"
+    }
+}
+
+fn parameter_region_labels(def: &ShaderDef, target: &[(String, f32)]) -> Vec<String> {
+    target
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "{}.{}:{}",
+                def.name,
+                name,
+                parameter_region(def, name, *value)
+            )
+        })
+        .collect()
+}
+
+fn parameter_regions_json(def: &ShaderDef, target: &[(String, f32)]) -> Vec<serde_json::Value> {
+    target
+        .iter()
+        .map(|(name, value)| {
+            serde_json::json!({
+                "param": name,
+                "region": parameter_region(def, name, *value),
+                "target": *value as f64,
+            })
+        })
+        .collect()
+}
+
+fn label_counts_json(labels: Vec<String>) -> Vec<serde_json::Value> {
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for label in labels {
+        if let Some((_, count)) = counts.iter_mut().find(|(candidate, _)| *candidate == label) {
+            *count += 1;
+        } else {
+            counts.push((label, 1));
+        }
+    }
+    counts.sort_by(|a, b| a.0.cmp(&b.0));
+    counts
+        .into_iter()
+        .map(|(label, count)| serde_json::json!({ "label": label, "count": count }))
+        .collect()
+}
+
 fn is_conditionally_low_salience(def: &ShaderDef) -> bool {
     matches!(
         def.name,
@@ -2637,8 +3287,8 @@ fn is_high_impingement_anchor(def: &ShaderDef) -> bool {
     matches!(
         def.name,
         // Bounded, source-gated treatments that still read immediately.
-        // At least one must be active so group coverage cannot collapse into
-        // a legal but visually quiet chain.
+        // Multiple anchors must be active so group coverage cannot collapse
+        // into a legal but visually quiet chain.
         "ascii"
             | "chromatic_aberration"
             | "color_map"
@@ -2657,6 +3307,8 @@ fn is_high_impingement_anchor(def: &ShaderDef) -> bool {
             | "particle_system"
             | "posterize"
             | "scanlines"
+            | "slitscan"
+            | "fluid_sim"
             | "thermal"
             | "threshold"
             | "transform"
@@ -2722,8 +3374,59 @@ fn shader_idx_by_name(name: &str) -> Option<usize> {
     SHADERS.iter().position(|def| def.name == name)
 }
 
-fn configured_shader_indices_from_env() -> Option<Vec<usize>> {
-    let raw = std::env::var("HAPAX_EFFECT_DRIFT_ALLOWED_SET").ok()?;
+fn drift_pool_invariant_failures(indices: &[usize]) -> Vec<String> {
+    let mut failures = Vec::new();
+    if indices.len() < POOL_SIZE {
+        failures.push(format!(
+            "has {} valid node(s), need at least {}",
+            indices.len(),
+            POOL_SIZE
+        ));
+    }
+
+    let visible_anchor_count = indices
+        .iter()
+        .filter(|idx| is_visible_anchor(&SHADERS[**idx]))
+        .count();
+    if visible_anchor_count < MIN_ACTIVE_ANCHOR_EFFECTS {
+        failures.push(format!(
+            "has {} visible anchor(s), need at least {}",
+            visible_anchor_count, MIN_ACTIVE_ANCHOR_EFFECTS
+        ));
+    }
+
+    let high_impingement_count = indices
+        .iter()
+        .filter(|idx| is_high_impingement_anchor(&SHADERS[**idx]))
+        .count();
+    if high_impingement_count < MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS {
+        failures.push(format!(
+            "has {} high-impingement anchor(s), need at least {}",
+            high_impingement_count, MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS
+        ));
+    }
+
+    let missing_groups: Vec<&str> = VISIBLE_BASELINE_GROUPS
+        .iter()
+        .copied()
+        .filter(|group| {
+            !indices.iter().any(|idx| {
+                let def = &SHADERS[*idx];
+                is_visible_anchor(def) && visibility_group(def) == *group
+            })
+        })
+        .collect();
+    if !missing_groups.is_empty() {
+        failures.push(format!(
+            "missing visible anchor coverage for group(s): {:?}",
+            missing_groups
+        ));
+    }
+
+    failures
+}
+
+fn configured_shader_indices_from_raw(raw: &str) -> Option<Vec<usize>> {
     let mut indices = Vec::new();
     let mut unknown = Vec::new();
     let mut non_autonomous = Vec::new();
@@ -2755,11 +3458,11 @@ fn configured_shader_indices_from_env() -> Option<Vec<usize>> {
             non_autonomous
         );
     }
-    if indices.len() < POOL_SIZE {
+    let failures = drift_pool_invariant_failures(&indices);
+    if !failures.is_empty() {
         log::warn!(
-            "SlotDrift: HAPAX_EFFECT_DRIFT_ALLOWED_SET has {} valid node(s), need at least {}; using full library",
-            indices.len(),
-            POOL_SIZE
+            "SlotDrift: HAPAX_EFFECT_DRIFT_ALLOWED_SET cannot satisfy live-surface drift invariants ({:?}); using full library",
+            failures
         );
         return None;
     }
@@ -2773,6 +3476,11 @@ fn configured_shader_indices_from_env() -> Option<Vec<usize>> {
             .collect::<Vec<&str>>()
     );
     Some(indices)
+}
+
+fn configured_shader_indices_from_env() -> Option<Vec<usize>> {
+    let raw = std::env::var("HAPAX_EFFECT_DRIFT_ALLOWED_SET").ok()?;
+    configured_shader_indices_from_raw(&raw)
 }
 
 fn choose_initial_pool(rng: &mut SimpleRng, selectable: &[usize]) -> Vec<usize> {
@@ -2885,6 +3593,8 @@ pub struct SlotDriftEngine {
     last_activation: f32,
     next_stagger: f32,
     recently_used: VecDeque<usize>,
+    selection_counts: Vec<u32>,
+    coverage_events: VecDeque<CoverageEvent>,
     plan_path: String,
     plan_dirty: bool,
     // Feedback bookend state
@@ -3024,13 +3734,15 @@ impl SlotDriftEngine {
             .map(|&(n, v)| (n.to_string(), v))
             .collect();
 
-        let engine = Self {
+        let mut engine = Self {
             slots,
             rng,
             tick_count: 0,
             last_activation: 0.0,
             next_stagger: STAGGER_S * 0.8,
-            recently_used: VecDeque::with_capacity(18),
+            recently_used: VecDeque::with_capacity(RECENT_EFFECT_MEMORY),
+            selection_counts: vec![0; SHADERS.len()],
+            coverage_events: VecDeque::with_capacity(COVERAGE_EVENT_MEMORY),
             plan_path: plan_path.to_string(),
             plan_dirty: false,
             fb_intensity: 0.0,
@@ -3038,8 +3750,139 @@ impl SlotDriftEngine {
             fb_current,
             allowed_shader_indices,
         };
+        for slot_idx in 0..engine.slots.len() {
+            engine.record_selection_for_slot(slot_idx);
+        }
         engine.write_plan(); // Write once at boot
         engine
+    }
+
+    fn record_selection(&mut self, shader_idx: usize, parameter_regions: Vec<String>) {
+        if let Some(count) = self.selection_counts.get_mut(shader_idx) {
+            *count = count.saturating_add(1);
+        }
+        self.coverage_events.push_back(CoverageEvent {
+            shader_idx,
+            parameter_regions,
+        });
+        while self.coverage_events.len() > COVERAGE_EVENT_MEMORY {
+            self.coverage_events.pop_front();
+        }
+    }
+
+    fn record_selection_for_slot(&mut self, slot_idx: usize) {
+        let (shader_idx, parameter_regions) = {
+            let slot = &self.slots[slot_idx];
+            let def = &SHADERS[slot.shader_idx];
+            (
+                slot.shader_idx,
+                parameter_region_labels(def, &slot.active_target),
+            )
+        };
+        self.record_selection(shader_idx, parameter_regions);
+    }
+
+    fn coverage_window_count(&self, shader_idx: usize) -> usize {
+        self.coverage_events
+            .iter()
+            .filter(|event| event.shader_idx == shader_idx)
+            .count()
+    }
+
+    fn candidate_novelty_score(&self, candidate_idx: usize, retiring_slot_idx: usize) -> f32 {
+        let def = &SHADERS[candidate_idx];
+        let visibility = visibility_group(def);
+        let aliases = effect_aliases(def);
+        let effect_window = self.coverage_window_count(candidate_idx) as f32;
+        let lifetime = self
+            .selection_counts
+            .get(candidate_idx)
+            .copied()
+            .unwrap_or(0) as f32;
+        let family_window = self
+            .coverage_events
+            .iter()
+            .filter(|event| SHADERS[event.shader_idx].family == def.family)
+            .count() as f32;
+        let visibility_window = self
+            .coverage_events
+            .iter()
+            .filter(|event| visibility_group(&SHADERS[event.shader_idx]) == visibility)
+            .count() as f32;
+        let alias_window = if aliases.is_empty() {
+            0.0
+        } else {
+            self.coverage_events
+                .iter()
+                .filter(|event| {
+                    effect_aliases(&SHADERS[event.shader_idx])
+                        .iter()
+                        .any(|alias| aliases.contains(alias))
+                })
+                .count() as f32
+        };
+        let active_same_family = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(slot_idx, slot)| {
+                *slot_idx != retiring_slot_idx
+                    && slot.phase != Phase::Idle
+                    && SHADERS[slot.shader_idx].family == def.family
+            })
+            .count() as f32;
+        let active_same_visibility = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(slot_idx, slot)| {
+                *slot_idx != retiring_slot_idx
+                    && slot.phase != Phase::Idle
+                    && visibility_group(&SHADERS[slot.shader_idx]) == visibility
+            })
+            .count() as f32;
+        let recent_penalty = self
+            .recently_used
+            .iter()
+            .rev()
+            .position(|idx| *idx == candidate_idx)
+            .map(|pos| (RECENT_EFFECT_MEMORY.saturating_sub(pos)) as f32)
+            .unwrap_or(0.0);
+
+        let mut score = 500.0;
+        score -= lifetime * 7.5;
+        score -= effect_window * 12.0;
+        score -= family_window * 1.4;
+        score -= visibility_window * 2.0;
+        score -= alias_window * 5.0;
+        score -= active_same_family * 5.5;
+        score -= active_same_visibility * 3.5;
+        score -= recent_penalty * 3.0;
+        if is_high_impingement_anchor(def) {
+            score += 5.0;
+        }
+        if !aliases.is_empty() && alias_window <= 1.0 {
+            score += 8.0;
+        }
+        score
+    }
+
+    fn pick_candidate_by_coverage(
+        &mut self,
+        candidates: &[usize],
+        retiring_slot_idx: usize,
+    ) -> usize {
+        let mut best_idx = candidates[0];
+        let mut best_score = f32::NEG_INFINITY;
+        for &candidate_idx in candidates {
+            let jitter = self.rng.next_f32() * 0.001;
+            let score = self.candidate_novelty_score(candidate_idx, retiring_slot_idx) + jitter;
+            if score > best_score {
+                best_score = score;
+                best_idx = candidate_idx;
+            }
+        }
+        best_idx
     }
 
     fn random_target(rng: &mut SimpleRng, def: &ShaderDef) -> Vec<(String, f32)> {
@@ -3093,6 +3936,7 @@ impl SlotDriftEngine {
                     let warm_smooth = warm_progress * warm_progress * (3.0 - 2.0 * warm_progress);
                     self.slots[i].phase_start = time - self.slots[i].phase_duration * warm_progress;
                     self.slots[i].intensity = self.slots[i].peak_intensity * warm_smooth;
+                    self.record_selection_for_slot(i);
                     log::info!(
                         "SlotDrift: zero-crossing → slot {} now {} (fading in)",
                         i,
@@ -3252,6 +4096,7 @@ impl SlotDriftEngine {
             let warm_smooth = warm_progress * warm_progress * (3.0 - 2.0 * warm_progress);
             slot.phase_start = now - slot.phase_duration * warm_progress;
             slot.intensity = slot.peak_intensity * warm_smooth;
+            self.record_selection_for_slot(chosen_idx);
             self.last_activation = now;
             self.next_stagger = STAGGER_S * self.rng.range(0.7, 1.3);
             log::info!(
@@ -3272,22 +4117,23 @@ impl SlotDriftEngine {
                     .filter(|idx| is_autonomous_drift_candidate(&SHADERS[*idx]))
                     .collect()
             });
-        let candidates: Vec<usize> = base_candidates
+        let non_current_candidates: Vec<usize> = base_candidates
             .iter()
             .copied()
             .filter(|i| is_autonomous_drift_candidate(&SHADERS[*i]))
-            .filter(|i| !current_types.contains(i) && !recently.contains(i))
+            .filter(|i| !current_types.contains(i))
             .collect();
-        let candidates = if candidates.is_empty() {
-            base_candidates
-                .iter()
-                .copied()
-                .filter(|i| !current_types.contains(i))
-                .collect::<Vec<_>>()
+        let fresh_candidates: Vec<usize> = non_current_candidates
+            .iter()
+            .copied()
+            .filter(|i| !recently.contains(i))
+            .collect();
+        let candidates = if fresh_candidates.is_empty() {
+            non_current_candidates.clone()
         } else {
-            candidates
+            fresh_candidates
         };
-        if candidates.is_empty() {
+        if non_current_candidates.is_empty() {
             self.slots[idx].needs_recycle = false;
             return;
         }
@@ -3334,7 +4180,7 @@ impl SlotDriftEngine {
                     && is_high_impingement_anchor(&SHADERS[slot.shader_idx])
             })
             .count();
-        let preferred: Vec<usize> = candidates
+        let preferred: Vec<usize> = non_current_candidates
             .iter()
             .copied()
             .filter(|i| {
@@ -3345,7 +4191,7 @@ impl SlotDriftEngine {
         let preferred: Vec<usize> = if preferred.is_empty()
             && active_high_impingement_count < MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS
         {
-            candidates
+            non_current_candidates
                 .iter()
                 .copied()
                 .filter(|i| is_high_impingement_anchor(&SHADERS[*i]))
@@ -3386,8 +4232,7 @@ impl SlotDriftEngine {
         };
 
         let old_idx = self.slots[idx].shader_idx;
-        let new_idx =
-            candidates[(self.rng.next_f32() * candidates.len() as f32) as usize % candidates.len()];
+        let new_idx = self.pick_candidate_by_coverage(&candidates, idx);
         let def = &SHADERS[new_idx];
 
         self.slots[idx].shader_idx = new_idx;
@@ -3400,7 +4245,7 @@ impl SlotDriftEngine {
         self.slots[idx].needs_recycle = false;
         self.slots[idx].rerise_after = self.slots[idx].idle_since + 2.0;
         self.recently_used.push_back(old_idx);
-        if self.recently_used.len() > 18 {
+        if self.recently_used.len() > RECENT_EFFECT_MEMORY {
             self.recently_used.pop_front();
         }
 
@@ -3419,6 +4264,16 @@ impl SlotDriftEngine {
             let def = &SHADERS[slot.shader_idx];
 
             for (pi, &(pname, pt_val)) in def.passthrough.iter().enumerate() {
+                if pname == "time" {
+                    let time_value = now.max(0.0);
+                    slot.current_params
+                        .iter_mut()
+                        .find(|(n, _)| n == pname)
+                        .map(|(_, v)| *v = time_value);
+                    uniforms.push((format!("{}.{}", def.name, pname), time_value));
+                    continue;
+                }
+
                 let act_val = slot
                     .active_target
                     .iter()
@@ -3429,7 +4284,7 @@ impl SlotDriftEngine {
                 let mut interpolated = pt_val + (act_val - pt_val) * slot.intensity;
 
                 if slot.intensity > 0.05 && span > 0.001 {
-                    let phase_seed = (slot_idx * 17 + pi * 7) as f32 * 0.1;
+                    let phase_seed = (slot_idx * 17 + pi * 7 + slot.shader_idx * 13) as f32 * 0.1;
                     let freq = 0.08 + 0.05 * ((slot_idx * 3 + pi * 11) % 7) as f32;
                     let sine = (now * freq + phase_seed).sin();
                     let mod_depth = if def.is_spatial { 0.10 } else { 0.30 };
@@ -3440,8 +4295,21 @@ impl SlotDriftEngine {
                     let noise = ((now * 1.7 + phase_seed * 3.1).sin() * 0.5) * drift_scale * span;
                     interpolated += noise;
 
-                    let lo = pt_val.min(act_val);
-                    let hi = pt_val.max(act_val);
+                    let (lo, hi) = active_range_for(def, pname)
+                        .unwrap_or((pt_val.min(act_val), pt_val.max(act_val)));
+                    let orbit_depth = parameter_orbit_depth(def, pname);
+                    if orbit_depth > 0.0 {
+                        let active_span = (hi - lo).abs();
+                        let primary = (now * PARAM_ORBIT_BASE_RATE + phase_seed * 2.7).sin();
+                        let secondary = (now * PARAM_ORBIT_SECONDARY_RATE + phase_seed * 5.1).sin();
+                        let orbit = (primary * 0.72) + (secondary * 0.28);
+                        interpolated += orbit * orbit_depth * active_span * slot.intensity;
+                    }
+                    let lo = if pname == "brightness" {
+                        lo.max(1.0)
+                    } else {
+                        lo
+                    };
                     interpolated = interpolated.clamp(lo, hi);
                 }
 
@@ -3474,6 +4342,68 @@ impl SlotDriftEngine {
         uniforms
     }
 
+    fn coverage_snapshot(&self) -> serde_json::Value {
+        let effect_counts: Vec<serde_json::Value> = SHADERS
+            .iter()
+            .enumerate()
+            .filter(|(_, def)| is_autonomous_drift_candidate(def))
+            .map(|(idx, def)| {
+                serde_json::json!({
+                    "name": def.name,
+                    "family": def.family,
+                    "visibility_group": visibility_group(def),
+                    "aliases": effect_aliases(def),
+                    "selection_count": self.selection_counts.get(idx).copied().unwrap_or(0),
+                    "coverage_window_count": self.coverage_window_count(idx),
+                })
+            })
+            .collect();
+        let recent_effects: Vec<&str> = self
+            .coverage_events
+            .iter()
+            .map(|event| SHADERS[event.shader_idx].name)
+            .collect();
+        let family_counts = label_counts_json(
+            self.coverage_events
+                .iter()
+                .map(|event| SHADERS[event.shader_idx].family.to_string())
+                .collect(),
+        );
+        let visibility_counts = label_counts_json(
+            self.coverage_events
+                .iter()
+                .map(|event| visibility_group(&SHADERS[event.shader_idx]).to_string())
+                .collect(),
+        );
+        let alias_counts = label_counts_json(
+            self.coverage_events
+                .iter()
+                .flat_map(|event| {
+                    effect_aliases(&SHADERS[event.shader_idx])
+                        .iter()
+                        .map(|alias| alias.to_string())
+                })
+                .collect(),
+        );
+        let parameter_region_counts = label_counts_json(
+            self.coverage_events
+                .iter()
+                .flat_map(|event| event.parameter_regions.iter().cloned())
+                .collect(),
+        );
+
+        serde_json::json!({
+            "schema": "slotdrift-coverage-v1",
+            "window_limit": COVERAGE_EVENT_MEMORY,
+            "recent_effects": recent_effects,
+            "effect_counts": effect_counts,
+            "family_counts": family_counts,
+            "visibility_group_counts": visibility_counts,
+            "alias_counts": alias_counts,
+            "parameter_region_counts": parameter_region_counts,
+        })
+    }
+
     fn write_plan(&self) {
         let mut passes = Vec::new();
         let mut prev_output = "@live".to_string();
@@ -3502,6 +4432,19 @@ impl SlotDriftEngine {
                 "output": layer,
                 "uniforms": uniforms_map,
                 "param_order": param_order,
+                "effect_scope": "composed_live_surface",
+                "effect_family": def.family,
+                "visibility_group": visibility_group(def),
+                "eviction_cadence": eviction_cadence_label(def),
+                "source_bound": true,
+                "full_surface": true,
+                "effect_aliases": effect_aliases(def),
+                "slot_index": i,
+                "slot_phase": phase_label(slot.phase),
+                "slot_intensity": slot.intensity as f64,
+                "selection_count": self.selection_counts.get(slot.shader_idx).copied().unwrap_or(0),
+                "coverage_window_count": self.coverage_window_count(slot.shader_idx),
+                "parameter_regions": parameter_regions_json(def, &slot.active_target),
             });
             if temporal {
                 pass.as_object_mut()
@@ -3560,6 +4503,7 @@ impl SlotDriftEngine {
 
         let plan = serde_json::json!({
             "version": 2,
+            "slotdrift_coverage": self.coverage_snapshot(),
             "targets": { "main": { "passes": passes } }
         });
 

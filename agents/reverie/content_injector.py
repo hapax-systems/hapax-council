@@ -242,8 +242,9 @@ def _extract_web_text(html: str, content_type: str) -> str:
     if "html" in content_type:
         import re
 
-        text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
-        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
+        tag_flags = re.DOTALL | re.IGNORECASE
+        text = re.sub(r"<script\b[^>]*>.*?</script\b[^>]*>", "", html, flags=tag_flags)
+        text = re.sub(r"<style\b[^>]*>.*?</style\b[^>]*>", "", text, flags=tag_flags)
         text = re.sub(r"<[^>]+>", " ", text)
         text = re.sub(r"\s+", " ", text).strip()
         return text[:500]

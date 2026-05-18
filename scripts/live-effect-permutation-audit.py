@@ -86,6 +86,7 @@ PERMUTATION_SETS: tuple[PermutationSet, ...] = (
         (
             "vignette",
             "halftone",
+            "grain_bump",
             "kaleidoscope",
             "kuwahara",
             "noise_overlay",
@@ -164,7 +165,16 @@ TEMPORAL = {
     "reaction_diffusion",
 }
 LINE_OR_JITTER = {"vhs", "scanlines", "rutt_etra", "slitscan", "glitch_block"}
-DETAIL = {"ascii", "dither", "halftone", "posterize", "threshold", "kuwahara", "thermal"}
+DETAIL = {
+    "ascii",
+    "dither",
+    "grain_bump",
+    "halftone",
+    "posterize",
+    "threshold",
+    "kuwahara",
+    "thermal",
+}
 NOISE_OR_PARTICLE = {"noise_overlay", "noise_gen", "particle_system", "glitch_block"}
 COMPOSITE_OR_MASK = {
     "blend",

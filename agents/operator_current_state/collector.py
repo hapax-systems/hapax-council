@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -170,17 +171,17 @@ def collect_operator_current_state(
 
     items.extend(_items_from_tasks(active_tasks.records, now, public_projection_authorized))
     items.extend(_items_from_planning_feed(planning_feed, active_tasks.records, now))
-    items.extend(_items_from_relay(relay_notes, now))
+    items.extend(_items_from_relay(relay_notes, active_tasks.records, now))
     items.extend(_items_from_claims(claims, active_tasks.records, now))
     items.extend(_items_from_historical(paths.cc_operator_blocking, now))
     items.extend(_items_from_awareness(source_status["awareness_state"], now))
 
-    do_decide_conflict = any(item.class_ in {"do", "decide"} and item.conflicts for item in items)
-    if do_decide_conflict:
+    item_conflict = any(item.conflicts for item in items)
+    if item_conflict:
         blockers.append(
             ReadinessBlocker(
                 source="items",
-                reason="do/decide item conflict",
+                reason="item conflict",
                 predicate_family="methodology",
                 predicate_value="conflict",
             )
@@ -443,14 +444,48 @@ def _items_from_planning_feed(
 
 
 def _items_from_relay(
-    relay_notes: list[tuple[Path, str]], now: datetime
+    relay_notes: list[tuple[Path, str]],
+    active_tasks: list[tuple[Path, dict[str, Any], str]],
+    now: datetime,
 ) -> list[OperatorCurrentStateItem]:
     items: list[OperatorCurrentStateItem] = []
+    task_operator_required = {
+        str(fm.get("task_id") or path.stem): _task_requires_operator(fm)
+        for path, fm, _ in active_tasks
+    }
     for path, text in relay_notes:
         lower = text.lower()
         if "operator action" not in lower and "operator_required" not in lower:
             continue
-        has_governed_ref = any(token in text for token in ("CASE-", "REQ-", "task_id:"))
+        task_match = re.search(r"(?im)^\s*task_id\s*:\s*([A-Za-z0-9_.:-]+)\s*$", text)
+        relay_operator_required = "operator_required" in lower or "operator action" in lower
+        if task_match:
+            task_id = task_match.group(1)
+            task_requires_operator = task_operator_required.get(task_id)
+            if task_requires_operator is False and relay_operator_required:
+                items.append(
+                    _item(
+                        "watch",
+                        f"relay-task-conflict:{path.name}:{task_id}",
+                        "Relay/task operator obligation conflict",
+                        "Relay text claims operator action for a task whose authoritative task note does not.",
+                        now,
+                        source_ref=str(path),
+                        predicate_family="methodology",
+                        predicate_value="conflict",
+                        confidence="high",
+                        status="blocked",
+                        conflicts=[
+                            Conflict(
+                                source_ref=f"active_tasks:{task_id}",
+                                predicate_value="operator_required_false",
+                                note="relay note claims operator action",
+                            )
+                        ],
+                    )
+                )
+            continue
+        has_governed_ref = any(token in text for token in ("CASE-", "REQ-"))
         if has_governed_ref:
             continue
         items.append(
@@ -468,6 +503,13 @@ def _items_from_relay(
             )
         )
     return items
+
+
+def _task_requires_operator(fm: dict[str, Any]) -> bool:
+    tags = _as_list(fm.get("tags"))
+    return _truthy(fm.get("operator_required")) or any(
+        tag in {"operator-action", "operator-physical", "operator-decision"} for tag in tags
+    )
 
 
 def _items_from_claims(

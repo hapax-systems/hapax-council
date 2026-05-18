@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlparse
 
 from agents.auto_clip.platform_dispatch import (
+    CITABLE_NEXUS_URL,
+    RAIL_PAGES,
     ClipMetadata,
     InstagramUploader,
     TikTokUploader,
@@ -24,16 +27,28 @@ def _sample_metadata() -> ClipMetadata:
     )
 
 
+def _description_value(desc: str, label: str) -> str:
+    prefix = f"{label}: "
+    return next(line.removeprefix(prefix) for line in desc.splitlines() if line.startswith(prefix))
+
+
 def test_build_description_contains_attribution():
     desc = build_description(_sample_metadata())
-    assert "hapax.github.io" in desc
+    canonical = _description_value(desc, "Canonical")
+    parsed = urlparse(canonical)
+    assert canonical == CITABLE_NEXUS_URL
+    assert (parsed.scheme, parsed.hostname) == ("https", "hapax.github.io")
     assert "CC-BY-4.0" in desc
 
 
 def test_build_description_contains_rail_pages():
     desc = build_description(_sample_metadata())
-    assert "github.com/sponsors" in desc
-    assert "opencollective.com" in desc
+    rail_urls = {
+        _description_value(desc, "Github Sponsors"),
+        _description_value(desc, "Open Collective"),
+    }
+    assert rail_urls == set(RAIL_PAGES.values())
+    assert {urlparse(url).hostname for url in rail_urls} == {"github.com", "opencollective.com"}
 
 
 def test_youtube_uploader_not_configured_by_default():

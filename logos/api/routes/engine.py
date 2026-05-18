@@ -2,10 +2,29 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from werkzeug.security import safe_join
 
 router = APIRouter(prefix="/api/engine", tags=["engine"])
+
+
+def _resolve_engine_audit_file(audit_dir: Path, target_date: str) -> Path | None:
+    import datetime as dt
+
+    try:
+        parsed = dt.date.fromisoformat(target_date)
+    except ValueError:
+        return None
+    if parsed.isoformat() != target_date:
+        return None
+    audit_name = f"engine-audit-{parsed.isoformat()}.jsonl"
+    joined = safe_join(str(audit_dir), audit_name)
+    if joined is None:
+        return None
+    return Path(joined)
 
 
 def _get_engine(request: Request):
@@ -158,7 +177,9 @@ async def engine_audit(request: Request, date: str = "", limit: int = 200):
 
     audit_dir = PROFILES_DIR / "engine-audit"
     target_date = date or dt.date.today().isoformat()
-    audit_file = audit_dir / f"engine-audit-{target_date}.jsonl"
+    audit_file = _resolve_engine_audit_file(audit_dir, target_date)
+    if audit_file is None:
+        return JSONResponse({"error": "Invalid audit date"}, status_code=400)
 
     if not audit_file.exists():
         return []

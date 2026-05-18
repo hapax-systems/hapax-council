@@ -11,12 +11,17 @@ def phase1_prompt(rubric: Rubric, text: str, source_ref: str, seed: int | None =
         rng = random.Random(seed)
         rng.shuffle(axes)
 
-    axis_block = "\n".join(
-        f"- **{a.name}** ({a.min_score}-{a.max_score}): {a.description}\n"
-        f"  Strong example: {a.strong_example}\n"
-        f"  Weak example: {a.weak_example}"
-        for a in axes
-    )
+    def _format_axis(a: object) -> str:
+        lines = [
+            f"- **{a.name}** ({a.min_score}-{a.max_score}): {a.description}",
+            f"  Strong example: {a.strong_example}",
+            f"  Weak example: {a.weak_example}",
+        ]
+        if getattr(a, "floor_example", ""):
+            lines.append(f"  Floor boundary: {a.floor_example}")
+        return "\n".join(lines)
+
+    axis_block = "\n".join(_format_axis(a) for a in axes)
 
     return (
         "You are a member of a deliberative council evaluating text.\n\n"
@@ -74,4 +79,58 @@ def phase4_revision_prompt(
         '{"revised_scores": {"axis_name": int, ...}, '
         '"revision_rationale": {"axis_name": "...", ...}, '
         '"changed_axes": ["..."]}'
+    )
+
+
+def phase2_alternative_framing_prompt(
+    text: str,
+    phase1_scores: dict[str, dict[str, int]],
+) -> str:
+    score_summary = "\n".join(f"  {model}: {scores}" for model, scores in phase1_scores.items())
+    return (
+        "You are analyzing a livestream segment's STRUCTURE to identify "
+        "alternative framings that might work better.\n\n"
+        f"## Segment Text\n{text[:4000]}\n\n"
+        f"## Phase 1 Scores\n{score_summary}\n\n"
+        "## Task\n\n"
+        "For each structural weakness identified in Phase 1 scores:\n"
+        "1. Name the weakness (e.g., 'flat opening', 'parallel beats', 'citation theater')\n"
+        "2. Propose an ALTERNATIVE FRAMING — how could the same material be "
+        "structured differently to score higher on that axis?\n"
+        "3. Assess: is the alternative demonstrably better, or just different?\n\n"
+        "The narrator is a non-anthropomorphic system with authentic perspective. "
+        "Alternatives must preserve external focalization — no performing humanness.\n\n"
+        "Respond in JSON:\n"
+        '{"alternative_framings": [{"weakness": "...", "alternative": "...", '
+        '"improvement_confidence": "high|medium|low"}, ...]}'
+    )
+
+
+def phase3_audience_simulation_prompt(
+    text: str,
+    axis: str,
+    your_score: int,
+    your_rationale: str,
+    opponent_score: int,
+    opponent_rationale: str,
+) -> str:
+    return (
+        f"You scored '{axis}' as {your_score}. Another member scored it {opponent_score}.\n\n"
+        f"**Their rationale:** {opponent_rationale}\n\n"
+        "## Audience Simulation Challenge\n\n"
+        "Model a naive listener encountering this segment linearly at speech pace. "
+        "Report:\n"
+        "1. At what point (beat/sentence) does comprehension first break?\n"
+        "2. Where does tension dissipate — where would a listener zone out?\n"
+        "3. Where do callbacks to earlier material land vs miss?\n"
+        "4. Does the closing feel like resolution or just stopping?\n\n"
+        "This is diagnostic, not adversarial. The 'opponent' is attention "
+        "attrition, not intellectual disagreement.\n\n"
+        f"## Segment Excerpt\n{text[:3000]}\n\n"
+        "Respond in JSON:\n"
+        '{"comprehension_breaks": [{"beat": int, "reason": "..."}], '
+        '"tension_drops": [{"beat": int, "reason": "..."}], '
+        '"callback_assessment": "...", '
+        '"closure_assessment": "...", '
+        '"revised_score": int, "response": "..."}'
     )

@@ -36,41 +36,65 @@ jobs:
       - name: Label issue as planning
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
         run: |
-          gh issue edit ${{ github.event.client_payload.issue_number }} --add-label "sdlc:planning"
+          set -euo pipefail
+          case "$ISSUE_NUMBER" in
+            ""|*[!0-9]*) echo "::error::Invalid issue number"; exit 1 ;;
+          esac
+          gh issue edit "$ISSUE_NUMBER" --add-label "sdlc:planning"
 
       - name: Run planning agent
         id: plan
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LANGFUSE_EXPORT_FILE: /tmp/langfuse-traces.jsonl
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
         run: |
-          set -eo pipefail
-          OUTPUT=$(uv run python -m scripts.sdlc_plan --issue-number ${{ github.event.client_payload.issue_number }})
+          set -euo pipefail
+          case "$ISSUE_NUMBER" in
+            ""|*[!0-9]*) echo "::error::Invalid issue number"; exit 1 ;;
+          esac
+          OUTPUT=$(uv run python -m scripts.sdlc_plan --issue-number "$ISSUE_NUMBER")
           echo "$OUTPUT"
-          echo "plan=$OUTPUT" >> "$GITHUB_OUTPUT"
 
           # Extract estimated diff lines for branch name slug.
           LINES=$(echo "$OUTPUT" | jq -r '.estimated_diff_lines')
-          echo "est_lines=$LINES" >> "$GITHUB_OUTPUT"
+          {
+            echo "plan<<PLAN_JSON"
+            printf '%s\n' "$OUTPUT"
+            echo "PLAN_JSON"
+            printf 'est_lines=%s\n' "$LINES"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Label issue as implementing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
         run: |
-          ISSUE=${{ github.event.client_payload.issue_number }}
+          set -euo pipefail
+          case "$ISSUE_NUMBER" in
+            ""|*[!0-9]*) echo "::error::Invalid issue number"; exit 1 ;;
+          esac
+          ISSUE="$ISSUE_NUMBER"
           gh issue edit "$ISSUE" --add-label "sdlc:implementing" --remove-label "sdlc:planning"
 
       - name: Create branch
-        run: |
-          ISSUE=${{ github.event.client_payload.issue_number }}
-          # Fetch issue title for branch slug.
-          TITLE=$(gh issue view "$ISSUE" --json title --jq '.title' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | head -c 40)
-          BRANCH="agent/issue-${ISSUE}-${TITLE}"
-          git checkout -b "$BRANCH"
-          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
+        run: |
+          set -euo pipefail
+          case "$ISSUE_NUMBER" in
+            ""|*[!0-9]*) echo "::error::Invalid issue number"; exit 1 ;;
+          esac
+          ISSUE="$ISSUE_NUMBER"
+          # Fetch issue title for branch slug.
+          TITLE=$(gh issue view "$ISSUE" --json title --jq '.title')
+          SLUG=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/^-*//; s/-*$//' | head -c 40)
+          BRANCH="agent/issue-${ISSUE}-${SLUG:-work}"
+          git checkout -b "$BRANCH"
+          printf 'BRANCH=%s\n' "$BRANCH" >> "$GITHUB_ENV"
 
       - name: Run implementation agent
         uses: anthropics/claude-code-action@034cbdb008291e7eeeac420d315fc3b45fca3781
@@ -97,13 +121,18 @@ jobs:
       - name: Commit and push
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
         run: |
+          set -euo pipefail
+          case "$ISSUE_NUMBER" in
+            ""|*[!0-9]*) echo "::error::Invalid issue number"; exit 1 ;;
+          esac
           git config user.name "claude-code[bot]"
           git config user.email "claude-code[bot]@users.noreply.github.com"
 
           if git diff --quiet && git diff --cached --quiet; then
             echo "No changes — implementation produced no output."
-            ISSUE=${{ github.event.client_payload.issue_number }}
+            ISSUE="$ISSUE_NUMBER"
             gh issue edit "$ISSUE" --add-label "needs-human" --remove-label "sdlc:implementing"
             gh issue comment "$ISSUE" --body "## ⚠️ Implementation Failed
 
@@ -111,7 +140,7 @@ jobs:
             exit 1
           fi
 
-          ISSUE=${{ github.event.client_payload.issue_number }}
+          ISSUE="$ISSUE_NUMBER"
           git add -A
           git commit -m "[agent] implement issue #${ISSUE}
 
@@ -123,8 +152,13 @@ jobs:
       - name: Open PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
         run: |
-          ISSUE=${{ github.event.client_payload.issue_number }}
+          set -euo pipefail
+          case "$ISSUE_NUMBER" in
+            ""|*[!0-9]*) echo "::error::Invalid issue number"; exit 1 ;;
+          esac
+          ISSUE="$ISSUE_NUMBER"
           TITLE=$(gh issue view "$ISSUE" --json title --jq '.title')
 
           gh pr create \
@@ -156,8 +190,13 @@ jobs:
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
         run: |
-          ISSUE=${{ github.event.client_payload.issue_number }}
+          set -euo pipefail
+          case "$ISSUE_NUMBER" in
+            ""|*[!0-9]*) echo "::error::Invalid issue number"; exit 1 ;;
+          esac
+          ISSUE="$ISSUE_NUMBER"
           gh issue edit "$ISSUE" --add-label "needs-human" --remove-label "sdlc:implementing" --remove-label "sdlc:planning"
           gh issue comment "$ISSUE" --body "## ⚠️ Implementation Failed
 
@@ -174,18 +213,47 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Validate agent-authored PR source
+        id: review_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REPOSITORY: ${{ github.event.pull_request.base.repo.full_name }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          case "$PR_NUMBER" in
+            ""|*[!0-9]*) echo "::error::Invalid PR number"; exit 1 ;;
+          esac
+          if [ "$HEAD_REPOSITORY" = "$BASE_REPOSITORY" ] && [[ "$HEAD_REF" == agent/issue-* ]]; then
+            printf 'safe=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'safe=false\n' >> "$GITHUB_OUTPUT"
+            gh pr edit "$PR_NUMBER" --add-label "needs-human"
+            gh pr comment "$PR_NUMBER" --body "Automated fix round skipped: PR head is not a same-repository agent branch."
+          fi
+
       - uses: actions/checkout@v6
+        if: steps.review_pr.outputs.safe == 'true'
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 10
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Check review round limit
+        if: steps.review_pr.outputs.safe == 'true'
         id: round
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          PR=${{ github.event.pull_request.number }}
+          set -euo pipefail
+          case "$PR_NUMBER" in
+            ""|*[!0-9]*) echo "::error::Invalid PR number"; exit 1 ;;
+          esac
+          PR="$PR_NUMBER"
           LABELS=$(gh pr view "$PR" --json labels --jq '.labels[].name')
           CURRENT_ROUND=0
           for label in $LABELS; do
@@ -194,20 +262,25 @@ jobs:
             fi
           done
           NEXT_ROUND=$((CURRENT_ROUND + 1))
-          echo "round=$NEXT_ROUND" >> "$GITHUB_OUTPUT"
+          printf 'round=%s\n' "$NEXT_ROUND" >> "$GITHUB_OUTPUT"
 
           if [ "$NEXT_ROUND" -ge 3 ]; then
-            echo "exceeded=true" >> "$GITHUB_OUTPUT"
+            printf 'exceeded=true\n' >> "$GITHUB_OUTPUT"
           else
-            echo "exceeded=false" >> "$GITHUB_OUTPUT"
+            printf 'exceeded=false\n' >> "$GITHUB_OUTPUT"
           fi
 
       - name: Escalate if too many rounds
-        if: steps.round.outputs.exceeded == 'true'
+        if: steps.review_pr.outputs.safe == 'true' && steps.round.outputs.exceeded == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          PR=${{ github.event.pull_request.number }}
+          set -euo pipefail
+          case "$PR_NUMBER" in
+            ""|*[!0-9]*) echo "::error::Invalid PR number"; exit 1 ;;
+          esac
+          PR="$PR_NUMBER"
           gh pr edit "$PR" --add-label "needs-human"
           gh pr comment "$PR" --body "## ⚠️ Fix Round Limit Exceeded
 
@@ -215,19 +288,20 @@ jobs:
           Human attention is needed."
 
       - uses: astral-sh/setup-uv@v7
-        if: steps.round.outputs.exceeded == 'false'
+        if: steps.review_pr.outputs.safe == 'true' && steps.round.outputs.exceeded == 'false'
       - run: uv sync --extra ci
-        if: steps.round.outputs.exceeded == 'false'
+        if: steps.review_pr.outputs.safe == 'true' && steps.round.outputs.exceeded == 'false'
 
       - name: Write review body to file
-        if: steps.round.outputs.exceeded == 'false'
+        if: steps.review_pr.outputs.safe == 'true' && steps.round.outputs.exceeded == 'false'
         env:
           REVIEW_BODY: ${{ github.event.review.body }}
         run: |
-          echo "$REVIEW_BODY" > /tmp/review-body.txt
+          set -euo pipefail
+          printf '%s\n' "$REVIEW_BODY" > /tmp/review-body.txt
 
       - name: Run fixer agent
-        if: steps.round.outputs.exceeded == 'false'
+        if: steps.review_pr.outputs.safe == 'true' && steps.round.outputs.exceeded == 'false'
         uses: anthropics/claude-code-action@034cbdb008291e7eeeac420d315fc3b45fca3781
         with:
           model: claude-sonnet-4-6
@@ -247,21 +321,29 @@ jobs:
           allowed_tools: "Bash,Read,Edit,Write"
 
       - name: Commit fix
-        if: steps.round.outputs.exceeded == 'false'
+        if: steps.review_pr.outputs.safe == 'true' && steps.round.outputs.exceeded == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          ROUND: ${{ steps.round.outputs.round }}
         run: |
+          set -euo pipefail
+          case "$PR_NUMBER" in
+            ""|*[!0-9]*) echo "::error::Invalid PR number"; exit 1 ;;
+          esac
           git config user.name "claude-code[bot]"
           git config user.email "claude-code[bot]@users.noreply.github.com"
-          PR=${{ github.event.pull_request.number }}
-          ROUND=${{ steps.round.outputs.round }}
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git"
+          PR="$PR_NUMBER"
 
           if ! git diff --quiet || ! git diff --cached --quiet; then
             git add -A
             git commit -m "[agent] fix review round ${ROUND}
 
             Co-Authored-By: Claude Sonnet <noreply@anthropic.com>"
-            git push
+            git push origin "HEAD:${HEAD_REF}"
             gh pr edit "$PR" --add-label "review-round:${ROUND}"
           else
             gh pr comment "$PR" --body "Fixer agent found no changes to make for the review feedback."

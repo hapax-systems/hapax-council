@@ -1,0 +1,16 @@
+[Unit]
+Description=Hapax frontier triage officer
+Documentation=file://%h/Documents/Personal/20-projects/hapax-requests/active/REQ-20260510-continuous-intelligent-triage.md
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=HAPAX_AGENT_NAME=triage-officer
+Environment=HAPAX_TRIAGE_LIMIT=5
+Environment=HAPAX_TRIAGE_INTERVAL_S=900
+ExecStart=/usr/bin/env bash -lc 'set -euo pipefail; root="$HOME/.cache/hapax/source-activation/worktree"; if [[ ! -x "$root/scripts/cc-task-frontier-triage" ]]; then root="$HOME/projects/hapax-council"; fi; cd "$root"; PYTHONPATH="$root:$root/packages/agentgov/src:${PYTHONPATH:-}" uv run python -m agents.triage_officer --write --limit "${HAPAX_TRIAGE_LIMIT:-5}" --interval-s "${HAPAX_TRIAGE_INTERVAL_S:-900}"'
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=default.target

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import enum
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -19,6 +20,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from werkzeug.security import safe_join
+from werkzeug.utils import secure_filename
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +30,23 @@ log = logging.getLogger(__name__)
 _CONTRACTS_DIR = Path(__file__).parent.parent / "axioms" / "contracts"
 
 REGISTERED_CHILD_PRINCIPALS: frozenset[str] = frozenset({"simon", "agatha"})
+_CONTRACT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+_UNSAFE_CONTRACT_CHARS_RE = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def _contract_id_component(value: str) -> str:
+    component = _UNSAFE_CONTRACT_CHARS_RE.sub("-", value.strip()).strip("-_")
+    return component[:64] or "subject"
+
+
+def _contract_path(directory: Path, contract_id: str) -> Path:
+    safe_id = secure_filename(contract_id)
+    if safe_id != contract_id or not _CONTRACT_ID_RE.fullmatch(safe_id):
+        raise ValueError("contract_id must be a bounded filename component")
+    joined = safe_join(str(directory), f"{safe_id}.yaml")
+    if joined is None:
+        raise ValueError("contract path escaped contracts directory")
+    return Path(joined)
 
 
 @dataclass(frozen=True)
@@ -140,7 +160,7 @@ class ConsentRegistry:
         contracts_dir: Path | None = None,
     ) -> ConsentContract:
         now = datetime.now().isoformat()
-        cid = contract_id or f"contract-{person_id}-{now[:10]}"
+        cid = contract_id or f"contract-{_contract_id_component(person_id)}-{now[:10]}"
 
         contract = ConsentContract(
             id=cid,
@@ -153,7 +173,7 @@ class ConsentRegistry:
 
         directory = contracts_dir or _CONTRACTS_DIR
         directory.mkdir(parents=True, exist_ok=True)
-        contract_path = directory / f"{cid}.yaml"
+        contract_path = _contract_path(directory, cid)
         contract_data: dict[str, Any] = {
             "id": contract.id,
             "parties": list(contract.parties),
@@ -166,7 +186,10 @@ class ConsentRegistry:
             contract_data["principal_class"] = contract.principal_class
         if contract.guardian:
             contract_data["guardian"] = contract.guardian
-        contract_path.write_text(yaml.dump(contract_data, default_flow_style=False))
+        contract_path.write_text(
+            yaml.dump(contract_data, default_flow_style=False),
+            encoding="utf-8",
+        )
         log.info("Created consent contract %s for %s at %s", cid, person_id, contract_path)
 
         self._contracts[cid] = contract

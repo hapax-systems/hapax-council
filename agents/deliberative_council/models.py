@@ -11,6 +11,7 @@ class CouncilMode(StrEnum):
     SCORING = "scoring"
     DISCONFIRMATION = "disconfirmation"
     AUDIT = "audit"
+    NARRATIVE = "narrative"
 
 
 class ConvergenceStatus(StrEnum):
@@ -108,4 +109,25 @@ class CouncilVerdict(BaseModel):
     research_findings: list[str]
     evidence_matrix: EvidenceMatrix | None
     adversarial_exchanges: tuple[AdversarialExchange, ...] = ()
+    receipt: dict[str, Any] = Field(default_factory=dict)
+
+
+class NarrativeVerdictStatus(StrEnum):
+    BROADCAST_READY = "broadcast_ready"
+    REVISE_AND_RESUBMIT = "revise_and_resubmit"
+    STRUCTURAL_REWORK = "structural_rework"
+    GENERIC_DETECTED = "generic_detected"
+
+
+class NarrativeVerdict(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    scores: dict[str, int | None]
+    confidence_bands: dict[str, tuple[int, int]]
+    convergence_status: ConvergenceStatus
+    verdict_status: NarrativeVerdictStatus
+    alternative_framings: list[str] = Field(default_factory=list)
+    audience_breaks: list[str] = Field(default_factory=list)
+    disagreement_log: list[str] = Field(default_factory=list)
+    revision_directives: list[str] = Field(default_factory=list)
     receipt: dict[str, Any] = Field(default_factory=dict)

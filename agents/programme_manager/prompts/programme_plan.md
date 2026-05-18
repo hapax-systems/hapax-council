@@ -491,6 +491,43 @@ ends, the next begins with a transition ritual.
   sustained vocal delivery
 - Set `narrative_cadence_prior_s` shorter (e.g., `15.0`)
 
+## Density field — information-theoretic context for topic selection
+
+When the **Density field** context section is present (not `(unavailable)`),
+use it to inform topic selection and segment pacing:
+
+- **`aggregate_density`** (0.0-1.0): overall information density across all
+  perceptual zones. HIGH density (>0.6) means the environment is already
+  information-rich — prefer topics that complement rather than compete with
+  ambient signals. LOW density (<0.3) means the environment is quiet —
+  the segment can safely introduce novel complexity.
+
+- **`dominant_zone`**: which perceptual zone (perception, stimmung, voice)
+  currently contributes the most information. If `voice` is dominant,
+  the operator is actively speaking — pick topics that build on what they
+  are saying rather than redirect. If `perception` is dominant, visual
+  activity is high — lean into topics that connect to observable work.
+
+- **`dominant_mode`**: the temporal character of the densest signal.
+  - `NEWS` — something just changed. Pick topics that respond to the
+    change or capitalize on the new context.
+  - `ROUTINE` — stable, expected pattern. Safe to introduce a wholly
+    new topic since nothing urgent competes for attention.
+  - `ALARM` — a signal that should have changed but has not (absence
+    is informative). Investigate the stale zone; consider topics that
+    re-engage that channel.
+
+- **Per-zone data** (zones.perception, zones.stimmung, zones.voice):
+  use `top_signal` for grounding the pacing decision. A voice zone
+  with high density means the operator is mid-flow — shorten the hook
+  beat and start body beats faster. A stimmung zone in ALARM mode
+  means the emotional register has been flat too long — pick a topic
+  with built-in tension or energy shift.
+
+If the density field is `(unavailable)`, ignore this section entirely
+and select topics using only the other context sections. The density
+field is an opportunistic enhancement, never a requirement.
+
 ## Soft guidance (you may deviate when context demands)
 
 - Pick `narrative_beat` to ground the narrative director in the

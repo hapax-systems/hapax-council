@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import types
 from typing import Any
 from unittest import mock
 
@@ -53,6 +54,20 @@ def test_pass_show_returns_none_on_nonzero_exit() -> None:
         assert oauth._pass_show("missing/key") is None
 
 
+def test_pass_show_logs_redacted_key_and_no_stderr(caplog: pytest.LogCaptureFixture) -> None:
+    raw_key = oauth.CLIENT_SECRET_PASS_KEY
+    stderr = "secret-value-from-gpg"
+    with (
+        mock.patch.object(subprocess, "run", return_value=_completed(returncode=1, stderr=stderr)),
+        caplog.at_level("DEBUG", logger=oauth.__name__),
+    ):
+        assert oauth._pass_show(raw_key) is None
+
+    assert raw_key not in caplog.text
+    assert stderr not in caplog.text
+    assert oauth._credential_ref(raw_key) in caplog.text
+
+
 def test_pass_show_returns_none_on_timeout() -> None:
     with mock.patch.object(
         subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd=["pass"], timeout=5.0)
@@ -88,6 +103,21 @@ def test_pass_insert_returns_false_on_nonzero_exit() -> None:
         subprocess, "run", return_value=_completed(returncode=1, stderr="gpg failed")
     ):
         assert oauth._pass_insert("mail-monitor/google-refresh-token", "abc") is False
+
+
+def test_pass_insert_logs_redacted_key_and_no_stderr(caplog: pytest.LogCaptureFixture) -> None:
+    raw_key = oauth.REFRESH_TOKEN_PASS_KEY
+    stderr = "refresh-token-material"
+    with (
+        mock.patch.object(subprocess, "run", return_value=_completed(returncode=1, stderr=stderr)),
+        caplog.at_level("ERROR", logger=oauth.__name__),
+    ):
+        assert oauth._pass_insert(raw_key, "refresh-token-value") is False
+
+    assert raw_key not in caplog.text
+    assert stderr not in caplog.text
+    assert "refresh-token-value" not in caplog.text
+    assert oauth._credential_ref(raw_key) in caplog.text
 
 
 def test_pass_insert_returns_false_when_pass_missing() -> None:
@@ -173,9 +203,18 @@ def test_run_first_consent_can_open_browser_when_requested() -> None:
     )
 
 
-def test_run_first_consent_aborts_when_client_creds_missing() -> None:
-    with mock.patch.object(oauth, "_client_config", return_value=None):
+def test_run_first_consent_aborts_when_client_creds_missing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        mock.patch.object(oauth, "_client_config", return_value=None),
+        caplog.at_level("ERROR", logger=oauth.__name__),
+    ):
         assert oauth.run_first_consent() is False
+    assert oauth.CLIENT_ID_PASS_KEY not in caplog.text
+    assert oauth.CLIENT_SECRET_PASS_KEY not in caplog.text
+    assert oauth.CLIENT_ID_PASS_REF in caplog.text
+    assert oauth.CLIENT_CREDENTIAL_PASS_REF in caplog.text
 
 
 def test_run_first_consent_aborts_when_flow_returns_no_refresh_token() -> None:
@@ -343,10 +382,21 @@ def test_main_verify_calls_get_profile_and_succeeds(capsys: pytest.CaptureFixtur
         "emailAddress": "ops@example.com",
         "messagesTotal": 42,
     }
+    fake_googleapiclient = types.ModuleType("googleapiclient")
+    fake_googleapiclient.__path__ = []
+    fake_errors = types.ModuleType("googleapiclient.errors")
+    fake_errors.HttpError = Exception
 
     with (
         mock.patch.object(oauth, "load_credentials", return_value=fake_creds),
         mock.patch.object(oauth, "build_gmail_service", return_value=fake_service),
+        mock.patch.dict(
+            "sys.modules",
+            {
+                "googleapiclient": fake_googleapiclient,
+                "googleapiclient.errors": fake_errors,
+            },
+        ),
     ):
         rc = oauth.main(["--verify"])
 

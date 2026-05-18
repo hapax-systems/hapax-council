@@ -242,6 +242,8 @@ class VinylSpinningEngine:
         single ``ClaimEngine.tick()`` call so the state machine ticks
         once per perceptual moment.
         """
+        prev_state = self._engine.state
+        prev_posterior = self._engine.posterior
         cover_fresh = self._read_album_cover_fresh()
         hand_recent = self._read_hand_on_turntable()
         # Conjunction: only contribute True when BOTH fire. None when
@@ -257,6 +259,18 @@ class VinylSpinningEngine:
             "cover_and_hand": cover_and_hand,
         }
         self._engine.tick(observations)
+        if self._engine.state != prev_state:
+            from shared.bayesian_impingement_emitter import emit_state_transition_impingement
+
+            emit_state_transition_impingement(
+                source="audio.vinyl_spinning",
+                claim_name="vinyl-spinning",
+                from_state=prev_state,
+                to_state=self._engine.state,
+                posterior=self._engine.posterior,
+                prev_posterior=prev_posterior,
+                active_signals={k: v for k, v in observations.items() if v is not None},
+            )
 
     @property
     def posterior(self) -> float:

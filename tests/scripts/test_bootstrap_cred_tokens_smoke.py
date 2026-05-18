@@ -46,6 +46,13 @@ def test_service_bootstrappers_match_keys_registry(mod):
     assert set(mod.SERVICE_BOOTSTRAPPERS) == set(mod.KEYS)
 
 
+def test_philarchive_cookie_domain_uses_hostname_boundary(mod):
+    assert mod._is_philarchive_cookie_domain("philarchive.org")
+    assert mod._is_philarchive_cookie_domain(".philarchive.org")
+    assert not mod._is_philarchive_cookie_domain("evilphilarchive.org")
+    assert not mod._is_philarchive_cookie_domain("philarchive.org.evil.test")
+
+
 def test_pass_has_returns_false_for_unknown(mod):
     # Sentinel key the operator's pass-store will NEVER contain
     import shutil

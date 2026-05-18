@@ -1,0 +1,18 @@
+[Unit]
+Description=Hapax Information Density Field — universal perception-to-automation primitive
+After=hapax-secrets.service pipewire.service
+Wants=hapax-secrets.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sleep 5
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.information_density_daemon
+WorkingDirectory=%h/projects/hapax-council
+Environment=PYTHONPATH=%h/projects/hapax-council
+Restart=on-failure
+RestartSec=10
+MemoryMax=256M
+WatchdogSec=120
+
+[Install]
+WantedBy=default.target

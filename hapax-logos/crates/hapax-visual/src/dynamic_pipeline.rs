@@ -81,6 +81,8 @@ struct PlanFile {
     passes: Vec<PlanPass>,
     #[serde(default)]
     targets: HashMap<String, PlanTarget>,
+    #[serde(default)]
+    slotdrift_coverage: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,6 +175,35 @@ struct PlanPass {
     /// the substrate node (`content_layer`).
     #[serde(default = "default_slot_family")]
     slot_family: String,
+    /// SlotDrift live-surface verification metadata. Older plans omit these
+    /// fields; default values keep compatibility while allowing the 3D
+    /// compositor path to publish machine-checkable scope/family/cadence.
+    #[serde(default)]
+    effect_scope: String,
+    #[serde(default)]
+    effect_family: String,
+    #[serde(default)]
+    visibility_group: String,
+    #[serde(default)]
+    eviction_cadence: String,
+    #[serde(default)]
+    source_bound: bool,
+    #[serde(default)]
+    full_surface: bool,
+    #[serde(default)]
+    effect_aliases: Vec<String>,
+    #[serde(default)]
+    slot_index: Option<usize>,
+    #[serde(default)]
+    slot_phase: String,
+    #[serde(default)]
+    slot_intensity: f64,
+    #[serde(default)]
+    selection_count: u32,
+    #[serde(default)]
+    coverage_window_count: u64,
+    #[serde(default)]
+    parameter_regions: Vec<serde_json::Value>,
 }
 
 fn default_output() -> String {
@@ -208,6 +239,31 @@ where
 // We parse as HashMap and route signal.* to shared uniforms, node.* to per-pass params.
 type UniformsOverride = HashMap<String, f64>;
 
+fn bounded_bookend_override(node_id: &str, param: &str, value: f64) -> Option<f32> {
+    if !value.is_finite() {
+        return None;
+    }
+    let value = value as f32;
+    match (node_id, param) {
+        // Feedback is allowed to contribute short-lived depth and trace
+        // pressure, but not to own the surface or hide the scene.
+        ("fb", "decay") => Some(value.clamp(0.0, 0.16)),
+        ("fb", "hue_shift") => Some(value.clamp(-4.0, 4.0)),
+        ("fb", "trace_strength") => Some(value.clamp(0.0, 0.24)),
+        ("fb", "trace_radius") => Some(value.clamp(0.0, 0.70)),
+        ("fb", "trace_center_x") => Some(value.clamp(0.18, 0.82)),
+        ("fb", "trace_center_y") => Some(value.clamp(0.18, 0.82)),
+        ("fb", "zoom") => Some(value.clamp(0.96, 1.04)),
+        ("fb", "rotate") => Some(value.clamp(-0.006, 0.006)),
+        ("fb", "blend_mode") => Some(3.0),
+
+        // SlotDrift owns the postprocess bookend. External post overrides
+        // have repeatedly reintroduced whole-frame dimming/pumping even
+        // when numerically bounded, so the render boundary rejects them.
+        _ => None,
+    }
+}
+
 // --- Pipeline types ---
 
 /// A single pass in the dynamic pipeline.
@@ -242,6 +298,19 @@ struct DynamicPass {
     /// the render hot path reads namespaced texture names directly.
     #[allow(dead_code)]
     target: String,
+    effect_scope: String,
+    effect_family: String,
+    visibility_group: String,
+    eviction_cadence: String,
+    source_bound: bool,
+    full_surface: bool,
+    effect_aliases: Vec<String>,
+    slot_index: Option<usize>,
+    slot_phase: String,
+    slot_intensity: f64,
+    selection_count: u32,
+    coverage_window_count: u64,
+    parameter_regions: Vec<serde_json::Value>,
 }
 
 /// Rewrite a texture name to be target-namespaced when appropriate.
@@ -262,6 +331,18 @@ fn compute_manifest_hash(plan_data: &str) -> String {
     let mut h = DefaultHasher::new();
     plan_data.hash(&mut h);
     format!("{:016x}", h.finish())
+}
+
+fn retain_temporal_priming_for_required_names(
+    primed: &mut HashSet<String>,
+    required_temporal_names: &HashSet<String>,
+) {
+    primed.retain(|name| required_temporal_names.contains(name));
+}
+
+fn clear_temporal_accumulators<T>(textures: &mut HashMap<String, T>, primed: &mut HashSet<String>) {
+    textures.clear();
+    primed.clear();
 }
 
 /// LRR Phase 0 item 4 / FINDING-Q step 2 — validate every pass's shader
@@ -311,6 +392,26 @@ fn validate_plan_shaders(plan_dir: &Path, active_passes: &[(String, PlanPass)]) 
         }
     }
     failures
+}
+
+fn plan_pass_uses_content_slots(pass: &PlanPass) -> bool {
+    pass.requires_content_slots || pass.inputs.iter().any(|n| n.starts_with("content_slot_"))
+}
+
+fn validate_3d_livestream_surface_scope(active_passes: &[(String, PlanPass)]) -> Vec<String> {
+    active_passes
+        .iter()
+        .filter_map(|(target_name, plan_pass)| {
+            if target_name == "main" && plan_pass_uses_content_slots(plan_pass) {
+                Some(format!(
+                    "{}/{}: content_slot_* inputs are pre-composition entity inputs; 3D livestream effects must start from composed @live",
+                    target_name, plan_pass.node_id
+                ))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn namespace_texture_name(name: &str, target: &str) -> String {
@@ -454,6 +555,7 @@ pub struct DynamicPipeline {
     /// legacy low-bandwidth compatibility.
     output_half_rate: bool,
     drift_engine: Option<SlotDriftEngine>,
+    slotdrift_coverage: Option<serde_json::Value>,
     /// Phase 3 3D: true when an external texture was injected as @live
     /// this frame; suppresses the procedural noise fallback.
     live_texture_overridden: bool,
@@ -500,6 +602,7 @@ impl DynamicPipeline {
             label: Some("dynamic pipeline sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
 
@@ -645,6 +748,7 @@ impl DynamicPipeline {
                 "/dev/shm/hapax-imagination/pipeline/plan.json",
                 42,
             )),
+            slotdrift_coverage: None,
             live_texture_overridden: false,
             shader_rollback_total: Arc::new(AtomicU64::new(0)),
         };
@@ -694,6 +798,11 @@ impl DynamicPipeline {
 
         if by_target.values().all(|v| v.is_empty()) {
             self.passes.clear();
+            self.slotdrift_coverage = plan.slotdrift_coverage.clone();
+            clear_temporal_accumulators(
+                &mut self.temporal_textures,
+                &mut self.temporal_textures_primed,
+            );
             log::info!("dynamic_pipeline: loaded empty plan (renders black)");
             return true;
         }
@@ -736,7 +845,14 @@ impl DynamicPipeline {
         // plan_data so the operator can grep the journal for repeat
         // failures.
         let manifest_hash = compute_manifest_hash(&plan_data);
-        let validation_failures = validate_plan_shaders(&self.plan_dir, &active_passes);
+        let mut validation_failures = Vec::new();
+        if std::env::var("HAPAX_3D_COMPOSITOR")
+            .map(|raw| raw == "1")
+            .unwrap_or(false)
+        {
+            validation_failures.extend(validate_3d_livestream_surface_scope(&active_passes));
+        }
+        validation_failures.extend(validate_plan_shaders(&self.plan_dir, &active_passes));
         if !validation_failures.is_empty() {
             self.shader_rollback_total.fetch_add(1, Ordering::Relaxed);
             log::warn!(
@@ -781,11 +897,12 @@ impl DynamicPipeline {
 
         self.temporal_textures
             .retain(|name, _| required_temporal_names.contains(name));
-        self.temporal_textures_primed
-            .retain(|name| required_temporal_names.contains(name));
+        retain_temporal_priming_for_required_names(
+            &mut self.temporal_textures_primed,
+            &required_temporal_names,
+        );
         for name in &required_temporal_names {
             self.ensure_temporal_texture(device, name);
-            self.temporal_textures_primed.remove(name);
         }
 
         // Build passes
@@ -889,6 +1006,19 @@ impl DynamicPipeline {
                     slot_family: plan_pass.slot_family.clone(),
                     backend: plan_pass.backend.clone(),
                     target: target_name.clone(),
+                    effect_scope: plan_pass.effect_scope.clone(),
+                    effect_family: plan_pass.effect_family.clone(),
+                    visibility_group: plan_pass.visibility_group.clone(),
+                    eviction_cadence: plan_pass.eviction_cadence.clone(),
+                    source_bound: plan_pass.source_bound,
+                    full_surface: plan_pass.full_surface,
+                    effect_aliases: plan_pass.effect_aliases.clone(),
+                    slot_index: plan_pass.slot_index,
+                    slot_phase: plan_pass.slot_phase.clone(),
+                    slot_intensity: plan_pass.slot_intensity,
+                    selection_count: plan_pass.selection_count,
+                    coverage_window_count: plan_pass.coverage_window_count,
+                    parameter_regions: plan_pass.parameter_regions.clone(),
                 });
             } else {
                 // Render pass
@@ -1030,6 +1160,19 @@ impl DynamicPipeline {
                     slot_family: plan_pass.slot_family.clone(),
                     backend: plan_pass.backend.clone(),
                     target: target_name.clone(),
+                    effect_scope: plan_pass.effect_scope.clone(),
+                    effect_family: plan_pass.effect_family.clone(),
+                    visibility_group: plan_pass.visibility_group.clone(),
+                    eviction_cadence: plan_pass.eviction_cadence.clone(),
+                    source_bound: plan_pass.source_bound,
+                    full_surface: plan_pass.full_surface,
+                    effect_aliases: plan_pass.effect_aliases.clone(),
+                    slot_index: plan_pass.slot_index,
+                    slot_phase: plan_pass.slot_phase.clone(),
+                    slot_intensity: plan_pass.slot_intensity,
+                    selection_count: plan_pass.selection_count,
+                    coverage_window_count: plan_pass.coverage_window_count,
+                    parameter_regions: plan_pass.parameter_regions.clone(),
                 });
             }
         }
@@ -1037,6 +1180,7 @@ impl DynamicPipeline {
         self.input_bind_group_layouts = input_layouts;
         let count = new_passes.len();
         self.passes = new_passes;
+        self.slotdrift_coverage = plan.slotdrift_coverage.clone();
         log::info!("dynamic_pipeline: loaded {} passes", count);
         true
     }
@@ -1064,120 +1208,118 @@ impl DynamicPipeline {
 
         // Apply uniforms.json signal overrides (flat dict from Python modulator)
         // Format: {"signal.key": val, "node.param": val}
-        if let Ok(data) = std::fs::read_to_string(UNIFORMS_JSON) {
-            if let Ok(overrides) = serde_json::from_str::<UniformsOverride>(&data) {
-                // F7 — signal.{9dim} is a dormant override hook.
-                // ``signal.color_warmth`` is the only key Python
-                // currently writes (``agents/reverie/_uniforms.py``);
-                // the other 12 arms exist so the visual chain *could*
-                // override DMN-state-sourced dimensions when the
-                // reverie mixer has an opinion. The primary path for
-                // the 9 dimensions is alive via
-                // ``UniformBuffer::from_state`` reading from
-                // ``StateReader.imagination.dimensions`` — these arms
-                // would override that read on a per-frame basis if
-                // anything wrote them. They are kept rather than
-                // pruned because the override capability is part of
-                // the chain → GPU contract; pruning would require
-                // re-adding them when the visual chain wants to drive
-                // a dimension directly. See F7 in the 2026-04-12
-                // beta session 3 retirement handoff.
-                for (key, &val) in &overrides {
-                    if let Some(signal) = key.strip_prefix("signal.") {
-                        let v = val as f32;
-                        match signal {
-                            "color_warmth" => uniform_data.color_warmth = v,
-                            "speed" => uniform_data.speed = v,
-                            "turbulence" => uniform_data.turbulence = v,
-                            "brightness" => uniform_data.brightness = v,
-                            "intensity" => uniform_data.intensity = v,
-                            "tension" => uniform_data.tension = v,
-                            "depth" => uniform_data.depth = v,
-                            "coherence" => uniform_data.coherence = v,
-                            "spectral_color" => uniform_data.spectral_color = v,
-                            "temporal_distortion" => uniform_data.temporal_distortion = v,
-                            "degradation" => uniform_data.degradation = v,
-                            "pitch_displacement" => uniform_data.pitch_displacement = v,
-                            "diffusion" => uniform_data.diffusion = v,
-                            _ => {
-                                if let Some(rest) = signal.strip_prefix("homage_custom_") {
-                                    let mut parts = rest.splitn(2, '_');
-                                    if let (Some(slot_s), Some(comp_s)) =
-                                        (parts.next(), parts.next())
+        let uniform_overrides = std::fs::read_to_string(UNIFORMS_JSON)
+            .ok()
+            .and_then(|data| serde_json::from_str::<UniformsOverride>(&data).ok());
+        if let Some(overrides) = uniform_overrides.as_ref() {
+            // F7 — signal.{9dim} is a dormant override hook.
+            // ``signal.color_warmth`` is the only key Python
+            // currently writes (``agents/reverie/_uniforms.py``);
+            // the other 12 arms exist so the visual chain *could*
+            // override DMN-state-sourced dimensions when the
+            // reverie mixer has an opinion. The primary path for
+            // the 9 dimensions is alive via
+            // ``UniformBuffer::from_state`` reading from
+            // ``StateReader.imagination.dimensions`` — these arms
+            // would override that read on a per-frame basis if
+            // anything wrote them. They are kept rather than
+            // pruned because the override capability is part of
+            // the chain → GPU contract; pruning would require
+            // re-adding them when the visual chain wants to drive
+            // a dimension directly. See F7 in the 2026-04-12
+            // beta session 3 retirement handoff.
+            for (key, &val) in overrides {
+                if let Some(signal) = key.strip_prefix("signal.") {
+                    let v = val as f32;
+                    match signal {
+                        "color_warmth" => uniform_data.color_warmth = v,
+                        "speed" => uniform_data.speed = v,
+                        "turbulence" => uniform_data.turbulence = v,
+                        "brightness" => uniform_data.brightness = v,
+                        "intensity" => uniform_data.intensity = v,
+                        "tension" => uniform_data.tension = v,
+                        "depth" => uniform_data.depth = v,
+                        "coherence" => uniform_data.coherence = v,
+                        "spectral_color" => uniform_data.spectral_color = v,
+                        "temporal_distortion" => uniform_data.temporal_distortion = v,
+                        "degradation" => uniform_data.degradation = v,
+                        "pitch_displacement" => uniform_data.pitch_displacement = v,
+                        "diffusion" => uniform_data.diffusion = v,
+                        _ => {
+                            if let Some(rest) = signal.strip_prefix("homage_custom_") {
+                                let mut parts = rest.splitn(2, '_');
+                                if let (Some(slot_s), Some(comp_s)) = (parts.next(), parts.next()) {
+                                    if let (Ok(slot), Ok(comp)) =
+                                        (slot_s.parse::<usize>(), comp_s.parse::<usize>())
                                     {
-                                        if let (Ok(slot), Ok(comp)) =
-                                            (slot_s.parse::<usize>(), comp_s.parse::<usize>())
-                                        {
-                                            if slot < 8 && comp < 4 {
-                                                uniform_data.custom[slot][comp] = v;
-                                            }
+                                        if slot < 8 && comp < 4 {
+                                            uniform_data.custom[slot][comp] = v;
                                         }
                                     }
                                 }
                             }
                         }
-                    } else if let Some(content) = key.strip_prefix("content.") {
-                        // F8: content_layer.wgsl has no @group(2) Params
-                        // binding (it composites 4 content slots and
-                        // reads its material/salience/intensity knobs
-                        // from uniforms.custom[0]). The per-node
-                        // params_buffer path skips it. Route the three
-                        // content.* keys into custom[0][0..2] so
-                        // Bachelard Amendment 3 (material quality) is
-                        // actually reachable at runtime. Python writes
-                        // these keys as floats already (see
-                        // agents/reverie/_uniforms.py MATERIAL_MAP).
+                    }
+                } else if let Some(content) = key.strip_prefix("content.") {
+                    // F8: content_layer.wgsl has no @group(2) Params
+                    // binding (it composites 4 content slots and
+                    // reads its material/salience/intensity knobs
+                    // from uniforms.custom[0]). The per-node
+                    // params_buffer path skips it. Route the three
+                    // content.* keys into custom[0][0..2] so
+                    // Bachelard Amendment 3 (material quality) is
+                    // actually reachable at runtime. Python writes
+                    // these keys as floats already (see
+                    // agents/reverie/_uniforms.py MATERIAL_MAP).
+                    let v = val as f32;
+                    match content {
+                        "material" => uniform_data.custom[0][0] = v,
+                        "salience" => uniform_data.custom[0][1] = v,
+                        "intensity" => uniform_data.custom[0][2] = v,
+                        _ => {}
+                    }
+                }
+            }
+
+            // Apply per-node param overrides from uniforms.json
+            // Skip passes managed by drift engine — it has full authority
+            let drift_managed: std::collections::HashSet<&str> = if self.drift_engine.is_some() {
+                let mut set: std::collections::HashSet<&str> = crate::effect_drift::SHADERS
+                    .iter()
+                    .map(|s| s.name)
+                    .collect();
+                set.insert("fb"); // feedback bookend — drift engine owns
+                set.insert("post"); // postprocess bookend — drift engine owns
+                set.insert("colorgrade"); // colorgrade — drift engine owns
+                set
+            } else {
+                std::collections::HashSet::new()
+            };
+            for pass in &mut self.passes {
+                if pass.params_buffer.is_none() || pass.param_order.is_empty() {
+                    continue;
+                }
+                // Drift engine owns these passes — skip uniforms.json overrides
+                if drift_managed.contains(pass.node_id.as_str()) {
+                    continue;
+                }
+                let mut updated = false;
+                for (i, name) in pass.param_order.iter().enumerate() {
+                    if i >= pass.current_params.len() {
+                        break;
+                    }
+                    let key = format!("{}.{}", pass.node_id, name);
+                    if let Some(&val) = overrides.get(&key) {
                         let v = val as f32;
-                        match content {
-                            "material" => uniform_data.custom[0][0] = v,
-                            "salience" => uniform_data.custom[0][1] = v,
-                            "intensity" => uniform_data.custom[0][2] = v,
-                            _ => {}
+                        if (pass.current_params[i] - v).abs() > f32::EPSILON {
+                            pass.current_params[i] = v;
+                            updated = true;
                         }
                     }
                 }
-
-                // Apply per-node param overrides from uniforms.json
-                // Skip passes managed by drift engine — it has full authority
-                let drift_managed: std::collections::HashSet<&str> = if self.drift_engine.is_some()
-                {
-                    let mut set: std::collections::HashSet<&str> = crate::effect_drift::SHADERS
-                        .iter()
-                        .map(|s| s.name)
-                        .collect();
-                    set.insert("fb"); // feedback bookend — drift engine owns
-                    set.insert("post"); // postprocess bookend — drift engine owns
-                    set.insert("colorgrade"); // colorgrade — drift engine owns
-                    set
-                } else {
-                    std::collections::HashSet::new()
-                };
-                for pass in &mut self.passes {
-                    if pass.params_buffer.is_none() || pass.param_order.is_empty() {
-                        continue;
-                    }
-                    // Drift engine owns these passes — skip uniforms.json overrides
-                    if drift_managed.contains(pass.node_id.as_str()) {
-                        continue;
-                    }
-                    let mut updated = false;
-                    for (i, name) in pass.param_order.iter().enumerate() {
-                        if i >= pass.current_params.len() {
-                            break;
-                        }
-                        let key = format!("{}.{}", pass.node_id, name);
-                        if let Some(&val) = overrides.get(&key) {
-                            let v = val as f32;
-                            if (pass.current_params[i] - v).abs() > f32::EPSILON {
-                                pass.current_params[i] = v;
-                                updated = true;
-                            }
-                        }
-                    }
-                    if updated {
-                        if let Some(ref buf) = pass.params_buffer {
-                            queue.write_buffer(buf, 0, bytemuck::cast_slice(&pass.current_params));
-                        }
+                if updated {
+                    if let Some(ref buf) = pass.params_buffer {
+                        queue.write_buffer(buf, 0, bytemuck::cast_slice(&pass.current_params));
                     }
                 }
             }
@@ -1213,6 +1355,9 @@ impl DynamicPipeline {
                     }
                 }
             }
+        }
+        if let Some(overrides) = uniform_overrides.as_ref() {
+            self.apply_bounded_bookend_overrides(queue, overrides);
         }
         self.publish_effect_state();
 
@@ -1641,6 +1786,45 @@ impl DynamicPipeline {
         }
     }
 
+    fn apply_bounded_bookend_overrides(
+        &mut self,
+        queue: &wgpu::Queue,
+        overrides: &UniformsOverride,
+    ) {
+        for pass in &mut self.passes {
+            if pass.params_buffer.is_none()
+                || pass.param_order.is_empty()
+                || (pass.node_id != "fb" && pass.node_id != "post")
+            {
+                continue;
+            }
+
+            let mut updated = false;
+            for (i, name) in pass.param_order.iter().enumerate() {
+                if i >= pass.current_params.len() {
+                    break;
+                }
+                let key = format!("{}.{}", pass.node_id, name);
+                let Some(&value) = overrides.get(&key) else {
+                    continue;
+                };
+                let Some(bounded) = bounded_bookend_override(&pass.node_id, name, value) else {
+                    continue;
+                };
+                if (pass.current_params[i] - bounded).abs() > 0.0001 {
+                    pass.current_params[i] = bounded;
+                    updated = true;
+                }
+            }
+
+            if updated {
+                if let Some(ref buf) = pass.params_buffer {
+                    queue.write_buffer(buf, 0, bytemuck::cast_slice(&pass.current_params));
+                }
+            }
+        }
+    }
+
     fn publish_effect_state(&self) {
         if !self.frame_count.is_multiple_of(30) {
             return;
@@ -1676,6 +1860,19 @@ impl DynamicPipeline {
                     "node_id": pass.node_id,
                     "inputs": pass.inputs,
                     "output": pass.output,
+                    "effect_scope": pass.effect_scope,
+                    "effect_family": pass.effect_family,
+                    "visibility_group": pass.visibility_group,
+                    "eviction_cadence": pass.eviction_cadence,
+                    "source_bound": pass.source_bound,
+                    "full_surface": pass.full_surface,
+                    "effect_aliases": pass.effect_aliases,
+                    "slot_index": pass.slot_index,
+                    "slot_phase": pass.slot_phase,
+                    "slot_intensity": pass.slot_intensity,
+                    "selection_count": pass.selection_count,
+                    "coverage_window_count": pass.coverage_window_count,
+                    "parameter_regions": pass.parameter_regions,
                     "max_delta": max_delta,
                     "non_neutral": max_delta > 0.0001,
                     "params": params,
@@ -1692,6 +1889,7 @@ impl DynamicPipeline {
             "frame_count": self.frame_count,
             "non_neutral_pass_count": non_neutral_pass_count,
             "pass_count": self.passes.len(),
+            "slotdrift_coverage": self.slotdrift_coverage,
             "passes": passes,
         });
 
@@ -2349,6 +2547,7 @@ mod tests {
     fn parses_v2_targets_format_with_main() {
         let json = r#"{
             "version": 2,
+            "slotdrift_coverage": {"schema": "slotdrift-coverage-v1", "recent_effects": ["noise"]},
             "targets": {
                 "main": {
                     "passes": [
@@ -2365,6 +2564,41 @@ mod tests {
         assert_eq!(main.len(), 2);
         assert_eq!(main[0].node_id, "noise");
         assert_eq!(main[1].node_id, "color");
+    }
+
+    #[test]
+    fn parses_live_surface_effect_metadata_fields() {
+        let json = r#"{
+            "version": 2,
+            "slotdrift_coverage": {"schema": "slotdrift-coverage-v1", "recent_effects": ["noise"]},
+            "targets": {
+                "main": {
+                    "passes": [
+                        {
+                            "node_id": "slitscan",
+                            "shader": "slitscan.wgsl",
+                            "effect_scope": "composed_live_surface",
+                            "effect_family": "temporal",
+                            "visibility_group": "temporal",
+                            "eviction_cadence": "fast",
+                            "source_bound": true,
+                            "full_surface": true,
+                            "effect_aliases": ["slicing"]
+                        }
+                    ]
+                }
+            }
+        }"#;
+        let plan: PlanFile = serde_json::from_str(json).expect("metadata plan parses");
+        let main = plan.main_passes();
+        assert_eq!(main.len(), 1);
+        assert_eq!(main[0].effect_scope, "composed_live_surface");
+        assert_eq!(main[0].effect_family, "temporal");
+        assert_eq!(main[0].visibility_group, "temporal");
+        assert_eq!(main[0].eviction_cadence, "fast");
+        assert!(main[0].source_bound);
+        assert!(main[0].full_surface);
+        assert_eq!(main[0].effect_aliases, vec!["slicing"]);
     }
 
     #[test]
@@ -2483,6 +2717,7 @@ mod tests {
         // uniforms, param_order) survive the v2 → main_passes() round-trip.
         let json = r#"{
             "version": 2,
+            "slotdrift_coverage": {"schema": "slotdrift-coverage-v1", "recent_effects": ["noise"]},
             "targets": {
                 "main": {
                     "passes": [
@@ -2494,13 +2729,26 @@ mod tests {
                             "output": "final",
                             "uniforms": {"amplitude": 0.5},
                             "param_order": ["amplitude"],
-                            "requires_content_slots": false
+                            "requires_content_slots": false,
+                            "slot_index": 2,
+                            "slot_phase": "peak",
+                            "slot_intensity": 0.73,
+                            "selection_count": 9,
+                            "coverage_window_count": 3,
+                            "parameter_regions": [{"param": "amplitude", "region": "high", "target": 0.5}]
                         }
                     ]
                 }
             }
         }"#;
         let plan: PlanFile = serde_json::from_str(json).expect("rich v2 plan parses");
+        assert_eq!(
+            plan.slotdrift_coverage
+                .as_ref()
+                .and_then(|v| v.get("schema"))
+                .and_then(|v| v.as_str()),
+            Some("slotdrift-coverage-v1")
+        );
         let passes = plan.main_passes();
         assert_eq!(passes.len(), 1);
         let p = &passes[0];
@@ -2510,6 +2758,40 @@ mod tests {
         assert_eq!(p.uniforms.get("amplitude").copied(), Some(0.5));
         assert_eq!(p.param_order, vec!["amplitude"]);
         assert!(!p.requires_content_slots);
+        assert_eq!(p.slot_index, Some(2));
+        assert_eq!(p.slot_phase, "peak");
+        assert_eq!(p.slot_intensity, 0.73);
+        assert_eq!(p.selection_count, 9);
+        assert_eq!(p.coverage_window_count, 3);
+        assert_eq!(p.parameter_regions.len(), 1);
+    }
+
+    #[test]
+    fn bookend_overrides_are_bounded_and_narrow() {
+        assert_eq!(bounded_bookend_override("fb", "decay", 0.012), Some(0.012));
+        assert_eq!(bounded_bookend_override("fb", "decay", 9.0), Some(0.16));
+        assert_eq!(
+            bounded_bookend_override("fb", "blend_mode", 1.0),
+            Some(3.0),
+            "external feedback control must use energy-preserving blend semantics"
+        );
+        assert_eq!(
+            bounded_bookend_override("post", "sediment_strength", 1.0),
+            None,
+            "external post overrides must not reintroduce whole-frame pumping"
+        );
+        assert_eq!(
+            bounded_bookend_override("post", "vignette_strength", 0.11),
+            None,
+            "external post overrides must not reintroduce whole-frame pumping"
+        );
+        assert_eq!(
+            bounded_bookend_override("post", "master_opacity", 0.2),
+            None,
+            "external post overrides must not reintroduce whole-frame pumping"
+        );
+        assert_eq!(bounded_bookend_override("drift", "amplitude", 0.2), None);
+        assert_eq!(bounded_bookend_override("fb", "decay", f64::NAN), None);
     }
 
     // ----- B4: TransientTexturePool wiring — pool-key bookkeeping -----
@@ -2651,6 +2933,19 @@ mod tests {
             requires_content_slots: false,
             backend: "wgsl_render".to_string(),
             slot_family: "narrative".to_string(),
+            effect_scope: String::new(),
+            effect_family: String::new(),
+            visibility_group: String::new(),
+            eviction_cadence: String::new(),
+            source_bound: false,
+            full_surface: false,
+            effect_aliases: Vec::new(),
+            slot_index: None,
+            slot_phase: String::new(),
+            slot_intensity: 0.0,
+            selection_count: 0,
+            coverage_window_count: 0,
+            parameter_regions: Vec::new(),
         }
     }
 
@@ -2677,6 +2972,19 @@ mod tests {
             slot_family: slot_family.to_string(),
             backend: "wgsl_render".to_string(),
             target: "main".to_string(),
+            effect_scope: String::new(),
+            effect_family: String::new(),
+            visibility_group: String::new(),
+            eviction_cadence: String::new(),
+            source_bound: false,
+            full_surface: false,
+            effect_aliases: Vec::new(),
+            slot_index: None,
+            slot_phase: String::new(),
+            slot_intensity: 0.0,
+            selection_count: 0,
+            coverage_window_count: 0,
+            parameter_regions: Vec::new(),
         }
     }
 
@@ -2691,6 +2999,33 @@ mod tests {
         let pass =
             make_dynamic_pass_for_slot_test(false, "narrative", &["@live", "content_slot_0"]);
         assert!(pass_uses_content_slots(&pass));
+    }
+
+    #[test]
+    fn three_d_livestream_scope_rejects_main_content_slot_effects() {
+        let mut pass = make_pass("content_layer", "content_layer.wgsl");
+        pass.requires_content_slots = true;
+        pass.inputs = vec!["@live".to_string(), "content_slot_0".to_string()];
+
+        let failures = validate_3d_livestream_surface_scope(&[("main".to_string(), pass)]);
+
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].contains("main/content_layer"));
+        assert!(failures[0].contains("composed @live"));
+    }
+
+    #[test]
+    fn three_d_livestream_scope_allows_non_main_content_slot_targets() {
+        let mut pass = make_pass("content_layer", "content_layer.wgsl");
+        pass.requires_content_slots = true;
+        pass.inputs = vec!["@live".to_string(), "content_slot_0".to_string()];
+
+        let failures = validate_3d_livestream_surface_scope(&[("preview".to_string(), pass)]);
+
+        assert!(
+            failures.is_empty(),
+            "non-main targets are not the livestream egress surface"
+        );
     }
 
     #[test]
@@ -2715,6 +3050,57 @@ mod tests {
         let a = compute_manifest_hash("hello world");
         let b = compute_manifest_hash("hello world!");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn temporal_accumulator_priming_survives_reused_hot_reload_nodes() {
+        let required_temporal_names = HashSet::from([
+            "fb".to_string(),
+            "slitscan".to_string(),
+            "fluid_sim".to_string(),
+        ]);
+        let mut primed = HashSet::from([
+            "fb".to_string(),
+            "slitscan".to_string(),
+            "retired_effect".to_string(),
+        ]);
+
+        retain_temporal_priming_for_required_names(&mut primed, &required_temporal_names);
+
+        assert!(
+            primed.contains("fb"),
+            "reused feedback accumulator must not be cleared on every plan hot reload"
+        );
+        assert!(
+            primed.contains("slitscan"),
+            "reused temporal effect accumulator must remain continuous across plan hot reload"
+        );
+        assert!(
+            !primed.contains("retired_effect"),
+            "retired accumulator priming should not survive after the node leaves the plan"
+        );
+        assert!(
+            !primed.contains("fluid_sim"),
+            "new temporal nodes start unprimed and get explicitly initialized"
+        );
+    }
+
+    #[test]
+    fn empty_plan_reload_clears_temporal_accumulator_state() {
+        let mut textures =
+            HashMap::from([("fb".to_string(), 1_u8), ("slitscan".to_string(), 2_u8)]);
+        let mut primed = HashSet::from(["fb".to_string(), "slitscan".to_string()]);
+
+        clear_temporal_accumulators(&mut textures, &mut primed);
+
+        assert!(
+            textures.is_empty(),
+            "empty plans must not leave retired accumulator textures alive for later reuse"
+        );
+        assert!(
+            primed.is_empty(),
+            "empty plans must not preserve priming marks for retired accumulators"
+        );
     }
 
     #[test]

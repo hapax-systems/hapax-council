@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Export formal governance runtime predicate and constraint snapshots."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.formal_governance_runtime import (  # noqa: E402
+    FORMAL_CONSTRAINT_ROOT,
+    FORMAL_GOVERNANCE_CACHE,
+    FormalGovernanceRuntimeError,
+    export_runtime,
+    parse_utc,
+)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--constraints-root",
+        type=Path,
+        default=FORMAL_CONSTRAINT_ROOT,
+        help="Formal-constraint store root.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=FORMAL_GOVERNANCE_CACHE,
+        help="Directory for status-predicates.json and operator-constraints.json.",
+    )
+    parser.add_argument("--now", default=None, help="ISO-8601 UTC timestamp override.")
+    parser.add_argument("--dry-run", action="store_true", help="Do not write snapshots.")
+    parser.add_argument("--json", action="store_true", help="Print snapshot JSON.")
+    return parser
+
+
+def _json_dump(value: Any) -> str:
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    return json.dumps(value, indent=2, sort_keys=True)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    try:
+        result = export_runtime(
+            constraints_root=args.constraints_root,
+            output_dir=args.output_dir,
+            now=parse_utc(args.now) if args.now else None,
+            write=not args.dry_run,
+        )
+    except FormalGovernanceRuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json or args.dry_run:
+        print(_json_dump(result))
+    else:
+        print(f"wrote {args.output_dir / 'status-predicates.json'}")
+        print(f"wrote {args.output_dir / 'operator-constraints.json'}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -10,7 +10,7 @@ from typing import Any
 
 from shared.live_surface_effect_policy import (
     LIVE_SURFACE_BLOCKED_NODE_TYPES,
-    LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES,
+    live_surface_glsl_requires_source_bound_repair,
 )
 from shared.live_surface_effect_policy import (
     apply_live_surface_param_bounds as _apply_live_surface_param_bounds,
@@ -298,15 +298,6 @@ def evaluate_preset_graph_policy(
             )
 
         node_def = registry.get(node_type) if registry is not None else None
-        if node_type in LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES and getattr(
-            node_def, "glsl_source", None
-        ):
-            return PresetPolicyDecision(
-                allowed=False,
-                reason="camera_legible_glsl_pending_source_bound_repair",
-                preset=primary,
-                matched=(node_id, node_type),
-            )
         if getattr(node_def, "requires_content_slots", False):
             if not _content_slot_policy_is_camera_legible(node_def):
                 return PresetPolicyDecision(
@@ -322,6 +313,17 @@ def evaluate_preset_graph_policy(
                     preset=primary,
                     matched=(node_id, node_type),
                 )
+
+        if live_surface_glsl_requires_source_bound_repair(
+            node_type,
+            has_glsl_source=bool(getattr(node_def, "glsl_source", None)),
+        ):
+            return PresetPolicyDecision(
+                allowed=False,
+                reason="camera_legible_glsl_pending_source_bound_repair",
+                preset=primary,
+                matched=(node_id, node_type),
+            )
 
     return PresetPolicyDecision(allowed=True, reason="allowed", preset=primary)
 

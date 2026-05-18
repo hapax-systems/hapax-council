@@ -2,11 +2,12 @@
   "registry_schema": 1,
   "registry_id": "hapax-platform-capability-registry",
   "schema_ref": "schemas/platform-capability-registry.schema.json",
-  "declared_at": "2026-05-09T20:50:00Z",
+  "declared_at": "2026-05-17T18:38:56Z",
   "capacity_invariant": "Default to maximum appropriate quality-preserving utilization. No quality degradation is permitted. Capacity may be reduced only by task-platform fit, quota state, resource contention, or explicit operator hold.",
   "generated_from": [
     "scripts/hapax-methodology-dispatch --list-platform-paths",
-    "quality-preserving-capacity-routing-authority-case-draft-2026-05-09#R2"
+    "quality-preserving-capacity-routing-authority-case-draft-2026-05-09#R2",
+    "fresh-platform-surface-research:2026-05-17T18:38Z"
   ],
   "required_route_ids": [
     "antigrav.interactive.full",
@@ -18,6 +19,7 @@
     "gemini.headless.flash",
     "gemini.headless.full",
     "gemini.headless.lite",
+    "gemini.headless.worker",
     "gemini.interactive.full",
     "vibe.headless.full"
   ],
@@ -30,9 +32,13 @@
       "profile": "full",
       "launcher": "~/.local/bin/hapax-antigrav --session <lane> --task <task>",
       "summary": "Anthropic Antigravity IDE lane",
-      "notes": "IDE-bound JR+ path; no headless lane contract exists.",
+      "notes": "IDE-only audited full-worker lane; terminal auto-approval posture requires external task gates, PR review, and sensitive-surface restrictions.",
       "route_state": "blocked",
-      "blocked_reasons": ["fresh_capability_evidence_absent"],
+      "blocked_reasons": [
+        "fresh_capability_evidence_absent",
+        "privacy_posture_unknown",
+        "quota_telemetry_unknown"
+      ],
       "model_or_engine": "anthropic-antigravity-ide",
       "auth_surface": "operator_session",
       "capacity_pool": "subscription_quota",
@@ -52,7 +58,10 @@
       },
       "privacy_posture": "unknown",
       "quality_envelope": {
-        "eligible_quality_floors": ["frontier_review_required", "deterministic_ok"],
+        "eligible_quality_floors": [
+          "frontier_review_required",
+          "deterministic_ok"
+        ],
         "explicit_equivalence_records": [],
         "excluded_task_classes": [
           "governance_authority_case",
@@ -61,19 +70,223 @@
           "provider_spend"
         ]
       },
-      "context_limits": {"max_context_class": "large"},
-      "telemetry": {"quota_source": "unknown", "cost_source": "none", "resource_source": "unknown"},
+      "context_limits": {
+        "max_context_class": "large"
+      },
+      "telemetry": {
+        "quota_source": "unknown",
+        "cost_source": "none",
+        "resource_source": "unknown"
+      },
       "freshness": {
         "capability_checked_at": null,
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T18:38:56Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_capability_evidence_absent",
+              "privacy_posture_unknown"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quota_telemetry_unknown"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:~/.local/bin/hapax-antigrav --help:available:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://codelabs.developers.google.com/getting-started-google-antigravity"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
-      "known_unknowns": ["Antigrav limits and telemetry are unknown."]
+      "known_unknowns": [
+        "Antigravity quota and account-live limits are not yet exposed as local telemetry.",
+        "Installed extension accepts .agent and .agents paths; official docs prefer .agents/rules and .agents/workflows."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:antigrav.interactive.full:dimensional-score:grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:antigrav.interactive.full:dimensional-score:governance_reasoning"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:antigrav.interactive.full:dimensional-score:source_editing"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:antigrav.interactive.full:dimensional-score:architecture"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:antigrav.interactive.full:dimensional-score:ambiguity_resolution"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:antigrav.interactive.full:dimensional-score:long_context"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:antigrav.interactive.full:dimensional-score:current_docs_grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:antigrav.interactive.full:dimensional-score:multimodal_verification"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:antigrav.interactive.full:dimensional-score:runtime_debugging"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:antigrav.interactive.full:dimensional-score:test_authoring"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:antigrav.interactive.full:dimensional-score:coordination_reliability"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 1,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:antigrav.interactive.full:dimensional-score:privacy_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:antigrav.interactive.full:dimensional-score:public_claim_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:antigrav.interactive.full:dimensional-score:local_calibration"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read",
+            "write"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:antigrav.interactive.full:tool_access.filesystem"
+        },
+        {
+          "tool_id": "local_shell",
+          "available": true,
+          "authority_use": [
+            "read",
+            "execute",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:antigrav.interactive.full:tool_access.shell"
+        },
+        {
+          "tool_id": "browser",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:antigrav.interactive.full:tool_access.browser"
+        }
+      ],
+      "sanctioned_wrapper": "~/.local/bin/hapax-antigrav",
+      "approval_posture": "ide_terminal_auto_approve",
+      "capability_tier": "audited_full_worker",
+      "worker_tier": "audited_full_worker"
     },
     {
       "registry_schema": 1,
@@ -84,8 +297,10 @@
       "launcher": "~/.local/bin/hapax-claude-headless <lane> <governed-prompt>",
       "summary": "Claude Code headless stream-json lane",
       "notes": "Default frontier Claude path; requires governed headless enable latch and a validated task.",
-      "route_state": "active",
-      "blocked_reasons": [],
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "account_live_quota_receipt_absent"
+      ],
       "model_or_engine": "claude-code-default",
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
@@ -101,11 +316,20 @@
         "filesystem": "read_write",
         "shell": "full",
         "browser": true,
-        "mcp": ["context7", "github", "hapax-mcp", "playwright"]
+        "mcp": [
+          "context7",
+          "github",
+          "hapax-mcp",
+          "playwright"
+        ]
       },
       "privacy_posture": "provider_private",
       "quality_envelope": {
-        "eligible_quality_floors": ["frontier_required", "frontier_review_required", "deterministic_ok"],
+        "eligible_quality_floors": [
+          "frontier_required",
+          "frontier_review_required",
+          "deterministic_ok"
+        ],
         "explicit_equivalence_records": [],
         "excluded_task_classes": [
           "runtime_mutation_without_isap",
@@ -113,19 +337,264 @@
           "public_release_without_gate"
         ]
       },
-      "context_limits": {"max_context_class": "very_large"},
-      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
-      "freshness": {
-        "capability_checked_at": "2026-05-11T01:56:10Z",
-        "capability_stale_after": "24h",
-        "quota_checked_at": "2026-05-11T01:56:10Z",
-        "quota_stale_after": "24h",
-        "resource_checked_at": "2026-05-11T01:56:10Z",
-        "resource_stale_after": "24h",
-        "provider_docs_checked_at": "2026-05-11T01:56:10Z",
-        "provider_docs_stale_after": "30d"
+      "context_limits": {
+        "max_context_class": "very_large"
       },
-      "known_unknowns": ["Subscription quota remains manually refreshed until telemetry adapter exists."]
+      "telemetry": {
+        "quota_source": "manual",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": "2026-05-17T08:14:11Z",
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "24h",
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [
+              "local:claude --version:2.1.143:2026-05-17T08:07Z",
+              "local:~/.cache/hapax/enable-claude-headless:present:2026-05-17T08:07Z",
+              "local:scripts/hapax-claude-headless:launcher-contract-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:hapax-claude-headless:executable-and-enable-latch-present:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://code.claude.com/docs/en/cli-usage",
+              "official:https://docs.anthropic.com/en/docs/claude-code/mcp"
+            ],
+            "blocked_reasons": []
+          }
+        }
+      },
+      "known_unknowns": [
+        "Subscription quota remains manually refreshed until telemetry adapter exists."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 5,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.full:dimensional-score:grounding"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 5,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.full:dimensional-score:governance_reasoning"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 4,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.full:dimensional-score:source_editing"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 5,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.full:dimensional-score:architecture"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 5,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.full:dimensional-score:ambiguity_resolution"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 5,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.full:dimensional-score:long_context"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 4,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.full:dimensional-score:current_docs_grounding"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 4,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.full:dimensional-score:multimodal_verification"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 4,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.full:dimensional-score:runtime_debugging"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 4,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.full:dimensional-score:test_authoring"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 4,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.full:dimensional-score:coordination_reliability"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 5,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.full:dimensional-score:privacy_safety"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 5,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.full:dimensional-score:public_claim_safety"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 4,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.full:dimensional-score:local_calibration"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read",
+            "write"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.full:tool_access.filesystem"
+        },
+        {
+          "tool_id": "local_shell",
+          "available": true,
+          "authority_use": [
+            "read",
+            "execute",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.full:tool_access.shell"
+        },
+        {
+          "tool_id": "browser",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.full:tool_access.browser"
+        },
+        {
+          "tool_id": "context7",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.full:tool_access.mcp.context7"
+        },
+        {
+          "tool_id": "github",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.full:tool_access.mcp.github"
+        },
+        {
+          "tool_id": "hapax-mcp",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.full:tool_access.mcp.hapax-mcp"
+        },
+        {
+          "tool_id": "playwright",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.full:tool_access.mcp.playwright"
+        }
+      ],
+      "sanctioned_wrapper": "~/.local/bin/hapax-claude-headless",
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "frontier_full",
+      "worker_tier": "full_worker"
     },
     {
       "registry_schema": 1,
@@ -137,7 +606,11 @@
       "summary": "Claude Opus headless stream-json lane",
       "notes": "Use when architecture, governance, theory, or high-ambiguity work requires the strongest Claude profile.",
       "route_state": "blocked",
-      "blocked_reasons": ["fresh_capability_evidence_absent"],
+      "blocked_reasons": [
+        "opus_model_entitlement_receipt_absent",
+        "fresh_capability_evidence_absent",
+        "account_live_quota_receipt_absent"
+      ],
       "model_or_engine": "claude-opus",
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
@@ -153,11 +626,20 @@
         "filesystem": "read_write",
         "shell": "full",
         "browser": true,
-        "mcp": ["context7", "github", "hapax-mcp", "playwright"]
+        "mcp": [
+          "context7",
+          "github",
+          "hapax-mcp",
+          "playwright"
+        ]
       },
       "privacy_posture": "provider_private",
       "quality_envelope": {
-        "eligible_quality_floors": ["frontier_required", "frontier_review_required", "deterministic_ok"],
+        "eligible_quality_floors": [
+          "frontier_required",
+          "frontier_review_required",
+          "deterministic_ok"
+        ],
         "explicit_equivalence_records": [],
         "excluded_task_classes": [
           "runtime_mutation_without_isap",
@@ -165,19 +647,263 @@
           "public_release_without_gate"
         ]
       },
-      "context_limits": {"max_context_class": "very_large"},
-      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "context_limits": {
+        "max_context_class": "very_large"
+      },
+      "telemetry": {
+        "quota_source": "manual",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
       "freshness": {
         "capability_checked_at": null,
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "opus_model_entitlement_receipt_absent",
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:hapax-claude-headless:executable-and-enable-latch-present:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://code.claude.com/docs/en/cli-usage",
+              "official:https://docs.anthropic.com/en/docs/claude-code/mcp"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
-      "known_unknowns": ["Account-live subscription quota remains manually refreshed until telemetry adapter exists."]
+      "known_unknowns": [
+        "Account-live subscription quota remains manually refreshed until telemetry adapter exists."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.opus:dimensional-score:grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.opus:dimensional-score:governance_reasoning"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 4,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.opus:dimensional-score:source_editing"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.opus:dimensional-score:architecture"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.opus:dimensional-score:ambiguity_resolution"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.opus:dimensional-score:long_context"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 4,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.opus:dimensional-score:current_docs_grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 4,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.opus:dimensional-score:multimodal_verification"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 4,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.opus:dimensional-score:runtime_debugging"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 4,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.opus:dimensional-score:test_authoring"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 4,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.opus:dimensional-score:coordination_reliability"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.opus:dimensional-score:privacy_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.opus:dimensional-score:public_claim_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 4,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.opus:dimensional-score:local_calibration"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read",
+            "write"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.opus:tool_access.filesystem"
+        },
+        {
+          "tool_id": "local_shell",
+          "available": true,
+          "authority_use": [
+            "read",
+            "execute",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.opus:tool_access.shell"
+        },
+        {
+          "tool_id": "browser",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.opus:tool_access.browser"
+        },
+        {
+          "tool_id": "context7",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.opus:tool_access.mcp.context7"
+        },
+        {
+          "tool_id": "github",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.opus:tool_access.mcp.github"
+        },
+        {
+          "tool_id": "hapax-mcp",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.opus:tool_access.mcp.hapax-mcp"
+        },
+        {
+          "tool_id": "playwright",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.opus:tool_access.mcp.playwright"
+        }
+      ],
+      "sanctioned_wrapper": "~/.local/bin/hapax-claude-headless",
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "frontier_full",
+      "worker_tier": "full_worker"
     },
     {
       "registry_schema": 1,
@@ -189,7 +915,11 @@
       "summary": "Claude Sonnet headless stream-json lane",
       "notes": "Use only when Sonnet is quality-equivalent for the bounded task or Opus capacity is blocked.",
       "route_state": "blocked",
-      "blocked_reasons": ["fresh_capability_evidence_absent", "quality_equivalence_record_absent"],
+      "blocked_reasons": [
+        "quality_equivalence_record_absent",
+        "fresh_capability_evidence_absent",
+        "account_live_quota_receipt_absent"
+      ],
       "model_or_engine": "claude-sonnet",
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
@@ -205,11 +935,19 @@
         "filesystem": "read_write",
         "shell": "full",
         "browser": true,
-        "mcp": ["context7", "github", "hapax-mcp", "playwright"]
+        "mcp": [
+          "context7",
+          "github",
+          "hapax-mcp",
+          "playwright"
+        ]
       },
       "privacy_posture": "provider_private",
       "quality_envelope": {
-        "eligible_quality_floors": ["frontier_review_required", "deterministic_ok"],
+        "eligible_quality_floors": [
+          "frontier_review_required",
+          "deterministic_ok"
+        ],
         "explicit_equivalence_records": [],
         "excluded_task_classes": [
           "frontier_required_without_equivalence_record",
@@ -219,19 +957,263 @@
           "provider_spend"
         ]
       },
-      "context_limits": {"max_context_class": "large"},
-      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "context_limits": {
+        "max_context_class": "large"
+      },
+      "telemetry": {
+        "quota_source": "manual",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
       "freshness": {
         "capability_checked_at": null,
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quality_equivalence_record_absent",
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:hapax-claude-headless:executable-and-enable-latch-present:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://code.claude.com/docs/en/cli-usage",
+              "official:https://docs.anthropic.com/en/docs/claude-code/mcp"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
-      "known_unknowns": ["Quality-equivalence records are task-class-specific and absent from this seed row."]
+      "known_unknowns": [
+        "Quality-equivalence records are task-class-specific and absent from this seed row."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.sonnet:dimensional-score:grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.sonnet:dimensional-score:governance_reasoning"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.sonnet:dimensional-score:source_editing"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.sonnet:dimensional-score:architecture"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.sonnet:dimensional-score:ambiguity_resolution"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.sonnet:dimensional-score:long_context"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.sonnet:dimensional-score:current_docs_grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.sonnet:dimensional-score:multimodal_verification"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.sonnet:dimensional-score:runtime_debugging"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.sonnet:dimensional-score:test_authoring"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.sonnet:dimensional-score:coordination_reliability"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.sonnet:dimensional-score:privacy_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.sonnet:dimensional-score:public_claim_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:claude.headless.sonnet:dimensional-score:local_calibration"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read",
+            "write"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.sonnet:tool_access.filesystem"
+        },
+        {
+          "tool_id": "local_shell",
+          "available": true,
+          "authority_use": [
+            "read",
+            "execute",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.sonnet:tool_access.shell"
+        },
+        {
+          "tool_id": "browser",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.sonnet:tool_access.browser"
+        },
+        {
+          "tool_id": "context7",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.sonnet:tool_access.mcp.context7"
+        },
+        {
+          "tool_id": "github",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.sonnet:tool_access.mcp.github"
+        },
+        {
+          "tool_id": "hapax-mcp",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.sonnet:tool_access.mcp.hapax-mcp"
+        },
+        {
+          "tool_id": "playwright",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:claude.headless.sonnet:tool_access.mcp.playwright"
+        }
+      ],
+      "sanctioned_wrapper": "~/.local/bin/hapax-claude-headless",
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "frontier_fallback",
+      "worker_tier": "fallback_worker"
     },
     {
       "registry_schema": 1,
@@ -243,7 +1225,9 @@
       "summary": "Codex full-capability tmux lane with methodology bootstrap",
       "notes": "Default Codex SOP: GPT-5.5 xhigh from the Codex launcher.",
       "route_state": "blocked",
-      "blocked_reasons": ["fresh_capability_evidence_absent"],
+      "blocked_reasons": [
+        "account_live_quota_receipt_absent"
+      ],
       "model_or_engine": "gpt-5.5-xhigh",
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
@@ -259,11 +1243,20 @@
         "filesystem": "read_write",
         "shell": "full",
         "browser": true,
-        "mcp": ["context7", "github", "playwright", "tavily"]
+        "mcp": [
+          "context7",
+          "github",
+          "playwright",
+          "tavily"
+        ]
       },
       "privacy_posture": "provider_private",
       "quality_envelope": {
-        "eligible_quality_floors": ["frontier_required", "frontier_review_required", "deterministic_ok"],
+        "eligible_quality_floors": [
+          "frontier_required",
+          "frontier_review_required",
+          "deterministic_ok"
+        ],
         "explicit_equivalence_records": [],
         "excluded_task_classes": [
           "runtime_mutation_without_isap",
@@ -271,19 +1264,266 @@
           "public_release_without_gate"
         ]
       },
-      "context_limits": {"max_context_class": "very_large"},
-      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "context_limits": {
+        "max_context_class": "very_large"
+      },
+      "telemetry": {
+        "quota_source": "manual",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
       "freshness": {
-        "capability_checked_at": null,
+        "capability_checked_at": "2026-05-17T08:14:11Z",
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [
+              "local:codex --version:codex-cli 0.130.0:2026-05-17T08:06Z",
+              "local:codex mcp list:configured-servers-enabled:2026-05-17T08:06Z",
+              "local:scripts/hapax-codex:methodology-launcher-reviewed:2026-05-17T08:05Z"
+            ],
+            "blocked_reasons": []
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:current-codex-session:filesystem-shell-browser-usable:2026-05-17T08:14Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://developers.openai.com/codex/cli",
+              "official:https://developers.openai.com/codex/noninteractive",
+              "official:https://developers.openai.com/codex/mcp",
+              "official:https://github.com/openai/codex"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
-      "known_unknowns": ["OpenAI/Codex subscription quota is partly opaque; fallback selection needs a separate quota receipt."]
+      "known_unknowns": [
+        "OpenAI/Codex subscription quota is partly opaque; fallback selection needs a separate quota receipt."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 4,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.full:dimensional-score:grounding"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 4,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.full:dimensional-score:governance_reasoning"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 5,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.full:dimensional-score:source_editing"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 5,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.full:dimensional-score:architecture"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 4,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.full:dimensional-score:ambiguity_resolution"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 5,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.full:dimensional-score:long_context"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 4,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.full:dimensional-score:current_docs_grounding"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 4,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.full:dimensional-score:multimodal_verification"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 4,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.full:dimensional-score:runtime_debugging"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 5,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.full:dimensional-score:test_authoring"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 5,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.full:dimensional-score:coordination_reliability"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 5,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.full:dimensional-score:privacy_safety"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 4,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.full:dimensional-score:public_claim_safety"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 4,
+          "confidence": 4,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.full:dimensional-score:local_calibration"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read",
+            "write"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:codex.headless.full:tool_access.filesystem"
+        },
+        {
+          "tool_id": "local_shell",
+          "available": true,
+          "authority_use": [
+            "read",
+            "execute",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:codex.headless.full:tool_access.shell"
+        },
+        {
+          "tool_id": "browser",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:codex.headless.full:tool_access.browser"
+        },
+        {
+          "tool_id": "context7",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:codex.headless.full:tool_access.mcp.context7"
+        },
+        {
+          "tool_id": "github",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:codex.headless.full:tool_access.mcp.github"
+        },
+        {
+          "tool_id": "playwright",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:codex.headless.full:tool_access.mcp.playwright"
+        },
+        {
+          "tool_id": "tavily",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:codex.headless.full:tool_access.mcp.tavily"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-codex",
+      "approval_posture": "no_ask_hooks_enforced",
+      "capability_tier": "frontier_full",
+      "worker_tier": "full_worker"
     },
     {
       "registry_schema": 1,
@@ -295,7 +1535,11 @@
       "summary": "Codex Spark quota-wall tmux lane with methodology bootstrap",
       "notes": "Use only when full Codex quota is blocked and Spark is quality-equivalent for the bounded task.",
       "route_state": "blocked",
-      "blocked_reasons": ["fresh_capability_evidence_absent", "quality_equivalence_record_absent"],
+      "blocked_reasons": [
+        "quality_equivalence_record_absent",
+        "fresh_capability_evidence_absent",
+        "account_live_quota_receipt_absent"
+      ],
       "model_or_engine": "gpt-5.3-codex-spark",
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
@@ -311,11 +1555,19 @@
         "filesystem": "read_write",
         "shell": "full",
         "browser": true,
-        "mcp": ["context7", "github", "playwright", "tavily"]
+        "mcp": [
+          "context7",
+          "github",
+          "playwright",
+          "tavily"
+        ]
       },
       "privacy_posture": "provider_private",
       "quality_envelope": {
-        "eligible_quality_floors": ["frontier_review_required", "deterministic_ok"],
+        "eligible_quality_floors": [
+          "frontier_review_required",
+          "deterministic_ok"
+        ],
         "explicit_equivalence_records": [],
         "excluded_task_classes": [
           "frontier_required_without_equivalence_record",
@@ -325,22 +1577,266 @@
           "provider_spend"
         ]
       },
-      "context_limits": {"max_context_class": "medium"},
-      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "context_limits": {
+        "max_context_class": "medium"
+      },
+      "telemetry": {
+        "quota_source": "manual",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
       "freshness": {
         "capability_checked_at": null,
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quality_equivalence_record_absent",
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:codex-cli-present-but-spark-profile-not-route-verified:2026-05-17T08:06Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://developers.openai.com/codex/cli",
+              "official:https://developers.openai.com/codex/noninteractive",
+              "official:https://developers.openai.com/codex/mcp",
+              "official:https://github.com/openai/codex"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
       "known_unknowns": [
         "Quality-equivalence records are task-class-specific and absent from this seed row.",
         "Fallback use cannot be justified by unknown quota state."
-      ]
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.spark:dimensional-score:grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.spark:dimensional-score:governance_reasoning"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.spark:dimensional-score:source_editing"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.spark:dimensional-score:architecture"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.spark:dimensional-score:ambiguity_resolution"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.spark:dimensional-score:long_context"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.spark:dimensional-score:current_docs_grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.spark:dimensional-score:multimodal_verification"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.spark:dimensional-score:runtime_debugging"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.spark:dimensional-score:test_authoring"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.spark:dimensional-score:coordination_reliability"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.spark:dimensional-score:privacy_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.spark:dimensional-score:public_claim_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:codex.headless.spark:dimensional-score:local_calibration"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read",
+            "write"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:codex.headless.spark:tool_access.filesystem"
+        },
+        {
+          "tool_id": "local_shell",
+          "available": true,
+          "authority_use": [
+            "read",
+            "execute",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:codex.headless.spark:tool_access.shell"
+        },
+        {
+          "tool_id": "browser",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:codex.headless.spark:tool_access.browser"
+        },
+        {
+          "tool_id": "context7",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:codex.headless.spark:tool_access.mcp.context7"
+        },
+        {
+          "tool_id": "github",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:codex.headless.spark:tool_access.mcp.github"
+        },
+        {
+          "tool_id": "playwright",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:codex.headless.spark:tool_access.mcp.playwright"
+        },
+        {
+          "tool_id": "tavily",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:codex.headless.spark:tool_access.mcp.tavily"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-codex",
+      "approval_posture": "no_ask_hooks_enforced",
+      "capability_tier": "frontier_fallback",
+      "worker_tier": "fallback_worker"
     },
     {
       "registry_schema": 1,
@@ -352,7 +1848,11 @@
       "summary": "Gemini Flash read-only quota/fallback headless sidecar",
       "notes": "Spark analogue for quality-equivalent read-only research/review/extraction; mutation tasks must route elsewhere.",
       "route_state": "blocked",
-      "blocked_reasons": ["fresh_capability_evidence_absent", "read_only_support_route"],
+      "blocked_reasons": [
+        "read_only_support_route",
+        "frontier_equivalence_record_absent",
+        "account_live_quota_receipt_absent"
+      ],
       "model_or_engine": "gemini-3-flash-preview",
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
@@ -372,7 +1872,9 @@
       },
       "privacy_posture": "provider_private",
       "quality_envelope": {
-        "eligible_quality_floors": ["deterministic_ok"],
+        "eligible_quality_floors": [
+          "deterministic_ok"
+        ],
         "explicit_equivalence_records": [],
         "excluded_task_classes": [
           "mutation_task",
@@ -382,19 +1884,226 @@
           "provider_spend"
         ]
       },
-      "context_limits": {"max_context_class": "medium"},
-      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "context_limits": {
+        "max_context_class": "medium"
+      },
+      "telemetry": {
+        "quota_source": "manual",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
       "freshness": {
-        "capability_checked_at": null,
+        "capability_checked_at": "2026-05-17T08:14:11Z",
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [
+              "local:gemini --version:0.42.0:2026-05-17T08:07Z",
+              "local:scripts/hapax-gemini:plan-mode-read-only-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": [
+              "read_only_support_route",
+              "frontier_equivalence_record_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:scripts/hapax-gemini:read-only-plan-mode-wrapper-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/tools.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/quota-and-pricing.md"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
-      "known_unknowns": ["Gemini CLI subscription ceilings are labels only, not account-live telemetry."]
+      "known_unknowns": [
+        "Gemini CLI subscription ceilings are labels only, not account-live telemetry.",
+        "Gemini worker authority depends on explicit HAPAX_GEMINI_APPROVAL_MODE and the local policy firewall; plan-mode routes remain read-only."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.flash:dimensional-score:grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.flash:dimensional-score:governance_reasoning"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 1,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.flash:dimensional-score:source_editing"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.flash:dimensional-score:architecture"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.flash:dimensional-score:ambiguity_resolution"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.flash:dimensional-score:long_context"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.flash:dimensional-score:current_docs_grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.flash:dimensional-score:multimodal_verification"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.flash:dimensional-score:runtime_debugging"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.flash:dimensional-score:test_authoring"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.flash:dimensional-score:coordination_reliability"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.flash:dimensional-score:privacy_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.flash:dimensional-score:public_claim_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.flash:dimensional-score:local_calibration"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:gemini.headless.flash:tool_access.filesystem"
+        },
+        {
+          "tool_id": "local_shell",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:gemini.headless.flash:tool_access.shell"
+        },
+        {
+          "tool_id": "browser",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:gemini.headless.flash:tool_access.browser"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-gemini",
+      "approval_posture": "plan_mode_read_only",
+      "capability_tier": "read_only_support",
+      "worker_tier": "read_only_sidecar"
     },
     {
       "registry_schema": 1,
@@ -406,7 +2115,11 @@
       "summary": "Gemini Pro plan-mode read-only headless sidecar",
       "notes": "Read-only/plan-mode only; mutation tasks must route elsewhere.",
       "route_state": "blocked",
-      "blocked_reasons": ["fresh_capability_evidence_absent", "read_only_support_route"],
+      "blocked_reasons": [
+        "read_only_support_route",
+        "frontier_equivalence_record_absent",
+        "account_live_quota_receipt_absent"
+      ],
       "model_or_engine": "gemini-pro-cli-default",
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
@@ -426,7 +2139,9 @@
       },
       "privacy_posture": "provider_private",
       "quality_envelope": {
-        "eligible_quality_floors": ["deterministic_ok"],
+        "eligible_quality_floors": [
+          "deterministic_ok"
+        ],
         "explicit_equivalence_records": [],
         "excluded_task_classes": [
           "mutation_task",
@@ -436,19 +2151,226 @@
           "provider_spend"
         ]
       },
-      "context_limits": {"max_context_class": "large"},
-      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "context_limits": {
+        "max_context_class": "large"
+      },
+      "telemetry": {
+        "quota_source": "manual",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
       "freshness": {
-        "capability_checked_at": null,
+        "capability_checked_at": "2026-05-17T08:14:11Z",
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [
+              "local:gemini --version:0.42.0:2026-05-17T08:07Z",
+              "local:scripts/hapax-gemini:plan-mode-read-only-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": [
+              "read_only_support_route",
+              "frontier_equivalence_record_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:scripts/hapax-gemini:read-only-plan-mode-wrapper-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/tools.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/quota-and-pricing.md"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
-      "known_unknowns": ["Gemini CLI subscription ceilings are labels only, not account-live telemetry."]
+      "known_unknowns": [
+        "Gemini CLI subscription ceilings are labels only, not account-live telemetry.",
+        "Gemini worker authority depends on explicit HAPAX_GEMINI_APPROVAL_MODE and the local policy firewall; plan-mode routes remain read-only."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 4,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.full:dimensional-score:grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.full:dimensional-score:governance_reasoning"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 1,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.full:dimensional-score:source_editing"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.full:dimensional-score:architecture"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.full:dimensional-score:ambiguity_resolution"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.full:dimensional-score:long_context"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.full:dimensional-score:current_docs_grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.full:dimensional-score:multimodal_verification"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.full:dimensional-score:runtime_debugging"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 2,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.full:dimensional-score:test_authoring"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.full:dimensional-score:coordination_reliability"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 4,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.full:dimensional-score:privacy_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.full:dimensional-score:public_claim_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.full:dimensional-score:local_calibration"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:gemini.headless.full:tool_access.filesystem"
+        },
+        {
+          "tool_id": "local_shell",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:gemini.headless.full:tool_access.shell"
+        },
+        {
+          "tool_id": "browser",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:gemini.headless.full:tool_access.browser"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-gemini",
+      "approval_posture": "plan_mode_read_only",
+      "capability_tier": "read_only_support",
+      "worker_tier": "read_only_sidecar"
     },
     {
       "registry_schema": 1,
@@ -460,7 +2382,11 @@
       "summary": "Gemini Flash-Lite read-only lowest-cost headless sidecar",
       "notes": "Use only for quality-equivalent low-risk extraction/currentness packets; mutation tasks must route elsewhere.",
       "route_state": "blocked",
-      "blocked_reasons": ["fresh_capability_evidence_absent", "read_only_support_route"],
+      "blocked_reasons": [
+        "read_only_support_route",
+        "frontier_equivalence_record_absent",
+        "account_live_quota_receipt_absent"
+      ],
       "model_or_engine": "gemini-3.1-flash-lite-preview",
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
@@ -480,7 +2406,9 @@
       },
       "privacy_posture": "provider_private",
       "quality_envelope": {
-        "eligible_quality_floors": ["deterministic_ok"],
+        "eligible_quality_floors": [
+          "deterministic_ok"
+        ],
         "explicit_equivalence_records": [],
         "excluded_task_classes": [
           "mutation_task",
@@ -490,19 +2418,500 @@
           "provider_spend"
         ]
       },
-      "context_limits": {"max_context_class": "small"},
-      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "context_limits": {
+        "max_context_class": "small"
+      },
+      "telemetry": {
+        "quota_source": "manual",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": "2026-05-17T08:14:11Z",
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [
+              "local:gemini --version:0.42.0:2026-05-17T08:07Z",
+              "local:scripts/hapax-gemini:plan-mode-read-only-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": [
+              "read_only_support_route",
+              "frontier_equivalence_record_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:scripts/hapax-gemini:read-only-plan-mode-wrapper-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/tools.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/quota-and-pricing.md"
+            ],
+            "blocked_reasons": []
+          }
+        }
+      },
+      "known_unknowns": [
+        "Gemini CLI subscription ceilings are labels only, not account-live telemetry.",
+        "Gemini worker authority depends on explicit HAPAX_GEMINI_APPROVAL_MODE and the local policy firewall; plan-mode routes remain read-only."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.lite:dimensional-score:grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.lite:dimensional-score:governance_reasoning"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 1,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.lite:dimensional-score:source_editing"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.lite:dimensional-score:architecture"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.lite:dimensional-score:ambiguity_resolution"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.lite:dimensional-score:long_context"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.lite:dimensional-score:current_docs_grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.lite:dimensional-score:multimodal_verification"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.lite:dimensional-score:runtime_debugging"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.lite:dimensional-score:test_authoring"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.lite:dimensional-score:coordination_reliability"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.lite:dimensional-score:privacy_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.lite:dimensional-score:public_claim_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.lite:dimensional-score:local_calibration"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:gemini.headless.lite:tool_access.filesystem"
+        },
+        {
+          "tool_id": "local_shell",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:gemini.headless.lite:tool_access.shell"
+        },
+        {
+          "tool_id": "browser",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:gemini.headless.lite:tool_access.browser"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-gemini",
+      "approval_posture": "plan_mode_read_only",
+      "capability_tier": "read_only_support",
+      "worker_tier": "read_only_sidecar"
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "gemini.headless.worker",
+      "platform": "gemini",
+      "mode": "headless",
+      "profile": "worker",
+      "launcher": "HAPAX_GEMINI_APPROVAL_MODE=auto_edit scripts/hapax-gemini --role <lane> --terminal tmux -- -p <governed-prompt>",
+      "summary": "Gemini governed auto-edit worker lane",
+      "notes": "Full-worker wrapper profile; route only when task fit, policy firewall, and review gates allow it.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "quality_equivalence_record_absent",
+        "fresh_capability_evidence_absent",
+        "account_live_quota_receipt_absent"
+      ],
+      "model_or_engine": "gemini-cli-default-auto-edit",
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": true,
+        "source": true,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "frontier_review_required",
+      "tool_access": {
+        "filesystem": "read_write",
+        "shell": "full",
+        "browser": true,
+        "mcp": [
+          "hapax",
+          "github",
+          "playwright",
+          "tavily"
+        ]
+      },
+      "privacy_posture": "provider_private",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "frontier_review_required",
+          "deterministic_ok"
+        ],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "frontier_required_without_equivalence_record",
+          "governance_authority_case",
+          "privacy_secret_sensitive",
+          "runtime_mutation",
+          "provider_spend",
+          "public_release"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "very_large"
+      },
+      "telemetry": {
+        "quota_source": "manual",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
       "freshness": {
         "capability_checked_at": null,
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quality_equivalence_record_absent",
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:scripts/hapax-gemini:read-only-plan-mode-wrapper-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/tools.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/quota-and-pricing.md"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
-      "known_unknowns": ["Gemini CLI subscription ceilings are labels only, not account-live telemetry."]
+      "known_unknowns": [
+        "Gemini full-worker route is separate from plan-mode read-only Gemini routes.",
+        "Worker authority depends on HAPAX_GEMINI_APPROVAL_MODE=auto_edit and the local policy firewall.",
+        "No local quality-equivalence record yet permits Gemini worker for frontier-required authority."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 4,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.worker:dimensional-score:grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.worker:dimensional-score:governance_reasoning"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 1,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.worker:dimensional-score:source_editing"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.worker:dimensional-score:architecture"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.worker:dimensional-score:ambiguity_resolution"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.worker:dimensional-score:long_context"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.worker:dimensional-score:current_docs_grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.worker:dimensional-score:multimodal_verification"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.worker:dimensional-score:runtime_debugging"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 2,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.worker:dimensional-score:test_authoring"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.worker:dimensional-score:coordination_reliability"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 4,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.worker:dimensional-score:privacy_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.worker:dimensional-score:public_claim_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 3,
+          "confidence": 3,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.headless.worker:dimensional-score:local_calibration"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read",
+            "write"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:gemini.headless.worker:tool_access.filesystem"
+        },
+        {
+          "tool_id": "local_shell",
+          "available": true,
+          "authority_use": [
+            "read",
+            "execute",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:gemini.headless.worker:tool_access.shell"
+        },
+        {
+          "tool_id": "browser",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:gemini.headless.worker:tool_access.browser"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-gemini",
+      "approval_posture": "auto_edit_policy_firewalled",
+      "capability_tier": "frontier_fallback",
+      "worker_tier": "full_worker"
     },
     {
       "registry_schema": 1,
@@ -514,7 +2923,11 @@
       "summary": "Gemini plan-mode interactive lane",
       "notes": "Read-only/plan-mode only; mutation tasks must route elsewhere.",
       "route_state": "blocked",
-      "blocked_reasons": ["fresh_capability_evidence_absent", "read_only_support_route"],
+      "blocked_reasons": [
+        "read_only_support_route",
+        "frontier_equivalence_record_absent",
+        "account_live_quota_receipt_absent"
+      ],
       "model_or_engine": "gemini-cli-default",
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
@@ -534,7 +2947,9 @@
       },
       "privacy_posture": "provider_private",
       "quality_envelope": {
-        "eligible_quality_floors": ["deterministic_ok"],
+        "eligible_quality_floors": [
+          "deterministic_ok"
+        ],
         "explicit_equivalence_records": [],
         "excluded_task_classes": [
           "mutation_task",
@@ -544,19 +2959,226 @@
           "provider_spend"
         ]
       },
-      "context_limits": {"max_context_class": "large"},
-      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "context_limits": {
+        "max_context_class": "large"
+      },
+      "telemetry": {
+        "quota_source": "manual",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
       "freshness": {
-        "capability_checked_at": null,
+        "capability_checked_at": "2026-05-17T08:14:11Z",
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [
+              "local:gemini --version:0.42.0:2026-05-17T08:07Z",
+              "local:scripts/hapax-gemini:plan-mode-read-only-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": [
+              "read_only_support_route",
+              "frontier_equivalence_record_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:scripts/hapax-gemini:read-only-plan-mode-wrapper-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/tools.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/quota-and-pricing.md"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
-      "known_unknowns": ["Gemini CLI subscription ceilings are labels only, not account-live telemetry."]
+      "known_unknowns": [
+        "Gemini CLI subscription ceilings are labels only, not account-live telemetry.",
+        "Gemini worker authority depends on explicit HAPAX_GEMINI_APPROVAL_MODE and the local policy firewall; plan-mode routes remain read-only."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.interactive.full:dimensional-score:grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.interactive.full:dimensional-score:governance_reasoning"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 1,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.interactive.full:dimensional-score:source_editing"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.interactive.full:dimensional-score:architecture"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.interactive.full:dimensional-score:ambiguity_resolution"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 5,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.interactive.full:dimensional-score:long_context"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 5,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.interactive.full:dimensional-score:current_docs_grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.interactive.full:dimensional-score:multimodal_verification"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.interactive.full:dimensional-score:runtime_debugging"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.interactive.full:dimensional-score:test_authoring"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.interactive.full:dimensional-score:coordination_reliability"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.interactive.full:dimensional-score:privacy_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.interactive.full:dimensional-score:public_claim_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:gemini.interactive.full:dimensional-score:local_calibration"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:gemini.interactive.full:tool_access.filesystem"
+        },
+        {
+          "tool_id": "local_shell",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:gemini.interactive.full:tool_access.shell"
+        },
+        {
+          "tool_id": "browser",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:gemini.interactive.full:tool_access.browser"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-gemini",
+      "approval_posture": "plan_mode_read_only",
+      "capability_tier": "read_only_support",
+      "worker_tier": "read_only_sidecar"
     },
     {
       "registry_schema": 1,
@@ -566,9 +3188,13 @@
       "profile": "full",
       "launcher": "~/.local/bin/hapax-vibe --session <lane> --terminal tmux --task <task> --prompt <governed-prompt>",
       "summary": "Mistral Vibe headless tmux one-shot lane",
-      "notes": "JR+ bounded worker path; task fit must exclude governance-critical or off-limits work.",
+      "notes": "JR+ bounded worker path; programmatic prompt mode auto-approves tools and must stay task-scoped, PR-only, and off sensitive surfaces.",
       "route_state": "blocked",
-      "blocked_reasons": ["fresh_capability_evidence_absent", "quality_equivalence_record_absent"],
+      "blocked_reasons": [
+        "quality_equivalence_record_absent",
+        "fresh_capability_evidence_absent",
+        "account_live_quota_receipt_absent"
+      ],
       "model_or_engine": "mistral-vibe",
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
@@ -588,7 +3214,10 @@
       },
       "privacy_posture": "provider_private",
       "quality_envelope": {
-        "eligible_quality_floors": ["frontier_review_required", "deterministic_ok"],
+        "eligible_quality_floors": [
+          "frontier_review_required",
+          "deterministic_ok"
+        ],
         "explicit_equivalence_records": [],
         "excluded_task_classes": [
           "frontier_required_without_equivalence_record",
@@ -598,19 +3227,223 @@
           "provider_spend"
         ]
       },
-      "context_limits": {"max_context_class": "medium"},
-      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "context_limits": {
+        "max_context_class": "medium"
+      },
+      "telemetry": {
+        "quota_source": "manual",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
       "freshness": {
         "capability_checked_at": null,
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T18:38:56Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quality_equivalence_record_absent",
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:~/.local/bin/hapax-vibe --help:available:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://docs.mistral.ai/mistral-vibe/terminal/configuration"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
-      "known_unknowns": ["JR+ bounded worker path; governance-critical task fit must be excluded by policy layer."]
+      "known_unknowns": [
+        "JR+ bounded worker path; governance-critical task fit must be excluded by policy layer.",
+        "Programmatic Vibe prompt mode auto-approves tools; route only through task-scoped worktrees and narrow enabled-tool policy."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:vibe.headless.full:dimensional-score:grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:vibe.headless.full:dimensional-score:governance_reasoning"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:vibe.headless.full:dimensional-score:source_editing"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:vibe.headless.full:dimensional-score:architecture"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:vibe.headless.full:dimensional-score:ambiguity_resolution"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:vibe.headless.full:dimensional-score:long_context"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:vibe.headless.full:dimensional-score:current_docs_grounding"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:vibe.headless.full:dimensional-score:multimodal_verification"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:vibe.headless.full:dimensional-score:runtime_debugging"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:vibe.headless.full:dimensional-score:test_authoring"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:vibe.headless.full:dimensional-score:coordination_reliability"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:vibe.headless.full:dimensional-score:privacy_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:vibe.headless.full:dimensional-score:public_claim_safety"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 2,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:vibe.headless.full:dimensional-score:local_calibration"
+          ],
+          "observed_at": "2026-05-09T20:50:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read",
+            "write"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:vibe.headless.full:tool_access.filesystem"
+        },
+        {
+          "tool_id": "local_shell",
+          "available": true,
+          "authority_use": [
+            "read",
+            "execute",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:vibe.headless.full:tool_access.shell"
+        },
+        {
+          "tool_id": "browser",
+          "available": true,
+          "authority_use": [
+            "read",
+            "verify"
+          ],
+          "observed_at": "2026-05-17T08:14:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:vibe.headless.full:tool_access.browser"
+        }
+      ],
+      "sanctioned_wrapper": "~/.local/bin/hapax-vibe",
+      "approval_posture": "programmatic_auto_approve_task_scoped",
+      "capability_tier": "jr_plus",
+      "worker_tier": "bounded_worker"
     }
   ]
 }

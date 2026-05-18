@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# hapax-systemd-topology — inventory + classify all hapax-* systemd user units.
+#
+# Outputs a structured summary: total count, classification buckets
+# (governance-critical / operational / infrastructure), and expert-system
+# risk flags where unit count tracks rulebase count.
+set -euo pipefail
+
+GOVERNANCE_CRITICAL=(
+    hapax-secrets
+    hapax-dmn
+    logos-api
+    officium-api
+    hapax-daimonion
+)
+
+INFRASTRUCTURE=(
+    hapax-rebuild-services.timer
+    hapax-backup.timer
+    hapax-storage-arbiter.timer
+    hapax-vram-watchdog.timer
+    hapax-relay-to-cc-tasks.timer
+    hapax-health-monitor.timer
+    hapax-working-mode.service
+    hapax-nightly-maintenance.timer
+)
+
+echo "=== Hapax Systemd Topology Inventory ==="
+echo ""
+
+# Count all hapax-* unit files
+total=$(systemctl --user list-unit-files "hapax-*" --no-pager --no-legend 2>/dev/null | wc -l)
+services=$(systemctl --user list-unit-files "hapax-*.service" --no-pager --no-legend 2>/dev/null | wc -l)
+timers=$(systemctl --user list-unit-files "hapax-*.timer" --no-pager --no-legend 2>/dev/null | wc -l)
+active=$(systemctl --user list-units "hapax-*" --state=active --no-pager --no-legend 2>/dev/null | wc -l)
+failed=$(systemctl --user list-units "hapax-*" --state=failed --no-pager --no-legend 2>/dev/null | wc -l)
+
+echo "Cardinality:"
+echo "  Total unit files: $total"
+echo "  Services: $services"
+echo "  Timers: $timers"
+echo "  Active: $active"
+echo "  Failed: $failed"
+echo ""
+
+# Classify
+echo "Classification:"
+echo ""
+echo "  GOVERNANCE-CRITICAL (failure blocks operator workflow):"
+for unit in "${GOVERNANCE_CRITICAL[@]}"; do
+    state=$(systemctl --user is-active "$unit.service" 2>/dev/null) || state="not-found"
+    printf "    %-40s %s\n" "$unit" "$state"
+done
+
+echo ""
+echo "  INFRASTRUCTURE (maintenance, monitoring, background tasks):"
+for unit in "${INFRASTRUCTURE[@]}"; do
+    state=$(systemctl --user is-active "$unit" 2>/dev/null) || state="not-found"
+    printf "    %-40s %s\n" "$unit" "$state"
+done
+
+echo ""
+echo "  OPERATIONAL (all other hapax-* units):"
+operational=0
+while IFS= read -r line; do
+    unit_name=$(echo "$line" | awk '{print $1}' | sed 's/\.service$//' | sed 's/\.timer$//')
+    is_gov=false
+    is_infra=false
+    for g in "${GOVERNANCE_CRITICAL[@]}"; do
+        [[ "$unit_name" == "$g" ]] && is_gov=true
+    done
+    for i in "${INFRASTRUCTURE[@]}"; do
+        [[ "$unit_name" == "$i" ]] && is_infra=true
+    done
+    if ! $is_gov && ! $is_infra; then
+        operational=$((operational + 1))
+    fi
+done < <(systemctl --user list-unit-files "hapax-*.service" --no-pager --no-legend 2>/dev/null)
+echo "    Count: $operational services (excluding governance-critical + infrastructure)"
+
+echo ""
+echo "Expert-System Risk Flags:"
+echo "  Timer-to-service ratio: $timers timers / $services services"
+if [ "$timers" -gt "$services" ]; then
+    echo "  WARNING: More timers than services — rulebase may be expanding faster than operational surface"
+fi
+if [ "$total" -gt 200 ]; then
+    echo "  WARNING: >200 unit files — operational sprawl risk"
+fi
+echo ""
+echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"

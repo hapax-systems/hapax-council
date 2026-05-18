@@ -180,6 +180,27 @@ def _assemble_drive_context(daemon: Any, now: float) -> DriveContext:
     )
 
 
+_DRIVE_CONTEXT_SHM = Path("/dev/shm/hapax-daimonion/drive-context.json")
+
+
+def _write_drive_context_shm(context: DriveContext) -> None:
+    """Write drive context to SHM for the composer to read."""
+    try:
+        payload = {
+            "chronicle_event_count": context.chronicle_event_count,
+            "stimmung_stance": context.stimmung_stance,
+            "operator_presence_score": context.operator_presence_score,
+            "programme_role": context.programme_role,
+            "updated_at": context.now,
+        }
+        _DRIVE_CONTEXT_SHM.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _DRIVE_CONTEXT_SHM.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        tmp.replace(_DRIVE_CONTEXT_SHM)
+    except OSError:
+        pass
+
+
 def _emit_drive_impingement(
     drive: EndogenousDrive,
     context: DriveContext,
@@ -230,6 +251,7 @@ def _emit_drive_impingement(
             context.chronicle_event_count,
             context.programme_role or "none",
         )
+        _write_drive_context_shm(context)
         return True
     except OSError:
         log.warning("Failed to write narrative drive impingement", exc_info=True)

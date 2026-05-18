@@ -192,6 +192,7 @@ from pathlib import Path
 from shared.capacity_routing_dashboard import (
     build_capacity_routing_dashboard,
     parse_optional_utc,
+    route_decision_items_from_jsonl,
 )
 from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
 from shared.route_metadata_schema import assess_route_metadata
@@ -213,6 +214,15 @@ capacity_ledger_path = (
     if capacity_ledger_env
     else Path(os.environ["REPO_ROOT"]) / "config" / "quota-spend-ledger-fixtures.json"
 )
+capacity_route_decision_env = os.environ.get("HAPAX_ROUTE_DECISION_LEDGER")
+if capacity_route_decision_env:
+    capacity_route_decision_path = Path(capacity_route_decision_env)
+elif os.environ.get("HAPAX_CAPACITY_ROUTING_NOW"):
+    capacity_route_decision_path = None
+else:
+    capacity_route_decision_path = (
+        Path.home() / ".cache" / "hapax" / "orchestration" / "route-decisions.jsonl"
+    )
 
 thresholds = {
     "stale_captured": int(os.environ["STALE_CAPTURED_HOURS"]),
@@ -511,6 +521,11 @@ planning_queue.sort(key=lambda item: (int(item["urgency_rank"]), -int(item["age_
 capacity_routing_dashboard = build_capacity_routing_dashboard(
     route_metadata_summary=route_metadata_summary,
     route_metadata_items=route_metadata_items,
+    route_decision_items=(
+        route_decision_items_from_jsonl(capacity_route_decision_path, now=capacity_now)
+        if capacity_route_decision_path is not None
+        else ()
+    ),
     route_metadata_generated_at=capacity_now,
     registry_path=capacity_registry_path,
     quota_spend_ledger_path=capacity_ledger_path,

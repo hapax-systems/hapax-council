@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# cc-task-frontier-triage — run the LiteLLM-backed cc-task triage officer.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+AGENTGOV_SRC="$REPO_ROOT/packages/agentgov/src"
+
+cd "$REPO_ROOT"
+PYTHONPATH="$REPO_ROOT:$AGENTGOV_SRC:${PYTHONPATH:-}" \
+  uv run python -m agents.triage_officer --once "$@"

@@ -6,6 +6,7 @@ import io
 import json
 import zipfile
 from datetime import UTC, datetime
+from urllib.parse import urlparse
 
 from shared.takeout.models import ServiceConfig
 from shared.takeout.parsers import (
@@ -183,7 +184,10 @@ class TestChromeParser:
         assert records[0].service == "chrome"
         assert records[0].content_type == "browser_history"
         urls = {r.structured_fields["url"] for r in records}
-        assert "https://github.com" in urls
+        assert any(
+            (urlparse(url).scheme, urlparse(url).hostname) == ("https", "github.com")
+            for url in urls
+        )
 
     def test_dedup_by_url(self):
         """Multiple visits to same URL should produce one record with visit count."""
@@ -357,7 +361,10 @@ class TestKeepParser:
         zf = make_zip({"Takeout/Keep/links.json": note})
         records = list(keep.parse(zf, self.CONFIG))
         assert len(records) == 1
-        assert "example.com" in records[0].text
+        assert records[0].text.splitlines() == [
+            "Some useful links",
+            "Link: Example (https://example.com)",
+        ]
 
 
 # ── Calendar parser ───────────────────────────────────────────────────────────

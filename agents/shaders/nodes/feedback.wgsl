@@ -144,8 +144,13 @@ fn main_1() {
         // longer than the decay half-life.
         r = mix(acc.xyz, cur.xyz, vec3(effective_decay * 3.0));
     }
-    let _e210 = r;
-    let _e215 = clamp(_e210, vec3(0f), vec3(1f));
+    // Feedback is a property of the live entities, not a glass pane over the
+    // broadcast. Even if an upstream controller requests an additive/screen
+    // mode, bound the accumulator's authority so it cannot flood the whole
+    // output plane or create hard luma drops when feedback returns to zero.
+    let feedback_weight = clamp((global.u_decay * 3.0f) + (global.u_trace_strength * 0.12f), 0.0f, 0.16f);
+    let source_bound_feedback = mix(current.xyz, r, vec3<f32>(feedback_weight));
+    let _e215 = clamp(source_bound_feedback, vec3(0f), vec3(1f));
     fragColor = vec4<f32>(_e215.x, _e215.y, _e215.z, current.a);
     return;
 }

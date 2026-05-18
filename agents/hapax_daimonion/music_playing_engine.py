@@ -217,8 +217,22 @@ class MusicPlayingEngine:
 
     def tick(self) -> None:
         """Capture audio + classify + update the underlying ClaimEngine."""
+        prev_state = self._engine.state
+        prev_posterior = self._engine.posterior
         observation = self._read_yamnet_music_present()
         self._engine.tick({"yamnet_music_present": observation})
+        if self._engine.state != prev_state:
+            from shared.bayesian_impingement_emitter import emit_state_transition_impingement
+
+            emit_state_transition_impingement(
+                source="audio.music_playing",
+                claim_name="music-playing",
+                from_state=prev_state,
+                to_state=self._engine.state,
+                posterior=self._engine.posterior,
+                prev_posterior=prev_posterior,
+                active_signals={"yamnet_music_present": observation},
+            )
 
     @property
     def posterior(self) -> float:

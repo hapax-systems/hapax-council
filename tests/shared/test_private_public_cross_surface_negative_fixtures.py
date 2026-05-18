@@ -409,6 +409,7 @@ def test_bridge_positive_fixture_is_transformed_and_metadata_backed() -> None:
     request = BridgeRequest(
         narrative_text=TRANSFORMED_PUBLIC_TEXT,
         programme_id="prog:test",
+        programme_role="work_block",
         speech_event_id="speech:fixture",
         impulse_id="impulse:fixture",
         triad_ids=("triad:fixture",),
@@ -425,7 +426,9 @@ def test_bridge_positive_fixture_is_transformed_and_metadata_backed() -> None:
     assert content["bridge_outcome"] == "public_action_proposal"
     assert content["public_broadcast_intent"] is True
     assert content["route_posture"] == "broadcast_authorized"
+    assert content["programme_role"] == "work_block"
     assert content["programme_authorization"]["authorized"] is True
+    assert content["programme_authorization"]["programme_role"] == "work_block"
     assert content["programme_authorization_ref"] == "programme:prog:test"
     assert content["evidence_refs"]
     _assert_no_sentinel(content)

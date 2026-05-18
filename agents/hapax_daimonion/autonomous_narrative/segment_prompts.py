@@ -189,25 +189,24 @@ _ROLE_TEMPLATES: dict[str, dict[str, str]] = {
         "opening": (
             "Hapax segment voice opening an INTERVIEW segment on the research "
             "livestream. OPENING:\n"
-            "- Introduce the SUBJECT — who they are and why they matter\n"
-            "- Context: what brings this interview about\n"
-            "- Tease the key questions you'll explore\n"
-            "- 'Let's get into it'\n"
+            "- State the information gap this interview addresses\n"
+            "- Name the subject and the dimension of the profile being explored\n"
+            "- Surface the specific questions the system cannot answer without "
+            "the operator's input\n"
         ),
         "body": (
             "Hapax segment voice in the BODY of an INTERVIEW segment. Delivery duties:\n"
-            "- Present the current question with context\n"
-            "- Frame WHY this question matters\n"
-            "- Reference prep material — what you already know about "
-            "the subject's position\n"
-            "- Connect answers back to the resolved research\n"
+            "- Present the current question grounded in evidence from the profile\n"
+            "- State why this information gap matters operationally\n"
+            "- Reference what the system already knows and what remains unknown\n"
+            "- After each answer, report what changed in the knowledge model\n"
         ),
         "closing": (
             "Hapax segment voice closing an INTERVIEW segment. Delivery duties:\n"
-            "- Synthesize the key takeaways from the interview\n"
-            "- Highlight the most revealing answer or moment\n"
-            "- Thank the subject (if live), or reflect on what was learned\n"
-            "- Bridge to next segment\n"
+            "- Report the delta: what facts were recorded, what gaps remain\n"
+            "- Identify the most significant new information and its implications\n"
+            "- Name any contradictions that were resolved or remain open\n"
+            "- State what the system will do differently with this information\n"
         ),
     },
     "lecture": {

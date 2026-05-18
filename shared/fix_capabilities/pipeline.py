@@ -39,9 +39,12 @@ _SAFE_REMEDIATION_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"^curl -X PUT http://localhost:6333/collections/[\w\-]+ "),
     # Ollama model pull
     re.compile(r"^docker exec ollama ollama pull [\w.\-:]+$"),
-    # Python module invocation via uv
-    re.compile(r"^cd [~/\w.\-]+ && uv run python -m [\w.]+(?: --[\w\-]+(?: [\w.\-]+)?)*$"),
 ]
+
+_SAFE_PATH_RE = re.compile(r"^[~/\w.\-]+$")
+_SAFE_MODULE_RE = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$")
+_SAFE_FLAG_RE = re.compile(r"^--[\w\-]+$")
+_SAFE_FLAG_VALUE_RE = re.compile(r"^[\w.\-]+$")
 
 
 def _normalize_remediation(cmd: str) -> str:
@@ -53,10 +56,41 @@ def _normalize_remediation(cmd: str) -> str:
     return cmd
 
 
+def _is_safe_uv_module_invocation(cmd: str) -> bool:
+    """Parse the allowed ``cd <dir> && uv run python -m ...`` command form."""
+    try:
+        args = shlex.split(cmd)
+    except ValueError:
+        return False
+
+    if len(args) < 8:
+        return False
+    if args[0] != "cd" or not _SAFE_PATH_RE.fullmatch(args[1]) or args[2] != "&&":
+        return False
+    if args[3:7] != ["uv", "run", "python", "-m"]:
+        return False
+    if not _SAFE_MODULE_RE.fullmatch(args[7]):
+        return False
+
+    index = 8
+    while index < len(args):
+        if not _SAFE_FLAG_RE.fullmatch(args[index]):
+            return False
+        index += 1
+        if index < len(args) and not args[index].startswith("--"):
+            if not _SAFE_FLAG_VALUE_RE.fullmatch(args[index]):
+                return False
+            index += 1
+
+    return True
+
+
 def _is_safe_remediation(cmd: str) -> bool:
     """Check if a remediation command matches a known-safe pattern."""
     cmd = _normalize_remediation(cmd)
-    return any(p.match(cmd) for p in _SAFE_REMEDIATION_PATTERNS)
+    return any(p.match(cmd) for p in _SAFE_REMEDIATION_PATTERNS) or _is_safe_uv_module_invocation(
+        cmd
+    )
 
 
 async def _run_deterministic_fix(check: CheckResult) -> FixOutcome:

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hapax Formal Constraint",
+  "type": "object",
+  "required": [
+    "type",
+    "constraint_id",
+    "title",
+    "lifecycle_state",
+    "scope_type",
+    "scope_ref",
+    "effect",
+    "enforcement",
+    "reason",
+    "source",
+    "created_at",
+    "created_by",
+    "receipts",
+    "authority"
+  ],
+  "properties": {
+    "type": { "const": "formal-constraint" },
+    "constraint_id": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "lifecycle_state": {
+      "enum": ["draft", "active", "suspended", "expired", "superseded", "emergency_override"]
+    },
+    "scope_type": {
+      "enum": [
+        "platform",
+        "model",
+        "lane",
+        "tool",
+        "service",
+        "repo",
+        "path",
+        "worktree",
+        "mutation_class",
+        "authority_case",
+        "task",
+        "surface",
+        "runtime_subsystem",
+        "publication_surface"
+      ]
+    },
+    "scope_ref": { "type": "string", "minLength": 1 },
+    "effect": {
+      "enum": [
+        "deny",
+        "hold",
+        "pause",
+        "drain",
+        "quarantine",
+        "required_approval",
+        "capacity_limit",
+        "route_exclusion",
+        "advisory"
+      ]
+    },
+    "enforcement": { "enum": ["fail_closed", "fail_visible", "advisory"] },
+    "reason": { "type": "string", "minLength": 1 },
+    "source": { "enum": ["operator", "authority_case", "incident", "dispatch"] },
+    "created_at": { "type": "string", "format": "date-time" },
+    "created_by": { "const": "operator" },
+    "review_at": { "type": ["string", "null"], "format": "date-time" },
+    "expires_at": { "type": ["string", "null"], "format": "date-time" },
+    "receipts": { "type": "array", "items": { "type": "string" } },
+    "authority": { "const": "gate" }
+  },
+  "additionalProperties": false
+}

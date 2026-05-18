@@ -12,13 +12,13 @@ from shared.quota_spend_ledger import (
     load_quota_spend_ledger,
 )
 
-NOW = datetime(2026, 5, 10, 19, 0, 0, tzinfo=UTC)
+NOW = datetime(2026, 5, 17, 8, 0, 0, tzinfo=UTC)
 
 
 class TestLedgerLoads:
     def test_fixture_loads_without_error(self) -> None:
         ledger = load_quota_spend_ledger()
-        assert ledger.ledger_id == "quota-spend-ledger-claude-active-20260510"
+        assert ledger.ledger_id == "quota-spend-ledger-reconciled-20260517"
 
     def test_quality_preserving_routes_available(self) -> None:
         ledger = load_quota_spend_ledger()

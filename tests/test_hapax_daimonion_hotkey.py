@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -12,14 +11,14 @@ from agents.hapax_daimonion.hotkey import HotkeyServer
 
 
 @pytest.mark.asyncio
-async def test_socket_receives_toggle() -> None:
+async def test_socket_receives_toggle(tmp_path: Path) -> None:
     """Send 'toggle' command and verify callback fires."""
     received: list[str] = []
 
     async def on_command(cmd: str) -> None:
         received.append(cmd)
 
-    sock_path = Path(tempfile.mktemp(suffix=".sock"))
+    sock_path = tmp_path / "hotkey-toggle.sock"
     server = HotkeyServer(socket_path=sock_path, on_command=on_command)
     try:
         await server.start()
@@ -39,14 +38,14 @@ async def test_socket_receives_toggle() -> None:
 
 
 @pytest.mark.asyncio
-async def test_socket_ignores_invalid() -> None:
+async def test_socket_ignores_invalid(tmp_path: Path) -> None:
     """Send invalid command and verify callback does NOT fire."""
     received: list[str] = []
 
     async def on_command(cmd: str) -> None:
         received.append(cmd)
 
-    sock_path = Path(tempfile.mktemp(suffix=".sock"))
+    sock_path = tmp_path / "hotkey-invalid.sock"
     server = HotkeyServer(socket_path=sock_path, on_command=on_command)
     try:
         await server.start()

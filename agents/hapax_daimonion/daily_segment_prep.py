@@ -1442,8 +1442,38 @@ def prep_segment(
 
     log.info("prep_segment: composing %s (%s, %d beats)", prog_id, role, len(beats))
 
+    # Pass 0: Angle resolution — gather competing sources, identify thesis + tension
+    angle_ctx = ""
+    try:
+        from agents.hapax_daimonion.angle_resolver import format_angle_for_composer, resolve_angle
+
+        topic = _extract_topic_string(programme)
+        if topic:
+            angle = resolve_angle(topic)
+            if angle and angle.source_count > 0:
+                angle_ctx = format_angle_for_composer(angle)
+                log.info(
+                    "prep_segment: angle resolved — %d supporting, %d challenging sources",
+                    len(angle.supporting_sources),
+                    len(angle.challenging_sources),
+                )
+    except Exception:
+        log.warning("prep_segment: angle resolution failed, proceeding without", exc_info=True)
+
+    # Pass 0.5: Research enrichment — deepen angle sources with research tools
+    research_ctx = ""
+    if angle_ctx:
+        try:
+            research_ctx = _research_enrich_angle(angle_ctx, _extract_topic_string(programme) or "")
+        except Exception:
+            log.warning("prep_segment: research enrichment failed", exc_info=True)
+
     # Pass 1: Initial composition
     seed = _build_seed(programme)
+    if angle_ctx:
+        seed = f"{seed}\n\n{angle_ctx}" if seed else angle_ctx
+    if research_ctx:
+        seed = f"{seed}\n\n{research_ctx}"
     prompt = _build_full_segment_prompt(programme, seed)
     source_hashes = _source_hashes(programme, seed=seed, prompt=prompt)
     raw = _call_llm(
@@ -1507,6 +1537,21 @@ def prep_segment(
         len(script),
         avg_chars,
     )
+
+    # Pass 1.5: Council coherence check — reject segments with no narrative force
+    coherence_passed = True
+    try:
+        coherence_passed, coherence_feedback = _council_coherence_check(
+            "\n\n".join(script), prog_id
+        )
+        if not coherence_passed and coherence_feedback:
+            log.warning(
+                "prep_segment: coherence check failed for %s, injecting feedback into refinement",
+                prog_id,
+            )
+            seed = f"{seed}\n\n## Council Coherence Feedback\n{coherence_feedback}"
+    except Exception:
+        log.warning("prep_segment: coherence check failed", exc_info=True)
 
     # Pass 2: Iterative refinement
     refine_result = _refine_script(
@@ -1594,17 +1639,99 @@ def prep_segment(
                     _write_json_atomic(diagnostic_path, diagnostic)
                     _append_to_candidate_ledger(prep_dir, prog_id, diagnostic_name, "no_candidate")
                     return None
+                refuted = council_disconfirmation_result.get("refuted_claims", [])
                 log.info(
                     "prep_segment: council pass for %s — %d survived, %d contested, %d refuted",
                     prog_id,
                     len(council_disconfirmation_result.get("survived_claims", [])),
                     len(council_disconfirmation_result.get("contested_claims", [])),
-                    len(council_disconfirmation_result.get("refuted_claims", [])),
+                    len(refuted),
                 )
+                if len(refuted) > 2 and not getattr(programme, "_recomposed", False):
+                    from shared.segment_disconfirmation import build_substance_gap_report
+
+                    gap_report = build_substance_gap_report(council_verdicts, list(claim_map))
+                    log.warning(
+                        "prep_segment: %d claims refuted — triggering recomposition for %s",
+                        len(refuted),
+                        prog_id,
+                    )
+                    repair_seed = f"{seed}\n\n{gap_report}" if seed else gap_report
+                    repair_prompt = _build_full_segment_prompt(programme, repair_seed)
+                    repair_raw = _call_llm(
+                        repair_prompt,
+                        prep_session=prep_session,
+                        phase="recompose",
+                        programme_id=prog_id,
+                    )
+                    repair_script, _ = _parse_segment_generation(repair_raw)
+                    if repair_script and len(repair_script) >= len(script):
+                        script = repair_script[: len(beats)]
+                        log.info(
+                            "prep_segment: recomposition produced %d blocks for %s",
+                            len(script),
+                            prog_id,
+                        )
+                        object.__setattr__(programme, "_recomposed", True)
     except ImportError:
         log.debug("prep_segment: council disconfirmation module not available — skipping")
     except Exception as exc:
         log.warning("prep_segment: council disconfirmation failed for %s: %s", prog_id, exc)
+
+    # Pass 4: Narrative quality council — structural/rhetorical critique
+    narrative_verdict_data: dict[str, Any] | None = None
+    try:
+        from shared.segment_narrative_critique import (
+            format_narrative_verdict_for_composer,
+            run_narrative_critique,
+        )
+
+        full_script_text = "\n\n".join(f"[Beat {i}]\n{b}" for i, b in enumerate(script))
+        narrative_verdict = run_narrative_critique(full_script_text, prog_id)
+        narrative_verdict_data = narrative_verdict.receipt
+        narrative_verdict_data["scores"] = narrative_verdict.scores
+        narrative_verdict_data["verdict_status"] = narrative_verdict.verdict_status.value
+        narrative_verdict_data["revision_directives"] = narrative_verdict.revision_directives
+
+        from agents.deliberative_council.models import NarrativeVerdictStatus
+
+        if narrative_verdict.verdict_status in (
+            NarrativeVerdictStatus.STRUCTURAL_REWORK,
+            NarrativeVerdictStatus.GENERIC_DETECTED,
+        ):
+            log.warning(
+                "prep_segment: narrative council verdict=%s for %s — injecting directives",
+                narrative_verdict.verdict_status.value,
+                prog_id,
+            )
+            feedback = format_narrative_verdict_for_composer(narrative_verdict)
+            repair_seed = f"{seed}\n\n{feedback}" if seed else feedback
+            repair_prompt = _build_full_segment_prompt(programme, repair_seed)
+            repair_raw = _call_llm(
+                repair_prompt,
+                prep_session=prep_session,
+                phase="narrative_recompose",
+                programme_id=prog_id,
+            )
+            repair_script, _ = _parse_segment_generation(repair_raw)
+            if repair_script and len(repair_script) >= len(script):
+                script = repair_script[: len(beats)]
+                log.info(
+                    "prep_segment: narrative recomposition produced %d blocks for %s",
+                    len(script),
+                    prog_id,
+                )
+        else:
+            log.info(
+                "prep_segment: narrative council verdict=%s (mean=%.1f) for %s",
+                narrative_verdict.verdict_status.value,
+                narrative_verdict.receipt.get("mean_score", 0),
+                prog_id,
+            )
+    except ImportError:
+        log.debug("prep_segment: narrative critique module not available — skipping")
+    except Exception as exc:
+        log.warning("prep_segment: narrative critique failed for %s: %s", prog_id, exc)
 
     actionability = validate_segment_actionability(
         script,
@@ -1961,6 +2088,8 @@ def prep_segment(
         source_hashes["council_verdict_sha256"] = council_disconfirmation_result.get(
             "council_verdict_sha256", ""
         )
+    if narrative_verdict_data is not None:
+        payload["narrative_quality_verdict"] = narrative_verdict_data
     payload["artifact_sha256"] = _artifact_hash(payload)
     tmp = out_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -2272,9 +2401,18 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
         for p in plan.programmes:
             pid = getattr(p, "programme_id", "")
             role_val = getattr(getattr(p, "role", None), "value", "")
-            if role_val in SEGMENTED_CONTENT_ROLES and pid not in seen_ids:
-                segmented.append(p)
-                seen_ids.add(pid)
+            if role_val not in SEGMENTED_CONTENT_ROLES or pid in seen_ids:
+                continue
+            topic = _extract_topic_string(p)
+            if topic and not _council_topic_substance_gate(topic, pid):
+                log.warning(
+                    "daily_segment_prep: council rejected topic substance for %s: %s",
+                    pid,
+                    topic[:80],
+                )
+                continue
+            segmented.append(p)
+            seen_ids.add(pid)
 
         log.info(
             "daily_segment_prep: round %d → %d total segmented (%d new this round)",
@@ -2436,6 +2574,148 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
         time.monotonic() - start,
     )
     return saved
+
+
+def _extract_topic_string(programme: Any) -> str | None:
+    """Pull the topic/narrative_beat from a planned programme for substance checking."""
+    content = getattr(programme, "content", None)
+    if content is None:
+        return None
+    topic = getattr(content, "declared_topic", None) or getattr(content, "narrative_beat", None)
+    if isinstance(topic, str) and topic.strip():
+        return topic.strip()
+    return None
+
+
+def _council_topic_substance_gate(topic: str, programme_id: str) -> bool:
+    """Run the deliberative council on a topic to check argumentative substance.
+
+    Returns True if the topic has enough substance for a full segment.
+    Returns True (fail-open) if the council is unavailable.
+    """
+    try:
+        import asyncio
+
+        from agents.deliberative_council.engine import deliberate
+        from agents.deliberative_council.models import CouncilConfig, CouncilInput, CouncilMode
+        from agents.deliberative_council.rubrics import DisconfirmationRubric
+
+        council_input = CouncilInput(
+            text=topic,
+            source_ref=f"topic_substance_check:{programme_id}",
+            metadata={"check_type": "anterior_substance", "programme_id": programme_id},
+        )
+        config = CouncilConfig(max_models=3, phase3_rounds=1)
+        verdict = asyncio.run(
+            deliberate(council_input, CouncilMode.DISCONFIRMATION, DisconfirmationRubric(), config)
+        )
+        mean_score = sum(s for s in verdict.scores.values() if s is not None) / max(
+            1, len(verdict.scores)
+        )
+        if mean_score <= 2.0:
+            log.warning(
+                "council_topic_substance_gate: topic rejected (mean=%.1f, scores=%s): %s",
+                mean_score,
+                verdict.scores,
+                topic[:80],
+            )
+            return False
+        log.info(
+            "council_topic_substance_gate: topic accepted (mean=%.1f): %s",
+            mean_score,
+            topic[:80],
+        )
+        return True
+    except Exception:
+        log.warning("council_topic_substance_gate: council unavailable, fail-open", exc_info=True)
+        return True
+
+
+def _council_coherence_check(full_script: str, programme_id: str) -> tuple[bool, str]:
+    """Run the council coherence rubric on a composed script.
+
+    Returns (passed, feedback_string). Feedback is a summary of the
+    council's scoring across the 4 coherence axes. When mean < 3.0,
+    passed=False and feedback contains specific axis-level critique.
+    """
+    try:
+        import asyncio
+
+        from agents.deliberative_council.engine import deliberate
+        from agents.deliberative_council.models import CouncilConfig, CouncilInput, CouncilMode
+        from agents.deliberative_council.rubrics import CoherenceRubric
+
+        council_input = CouncilInput(
+            text=full_script[:4000],
+            source_ref=f"coherence_check:{programme_id}",
+            metadata={"check_type": "coherence", "programme_id": programme_id},
+        )
+        config = CouncilConfig(max_models=3, phase3_rounds=1)
+        verdict = asyncio.run(
+            deliberate(council_input, CouncilMode.DISCONFIRMATION, CoherenceRubric(), config)
+        )
+        scores = verdict.scores
+        mean_score = sum(s for s in scores.values() if s is not None) / max(1, len(scores))
+        feedback_lines = [f"Council coherence scores (mean={mean_score:.1f}):"]
+        for axis, score in scores.items():
+            feedback_lines.append(f"  - {axis}: {score}")
+        for note in verdict.disagreement_log[:3]:
+            feedback_lines.append(f"  Council note: {note[:200]}")
+        feedback = "\n".join(feedback_lines)
+
+        if mean_score < 3.0:
+            log.warning(
+                "_council_coherence_check: FAILED (mean=%.1f) for %s",
+                mean_score,
+                programme_id,
+            )
+            return False, feedback
+        log.info("_council_coherence_check: passed (mean=%.1f) for %s", mean_score, programme_id)
+        return True, feedback
+    except Exception:
+        log.warning("_council_coherence_check: council unavailable, fail-open", exc_info=True)
+        return True, ""
+
+
+def _research_enrich_angle(angle_ctx: str, topic: str) -> str:
+    """Use research tools to deepen the angle's source material.
+
+    Runs a lightweight LLM call with web search + qdrant lookup to
+    gather concrete evidence, examples, and counter-examples for the
+    angle hypothesis. Returns a formatted research block for the
+    composer's seed.
+    """
+    try:
+        import litellm
+
+        from shared.config import MODELS
+
+        prompt = (
+            f"Topic: {topic}\n\n"
+            f"Angle analysis:\n{angle_ctx}\n\n"
+            "You are a research assistant preparing material for a segment producer. "
+            "Based on the angle analysis above, provide:\n"
+            "1. CONCRETE EXAMPLE: A specific real-world case that illustrates the thesis\n"
+            "2. COUNTER EXAMPLE: A specific case that illustrates the challenge\n"
+            "3. KEY TERM DEFINITIONS: 2-3 technical terms the audience needs defined\n"
+            "4. OPENING HOOK: A specific question, paradox, or provocation that would "
+            "make the audience want to hear the rest\n\n"
+            "Be specific. Name real systems, papers, incidents, or frameworks. "
+            "If you don't know specific examples, say so honestly."
+        )
+        response = litellm.completion(
+            model=MODELS.get("claude-opus", "claude-opus"),
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2000,
+            temperature=0.4,
+        )
+        result = response.choices[0].message.content or ""
+        if len(result) > 100:
+            log.info("_research_enrich_angle: enrichment returned %d chars", len(result))
+            return f"## Research Enrichment\n{result}"
+    except Exception:
+        log.warning("_research_enrich_angle: enrichment failed", exc_info=True)
+    return ""
 
 
 _PROGRAMME_ID_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")

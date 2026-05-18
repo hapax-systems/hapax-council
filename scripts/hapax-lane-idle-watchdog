@@ -208,50 +208,6 @@ find_claimed_task() {
     return 1
 }
 
-find_next_wsjf_task() {
-    local lane_platform="${1:-any}"
-    if [ ! -d "$TASK_ROOT" ]; then
-        return 1
-    fi
-    python3 -c "
-import re, sys
-from pathlib import Path
-
-task_root = Path('$TASK_ROOT')
-lane_platform = '$lane_platform'
-best_id = None
-best_wsjf = -1.0
-
-for p in task_root.glob('*.md'):
-    text = p.read_text(errors='replace')
-    status_m = re.search(r'^status:\s*(\S+)', text, re.MULTILINE)
-    if not status_m:
-        continue
-    status = status_m.group(1)
-    if status not in ('offered', 'unassigned', 'ready'):
-        continue
-    assigned_m = re.search(r'^assigned_to:\s*(\S+)', text, re.MULTILINE)
-    if assigned_m and assigned_m.group(1) not in ('unassigned', 'null', 'None', ''):
-        continue
-    blocked_m = re.search(r'^blocked_reason:', text, re.MULTILINE)
-    if blocked_m:
-        continue
-    plat_m = re.search(r'^platform_suitability:\s*\[([^\]]*)\]', text, re.MULTILINE)
-    if plat_m:
-        platforms = [s.strip() for s in plat_m.group(1).split(',')]
-        if 'any' not in platforms and lane_platform not in platforms:
-            continue
-    wsjf_m = re.search(r'^wsjf:\s*([0-9.]+)', text, re.MULTILINE)
-    wsjf = float(wsjf_m.group(1)) if wsjf_m else 0.0
-    if wsjf > best_wsjf:
-        best_wsjf = wsjf
-        best_id = p.stem
-
-if best_id:
-    print(best_id)
-" 2>/dev/null
-}
-
 dispatched=0
 skipped_cooldown=0
 
@@ -277,19 +233,13 @@ for session in "${!IDLE_LANES[@]}"; do
 
     dispatch_msg=""
     claimed=$(find_claimed_task "$lane" 2>/dev/null || true)
+    dispatch_target=""
     if [ -n "$claimed" ]; then
         dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with an active task: $claimed. Resume work immediately. Ship a PR and cc-close --pr N after merge."
+        dispatch_target="$claimed"
     else
-        next_task=$(find_next_wsjf_task "$platform" || true)
-        if [ -n "$next_task" ]; then
-            dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. Claim and start: cc-claim $next_task. Do the work, ship a PR, then cc-close --pr N."
-        else
-            if [ -d "$REQUEST_ROOT" ] && [ "$(ls "$REQUEST_ROOT"/*.md 2>/dev/null | wc -l)" -gt 0 ]; then
-                dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. No offered cc-tasks available. Check ~/Documents/Personal/20-projects/hapax-requests/active/ for request backlog items."
-            else
-                dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. No tasks available. Run: ls ~/Documents/Personal/20-projects/hapax-cc-tasks/active/ and find the highest-WSJF offered task to claim."
-            fi
-        fi
+        dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with no active task. Do not claim work from the pool. Wait for an explicit parent/RTE assignment launched through hapax-methodology-dispatch --launch."
+        dispatch_target="governed-hold"
     fi
 
     send_success=false
@@ -316,7 +266,7 @@ for session in "${!IDLE_LANES[@]}"; do
     echo "$now" > "$STATE_DIR/${session}.last_kick"
 
     if [ "$send_success" = true ]; then
-        log "DISPATCHED $session ($platform/$lane): idle ${idle_s}s → ${claimed:-${next_task:-generic}}"
+        log "DISPATCHED $session ($platform/$lane): idle ${idle_s}s -> $dispatch_target"
         rm -f "$STATE_DIR/${session}.idle_since" 2>/dev/null
         dispatched=$((dispatched + 1))
     else

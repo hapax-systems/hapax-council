@@ -861,7 +861,7 @@ class TestRuntimeLevel2TopologyMutation:
         g = EffectGraph(
             nodes={
                 "c": NodeInstance(type="colorgrade"),
-                "s": NodeInstance(type="scanlines"),
+                "s": NodeInstance(type="bloom"),
                 "o": NodeInstance(type="output"),
             },
             edges=[["@live", "c"], ["c", "s"], ["s", "o"]],
@@ -881,7 +881,7 @@ class TestRuntimeLevel2TopologyMutation:
         g = EffectGraph(
             nodes={
                 "c": NodeInstance(type="colorgrade"),
-                "s": NodeInstance(type="scanlines"),
+                "s": NodeInstance(type="bloom"),
                 "o": NodeInstance(type="output"),
             },
             edges=[["@live", "c"], ["c", "o"], ["c", "s"]],

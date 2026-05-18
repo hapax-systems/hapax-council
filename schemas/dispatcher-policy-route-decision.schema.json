@@ -18,6 +18,14 @@
     "policy_outcome",
     "launch_allowed",
     "prompt_allowed",
+    "route_policy_green",
+    "clog_state",
+    "compatibility_mode",
+    "degraded_state",
+    "registry_freshness_green",
+    "quota_freshness_green",
+    "resource_freshness_green",
+    "route_selection_authority",
     "quality_floor_satisfied",
     "authority_allowed",
     "reason_codes",
@@ -44,6 +52,22 @@
     "policy_outcome": {"enum": ["launch", "hold", "support_only", "refuse"]},
     "launch_allowed": {"type": "boolean"},
     "prompt_allowed": {"type": "boolean"},
+    "route_policy_green": {"type": "boolean"},
+    "clog_state": {
+      "enum": [
+        "policy_green",
+        "compatibility_degraded",
+        "held",
+        "refused",
+        "support_only"
+      ]
+    },
+    "compatibility_mode": {"enum": ["none", "rollback_full_profile"]},
+    "degraded_state": {"type": ["string", "null"]},
+    "registry_freshness_green": {"type": "boolean"},
+    "quota_freshness_green": {"type": "boolean"},
+    "resource_freshness_green": {"type": "boolean"},
+    "route_selection_authority": {"const": false},
     "quality_floor_satisfied": {"type": "boolean"},
     "authority_allowed": {"type": "boolean"},
     "reason_codes": {

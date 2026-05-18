@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from urllib.parse import urlparse
 
 import pytest
 
@@ -29,6 +30,16 @@ def _cfg(
         "on_budget_exhausted": "skip_silent",
         "oauth_scope": "https://www.googleapis.com/auth/youtube.force-ssl",
     }
+
+
+def _source_url_from_description_line(line: str) -> str:
+    stripped = line.strip()
+    if not stripped.startswith("- "):
+        return ""
+    body = stripped.removeprefix("- ")
+    if ": " in body:
+        return body.rsplit(": ", 1)[1]
+    return body
 
 
 class TestAssemble:
@@ -251,7 +262,11 @@ class TestAttributionRendering:
             attribution_max=5,
         )
         # Only 5 URLs make it in.
-        url_count = sum(1 for line in desc.splitlines() if "https://youtu.be/" in line)
+        url_count = sum(
+            1
+            for line in desc.splitlines()
+            if urlparse(_source_url_from_description_line(line)).hostname == "youtu.be"
+        )
         assert url_count == 5
 
     def test_max_chars_truncates_with_notice(self):
