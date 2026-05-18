@@ -3467,3 +3467,13 @@ try:
     repair_required_frontmatter
 except ImportError:
     pass
+
+# Programme runtime profiles are configuration loader API for launchers that
+# select programme roles dynamically; the diff-only vulture pass does not count
+# focused tests or future stacked programme consumers as production call sites.
+try:
+    from shared.programme_profiles import get_programme_profile  # noqa: F401, E402
+
+    get_programme_profile
+except ImportError:
+    pass
