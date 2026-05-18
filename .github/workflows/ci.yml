@@ -342,14 +342,14 @@ jobs:
           fc-list | grep -i 'Px437.*IBM VGA 8x16' \
             || (echo "font install failed (fc-list)" >&2; exit 1)
       - name: Sync uv ci extras for full pytest
-        run: uv sync --extra ci
+        run: uv sync --extra ci --frozen
       - name: Verify Pango can resolve Px437 IBM VGA 8x16
         # Pango consults fontconfig but has its own per-process cache; a
         # Pango-level probe confirms the HARDM render path will see the
         # font, not just fontconfig. If this fails, HARDM tests render
         # blank cells silently, so fail loud here with diagnostic output.
         run: |
-          uv run python scripts/ci_verify_pango_font.py "Px437 IBM VGA 8x16"
+          uv run --no-sync python scripts/ci_verify_pango_font.py "Px437 IBM VGA 8x16"
       - name: Run full pytest shard
         env:
           LITELLM_BASE_URL: "http://0.0.0.0:1"
@@ -379,14 +379,15 @@ jobs:
           # the prior 15m wrapper killed otherwise-successful runs at 99%.
           #
           # Merge-queue throughput: full pytest remains mandatory before
-          # release, but the queue runs it in four runtime-weighted file-level
-          # shards and keeps the required `test` check as an aggregate gate.
+          # release, but the queue runs it in four runtime-weighted shards and
+          # can split explicitly configured slow files by pytest node prefix.
+          # The required `test` check remains the aggregate gate.
           # The shard list is derived from the same collect/ignore/deselect
           # expression used by the actual test command, preserving the
           # existing release surface while reducing longest-runner wall time.
           collect_output="$(mktemp)"
           shard_files="$(mktemp)"
-          uv run pytest tests/ --collect-only -q \
+          uv run --no-sync pytest tests/ --collect-only -q \
             --benchmark-disable \
             --ignore=tests/hapax_daimonion --ignore=tests/contract \
             --ignore=tests/test_frame_gate.py \
@@ -418,20 +419,20 @@ jobs:
             --deselect=tests/studio_compositor/test_overlay_zones_research_gate.py::TestZoneGate::test_default_always_on \
             -m "not llm" -k "not golden and not goldens" \
             -p no:cacheprovider > "$collect_output"
-          uv run python scripts/ci_select_pytest_shard.py \
+          uv run --no-sync python scripts/ci_select_pytest_shard.py \
             --collect-output "$collect_output" \
             --weights config/ci/python-test-runtime-weights.yaml \
             --shard "$PYTEST_SHARD" \
             --shards "$PYTEST_SHARD_COUNT" > "$shard_files"
-          file_count="$(wc -l < "$shard_files" | tr -d ' ')"
-          echo "Shard $PYTEST_SHARD/$PYTEST_SHARD_COUNT selected $file_count test files."
-          if [ "$file_count" -eq 0 ]; then
-            echo "No test files selected for this shard."
+          unit_count="$(wc -l < "$shard_files" | tr -d ' ')"
+          echo "Shard $PYTEST_SHARD/$PYTEST_SHARD_COUNT selected $unit_count test units."
+          if [ "$unit_count" -eq 0 ]; then
+            echo "No test units selected for this shard."
             exit 0
           fi
           set +e
           timeout -s KILL 1200 \
-            xargs -a "$shard_files" uv run pytest -q --tb=line --durations=25 \
+            xargs -d '\n' -a "$shard_files" uv run --no-sync pytest -q --tb=line --durations=25 \
               --benchmark-disable \
               -n 4 --dist loadfile \
               --ignore=tests/hapax_daimonion --ignore=tests/contract \
@@ -505,7 +506,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection
       - name: Sync uv ci extras for serial title-card tests
-        run: uv sync --extra ci
+        run: uv sync --extra ci --frozen
       - name: Run serial title-card tests
         env:
           LITELLM_BASE_URL: "http://0.0.0.0:1"
@@ -514,7 +515,7 @@ jobs:
           OTEL_SDK_DISABLED: "true"
           LANGFUSE_HOST: "http://0.0.0.0:1"
         run: |
-          uv run pytest \
+          uv run --no-sync pytest \
             tests/test_demo_title_cards.py \
             tests/test_demo_video_integration.py \
             -q --tb=line --benchmark-disable
@@ -612,7 +613,7 @@ jobs:
             || (echo "font install failed (fc-list)" >&2; exit 1)
       - name: Sync uv ci extras for full pytest
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
-        run: uv sync --extra ci
+        run: uv sync --extra ci --frozen
       - name: Verify Pango can resolve Px437 IBM VGA 8x16
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         # Pango consults fontconfig but has its own per-process cache; a
@@ -620,7 +621,7 @@ jobs:
         # font, not just fontconfig. If this fails, HARDM tests render
         # blank cells silently, so fail loud here with diagnostic output.
         run: |
-          uv run python scripts/ci_verify_pango_font.py "Px437 IBM VGA 8x16"
+          uv run --no-sync python scripts/ci_verify_pango_font.py "Px437 IBM VGA 8x16"
       - name: Run serial title-card tests
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         env:
@@ -630,7 +631,7 @@ jobs:
           OTEL_SDK_DISABLED: "true"
           LANGFUSE_HOST: "http://0.0.0.0:1"
         run: |
-          uv run pytest \
+          uv run --no-sync pytest \
             tests/test_demo_title_cards.py \
             tests/test_demo_video_integration.py \
             -q --tb=line --benchmark-disable
@@ -662,7 +663,7 @@ jobs:
           # the prior 15m wrapper killed otherwise-successful runs at 99%.
           set +e
           timeout -s KILL 1200 \
-            uv run pytest tests/ -q --tb=line --durations=25 \
+            uv run --no-sync pytest tests/ -q --tb=line --durations=25 \
               --benchmark-disable \
               -n 4 --dist loadfile \
               --ignore=tests/hapax_daimonion --ignore=tests/contract \

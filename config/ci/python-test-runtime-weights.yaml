@@ -5,12 +5,14 @@ weight_units: collected_test_equivalent
 unknown_file_fallback: collected_test_count
 assignment_policy:
   selector: scripts/ci_select_pytest_shard.py
+  unit: file_or_configured_pytest_node_prefix
   sort: descending_weight_then_path
   placement: greedy_lowest_load
   tie_breakers:
     - current_shard_load
     - current_shard_file_count
     - shard_index
+  partially_split_file_fallback: exact_collected_nodeid
 evidence:
   - source: github_actions_merge_group
     pr: 3444
@@ -26,6 +28,74 @@ evidence:
       "2": 250.29
       "3": 236.20
       "4": 884.43
+  - source: github_actions_merge_group
+    pr: 3450
+    run_id: 26059880890
+    merge_commit: d7d143a1f0dea210d09aa752a5ddbd246def47a5
+    captured_at: 2026-05-18T22:14:10Z
+    summary: >-
+      Runtime-weighted file shards isolated test_compositor_wiring.py on shard
+      1, but xdist loadfile still kept that file as a single long-pole unit.
+    shard_pytest_seconds:
+      "1": 801.17
+      "2": 197.01
+      "3": 290.09
+      "4": 279.82
+  - source: github_actions_merge_group
+    pr: 3450
+    run_id: 26060944340
+    merge_commit: 8bc92b9741dcbe2e53fcb32fd1e9d9b6c4030edc
+    captured_at: 2026-05-18T22:14:10Z
+    summary: >-
+      Second repeat of the same shard-1 long pole: shard 1 spent 799.43s in
+      pytest while shards 2-4 completed in 253.82s, 265.32s, and 258.48s.
+      The slowest durations were concentrated in compositor wiring classes.
+    shard_pytest_seconds:
+      "1": 799.43
+      "2": 253.82
+      "3": 265.32
+      "4": 258.48
+split_groups:
+  tests/studio_compositor/test_compositor_wiring.py::TestStudioCompositorBudgetWiring:
+    collected_test_equivalent_weight: 4200
+    evidence:
+      collected_tests_after_deselect: 6
+      latest_top_duration_seconds_for_group: 84.42
+      note: >-
+        Six budget/tracker tests dominated the file-level shard in successful
+        merge-group runs 26059880890 and 26060944340.
+  tests/studio_compositor/test_compositor_wiring.py::TestStudioCompositorOutputRouterWiring:
+    collected_test_equivalent_weight: 2200
+    evidence:
+      collected_tests_after_deselect: 3
+      latest_top_duration_seconds_for_group: 39.98
+  tests/studio_compositor/test_compositor_wiring.py::TestFeatureProbeLog:
+    collected_test_equivalent_weight: 1800
+    evidence:
+      collected_tests_after_deselect: 1
+      latest_top_duration_seconds_for_group: 29.69
+  tests/studio_compositor/test_compositor_wiring.py::TestStartLayoutOnly:
+    collected_test_equivalent_weight: 1400
+    evidence:
+      collected_tests_after_deselect: 12
+      latest_top_duration_seconds_for_group: 25.16
+      note: >-
+        One StartLayoutOnly test is deselected by the existing release-surface
+        command; this weight covers the remaining collected class node prefix.
+        The duration value is the subset visible in the latest top-25 log.
+  tests/studio_compositor/test_compositor_wiring.py::TestStartDelegatesThroughStartLayoutOnly:
+    collected_test_equivalent_weight: 700
+    evidence:
+      collected_tests_after_deselect: 1
+      latest_top_duration_seconds_for_group: 10.30
+  tests/studio_compositor/test_compositor_wiring.py::TestResearchMarkerOverlayRegistered:
+    collected_test_equivalent_weight: 100
+    evidence:
+      collected_tests_after_deselect: 1
+      note: >-
+        Not present in the latest top-25 duration log; kept as an explicit
+        split unit so the configured file is fully covered without whole-file
+        fallback duplication.
 files:
   tests/studio_compositor/test_compositor_wiring.py:
     collected_test_equivalent_weight: 9000
@@ -35,6 +105,8 @@ files:
       note: >-
         Dominated the long-pole shard under pytest-xdist loadfile scheduling;
         coarse weight prevents co-location with most other runtime-heavy files.
+        The configured split_groups above take precedence for collected class
+        node prefixes so this file no longer has to remain one shard unit.
   tests/scripts/test_post_merge_smoke.py:
     collected_test_equivalent_weight: 1200
     evidence:
