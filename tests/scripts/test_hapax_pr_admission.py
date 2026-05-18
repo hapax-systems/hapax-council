@@ -11,6 +11,7 @@ Spec acceptance criteria covered (P0 phase):
 from __future__ import annotations
 
 import importlib.util
+import json
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from unittest.mock import patch
@@ -57,6 +58,56 @@ class TestLoadState:
         assert loaded["set_by"] == "alpha"
         assert loaded["reason"] == "test reason"
         assert loaded["allowed_existing_branches"] == ["alpha/foo", "beta/bar"]
+
+
+class TestStatusCommand:
+    def test_status_prints_merge_queue_summary(self, gov_module, capsys, tmp_path):
+        summary_path = tmp_path / "merge-queue-summary.json"
+        gov_module.MERGE_QUEUE_SUMMARY_PATH = summary_path
+        summary_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "event": "merge_queue_summary",
+                    "observed_at": "2026-05-18T22:05:00Z",
+                    "records_considered": 2,
+                    "latest_run_id": 26062256385,
+                    "latest_pr_number": 3450,
+                    "latest_run_outcome": "success",
+                    "latest_bottleneck": {
+                        "kind": "branch_protection_check_mapping",
+                        "reason": "successful synthetic merge-group run did not merge or close the PR",
+                        "evidence": {"run_id": 26062256385, "pr_number": 3450},
+                    },
+                    "bottleneck_counts": {"branch_protection_check_mapping": 1},
+                    "current_queue_hold_reasons": [
+                        {
+                            "pr_number": 3450,
+                            "kind": "queue_admission",
+                            "reason": "clean PR has no auto-merge request",
+                            "source": "autoMergeRequest",
+                            "run_id": None,
+                            "details": {},
+                        }
+                    ],
+                    "repeated_successful_synthetic_prs": [],
+                    "stale_synthetic_run_ids": [],
+                    "slowest_recent_job": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.object(gov_module, "query_open_prs", return_value=[]):
+            ns = type("NS", (), {})()
+            rc = gov_module.cmd_status(ns)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Merge queue lineage:" in out
+        assert "run=26062256385 pr=3450 outcome=success" in out
+        assert "branch_protection_check_mapping" in out
+        assert "clean PR has no auto-merge request" in out
 
 
 class TestClassifyPR:

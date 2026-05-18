@@ -32,7 +32,14 @@ from typing import Any
 
 import yaml
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.merge_queue_lineage import DEFAULT_SUMMARY_PATH, load_summary
+
 CONTROL_PATH = Path(os.path.expanduser("~/.cache/hapax/pr-admission-governor.yaml"))
+MERGE_QUEUE_SUMMARY_PATH = DEFAULT_SUMMARY_PATH
 DEFAULT_EXIT_BELOW_COUNT = 6
 DEFAULT_STABLE_TICKS = 2
 ALLOWED_MODES = {"normal", "drain", "frozen"}
@@ -159,6 +166,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(f"    ... +{len(snapshot) - 10} more")
 
     print()
+    _print_merge_queue_summary()
+    print()
     if state["mode"] == "normal":
         print("ADMISSION: ALLOWED — new PRs / new branches OK.")
         return 0
@@ -169,6 +178,40 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"            for {state['exit_stable_ticks_required']} consecutive ticks, then run:")
     print("            hapax-pr-admission normal --reason 'drain complete'")
     return 0
+
+
+def _print_merge_queue_summary() -> None:
+    """Surface the lineage summary for autoqueue/dashboard readers."""
+    summary = load_summary(MERGE_QUEUE_SUMMARY_PATH)
+    print("Merge queue lineage:")
+    if summary is None:
+        print(f"  Summary: unavailable ({MERGE_QUEUE_SUMMARY_PATH})")
+        print("  Refresh: scripts/hapax-merge-queue-lineage collect")
+        return
+
+    print(f"  Observed: {summary.observed_at.strftime('%Y-%m-%dT%H:%M:%SZ')}")
+    print(
+        "  Latest: "
+        f"run={summary.latest_run_id or '-'} "
+        f"pr={summary.latest_pr_number or '-'} "
+        f"outcome={summary.latest_run_outcome or '-'}"
+    )
+    if summary.latest_bottleneck is not None:
+        print(
+            "  Latest bottleneck: "
+            f"{summary.latest_bottleneck.kind} — {summary.latest_bottleneck.reason}"
+        )
+    if summary.bottleneck_counts:
+        counts = ", ".join(
+            f"{kind}={count}" for kind, count in sorted(summary.bottleneck_counts.items())
+        )
+        print(f"  Bottleneck counts: {counts}")
+    reasons = summary.current_queue_hold_reasons[:8]
+    if reasons:
+        print("  Hold reasons:")
+        for reason in reasons:
+            pr = f"PR #{reason.pr_number}" if reason.pr_number is not None else "PR -"
+            print(f"    - {pr}: {reason.kind} — {reason.reason}")
 
 
 def _snapshot_open_branches() -> list[str]:
