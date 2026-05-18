@@ -1,0 +1,161 @@
+"""Tests for the runtime activation drift audit."""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "audit-runtime-activation-drift.py"
+spec = importlib.util.spec_from_file_location("runtime_activation_drift_audit", SCRIPT)
+assert spec and spec.loader
+audit = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = audit
+spec.loader.exec_module(audit)
+
+
+def test_parse_unit_file_marks_installable_and_critical(tmp_path: Path) -> None:
+    unit = tmp_path / "hapax-operator-current-state.timer"
+    unit.write_text(
+        "[Unit]\nDescription=fixture\n\n[Timer]\nOnUnitActiveSec=5min\n\n"
+        "[Install]\nWantedBy=timers.target\n",
+        encoding="utf-8",
+    )
+
+    parsed = audit.parse_unit_file(unit)
+
+    assert parsed.installable is True
+    assert parsed.critical is True
+    assert parsed.kind == "timer"
+
+
+def test_missing_critical_unit_is_critical(tmp_path: Path) -> None:
+    unit = tmp_path / "hapax-operator-current-state.timer"
+    unit.write_text("[Install]\nWantedBy=timers.target\n", encoding="utf-8")
+    specs = [audit.parse_unit_file(unit)]
+
+    findings = audit.classify_unit_findings(specs, {})
+
+    assert [(f.severity, f.kind, f.subject) for f in findings] == [
+        ("critical", "unit_missing", "hapax-operator-current-state.timer")
+    ]
+
+
+def test_disabled_noncritical_unit_is_warning(tmp_path: Path) -> None:
+    unit = tmp_path / "example.timer"
+    unit.write_text("[Install]\nWantedBy=timers.target\n", encoding="utf-8")
+    specs = [audit.parse_unit_file(unit)]
+    runtime = {
+        "example.timer": audit.RuntimeUnit(
+            name="example.timer",
+            file_state="disabled",
+            active_state="inactive",
+            sub_state="dead",
+        )
+    }
+
+    findings = audit.classify_unit_findings(specs, runtime)
+
+    assert [(f.severity, f.kind, f.subject) for f in findings] == [
+        ("warning", "unit_not_enabled", "example.timer")
+    ]
+
+
+def test_timer_driven_service_disabled_is_not_a_finding(tmp_path: Path) -> None:
+    service = tmp_path / "example.service"
+    timer = tmp_path / "example.timer"
+    service.write_text("[Install]\nWantedBy=default.target\n", encoding="utf-8")
+    timer.write_text("[Install]\nWantedBy=timers.target\n", encoding="utf-8")
+    specs = [audit.parse_unit_file(service), audit.parse_unit_file(timer)]
+    runtime = {
+        "example.service": audit.RuntimeUnit(
+            name="example.service",
+            file_state="disabled",
+            active_state="inactive",
+            sub_state="dead",
+        ),
+        "example.timer": audit.RuntimeUnit(
+            name="example.timer",
+            file_state="enabled",
+            active_state="active",
+            sub_state="waiting",
+        ),
+    }
+
+    assert audit.classify_unit_findings(specs, runtime) == []
+
+
+def test_failed_unit_is_a_finding_even_when_timer_driven(tmp_path: Path) -> None:
+    service = tmp_path / "example.service"
+    timer = tmp_path / "example.timer"
+    service.write_text("[Install]\nWantedBy=default.target\n", encoding="utf-8")
+    timer.write_text("[Install]\nWantedBy=timers.target\n", encoding="utf-8")
+    specs = [audit.parse_unit_file(service), audit.parse_unit_file(timer)]
+    runtime = {
+        "example.service": audit.RuntimeUnit(
+            name="example.service",
+            file_state="disabled",
+            active_state="failed",
+            sub_state="failed",
+        ),
+        "example.timer": audit.RuntimeUnit(
+            name="example.timer",
+            file_state="enabled",
+            active_state="active",
+            sub_state="waiting",
+        ),
+    }
+
+    findings = audit.classify_unit_findings(specs, runtime)
+
+    assert [(f.severity, f.kind, f.subject) for f in findings] == [
+        ("warning", "unit_failed", "example.service")
+    ]
+
+
+def test_parse_units_output_handles_separate_failure_bullet() -> None:
+    rows = audit.parse_units_output(
+        "● hapax-obsidian-publish-sync.service loaded failed failed Hapax Obsidian Publish sync\n"
+    )
+
+    assert rows["hapax-obsidian-publish-sync.service"].active_state == "failed"
+    assert rows["hapax-obsidian-publish-sync.service"].sub_state == "failed"
+
+
+def test_stale_artifact_is_critical(tmp_path: Path) -> None:
+    for _, relative_path, _ in audit.CRITICAL_ARTIFACTS:
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n", encoding="utf-8")
+    stale_path = tmp_path / "operator-current-state.json"
+    stale_time = datetime(2026, 5, 18, 12, 0, tzinfo=UTC).timestamp()
+    stale_path.touch()
+
+    os.utime(stale_path, (stale_time, stale_time))
+
+    findings = audit.classify_artifact_findings(tmp_path, datetime(2026, 5, 18, 12, 20, tzinfo=UTC))
+
+    assert ("critical", "artifact_stale", "operator_current_state") in [
+        (f.severity, f.kind, f.subject) for f in findings
+    ]
+
+
+def test_fresh_artifacts_have_no_findings(tmp_path: Path) -> None:
+    now = datetime(2026, 5, 18, 12, 0, tzinfo=UTC)
+    for _, relative_path, _ in audit.CRITICAL_ARTIFACTS:
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n", encoding="utf-8")
+        timestamp = (now - timedelta(seconds=30)).timestamp()
+
+        os.utime(path, (timestamp, timestamp))
+
+    assert audit.classify_artifact_findings(tmp_path, now) == []
+
+
+def test_security_signal_artifact_matches_systemd_state_contract() -> None:
+    artifacts = {label: relative_path for label, relative_path, _ in audit.CRITICAL_ARTIFACTS}
+
+    assert artifacts["security_signal_intake_state"] == Path("security-signal-intake-state.json")

@@ -398,6 +398,7 @@ jobs:
             --ignore=tests/test_demo_screenshots.py \
             --ignore=tests/test_demo_screencasts.py \
             --ignore=tests/test_demo_title_cards.py \
+            --ignore=tests/test_demo_video_integration.py \
             --ignore=tests/test_demo_video.py \
             --ignore=tests/test_demo_timeline.py \
             --ignore=tests/test_event_log_trace_id.py \
@@ -443,6 +444,7 @@ jobs:
               --ignore=tests/test_demo_screenshots.py \
               --ignore=tests/test_demo_screencasts.py \
               --ignore=tests/test_demo_title_cards.py \
+              --ignore=tests/test_demo_video_integration.py \
               --ignore=tests/test_demo_video.py \
               --ignore=tests/test_demo_timeline.py \
               --ignore=tests/test_event_log_trace_id.py \
@@ -511,7 +513,11 @@ jobs:
           OLLAMA_HOST: "http://0.0.0.0:1"
           OTEL_SDK_DISABLED: "true"
           LANGFUSE_HOST: "http://0.0.0.0:1"
-        run: uv run pytest tests/test_demo_title_cards.py -q --tb=line --benchmark-disable
+        run: |
+          uv run pytest \
+            tests/test_demo_title_cards.py \
+            tests/test_demo_video_integration.py \
+            -q --tb=line --benchmark-disable
 
   test:
     needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard, test-title-cards]
@@ -623,7 +629,11 @@ jobs:
           OLLAMA_HOST: "http://0.0.0.0:1"
           OTEL_SDK_DISABLED: "true"
           LANGFUSE_HOST: "http://0.0.0.0:1"
-        run: uv run pytest tests/test_demo_title_cards.py -q --tb=line --benchmark-disable
+        run: |
+          uv run pytest \
+            tests/test_demo_title_cards.py \
+            tests/test_demo_video_integration.py \
+            -q --tb=line --benchmark-disable
       - name: Run tests
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         env:
@@ -665,6 +675,7 @@ jobs:
               --ignore=tests/test_demo_screenshots.py \
               --ignore=tests/test_demo_screencasts.py \
               --ignore=tests/test_demo_title_cards.py \
+              --ignore=tests/test_demo_video_integration.py \
               --ignore=tests/test_demo_video.py \
               --ignore=tests/test_demo_timeline.py \
               --ignore=tests/test_event_log_trace_id.py \
