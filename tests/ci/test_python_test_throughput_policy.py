@@ -71,7 +71,9 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
 
     assert "github.event_name == 'merge_group'" in title_card_block
     assert "Install system deps for serial title-card tests" in title_card_block
-    assert "sudo apt-get install -y libcairo2-dev" in title_card_block
+    assert (
+        "sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection"
+    ) in title_card_block
     assert "uv run pytest tests/test_demo_title_cards.py -q --tb=line" in title_card_block
 
 

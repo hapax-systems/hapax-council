@@ -501,7 +501,7 @@ jobs:
       - name: Install system deps for serial title-card tests
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcairo2-dev
+          sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection
       - name: Sync uv ci extras for serial title-card tests
         run: uv sync --extra ci
       - name: Run serial title-card tests
