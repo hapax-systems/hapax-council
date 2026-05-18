@@ -1,0 +1,102 @@
+schema_version: 1
+task_id: ci-merge-queue-runtime-weighted-pytest-shards-20260518
+status: active
+weight_units: collected_test_equivalent
+unknown_file_fallback: collected_test_count
+assignment_policy:
+  selector: scripts/ci_select_pytest_shard.py
+  sort: descending_weight_then_path
+  placement: greedy_lowest_load
+  tie_breakers:
+    - current_shard_load
+    - current_shard_file_count
+    - shard_index
+evidence:
+  - source: github_actions_merge_group
+    pr: 3444
+    run_id: 26035987726
+    merge_commit: 0eaf201f090439ce59690f0a08ec6d01d640751c
+    captured_at: 2026-05-18T13:49:00Z
+    summary: >-
+      Four collected-test-count-balanced shards were materially faster than the
+      prior two-shard topology, but shard 4 remained the long pole because slow
+      runtime clusters were not represented by collected test count.
+    shard_pytest_seconds:
+      "1": 246.32
+      "2": 250.29
+      "3": 236.20
+      "4": 884.43
+files:
+  tests/studio_compositor/test_compositor_wiring.py:
+    collected_test_equivalent_weight: 9000
+    evidence:
+      shard: 4
+      top_25_duration_seconds_for_file: 192.90
+      note: >-
+        Dominated the long-pole shard under pytest-xdist loadfile scheduling;
+        coarse weight prevents co-location with most other runtime-heavy files.
+  tests/scripts/test_post_merge_smoke.py:
+    collected_test_equivalent_weight: 1200
+    evidence:
+      shard: 2
+      top_25_duration_seconds_for_file: 30.10
+  tests/scripts/test_hapax_post_merge_deploy.py:
+    collected_test_equivalent_weight: 900
+    evidence:
+      shard: 1
+      top_25_duration_seconds_for_file: 22.87
+  tests/studio_compositor/test_preset_family_selector_deprecation.py:
+    collected_test_equivalent_weight: 900
+    evidence:
+      shard: 3
+      top_25_duration_seconds_for_file: 28.90
+  tests/studio_compositor/test_no_blink.py:
+    collected_test_equivalent_weight: 900
+    evidence:
+      shard: 2
+      top_25_duration_seconds_for_file: 16.41
+  tests/scripts/test_hapax_pipewire_graph_cli.py:
+    collected_test_equivalent_weight: 800
+    evidence:
+      shard: 3
+      top_25_duration_seconds_for_file: 18.58
+  tests/scripts/test_hapax_audio_safe_restart.py:
+    collected_test_equivalent_weight: 800
+    evidence:
+      shard: 1
+      top_25_duration_seconds_for_file: 14.29
+  tests/scripts/test_hapax_live_surface_preflight.py:
+    collected_test_equivalent_weight: 750
+    evidence:
+      shard: 2
+      top_25_duration_seconds_for_file: 12.36
+  tests/test_llm_import_graph.py:
+    collected_test_equivalent_weight: 500
+    evidence:
+      shard: 1
+      top_25_duration_seconds_for_file: 13.86
+  tests/test_forbidden_social_media_imports.py:
+    collected_test_equivalent_weight: 400
+    evidence:
+      shard: 2
+      top_25_duration_seconds_for_file: 7.58
+  tests/test_forbidden_payment_imports.py:
+    collected_test_equivalent_weight: 350
+    evidence:
+      shard: 2
+      top_25_duration_seconds_for_file: 5.95
+  tests/test_agent_registry.py:
+    collected_test_equivalent_weight: 300
+    evidence:
+      shard: 1
+      top_25_duration_seconds_for_file: 8.62
+  tests/test_check_claim_registry.py:
+    collected_test_equivalent_weight: 250
+    evidence:
+      shard: 4
+      top_25_duration_seconds_for_file: 6.41
+  tests/test_affordance_recruitment_probe.py:
+    collected_test_equivalent_weight: 250
+    evidence:
+      shard: 4
+      top_25_duration_seconds_for_file: 5.67
