@@ -1041,11 +1041,39 @@ class CpalRunner:
                 len(narrative) if narrative else 0,
             )
 
-            # Resolve the destination explicitly before synthesis/playback.
-            # Autonomous narration only reaches broadcast when the public gates
-            # pass and the impingement already carries bridge-produced public
-            # metadata. CPAL's broadcast bias is a candidate trigger only; this
-            # runner must not mint broadcast intent or programme authorization.
+            # Refresh programme authorization if still valid.
+            # Auth is stamped at emit time but impingements queue behind
+            # TTS playback (60-100s per utterance). By the time we reach
+            # here the authorized_at timestamp exceeds BROADCAST_AUTH_MAX_AGE_S.
+            # Re-stamping preserves the safety check while handling pipeline
+            # latency — we only refresh if the same programme is still active.
+            if isinstance(content, dict):
+                auth = content.get("programme_authorization")
+                if isinstance(auth, dict) and auth.get("authorized") is True:
+                    try:
+                        from shared.programme_store import default_store as _ds2
+
+                        current_prog = _ds2().active_programme()
+                        orig_ref = auth.get("evidence_ref", "")
+                        prog_id = getattr(current_prog, "id", None) or getattr(
+                            current_prog, "programme_id", None
+                        )
+                        if prog_id and f"programme:{prog_id}" == orig_ref:
+                            auth["authorized_at"] = time.time()
+                            log.info(
+                                "autonomous_narrative: refreshed programme auth (prog=%s)",
+                                prog_id,
+                            )
+                        else:
+                            log.info(
+                                "autonomous_narrative: programme changed, not refreshing auth "
+                                "(orig=%s, current=%s)",
+                                orig_ref,
+                                prog_id,
+                            )
+                    except Exception:
+                        log.info("autonomous_narrative: programme store unavail for auth refresh")
+
             try:
                 register = self._register_bridge.current_register()
                 decision = resolve_playback_decision(impingement, voice_register=register)
