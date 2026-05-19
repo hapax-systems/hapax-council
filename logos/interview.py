@@ -258,6 +258,13 @@ Each topic should have:
 - An opening question that invites reflection, not yes/no answers
 - An appropriate depth: "surface" for new areas, "deep" to elaborate on existing facts,
   "challenge" to constructively critique practices or goals
+
+CRITICAL — Output format:
+Your response MUST be valid JSON with exactly these top-level keys:
+  {"topics": [...], "overall_focus": "..."}
+Each topic object MUST have exactly these keys:
+  {"dimension": "...", "topic": "...", "rationale": "...", "question_seed": "...", "depth": "surface|deep|challenge"}
+Do NOT wrap in "interview_plan" or use any other key names.
 """
 
 # Neurocognitive exploration guidance — only injected when there's an actual gap
@@ -431,6 +438,7 @@ async def generate_interview_plan(
         get_model(model_alias),
         output_type=InterviewPlan,
         system_prompt=system_prompt,
+        retries=3,
     )
 
     result = await planner.run("\n".join(parts))
