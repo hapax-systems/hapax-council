@@ -228,6 +228,7 @@ if [[ -n "$role" ]]; then
   if [[ -f "$claim_file" ]] && [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]]; then
     rm -f "$claim_file"
     echo "cc-close: cleared claim file for role '$role'"
+    systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
   fi
 fi
 

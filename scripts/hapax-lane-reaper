@@ -142,3 +142,8 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "
 done
 
 log "Done: killed=$killed cleaned=$cleaned"
+
+if [[ "$DRY_RUN" -eq 0 && $(( killed + cleaned )) -gt 0 ]]; then
+    systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
+    log "Triggered hygiene sweep after cleanup"
+fi
