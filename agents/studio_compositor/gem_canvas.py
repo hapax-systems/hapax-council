@@ -159,9 +159,7 @@ class GlyphCanvas:
 
     def __post_init__(self) -> None:
         if not self.cells:
-            self.cells = [
-                [GlyphCell() for _ in range(self.cols)] for _ in range(self.rows)
-            ]
+            self.cells = [[GlyphCell() for _ in range(self.cols)] for _ in range(self.rows)]
 
     def clear(self) -> None:
         """Reset all cells to empty."""
@@ -246,12 +244,7 @@ class GlyphCanvas:
         total = self.rows * self.cols
         if total == 0:
             return 0.0
-        filled = sum(
-            1
-            for row in self.cells
-            for cell in row
-            if cell.glyph and cell.glyph != " "
-        )
+        filled = sum(1 for row in self.cells for cell in row if cell.glyph and cell.glyph != " ")
         return filled / total
 
     @classmethod
@@ -321,9 +314,7 @@ class CompositionFrame:
 
     glyphs: tuple[str, ...] = ()
     duration_ms: int = 1000
-    transition_from_prev: Literal[
-        "zero-cut", "scroll-h", "scroll-v", "overstrike"
-    ] = "zero-cut"
+    transition_from_prev: Literal["zero-cut", "scroll-h", "scroll-v", "overstrike"] = "zero-cut"
 
 
 @dataclass(frozen=True)
@@ -336,9 +327,7 @@ class GemComposition:
     compose_hold_s: float = 3.0
     emphasis_words: tuple[str, ...] = ()
     banner_word: str | None = None
-    anchor: Literal[
-        "tl", "tc", "tr", "cl", "cc", "cr", "bl", "bc", "br"
-    ] = "cc"
+    anchor: Literal["tl", "tc", "tr", "cl", "cc", "cr", "bl", "bc", "br"] = "cc"
     created_at: float = 0.0
 
 
