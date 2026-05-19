@@ -136,6 +136,7 @@ class SalienceRouter:
         face_count: int = 0,
         has_tools: bool = True,
         desk_activity: str = "idle",
+        interview_mode: bool = False,
     ) -> RoutingDecision:
         """Route an utterance to a model tier based on activation score.
 
@@ -179,6 +180,20 @@ class SalienceRouter:
                     model="",
                     reason="phatic",
                     canned_response=canned,
+                )
+
+        # ── Interview mode: bias LOCAL (Command-R) for grounding ──
+        if interview_mode and not guest_mode and consent_phase == "none":
+            if not features.has_explicit_escalation:
+                self._record_breakdown(
+                    0.0, 0.0, 0.0, 0.0, "interview_mode_local_bias", "LOCAL", t_start
+                )
+                self._add_recent_turn(transcript)
+                return RoutingDecision(
+                    tier=ModelTier.LOCAL,
+                    model=TIER_ROUTES[ModelTier.LOCAL],
+                    reason="interview_mode_local_bias",
+                    canned_response="",
                 )
 
         # ── Explicit escalation override ──────────────────────────
