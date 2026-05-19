@@ -753,7 +753,7 @@ def check_spec_staleness(
                         "request_id": req_id,
                         "age_days": str(age_days),
                         "threshold_days": str(SPEC_STALENESS_DAYS),
-                    }
+                    },
                 )
             )
     return events
