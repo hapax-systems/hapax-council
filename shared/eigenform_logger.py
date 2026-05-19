@@ -26,6 +26,25 @@ def _safe_label(value: str, *, allowed: frozenset[str], default: str) -> str:
     return label if label in allowed else default
 
 
+PERSISTENT_LOG = Path.home() / "hapax-state/research/eigenform-log.jsonl"
+MAX_PERSISTENT_ENTRIES = 50_000
+
+
+def _append_and_trim(
+    entry: dict, path: Path = PERSISTENT_LOG, max_entries: int = MAX_PERSISTENT_ENTRIES
+) -> None:
+    """Append *entry* to a persistent JSONL ring buffer on disk."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+        lines = path.read_text(encoding="utf-8").strip().split("\n")
+        if len(lines) > max_entries * 2:
+            path.write_text("\n".join(lines[-max_entries:]) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def log_state_vector(
     *,
     presence: float = 0.0,
@@ -73,3 +92,6 @@ def log_state_vector(
             path.write_text("\n".join(trimmed) + "\n", encoding="utf-8")
     except OSError:
         pass
+
+    # Persistent disk log (50K ring buffer for long-term convergence analysis)
+    _append_and_trim(entry)
