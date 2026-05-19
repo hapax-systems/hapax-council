@@ -235,7 +235,7 @@ def update_stimmung_sources(agg: VisualLayerAggregator) -> None:
             agg._stimmung_collector.update_audio_perception(
                 spectral_centroid_hz=float(audio_data.get("spectral_centroid_hz", 0.0)),
                 low_high_ratio=float(audio_data.get("low_high_ratio", 1.0)),
-                sample_rate=int(audio_data.get("sample_rate", 48000)),
+                sample_rate=int(audio_data.get("sample_rate", 44100)),
                 **audio_kwargs,
             )
             log.debug(

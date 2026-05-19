@@ -38,7 +38,7 @@ def test_audio_measure_launches_background_pw_cat_and_analyzes_capture(tmp_path:
         bin_dir / "pactl",
         """
         if [[ "$*" == "list short sources" ]]; then
-          printf '42\\thapax-broadcast-normalized\\tPipeWire\\ts16le 2ch 48000Hz\\tRUNNING\\n'
+          printf '42\\thapax-broadcast-normalized\\tPipeWire\\ts16le 2ch 44100Hz\\tRUNNING\\n'
           exit 0
         fi
         exit 1
@@ -117,7 +117,7 @@ def test_audio_measure_targets_requested_node_when_it_is_already_a_source(
         bin_dir / "pactl",
         """
         if [[ "$*" == "list short sources" ]]; then
-          printf '42\\thapax-broadcast-normalized\\tPipeWire\\ts16le 2ch 48000Hz\\tRUNNING\\n'
+          printf '42\\thapax-broadcast-normalized\\tPipeWire\\ts16le 2ch 44100Hz\\tRUNNING\\n'
           exit 0
         fi
         exit 1

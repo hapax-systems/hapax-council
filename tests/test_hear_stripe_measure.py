@@ -28,7 +28,7 @@ def _load_module():
 hsm = _load_module()
 
 
-def _write_wav(path: Path, data: np.ndarray, sr: int = 48000) -> None:
+def _write_wav(path: Path, data: np.ndarray, sr: int = 44100) -> None:
     soundfile.write(str(path), data, sr, format="WAV", subtype="FLOAT")
 
 
@@ -40,7 +40,7 @@ class TestSpectralAnalysis:
         assert result == {"error": "empty signal"}
 
     def test_sine_1khz_peaks_in_mid_band(self, tmp_path: Path) -> None:
-        sr = 48000
+        sr = 44100
         t = np.linspace(0, 1.0, sr, endpoint=False)
         data = 0.5 * np.sin(2 * np.pi * 1000 * t).astype(np.float32)
         wav = tmp_path / "sine_1k.wav"
@@ -53,7 +53,7 @@ class TestSpectralAnalysis:
         assert result["duration_s"] == pytest.approx(1.0, abs=0.01)
 
     def test_stereo_downmix(self, tmp_path: Path) -> None:
-        sr = 48000
+        sr = 44100
         t = np.linspace(0, 0.5, sr // 2, endpoint=False)
         left = 0.5 * np.sin(2 * np.pi * 440 * t).astype(np.float32)
         right = 0.5 * np.sin(2 * np.pi * 440 * t).astype(np.float32)
@@ -67,7 +67,7 @@ class TestSpectralAnalysis:
         assert result["duration_s"] == pytest.approx(0.5, abs=0.01)
 
     def test_high_frequency_signal_raises_hf_ratio(self, tmp_path: Path) -> None:
-        sr = 48000
+        sr = 44100
         t = np.linspace(0, 1.0, sr, endpoint=False)
         data = 0.3 * np.sin(2 * np.pi * 12000 * t).astype(np.float32)
         wav = tmp_path / "hf.wav"
@@ -77,7 +77,7 @@ class TestSpectralAnalysis:
         assert result["hf_ratio_pct"] > 50
 
     def test_band_keys_complete(self, tmp_path: Path) -> None:
-        sr = 48000
+        sr = 44100
         t = np.linspace(0, 0.1, sr // 10, endpoint=False)
         data = np.random.default_rng(42).normal(0, 0.1, len(t)).astype(np.float32)
         wav = tmp_path / "noise.wav"
@@ -130,7 +130,7 @@ class TestVerdictLogic:
 
 class TestVerdictInconclusive:
     def test_very_quiet_signal_below_threshold(self, tmp_path: Path) -> None:
-        sr = 48000
+        sr = 44100
         data = np.full(sr, 1e-6, dtype=np.float32)
         wav = tmp_path / "quiet.wav"
         _write_wav(wav, data, sr)

@@ -202,7 +202,7 @@ def test_live_broadcast_egress_lufs_in_band(tmp_path: Path) -> None:
             "hapax-obs-broadcast-remap.monitor",
             str(capture),
             "--format=s16",
-            "--rate=48000",
+            "--rate=44100",
             "--channels=2",
         ],
         timeout=10,

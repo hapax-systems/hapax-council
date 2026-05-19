@@ -41,7 +41,7 @@ DEFAULT_DWELL_S = 2.0  # both must be active for this duration → fire
 DEFAULT_COOLDOWN_S = 60.0  # min seconds between alerts
 DEFAULT_FRAME_MS = 100  # capture frame size
 DEFAULT_CHANNELS = 14
-DEFAULT_RATE = 48000
+DEFAULT_RATE = 44100
 DEFAULT_AUX_EVILPET = 5  # AUX5 = CH6 Evil Pet return
 DEFAULT_AUX_VINYL_L = 8  # AUX8 = CH9 Handytraxx L
 DEFAULT_AUX_VINYL_R = 9  # AUX9 = CH10 Handytraxx R

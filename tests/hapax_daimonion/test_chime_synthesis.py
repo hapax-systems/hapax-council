@@ -23,25 +23,25 @@ class TestSynthesizeChime:
     def test_activation_duration(self):
         """Activation chime should be ~350ms at 48kHz."""
         audio = synthesize_chime("activation")
-        duration_ms = len(audio) / 48000 * 1000
+        duration_ms = len(audio) / 44100 * 1000
         assert 340 <= duration_ms <= 360
 
     def test_deactivation_duration(self):
         """Deactivation chime should be ~280ms."""
         audio = synthesize_chime("deactivation")
-        duration_ms = len(audio) / 48000 * 1000
+        duration_ms = len(audio) / 44100 * 1000
         assert 270 <= duration_ms <= 290
 
     def test_error_duration(self):
         """Error chime should be ~200ms."""
         audio = synthesize_chime("error")
-        duration_ms = len(audio) / 48000 * 1000
+        duration_ms = len(audio) / 44100 * 1000
         assert 190 <= duration_ms <= 210
 
     def test_completion_duration(self):
         """Completion chime should be ~150ms."""
         audio = synthesize_chime("completion")
-        duration_ms = len(audio) / 48000 * 1000
+        duration_ms = len(audio) / 44100 * 1000
         assert 140 <= duration_ms <= 160
 
     def test_peak_amplitude_within_bounds(self):
@@ -74,7 +74,7 @@ class TestGenerateAllChimes:
         with wave.open(str(tmp_path / "activation.wav"), "rb") as f:
             assert f.getnchannels() == 1
             assert f.getsampwidth() == 2
-            assert f.getframerate() == 48000
+            assert f.getframerate() == 44100
 
     def test_wav_not_empty(self, tmp_path):
         generate_all_chimes(tmp_path)

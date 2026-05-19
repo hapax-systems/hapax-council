@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
-SAMPLE_RATE = 48000
+SAMPLE_RATE = 44100
 
 
 @dataclass

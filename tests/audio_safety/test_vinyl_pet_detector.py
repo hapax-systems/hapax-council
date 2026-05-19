@@ -114,9 +114,9 @@ def test_detector_config_dwell_frames_rounds_correctly() -> None:
 
 
 def test_detector_config_frame_bytes_int16_14ch() -> None:
-    cfg = DetectorConfig(rate=48000, channels=14, frame_ms=100)
-    # 100ms at 48kHz = 4800 samples; 14ch × 2 bytes = 28 → 4800 × 28 = 134400
-    assert cfg.frame_bytes == 134_400
+    cfg = DetectorConfig(rate=44100, channels=14, frame_ms=100)
+    # 100ms at 44.1kHz = 4410 samples; 14ch × 2 bytes = 28 → 4410 × 28 = 123480
+    assert cfg.frame_bytes == 123_480
 
 
 def test_detector_config_dwell_frames_minimum_one() -> None:
@@ -129,7 +129,7 @@ def test_detector_config_dwell_frames_minimum_one() -> None:
 
 def _config_for_test(impingements_path: Path) -> DetectorConfig:
     return DetectorConfig(
-        rate=48000,
+        rate=44100,
         channels=14,
         frame_ms=100,
         rms_threshold=0.05,

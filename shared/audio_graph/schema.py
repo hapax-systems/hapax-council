@@ -154,7 +154,7 @@ class FormatSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    rate_hz: Literal[16000, 44100, 48000] = 48000
+    rate_hz: Literal[16000, 44100, 48000] = 44100
     format: Literal["S16LE", "S24LE", "S32LE", "F32LE"] = "S32LE"
     channels: int = Field(..., ge=1, le=64)
 

@@ -98,12 +98,12 @@ class TestGenerateMarkerTone:
 
     def test_rejects_above_nyquist(self) -> None:
         with pytest.raises(ValueError, match="exceeds Nyquist"):
-            generate_marker_tone(freq_hz=30000.0, sample_rate=48000)
+            generate_marker_tone(freq_hz=30000.0, sample_rate=44100)
 
     def test_fft_peak_at_carrier(self) -> None:
         """The generated tone's FFT must show its largest peak at the
         requested carrier frequency."""
-        sample_rate = 48000
+        sample_rate = 44100
         freq_hz = 17500.0
         samples = generate_marker_tone(freq_hz=freq_hz, duration_s=0.5, sample_rate=sample_rate)
         spectrum = np.abs(np.fft.rfft(samples.astype(np.float64)))
@@ -145,16 +145,16 @@ class TestDetectMarker:
         assert result.detected is True
 
     def test_not_detected_in_white_noise(self) -> None:
-        samples = _white_noise(48000, seed=1)
+        samples = _white_noise(44100, seed=1)
         result = detect_marker_in_capture(samples)
         assert result.detected is False
         # Noise should fail SNR (the marker freq has no excess power).
         assert result.failure_reason == "snr-below-threshold"
 
     def test_not_detected_when_tone_at_different_frequency(self) -> None:
-        """A 5 kHz tone (well outside the carrier) must not trip the
+        """A 6 kHz tone (well outside the carrier) must not trip the
         17.5 kHz detector."""
-        samples = generate_marker_tone(freq_hz=5000.0, duration_s=0.5)
+        samples = generate_marker_tone(freq_hz=6000.0, duration_s=0.5)
         result = detect_marker_in_capture(samples)
         assert result.detected is False
         assert result.failure_reason == "snr-below-threshold"
@@ -188,7 +188,7 @@ class TestDetectMarker:
         """Lowering the threshold below the natural noise-floor SNR
         should make even noise pass — useful for negative-test
         calibration. Pin so future SNR-default changes are deliberate."""
-        samples = _white_noise(48000, seed=2)
+        samples = _white_noise(44100, seed=2)
         result = detect_marker_in_capture(samples, snr_threshold_db=-100.0)
         # With a permissive threshold, the noise spectrum's natural
         # spread will trip detection — pinning the calibration knob.

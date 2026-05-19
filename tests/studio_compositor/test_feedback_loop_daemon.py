@@ -230,11 +230,11 @@ class TestRunLoopWatchdogKick:
 class TestDiscoverL12Source:
     _PACTL_OUTPUT = (
         "210\talsa_output.usb-Torso_Electronics_S-4_xxx-03.multichannel-output.monitor\t"
-        "PipeWire\ts16le 10ch 48000Hz\tSUSPENDED\n"
+        "PipeWire\ts16le 10ch 44100Hz\tSUSPENDED\n"
         "211\talsa_input.usb-Torso_Electronics_S-4_xxx-03.multichannel-input\t"
-        "PipeWire\ts16le 10ch 48000Hz\tSUSPENDED\n"
+        "PipeWire\ts16le 10ch 44100Hz\tSUSPENDED\n"
         "213\talsa_input.usb-ZOOM_Corporation_L-12_8253...-00.multichannel-input\t"
-        "PipeWire\ts32le 14ch 48000Hz\tRUNNING\n"
+        "PipeWire\ts32le 14ch 44100Hz\tRUNNING\n"
     )
 
     def test_finds_l12_by_substring(self) -> None:

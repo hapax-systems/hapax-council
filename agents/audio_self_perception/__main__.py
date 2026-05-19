@@ -63,7 +63,7 @@ def _write_state(perception: dict, error: str | None = None) -> None:
 def _probe_once() -> None:
     config = ProbeConfig(
         duration_s=CAPTURE_DURATION_S,
-        sample_rate=48000,
+        sample_rate=44100,
         channels=2,
     )
     try:

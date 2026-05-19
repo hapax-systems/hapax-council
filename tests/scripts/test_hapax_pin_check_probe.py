@@ -105,7 +105,7 @@ class TestProbeAssembly:
                 ;;
               "list short")
                 if [[ "$3" == "sinks" ]]; then
-                    printf "42\talsa_output.test\tPipeWire\ts32le 2ch 48000Hz\tRUNNING\n"
+                    printf "42\talsa_output.test\tPipeWire\ts32le 2ch 44100Hz\tRUNNING\n"
                 elif [[ "$3" == "sink-inputs" ]]; then
                     printf "100\tPipeWire\t-\t42\ts16le 2ch\n"
                 fi
@@ -157,7 +157,7 @@ class TestProbeAssembly:
                 ;;
               "list short")
                 if [[ "$3" == "sinks" ]]; then
-                    printf "42\talsa_output.test\tPipeWire\ts32le 2ch 48000Hz\tIDLE\n"
+                    printf "42\talsa_output.test\tPipeWire\ts32le 2ch 44100Hz\tIDLE\n"
                 elif [[ "$3" == "sink-inputs" ]]; then
                     printf ""
                 fi
@@ -194,7 +194,7 @@ class TestProbeAssembly:
                 ;;
               "list short")
                 if [[ "$3" == "sinks" ]]; then
-                    printf "42\talsa_output.test\tPipeWire\ts32le 2ch 48000Hz\tRUNNING\n"
+                    printf "42\talsa_output.test\tPipeWire\ts32le 2ch 44100Hz\tRUNNING\n"
                 elif [[ "$3" == "sink-inputs" ]]; then
                     printf "100\tPipeWire\t-\t42\ts16le 2ch\n"
                 fi
@@ -261,7 +261,7 @@ class TestAutoFixWiring:
                 ;;
               "list short")
                 if [[ "$3" == "sinks" ]]; then
-                    printf "42\talsa_output.test\tPipeWire\ts32le 2ch 48000Hz\tRUNNING\n"
+                    printf "42\talsa_output.test\tPipeWire\ts32le 2ch 44100Hz\tRUNNING\n"
                 elif [[ "$3" == "sink-inputs" ]]; then
                     printf "100\tPipeWire\t-\t42\ts16le 2ch\n"
                 fi

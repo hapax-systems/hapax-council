@@ -79,8 +79,8 @@ class TestTrackBeats:
         )
 
         mock_info = MagicMock()
-        mock_info.num_frames = 48000
-        mock_info.sample_rate = 48000
+        mock_info.num_frames = 44100
+        mock_info.sample_rate = 44100
 
         mock_torchaudio = MagicMock()
         mock_torchaudio.info.return_value = mock_info

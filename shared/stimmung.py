@@ -665,7 +665,7 @@ class StimmungCollector:
         voice_ratio: float = 0.0,
         music_ratio: float = 0.0,
         env_ratio: float = 0.0,
-        sample_rate: int = 48000,
+        sample_rate: int = 44100,
         scene: str | None = None,
         is_speech: bool | None = None,
         music_playing: bool | None = None,

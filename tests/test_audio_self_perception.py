@@ -34,7 +34,7 @@ class TestAnalyzerEmpty:
 
 
 class TestAnalyzerSineWave:
-    def _sine(self, freq_hz: float, duration_s: float = 1.0, sr: int = 48000) -> np.ndarray:
+    def _sine(self, freq_hz: float, duration_s: float = 1.0, sr: int = 44100) -> np.ndarray:
         t = np.arange(int(sr * duration_s)) / sr
         return (np.sin(2 * np.pi * freq_hz * t) * 16000).astype(np.int16)
 
@@ -42,14 +42,14 @@ class TestAnalyzerSineWave:
         from agents.audio_self_perception.analyzer import analyze
 
         samples = self._sine(1000.0)
-        result = analyze(samples, sample_rate=48000)
+        result = analyze(samples, sample_rate=44100)
         assert 900 < result.spectral_centroid_hz < 1100
 
     def test_high_frequency_centroid(self):
         from agents.audio_self_perception.analyzer import analyze
 
-        low = analyze(self._sine(500.0), sample_rate=48000)
-        high = analyze(self._sine(5000.0), sample_rate=48000)
+        low = analyze(self._sine(500.0), sample_rate=44100)
+        high = analyze(self._sine(5000.0), sample_rate=44100)
         assert high.spectral_centroid_hz > low.spectral_centroid_hz
 
     def test_rms_reasonable(self):
@@ -76,8 +76,8 @@ class TestAnalyzerNoise:
         from agents.audio_self_perception.analyzer import analyze
 
         rng = np.random.default_rng(42)
-        noise = (rng.standard_normal(48000) * 8000).astype(np.int16)
-        result = analyze(noise, sample_rate=48000)
+        noise = (rng.standard_normal(44100) * 8000).astype(np.int16)
+        result = analyze(noise, sample_rate=44100)
         # White noise: equal energy/Hz, so ratio ≈ low_bw/high_bw ≈ 1000/23000 ≈ 0.04
         assert 0.01 < result.low_high_ratio < 0.15
 
@@ -85,8 +85,8 @@ class TestAnalyzerNoise:
         from agents.audio_self_perception.analyzer import analyze
 
         rng = np.random.default_rng(42)
-        noise = (rng.standard_normal(48000) * 8000).astype(np.int16)
-        result = analyze(noise, sample_rate=48000)
+        noise = (rng.standard_normal(44100) * 8000).astype(np.int16)
+        result = analyze(noise, sample_rate=44100)
         assert result.voice_ratio > 0.1
         assert result.music_ratio > 0.1
         assert result.env_ratio > 0.1
@@ -96,7 +96,7 @@ class TestAnalyzerSilence:
     def test_silence_floor(self):
         from agents.audio_self_perception.analyzer import analyze
 
-        silence = np.zeros(48000, dtype=np.int16)
+        silence = np.zeros(44100, dtype=np.int16)
         result = analyze(silence)
         assert result.rms_dbfs == -120.0
 
@@ -105,7 +105,7 @@ class TestAnalyzerBalance:
     def test_low_freq_dominated_has_high_ratio(self):
         from agents.audio_self_perception.analyzer import analyze
 
-        t = np.arange(48000) / 48000.0
+        t = np.arange(44100) / 44100.0
         low = (np.sin(2 * np.pi * 100 * t) * 16000).astype(np.int16)
         result = analyze(low)
         assert result.low_high_ratio > 5.0
@@ -113,7 +113,7 @@ class TestAnalyzerBalance:
     def test_high_freq_dominated_has_low_ratio(self):
         from agents.audio_self_perception.analyzer import analyze
 
-        t = np.arange(48000) / 48000.0
+        t = np.arange(44100) / 44100.0
         high = (np.sin(2 * np.pi * 8000 * t) * 16000).astype(np.int16)
         result = analyze(high)
         assert result.low_high_ratio < 0.2

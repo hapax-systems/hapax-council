@@ -17,7 +17,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-CHIME_SAMPLE_RATE = 48000
+CHIME_SAMPLE_RATE = 44100
 CHIME_CHANNELS = 1
 CHIME_SAMPLE_WIDTH = 2  # 16-bit
 
