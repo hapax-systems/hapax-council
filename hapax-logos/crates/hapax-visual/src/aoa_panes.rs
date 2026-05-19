@@ -341,6 +341,17 @@ pub struct AoaPaneFrameObservation {
     pub gate_reasons: Vec<AoaPaneObservationGateReason>,
 }
 
+impl AoaPaneFrameObservation {
+    pub fn metrics(&self) -> AoaPaneObservationMetrics {
+        AoaPaneObservationMetrics {
+            projected_area_px2: self.projected_area_px2,
+            min_projected_edge_px: self.min_projected_edge_px,
+            facing_dot: self.facing_dot,
+            visible_fraction: self.visible_fraction,
+        }
+    }
+}
+
 impl AoaPanePayloadGate {
     pub fn visible_inside(barycentric: [f32; 3]) -> Self {
         Self {
@@ -611,6 +622,44 @@ pub fn aoa_lod_class_for_metrics_with_state(
         return previous;
     }
     raw
+}
+
+pub fn aoa_min_lod_for_binding_mode(mode: AoaPaneBindingMode) -> AoaPaneLodClass {
+    match mode {
+        AoaPaneBindingMode::EdgeAccent => AoaPaneLodClass::Accent,
+        AoaPaneBindingMode::SignalGlyph => AoaPaneLodClass::Glyph,
+        AoaPaneBindingMode::DataGlyph => AoaPaneLodClass::CompactData,
+        AoaPaneBindingMode::TriTextureMasked => AoaPaneLodClass::Text,
+    }
+}
+
+pub fn aoa_pane_lod_supports_binding_mode(
+    lod_class: AoaPaneLodClass,
+    mode: AoaPaneBindingMode,
+) -> bool {
+    lod_class >= aoa_min_lod_for_binding_mode(mode)
+}
+
+pub fn aoa_pane_lod_alpha_for_binding_mode(
+    observation: &AoaPaneFrameObservation,
+    mode: AoaPaneBindingMode,
+) -> f32 {
+    if !aoa_pane_lod_supports_binding_mode(observation.lod_class, mode) {
+        return 0.0;
+    }
+    let ratio = lod_metric_ratio(observation.metrics(), aoa_min_lod_for_binding_mode(mode));
+    smoothstep(0.92, 1.08, ratio)
+}
+
+impl AoaPaneBindingMode {
+    pub fn shader_payload_mode(self) -> f32 {
+        match self {
+            Self::EdgeAccent => 1.0,
+            Self::SignalGlyph => 2.0,
+            Self::DataGlyph => 3.0,
+            Self::TriTextureMasked => 4.0,
+        }
+    }
 }
 
 pub fn aoa_pane_records(render_depth: u32) -> Vec<AoaPaneRecord> {
@@ -1139,6 +1188,56 @@ fn metrics_support_lod(
     }
 }
 
+fn lod_metric_ratio(metrics: AoaPaneObservationMetrics, lod: AoaPaneLodClass) -> f32 {
+    if !metrics_are_finite(metrics) {
+        return 0.0;
+    }
+    match lod {
+        AoaPaneLodClass::Text => [
+            metrics.projected_area_px2 / AOA_PANE_TEXT_AREA_PX2,
+            metrics.min_projected_edge_px / AOA_PANE_TEXT_MIN_EDGE_PX,
+            metrics.facing_dot / AOA_PANE_TEXT_MIN_FACING_DOT,
+            metrics.visible_fraction / AOA_PANE_TEXT_MIN_VISIBLE_FRACTION,
+        ],
+        AoaPaneLodClass::CompactData => [
+            metrics.projected_area_px2 / AOA_PANE_COMPACT_AREA_PX2,
+            metrics.min_projected_edge_px / AOA_PANE_COMPACT_MIN_EDGE_PX,
+            metrics.facing_dot / AOA_PANE_COMPACT_MIN_FACING_DOT,
+            metrics.visible_fraction / AOA_PANE_COMPACT_MIN_VISIBLE_FRACTION,
+        ],
+        AoaPaneLodClass::Glyph => [
+            metrics.projected_area_px2 / AOA_PANE_GLYPH_AREA_PX2,
+            metrics.min_projected_edge_px / AOA_PANE_GLYPH_MIN_EDGE_PX,
+            f32::INFINITY,
+            metrics.visible_fraction / AOA_PANE_GLYPH_MIN_VISIBLE_FRACTION,
+        ],
+        AoaPaneLodClass::Accent => [
+            metrics.projected_area_px2 / AOA_PANE_ACCENT_AREA_PX2,
+            metrics.min_projected_edge_px / AOA_PANE_ACCENT_MIN_EDGE_PX,
+            f32::INFINITY,
+            f32::INFINITY,
+        ],
+        AoaPaneLodClass::EdgeOnly => [
+            f32::INFINITY,
+            metrics.min_projected_edge_px / AOA_PANE_MIN_VISIBLE_EDGE_PX,
+            f32::INFINITY,
+            metrics.visible_fraction.max(0.0),
+        ],
+        AoaPaneLodClass::Culled => [0.0; 4],
+    }
+    .into_iter()
+    .filter(|ratio| ratio.is_finite())
+    .fold(f32::INFINITY, f32::min)
+}
+
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    if !value.is_finite() || edge0 >= edge1 {
+        return 0.0;
+    }
+    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1411,6 +1510,65 @@ mod tests {
             AoaPaneLodClass::Text
         );
         assert!(reasons.contains(&AoaPaneObservationGateReason::HysteresisHold));
+    }
+
+    #[test]
+    fn binding_modes_have_monotonic_lod_requirements_and_fade_alpha() {
+        assert_eq!(
+            aoa_min_lod_for_binding_mode(AoaPaneBindingMode::EdgeAccent),
+            AoaPaneLodClass::Accent
+        );
+        assert_eq!(
+            aoa_min_lod_for_binding_mode(AoaPaneBindingMode::SignalGlyph),
+            AoaPaneLodClass::Glyph
+        );
+        assert_eq!(
+            aoa_min_lod_for_binding_mode(AoaPaneBindingMode::DataGlyph),
+            AoaPaneLodClass::CompactData
+        );
+        assert_eq!(
+            aoa_min_lod_for_binding_mode(AoaPaneBindingMode::TriTextureMasked),
+            AoaPaneLodClass::Text
+        );
+
+        let mut observation = AoaPaneFrameObservation {
+            pane_id: "aoa:pane:v1:a:bcd".to_string(),
+            pane_ordinal: 5,
+            viewport_px: [1920, 1080],
+            screen_bbox_px: [0.0, 0.0, 100.0, 100.0],
+            projected_area_px2: AOA_PANE_ACCENT_AREA_PX2,
+            min_projected_edge_px: AOA_PANE_ACCENT_MIN_EDGE_PX,
+            facing_dot: AOA_PANE_MIN_FRONT_FACING_DOT,
+            visible_fraction: 0.5,
+            occlusion_state: AoaPaneOcclusionState::Visible,
+            lod_class: AoaPaneLodClass::Accent,
+            gate_reasons: Vec::new(),
+        };
+
+        assert!(aoa_pane_lod_supports_binding_mode(
+            observation.lod_class,
+            AoaPaneBindingMode::EdgeAccent
+        ));
+        assert!(!aoa_pane_lod_supports_binding_mode(
+            observation.lod_class,
+            AoaPaneBindingMode::SignalGlyph
+        ));
+        assert_eq!(
+            aoa_pane_lod_alpha_for_binding_mode(&observation, AoaPaneBindingMode::SignalGlyph),
+            0.0
+        );
+
+        let threshold_alpha =
+            aoa_pane_lod_alpha_for_binding_mode(&observation, AoaPaneBindingMode::EdgeAccent);
+        observation.projected_area_px2 = AOA_PANE_ACCENT_AREA_PX2 * 1.2;
+        observation.min_projected_edge_px = AOA_PANE_ACCENT_MIN_EDGE_PX * 1.2;
+        let settled_alpha =
+            aoa_pane_lod_alpha_for_binding_mode(&observation, AoaPaneBindingMode::EdgeAccent);
+        assert!(
+            settled_alpha > threshold_alpha,
+            "alpha should ramp smoothly above the LOD threshold"
+        );
+        assert!(settled_alpha > 0.95);
     }
 
     #[test]

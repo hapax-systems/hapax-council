@@ -1,7 +1,9 @@
 //! Content source manager — scans shm for arbitrary RGBA/text content sources,
 //! manages GPU textures, composites onto ground field.
 
-use crate::aoa_panes::{aoa_active_pane_manifest, AoaPaneBindingMode, AoaPanePrivacyClass};
+use crate::aoa_panes::{
+    aoa_active_pane_manifest, AoaPaneBindingMode, AoaPaneLodClass, AoaPanePrivacyClass,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
@@ -205,6 +207,16 @@ pub enum AoaPaneBindingRejectionReason {
     ModeNotAllowed {
         pane_id: String,
         mode: AoaPaneBindingMode,
+    },
+    PaneLodNotPermitted {
+        pane_id: String,
+        mode: AoaPaneBindingMode,
+        required: AoaPaneLodClass,
+        actual: AoaPaneLodClass,
+    },
+    PaneSubtreeConflict {
+        pane_id: String,
+        selected_pane_id: String,
     },
     MissingPrivacyPosture,
     PrivacyBlocked,
