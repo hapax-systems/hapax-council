@@ -24,6 +24,8 @@ fn main_1() {
     let _e10 = v_texcoord_1;
     let _e11 = textureSample(tex, tex_sampler, _e10);
     c = _e11;
+    let source_luma = dot(c.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    let surface_presence = smoothstep(0.035f, 0.18f, source_luma);
 
     // Elliptical vignette: UV 0..1 mapped to centered -1..1 on both axes.
     // No aspect correction — distance is 1.0 at all four edges, ~1.414 at corners.
@@ -31,9 +33,10 @@ fn main_1() {
     let centered = (v_texcoord_1 - vec2(0.5)) * 2.0;
     d = length(centered);
 
-    let vig = smoothstep(global.u_radius, global.u_radius + global.u_softness, d) * global.u_strength;
+    let vig = smoothstep(global.u_radius, global.u_radius + global.u_softness, d) * global.u_strength * surface_presence;
     let darkened = c.xyz * (1.0 - vig);
-    fragColor = vec4<f32>(darkened, c.w);
+    let mediated = mix(c.xyz, darkened, vec3<f32>(min(vig, 0.34f)));
+    fragColor = vec4<f32>(mediated, c.w);
     return;
 }
 

@@ -26,6 +26,8 @@ fn main_1() {
     let _e22 = v_texcoord_1;
     let _e23 = textureSample(tex, tex_sampler, _e22);
     color = _e23;
+    let source_luma = dot(color.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    let surface_presence = smoothstep(0.035f, 0.18f, source_luma);
     let _e25 = v_texcoord_1;
     let _e26 = texel;
     let _e29 = texel;
@@ -48,8 +50,9 @@ fn main_1() {
     let _e68 = color;
     let _e70 = color;
     let _e72 = blur;
-    let _e75 = global.u_amount;
-    let _e77 = (_e68.xyz + ((_e70.xyz - _e72.xyz) * _e75));
+    let _e75 = global.u_amount * surface_presence;
+    let sharpen_candidate = (_e68.xyz + ((_e70.xyz - _e72.xyz) * _e75));
+    let _e77 = mix(_e68.xyz, sharpen_candidate, vec3<f32>(min(_e75, 0.55f)));
     let _e78 = color;
     fragColor = vec4<f32>(_e77.x, _e77.y, _e77.z, _e78.w);
     return;

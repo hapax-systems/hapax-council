@@ -7,32 +7,32 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 // ── Lifecycle timing (matching 2D) ─────────────────────────────
-const FADE_IN_S: f32 = 18.0;
-const PEAK_HOLD_S: f32 = 9.0;
-const FADE_OUT_S: f32 = 18.0;
-const FAST_FADE_IN_S: f32 = 8.0;
-const FAST_PEAK_HOLD_S: f32 = 4.5;
-const FAST_FADE_OUT_S: f32 = 8.0;
-const STAGGER_S: f32 = 9.0;
+const FADE_IN_S: f32 = 14.0;
+const PEAK_HOLD_S: f32 = 7.0;
+const FADE_OUT_S: f32 = 14.0;
+const FAST_FADE_IN_S: f32 = 6.0;
+const FAST_PEAK_HOLD_S: f32 = 3.5;
+const FAST_FADE_OUT_S: f32 = 6.0;
+const STAGGER_S: f32 = 6.0;
 const POOL_SIZE: usize = 5; // Five visible slots: four active, one rotating/recruiting.
 const ACTIVE_SLOT_TARGET: usize = 4;
-const PARAM_DRIFT_RATE: f32 = 0.015;
+const PARAM_DRIFT_RATE: f32 = 0.024;
 const TICK_DIVISOR: u64 = 5; // ~6Hz at 30fps
-const SPATIAL_PEAK_RANGE: (f32, f32) = (0.78, 0.94);
+const SPATIAL_PEAK_RANGE: (f32, f32) = (0.82, 0.98);
 const NONSPATIAL_PEAK_RANGE: (f32, f32) = (0.96, 1.0);
-const RETIRE_INTENSITY_FLOOR: f32 = 0.22;
-const FAST_RETIRE_INTENSITY_FLOOR: f32 = 0.24;
-const RECRUIT_WARM_PROGRESS: f32 = 0.42;
-const FAST_RECRUIT_WARM_PROGRESS: f32 = 0.35;
-const INITIAL_VISIBLE_FLOOR: f32 = 0.36;
+const RETIRE_INTENSITY_FLOOR: f32 = 0.28;
+const FAST_RETIRE_INTENSITY_FLOOR: f32 = 0.32;
+const RECRUIT_WARM_PROGRESS: f32 = 0.48;
+const FAST_RECRUIT_WARM_PROGRESS: f32 = 0.40;
+const INITIAL_VISIBLE_FLOOR: f32 = 0.46;
 const ASSERTIVE_TARGET_DEPARTURE_FRACTION: f32 = 0.45;
 const MIN_ACTIVE_ANCHOR_EFFECTS: usize = 3;
 const MAX_ACTIVE_CONDITIONAL_EFFECTS: usize = 1;
 const MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS: usize = 2;
-const RECENT_EFFECT_MEMORY: usize = 18;
-const COVERAGE_EVENT_MEMORY: usize = 96;
-const PARAM_ORBIT_BASE_RATE: f32 = 0.019;
-const PARAM_ORBIT_SECONDARY_RATE: f32 = 0.007;
+const RECENT_EFFECT_MEMORY: usize = 36;
+const COVERAGE_EVENT_MEMORY: usize = 192;
+const PARAM_ORBIT_BASE_RATE: f32 = 0.031;
+const PARAM_ORBIT_SECONDARY_RATE: f32 = 0.013;
 
 fn shader_nodes_dir() -> PathBuf {
     if let Ok(path) = std::env::var("HAPAX_SHADER_NODES_DIR") {
@@ -1484,6 +1484,39 @@ mod tests {
                 Some(true),
                 "effect passes must declare full-surface execution"
             );
+            assert_eq!(
+                pass["effect_binding"].as_str(),
+                Some("source_presence_gated"),
+                "effect passes must declare source/entity gating, not foreground-pane authority"
+            );
+            assert_eq!(
+                pass["fourth_wall_policy"].as_str(),
+                Some("forbid_foreground_overlay"),
+                "effect passes must fail closed against fourth-wall/glass-pane overlays"
+            );
+            assert!(
+                matches!(
+                    pass["effect_application_plane"].as_str(),
+                    Some(
+                        "entity_field_surface_treatment"
+                            | "entity_field_temporal_treatment"
+                            | "entity_field_spatial_reprojection"
+                    )
+                ),
+                "effect passes must declare the internal livestream-space plane they work on"
+            );
+            assert!(
+                matches!(
+                    pass["coverage_role"].as_str(),
+                    Some(
+                        "high_impingement_anchor"
+                            | "visible_anchor"
+                            | "supporting_conditional"
+                            | "supporting_effect"
+                    )
+                ),
+                "effect passes must declare their drift coverage role"
+            );
             assert!(
                 pass["effect_family"]
                     .as_str()
@@ -1601,6 +1634,16 @@ mod tests {
         assert!(
             fast_total > slow_total * 0.25,
             "fast-evict effects should not churn fast enough to read as periodic whole-frame pumping"
+        );
+        assert!(
+            slow_total < 42.0 && fast_total < 20.0 && STAGGER_S <= 6.5,
+            "effect traversal must not hang near baseline for long static dwell windows; slow_total={slow_total}, fast_total={fast_total}, stagger={STAGGER_S}"
+        );
+        assert!(
+            INITIAL_VISIBLE_FLOOR >= 0.44
+                && RETIRE_INTENSITY_FLOOR >= 0.26
+                && FAST_RETIRE_INTENSITY_FLOOR >= 0.30,
+            "drift lifecycle must stay visibly above near-noop intensity floors"
         );
         assert!(
             retire_intensity_floor(fast) > retire_intensity_floor(slow),
@@ -2252,6 +2295,104 @@ mod tests {
     }
 
     #[test]
+    fn recycle_can_select_supporting_effects_after_anchor_floor_is_met() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-supporting-recycle-{}.json",
+            std::process::id()
+        ));
+        let mut engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+
+        for (slot, shader_name) in
+            engine
+                .slots
+                .iter_mut()
+                .take(4)
+                .zip(["drift", "halftone", "color_map", "slitscan"])
+        {
+            slot.shader_idx = shader_idx_by_name(shader_name).unwrap();
+            slot.phase = Phase::Peak;
+            slot.needs_recycle = false;
+        }
+        engine.slots[4].shader_idx = shader_idx_by_name("mirror").unwrap();
+        engine.slots[4].phase = Phase::Falling;
+        engine.slots[4].needs_recycle = true;
+        engine.allowed_shader_indices = Some(
+            [
+                "drift",
+                "halftone",
+                "color_map",
+                "slitscan",
+                "mirror",
+                "blend",
+            ]
+            .iter()
+            .map(|name| shader_idx_by_name(name).unwrap())
+            .collect(),
+        );
+        for name in ["drift", "halftone", "color_map", "slitscan", "mirror"] {
+            let idx = shader_idx_by_name(name).unwrap();
+            engine.selection_counts[idx] = 20;
+        }
+
+        engine.recycle_slot(4);
+
+        assert_eq!(
+            SHADERS[engine.slots[4].shader_idx].name, "blend",
+            "supporting effects must get rotation authority once existing active anchors satisfy the surface floor"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn full_autonomous_inventory_gets_selection_authority_over_time() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-full-coverage-{}.json",
+            std::process::id()
+        ));
+        let mut engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+
+        for (slot, shader_name) in
+            engine
+                .slots
+                .iter_mut()
+                .take(4)
+                .zip(["drift", "halftone", "color_map", "slitscan"])
+        {
+            slot.shader_idx = shader_idx_by_name(shader_name).unwrap();
+            slot.phase = Phase::Peak;
+            slot.needs_recycle = false;
+        }
+
+        let autonomous_count = SHADERS
+            .iter()
+            .filter(|def| is_autonomous_drift_candidate(def))
+            .count();
+        for iteration in 0..(autonomous_count * 8) {
+            let slot_idx = iteration % POOL_SIZE;
+            engine.slots[slot_idx].phase = Phase::Falling;
+            engine.slots[slot_idx].needs_recycle = true;
+            engine.recycle_slot(slot_idx);
+            engine.record_selection_for_slot(slot_idx);
+        }
+
+        let never_selected: Vec<&str> = SHADERS
+            .iter()
+            .enumerate()
+            .filter(|(_, def)| is_autonomous_drift_candidate(def))
+            .filter(|(idx, _)| engine.selection_counts[*idx] == 0)
+            .map(|(_, def)| def.name)
+            .collect();
+
+        assert!(
+            never_selected.is_empty(),
+            "autonomous drift must eventually exercise the full repaired inventory; missing {never_selected:?}"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn active_effect_parameters_orbit_safe_range_not_only_fixed_target_corridor() {
         let path = std::env::temp_dir().join(format!(
             "hapax-effect-drift-test-plan-param-orbit-{}.json",
@@ -2290,10 +2431,15 @@ mod tests {
             .iter()
             .copied()
             .fold(f32::NEG_INFINITY, f32::max);
+        let min_value = saturation_values
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min);
+        let spread = max_value - min_value;
 
         assert!(
-            max_value > 1.12,
-            "active effects should continuously travel through safe parameter volume instead of staying inside the original passthrough→target corridor; max={max_value}"
+            max_value > 1.20 && spread > 0.24,
+            "active effects should continuously travel through safe parameter volume instead of staying inside the original passthrough→target corridor; min={min_value}, max={max_value}, spread={spread}"
         );
 
         let _ = std::fs::remove_file(path);
@@ -2383,6 +2529,21 @@ mod tests {
     }
 
     #[test]
+    fn every_autonomous_effect_has_a_live_visibility_axis() {
+        let unassigned: Vec<&str> = SHADERS
+            .iter()
+            .filter(|def| is_autonomous_drift_candidate(def))
+            .filter(|def| !VISIBLE_BASELINE_GROUPS.contains(&visibility_group(def)))
+            .map(|def| def.name)
+            .collect();
+
+        assert!(
+            unassigned.is_empty(),
+            "autonomous effects without a visibility axis cannot be routed by the drift engine: {unassigned:?}"
+        );
+    }
+
+    #[test]
     fn shader_inventory_contains_the_repaired_live_surface_inventory() {
         let names: std::collections::HashSet<&str> = SHADERS.iter().map(|def| def.name).collect();
         for name in [
@@ -2453,6 +2614,7 @@ mod tests {
         for shader in [
             "ascii.wgsl",
             "blend.wgsl",
+            "bloom.wgsl",
             "breathing.wgsl",
             "chroma_key.wgsl",
             "circular_mask.wgsl",
@@ -2461,11 +2623,13 @@ mod tests {
             "crossfade.wgsl",
             "diff.wgsl",
             "dither.wgsl",
+            "emboss.wgsl",
             "droste.wgsl",
             "echo.wgsl",
             "fluid_sim.wgsl",
             "grain_bump.wgsl",
             "halftone.wgsl",
+            "invert.wgsl",
             "kuwahara.wgsl",
             "luma_key.wgsl",
             "nightvision_tint.wgsl",
@@ -2475,11 +2639,13 @@ mod tests {
             "palette_extract.wgsl",
             "palette_remap.wgsl",
             "particle_system.wgsl",
+            "pixsort.wgsl",
             "posterize.wgsl",
             "postprocess.wgsl",
             "reaction_diffusion.wgsl",
             "rutt_etra.wgsl",
             "scanlines.wgsl",
+            "sharpen.wgsl",
             "slitscan.wgsl",
             "solid.wgsl",
             "strobe.wgsl",
@@ -2490,6 +2656,7 @@ mod tests {
             "tile.wgsl",
             "tunnel.wgsl",
             "vhs.wgsl",
+            "vignette.wgsl",
             "voronoi_overlay.wgsl",
             "waveform_render.wgsl",
         ] {
@@ -2522,6 +2689,7 @@ mod tests {
             "color_map.wgsl",
             "colorgrade.wgsl",
             "dither.wgsl",
+            "invert.wgsl",
             "halftone.wgsl",
             "kuwahara.wgsl",
             "noise_gen.wgsl",
@@ -2533,6 +2701,7 @@ mod tests {
             "postprocess.wgsl",
             "scanlines.wgsl",
             "thermal.wgsl",
+            "vignette.wgsl",
             "voronoi_overlay.wgsl",
         ] {
             let source = std::fs::read_to_string(shader_root.join(shader))
@@ -2841,24 +3010,30 @@ mod tests {
     fn repaired_live_surface_shaders_are_source_bound() {
         for shader in [
             "blend.wgsl",
+            "bloom.wgsl",
             "breathing.wgsl",
             "chroma_key.wgsl",
             "circular_mask.wgsl",
             "crossfade.wgsl",
             "diff.wgsl",
             "droste.wgsl",
+            "emboss.wgsl",
             "fluid_sim.wgsl",
+            "invert.wgsl",
             "luma_key.wgsl",
             "nightvision_tint.wgsl",
             "noise_gen.wgsl",
+            "pixsort.wgsl",
             "particle_system.wgsl",
             "reaction_diffusion.wgsl",
+            "sharpen.wgsl",
             "solid.wgsl",
             "strobe.wgsl",
             "syrup.wgsl",
             "threshold.wgsl",
             "tile.wgsl",
             "tunnel.wgsl",
+            "vignette.wgsl",
             "waveform_render.wgsl",
         ] {
             let source = std::fs::read_to_string(
@@ -2875,6 +3050,7 @@ mod tests {
             assert!(
                 source.contains("mix(")
                     || source.contains("base.xyz +")
+                    || source.contains("c.xyz +")
                     || source.contains("source.xyz +"),
                 "{shader} must preserve a source floor instead of replacing the surface"
             );
@@ -2950,7 +3126,7 @@ mod tests {
             .expect("read feedback shader");
 
         assert!(
-            pixsort.contains("_e354.z, orig.a") && !pixsort.contains("_e354.z, 1f"),
+            pixsort.contains("orig.a") && !pixsort.contains(", 1f)"),
             "pixsort must preserve source alpha; sorted pixels cannot declare the empty field present"
         );
         assert!(
@@ -3126,23 +3302,33 @@ fn shuffle_indices(rng: &mut SimpleRng, indices: &mut [usize]) {
 
 fn visibility_group(def: &ShaderDef) -> &'static str {
     match def.name {
-        "trail" | "echo" | "diff" | "slitscan" | "fluid_sim" | "reaction_diffusion" => "temporal",
-        "color_map" | "thermal" | "nightvision_tint" | "palette_remap" | "posterize" | "syrup" => {
+        "trail" | "echo" | "stutter" | "diff" | "slitscan" | "fluid_sim" | "reaction_diffusion"
+        | "pixsort" | "blend" | "chroma_key" | "crossfade" | "luma_key" => "temporal",
+        "bloom" | "color_map" | "colorgrade" | "invert" | "palette" | "palette_extract"
+        | "palette_remap" | "posterize" | "syrup" | "thermal" | "vignette" | "nightvision_tint" => {
             "tonal"
         }
         "ascii"
         | "vhs"
         | "glitch_block"
         | "edge_detect"
+        | "emboss"
+        | "grain_bump"
+        | "kuwahara"
         | "rutt_etra"
         | "scanlines"
         | "dither"
         | "halftone"
         | "noise_gen"
+        | "noise_overlay"
         | "particle_system"
+        | "sharpen"
+        | "strobe"
         | "threshold"
+        | "voronoi_overlay"
         | "waveform_render"
         | "chromatic_aberration" => "texture",
+        "circular_mask" => "spatial",
         _ if def.is_spatial => "spatial",
         _ => "secondary",
     }
@@ -3186,16 +3372,16 @@ fn parameter_orbit_depth(def: &ShaderDef, param_name: &str) -> f32 {
         "brightness" | "alpha" | "opacity" | "time" => 0.0,
         "strength" | "intensity" | "blend" => {
             if def.is_spatial {
-                0.08
+                0.14
             } else if is_fast_evict(def) {
-                0.12
+                0.18
             } else {
-                0.10
+                0.14
             }
         }
-        _ if def.is_spatial => 0.14,
-        _ if is_fast_evict(def) => 0.22,
-        _ => 0.18,
+        _ if def.is_spatial => 0.22,
+        _ if is_fast_evict(def) => 0.34,
+        _ => 0.26,
     }
 }
 
@@ -3304,11 +3490,14 @@ fn is_high_impingement_anchor(def: &ShaderDef) -> bool {
             | "nightvision_tint"
             | "noise_gen"
             | "palette_remap"
+            | "pixsort"
             | "particle_system"
             | "posterize"
+            | "rutt_etra"
             | "scanlines"
             | "slitscan"
             | "fluid_sim"
+            | "strobe"
             | "thermal"
             | "threshold"
             | "transform"
@@ -3322,7 +3511,11 @@ fn is_high_impingement_anchor(def: &ShaderDef) -> bool {
 fn is_baseline_visible(def: &ShaderDef) -> bool {
     matches!(
         def.name,
-        "drift"
+        "bloom"
+            | "colorgrade"
+            | "drift"
+            | "invert"
+            | "vignette"
             | "chromatic_aberration"
             | "displacement_map"
             | "fisheye"
@@ -3338,25 +3531,40 @@ fn is_baseline_visible(def: &ShaderDef) -> bool {
             | "vhs"
             | "glitch_block"
             | "edge_detect"
+            | "emboss"
             | "rutt_etra"
             | "scanlines"
             | "dither"
             | "grain_bump"
             | "halftone"
+            | "kuwahara"
             | "noise_gen"
+            | "noise_overlay"
             | "particle_system"
+            | "sharpen"
+            | "strobe"
             | "threshold"
+            | "voronoi_overlay"
             | "waveform_render"
             | "color_map"
+            | "palette"
+            | "palette_extract"
             | "thermal"
             | "nightvision_tint"
             | "palette_remap"
             | "posterize"
             | "syrup"
+            | "pixsort"
+            | "blend"
+            | "chroma_key"
+            | "circular_mask"
+            | "crossfade"
             | "trail"
             | "echo"
             | "diff"
+            | "luma_key"
             | "slitscan"
+            | "stutter"
             | "fluid_sim"
             | "reaction_diffusion"
     )
@@ -3368,6 +3576,30 @@ fn is_autonomous_drift_candidate(def: &ShaderDef) -> bool {
     // slot becomes a permanent no-op and the surface reads like fewer than
     // four active treatments even when telemetry says otherwise.
     def.name != "solid"
+}
+
+fn effect_coverage_role(def: &ShaderDef) -> &'static str {
+    if !is_autonomous_drift_candidate(def) {
+        "non_autonomous"
+    } else if is_conditionally_low_salience(def) {
+        "supporting_conditional"
+    } else if is_high_impingement_anchor(def) {
+        "high_impingement_anchor"
+    } else if is_visible_anchor(def) {
+        "visible_anchor"
+    } else {
+        "supporting_effect"
+    }
+}
+
+fn effect_application_plane(def: &ShaderDef) -> &'static str {
+    if def.is_spatial {
+        "entity_field_spatial_reprojection"
+    } else if matches!(def.family, "temporal" | "compositing") {
+        "entity_field_temporal_treatment"
+    } else {
+        "entity_field_surface_treatment"
+    }
 }
 
 fn shader_idx_by_name(name: &str) -> Option<usize> {
@@ -3850,6 +4082,12 @@ impl SlotDriftEngine {
             .unwrap_or(0.0);
 
         let mut score = 500.0;
+        if lifetime == 0.0 {
+            score += 180.0;
+        }
+        if effect_window == 0.0 {
+            score += 65.0;
+        }
         score -= lifetime * 7.5;
         score -= effect_window * 12.0;
         score -= family_window * 1.4;
@@ -3860,6 +4098,9 @@ impl SlotDriftEngine {
         score -= recent_penalty * 3.0;
         if is_high_impingement_anchor(def) {
             score += 5.0;
+        }
+        if is_baseline_visible(def) && !is_visible_anchor(def) && lifetime == 0.0 {
+            score += 20.0;
         }
         if !aliases.is_empty() && alias_window <= 1.0 {
             score += 8.0;
@@ -4180,12 +4421,25 @@ impl SlotDriftEngine {
                     && is_high_impingement_anchor(&SHADERS[slot.shader_idx])
             })
             .count();
+        let candidate_preserves_hard_floor = |idx: usize| {
+            let def = &SHADERS[idx];
+            let candidate_anchor = usize::from(is_visible_anchor(def));
+            let candidate_high_impingement = usize::from(is_high_impingement_anchor(def));
+            let candidate_conditional = usize::from(is_conditionally_low_salience(def));
+            active_anchor_count + candidate_anchor >= MIN_ACTIVE_ANCHOR_EFFECTS
+                && active_high_impingement_count + candidate_high_impingement
+                    >= MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS
+                && active_conditional_count + candidate_conditional
+                    <= MAX_ACTIVE_CONDITIONAL_EFFECTS
+        };
         let preferred: Vec<usize> = non_current_candidates
             .iter()
             .copied()
             .filter(|i| {
                 let def = &SHADERS[*i];
-                is_visible_anchor(def) && missing_groups.contains(&visibility_group(def))
+                is_baseline_visible(def)
+                    && missing_groups.contains(&visibility_group(def))
+                    && candidate_preserves_hard_floor(*i)
             })
             .collect();
         let preferred: Vec<usize> = if preferred.is_empty()
@@ -4194,7 +4448,9 @@ impl SlotDriftEngine {
             non_current_candidates
                 .iter()
                 .copied()
-                .filter(|i| is_high_impingement_anchor(&SHADERS[*i]))
+                .filter(|i| {
+                    is_high_impingement_anchor(&SHADERS[*i]) && candidate_preserves_hard_floor(*i)
+                })
                 .collect()
         } else {
             preferred
@@ -4205,7 +4461,9 @@ impl SlotDriftEngine {
                 .copied()
                 .filter(|i| {
                     let def = &SHADERS[*i];
-                    is_visible_anchor(def) && (active_anchor_count + 1 >= MIN_ACTIVE_ANCHOR_EFFECTS)
+                    is_visible_anchor(def)
+                        && (active_anchor_count + 1 >= MIN_ACTIVE_ANCHOR_EFFECTS)
+                        && candidate_preserves_hard_floor(*i)
                 })
                 .collect()
         } else {
@@ -4218,6 +4476,22 @@ impl SlotDriftEngine {
                 .filter(|i| {
                     let def = &SHADERS[*i];
                     is_baseline_visible(def)
+                        && candidate_preserves_hard_floor(*i)
+                        && (self.selection_counts.get(*i).copied().unwrap_or(0) == 0
+                            || self.coverage_window_count(*i) == 0)
+                })
+                .collect()
+        } else {
+            preferred
+        };
+        let preferred: Vec<usize> = if preferred.is_empty() {
+            candidates
+                .iter()
+                .copied()
+                .filter(|i| {
+                    let def = &SHADERS[*i];
+                    is_baseline_visible(def)
+                        && candidate_preserves_hard_floor(*i)
                         && (!is_conditionally_low_salience(def)
                             || active_conditional_count < MAX_ACTIVE_CONDITIONAL_EFFECTS)
                 })
@@ -4438,6 +4712,10 @@ impl SlotDriftEngine {
                 "eviction_cadence": eviction_cadence_label(def),
                 "source_bound": true,
                 "full_surface": true,
+                "effect_binding": "source_presence_gated",
+                "effect_application_plane": effect_application_plane(def),
+                "fourth_wall_policy": "forbid_foreground_overlay",
+                "coverage_role": effect_coverage_role(def),
                 "effect_aliases": effect_aliases(def),
                 "slot_index": i,
                 "slot_phase": phase_label(slot.phase),
