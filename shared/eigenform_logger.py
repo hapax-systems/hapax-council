@@ -25,6 +25,7 @@ def _safe_label(value: str, *, allowed: frozenset[str], default: str) -> str:
     label = value.strip().lower()
     return label if label in allowed else default
 
+
 PERSISTENT_LOG = Path.home() / "hapax-state/research/eigenform-log.jsonl"
 MAX_PERSISTENT_ENTRIES = 50_000
 
