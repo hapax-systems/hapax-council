@@ -1149,6 +1149,9 @@ def _hand_on_turntable() -> bool:
     return False
 
 
+_hand_on_turntable_recent = _hand_on_turntable
+
+
 # Phase 2 + Phase 2b: VinylSpinningEngine + MusicPlayingEngine replace
 # Boolean predicates with Bayesian posteriors. Engines are lazily
 # constructed singletons; HAPAX_BAYESIAN_BYPASS=1 disables them and
