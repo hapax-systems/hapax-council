@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from agents.studio_compositor.models import CameraSpec
 from agents.studio_compositor.pipeline_manager import PipelineManager
 
 
@@ -82,3 +83,17 @@ class TestSetComposeSafe:
         mgr.set_compose_safe(False)
         assert mgr._compose_safe_pin is False
         assert srcs["brio-operator"].value is None
+
+
+class TestSourceFps:
+    def test_source_fps_honors_per_camera_framerate_below_output(self):
+        mgr = PipelineManager(specs=[], gst=None, glib=None, fps=30)
+        spec = CameraSpec(role="pi-noir", device="http://example.invalid/frame.jpg", framerate=5)
+
+        assert mgr._source_fps(spec) == 5
+
+    def test_source_fps_clamps_per_camera_framerate_to_output(self):
+        mgr = PipelineManager(specs=[], gst=None, glib=None, fps=30)
+        spec = CameraSpec(role="overfast", device="/dev/video0", framerate=60)
+
+        assert mgr._source_fps(spec) == 30

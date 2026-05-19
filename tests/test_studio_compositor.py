@@ -33,7 +33,12 @@ class TestCameraSpec:
         assert cam.height == 720
         assert cam.input_format == "mjpeg"
         assert cam.pixel_format is None
+        assert cam.framerate is None
         assert cam.hero is False
+
+    def test_per_camera_framerate_is_preserved(self) -> None:
+        cam = CameraSpec(role="ir", device="http://example.invalid/frame.jpg", framerate=5)
+        assert cam.framerate == 5
 
     def test_ir_camera(self) -> None:
         cam = CameraSpec(role="ir", device="/dev/video5", input_format="raw", pixel_format="gray")

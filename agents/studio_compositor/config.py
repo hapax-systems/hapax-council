@@ -163,6 +163,7 @@ _DEFAULT_OVERLAY_FIELDS: tuple[str, ...] = (
     "operator_visible",
     "ambient_priority",
     "watchdog_timeout_ms",
+    "framerate",
 )
 
 
