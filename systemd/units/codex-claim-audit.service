@@ -1,0 +1,9 @@
+[Unit]
+Description=Codex phantom claim audit
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/hapax-council/scripts/codex-claim-audit --release --stale-hours=6
+Environment=NTFY_URL=https://ntfy.sh
+Environment=NTFY_TOPIC=hapax-ops

@@ -12,8 +12,9 @@
 #   ~/.cache/hapax/cc-active-task-{role}
 # (one line: the vault task_id, e.g. "ef7b-020")
 #
-# This hook is OFF BY DEFAULT until D-30 Phase 7 validation completes.
-# Activate in Codex by launching `hapax-codex --task-gate`.
+# MANDATORY for all interfaces. Claude Code fires this hook directly;
+# Codex fires it via codex-hook-adapter.sh (unconditionally since the
+# 2026-05-19 codex-lane-crashout-prevention fix).
 #
 # Bypass: HAPAX_CC_TASK_GATE_OFF=1 disables the hook (incident response).
 #
@@ -36,13 +37,14 @@ input="$(cat)"
 tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || echo "")"
 
 # --- 2. Only gate file-mutating tools ---
+# Covers Claude Code (Edit/Write/Bash) AND Codex (apply_patch/exec_command_pty)
+# tool names. The codex-hook-adapter normalizes before calling this script, but
+# defense-in-depth: if this hook is invoked directly, Codex tool names still match.
 case "$tool_name" in
-  Edit|Write|MultiEdit|NotebookEdit)
+  Edit|Write|MultiEdit|NotebookEdit|apply_patch|ApplyPatch|functions.apply_patch|patch)
     ;;
-  Bash)
-    # Only gate destructive Bash invocations. Read-only commands stay
-    # ungated (saves on hook overhead for the common ls/cat/grep paths).
-    bash_cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || echo "")"
+  Bash|exec_command_pty|exec_command|shell|shell_command|unified_exec)
+    bash_cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // .tool_input.cmd // .tool_input.shell_command // empty' 2>/dev/null || echo "")"
     case "$bash_cmd" in
       *"git commit"*|*"git push"*|*" > "*|*" >> "*|*"rm "*|*"mv "*) ;;
       *) exit 0 ;;

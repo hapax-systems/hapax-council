@@ -24,12 +24,19 @@ if [[ -f "$ROLE_HELPER" ]]; then
   . "$ROLE_HELPER"
 fi
 
-if [[ $# -lt 1 ]]; then
-  echo "usage: cc-claim <task_id>" >&2
+force=false
+task_id=""
+for arg in "$@"; do
+  case "$arg" in
+    --force) force=true ;;
+    -*) echo "cc-claim: unknown flag '$arg'" >&2; exit 1 ;;
+    *) task_id="$arg" ;;
+  esac
+done
+if [[ -z "$task_id" ]]; then
+  echo "usage: cc-claim [--force] <task_id>" >&2
   exit 1
 fi
-
-task_id="$1"
 role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
 if [[ -z "$role" ]] && declare -F hapax_agent_role >/dev/null 2>&1; then
   role="$(hapax_agent_role 2>/dev/null || true)"
@@ -37,6 +44,37 @@ fi
 if [[ -z "$role" ]]; then
   echo "cc-claim: cannot determine role; set HAPAX_AGENT_ROLE, CODEX_ROLE, or CLAUDE_ROLE" >&2
   exit 1
+fi
+
+# --- Multi-claim prevention ---
+# A role must close its current task before claiming a new one.
+# Without this, Codex lanes bulk-claimed dozens of tasks with zero implementation.
+claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+if [[ -f "$claim_file" ]]; then
+  existing_task="$(head -n1 "$claim_file" | tr -d '[:space:]')"
+  if [[ -n "$existing_task" && "$existing_task" != "$task_id" ]]; then
+    vault_root_check="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+    existing_note=""
+    for c in "$vault_root_check/active/$existing_task-"*.md "$vault_root_check/active/$existing_task.md"; do
+      [[ -f "$c" ]] && existing_note="$c" && break
+    done
+    if [[ -n "$existing_note" ]]; then
+      existing_status="$(grep -oP '^status:\s*\K\S+' "$existing_note" 2>/dev/null || echo "unknown")"
+      case "$existing_status" in
+        done|completed|closed|withdrawn|superseded)
+          ;;
+        *)
+          echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
+          echo "  Close it first: cc-close $existing_task" >&2
+          echo "  Or force: cc-claim --force $task_id" >&2
+          if [[ "$force" != "true" ]]; then
+            exit 7
+          fi
+          echo "cc-claim: --force override — releasing prior claim on '$existing_task'" >&2
+          ;;
+      esac
+    fi
+  fi
 fi
 
 vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"

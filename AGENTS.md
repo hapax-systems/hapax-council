@@ -15,5 +15,9 @@ Core invariants:
 - Respect protected live-session declarations in `~/.cache/hapax/relay/session-protection.md`; a protected `cx-*` lane must not be killed, replaced, relaunched, or reclaimed unless the operator explicitly overrides it.
 - Idle Codex sessions must stay on the coordination timer from `HAPAX_IDLE_UPDATE_SECONDS` (default 270): when blocked, waiting, or otherwise not actively producing, check parent/user/relay updates on that cadence and leave a concise relay/status update if the wait continues.
 - Existing Claude hook scripts are also the Codex guardrails through `hooks/scripts/codex-hook-adapter.sh`.
+- **Task gate is MANDATORY for all Codex sessions.** The `cc-task-gate.sh` hook runs on every file-mutating tool call. You MUST `cc-claim <task_id>` before writing code. Bulk-claiming multiple tasks is blocked — close the current task before claiming another.
+- **One task at a time.** `cc-claim` refuses to claim a new task while the current claim is active (non-terminal). Use `cc-close` first, or `cc-claim --force` with justification.
+- **Worktree limit: 20 visible session worktrees.** Creating worktrees beyond this is blocked. Codex lanes share this cap with Claude Code sessions.
+- A `codex-claim-audit.timer` runs every 4 hours and auto-releases phantom claims (claimed > 6h with no PR). Do not disable this timer.
 
 For multi-session work, Codex lane identities use `cx-<color>` and worktree slots remain `alpha`, `beta`, `delta`, `epsilon` as coordination lanes. Greek slot names are not Codex worktree names; do not default Codex work into legacy Claude-era `hapax-council--delta/epsilon/main-red` paths.

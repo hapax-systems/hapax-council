@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# codex-claim-audit — detect phantom task claims (claimed but no implementation progress).
+#
+# Scans all active tasks assigned to cx-* or codex-* roles. For each, checks:
+#   1. Is the task claimed/in_progress for > STALE_HOURS without a PR or branch?
+#   2. Does the assigned role have a live session (tmux/worktree)?
+#
+# Reports phantom claims and optionally releases them (--release).
+#
+# Intended to run as a systemd timer (codex-claim-audit.timer) or ad-hoc.
+
+set -euo pipefail
+
+VAULT_ROOT="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+STALE_HOURS="${CODEX_CLAIM_STALE_HOURS:-6}"
+RELEASE=false
+NTFY_URL="${NTFY_URL:-https://ntfy.sh}"
+NTFY_TOPIC="${NTFY_TOPIC:-hapax-ops}"
+
+for arg in "$@"; do
+  case "$arg" in
+    --release) RELEASE=true ;;
+    --stale-hours=*) STALE_HOURS="${arg#*=}" ;;
+  esac
+done
+
+stale_threshold=$((STALE_HOURS * 3600))
+now_epoch=$(date +%s)
+phantom_count=0
+report=""
+
+for note in "$VAULT_ROOT/active/"*.md; do
+  [ -f "$note" ] || continue
+
+  assigned=$(grep -oP '^assigned_to:\s*\K\S+' "$note" 2>/dev/null || echo "")
+  case "$assigned" in
+    cx-*|codex*) ;;
+    *) continue ;;
+  esac
+
+  status=$(grep -oP '^status:\s*\K\S+' "$note" 2>/dev/null || echo "")
+  case "$status" in
+    claimed|in_progress) ;;
+    *) continue ;;
+  esac
+
+  task_id=$(grep -oP '^task_id:\s*\K\S+' "$note" 2>/dev/null || echo "$(basename "$note" .md)")
+  pr=$(grep -oP '^pr:\s*\K\S+' "$note" 2>/dev/null || echo "null")
+  branch=$(grep -oP '^branch:\s*\K\S+' "$note" 2>/dev/null || echo "null")
+  claimed_at=$(grep -oP '^claimed_at:\s*\K\S+' "$note" 2>/dev/null || echo "")
+
+  if [ -n "$claimed_at" ] && [ "$claimed_at" != "null" ]; then
+    claimed_epoch=$(date -d "$claimed_at" +%s 2>/dev/null || echo 0)
+    age=$((now_epoch - claimed_epoch))
+  else
+    age=$((stale_threshold + 1))
+  fi
+
+  has_pr=false
+  [ "$pr" != "null" ] && [ -n "$pr" ] && has_pr=true
+
+  has_branch=false
+  [ "$branch" != "null" ] && [ -n "$branch" ] && has_branch=true
+
+  if [ "$age" -ge "$stale_threshold" ] && [ "$has_pr" = false ]; then
+    phantom_count=$((phantom_count + 1))
+    age_h=$((age / 3600))
+    report="${report}  PHANTOM: ${task_id} assigned=${assigned} status=${status} age=${age_h}h pr=${pr} branch=${branch}\n"
+
+    if [ "$RELEASE" = true ]; then
+      now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      sed -i "s/^status:.*/status: offered/" "$note"
+      sed -i "s/^assigned_to:.*/assigned_to: unassigned/" "$note"
+      sed -i "s/^updated_at:.*/updated_at: $now_iso/" "$note"
+      sed -i "/^## Session log$/a\\- $now_iso codex-claim-audit released phantom claim (${assigned}, ${age_h}h stale)" "$note"
+      report="${report}    → RELEASED back to offered\n"
+    fi
+  fi
+done
+
+if [ "$phantom_count" -gt 0 ]; then
+  printf "codex-claim-audit: %d phantom claim(s) found\n" "$phantom_count"
+  printf '%b' "$report"
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -s \
+      -d "codex-claim-audit: $phantom_count phantom claim(s) detected" \
+      -H "Title: Codex Phantom Claims" \
+      -H "Priority: default" \
+      -H "Tags: warning,robot" \
+      "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+  fi
+  exit 1
+else
+  echo "codex-claim-audit: no phantom claims found"
+  exit 0
+fi
