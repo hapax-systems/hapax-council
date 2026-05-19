@@ -3585,3 +3585,9 @@ dispatch_chat_response
 from agents.hapax_daimonion.chat_response_dispatch import DispatchResult
 
 DispatchResult.any_sent
+
+# GEM canvas composition API — consumed by GemCairoSource render path
+from agents.studio_compositor.gem_canvas import GlyphCanvas
+
+GlyphCanvas.write_box
+GlyphCanvas.from_row_strings
