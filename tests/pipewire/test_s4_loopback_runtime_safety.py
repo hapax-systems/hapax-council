@@ -83,14 +83,14 @@ def test_audio_format_is_accepted_by_pipewire(raw_config: str) -> None:
 def test_audio_rate_is_common_sample_rate(raw_config: str) -> None:
     """audio.rate must be one of the rates the S-4 + downstream graph share.
 
-    48 kHz is the native S-4 USB rate and the graph-wide quantum alignment.
+    44.1 kHz is the graph-wide quantum alignment (matching L-12 native rate).
     If this drifts, the loopback resamples silently (CPU hit) or fails to
     bind if the downstream tap can't renegotiate.
     """
     matches = re.findall(r"audio\.rate\s*=\s*(\d+)", raw_config)
     assert matches, "conf declares no audio.rate"
     for rate in matches:
-        assert int(rate) in {44100, 44100, 88200, 96000}, (
+        assert int(rate) in {44100, 48000, 88200, 96000}, (
             f"audio.rate={rate} is unusual — if intentional, widen this test, "
             f"but first confirm the rest of the graph can align."
         )
