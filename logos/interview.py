@@ -883,6 +883,50 @@ def create_interview_agent(model_alias: str = "balanced") -> Agent[InterviewDeps
         except Exception as e:
             return f"Error reading patterns: {e}"
 
+    @agent.tool
+    async def request_background_research(
+        ctx: RunContext[InterviewDeps],
+        query: str,
+        reason: str,
+    ) -> str:
+        """Request asynchronous background research without blocking the interview.
+
+        Writes a research request to the SHM queue for downstream consumers.
+        This is the non-severing async capability path — Command-R can request
+        research without waiting for results.
+
+        Args:
+            query: The research question or topic to investigate.
+            reason: Why this research is needed in the interview context.
+        """
+        import json
+        import time
+
+        queue_path = Path("/dev/shm/hapax-compositor/interview-research-queue.json")
+
+        # Ensure parent directory exists
+        queue_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Read existing queue or start fresh
+        queue: list[dict[str, str]] = []
+        if queue_path.exists():
+            try:
+                queue = json.loads(queue_path.read_text("utf-8"))
+            except (json.JSONDecodeError, OSError):
+                queue = []
+
+        queue.append(
+            {
+                "query": query,
+                "reason": reason,
+                "requested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+        )
+
+        queue_path.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+
+        return f"Research request queued ({len(queue)} total in queue): '{query}' — {reason}"
+
     return agent
 
 
