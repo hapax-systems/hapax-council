@@ -118,17 +118,35 @@ DEGRADATION_FNS: dict[str, object] = {
 }
 
 
-def degrade(content: str, unconsented: frozenset[str], category: str = "default") -> str:
-    """Apply category-appropriate degradation to content.
+def degrade(
+    content: str,
+    unconsented: frozenset[str],
+    category: str = "default",
+    *,
+    level: int = 2,
+    item_count: int = 1,
+) -> str:
+    """Apply level-appropriate degradation to content.
+
+    Levels:
+        1 — Full access (return content unchanged)
+        2 — Abstraction (replace unconsented names with counts/roles)
+        3 — Existence only (count + category, no detail)
+        4 — Suppress (return nothing)
 
     Args:
         content: The text to degrade.
         unconsented: Set of person identifiers that lack consent.
         category: Data category ("calendar", "email", "document", or "default").
-
-    Returns:
-        Content with unconsented person identifiers abstracted.
+        level: Degradation level (1-4). Default 2 for backward compatibility.
+        item_count: Number of items (used by level 3).
     """
+    if level <= 1 or not unconsented:
+        return content
+    if level == 3:
+        return degrade_to_existence(category, item_count)
+    if level >= 4:
+        return degrade_to_suppression()
     fn = DEGRADATION_FNS.get(category, degrade_default)
     return fn(content, unconsented)
 
@@ -205,30 +223,3 @@ def degrade_to_suppression() -> str:
     """Level 4: return nothing. Used when even acknowledging existence would
     violate consent (e.g., someone's presence at a sensitive location)."""
     return ""
-
-
-# --- Dispatcher ---
-
-
-def degrade(
-    content: str,
-    unconsented: frozenset[str],
-    *,
-    level: int = 2,
-    category: str = "unknown",
-    item_count: int = 1,
-) -> str:
-    """Dispatch to the appropriate degradation level.
-
-    Level 1: full access (return content unchanged)
-    Level 2: abstraction (replace names with counts)
-    Level 3: existence only (count + category, no detail)
-    Level 4: total suppression (empty string)
-    """
-    if level <= 1 or not unconsented:
-        return content
-    if level == 2:
-        return _replace_identifiers(content, unconsented)
-    if level == 3:
-        return degrade_to_existence(category, item_count)
-    return degrade_to_suppression()
