@@ -890,11 +890,14 @@ def _call_llm_grounded(
     host prompt can produce 3-6 sentences of professional delivery.
     """
 
+    timeout_s = max(30.0, max_tokens / 5.0)
+
     def _one_call(temp: float) -> str | None:
         return call_resident_command_r(
             prompt,
             max_tokens=max_tokens,
             temperature=temp,
+            timeout_s=timeout_s,
         )
 
     try:
