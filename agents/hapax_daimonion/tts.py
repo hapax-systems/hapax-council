@@ -38,6 +38,8 @@ _VOICE_SAMPLE_PATH = Path(__file__).resolve().parent.parent.parent / "profiles" 
 _CHATTERBOX_DEVICE = os.environ.get("HAPAX_CHATTERBOX_DEVICE", "cuda:0")
 _CHATTERBOX_EXAGGERATION = 0.35
 _CHATTERBOX_CFG_WEIGHT = 0.4
+_INTERVIEW_EXAGGERATION = 0.20
+_INTERVIEW_CFG_WEIGHT = 0.50
 
 
 def select_tier(use_case: str) -> str:
@@ -78,7 +80,14 @@ class TTSManager:
             self._kokoro_pipeline = KPipeline(lang_code="a", device="cpu")
         return self._kokoro_pipeline
 
-    def synthesize(self, text: str, use_case: str = "conversation", *, speed: float = 1.0) -> bytes:
+    def synthesize(
+        self,
+        text: str,
+        use_case: str = "conversation",
+        *,
+        speed: float = 1.0,
+        interview_mode: bool = False,
+    ) -> bytes:
         if not text or not text.strip():
             return b""
         redaction = _speech_safety_censor(text)
@@ -92,20 +101,22 @@ class TTSManager:
 
         if self._backend == "chatterbox":
             try:
-                return self._synthesize_chatterbox(lexicon.text)
+                return self._synthesize_chatterbox(lexicon.text, interview_mode=interview_mode)
             except Exception:
                 log.warning("Chatterbox synthesis failed, falling back to Kokoro", exc_info=True)
                 return self._synthesize_kokoro(lexicon.text, speed=speed)
         return self._synthesize_kokoro(lexicon.text, speed=speed)
 
-    def _synthesize_chatterbox(self, text: str) -> bytes:
+    def _synthesize_chatterbox(self, text: str, *, interview_mode: bool = False) -> bytes:
         model = self._get_chatterbox()
         voice_path = str(_VOICE_SAMPLE_PATH) if _VOICE_SAMPLE_PATH.exists() else None
+        exag = _INTERVIEW_EXAGGERATION if interview_mode else _CHATTERBOX_EXAGGERATION
+        cfg = _INTERVIEW_CFG_WEIGHT if interview_mode else _CHATTERBOX_CFG_WEIGHT
         wav = model.generate(
             text,
             audio_prompt_path=voice_path,
-            exaggeration=_CHATTERBOX_EXAGGERATION,
-            cfg_weight=_CHATTERBOX_CFG_WEIGHT,
+            exaggeration=exag,
+            cfg_weight=cfg,
         )
         audio = wav.squeeze().cpu().numpy().astype(np.float32)
         pcm = (audio * 32768).clip(-32768, 32767).astype(np.int16)

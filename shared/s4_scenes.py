@@ -288,6 +288,59 @@ SCENES: Final[dict[str, S4Scene]] = {
             73: 127,
         },
     ),
+    "VOICE-SELF-MOD": S4Scene(
+        name="VOICE-SELF-MOD",
+        description=(
+            "Non-anthropomorphic voice self-modulation for interview segments. "
+            "Mosaic 35% wet for grain texture, Ring 40% for resonant "
+            "formant shifting, Deform 30% for timbral density, small-room "
+            "Vast. Chatterbox output as raw material; S-4 transforms it "
+            "into Hapax's own voice. Importance drives processing "
+            "REDUCTION (more important = less processing)."
+        ),
+        program_number=11,
+        material="Bypass",
+        granular="Mosaic",
+        filter="Ring",
+        color="Deform",
+        space="Vast",
+        ccs={
+            # Granular (Mosaic): density 35%, position stable, grain 80ms
+            62: 45,
+            63: 20,
+            64: 40,
+            65: 64,
+            66: 0,
+            67: 45,
+            68: 64,
+            69: 64,
+            # Filter (Ring): freq 1.5 kHz, Q 0.6, wet 40%
+            78: 75,
+            79: 75,
+            80: 75,
+            81: 50,
+            82: 64,
+            83: 64,
+            84: 64,
+            85: 64,
+            # Color (Deform): drive 30%, compression 25%
+            94: 38,
+            95: 32,
+            96: 38,
+            97: 64,
+            98: 64,
+            99: 64,
+            100: 64,
+            101: 64,
+            # Space (Vast): small room, bright tone, wet 25%
+            112: 30,
+            113: 80,
+            114: 32,
+            115: 50,
+            116: 64,
+            117: 64,
+        },
+    ),
     "BYPASS": S4Scene(
         name="BYPASS",
         description=(
