@@ -53,7 +53,7 @@ Three-tier fallback: VS Code setting > environment variable (direnv) > `pass` st
 ## Key Features
 
 - **Chat sidebar** (`src/chat-view.ts`) -- streaming LLM chat in the activity bar. Markdown rendering via `marked`. History persisted in `globalState`.
-- **Note-type awareness** -- detects frontmatter `type` field (person, meeting, decision, etc.) and injects context-appropriate system prompt prefixes. 16 note types supported.
+- **Note-type awareness** -- detects frontmatter `type` field (person, meeting, decision, etc.) and injects context-appropriate system prompt prefixes. 15 note types supported.
 - **Vault context** -- loads `30-system/hapax-context.md` on every message for dynamic system context.
 - **Slash commands** (`src/slash-commands.ts`) -- `/prep`, `/review-week`, `/growth`, `/team-risks`, `/setup` (interview), `/setup skip`, `/setup status`. Autocomplete dropdown in chat.
 - **RAG search** (`src/qdrant-client.ts`) -- vector search via Qdrant + Ollama embeddings (nomic-embed-text-v2-moe, 768d). Multi-collection search. Degrades silently off home network.
