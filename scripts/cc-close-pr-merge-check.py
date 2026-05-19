@@ -13,6 +13,7 @@ Exit codes:
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -80,11 +81,19 @@ def main() -> int:
 
     if not pr_num or pr_num == "null":
         if "source" in mutation_surface and kind == "build":
-            print(
-                "cc-close-pr-merge-check: WARNING — build task with source mutation "
-                "has no PR number. Consider adding --pr N.",
-                file=sys.stderr,
-            )
+            branch = fields.get("branch", "").strip()
+            has_branch = branch and branch != "null"
+            has_session_commit = "commit" in text.lower() or "sha" in text.lower()
+            if not has_branch and not has_session_commit:
+                print(
+                    "cc-close-pr-merge-check: BLOCKED — build task with source mutation "
+                    "has no PR, no branch, and no commit reference.\n"
+                    "  Add --pr N, or set branch: in frontmatter, or document a commit SHA.\n"
+                    "  Bypass: HAPAX_EVIDENCE_GATE_OFF=1",
+                    file=sys.stderr,
+                )
+                if os.environ.get("HAPAX_EVIDENCE_GATE_OFF") != "1":
+                    return 2
         return 0
 
     state = _check_pr_merged(pr_num)
