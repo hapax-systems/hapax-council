@@ -21,9 +21,11 @@ References:
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
@@ -1243,3 +1245,75 @@ class ProgrammePlan(BaseModel):
                     f"{p.parent_show_id!r} but plan show_id={self.show_id!r}"
                 )
         return self
+
+
+# ── Programme affordance registration ───────────────────────────────
+
+_log = logging.getLogger(__name__)
+
+AFFORDANCE_COLLECTION = "affordances"
+AFFORDANCE_FAMILY_PREFIX = "programme.segment."
+
+
+def register_programme_affordances() -> int:
+    """Register each programme role as an affordance in Qdrant.
+
+    Each segmented-content format spec becomes an affordance under the
+    family ``programme.segment.*``. Idempotent — uses deterministic
+    UUID5 IDs so re-registration overwrites the same points.
+
+    Returns the number of affordances successfully registered.
+    """
+    from shared.config import embed_safe, get_qdrant
+
+    registered = 0
+    client = get_qdrant()
+
+    for role_key, spec in SEGMENTED_CONTENT_FORMAT_SPECS.items():
+        affordance_id = f"{AFFORDANCE_FAMILY_PREFIX}{role_key}"
+        description = spec.narrative_beat_template
+
+        embedding = embed_safe(description, prefix="search_document")
+        if embedding is None:
+            _log.warning("register_programme_affordances: cannot embed %s, skipping", affordance_id)
+            continue
+
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, affordance_id))
+
+        try:
+            from qdrant_client.models import PointStruct
+
+            client.upsert(
+                collection_name=AFFORDANCE_COLLECTION,
+                points=[
+                    PointStruct(
+                        id=point_id,
+                        vector=embedding,
+                        payload={
+                            "affordance_id": affordance_id,
+                            "description": description,
+                            "base_level": 0.5,
+                            "domain": "expression",
+                            "family": AFFORDANCE_FAMILY_PREFIX.rstrip("."),
+                            "programme_role": role_key,
+                            "ward_profile": spec.ward_profile,
+                            "available": True,
+                        },
+                    )
+                ],
+            )
+            registered += 1
+            _log.info("Registered programme affordance: %s", affordance_id)
+        except Exception:
+            _log.warning(
+                "register_programme_affordances: failed to upsert %s",
+                affordance_id,
+                exc_info=True,
+            )
+
+    _log.info(
+        "register_programme_affordances: %d/%d registered",
+        registered,
+        len(SEGMENTED_CONTENT_FORMAT_SPECS),
+    )
+    return registered
