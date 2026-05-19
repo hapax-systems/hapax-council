@@ -333,7 +333,20 @@ with open('$LEDGER_DIR/dispatch-ledger.jsonl', 'a') as f:
 print('  receipt written')
 "
 
-# Invoke target launcher
+# Methodology-dispatch gate: when HAPAX_METHODOLOGY_DISPATCH is set (or the
+# script exists at the standard path), delegate task-bearing dispatches through
+# it. Taskless dispatches are blocked — methodology requires a task.
+METHODOLOGY_DISPATCH="${HAPAX_METHODOLOGY_DISPATCH:-$SCRIPT_DIR/hapax-methodology-dispatch}"
+if [[ -x "$METHODOLOGY_DISPATCH" ]]; then
+    if [[ -z "$TASK" ]]; then
+        echo "error: require --task and methodology dispatch for governed lane dispatch" >&2
+        exit 2
+    fi
+    echo "  delegating: $METHODOLOGY_DISPATCH --task $TASK --lane $LANE --platform $PLATFORM --launch"
+    exec "$METHODOLOGY_DISPATCH" --task "$TASK" --lane "$LANE" --platform "$PLATFORM" --launch
+fi
+
+# Fallback: direct launcher (methodology-dispatch not available)
 case "$PLATFORM" in
     claude)
         LAUNCHER="$SCRIPT_DIR/hapax-claude"
