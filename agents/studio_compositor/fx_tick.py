@@ -222,19 +222,38 @@ def tick_governance(compositor: Any, t: float) -> None:
         else:
             _record_atmospheric_preset_load_failed(compositor, target)
 
-    offsets = compute_gestural_offsets(
-        desk_activity=gov_data.desk_activity,
-        gaze_direction="",
-        person_count=0,
-    )
+    desk_activity = getattr(gov_data, "desk_activity", "") or ""
+    gaze_direction = getattr(gov_data, "gaze_direction", "") or ""
+    person_count = getattr(gov_data, "person_count", 0) or 0
+    if person_count == 0 and getattr(gov_data, "guest_present", False):
+        person_count = 2
+    try:
+        person_count = int(person_count)
+    except (TypeError, ValueError):
+        person_count = 0
+
+    gestural_layer = getattr(compositor, "_gestural_offset_layer", None)
+    if gestural_layer is not None and hasattr(gestural_layer, "tick"):
+        offsets = gestural_layer.tick(
+            desk_activity=desk_activity,
+            gaze_direction=gaze_direction,
+            person_count=person_count,
+            now=now,
+        )
+    else:
+        offsets = compute_gestural_offsets(
+            desk_activity=desk_activity,
+            gaze_direction=gaze_direction,
+            person_count=person_count,
+        )
     for (node_id, param), offset in offsets.items():
         if offset != 0 and compositor._graph_runtime.current_graph:
             if node_id in compositor._graph_runtime.current_graph.nodes:
                 compositor._on_graph_params_changed(node_id, {param: offset})
 
-    if gov_data.desk_activity in ("idle", ""):
+    if desk_activity in ("idle", ""):
         if compositor._idle_start is None:
-            compositor._idle_start = time.monotonic()
+            compositor._idle_start = now
     else:
         compositor._idle_start = None
 

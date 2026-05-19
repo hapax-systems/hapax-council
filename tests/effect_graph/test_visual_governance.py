@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 class TestPresetFamily:
     def test_first_available_returns_match(self):
@@ -263,6 +265,85 @@ class TestGesturalOffsets:
         for key in alone:
             if key in guest:
                 assert guest[key] <= alone[key]
+
+    def test_gestural_layer_attacks_over_minimum_one_second(self):
+        from agents.effect_graph.visual_governance import (
+            GesturalOffsetLayer,
+            compute_gestural_offsets,
+        )
+
+        raw = compute_gestural_offsets("drumming", "hardware", person_count=1)
+        key = ("bloom", "alpha")
+        layer = GesturalOffsetLayer()
+
+        assert (
+            layer.tick(
+                desk_activity="drumming",
+                gaze_direction="hardware",
+                person_count=1,
+                now=0.0,
+            )
+            == {}
+        )
+
+        half = layer.tick(
+            desk_activity="drumming",
+            gaze_direction="hardware",
+            person_count=1,
+            now=0.5,
+        )
+        assert half[key] == pytest.approx(raw[key] * 0.5)
+
+        full = layer.tick(
+            desk_activity="drumming",
+            gaze_direction="hardware",
+            person_count=1,
+            now=1.0,
+        )
+        assert full[key] == pytest.approx(raw[key])
+
+    def test_gestural_layer_releases_to_zero_over_idle_window(self):
+        from agents.effect_graph.visual_governance import (
+            GesturalOffsetLayer,
+            compute_gestural_offsets,
+        )
+
+        raw = compute_gestural_offsets("scratching", "", person_count=1)
+        key = ("trail", "opacity")
+        layer = GesturalOffsetLayer()
+        layer.tick(desk_activity="scratching", gaze_direction="", person_count=1, now=0.0)
+        assert layer.tick(
+            desk_activity="scratching",
+            gaze_direction="",
+            person_count=1,
+            now=1.0,
+        )[key] == pytest.approx(raw[key])
+
+        start_release = layer.tick(
+            desk_activity="idle",
+            gaze_direction="",
+            person_count=1,
+            now=1.0,
+        )
+        assert start_release[key] == pytest.approx(raw[key])
+
+        half_release = layer.tick(
+            desk_activity="idle",
+            gaze_direction="",
+            person_count=1,
+            now=3.5,
+        )
+        assert half_release[key] == pytest.approx(raw[key] * 0.5)
+
+        assert (
+            layer.tick(
+                desk_activity="idle",
+                gaze_direction="",
+                person_count=1,
+                now=6.0,
+            )
+            == {}
+        )
 
 
 class TestBreathingSubstrate:
