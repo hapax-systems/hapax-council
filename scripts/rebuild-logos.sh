@@ -132,7 +132,10 @@ else
     ntfy "Imagination rebuild FAILED" "See ~/.cache/hapax/rebuild/build.log" "high" "x"
 fi
 
-# Auto-restart stale services (binary newer than running process)
+# Do not auto-restart the live renderer from the rebuild timer. A restart of
+# hapax-imagination briefly presents an empty source set to OBS during renderer
+# startup, which is a visible livestream incident. Rebuild/install is safe here;
+# activation of the new binary must be a governed, witnessed restart.
 svc=hapax-imagination
 if systemctl --user is-active "$svc" &>/dev/null; then
     svc_start=$(systemctl --user show "$svc" --property=ActiveEnterTimestamp --value 2>/dev/null)
@@ -140,8 +143,11 @@ if systemctl --user is-active "$svc" &>/dev/null; then
         svc_epoch=$(date -d "$svc_start" +%s 2>/dev/null || echo 0)
         bin_epoch=$(stat -c %Y "$HOME/.local/bin/$svc" 2>/dev/null || echo 0)
         if [[ "$bin_epoch" -gt "$svc_epoch" ]]; then
-            logger -t "$LOG_TAG" "auto-restarting $svc (binary newer by $((bin_epoch - svc_epoch))s)"
-            systemctl --user restart "$svc"
+            delta=$((bin_epoch - svc_epoch))
+            logger -t "$LOG_TAG" "$svc binary newer by ${delta}s; restart pending governed live-surface witness"
+            ntfy "Imagination restart pending" \
+                "$svc binary newer by ${delta}s; restart only under governed compositor witness" \
+                "default" "pause_button"
         fi
     fi
 fi
