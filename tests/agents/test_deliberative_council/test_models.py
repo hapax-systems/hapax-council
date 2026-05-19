@@ -31,7 +31,15 @@ class TestCouncilInput:
 
 class TestCouncilMode:
     def test_all_modes(self) -> None:
-        assert set(CouncilMode) == {"labeling", "scoring", "disconfirmation", "audit", "narrative"}
+        assert set(CouncilMode) == {
+            "labeling",
+            "scoring",
+            "disconfirmation",
+            "audit",
+            "narrative",
+            "intake",
+            "research_assessment",
+        }
 
 
 class TestConvergenceStatus:

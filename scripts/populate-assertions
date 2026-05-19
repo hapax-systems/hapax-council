@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""Populate the Qdrant assertions collection from code + prose extractors.
+
+Unb-AIRy Phase 0: seed corpus. Runs both extraction pipelines, normalizes,
+deduplicates, embeds, and upserts into the assertions collection.
+
+Run: uv run python scripts/populate-assertions [--dry-run] [--summary]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from shared.assertion_model import Assertion
+from shared.assertion_normalizer import normalize_text
+from shared.code_assertion_extractor import extract_from_directory as extract_code
+from shared.prose_assertion_extractor import extract_from_directory as extract_prose
+
+log = logging.getLogger(__name__)
+
+MEMORY_DIR = Path.home() / ".claude" / "projects" / "-home-hapax-projects-hapax-council" / "memory"
+RELAY_DIR = Path.home() / ".cache" / "hapax" / "relay"
+CLAUDE_MD_DIRS = [ROOT, ROOT / "vscode"]
+CODE_DIRS = [ROOT / "agents", ROOT / "shared"]
+PROSE_DIRS = [ROOT / "docs", ROOT / "axioms"]
+
+COLLECTION_NAME = "assertions"
+
+
+def _extract_all() -> list[Assertion]:
+    assertions: list[Assertion] = []
+
+    for d in CODE_DIRS:
+        if d.is_dir():
+            assertions.extend(extract_code(d))
+
+    for d in PROSE_DIRS:
+        if d.is_dir():
+            assertions.extend(extract_prose(d))
+
+    for d in CLAUDE_MD_DIRS:
+        claude_md = d / "CLAUDE.md"
+        if claude_md.is_file():
+            assertions.extend(extract_prose(d, source_kind="claude_md"))
+
+    if MEMORY_DIR.is_dir():
+        assertions.extend(extract_prose(MEMORY_DIR))
+
+    return assertions
+
+
+def _deduplicate(assertions: list[Assertion]) -> list[Assertion]:
+    seen: dict[str, Assertion] = {}
+    for a in assertions:
+        key = normalize_text(a.text)
+        if key not in seen:
+            seen[key] = a
+    return list(seen.values())
+
+
+def _upsert_to_qdrant(assertions: list[Assertion], *, dry_run: bool = False) -> int:
+    if dry_run:
+        return len(assertions)
+
+    try:
+        from shared.config import get_qdrant_client
+        from shared.embedding import embed_text
+    except ImportError:
+        log.warning("Qdrant/embedding not available — writing JSON fallback")
+        out = ROOT / "data" / "assertions-seed-corpus.jsonl"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("w") as f:
+            for a in assertions:
+                f.write(a.model_dump_json() + "\n")
+        log.info("Wrote %d assertions to %s", len(assertions), out)
+        return len(assertions)
+
+    client = get_qdrant_client()
+    from qdrant_client.models import PointStruct
+
+    batch_size = 64
+    total = 0
+    for i in range(0, len(assertions), batch_size):
+        batch = assertions[i : i + batch_size]
+        texts = [a.text for a in batch]
+        vectors = embed_text(texts)
+        points = [
+            PointStruct(
+                id=abs(hash(a.assertion_id)) % (2**63),
+                vector=vec,
+                payload=json.loads(a.model_dump_json()),
+            )
+            for a, vec in zip(batch, vectors)
+        ]
+        client.upsert(collection_name=COLLECTION_NAME, points=points)
+        total += len(points)
+        log.info("Upserted batch %d-%d (%d total)", i, i + len(batch), total)
+
+    return total
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Populate assertions Qdrant collection")
+    parser.add_argument("--dry-run", action="store_true", help="Extract and count without upserting")
+    parser.add_argument("--summary", action="store_true", help="Show summary only")
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    assertions = _extract_all()
+    log.info("Extracted %d raw assertions", len(assertions))
+
+    deduped = _deduplicate(assertions)
+    log.info("After dedup: %d unique assertions", len(deduped))
+
+    if args.summary:
+        from collections import Counter
+
+        by_type = Counter(a.assertion_type for a in deduped)
+        by_source = Counter(a.source_type for a in deduped)
+        print(f"Total: {len(deduped)} assertions")
+        print(f"By type: {dict(by_type.most_common())}")
+        print(f"By source: {dict(by_source.most_common())}")
+        return
+
+    if args.json:
+        for a in deduped:
+            print(a.model_dump_json())
+        return
+
+    count = _upsert_to_qdrant(deduped, dry_run=args.dry_run)
+    action = "Would upsert" if args.dry_run else "Upserted"
+    print(f"{action} {count} assertions to {COLLECTION_NAME}")
+
+
+if __name__ == "__main__":
+    main()

@@ -56,6 +56,7 @@ from shared.broadcast_audio_health import (
 from shared.broadcast_audio_health import (
     read_broadcast_audio_health_state,
 )
+from shared.stream_mode import StreamMode, get_stream_mode_or_off
 from shared.voice_output_router import (
     DEFAULT_PRIVATE_MONITOR_STATUS_PATH,
     VoiceOutputDestination,
@@ -68,6 +69,15 @@ from shared.voice_output_router import (
 from shared.voice_register import VoiceRegister
 
 log = logging.getLogger(__name__)
+
+
+def _stream_mode_is_public() -> bool:
+    """True when operator has set stream mode to PUBLIC or PUBLIC_RESEARCH.
+
+    Uses get_stream_mode_or_off (defaults OFF) so missing/unreadable mode
+    files don't accidentally activate the broadcast bypass.
+    """
+    return get_stream_mode_or_off() in (StreamMode.PUBLIC, StreamMode.PUBLIC_RESEARCH)
 
 
 DESTINATION_ROUTING_ENV: str = "HAPAX_TTS_DESTINATION_ROUTING_ACTIVE"
@@ -96,22 +106,6 @@ LIVESTREAM_SINK: str = "hapax-livestream"
 
 PRIVATE_SINK: str = "hapax-private"
 """Private null sink that is audible only through the exact monitor bridge."""
-
-
-def _stream_mode_is_public() -> bool:
-    """Return True when the operator has set stream mode to a public context.
-
-    Reads from the canonical shared.stream_mode module (file-backed at
-    ~/.cache/hapax/stream-mode). This is the single source of truth for
-    stream mode, unified with the Logos API and Stream Deck dispatch.
-    """
-    try:
-        from shared.stream_mode import StreamMode, get_stream_mode
-
-        mode = get_stream_mode()
-        return mode in (StreamMode.PUBLIC, StreamMode.PUBLIC_RESEARCH)
-    except Exception:
-        return False
 
 
 class DestinationChannel(StrEnum):

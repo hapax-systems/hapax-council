@@ -36,6 +36,9 @@ Environment=MKL_NUM_THREADS=2
 Environment=OPENBLAS_NUM_THREADS=2
 Environment=ONNXRUNTIME_INTRA_OP_NUM_THREADS=2
 Environment=HAPAX_PROGRAMME_AUTO_PLAN=1
+# Audio input override — empty uses DEFAULT_SOURCE_PRIORITY (Rode > AEC > Yeti).
+# Set to a pw-cli node name to force a specific input device.
+Environment=HAPAX_AUDIO_INPUT_TARGET=
 # Cap OpenTelemetry BatchSpanProcessor so Langfuse outages can't fill the
 # Python heap with pending spans. Defaults are 2048 queue and 30s export
 # timeout, which means daimonion holds ~MB of KV-pair-dense span objects

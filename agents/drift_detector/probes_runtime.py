@@ -32,10 +32,11 @@ def _check_health_timer_fired() -> tuple[bool, str]:
 
 def _check_backup_fresh() -> tuple[bool, str]:
     """Last backup is <36h old."""
+    import os
     import time as _time
     from pathlib import Path
 
-    repo = Path("/store/hapax-backups/restic")
+    repo = Path(os.environ.get("HAPAX_RESTIC_REPO", "/mnt/nas/backups/restic"))
     candidates = [repo / "locks", repo / "snapshots", repo / "index"]
     latest: float | None = None
     for p in candidates:

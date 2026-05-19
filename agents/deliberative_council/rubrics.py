@@ -333,3 +333,98 @@ class NarrativeQualityRubric(Rubric):
             ),
         ),
     )
+
+
+class IntakeHardeningRubric(Rubric):
+    name: str = "intake_hardening"
+    version: int = 1
+    instructions: str = (
+        "Evaluate whether this request is specific enough to decompose into "
+        "cc-tasks. Score what the request STATES, not what you can infer. "
+        "A request that requires you to guess scope, deliverables, or "
+        "verification is not ready for planning."
+    )
+    axes: tuple[RubricAxis, ...] = (
+        RubricAxis(
+            name="outcome_concreteness",
+            description="Can you identify a single testable state change?",
+            strong_example="'NV12 frames appear on /dev/video42 at 30fps; OBS captures them'",
+            weak_example="'improve the system' or 'build epistemic quality infrastructure'",
+            floor_example="Pure concept with no observable predicate",
+        ),
+        RubricAxis(
+            name="scope_boundedness",
+            description="Does the request have explicit in-scope AND out-of-scope boundaries?",
+            strong_example="In/out explicitly enumerated with named files, services, or surfaces",
+            weak_example="Implicit scope from context only, no exclusions stated",
+            floor_example="No scope section; entire body reads as aspirational",
+        ),
+        RubricAxis(
+            name="decomposability",
+            description="Can this be converted into cc-tasks without a research phase first?",
+            strong_example="Request text directly maps to 1-5 cc-tasks with clear dependencies",
+            weak_example="Requires significant design work before any task can be defined",
+            floor_example="Request IS a research programme (phases, hypotheses, experiments)",
+        ),
+        RubricAxis(
+            name="artifact_specificity",
+            description="Does the request name concrete code paths, services, or config?",
+            strong_example="Names specific files, functions, config keys, or API routes",
+            weak_example="Names subsystem concepts ('the compositor') but no paths",
+            floor_example="No code/service/file references at all",
+        ),
+        RubricAxis(
+            name="verification_seed",
+            description="Does the request contain enough to write a verification check?",
+            strong_example="Mechanizable: command to run, metric to check, predicate to assert",
+            weak_example="Vague quality statement ('it should work well')",
+            floor_example="No mention of how to verify",
+        ),
+        RubricAxis(
+            name="singularity",
+            description="Does the request describe ONE need or a bundle of loosely related needs?",
+            strong_example="Single atomic need with clear done condition",
+            weak_example="3-4 distinct deliverables sharing a theme but separable",
+            floor_example="Programme with 5+ deliverables across multiple subsystems",
+        ),
+    )
+
+
+class ResearchImplementabilityRubric(Rubric):
+    name: str = "research_implementability"
+    version: int = 1
+    instructions: str = (
+        "Evaluate whether this research deliverable is implementable TODAY. "
+        "Score conservatively: READY means you could write a PR description now. "
+        "If you cannot name the files and functions that would change, it is not READY."
+    )
+    axes: tuple[RubricAxis, ...] = (
+        RubricAxis(
+            name="code_path_clarity",
+            description="Is there a clear implementation path with named files/functions?",
+            strong_example="Can name exact files, functions, and data flows that change",
+            weak_example="Knows the subsystem but not the specific code path",
+            floor_example="No implementation path identifiable from research",
+        ),
+        RubricAxis(
+            name="dependency_readiness",
+            description="Are prerequisite systems, data sources, and infrastructure in place?",
+            strong_example="All dependencies exist, are tested, and are running",
+            weak_example="Some dependencies exist but untested or unstable",
+            floor_example="Critical dependency missing or unbuilt",
+        ),
+        RubricAxis(
+            name="interface_definition",
+            description="Are inputs, outputs, data models, and API contracts defined?",
+            strong_example="Pydantic models, function signatures, or protocol defined",
+            weak_example="Conceptual interface described but not formalized",
+            floor_example="No interface definition; would need design phase first",
+        ),
+        RubricAxis(
+            name="scope_boundedness",
+            description="Is the deliverable bounded enough to produce a verifiable artifact?",
+            strong_example="Single module or function with clear acceptance test",
+            weak_example="Bounded but verification requires integration testing",
+            floor_example="Open-ended theory with no clear stopping point",
+        ),
+    )

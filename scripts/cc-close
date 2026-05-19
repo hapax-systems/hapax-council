@@ -30,6 +30,7 @@ while [[ $# -gt 0 ]]; do
     --pr) pr="$2"; shift 2 ;;
     --status) final_status="$2"; shift 2 ;;
     --debt) debt_reason="$2"; shift 2 ;;
+    --retroactive) retroactive=1; shift ;;
     *) echo "cc-close: unknown arg '$1'" >&2; exit 1 ;;
   esac
 done
@@ -105,6 +106,34 @@ if [[ -n "$closed_duplicate" ]]; then
   exit 8
 fi
 
+# Rapid-closure flag — require --retroactive for tasks closed <5min after claim.
+# Prevents the 22-second paperwork closure pattern found by CCTV disconfirmation.
+if [[ "$final_status" == "done" && -z "${retroactive:-}" && "${HAPAX_RAPID_CLOSE_OFF:-0}" != "1" ]]; then
+  claimed_at="$(python3 -c "
+import re, sys
+from pathlib import Path
+text = Path('$note_path').read_text()
+m = re.search(r'^claimed_at:\s*(.+)$', text, re.MULTILINE)
+if m: print(m.group(1).strip().strip(\"'\").strip('\"'))
+" 2>/dev/null || true)"
+  if [[ -n "$claimed_at" ]]; then
+    elapsed="$(python3 -c "
+from datetime import datetime, timezone
+try:
+    claimed = datetime.fromisoformat('$claimed_at'.replace('Z','+00:00'))
+    now = datetime.now(timezone.utc)
+    print(int((now - claimed).total_seconds()))
+except: print('999')
+" 2>/dev/null || echo "999")"
+    if [[ "$elapsed" -lt 300 ]]; then
+      echo "cc-close: BLOCKED — task closed ${elapsed}s after claim (< 5min threshold)." >&2
+      echo "  If this is a retroactive close of already-completed work, re-run with --retroactive." >&2
+      echo "  Bypass: HAPAX_RAPID_CLOSE_OFF=1" >&2
+      exit 2
+    fi
+  fi
+fi
+
 # Closure-discipline gate (cc-task cc-task-closure-hook-acceptance-criteria-gate):
 # refuse the move when any `## Acceptance criteria` checkbox is unchecked.
 # The Bash PreToolUse hook catches manual mv / git mv; this call catches
@@ -122,6 +151,22 @@ if [[ "$final_status" == "done" ]]; then
     set -e
     if [[ "$gate_rc" -ne 0 ]]; then
       exit "$gate_rc"
+    fi
+  fi
+
+  # PR-merge evidence gate — verify PR is merged before allowing done status.
+  # Prevents "status: done but PR is open" false-completion pattern.
+  # Bypass: HAPAX_PR_MERGE_GATE_OFF=1
+  if [[ "${HAPAX_PR_MERGE_GATE_OFF:-0}" != "1" ]]; then
+    PR_MERGE_CHECKER="$SCRIPT_DIR/cc-close-pr-merge-check.py"
+    if [[ -f "$PR_MERGE_CHECKER" ]]; then
+      set +e
+      python3 "$PR_MERGE_CHECKER" "$note_path" ${pr:+--pr "$pr"}
+      merge_rc=$?
+      set -e
+      if [[ "$merge_rc" -ne 0 ]]; then
+        exit "$merge_rc"
+      fi
     fi
   fi
 
@@ -183,6 +228,7 @@ if [[ -n "$role" ]]; then
   if [[ -f "$claim_file" ]] && [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]]; then
     rm -f "$claim_file"
     echo "cc-close: cleared claim file for role '$role'"
+    systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
   fi
 fi
 
@@ -199,5 +245,13 @@ if [[ "$final_status" == "done" && "${HAPAX_REQUEST_RECONCILER_OFF:-0}" != "1" &
     if [[ "$reconcile_rc" -ne 0 ]]; then
       echo "cc-close: request fulfillment reconciler failed rc=$reconcile_rc" >&2
     fi
+  fi
+
+  # Phase-advance: if this task is Phase N, create Phase N+1 if the request has more phases.
+  phase_advance="$SCRIPT_DIR/cc-phase-advance.py"
+  if [[ -f "$phase_advance" ]]; then
+    set +e
+    python3 "$phase_advance" "$vault_root/closed/$(basename "$note_path")" "$task_id"
+    set -e
   fi
 fi

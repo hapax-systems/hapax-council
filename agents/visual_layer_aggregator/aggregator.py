@@ -1162,7 +1162,7 @@ class VisualLayerAggregator:
                 flow_score=float(_pd.get("flow_score", self._flow_score)),
                 audio_energy=float(_pd.get("audio_energy_rms", self._audio_energy)),
                 stimmung_stance=stimmung_stance,
-                imagination_salience=0.0,
+                imagination_salience=self._read_imagination_salience(),
                 visual_brightness=float(state.ambient_params.brightness),
                 heart_rate=float(_pd.get("heart_rate_bpm", 0)),
                 operator_stress=float(self._stimmung.operator_stress.value)
@@ -1185,21 +1185,21 @@ class VisualLayerAggregator:
         return state
 
     def _write_density_field(self, stimmung_stance: str) -> None:
-        """Write density field state to /dev/shm for downstream consumers."""
-        from agents.density_field import compute_density_state
+        """Write density field temporal mode to /dev/shm for downstream consumers."""
+        from agents.density_field import DensityFieldCompute
 
-        state = compute_density_state(
-            perception_data=self._last_perception_data,
-            stimmung_stance=stimmung_stance,
-            audio_energy=self._audio_energy,
-            epoch=self._epoch,
-        )
-        out_dir = Path("/dev/shm/hapax-density-field")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_file = out_dir / "state.json"
-        tmp = out_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state), encoding="utf-8")
-        tmp.rename(out_file)
+        if not hasattr(self, "_density_compute"):
+            self._density_compute = DensityFieldCompute()
+        self._density_compute.tick()
+
+    @staticmethod
+    def _read_imagination_salience() -> float:
+        """Read current imagination salience from SHM. Returns 0.0 on any error."""
+        try:
+            data = json.loads(Path("/dev/shm/hapax-imagination/current.json").read_text())
+            return float(data.get("salience", 0.0))
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            return 0.0
 
     def _read_watershed_events(self) -> list[WatershedEvent]:
         """Read and prune watershed events from shared file."""

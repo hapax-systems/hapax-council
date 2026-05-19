@@ -29,6 +29,7 @@ from typing import Any
 import cairo
 
 from .cairo_source import CairoSource
+from .homage import get_active_package
 
 log = logging.getLogger(__name__)
 
@@ -268,9 +269,14 @@ class PackedCamerasCairoSource(CairoSource):
         cr.translate(slot.cx, slot.cy)
         cr.rotate(slot.rotation)
 
-        # Thin border glow
+        # Thin border glow — accent_cyan from active HOMAGE package
+        pkg = get_active_package()
+        if pkg is not None:
+            ac_r, ac_g, ac_b, _ac_a = pkg.resolve_colour("accent_cyan")
+        else:
+            ac_r, ac_g, ac_b = 0.0, 0.9, 1.0
         cr.rectangle(-frame_w / 2 - 1, -frame_h / 2 - 1, frame_w + 2, frame_h + 2)
-        cr.set_source_rgba(0.0, 0.9, 1.0, 0.15)
+        cr.set_source_rgba(ac_r, ac_g, ac_b, 0.15)
         cr.fill()
 
         # Clip and draw

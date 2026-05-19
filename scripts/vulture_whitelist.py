@@ -3491,3 +3491,97 @@ try:
     get_programme_profile
 except ImportError:
     pass
+
+# PR #3447 extractions — runtime-invoked via SHM readers, systemd daemons, and
+# AffordancePipeline select() context injection.
+from agents.density_field import DensityFieldCompute, read_temporal_mode
+
+DensityFieldCompute
+read_temporal_mode
+
+from agents.hapax_daimonion.grounding_ledger import GroundingLedger
+
+GroundingLedger.save_session
+GroundingLedger.load_session
+
+from agents.studio_compositor.director_loop import _hand_on_turntable
+
+_hand_on_turntable
+
+from shared.audio_performance_context import build_performance_context_full
+
+build_performance_context_full
+
+# Session audit deliverables — runtime SHM readers, daemon entry points,
+# and API consumed by downstream compositor/choreographer integration.
+from shared.audio_topology_validator import ValidationResult
+
+ValidationResult.warning_count
+
+from shared.code_assertion_extractor import _PydanticFieldVisitor
+
+_PydanticFieldVisitor.visit_AnnAssign
+
+from shared.dynamic_audit import run_all_probes
+
+run_all_probes
+
+from shared.ward_spatial_affordance import get_fishbowl_defaults, get_ward_affordance
+
+get_ward_affordance
+get_fishbowl_defaults
+
+# Request decomposer — Pydantic model validators invoked by framework
+from agents.request_decomposer.models import RequestDecomposition, TaskSpec
+
+TaskSpec._blocked_needs_reason
+TaskSpec._needs_acceptance_criteria
+RequestDecomposition._validate_dag
+RequestDecomposition._validate_unique_ids
+RequestDecomposition._validate_parent_request
+
+# Atomic writer — called by request-decompose script
+from agents.request_decomposer.writer import write_decomposition
+
+write_decomposition
+
+# CI shard selection — called by CI workflow
+try:
+    from scripts.ci_select_pytest_shard import load_runtime_weights, parse_collect_output
+
+    parse_collect_output
+    load_runtime_weights
+except ImportError:
+    pass
+
+# CCTV intake gate — rubrics consumed by engine mode dispatch,
+# implementability map properties consumed by intake receipt builder
+from agents.deliberative_council.rubrics import (
+    IntakeHardeningRubric,
+    ResearchImplementabilityRubric,
+)
+
+IntakeHardeningRubric
+ResearchImplementabilityRubric
+
+from agents.deliberative_council.modes.implementability import (
+    ResearchImplementabilityMap,
+    build_assessment,
+    build_map,
+)
+
+ResearchImplementabilityMap.coverage_ratio
+ResearchImplementabilityMap.task_yield
+ResearchImplementabilityMap.theoretical_remainder
+ResearchImplementabilityMap.blocked_count
+build_assessment
+build_map
+
+# Chat response dispatch — called by conversation pipeline on chat impingements
+from agents.hapax_daimonion.chat_response_dispatch import dispatch_chat_response
+
+dispatch_chat_response
+
+from agents.hapax_daimonion.chat_response_dispatch import DispatchResult
+
+DispatchResult.any_sent

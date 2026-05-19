@@ -123,6 +123,23 @@ if [[ "$install_assets_only" == "1" ]]; then
   exit 0
 fi
 
+# Auth preflight — verify obsidian-headless can authenticate before
+# attempting any publish operations. Prevents silent auth failures in
+# scheduled (timer-triggered) runs.
+auth_preflight() {
+  if [[ "${HAPAX_OBSIDIAN_SKIP_AUTH_CHECK:-0}" == "1" || "$dry_run" == "1" ]]; then
+    return 0
+  fi
+  ensure_headless
+  if ! "$OB_BIN" publish-config --path "$VAULT_DIR" >/dev/null 2>&1; then
+    log "auth preflight: publish-config failed — obsidian-headless may not be authenticated"
+    log "auth preflight: run 'ob publish-setup --site <siteId> --path $VAULT_DIR' to authenticate"
+    fail "auth preflight failed — aborting scheduled sync"
+  fi
+  log "auth preflight: OK"
+}
+auth_preflight
+
 require_node22
 ensure_headless
 ensure_publish_setup

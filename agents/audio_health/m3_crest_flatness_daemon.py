@@ -313,14 +313,11 @@ def _mark_error(state: StageState, exc: BaseException | str | None) -> None:
 
 
 def _is_noise_like_crest_drop(measurement: StageMeasurement, config: M3DaemonConfig) -> bool:
-    """Return whether a low-crest transition has noise-like corroboration.
+    """Return whether a low-crest transition has noise-like corroboration."""
 
-    Requires BOTH high ZCR and high spectral flatness — either alone can
-    spike transiently on idle mixer noise without indicating real degradation.
-    """
     return (
         measurement.zcr >= config.crest_drop_zcr_min
-        and measurement.spectral_flatness >= config.crest_drop_flatness_min
+        or measurement.spectral_flatness >= config.crest_drop_flatness_min
     )
 
 

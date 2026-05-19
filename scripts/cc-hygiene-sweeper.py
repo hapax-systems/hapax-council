@@ -46,6 +46,7 @@ from cc_hygiene.checks import (
     check_orphan_pr,
     check_refusal_pipeline_dormancy,
     check_relay_yaml_staleness,
+    check_spec_staleness,
     check_stale_in_progress,
     check_wip_limit,
     parse_task_note,
@@ -363,6 +364,7 @@ def run_sweep(
     events.extend(check_wip_limit(notes, now=now))
     events.extend(check_offered_staleness(notes, now=now))
     events.extend(check_refusal_pipeline_dormancy(closed_notes, now=now))
+    events.extend(check_spec_staleness(notes, now=now))
 
     sessions = _build_session_states(relay_payloads, notes)
     summaries = _summarize_checks(events)

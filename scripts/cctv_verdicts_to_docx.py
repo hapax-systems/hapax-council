@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Convert CCTV verdicts JSONL to a formatted DOCX report."""
+
+from __future__ import annotations
+
+import json
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Pt, RGBColor
+
+VERDICTS_FILE = (
+    Path.home()
+    / "Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/cctv-council-synthesis-verdicts.jsonl"
+)
+OUTPUT_FILE = Path.home() / "gdrive-drop" / "cctv-council-synthesis-report.docx"
+
+
+def build_report(verdicts_path: Path, output_path: Path) -> None:
+    verdicts = [json.loads(line) for line in verdicts_path.read_text().splitlines() if line.strip()]
+
+    doc = Document()
+
+    style = doc.styles["Normal"]
+    font = style.font
+    font.name = "Calibri"
+    font.size = Pt(11)
+
+    title = doc.add_heading("CCTV: Council Synthesis Disconfirmation Report", level=0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    doc.add_paragraph(
+        f"Generated: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}\n"
+        f"Claims evaluated: {len(verdicts)}\n"
+        f"Models: Claude Opus, Claude Sonnet, Gemini 3 Pro, Command-R 35B, Perplexity Sonar, Mistral Large\n"
+        f"Protocol: 5-phase adversarial deliberation (blind scoring → evidence matrix → adversarial challenge → revision → convergence)"
+    )
+
+    survived = sum(
+        1
+        for v in verdicts
+        if v["convergence_status"] == "converged"
+        and all(s is not None and s > 2 for s in v["scores"].values())
+    )
+    contested = sum(1 for v in verdicts if v["convergence_status"] == "contested")
+    hung = sum(1 for v in verdicts if v["convergence_status"] == "hung")
+    refuted = sum(
+        1
+        for v in verdicts
+        if v["convergence_status"] == "converged"
+        and any(s is not None and s <= 2 for s in v["scores"].values())
+    )
+
+    doc.add_heading("Executive Summary", level=1)
+    doc.add_paragraph(
+        f"Survived: {survived}  |  Contested: {contested}  |  Hung: {hung}  |  Weakened: {refuted}"
+    )
+
+    doc.add_heading("Verdicts by Claim", level=1)
+
+    for v in verdicts:
+        claim_id = v.get("claim_id", "?")
+        claim_text = v.get("claim_text", "")
+        status = v.get("convergence_status", "unknown")
+        scores = v.get("scores", {})
+
+        heading = doc.add_heading(f"{claim_id}: {status.upper()}", level=2)
+        if status == "converged":
+            for run in heading.runs:
+                run.font.color.rgb = RGBColor(0x2E, 0x7D, 0x32)
+        elif status == "contested":
+            for run in heading.runs:
+                run.font.color.rgb = RGBColor(0xFF, 0x8F, 0x00)
+        elif status == "hung":
+            for run in heading.runs:
+                run.font.color.rgb = RGBColor(0xC6, 0x28, 0x28)
+
+        p = doc.add_paragraph()
+        p.add_run("Claim: ").bold = True
+        p.add_run(claim_text)
+
+        p = doc.add_paragraph()
+        p.add_run("Source: ").bold = True
+        p.add_run(v.get("source_ref", ""))
+
+        if scores:
+            doc.add_paragraph()
+            table = doc.add_table(rows=1, cols=3)
+            table.style = "Light Grid Accent 1"
+            hdr = table.rows[0].cells
+            hdr[0].text = "Axis"
+            hdr[1].text = "Score"
+            hdr[2].text = "Band"
+            for axis, score in scores.items():
+                row = table.add_row().cells
+                row[0].text = axis
+                row[1].text = str(score) if score is not None else "HUNG"
+                band = v.get("confidence_bands", {}).get(axis, [])
+                row[2].text = f"{band[0]}-{band[1]}" if len(band) == 2 else ""
+
+        if v.get("disagreement_log"):
+            doc.add_paragraph()
+            p = doc.add_paragraph()
+            p.add_run("Disagreements:").bold = True
+            for d in v["disagreement_log"]:
+                doc.add_paragraph(d, style="List Bullet")
+
+        if v.get("research_findings"):
+            p = doc.add_paragraph()
+            p.add_run("Research Findings:").bold = True
+            for f in v["research_findings"][:10]:
+                doc.add_paragraph(f[:200], style="List Bullet")
+
+        if v.get("adversarial_exchanges"):
+            p = doc.add_paragraph()
+            p.add_run("Adversarial Exchanges:").bold = True
+            for e in v["adversarial_exchanges"]:
+                doc.add_paragraph(
+                    f"{e['axis']}: {e['high_scorer']} vs {e['low_scorer']} — {e.get('response_text', '')[:300]}",
+                    style="List Bullet",
+                )
+
+        doc.add_page_break()
+
+    doc.add_heading("Receipt", level=1)
+    doc.add_paragraph(
+        f"Total claims: {len(verdicts)}\n"
+        f"Survived (converged, scores > 2): {survived}\n"
+        f"Contested (IQR 1-2): {contested}\n"
+        f"Hung (IQR > 2): {hung}\n"
+        f"Weakened (converged, any score <= 2): {refuted}\n"
+        f"Generated by CCTV (Conceptual Coherence Tester and Validator)\n"
+        f"Engine: 5-phase deliberative council with research tools"
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(output_path))
+    print(f"Report saved to: {output_path}")
+
+
+if __name__ == "__main__":
+    verdicts_path = Path(sys.argv[1]) if len(sys.argv) > 1 else VERDICTS_FILE
+    output_path = Path(sys.argv[2]) if len(sys.argv) > 2 else OUTPUT_FILE
+    build_report(verdicts_path, output_path)

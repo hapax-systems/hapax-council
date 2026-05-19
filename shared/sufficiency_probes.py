@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -33,7 +34,7 @@ from shared.config import (
 
 log = logging.getLogger(__name__)
 
-RUNTIME_RESTIC_REPO = Path("/store/hapax-backups/restic")
+RUNTIME_RESTIC_REPO = Path(os.environ.get("HAPAX_RESTIC_REPO", "/mnt/nas/backups/restic"))
 
 
 @dataclass

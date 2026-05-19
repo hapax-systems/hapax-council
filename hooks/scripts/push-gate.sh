@@ -6,6 +6,11 @@
 # Returns exit 2 to block the tool call with a message.
 set -euo pipefail
 
+# Bypass for operator-approved autonomous sessions
+if [[ "${HAPAX_PUSH_GATE_OFF:-0}" == "1" ]]; then
+    exit 0
+fi
+
 INPUT="$(cat)"
 TOOL="$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)"
 

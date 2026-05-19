@@ -36,7 +36,6 @@ DECOMMISSIONED_UNITS=(
     # by hapax-stale-unit-audit after canonical checkout restore.
     hapax-broadcast-boundary-public-event-producer.service
     hapax-hailo-frame-feeder.service
-    hapax-triage-officer.service
     hapax-youtube-viewer-count.timer
     # Superseded 2026-05-02 by hapax-parametric-modulation-heartbeat.service.
     # Per memory `feedback_no_presets_use_parametric_modulation`: preset-pulse

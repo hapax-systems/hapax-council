@@ -523,6 +523,12 @@ def _emit_compositional_impingements(intent: DirectorIntent, condition_id: str) 
     """
     if not intent.compositional_impingements:
         return
+    if not _t4_ownership_gate():
+        log.debug(
+            "T4 ownership gate: suppressing %d impingements (low presence)",
+            len(intent.compositional_impingements),
+        )
+        return
     try:
         from shared.impingement import Impingement, ImpingementType
 
@@ -1091,7 +1097,28 @@ _TURNTABLE_ACTIVE_STALE_S = 120.0
 _VINYL_OPERATOR_OVERRIDE_FLAG = Path("/dev/shm/hapax-compositor/vinyl-operator-active.flag")
 
 
-def _hand_on_turntable_recent() -> bool:
+_TAU_OWNERSHIP = 0.60
+_PERCEPTION_STATE_PATH = Path.home() / ".cache/hapax-daimonion/perception-state.json"
+
+
+def _t4_ownership_gate() -> bool:
+    """Bayesian presence-posterior gate on compositional emissions.
+
+    Suppresses director impingements when operator ownership confidence
+    is below TAU (0.60). Fail-open: returns True on any read error so
+    the director is never silenced by infrastructure failures.
+    """
+    try:
+        if not _PERCEPTION_STATE_PATH.exists():
+            return True
+        data = json.loads(_PERCEPTION_STATE_PATH.read_text())
+        posterior = float(data.get("presence_probability", 1.0))
+        return posterior >= _TAU_OWNERSHIP
+    except Exception:
+        return True
+
+
+def _hand_on_turntable() -> bool:
     """Return True iff perception saw a turntable-zone hand recently.
 
     Reads ~/.cache/hapax-daimonion/perception-state.json. The
@@ -1120,6 +1147,9 @@ def _hand_on_turntable_recent() -> bool:
     except Exception:
         log.debug("hand-on-turntable check failed", exc_info=True)
     return False
+
+
+_hand_on_turntable_recent = _hand_on_turntable
 
 
 # Phase 2 + Phase 2b: VinylSpinningEngine + MusicPlayingEngine replace

@@ -46,6 +46,9 @@ OFFERED_STALE_DAYS = 14
 REFUSAL_DORMANCY_DAYS = 7
 """§2.8: zero canonical refusal notes in this window is a dormancy signal."""
 
+SPEC_STALENESS_DAYS = 7
+"""Hard threshold: active requests older than 7d with no cc-tasks."""
+
 KNOWN_ROLES: tuple[Role, ...] = ("alpha", "beta", "delta", "epsilon")
 """Permanent Claude worktree slots. Codex cx-* relay files are discovered dynamically."""
 
@@ -687,3 +690,70 @@ def parse_task_note(path: Path) -> TaskNote | None:
         created_at=_parse_dt(fm.get("created_at")),
         updated_at=_parse_dt(fm.get("updated_at")),
     )
+
+
+def check_spec_staleness(
+    notes: Iterable[TaskNote], requests_root: Path | None = None, *, now: datetime | None = None
+) -> list[HygieneEvent]:
+    """Scans active requests older than 7 days with no downstream cc-tasks.
+
+    Severity: warning.
+    """
+    now = now or _now()
+    events: list[HygieneEvent] = []
+    if requests_root is None:
+        requests_root = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-requests"
+    active_req_dir = requests_root / "active"
+    if not active_req_dir.is_dir():
+        return events
+
+    downstream_specs = set()
+    for note in notes:
+        if note.parent_spec:
+            downstream_specs.add(note.parent_spec)
+
+    cutoff = now - timedelta(days=SPEC_STALENESS_DAYS)
+    for path in active_req_dir.glob("*.md"):
+        req_id = path.stem
+        if req_id in downstream_specs:
+            continue
+
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        m = _FRONTMATTER_RE.match(text)
+        created = None
+        if m:
+            try:
+                fm = yaml.safe_load(m.group(1)) or {}
+                if isinstance(fm, dict):
+                    created = _parse_dt(fm.get("created_at"))
+            except yaml.YAMLError:
+                pass
+
+        if not created:
+            try:
+                created = _ensure_aware(datetime.fromtimestamp(path.stat().st_ctime, UTC))
+            except OSError:
+                continue
+
+        if created and created < cutoff:
+            age_days = int((now - created).total_seconds() // 86400)
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="spec_staleness",
+                    severity="warning",
+                    task_id=None,
+                    session=None,
+                    message=f"active request '{req_id}' is {age_days}d old with no downstream cc-tasks",
+                    metadata={
+                        "request_id": req_id,
+                        "age_days": str(age_days),
+                        "threshold_days": str(SPEC_STALENESS_DAYS),
+                    },
+                )
+            )
+    return events

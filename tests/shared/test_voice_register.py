@@ -16,13 +16,13 @@ from shared.voice_register import DEFAULT_REGISTER, VoiceRegister
 
 
 class TestEnumMembership:
-    def test_three_documented_members(self) -> None:
-        """The HOMAGE spec defines exactly three voice registers; pin
-        the count so accidental additions/removals are caught."""
+    def test_documented_members(self) -> None:
+        """Pin voice register membership so accidental changes are caught."""
         assert {member.name for member in VoiceRegister} == {
             "ANNOUNCING",
             "CONVERSING",
             "TEXTMODE",
+            "AMBIENT",
         }
 
     @pytest.mark.parametrize(

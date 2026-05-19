@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# hapax-dead-service-detector — checks that deployed units are running.
+# Exits 0 if all expected services are active. Exits 1 on any dead/failed.
+# With --apply: attempts restart of failed (not inactive) units.
+# With --json: output as JSON to stdout.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ALLOWLIST="${SCRIPT_DIR}/../config/dead-service-allowlist.yaml"
+STATE_FILE="$HOME/.cache/hapax/dead-service-state.json"
+APPLY=false
+JSON_OUT=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --apply) APPLY=true; shift ;;
+        --json) JSON_OUT=true; shift ;;
+        *) shift ;;
+    esac
+done
+
+# Load allowlist (services that are legitimately inactive)
+ALLOWED_INACTIVE=()
+if [[ -f "$ALLOWLIST" ]]; then
+    while IFS= read -r line; do
+        line="${line%%#*}"
+        line="${line// /}"
+        [[ -n "$line" && "$line" != "---" && "$line" != "allowed_inactive:" ]] && ALLOWED_INACTIVE+=("${line#-}")
+    done < "$ALLOWLIST"
+fi
+
+is_allowed() {
+    local unit="$1"
+    for allowed in "${ALLOWED_INACTIVE[@]}"; do
+        [[ "$unit" == "$allowed" ]] && return 0
+    done
+    return 1
+}
+
+# Scan all hapax-* services (excluding timers and oneshots)
+DEAD=()
+FAILED=()
+ACTIVE=0
+TOTAL=0
+
+while IFS= read -r line; do
+    unit=$(echo "$line" | awk '{print $1}')
+    state=$(echo "$line" | awk '{print $3}')
+    sub=$(echo "$line" | awk '{print $4}')
+
+    [[ -z "$unit" ]] && continue
+    ((TOTAL++)) || true
+
+    case "$state" in
+        active)
+            ((ACTIVE++)) || true
+            ;;
+        inactive|deactivating)
+            if ! is_allowed "$unit"; then
+                DEAD+=("$unit")
+            fi
+            ;;
+        failed)
+            FAILED+=("$unit")
+            ;;
+    esac
+done < <(systemctl --user list-units 'hapax-*.service' --no-legend --no-pager 2>/dev/null || true)
+
+# Attempt restart of failed units if --apply
+RESTARTED=()
+if $APPLY && [[ ${#FAILED[@]} -gt 0 ]]; then
+    for unit in "${FAILED[@]}"; do
+        if systemctl --user restart "$unit" 2>/dev/null; then
+            RESTARTED+=("$unit")
+        fi
+    done
+fi
+
+# Output
+if $JSON_OUT; then
+    mkdir -p "$(dirname "$STATE_FILE")"
+    cat > "$STATE_FILE" << JSONEOF
+{
+    "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+    "total": $TOTAL,
+    "active": $ACTIVE,
+    "dead": ${#DEAD[@]},
+    "failed": ${#FAILED[@]},
+    "dead_units": $(printf '%s\n' "${DEAD[@]:-}" | jq -R . | jq -s . 2>/dev/null || echo '[]'),
+    "failed_units": $(printf '%s\n' "${FAILED[@]:-}" | jq -R . | jq -s . 2>/dev/null || echo '[]'),
+    "restarted": $(printf '%s\n' "${RESTARTED[@]:-}" | jq -R . | jq -s . 2>/dev/null || echo '[]')
+}
+JSONEOF
+    cat "$STATE_FILE"
+else
+    echo "Dead service detector: $TOTAL units, $ACTIVE active, ${#DEAD[@]} dead, ${#FAILED[@]} failed"
+    for u in "${DEAD[@]}"; do echo "  DEAD: $u"; done
+    for u in "${FAILED[@]}"; do echo "  FAILED: $u"; done
+    for u in "${RESTARTED[@]}"; do echo "  RESTARTED: $u"; done
+fi
+
+[[ ${#DEAD[@]} -eq 0 && ${#FAILED[@]} -eq 0 ]] && exit 0 || exit 1

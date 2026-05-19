@@ -30,6 +30,8 @@
 #   systemd/overrides/**           → source/rationale docs only; no direct deploy
 #   systemd/scripts/*              → installer helper scripts; no direct deploy
 #   systemd/watchdogs/*            → install executable into ~/.local/bin
+#   systemd/logrotate.d/*          → logrotate configs; require sudo install
+#   systemd/system/**              → system-scoped configs; require sudo install
 #   scripts/hapax-*                → ensure ~/.local/bin/ symlink
 #
 # Usage:
@@ -269,6 +271,8 @@ while IFS= read -r f; do
         systemd/watchdogs/*)              WATCHDOGS+=("$f") ;;
         systemd/scripts/*)                ;; # installer helpers; run manually when needed
         systemd/udev/*.rules)             ;; # udev rules; require sudo install + udevadm reload (operator action)
+        systemd/logrotate.d/*)            ;; # logrotate configs; require sudo install
+        systemd/system/*)                 ;; # system-scoped configs; require sudo install
         scripts/hapax-*)                  SCRIPTS+=("$f") ;;
         scripts/*.py|scripts/*.sh)        SCRIPT_PY+=("$f") ;;
         systemd/expected-timers.yaml)     ;; # frozen-baseline doc, not deployable

@@ -53,6 +53,15 @@ from shared.voice_output_router import VoiceRouteState
 from shared.voice_register import VoiceRegister
 
 
+@pytest.fixture(autouse=True)
+def _isolate_stream_mode(monkeypatch):
+    """Default stream mode to off so tests don't depend on host state."""
+    monkeypatch.setattr(
+        "agents.hapax_daimonion.cpal.destination_channel._stream_mode_is_public",
+        lambda: False,
+    )
+
+
 def _write_private_status(path: Path) -> None:
     path.write_text(
         json.dumps(
@@ -519,6 +528,40 @@ class TestPlaybackDecision:
 
         assert decision.allowed is False
         assert decision.reason_code == "bridge_programme_authorization_soft_prior"
+
+    def test_stream_mode_public_classifies_no_intent_as_livestream(self, monkeypatch):
+        monkeypatch.setattr(destination_channel, "_stream_mode_is_public", lambda: True)
+        imp = SimpleNamespace(
+            source="conversation.response",
+            content={"narrative": "No explicit broadcast intent here."},
+        )
+        assert classify_destination(imp) == DestinationChannel.LIVESTREAM
+
+    def test_stream_mode_public_allows_playback_with_programme_auth(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(destination_channel, "_stream_mode_is_public", lambda: True)
+        now = time.time()
+        health_path = tmp_path / "audio-safe-for-broadcast.json"
+        _write_broadcast_health(health_path, safe=True)
+        imp = SimpleNamespace(
+            source="conversation.response",
+            content={
+                "narrative": "Conversational TTS on public stream.",
+                "public_broadcast_intent": True,
+                "programme_authorization": {
+                    "authorized": True,
+                    "authorized_at": now,
+                    "programme_id": "programme:conversation",
+                    "evidence_ref": "programme:conversation:voice",
+                },
+            },
+        )
+        decision = resolve_playback_decision(
+            imp,
+            broadcast_audio_health_path=health_path,
+            now=now,
+        )
+        assert decision.allowed is True
+        assert decision.reason_code == "broadcast_voice_authorized"
 
     @pytest.mark.parametrize(
         "raw,expected_active",
