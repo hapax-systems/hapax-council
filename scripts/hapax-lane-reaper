@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
-# hapax-lane-reaper — kill dead tmux sessions and clean their worktrees.
+# hapax-lane-reaper — manage lane lifecycle based on declared state.
 #
-# Scans hapax-codex-cx-* and hapax-claude-* tmux sessions. Kills any
-# that have been idle (shell prompt, no active child process) for longer
-# than IDLE_THRESHOLD_MIN. Cleans worktrees whose branches are merged.
+# Each lane declares its state via a file at:
+#   ~/.cache/hapax/lane-state/<session-name>
+# containing one of: working, waiting, done
+#
+# - working: active process, leave alone
+# - waiting: between tasks, available for dispatch — DO NOT KILL
+# - done:    session completed all work, safe to kill + clean
+# - (missing/stale): infer from process tree + idle time (legacy behavior)
+#
+# The reaper only kills lanes that are explicitly "done" or that have no
+# declared state AND no active process AND exceed the idle threshold.
 #
 # Usage:
 #   hapax-lane-reaper [--dry-run] [--threshold MINUTES]
@@ -15,6 +23,8 @@ set -euo pipefail
 IDLE_THRESHOLD_MIN="${1:-30}"
 DRY_RUN=0
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+STATE_DIR="$HOME/.cache/hapax/lane-state"
+mkdir -p "$STATE_DIR"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -28,31 +38,59 @@ log() { printf 'lane-reaper: %s\n' "$*" >&2; }
 
 killed=0
 cleaned=0
+waiting=0
 
 for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "^hapax-(codex-cx-|claude-)"); do
-    # Check if session has an active process beyond the shell
+    role="${session#hapax-codex-}"
+    role="${role#hapax-claude-}"
+    state_file="$STATE_DIR/$session"
+
+    # --- Read declared state ---
+    declared=""
+    if [[ -f "$state_file" ]]; then
+        declared=$(head -1 "$state_file" | tr -d '[:space:]')
+        state_age=$(( $(date +%s) - $(stat -c %Y "$state_file") ))
+    fi
+
+    # --- WORKING: leave alone ---
+    if [[ "$declared" == "working" ]]; then
+        continue
+    fi
+
+    # --- WAITING: available for dispatch, DO NOT KILL ---
+    if [[ "$declared" == "waiting" ]]; then
+        ((waiting++))
+        log "$session: WAITING for dispatch (${state_age}s)"
+        continue
+    fi
+
+    # --- DONE: safe to kill + clean ---
+    if [[ "$declared" == "done" ]]; then
+        log "$session: DONE — cleaning up"
+        _release_and_kill
+    fi
+
+    # --- No declared state: infer from process tree (legacy) ---
     pane_pid=$(tmux list-panes -t "$session" -F '#{pane_pid}' 2>/dev/null | head -1)
     [[ -z "$pane_pid" ]] && continue
 
-    # Count child processes (excluding the shell itself)
     children=$(ps --ppid "$pane_pid" -o comm= 2>/dev/null | grep -cv "^fish$\|^bash$\|^zsh$\|^sh$" || echo 0)
 
-    # Check last output for stuck patterns (quota, rate limit, error loops)
+    # Check for stuck patterns (quota, rate limit)
     last_output=$(tmux capture-pane -t "$session" -p 2>/dev/null | grep -v "^$" | tail -3)
     is_stuck=0
     if echo "$last_output" | grep -qi "rate.limit\|quota\|429\|Usage limit\|BLOCKED.*quota"; then
         is_stuck=1
     fi
 
+    # Active process, not stuck — working (implicit)
     if [[ "$children" -gt 0 && "$is_stuck" -eq 0 ]]; then
-        continue  # Active process making progress — skip
+        continue
     fi
 
+    # Active process but stuck — release task, keep session
     if [[ "$children" -gt 0 && "$is_stuck" -eq 1 ]]; then
-        # Stuck lane — release the task but DON'T kill the session
         log "$session: STUCK (quota/rate-limit) — releasing task, keeping session"
-        role="${session#hapax-codex-}"
-        role="${role#hapax-claude-}"
         claim_file="$HOME/.cache/hapax/cc-active-task-$role"
         if [[ -f "$claim_file" ]]; then
             claim=$(cat "$claim_file" | tr -d '[:space:]')
@@ -68,26 +106,23 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "
             fi
             rm -f "$claim_file"
         fi
-        continue  # Don't kill — session may recover
+        continue
     fi
 
-    # Dead lane — shell prompt, no process, idle too long
+    # No process, no declared state — check idle threshold before killing
     last_activity=$(tmux display-message -t "$session" -p '#{session_activity}' 2>/dev/null || echo 0)
     now=$(date +%s)
     idle_sec=$(( now - last_activity ))
     idle_min=$(( idle_sec / 60 ))
 
     if [[ "$idle_min" -lt "$IDLE_THRESHOLD_MIN" ]]; then
-        continue  # Not idle long enough
+        continue
     fi
 
-    log "$session: DEAD idle ${idle_min}m (threshold ${IDLE_THRESHOLD_MIN}m)"
+    log "$session: DEAD (no state, no process, idle ${idle_min}m)"
 
     # Check for uncommitted work in the session's worktree
-    role="${session#hapax-codex-}"
-    role="${role#hapax-claude-}"
     worktree="$COUNCIL_DIR--$role"
-
     if [[ -d "$worktree" ]]; then
         uncommitted=$(git -C "$worktree" status --porcelain 2>/dev/null | wc -l)
         branch=$(git -C "$worktree" symbolic-ref --short HEAD 2>/dev/null || echo "detached")
@@ -96,7 +131,6 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "
         if [[ "$uncommitted" -gt 0 ]]; then
             log "  WARNING: $worktree has $uncommitted uncommitted changes — NOT cleaning"
         elif [[ "$ahead" -gt 0 ]]; then
-            # Check if branch was merged
             merged=$(git -C "$COUNCIL_DIR" branch --merged main 2>/dev/null | grep -c "$branch" || echo 0)
             if [[ "$merged" -gt 0 ]]; then
                 log "  Worktree $worktree: branch $branch merged, cleaning"
@@ -114,12 +148,11 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "
         fi
     fi
 
-    # Clear stale claim file
+    # Release claimed task
     claim_file="$HOME/.cache/hapax/cc-active-task-$role"
     if [[ -f "$claim_file" ]]; then
         claim=$(cat "$claim_file" | tr -d '[:space:]')
         if [[ -n "$claim" ]]; then
-            # Release the task back to offered
             for task_file in "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/active/${claim}"*.md; do
                 if [[ -f "$task_file" ]]; then
                     sed -i "s/^status: claimed/status: offered/" "$task_file"
@@ -135,13 +168,14 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "
     # Kill the session
     if [[ "$DRY_RUN" -eq 0 ]]; then
         tmux kill-session -t "$session" 2>/dev/null && ((killed++)) || true
+        rm -f "$state_file"
         log "  Killed session: $session"
     else
         log "  DRY RUN: would kill $session"
     fi
 done
 
-log "Done: killed=$killed cleaned=$cleaned"
+log "Done: killed=$killed cleaned=$cleaned waiting=$waiting"
 
 if [[ "$DRY_RUN" -eq 0 && $(( killed + cleaned )) -gt 0 ]]; then
     systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
