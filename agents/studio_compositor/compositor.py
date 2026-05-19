@@ -1173,9 +1173,10 @@ class StudioCompositor:
         if "default" in self._layout_store.list_available():
             self._layout_store.set_active("default")
 
-        from agents.effect_graph.visual_governance import AtmosphericSelector
+        from agents.effect_graph.visual_governance import AtmosphericSelector, GesturalOffsetLayer
 
         self._atmospheric_selector = AtmosphericSelector()
+        self._gestural_offset_layer = GesturalOffsetLayer()
         self._idle_start: float | None = None
         self._current_preset_name: str | None = None
 

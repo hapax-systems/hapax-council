@@ -326,3 +326,67 @@ def test_tick_governance_backs_off_failed_atmospheric_load(
 
     assert calls == ["bad_preset"]
     assert fake._atmospheric_selector.marked == ["bad_preset"]
+
+
+def test_tick_governance_uses_stateful_gestural_layer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agents.effect_graph.visual_governance import GesturalOffsetLayer
+
+    class _FakeSelector:
+        def evaluate(self, **_kwargs):
+            return None
+
+    class _FakeOverlay:
+        _data = type(
+            "_Data",
+            (),
+            {
+                "desk_activity": "scratching",
+                "music_genre": "",
+                "gaze_direction": "hardware",
+                "person_count": 2,
+            },
+        )()
+
+    class _FakeGraph:
+        nodes = {"trail": object(), "bloom": object(), "drift": object()}
+
+    class _FakeGraphRuntime:
+        current_graph = _FakeGraph()
+
+    class _FakeCompositor:
+        _graph_runtime = _FakeGraphRuntime()
+        _atmospheric_selector = _FakeSelector()
+        _overlay_state = _FakeOverlay()
+        _user_preset_hold_until = 0.0
+        _current_preset_name = "clean"
+        _idle_start = None
+        _gestural_offset_layer = GesturalOffsetLayer()
+
+        def __init__(self) -> None:
+            self.changes: list[tuple[str, dict[str, float]]] = []
+
+        def _on_graph_params_changed(self, node_id: str, params: dict[str, float]) -> None:
+            self.changes.append((node_id, params))
+
+    now = 100.0
+    fake = _FakeCompositor()
+
+    monkeypatch.setattr(fx_tick, "_degraded_active", lambda: False)
+    monkeypatch.setattr(fx_tick, "_autonomous_fx_mutations_enabled", lambda: True)
+    monkeypatch.setattr(fx_tick, "_read_stimmung_stance", lambda: "nominal")
+    monkeypatch.setattr(fx_tick.time, "monotonic", lambda: now)
+    monkeypatch.setattr(
+        "agents.studio_compositor.effects.get_available_preset_names",
+        lambda: set(),
+    )
+
+    fx_tick.tick_governance(fake, 1.0)
+    assert fake.changes == []
+
+    now = 100.5
+    fx_tick.tick_governance(fake, 1.0)
+
+    trail_updates = [params["opacity"] for node, params in fake.changes if node == "trail"]
+    assert trail_updates == [pytest.approx(0.2 * 1.2 * 0.6 * 0.5)]

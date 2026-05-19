@@ -16,6 +16,7 @@ import math
 import os
 import random
 import time
+from dataclasses import dataclass
 
 from agents._capability import SystemContext
 from agents._governance.primitives import Candidate, FallbackChain, Veto, VetoChain
@@ -447,6 +448,41 @@ _GAZE_MODIFIERS: dict[str, float] = {
 }
 
 _GUEST_REDUCTION = 0.6
+_GESTURAL_MIN_ENVELOPE_S = 1.0
+_GESTURAL_MAX_ENVELOPE_S = 10.0
+_GESTURAL_IDLE_RELEASE_S = 5.0
+_GESTURAL_EPSILON = 1e-6
+
+# Activity attack times from the perception-visual governance design, clamped
+# into the task's 1-10 second live-offset range.
+_ACTIVITY_ATTACK_S: dict[str, float] = {
+    "scratching": 1.0,
+    "drumming": 0.5,
+    "tapping": 0.8,
+    "typing": 2.0,
+}
+
+
+def _clamp_gestural_envelope_s(seconds: float) -> float:
+    return min(_GESTURAL_MAX_ENVELOPE_S, max(_GESTURAL_MIN_ENVELOPE_S, seconds))
+
+
+@dataclass
+class _OffsetTransition:
+    start_value: float
+    target_value: float
+    start_time: float
+    duration_s: float
+
+    def value_at(self, now: float) -> float:
+        if self.duration_s <= 0.0:
+            return self.target_value
+        progress = (now - self.start_time) / self.duration_s
+        progress = min(1.0, max(0.0, progress))
+        return self.start_value + ((self.target_value - self.start_value) * progress)
+
+    def done(self, now: float) -> bool:
+        return now >= self.start_time + self.duration_s
 
 
 def compute_gestural_offsets(
@@ -471,6 +507,87 @@ def compute_gestural_offsets(
             base[key] *= _GUEST_REDUCTION
 
     return base
+
+
+class GesturalOffsetLayer:
+    """Stateful 1-10 second envelope for additive gestural offsets."""
+
+    def __init__(self) -> None:
+        self._current: dict[tuple[str, str], float] = {}
+        self._transitions: dict[tuple[str, str], _OffsetTransition] = {}
+
+    def reset(self) -> None:
+        self._current.clear()
+        self._transitions.clear()
+
+    def tick(
+        self,
+        *,
+        desk_activity: str,
+        gaze_direction: str,
+        person_count: int,
+        now: float | None = None,
+    ) -> dict[tuple[str, str], float]:
+        """Advance the gestural layer and return current additive offsets."""
+
+        now_f = time.monotonic() if now is None else now
+        targets = compute_gestural_offsets(
+            desk_activity=desk_activity,
+            gaze_direction=gaze_direction,
+            person_count=person_count,
+        )
+        keys = set(self._current) | set(self._transitions) | set(targets)
+
+        offsets: dict[tuple[str, str], float] = {}
+        for key in keys:
+            current = self._value_for_key(key, now_f)
+            target = targets.get(key, 0.0)
+            transition = self._transitions.get(key)
+            if transition is None or not math.isclose(
+                transition.target_value,
+                target,
+                rel_tol=1e-9,
+                abs_tol=_GESTURAL_EPSILON,
+            ):
+                transition = _OffsetTransition(
+                    start_value=current,
+                    target_value=target,
+                    start_time=now_f,
+                    duration_s=self._duration_s(
+                        desk_activity=desk_activity,
+                        current=current,
+                        target=target,
+                    ),
+                )
+                self._transitions[key] = transition
+
+            value = transition.value_at(now_f)
+            if transition.done(now_f):
+                value = transition.target_value
+                self._transitions.pop(key, None)
+
+            if abs(value) <= _GESTURAL_EPSILON and abs(target) <= _GESTURAL_EPSILON:
+                self._current.pop(key, None)
+                continue
+
+            self._current[key] = value
+            if abs(value) > _GESTURAL_EPSILON:
+                offsets[key] = value
+
+        return offsets
+
+    def _value_for_key(self, key: tuple[str, str], now: float) -> float:
+        transition = self._transitions.get(key)
+        if transition is not None:
+            return transition.value_at(now)
+        return self._current.get(key, 0.0)
+
+    def _duration_s(self, *, desk_activity: str, current: float, target: float) -> float:
+        if abs(target) <= _GESTURAL_EPSILON:
+            return _clamp_gestural_envelope_s(_GESTURAL_IDLE_RELEASE_S)
+        if abs(target) > abs(current):
+            return _clamp_gestural_envelope_s(_ACTIVITY_ATTACK_S.get(desk_activity, 1.0))
+        return _clamp_gestural_envelope_s(_GESTURAL_IDLE_RELEASE_S)
 
 
 # ── Breathing Substrate ───────────────────────────────────────────────────────
