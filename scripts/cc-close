@@ -216,4 +216,12 @@ if [[ "$final_status" == "done" && "${HAPAX_REQUEST_RECONCILER_OFF:-0}" != "1" &
       echo "cc-close: request fulfillment reconciler failed rc=$reconcile_rc" >&2
     fi
   fi
+
+  # Phase-advance: if this task is Phase N, create Phase N+1 if the request has more phases.
+  phase_advance="$SCRIPT_DIR/cc-phase-advance.py"
+  if [[ -f "$phase_advance" ]]; then
+    set +e
+    python3 "$phase_advance" "$vault_root/closed/$(basename "$note_path")" "$task_id"
+    set -e
+  fi
 fi
