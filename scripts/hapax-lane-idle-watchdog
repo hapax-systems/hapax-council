@@ -195,7 +195,7 @@ fi
 pick_next_offered() {
     local skip_lane="$1"
     if [ ! -d "$TASK_ROOT" ]; then
-        return 1
+        return 0
     fi
     # Find offered+unassigned tasks, sort by WSJF descending, return top task_id
     python3 -c "
