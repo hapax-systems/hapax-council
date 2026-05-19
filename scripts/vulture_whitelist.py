@@ -3581,3 +3581,7 @@ build_map
 from agents.hapax_daimonion.chat_response_dispatch import dispatch_chat_response
 
 dispatch_chat_response
+
+from agents.hapax_daimonion.chat_response_dispatch import DispatchResult
+
+DispatchResult.any_sent
