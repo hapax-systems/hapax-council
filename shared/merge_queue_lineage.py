@@ -491,6 +491,18 @@ def classify_record_bottleneck(record: MergeQueueLineageRecord) -> BottleneckCla
             reason="merge-group run cancelled before completion",
             evidence={"run_id": record.merge_group_run_id, "pr_number": record.pr_number},
         )
+    if record.run_conclusion in {"failure", "timed_out", "startup_failure"} and (
+        record.lifecycle_reasons
+    ):
+        return BottleneckClassification(
+            kind="queue_admission",
+            reason="merge-group run failed while the PR had admission blockers",
+            evidence={
+                "run_id": record.merge_group_run_id,
+                "pr_number": record.pr_number,
+                "lifecycle_reason_count": len(record.lifecycle_reasons),
+            },
+        )
     if record.pr_remained_open_after_success:
         return BottleneckClassification(
             kind="branch_protection_check_mapping",

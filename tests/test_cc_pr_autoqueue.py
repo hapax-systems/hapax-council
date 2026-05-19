@@ -6,9 +6,12 @@ import importlib.util
 import json
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+
+from shared.merge_queue_lineage import MergeQueueLineageRecord, write_jsonl_records
 
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 if str(_SCRIPTS) not in sys.path:
@@ -686,3 +689,162 @@ def test_stabilization_allows_governed_independent_route(tmp_path: Path) -> None
         reason.startswith("admission_stabilization_hold:")
         for reason in decisions[93].get("reasons", [])
     )
+
+
+def test_storm_mode_dry_run_reports_build_ahead_risk_and_pr_reasons(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    for number in range(100, 108):
+        _write_task(vault, task_id=f"task-{number}", pr=number)
+    runner = _FakeRunner()
+    runner.queued_prs = {100, 101}
+    runner.open_prs = [
+        _pr(100),
+        _pr(101, checks=[_check("lint", "FAILURE")]),
+        *[_pr(number) for number in range(102, 108)],
+    ]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    decisions = {item["pr"]: item for item in report["decisions"]}
+    assert report["storm_mode"]["active"] is True
+    assert report["storm_mode"]["queued_pr_count"] == 2
+    assert report["storm_mode"]["blocked_queued_pr_count"] == 1
+    assert report["storm_mode"]["recommended_throttle"]["max_entries_to_build"] == 1
+    assert decisions[100]["action"] == "already_queued"
+    assert decisions[101]["action"] == "dequeue"
+    assert any(reason.startswith("failed_checks:") for reason in decisions[101]["reasons"])
+    assert decisions[102]["action"] == "blocked"
+    assert any(reason.startswith("storm_admission_hold:") for reason in decisions[102]["reasons"])
+
+
+def test_storm_apply_dequeues_only_non_ready_queued_prs(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="ready-queued", folder="active", status="merge_queue", pr=110)
+    _write_task(vault, task_id="blocked-queued", pr=111, route_metadata_schema=None)
+    _write_task(
+        vault,
+        task_id="repair-queued",
+        folder="active",
+        status="merge_queue",
+        pr=112,
+        priority="p0",
+        kind="cicd-speedup",
+        tags=["cicd"],
+    )
+    for number in range(113, 118):
+        _write_task(vault, task_id=f"task-{number}", pr=number)
+    runner = _FakeRunner()
+    runner.queued_prs = {110, 111, 112}
+    runner.open_prs = [_pr(number) for number in range(110, 118)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decisions = {item["pr"]: item for item in report["decisions"]}
+    assert decisions[110]["action"] == "already_queued"
+    assert decisions[111]["action"] == "dequeue"
+    assert decisions[112]["action"] == "already_queued"
+    assert report["counts"]["dequeue"] == 1
+    assert (
+        sum(
+            1
+            for call in runner.calls
+            if call[:3] == ["gh", "api", "graphql"]
+            and any("dequeuePullRequest" in part for part in call)
+        )
+        == 1
+    )
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+
+
+def test_storm_allows_ci_repair_and_independent_admissions(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="normal-ready", folder="active", status="ready", pr=120)
+    _write_task(
+        vault,
+        task_id="ci-repair",
+        folder="active",
+        status="ready",
+        pr=121,
+        priority="p0",
+        kind="cicd-speedup",
+        tags=["cicd"],
+    )
+    _write_task(
+        vault,
+        task_id="independent",
+        folder="active",
+        status="ready",
+        pr=122,
+        queue_admission="independent",
+    )
+    for number in range(123, 128):
+        _write_task(vault, task_id=f"task-{number}", pr=number)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(number) for number in range(120, 128)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decisions = {item["pr"]: item for item in report["decisions"]}
+    assert report["storm_mode"]["active"] is True
+    assert decisions[120]["action"] == "blocked"
+    assert decisions[121]["action"] == "queue"
+    assert decisions[122]["action"] == "queue"
+    assert ["gh", "pr", "merge", "121", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert ["gh", "pr", "merge", "122", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert not any(call[:4] == ["gh", "pr", "merge", "120"] for call in runner.calls)
+
+
+def test_failed_recent_non_ready_merge_group_run_activates_storm_mode(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="missing-route", pr=130, route_metadata_schema=None)
+    ledger = tmp_path / "merge-queue-lineage.jsonl"
+    write_jsonl_records(
+        ledger,
+        [
+            MergeQueueLineageRecord(
+                observed_at=datetime(2026, 5, 18, 23, 30, tzinfo=UTC),
+                pr_number=130,
+                merge_group_run_id=9001,
+                run_conclusion="failure",
+                run_outcome="failure",
+            )
+        ],
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(130)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        lineage_ledger_path=ledger,
+        runner=runner,
+    )
+
+    failed = report["storm_mode"]["failed_recent_merge_group_runs"]
+    assert report["storm_mode"]["active"] is True
+    assert "failed_recent_merge_group_runs:1" in report["storm_mode"]["reasons"]
+    assert failed[0]["run_id"] == 9001
+    assert failed[0]["pr"] == 130
+    assert "task_missing_route_metadata_schema_1" in failed[0]["reasons"]

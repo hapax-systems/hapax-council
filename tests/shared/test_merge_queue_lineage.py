@@ -103,6 +103,27 @@ def test_repeated_setup_cost_uses_step_durations() -> None:
     assert record.bottleneck.kind == "repeated_setup_cost"
 
 
+def test_failed_non_ready_merge_group_classifies_queue_admission() -> None:
+    record = build_lineage_record(
+        _run(conclusion="failure"),
+        pr_by_number={
+            3450: _pr()
+            | {
+                "body": "## Summary\nno task link\n\n## Test plan\n- [ ] manual validation\n",
+                "statusCheckRollup": [
+                    {"name": "lint", "conclusion": "FAILURE", "status": "COMPLETED"}
+                ],
+            }
+        },
+        observed_at=datetime(2026, 5, 18, 22, 1, tzinfo=UTC),
+    )
+
+    assert record.lifecycle_reasons
+    assert record.bottleneck is not None
+    assert record.bottleneck.kind == "queue_admission"
+    assert "admission blockers" in record.bottleneck.reason
+
+
 def test_summary_includes_open_pr_hold_reasons_and_repeated_successes() -> None:
     first = build_lineage_record(_run(run_id=1), pr_by_number={3450: _pr()})
     second = build_lineage_record(_run(run_id=2), pr_by_number={3450: _pr()})
