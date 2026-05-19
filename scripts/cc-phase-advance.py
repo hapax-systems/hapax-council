@@ -53,7 +53,7 @@ def _phase_task_exists(phase_num: int, parent_request: str) -> bool:
         if not d.is_dir():
             continue
         for f in d.iterdir():
-            if not f.suffix == ".md":
+            if f.suffix != ".md":
                 continue
             name = f.name.lower()
             if (
