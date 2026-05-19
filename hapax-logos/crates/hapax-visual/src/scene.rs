@@ -73,18 +73,18 @@ impl ZPlane {
 
 // ─── Scene node ────────────────────────────────────────────────────
 
-pub const AOA_NODE_LABEL: &str = "aoa-pyramid";
+pub const AOA_NODE_LABEL: &str = "aperture-of-apertures";
 pub const AOA_COMPAT_SOURCE_IDS: &[&str] = &[
     "aoa",
-    "aoa-pyramid",
     "aperture-of-apertures",
+    "aoa-pyramid",
     // Legacy source IDs. These remain as compatibility aliases only; the
     // authored AoA anchor supplies its own geometry and never samples them.
     "sierpinski",
     "sierpinski-lines",
 ];
 pub const AOA_BASE_GRID_UNITS: f32 = 2.0;
-const NEBULOUS_SCROOM_CAMERA_SIDE_DEPTH_FACTOR: f32 = 0.30;
+const NEBULOUS_SCROOM_CAMERA_SIDE_DEPTH_FACTOR: f32 = 0.39;
 
 /// GPU shader family used by a scene node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,8 +106,8 @@ impl SceneNodeShader {
     pub fn vertex_count(self) -> u32 {
         match self {
             SceneNodeShader::Textured => 6,
-            // Parent tetrahedron plus depth-1 and depth-2 child tetrahedra:
-            // 21 tetrahedra * 4 triangular panes * 3 vertices.
+            // Parent tetrahedron plus depth-1, depth-2, and depth-3 children:
+            // 85 tetrahedra * 4 triangular panes * 3 vertices.
             SceneNodeShader::ApertureOfApertures => {
                 aoa_raw_triangular_pane_count(AOA_TETRIX_RENDER_DEPTH) as u32 * 3
             }
@@ -341,7 +341,7 @@ fn push_optional_node(
 
 pub fn authored_aoa_scene_node() -> SceneNode {
     let mut node = SceneNode::new(AOA_NODE_LABEL);
-    node.position = Vec3::new(0.0, -0.08, ZPlane::SurfaceScrim.z_position() - 0.4 + 0.55);
+    node.position = Vec3::new(0.0, -0.30, ZPlane::SurfaceScrim.z_position() + 0.44);
     node.scale = Vec3::splat(AOA_BASE_GRID_UNITS);
     node.rotation_y = 0.0;
     node.opacity = 0.92;
@@ -821,10 +821,10 @@ fn build_scene_from_source_refs(
     force_aoa_anchor: bool,
 ) -> Vec<SceneNode> {
     let mut nodes = Vec::new();
-    let primary_forward = 0.55;
-    let on_ring_forward = 0.82;
-    let mid_ring_forward = 1.04;
-    let far_ring_forward = 1.62;
+    let primary_forward = 0.78;
+    let on_ring_forward = 1.08;
+    let mid_ring_forward = 1.36;
+    let far_ring_forward = 1.95;
 
     let mut used_indices = Vec::new();
     // Full-frame/projection-capable sources can represent prior layouts or
@@ -892,7 +892,7 @@ fn build_scene_from_source_refs(
         active_sources,
         &hls_indices,
         Vec3::new(
-            -2.36,
+            -1.92,
             0.78,
             ZPlane::OnScrim.z_position() + 0.02 + on_ring_forward,
         ),
@@ -909,7 +909,7 @@ fn build_scene_from_source_refs(
         active_sources,
         &ir_indices,
         Vec3::new(
-            -2.18,
+            -1.94,
             1.58,
             ZPlane::MidScrim.z_position() + 0.86 + mid_ring_forward,
         ),
@@ -926,7 +926,7 @@ fn build_scene_from_source_refs(
         active_sources,
         &static_camera_artifact_indices,
         Vec3::new(
-            1.52,
+            1.36,
             -1.34,
             ZPlane::BeyondScrim.z_position() + 1.12 + far_ring_forward,
         ),
@@ -953,7 +953,7 @@ fn build_scene_from_source_refs(
         active_sources,
         &right_cube,
         Vec3::new(
-            2.30,
+            1.84,
             0.74,
             ZPlane::OnScrim.z_position() - 0.04 + on_ring_forward,
         ),
@@ -972,7 +972,7 @@ fn build_scene_from_source_refs(
         active_sources,
         &mid_band.iter().take(10).copied().collect::<Vec<_>>(),
         Vec3::new(
-            2.08,
+            1.76,
             -0.84,
             ZPlane::MidScrim.z_position() + 0.48 + mid_ring_forward,
         ),
@@ -993,7 +993,7 @@ fn build_scene_from_source_refs(
         active_sources,
         &far_band.iter().take(12).copied().collect::<Vec<_>>(),
         Vec3::new(
-            -2.10,
+            -1.72,
             -0.92,
             ZPlane::BeyondScrim.z_position() + 1.26 + far_ring_forward,
         ),
@@ -1297,11 +1297,11 @@ mod tests {
 
     #[test]
     fn aoa_tetrix_geometry_counts_are_pinned() {
-        assert_eq!(AOA_TETRIX_RENDER_DEPTH, 2);
-        assert_eq!(aoa_leaf_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 16);
-        assert_eq!(aoa_total_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 21);
-        assert_eq!(aoa_raw_edge_segment_count(AOA_TETRIX_RENDER_DEPTH), 126);
-        assert_eq!(aoa_raw_triangular_pane_count(AOA_TETRIX_RENDER_DEPTH), 84);
+        assert_eq!(AOA_TETRIX_RENDER_DEPTH, 3);
+        assert_eq!(aoa_leaf_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 64);
+        assert_eq!(aoa_total_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 85);
+        assert_eq!(aoa_raw_edge_segment_count(AOA_TETRIX_RENDER_DEPTH), 510);
+        assert_eq!(aoa_raw_triangular_pane_count(AOA_TETRIX_RENDER_DEPTH), 340);
     }
 
     #[test]
@@ -1316,6 +1316,12 @@ mod tests {
                 && shader.contains("aoa_vertex")
                 && shader.contains("aoa_fragment"),
             "AoA mesh shader entry points should remain explicit"
+        );
+        assert!(
+            shader.contains("AOA_INNER_PANE_COUNT_DEPTH_3")
+                && shader.contains("aoa_pane_depth")
+                && shader.contains("aoa_neon_palette"),
+            "AoA shader must carry the depth-3 pane layer and temporary per-volume color differentiation"
         );
     }
 
@@ -1444,8 +1450,8 @@ mod tests {
             .find(|n| n.label == "content-episodic_recall")
             .unwrap();
         assert!(
-            content.position.x > 1.5,
-            "content should start the right shelf"
+            content.position.x > 1.2,
+            "content should start the right shelf while staying tucked near AoA"
         );
     }
 
@@ -1887,8 +1893,14 @@ mod tests {
 
         let aoa = scene.iter().find(|n| n.label == AOA_NODE_LABEL).unwrap();
         assert!(aoa.position.x.abs() < 0.01);
-        assert!(aoa.position.y < 0.0);
-        assert!(aoa.position.y > -0.2);
+        assert!(
+            (-0.42..=-0.22).contains(&aoa.position.y),
+            "AoA should sit low enough to read as a grounded foreground object"
+        );
+        assert!(
+            aoa.position.z > ZPlane::SurfaceScrim.z_position(),
+            "AoA should be forward of the surface scrim rather than compacted into the old flat layer"
+        );
         assert_eq!(aoa.rotation_y, 0.0);
         assert_eq!(aoa.shader, SceneNodeShader::ApertureOfApertures);
         assert_eq!(aoa.scale.x, AOA_BASE_GRID_UNITS);
@@ -1919,7 +1931,10 @@ mod tests {
             .iter()
             .find(|n| n.label == "camera-brio-operator")
             .unwrap();
-        assert!(hls.position.x < -2.0, "HLS shelf should sit left");
+        assert!(
+            hls.position.x < -1.85 && hls.position.x > -3.0,
+            "HLS shelf should sit left while staying tucked near AoA"
+        );
 
         let ir = scene
             .iter()
@@ -1931,7 +1946,10 @@ mod tests {
             .iter()
             .find(|n| n.label == "programme_history")
             .unwrap();
-        assert!(ward.position.x > 1.5, "ward shelf should sit right");
+        assert!(
+            ward.position.x > 1.2 && ward.position.x < 2.7,
+            "ward shelf should sit right while staying tucked near AoA"
+        );
     }
 
     #[test]
@@ -2145,7 +2163,7 @@ mod tests {
             "overflow wards must not become a low floor/reflection-like band"
         );
         assert!(
-            overflow.position.x.abs() > 1.6,
+            overflow.position.x.abs() > 1.2,
             "overflow wards should remain in side shelves rather than a centered ghost layout"
         );
     }

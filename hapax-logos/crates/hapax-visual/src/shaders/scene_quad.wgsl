@@ -95,10 +95,13 @@ fn child_tetra_vertex(
 const AOA_OUTER_PANE_COUNT: u32 = 4u;
 const AOA_INNER_PANE_COUNT_DEPTH_1: u32 = 16u;
 const AOA_INNER_PANE_COUNT_DEPTH_2: u32 = 64u;
+const AOA_INNER_PANE_COUNT_DEPTH_3: u32 = 256u;
 const AOA_DEPTH_2_PANES_PER_CHILD: u32 = 16u;
+const AOA_DEPTH_3_PANES_PER_CHILD: u32 = 64u;
 const AOA_TOTAL_PANE_COUNT: u32 = AOA_OUTER_PANE_COUNT
     + AOA_INNER_PANE_COUNT_DEPTH_1
-    + AOA_INNER_PANE_COUNT_DEPTH_2;
+    + AOA_INNER_PANE_COUNT_DEPTH_2
+    + AOA_INNER_PANE_COUNT_DEPTH_3;
 
 fn aoa_barycentric(corner_idx: u32) -> vec3<f32> {
     if corner_idx == 0u {
@@ -222,9 +225,26 @@ fn aoa_pane_vertex(
     }
 
     let depth_2_idx = inner_idx - AOA_INNER_PANE_COUNT_DEPTH_1;
-    let child_idx = depth_2_idx / AOA_DEPTH_2_PANES_PER_CHILD;
-    let grandchild_idx = (depth_2_idx / 4u) % 4u;
-    let face_idx = depth_2_idx % 4u;
+    if depth_2_idx < AOA_INNER_PANE_COUNT_DEPTH_2 {
+        let child_idx = depth_2_idx / AOA_DEPTH_2_PANES_PER_CHILD;
+        let grandchild_idx = (depth_2_idx / 4u) % 4u;
+        let face_idx = depth_2_idx % 4u;
+        let ca = child_tetra_vertex(a, b, c, d, child_idx, 0u);
+        let cb = child_tetra_vertex(a, b, c, d, child_idx, 1u);
+        let cc = child_tetra_vertex(a, b, c, d, child_idx, 2u);
+        let cd = child_tetra_vertex(a, b, c, d, child_idx, 3u);
+        let ga = child_tetra_vertex(ca, cb, cc, cd, grandchild_idx, 0u);
+        let gb = child_tetra_vertex(ca, cb, cc, cd, grandchild_idx, 1u);
+        let gc = child_tetra_vertex(ca, cb, cc, cd, grandchild_idx, 2u);
+        let gd = child_tetra_vertex(ca, cb, cc, cd, grandchild_idx, 3u);
+        return aoa_face_vertex(ga, gb, gc, gd, face_idx, corner_idx);
+    }
+
+    let depth_3_idx = depth_2_idx - AOA_INNER_PANE_COUNT_DEPTH_2;
+    let child_idx = depth_3_idx / AOA_DEPTH_3_PANES_PER_CHILD;
+    let grandchild_idx = (depth_3_idx / AOA_DEPTH_2_PANES_PER_CHILD) % 4u;
+    let great_grandchild_idx = (depth_3_idx / 4u) % 4u;
+    let face_idx = depth_3_idx % 4u;
     let ca = child_tetra_vertex(a, b, c, d, child_idx, 0u);
     let cb = child_tetra_vertex(a, b, c, d, child_idx, 1u);
     let cc = child_tetra_vertex(a, b, c, d, child_idx, 2u);
@@ -233,7 +253,67 @@ fn aoa_pane_vertex(
     let gb = child_tetra_vertex(ca, cb, cc, cd, grandchild_idx, 1u);
     let gc = child_tetra_vertex(ca, cb, cc, cd, grandchild_idx, 2u);
     let gd = child_tetra_vertex(ca, cb, cc, cd, grandchild_idx, 3u);
-    return aoa_face_vertex(ga, gb, gc, gd, face_idx, corner_idx);
+    let ha = child_tetra_vertex(ga, gb, gc, gd, great_grandchild_idx, 0u);
+    let hb = child_tetra_vertex(ga, gb, gc, gd, great_grandchild_idx, 1u);
+    let hc = child_tetra_vertex(ga, gb, gc, gd, great_grandchild_idx, 2u);
+    let hd = child_tetra_vertex(ga, gb, gc, gd, great_grandchild_idx, 3u);
+    return aoa_face_vertex(ha, hb, hc, hd, face_idx, corner_idx);
+}
+
+fn aoa_pane_depth(pane_idx: u32) -> f32 {
+    if pane_idx < AOA_OUTER_PANE_COUNT {
+        return 0.0;
+    }
+    let inner_idx = pane_idx - AOA_OUTER_PANE_COUNT;
+    if inner_idx < AOA_INNER_PANE_COUNT_DEPTH_1 {
+        return 1.0;
+    }
+    if inner_idx < AOA_INNER_PANE_COUNT_DEPTH_1 + AOA_INNER_PANE_COUNT_DEPTH_2 {
+        return 2.0;
+    }
+    return 3.0;
+}
+
+fn aoa_primary_child_index(pane_idx: u32) -> u32 {
+    if pane_idx < AOA_OUTER_PANE_COUNT {
+        return pane_idx;
+    }
+    let inner_idx = pane_idx - AOA_OUTER_PANE_COUNT;
+    if inner_idx < AOA_INNER_PANE_COUNT_DEPTH_1 {
+        return inner_idx / 4u;
+    }
+    let depth_2_idx = inner_idx - AOA_INNER_PANE_COUNT_DEPTH_1;
+    if depth_2_idx < AOA_INNER_PANE_COUNT_DEPTH_2 {
+        return depth_2_idx / AOA_DEPTH_2_PANES_PER_CHILD;
+    }
+    let depth_3_idx = depth_2_idx - AOA_INNER_PANE_COUNT_DEPTH_2;
+    return depth_3_idx / AOA_DEPTH_3_PANES_PER_CHILD;
+}
+
+fn aoa_secondary_child_index(pane_idx: u32) -> u32 {
+    if pane_idx < AOA_OUTER_PANE_COUNT + AOA_INNER_PANE_COUNT_DEPTH_1 {
+        return pane_idx % 4u;
+    }
+    let inner_idx = pane_idx - AOA_OUTER_PANE_COUNT;
+    let depth_2_idx = inner_idx - AOA_INNER_PANE_COUNT_DEPTH_1;
+    if depth_2_idx < AOA_INNER_PANE_COUNT_DEPTH_2 {
+        return (depth_2_idx / 4u) % 4u;
+    }
+    let depth_3_idx = depth_2_idx - AOA_INNER_PANE_COUNT_DEPTH_2;
+    return (depth_3_idx / AOA_DEPTH_2_PANES_PER_CHILD) % 4u;
+}
+
+fn aoa_neon_palette(idx: u32) -> vec3<f32> {
+    if idx == 1u {
+        return vec3<f32>(0.28, 0.86, 1.0);
+    }
+    if idx == 2u {
+        return vec3<f32>(0.78, 0.40, 1.0);
+    }
+    if idx == 3u {
+        return vec3<f32>(1.0, 0.62, 0.18);
+    }
+    return vec3<f32>(1.0, 0.24, 0.74);
 }
 
 fn aoa_vertex(vi: u32) -> VertexOutput {
@@ -256,11 +336,7 @@ fn aoa_vertex(vi: u32) -> VertexOutput {
     out.barycentric = aoa_barycentric(corner_idx);
     out.pane_info = vec4<f32>(
         f32(pane_idx % 4u),
-        select(
-            0.0,
-            select(1.0, 2.0, pane_idx >= AOA_OUTER_PANE_COUNT + AOA_INNER_PANE_COUNT_DEPTH_1),
-            pane_idx >= AOA_OUTER_PANE_COUNT,
-        ),
+        aoa_pane_depth(pane_idx),
         f32(pane_idx),
         1.0,
     );
@@ -268,7 +344,7 @@ fn aoa_vertex(vi: u32) -> VertexOutput {
     return out;
 }
 
-fn aoa_face_tint(face: f32, inner_pane: f32, local_pos: vec3<f32>) -> vec3<f32> {
+fn aoa_face_tint(face: f32, inner_pane: f32, local_pos: vec3<f32>, pane_idx: f32) -> vec3<f32> {
     var tint = vec3<f32>(1.0, 0.28, 0.74);
     if face > 0.5 && face < 1.5 {
         tint = vec3<f32>(0.30, 0.84, 1.0);
@@ -277,9 +353,14 @@ fn aoa_face_tint(face: f32, inner_pane: f32, local_pos: vec3<f32>) -> vec3<f32> 
     } else if face > 2.5 {
         tint = vec3<f32>(1.0, 0.58, 0.20);
     }
+    let pane_u = u32(pane_idx + 0.5);
+    let primary = aoa_neon_palette(aoa_primary_child_index(pane_u));
+    let secondary = aoa_neon_palette(aoa_secondary_child_index(pane_u));
+    let lineage_mix = clamp(inner_pane * 0.12, 0.0, 0.32);
+    tint = mix(mix(tint, primary, clamp(inner_pane * 0.22, 0.0, 0.46)), secondary, lineage_mix);
     let depth_signal = clamp((local_pos.z + 0.62) / 0.96, 0.0, 1.0);
     let height_signal = clamp((local_pos.y + 0.44) / 1.04, 0.0, 1.0);
-    return tint * (0.72 + depth_signal * 0.20 + height_signal * 0.18) * (1.0 - inner_pane * 0.08);
+    return tint * (0.72 + depth_signal * 0.20 + height_signal * 0.18) * (1.0 - inner_pane * 0.045);
 }
 
 fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
@@ -298,7 +379,7 @@ fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
         }
         let sample_uv = pane_payload_sample_uv(info_uv);
         let payload = textureSample(quad_texture, quad_sampler, sample_uv);
-        let tint = aoa_face_tint(in.pane_info.x, inner_pane, in.local_pos);
+        let tint = aoa_face_tint(in.pane_info.x, inner_pane, in.local_pos, in.pane_info.z);
         let info_grid = pane_information_grid(info_uv, inside);
         let luma = payload_luma(payload.rgb);
 
@@ -342,7 +423,7 @@ fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
     let info_grid = pane_information_grid(info_uv, 1.0);
     let local_lattice = aa_line_mask(abs(bary.x - bary.y), 0.018, 0.042)
         * aa_line_mask(bary.z, 0.018, 0.042);
-    let tint = aoa_face_tint(in.pane_info.x, inner_pane, in.local_pos);
+    let tint = aoa_face_tint(in.pane_info.x, inner_pane, in.local_pos, in.pane_info.z);
     let fill = 0.052 + inner_pane * 0.014;
     let line = edge * (0.76 - inner_pane * 0.11);
     let address = info_grid * (0.12 + inner_pane * 0.04);
