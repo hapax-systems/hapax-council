@@ -97,7 +97,7 @@ MASTER_LIMITER_RELEASE_MS: float = 50.0
 #   under the music-duck stereo-split + FL/FR→RL/RR remap topology
 # Those music-alone notes were not a public-egress calibration. They remain
 # useful context, but broadcast safety follows the measured public source.
-MASTER_INPUT_MAKEUP_DB: float = 16.0
+MASTER_INPUT_MAKEUP_DB: float = 12.0
 
 # ── Per-source line-output ceiling for L-12 USB return (Phase 1.5) ────
 #
