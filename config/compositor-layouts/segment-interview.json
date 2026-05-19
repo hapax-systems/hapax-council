@@ -7,7 +7,6 @@
       "kind": "cairo",
       "backend": "cairo",
       "params": {
-        "class_name": "InterviewQuestionWard",
         "natural_w": 400,
         "natural_h": 600
       },
@@ -21,7 +20,6 @@
       "kind": "cairo",
       "backend": "cairo",
       "params": {
-        "class_name": "InterviewTranscriptWard",
         "natural_w": 640,
         "natural_h": 600
       },
@@ -35,7 +33,6 @@
       "kind": "cairo",
       "backend": "cairo",
       "params": {
-        "class_name": "InterviewUnknownsWard",
         "natural_w": 400,
         "natural_h": 600
       },
@@ -49,7 +46,6 @@
       "kind": "cairo",
       "backend": "cairo",
       "params": {
-        "class_name": "InterviewDeltaWard",
         "natural_w": 640,
         "natural_h": 180
       },
