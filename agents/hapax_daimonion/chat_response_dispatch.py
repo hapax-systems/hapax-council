@@ -71,7 +71,7 @@ async def dispatch_chat_response(
                 )
 
                 publisher = YoutubeLiveChatPublisher()
-                result = await publisher.publish(
+                result = publisher.publish(
                     content=text,
                     metadata={"liveChatId": live_chat_id},
                 )
