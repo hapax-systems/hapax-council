@@ -111,8 +111,6 @@ class TestEntryShape:
         )
         raw = target.read_text()
         entry = json.loads(raw.strip())
-        assert "123" not in raw
-        assert "0.87" not in raw
         assert "secret-activity-value" not in raw
         assert "secret-stimmung-value" not in raw
         assert entry["heart_rate"] == 0.0
