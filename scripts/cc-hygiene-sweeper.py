@@ -363,6 +363,7 @@ def run_sweep(
     events.extend(check_wip_limit(notes, now=now))
     events.extend(check_offered_staleness(notes, now=now))
     events.extend(check_refusal_pipeline_dormancy(closed_notes, now=now))
+    events.extend(check_spec_staleness(notes, now=now))
 
     sessions = _build_session_states(relay_payloads, notes)
     summaries = _summarize_checks(events)

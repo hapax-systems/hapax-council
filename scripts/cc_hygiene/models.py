@@ -24,6 +24,7 @@ CheckId = Literal[
     "wip_limit",
     "offered_stale",
     "refusal_dormancy",
+    "spec_staleness",
 ]
 """The 8 check identifiers from research §2."""
 
