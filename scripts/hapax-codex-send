@@ -10,11 +10,11 @@ usage: hapax-codex-send --session cx-color [--transport auto|foot|tmux]
                          [--ack-timeout SECONDS] [--json] [--stdin]
                          [--] MESSAGE...
 
-Sends MESSAGE to a visible Hapax Codex session. The default transport prefers a
-tmux session named hapax-codex-cx-color and falls back to a visible foot window
-named hapax-codex-cx-color. Visible foot delivery targets the window address
-directly when Hyprland supports it, avoiding focus-follow-mouse paste/Return
-races.
+Sends MESSAGE to a Hapax Codex session. The reliable control plane is tmux:
+the default transport prefers a tmux session named hapax-codex-cx-color.
+Visible foot delivery is a legacy Hyprland-specific fallback for desktop
+sessions named hapax-codex-cx-color. ACK-gated sends require tmux unless a
+future governed transport proves equivalent.
 EOF
 }
 
@@ -451,8 +451,14 @@ EOF
 }
 
 send_foot() {
-  have_cmd hyprctl || { echo "hapax-codex-send: hyprctl not found" >&2; exit 10; }
-  have_cmd jq || { echo "hapax-codex-send: jq not found" >&2; exit 10; }
+  have_cmd hyprctl || {
+    echo "hapax-codex-send: legacy Hyprland foot transport requires hyprctl; use tmux for KDE/reliable control-plane delivery" >&2
+    exit 10
+  }
+  have_cmd jq || {
+    echo "hapax-codex-send: legacy Hyprland foot transport requires jq for hyprctl client lookup" >&2
+    exit 10
+  }
 
   local address
   address="$(foot_window_address)"
@@ -545,7 +551,13 @@ case "$TRANSPORT" in
       USED_TRANSPORT="foot"
       send_foot
     else
-      echo "hapax-codex-send: no live target for $SESSION" >&2
+      if ! have_cmd hyprctl; then
+        echo "hapax-codex-send: no tmux session hapax-codex-$SESSION; legacy Hyprland foot fallback unavailable because hyprctl is absent (KDE/no-window-observer)" >&2
+      elif ! have_cmd jq; then
+        echo "hapax-codex-send: no tmux session hapax-codex-$SESSION; legacy Hyprland foot fallback unavailable because jq is absent" >&2
+      else
+        echo "hapax-codex-send: no live tmux target or legacy Hyprland foot window for $SESSION" >&2
+      fi
       exit 11
     fi
     ;;
