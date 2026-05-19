@@ -3553,3 +3553,26 @@ try:
     load_runtime_weights
 except ImportError:
     pass
+
+# CCTV intake gate — rubrics consumed by engine mode dispatch,
+# implementability map properties consumed by intake receipt builder
+from agents.deliberative_council.rubrics import (
+    IntakeHardeningRubric,
+    ResearchImplementabilityRubric,
+)
+
+IntakeHardeningRubric
+ResearchImplementabilityRubric
+
+from agents.deliberative_council.modes.implementability import (
+    ResearchImplementabilityMap,
+    build_assessment,
+    build_map,
+)
+
+ResearchImplementabilityMap.coverage_ratio
+ResearchImplementabilityMap.task_yield
+ResearchImplementabilityMap.theoretical_remainder
+ResearchImplementabilityMap.blocked_count
+build_assessment
+build_map
