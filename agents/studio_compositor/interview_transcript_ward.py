@@ -14,7 +14,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from agents.studio_compositor.homage_transitional_source import HomageTransitionalSource
+from agents.studio_compositor.homage.transitional_source import HomageTransitionalSource
 
 log = logging.getLogger(__name__)
 

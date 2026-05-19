@@ -327,5 +327,17 @@ def _register_builtins() -> None:
 
     register("AssertionReceiptWard", AssertionReceiptWard)
 
+    from agents.studio_compositor.interview_delta_ward import InterviewDeltaWard
+    from agents.studio_compositor.interview_question_ward import InterviewQuestionWard
+    from agents.studio_compositor.interview_transcript_ward import (
+        InterviewTranscriptWard,
+    )
+    from agents.studio_compositor.interview_unknowns_ward import InterviewUnknownsWard
+
+    register("InterviewQuestionWard", InterviewQuestionWard)
+    register("InterviewTranscriptWard", InterviewTranscriptWard)
+    register("InterviewUnknownsWard", InterviewUnknownsWard)
+    register("InterviewDeltaWard", InterviewDeltaWard)
+
 
 _register_builtins()
