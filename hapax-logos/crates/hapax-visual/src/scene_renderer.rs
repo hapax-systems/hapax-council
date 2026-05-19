@@ -644,7 +644,7 @@ impl SceneRenderer {
                 queue.write_buffer(&self.grid_uniform_buffer, 0, bytemuck::bytes_of(&grid_data));
                 pass.set_pipeline(&self.grid_pipeline);
                 pass.set_bind_group(0, &self.grid_uniform_bind_group, &[]);
-                pass.draw(0..48, 0..1); // Room grids + visible light marker + volumetric rays
+                pass.draw(0..48, 0..1); // Outer room grids + visible light marker + volumetric rays
             }
 
             // ── Draw content quads ───────────────────────────────────
@@ -862,12 +862,28 @@ mod tests {
     fn nebulous_scroom_planes_have_persistent_material() {
         assert!(
             SCENE_GRID_WGSL.contains("scroom_material_pattern"),
-            "floor, ceiling, back wall, and mid-field planes need persistent room material"
+            "floor, ceiling, and back wall planes need persistent room material"
         );
         assert!(
             SCENE_GRID_WGSL.contains("not to the output pane"),
             "scroom material must remain authored room geometry, not a fourth-wall overlay"
         );
+    }
+
+    #[test]
+    fn nebulous_scroom_has_no_mid_field_cross_plane() {
+        for forbidden in [
+            "mid-field",
+            "is_mid_field",
+            "wp.y - 0.35",
+            "0.35, lp.y * 6.5",
+            "base_alpha = 0.056",
+        ] {
+            assert!(
+                !SCENE_GRID_WGSL.contains(forbidden),
+                "scroom grid must not cut a middle plane through occupied room volume"
+            );
+        }
     }
 
     #[test]

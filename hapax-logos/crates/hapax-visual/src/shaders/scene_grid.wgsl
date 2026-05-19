@@ -1,5 +1,4 @@
-// 3D perspective grid — floor, back wall, ceiling, and a mid-field plane
-// for spatial depth through the occupied volume.
+// 3D perspective grid — floor, back wall, and ceiling.
 // Neon depth lines. They should read as spatial structure, not as a
 // foreground scanner laid over the livestream surface.
 
@@ -153,9 +152,6 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
         world = vec3<f32>(lp.x * 15.0, 2.5, lp.y * 8.0 - 4.0);
         n = vec3<f32>(0.0, -1.0, 0.0);
     } else if quad_idx == 3u {
-        world = vec3<f32>(lp.x * 12.0, 0.35, lp.y * 6.5 - 4.2);
-        n = vec3<f32>(0.0, 1.0, 0.0);
-    } else if quad_idx == 4u {
         // Visible point-light marker. This is intentionally authored geometry,
         // not a hardware raytracing dependency.
         world = grid.light_position.xyz + vec3<f32>(lp.x * 0.28, lp.y * 0.28, 0.0);
@@ -164,11 +160,11 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
         // Soft volumetric beam billboards from the moving light into the room.
         let start = grid.light_position.xyz;
         var end: vec3<f32>;
-        if quad_idx == 5u {
+        if quad_idx == 4u {
             end = vec3<f32>(0.0, 0.25, -4.6);
-        } else if quad_idx == 6u {
+        } else if quad_idx == 5u {
             end = vec3<f32>(-3.2, -1.15, -3.2);
-        } else if quad_idx == 7u {
+        } else if quad_idx == 6u {
             end = vec3<f32>(3.0, -1.05, -3.7);
         } else {
             end = vec3<f32>(0.0, 2.2, -5.8);
@@ -202,8 +198,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let t = grid.time;
     let light_color = grid.light_color.rgb;
 
-    if in.plane_kind > 3.5 {
-        if in.plane_kind < 4.5 {
+    if in.plane_kind > 2.5 {
+        if in.plane_kind < 3.5 {
             let d = length(in.local_pos);
             let core = smoothstep(0.34, 0.02, d);
             let halo = smoothstep(1.0, 0.08, d);
@@ -237,9 +233,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let major_x = grid_line_mask(lx, 0.006, 0.090);
     let major_y = grid_line_mask(ly, 0.006, 0.090);
     let is_horizontal_plane = abs(in.normal.y) > 0.5;
-    let is_mid_field = abs(wp.y - 0.35) < 0.02;
-    let is_floor_or_ceiling = is_horizontal_plane && !is_mid_field;
-    let major = select(max(major_x, major_y), max(major_x * 0.90, major_y * 0.55), is_mid_field);
+    let is_floor_or_ceiling = is_horizontal_plane;
+    let major = max(major_x, major_y);
 
     // Distance attenuation
     let dist = length(wp - vec3(0.0, 0.0, 2.0));
@@ -259,12 +254,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let shadow = soft_shadow_at(wp, grid.light_position.xyz);
         let room_light = point_light_at(wp, in.normal) * shadow;
         var base_alpha = 0.092;
-        if is_mid_field {
-            base_alpha = 0.056;
-        } else if abs(in.normal.z) > 0.5 {
-            base_alpha = 0.138;
+        if abs(in.normal.z) > 0.5 {
+            base_alpha = 0.150;
         } else if is_floor_or_ceiling {
-            base_alpha = 0.118;
+            base_alpha = 0.130;
         }
         let texture_signal = 0.42 + 0.34 * material + 0.12 * weave + 0.22 * dot_alpha;
         var plane_color = vec3<f32>(0.095, 0.110, 0.165)
@@ -297,10 +290,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     color = color * 0.72 * glow * dist_fade;
     color = color * (0.66 + 0.34 * shadow) + light_color * room_light * 0.22;
     var alpha = major * 0.50 * dist_fade * (0.82 + 0.18 * shadow + 0.12 * room_light);
-    if is_mid_field {
-        alpha = alpha * 0.72;
-        color = color * 1.12;
-    } else if abs(in.normal.y) > 0.5 {
+    if abs(in.normal.y) > 0.5 {
         alpha = alpha * 1.16;
         color = color * 1.28;
     } else {

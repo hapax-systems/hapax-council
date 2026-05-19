@@ -423,7 +423,7 @@ def test_scene_grid_keeps_spatial_visibility_floor() -> None:
     assert "max(smoothstep(22.0, 1.5, dist), 0.26)" in source
     assert "major < 0.003" in source
     assert "scroom_material_pattern" in source
-    assert "base_alpha = 0.138;" in source
-    assert "base_alpha = 0.118;" in source
-    assert "base_alpha = 0.056;" in source
+    assert "base_alpha = 0.150;" in source
+    assert "base_alpha = 0.130;" in source
+    assert "is_mid_field" not in source
     assert "var alpha = major * 0.50 * dist_fade" in source
