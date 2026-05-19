@@ -24,8 +24,9 @@ def _write_shm(tmp_path: Path, sources: dict) -> Path:
 def test_baseline_on_zero_density(tmp_path: Path) -> None:
     shm = _write_shm(tmp_path, {"a": {"density": 0.0}})
     temporal = tmp_path / "hapax-density-field" / "temporal-mode.json"
-    with patch("agents.density_field.DENSITY_FIELD_SHM", shm), patch(
-        "agents.density_field.TEMPORAL_STATE_PATH", temporal
+    with (
+        patch("agents.density_field.DENSITY_FIELD_SHM", shm),
+        patch("agents.density_field.TEMPORAL_STATE_PATH", temporal),
     ):
         dfc = DensityFieldCompute()
         mode = dfc.tick()
@@ -36,8 +37,9 @@ def test_baseline_on_zero_density(tmp_path: Path) -> None:
 def test_rising_on_moderate_density(tmp_path: Path) -> None:
     shm = _write_shm(tmp_path, {"a": {"density": 0.4}})
     temporal = tmp_path / "hapax-density-field" / "temporal-mode.json"
-    with patch("agents.density_field.DENSITY_FIELD_SHM", shm), patch(
-        "agents.density_field.TEMPORAL_STATE_PATH", temporal
+    with (
+        patch("agents.density_field.DENSITY_FIELD_SHM", shm),
+        patch("agents.density_field.TEMPORAL_STATE_PATH", temporal),
     ):
         dfc = DensityFieldCompute()
         mode = dfc.tick()
@@ -47,8 +49,9 @@ def test_rising_on_moderate_density(tmp_path: Path) -> None:
 def test_sustained_on_high_density(tmp_path: Path) -> None:
     shm = _write_shm(tmp_path, {"a": {"density": 0.6}})
     temporal = tmp_path / "hapax-density-field" / "temporal-mode.json"
-    with patch("agents.density_field.DENSITY_FIELD_SHM", shm), patch(
-        "agents.density_field.TEMPORAL_STATE_PATH", temporal
+    with (
+        patch("agents.density_field.DENSITY_FIELD_SHM", shm),
+        patch("agents.density_field.TEMPORAL_STATE_PATH", temporal),
     ):
         dfc = DensityFieldCompute()
         mode = dfc.tick()
@@ -58,8 +61,9 @@ def test_sustained_on_high_density(tmp_path: Path) -> None:
 def test_density_bounded(tmp_path: Path) -> None:
     shm = _write_shm(tmp_path, {"a": {"density": 0.5}, "b": {"density": 0.8}})
     temporal = tmp_path / "hapax-density-field" / "temporal-mode.json"
-    with patch("agents.density_field.DENSITY_FIELD_SHM", shm), patch(
-        "agents.density_field.TEMPORAL_STATE_PATH", temporal
+    with (
+        patch("agents.density_field.DENSITY_FIELD_SHM", shm),
+        patch("agents.density_field.TEMPORAL_STATE_PATH", temporal),
     ):
         dfc = DensityFieldCompute()
         dfc.tick()
@@ -69,8 +73,9 @@ def test_density_bounded(tmp_path: Path) -> None:
 def test_writes_temporal_state(tmp_path: Path) -> None:
     shm = _write_shm(tmp_path, {"a": {"density": 0.4}})
     temporal = tmp_path / "hapax-density-field" / "temporal-mode.json"
-    with patch("agents.density_field.DENSITY_FIELD_SHM", shm), patch(
-        "agents.density_field.TEMPORAL_STATE_PATH", temporal
+    with (
+        patch("agents.density_field.DENSITY_FIELD_SHM", shm),
+        patch("agents.density_field.TEMPORAL_STATE_PATH", temporal),
     ):
         dfc = DensityFieldCompute()
         dfc.tick()
