@@ -15,10 +15,11 @@ import logging
 import math
 import time
 import urllib.request
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from shared.information_density import InformationDensityField
+from shared.information_density import BOCPDModel, InformationDensityField, SourceDensity
 
 log = logging.getLogger(__name__)
 
@@ -139,6 +140,150 @@ def compute_concept_anchors() -> list[tuple[str, list[float]]]:
         log.warning("compute_concept_anchors: SHM write failed", exc_info=True)
 
     return anchors
+
+
+# ── Narrative Source ─────────────────────────────────────────────────────────
+
+NARRATIVE_STATE_SHM = Path("/dev/shm/hapax-director/narrative-state.json")
+CHRONICLE_EVENTS_PATH = Path("/dev/shm/hapax-chronicle/events.jsonl")
+AUDIENCE_SHM = Path("/dev/shm/hapax-perception/audience.json")
+STT_RECENT_PATH = Path("/dev/shm/hapax-daimonion/stt-recent.txt")
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two vectors."""
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    mag_a = math.sqrt(sum(x * x for x in a))
+    mag_b = math.sqrt(sum(x * x for x in b))
+    if mag_a == 0 or mag_b == 0:
+        return 0.0
+    return dot / (mag_a * mag_b)
+
+
+class NarrativeSource:
+    """Computes narrative density from chronicle, transcript, and audience signals.
+
+    Four sub-signals:
+    - activity:  Shannon entropy over chronicle event types (variety of things happening)
+    - surprise:  1 - mean(cosine_sim(transcript, anchors)) — high when ungrounded
+    - novelty:   BOCPD change-point probability on transcript embedding magnitude
+    - relevance: viewer_count / max(viewer_count, 1) normalized [0,1]
+    """
+
+    def __init__(self, anchor_vectors: list[list[float]]) -> None:
+        self._anchor_vectors = anchor_vectors
+        self._bocpd = BOCPDModel(hazard=1 / 100, max_run_lengths=100)
+        self._show_start = time.time()
+
+    def compute(self) -> SourceDensity:
+        """Compute all four narrative density sub-signals."""
+        activity = self._compute_activity()
+        surprise = self._compute_surprise()
+        novelty = self._compute_novelty()
+        relevance = self._compute_relevance()
+
+        sd = SourceDensity(
+            source_id="narrative",
+            activity=activity,
+            surprise=surprise,
+            novelty=novelty,
+            relevance=relevance,
+            confidence=1.0,
+            timestamp=time.time(),
+        )
+        sd.compute_density()
+        return sd
+
+    def _compute_activity(self) -> float:
+        """Shannon entropy over chronicle event types since show start."""
+        try:
+            events_path = CHRONICLE_EVENTS_PATH
+            if not events_path.exists():
+                return 0.0
+            counter: Counter[str] = Counter()
+            text = events_path.read_text(encoding="utf-8")
+            for line in text.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    evt = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = evt.get("ts", 0.0)
+                if ts < self._show_start:
+                    continue
+                event_type = evt.get("event_type", "unknown")
+                counter[event_type] += 1
+
+            total = sum(counter.values())
+            if total == 0:
+                return 0.0
+            n_types = len(counter)
+            if n_types <= 1:
+                return 0.0
+            entropy = 0.0
+            max_entropy = math.log2(n_types) if n_types > 1 else 1.0
+            for count in counter.values():
+                p = count / total
+                if p > 0:
+                    entropy -= p * math.log2(p)
+            return entropy / max_entropy if max_entropy > 0 else 0.0
+        except OSError:
+            return 0.0
+
+    def _compute_surprise(self) -> float:
+        """1 - mean(cosine_sim(transcript_embedding, anchors)). High = ungrounded."""
+        if not self._anchor_vectors:
+            return 0.5  # neutral when no anchors
+
+        try:
+            transcript = STT_RECENT_PATH.read_text(encoding="utf-8").strip()
+        except (FileNotFoundError, OSError):
+            return 0.5
+
+        if not transcript:
+            return 0.5
+
+        from shared.config import embed_safe
+
+        vec = embed_safe(transcript, prefix="search_query")
+        if vec is None:
+            return 0.5
+
+        sims = [_cosine_similarity(vec, anchor) for anchor in self._anchor_vectors]
+        mean_sim = sum(sims) / len(sims) if sims else 0.0
+        return max(0.0, min(1.0, 1.0 - mean_sim))
+
+    def _compute_novelty(self) -> float:
+        """BOCPD change-point probability on transcript embedding stream.
+
+        Uses the L2 norm of the latest transcript embedding as a scalar
+        summary — sudden topic shifts produce large norm changes.
+        """
+        try:
+            transcript = STT_RECENT_PATH.read_text(encoding="utf-8").strip()
+        except (FileNotFoundError, OSError):
+            return 0.0
+
+        if not transcript:
+            return 0.0
+
+        from shared.config import embed_safe
+
+        vec = embed_safe(transcript, prefix="search_query")
+        if vec is None:
+            return 0.0
+
+        magnitude = math.sqrt(sum(x * x for x in vec))
+        return self._bocpd.update(magnitude)
+
+    def _compute_relevance(self) -> float:
+        """Viewer count normalized to [0,1]. Read from audience SHM."""
+        audience_data = _read_json(AUDIENCE_SHM)
+        if audience_data is None:
+            return 0.0
+        viewer_count = _extract_float(audience_data, "viewer_count", "viewers", "count")
+        return min(1.0, viewer_count / max(viewer_count, 1.0))
 
 
 SOURCE_REGISTRY: list[dict[str, Any]] = [
@@ -263,8 +408,14 @@ def run_density_daemon() -> None:
 
     # Compute concept anchors once at show start
     anchors = compute_concept_anchors()
+    anchor_vectors = [vec for _, vec in anchors]
+
+    # Register narrative source — uses direct SourceDensity updates
+    field.register_source("narrative", obs_min=0.0, obs_max=1.0)
+    narrative = NarrativeSource(anchor_vectors)
+
     log.info(
-        "information_density_daemon: started with %d sources, %d concept anchors",
+        "information_density_daemon: started with %d sources + narrative, %d concept anchors",
         len(SOURCE_REGISTRY),
         len(anchors),
     )
@@ -276,6 +427,18 @@ def run_density_daemon() -> None:
                 data = _read_json(shm_path)
                 value = _extract_float(data, *src["keys"])
                 field.update(src["id"], value)
+
+            # Update narrative source with pre-computed density signals
+            narrative_density = narrative.compute()
+            field.update(
+                "narrative",
+                narrative_density.activity,
+                relevance=narrative_density.relevance,
+            )
+            # Override the source model's computed values with our richer signals
+            narrative_model = field._sources.get("narrative")
+            if narrative_model is not None:
+                narrative_model.last_density = narrative_density
 
             field.write_shm()
 
