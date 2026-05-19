@@ -277,7 +277,20 @@ async def _run_phase2(
     findings_block = "\n".join(all_findings) if all_findings else "No research findings."
     scores_block = "\n".join(f"  {r.model_alias}: {r.scores}" for r in phase1_results)
 
-    if mode == CouncilMode.NARRATIVE and text:
+    if mode == CouncilMode.INTAKE:
+        prompt = (
+            "You are building an Impediment Matrix for a work request.\n\n"
+            f"## Contested axes: {contested_axes}\n\n"
+            f"## Phase 1 scores:\n{scores_block}\n\n"
+            f"## Research findings:\n{findings_block}\n\n"
+            "For each contested axis, identify WHAT SPECIFIC INFORMATION IS MISSING\n"
+            "that prevents convergence. Be concrete — name the missing section,\n"
+            "field, or specification that would resolve the disagreement.\n\n"
+            "Respond in JSON:\n"
+            '{"axes": {"axis_name": {"impediment": "what is missing", '
+            '"resolution": "what the requester should add"}, ...}}'
+        )
+    elif mode == CouncilMode.NARRATIVE and text:
         phase1_scores = {r.model_alias: r.scores for r in phase1_results}
         prompt = phase2_alternative_framing_prompt(text, phase1_scores)
     else:
@@ -360,7 +373,19 @@ async def _run_phase3(
             em_axis = evidence_matrix.axes[axis]
             matrix_summary = f"Least inconsistent score: {em_axis.least_inconsistent_score}"
 
-        if mode == CouncilMode.NARRATIVE and text:
+        if mode == CouncilMode.INTAKE:
+            prompt = (
+                f"You are evaluating a work request on axis '{axis}'.\n\n"
+                f"One evaluator scored {high_score}/5: {high_result.rationale.get(axis, '')}\n"
+                f"Another scored {low_score}/5: {low_result.rationale.get(axis, '')}\n\n"
+                f"Evidence matrix: {matrix_summary}\n\n"
+                "TASK: Role-play as a task creator trying to decompose this request.\n"
+                "What specific cc-tasks would you create for this axis?\n"
+                "What acceptance criteria would each task have?\n"
+                "If you CANNOT create concrete tasks, explain why — that's diagnostic.\n\n"
+                "Respond concisely (under 300 words)."
+            )
+        elif mode == CouncilMode.NARRATIVE and text:
             prompt = phase3_audience_simulation_prompt(
                 text=text,
                 axis=axis,
