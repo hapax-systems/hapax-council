@@ -3592,37 +3592,26 @@ from agents.studio_compositor.gem_canvas import GlyphCanvas
 GlyphCanvas.write_box
 GlyphCanvas.from_row_strings
 
-# Interview system — wards loaded dynamically by compositor, interview methods
-# called via CPAL conversation pipeline
+# Interview system + concept mastery — wards loaded dynamically by compositor,
+# interview methods called via CPAL, programme agents use concept mastery
 from agents.hapax_daimonion.daily_segment_prep import _interview_question_violations
-_interview_question_violations
-
 from agents.studio_compositor.interview_delta_ward import InterviewDeltaWard
-InterviewDeltaWard
-
 from agents.studio_compositor.interview_question_ward import InterviewQuestionWard
-InterviewQuestionWard
-
 from agents.studio_compositor.interview_transcript_ward import InterviewTranscriptWard
-InterviewTranscriptWard
-
 from agents.studio_compositor.interview_unknowns_ward import InterviewUnknownsWard
-InterviewUnknownsWard
-
 from logos.interview import branch_follow_up, request_background_research
+from shared.concept_mastery import ConceptMastery, compute_zpd_affordance_pressure
+from shared.programme import register_programme_affordances
+
+_interview_question_violations
+InterviewDeltaWard
+InterviewQuestionWard
+InterviewTranscriptWard
+InterviewUnknownsWard
 branch_follow_up
 request_background_research
-
-from shared.concept_mastery import (
-    compute_zpd_affordance_pressure,
-)
 compute_zpd_affordance_pressure
-
-# ConceptMastery methods — called by programme agents
-from shared.concept_mastery import ConceptMastery
 ConceptMastery.update_segment_covered
 ConceptMastery.update_chat_mention
 ConceptMastery.add_concept
-
-from shared.programme import register_programme_affordances
 register_programme_affordances
