@@ -32,6 +32,7 @@ dependencies = [
     "litellm>=1.83.10",
     "kokoro>=0.9",
     "chatterbox-tts",
+    "torchvision>=0.21",
     "mistralai>=2.1.0",
     "python-toon>=0.1.3",
     "llmlingua>=0.2.2",
