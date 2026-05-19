@@ -372,7 +372,7 @@ def _decompose_filter_chain_module(
     if format_outer or rate_outer:
         try:
             outer_format = FormatSpec(
-                rate_hz=int(rate_outer.group(1)) if rate_outer else 48000,
+                rate_hz=int(rate_outer.group(1)) if rate_outer else 44100,
                 format=_parse_format_token(format_outer.group(1) if format_outer else "S32"),
                 channels=outer_channels.count,
             )
@@ -423,7 +423,7 @@ def _decompose_filter_chain_module(
         if cap_format_m or cap_rate_m:
             try:
                 cap_format = FormatSpec(
-                    rate_hz=int(cap_rate_m.group(1)) if cap_rate_m else 48000,
+                    rate_hz=int(cap_rate_m.group(1)) if cap_rate_m else 44100,
                     format=_parse_format_token(cap_format_m.group(1) if cap_format_m else "S32"),
                     channels=cap_channels.count,
                 )
@@ -472,7 +472,7 @@ def _decompose_filter_chain_module(
         if pb_format_m or pb_rate_m:
             try:
                 pb_format = FormatSpec(
-                    rate_hz=int(pb_rate_m.group(1)) if pb_rate_m else 48000,
+                    rate_hz=int(pb_rate_m.group(1)) if pb_rate_m else 44100,
                     format=_parse_format_token(pb_format_m.group(1) if pb_format_m else "S32"),
                     channels=pb_channels.count,
                 )
@@ -569,7 +569,7 @@ def _decompose_loopback_module(
     if cap_format_m or cap_rate_m:
         try:
             cap_format = FormatSpec(
-                rate_hz=int(cap_rate_m.group(1)) if cap_rate_m else 48000,
+                rate_hz=int(cap_rate_m.group(1)) if cap_rate_m else 44100,
                 format=_parse_format_token(cap_format_m.group(1) if cap_format_m else "S32"),
                 channels=cap_channels.count,
             )
@@ -578,7 +578,7 @@ def _decompose_loopback_module(
     if pb_format_m or pb_rate_m:
         try:
             pb_format = FormatSpec(
-                rate_hz=int(pb_rate_m.group(1)) if pb_rate_m else 48000,
+                rate_hz=int(pb_rate_m.group(1)) if pb_rate_m else 44100,
                 format=_parse_format_token(pb_format_m.group(1) if pb_format_m else "S32"),
                 channels=pb_channels.count,
             )

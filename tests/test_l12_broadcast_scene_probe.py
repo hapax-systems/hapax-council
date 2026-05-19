@@ -57,7 +57,7 @@ class TestChannelRmsDbfs:
         # Construct a 14-channel buffer where AUX8 carries a
         # near-full-scale 1 kHz sine; other channels are silent.
         sample_count = 4800
-        t = np.arange(sample_count) / 48000.0
+        t = np.arange(sample_count) / 44100.0
         sine = (np.sin(2 * np.pi * 1000.0 * t) * 30000).astype(np.int16)
         buffer = np.zeros((sample_count, 14), dtype=np.int16)
         buffer[:, 8] = sine
@@ -458,7 +458,7 @@ def _make_silent_pcm(channels: int = 14, samples: int = 4800) -> bytes:
 
 def _make_loud_content_return_pcm(channels: int = 14, samples: int = 4800) -> bytes:
     buffer = np.zeros((samples, channels), dtype=np.int16)
-    t = np.arange(samples) / 48000.0
+    t = np.arange(samples) / 44100.0
     sine = (np.sin(2 * np.pi * 1000.0 * t) * 25000).astype(np.int16)
     buffer[:, 8] = sine
     buffer[:, 9] = sine

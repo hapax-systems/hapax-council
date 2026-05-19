@@ -291,7 +291,7 @@ def test_s4_loopback_targets_livestream_tap() -> None:
     assert s4.pipewire_name == "hapax-s4-content"
     assert s4.target_object == "hapax-livestream-tap"
     assert s4.params["audio.format"] == "S32"
-    assert s4.params["audio.rate"] == 48000
+    assert s4.params["audio.rate"] == 44100
 
 
 def test_m8_loudnorm_is_reconciler_owned_and_missing_hardware_is_classified() -> None:

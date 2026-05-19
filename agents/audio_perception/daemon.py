@@ -26,7 +26,7 @@ OUTPUT_DIR = Path("/dev/shm/hapax-perception")
 OUTPUT_FILE = OUTPUT_DIR / "audio.json"
 
 CAPTURE_DURATION_S = 2.0
-SAMPLE_RATE = 48000
+SAMPLE_RATE = 44100
 TICK_INTERVAL_S = 1.0
 
 VOICE_LOW_HZ = 85.0

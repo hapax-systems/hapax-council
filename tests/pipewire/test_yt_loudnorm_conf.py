@@ -101,7 +101,7 @@ def test_true_peak_ceiling_pinned_at_minus_1_0_dbtp(raw_config: str) -> None:
 
 def test_audio_rate_48k(raw_config: str) -> None:
     """Match the rest of the broadcast chain — no resampling cost."""
-    assert "audio.rate = 48000" in raw_config
+    assert "audio.rate = 44100" in raw_config
 
 
 def test_braces_balanced(raw_config: str) -> None:

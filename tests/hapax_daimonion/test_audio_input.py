@@ -47,10 +47,10 @@ class TestFrameMath:
         assert s.frame_bytes == 960
 
     def test_frame_samples_other_rates(self) -> None:
-        # 48 kHz × 20 ms → 960 samples / 1920 bytes
-        s = AudioInputStream(sample_rate=48000, frame_ms=20)
-        assert s.frame_samples == 960
-        assert s.frame_bytes == 1920
+        # 44.1 kHz × 20 ms → 882 samples / 1764 bytes
+        s = AudioInputStream(sample_rate=44100, frame_ms=20)
+        assert s.frame_samples == 882
+        assert s.frame_bytes == 1764
 
 
 # ── Default source resolution ─────────────────────────────────────────

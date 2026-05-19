@@ -50,7 +50,7 @@ def _probe_result(stage: str, samples: np.ndarray) -> ProbeResult:
         measurement=measurement,
         samples_mono=samples,
         captured_at=1000.0,
-        duration_s=samples.size / 48000,
+        duration_s=samples.size / 44100,
         error=None,
     )
 
@@ -85,7 +85,7 @@ class TestM4Config:
 class TestM4Correlation:
     def test_identical_signals_correlation_1(self) -> None:
         """Identical signals should have correlation ~1.0."""
-        t = np.linspace(0, 1, 48000, endpoint=False)
+        t = np.linspace(0, 1, 44100, endpoint=False)
         sig = np.sin(2 * np.pi * 440 * t)
         corr = compute_envelope_correlation(sig, sig)
         assert corr is not None
@@ -93,7 +93,7 @@ class TestM4Correlation:
 
     def test_inverted_signal_high_correlation(self) -> None:
         """Inverted signal should still have high envelope correlation."""
-        t = np.linspace(0, 1, 48000, endpoint=False)
+        t = np.linspace(0, 1, 44100, endpoint=False)
         sig = np.sin(2 * np.pi * 440 * t)
         corr = compute_envelope_correlation(sig, -sig)
         assert corr is not None
@@ -103,15 +103,15 @@ class TestM4Correlation:
     def test_uncorrelated_signals(self) -> None:
         """Uncorrelated signals should have low correlation."""
         rng = np.random.default_rng(42)
-        sig_a = rng.standard_normal(48000)
-        sig_b = rng.standard_normal(48000)
+        sig_a = rng.standard_normal(44100)
+        sig_b = rng.standard_normal(44100)
         corr = compute_envelope_correlation(sig_a, sig_b)
         assert corr is not None
         assert corr < 0.5
 
     def test_silence_both_constant_correlation(self) -> None:
         """Both silent signals have constant envelopes → correlation 1.0."""
-        silence = np.zeros(48000)
+        silence = np.zeros(44100)
         corr = compute_envelope_correlation(silence, silence)
         assert corr is not None
         # Constant envelopes are perfectly correlated (both zero)
@@ -133,7 +133,7 @@ class TestM4Emission:
 
 class TestM4RawSampleContract:
     def test_pair_probe_captures_both_stages_concurrently(self) -> None:
-        t = np.linspace(0, 1, 48000, endpoint=False)
+        t = np.linspace(0, 1, 44100, endpoint=False)
         samples = (0.25 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16)
         results = {
             "a.monitor": _probe_result("a", samples),
@@ -165,7 +165,7 @@ class TestM4RawSampleContract:
         assert started == {"a.monitor", "b.monitor"}
 
     def test_pair_probe_uses_result_samples_without_dynamic_measurement_attr(self) -> None:
-        t = np.linspace(0, 1, 48000, endpoint=False)
+        t = np.linspace(0, 1, 44100, endpoint=False)
         samples = (0.25 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16)
         results = {
             "a.monitor": _probe_result("a", samples),
@@ -195,8 +195,8 @@ class TestM4RawSampleContract:
 
     def test_low_correlation_with_two_live_stages_is_diagnostic_only(self) -> None:
         rng = np.random.default_rng(42)
-        samples_a = (0.25 * rng.standard_normal(48000) * 32767).astype(np.int16)
-        samples_b = (0.25 * rng.standard_normal(48000) * 32767).astype(np.int16)
+        samples_a = (0.25 * rng.standard_normal(44100) * 32767).astype(np.int16)
+        samples_b = (0.25 * rng.standard_normal(44100) * 32767).astype(np.int16)
         results = {
             "a.monitor": _probe_result("a", samples_a),
             "b.monitor": _probe_result("b", samples_b),
@@ -229,9 +229,9 @@ class TestM4RawSampleContract:
         send_ntfy.assert_not_called()
 
     def test_downstream_silence_after_upstream_signal_pages_operator(self) -> None:
-        t = np.linspace(0, 1, 48000, endpoint=False)
+        t = np.linspace(0, 1, 44100, endpoint=False)
         samples_a = (0.25 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16)
-        samples_b = np.zeros(48000, dtype=np.int16)
+        samples_b = np.zeros(44100, dtype=np.int16)
         results = {
             "a.monitor": _probe_result("a", samples_a),
             "b.monitor": _probe_result("b", samples_b),
@@ -263,7 +263,7 @@ class TestM4RawSampleContract:
         send_ntfy.assert_called_once()
 
     def test_both_silent_pair_does_not_page_or_start_breach(self) -> None:
-        silence = np.zeros(48000, dtype=np.int16)
+        silence = np.zeros(44100, dtype=np.int16)
         results = {
             "a.monitor": _probe_result("a", silence),
             "b.monitor": _probe_result("b", silence.copy()),
@@ -296,7 +296,7 @@ class TestM4RawSampleContract:
         assert _is_downstream_signal_loss(0.0, 0.0, cfg) is False
 
     def test_pair_probe_records_capture_error_as_health_evidence(self, tmp_path: Path) -> None:
-        good = _probe_result("a", np.zeros(48000, dtype=np.int16))
+        good = _probe_result("a", np.zeros(44100, dtype=np.int16))
         bad = ProbeResult(
             stage="b",
             classification=good.classification,
@@ -326,7 +326,7 @@ class TestM4RawSampleContract:
         assert payload["pairs"]["a|b"]["analyzer_error_count"] == 1
 
     def test_pair_probe_records_analyzer_exception_as_health_evidence(self) -> None:
-        t = np.linspace(0, 1, 48000, endpoint=False)
+        t = np.linspace(0, 1, 44100, endpoint=False)
         samples = (0.25 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16)
         state = PairState()
         cfg = M4DaemonConfig(stage_pairs=[("a", "b")])
@@ -359,9 +359,9 @@ class TestM4RawSampleContract:
 
 PWTOP_SAMPLE = """\
 S  ID QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR  NAME
-S  34  1024  48000   0.15ms  0.12ms  0.7%  0.6%    0  alsa_output.usb-ZOOM_L-12
-S  35  1024  48000   0.10ms  0.08ms  0.5%  0.4%    3  alsa_input.usb-ZOOM_L-12
-S  50   512  48000   0.05ms  0.03ms  0.2%  0.1%    0  hapax-broadcast-master
+S  34  1024  44100   0.15ms  0.12ms  0.7%  0.6%    0  alsa_output.usb-ZOOM_L-12
+S  35  1024  44100   0.10ms  0.08ms  0.5%  0.4%    3  alsa_input.usb-ZOOM_L-12
+S  50   512  44100   0.05ms  0.03ms  0.2%  0.1%    0  hapax-broadcast-master
 """
 
 
@@ -433,7 +433,7 @@ class TestM11Config:
     def test_defaults(self) -> None:
         cfg = M11DaemonConfig()
         assert cfg.probe_interval_s == 30.0
-        assert cfg.expected_sample_rate == 48000
+        assert cfg.expected_sample_rate == 44100
         assert cfg.absent_threshold_s == 30.0
 
     def test_from_env_override(self) -> None:
@@ -484,17 +484,17 @@ class TestM11AbsentLogic:
         assert state.absent_since is None
 
     def test_sample_rate_drift_detection(self) -> None:
-        cfg = M11DaemonConfig(expected_sample_rate=48000)
-        observed = 44100
+        cfg = M11DaemonConfig(expected_sample_rate=44100)
+        observed = 48000
         assert observed != cfg.expected_sample_rate
 
 
 class TestM11Emission:
     def test_emit_snapshot(self, tmp_path: Path) -> None:
         path = tmp_path / "l12-usb.json"
-        state = L12State(present=True, sample_rate=48000, xrun_delta=0)
+        state = L12State(present=True, sample_rate=44100, xrun_delta=0)
         m11_emit_snapshot(state, now=1000.0, path=path)
         data = json.loads(path.read_text())
         assert data["monitor"] == "l12-usb"
         assert data["present"] is True
-        assert data["sample_rate"] == 48000
+        assert data["sample_rate"] == 44100

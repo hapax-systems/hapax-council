@@ -4,7 +4,7 @@ Audio health monitor suite §3.12. Monitors the Zoom L-12 USB audio
 interface at 30s cadence:
 
 - Device PRESENT / ABSENT detection via ALSA card enumeration
-- Sample-rate drift detection (expected 48000 Hz)
+- Sample-rate drift detection (expected 44100 Hz)
 - ALSA xrun counter tracking
 - P0 ntfy on >30s ABSENT during livestream
 
@@ -32,7 +32,7 @@ from agents.audio_health.service_loop import interruptible_sleep
 log = logging.getLogger(__name__)
 
 DEFAULT_PROBE_INTERVAL_S: float = 30.0
-DEFAULT_EXPECTED_SAMPLE_RATE: int = 48000
+DEFAULT_EXPECTED_SAMPLE_RATE: int = 44100
 DEFAULT_ABSENT_THRESHOLD_S: float = 30.0  # >30s absent → P0 ntfy
 DEFAULT_SNAPSHOT_PATH: Path = Path("/dev/shm/hapax-audio-health/l12-usb.json")
 DEFAULT_TEXTFILE_DIR: Path = Path("/var/lib/node_exporter/textfile_collector")

@@ -91,7 +91,7 @@ class TestComputeRms:
         assert _compute_rms(signal) == pytest.approx(0.5)
 
     def test_sine_wave(self):
-        t = np.linspace(0, 1, 48000, dtype=np.float32)
+        t = np.linspace(0, 1, 44100, dtype=np.float32)
         signal = np.sin(2 * np.pi * 440 * t)
         rms = _compute_rms(signal)
         assert 0.7 < rms < 0.72  # RMS of sine = 1/√2 ≈ 0.707
@@ -204,7 +204,7 @@ class TestStudioIngestionBackend:
     def test_inference_step_with_silence(self):
         """Near-silence audio results in idle state."""
         backend = StudioIngestionBackend()
-        silence = np.zeros(48000 * 10, dtype=np.float32)
+        silence = np.zeros(44100 * 10, dtype=np.float32)
 
         with patch(
             "agents.hapax_daimonion.backends.studio_ingestion._capture_audio",
@@ -219,7 +219,7 @@ class TestStudioIngestionBackend:
     def test_inference_step_with_audio(self):
         """Audio above noise floor triggers CLAP classification."""
         backend = StudioIngestionBackend()
-        audio = np.random.randn(48000 * 10).astype(np.float32) * 0.1
+        audio = np.random.randn(44100 * 10).astype(np.float32) * 0.1
 
         mock_classify = MagicMock(
             side_effect=[

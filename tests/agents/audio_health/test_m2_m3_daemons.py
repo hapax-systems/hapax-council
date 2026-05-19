@@ -50,7 +50,7 @@ def _probe_result(stage: str, samples: np.ndarray) -> ProbeResult:
         measurement=measurement,
         samples_mono=samples,
         captured_at=1000.0,
-        duration_s=samples.size / 48000,
+        duration_s=samples.size / 44100,
         error=None,
     )
 
@@ -155,19 +155,19 @@ class TestM2RawSampleContract:
             bands={"stage-a": LufsBand(low=-23.0, high=-16.0)},
             enable_ntfy=False,
         )
-        result = _probe_result("stage-a", np.zeros(48000, dtype=np.int16))
+        result = _probe_result("stage-a", np.zeros(44100, dtype=np.int16))
 
         with patch("agents.audio_health.m2_lufs_s_daemon.capture_and_measure", return_value=result):
             _probe_stage("stage-a", state, cfg, now=1000.0)
 
         assert not hasattr(result.measurement, "samples_mono")
-        assert result.samples_mono.size == 48000
+        assert result.samples_mono.size == 44100
         assert state.last_error is None
         assert state.last_lufs == pytest.approx(-120.0)
         assert state.in_band is True  # silence gate suppresses band check
 
     def test_tone_input_updates_lufs_without_samples_mono_attribute_error(self) -> None:
-        t = np.linspace(0, 1, 48000, endpoint=False)
+        t = np.linspace(0, 1, 44100, endpoint=False)
         tone = (0.25 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16)
         state = StageState()
         cfg = M2DaemonConfig(stages=("stage-a",), enable_ntfy=False)
@@ -182,7 +182,7 @@ class TestM2RawSampleContract:
     def test_analyzer_exception_is_snapshot_health_evidence(self, tmp_path: Path) -> None:
         state = StageState()
         cfg = M2DaemonConfig(snapshot_path=tmp_path / "lufs-s.json", enable_ntfy=False)
-        result = _probe_result("stage-a", np.zeros(48000, dtype=np.int16))
+        result = _probe_result("stage-a", np.zeros(44100, dtype=np.int16))
 
         with (
             patch("agents.audio_health.m2_lufs_s_daemon.capture_and_measure", return_value=result),
@@ -209,7 +209,7 @@ class TestCrestFactor:
 
     def test_sine_wave_crest(self) -> None:
         """Sine wave crest factor = sqrt(2) ≈ 1.414."""
-        t = np.linspace(0, 1, 48000, endpoint=False)
+        t = np.linspace(0, 1, 44100, endpoint=False)
         sine = np.sin(2 * np.pi * 440 * t)
         crest = compute_crest_factor(sine)
         assert crest == pytest.approx(math.sqrt(2), abs=0.05)
@@ -217,14 +217,14 @@ class TestCrestFactor:
     def test_white_noise_crest(self) -> None:
         """White noise crest factor ≈ 3.0 (sqrt(3)), but can vary."""
         rng = np.random.default_rng(42)
-        noise = rng.standard_normal(48000)
+        noise = rng.standard_normal(44100)
         crest = compute_crest_factor(noise)
         # White noise crest typically 2.5-5.0
         assert 2.0 < crest < 6.0
 
     def test_silence_crest(self) -> None:
         """Silent input returns 0.0."""
-        silence = np.zeros(48000)
+        silence = np.zeros(44100)
         assert compute_crest_factor(silence) == 0.0
 
     def test_empty_input(self) -> None:
@@ -232,7 +232,7 @@ class TestCrestFactor:
 
     def test_dc_signal_crest(self) -> None:
         """DC signal has crest factor = 1.0."""
-        dc = np.full(48000, 0.5)
+        dc = np.full(44100, 0.5)
         crest = compute_crest_factor(dc)
         assert crest == pytest.approx(1.0, abs=0.01)
 
@@ -241,28 +241,28 @@ class TestZCR:
     """Zero crossing rate computation."""
 
     def test_sine_wave_zcr(self) -> None:
-        """440 Hz sine at 48kHz has ~880 crossings / 48000 samples ≈ 0.018."""
-        t = np.linspace(0, 1, 48000, endpoint=False)
+        """440 Hz sine at 48kHz has ~880 crossings / 44100 samples ≈ 0.018."""
+        t = np.linspace(0, 1, 44100, endpoint=False)
         sine = np.sin(2 * np.pi * 440 * t)
         zcr = compute_zcr(sine)
-        expected = 2 * 440 / 48000
+        expected = 2 * 440 / 44100
         assert zcr == pytest.approx(expected, abs=0.005)
 
     def test_white_noise_zcr(self) -> None:
         """White noise ZCR ≈ 0.5."""
         rng = np.random.default_rng(42)
-        noise = rng.standard_normal(48000)
+        noise = rng.standard_normal(44100)
         zcr = compute_zcr(noise)
         assert 0.4 < zcr < 0.6
 
     def test_silence_zcr(self) -> None:
-        silence = np.zeros(48000)
+        silence = np.zeros(44100)
         # All samples are 0 — signbit is False for all, so no crossings
         assert compute_zcr(silence) == 0.0
 
     def test_dc_zcr(self) -> None:
         """DC signal has no crossings."""
-        dc = np.full(48000, 0.5)
+        dc = np.full(44100, 0.5)
         assert compute_zcr(dc) == 0.0
 
     def test_alternating_zcr(self) -> None:
@@ -304,7 +304,7 @@ class TestM3MeasurementClassification:
     def test_music_like_signal(self) -> None:
         """Music: high crest, low ZCR, low flatness."""
         # Simulated music-like signal (multiple tones)
-        t = np.linspace(0, 1, 48000, endpoint=False)
+        t = np.linspace(0, 1, 44100, endpoint=False)
         signal = 0.3 * np.sin(2 * np.pi * 440 * t) + 0.2 * np.sin(2 * np.pi * 880 * t)
         compute_crest_factor(signal)  # called to verify no error
         zcr = compute_zcr(signal)
@@ -316,7 +316,7 @@ class TestM3MeasurementClassification:
     def test_white_noise_signal(self) -> None:
         """White noise: medium crest, high ZCR, high flatness."""
         rng = np.random.default_rng(42)
-        noise = rng.standard_normal(48000)
+        noise = rng.standard_normal(44100)
         crest = compute_crest_factor(noise)
         zcr = compute_zcr(noise)
         flatness = compute_spectral_flatness(noise)
@@ -326,7 +326,7 @@ class TestM3MeasurementClassification:
 
     def test_tone_drone_signal(self) -> None:
         """Pure tone: low crest (~1.4), very low ZCR, very low flatness."""
-        t = np.linspace(0, 1, 48000, endpoint=False)
+        t = np.linspace(0, 1, 44100, endpoint=False)
         tone = np.sin(2 * np.pi * 60 * t)  # 60 Hz hum
         crest = compute_crest_factor(tone)
         zcr = compute_zcr(tone)
@@ -365,7 +365,7 @@ class TestM3RawSampleContract:
     """M3 consumes explicit ProbeResult samples and reports analyzer failures."""
 
     def test_tone_input_updates_crest_zcr_flatness_without_dynamic_measurement_attr(self) -> None:
-        t = np.linspace(0, 1, 48000, endpoint=False)
+        t = np.linspace(0, 1, 44100, endpoint=False)
         tone = (0.4 * np.sin(2 * np.pi * 60 * t) * 32767).astype(np.int16)
         state = M3StageState()
         cfg = M3DaemonConfig(stages=("stage-a",), enable_ntfy=False)
@@ -386,7 +386,7 @@ class TestM3RawSampleContract:
 
     def test_white_noise_input_exercises_flatness_path(self) -> None:
         rng = np.random.default_rng(42)
-        noise = np.clip(rng.standard_normal(48000) * 5000, -32768, 32767).astype(np.int16)
+        noise = np.clip(rng.standard_normal(44100) * 5000, -32768, 32767).astype(np.int16)
         state = M3StageState()
         cfg = M3DaemonConfig(stages=("stage-a",), enable_ntfy=False)
         result = _probe_result("stage-a", noise)
@@ -406,7 +406,7 @@ class TestM3RawSampleContract:
     def test_analyzer_exception_is_snapshot_health_evidence(self, tmp_path: Path) -> None:
         state = M3StageState()
         cfg = M3DaemonConfig(snapshot_path=tmp_path / "crest-flatness.json", enable_ntfy=False)
-        result = _probe_result("stage-a", np.zeros(48000, dtype=np.int16))
+        result = _probe_result("stage-a", np.zeros(44100, dtype=np.int16))
 
         with (
             patch(
@@ -443,7 +443,7 @@ class TestM3BreachDetection:
         """Low crest with low ZCR/flatness is compressed program material, not noise."""
         state = M3StageState(prev_crest=8.0, crest_drop_start=990.0)
         cfg = M3DaemonConfig(enable_ntfy=True)
-        result = _probe_result("hapax-obs-broadcast-remap", np.zeros(48000, dtype=np.int16))
+        result = _probe_result("hapax-obs-broadcast-remap", np.zeros(44100, dtype=np.int16))
 
         with (
             patch(
@@ -471,7 +471,7 @@ class TestM3BreachDetection:
         """Low crest with high ZCR/flatness still triggers the M3 alert."""
         state = M3StageState(prev_crest=8.0, crest_drop_start=990.0)
         cfg = M3DaemonConfig(enable_ntfy=True)
-        noise = (np.random.default_rng(42).standard_normal(48000) * 3000).astype(np.int16)
+        noise = (np.random.default_rng(42).standard_normal(44100) * 3000).astype(np.int16)
         result = _probe_result("hapax-obs-broadcast-remap", noise)
 
         with (

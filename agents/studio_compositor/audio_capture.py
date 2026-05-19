@@ -19,13 +19,13 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-RATE = 48000
+RATE = 44100
 CHANNELS = 2
-CHUNK = 512  # 10.7ms chunks for tighter transient response
+CHUNK = 512  # 11.6ms chunks for tighter transient response
 BYTES_PER_FRAME = CHANNELS * 2  # int16
 CHUNK_BYTES = CHUNK * BYTES_PER_FRAME
 
-# Rolling AGC: ~4 seconds of history at ~93 chunks/sec (48000/512)
+# Rolling AGC: ~4 seconds of history at ~86 chunks/sec (44100/512)
 AGC_HISTORY_LEN = 372
 AGC_FLOOR = 1e-6  # prevent division by zero
 

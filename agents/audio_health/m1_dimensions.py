@@ -73,7 +73,7 @@ def _biquad_filter(b: np.ndarray, a: np.ndarray, x: np.ndarray) -> np.ndarray:
 
 def compute_lufs_s(
     samples: np.ndarray,
-    sample_rate: int = 48000,
+    sample_rate: int = 44100,
 ) -> float:
     """Compute short-term (3s window) LUFS per EBU R128 / ITU-R BS.1770-4.
 
@@ -83,7 +83,7 @@ def compute_lufs_s(
     Parameters
     ----------
     samples : mono float64 array, normalized to [-1, 1]
-    sample_rate : sample rate in Hz (default 48000)
+    sample_rate : sample rate in Hz (default 44100)
     """
     if samples.size == 0:
         return -120.0
@@ -285,7 +285,7 @@ class M1Alert:
 def measure_m1(
     samples: np.ndarray,
     *,
-    sample_rate: int = 48000,
+    sample_rate: int = 44100,
     stage_b_samples: np.ndarray | None = None,
     envelope_window: int = 256,
 ) -> M1ExtendedMeasurement:

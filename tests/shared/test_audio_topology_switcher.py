@@ -37,9 +37,9 @@ class _RunnerStub:
 
 _SHORT_SINKS = dedent(
     """
-    42\thapax-livestream-tap\tPipeWire\tfloat32le 2ch 48000Hz\tIDLE
-    63\talsa_output.pci-0000_73_00.6.analog-stereo\tPipeWire\ts24-3le 2ch 48000Hz\tRUNNING
-    99\talsa_output.usb-Torso_Electronics_S-4\tPipeWire\ts32le 2ch 48000Hz\tIDLE
+    42\thapax-livestream-tap\tPipeWire\tfloat32le 2ch 44100Hz\tIDLE
+    63\talsa_output.pci-0000_73_00.6.analog-stereo\tPipeWire\ts24-3le 2ch 44100Hz\tRUNNING
+    99\talsa_output.usb-Torso_Electronics_S-4\tPipeWire\ts32le 2ch 44100Hz\tIDLE
     """
 ).strip()
 
@@ -125,8 +125,8 @@ class TestSinkInputMigration:
         # Two active inputs; only #100 is bound to the prior sink (id 63).
         sink_inputs_stdout = dedent(
             """
-            100\tPipeWire\t-\t63\ts24-3le 2ch 48000Hz
-            101\tPipeWire\t-\t42\tfloat32le 2ch 48000Hz
+            100\tPipeWire\t-\t63\ts24-3le 2ch 44100Hz
+            101\tPipeWire\t-\t42\tfloat32le 2ch 44100Hz
             """
         ).strip()
         responses = {
@@ -150,8 +150,8 @@ class TestSinkInputMigration:
     def test_moves_all_inputs_when_prior_sink_unspecified(self) -> None:
         sink_inputs_stdout = dedent(
             """
-            100\tPipeWire\t-\t63\ts24-3le 2ch 48000Hz
-            101\tPipeWire\t-\t42\tfloat32le 2ch 48000Hz
+            100\tPipeWire\t-\t63\ts24-3le 2ch 44100Hz
+            101\tPipeWire\t-\t42\tfloat32le 2ch 44100Hz
             """
         ).strip()
         responses = {
@@ -168,7 +168,7 @@ class TestSinkInputMigration:
         assert set(result.moved_input_ids) == {"100", "101"}
 
     def test_individual_move_failure_recorded_as_warning(self) -> None:
-        sink_inputs_stdout = "100\tPipeWire\t-\t63\ts24-3le 2ch 48000Hz"
+        sink_inputs_stdout = "100\tPipeWire\t-\t63\ts24-3le 2ch 44100Hz"
         responses = {
             "pw-cli set-default-audio-sink": CommandResult(0, "", ""),
             "pactl list short sinks": CommandResult(0, _SHORT_SINKS, ""),

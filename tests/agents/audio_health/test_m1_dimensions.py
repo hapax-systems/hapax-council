@@ -27,7 +27,7 @@ from agents.audio_health.m1_dimensions import (
 
 # ── Synthesize test signals ─────────────────────────────────────────────
 
-_SR = 48000  # sample rate
+_SR = 44100  # sample rate
 
 
 def _sine(freq: float = 440.0, duration: float = 0.5, amplitude: float = 0.5) -> np.ndarray:

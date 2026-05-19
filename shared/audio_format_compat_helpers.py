@@ -32,10 +32,9 @@ import array
 import math
 from typing import Final
 
-#: Canonical broadcast sample rate. The L-12 chain runs
-#: at 48000 Hz; any source at 44.1k must be resampled before reaching
-#: the chain.
-DEFAULT_SAMPLE_RATE_HZ: Final[int] = 48000
+#: Canonical broadcast sample rate.  L-12 hardware runs at 44.1 kHz;
+#: the entire PipeWire graph matches.
+DEFAULT_SAMPLE_RATE_HZ: Final[int] = 44100
 
 #: Canonical broadcast bit depth: int16 is the L-12 line-driver native
 #: format. Some upstream graphs run at f32; conversion happens in the

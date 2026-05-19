@@ -90,7 +90,7 @@ def test_audio_rate_is_common_sample_rate(raw_config: str) -> None:
     matches = re.findall(r"audio\.rate\s*=\s*(\d+)", raw_config)
     assert matches, "conf declares no audio.rate"
     for rate in matches:
-        assert int(rate) in {44100, 48000, 88200, 96000}, (
+        assert int(rate) in {44100, 44100, 88200, 96000}, (
             f"audio.rate={rate} is unusual — if intentional, widen this test, "
             f"but first confirm the rest of the graph can align."
         )

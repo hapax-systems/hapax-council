@@ -96,7 +96,7 @@ def test_validator_extracts_quantum_tunables(tmp_path: Path) -> None:
             default.clock.quantum = 128
             default.clock.min-quantum = 64
             default.clock.max-quantum = 1024
-            default.clock.allowed-rates = [ 16000 44100 48000 ]
+            default.clock.allowed-rates = [ 16000 44100 44100 ]
         }
         """,
     )
@@ -105,7 +105,7 @@ def test_validator_extracts_quantum_tunables(tmp_path: Path) -> None:
     assert len(result.graph.tunables) == 1
     t = result.graph.tunables[0]
     assert t.default_clock_quantum == 128
-    assert t.allowed_rates == [16000, 44100, 48000]
+    assert t.allowed_rates == [16000, 44100, 44100]
 
 
 def test_validator_extracts_alsa_profile_pin(tmp_path: Path) -> None:
@@ -155,7 +155,7 @@ def test_validator_decomposes_args_level_filter_chain_sink(tmp_path: Path) -> No
                     node.name = "hapax-voice-s4-emu"
                     node.description = "Hapax S-4 Voice Emulation"
                     media.class = "Audio/Sink"
-                    audio.rate = 48000
+                    audio.rate = 44100
                     audio.channels = 2
                     audio.position = [ FL FR ]
 
@@ -185,7 +185,7 @@ def test_validator_decomposes_args_level_filter_chain_sink(tmp_path: Path) -> No
     assert node.kind.value == "filter_chain"
     assert node.channels.count == 2
     assert node.format is not None
-    assert node.format.rate_hz == 48000
+    assert node.format.rate_hz == 44100
     assert len(node.filter_graph_stages) == 2
     assert "hapax-voice-s4-emulation.conf" not in result.gaps.untyped_confs
 

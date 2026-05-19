@@ -65,7 +65,7 @@ def _entry(
 
 def _short_listing(names: tuple[str, ...]) -> str:
     return "".join(
-        f"{idx}\t{name}\tPipeWire\tfloat32le 2ch 48000Hz\n" for idx, name in enumerate(names)
+        f"{idx}\t{name}\tPipeWire\tfloat32le 2ch 44100Hz\n" for idx, name in enumerate(names)
     )
 
 

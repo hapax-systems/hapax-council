@@ -40,7 +40,7 @@ log = logging.getLogger(__name__)
 def _aac_input_caps_string(encoder_factory: str) -> str:
     """Return raw audio caps accepted by the selected AAC encoder."""
     audio_format = "F32LE" if encoder_factory == "avenc_aac" else "S16LE"
-    return f"audio/x-raw,rate=48000,channels=2,format={audio_format}"
+    return f"audio/x-raw,rate=44100,channels=2,format={audio_format}"
 
 
 class RtmpOutputBin:

@@ -79,6 +79,9 @@ TAKEOUT_STATE_DIR: Path = HAPAX_CACHE_DIR / "takeout-ingest"
 AUDIO_PROCESSOR_CACHE_DIR: Path = HAPAX_CACHE_DIR / "audio-processor"
 HAPAX_TMP_WAV_DIR: Path = HAPAX_CACHE_DIR / "hapax" / "tmp-wav"
 
+# PipeWire audio graph sample rate (Hz).  L-12 hardware runs at 44.1 kHz.
+GRAPH_SAMPLE_RATE: int = 44100
+
 # Studio ingestion paths
 AUDIO_RAW_DIR: Path = HAPAX_HOME / "audio-recording" / "raw"
 AUDIO_ARCHIVE_DIR: Path = HAPAX_HOME / "audio-recording" / "archive"

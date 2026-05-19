@@ -277,7 +277,7 @@ def _probe_stage(
             _mark_error(state, result.error)
             return
 
-        lufs = compute_lufs_s(result.samples_mono_float, sample_rate=48000)
+        lufs = compute_lufs_s(result.samples_mono_float, sample_rate=44100)
         state.last_error = None
         state.last_lufs = lufs
 

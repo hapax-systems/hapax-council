@@ -19,19 +19,19 @@ from agents.audio_perception.daemon import (
 
 class TestComputeFeatures:
     def test_silence_returns_low_rms(self) -> None:
-        silence = np.zeros(48000, dtype=np.int16)
+        silence = np.zeros(44100, dtype=np.int16)
         features = _compute_features(silence)
         assert features["rms_dbfs"] == -120.0
 
     def test_voice_band_dominant(self) -> None:
-        t = np.linspace(0, 1.0, 48000, endpoint=False)
+        t = np.linspace(0, 1.0, 44100, endpoint=False)
         tone_500hz = (np.sin(2 * np.pi * 500 * t) * 16000).astype(np.int16)
         features = _compute_features(tone_500hz)
         assert features["voice_ratio"] > 0.5
         assert features["rms_dbfs"] > -20
 
     def test_high_frequency_is_not_voice(self) -> None:
-        t = np.linspace(0, 1.0, 48000, endpoint=False)
+        t = np.linspace(0, 1.0, 44100, endpoint=False)
         tone_10khz = (np.sin(2 * np.pi * 10000 * t) * 16000).astype(np.int16)
         features = _compute_features(tone_10khz)
         assert features["voice_ratio"] < 0.2
@@ -69,7 +69,7 @@ class TestEstimateBPM:
         assert _estimate_bpm(silence) is None
 
     def test_detects_periodic_signal(self) -> None:
-        sr = 48000
+        sr = 44100
         dur = 4.0
         bpm_target = 120
         t = np.linspace(0, dur, int(sr * dur), endpoint=False)

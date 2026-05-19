@@ -39,7 +39,7 @@ def _silence_bytes(n_samples: int) -> bytes:
 def _sine_bytes(
     n_samples: int,
     freq_hz: float = 1000.0,
-    sample_rate: int = 48000,
+    sample_rate: int = 44100,
     amplitude: float = 0.5,
 ) -> bytes:
     """Generate a sine wave at the given amplitude (fraction of full scale)."""
@@ -52,7 +52,7 @@ def _sine_bytes(
     return samples.tobytes()
 
 
-def _half_silent_bytes(n_samples: int, sample_rate: int = 48000) -> bytes:
+def _half_silent_bytes(n_samples: int, sample_rate: int = 44100) -> bytes:
     """Half silence + half sine at -6 dBFS — silence_ratio should be ~0.5."""
     silent = _silence_bytes(n_samples // 2)
     audible = _sine_bytes(n_samples - (n_samples // 2), sample_rate=sample_rate)
@@ -64,7 +64,7 @@ def _half_silent_bytes(n_samples: int, sample_rate: int = 48000) -> bytes:
 
 class TestComputeLoopbackMetrics:
     def test_silence_returns_floor_metrics(self) -> None:
-        sample = compute_loopback_metrics(_silence_bytes(48000))
+        sample = compute_loopback_metrics(_silence_bytes(44100))
         assert sample.rms_dbfs == -120.0
         assert sample.peak_dbfs == -120.0
         assert sample.silence_ratio == 1.0
@@ -76,7 +76,7 @@ class TestComputeLoopbackMetrics:
 
     def test_full_scale_sine_rms_near_minus_three_db(self) -> None:
         # Sine wave at amplitude 1.0 → RMS = 1/sqrt(2) → ~-3.01 dBFS
-        sample = compute_loopback_metrics(_sine_bytes(48000, amplitude=1.0))
+        sample = compute_loopback_metrics(_sine_bytes(44100, amplitude=1.0))
         assert sample.rms_dbfs == pytest.approx(-3.01, abs=0.1)
         # Peak should be at or just below 0 dBFS (full scale int16 is 32767).
         assert sample.peak_dbfs == pytest.approx(0.0, abs=0.1)
@@ -84,7 +84,7 @@ class TestComputeLoopbackMetrics:
         assert sample.silence_ratio < 0.1
 
     def test_half_silent_input_yields_half_silence_ratio(self) -> None:
-        sample = compute_loopback_metrics(_half_silent_bytes(48000))
+        sample = compute_loopback_metrics(_half_silent_bytes(44100))
         # Half the samples are exact zero → silence_ratio ≈ 0.5
         # Exact value drifts a hair because the boundary sample of the
         # sine half sits just above 0; widen tolerance to suit.
