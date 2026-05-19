@@ -83,7 +83,7 @@ class CameraPipeline:
     ) -> None:
         self._spec = spec
         self._Gst = gst
-        self._fps = fps
+        self._fps = self._effective_source_fps(spec, fps)
         self._on_error = on_error
         self._on_frame = on_frame
 
@@ -101,7 +101,7 @@ class CameraPipeline:
         self._http_appsrc: Any = None
         self._http_stop_event = threading.Event()
         self._http_thread: threading.Thread | None = None
-        source_fps = self._effective_http_fps() if self._is_http_jpeg_source() else float(fps)
+        source_fps = self._effective_http_fps() if self._is_http_jpeg_source() else float(self._fps)
         self._frame_cache_sample_every_n = self._frame_cache_sample_stride_for_fps(source_fps)
 
     @property
@@ -136,6 +136,25 @@ class CameraPipeline:
             target_fps = 30.0
         target_fps = max(1.0, min(source_fps, target_fps))
         return max(1, int(round(source_fps / target_fps)))
+
+    @staticmethod
+    def _effective_source_fps(spec: CameraSpec, fallback_fps: int) -> int:
+        raw = getattr(spec, "framerate", None)
+        if raw is None:
+            return fallback_fps
+        if not isinstance(raw, (int, float, str)):
+            return fallback_fps
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            log.warning(
+                "camera_pipeline %s: invalid framerate %r; using %dfps",
+                getattr(spec, "role", "unknown"),
+                raw,
+                fallback_fps,
+            )
+            return fallback_fps
+        return max(1, min(fallback_fps, value))
 
     @property
     def last_frame_age_seconds(self) -> float:

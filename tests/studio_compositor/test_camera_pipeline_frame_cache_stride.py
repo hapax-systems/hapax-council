@@ -1,4 +1,5 @@
 from agents.studio_compositor.camera_pipeline import CameraPipeline
+from agents.studio_compositor.models import CameraSpec
 
 
 def test_frame_cache_sample_stride_defaults_to_full_source_cadence(monkeypatch) -> None:
@@ -22,3 +23,28 @@ def test_http_jpeg_camera_fps_defaults_to_compositor_cadence(monkeypatch) -> Non
     pipeline._fps = 30
 
     assert pipeline._effective_http_fps() == 30
+
+
+def test_camera_pipeline_honors_spec_framerate_before_http_env_default(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("HAPAX_HTTP_JPEG_CAMERA_FPS", raising=False)
+    spec = CameraSpec(
+        role="pi-noir-ir",
+        device="http://example.invalid/frame.jpg",
+        input_format="http_jpeg",
+        framerate=5,
+    )
+
+    pipeline = CameraPipeline(spec, gst=object(), fps=30)
+
+    assert pipeline._fps == 5
+    assert pipeline._effective_http_fps() == 5
+
+
+def test_camera_pipeline_clamps_spec_framerate_to_compositor_output() -> None:
+    spec = CameraSpec(role="overfast", device="/dev/video0", framerate=60)
+
+    pipeline = CameraPipeline(spec, gst=object(), fps=30)
+
+    assert pipeline._fps == 30
