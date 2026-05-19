@@ -8,11 +8,11 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-pub const AOA_OBJECT_ID: &str = "aoa-pyramid";
-pub const AOA_GEOMETRY_REVISION: &str = "aoa-tetrix-v1";
+pub const AOA_OBJECT_ID: &str = "aperture-of-apertures";
+pub const AOA_GEOMETRY_REVISION: &str = "aoa-tetrix-v2";
 pub const AOA_PANE_SCHEMA_VERSION: u32 = 1;
 pub const AOA_PANE_ID_VERSION: &str = "v1";
-pub const AOA_TETRIX_RENDER_DEPTH: u32 = 2;
+pub const AOA_TETRIX_RENDER_DEPTH: u32 = 3;
 pub const AOA_PANE_CLIP_TOLERANCE: f32 = 0.001;
 pub const AOA_PANE_MIN_VISIBLE_EDGE_PX: f32 = 4.0;
 pub const AOA_PANE_MIN_FRONT_FACING_DOT: f32 = 0.02;
@@ -1244,13 +1244,14 @@ mod tests {
 
     #[test]
     fn tetrix_count_formulas_match_active_shader_depth() {
-        assert_eq!(AOA_TETRIX_RENDER_DEPTH, 2);
+        assert_eq!(AOA_TETRIX_RENDER_DEPTH, 3);
         assert_eq!(aoa_leaf_tetrahedron_count(0), 1);
         assert_eq!(aoa_leaf_tetrahedron_count(1), 4);
         assert_eq!(aoa_leaf_tetrahedron_count(2), 16);
-        assert_eq!(aoa_total_tetrahedron_count(2), 21);
-        assert_eq!(aoa_raw_edge_segment_count(2), 126);
-        assert_eq!(aoa_raw_triangular_pane_count(2), 84);
+        assert_eq!(aoa_leaf_tetrahedron_count(3), 64);
+        assert_eq!(aoa_total_tetrahedron_count(3), 85);
+        assert_eq!(aoa_raw_edge_segment_count(3), 510);
+        assert_eq!(aoa_raw_triangular_pane_count(3), 340);
     }
 
     #[test]
@@ -1267,11 +1268,11 @@ mod tests {
     }
 
     #[test]
-    fn active_manifest_has_all_depth_two_panes_with_unique_identity() {
+    fn active_manifest_has_all_depth_three_panes_with_unique_identity() {
         let manifest = aoa_active_pane_manifest();
         assert_eq!(manifest.render_depth, AOA_TETRIX_RENDER_DEPTH);
-        assert_eq!(manifest.pane_count, 84);
-        assert_eq!(manifest.panes.len(), 84);
+        assert_eq!(manifest.pane_count, 340);
+        assert_eq!(manifest.panes.len(), 340);
         assert!(aoa_manifest_has_unique_identity(&manifest));
     }
 
@@ -1781,6 +1782,7 @@ mod tests {
         let manifest = aoa_pane_manifest(1);
         let json = serde_json::to_string(&manifest).expect("manifest should serialize");
         assert!(json.contains("aoa:pane:v1:r:abd"));
-        assert!(json.contains("aoa-tetrix-v1"));
+        assert!(json.contains("aoa-tetrix-v2"));
+        assert!(json.contains("aperture-of-apertures"));
     }
 }
