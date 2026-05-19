@@ -79,6 +79,11 @@ fn main_1() {
     let _e28 = orig;
     let _e30 = luma(_e28.xyz);
     lum = _e30;
+    let surface_presence = smoothstep(0.035f, 0.18f, lum);
+    if (surface_presence <= 0.001f) {
+        fragColor = orig;
+        return;
+    }
     let _e32 = lum;
     let _e33 = global.u_threshold_low;
     let _e35 = lum;
@@ -329,7 +334,8 @@ fn main_1() {
     let _e350 = frac;
     sorted = mix(_e348, _e349, vec3(_e350));
     let _e354 = sorted;
-    fragColor = vec4<f32>(_e354.x, _e354.y, _e354.z, orig.a);
+    let source_bound_sort = mix(orig.xyz, _e354, vec3<f32>(0.42f * surface_presence));
+    fragColor = vec4<f32>(source_bound_sort.x, source_bound_sort.y, source_bound_sort.z, orig.a);
     return;
 }
 

@@ -32,6 +32,8 @@ fn main_1() {
     let _e14 = v_texcoord_1;
     let _e15 = textureSample(tex, tex_sampler, _e14);
     c = _e15;
+    let source_luma = dot(c.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    let surface_presence = smoothstep(0.035f, 0.18f, source_luma);
 
     let _e24 = global.u_radius;
     tx = ((vec2<f32>((1f / uniforms.resolution.x), (1f / uniforms.resolution.y)) * _e24) * 0.25f);
@@ -87,13 +89,10 @@ fn main_1() {
     let _e105 = c;
     let _e107 = g;
     let _e108 = t;
-    let _e111 = global.u_alpha;
-    let _e113 = (_e105.xyz + ((_e107 / vec3(_e108)) * _e111));
-    c.x = _e113.x;
-    c.y = _e113.y;
-    c.z = _e113.z;
-    let _e120 = c;
-    let _e126 = clamp(_e120.xyz, vec3(0f), vec3(1f));
+    let _e111 = global.u_alpha * surface_presence;
+    let bloom_boost = ((_e107 / vec3(_e108)) * _e111);
+    let bloom_candidate = clamp((_e105.xyz + bloom_boost), vec3(0f), vec3(1f));
+    let _e126 = mix(_e105.xyz, bloom_candidate, vec3<f32>(min(_e111, 0.42f)));
     let _e127 = c;
     fragColor = vec4<f32>(_e126.x, _e126.y, _e126.z, _e127.w);
     return;

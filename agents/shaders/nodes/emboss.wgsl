@@ -39,6 +39,8 @@ fn main_1() {
     let _e34 = v_texcoord_1;
     let _e35 = textureSample(tex, tex_sampler, _e34);
     color = _e35;
+    let source_luma = dot(color.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    let surface_presence = smoothstep(0.035f, 0.18f, source_luma);
     let _e37 = v_texcoord_1;
     let _e38 = dir;
     let _e40 = textureSample(tex, tex_sampler, (_e37 + _e38));
@@ -53,7 +55,7 @@ fn main_1() {
     embossed = (((_e47.xyz - _e49.xyz) * _e52) + vec3(0.5f));
     let _e58 = color;
     let _e60 = embossed;
-    let _e61 = global.u_blend;
+    let _e61 = global.u_blend * surface_presence;
     let _e63 = mix(_e58.xyz, _e60, vec3(_e61));
     let _e64 = color;
     fragColor = vec4<f32>(_e63.x, _e63.y, _e63.z, _e64.w);
