@@ -1,0 +1,126 @@
+{
+  "name": "segment-interview",
+  "description": "Responsible hosted segment layout for interview sessions. Four wards: question card (left), transcript (center), unknowns (right), delta overlay (bottom).",
+  "sources": [
+    {
+      "id": "interview-question",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "InterviewQuestionWard",
+        "natural_w": 400,
+        "natural_h": 600
+      },
+      "update_cadence": "rate",
+      "rate_hz": 1.0,
+      "tags": ["segment", "responsible-layout", "interview", "question"],
+      "ward_id": "interview-question-card"
+    },
+    {
+      "id": "interview-transcript",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "InterviewTranscriptWard",
+        "natural_w": 640,
+        "natural_h": 600
+      },
+      "update_cadence": "rate",
+      "rate_hz": 1.0,
+      "tags": ["segment", "responsible-layout", "interview", "transcript"],
+      "ward_id": "interview-transcript-card"
+    },
+    {
+      "id": "interview-unknowns",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "InterviewUnknownsWard",
+        "natural_w": 400,
+        "natural_h": 600
+      },
+      "update_cadence": "rate",
+      "rate_hz": 1.0,
+      "tags": ["segment", "responsible-layout", "interview", "unknowns"],
+      "ward_id": "interview-unknowns-card"
+    },
+    {
+      "id": "interview-delta",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "InterviewDeltaWard",
+        "natural_w": 640,
+        "natural_h": 180
+      },
+      "update_cadence": "rate",
+      "rate_hz": 1.0,
+      "tags": ["segment", "responsible-layout", "interview", "delta"],
+      "ward_id": "interview-delta-card"
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "interview-question-surface",
+      "geometry": { "kind": "rect", "x": 0, "y": 144, "w": 358, "h": 432 },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 900,
+      "update_cadence": "always"
+    },
+    {
+      "id": "interview-transcript-surface",
+      "geometry": { "kind": "rect", "x": 384, "y": 108, "w": 512, "h": 504 },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 900,
+      "update_cadence": "always"
+    },
+    {
+      "id": "interview-unknowns-surface",
+      "geometry": { "kind": "rect", "x": 922, "y": 144, "w": 358, "h": 432 },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 900,
+      "update_cadence": "always"
+    },
+    {
+      "id": "interview-delta-surface",
+      "geometry": { "kind": "rect", "x": 192, "y": 612, "w": 896, "h": 101 },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 950,
+      "update_cadence": "always"
+    }
+  ],
+  "assignments": [
+    {
+      "source": "interview-question",
+      "surface": "interview-question-surface",
+      "opacity": 0.88,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "interview-transcript",
+      "surface": "interview-transcript-surface",
+      "opacity": 0.92,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "interview-unknowns",
+      "surface": "interview-unknowns-surface",
+      "opacity": 0.85,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "interview-delta",
+      "surface": "interview-delta-surface",
+      "opacity": 0.82,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    }
+  ]
+}

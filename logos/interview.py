@@ -258,6 +258,13 @@ Each topic should have:
 - An opening question that invites reflection, not yes/no answers
 - An appropriate depth: "surface" for new areas, "deep" to elaborate on existing facts,
   "challenge" to constructively critique practices or goals
+
+CRITICAL — Output format:
+Your response MUST be valid JSON with exactly these top-level keys:
+  {"topics": [...], "overall_focus": "..."}
+Each topic object MUST have exactly these keys:
+  {"dimension": "...", "topic": "...", "rationale": "...", "question_seed": "...", "depth": "surface|deep|challenge"}
+Do NOT wrap in "interview_plan" or use any other key names.
 """
 
 # Neurocognitive exploration guidance — only injected when there's an actual gap
@@ -369,6 +376,59 @@ async def generate_interview_plan(
         for g in analysis.goal_gaps:
             parts.append(f"  - {g['goal_name']} ({g['goal_id']}, status: {g['status']})")
 
+    # Gather system context: chronicle, stimmung, open tasks
+    context_parts: list[str] = []
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+
+        stim_path = _Path("/dev/shm/hapax-stimmung/state.json")
+        stim = _json.loads(stim_path.read_text("utf-8"))
+        context_parts.append(
+            f"\nCurrent stimmung: valence={stim.get('valence', '?')}, "
+            f"arousal={stim.get('arousal', '?')}, stance={stim.get('stance', '?')}"
+        )
+    except (FileNotFoundError, ValueError, OSError):
+        pass
+
+    try:
+        import subprocess
+
+        chronicle = subprocess.run(
+            ["curl", "-sf", "http://localhost:8051/api/chronicle?limit=10"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if chronicle.returncode == 0:
+            import json as _json2
+
+            events = _json2.loads(chronicle.stdout)
+            if events:
+                context_parts.append("\nRecent chronicle events:")
+                for ev in events[:5]:
+                    context_parts.append(
+                        f"  - [{ev.get('category', '?')}] {ev.get('summary', '?')}"
+                    )
+    except (FileNotFoundError, ValueError, OSError):
+        pass
+
+    try:
+        import glob
+        from pathlib import Path as _Path2
+
+        tasks_dir = _Path2.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+        task_files = sorted(glob.glob(str(tasks_dir / "*.md")))[:10]
+        if task_files:
+            context_parts.append("\nOpen CC-tasks (current work priorities):")
+            for tf in task_files:
+                context_parts.append(f"  - {_Path2(tf).stem}")
+    except (FileNotFoundError, OSError):
+        pass
+
+    if context_parts:
+        parts.extend(context_parts)
+
     # Conditionally inject neurocognitive exploration guidance
     system_prompt = PLAN_SYSTEM_PROMPT
     if analysis.neurocognitive_gap:
@@ -378,6 +438,7 @@ async def generate_interview_plan(
         get_model(model_alias),
         output_type=InterviewPlan,
         system_prompt=system_prompt,
+        retries=3,
     )
 
     result = await planner.run("\n".join(parts))
@@ -616,6 +677,62 @@ def create_interview_agent(model_alias: str = "balanced") -> Agent[InterviewDeps
         return f"Topic '{topic}' marked complete. All topics explored!"
 
     @agent.tool
+    async def branch_follow_up(
+        ctx: RunContext[InterviewDeps],
+        dimension: str,
+        topic: str,
+        rationale: str,
+        question_seed: str,
+        depth: str = "deep",
+    ) -> str:
+        """Insert an ad-hoc follow-up topic before the next planned topic.
+
+        Use this when the operator's answer reveals an interesting thread worth
+        chasing immediately, without losing the rest of the plan.  The new topic
+        is inserted at the front of the remaining (unexplored) queue.
+
+        Args:
+            dimension: Profile dimension for this follow-up.
+            topic: Short label for the follow-up topic (must be unique).
+            rationale: Why this thread is worth pursuing now.
+            question_seed: Opening question for the follow-up.
+            depth: One of surface, deep, challenge.  Defaults to deep.
+        """
+        valid_depths = ("surface", "deep", "challenge")
+        if depth not in valid_depths:
+            return f"Invalid depth '{depth}'. Must be one of: {', '.join(valid_depths)}"
+
+        # Prevent duplicate topic names
+        existing_names = {t.topic for t in ctx.deps.state.plan.topics}
+        if topic in existing_names:
+            return f"Topic '{topic}' already exists in the plan."
+
+        new_topic = InterviewTopic(
+            dimension=dimension,
+            topic=topic,
+            rationale=rationale,
+            question_seed=question_seed,
+            depth=depth,  # type: ignore[arg-type]
+        )
+
+        # Find insertion point: right after the last explored topic
+        plan_topics = ctx.deps.state.plan.topics
+        explored = ctx.deps.state.topics_explored
+        insert_idx = 0
+        for i, t in enumerate(plan_topics):
+            if t.topic in explored:
+                insert_idx = i + 1
+
+        plan_topics.insert(insert_idx, new_topic)
+
+        remaining = [t for t in plan_topics if t.topic not in explored]
+        return (
+            f"Inserted follow-up topic '{topic}' ({dimension}, {depth}) "
+            f"at position {insert_idx}. {len(remaining)} topics remaining. "
+            f"Next: {remaining[0].topic}"
+        )
+
+    @agent.tool
     async def get_interview_progress(ctx: RunContext[InterviewDeps]) -> str:
         """Get current interview progress summary."""
         state = ctx.deps.state
@@ -765,6 +882,50 @@ def create_interview_agent(model_alias: str = "balanced") -> Agent[InterviewDeps
             return "\n".join(f"- {p}" for p in patterns)
         except Exception as e:
             return f"Error reading patterns: {e}"
+
+    @agent.tool
+    async def request_background_research(
+        ctx: RunContext[InterviewDeps],
+        query: str,
+        reason: str,
+    ) -> str:
+        """Request asynchronous background research without blocking the interview.
+
+        Writes a research request to the SHM queue for downstream consumers.
+        This is the non-severing async capability path — Command-R can request
+        research without waiting for results.
+
+        Args:
+            query: The research question or topic to investigate.
+            reason: Why this research is needed in the interview context.
+        """
+        import json
+        import time
+
+        queue_path = Path("/dev/shm/hapax-compositor/interview-research-queue.json")
+
+        # Ensure parent directory exists
+        queue_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Read existing queue or start fresh
+        queue: list[dict[str, str]] = []
+        if queue_path.exists():
+            try:
+                queue = json.loads(queue_path.read_text("utf-8"))
+            except (json.JSONDecodeError, OSError):
+                queue = []
+
+        queue.append(
+            {
+                "query": query,
+                "reason": reason,
+                "requested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+        )
+
+        queue_path.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+
+        return f"Research request queued ({len(queue)} total in queue): '{query}' — {reason}"
 
     return agent
 

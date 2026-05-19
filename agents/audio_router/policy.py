@@ -38,6 +38,7 @@ _PROGRAMME_OVERRIDES: dict[str, tuple[int | None, str | None, str | None]] = {
     "research_mode": (0, "RECORD-DRY", "MUSIC-BED"),  # dry capture
     "sonic_ritual": (5, "SONIC-RITUAL", "MUSIC-DRONE"),  # opt-in gated
     "live_performance": (0, "VOCAL-COMPANION", "BEAT-1"),  # TTS dry; beat + vinyl take FX space
+    "interview": (2, "VOICE-SELF-MOD", "MUSIC-BED"),
 }
 
 

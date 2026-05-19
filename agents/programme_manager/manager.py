@@ -356,7 +356,13 @@ class ProgrammeManager:
         )
 
     def _maybe_promote_first_pending(self) -> BoundaryDecision:
-        """When no programme is ACTIVE, promote the first PENDING in store order."""
+        """When no programme is ACTIVE, promote the best PENDING candidate.
+
+        Scores each pending programme prospectively against the stream
+        biography, then promotes the highest-scoring candidate. This
+        prefers candidates that close narrative gaps over those that
+        retread established ground.
+        """
         pending = [p for p in self.store.all() if p.status == ProgrammeStatus.PENDING]
         if not pending:
             return BoundaryDecision(
@@ -366,12 +372,68 @@ class ProgrammeManager:
                 impingements=None,
                 notes="no active programme; no pending programme to promote",
             )
-        first = pending[0]
+
+        # Score and sort by prospective quality (descending)
+        from shared.stream_biography import read_shm as read_bio_shm
+
+        bio = read_bio_shm()
+        scored = sorted(
+            pending,
+            key=lambda p: self._score_candidate_prospectively(p, bio),
+            reverse=True,
+        )
+        best = scored[0]
         return self._apply_transition(
             from_programme=None,
-            to_programme=first,
+            to_programme=best,
             trigger=BoundaryTrigger.PLANNED,
         )
+
+    def _score_candidate_prospectively(
+        self,
+        candidate: Programme,
+        biography: object,
+    ) -> float:
+        """Score a programme candidate against the stream biography.
+
+        Returns a multiplier in [0.5, 2.0]:
+        - 2.0 if the topic addresses ungrounded concepts (high information gap)
+        - 1.0 if neutral (no topic or no biography data)
+        - 0.5 if the topic covers already-established ground (low novelty)
+        """
+        from shared.stream_biography import StreamBiography
+
+        if not isinstance(biography, StreamBiography):
+            return 1.0
+
+        topic = candidate.content.declared_topic
+        if not topic:
+            return 1.0
+
+        # Check if the topic's concepts are already grounded
+        established = biography.established_concepts
+        if not established:
+            # No biography data yet — everything is ungrounded, high value
+            return 2.0
+
+        # Simple text match: check if the topic token appears in established concepts
+        topic_lower = topic.lower()
+        established_names = {c.concept.lower() for c in established}
+
+        # Count how many established concepts overlap with the topic
+        overlaps = sum(
+            1 for name in established_names if name in topic_lower or topic_lower in name
+        )
+
+        if overlaps == 0:
+            # Topic addresses ungrounded territory — high information gap
+            return 2.0
+        elif overlaps >= 2:
+            # Multiple established concepts overlap — low novelty
+            return 0.5
+        else:
+            # Single overlap — moderate novelty
+            return 1.0
 
     def _next_pending_after(self, active: Programme) -> Programme | None:
         records = self.store.all()

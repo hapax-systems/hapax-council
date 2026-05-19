@@ -862,6 +862,18 @@ class ConversationPipeline:
         # And Provider Policy, line 275.
         from agents.hapax_daimonion.model_router import TIER_ROUTES, ModelTier
 
+        _interview_active = False
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+
+            _seg = _json.loads(
+                _Path("/dev/shm/hapax-compositor/active-segment.json").read_text("utf-8")
+            )
+            _interview_active = _seg.get("role", "") == "interview"
+        except (FileNotFoundError, _json.JSONDecodeError, OSError):
+            pass
+
         if self._salience_router is not None:
             routing = self._salience_router.route(
                 transcript,
@@ -872,6 +884,7 @@ class ConversationPipeline:
                 face_count=self._face_count,
                 has_tools=bool(self.tools),
                 desk_activity=self._desk_activity,
+                interview_mode=_interview_active,
             )
         else:
             # No salience router — default to FAST (grounding-capable
@@ -1174,9 +1187,22 @@ class ConversationPipeline:
             # (assistant+tool_calls, tool result, follow-up) as complete exchanges.
             # INTERVIEW programmes disable message_drop — full thread needed for
             # callbacks, follow-ups, and avoiding re-asks across 120 turns.
+            _interview_on = False
+            try:
+                import json as _jl
+                import pathlib as _pl
+
+                _seg_data = _pl.Path("/dev/shm/hapax-compositor/active-segment.json").read_text(
+                    "utf-8"
+                )
+                _interview_on = _jl.loads(_seg_data).get("role", "") == "interview"
+            except (FileNotFoundError, ValueError, OSError):
+                pass
+
             _drop_threshold = getattr(self, "_message_drop_threshold", 12)
             if (
                 self._experiment_flags.get("message_drop", True)
+                and not _interview_on
                 and len(self.messages) > _drop_threshold
             ):
                 system_msg = self.messages[0]

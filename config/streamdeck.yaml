@@ -51,13 +51,13 @@ bindings:
     label: Study
 
   - key: 9
-    command: research.condition.open
+    command: studio.interview.activate
     args: {}
-    label: RC Open
+    label: Interview
   - key: 10
-    command: research.condition.close
+    command: studio.interview.deactivate
     args: {}
-    label: RC Close
+    label: End Intv
 
   - key: 11
     command: attention_bid.dismiss

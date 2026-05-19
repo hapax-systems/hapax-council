@@ -354,6 +354,16 @@ _ROLE_VISUAL_HOOKS: dict[str, str] = {
         "  Skepticism: 'wait', 'hold on', 'not sure' -> challenge posture\n"
         "  Resolution: 'exactly', 'this is it', 'nailed it' -> synthesis posture\n\n"
     ),
+    "interview": (
+        "INTERVIEW QUESTION HOOKS — the stream renders a question card:\n"
+        "  Each beat is ONE QUESTION with context grounded in profile evidence.\n"
+        "  State the INFORMATION GAP this question addresses.\n"
+        "  Reference what the system already knows and what remains unknown.\n"
+        "  Do NOT perform warmth, curiosity, or rapport. Report operational need.\n"
+        "  After each answer, report what changed in the knowledge model.\n"
+        "  Example form: 'My model of [dimension] has [N] facts at [confidence]. "
+        "The gap: [specific unknown]. [Question].'\n\n"
+    ),
 }
 
 
@@ -471,6 +481,9 @@ def _build_full_segment_prompt(
             if role_value == "tier_list"
             else "- ordering_criterion: the EXPLICIT ordering rule (REQUIRED for top_10)\n"
             if role_value == "top_10"
+            else "- question_ladder: ordered questions with information gap + source evidence (REQUIRED for interview)\n"
+            "- answer_source_policy: how operator answers are grounded and verified\n"
+            if role_value == "interview"
             else ""
         )
         + "- claim_map, source_consequence_map, actionability_map, layout_need_map\n"
@@ -989,6 +1002,28 @@ def _tier_list_placement_violations(
                     "beat_direction": direction,
                     "required_trigger": "Place [item] in [S/A/B/C/D]-tier",
                     "required_action_kind": "tier_chart",
+                }
+            )
+    return violations
+
+
+def _interview_question_violations(
+    *,
+    role: str,
+    script: list[str],
+) -> list[dict[str, Any]]:
+    """Check that interview beats contain question structure."""
+    if role != "interview":
+        return []
+    violations: list[dict[str, Any]] = []
+    question_re = re.compile(r"\?")
+    for i, beat in enumerate(script):
+        if not question_re.search(beat):
+            violations.append(
+                {
+                    "reason": "missing_question_mark",
+                    "beat_index": i,
+                    "note": "interview beats should contain at least one question",
                 }
             )
     return violations
