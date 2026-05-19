@@ -387,6 +387,8 @@ jobs:
           # existing release surface while reducing longest-runner wall time.
           collect_output="$(mktemp)"
           shard_files="$(mktemp)"
+          duration_artifact="/tmp/pytest-node-durations-shard-${PYTEST_SHARD}-of-${PYTEST_SHARD_COUNT}.yaml"
+          selected_units_artifact="/tmp/pytest-selected-units-shard-${PYTEST_SHARD}-of-${PYTEST_SHARD_COUNT}.txt"
           uv run --no-sync pytest tests/ --collect-only -q \
             --benchmark-disable \
             --ignore=tests/hapax_daimonion --ignore=tests/contract \
@@ -426,13 +428,25 @@ jobs:
             --shards "$PYTEST_SHARD_COUNT" > "$shard_files"
           unit_count="$(wc -l < "$shard_files" | tr -d ' ')"
           echo "Shard $PYTEST_SHARD/$PYTEST_SHARD_COUNT selected $unit_count test units."
+          cp "$shard_files" "$selected_units_artifact"
           if [ "$unit_count" -eq 0 ]; then
+            uv run --no-sync python scripts/ci_select_pytest_shard.py \
+              --pytest-output /dev/null \
+              --duration-artifact "$duration_artifact" \
+              --selected-units "$selected_units_artifact" \
+              --shard "$PYTEST_SHARD" \
+              --shards "$PYTEST_SHARD_COUNT" \
+              --run-id "$GITHUB_RUN_ID" \
+              --run-attempt "$GITHUB_RUN_ATTEMPT" \
+              --head-sha "$GITHUB_SHA" \
+              --event-name "$GITHUB_EVENT_NAME"
             echo "No test units selected for this shard."
             exit 0
           fi
           set +e
           timeout -s KILL 1200 \
-            xargs -d '\n' -a "$shard_files" uv run --no-sync pytest -q --tb=line --durations=25 \
+            xargs -d '\n' -a "$shard_files" uv run --no-sync pytest -q --tb=line \
+              --durations=0 --durations-min=0 \
               --benchmark-disable \
               -n 4 --dist loadfile \
               --ignore=tests/hapax_daimonion --ignore=tests/contract \
@@ -466,6 +480,22 @@ jobs:
               -m "not llm" -k "not golden and not goldens" \
               -p no:cacheprovider 2>&1 | tee /tmp/pytest-output.txt
           PYTEST_EXIT=${PIPESTATUS[0]}
+          uv run --no-sync python scripts/ci_select_pytest_shard.py \
+            --pytest-output /tmp/pytest-output.txt \
+            --duration-artifact "$duration_artifact" \
+            --selected-units "$selected_units_artifact" \
+            --shard "$PYTEST_SHARD" \
+            --shards "$PYTEST_SHARD_COUNT" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --head-sha "$GITHUB_SHA" \
+            --event-name "$GITHUB_EVENT_NAME" \
+            --require-durations
+          DURATION_EXIT=$?
+          if [ "$DURATION_EXIT" -ne 0 ]; then
+            echo "Could not write pytest node duration artifact (exit $DURATION_EXIT)"
+            exit 1
+          fi
           # pytest exit codes: 0 = all passed, 1 = failures, 2 = usage error,
           # 3 = internal error, 4 = usage error, 5 = no tests collected.
           # With conftest.py pytest_sessionfinish (#1318) closing socket hangs,
@@ -490,6 +520,16 @@ jobs:
           fi
           echo "Tests failed (pytest exit $PYTEST_EXIT)"
           exit 1
+      - name: Upload pytest node duration artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-node-durations-shard-${{ matrix.shard }}-of-${{ matrix.shard_count }}
+          path: |
+            /tmp/pytest-node-durations-shard-${{ matrix.shard }}-of-${{ matrix.shard_count }}.yaml
+            /tmp/pytest-selected-units-shard-${{ matrix.shard }}-of-${{ matrix.shard_count }}.txt
+          if-no-files-found: warn
+          retention-days: 30
 
   test-title-cards:
     needs: [docs_only_filter, post_merge_duplicate_filter]
