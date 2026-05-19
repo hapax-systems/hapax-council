@@ -64,6 +64,41 @@ class TestSourceActive:
         assert reset_mod._is_source_active(client, "TestSource") is False
 
 
+class TestTransportErrors:
+    def test_broken_pipe_is_disconnected_not_missing_source(
+        self, reset_mod: types.ModuleType
+    ) -> None:
+        client = MagicMock()
+        client.get_source_active.side_effect = BrokenPipeError("broken pipe")
+
+        probe = reset_mod._probe_source(
+            client,
+            "Video Capture Device (V4L2)",
+            previous_hash=None,
+            hash_stable_since=10.0,
+            now=15.0,
+        )
+
+        assert probe.state is reset_mod.SourceState.DISCONNECTED
+        assert probe.source_active is None
+        assert probe.reason == "source_active_failed:BrokenPipeError"
+
+    def test_true_missing_source_remains_source_missing(self, reset_mod: types.ModuleType) -> None:
+        client = MagicMock()
+        client.get_source_active.side_effect = RuntimeError("No source was found")
+
+        probe = reset_mod._probe_source(
+            client,
+            "StudioCompositor",
+            previous_hash=None,
+            hash_stable_since=10.0,
+            now=15.0,
+        )
+
+        assert probe.state is reset_mod.SourceState.SOURCE_MISSING
+        assert probe.source_active is False
+
+
 class TestFindSceneItem:
     def test_finds_matching_item(self, reset_mod: types.ModuleType) -> None:
         client = MagicMock()
@@ -186,6 +221,25 @@ class TestProbeSource:
 
         assert probe.state is reset_mod.SourceState.STALLED
         assert probe.stall_seconds == 35.0
+
+    def test_screenshot_transport_error_disconnects_client(
+        self, reset_mod: types.ModuleType
+    ) -> None:
+        client = MagicMock()
+        client.get_source_active.return_value = MagicMock(video_active=True)
+        client.get_source_screenshot.side_effect = TimeoutError("timed out")
+
+        probe = reset_mod._probe_source(
+            client,
+            "Video Capture Device (V4L2)",
+            previous_hash=None,
+            hash_stable_since=10.0,
+            now=45.0,
+        )
+
+        assert probe.state is reset_mod.SourceState.DISCONNECTED
+        assert probe.source_active is True
+        assert probe.screenshot_available is False
 
 
 class TestObswsCompatibility:

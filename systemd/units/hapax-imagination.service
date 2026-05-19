@@ -41,6 +41,11 @@ Environment=HAPAX_SHADER_NODES_DIR=%h/.cache/hapax/source-activation/worktree/ag
 # shows up in journal.
 Environment=HAPAX_IMAGINATION_WIDTH=960
 Environment=HAPAX_IMAGINATION_HEIGHT=540
+# Direct V4L2 3D egress needs render-loop headroom to satisfy the 30 fps
+# consumer-boundary contract after GPU readback + JPEG + NV12 conversion.
+# 30 ms targets ~33 fps and observed 30.5 fps sustained on the live stack
+# during the 2026-05-18 compositor incident recovery.
+Environment=HAPAX_IMAGINATION_INTERVAL_MS=30
 
 [Install]
 WantedBy=default.target
