@@ -37,11 +37,41 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "
     # Count child processes (excluding the shell itself)
     children=$(ps --ppid "$pane_pid" -o comm= 2>/dev/null | grep -cv "^fish$\|^bash$\|^zsh$\|^sh$" || echo 0)
 
-    if [[ "$children" -gt 0 ]]; then
-        continue  # Active process running — skip
+    # Check last output for stuck patterns (quota, rate limit, error loops)
+    last_output=$(tmux capture-pane -t "$session" -p 2>/dev/null | grep -v "^$" | tail -3)
+    is_stuck=0
+    if echo "$last_output" | grep -qi "rate.limit\|quota\|429\|Usage limit\|BLOCKED.*quota"; then
+        is_stuck=1
     fi
 
-    # Check how long the session has been idle (last activity timestamp)
+    if [[ "$children" -gt 0 && "$is_stuck" -eq 0 ]]; then
+        continue  # Active process making progress — skip
+    fi
+
+    if [[ "$children" -gt 0 && "$is_stuck" -eq 1 ]]; then
+        # Stuck lane — release the task but DON'T kill the session
+        log "$session: STUCK (quota/rate-limit) — releasing task, keeping session"
+        role="${session#hapax-codex-}"
+        role="${role#hapax-claude-}"
+        claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+        if [[ -f "$claim_file" ]]; then
+            claim=$(cat "$claim_file" | tr -d '[:space:]')
+            if [[ -n "$claim" ]]; then
+                for task_file in "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/active/${claim}"*.md; do
+                    if [[ -f "$task_file" ]]; then
+                        sed -i "s/^status: claimed/status: offered/" "$task_file"
+                        sed -i "s/^status: in_progress/status: offered/" "$task_file"
+                        sed -i "s/^assigned_to: .*/assigned_to: unassigned/" "$task_file"
+                        log "  Released task: $claim → offered"
+                    fi
+                done
+            fi
+            rm -f "$claim_file"
+        fi
+        continue  # Don't kill — session may recover
+    fi
+
+    # Dead lane — shell prompt, no process, idle too long
     last_activity=$(tmux display-message -t "$session" -p '#{session_activity}' 2>/dev/null || echo 0)
     now=$(date +%s)
     idle_sec=$(( now - last_activity ))
@@ -51,7 +81,7 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "
         continue  # Not idle long enough
     fi
 
-    log "$session: idle ${idle_min}m (threshold ${IDLE_THRESHOLD_MIN}m)"
+    log "$session: DEAD idle ${idle_min}m (threshold ${IDLE_THRESHOLD_MIN}m)"
 
     # Check for uncommitted work in the session's worktree
     role="${session#hapax-codex-}"
