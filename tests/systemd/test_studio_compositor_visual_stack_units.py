@@ -190,6 +190,7 @@ def test_obs_v4l2_source_reset_runs_from_activation_worktree_with_notify_watchdo
     assert parser.get("Service", "ExecStart").startswith(
         f"{SOURCE_ROOT}/scripts/hapax-obs-v4l2-source-reset"
     )
+    assert '--source-name "Video Capture Device (V4L2)"' in parser.get("Service", "ExecStart")
     assert "--reset-cooldown 60" in parser.get("Service", "ExecStart")
     assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
     lines = _active_unit_lines(OBS_SOURCE_RESET)
@@ -198,11 +199,18 @@ def test_obs_v4l2_source_reset_runs_from_activation_worktree_with_notify_watchdo
 
 def test_live_surface_guard_runs_from_activation_worktree() -> None:
     parser = _load_unit(LIVE_SURFACE_GUARD)
+    assert parser.get("Unit", "After") == "studio-compositor.service"
+    assert not parser.has_option("Unit", "Wants")
     assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
     assert parser.get("Service", "ExecStart").startswith(f"{SOURCE_ROOT}/.venv/bin/python")
     assert "agents.live_surface_guard" in parser.get("Service", "ExecStart")
+    assert "--require-hls" not in parser.get("Service", "ExecStart")
     assert "--require-obs-decoder" in parser.get("Service", "ExecStart")
     assert "--poll-interval 5" in parser.get("Service", "ExecStart")
+    assert '--obs-source-name "Video Capture Device (V4L2)"' in parser.get(
+        "Service",
+        "ExecStart",
+    )
     assert (
         "--textfile-path %h/.local/share/node_exporter/textfile_collector/"
         "hapax-live-surface-guard.prom"

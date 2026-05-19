@@ -228,9 +228,43 @@ def _get_screenshot_hash(client: Any, source_name: str) -> str | None:
 
 def _source_error_state(exc: Exception) -> SourceState:
     message = str(exc).lower()
-    if any(token in message for token in ("not found", "does not exist", "unknown source")):
+    if any(
+        token in message
+        for token in ("not found", "no source was found", "does not exist", "unknown source")
+    ):
         return SourceState.SOURCE_MISSING
+    if _is_transport_error(exc):
+        return SourceState.DISCONNECTED
     return SourceState.SCREENSHOT_FAILED
+
+
+def _is_transport_error(exc: Exception) -> bool:
+    """Return true when the OBS websocket client should be reconnected.
+
+    OBS request errors that say the source does not exist are semantic source
+    failures. Broken pipes, closed websockets, and timeout-like failures mean
+    the cached client is stale; treating those as SOURCE_MISSING creates a
+    false reset loop even while the live OBS scene is healthy.
+    """
+
+    if isinstance(exc, (BrokenPipeError, ConnectionError, TimeoutError)):
+        return True
+    name = type(exc).__name__.lower()
+    message = str(exc).lower()
+    transport_tokens = (
+        "broken pipe",
+        "connection reset",
+        "connection aborted",
+        "connection refused",
+        "connection closed",
+        "websocket closed",
+        "socket is closed",
+        "timed out",
+        "timeout",
+    )
+    return any(token in name for token in ("brokenpipe", "connection", "timeout")) or any(
+        token in message for token in transport_tokens
+    )
 
 
 def _is_source_active(client: Any, source_name: str) -> bool:
@@ -253,9 +287,10 @@ def _probe_source(
         resp = _get_source_active_response(client, source_name)
         source_active = bool(resp.video_active)
     except Exception as exc:
+        state = _source_error_state(exc)
         return ProbeResult(
-            state=SourceState.SOURCE_MISSING,
-            source_active=False,
+            state=state,
+            source_active=None if state is SourceState.DISCONNECTED else False,
             screenshot_hash=None,
             screenshot_available=False,
             stall_seconds=0.0,
@@ -533,6 +568,9 @@ def monitor_loop(
             SourceState.STALLED,
             SourceState.SCREENSHOT_FAILED,
         }
+
+        if probe.state is SourceState.DISCONNECTED:
+            client = None
 
         cooldown_remaining_seconds = 0.0
         if (

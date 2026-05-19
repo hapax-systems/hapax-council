@@ -210,6 +210,10 @@ class TestImaginationSourceResolution:
         text = (UNITS_DIR / "hapax-imagination.service").read_text()
         assert "hapax-council--cx-" not in text
 
+    def test_imagination_direct_v4l2_cadence_has_30fps_headroom(self) -> None:
+        text = (UNITS_DIR / "hapax-imagination.service").read_text()
+        assert "Environment=HAPAX_IMAGINATION_INTERVAL_MS=30" in text
+
 
 class TestPrivateMonitorRecoverSourceResolution:
     def test_private_monitor_recover_unit_uses_activation_worktree_repo_root(self) -> None:
