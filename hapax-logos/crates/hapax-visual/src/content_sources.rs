@@ -16,6 +16,7 @@ const CAMERA_SNAPSHOT_IMPLICIT_TTL_MS: u64 = 30_000;
 const LEGACY_CAIRO_IMPLICIT_TTL_MS: u64 = 10_000;
 const RECRUITED_CONTENT_IMPLICIT_TTL_MS: u64 = 30_000;
 const IMAGINATION_IMPLICIT_TTL_MS: u64 = 60_000;
+const LAST_GOOD_SOURCE_RETENTION_MS: u64 = 90_000;
 const MAX_SOURCES: usize = 64;
 const CONTENT_SOURCE_MIP_WGSL: &str = r#"
 @group(0) @binding(0)
@@ -679,6 +680,31 @@ fn source_file_age_exceeds_ttl(
     })
 }
 
+fn effective_last_good_retention_ms(manifest: &SourceManifest) -> u64 {
+    match effective_ttl_ms(manifest) {
+        0 => 0,
+        ttl_ms => ttl_ms.max(LAST_GOOD_SOURCE_RETENTION_MS),
+    }
+}
+
+fn source_file_age_exceeds_retention(
+    manifest_path: &Path,
+    frame_path: &Path,
+    manifest: &SourceManifest,
+) -> bool {
+    let retention_ms = effective_last_good_retention_ms(manifest);
+    if retention_ms == 0 {
+        return false;
+    }
+
+    [manifest_path, frame_path].into_iter().any(|path| {
+        std::fs::metadata(path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .is_none_or(|modified| modified_age_exceeds_ttl(modified, retention_ms))
+    })
+}
+
 fn read_complete_rgba_frame(
     frame_path: &Path,
     source_id: &str,
@@ -836,12 +862,30 @@ impl ContentSourceManager {
 
             let frame_path = path.join("frame.rgba");
             if source_file_age_exceeds_ttl(&manifest_path, &frame_path, &manifest) {
-                log::warn!(
-                    "ContentSourceManager: expiring stale source '{}' by file age (effective ttl {}ms)",
-                    source_id,
-                    effective_ttl_ms(&manifest)
-                );
-                let _ = std::fs::remove_dir_all(&path);
+                let ttl_ms = effective_ttl_ms(&manifest);
+                let retention_ms = effective_last_good_retention_ms(&manifest);
+                if self.sources.contains_key(&source_id)
+                    && !source_file_age_exceeds_retention(&manifest_path, &frame_path, &manifest)
+                {
+                    log::debug!(
+                        "ContentSourceManager: retaining stale loaded source '{}' from last-good texture (ttl {}ms, retention {}ms)",
+                        source_id,
+                        ttl_ms,
+                        retention_ms
+                    );
+                    seen.push(source_id);
+                    continue;
+                }
+
+                if source_file_age_exceeds_retention(&manifest_path, &frame_path, &manifest) {
+                    log::warn!(
+                        "ContentSourceManager: expiring stale source '{}' by file age after retention (ttl {}ms, retention {}ms)",
+                        source_id,
+                        ttl_ms,
+                        retention_ms
+                    );
+                    let _ = std::fs::remove_dir_all(&path);
+                }
                 continue;
             }
 
@@ -862,14 +906,16 @@ impl ContentSourceManager {
             queue.submit(std::iter::once(mip_encoder.finish()));
         }
 
-        // Expire sources not seen or past TTL, clean up shm directories
+        // Expire sources past last-good retention, clean up shm directories.
+        // A producer/compositor restart can pause shm publication for tens of
+        // seconds; visible entities should hold their last successful GPU
+        // texture during that bounded gap instead of disappearing from OBS.
         let now = Instant::now();
         let sources_dir = self.sources_dir.clone();
         self.sources.retain(|id, src| {
-            let ttl_ms = effective_ttl_ms(&src.manifest);
-            let keep = seen.contains(id)
-                && (ttl_ms == 0
-                    || now.duration_since(src.last_refresh).as_millis() <= ttl_ms as u128);
+            let retention_ms = effective_last_good_retention_ms(&src.manifest);
+            let keep = retention_ms == 0
+                || now.duration_since(src.last_refresh).as_millis() <= retention_ms as u128;
             if !keep {
                 let dir = sources_dir.join(id);
                 if dir.exists() {
@@ -885,13 +931,13 @@ impl ContentSourceManager {
             if !self.sources.contains_key(id.as_str()) {
                 let manifest_path = self.sources_dir.join(id).join("manifest.json");
                 if let Some(manifest) = Self::read_manifest(&manifest_path) {
-                    let ttl_ms = effective_ttl_ms(&manifest);
-                    if ttl_ms > 0 {
+                    let retention_ms = effective_last_good_retention_ms(&manifest);
+                    if retention_ms > 0 {
                         // Check file age as proxy for staleness
                         if let Ok(metadata) = std::fs::metadata(&manifest_path) {
                             if let Ok(modified) = metadata.modified() {
                                 if modified.elapsed().unwrap_or_default().as_millis()
-                                    > ttl_ms as u128
+                                    > retention_ms as u128
                                 {
                                     let dir = self.sources_dir.join(id);
                                     let _ = std::fs::remove_dir_all(&dir);
@@ -1256,12 +1302,13 @@ impl ContentSourceManager {
 mod family_classification_tests {
     use super::validate_aoa_pane_binding_for_stream_posture;
     use super::{
-        effective_ttl_ms, expected_rgba_size, modified_age_exceeds_ttl, read_complete_rgba_frame,
-        rgba_frame_matches_manifest, source_file_age_exceeds_ttl, source_mip_level_count,
+        effective_last_good_retention_ms, effective_ttl_ms, expected_rgba_size,
+        modified_age_exceeds_ttl, read_complete_rgba_frame, rgba_frame_matches_manifest,
+        source_file_age_exceeds_retention, source_file_age_exceeds_ttl, source_mip_level_count,
         validate_aoa_pane_binding, AoaPaneBindingMetadata, AoaPaneBindingRejectionReason,
         AoaPaneCompositionPosture, AoaPanePrivacyPosture, AoaPaneSourcePosture,
         AoaPaneStreamPosture, ContentSourceManager, SourceManifest,
-        CAMERA_SNAPSHOT_IMPLICIT_TTL_MS, CONTENT_SOURCE_MIP_WGSL,
+        CAMERA_SNAPSHOT_IMPLICIT_TTL_MS, CONTENT_SOURCE_MIP_WGSL, LAST_GOOD_SOURCE_RETENTION_MS,
     };
     use crate::aoa_panes::AoaPaneBindingMode;
     use std::time::{Duration, SystemTime};
@@ -1725,6 +1772,55 @@ mod family_classification_tests {
         assert!(!modified_age_exceeds_ttl(
             fresh,
             CAMERA_SNAPSHOT_IMPLICIT_TTL_MS
+        ));
+    }
+
+    #[test]
+    fn last_good_retention_extends_finite_ttl_sources() {
+        let mut manifest = manifest(640, 360);
+        manifest.ttl_ms = 1;
+
+        assert_eq!(
+            effective_last_good_retention_ms(&manifest),
+            LAST_GOOD_SOURCE_RETENTION_MS
+        );
+
+        manifest.ttl_ms = LAST_GOOD_SOURCE_RETENTION_MS * 2;
+        assert_eq!(
+            effective_last_good_retention_ms(&manifest),
+            LAST_GOOD_SOURCE_RETENTION_MS * 2
+        );
+    }
+
+    #[test]
+    fn persistent_sources_remain_persistent_under_last_good_policy() {
+        let manifest = manifest(640, 360);
+
+        assert_eq!(effective_ttl_ms(&manifest), 0);
+        assert_eq!(effective_last_good_retention_ms(&manifest), 0);
+    }
+
+    #[test]
+    fn stale_file_can_exceed_ttl_without_exceeding_last_good_retention() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("manifest.json");
+        let frame_path = dir.path().join("frame.rgba");
+        let mut manifest = manifest(2, 2);
+        manifest.ttl_ms = 1;
+
+        std::fs::write(&manifest_path, b"{}").unwrap();
+        std::fs::write(&frame_path, vec![0u8; 16]).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+
+        assert!(source_file_age_exceeds_ttl(
+            &manifest_path,
+            &frame_path,
+            &manifest
+        ));
+        assert!(!source_file_age_exceeds_retention(
+            &manifest_path,
+            &frame_path,
+            &manifest
         ));
     }
 }
