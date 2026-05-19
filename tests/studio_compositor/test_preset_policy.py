@@ -420,10 +420,12 @@ def test_rust_autonomous_drift_only_schedules_live_surface_bounded_nodes() -> No
 def test_scene_grid_keeps_spatial_visibility_floor() -> None:
     source = SCENE_GRID_WGSL.read_text()
 
-    assert "max(smoothstep(22.0, 1.5, dist), 0.26)" in source
+    assert "max(smoothstep(22.0, 1.5, dist), 0.30)" in source
     assert "major < 0.003" in source
     assert "scroom_material_pattern" in source
-    assert "base_alpha = 0.150;" in source
-    assert "base_alpha = 0.130;" in source
+    assert "density_gate = step(0.62" in source
+    assert "base_alpha = 0.190;" in source
+    assert "base_alpha = 0.170;" in source
+    assert "clamp(0.52 + 0.38 * material" in source
     assert "is_mid_field" not in source
     assert "var alpha = major * 0.50 * dist_fade" in source
