@@ -325,7 +325,23 @@ def decide_request(
             elif _ac_unchecked:
                 reason = "request_ac_incomplete"
             else:
-                reason = "eligible"
+                # Phase awareness: detect multi-phase requests and block
+                # closure when later phases have no fulfilling tasks.
+                _phases = _re.findall(r"###?\s*Phase\s*(\d+)", request_text, _re.IGNORECASE)
+                if len(_phases) > 1:
+                    _phase_nums = sorted(set(int(p) for p in _phases))
+                    _fulfilled_phases = set()
+                    for _ft in fulfilling:
+                        for _pn in _phase_nums:
+                            if f"phase{_pn}" in _ft.lower() or f"phase-{_pn}" in _ft.lower() or f"phase_{_pn}" in _ft.lower():
+                                _fulfilled_phases.add(_pn)
+                    _missing_phases = [p for p in _phase_nums if p not in _fulfilled_phases]
+                    if _missing_phases:
+                        reason = "unfulfilled_phases"
+                    else:
+                        reason = "eligible"
+                else:
+                    reason = "eligible"
 
     return ReconcileDecision(
         request_id=request_id,
