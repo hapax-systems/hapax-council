@@ -238,7 +238,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Distance attenuation
     let dist = length(wp - vec3(0.0, 0.0, 2.0));
-    let dist_fade = max(smoothstep(22.0, 1.5, dist), 0.26);
+    let dist_fade = max(smoothstep(22.0, 1.5, dist), 0.30);
 
     if major < 0.003 {
         let cell = floor(gc * 2.15);
@@ -247,23 +247,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             0.30 + 0.40 * stipple_hash(cell + vec2<f32>(11.0, 37.0)),
             0.30 + 0.40 * stipple_hash(cell + vec2<f32>(53.0, 19.0))
         );
-        let density_gate = step(0.74, stipple_hash(cell));
-        let dot_alpha = density_gate * aa_disc_mask(length(local - center), 0.155);
+        let density_gate = step(0.62, stipple_hash(cell));
+        let dot_alpha = density_gate * aa_disc_mask(length(local - center), 0.175);
         let material = scroom_material_pattern(gc, in.plane_kind);
         let weave = 0.5 + 0.5 * sin(gc.x * 2.1 + gc.y * 1.7);
         let shadow = soft_shadow_at(wp, grid.light_position.xyz);
         let room_light = point_light_at(wp, in.normal) * shadow;
-        var base_alpha = 0.092;
+        var base_alpha = 0.110;
         if abs(in.normal.z) > 0.5 {
-            base_alpha = 0.150;
+            base_alpha = 0.190;
         } else if is_floor_or_ceiling {
-            base_alpha = 0.130;
+            base_alpha = 0.170;
         }
-        let texture_signal = 0.42 + 0.34 * material + 0.12 * weave + 0.22 * dot_alpha;
-        var plane_color = vec3<f32>(0.095, 0.110, 0.165)
-            + light_color * (0.052 + room_light * 0.18)
-            + vec3<f32>(0.036, 0.050, 0.068) * material
-            + vec3<f32>(0.018, 0.026, 0.038) * stipple_hash(cell + vec2<f32>(3.0, 7.0));
+        let texture_signal = clamp(0.52 + 0.38 * material + 0.14 * weave + 0.24 * dot_alpha, 0.42, 1.0);
+        var plane_color = vec3<f32>(0.120, 0.135, 0.190)
+            + light_color * (0.060 + room_light * 0.20)
+            + vec3<f32>(0.052, 0.068, 0.092) * material
+            + vec3<f32>(0.022, 0.032, 0.048) * stipple_hash(cell + vec2<f32>(3.0, 7.0));
         plane_color = plane_color * (0.70 + 0.30 * shadow);
         let alpha = base_alpha * texture_signal * dist_fade * (0.86 + 0.14 * shadow);
         return vec4<f32>(plane_color * texture_signal, alpha);
