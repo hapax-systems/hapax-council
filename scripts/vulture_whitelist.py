@@ -3548,6 +3548,7 @@ write_decomposition
 # CI shard selection — called by CI workflow
 try:
     from scripts.ci_select_pytest_shard import load_runtime_weights, parse_collect_output
+
     parse_collect_output
     load_runtime_weights
 except ImportError:
