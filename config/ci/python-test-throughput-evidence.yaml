@@ -56,11 +56,66 @@ rollout_policy:
   merge_group_duration_artifact_schema: pytest_node_durations/v1
   merge_group_execution_order_first_source: config/ci/python-test-runtime-weights.yaml
   merge_group_uv_policy: frozen_sync_then_no_sync_run
+  merge_group_shard_uv_cache: restore_only_explicit_pyproject_uv_lock_key
+  merge_group_title_cards: serial_in_shard_4_with_status_sentinel
+  merge_group_aggregate_test_checkout: skipped_for_merge_group_shards
   push_main: full_pytest
   docs_only: sentinel_success
   duplicate_post_merge_push: sentinel_success_after_successful_merge_group
   workflow_level_path_filters_for_required_check: forbidden
   branch_protection_check_name_change: forbidden
+
+setup_cost_elimination:
+  task_id: ci-setup-cost-elimination-prototype-20260518
+  authority_case: CASE-SDLC-CI-THROUGHPUT-SECOND-PASS-20260518
+  decision_time: 2026-05-18T23:55:00Z
+  implemented:
+    - moved serial title-card pytest command into test-full-shard shard 4
+    - kept test-title-cards status as a merge-group sentinel check
+    - skipped aggregate test checkout when merge-group shards provide validation
+    - made uv cache key inputs explicit and made matrix shards restore-only
+  required_check_names_changed: false
+  aggregate_test_behavior: >-
+    Pull requests keep the fast admission slice. Merge groups still require the
+    four full pytest shards plus the serial title-card tests before the stable
+    aggregate `test` check succeeds. Main push still runs full pytest unless a
+    successful merge-group run already validated the same SHA.
+  cache_policy:
+    matrix_shards:
+      restore_cache: true
+      save_cache: false
+      dependency_glob:
+        - pyproject.toml
+        - uv.lock
+      safety_basis: >-
+        `uv sync --extra ci --frozen` still runs in every shard, so cache hits
+        are acceleration only and cannot hide missing dependency setup. Cache
+        saving remains available in non-matrix uv jobs that also run explicit
+        sync/install steps.
+    non_matrix_uv_jobs:
+      restore_cache: true
+      save_cache: true
+      dependency_glob:
+        - pyproject.toml
+        - uv.lock
+  expected_setup_seconds:
+    title_card_job_before_range: [55, 95]
+    title_card_sentinel_after_range: [1, 3]
+    merge_group_aggregate_checkout_before_range: [4, 8]
+    merge_group_aggregate_checkout_after_range: [0, 0]
+    removed_per_merge_group_range: [58, 103]
+    not_counted: >-
+      Matrix shard cache post-job save/prune/upload avoidance is intentionally
+      not counted because the cost is cache-hit dependent; it should reduce
+      contention on lockfile changes without affecting validation.
+  prebuilt_or_self_hosted_runner_position:
+    decision: defer
+    reason: >-
+      This slice removes hosted-runner setup cost without introducing a custom
+      image or local workstation coupling. A prebuilt image or self-hosted
+      runner still needs isolation, secret minimization, patching, cache bounds,
+      registry or runner provenance, and live-service resource contention
+      review before adoption.
 
 pr_admission_slice:
   purpose: >-
@@ -83,8 +138,8 @@ pr_admission_slice:
       tests/ci/test_python_test_throughput_policy.py tests/test_ci_required_coverage_claims.py
       tests/shared/test_ci_discovery.py -q --tb=line
     conclusion: pass
-    tests_passed: 45
-    pytest_reported_seconds: 0.70
+    tests_passed: 50
+    pytest_reported_seconds: 0.86
     shell_elapsed_seconds: 2
 
 parity_status:

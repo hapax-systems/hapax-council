@@ -157,6 +157,11 @@ jobs:
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           enable-cache: true
+          restore-cache: true
+          save-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
       - uses: astral-sh/ruff-action@v3
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
@@ -296,6 +301,11 @@ jobs:
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           enable-cache: true
+          restore-cache: true
+          save-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
       # Keep the typecheck path independent of the full CI environment.
       # Pyrefly does not need the cairo/gobject runtime deps or uv sync, and
       # the previous analysis-cache restore did not materially shorten this
@@ -319,6 +329,11 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+          restore-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+          save-cache: false
       - name: Install system deps (cairo, gobject, gst, pango, hook transports)
         run: |
           sudo apt-get update
@@ -530,24 +545,8 @@ jobs:
             /tmp/pytest-selected-units-shard-${{ matrix.shard }}-of-${{ matrix.shard_count }}.txt
           if-no-files-found: warn
           retention-days: 30
-
-  test-title-cards:
-    needs: [docs_only_filter, post_merge_duplicate_filter]
-    if: github.event_name == 'merge_group' && needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-      - name: Install system deps for serial title-card tests
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection
-      - name: Sync uv ci extras for serial title-card tests
-        run: uv sync --extra ci --frozen
-      - name: Run serial title-card tests
+      - name: Run serial title-card tests in shard 4
+        if: matrix.shard == 4
         env:
           LITELLM_BASE_URL: "http://0.0.0.0:1"
           QDRANT_URL: "http://0.0.0.0:1"
@@ -555,10 +554,30 @@ jobs:
           OTEL_SDK_DISABLED: "true"
           LANGFUSE_HOST: "http://0.0.0.0:1"
         run: |
-          uv run --no-sync pytest \
-            tests/test_demo_title_cards.py \
-            tests/test_demo_video_integration.py \
-            -q --tb=line --benchmark-disable
+          timeout -s KILL 600 \
+            uv run --no-sync pytest \
+              tests/test_demo_title_cards.py \
+              tests/test_demo_video_integration.py \
+              -q --tb=line --benchmark-disable
+
+  test-title-cards:
+    needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard]
+    if: always() && github.event_name == 'merge_group' && needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Report serial title-card shard result
+        env:
+          TEST_FULL_SHARD_RESULT: ${{ needs.test-full-shard.result }}
+        run: |
+          set -euo pipefail
+          if [ "$TEST_FULL_SHARD_RESULT" = "success" ]; then
+            echo "Serial title-card tests ran inside test-full-shard shard 4."
+            exit 0
+          fi
+          echo "Full pytest shard matrix result: $TEST_FULL_SHARD_RESULT"
+          echo "Serial title-card coverage is included in shard 4, so this check fails with the shard matrix."
+          exit 1
 
   test:
     needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard, test-title-cards]
@@ -573,7 +592,7 @@ jobs:
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only == 'true'
         run: echo "Docs-only change set; test reports success without running pytest."
       - uses: actions/checkout@v6
-        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && github.event_name != 'merge_group'
       - name: Determine Python test mode
         id: test_mode
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
@@ -610,6 +629,11 @@ jobs:
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode != 'merge-group-shards'
         with:
           enable-cache: true
+          restore-cache: true
+          save-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
       - name: Run PR Python admission slice
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'pr-admission'
         env:
@@ -833,6 +857,11 @@ jobs:
         if: steps.filter.outputs.homage_inputs == 'true'
         with:
           enable-cache: true
+          restore-cache: true
+          save-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
       - name: Sync uv ci extras
         if: steps.filter.outputs.homage_inputs == 'true'
         run: uv sync --extra ci
