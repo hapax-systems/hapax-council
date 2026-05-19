@@ -90,6 +90,7 @@ def test_render_block_includes_three_sections(tmp_path: Path) -> None:
     active.mkdir()
     block = render_block(state, event_log_path=event_log, vault_active=active, now=_now())
     assert "## Live Sessions" in block
+    assert "## Research To Implementation" in block
     assert "## Recent Hygiene Events" in block
     assert "## Counters" in block
 
@@ -187,6 +188,47 @@ def test_render_block_counters_uses_vault_active_dir(tmp_path: Path) -> None:
     # Counter row ordering: offered | claimed | in_progress | pr_open | done | other
     # We expect 1 offered + 1 in_progress
     assert "| 1 | 0 | 1 | 0 | 0 | 0 |" in block
+
+
+def test_render_block_research_pipeline_uses_parent_spec_and_task_title(tmp_path: Path) -> None:
+    active = tmp_path / "active"
+    active.mkdir()
+    (active / "research-task.md").write_text(
+        "---\n"
+        "type: cc-task\n"
+        "task_id: research-task\n"
+        "title: Implement research-backed queue visibility\n"
+        "status: offered\n"
+        "assigned_to: unassigned\n"
+        "priority: p1\n"
+        "wsjf: 9.5\n"
+        "parent_spec: /home/hapax/Documents/Personal/20-projects/hapax-research/specs/source.md\n"
+        "tags:\n"
+        "  - cc-task\n"
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+    (active / "ordinary-task.md").write_text(
+        "---\n"
+        "type: cc-task\n"
+        "task_id: ordinary-task\n"
+        "title: Ordinary maintenance\n"
+        "status: offered\n"
+        "priority: p3\n"
+        "wsjf: 1\n"
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+    state = _build_state()
+    event_log = tmp_path / "cc-hygiene-events.md"
+
+    block = render_block(state, event_log_path=event_log, vault_active=active, now=_now())
+
+    assert "## Research To Implementation" in block
+    assert "| research-task | offered | unassigned | p1 | 9.5 | source.md |" in block
+    assert "ordinary-task" not in block
 
 
 # ----------------------------------------------------------------------------

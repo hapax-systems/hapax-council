@@ -655,17 +655,35 @@ def parse_task_note(path: Path) -> TaskNote | None:
             pr = None
     elif not isinstance(pr, int):
         pr = None
+    tags_raw = fm.get("tags")
+    if isinstance(tags_raw, list):
+        tags = [str(tag) for tag in tags_raw if tag is not None]
+    elif isinstance(tags_raw, str):
+        tags = [tags_raw]
+    else:
+        tags = []
+    wsjf_raw = fm.get("wsjf")
+    try:
+        wsjf = float(wsjf_raw) if wsjf_raw is not None else None
+    except (TypeError, ValueError):
+        wsjf = None
     return TaskNote(
         path=str(path),
         task_id=str(task_id),
+        title=str(fm["title"]) if fm.get("title") is not None else None,
         status=str(status),
         automation_status=(
             str(fm["automation_status"]) if fm.get("automation_status") is not None else None
         ),
+        priority=str(fm["priority"]) if fm.get("priority") is not None else None,
+        wsjf=wsjf,
         assigned_to=fm.get("assigned_to"),
         claimed_at=_parse_dt(fm.get("claimed_at")),
         branch=fm.get("branch"),
         pr=pr,
+        parent_plan=str(fm["parent_plan"]) if fm.get("parent_plan") is not None else None,
+        parent_spec=str(fm["parent_spec"]) if fm.get("parent_spec") is not None else None,
+        tags=tags,
         created_at=_parse_dt(fm.get("created_at")),
         updated_at=_parse_dt(fm.get("updated_at")),
     )
