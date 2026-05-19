@@ -369,6 +369,59 @@ async def generate_interview_plan(
         for g in analysis.goal_gaps:
             parts.append(f"  - {g['goal_name']} ({g['goal_id']}, status: {g['status']})")
 
+    # Gather system context: chronicle, stimmung, open tasks
+    context_parts: list[str] = []
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+
+        stim_path = _Path("/dev/shm/hapax-stimmung/state.json")
+        stim = _json.loads(stim_path.read_text("utf-8"))
+        context_parts.append(
+            f"\nCurrent stimmung: valence={stim.get('valence', '?')}, "
+            f"arousal={stim.get('arousal', '?')}, stance={stim.get('stance', '?')}"
+        )
+    except (FileNotFoundError, ValueError, OSError):
+        pass
+
+    try:
+        import subprocess
+
+        chronicle = subprocess.run(
+            ["curl", "-sf", "http://localhost:8051/api/chronicle?limit=10"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if chronicle.returncode == 0:
+            import json as _json2
+
+            events = _json2.loads(chronicle.stdout)
+            if events:
+                context_parts.append("\nRecent chronicle events:")
+                for ev in events[:5]:
+                    context_parts.append(
+                        f"  - [{ev.get('category', '?')}] {ev.get('summary', '?')}"
+                    )
+    except (FileNotFoundError, ValueError, OSError):
+        pass
+
+    try:
+        import glob
+        from pathlib import Path as _Path2
+
+        tasks_dir = _Path2.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+        task_files = sorted(glob.glob(str(tasks_dir / "*.md")))[:10]
+        if task_files:
+            context_parts.append("\nOpen CC-tasks (current work priorities):")
+            for tf in task_files:
+                context_parts.append(f"  - {_Path2(tf).stem}")
+    except (FileNotFoundError, OSError):
+        pass
+
+    if context_parts:
+        parts.extend(context_parts)
+
     # Conditionally inject neurocognitive exploration guidance
     system_prompt = PLAN_SYSTEM_PROMPT
     if analysis.neurocognitive_gap:
