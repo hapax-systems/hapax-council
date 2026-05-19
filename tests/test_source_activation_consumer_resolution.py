@@ -10,6 +10,7 @@ ISAP: SLICE-SOURCE-ACTIVATION-CONSUMER-AUDIT (CASE-SDLC-REFORM-001)
 from __future__ import annotations
 
 import os
+import re
 import stat
 from pathlib import Path
 
@@ -212,7 +213,10 @@ class TestImaginationSourceResolution:
 
     def test_imagination_direct_v4l2_cadence_has_30fps_headroom(self) -> None:
         text = (UNITS_DIR / "hapax-imagination.service").read_text()
-        assert "Environment=HAPAX_IMAGINATION_INTERVAL_MS=30" in text
+        match = re.search(r"^Environment=HAPAX_IMAGINATION_INTERVAL_MS=(\d+)$", text, re.M)
+        assert match is not None
+        interval_ms = int(match.group(1))
+        assert 16 <= interval_ms <= 30
 
 
 class TestPrivateMonitorRecoverSourceResolution:
