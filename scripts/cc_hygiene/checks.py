@@ -203,13 +203,13 @@ def _extract_relay_updated(payload: dict[str, Any]) -> datetime | None:
     Some yamls use `updated`, some use `session_status.timestamp` or
     similar. Walk a few common spellings; missing → None.
     """
-    for key in ("updated", "last_updated", "timestamp"):
+    for key in ("updated", "updated_at", "last_updated", "timestamp"):
         raw = payload.get(key)
         if raw:
             return _parse_dt(raw)
     status = payload.get("session_status")
     if isinstance(status, dict):
-        for key in ("updated", "timestamp", "last_updated"):
+        for key in ("updated", "updated_at", "timestamp", "last_updated"):
             raw = status.get(key)
             if raw:
                 return _parse_dt(raw)

@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Write `status: retired` to a relay YAML for a given role/session.
+#
+# Called on two paths:
+#   1. EXIT trap in hapax-claude / hapax-claude-headless (clean shutdown)
+#   2. Hygiene sweeper reaper (dead lane — no matching process)
+#
+# Idempotent: if the YAML already has a retired status, this is a no-op.
+
+set -euo pipefail
+
+RELAY_DIR="${HAPAX_RELAY_DIR:-$HOME/.cache/hapax/relay}"
+
+usage() {
+  echo "usage: hapax-relay-retire <role|session> [--reason TEXT]" >&2
+  echo "  Marks the relay YAML for <role> as retired." >&2
+  echo "  Files checked: <role>-status.yaml, <role>.yaml" >&2
+}
+
+ROLE=""
+REASON="session exited"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reason) REASON="${2:-session exited}"; shift 2 ;;
+    --reason=*) REASON="${1#--reason=}"; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) ROLE="$1"; shift ;;
+  esac
+done
+
+if [ -z "$ROLE" ]; then
+  usage
+  exit 1
+fi
+
+retire_yaml() {
+  local yaml_file="$1"
+  [ -f "$yaml_file" ] || return 0
+
+  if grep -qiE '^status:\s*(retired|superseded|closed)' "$yaml_file" 2>/dev/null; then
+    return 0
+  fi
+
+  local now
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local tmp="${yaml_file}.retire-tmp"
+
+  {
+    cat "$yaml_file"
+    printf 'status: retired\n'
+    printf 'retired_reason: %s\n' "$REASON"
+    printf 'retired_at: %s\n' "'$now'"
+  } > "$tmp"
+  mv -f "$tmp" "$yaml_file"
+}
+
+for candidate in "$RELAY_DIR/${ROLE}-status.yaml" "$RELAY_DIR/${ROLE}.yaml"; do
+  retire_yaml "$candidate"
+done
