@@ -31,6 +31,8 @@ EFFECT_DRIFT_STATE_JSON = Path("/dev/shm/hapax-visual/effect-drift-state.json")
 SUMMARY_ROOT = Path.home() / ".cache/hapax/screenshots/paired-fx-audit/effect-permutation-bank"
 LOCK_PATH = Path.home() / ".cache/hapax/locks/live-effect-permutation-audit.lock"
 NON_AUTONOMOUS_EFFECTS = {"solid"}
+CONTROL_NODE_IDS = {"fb", "post"}
+SLOTDRIFT_NODE_PREFIX = re.compile(r"^slot\d+_\d+_(?P<shader>.+)$")
 _CLEANED_UP = False
 _LOCK_FH = None
 
@@ -320,6 +322,46 @@ def validate_sets(shader_table: dict[str, dict[str, object]]) -> list[dict[str, 
     return reports
 
 
+def canonical_effect_node_id(node_id: str) -> str:
+    """Return the shader identity for a generated SlotDrift pipeline node.
+
+    SlotDrift emits runtime lineage in node IDs such as
+    ``slot0_2_chromatic_aberration``. Audit coverage is about the shader
+    vocabulary member, not that generated slot position, so strip only the
+    generated ``slot<slot>_<index>_`` prefix and preserve shader names that
+    themselves contain underscores.
+    """
+
+    match = SLOTDRIFT_NODE_PREFIX.match(node_id)
+    if match:
+        return match.group("shader")
+    return node_id
+
+
+def plan_anchor_id(entry: object) -> str | None:
+    if not isinstance(entry, dict):
+        return None
+    graph_motif = entry.get("graph_motif")
+    if isinstance(graph_motif, str) and graph_motif:
+        return canonical_effect_node_id(graph_motif)
+    node_id = entry.get("node_id")
+    if isinstance(node_id, str) and node_id:
+        return canonical_effect_node_id(node_id)
+    return None
+
+
+def plan_anchor_ids_from_passes(passes: object) -> set[str]:
+    if not isinstance(passes, list):
+        return set()
+    anchors: set[str] = set()
+    for entry in passes:
+        anchor = plan_anchor_id(entry)
+        if anchor is None or anchor in CONTROL_NODE_IDS:
+            continue
+        anchors.add(anchor)
+    return anchors
+
+
 def write_dropin(spec: PermutationSet) -> None:
     DROPIN.parent.mkdir(parents=True, exist_ok=True)
     effects = ",".join(spec.effects)
@@ -401,19 +443,25 @@ def wait_for_plan_subset(spec: PermutationSet, timeout_s: float = 20.0) -> list[
     allowed = set(spec.effects) | {"fb", "post"}
     deadline = time.monotonic() + timeout_s
     last_nodes: list[str] = []
+    last_canonical_nodes: list[str] = []
+    last_anchors: set[str] = set()
     while time.monotonic() < deadline:
         if PLAN_JSON.exists():
             try:
                 raw = json.loads(PLAN_JSON.read_text(encoding="utf-8"))
                 passes = raw["targets"]["main"]["passes"]
                 last_nodes = [entry["node_id"] for entry in passes]
-                if last_nodes and set(last_nodes).issubset(allowed):
+                last_canonical_nodes = [canonical_effect_node_id(node) for node in last_nodes]
+                last_anchors = plan_anchor_ids_from_passes(passes)
+                if last_nodes and last_anchors and last_anchors.issubset(allowed):
                     return last_nodes
             except (KeyError, json.JSONDecodeError, OSError):
                 pass
         time.sleep(0.5)
     raise RuntimeError(
-        f"plan did not constrain to {spec.label}; last nodes={last_nodes}, allowed={sorted(allowed)}"
+        f"plan did not constrain to {spec.label}; "
+        f"last nodes={last_nodes}, canonical={last_canonical_nodes}, "
+        f"anchors={sorted(last_anchors)}, allowed={sorted(allowed)}"
     )
 
 
@@ -448,16 +496,55 @@ def observed_nodes_from_audit_dir(audit_dir: Path) -> set[str]:
     return observed
 
 
+def observed_node_lineage_from_audit_dir(audit_dir: Path) -> dict[str, list[str]]:
+    lineage: dict[str, set[str]] = {}
+    for state_path in sorted(audit_dir.glob("effect_state-*.json")):
+        for canonical, raw_nodes in observed_node_lineage_from_effect_state_file(
+            state_path
+        ).items():
+            lineage.setdefault(canonical, set()).update(raw_nodes)
+    return {canonical: sorted(raw_nodes) for canonical, raw_nodes in sorted(lineage.items())}
+
+
 def observed_nodes_from_effect_state_file(state_path: Path) -> set[str]:
+    return set(observed_node_lineage_from_effect_state_file(state_path))
+
+
+def observed_node_lineage_from_effect_state_file(state_path: Path) -> dict[str, set[str]]:
+    lineage: dict[str, set[str]] = {}
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return lineage
+    for entry in state.get("passes", []):
+        node_id = entry.get("node_id")
+        if not isinstance(node_id, str):
+            continue
+        canonical = canonical_effect_node_id(node_id)
+        if canonical in CONTROL_NODE_IDS:
+            continue
+        lineage.setdefault(canonical, set()).add(node_id)
+    return lineage
+
+
+def observed_anchor_ids_from_effect_state_file(state_path: Path) -> set[str]:
     observed: set[str] = set()
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return observed
     for entry in state.get("passes", []):
-        node_id = entry.get("node_id")
-        if isinstance(node_id, str) and node_id not in {"fb", "post"}:
-            observed.add(node_id)
+        anchor = plan_anchor_id(entry)
+        if anchor is None or anchor in CONTROL_NODE_IDS:
+            continue
+        observed.add(anchor)
+    return observed
+
+
+def observed_anchor_ids_from_audit_dir(audit_dir: Path) -> set[str]:
+    observed: set[str] = set()
+    for state_path in sorted(audit_dir.glob("effect_state-*.json")):
+        observed |= observed_anchor_ids_from_effect_state_file(state_path)
     return observed
 
 
@@ -472,17 +559,34 @@ def sample_runtime_effect_state(duration_s: float, interval_s: float = 1.0) -> s
 
 
 def plan_nodes() -> set[str]:
-    observed: set[str] = set()
+    return set(plan_node_lineage())
+
+
+def plan_anchors() -> set[str]:
     try:
         raw = json.loads(PLAN_JSON.read_text(encoding="utf-8"))
         passes = raw["targets"]["main"]["passes"]
     except (KeyError, json.JSONDecodeError, OSError):
-        return observed
+        return set()
+    return plan_anchor_ids_from_passes(passes)
+
+
+def plan_node_lineage() -> dict[str, list[str]]:
+    lineage: dict[str, set[str]] = {}
+    try:
+        raw = json.loads(PLAN_JSON.read_text(encoding="utf-8"))
+        passes = raw["targets"]["main"]["passes"]
+    except (KeyError, json.JSONDecodeError, OSError):
+        return {}
     for entry in passes:
         node_id = entry.get("node_id")
-        if isinstance(node_id, str) and node_id not in {"fb", "post"}:
-            observed.add(node_id)
-    return observed
+        if not isinstance(node_id, str):
+            continue
+        canonical = canonical_effect_node_id(node_id)
+        if canonical in CONTROL_NODE_IDS:
+            continue
+        lineage.setdefault(canonical, set()).add(node_id)
+    return {canonical: sorted(raw_nodes) for canonical, raw_nodes in sorted(lineage.items())}
 
 
 def main() -> int:
@@ -631,12 +735,22 @@ def main() -> int:
                     round_index=round_index,
                 )
                 print(audit_stdout)
-                round_observed = observed_nodes_from_audit_dir(audit_dir)
-                plan_observed = plan_nodes() & set(spec.effects)
+                round_lineage = observed_node_lineage_from_audit_dir(audit_dir)
+                round_observed = set(round_lineage)
+                round_anchor_observed = observed_anchor_ids_from_audit_dir(audit_dir)
+                plan_lineage = plan_node_lineage()
+                plan_observed = set(plan_lineage) & set(spec.effects)
+                plan_anchor_observed = plan_anchors() & set(spec.effects)
                 followup_observed = sample_runtime_effect_state(args.state_followup_s) & set(
                     spec.effects
                 )
-                round_total_observed = round_observed | plan_observed | followup_observed
+                round_total_observed = (
+                    round_observed
+                    | round_anchor_observed
+                    | plan_observed
+                    | plan_anchor_observed
+                    | followup_observed
+                )
                 observed |= round_total_observed
                 missing = sorted(set(spec.effects) - observed)
                 rounds.append(
@@ -644,7 +758,13 @@ def main() -> int:
                         "round": round_index,
                         "audit_dir": str(audit_dir),
                         "observed": sorted(round_observed),
+                        "observed_lineage": round_lineage,
+                        "observed_anchors": sorted(round_anchor_observed),
                         "observed_in_current_plan": sorted(plan_observed),
+                        "observed_current_plan_anchors": sorted(plan_anchor_observed),
+                        "observed_in_current_plan_lineage": {
+                            key: plan_lineage[key] for key in sorted(plan_observed)
+                        },
                         "observed_in_followup_state": sorted(followup_observed),
                         "observed_round_total": sorted(round_total_observed),
                         "observed_cumulative": sorted(observed),
@@ -677,6 +797,7 @@ def main() -> int:
                     "label": spec.label,
                     "seed": spec.seed,
                     "plan_nodes": nodes,
+                    "plan_canonical_nodes": [canonical_effect_node_id(node) for node in nodes],
                     "observed_effects": sorted(observed),
                     "missing_effects": missing_final,
                     "coverage_complete": not missing_final,
