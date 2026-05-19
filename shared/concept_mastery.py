@@ -153,3 +153,56 @@ class ConceptMastery:
         )
         obj._mastery = {k: float(v) for k, v in mastery.items()}
         return obj
+
+
+# ── ZPD affordance pressure signal ──────────────────────────────────
+
+ZPD_SIGNAL_FILE = SHM_DIR / "zpd-signal.json"
+
+
+def compute_zpd_affordance_pressure() -> dict[str, Any]:
+    """Compute affordance pressure from concept mastery state.
+
+    Reads concept mastery from SHM, computes the proportion of concepts
+    in ZPD range (ripe for explanation) and unknown range (high information
+    gap). Writes the signal to SHM for consumption by programme scoring
+    and content recruitment layers.
+
+    Returns a dict with zpd_concepts, unknown_concepts, zpd_pressure,
+    and unknown_pressure. Returns zero-pressure defaults if mastery
+    state is unavailable.
+    """
+    cm = ConceptMastery.read_shm()
+    if cm is None:
+        result: dict[str, Any] = {
+            "zpd_concepts": [],
+            "unknown_concepts": [],
+            "zpd_pressure": 0.0,
+            "unknown_pressure": 0.0,
+            "updated_at": time.time(),
+        }
+        _write_zpd_signal(result)
+        return result
+
+    all_concepts = cm.all_mastery()
+    total = len(all_concepts)
+    zpd = cm.zpd_concepts()
+    unknown = cm.unknown_concepts()
+
+    result = {
+        "zpd_concepts": zpd,
+        "unknown_concepts": unknown,
+        "zpd_pressure": len(zpd) / total if total > 0 else 0.0,
+        "unknown_pressure": len(unknown) / total if total > 0 else 0.0,
+        "updated_at": time.time(),
+    }
+    _write_zpd_signal(result)
+    return result
+
+
+def _write_zpd_signal(data: dict[str, Any]) -> None:
+    """Atomic write of ZPD signal to SHM."""
+    SHM_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = ZPD_SIGNAL_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(ZPD_SIGNAL_FILE)
