@@ -119,6 +119,43 @@ evidence:
       file. It does not skip or split tests; it avoids inheriting
       process-local image/font state from unrelated prior files in the same
       xdist worker.
+  - source: github_actions_merge_group
+    pr: 3459
+    run_id: 26069620227
+    merge_commit: 9c0d303b7b6cca3ed093a96b2cc440396962eec1
+    captured_at: 2026-05-19T01:30:22Z
+    summary: >-
+      Successful run after title-card setup consolidation showed duplicate
+      serial setup was no longer the dominant tail, but shard 4 remained a
+      runtime long pole because six slow no-blink compositor audit nodes were
+      still co-located as one whole-file shard unit.
+    selected_unit_counts:
+      "1": 509
+      "2": 509
+      "3": 509
+      "4": 509
+    shard_job_wall_seconds:
+      "1": 443
+      "2": 427
+      "3": 424
+      "4": 741
+    shard_call_duration_seconds:
+      "1": 174.34
+      "2": 145.16
+      "3": 152.42
+      "4": 582.89
+    shard_4_no_blink_call_seconds:
+      tests/studio_compositor/test_no_blink.py::test_stance_indicator_with_flash_event_no_blink: 77.90
+      tests/studio_compositor/test_no_blink.py::test_activity_header_with_flash_event_no_blink: 76.39
+      tests/studio_compositor/test_no_blink.py::test_stance_indicator_quiet_state_no_blink: 38.81
+      tests/studio_compositor/test_no_blink.py::test_thinking_indicator_empty_breath_no_blink: 34.89
+      tests/studio_compositor/test_no_blink.py::test_activity_header_quiet_state_no_blink: 30.15
+      tests/studio_compositor/test_no_blink.py::test_token_pole_idle_no_blink: 29.77
+    duration_artifacts_uploaded:
+      - pytest-node-durations-shard-1-of-4
+      - pytest-node-durations-shard-2-of-4
+      - pytest-node-durations-shard-3-of-4
+      - pytest-node-durations-shard-4-of-4
 prediction_receipts:
   before_refresh:
     source: local_merge_group_collect_with_ci_filters
@@ -159,6 +196,61 @@ prediction_receipts:
     conclusion: >-
       Exact-node splits redistribute the observed shard-4 long pole across all
       four shards while keeping deterministic greedy placement.
+  before_no_blink_refresh:
+    source: local_merge_group_collect_with_ci_filters
+    captured_at: 2026-05-19T01:30:22Z
+    collected_shard_unit_count: 2036
+    predicted_shard_weights:
+      "1": 13867
+      "2": 13866
+      "3": 13866
+      "4": 13866
+    predicted_unit_counts:
+      "1": 509
+      "2": 509
+      "3": 509
+      "4": 509
+    selected_no_blink_units:
+      "4":
+        - tests/studio_compositor/test_no_blink.py
+    observed_call_seconds_from_run_26069620227:
+      "1": 174.34
+      "2": 145.16
+      "3": 152.42
+      "4": 582.89
+    conclusion: >-
+      Current weights still co-locate every no-blink audit node on shard 4 as a
+      single file unit, so the predicted balance hides a real xdist loadfile
+      long pole.
+  after_no_blink_refresh:
+    source: local_merge_group_collect_with_ci_filters
+    captured_at: 2026-05-19T01:30:22Z
+    collected_shard_unit_count: 2042
+    predicted_shard_weights:
+      "1": 20840
+      "2": 20839
+      "3": 20839
+      "4": 20839
+    predicted_unit_counts:
+      "1": 511
+      "2": 510
+      "3": 510
+      "4": 511
+    selected_no_blink_units:
+      "1":
+        - tests/studio_compositor/test_no_blink.py::test_stance_indicator_with_flash_event_no_blink
+      "2":
+        - tests/studio_compositor/test_no_blink.py::test_activity_header_with_flash_event_no_blink
+        - tests/studio_compositor/test_no_blink.py::test_default_threshold_matches_operator_heuristic
+      "3":
+        - tests/studio_compositor/test_no_blink.py::test_token_pole_idle_no_blink
+      "4":
+        - tests/studio_compositor/test_no_blink.py::test_stance_indicator_quiet_state_no_blink
+        - tests/studio_compositor/test_no_blink.py::test_thinking_indicator_empty_breath_no_blink
+        - tests/studio_compositor/test_no_blink.py::test_activity_header_quiet_state_no_blink
+    conclusion: >-
+      Exact-node no-blink splits prevent all six slow blink-audit nodes from
+      being selected into one shard while preserving full release coverage.
 split_groups:
   tests/studio_compositor/test_compositor_wiring.py::TestStudioCompositorBudgetWiring:
     collected_test_equivalent_weight: 4200
@@ -238,6 +330,60 @@ split_groups:
       stateful_test_risk: >-
         Low: this is a read-only source tree scan; the remaining unit tests in
         the file use tmp_path fixtures.
+  tests/studio_compositor/test_no_blink.py::test_stance_indicator_with_flash_event_no_blink:
+    collected_test_equivalent_weight: 7790
+    evidence:
+      collected_tests_after_deselect: 1
+      latest_visible_call_seconds: 77.90
+      source_run_id: 26069620227
+      stateful_test_risk: >-
+        Low: this renders one fresh StanceIndicator ward under patched
+        read-only state and has no file-level fixture coupling.
+  tests/studio_compositor/test_no_blink.py::test_activity_header_with_flash_event_no_blink:
+    collected_test_equivalent_weight: 7639
+    evidence:
+      collected_tests_after_deselect: 1
+      latest_visible_call_seconds: 76.39
+      source_run_id: 26069620227
+      stateful_test_risk: >-
+        Low: this renders one fresh ActivityHeader ward under patched
+        read-only state and has no file-level fixture coupling.
+  tests/studio_compositor/test_no_blink.py::test_stance_indicator_quiet_state_no_blink:
+    collected_test_equivalent_weight: 3881
+    evidence:
+      collected_tests_after_deselect: 1
+      latest_visible_call_seconds: 38.81
+      source_run_id: 26069620227
+      stateful_test_risk: >-
+        Low: this renders one fresh StanceIndicator ward under patched
+        read-only state and has no file-level fixture coupling.
+  tests/studio_compositor/test_no_blink.py::test_thinking_indicator_empty_breath_no_blink:
+    collected_test_equivalent_weight: 3489
+    evidence:
+      collected_tests_after_deselect: 1
+      latest_visible_call_seconds: 34.89
+      source_run_id: 26069620227
+      stateful_test_risk: >-
+        Low: this renders one fresh ThinkingIndicator ward and does not depend
+        on file-level shared state.
+  tests/studio_compositor/test_no_blink.py::test_activity_header_quiet_state_no_blink:
+    collected_test_equivalent_weight: 3015
+    evidence:
+      collected_tests_after_deselect: 1
+      latest_visible_call_seconds: 30.15
+      source_run_id: 26069620227
+      stateful_test_risk: >-
+        Low: this renders one fresh ActivityHeader ward under patched
+        read-only state and has no file-level fixture coupling.
+  tests/studio_compositor/test_no_blink.py::test_token_pole_idle_no_blink:
+    collected_test_equivalent_weight: 2977
+    evidence:
+      collected_tests_after_deselect: 1
+      latest_visible_call_seconds: 29.77
+      source_run_id: 26069620227
+      stateful_test_risk: >-
+        Low: this test seeds its particle randomness explicitly and renders one
+        fresh TokenPole ward without relying on surrounding file state.
 files:
   tests/studio_compositor/test_compositor_wiring.py:
     collected_test_equivalent_weight: 9000
@@ -273,8 +419,14 @@ files:
   tests/studio_compositor/test_no_blink.py:
     collected_test_equivalent_weight: 900
     evidence:
-      shard: 2
-      top_25_duration_seconds_for_file: 16.41
+      shard: 4
+      top_25_duration_seconds_for_file: 287.91
+      source_run_id: 26069620227
+      note: >-
+        Six slow blink-audit nodes are split exactly above so this file no
+        longer travels as one coarse shard unit under xdist loadfile
+        scheduling. Remaining unsplit nodes fall back to exact collected
+        nodeids by the partial-split policy.
   tests/scripts/test_hapax_pipewire_graph_cli.py:
     collected_test_equivalent_weight: 800
     evidence:

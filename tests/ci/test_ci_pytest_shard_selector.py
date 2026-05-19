@@ -17,6 +17,8 @@ from scripts.ci_select_pytest_shard import (
     selected_paths,
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def test_parse_collect_output_counts_tests_by_file() -> None:
     collected = "\n".join(
@@ -151,6 +153,47 @@ def test_unsplit_nodes_from_partially_split_file_use_exact_nodeid_not_whole_file
     assert "tests/slow.py::TestSlowA" in all_selected
     assert "tests/slow.py::TestNewClass::test_new_path" in all_selected
     assert "tests/slow.py" not in all_selected
+
+
+def test_checked_in_no_blink_weights_split_slow_nodes_across_shards() -> None:
+    collected = "\n".join(
+        [
+            "tests/studio_compositor/test_no_blink.py::test_activity_header_quiet_state_no_blink",
+            "tests/studio_compositor/test_no_blink.py::test_activity_header_with_flash_event_no_blink",
+            "tests/studio_compositor/test_no_blink.py::test_stance_indicator_quiet_state_no_blink",
+            "tests/studio_compositor/test_no_blink.py::test_stance_indicator_with_flash_event_no_blink",
+            "tests/studio_compositor/test_no_blink.py::test_thinking_indicator_empty_breath_no_blink",
+            "tests/studio_compositor/test_no_blink.py::test_token_pole_idle_no_blink",
+            "tests/studio_compositor/test_no_blink.py::test_default_threshold_matches_operator_heuristic",
+        ]
+    )
+    runtime_config = load_runtime_weight_config(
+        REPO_ROOT / "config/ci/python-test-runtime-weights.yaml"
+    )
+
+    plan = build_shard_plan_from_collect(collected, runtime_config, shard_count=4)
+    shard_paths = {
+        summary.index: selected_paths(plan, summary.index, runtime_config.execution_order_first)
+        for summary in plan
+    }
+    all_selected = [path for paths in shard_paths.values() for path in paths]
+    slow_node_shards = {
+        path: shard
+        for shard, paths in shard_paths.items()
+        for path in paths
+        if path.endswith("_no_blink")
+    }
+
+    assert "tests/studio_compositor/test_no_blink.py" not in all_selected
+    assert set(slow_node_shards) == {
+        "tests/studio_compositor/test_no_blink.py::test_activity_header_quiet_state_no_blink",
+        "tests/studio_compositor/test_no_blink.py::test_activity_header_with_flash_event_no_blink",
+        "tests/studio_compositor/test_no_blink.py::test_stance_indicator_quiet_state_no_blink",
+        "tests/studio_compositor/test_no_blink.py::test_stance_indicator_with_flash_event_no_blink",
+        "tests/studio_compositor/test_no_blink.py::test_thinking_indicator_empty_breath_no_blink",
+        "tests/studio_compositor/test_no_blink.py::test_token_pole_idle_no_blink",
+    }
+    assert len(set(slow_node_shards.values())) == 4
 
 
 def test_load_runtime_weights_accepts_explicit_weight_alias(tmp_path: Path) -> None:
