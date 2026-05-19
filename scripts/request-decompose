@@ -103,9 +103,9 @@ def _find_undecomposed_requests() -> list[Path]:
 def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
     """Call LLM to decompose. Returns None on failure (fail-closed)."""
     try:
-        from shared.config import get_model
+        from shared.config import MODELS
 
-        model = get_model("balanced")
+        model = MODELS.get("balanced", "balanced")
     except Exception:
         model = "balanced"
 
