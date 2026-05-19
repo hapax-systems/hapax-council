@@ -115,6 +115,7 @@ is_gemini_idle() {
 # ─── Lane discovery ──────────────────────────────────────────────────────────
 
 declare -A LANES  # session_name -> platform
+lane_count=0
 
 for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | sort); do
     case "$session" in
@@ -125,20 +126,59 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | sort); do
                 [ "$lane" = "$skip" ] && continue 2
             done
             LANES["$session"]="claude"
+            lane_count=$((lane_count + 1))
             ;;
         hapax-codex-*)
             lane="${session#hapax-codex-}"
             LANES["$session"]="codex"
+            lane_count=$((lane_count + 1))
             ;;
         hapax-gemini-*)
             lane="${session#hapax-gemini-}"
             LANES["$session"]="gemini"
+            lane_count=$((lane_count + 1))
             ;;
     esac
 done
 
-if [ ${#LANES[@]} -eq 0 ]; then
-    log "no lanes found"
+if [ "$lane_count" -eq 0 ]; then
+    log "no lanes found — checking for offered work to launch lanes"
+
+    offered_count=$(grep -rl '^status: offered' "$TASK_ROOT/" 2>/dev/null | wc -l)
+    if [ "$offered_count" -gt 0 ]; then
+        cooldown_file="$STATE_DIR/_lane_launch.last"
+        launch_cooldown=600  # 10 min between launch attempts
+        if [ -f "$cooldown_file" ]; then
+            last_launch=$(cat "$cooldown_file")
+            elapsed=$((now - last_launch))
+            if [ "$elapsed" -lt "$launch_cooldown" ]; then
+                log "lane launch in cooldown (${elapsed}s / ${launch_cooldown}s)"
+                exit 0
+            fi
+        fi
+
+        log "LAUNCHING: $offered_count offered tasks, no lanes running"
+        echo "$now" > "$cooldown_file"
+
+        CLAUDE_LAUNCHER="${HOME}/.local/bin/hapax-claude"
+        if [ -x "$CLAUDE_LAUNCHER" ]; then
+            for role in beta; do
+                if [ -d "${HOME}/projects/hapax-council--${role}" ]; then
+                    log "launching lane: $role"
+                    "$CLAUDE_LAUNCHER" --role "$role" --terminal tmux 2>/dev/null || true
+                    curl -sf -d "Lane idle watchdog: launched $role (no lanes were running, $offered_count tasks offered)" \
+                        -H "Title: Lane auto-launched" \
+                        -H "Priority: default" \
+                        -H "Tags: rocket" \
+                        "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+                fi
+            done
+        else
+            log "WARN: hapax-claude launcher not found at $CLAUDE_LAUNCHER"
+        fi
+    else
+        log "no lanes and no offered tasks — nothing to launch"
+    fi
     exit 0
 fi
 
@@ -184,9 +224,9 @@ for session in "${!LANES[@]}"; do
     fi
 done
 
-log "scan: ${#LANES[@]} lanes, $active_count active, $idle_count idle past threshold"
+log "scan: $lane_count lanes, $active_count active, $idle_count idle past threshold"
 
-if [ ${#IDLE_LANES[@]} -eq 0 ]; then
+if [ "$idle_count" -eq 0 ]; then
     exit 0
 fi
 
@@ -330,21 +370,21 @@ for session in "${!IDLE_LANES[@]}"; do
 done
 
 if [ "$dispatched" -eq 0 ] && [ "$skipped_cooldown" -gt 0 ]; then
-    log "all ${#IDLE_LANES[@]} idle lanes in cooldown"
+    log "all $idle_count idle lanes in cooldown"
 fi
 
-log "dispatched $dispatched of ${#IDLE_LANES[@]} idle lanes"
+log "dispatched $dispatched of $idle_count idle lanes"
 
 # ─── Summary alert if many lanes idle ────────────────────────────────────────
 
-if [ ${#IDLE_LANES[@]} -ge 3 ]; then
+if [ "$idle_count" -ge 3 ]; then
     idle_summary=""
     for session in "${!IDLE_LANES[@]}"; do
         idle_s="${IDLE_LANES[$session]}"
         idle_summary+="$session(${idle_s}s) "
     done
-    log "WARNING: ${#IDLE_LANES[@]} lanes idle past threshold: $idle_summary"
-    curl -sf -d "Lane idle watchdog: ${#IDLE_LANES[@]} lanes idle — $idle_summary" \
+    log "WARNING: $idle_count lanes idle past threshold: $idle_summary"
+    curl -sf -d "Lane idle watchdog: $idle_count lanes idle — $idle_summary" \
         -H "Title: Multiple lanes idle" \
         -H "Priority: high" \
         -H "Tags: warning,robot" \
