@@ -42,6 +42,7 @@ def test_post_ir_detection(client, tmp_path):
     camera_state_file = tmp_path / "overhead-primary.json"
     assert state_file.exists()
     assert camera_state_file.exists()
+    assert (tmp_path / "cam_primary.json").exists()
     data = json.loads(state_file.read_text())
     assert data["role"] == "overhead"
     assert data["cam_id"] == "primary"
@@ -68,6 +69,7 @@ def test_post_ir_detection_with_secondary_cam_id(client, tmp_path):
     assert not (tmp_path / "overhead.json").exists()
     camera_state_file = tmp_path / "overhead-secondary.json"
     assert camera_state_file.exists()
+    assert (tmp_path / "cam_secondary.json").exists()
     data = json.loads(camera_state_file.read_text())
     assert data["role"] == "overhead"
     assert data["cam_id"] == "secondary"

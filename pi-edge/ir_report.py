@@ -29,6 +29,10 @@ def build_report(
     cadence_interval_s: float = 3.0,
     hand_semantics: dict | None = None,
     cam_id: str = "primary",
+    capture_ts: str = "",
+    grey_jpeg_b64: str = "",
+    platter_objects: list[dict[str, object]] | None = None,
+    platter_primary_object: dict[str, object] | None = None,
 ) -> IrDetectionReport:
     """Build detection report from inference results.
 
@@ -50,6 +54,7 @@ def build_report(
         role=role,
         cam_id=cam_id,
         ts=datetime.now(UTC).isoformat(),
+        capture_ts=capture_ts,
         motion_delta=round(motion_delta, 4),
         persons=[
             IrPerson(
@@ -73,6 +78,11 @@ def build_report(
         ],
         screens=[IrScreen(bbox=s.get("bbox", []), area_pct=s.get("area_pct", 0)) for s in screens],
         ir_brightness=int(np.mean(grey)),
+        frame_width=int(grey.shape[1]) if grey.ndim >= 2 else 0,
+        frame_height=int(grey.shape[0]) if grey.ndim >= 2 else 0,
+        grey_jpeg_b64=grey_jpeg_b64,
+        platter_objects=platter_objects or [],
+        platter_primary_object=platter_primary_object,
         inference_ms=inference_ms,
         biometrics=IrBiometrics(**biometrics_snapshot),
         cadence_state=cadence_state,

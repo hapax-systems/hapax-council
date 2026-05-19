@@ -58,6 +58,8 @@ async def receive_ir_detection(
         if cam_id == "primary":
             _write_json_atomic(state_dir / f"{role}.json", report.model_dump_json())
         _write_json_atomic(state_dir / f"{role}-{cam_id}.json", report.model_dump_json())
+        if role == "overhead" and cam_id in {"primary", "secondary"}:
+            _write_json_atomic(state_dir / f"cam_{cam_id}.json", report.model_dump_json())
     except OSError as exc:
         log.warning("Failed to write IR state for role=%s cam_id=%s", role, cam_id, exc_info=True)
         raise HTTPException(status_code=500, detail="State file write failed") from exc

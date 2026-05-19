@@ -60,11 +60,17 @@ class IrDetectionReport(BaseModel):
     role: str
     cam_id: str = "primary"
     ts: str
+    capture_ts: str = ""
     motion_delta: float = 0.0
     persons: list[IrPerson] = Field(default_factory=list)
     hands: list[IrHand] = Field(default_factory=list)
     screens: list[IrScreen] = Field(default_factory=list)
     ir_brightness: int = 0
+    frame_width: int = 0
+    frame_height: int = 0
+    grey_jpeg_b64: str = ""
+    platter_objects: list[dict[str, object]] = Field(default_factory=list)
+    platter_primary_object: dict[str, object] | None = None
     inference_ms: int = 0
     biometrics: IrBiometrics = Field(default_factory=IrBiometrics)
     # #143 — activity-gated cadence (cadence_controller).  Server-side fusion
