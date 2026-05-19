@@ -129,11 +129,20 @@ class TaskNote(BaseModel):
     task_id: str
     """Vault frontmatter `task_id`."""
 
+    title: str | None = None
+    """Human-readable task title from frontmatter, when present."""
+
     status: str
     """offered / claimed / in_progress / pr_open / done / refused / superseded / withdrawn."""
 
     automation_status: str | None = None
     """FULL_AUTO / CONDITIONAL / REFUSED / REMOVED lifecycle state, when present."""
+
+    priority: str | None = None
+    """Priority bucket such as p0/p1/p2."""
+
+    wsjf: float | None = None
+    """WSJF score, when parseable."""
 
     assigned_to: str | None = None
     """Session role currently owning the task ("unassigned" sentinel allowed)."""
@@ -141,5 +150,8 @@ class TaskNote(BaseModel):
     claimed_at: datetime | None = None
     branch: str | None = None
     pr: int | None = None
+    parent_plan: str | None = None
+    parent_spec: str | None = None
+    tags: list[str] = Field(default_factory=list)
     created_at: datetime | None = None
     updated_at: datetime | None = None
