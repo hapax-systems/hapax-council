@@ -315,7 +315,17 @@ def decide_request(
         elif status != "fulfilled" and not (set(fulfilling) & explicit_fulfillment_tasks):
             reason = "no_fulfilling_task_evidence"
         else:
-            reason = "eligible"
+            # AC gate: check request-level acceptance criteria before allowing closure
+            request_text = request_note.path.read_text(encoding="utf-8") if request_note.path.exists() else ""
+            import re as _re
+            _ac_unchecked = _re.findall(r"^- \[ \]", request_text, _re.MULTILINE)
+            _ac_checked = _re.findall(r"^- \[x\]", request_text, _re.MULTILINE)
+            if _ac_unchecked and not _ac_checked:
+                reason = "request_ac_all_unchecked"
+            elif _ac_unchecked:
+                reason = "request_ac_incomplete"
+            else:
+                reason = "eligible"
 
     return ReconcileDecision(
         request_id=request_id,
