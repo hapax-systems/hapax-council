@@ -677,6 +677,62 @@ def create_interview_agent(model_alias: str = "balanced") -> Agent[InterviewDeps
         return f"Topic '{topic}' marked complete. All topics explored!"
 
     @agent.tool
+    async def branch_follow_up(
+        ctx: RunContext[InterviewDeps],
+        dimension: str,
+        topic: str,
+        rationale: str,
+        question_seed: str,
+        depth: str = "deep",
+    ) -> str:
+        """Insert an ad-hoc follow-up topic before the next planned topic.
+
+        Use this when the operator's answer reveals an interesting thread worth
+        chasing immediately, without losing the rest of the plan.  The new topic
+        is inserted at the front of the remaining (unexplored) queue.
+
+        Args:
+            dimension: Profile dimension for this follow-up.
+            topic: Short label for the follow-up topic (must be unique).
+            rationale: Why this thread is worth pursuing now.
+            question_seed: Opening question for the follow-up.
+            depth: One of surface, deep, challenge.  Defaults to deep.
+        """
+        valid_depths = ("surface", "deep", "challenge")
+        if depth not in valid_depths:
+            return f"Invalid depth '{depth}'. Must be one of: {', '.join(valid_depths)}"
+
+        # Prevent duplicate topic names
+        existing_names = {t.topic for t in ctx.deps.state.plan.topics}
+        if topic in existing_names:
+            return f"Topic '{topic}' already exists in the plan."
+
+        new_topic = InterviewTopic(
+            dimension=dimension,
+            topic=topic,
+            rationale=rationale,
+            question_seed=question_seed,
+            depth=depth,  # type: ignore[arg-type]
+        )
+
+        # Find insertion point: right after the last explored topic
+        plan_topics = ctx.deps.state.plan.topics
+        explored = ctx.deps.state.topics_explored
+        insert_idx = 0
+        for i, t in enumerate(plan_topics):
+            if t.topic in explored:
+                insert_idx = i + 1
+
+        plan_topics.insert(insert_idx, new_topic)
+
+        remaining = [t for t in plan_topics if t.topic not in explored]
+        return (
+            f"Inserted follow-up topic '{topic}' ({dimension}, {depth}) "
+            f"at position {insert_idx}. {len(remaining)} topics remaining. "
+            f"Next: {remaining[0].topic}"
+        )
+
+    @agent.tool
     async def get_interview_progress(ctx: RunContext[InterviewDeps]) -> str:
         """Get current interview progress summary."""
         state = ctx.deps.state
