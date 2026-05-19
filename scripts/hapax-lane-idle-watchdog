@@ -28,6 +28,8 @@ NTFY_TOPIC="${HAPAX_NTFY_TOPIC:-hapax}"
 NTFY_URL="${HAPAX_NTFY_URL:-http://localhost:8092}"
 CLAUDE_SEND="${HOME}/projects/hapax-council/scripts/hapax-claude-send"
 CODEX_SEND="${HOME}/projects/hapax-council/scripts/hapax-codex-send"
+CC_CLAIM="${HOME}/.local/bin/cc-claim"
+METHODOLOGY_DISPATCH="${HOME}/.local/bin/hapax-methodology-dispatch"
 
 # Skip alpha (integrator, always has operator) and RTE
 SKIP_LANES="${HAPAX_IDLE_SKIP_LANES:-alpha}"
@@ -190,6 +192,38 @@ fi
 
 # ─── Dispatch ALL idle lanes past cooldown ──────────────────────────────────
 
+pick_next_offered() {
+    local skip_lane="$1"
+    if [ ! -d "$TASK_ROOT" ]; then
+        return 0
+    fi
+    # Find offered+unassigned tasks, sort by WSJF descending, return top task_id
+    python3 -c "
+import os, re, sys
+from pathlib import Path
+task_root = Path('$TASK_ROOT')
+offered = []
+for f in task_root.glob('*.md'):
+    text = f.read_text()
+    status_m = re.search(r'^status:\s*(\S+)', text, re.M)
+    assigned_m = re.search(r'^assigned_to:\s*(.+)', text, re.M)
+    wsjf_m = re.search(r'^wsjf:\s*(\S+)', text, re.M)
+    if not status_m or status_m.group(1) != 'offered':
+        continue
+    assigned = (assigned_m.group(1).strip() if assigned_m else 'unassigned')
+    if assigned != 'unassigned':
+        continue
+    wsjf = float(wsjf_m.group(1)) if wsjf_m else 0
+    # Extract task_id (filename minus trailing descriptor)
+    task_id_m = re.match(r'^([a-zA-Z0-9_-]+?)(?:-[A-Z].*)?$', f.stem)
+    task_id = task_id_m.group(1) if task_id_m else f.stem
+    offered.append((wsjf, task_id, f.stem))
+offered.sort(reverse=True)
+if offered:
+    print(offered[0][2])
+" 2>/dev/null
+}
+
 find_claimed_task() {
     local assignee="$1"
     if [ -d "$TASK_ROOT" ]; then
@@ -238,8 +272,24 @@ for session in "${!IDLE_LANES[@]}"; do
         dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with an active task: $claimed. Resume work immediately. Ship a PR and cc-close --pr N after merge."
         dispatch_target="$claimed"
     else
-        dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with no active task. Do not claim work from the pool. Wait for an explicit parent/RTE assignment launched through hapax-methodology-dispatch --launch."
-        dispatch_target="governed-hold"
+        # Pick next WSJF task from offered queue and claim it for this lane
+        next_task=$(pick_next_offered "$lane")
+        if [ -n "$next_task" ]; then
+            task_title=$(grep -m1 "^title:" "$TASK_ROOT/${next_task}"*.md 2>/dev/null | sed 's/^title:[[:space:]]*//' | head -c 80)
+            log "CLAIMING $next_task for $lane ($platform)"
+            if HAPAX_AGENT_ROLE="$lane" "$CC_CLAIM" "$next_task" 2>/dev/null; then
+                dispatch_msg="IDLE WATCHDOG: Claimed task $next_task for you. Title: ${task_title:-unknown}. Read the task note at ~/Documents/Personal/20-projects/hapax-cc-tasks/active/ and begin work immediately. Ship a PR and cc-close --pr N after merge."
+                dispatch_target="$next_task"
+            else
+                log "CLAIM FAILED for $next_task -> $lane"
+                dispatch_msg="IDLE WATCHDOG: Tried to claim $next_task but cc-claim failed. Check the task queue manually: ls ~/Documents/Personal/20-projects/hapax-cc-tasks/active/"
+                dispatch_target="claim-failed"
+            fi
+        else
+            log "NO OFFERED TASKS for $lane — queue empty"
+            dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. No offered tasks in queue. Waiting for intake pipeline to produce work."
+            dispatch_target="queue-empty"
+        fi
     fi
 
     send_success=false
