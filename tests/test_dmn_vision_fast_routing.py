@@ -5,7 +5,7 @@ route through Gemini 3 Flash with `media_resolution="low"` (280 tokens, ~
 $0.00014/frame) for the price-performance leader on 10fps vision.
 
 Pinned invariants:
-  * `MODELS["vision-fast"]` resolves to `gemini-3-flash-preview`.
+  * `MODELS["vision-fast"]` resolves to `gemini-flash` (LiteLLM route name).
   * The DMN multimodal call site uses `model=MODELS["vision-fast"]`.
   * The DMN multimodal call site passes BOTH `budget_tokens: 0` AND
     `media_resolution: "low"` in `extra_body`. Removing either breaks the
@@ -19,10 +19,10 @@ import inspect
 from shared.config import MODELS
 
 
-def test_vision_fast_alias_resolves_to_gemini_3_flash_preview() -> None:
-    """Pin: the vision route lives on Gemini 3 Flash preview, not the
-    older Gemini Flash 2.5. Vendor migration must update this constant."""
-    assert MODELS["vision-fast"] == "gemini-3-flash-preview"
+def test_vision_fast_alias_resolves_to_gemini_flash() -> None:
+    """Pin: vision-fast uses the gemini-flash LiteLLM route (which maps
+    to gemini-3-flash-preview under the hood)."""
+    assert MODELS["vision-fast"] == "gemini-flash"
 
 
 def test_dmn_multimodal_call_uses_vision_fast_route() -> None:

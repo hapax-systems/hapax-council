@@ -404,8 +404,9 @@ def compose_narrative(
     if llm_call is None:
         llm_call = _call_llm_grounded
 
+    timeout = 90.0 if segment_mode else 30.0
     try:
-        polished = llm_call(prompt=prompt, seed=seed, max_tokens=max_tokens)
+        polished = llm_call(prompt=prompt, seed=seed, max_tokens=max_tokens, timeout_s=timeout)
     except Exception as exc:
         log.warning("autonomous_narrative LLM call failed: %s", exc)
         return None
@@ -880,14 +881,17 @@ def _call_llm_grounded(
     prompt: str,
     seed: str,
     max_tokens: int = _GROUNDED_MAX_TOKENS,
+    timeout_s: float = 30.0,
 ) -> str | None:
     """Production LLM call via resident Command-R on TabbyAPI.
 
     Grounding acts stay on the resident local grounded model, not cloud,
     not LiteLLM fallback, and not a model-swapped TabbyAPI process.
 
-    ``max_tokens`` is elevated during segment mode (500 vs 220) so the
-    host prompt can produce 3-6 sentences of professional delivery.
+    ``max_tokens`` is elevated during segment mode (1200 vs 220) so the
+    host prompt can produce a full segment of professional delivery.
+    ``timeout_s`` is elevated to 90s for segment mode (large prompt +
+    high max_tokens requires longer prefill and generation).
     """
 
     def _one_call(temp: float) -> str | None:
@@ -895,6 +899,7 @@ def _call_llm_grounded(
             prompt,
             max_tokens=max_tokens,
             temperature=temp,
+            timeout_s=timeout_s,
         )
 
     try:
