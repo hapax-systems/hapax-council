@@ -147,6 +147,10 @@ def test_python_test_throughput_evidence_records_gated_decision() -> None:
         evidence["rollout_policy"]["merge_group_duration_artifact_schema"]
         == "pytest_node_durations/v1"
     )
+    assert (
+        evidence["rollout_policy"]["merge_group_execution_order_first_source"]
+        == "config/ci/python-test-runtime-weights.yaml"
+    )
     assert evidence["rollout_policy"]["merge_group_uv_policy"] == "frozen_sync_then_no_sync_run"
     assert evidence["rollout_policy"]["push_main"] == "full_pytest"
     assert (
@@ -164,6 +168,13 @@ def test_python_runtime_weights_record_merge_queue_evidence() -> None:
     assert weights["assignment_policy"]["selector"] == "scripts/ci_select_pytest_shard.py"
     assert weights["assignment_policy"]["unit"] == "file_or_configured_pytest_node_prefix"
     assert weights["assignment_policy"]["partially_split_file_fallback"] == "exact_collected_nodeid"
+    assert (
+        weights["assignment_policy"]["execution_order_first"]
+        == "exact_unit_priority_within_selected_shard"
+    )
+    assert weights["execution_order_first"] == [
+        "tests/studio_compositor/cbip/test_recognizability_harness.py"
+    ]
     first_pass_evidence = weights["evidence"][0]
     assert first_pass_evidence["pr"] == 3444
     assert first_pass_evidence["run_id"] == 26035987726
@@ -191,6 +202,18 @@ def test_python_runtime_weights_record_merge_queue_evidence() -> None:
         "2": 265.57,
         "3": 263.52,
         "4": 415.06,
+    }
+    assert recent_evidence[26067343259]["duration_artifacts_uploaded"] == [
+        "pytest-node-durations-shard-1-of-4",
+        "pytest-node-durations-shard-2-of-4",
+        "pytest-node-durations-shard-3-of-4",
+        "pytest-node-durations-shard-4-of-4",
+    ]
+    assert recent_evidence[26067343259]["selected_unit_counts"] == {
+        "1": 508,
+        "2": 509,
+        "3": 510,
+        "4": 509,
     }
     predictions = weights["prediction_receipts"]
     assert predictions["before_refresh"]["predicted_shard_weights"] == {

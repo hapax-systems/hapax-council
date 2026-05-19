@@ -13,6 +13,9 @@ assignment_policy:
     - current_shard_file_count
     - shard_index
   partially_split_file_fallback: exact_collected_nodeid
+  execution_order_first: exact_unit_priority_within_selected_shard
+execution_order_first:
+  - tests/studio_compositor/cbip/test_recognizability_harness.py
 evidence:
   - source: github_actions_merge_group
     pr: 3444
@@ -81,6 +84,41 @@ evidence:
       tests/studio_compositor/test_compositor_wiring.py::TestStartLayoutOnly::test_start_layout_only_wires_autosaver_and_file_watcher: 11.93
       tests/studio_compositor/test_compositor_wiring.py::TestStartDelegatesThroughStartLayoutOnly::test_start_invokes_layout_loader_before_lifecycle: 11.54
       tests/test_forbidden_payment_imports.py::TestForbiddenPaymentImportGuard::test_codebase_has_no_forbidden_payment_imports: 8.47
+  - source: github_actions_merge_group
+    pr: 3457
+    run_id: 26067343259
+    merge_commit: 76cebd73ada667504b0bda0593a9f3cd6277135f
+    captured_at: 2026-05-19T00:08:26Z
+    summary: >-
+      Duration artifact generation succeeded for all four shards, including
+      the failed shard 3 upload, proving the artifact path is not the failure
+      source. Shard 3 exposed a process-state-sensitive failure pattern in the
+      PIL recognizability harness (`DecompressionBombError`) after it ran later
+      in a co-located xdist worker.
+    conclusion: >-
+      Keep coverage unchanged and order the recognizability harness first
+      within whichever shard selects it, avoiding inherited worker process
+      state while preserving the runtime-weighted assignment.
+    selected_unit_counts:
+      "1": 508
+      "2": 509
+      "3": 510
+      "4": 509
+    shard_job_wall_seconds:
+      "1": 427
+      "2": 434
+      "3": 420
+      "4": 487
+    duration_artifacts_uploaded:
+      - pytest-node-durations-shard-1-of-4
+      - pytest-node-durations-shard-2-of-4
+      - pytest-node-durations-shard-3-of-4
+      - pytest-node-durations-shard-4-of-4
+    stateful_test_risk: >-
+      Low: this is an ordering-only policy for one fast synthetic-PIL test
+      file. It does not skip or split tests; it avoids inheriting
+      process-local image/font state from unrelated prior files in the same
+      xdist worker.
 prediction_receipts:
   before_refresh:
     source: local_merge_group_collect_with_ci_filters

@@ -23,6 +23,7 @@ class WeightedTestFile:
 class RuntimeWeightConfig:
     file_weights: Mapping[str, float]
     split_weights: Mapping[str, float]
+    execution_order_first: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -104,7 +105,20 @@ def load_runtime_weight_config(path: Path) -> RuntimeWeightConfig:
             raise ValueError(f"{path}: {node_prefix} weight must be positive")
         split_weights[node_prefix] = weight
 
-    return RuntimeWeightConfig(file_weights=weights, split_weights=split_weights)
+    execution_order_first_loaded = loaded.get("execution_order_first", [])
+    if not isinstance(execution_order_first_loaded, list):
+        raise ValueError(f"{path}: execution_order_first must be a list")
+    execution_order_first: list[str] = []
+    for unit in execution_order_first_loaded:
+        if not isinstance(unit, str):
+            raise ValueError(f"{path}: execution_order_first entries must be strings")
+        execution_order_first.append(unit)
+
+    return RuntimeWeightConfig(
+        file_weights=weights,
+        split_weights=split_weights,
+        execution_order_first=tuple(execution_order_first),
+    )
 
 
 def _extract_weight(path: Path, test_path: str, spec: Any) -> int | float:
@@ -189,10 +203,25 @@ def _matching_split_prefix(nodeid: str, split_prefixes: list[str]) -> str | None
     return None
 
 
-def selected_paths(plan: tuple[ShardSummary, ...], shard: int) -> list[str]:
+def selected_paths(
+    plan: tuple[ShardSummary, ...],
+    shard: int,
+    execution_order_first: tuple[str, ...] = (),
+) -> list[str]:
     if shard < 1 or shard > len(plan):
         raise ValueError(f"shard must be between 1 and {len(plan)}")
-    return [item.path for item in plan[shard - 1].files]
+    paths = [item.path for item in plan[shard - 1].files]
+    if not execution_order_first:
+        return paths
+
+    priority = {path: index for index, path in enumerate(execution_order_first)}
+    return [
+        path
+        for _, path in sorted(
+            enumerate(paths),
+            key=lambda item: (priority.get(item[1], len(priority)), item[0]),
+        )
+    ]
 
 
 def write_plan(plan: tuple[ShardSummary, ...], stream: TextIO) -> None:
@@ -352,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
     plan = build_shard_plan_from_collect(collect_output, runtime_config, args.shards)
     write_plan(plan, sys.stderr)
 
-    for path in selected_paths(plan, args.shard):
+    for path in selected_paths(plan, args.shard, runtime_config.execution_order_first):
         print(path)
     return 0
 

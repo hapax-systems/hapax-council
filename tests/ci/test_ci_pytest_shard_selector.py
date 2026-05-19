@@ -82,6 +82,30 @@ def test_equal_weights_are_ordered_lexically_for_determinism() -> None:
     assert selected_paths(plan, 2) == ["tests/b.py"]
 
 
+def test_execution_order_first_reorders_selected_paths_without_changing_load() -> None:
+    plan = build_shard_plan(
+        {
+            "tests/a.py": 3,
+            "tests/b.py": 2,
+            "tests/state_sensitive.py": 1,
+        },
+        {},
+        shard_count=1,
+    )
+
+    assert [summary.load for summary in plan] == [6]
+    assert selected_paths(plan, 1) == [
+        "tests/a.py",
+        "tests/b.py",
+        "tests/state_sensitive.py",
+    ]
+    assert selected_paths(plan, 1, ("tests/state_sensitive.py",)) == [
+        "tests/state_sensitive.py",
+        "tests/a.py",
+        "tests/b.py",
+    ]
+
+
 def test_configured_split_groups_are_selected_as_node_prefix_units() -> None:
     collected = "\n".join(
         [
@@ -142,6 +166,8 @@ def test_load_runtime_weights_accepts_explicit_weight_alias(tmp_path: Path) -> N
                 "split_groups:",
                 "  tests/a.py::TestA:",
                 "    collected_test_equivalent_weight: 11",
+                "execution_order_first:",
+                "  - tests/b.py",
             ]
         ),
         encoding="utf-8",
@@ -151,6 +177,7 @@ def test_load_runtime_weights_accepts_explicit_weight_alias(tmp_path: Path) -> N
     assert load_runtime_weights(weights_path) == {"tests/a.py": 42.0, "tests/b.py": 3.5}
     assert runtime_config.file_weights == {"tests/a.py": 42.0, "tests/b.py": 3.5}
     assert runtime_config.split_weights == {"tests/a.py::TestA": 11.0}
+    assert runtime_config.execution_order_first == ("tests/b.py",)
 
 
 def test_load_runtime_weights_rejects_missing_numeric_weight(tmp_path: Path) -> None:
