@@ -1,6 +1,6 @@
 {
   "name": "segment-interview",
-  "description": "Responsible hosted segment layout for interview sessions. Three wards: question card (left), transcript (center), unknowns (right).",
+  "description": "Responsible hosted segment layout for interview sessions. Four wards: question card (left), transcript (center), unknowns (right), delta overlay (bottom).",
   "sources": [
     {
       "id": "interview-question",
@@ -43,6 +43,20 @@
       "rate_hz": 1.0,
       "tags": ["segment", "responsible-layout", "interview", "unknowns"],
       "ward_id": "interview-unknowns-card"
+    },
+    {
+      "id": "interview-delta",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "InterviewDeltaWard",
+        "natural_w": 640,
+        "natural_h": 180
+      },
+      "update_cadence": "rate",
+      "rate_hz": 1.0,
+      "tags": ["segment", "responsible-layout", "interview", "delta"],
+      "ward_id": "interview-delta-card"
     }
   ],
   "surfaces": [
@@ -72,6 +86,15 @@
       "h": 0.6,
       "z_plane": "on-scrim",
       "alpha": 0.85
+    },
+    {
+      "source_id": "interview-delta",
+      "x": 0.15,
+      "y": 0.85,
+      "w": 0.70,
+      "h": 0.14,
+      "z_plane": "on-scrim",
+      "alpha": 0.82
     }
   ]
 }
