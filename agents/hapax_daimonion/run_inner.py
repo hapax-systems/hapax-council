@@ -439,7 +439,7 @@ async def run_inner(daemon: VoiceDaemon) -> None:
                 for imp in consumer.read_new():
                     await daemon._cpal_runner.process_impingement(imp)
             except Exception:
-                log.debug("CPAL impingement consumer error", exc_info=True)
+                log.warning("CPAL impingement consumer error", exc_info=True)
             await asyncio.sleep(0.5)
 
     _make_task(daemon, "cpal_impingement_loop", _cpal_impingement_loop)

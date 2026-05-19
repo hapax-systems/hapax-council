@@ -893,6 +893,7 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
 
         context = assemble_context(daemon)
         programme_id = _programme_id_from_context(context)
+        programme_role = _programme_role_from_context(context)
         referent = _pick_referent_for_narration(programme_id)
 
         # --- Delivery mode: use pre-composed script if available ---
@@ -941,6 +942,7 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
         emit_result = emit.emit_narrative(
             narrative,
             programme_id=programme_id,
+            programme_role=programme_role,
             operator_referent=referent,
             impulse_id=impulse_id,
             speech_event_id=speech_event_id,
@@ -1194,6 +1196,16 @@ def _programme_id_from_context(context) -> str | None:
         return None
     pid = getattr(prog, "programme_id", None)
     return str(pid) if pid is not None else None
+
+
+def _programme_role_from_context(context) -> str | None:
+    prog = getattr(context, "programme", None)
+    if prog is None:
+        return None
+    role = getattr(prog, "role", None)
+    if role is None:
+        return None
+    return getattr(role, "value", str(role))
 
 
 def _pick_referent_for_narration(programme_id: str | None) -> str | None:

@@ -771,6 +771,28 @@ nodes:
       bypasses_l12: true
       playback_target: hapax-livestream-tap
 
+  - id: s4-voice-send
+    kind: loopback
+    pipewire_name: hapax-s4-voice-send
+    industrial_name: chain.s4.voice-send
+    description: S4 voice send loopback for TTS routing
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      audit_classification: runtime-loopback-shape
+
+  - id: tts-s4-send
+    kind: loopback
+    pipewire_name: hapax-tts-s4-send
+    industrial_name: chain.tts.s4-send
+    description: TTS to S4 send loopback bridge
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      audit_classification: runtime-loopback-shape
+
 edges:
   # Live edges the inspector can observe directly.
   - source: l12-capture

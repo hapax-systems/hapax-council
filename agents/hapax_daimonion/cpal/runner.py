@@ -1015,6 +1015,7 @@ class CpalRunner:
         # the resolved destination decision accepts the route.
         source = getattr(impingement, "source", "")
         if source == "autonomous_narrative" and self._daemon is not None:
+            log.info("autonomous_narrative TTS path entered (daemon=%s)", self._daemon is not None)
             # The dedicated prepared_playback_loop owns TTS only for explicit
             # legacy verbatim playback. Live-prior prepared scripts are source
             # context for composition and must not suppress autonomous narration.
@@ -1023,26 +1024,33 @@ class CpalRunner:
 
                 _ap = _ds().active_programme()
                 if _prepared_playback_loop_owns_tts(_ap):
-                    log.debug(
-                        "Autonomous narrative skipped: prepared_playback_loop owns legacy TTS"
-                    )
+                    log.info("autonomous_narrative BLOCKED: prepared_playback_loop owns legacy TTS")
                     return
             except Exception:
-                pass  # fail-open: let it through if store is unavailable
+                log.info("autonomous_narrative: programme store unavailable, fail-open")
             tts = getattr(self._daemon, "tts", None)
             content = getattr(impingement, "content", {})
             narrative = content.get("narrative") if isinstance(content, dict) else None
             impulse_id = content.get("impulse_id") if isinstance(content, dict) else None
             impulse_id = str(impulse_id) if impulse_id else None
             narrative = narrative or effect.narrative
+            log.info(
+                "autonomous_narrative gate check: tts=%s, narrative=%s chars",
+                tts is not None,
+                len(narrative) if narrative else 0,
+            )
 
             # Resolve the destination explicitly before synthesis/playback.
             # Autonomous narration only reaches broadcast when the public gates
             # pass and the impingement already carries bridge-produced public
             # metadata. CPAL's broadcast bias is a candidate trigger only; this
             # runner must not mint broadcast intent or programme authorization.
-            register = self._register_bridge.current_register()
-            decision = resolve_playback_decision(impingement, voice_register=register)
+            try:
+                register = self._register_bridge.current_register()
+                decision = resolve_playback_decision(impingement, voice_register=register)
+            except Exception:
+                log.exception("autonomous_narrative: resolve_playback_decision CRASHED")
+                return
             destination = decision.destination
             destination_target = decision.target
             destination_role = decision.media_role
@@ -1059,6 +1067,13 @@ class CpalRunner:
                 terminal_state="pending" if decision.allowed else "inhibited",
             )
 
+            log.info(
+                "autonomous_narrative decision: allowed=%s dest=%s reason=%s safety=%s",
+                decision.allowed,
+                destination.value,
+                decision.reason_code,
+                decision.safety_gate,
+            )
             if not decision.allowed:
                 record_drop(
                     reason=decision.reason_code,
@@ -1096,15 +1111,24 @@ class CpalRunner:
 
                 try:
                     if self._speech_lock.locked():
-                        log.debug("Autonomous narrative deferred: speech lock held")
+                        log.info("autonomous_narrative BLOCKED: speech lock held")
                         return
                     if self._processing_utterance:
-                        log.debug("Autonomous narrative deferred: conversational response active")
+                        log.info("autonomous_narrative BLOCKED: conversational response active")
                         return
+                    log.info("autonomous_narrative: acquiring speech_lock for TTS synthesis")
                     async with self._speech_lock:
+                        log.info(
+                            "autonomous_narrative: speech_lock acquired, starting TTS synthesis (%d chars)",
+                            len(narrative),
+                        )
                         loop = asyncio.get_running_loop()
                         pcm = await loop.run_in_executor(
                             None, tts.synthesize, narrative, "proactive"
+                        )
+                        log.info(
+                            "autonomous_narrative: TTS synthesis returned %d bytes",
+                            len(pcm) if pcm else 0,
                         )
                         if not pcm:
                             record_tts_synthesis(

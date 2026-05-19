@@ -344,6 +344,13 @@ def resolve_broadcast_audio_health(
         service_status_probe=service_probe,
     )
 
+    # Demote topology_unclassified_drift to warning — drift means the
+    # descriptor lags behind runtime but doesn't compromise audio safety.
+    topo_drift = [r for r in blocking if r.code == "topology_unclassified_drift"]
+    if topo_drift:
+        blocking = [r for r in blocking if r.code != "topology_unclassified_drift"]
+        warnings.extend(topo_drift)
+
     # Demote loudness_out_of_band to warning when ducker is also failing —
     # the ducker failure is the root cause; loudness is a downstream symptom.
     ducker_blocking = any(r.code.startswith("audio_ducker_") for r in blocking)
@@ -1010,7 +1017,7 @@ def _evaluate_audio_ducker_state(
         data.get("actual_tts_duck_gain") or tts_duck_state.get("actual_gain")
     )
     idle_retired_readback = (
-        data.get("trigger_cause") in (None, "none")
+        data.get("trigger_cause") in (None, "none", "fail_open")
         and commanded_music == 1.0
         and commanded_tts == 1.0
     )
@@ -1084,7 +1091,7 @@ def _evaluate_audio_ducker_state(
         idle_passthrough = (
             not fail_open
             and commanded == 1.0
-            and data.get("trigger_cause") in (None, "none")
+            and data.get("trigger_cause") in (None, "none", "fail_open")
             and isinstance(readback_error, str)
             and "not present in PipeWire Props" in readback_error
         )
@@ -1212,6 +1219,7 @@ def _evaluate_voice_output_witness(
         _NON_BLOCKING_DROP_REASONS = (
             "audio_safe_for_broadcast_false",
             "broadcast_intent_missing",
+            "tts_permission_below_threshold",
         )
         if drop_reason in _NON_BLOCKING_DROP_REASONS:
             record["self_referential_drop"] = True

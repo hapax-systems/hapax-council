@@ -83,6 +83,7 @@ def emit_narrative(
     text: str,
     *,
     programme_id: str | None = None,
+    programme_role: str | None = None,
     operator_referent: str | None = None,
     impulse_id: str | None = None,
     speech_event_id: str | None = None,
@@ -108,6 +109,8 @@ def emit_narrative(
         "speech_event_id": impingement_id,
         "triad_ids": list(triad_ids),
     }
+    if programme_role:
+        content["programme_role"] = programme_role
     if programme_id:
         content["public_broadcast_intent"] = True
         content["channel"] = "broadcast"
@@ -118,6 +121,7 @@ def emit_narrative(
             "authorized": True,
             "authorized_at": ts,
             "evidence_ref": f"programme:{programme_id}",
+            "programme_role": programme_role,
         }
         content["programme_authorization_ref"] = f"programme:{programme_id}"
 
