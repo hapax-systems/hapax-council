@@ -180,6 +180,7 @@ class ProgrammePlanner:
         fore_understanding: list[dict] | None = None,
         target_programmes: int | None = None,
         density_field: dict | None = None,
+        stream_biography: str | None = None,
     ) -> ProgrammePlan | None:
         """Compose a context block, call the LLM, validate + return.
 
@@ -199,6 +200,7 @@ class ProgrammePlanner:
             fore_understanding=fore_understanding,
             target_programmes=target_programmes,
             density_field=density_field,
+            stream_biography=stream_biography,
         )
 
         prompt = base_prompt
@@ -246,6 +248,7 @@ class ProgrammePlanner:
         fore_understanding: list[dict] | None = None,
         target_programmes: int | None,
         density_field: dict | None = None,
+        stream_biography: str | None = None,
     ) -> str:
         """Render the prompt template + per-call context."""
         template = self._read_prompt_template()
@@ -261,6 +264,7 @@ class ProgrammePlanner:
             content_state=content_state,
             fore_understanding=fore_understanding,
             density_field=density_field,
+            stream_biography=stream_biography,
         )
         blocks = [block for block in (target_directive, template) if block]
         prompt_body = "\n\n".join(blocks)
@@ -335,6 +339,7 @@ class ProgrammePlanner:
         content_state: dict | None,
         fore_understanding: list[dict] | None = None,
         density_field: dict | None = None,
+        stream_biography: str | None = None,
     ) -> str:
         """Render the per-call inputs as a Markdown context block.
 
@@ -365,6 +370,7 @@ class ProgrammePlanner:
         _section("Condition history", condition_history)
         _section("Content state", content_state)
         _section("Density field", density_field)
+        _section("Stream biography", stream_biography)
         if fore_understanding:
             summary = [
                 {

@@ -589,6 +589,15 @@ def _maybe_author_plan(
     content_state = _gather_content_state(manager.store)
     density_field = _gather_density_field()
 
+    biography_summary = ""
+    try:
+        from shared.stream_biography import read_shm as _read_bio_shm
+
+        bio = _read_bio_shm()
+        biography_summary = bio.to_planner_summary()
+    except Exception:
+        log.debug("stream biography unavailable for planner", exc_info=True)
+
     try:
         plan = planner.plan(
             show_id=show_id,
@@ -598,6 +607,7 @@ def _maybe_author_plan(
             profile=profile,
             content_state=content_state,
             density_field=density_field,
+            stream_biography=biography_summary,
         )
     except Exception:
         log.warning("ProgrammePlanner.plan raised", exc_info=True)
