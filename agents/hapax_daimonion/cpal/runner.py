@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agents.hapax_daimonion.cpal.destination_channel import (
+    DestinationChannel,
     resolve_playback_decision,
 )
 from agents.hapax_daimonion.cpal.evaluator import CpalEvaluator
@@ -1075,17 +1076,16 @@ class CpalRunner:
                 decision.safety_gate,
             )
             if not decision.allowed:
-                record_drop(
-                    reason=decision.reason_code,
-                    source=source,
-                    destination=destination.value,
-                    target=destination_target,
-                    media_role=destination_role,
-                    text=narrative or "",
-                    impulse_id=impulse_id,
-                    terminal_state="inhibited",
+                # Broadcast denied — fall back to private delivery so
+                # the operator still hears narration via monitor.
+                log.info(
+                    "autonomous_narrative: broadcast denied (%s), falling back to private",
+                    decision.reason_code,
                 )
-            elif tts is None:
+                destination = DestinationChannel.PRIVATE
+                destination_target = None
+                destination_role = "Assistant"
+            if tts is None:
                 record_drop(
                     reason="tts_manager_missing",
                     source=source,
