@@ -4,7 +4,7 @@ Single-operator externalized executive function. No auth/roles/multi-user. Share
 
 ## Architecture
 
-Filesystem-as-bus: agents read/write markdown+YAML on disk; inotify reactive engine cascades work. Three tiers: T1 interactive (Tauri, waybar, VS Code), T2 LLM agents (pydantic-ai via LiteLLM :4000; local Command-R 35B EXL3 on TabbyAPI :5000 `gpu_split=[16,10]`; cloud Claude/Gemini), T3 deterministic (sync/health/maintenance). Docker Compose 13 containers + systemd user units. New units → `systemd/units/` only. Key chain: hapax-secrets → logos-api(:8051) → tabbyapi(:5000) → hapax-daimonion → studio-compositor. Qdrant `operator-patterns` is dead schema — don't add writers.
+Filesystem-as-bus: agents read/write markdown+YAML on disk; inotify reactive engine cascades work. Three tiers: T1 interactive (Tauri, waybar, VS Code), T2 LLM agents (pydantic-ai via LiteLLM :4000; local Command-R 35B EXL3 on TabbyAPI :5000 `gpu_split=[13,13]`; cloud Claude/Gemini), T3 deterministic (sync/health/maintenance). Docker Compose 20 containers + systemd user units. New units → `systemd/units/` only. Key chain: hapax-secrets → logos-api(:8051) → tabbyapi(:5000) → hapax-daimonion → studio-compositor. Qdrant `operator-patterns` is dead schema — don't add writers.
 
 ## Design Language
 
@@ -32,7 +32,7 @@ GStreamer pipeline: cameras → cudacompositor → GL shader chain (12 glfeedbac
 
 ## Reverie Vocabulary Integrity
 
-64 WGSL nodes (60 live in `agents/shaders/nodes/`), 30 presets, glfeedback Rust plugin. 8 always-on vocab nodes + 52 satellite-recruitable. Full affordance coverage (60/60 registered). Satellites MUST use `sat_` prefix. Two GPU bridge paths: shared 9-dim uniforms + per-node params_buffer. Regression pin: `tests/test_wgsl_node_affordance_coverage.py`.
+62 WGSL nodes (60 registered in `agents/shaders/nodes/`), 88 presets, glfeedback Rust plugin. 8 always-on vocab nodes + 52 satellite-recruitable. Full affordance coverage (60/60 registered). Satellites MUST use `sat_` prefix. Two GPU bridge paths: shared 9-dim uniforms + per-node params_buffer. Regression pin: `tests/test_wgsl_node_affordance_coverage.py`.
 
 ## Audio Routing — PROTECTED INVARIANTS
 
@@ -58,7 +58,7 @@ Non-formal referents: "The Operator"/"Oudepode"/"OTO" (sticky per utterance via 
 
 ## V5 Publication Bus
 
-49 surfaces, 3 tiers (FULL_AUTO/CONDITIONAL_ENGAGE/REFUSED). Publisher superclass enforces AllowlistGate + legal-name guard + Prometheus counter. SWH attribution pipeline. Cold-contact: citation-graph-only, ≤5/deposit, ≤3/year/candidate.
+55 surfaces, 3 tiers (FULL_AUTO/CONDITIONAL_ENGAGE/REFUSED). Publisher superclass enforces AllowlistGate + legal-name guard + Prometheus counter. SWH attribution pipeline. Cold-contact: citation-graph-only, ≤5/deposit, ≤3/year/candidate.
 
 ## Key Modules
 
