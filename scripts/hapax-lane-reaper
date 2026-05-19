@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# hapax-lane-reaper — kill dead tmux sessions and clean their worktrees.
+#
+# Scans hapax-codex-cx-* and hapax-claude-* tmux sessions. Kills any
+# that have been idle (shell prompt, no active child process) for longer
+# than IDLE_THRESHOLD_MIN. Cleans worktrees whose branches are merged.
+#
+# Usage:
+#   hapax-lane-reaper [--dry-run] [--threshold MINUTES]
+#
+# Run via timer: systemd/units/hapax-lane-reaper.timer (every 30 min)
+
+set -euo pipefail
+
+IDLE_THRESHOLD_MIN="${1:-30}"
+DRY_RUN=0
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run) DRY_RUN=1; shift ;;
+        --threshold) IDLE_THRESHOLD_MIN="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+
+log() { printf 'lane-reaper: %s\n' "$*" >&2; }
+
+killed=0
+cleaned=0
+
+for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "^hapax-(codex-cx-|claude-)"); do
+    # Check if session has an active process beyond the shell
+    pane_pid=$(tmux list-panes -t "$session" -F '#{pane_pid}' 2>/dev/null | head -1)
+    [[ -z "$pane_pid" ]] && continue
+
+    # Count child processes (excluding the shell itself)
+    children=$(ps --ppid "$pane_pid" -o comm= 2>/dev/null | grep -cv "^fish$\|^bash$\|^zsh$\|^sh$" || echo 0)
+
+    if [[ "$children" -gt 0 ]]; then
+        continue  # Active process running — skip
+    fi
+
+    # Check how long the session has been idle (last activity timestamp)
+    last_activity=$(tmux display-message -t "$session" -p '#{session_activity}' 2>/dev/null || echo 0)
+    now=$(date +%s)
+    idle_sec=$(( now - last_activity ))
+    idle_min=$(( idle_sec / 60 ))
+
+    if [[ "$idle_min" -lt "$IDLE_THRESHOLD_MIN" ]]; then
+        continue  # Not idle long enough
+    fi
+
+    log "$session: idle ${idle_min}m (threshold ${IDLE_THRESHOLD_MIN}m)"
+
+    # Check for uncommitted work in the session's worktree
+    role="${session#hapax-codex-}"
+    role="${role#hapax-claude-}"
+    worktree="$COUNCIL_DIR--$role"
+
+    if [[ -d "$worktree" ]]; then
+        uncommitted=$(git -C "$worktree" status --porcelain 2>/dev/null | wc -l)
+        branch=$(git -C "$worktree" symbolic-ref --short HEAD 2>/dev/null || echo "detached")
+        ahead=$(git -C "$worktree" rev-list --count main..HEAD 2>/dev/null || echo 0)
+
+        if [[ "$uncommitted" -gt 0 ]]; then
+            log "  WARNING: $worktree has $uncommitted uncommitted changes — NOT cleaning"
+        elif [[ "$ahead" -gt 0 ]]; then
+            # Check if branch was merged
+            merged=$(git -C "$COUNCIL_DIR" branch --merged main 2>/dev/null | grep -c "$branch" || echo 0)
+            if [[ "$merged" -gt 0 ]]; then
+                log "  Worktree $worktree: branch $branch merged, cleaning"
+                if [[ "$DRY_RUN" -eq 0 ]]; then
+                    git -C "$COUNCIL_DIR" worktree remove --force "$worktree" 2>/dev/null && ((cleaned++)) || true
+                fi
+            else
+                log "  Worktree $worktree: branch $branch has $ahead unpushed commits — NOT cleaning"
+            fi
+        else
+            log "  Worktree $worktree: clean, removing"
+            if [[ "$DRY_RUN" -eq 0 ]]; then
+                git -C "$COUNCIL_DIR" worktree remove --force "$worktree" 2>/dev/null && ((cleaned++)) || true
+            fi
+        fi
+    fi
+
+    # Clear stale claim file
+    claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+    if [[ -f "$claim_file" ]]; then
+        claim=$(cat "$claim_file" | tr -d '[:space:]')
+        if [[ -n "$claim" ]]; then
+            # Release the task back to offered
+            for task_file in "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/active/${claim}"*.md; do
+                if [[ -f "$task_file" ]]; then
+                    sed -i "s/^status: claimed/status: offered/" "$task_file"
+                    sed -i "s/^status: in_progress/status: offered/" "$task_file"
+                    sed -i "s/^assigned_to: .*/assigned_to: unassigned/" "$task_file"
+                    log "  Released task: $claim → offered"
+                fi
+            done
+        fi
+        rm -f "$claim_file"
+    fi
+
+    # Kill the session
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+        tmux kill-session -t "$session" 2>/dev/null && ((killed++)) || true
+        log "  Killed session: $session"
+    else
+        log "  DRY RUN: would kill $session"
+    fi
+done
+
+log "Done: killed=$killed cleaned=$cleaned"

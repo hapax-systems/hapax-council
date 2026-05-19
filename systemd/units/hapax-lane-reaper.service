@@ -1,0 +1,8 @@
+[Unit]
+Description=Hapax lane reaper — kill dead tmux sessions and clean worktrees
+
+[Service]
+Type=oneshot
+ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-lane-reaper --threshold 30
+Environment=HOME=/home/hapax
+TimeoutStartSec=120
