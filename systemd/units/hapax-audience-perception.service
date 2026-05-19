@@ -1,0 +1,15 @@
+[Unit]
+Description=Hapax Audience Perception — polls audience metrics to SHM
+After=hapax-secrets.service
+
+[Service]
+Type=simple
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.audience_perception
+WorkingDirectory=%h/projects/hapax-council
+Environment=PYTHONPATH=%h/projects/hapax-council
+Restart=on-failure
+RestartSec=10
+MemoryMax=128M
+
+[Install]
+WantedBy=default.target

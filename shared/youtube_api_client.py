@@ -94,7 +94,11 @@ class YouTubeApiClient:
         self._reload_service()
 
     def _reload_service(self) -> None:
-        creds = get_google_credentials(self._scopes, pass_key=self._pass_key)
+        creds = get_google_credentials(
+            self._scopes,
+            pass_key=self._pass_key,
+            interactive=False,
+        )
         if not creds:
             log.warning(
                 "No credentials at pass_key=%s; client DISABLED. "

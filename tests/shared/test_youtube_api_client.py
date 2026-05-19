@@ -30,6 +30,11 @@ def test_disabled_when_no_creds(mock_creds, mock_build):
     client = YouTubeApiClient(scopes=[])
     assert not client.enabled
     assert mock_build.call_count == 0
+    mock_creds.assert_called_once_with(
+        [],
+        pass_key="google/token-youtube-streaming",
+        interactive=False,
+    )
 
 
 @patch("shared.youtube_api_client.build")
