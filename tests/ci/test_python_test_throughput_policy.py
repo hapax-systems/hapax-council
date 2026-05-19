@@ -243,6 +243,24 @@ def test_python_runtime_weights_record_merge_queue_evidence() -> None:
         "3": 510,
         "4": 509,
     }
+    assert recent_evidence[26069620227]["selected_unit_counts"] == {
+        "1": 509,
+        "2": 509,
+        "3": 509,
+        "4": 509,
+    }
+    assert recent_evidence[26069620227]["shard_job_wall_seconds"] == {
+        "1": 443,
+        "2": 427,
+        "3": 424,
+        "4": 741,
+    }
+    assert recent_evidence[26069620227]["shard_call_duration_seconds"] == {
+        "1": 174.34,
+        "2": 145.16,
+        "3": 152.42,
+        "4": 582.89,
+    }
     predictions = weights["prediction_receipts"]
     assert predictions["before_refresh"]["predicted_shard_weights"] == {
         "1": 11587,
@@ -256,6 +274,23 @@ def test_python_runtime_weights_record_merge_queue_evidence() -> None:
         "3": 13830,
         "4": 13830,
     }
+    assert predictions["before_no_blink_refresh"]["selected_no_blink_units"] == {
+        "4": ["tests/studio_compositor/test_no_blink.py"],
+    }
+    assert predictions["after_no_blink_refresh"]["predicted_shard_weights"] == {
+        "1": 20840,
+        "2": 20839,
+        "3": 20839,
+        "4": 20839,
+    }
+    after_no_blink_selected = predictions["after_no_blink_refresh"]["selected_no_blink_units"]
+    assert {
+        unit
+        for shard_units in after_no_blink_selected.values()
+        for unit in shard_units
+        if unit.endswith("_no_blink")
+    } == set(recent_evidence[26069620227]["shard_4_no_blink_call_seconds"])
+    assert set(after_no_blink_selected) == {"1", "2", "3", "4"}
     split_groups = weights["split_groups"]
     assert (
         split_groups[
@@ -283,6 +318,48 @@ def test_python_runtime_weights_record_merge_queue_evidence() -> None:
         ]["collected_test_equivalent_weight"]
         == 3200
     )
+    assert (
+        split_groups[
+            "tests/studio_compositor/test_no_blink.py::"
+            "test_stance_indicator_with_flash_event_no_blink"
+        ]["collected_test_equivalent_weight"]
+        == 7790
+    )
+    assert (
+        split_groups[
+            "tests/studio_compositor/test_no_blink.py::"
+            "test_activity_header_with_flash_event_no_blink"
+        ]["collected_test_equivalent_weight"]
+        == 7639
+    )
+    assert (
+        split_groups[
+            "tests/studio_compositor/test_no_blink.py::test_stance_indicator_quiet_state_no_blink"
+        ]["collected_test_equivalent_weight"]
+        == 3881
+    )
+    assert (
+        split_groups[
+            "tests/studio_compositor/test_no_blink.py::test_thinking_indicator_empty_breath_no_blink"
+        ]["collected_test_equivalent_weight"]
+        == 3489
+    )
+    assert (
+        split_groups[
+            "tests/studio_compositor/test_no_blink.py::test_activity_header_quiet_state_no_blink"
+        ]["collected_test_equivalent_weight"]
+        == 3015
+    )
+    assert (
+        split_groups["tests/studio_compositor/test_no_blink.py::test_token_pole_idle_no_blink"][
+            "collected_test_equivalent_weight"
+        ]
+        == 2977
+    )
     slow_file = weights["files"]["tests/studio_compositor/test_compositor_wiring.py"]
     assert slow_file["collected_test_equivalent_weight"] == 9000
     assert slow_file["evidence"]["top_25_duration_seconds_for_file"] == 192.90
+    no_blink_file = weights["files"]["tests/studio_compositor/test_no_blink.py"]
+    assert no_blink_file["collected_test_equivalent_weight"] == 900
+    assert no_blink_file["evidence"]["shard"] == 4
+    assert no_blink_file["evidence"]["top_25_duration_seconds_for_file"] == 287.91
