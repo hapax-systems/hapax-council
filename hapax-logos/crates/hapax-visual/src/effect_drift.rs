@@ -16,7 +16,7 @@ const FAST_FADE_OUT_S: f32 = 6.0;
 const STAGGER_S: f32 = 6.0;
 const POOL_SIZE: usize = 5; // Five visible slots: four active, one rotating/recruiting.
 const ACTIVE_SLOT_TARGET: usize = 4;
-const PARAM_DRIFT_RATE: f32 = 0.024;
+const PARAM_DRIFT_RATE: f32 = 0.036;
 const TICK_DIVISOR: u64 = 5; // ~6Hz at 30fps
 const SPATIAL_PEAK_RANGE: (f32, f32) = (0.82, 0.98);
 const NONSPATIAL_PEAK_RANGE: (f32, f32) = (0.96, 1.0);
@@ -28,11 +28,11 @@ const INITIAL_VISIBLE_FLOOR: f32 = 0.46;
 const ASSERTIVE_TARGET_DEPARTURE_FRACTION: f32 = 0.45;
 const MIN_ACTIVE_ANCHOR_EFFECTS: usize = 3;
 const MAX_ACTIVE_CONDITIONAL_EFFECTS: usize = 1;
-const MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS: usize = 2;
+const MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS: usize = 3;
 const RECENT_EFFECT_MEMORY: usize = 36;
 const COVERAGE_EVENT_MEMORY: usize = 192;
-const PARAM_ORBIT_BASE_RATE: f32 = 0.031;
-const PARAM_ORBIT_SECONDARY_RATE: f32 = 0.013;
+const PARAM_ORBIT_BASE_RATE: f32 = 0.11;
+const PARAM_ORBIT_SECONDARY_RATE: f32 = 0.047;
 
 fn shader_nodes_dir() -> PathBuf {
     if let Ok(path) = std::env::var("HAPAX_SHADER_NODES_DIR") {
@@ -1105,17 +1105,24 @@ fn eviction_cadence(def: &ShaderDef) -> EvictionCadence {
         // surface or dominate other treatments. They are transient inflections,
         // not long-dwell atmospheres.
         "ascii"
+        | "blend"
+        | "breathing"
+        | "chroma_key"
         | "chromatic_aberration"
         | "color_map"
+        | "crossfade"
         | "dither"
         | "displacement_map"
+        | "diff"
         | "droste"
         | "edge_detect"
+        | "echo"
         | "fisheye"
         | "fluid_sim"
         | "glitch_block"
         | "halftone"
         | "kaleidoscope"
+        | "luma_key"
         | "mirror"
         | "noise_gen"
         | "palette_extract"
@@ -1134,6 +1141,7 @@ fn eviction_cadence(def: &ShaderDef) -> EvictionCadence {
         | "tile"
         | "transform"
         | "tunnel"
+        | "trail"
         | "vhs"
         | "warp"
         | "waveform_render" => EvictionCadence::Fast,
@@ -1656,6 +1664,36 @@ mod tests {
     }
 
     #[test]
+    fn conditional_support_effects_are_short_dwell_inflections() {
+        let slow_conditionals: Vec<&str> = SHADERS
+            .iter()
+            .filter(|def| is_conditionally_low_salience(def) && !is_fast_evict(def))
+            .map(|def| def.name)
+            .collect();
+
+        assert!(
+            slow_conditionals.is_empty(),
+            "support-only effects should not hang as slow-dwell layers: {slow_conditionals:?}"
+        );
+    }
+
+    #[test]
+    fn parameter_orbit_is_visible_without_brightness_or_alpha_pumping() {
+        let representative = SHADERS.iter().find(|def| def.name == "warp").unwrap();
+
+        assert!(
+            PARAM_ORBIT_BASE_RATE >= 0.10 && PARAM_ORBIT_SECONDARY_RATE >= 0.04,
+            "structural parameter orbits must be fast enough to be witnessed inside a one-minute sample"
+        );
+        assert_eq!(parameter_orbit_depth(representative, "brightness"), 0.0);
+        assert_eq!(parameter_orbit_depth(representative, "alpha"), 0.0);
+        assert!(
+            parameter_orbit_depth(representative, "slice_amplitude") >= 0.20,
+            "non-opacity structural parameters should carry visible continuous variation"
+        );
+    }
+
+    #[test]
     fn fast_evict_replacement_matches_retirement_energy() {
         let fast_floor = FAST_RETIRE_INTENSITY_FLOOR;
         let warm_progress = FAST_RECRUIT_WARM_PROGRESS;
@@ -1908,6 +1946,38 @@ mod tests {
     }
 
     #[test]
+    fn slot_runtime_metadata_reports_current_lifecycle_state() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-runtime-metadata-{}.json",
+            std::process::id()
+        ));
+        let mut engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+
+        engine.slots[0].phase = Phase::Falling;
+        engine.slots[0].intensity = 0.37;
+        let shader_idx = engine.slots[0].shader_idx;
+        engine.selection_counts[shader_idx] = 12;
+
+        let metadata = engine.slot_runtime_metadata();
+        let first = &metadata[0];
+
+        assert_eq!(first.slot_index, 0);
+        assert_eq!(first.node_id, SHADERS[shader_idx].name);
+        assert_eq!(first.slot_phase, "falling");
+        assert!(
+            (first.slot_intensity - 0.37).abs() < 0.0001,
+            "runtime metadata must report current intensity, not last plan-reload metadata"
+        );
+        assert_eq!(first.selection_count, 12);
+        assert!(
+            !first.parameter_regions.is_empty(),
+            "runtime metadata must retain target-region evidence for visual witnesses"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn autonomous_initial_active_slots_have_salience_anchors() {
         let path = std::env::temp_dir().join(format!(
             "hapax-effect-drift-test-plan-salience-anchors-{}.json",
@@ -2155,6 +2225,48 @@ mod tests {
     }
 
     #[test]
+    fn overdue_support_effect_gets_next_rotation_without_second_falling_slot() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-overdue-support-{}.json",
+            std::process::id()
+        ));
+        let mut engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+
+        for (slot, shader_name) in
+            engine
+                .slots
+                .iter_mut()
+                .take(4)
+                .zip(["warp", "edge_detect", "color_map", "echo"])
+        {
+            slot.shader_idx = shader_idx_by_name(shader_name).unwrap();
+            slot.phase = Phase::Peak;
+            slot.phase_start = 0.0;
+            slot.phase_duration = 1.0;
+            slot.intensity = slot.peak_intensity;
+            slot.needs_recycle = false;
+        }
+
+        engine.tick_count = TICK_DIVISOR - 1;
+        engine.tick(2.0, 1.0 / 30.0);
+
+        let falling: Vec<&str> = engine
+            .slots
+            .iter()
+            .filter(|slot| slot.phase == Phase::Falling)
+            .map(|slot| SHADERS[slot.shader_idx].name)
+            .collect();
+
+        assert_eq!(
+            falling,
+            vec!["echo"],
+            "overdue support effects should not hang behind anchor churn, but the one-falling-slot rule must still hold"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn recycle_restores_high_impingement_when_active_set_is_quiet() {
         let path = std::env::temp_dir().join(format!(
             "hapax-effect-drift-test-plan-high-impingement-recycle-{}.json",
@@ -2182,6 +2294,53 @@ mod tests {
         assert!(
             is_high_impingement_anchor(&SHADERS[engine.slots[4].shader_idx]),
             "recycling must restore a high-impingement anchor when the active set is otherwise quiet"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn recycle_preserves_three_high_impingement_anchor_floor() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-high-floor-recycle-{}.json",
+            std::process::id()
+        ));
+        let mut engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+
+        for (slot, shader_name) in
+            engine
+                .slots
+                .iter_mut()
+                .take(4)
+                .zip(["drift", "grain_bump", "color_map", "diff"])
+        {
+            slot.shader_idx = shader_idx_by_name(shader_name).unwrap();
+            slot.phase = Phase::Peak;
+            slot.needs_recycle = false;
+        }
+        engine.slots[4].shader_idx = shader_idx_by_name("mirror").unwrap();
+        engine.slots[4].phase = Phase::Falling;
+        engine.slots[4].needs_recycle = true;
+        engine.allowed_shader_indices = Some(
+            [
+                "drift",
+                "grain_bump",
+                "color_map",
+                "diff",
+                "mirror",
+                "kuwahara",
+                "slitscan",
+            ]
+            .iter()
+            .map(|name| shader_idx_by_name(name).unwrap())
+            .collect(),
+        );
+
+        engine.recycle_slot(4);
+
+        assert_eq!(
+            SHADERS[engine.slots[4].shader_idx].name, "slitscan",
+            "when the active set has only two high-impingement anchors, recycling must choose a third anchor over quieter visible support"
         );
 
         let _ = std::fs::remove_file(path);
@@ -3167,6 +3326,17 @@ struct CoverageEvent {
     parameter_regions: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SlotRuntimeMetadata {
+    pub slot_index: usize,
+    pub node_id: &'static str,
+    pub slot_phase: &'static str,
+    pub slot_intensity: f64,
+    pub selection_count: u32,
+    pub coverage_window_count: u64,
+    pub parameter_regions: Vec<serde_json::Value>,
+}
+
 // ── Simple RNG ─────────────────────────────────────────────────
 
 struct SimpleRng(u64);
@@ -4021,6 +4191,29 @@ impl SlotDriftEngine {
             .count()
     }
 
+    pub fn slot_runtime_metadata(&self) -> Vec<SlotRuntimeMetadata> {
+        self.slots
+            .iter()
+            .enumerate()
+            .map(|(slot_index, slot)| {
+                let def = &SHADERS[slot.shader_idx];
+                SlotRuntimeMetadata {
+                    slot_index,
+                    node_id: def.name,
+                    slot_phase: phase_label(slot.phase),
+                    slot_intensity: slot.intensity as f64,
+                    selection_count: self
+                        .selection_counts
+                        .get(slot.shader_idx)
+                        .copied()
+                        .unwrap_or(0),
+                    coverage_window_count: self.coverage_window_count(slot.shader_idx) as u64,
+                    parameter_regions: parameter_regions_json(def, &slot.active_target),
+                }
+            })
+            .collect()
+    }
+
     fn candidate_novelty_score(&self, candidate_idx: usize, retiring_slot_idx: usize) -> f32 {
         let def = &SHADERS[candidate_idx];
         let visibility = visibility_group(def);
@@ -4198,6 +4391,15 @@ impl SlotDriftEngine {
         let another_slot_is_rotating = self.slots.iter().enumerate().any(|(slot_idx, slot)| {
             slot_idx != idx && (slot.phase == Phase::Falling || slot.needs_recycle)
         });
+        let current_is_conditional =
+            is_conditionally_low_salience(&SHADERS[self.slots[idx].shader_idx]);
+        let overdue_conditional_waiting = !current_is_conditional
+            && self.slots.iter().enumerate().any(|(slot_idx, slot)| {
+                slot_idx != idx
+                    && slot.phase == Phase::Peak
+                    && is_conditionally_low_salience(&SHADERS[slot.shader_idx])
+                    && now - slot.phase_start >= slot.phase_duration
+            });
         let slot = &mut self.slots[idx];
         match slot.phase {
             Phase::Idle => {
@@ -4227,6 +4429,9 @@ impl SlotDriftEngine {
                 let elapsed = now - slot.phase_start;
                 if elapsed >= slot.phase_duration {
                     if another_slot_is_rotating {
+                        return;
+                    }
+                    if overdue_conditional_waiting {
                         return;
                     }
                     slot.phase = Phase::Falling;
@@ -4559,9 +4764,9 @@ impl SlotDriftEngine {
 
                 if slot.intensity > 0.05 && span > 0.001 {
                     let phase_seed = (slot_idx * 17 + pi * 7 + slot.shader_idx * 13) as f32 * 0.1;
-                    let freq = 0.08 + 0.05 * ((slot_idx * 3 + pi * 11) % 7) as f32;
+                    let freq = 0.16 + 0.09 * ((slot_idx * 3 + pi * 11) % 7) as f32;
                     let sine = (now * freq + phase_seed).sin();
-                    let mod_depth = if def.is_spatial { 0.10 } else { 0.30 };
+                    let mod_depth = if def.is_spatial { 0.16 } else { 0.38 };
                     interpolated += sine * mod_depth * span * slot.intensity;
 
                     let drift_scale = PARAM_DRIFT_RATE * if def.is_spatial { 0.3 } else { 1.0 };

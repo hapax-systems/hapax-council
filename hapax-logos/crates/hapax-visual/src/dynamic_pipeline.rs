@@ -1349,6 +1349,7 @@ impl DynamicPipeline {
         if let Some(ref mut drift) = self.drift_engine {
             let dt = 1.0 / 30.0; // approximate frame time
             let drift_uniforms = drift.tick(time, dt);
+            let slot_metadata = drift.slot_runtime_metadata();
             if !drift_uniforms.is_empty() {
                 // Apply drift uniforms to passes
                 for pass in &mut self.passes {
@@ -1373,6 +1374,17 @@ impl DynamicPipeline {
                             queue.write_buffer(buf, 0, bytemuck::cast_slice(&pass.current_params));
                         }
                     }
+                }
+            }
+            for metadata in slot_metadata {
+                if let Some(pass) = self.passes.iter_mut().find(|pass| {
+                    pass.slot_index == Some(metadata.slot_index) && pass.node_id == metadata.node_id
+                }) {
+                    pass.slot_phase = metadata.slot_phase.to_string();
+                    pass.slot_intensity = metadata.slot_intensity;
+                    pass.selection_count = metadata.selection_count;
+                    pass.coverage_window_count = metadata.coverage_window_count;
+                    pass.parameter_regions = metadata.parameter_regions;
                 }
             }
         }
