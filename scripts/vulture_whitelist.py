@@ -3576,3 +3576,8 @@ ResearchImplementabilityMap.theoretical_remainder
 ResearchImplementabilityMap.blocked_count
 build_assessment
 build_map
+
+# Chat response dispatch — called by conversation pipeline on chat impingements
+from agents.hapax_daimonion.chat_response_dispatch import dispatch_chat_response
+
+dispatch_chat_response
