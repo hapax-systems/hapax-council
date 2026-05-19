@@ -127,7 +127,7 @@ fi
 # attempting any publish operations. Prevents silent auth failures in
 # scheduled (timer-triggered) runs.
 auth_preflight() {
-  if [[ "${HAPAX_OBSIDIAN_SKIP_AUTH_CHECK:-0}" == "1" ]]; then
+  if [[ "${HAPAX_OBSIDIAN_SKIP_AUTH_CHECK:-0}" == "1" || "$dry_run" == "1" ]]; then
     return 0
   fi
   ensure_headless

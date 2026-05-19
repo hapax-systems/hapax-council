@@ -481,7 +481,7 @@ class TestM3BreachDetection:
             ),
             patch(
                 "agents.audio_health.m3_crest_flatness_daemon.compute_crest_factor",
-                return_value=3.8,
+                return_value=2.5,
             ),
             patch("agents.audio_health.m3_crest_flatness_daemon.compute_zcr", return_value=0.42),
             patch(
