@@ -212,6 +212,16 @@ struct PlanPass {
     coverage_window_count: u64,
     #[serde(default)]
     parameter_regions: Vec<serde_json::Value>,
+    #[serde(default)]
+    preset_chain_id: String,
+    #[serde(default)]
+    chain_lineage: String,
+    #[serde(default)]
+    topology_signature: String,
+    #[serde(default)]
+    graph_motif: String,
+    #[serde(default)]
+    motif_node_index: Option<usize>,
 }
 
 fn default_output() -> String {
@@ -323,6 +333,11 @@ struct DynamicPass {
     selection_count: u32,
     coverage_window_count: u64,
     parameter_regions: Vec<serde_json::Value>,
+    preset_chain_id: String,
+    chain_lineage: String,
+    topology_signature: String,
+    graph_motif: String,
+    motif_node_index: Option<usize>,
 }
 
 /// Rewrite a texture name to be target-namespaced when appropriate.
@@ -1035,6 +1050,11 @@ impl DynamicPipeline {
                     selection_count: plan_pass.selection_count,
                     coverage_window_count: plan_pass.coverage_window_count,
                     parameter_regions: plan_pass.parameter_regions.clone(),
+                    preset_chain_id: plan_pass.preset_chain_id.clone(),
+                    chain_lineage: plan_pass.chain_lineage.clone(),
+                    topology_signature: plan_pass.topology_signature.clone(),
+                    graph_motif: plan_pass.graph_motif.clone(),
+                    motif_node_index: plan_pass.motif_node_index,
                 });
             } else {
                 // Render pass
@@ -1193,6 +1213,11 @@ impl DynamicPipeline {
                     selection_count: plan_pass.selection_count,
                     coverage_window_count: plan_pass.coverage_window_count,
                     parameter_regions: plan_pass.parameter_regions.clone(),
+                    preset_chain_id: plan_pass.preset_chain_id.clone(),
+                    chain_lineage: plan_pass.chain_lineage.clone(),
+                    topology_signature: plan_pass.topology_signature.clone(),
+                    graph_motif: plan_pass.graph_motif.clone(),
+                    motif_node_index: plan_pass.motif_node_index,
                 });
             }
         }
@@ -1320,7 +1345,7 @@ impl DynamicPipeline {
                     continue;
                 }
                 // Drift engine owns these passes — skip uniforms.json overrides
-                if drift_managed.contains(pass.node_id.as_str()) {
+                if pass.slot_index.is_some() || drift_managed.contains(pass.node_id.as_str()) {
                     continue;
                 }
                 let mut updated = false;
@@ -1909,6 +1934,11 @@ impl DynamicPipeline {
                     "selection_count": pass.selection_count,
                     "coverage_window_count": pass.coverage_window_count,
                     "parameter_regions": pass.parameter_regions,
+                    "preset_chain_id": pass.preset_chain_id,
+                    "chain_lineage": pass.chain_lineage,
+                    "topology_signature": pass.topology_signature,
+                    "graph_motif": pass.graph_motif,
+                    "motif_node_index": pass.motif_node_index,
                     "max_delta": max_delta,
                     "non_neutral": max_delta > 0.0001,
                     "params": params,
@@ -2986,6 +3016,11 @@ mod tests {
             selection_count: 0,
             coverage_window_count: 0,
             parameter_regions: Vec::new(),
+            preset_chain_id: String::new(),
+            chain_lineage: String::new(),
+            topology_signature: String::new(),
+            graph_motif: String::new(),
+            motif_node_index: None,
         }
     }
 
@@ -3029,6 +3064,11 @@ mod tests {
             selection_count: 0,
             coverage_window_count: 0,
             parameter_regions: Vec::new(),
+            preset_chain_id: String::new(),
+            chain_lineage: String::new(),
+            topology_signature: String::new(),
+            graph_motif: String::new(),
+            motif_node_index: None,
         }
     }
 

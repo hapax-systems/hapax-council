@@ -70,6 +70,116 @@ pub struct ShaderDef {
     pub param_order: &'static [&'static str],
 }
 
+#[derive(Clone, Debug)]
+struct ChainMotif {
+    id: &'static str,
+    lineage: &'static str,
+    topology_signature: &'static str,
+    anchor: &'static str,
+    nodes: &'static [&'static str],
+}
+
+static CHAIN_MOTIFS: &[ChainMotif] = &[
+    ChainMotif {
+        id: "kaleido-fractal-mirror",
+        lineage: "kaleidoscope-fractal",
+        topology_signature: "tonal:kaleidoscope:mirror:droste",
+        anchor: "kaleidoscope",
+        nodes: &["colorgrade", "kaleidoscope", "mirror", "droste"],
+    },
+    ChainMotif {
+        id: "ghost-trace-print",
+        lineage: "chronophotographic-temporal",
+        topology_signature: "posterize:trail:bloom:noise",
+        anchor: "trail",
+        nodes: &["posterize", "trail", "bloom", "noise_overlay"],
+    },
+    ChainMotif {
+        id: "tape-chroma-decay",
+        lineage: "broadcast-decay",
+        topology_signature: "vhs:scanlines:chromatic_aberration",
+        anchor: "vhs",
+        nodes: &["vhs", "scanlines", "chromatic_aberration"],
+    },
+    ChainMotif {
+        id: "glitch-sort-separation",
+        lineage: "digital-breakage",
+        topology_signature: "glitch_block:pixsort:chromatic_aberration",
+        anchor: "glitch_block",
+        nodes: &["glitch_block", "pixsort", "chromatic_aberration"],
+    },
+    ChainMotif {
+        id: "print-threshold-map",
+        lineage: "printmaker-halftone",
+        topology_signature: "halftone:dither:palette",
+        anchor: "halftone",
+        nodes: &["halftone", "dither", "palette"],
+    },
+    ChainMotif {
+        id: "thermal-poster-map",
+        lineage: "sensor-falsecolor",
+        topology_signature: "thermal:posterize:color_map",
+        anchor: "thermal",
+        nodes: &["thermal", "posterize", "color_map"],
+    },
+    ChainMotif {
+        id: "slitscan-rgba-slice",
+        lineage: "temporal-slicing",
+        topology_signature: "slitscan:chromatic_aberration:edge_detect",
+        anchor: "slitscan",
+        nodes: &["slitscan", "chromatic_aberration", "edge_detect"],
+    },
+    ChainMotif {
+        id: "fluid-displacement-map",
+        lineage: "liquid-field",
+        topology_signature: "fluid_sim:displacement_map:palette_remap",
+        anchor: "fluid_sim",
+        nodes: &["fluid_sim", "displacement_map", "palette_remap"],
+    },
+    ChainMotif {
+        id: "tunnel-vortex-ca",
+        lineage: "vortex-depth",
+        topology_signature: "tunnel:kaleidoscope:chromatic_aberration",
+        anchor: "tunnel",
+        nodes: &["tunnel", "kaleidoscope", "chromatic_aberration"],
+    },
+    ChainMotif {
+        id: "pixsort-palette-scan",
+        lineage: "ordered-corruption",
+        topology_signature: "pixsort:palette_remap:scanlines",
+        anchor: "pixsort",
+        nodes: &["pixsort", "palette_remap", "scanlines"],
+    },
+    ChainMotif {
+        id: "mirror-dub-recursion",
+        lineage: "reflection-recursion",
+        topology_signature: "mirror:droste:chromatic_aberration",
+        anchor: "mirror",
+        nodes: &["mirror", "droste", "chromatic_aberration"],
+    },
+    ChainMotif {
+        id: "edge-palette-carve",
+        lineage: "edge-extraction",
+        topology_signature: "edge_detect:threshold:palette",
+        anchor: "edge_detect",
+        nodes: &["edge_detect", "threshold", "palette"],
+    },
+    ChainMotif {
+        id: "displacement-chroma-drift",
+        lineage: "spatial-reprojection",
+        topology_signature: "displacement_map:chromatic_aberration:drift",
+        anchor: "displacement_map",
+        nodes: &["displacement_map", "chromatic_aberration", "drift"],
+    },
+    ChainMotif {
+        id: "waveform-sensor-map",
+        lineage: "signal-render",
+        topology_signature: "waveform_render:palette_remap:scanlines",
+        anchor: "waveform_render",
+        nodes: &["waveform_render", "palette_remap", "scanlines"],
+    },
+];
+
 pub static SHADERS: &[ShaderDef] = &[
     ShaderDef {
         name: "colorgrade",
@@ -1470,10 +1580,31 @@ mod tests {
             })
             .collect();
 
+        assert!(
+            effect_passes.len() >= POOL_SIZE,
+            "SlotDrift should publish at least one metadata-bearing pass per effect slot"
+        );
+        let mut slot_indices = Vec::new();
+        for pass in &effect_passes {
+            let Some(slot_index) = pass["slot_index"].as_u64() else {
+                panic!("effect pass must carry slot_index");
+            };
+            if !slot_indices.contains(&slot_index) {
+                slot_indices.push(slot_index);
+            }
+        }
         assert_eq!(
-            effect_passes.len(),
+            slot_indices.len(),
             POOL_SIZE,
-            "SlotDrift should publish one metadata-bearing pass per effect slot"
+            "expanded motifs must still account for all five SlotDrift slots"
+        );
+        assert!(
+            effect_passes.iter().any(|pass| {
+                pass["preset_chain_id"]
+                    .as_str()
+                    .is_some_and(|id| id != "single-node")
+            }),
+            "SlotDrift must exercise curated motif topology, not only single nodes"
         );
 
         for pass in effect_passes {
@@ -1556,6 +1687,18 @@ mod tests {
             assert!(
                 pass["parameter_regions"].as_array().is_some(),
                 "effect passes must publish target parameter regions"
+            );
+            assert!(
+                pass["preset_chain_id"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty()),
+                "effect passes must publish preset/motif chain identity"
+            );
+            assert!(
+                pass["topology_signature"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty()),
+                "effect passes must publish topology signature for variance evidence"
             );
         }
 
@@ -1959,10 +2102,17 @@ mod tests {
         engine.selection_counts[shader_idx] = 12;
 
         let metadata = engine.slot_runtime_metadata();
-        let first = &metadata[0];
+        let primary_suffix = format!("_{}", SHADERS[shader_idx].name);
+        let first = metadata
+            .iter()
+            .find(|entry| entry.slot_index == 0 && entry.node_id.ends_with(&primary_suffix))
+            .expect("runtime metadata should include the primary shader node for slot 0");
 
         assert_eq!(first.slot_index, 0);
-        assert_eq!(first.node_id, SHADERS[shader_idx].name);
+        assert!(
+            first.node_id.starts_with("slot0_"),
+            "slot-managed effect nodes must have unique plan node IDs"
+        );
         assert_eq!(first.slot_phase, "falling");
         assert!(
             (first.slot_intensity - 0.37).abs() < 0.0001,
@@ -2127,13 +2277,12 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(
-            passes.len(),
-            POOL_SIZE + 2,
-            "SlotDrift owns five effect slots plus feedback/postprocess bookends"
+        assert!(
+            passes.len() >= POOL_SIZE + 2,
+            "SlotDrift owns five effect slots plus feedback/postprocess bookends; slots may expand into curated motifs"
         );
         assert_eq!(
-            &node_ids[POOL_SIZE..],
+            &node_ids[node_ids.len() - 2..],
             &["fb", "post"],
             "feedback and postprocess are required bookends after the rotating slots"
         );
@@ -2437,7 +2586,7 @@ mod tests {
         engine.selection_counts[warp] = 0;
         engine.coverage_events.clear();
         for idx in [thermal, edge_detect].into_iter().cycle().take(60) {
-            engine.record_selection(idx, Vec::new());
+            engine.record_selection(idx, "single-node", Vec::new());
         }
         engine.selection_counts[thermal] = 40;
         engine.selection_counts[edge_detect] = 40;
@@ -2560,6 +2709,7 @@ mod tests {
         let mut engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
         let colorgrade = shader_idx_by_name("colorgrade").unwrap();
         engine.slots[0].shader_idx = colorgrade;
+        engine.slots[0].motif_idx = None;
         engine.slots[0].phase = Phase::Peak;
         engine.slots[0].intensity = 1.0;
         engine.slots[0].peak_intensity = 1.0;
@@ -2581,7 +2731,7 @@ mod tests {
             let uniforms = engine.interpolate_all(step as f32 * 12.0);
             let saturation = uniforms
                 .iter()
-                .find(|(name, _)| name == "colorgrade.saturation")
+                .find(|(name, _)| name.ends_with("colorgrade.saturation"))
                 .map(|(_, value)| *value)
                 .expect("colorgrade.saturation uniform present");
             saturation_values.push(saturation);
@@ -2636,6 +2786,7 @@ mod tests {
         );
 
         engine.slots[0].shader_idx = palette_remap;
+        engine.slots[0].motif_idx = None;
         engine.slots[0].phase = Phase::Peak;
         engine.slots[0].intensity = 1.0;
         engine.slots[0].peak_intensity = 1.0;
@@ -2656,7 +2807,7 @@ mod tests {
             let uniforms = engine.interpolate_all(time);
             let observed_time = uniforms
                 .iter()
-                .find(|(name, _)| name == "palette_remap.time")
+                .find(|(name, _)| name.ends_with("palette_remap.time"))
                 .map(|(_, value)| *value)
                 .expect("palette_remap.time uniform present");
             assert_eq!(
@@ -3308,6 +3459,7 @@ pub enum Phase {
 #[derive(Debug, Clone)]
 pub struct SlotState {
     pub shader_idx: usize,
+    motif_idx: Option<usize>,
     pub phase: Phase,
     pub intensity: f32,
     pub phase_start: f32,
@@ -3323,18 +3475,30 @@ pub struct SlotState {
 #[derive(Debug, Clone)]
 struct CoverageEvent {
     shader_idx: usize,
+    motif_id: &'static str,
     parameter_regions: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct SlotRuntimeMetadata {
     pub slot_index: usize,
-    pub node_id: &'static str,
+    pub node_id: String,
     pub slot_phase: &'static str,
     pub slot_intensity: f64,
     pub selection_count: u32,
     pub coverage_window_count: u64,
     pub parameter_regions: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone)]
+struct SlotPlanNode {
+    shader_idx: usize,
+    node_id: String,
+    motif_node_index: usize,
+    preset_chain_id: &'static str,
+    chain_lineage: &'static str,
+    topology_signature: &'static str,
+    graph_motif: &'static str,
 }
 
 // ── Simple RNG ─────────────────────────────────────────────────
@@ -3363,6 +3527,10 @@ impl SimpleRng {
 }
 
 fn pass_inputs_for(def: &ShaderDef, prev_output: &str) -> (Vec<String>, bool) {
+    pass_inputs_for_node(def, def.name, prev_output)
+}
+
+fn pass_inputs_for_node(def: &ShaderDef, node_id: &str, prev_output: &str) -> (Vec<String>, bool) {
     if matches!(
         def.name,
         "slitscan"
@@ -3378,7 +3546,7 @@ fn pass_inputs_for(def: &ShaderDef, prev_output: &str) -> (Vec<String>, bool) {
             | "luma_key"
     ) {
         return (
-            vec![prev_output.to_string(), format!("@accum_{}", def.name)],
+            vec![prev_output.to_string(), format!("@accum_{}", node_id)],
             true,
         );
     }
@@ -3393,6 +3561,76 @@ fn pass_inputs_for(def: &ShaderDef, prev_output: &str) -> (Vec<String>, bool) {
         );
     }
     (vec![prev_output.to_string()], false)
+}
+
+fn motif_candidates_for_shader(shader_idx: usize) -> Vec<usize> {
+    let anchor = SHADERS[shader_idx].name;
+    CHAIN_MOTIFS
+        .iter()
+        .enumerate()
+        .filter(|(_, motif)| {
+            motif.anchor == anchor
+                || motif
+                    .nodes
+                    .iter()
+                    .any(|node_name| *node_name == anchor && motif.anchor != "colorgrade")
+        })
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+fn choose_motif_for_shader(rng: &mut SimpleRng, shader_idx: usize) -> Option<usize> {
+    let candidates = motif_candidates_for_shader(shader_idx);
+    if candidates.is_empty() {
+        return None;
+    }
+    let idx = (rng.next_f32() * candidates.len() as f32) as usize % candidates.len();
+    Some(candidates[idx])
+}
+
+fn slot_chain_id(slot: &SlotState) -> &'static str {
+    slot.motif_idx
+        .and_then(|idx| CHAIN_MOTIFS.get(idx))
+        .map(|motif| motif.id)
+        .unwrap_or("single-node")
+}
+
+fn slot_plan_nodes(slot_index: usize, slot: &SlotState) -> Vec<SlotPlanNode> {
+    let mut nodes = Vec::new();
+    if let Some(motif) = slot.motif_idx.and_then(|idx| CHAIN_MOTIFS.get(idx)) {
+        for (motif_node_index, node_name) in motif.nodes.iter().enumerate() {
+            if let Some(shader_idx) = shader_idx_by_name(node_name) {
+                let def = &SHADERS[shader_idx];
+                nodes.push(SlotPlanNode {
+                    shader_idx,
+                    node_id: format!("slot{}_{}_{}", slot_index, motif_node_index, def.name),
+                    motif_node_index,
+                    preset_chain_id: motif.id,
+                    chain_lineage: motif.lineage,
+                    topology_signature: motif.topology_signature,
+                    graph_motif: motif.anchor,
+                });
+            }
+        }
+    }
+
+    if nodes.is_empty() || !nodes.iter().any(|node| node.shader_idx == slot.shader_idx) {
+        let def = &SHADERS[slot.shader_idx];
+        nodes.insert(
+            0,
+            SlotPlanNode {
+                shader_idx: slot.shader_idx,
+                node_id: format!("slot{}_0_{}", slot_index, def.name),
+                motif_node_index: 0,
+                preset_chain_id: "single-node",
+                chain_lineage: def.family,
+                topology_signature: def.name,
+                graph_motif: def.name,
+            },
+        );
+    }
+
+    nodes
 }
 
 fn random_peak_intensity(rng: &mut SimpleRng, def: &ShaderDef) -> f32 {
@@ -3459,6 +3697,118 @@ fn assertive_target_value(
     } else {
         value
     }
+}
+
+fn deterministic_assertive_target_value(
+    def: &ShaderDef,
+    param_name: &str,
+    passthrough: f32,
+    lo: f32,
+    hi: f32,
+    seed: usize,
+) -> f32 {
+    if (hi - lo).abs() <= f32::EPSILON {
+        return lo;
+    }
+
+    let fractions = [0.14, 0.32, 0.58, 0.78, 0.92];
+    let raw = lo + (hi - lo) * fractions[seed % fractions.len()];
+    let range = hi - lo;
+    let min_delta = range * target_departure_fraction(def);
+    let value = if (raw - passthrough).abs() >= min_delta {
+        raw
+    } else if raw >= passthrough {
+        (passthrough + min_delta).clamp(lo, hi)
+    } else {
+        (passthrough - min_delta).clamp(lo, hi)
+    };
+
+    if param_name == "brightness" {
+        value.max(1.0).clamp(lo, hi)
+    } else {
+        value
+    }
+}
+
+fn motif_node_target(
+    slot: &SlotState,
+    slot_index: usize,
+    plan_node: &SlotPlanNode,
+) -> Vec<(String, f32)> {
+    if plan_node.shader_idx == slot.shader_idx {
+        return slot.active_target.clone();
+    }
+
+    let def = &SHADERS[plan_node.shader_idx];
+    def.active_ranges
+        .iter()
+        .enumerate()
+        .map(|(param_index, &(name, lo, hi))| {
+            let passthrough = def
+                .passthrough
+                .iter()
+                .find(|(candidate, _)| *candidate == name)
+                .map(|(_, value)| *value)
+                .unwrap_or(lo);
+            let seed = slot_index * 37
+                + slot.shader_idx * 19
+                + plan_node.shader_idx * 13
+                + plan_node.motif_node_index * 7
+                + param_index * 5;
+            (
+                name.to_string(),
+                deterministic_assertive_target_value(def, name, passthrough, lo, hi, seed),
+            )
+        })
+        .collect()
+}
+
+fn interpolated_param_value(
+    def: &ShaderDef,
+    slot_index: usize,
+    node_index: usize,
+    shader_idx: usize,
+    param_index: usize,
+    param_name: &str,
+    passthrough: f32,
+    active_value: f32,
+    intensity: f32,
+    now: f32,
+) -> f32 {
+    let span = (active_value - passthrough).abs();
+    let mut interpolated = passthrough + (active_value - passthrough) * intensity;
+
+    if intensity > 0.05 && span > 0.001 {
+        let phase_seed =
+            (slot_index * 17 + node_index * 23 + param_index * 7 + shader_idx * 13) as f32 * 0.1;
+        let freq = 0.16 + 0.09 * ((slot_index * 3 + node_index * 5 + param_index * 11) % 7) as f32;
+        let sine = (now * freq + phase_seed).sin();
+        let mod_depth = if def.is_spatial { 0.16 } else { 0.38 };
+        interpolated += sine * mod_depth * span * intensity;
+
+        let drift_scale = PARAM_DRIFT_RATE * if def.is_spatial { 0.3 } else { 1.0 };
+        let noise = ((now * 1.7 + phase_seed * 3.1).sin() * 0.5) * drift_scale * span;
+        interpolated += noise;
+
+        let (lo, hi) = active_range_for(def, param_name)
+            .unwrap_or((passthrough.min(active_value), passthrough.max(active_value)));
+        let orbit_depth = parameter_orbit_depth(def, param_name);
+        if orbit_depth > 0.0 {
+            let active_span = (hi - lo).abs();
+            let primary = (now * PARAM_ORBIT_BASE_RATE + phase_seed * 2.7).sin();
+            let secondary = (now * PARAM_ORBIT_SECONDARY_RATE + phase_seed * 5.1).sin();
+            let orbit = (primary * 0.72) + (secondary * 0.28);
+            interpolated += orbit * orbit_depth * active_span * intensity;
+        }
+        let lo = if param_name == "brightness" {
+            lo.max(1.0)
+        } else {
+            lo
+        };
+        interpolated = interpolated.clamp(lo, hi);
+    }
+
+    interpolated
 }
 
 const VISIBLE_BASELINE_GROUPS: &[&str] = &["spatial", "texture", "tonal", "temporal"];
@@ -4054,6 +4404,7 @@ impl SlotDriftEngine {
 
             let mut state = SlotState {
                 shader_idx,
+                motif_idx: choose_motif_for_shader(&mut rng, shader_idx),
                 phase: Phase::Idle,
                 intensity: 0.0,
                 phase_start: now,
@@ -4159,12 +4510,18 @@ impl SlotDriftEngine {
         engine
     }
 
-    fn record_selection(&mut self, shader_idx: usize, parameter_regions: Vec<String>) {
+    fn record_selection(
+        &mut self,
+        shader_idx: usize,
+        motif_id: &'static str,
+        parameter_regions: Vec<String>,
+    ) {
         if let Some(count) = self.selection_counts.get_mut(shader_idx) {
             *count = count.saturating_add(1);
         }
         self.coverage_events.push_back(CoverageEvent {
             shader_idx,
+            motif_id,
             parameter_regions,
         });
         while self.coverage_events.len() > COVERAGE_EVENT_MEMORY {
@@ -4173,15 +4530,16 @@ impl SlotDriftEngine {
     }
 
     fn record_selection_for_slot(&mut self, slot_idx: usize) {
-        let (shader_idx, parameter_regions) = {
+        let (shader_idx, motif_id, parameter_regions) = {
             let slot = &self.slots[slot_idx];
             let def = &SHADERS[slot.shader_idx];
             (
                 slot.shader_idx,
+                slot_chain_id(slot),
                 parameter_region_labels(def, &slot.active_target),
             )
         };
-        self.record_selection(shader_idx, parameter_regions);
+        self.record_selection(shader_idx, motif_id, parameter_regions);
     }
 
     fn coverage_window_count(&self, shader_idx: usize) -> usize {
@@ -4195,21 +4553,27 @@ impl SlotDriftEngine {
         self.slots
             .iter()
             .enumerate()
-            .map(|(slot_index, slot)| {
-                let def = &SHADERS[slot.shader_idx];
-                SlotRuntimeMetadata {
-                    slot_index,
-                    node_id: def.name,
-                    slot_phase: phase_label(slot.phase),
-                    slot_intensity: slot.intensity as f64,
-                    selection_count: self
-                        .selection_counts
-                        .get(slot.shader_idx)
-                        .copied()
-                        .unwrap_or(0),
-                    coverage_window_count: self.coverage_window_count(slot.shader_idx) as u64,
-                    parameter_regions: parameter_regions_json(def, &slot.active_target),
-                }
+            .flat_map(|(slot_index, slot)| {
+                slot_plan_nodes(slot_index, slot)
+                    .into_iter()
+                    .map(move |node| {
+                        let def = &SHADERS[node.shader_idx];
+                        let target = motif_node_target(slot, slot_index, &node);
+                        SlotRuntimeMetadata {
+                            slot_index,
+                            node_id: node.node_id,
+                            slot_phase: phase_label(slot.phase),
+                            slot_intensity: slot.intensity as f64,
+                            selection_count: self
+                                .selection_counts
+                                .get(node.shader_idx)
+                                .copied()
+                                .unwrap_or(0),
+                            coverage_window_count: self.coverage_window_count(node.shader_idx)
+                                as u64,
+                            parameter_regions: parameter_regions_json(def, &target),
+                        }
+                    })
             })
             .collect()
     }
@@ -4715,6 +5079,7 @@ impl SlotDriftEngine {
         let def = &SHADERS[new_idx];
 
         self.slots[idx].shader_idx = new_idx;
+        self.slots[idx].motif_idx = choose_motif_for_shader(&mut self.rng, new_idx);
         self.slots[idx].current_params = def
             .passthrough
             .iter()
@@ -4739,64 +5104,56 @@ impl SlotDriftEngine {
     fn interpolate_all(&mut self, now: f32) -> Vec<(String, f32)> {
         let mut uniforms = Vec::new();
 
-        for (slot_idx, slot) in self.slots.iter_mut().enumerate() {
-            let def = &SHADERS[slot.shader_idx];
+        for slot_idx in 0..self.slots.len() {
+            let plan_nodes = slot_plan_nodes(slot_idx, &self.slots[slot_idx]);
+            let slot_intensity = self.slots[slot_idx].intensity;
+            let primary_shader_idx = self.slots[slot_idx].shader_idx;
 
-            for (pi, &(pname, pt_val)) in def.passthrough.iter().enumerate() {
-                if pname == "time" {
-                    let time_value = now.max(0.0);
-                    slot.current_params
-                        .iter_mut()
-                        .find(|(n, _)| n == pname)
-                        .map(|(_, v)| *v = time_value);
-                    uniforms.push((format!("{}.{}", def.name, pname), time_value));
-                    continue;
-                }
+            for node in plan_nodes {
+                let def = &SHADERS[node.shader_idx];
+                let target = motif_node_target(&self.slots[slot_idx], slot_idx, &node);
 
-                let act_val = slot
-                    .active_target
-                    .iter()
-                    .find(|(n, _)| n == pname)
-                    .map(|(_, v)| *v)
-                    .unwrap_or(pt_val);
-                let span = (act_val - pt_val).abs();
-                let mut interpolated = pt_val + (act_val - pt_val) * slot.intensity;
-
-                if slot.intensity > 0.05 && span > 0.001 {
-                    let phase_seed = (slot_idx * 17 + pi * 7 + slot.shader_idx * 13) as f32 * 0.1;
-                    let freq = 0.16 + 0.09 * ((slot_idx * 3 + pi * 11) % 7) as f32;
-                    let sine = (now * freq + phase_seed).sin();
-                    let mod_depth = if def.is_spatial { 0.16 } else { 0.38 };
-                    interpolated += sine * mod_depth * span * slot.intensity;
-
-                    let drift_scale = PARAM_DRIFT_RATE * if def.is_spatial { 0.3 } else { 1.0 };
-                    // Use deterministic noise instead of gaussian for reproducibility
-                    let noise = ((now * 1.7 + phase_seed * 3.1).sin() * 0.5) * drift_scale * span;
-                    interpolated += noise;
-
-                    let (lo, hi) = active_range_for(def, pname)
-                        .unwrap_or((pt_val.min(act_val), pt_val.max(act_val)));
-                    let orbit_depth = parameter_orbit_depth(def, pname);
-                    if orbit_depth > 0.0 {
-                        let active_span = (hi - lo).abs();
-                        let primary = (now * PARAM_ORBIT_BASE_RATE + phase_seed * 2.7).sin();
-                        let secondary = (now * PARAM_ORBIT_SECONDARY_RATE + phase_seed * 5.1).sin();
-                        let orbit = (primary * 0.72) + (secondary * 0.28);
-                        interpolated += orbit * orbit_depth * active_span * slot.intensity;
+                for (pi, &(pname, pt_val)) in def.passthrough.iter().enumerate() {
+                    if pname == "time" {
+                        let time_value = now.max(0.0);
+                        if node.shader_idx == primary_shader_idx {
+                            self.slots[slot_idx]
+                                .current_params
+                                .iter_mut()
+                                .find(|(n, _)| n == pname)
+                                .map(|(_, v)| *v = time_value);
+                        }
+                        uniforms.push((format!("{}.{}", node.node_id, pname), time_value));
+                        continue;
                     }
-                    let lo = if pname == "brightness" {
-                        lo.max(1.0)
-                    } else {
-                        lo
-                    };
-                    interpolated = interpolated.clamp(lo, hi);
-                }
 
-                slot.current_params
-                    .iter_mut()
-                    .find(|(n, _)| n == pname)
-                    .map(|(_, v)| *v = interpolated);
-                uniforms.push((format!("{}.{}", def.name, pname), interpolated));
+                    let act_val = target
+                        .iter()
+                        .find(|(n, _)| n == pname)
+                        .map(|(_, v)| *v)
+                        .unwrap_or(pt_val);
+                    let interpolated = interpolated_param_value(
+                        def,
+                        slot_idx,
+                        node.motif_node_index,
+                        node.shader_idx,
+                        pi,
+                        pname,
+                        pt_val,
+                        act_val,
+                        slot_intensity,
+                        now,
+                    );
+
+                    if node.shader_idx == primary_shader_idx {
+                        self.slots[slot_idx]
+                            .current_params
+                            .iter_mut()
+                            .find(|(n, _)| n == pname)
+                            .map(|(_, v)| *v = interpolated);
+                    }
+                    uniforms.push((format!("{}.{}", node.node_id, pname), interpolated));
+                }
             }
         }
 
@@ -4842,6 +5199,11 @@ impl SlotDriftEngine {
             .iter()
             .map(|event| SHADERS[event.shader_idx].name)
             .collect();
+        let recent_motifs: Vec<&str> = self
+            .coverage_events
+            .iter()
+            .map(|event| event.motif_id)
+            .collect();
         let family_counts = label_counts_json(
             self.coverage_events
                 .iter()
@@ -4870,78 +5232,97 @@ impl SlotDriftEngine {
                 .flat_map(|event| event.parameter_regions.iter().cloned())
                 .collect(),
         );
+        let motif_counts = label_counts_json(
+            self.coverage_events
+                .iter()
+                .map(|event| event.motif_id.to_string())
+                .collect(),
+        );
 
         serde_json::json!({
             "schema": "slotdrift-coverage-v1",
             "window_limit": COVERAGE_EVENT_MEMORY,
             "recent_effects": recent_effects,
+            "recent_motifs": recent_motifs,
             "effect_counts": effect_counts,
             "family_counts": family_counts,
             "visibility_group_counts": visibility_counts,
             "alias_counts": alias_counts,
             "parameter_region_counts": parameter_region_counts,
+            "motif_counts": motif_counts,
         })
     }
 
     fn write_plan(&self) {
         let mut passes = Vec::new();
         let mut prev_output = "@live".to_string();
+        let mut layer_index = 0usize;
         let plan_dir = Path::new(&self.plan_path)
             .parent()
             .unwrap_or_else(|| Path::new("."));
 
         for (i, slot) in self.slots.iter().enumerate() {
-            let def = &SHADERS[slot.shader_idx];
-            copy_shader_to_plan_dir(def, plan_dir);
-            let layer = format!("layer_{}", i);
-            let mut uniforms_map = serde_json::Map::new();
-            let param_order: Vec<String> = def.param_order.iter().map(|s| s.to_string()).collect();
-            let (inputs, temporal) = pass_inputs_for(def, &prev_output);
+            for node in slot_plan_nodes(i, slot) {
+                let def = &SHADERS[node.shader_idx];
+                copy_shader_to_plan_dir(def, plan_dir);
+                let layer = format!("layer_{}", layer_index);
+                layer_index += 1;
+                let mut uniforms_map = serde_json::Map::new();
+                let param_order: Vec<String> =
+                    def.param_order.iter().map(|s| s.to_string()).collect();
+                let (inputs, temporal) = pass_inputs_for_node(def, &node.node_id, &prev_output);
+                let target = motif_node_target(slot, i, &node);
 
-            for &(name, val) in def.passthrough.iter() {
-                uniforms_map.insert(name.to_string(), serde_json::Value::from(val as f64));
-            }
+                for &(name, val) in def.passthrough.iter() {
+                    uniforms_map.insert(name.to_string(), serde_json::Value::from(val as f64));
+                }
 
-            let mut pass = serde_json::json!({
-                "node_id": def.name,
-                "shader": def.shader_file,
-                "type": "render",
-                "backend": "wgsl_render",
-                "inputs": inputs,
-                "output": layer,
-                "uniforms": uniforms_map,
-                "param_order": param_order,
-                "effect_scope": "composed_live_surface",
-                "effect_family": def.family,
-                "visibility_group": visibility_group(def),
-                "eviction_cadence": eviction_cadence_label(def),
-                "source_bound": true,
-                "full_surface": true,
-                "effect_binding": "source_presence_gated",
-                "effect_application_plane": effect_application_plane(def),
-                "fourth_wall_policy": "forbid_foreground_overlay",
-                "coverage_role": effect_coverage_role(def),
-                "effect_aliases": effect_aliases(def),
-                "slot_index": i,
-                "slot_phase": phase_label(slot.phase),
-                "slot_intensity": slot.intensity as f64,
-                "selection_count": self.selection_counts.get(slot.shader_idx).copied().unwrap_or(0),
-                "coverage_window_count": self.coverage_window_count(slot.shader_idx),
-                "parameter_regions": parameter_regions_json(def, &slot.active_target),
-            });
-            if temporal {
-                pass.as_object_mut()
-                    .expect("effect pass is a JSON object")
-                    .insert("temporal".to_string(), serde_json::Value::Bool(true));
+                let mut pass = serde_json::json!({
+                    "node_id": node.node_id,
+                    "shader": def.shader_file,
+                    "type": "render",
+                    "backend": "wgsl_render",
+                    "inputs": inputs,
+                    "output": layer,
+                    "uniforms": uniforms_map,
+                    "param_order": param_order,
+                    "effect_scope": "composed_live_surface",
+                    "effect_family": def.family,
+                    "visibility_group": visibility_group(def),
+                    "eviction_cadence": eviction_cadence_label(def),
+                    "source_bound": true,
+                    "full_surface": true,
+                    "effect_binding": "source_presence_gated",
+                    "effect_application_plane": effect_application_plane(def),
+                    "fourth_wall_policy": "forbid_foreground_overlay",
+                    "coverage_role": effect_coverage_role(def),
+                    "effect_aliases": effect_aliases(def),
+                    "slot_index": i,
+                    "slot_phase": phase_label(slot.phase),
+                    "slot_intensity": slot.intensity as f64,
+                    "selection_count": self.selection_counts.get(node.shader_idx).copied().unwrap_or(0),
+                    "coverage_window_count": self.coverage_window_count(node.shader_idx),
+                    "parameter_regions": parameter_regions_json(def, &target),
+                    "preset_chain_id": node.preset_chain_id,
+                    "chain_lineage": node.chain_lineage,
+                    "topology_signature": node.topology_signature,
+                    "graph_motif": node.graph_motif,
+                    "motif_node_index": node.motif_node_index,
+                });
+                if temporal {
+                    pass.as_object_mut()
+                        .expect("effect pass is a JSON object")
+                        .insert("temporal".to_string(), serde_json::Value::Bool(true));
+                }
+                passes.push(pass);
+                prev_output = layer;
             }
-            passes.push(pass);
-            prev_output = layer;
         }
 
         // Feedback bookend
         {
             copy_shader_to_plan_dir(&FEEDBACK_DEF, plan_dir);
-            let layer = format!("layer_{}", self.slots.len());
+            let layer = format!("layer_{}", layer_index);
             let mut u = serde_json::Map::new();
             for &(name, val) in FEEDBACK_DEF.passthrough.iter() {
                 u.insert(name.to_string(), serde_json::Value::from(val as f64));
@@ -4995,7 +5376,12 @@ impl SlotDriftEngine {
             .iter()
             .map(|s| SHADERS[s.shader_idx].name)
             .collect();
-        log::info!("SlotDrift: writing plan chain={:?}", chain);
+        let motifs: Vec<&str> = self.slots.iter().map(slot_chain_id).collect();
+        log::info!(
+            "SlotDrift: writing plan chain={:?} motifs={:?}",
+            chain,
+            motifs
+        );
 
         if let Err(e) = std::fs::write(
             Path::new(&self.plan_path),
