@@ -61,40 +61,66 @@
   ],
   "surfaces": [
     {
-      "source_id": "interview-question",
-      "x": 0.0,
-      "y": 0.2,
-      "w": 0.28,
-      "h": 0.6,
-      "z_plane": "on-scrim",
-      "alpha": 0.88
+      "id": "interview-question-surface",
+      "geometry": { "kind": "rect", "x": 0, "y": 144, "w": 358, "h": 432 },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 900,
+      "update_cadence": "always"
     },
     {
-      "source_id": "interview-transcript",
-      "x": 0.30,
-      "y": 0.15,
-      "w": 0.40,
-      "h": 0.7,
-      "z_plane": "on-scrim",
-      "alpha": 0.92
+      "id": "interview-transcript-surface",
+      "geometry": { "kind": "rect", "x": 384, "y": 108, "w": 512, "h": 504 },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 900,
+      "update_cadence": "always"
     },
     {
-      "source_id": "interview-unknowns",
-      "x": 0.72,
-      "y": 0.2,
-      "w": 0.28,
-      "h": 0.6,
-      "z_plane": "on-scrim",
-      "alpha": 0.85
+      "id": "interview-unknowns-surface",
+      "geometry": { "kind": "rect", "x": 922, "y": 144, "w": 358, "h": 432 },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 900,
+      "update_cadence": "always"
     },
     {
-      "source_id": "interview-delta",
-      "x": 0.15,
-      "y": 0.85,
-      "w": 0.70,
-      "h": 0.14,
-      "z_plane": "on-scrim",
-      "alpha": 0.82
+      "id": "interview-delta-surface",
+      "geometry": { "kind": "rect", "x": 192, "y": 612, "w": 896, "h": 101 },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 950,
+      "update_cadence": "always"
+    }
+  ],
+  "assignments": [
+    {
+      "source": "interview-question",
+      "surface": "interview-question-surface",
+      "opacity": 0.88,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "interview-transcript",
+      "surface": "interview-transcript-surface",
+      "opacity": 0.92,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "interview-unknowns",
+      "surface": "interview-unknowns-surface",
+      "opacity": 0.85,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "interview-delta",
+      "surface": "interview-delta-surface",
+      "opacity": 0.82,
+      "non_destructive": true,
+      "render_stage": "post_fx"
     }
   ]
 }
