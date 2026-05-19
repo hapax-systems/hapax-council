@@ -203,7 +203,7 @@ def test_tts_manager_applies_gate(monkeypatch):
 
     received: list[str] = []
 
-    def _fake_synth(self, text):
+    def _fake_synth(self, text, *, speed=1.0):
         received.append(text)
         return b"\x00\x00"
 
@@ -223,7 +223,7 @@ def test_tts_manager_passes_clean_text_unchanged(monkeypatch):
 
     received: list[str] = []
 
-    def _fake_synth(self, text):
+    def _fake_synth(self, text, *, speed=1.0):
         received.append(text)
         return b"\x00\x00"
 

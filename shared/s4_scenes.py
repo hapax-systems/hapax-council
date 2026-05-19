@@ -296,7 +296,8 @@ SCENES: Final[dict[str, S4Scene]] = {
             "formant shifting, Deform 30% for timbral density, small-room "
             "Vast. Chatterbox output as raw material; S-4 transforms it "
             "into Hapax's own voice. Importance drives processing "
-            "REDUCTION (more important = less processing)."
+            "REDUCTION (more important = less processing). "
+            "Intelligibility floor: processing never obscures speech content."
         ),
         program_number=11,
         material="Bypass",
