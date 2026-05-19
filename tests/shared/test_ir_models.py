@@ -44,6 +44,12 @@ def test_full_report():
         hands=[IrHand(zone="mpc-pads", bbox=[200, 300, 350, 420], activity="tapping")],
         screens=[IrScreen(bbox=[0, 0, 300, 200], area_pct=0.12)],
         ir_brightness=142,
+        capture_ts="2026-03-29T14:29:59-05:00",
+        frame_width=640,
+        frame_height=360,
+        grey_jpeg_b64="encoded",
+        platter_objects=[{"object_id": "platter-01", "position_index": 1}],
+        platter_primary_object={"object_id": "platter-01"},
         inference_ms=280,
         biometrics=IrBiometrics(
             heart_rate_bpm=72,
@@ -58,6 +64,8 @@ def test_full_report():
     assert report.persons[0].gaze_zone == "at-screen"
     assert report.hands[0].activity == "tapping"
     assert report.biometrics.drowsiness_score == 0.15
+    assert report.frame_width == 640
+    assert report.platter_objects[0]["position_index"] == 1
 
 
 def test_valid_roles():

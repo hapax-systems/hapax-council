@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import logging
 import os
 import signal
@@ -82,6 +83,8 @@ _CV2_ROTATE_FOR: dict[int, int] = {
 # rate; this is only used when the controller is unavailable (e.g. test mode).
 POST_INTERVAL_S = 2.0
 CAMERA_MAP_ENV = "HAPAX_IR_CAMERA_MAP"
+REPORT_FRAME_MAX_DIM_ENV = "HAPAX_IR_REPORT_FRAME_MAX_DIM"
+REPORT_FRAME_JPEG_QUALITY = 70
 
 # Metric label for prometheus scraping: hapax_ir_cadence_state{pi_role="..."}.
 _METRIC_PATH = Path.home() / "hapax-edge" / "metrics" / "cadence.prom"
@@ -106,12 +109,16 @@ class EdgeCamera:
 @dataclass
 class ProcessedFrame:
     cam_id: str
+    capture_ts: str
     grey: np.ndarray
     motion_delta: float
     persons: list[dict]
     hands: list[dict]
     screens: list[dict]
     inference_ms: int
+    grey_jpeg_b64: str = ""
+    platter_objects: list[dict[str, object]] | None = None
+    platter_primary_object: dict[str, object] | None = None
 
 
 def parse_camera_map(raw: str | None) -> tuple[RawCameraSpec, ...]:
@@ -289,15 +296,16 @@ class IrEdgeDaemon:
             loop.run_until_complete(self._client.aclose())
             loop.close()
 
-    def _capture_frame(self, camera: EdgeCamera) -> tuple[str, np.ndarray, np.ndarray]:
-        """Capture one configured camera. Returns (cam_id, color, greyscale)."""
+    def _capture_frame(self, camera: EdgeCamera) -> tuple[str, str, np.ndarray, np.ndarray]:
+        """Capture one configured camera. Returns (cam_id, capture_ts, color, grey)."""
         if camera.backend == "usb":
             color = self._capture_usb_frame(camera)
         else:
             color = self._capture_rpicam_frame(camera)
+        capture_ts = datetime.now(UTC).isoformat()
         color = self._prepare_captured_color(camera, color)
         grey = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
-        return camera.cam_id, color, grey
+        return camera.cam_id, capture_ts, color, grey
 
     def _capture_rpicam_frame(self, camera: EdgeCamera) -> np.ndarray:
         import subprocess
@@ -387,8 +395,8 @@ class IrEdgeDaemon:
 
             captured = await self._capture_all_frames()
             processed = [
-                self._process_captured_frame(cam_id, color, grey)
-                for cam_id, color, grey in captured
+                self._process_captured_frame(cam_id, capture_ts, color, grey)
+                for cam_id, capture_ts, color, grey in captured
             ]
             if not processed:
                 await asyncio.sleep(0.5)
@@ -431,6 +439,10 @@ class IrEdgeDaemon:
                         frame.inference_ms,
                         hand_semantics=tick.semantics if frame.cam_id == "primary" else None,
                         cam_id=frame.cam_id,
+                        capture_ts=frame.capture_ts,
+                        grey_jpeg_b64=frame.grey_jpeg_b64,
+                        platter_objects=frame.platter_objects,
+                        platter_primary_object=frame.platter_primary_object,
                     )
                     await self._post_report(report)
                 last_post = now
@@ -440,13 +452,13 @@ class IrEdgeDaemon:
             sleep_time = max(0.05, cadence_interval_s - elapsed)
             await asyncio.sleep(sleep_time)
 
-    async def _capture_all_frames(self) -> list[tuple[str, np.ndarray, np.ndarray]]:
+    async def _capture_all_frames(self) -> list[tuple[str, str, np.ndarray, np.ndarray]]:
         loop = asyncio.get_event_loop()
         tasks = [
             loop.run_in_executor(None, self._capture_frame, camera) for camera in self._cameras
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        captured: list[tuple[str, np.ndarray, np.ndarray]] = []
+        captured: list[tuple[str, str, np.ndarray, np.ndarray]] = []
         for camera, result in zip(self._cameras, results, strict=True):
             if isinstance(result, Exception):
                 log.warning(
@@ -460,7 +472,7 @@ class IrEdgeDaemon:
         return captured
 
     def _process_captured_frame(
-        self, cam_id: str, color: np.ndarray, grey: np.ndarray
+        self, cam_id: str, capture_ts: str, color: np.ndarray, grey: np.ndarray
     ) -> ProcessedFrame:
         self._handle_frame_saves(cam_id, grey)
         motion_delta = self._compute_motion(cam_id, grey)
@@ -472,6 +484,8 @@ class IrEdgeDaemon:
         hands: list[dict] = []
         screens: list[dict] = []
         inference_ms = 0
+        platter_objects: list[dict[str, object]] = []
+        platter_primary_object: dict[str, object] | None = None
 
         if not skip_inference:
             t_infer = time.monotonic()
@@ -495,9 +509,11 @@ class IrEdgeDaemon:
 
             # Platter object detection remains on the primary overhead stream.
             if self._role == "overhead" and cam_id == "primary":
-                platter_objects = detect_platter_objects(grey)
+                platter_detections = detect_platter_objects(grey)
+                platter_objects = [dict(obj) for obj in platter_detections]
                 if platter_objects:
                     primary = max(platter_objects, key=lambda d: d["area_pct"])
+                    platter_primary_object = dict(primary)
                     crop = extract_platter_crop(color, primary, output_size=640)
                     if crop is not None:
                         _, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
@@ -525,12 +541,16 @@ class IrEdgeDaemon:
         self._update_rppg(persons, grey)
         return ProcessedFrame(
             cam_id=cam_id,
+            capture_ts=capture_ts,
             grey=grey,
             motion_delta=motion_delta,
             persons=persons,
             hands=hands,
             screens=screens,
             inference_ms=inference_ms,
+            grey_jpeg_b64=self._report_frame_b64(grey),
+            platter_objects=platter_objects,
+            platter_primary_object=platter_primary_object,
         )
 
     def _compute_motion(self, cam_id: str, grey: np.ndarray) -> float:
@@ -562,6 +582,36 @@ class IrEdgeDaemon:
             ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
             cv2.imwrite(str(self._captures_dir / f"{self._role}_{cam_id}_{ts}.jpg"), grey)
 
+    def _report_frame_b64(self, grey: np.ndarray) -> str:
+        """Return a bounded greyscale JPEG payload for CBIP/council-side consumers."""
+        if self._role != "overhead":
+            return ""
+        try:
+            max_dim = int(os.getenv(REPORT_FRAME_MAX_DIM_ENV, "640"))
+        except ValueError:
+            max_dim = 640
+        if max_dim <= 0:
+            return ""
+
+        frame = grey
+        height, width = frame.shape[:2]
+        largest = max(height, width)
+        if largest > max_dim:
+            scale = max_dim / float(largest)
+            frame = cv2.resize(
+                frame,
+                (max(1, int(width * scale)), max(1, int(height * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+        ok, buf = cv2.imencode(
+            ".jpg",
+            frame,
+            [cv2.IMWRITE_JPEG_QUALITY, REPORT_FRAME_JPEG_QUALITY],
+        )
+        if not ok:
+            return ""
+        return base64.b64encode(buf.tobytes()).decode("ascii")
+
     def _update_rppg(self, persons: list[dict], grey: np.ndarray) -> None:
         self._biometrics.face_detected = False
         if not persons:
@@ -589,6 +639,10 @@ class IrEdgeDaemon:
         inference_ms,
         hand_semantics: dict | None = None,
         cam_id: str = "primary",
+        capture_ts: str = "",
+        grey_jpeg_b64: str = "",
+        platter_objects: list[dict[str, object]] | None = None,
+        platter_primary_object: dict[str, object] | None = None,
     ) -> IrDetectionReport:
         return build_report(
             self._hostname,
@@ -604,6 +658,10 @@ class IrEdgeDaemon:
             cadence_interval_s=self._cadence.get_sleep_duration(),
             hand_semantics=hand_semantics,
             cam_id=cam_id,
+            capture_ts=capture_ts,
+            grey_jpeg_b64=grey_jpeg_b64,
+            platter_objects=platter_objects,
+            platter_primary_object=platter_primary_object,
         )
 
     def _write_cadence_metric(self) -> None:
