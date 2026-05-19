@@ -471,7 +471,8 @@ class TestM3BreachDetection:
         """Low crest with high ZCR/flatness still triggers the M3 alert."""
         state = M3StageState(prev_crest=8.0, crest_drop_start=990.0)
         cfg = M3DaemonConfig(enable_ntfy=True)
-        result = _probe_result("hapax-obs-broadcast-remap", np.zeros(48000, dtype=np.int16))
+        noise = (np.random.default_rng(42).standard_normal(48000) * 3000).astype(np.int16)
+        result = _probe_result("hapax-obs-broadcast-remap", noise)
 
         with (
             patch(

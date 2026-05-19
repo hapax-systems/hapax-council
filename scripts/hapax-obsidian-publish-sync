@@ -115,6 +115,14 @@ ensure_publish_setup() {
 
 require_vault
 
+if [[ "$skip_assets" != "1" ]]; then
+  install_assets
+fi
+
+if [[ "$install_assets_only" == "1" ]]; then
+  exit 0
+fi
+
 # Auth preflight — verify obsidian-headless can authenticate before
 # attempting any publish operations. Prevents silent auth failures in
 # scheduled (timer-triggered) runs.
@@ -131,14 +139,6 @@ auth_preflight() {
   log "auth preflight: OK"
 }
 auth_preflight
-
-if [[ "$skip_assets" != "1" ]]; then
-  install_assets
-fi
-
-if [[ "$install_assets_only" == "1" ]]; then
-  exit 0
-fi
 
 require_node22
 ensure_headless
