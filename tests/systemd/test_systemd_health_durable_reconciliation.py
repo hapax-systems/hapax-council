@@ -149,6 +149,13 @@ class TestNoveltyShiftEmitter:
         assert "--loop" in exec_start
         assert "--interval 1" in exec_start
 
+    def test_service_runs_from_active_source(self):
+        """Runtime must use the deployed source-activation worktree."""
+        text = _unit_text("hapax-novelty-shift-emitter.service")
+        assert _unit_value(text, "Service", "WorkingDirectory") == (
+            "%h/.cache/hapax/source-activation/worktree"
+        )
+
     def test_timer_retired_behind_explicit_guard(self):
         """The old timer must not be able to reintroduce 1s process spawning."""
         text = _unit_text("hapax-novelty-shift-emitter.timer")
