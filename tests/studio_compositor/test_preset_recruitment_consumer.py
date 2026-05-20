@@ -288,7 +288,7 @@ def test_process_skips_policy_blocked_candidate_and_uses_eligible_candidate(
 ) -> None:
     ts = time.time()
     _write_recruitment(prc.RECRUITMENT_FILE, "glitch-dense", ts=ts)
-    blocked_graph = _minimal_graph("Blocked Halftone", "halftone")
+    blocked_graph = _minimal_graph("Blocked Echo", "echo")
     eligible_graph = _minimal_graph("Eligible Grade", "colorgrade")
     seen_available: list[tuple[str, ...] | None] = []
 
@@ -333,7 +333,7 @@ def test_process_consumes_recruitment_when_all_candidates_policy_blocked(
 ) -> None:
     ts = time.time()
     _write_recruitment(prc.RECRUITMENT_FILE, "glitch-dense", ts=ts)
-    blocked_graph = _minimal_graph("Blocked Halftone", "halftone")
+    blocked_graph = _minimal_graph("Blocked Echo", "echo")
 
     monkeypatch.setenv("HAPAX_SEGMENT_BIAS_DISABLED", "1")
     monkeypatch.setattr(prc, "presets_for_family", lambda _family: ("blocked",))
