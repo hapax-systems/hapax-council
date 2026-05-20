@@ -84,3 +84,21 @@ Tasks without explicit `route_metadata` get conservative derived metadata via
 For dispatcher-level routing, `build_demand_vector()` projects route metadata
 plus task-specific signals into a 17-dimension `DemandVector` used by the
 policy layer.
+
+## Task Dimension Fit Extension
+
+The Obsidian vault packet
+`[[task-dimensions-platform-profile-fit-research-2026-05-20]]` extends the R1
+route ontology with the ranked dimensions that predict platform/profile fit.
+Its main additions for later schema work are:
+
+| Predictor | Proposed field | Why it matters |
+|-----------|----------------|----------------|
+| Output finality | `output_finality` | Irreversible artifacts need stronger routes than repairable drafts. |
+| Review containment | `review_containment` | Support routes are safe only when review can cheaply catch failures. |
+| Claim scope | `claim_scope` | Public, scientific, revenue, and support claims need stricter evidence gates. |
+| Context budget | `context_budget_class` | A route is not quality-equivalent if it cannot fit the required context. |
+| Operator obligation | `operator_obligation` | Legal, account, financial, and live-observation actions stay operator-owned. |
+
+The packet preserves the existing invariant: quota, cost, latency, and
+parallelism rank routes only after quality and authority gates pass.
