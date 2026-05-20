@@ -17,6 +17,7 @@ Three pinned behaviours:
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -130,6 +131,15 @@ def _write_recruitment(path: Path, family: str) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _wait_for_transition_thread(timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        active = [thread for thread in threading.enumerate() if thread.name == "preset-transition"]
+        if not active:
+            return
+        time.sleep(0.01)
+
+
 def test_process_preset_recruitment_extends_hold_when_compositor_passed(
     _isolated_recruit_state, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -141,6 +151,11 @@ def test_process_preset_recruitment_extends_hold_when_compositor_passed(
 
     fam = next(iter(family_names()))
     _write_recruitment(prc.RECRUITMENT_FILE, fam)
+    monkeypatch.setattr(
+        prc,
+        "policy_eligible_presets_for_family",
+        lambda _family, **_kwargs: ("p",),
+    )
     monkeypatch.setattr(prc, "pick_and_load_mutated", lambda *a, **kw: ("p", {"nodes": {}}))
     monkeypatch.setattr(
         prc,
@@ -156,6 +171,7 @@ def test_process_preset_recruitment_extends_hold_when_compositor_passed(
     before = time.monotonic()
     assert prc.process_preset_recruitment(fake) is True
     after = time.monotonic()
+    _wait_for_transition_thread()
 
     # Hold MUST be in [before + RECRUITMENT_HOLD_S, after + RECRUITMENT_HOLD_S].
     assert fake._user_preset_hold_until >= before + prc.RECRUITMENT_HOLD_S - 0.05
@@ -175,6 +191,11 @@ def test_process_preset_recruitment_no_compositor_still_dispatches(
 
     fam = next(iter(family_names()))
     _write_recruitment(prc.RECRUITMENT_FILE, fam)
+    monkeypatch.setattr(
+        prc,
+        "policy_eligible_presets_for_family",
+        lambda _family, **_kwargs: ("p",),
+    )
     monkeypatch.setattr(prc, "pick_and_load_mutated", lambda *a, **kw: ("p", {"nodes": {}}))
     monkeypatch.setattr(
         prc,
@@ -183,6 +204,7 @@ def test_process_preset_recruitment_no_compositor_still_dispatches(
     )
     monkeypatch.setattr(prc, "_write_mutation", lambda _g: None)
     assert prc.process_preset_recruitment() is True
+    _wait_for_transition_thread()
 
 
 def test_process_preset_recruitment_no_dispatch_no_hold_extension(
