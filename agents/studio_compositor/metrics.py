@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -1837,14 +1839,57 @@ def record_face_obscure_error(camera_role: str, exception_class: str) -> None:
     ).inc()
 
 
-# Lazy-initialised subprocess command cache for the VRAM poll so we only
-# build the argv list once per process. ``nvidia-smi`` is invoked at most
-# once per second from ``_poll_loop``.
-_NVIDIA_SMI_CMD: tuple[str, ...] = (
+# Lazy-initialised subprocess command/cache for the VRAM poll. The metrics loop
+# wakes once per second, but ``nvidia-smi`` is far too expensive to run at that
+# cadence inside the compositor process, so the probe is TTL-gated below.
+_NVIDIA_SMI_CMD_ARGS: tuple[str, ...] = (
     "nvidia-smi",
     "--query-compute-apps=pid,used_memory",
     "--format=csv,noheader,nounits",
 )
+_NVIDIA_SMI_BIN_CACHE: str | None | bool = False
+_GPU_VRAM_POLL_LOCK = threading.Lock()
+_GPU_VRAM_LAST_POLL_MONOTONIC = 0.0
+_GPU_VRAM_LAST_VALUE_BYTES = 0
+_DEFAULT_GPU_VRAM_POLL_INTERVAL_S = 15.0
+
+
+def _float_env(name: str, default: float, *, minimum: float = 0.0) -> float:
+    try:
+        return max(minimum, float(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _gpu_vram_poll_interval_s() -> float:
+    return _float_env(
+        "HAPAX_COMPOSITOR_GPU_VRAM_POLL_INTERVAL_S",
+        _DEFAULT_GPU_VRAM_POLL_INTERVAL_S,
+        minimum=0.0,
+    )
+
+
+def _nvidia_smi_cmd() -> tuple[str, ...] | None:
+    override = os.environ.get("HAPAX_NVIDIA_SMI_BIN", "").strip()
+    if override:
+        return (override, *_NVIDIA_SMI_CMD_ARGS[1:])
+    global _NVIDIA_SMI_BIN_CACHE
+    with _GPU_VRAM_POLL_LOCK:
+        if _NVIDIA_SMI_BIN_CACHE is False:
+            _NVIDIA_SMI_BIN_CACHE = shutil.which("nvidia-smi")
+        if isinstance(_NVIDIA_SMI_BIN_CACHE, str):
+            return (_NVIDIA_SMI_BIN_CACHE, *_NVIDIA_SMI_CMD_ARGS[1:])
+    return None
+
+
+def _clear_gpu_vram_poll_cache_for_tests() -> None:
+    global _NVIDIA_SMI_BIN_CACHE
+    global _GPU_VRAM_LAST_POLL_MONOTONIC
+    global _GPU_VRAM_LAST_VALUE_BYTES
+    with _GPU_VRAM_POLL_LOCK:
+        _NVIDIA_SMI_BIN_CACHE = False
+        _GPU_VRAM_LAST_POLL_MONOTONIC = 0.0
+        _GPU_VRAM_LAST_VALUE_BYTES = 0
 
 
 def _update_gpu_vram() -> None:
@@ -1859,15 +1904,31 @@ def _update_gpu_vram() -> None:
     post-libtorch-removal and flagged for attribution investigation. This
     gauge makes the ongoing footprint visible to Grafana + alertable.
     """
+    global _GPU_VRAM_LAST_POLL_MONOTONIC
+    global _GPU_VRAM_LAST_VALUE_BYTES
     if COMP_GPU_VRAM_BYTES is None:
         return
+    interval = _gpu_vram_poll_interval_s()
+    now = time.monotonic()
+    with _GPU_VRAM_POLL_LOCK:
+        if (
+            interval > 0.0
+            and _GPU_VRAM_LAST_POLL_MONOTONIC > 0.0
+            and now - _GPU_VRAM_LAST_POLL_MONOTONIC < interval
+        ):
+            COMP_GPU_VRAM_BYTES.set(_GPU_VRAM_LAST_VALUE_BYTES)
+            return
+        _GPU_VRAM_LAST_POLL_MONOTONIC = now
+    cmd = _nvidia_smi_cmd()
+    if cmd is None:
+        COMP_GPU_VRAM_BYTES.set(0)
+        with _GPU_VRAM_POLL_LOCK:
+            _GPU_VRAM_LAST_VALUE_BYTES = 0
+        return
     try:
-        import os
-        import subprocess
-
         my_pid = os.getpid()
         result = subprocess.run(
-            _NVIDIA_SMI_CMD,
+            cmd,
             capture_output=True,
             text=True,
             timeout=2.0,
@@ -1890,11 +1951,16 @@ def _update_gpu_vram() -> None:
                 mib = int(parts[1])
             except ValueError:
                 return
-            COMP_GPU_VRAM_BYTES.set(mib * 1024 * 1024)
+            value = mib * 1024 * 1024
+            COMP_GPU_VRAM_BYTES.set(value)
+            with _GPU_VRAM_POLL_LOCK:
+                _GPU_VRAM_LAST_VALUE_BYTES = value
             return
         # PID not in the output — no GPU context held yet. Set 0 so
         # Grafana sees a real ``0`` instead of stale values from a prior tick.
         COMP_GPU_VRAM_BYTES.set(0)
+        with _GPU_VRAM_POLL_LOCK:
+            _GPU_VRAM_LAST_VALUE_BYTES = 0
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         # nvidia-smi missing (test environments), or subprocess hung.
         return

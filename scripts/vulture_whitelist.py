@@ -3617,3 +3617,15 @@ ConceptMastery.update_chat_mention
 ConceptMastery.add_concept
 register_programme_affordances
 EgressSafetyEnvelope.kill_switch_active
+
+# Compositor incident cache reset hooks — tests call these through module
+# aliases so vulture does not see the static path.
+from agents.studio_compositor.coding_session_reveal import (
+    _clear_tmux_session_cache_for_tests,
+)
+from agents.studio_compositor.durf_source import _clear_tmux_cache_for_tests
+from agents.studio_compositor.metrics import _clear_gpu_vram_poll_cache_for_tests
+
+_clear_gpu_vram_poll_cache_for_tests
+_clear_tmux_cache_for_tests
+_clear_tmux_session_cache_for_tests
