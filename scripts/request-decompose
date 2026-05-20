@@ -20,6 +20,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -49,7 +50,7 @@ Each task object must have these fields:
 - intent: 1-3 sentences describing the work
 - acceptance_criteria: list of concrete, testable criteria strings
 - effort_class: "standard" | "high" | "max"
-- mutation_surface: "source" | "runtime" | "vault" | "system"
+- mutation_surface: "none" | "vault_docs" | "source" | "runtime" | "public" | "provider_spend"
 - quality_floor: "deterministic_ok" | "frontier_review_required" | "frontier_required"
 
 Rules:
@@ -72,32 +73,76 @@ def _read_request(path: Path) -> dict:
     }
 
 
+def _scalar(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ""
+    text = str(value).strip()
+    return "" if text in {"null", "None", "~"} else text
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [_scalar(item) for item in value if _scalar(item)]
+    text = _scalar(value)
+    if not text:
+        return []
+    if text.startswith("[") and text.endswith("]"):
+        return [part.strip().strip("'\"") for part in text[1:-1].split(",") if part.strip()]
+    return [text]
+
+
+def _request_keys(path: Path, frontmatter: dict[str, Any]) -> set[str]:
+    keys = {str(path), path.name, path.stem}
+    request_id = _scalar(frontmatter.get("request_id"))
+    if request_id:
+        keys.add(request_id)
+    return keys
+
+
+def _normalize_mutation_surface(value: Any) -> str:
+    text = _scalar(value) or "source"
+    aliases = {
+        "vault": "vault_docs",
+        "docs": "vault_docs",
+        "system": "runtime",
+        "external": "public",
+    }
+    normalized = aliases.get(text, text)
+    allowed = {"none", "vault_docs", "source", "runtime", "public", "provider_spend"}
+    return normalized if normalized in allowed else "source"
+
+
 def _find_undecomposed_requests() -> list[Path]:
     task_parents = set()
     for d in [TASKS_DIR / "active", TASKS_DIR / "closed"]:
         if not d.is_dir():
             continue
-        for f in d.iterdir():
+        for f in sorted(d.glob("*.md")):
             if f.suffix != ".md":
                 continue
-            text = f.read_text(errors="replace")[:500]
-            for line in text.splitlines():
-                if line.strip().startswith("parent_request:"):
-                    val = line.split(":", 1)[1].strip().strip('"').strip("'")
-                    if val and val != "null":
-                        task_parents.add(val)
+            fm, _body = parse_frontmatter(f)
+            for field_name in ("parent_request", "parent_plan", "parent_spec"):
+                task_parents.update(_string_list(fm.get(field_name)))
 
     undecomposed = []
-    for f in sorted(REQUESTS_DIR.iterdir()):
+    for f in sorted(REQUESTS_DIR.glob("*.md")):
         if f.suffix != ".md":
             continue
-        text = f.read_text(errors="replace")[:500]
-        if "status: accepted_for_planning" not in text:
+        fm, _body = parse_frontmatter(f)
+        if _scalar(fm.get("status")) != "accepted_for_planning":
             continue
-        if f.name not in task_parents and f.stem not in task_parents:
-            has_linked = any(f.name in tp or f.stem in tp for tp in task_parents)
-            if not has_linked:
-                undecomposed.append(f)
+        if _string_list(fm.get("downstream_tasks")):
+            continue
+        keys = _request_keys(f, fm)
+        if keys & task_parents:
+            continue
+        has_linked = any(any(key in parent for key in keys) for parent in task_parents)
+        if not has_linked:
+            undecomposed.append(f)
     return undecomposed
 
 
@@ -115,7 +160,8 @@ def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
     fm.get("title", request_data["filename"])[:60]
     req_wsjf = float(fm.get("wsjf", "5.0") or "5.0")
     req_priority = fm.get("priority", "medium")
-    authority = fm.get("planning_case", "")
+    authority = fm.get("planning_case") or fm.get("authority_case") or ""
+    parent_spec = fm.get("parent_spec") or fm.get("parent_plan") or request_data["path"]
     slug = request_data["filename"].replace(".md", "").replace("REQ-", "").lower()[:30]
 
     try:
@@ -165,7 +211,7 @@ def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
                     phase_index=t.get("phase_index", 0),
                     parent_request=request_data["filename"],
                     authority_case=authority or f"CASE-{slug.upper()[:20]}",
-                    parent_spec=fm.get("parent_spec"),
+                    parent_spec=parent_spec,
                     status="blocked" if t.get("depends_on") else "offered",
                     blocked_reason=(
                         f"Depends on: {', '.join(t['depends_on'])}" if t.get("depends_on") else None
@@ -173,7 +219,7 @@ def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
                     intent=t.get("intent", ""),
                     acceptance_criteria=t.get("acceptance_criteria", ["TBD"]),
                     effort_class=t.get("effort_class", "standard"),
-                    mutation_surface=t.get("mutation_surface", "source"),
+                    mutation_surface=_normalize_mutation_surface(t.get("mutation_surface")),
                     quality_floor=t.get("quality_floor", "deterministic_ok"),
                 )
             )
@@ -205,6 +251,7 @@ def main() -> int:
         undecomposed = _find_undecomposed_requests()
         _log.info("Found %d undecomposed requests", len(undecomposed))
         total_tasks = 0
+        skipped_existing = 0
         for req_path in undecomposed:
             req_data = _read_request(req_path)
             decomp = _decompose_with_llm(req_data)
@@ -217,10 +264,20 @@ def main() -> int:
                     _log.info("  %s (WSJF %.1f, %s)", t.task_id, t.wsjf, t.status)
                 total_tasks += len(decomp.tasks)
             else:
-                paths = write_decomposition(decomp, TASKS_DIR)
+                try:
+                    paths = write_decomposition(decomp, TASKS_DIR)
+                except FileExistsError as exc:
+                    skipped_existing += 1
+                    _log.warning("Skipping %s: %s", req_path.name, exc)
+                    continue
                 _log.info("Wrote %d tasks for %s", len(paths), req_path.name)
                 total_tasks += len(paths)
-        _log.info("Total: %d tasks created from %d requests", total_tasks, len(undecomposed))
+        _log.info(
+            "Total: %d tasks created from %d requests (%d skipped existing)",
+            total_tasks,
+            len(undecomposed),
+            skipped_existing,
+        )
         return 0
 
     if args.request_path:

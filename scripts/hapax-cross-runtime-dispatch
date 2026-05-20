@@ -336,14 +336,22 @@ print('  receipt written')
 # Methodology-dispatch gate: when HAPAX_METHODOLOGY_DISPATCH is set (or the
 # script exists at the standard path), delegate task-bearing dispatches through
 # it. Taskless dispatches are blocked — methodology requires a task.
-METHODOLOGY_DISPATCH="${HAPAX_METHODOLOGY_DISPATCH:-$SCRIPT_DIR/hapax-methodology-dispatch}"
+METHODOLOGY_DISPATCH_ENV="${HAPAX_METHODOLOGY_DISPATCH:-}"
+METHODOLOGY_DISPATCH="${METHODOLOGY_DISPATCH_ENV:-$SCRIPT_DIR/hapax-methodology-dispatch}"
 if [[ -x "$METHODOLOGY_DISPATCH" ]]; then
     if [[ -z "$TASK" ]]; then
         echo "error: require --task and methodology dispatch for governed lane dispatch" >&2
         exit 2
     fi
-    echo "  delegating: $METHODOLOGY_DISPATCH --task $TASK --lane $LANE --platform $PLATFORM --launch"
-    exec "$METHODOLOGY_DISPATCH" --task "$TASK" --lane "$LANE" --platform "$PLATFORM" --launch
+    METHODOLOGY_CMD=("$METHODOLOGY_DISPATCH")
+    if [[ -z "$METHODOLOGY_DISPATCH_ENV" ]] && command -v uv >/dev/null 2>&1; then
+        METHODOLOGY_CMD=(uv run python "$METHODOLOGY_DISPATCH")
+    fi
+    echo "  delegating: ${METHODOLOGY_CMD[*]} --task $TASK --lane $LANE --platform $PLATFORM --launch"
+    if [[ -z "$METHODOLOGY_DISPATCH_ENV" ]]; then
+        export PYTHONPATH="$REPO_ROOT:$REPO_ROOT/packages/agentgov/src:${PYTHONPATH:-}"
+    fi
+    exec "${METHODOLOGY_CMD[@]}" --task "$TASK" --lane "$LANE" --platform "$PLATFORM" --launch
 fi
 
 # Fallback: direct launcher (methodology-dispatch not available)

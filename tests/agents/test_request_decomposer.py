@@ -2,13 +2,33 @@
 
 from __future__ import annotations
 
+import importlib.util
+import sys
 import tempfile
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
 from agents.request_decomposer.models import RequestDecomposition, TaskSpec
 from agents.request_decomposer.writer import write_decomposition
+from shared.frontmatter import parse_frontmatter
+
+_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_request_decompose_module() -> ModuleType:
+    if "request_decompose_script" in sys.modules:
+        return sys.modules["request_decompose_script"]
+    path = _ROOT / "scripts" / "request-decompose"
+    loader = SourceFileLoader("request_decompose_script", str(path))
+    spec = importlib.util.spec_from_loader("request_decompose_script", loader)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["request_decompose_script"] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 class TestTaskSpec:
@@ -222,6 +242,8 @@ class TestWriter:
                 content = p.read_text()
                 assert "type: cc-task" in content
                 assert "parent_request: REQ-test.md" in content
+                assert "route_metadata_schema: 1" in content
+                assert "mutation_scope_refs:" in content
 
     def test_blocks_computed(self):
         with tempfile.TemporaryDirectory() as td:
@@ -235,3 +257,128 @@ class TestWriter:
             write_decomposition(self._make_decomp(), Path(td))
             with pytest.raises(FileExistsError):
                 write_decomposition(self._make_decomp(), Path(td))
+
+    def test_real_write_links_parent_request_downstream_tasks(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            request = root / "REQ-test.md"
+            request.write_text(
+                """---
+type: hapax-request
+request_id: REQ-test
+status: accepted_for_planning
+---
+
+# Request
+
+Body.
+""",
+                encoding="utf-8",
+            )
+            decomp = self._make_decomp()
+            decomp.request_path = str(request)
+
+            write_decomposition(decomp, root / "tasks")
+
+            frontmatter, _body = parse_frontmatter(request)
+            assert frontmatter["downstream_tasks"] == ["write-phase1", "write-phase2"]
+            assert frontmatter["decomposition_model"] == "balanced"
+            assert frontmatter["decomposition_task_count"] == 2
+
+    def test_dry_run_does_not_link_parent_request(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            request = root / "REQ-test.md"
+            original = """---
+type: hapax-request
+request_id: REQ-test
+status: accepted_for_planning
+---
+
+# Request
+"""
+            request.write_text(original, encoding="utf-8")
+            decomp = self._make_decomp()
+            decomp.request_path = str(request)
+
+            write_decomposition(decomp, root / "tasks", dry_run=True)
+
+            assert request.read_text(encoding="utf-8") == original
+
+
+class TestRequestDecomposeScan:
+    def test_scan_uses_full_frontmatter_for_parent_request(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+
+        request = requests / "REQ-long.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-long
+status: accepted_for_planning
+owner: test
+padding:
+  - aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  - bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  - ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  - ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        task = tasks / "active" / "linked.md"
+        task.write_text(
+            """---
+type: cc-task
+task_id: linked
+status: offered
+padding:
+  - aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  - bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  - ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  - ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+parent_request: REQ-long.md
+---
+
+# Task
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+
+        assert script._find_undecomposed_requests() == []
+
+    def test_scan_skips_requests_with_downstream_tasks(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+
+        request = requests / "REQ-linked.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-linked
+status: accepted_for_planning
+downstream_tasks:
+  - already-linked
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+
+        assert script._find_undecomposed_requests() == []

@@ -27,12 +27,13 @@ def _write_request(
     intake_owner: str = "",
     planning_case: str = "",
     updated_at: str = "2026-05-08T15:00:00Z",
+    request_type: str = "hapax-request",
+    include_request_id: bool = True,
 ) -> None:
-    frontmatter = (
-        f"---\ntype: hapax-request\nrequest_id: {req_id}\n"
-        f"title: {title}\nstatus: {status}\n"
-        f"updated_at: {updated_at}\n"
-    )
+    frontmatter = f"---\ntype: {request_type}\n"
+    if include_request_id:
+        frontmatter += f"request_id: {req_id}\n"
+    frontmatter += f"title: {title}\nstatus: {status}\nupdated_at: {updated_at}\n"
     if intake_owner:
         frontmatter += f"intake_owner: {intake_owner}\n"
     if planning_case:
@@ -282,6 +283,22 @@ def test_non_request_files_ignored(tmp_path: Path) -> None:
     assert "all requests have fresh read receipts" in result.stdout
 
 
+def test_legacy_request_type_is_consumed(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    _write_request(
+        active / "REQ-LEGACY.md",
+        "REQ-LEGACY",
+        title="Legacy Type",
+        request_type="request",
+        include_request_id=False,
+    )
+
+    result = _run(tmp_path)
+    assert "1 unread" in result.stdout
+    assert "REQ-LEGACY" in result.stdout
+
+
 def test_missing_type_note_does_not_hide_valid_request(tmp_path: Path) -> None:
     active = tmp_path / "requests" / "active"
     active.mkdir(parents=True)
@@ -353,6 +370,26 @@ def test_planning_feed_produces_valid_json(tmp_path: Path) -> None:
     assert data["total_requests"] == 1
     assert len(data["requests"]) == 1
     assert data["dispatch"]["ranking_basis"] == "wsjf_v0"
+
+
+def test_planning_feed_includes_legacy_request_type(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    _write_request(
+        active / "REQ-LEGACY-FEED.md",
+        "REQ-LEGACY-FEED",
+        status="accepted_for_planning",
+        request_type="request",
+        include_request_id=False,
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert data["total_requests"] == 1
+    assert data["requests"][0]["request_id"] == "REQ-LEGACY-FEED"
 
 
 def test_planning_feed_pythonpath_includes_agentgov_src() -> None:

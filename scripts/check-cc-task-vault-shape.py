@@ -56,7 +56,7 @@ REQUIRED_TASK_FIELDS_BY_DIR = {
     "refused": REFUSED_TASK_FIELDS,
 }
 
-ACTIVE_STATUSES = {"offered", "claimed", "in_progress", "blocked", "pr_open"}
+ACTIVE_STATUSES = {"offered", "claimed", "in_progress", "blocked", "pr_open", "merge_queue"}
 CLOSED_STATUSES = {"closed", "completed", "done", "superseded", "withdrawn"}
 REFUSED_STATUSES = {"refused"}
 TERMINAL_STATUSES = CLOSED_STATUSES | REFUSED_STATUSES

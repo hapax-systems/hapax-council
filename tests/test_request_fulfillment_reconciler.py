@@ -19,9 +19,10 @@ def _write_request(
     *,
     status: str = "accepted_for_planning",
     downstream_tasks: list[str] | None = None,
+    request_type: str = "hapax-request",
 ) -> None:
     frontmatter = {
-        "type": "hapax-request",
+        "type": request_type,
         "request_id": request_id,
         "title": f"{request_id} title",
         "status": status,
@@ -148,6 +149,32 @@ def test_active_linked_task_blocks_request_closure(tmp_path: Path) -> None:
     assert payload["blocked"][0]["reason"] == "linked_tasks_not_fulfilled"
     assert (active / "REQ-003.md").exists()
     assert not (closed / "REQ-003.md").exists()
+
+
+def test_legacy_request_type_can_be_fulfilled(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    _write_request(
+        active / "REQ-LEGACY.md",
+        "REQ-LEGACY",
+        downstream_tasks=["T-LEGACY"],
+        request_type="request",
+    )
+    _write_task(task_closed / "T-LEGACY.md", "T-LEGACY", status="done")
+
+    result = _run(tmp_path, "--apply", "--json", "--now", "2026-05-18T01:00:00Z")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 1
+    assert not (active / "REQ-LEGACY.md").exists()
+    metadata = _frontmatter(closed / "REQ-LEGACY.md")
+    assert metadata["status"] == "fulfilled"
+    assert metadata["type"] == "request"
 
 
 def test_grouped_covered_requests_are_linked_from_task_body(tmp_path: Path) -> None:
