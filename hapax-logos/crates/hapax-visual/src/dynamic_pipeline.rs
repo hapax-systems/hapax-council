@@ -287,8 +287,11 @@ fn bounded_bookend_override(node_id: &str, param: &str, value: f64) -> Option<f3
 // --- Pipeline types ---
 
 /// A single pass in the dynamic pipeline.
+#[derive(Clone)]
 struct DynamicPass {
     node_id: String,
+    shader: String,
+    shader_source_hash: String,
     render_pipeline: Option<wgpu::RenderPipeline>,
     compute_pipeline: Option<wgpu::ComputePipeline>,
     uniform_bind_group: Option<wgpu::BindGroup>,
@@ -341,6 +344,100 @@ struct DynamicPass {
     topology_signature: String,
     graph_motif: String,
     motif_node_index: Option<usize>,
+}
+
+fn padded_plan_params(plan_pass: &PlanPass) -> Vec<f32> {
+    let mut values: Vec<f32> = plan_pass
+        .param_order
+        .iter()
+        .map(|name| plan_pass.uniforms.get(name).copied().unwrap_or(0.0) as f32)
+        .collect();
+    while values.len() < 4 {
+        values.push(0.0);
+    }
+    while !(values.len() * 4).is_multiple_of(16) {
+        values.push(0.0);
+    }
+    values
+}
+
+fn pass_plan_reuse_compatible(
+    pass: &DynamicPass,
+    target_name: &str,
+    plan_pass: &PlanPass,
+    shader_source_hash: &str,
+) -> bool {
+    let plan_is_compute = plan_pass.pass_type == "compute";
+    let pass_is_compute = pass.compute_pipeline.is_some();
+    if plan_is_compute != pass_is_compute {
+        return false;
+    }
+
+    // Non-SlotDrift plans may use node_id as a uniforms.json contract. Keep
+    // those strict; SlotDrift rewrites its own uniforms every frame, so a
+    // slot-local node_id change can reuse the same GPU pass when the executable
+    // shape is otherwise identical.
+    if plan_pass.slot_index.is_none() && pass.node_id != plan_pass.node_id {
+        return false;
+    }
+
+    pass.shader == plan_pass.shader
+        && pass.shader_source_hash == shader_source_hash
+        && pass.target == target_name
+        && pass.inputs == plan_pass.inputs
+        && pass.output == plan_pass.output
+        && pass.steps_per_frame == plan_pass.steps_per_frame
+        && pass.requires_content_slots == plan_pass.requires_content_slots
+        && pass.slot_family == plan_pass.slot_family
+        && pass.backend == plan_pass.backend
+        && pass.param_order == plan_pass.param_order
+        && pass.neutral_params == padded_plan_params(plan_pass)
+}
+
+fn update_dynamic_pass_metadata_from_plan(
+    pass: &mut DynamicPass,
+    target_name: &str,
+    plan_pass: &PlanPass,
+    shader_source_hash: &str,
+) {
+    let old_node_id = pass.node_id.clone();
+    pass.node_id = plan_pass.node_id.clone();
+    pass.shader = plan_pass.shader.clone();
+    pass.shader_source_hash = shader_source_hash.to_string();
+    pass.inputs = plan_pass.inputs.clone();
+    pass.output = plan_pass.output.clone();
+    pass.steps_per_frame = plan_pass.steps_per_frame;
+    pass.requires_content_slots = plan_pass.requires_content_slots;
+    pass.slot_family = plan_pass.slot_family.clone();
+    pass.backend = plan_pass.backend.clone();
+    pass.target = target_name.to_string();
+    pass.effect_scope = plan_pass.effect_scope.clone();
+    pass.effect_family = plan_pass.effect_family.clone();
+    pass.visibility_group = plan_pass.visibility_group.clone();
+    pass.eviction_cadence = plan_pass.eviction_cadence.clone();
+    pass.source_bound = plan_pass.source_bound;
+    pass.full_surface = plan_pass.full_surface;
+    pass.effect_binding = plan_pass.effect_binding.clone();
+    pass.effect_application_plane = plan_pass.effect_application_plane.clone();
+    pass.fourth_wall_policy = plan_pass.fourth_wall_policy.clone();
+    pass.coverage_role = plan_pass.coverage_role.clone();
+    pass.effect_aliases = plan_pass.effect_aliases.clone();
+    pass.slot_index = plan_pass.slot_index;
+    pass.slot_phase = plan_pass.slot_phase.clone();
+    pass.slot_intensity = plan_pass.slot_intensity;
+    pass.selection_count = plan_pass.selection_count;
+    pass.coverage_window_count = plan_pass.coverage_window_count;
+    pass.parameter_regions = plan_pass.parameter_regions.clone();
+    pass.preset_chain_id = plan_pass.preset_chain_id.clone();
+    pass.chain_lineage = plan_pass.chain_lineage.clone();
+    pass.structural_signature = plan_pass.structural_signature.clone();
+    pass.topology_signature = plan_pass.topology_signature.clone();
+    pass.graph_motif = plan_pass.graph_motif.clone();
+    pass.motif_node_index = plan_pass.motif_node_index;
+    pass.neutral_params = padded_plan_params(plan_pass);
+    if plan_pass.slot_index.is_some() && old_node_id != pass.node_id {
+        pass.current_params = pass.neutral_params.clone();
+    }
 }
 
 /// Rewrite a texture name to be target-namespaced when appropriate.
@@ -938,8 +1035,17 @@ impl DynamicPipeline {
         // Build passes
         let mut new_passes = Vec::new();
         let mut input_layouts = HashMap::new();
+        let previous_passes = self.passes.clone();
+        let mut reused_passes = 0usize;
+        let mut rebuilt_passes = 0usize;
 
         for (target_name, plan_pass) in &active_passes {
+            Self::ensure_cached_input_layout(
+                device,
+                plan_pass.inputs.len(),
+                &plan_pass.inputs,
+                &mut input_layouts,
+            );
             let shader_path = self.plan_dir.join(&plan_pass.shader);
             let fragment_source = match std::fs::read_to_string(&shader_path) {
                 Ok(src) => src,
@@ -952,6 +1058,22 @@ impl DynamicPipeline {
                     continue;
                 }
             };
+            let shader_source_hash = compute_manifest_hash(&fragment_source);
+            if let Some(existing) = previous_passes.get(new_passes.len()) {
+                if pass_plan_reuse_compatible(existing, target_name, plan_pass, &shader_source_hash)
+                {
+                    let mut reused = existing.clone();
+                    update_dynamic_pass_metadata_from_plan(
+                        &mut reused,
+                        target_name,
+                        plan_pass,
+                        &shader_source_hash,
+                    );
+                    new_passes.push(reused);
+                    reused_passes += 1;
+                    continue;
+                }
+            }
 
             let input_count = plan_pass.inputs.len();
 
@@ -994,6 +1116,8 @@ impl DynamicPipeline {
 
                 new_passes.push(DynamicPass {
                     node_id: plan_pass.node_id.clone(),
+                    shader: plan_pass.shader.clone(),
+                    shader_source_hash: shader_source_hash.clone(),
                     render_pipeline: None,
                     compute_pipeline: Some(compute_pipeline),
                     uniform_bind_group: None,
@@ -1001,34 +1125,8 @@ impl DynamicPipeline {
                     params_buffer: None,
                     params_bind_group: None,
                     param_order: plan_pass.param_order.clone(),
-                    neutral_params: {
-                        let mut v: Vec<f32> = plan_pass
-                            .param_order
-                            .iter()
-                            .map(|name| plan_pass.uniforms.get(name).copied().unwrap_or(0.0) as f32)
-                            .collect();
-                        while v.len() < 4 {
-                            v.push(0.0);
-                        }
-                        while !(v.len() * 4).is_multiple_of(16) {
-                            v.push(0.0);
-                        }
-                        v
-                    },
-                    current_params: {
-                        let mut v: Vec<f32> = plan_pass
-                            .param_order
-                            .iter()
-                            .map(|name| plan_pass.uniforms.get(name).copied().unwrap_or(0.0) as f32)
-                            .collect();
-                        while v.len() < 4 {
-                            v.push(0.0);
-                        }
-                        while !(v.len() * 4).is_multiple_of(16) {
-                            v.push(0.0);
-                        }
-                        v
-                    },
+                    neutral_params: padded_plan_params(plan_pass),
+                    current_params: padded_plan_params(plan_pass),
                     inputs: plan_pass.inputs.clone(),
                     output: plan_pass.output.clone(),
                     steps_per_frame: plan_pass.steps_per_frame,
@@ -1060,6 +1158,7 @@ impl DynamicPipeline {
                     graph_motif: plan_pass.graph_motif.clone(),
                     motif_node_index: plan_pass.motif_node_index,
                 });
+                rebuilt_passes += 1;
             } else {
                 // Render pass
                 let combined_source = format!("{}\n{}", SHARED_UNIFORMS_WGSL, fragment_source);
@@ -1158,6 +1257,8 @@ impl DynamicPipeline {
 
                 new_passes.push(DynamicPass {
                     node_id: plan_pass.node_id.clone(),
+                    shader: plan_pass.shader.clone(),
+                    shader_source_hash: shader_source_hash.clone(),
                     render_pipeline: Some(render_pipeline),
                     compute_pipeline: None,
                     uniform_bind_group: None,
@@ -1165,34 +1266,8 @@ impl DynamicPipeline {
                     params_buffer: pbuf,
                     params_bind_group: pbg,
                     param_order: plan_pass.param_order.clone(),
-                    neutral_params: {
-                        let mut v: Vec<f32> = plan_pass
-                            .param_order
-                            .iter()
-                            .map(|name| plan_pass.uniforms.get(name).copied().unwrap_or(0.0) as f32)
-                            .collect();
-                        while v.len() < 4 {
-                            v.push(0.0);
-                        }
-                        while !(v.len() * 4).is_multiple_of(16) {
-                            v.push(0.0);
-                        }
-                        v
-                    },
-                    current_params: {
-                        let mut v: Vec<f32> = plan_pass
-                            .param_order
-                            .iter()
-                            .map(|name| plan_pass.uniforms.get(name).copied().unwrap_or(0.0) as f32)
-                            .collect();
-                        while v.len() < 4 {
-                            v.push(0.0);
-                        }
-                        while !(v.len() * 4).is_multiple_of(16) {
-                            v.push(0.0);
-                        }
-                        v
-                    },
+                    neutral_params: padded_plan_params(plan_pass),
+                    current_params: padded_plan_params(plan_pass),
                     inputs: plan_pass.inputs.clone(),
                     output: plan_pass.output.clone(),
                     steps_per_frame: plan_pass.steps_per_frame,
@@ -1224,6 +1299,7 @@ impl DynamicPipeline {
                     graph_motif: plan_pass.graph_motif.clone(),
                     motif_node_index: plan_pass.motif_node_index,
                 });
+                rebuilt_passes += 1;
             }
         }
 
@@ -1231,7 +1307,12 @@ impl DynamicPipeline {
         let count = new_passes.len();
         self.passes = new_passes;
         self.slotdrift_coverage = plan.slotdrift_coverage.clone();
-        log::info!("dynamic_pipeline: loaded {} passes", count);
+        log::info!(
+            "dynamic_pipeline: loaded {} passes ({} reused, {} rebuilt)",
+            count,
+            reused_passes,
+            rebuilt_passes
+        );
         true
     }
 
@@ -2201,15 +2282,24 @@ impl DynamicPipeline {
         input_names: &[String],
         layouts: &mut HashMap<usize, wgpu::BindGroupLayout>,
     ) -> wgpu::BindGroupLayout {
+        Self::ensure_cached_input_layout(device, input_count, input_names, layouts);
+        // Always create a fresh one to return — wgpu layouts are not Clone,
+        // but two layouts created with the same descriptor are compatible.
+        Self::create_input_layout_for(device, input_count, input_names)
+    }
+
+    fn ensure_cached_input_layout(
+        device: &wgpu::Device,
+        input_count: usize,
+        input_names: &[String],
+        layouts: &mut HashMap<usize, wgpu::BindGroupLayout>,
+    ) {
         let has_content_slots = input_names.iter().any(|n| n.starts_with("content_slot_"));
         if !has_content_slots {
             layouts
                 .entry(input_count)
                 .or_insert_with(|| Self::create_input_layout(device, input_count));
         }
-        // Always create a fresh one to return — wgpu layouts are not Clone,
-        // but two layouts created with the same descriptor are compatible.
-        Self::create_input_layout_for(device, input_count, input_names)
     }
 
     fn create_input_layout(device: &wgpu::Device, input_count: usize) -> wgpu::BindGroupLayout {
@@ -3042,6 +3132,8 @@ mod tests {
     ) -> DynamicPass {
         DynamicPass {
             node_id: "test".to_string(),
+            shader: "test.wgsl".to_string(),
+            shader_source_hash: "test-source".to_string(),
             render_pipeline: None,
             compute_pipeline: None,
             uniform_bind_group: None,
@@ -3095,6 +3187,98 @@ mod tests {
         let pass =
             make_dynamic_pass_for_slot_test(false, "narrative", &["@live", "content_slot_0"]);
         assert!(pass_uses_content_slots(&pass));
+    }
+
+    #[test]
+    fn pass_plan_reuse_allows_slotdrift_metadata_only_node_change() {
+        let mut pass = make_dynamic_pass_for_slot_test(false, "narrative", &["@live"]);
+        pass.node_id = "slot0_0_noise".to_string();
+        pass.shader = "noise.wgsl".to_string();
+        pass.shader_source_hash = "noise-source".to_string();
+        pass.output = "main:layer_0".to_string();
+        pass.slot_index = Some(0);
+        pass.neutral_params = vec![0.0, 0.0, 0.0, 0.0];
+        pass.current_params = vec![0.25, 0.0, 0.0, 0.0];
+
+        let mut plan = make_pass("slot1_0_noise", "noise.wgsl");
+        plan.inputs = vec!["@live".to_string()];
+        plan.output = "main:layer_0".to_string();
+        plan.slot_index = Some(1);
+        plan.slot_phase = "rising".to_string();
+        plan.slot_intensity = 0.6;
+
+        assert!(pass_plan_reuse_compatible(
+            &pass,
+            "main",
+            &plan,
+            "noise-source"
+        ));
+
+        update_dynamic_pass_metadata_from_plan(&mut pass, "main", &plan, "noise-source");
+
+        assert_eq!(pass.node_id, "slot1_0_noise");
+        assert_eq!(pass.slot_index, Some(1));
+        assert_eq!(pass.slot_phase, "rising");
+        assert_eq!(pass.slot_intensity, 0.6);
+        assert_eq!(pass.current_params, pass.neutral_params);
+    }
+
+    #[test]
+    fn pass_plan_reuse_rejects_shader_changes() {
+        let mut pass = make_dynamic_pass_for_slot_test(false, "narrative", &["@live"]);
+        pass.shader = "noise.wgsl".to_string();
+        pass.shader_source_hash = "noise-source".to_string();
+        pass.output = "main:layer_0".to_string();
+
+        let mut plan = make_pass("test", "pixsort.wgsl");
+        plan.inputs = vec!["@live".to_string()];
+        plan.output = "main:layer_0".to_string();
+
+        assert!(!pass_plan_reuse_compatible(
+            &pass,
+            "main",
+            &plan,
+            "noise-source"
+        ));
+    }
+
+    #[test]
+    fn pass_plan_reuse_rejects_shader_source_changes() {
+        let mut pass = make_dynamic_pass_for_slot_test(false, "narrative", &["@live"]);
+        pass.shader = "noise.wgsl".to_string();
+        pass.shader_source_hash = "old-source".to_string();
+        pass.output = "main:layer_0".to_string();
+
+        let mut plan = make_pass("test", "noise.wgsl");
+        plan.inputs = vec!["@live".to_string()];
+        plan.output = "main:layer_0".to_string();
+
+        assert!(!pass_plan_reuse_compatible(
+            &pass,
+            "main",
+            &plan,
+            "new-source"
+        ));
+    }
+
+    #[test]
+    fn pass_plan_reuse_rejects_external_node_id_changes() {
+        let mut pass = make_dynamic_pass_for_slot_test(false, "narrative", &["@live"]);
+        pass.node_id = "external_a".to_string();
+        pass.shader = "noise.wgsl".to_string();
+        pass.shader_source_hash = "noise-source".to_string();
+        pass.output = "main:layer_0".to_string();
+
+        let mut plan = make_pass("external_b", "noise.wgsl");
+        plan.inputs = vec!["@live".to_string()];
+        plan.output = "main:layer_0".to_string();
+
+        assert!(!pass_plan_reuse_compatible(
+            &pass,
+            "main",
+            &plan,
+            "noise-source"
+        ));
     }
 
     #[test]
