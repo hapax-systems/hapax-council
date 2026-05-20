@@ -53,7 +53,64 @@ livestream.
 | AUX6/7      | IN 7/8   | YouTube audio     | hapax-yt-loudnorm-playback     |
 | AUX8/9      | IN 9/10  | Private/assistant | hapax-private-playback + hapax-notification-private-playback |
 
-## 3. Source Inventory
+## 3. Schema V4 Generated Tables
+
+Generated from `config/audio-topology.yaml` via
+`shared.audio_topology_generator.generate_audio_graph_reference_tables`.
+
+<!-- audio-graph-v4-generated:start -->
+### Route Classes
+
+| ID | Kind | Broadcast | Private | Autoconnect | Fail Closed | Recovery |
+| --- | --- | --- | --- | --- | --- | --- |
+| mpc-first-broadcast | broadcast | yes | no | no | yes | hold |
+| private-monitor-fail-closed | private | no | yes | no | yes | hold |
+| optional-hardware-fail-closed | optional | no | no | no | yes | operator-promote |
+| aec-reference-only | aec-reference | no | yes | no | yes | hold |
+
+### Port Groups
+
+| ID | Node | Role | Route Class | Fail Closed | Ports |
+| --- | --- | --- | --- | --- | --- |
+| mpc-content-return-output | mpc-usb-output | broadcast | mpc-first-broadcast | yes | mpc-usb-output-aux0, mpc-usb-output-aux1 |
+| mpc-voice-return-output | mpc-usb-output | broadcast | mpc-first-broadcast | yes | mpc-usb-output-aux2, mpc-usb-output-aux3 |
+| l12-content-return-input | l12-capture | broadcast | mpc-first-broadcast | yes | l12-capture-aux8, l12-capture-aux9 |
+| l12-voice-return-input | l12-capture | broadcast | mpc-first-broadcast | yes | l12-capture-aux10, l12-capture-aux11 |
+| mpc-private-monitor-output | mpc-usb-output | private | private-monitor-fail-closed | yes | mpc-usb-output-aux8, mpc-usb-output-aux9 |
+
+### Channel Pairs
+
+| ID | Left Port | Right Port | Route Class | Label |
+| --- | --- | --- | --- | --- |
+| mpc-content-return | mpc-usb-output-aux0 | mpc-usb-output-aux1 | mpc-first-broadcast | MPC content return to L-12 CH9/10 |
+| mpc-voice-return | mpc-usb-output-aux2 | mpc-usb-output-aux3 | mpc-first-broadcast | MPC voice return to L-12 CH11/12 |
+| mpc-private-monitor | mpc-usb-output-aux8 | mpc-usb-output-aux9 | private-monitor-fail-closed | MPC private monitor ingress AUX8/9 |
+
+### Physical Edges
+
+| ID | Source Ports | Target Ports | Medium | Route Class | Channel Pair | Fail Closed |
+| --- | --- | --- | --- | --- | --- | --- |
+| mpc-out-1-2-to-l12-ch9-10 | mpc-usb-output-aux0, mpc-usb-output-aux1 | l12-capture-aux8, l12-capture-aux9 | trs | mpc-first-broadcast | mpc-content-return | yes |
+| mpc-out-3-4-to-l12-ch11-12 | mpc-usb-output-aux2, mpc-usb-output-aux3 | l12-capture-aux10, l12-capture-aux11 | trs | mpc-first-broadcast | mpc-voice-return | yes |
+
+### Hardware Patches
+
+| ID | Source Device | Target Device | Route Class | Fail Closed | Physical Edges |
+| --- | --- | --- | --- | --- | --- |
+| mpc-trs-returns-to-l12 | mpc-live-iii | zoom-l12 | mpc-first-broadcast | yes | mpc-out-1-2-to-l12-ch9-10, mpc-out-3-4-to-l12-ch11-12 |
+
+### Optional Device Lifecycle
+
+| Device | Nodes | Default State | Absent OK | Fail Closed | Promotion Gate |
+| --- | --- | --- | --- | --- | --- |
+| blue-yeti-headphone-output | yeti-headphone-output | absent | yes | yes | private-monitor-only |
+| respeaker-xvf3800 | respeaker-xvf3800-array-source, respeaker-xvf3800-aec-reference-output | absent | yes | yes | explicit-operator-promotion |
+| torso-s4 | s4-analog-out-1-2, s4-source, s4-output, s4-loopback | absent | yes | yes | route-policy-owner |
+| dirtywave-m8 | m8-usb-source, m8-instrument-capture, m8-loudnorm | absent | yes | yes | reconciler-owned-handoff |
+| polyend-tracker-mini | polyend-instrument-source, polyend-instrument-capture, polyend-loudnorm | absent | yes | yes | route-policy-owner |
+<!-- audio-graph-v4-generated:end -->
+
+## 4. Source Inventory
 
 | Source | Service/Origin | PipeWire Entry Point | Chain | Status |
 |--------|---------------|---------------------|-------|--------|
@@ -73,9 +130,9 @@ uses yt-dlp to download tracks and ffmpeg + pw-cat to pipe audio directly to
 `~/hapax-state/music-repo/soundcloud.jsonl`, replenished by
 `hapax-soundcloud-adapter.service`.
 
-## 4. Signal Flow Per Use Case
+## 5. Signal Flow Per Use Case
 
-### 4a. TTS Voice → Livestream
+### 5a. TTS Voice → Livestream
 
 ```
 Daimonion (role.broadcast)
@@ -94,7 +151,7 @@ Daimonion (role.broadcast)
   → hapax-obs-broadcast-remap → OBS
 ```
 
-### 4b. Music → Livestream
+### 5b. Music → Livestream
 
 ```
 hapax-music-player.service (pw-cat → hapax-music-loudnorm directly)
@@ -108,7 +165,7 @@ hapax-music-player.service (pw-cat → hapax-music-loudnorm directly)
 Music ducking: `hapax-audio-ducker.service` writes gain to `hapax-music-duck`
 mixer nodes when operator voice (Rode VAD) or TTS is active.
 
-### 4c. Private Audio (NOT Broadcast)
+### 5c. Private Audio (NOT Broadcast)
 
 ```
 role.assistant → hapax-private (null sink)
@@ -117,7 +174,7 @@ role.assistant → hapax-private (null sink)
   → MPC headphone only (NOT routed to TRS outputs)
 ```
 
-## 5. Critical Invariants
+## 6. Critical Invariants
 
 | # | Invariant | Failure Mode |
 |---|-----------|-------------|
@@ -130,7 +187,7 @@ role.assistant → hapax-private (null sink)
 | 7 | No webcam mics in broadcast chain | Room audio leaks to stream |
 | 8 | No dry host signal to livestream (MPC-first) | Untreated audio on stream |
 
-## 6. Node Protection Status (2026-05-20)
+## 7. Node Protection Status (2026-05-20)
 
 | Node | autoconnect | dont-fallback | Reconciler | Protection |
 |------|------------|--------------|-----------|-----------|
@@ -146,7 +203,7 @@ role.assistant → hapax-private (null sink)
 | hapax-pc-monitor-playback | — | true | — | TARGET + HEAVY |
 | hapax-m8-loudnorm-playback | false | true | yes | FULL |
 
-## 7. Reconciler & Sidechain Ducking
+## 8. Reconciler & Sidechain Ducking
 
 **Reconciler:** `hapax-audio-reconciler.service`
 - Reads `~/.config/hapax/audio-link-map.conf` + `audio-forbidden-links.conf`
@@ -161,7 +218,7 @@ role.assistant → hapax-private (null sink)
 
 **Validation:** `scripts/hapax-audio-routing-check` — run before/after config changes
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Check |
 |---------|-------|
@@ -172,7 +229,7 @@ role.assistant → hapax-private (null sink)
 | L-12 USB missing | `pw-cli ls Node \| grep -i zoom` + physical reconnect |
 | No audio at all | Check MPC USB device present + reconciler running + PipeWire healthy |
 
-## 9. Decommissioned
+## 10. Decommissioned
 
 | Item | Retired | Notes |
 |------|---------|-------|
@@ -180,7 +237,7 @@ role.assistant → hapax-private (null sink)
 | hapax-tts-duck (software ducker) | 2026-04-23 | Replaced by MPC-routed voice chain |
 | hapax-source-activate.timer | 2026-05-20 | Was regenerating configs; permanently disabled |
 
-## 10. Key Files
+## 11. Key Files
 
 | File | Purpose |
 |------|---------|

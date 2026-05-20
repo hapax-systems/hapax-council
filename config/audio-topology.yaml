@@ -1,4 +1,4 @@
-schema_version: 3
+schema_version: 4
 description: |
   Canonical workstation audio topology for the live L-12 broadcast graph.
 
@@ -9,10 +9,10 @@ description: |
       anything that enters the L-12 reaches broadcast; private audio leaves
       the L-12 entirely.
 
-  The current schema has one target_object per logical node, while several
-  deployed PipeWire modules expose separate capture/playback sides. For those
-  nodes, params.* records the side that cannot be represented structurally yet
-  (for example playback_target, capture_positions, and fail_closed).
+  Schema v4 (2026-05-20): first-class ports, port groups, channel pairs,
+  route classes, physical edges, hardware patches, and optional-device
+  lifecycle policy. Physical hardware forwarding is data, not prose in
+  params.*, and fail-closed behavior is available as generator input.
 
   Schema v2 (2026-05-02): hw: fields now use symbolic ALSA card IDs
   (`hw:CARD=L12`) pinned by config/udev/rules.d/50-hapax-alsa-card-ids.rules,
@@ -26,6 +26,265 @@ description: |
   hand-mirror gap on respeaker-class new sources. v2 descriptors still
   parse — chain_kind defaults to None and the generic filter-chain
   template runs unchanged.
+
+route_classes:
+  - id: mpc-first-broadcast
+    kind: broadcast
+    description: Host audio must enter MPC first, exit hardware outputs, then re-enter L-12 before broadcast.
+    broadcast_allowed: true
+    private_allowed: false
+    default_autoconnect: false
+    fail_closed_on_absent: true
+    recovery_action: hold
+
+  - id: private-monitor-fail-closed
+    kind: private
+    description: Private assistant and notification monitor paths may target MPC private monitor ingress only.
+    broadcast_allowed: false
+    private_allowed: true
+    default_autoconnect: false
+    fail_closed_on_absent: true
+    recovery_action: hold
+
+  - id: optional-hardware-fail-closed
+    kind: optional
+    description: Optional external hardware branches are absent-safe and never auto-promote to broadcast.
+    broadcast_allowed: false
+    private_allowed: false
+    default_autoconnect: false
+    fail_closed_on_absent: true
+    recovery_action: operator-promote
+
+  - id: aec-reference-only
+    kind: aec-reference
+    description: Far-end AEC reference may feed optional hardware playback only; it is not an operator monitor or egress.
+    broadcast_allowed: false
+    private_allowed: true
+    default_autoconnect: false
+    fail_closed_on_absent: true
+    recovery_action: hold
+
+ports:
+  - id: mpc-usb-output-aux0
+    node_id: mpc-usb-output
+    direction: output
+    position: AUX0
+    channel_index: 0
+    label: MPC USB OUT AUX0 / Out 1 left
+    broadcast: true
+
+  - id: mpc-usb-output-aux1
+    node_id: mpc-usb-output
+    direction: output
+    position: AUX1
+    channel_index: 1
+    label: MPC USB OUT AUX1 / Out 1 right
+    broadcast: true
+
+  - id: mpc-usb-output-aux2
+    node_id: mpc-usb-output
+    direction: output
+    position: AUX2
+    channel_index: 2
+    label: MPC USB OUT AUX2 / Out 3 left
+    broadcast: true
+
+  - id: mpc-usb-output-aux3
+    node_id: mpc-usb-output
+    direction: output
+    position: AUX3
+    channel_index: 3
+    label: MPC USB OUT AUX3 / Out 3 right
+    broadcast: true
+
+  - id: mpc-usb-output-aux8
+    node_id: mpc-usb-output
+    direction: output
+    position: AUX8
+    channel_index: 8
+    label: MPC private monitor left
+    private_monitor: true
+
+  - id: mpc-usb-output-aux9
+    node_id: mpc-usb-output
+    direction: output
+    position: AUX9
+    channel_index: 9
+    label: MPC private monitor right
+    private_monitor: true
+
+  - id: l12-capture-aux8
+    node_id: l12-capture
+    direction: input
+    position: AUX8
+    channel_index: 8
+    label: L-12 CH9 MPC content left
+    broadcast: true
+
+  - id: l12-capture-aux9
+    node_id: l12-capture
+    direction: input
+    position: AUX9
+    channel_index: 9
+    label: L-12 CH10 MPC content right
+    broadcast: true
+
+  - id: l12-capture-aux10
+    node_id: l12-capture
+    direction: input
+    position: AUX10
+    channel_index: 10
+    label: L-12 CH11 MPC voice left
+    broadcast: true
+
+  - id: l12-capture-aux11
+    node_id: l12-capture
+    direction: input
+    position: AUX11
+    channel_index: 11
+    label: L-12 CH12 MPC voice right
+    broadcast: true
+
+port_groups:
+  - id: mpc-content-return-output
+    node_id: mpc-usb-output
+    ports: [mpc-usb-output-aux0, mpc-usb-output-aux1]
+    route_class: mpc-first-broadcast
+    role: broadcast
+    fail_closed: true
+    description: MPC content mix output pair feeding L-12 CH9/10.
+
+  - id: mpc-voice-return-output
+    node_id: mpc-usb-output
+    ports: [mpc-usb-output-aux2, mpc-usb-output-aux3]
+    route_class: mpc-first-broadcast
+    role: broadcast
+    fail_closed: true
+    description: MPC voice return output pair feeding L-12 CH11/12.
+
+  - id: l12-content-return-input
+    node_id: l12-capture
+    ports: [l12-capture-aux8, l12-capture-aux9]
+    route_class: mpc-first-broadcast
+    role: broadcast
+    fail_closed: true
+    description: L-12 CH9/10 broadcast-bound content return.
+
+  - id: l12-voice-return-input
+    node_id: l12-capture
+    ports: [l12-capture-aux10, l12-capture-aux11]
+    route_class: mpc-first-broadcast
+    role: broadcast
+    fail_closed: true
+    description: L-12 CH11/12 broadcast-bound voice return.
+
+  - id: mpc-private-monitor-output
+    node_id: mpc-usb-output
+    ports: [mpc-usb-output-aux8, mpc-usb-output-aux9]
+    route_class: private-monitor-fail-closed
+    role: private
+    fail_closed: true
+    description: MPC private monitor ingress; never an L-12 fallback.
+
+channel_pairs:
+  - id: mpc-content-return
+    left_port: mpc-usb-output-aux0
+    right_port: mpc-usb-output-aux1
+    route_class: mpc-first-broadcast
+    label: MPC content return to L-12 CH9/10
+
+  - id: mpc-voice-return
+    left_port: mpc-usb-output-aux2
+    right_port: mpc-usb-output-aux3
+    route_class: mpc-first-broadcast
+    label: MPC voice return to L-12 CH11/12
+
+  - id: mpc-private-monitor
+    left_port: mpc-usb-output-aux8
+    right_port: mpc-usb-output-aux9
+    route_class: private-monitor-fail-closed
+    label: MPC private monitor ingress AUX8/9
+
+physical_edges:
+  - id: mpc-out-1-2-to-l12-ch9-10
+    source_ports: [mpc-usb-output-aux0, mpc-usb-output-aux1]
+    target_ports: [l12-capture-aux8, l12-capture-aux9]
+    source_connector: MPC Live III Out 1/2
+    target_connector: ZOOM L-12 CH9/10
+    medium: trs
+    route_class: mpc-first-broadcast
+    channel_pair: mpc-content-return
+    fail_closed_on_absent: true
+    description: Hardware return carrying MPC content mix back into L-12 capture.
+
+  - id: mpc-out-3-4-to-l12-ch11-12
+    source_ports: [mpc-usb-output-aux2, mpc-usb-output-aux3]
+    target_ports: [l12-capture-aux10, l12-capture-aux11]
+    source_connector: MPC Live III Out 3/4
+    target_connector: ZOOM L-12 CH11/12
+    medium: trs
+    route_class: mpc-first-broadcast
+    channel_pair: mpc-voice-return
+    fail_closed_on_absent: true
+    description: Hardware return carrying Hapax voice back into L-12 capture.
+
+hardware_patches:
+  - id: mpc-trs-returns-to-l12
+    source_device: mpc-live-iii
+    target_device: zoom-l12
+    physical_edges:
+      - mpc-out-1-2-to-l12-ch9-10
+      - mpc-out-3-4-to-l12-ch11-12
+    route_class: mpc-first-broadcast
+    fail_closed_on_absent: true
+    operator_verified: true
+    description: MPC-first broadcast hardware patch; dry host signal must not bypass it.
+
+optional_devices:
+  - device_id: blue-yeti-headphone-output
+    node_ids: [yeti-headphone-output]
+    states: [present, absent, inactive, reconnecting, failed]
+    default_state: absent
+    absent_is_ok: true
+    fail_closed_when_absent: true
+    promotion_gate: private-monitor-only
+    description: Optional off-L-12 private monitor endpoint.
+
+  - device_id: respeaker-xvf3800
+    node_ids: [respeaker-xvf3800-array-source, respeaker-xvf3800-aec-reference-output]
+    states: [present, absent, inactive, reconnecting, failed]
+    default_state: absent
+    absent_is_ok: true
+    fail_closed_when_absent: true
+    promotion_gate: explicit-operator-promotion
+    description: Optional far-field sidechat capture plus AEC reference output.
+
+  - device_id: torso-s4
+    node_ids: [s4-analog-out-1-2, s4-source, s4-output, s4-loopback]
+    states: [present, absent, inactive, reconnecting, failed]
+    default_state: absent
+    absent_is_ok: true
+    fail_closed_when_absent: true
+    promotion_gate: route-policy-owner
+    description: Optional S-4 host audio surface; not the private-monitor readiness target.
+
+  - device_id: dirtywave-m8
+    node_ids: [m8-usb-source, m8-instrument-capture, m8-loudnorm]
+    states: [present, absent, inactive, reconnecting, failed]
+    default_state: absent
+    absent_is_ok: true
+    fail_closed_when_absent: true
+    promotion_gate: reconciler-owned-handoff
+    description: Optional M8 instrument branch; absent state is expected and fail-closed.
+
+  - device_id: polyend-tracker-mini
+    node_ids: [polyend-instrument-source, polyend-instrument-capture, polyend-loudnorm]
+    states: [present, absent, inactive, reconnecting, failed]
+    default_state: absent
+    absent_is_ok: true
+    fail_closed_when_absent: true
+    promotion_gate: route-policy-owner
+    description: Optional Polyend branch blocked until route policy owns broadcast activation.
 
 nodes:
   # L-12 hardware endpoints.
@@ -92,7 +351,6 @@ nodes:
       private_monitor_endpoint: true
       private_monitor_positions: AUX8 AUX9
       private_monitor_route: private-monitor-via-mpc-live-iii
-      hardware_forward_path: "MPC Out 1/2 -> L-12 CH9/10; MPC Out 3/4 -> L-12 CH11/12"
 
   - id: yeti-headphone-output
     kind: alsa_sink

@@ -139,6 +139,47 @@ class DownmixStrategy(StrEnum):
     BROADCAST_FAN_OUT = "broadcast-fan-out"
 
 
+class PortDirection(StrEnum):
+    """Physical or logical port direction at the device boundary."""
+
+    INPUT = "input"
+    OUTPUT = "output"
+    DUPLEX = "duplex"
+
+
+class RouteKind(StrEnum):
+    """Route intent taxonomy used by typed policy maps and generated docs."""
+
+    BROADCAST = "broadcast"
+    PRIVATE = "private"
+    MONITOR = "monitor"
+    AEC_REFERENCE = "aec-reference"
+    OPTIONAL = "optional"
+
+
+class PhysicalMedium(StrEnum):
+    """Transport used by a typed physical/hardware edge."""
+
+    TRS = "trs"
+    USB_AUDIO = "usb-audio"
+    INTERNAL_DSP = "internal-dsp"
+    VIRTUAL = "virtual"
+
+
+class OptionalDeviceState(StrEnum):
+    """Lifecycle states for optional hardware branches."""
+
+    PRESENT = "present"
+    ABSENT = "absent"
+    INACTIVE = "inactive"
+    RECONNECTING = "reconnecting"
+    FAILED = "failed"
+
+
+class AudioGraphCompatibilityError(ValueError):
+    """Raised when an older descriptor is not accepted as v4 AudioGraph input."""
+
+
 # ---------------------------------------------------------------------------
 # Format spec (gap G-9)
 # ---------------------------------------------------------------------------
@@ -182,6 +223,165 @@ class ChannelMap(BaseModel):
             raise ValueError(
                 f"ChannelMap.positions length ({len(self.positions)}) "
                 f"must equal count ({self.count}) when positions are set"
+            )
+        return self
+
+
+# ---------------------------------------------------------------------------
+# Ports, route classes, and physical hardware topology (schema v4)
+# ---------------------------------------------------------------------------
+
+
+class Port(BaseModel):
+    """First-class logical/physical port in the audio graph.
+
+    v3 encoded port intent mostly in prose fields such as
+    ``params.hardware_forward_path`` or ``params.playback_positions``.
+    v4 promotes those endpoints so validators, generated docs, and
+    fail-closed policy maps can reason about individual channels.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    node_id: str
+    direction: PortDirection
+    position: str
+    channel_index: int | None = Field(default=None, ge=0)
+    label: str = ""
+    broadcast: bool = False
+    private_monitor: bool = False
+    optional: bool = False
+
+
+class PortGroup(BaseModel):
+    """Named bundle of ports that must move as one operational route."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    node_id: str
+    ports: list[str] = Field(..., min_length=1)
+    route_class: str | None = None
+    role: RouteKind
+    fail_closed: bool = False
+    description: str = ""
+
+
+class ChannelPair(BaseModel):
+    """Stereo pair with explicit left/right port membership."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    left_port: str
+    right_port: str
+    label: str = ""
+    route_class: str | None = None
+    description: str = ""
+
+    @model_validator(mode="after")
+    def _left_and_right_are_distinct(self) -> ChannelPair:
+        if self.left_port == self.right_port:
+            raise ValueError(f"ChannelPair {self.id!r}: left_port and right_port must differ")
+        return self
+
+
+class RouteClass(BaseModel):
+    """Executable policy class for a route family.
+
+    These values are generator input, not prose: a route class decides
+    whether a generated map may autoconnect, whether private/broadcast
+    boundaries are legal, and whether absent targets fail closed.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    kind: RouteKind
+    description: str = ""
+    broadcast_allowed: bool = False
+    private_allowed: bool = False
+    default_autoconnect: bool = False
+    fail_closed_on_absent: bool = True
+    recovery_action: Literal["hold", "reconnect", "operator-promote"] = "hold"
+
+    @model_validator(mode="after")
+    def _route_has_allowed_surface(self) -> RouteClass:
+        if (
+            not self.broadcast_allowed
+            and not self.private_allowed
+            and self.kind != RouteKind.OPTIONAL
+        ):
+            raise ValueError(
+                f"RouteClass {self.id!r}: non-optional route must allow broadcast or private"
+            )
+        return self
+
+
+class PhysicalEdge(BaseModel):
+    """Typed hardware forwarding edge.
+
+    Replaces prose like ``MPC Out 1/2 -> L-12 CH9/10`` with stable
+    port references and connector labels.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    source_ports: list[str] = Field(..., min_length=1)
+    target_ports: list[str] = Field(..., min_length=1)
+    source_connector: str
+    target_connector: str
+    medium: PhysicalMedium
+    route_class: str
+    channel_pair: str | None = None
+    fail_closed_on_absent: bool = True
+    description: str = ""
+
+    @model_validator(mode="after")
+    def _port_lists_match(self) -> PhysicalEdge:
+        if len(self.source_ports) != len(self.target_ports):
+            raise ValueError(
+                f"PhysicalEdge {self.id!r}: source_ports and target_ports lengths must match"
+            )
+        return self
+
+
+class HardwarePatch(BaseModel):
+    """Operational hardware patch assembled from one or more physical edges."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    source_device: str
+    target_device: str
+    physical_edges: list[str] = Field(..., min_length=1)
+    route_class: str
+    fail_closed_on_absent: bool = True
+    operator_verified: bool = False
+    description: str = ""
+
+
+class OptionalDeviceLifecycle(BaseModel):
+    """Lifecycle policy for optional external hardware branches."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    device_id: str
+    node_ids: list[str] = Field(..., min_length=1)
+    states: list[OptionalDeviceState] = Field(..., min_length=1)
+    default_state: OptionalDeviceState = OptionalDeviceState.ABSENT
+    absent_is_ok: bool = True
+    fail_closed_when_absent: bool = True
+    promotion_gate: str | None = None
+    description: str = ""
+
+    @model_validator(mode="after")
+    def _default_state_in_states(self) -> OptionalDeviceLifecycle:
+        if self.default_state not in self.states:
+            raise ValueError(
+                f"OptionalDeviceLifecycle {self.device_id!r}: default_state must be in states"
             )
         return self
 
@@ -446,11 +646,14 @@ class AudioNode(BaseModel):
     channels: ChannelMap = Field(
         default_factory=lambda: ChannelMap(count=2, positions=["FL", "FR"])
     )
+    expected_scene: str | None = None
+    expected_channel_assignments: dict[str, str] = Field(default_factory=dict)
     format: FormatSpec | None = None
     # Gap G-5 — typed fail-closed for null-sink TAPs.
     fail_closed: bool = False
     private_monitor_endpoint: bool = False
     # Spec §2.1 + gap G-7 — typed filter-chain shape.
+    chain_kind: Literal["loudnorm", "duck", "usb-bias"] | None = None
     filter_chain_template: FilterChainTemplate | None = None
     filter_graph_stages: list[FilterStage] = Field(default_factory=list)
     # Loudnorm / usb-bias parametric knobs (parity with audio_topology v3).
@@ -781,6 +984,13 @@ class AudioGraph(BaseModel):
     # Core graph (spec §2.1).
     nodes: list[AudioNode]
     links: list[AudioLink] = Field(default_factory=list)
+    ports: list[Port] = Field(default_factory=list)
+    port_groups: list[PortGroup] = Field(default_factory=list)
+    channel_pairs: list[ChannelPair] = Field(default_factory=list)
+    route_classes: list[RouteClass] = Field(default_factory=list)
+    physical_edges: list[PhysicalEdge] = Field(default_factory=list)
+    hardware_patches: list[HardwarePatch] = Field(default_factory=list)
+    optional_devices: list[OptionalDeviceLifecycle] = Field(default_factory=list)
     loopbacks: list[LoopbackTopology] = Field(default_factory=list)
     channel_downmixes: list[ChannelDownmix] = Field(default_factory=list)
     fanouts: list[Fanout] = Field(default_factory=list)
@@ -810,6 +1020,24 @@ class AudioGraph(BaseModel):
 
     # Gap G-12 catch-all — un-typed wireplumber rules retained as text.
     untyped_wireplumber_rules: list[WireplumberRule] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_edges_key(cls, data: Any) -> Any:
+        """Accept canonical v4 YAML that still serves legacy v3 tools.
+
+        ``shared.audio_topology.TopologyDescriptor`` uses ``edges`` while
+        ``AudioGraph`` uses ``links``. The canonical file remains readable by
+        both during the migration by normalising the input key here.
+        """
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        if "edges" in out:
+            if "links" in out:
+                raise ValueError("AudioGraph input must not specify both edges and links")
+            out["links"] = out.pop("edges")
+        return out
 
     @field_validator("nodes")
     @classmethod
@@ -847,6 +1075,151 @@ class AudioGraph(BaseModel):
                 )
             seen.add(node.industrial_name)
         return v
+
+    @model_validator(mode="after")
+    def _ports_reference_valid_nodes(self) -> AudioGraph:
+        node_ids = {n.id for n in self.nodes}
+        seen: set[str] = set()
+        for port in self.ports:
+            if port.id in seen:
+                raise ValueError(f"Duplicate port id: {port.id!r}")
+            seen.add(port.id)
+            if port.node_id not in node_ids:
+                raise ValueError(f"Port {port.id!r}: node_id {port.node_id!r} not in nodes")
+        return self
+
+    @model_validator(mode="after")
+    def _route_classes_unique(self) -> AudioGraph:
+        seen: set[str] = set()
+        for route_class in self.route_classes:
+            if route_class.id in seen:
+                raise ValueError(f"Duplicate route class id: {route_class.id!r}")
+            seen.add(route_class.id)
+        return self
+
+    @model_validator(mode="after")
+    def _port_groups_reference_valid_ports(self) -> AudioGraph:
+        node_ids = {n.id for n in self.nodes}
+        ports_by_id = {p.id: p for p in self.ports}
+        route_class_ids = {rc.id for rc in self.route_classes}
+        seen: set[str] = set()
+        for group in self.port_groups:
+            if group.id in seen:
+                raise ValueError(f"Duplicate port group id: {group.id!r}")
+            seen.add(group.id)
+            if group.node_id not in node_ids:
+                raise ValueError(f"PortGroup {group.id!r}: node_id {group.node_id!r} not in nodes")
+            if group.route_class is not None and group.route_class not in route_class_ids:
+                raise ValueError(
+                    f"PortGroup {group.id!r}: route_class {group.route_class!r} not declared"
+                )
+            for port_id in group.ports:
+                port = ports_by_id.get(port_id)
+                if port is None:
+                    raise ValueError(f"PortGroup {group.id!r}: port {port_id!r} not declared")
+                if port.node_id != group.node_id:
+                    raise ValueError(
+                        f"PortGroup {group.id!r}: port {port_id!r} belongs to "
+                        f"node_id {port.node_id!r}, expected {group.node_id!r}"
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def _channel_pairs_reference_valid_ports(self) -> AudioGraph:
+        port_ids = {p.id for p in self.ports}
+        route_class_ids = {rc.id for rc in self.route_classes}
+        seen: set[str] = set()
+        for pair in self.channel_pairs:
+            if pair.id in seen:
+                raise ValueError(f"Duplicate channel pair id: {pair.id!r}")
+            seen.add(pair.id)
+            if pair.left_port not in port_ids:
+                raise ValueError(
+                    f"ChannelPair {pair.id!r}: left_port {pair.left_port!r} not declared"
+                )
+            if pair.right_port not in port_ids:
+                raise ValueError(
+                    f"ChannelPair {pair.id!r}: right_port {pair.right_port!r} not declared"
+                )
+            if pair.route_class is not None and pair.route_class not in route_class_ids:
+                raise ValueError(
+                    f"ChannelPair {pair.id!r}: route_class {pair.route_class!r} not declared"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _physical_edges_reference_valid_schema_data(self) -> AudioGraph:
+        ports_by_id = {p.id: p for p in self.ports}
+        pair_ids = {pair.id for pair in self.channel_pairs}
+        route_class_ids = {rc.id for rc in self.route_classes}
+        seen: set[str] = set()
+        for edge in self.physical_edges:
+            if edge.id in seen:
+                raise ValueError(f"Duplicate physical edge id: {edge.id!r}")
+            seen.add(edge.id)
+            if edge.route_class not in route_class_ids:
+                raise ValueError(
+                    f"PhysicalEdge {edge.id!r}: route_class {edge.route_class!r} not declared"
+                )
+            if edge.channel_pair is not None and edge.channel_pair not in pair_ids:
+                raise ValueError(
+                    f"PhysicalEdge {edge.id!r}: channel_pair {edge.channel_pair!r} not declared"
+                )
+            for port_id in edge.source_ports:
+                port = ports_by_id.get(port_id)
+                if port is None:
+                    raise ValueError(f"PhysicalEdge {edge.id!r}: port {port_id!r} not declared")
+                if port.direction != PortDirection.OUTPUT:
+                    raise ValueError(
+                        f"PhysicalEdge {edge.id!r}: source port {port_id!r} has "
+                        f"direction {port.direction.value!r}, expected 'output'"
+                    )
+            for port_id in edge.target_ports:
+                port = ports_by_id.get(port_id)
+                if port is None:
+                    raise ValueError(f"PhysicalEdge {edge.id!r}: port {port_id!r} not declared")
+                if port.direction != PortDirection.INPUT:
+                    raise ValueError(
+                        f"PhysicalEdge {edge.id!r}: target port {port_id!r} has "
+                        f"direction {port.direction.value!r}, expected 'input'"
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def _hardware_patches_reference_valid_edges(self) -> AudioGraph:
+        edge_ids = {edge.id for edge in self.physical_edges}
+        route_class_ids = {rc.id for rc in self.route_classes}
+        seen: set[str] = set()
+        for patch in self.hardware_patches:
+            if patch.id in seen:
+                raise ValueError(f"Duplicate hardware patch id: {patch.id!r}")
+            seen.add(patch.id)
+            if patch.route_class not in route_class_ids:
+                raise ValueError(
+                    f"HardwarePatch {patch.id!r}: route_class {patch.route_class!r} not declared"
+                )
+            for edge_id in patch.physical_edges:
+                if edge_id not in edge_ids:
+                    raise ValueError(
+                        f"HardwarePatch {patch.id!r}: physical edge {edge_id!r} not declared"
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def _optional_devices_reference_valid_nodes(self) -> AudioGraph:
+        node_ids = {n.id for n in self.nodes}
+        seen: set[str] = set()
+        for device in self.optional_devices:
+            if device.device_id in seen:
+                raise ValueError(f"Duplicate optional device id: {device.device_id!r}")
+            seen.add(device.device_id)
+            for node_id in device.node_ids:
+                if node_id not in node_ids:
+                    raise ValueError(
+                        f"OptionalDeviceLifecycle {device.device_id!r}: "
+                        f"node_id {node_id!r} not in nodes"
+                    )
+        return self
 
     @model_validator(mode="after")
     def _links_reference_valid_nodes(self) -> AudioGraph:
@@ -934,8 +1307,16 @@ class AudioGraph(BaseModel):
         data = yaml.safe_load(raw)
         if not isinstance(data, dict):
             raise ValueError("AudioGraph.from_yaml expects a top-level mapping")
-        if data.get("schema_version") != 4:
-            raise ValueError(f"unknown schema_version: {data.get('schema_version')!r} (expected 4)")
+        schema_version = data.get("schema_version")
+        if schema_version == 3:
+            raise AudioGraphCompatibilityError(
+                "schema_version=3 descriptors are legacy TopologyDescriptor input, not "
+                "AudioGraph v4 input. Migrate to schema_version=4 with typed ports, "
+                "route_classes, physical_edges, hardware_patches, and optional_devices; "
+                "or parse the legacy document with shared.audio_topology.TopologyDescriptor."
+            )
+        if schema_version != 4:
+            raise ValueError(f"unknown schema_version: {schema_version!r} (expected 4)")
         return cls.model_validate(data)
 
 
@@ -943,6 +1324,7 @@ class AudioGraph(BaseModel):
 __all__: list[Any] = [
     "AlsaCardRule",
     "AlsaProfilePin",
+    "AudioGraphCompatibilityError",
     "AudioGraph",
     "AudioLink",
     "AudioNode",
@@ -950,6 +1332,7 @@ __all__: list[Any] = [
     "BroadcastInvariant",
     "ChannelDownmix",
     "ChannelMap",
+    "ChannelPair",
     "DownmixRoute",
     "DownmixStrategy",
     "DuckPolicy",
@@ -959,13 +1342,23 @@ __all__: list[Any] = [
     "FormatSpec",
     "GainStage",
     "GlobalTunables",
+    "HardwarePatch",
     "LoopbackTopology",
     "MediaRoleSink",
     "MixdownGraph",
     "MixerRoute",
     "NodeKind",
+    "OptionalDeviceLifecycle",
+    "OptionalDeviceState",
+    "PhysicalEdge",
+    "PhysicalMedium",
+    "Port",
+    "PortDirection",
+    "PortGroup",
     "PreferredTargetPin",
     "RemapSource",
+    "RouteClass",
+    "RouteKind",
     "RoleLoopback",
     "StreamPin",
     "StreamRestoreRule",
