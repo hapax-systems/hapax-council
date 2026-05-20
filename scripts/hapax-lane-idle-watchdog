@@ -34,9 +34,11 @@ METHODOLOGY_DISPATCH="${HOME}/.local/bin/hapax-methodology-dispatch"
 # Skip alpha (integrator, always has operator) and RTE
 SKIP_LANES="${HAPAX_IDLE_SKIP_LANES:-alpha}"
 
-# Lanes that must always be running (operator directive: 4 Claude lanes at all times)
+# Lanes that must always be running (operator directive: 4 of each at all times)
 REQUIRED_CLAUDE_LANES="${HAPAX_REQUIRED_CLAUDE_LANES:-beta gamma delta epsilon}"
+REQUIRED_CODEX_LANES="${HAPAX_REQUIRED_CODEX_LANES:-cx-cpu-bridge cx-effect-drift-current cx-preset-storm cx-visual-bandwidth}"
 CLAUDE_LAUNCHER="${HOME}/.local/bin/hapax-claude"
+CODEX_LAUNCHER="${HOME}/projects/hapax-council/scripts/hapax-codex"
 
 mkdir -p "$STATE_DIR"
 now=$(date +%s)
@@ -198,6 +200,59 @@ if [ -x "$CLAUDE_LAUNCHER" ]; then
                     revived_lanes=$((revived_lanes + 1))
                     curl -sf -d "Lane idle watchdog: revived $role (Claude had exited, pane was $pane_cmd)" \
                         -H "Title: Lane revived" \
+                        -H "Priority: default" \
+                        -H "Tags: recycle" \
+                        "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+                    ;;
+            esac
+        fi
+    done
+fi
+
+# ─── Ensure required Codex lanes are alive ─────────────────────────────────
+
+if [ -x "$CODEX_LAUNCHER" ]; then
+    for color in $REQUIRED_CODEX_LANES; do
+        session="hapax-codex-${color}"
+        worktree="${HOME}/projects/hapax-council--${color}"
+
+        cooldown_file="$STATE_DIR/_lane_launch_codex_${color}.last"
+        launch_cooldown=300
+        if [ -f "$cooldown_file" ]; then
+            last_attempt=$(cat "$cooldown_file")
+            elapsed=$((now - last_attempt))
+            if [ "$elapsed" -lt "$launch_cooldown" ]; then
+                continue
+            fi
+        fi
+
+        if ! tmux has-session -t "$session" 2>/dev/null; then
+            if [ -d "$worktree" ]; then
+                log "LAUNCHING missing Codex lane: $color"
+                echo "$now" > "$cooldown_file"
+                "$CODEX_LAUNCHER" --session "$color" --cd "$worktree" --terminal tmux 2>/dev/null || true
+                launched_lanes=$((launched_lanes + 1))
+                curl -sf -d "Lane idle watchdog: launched Codex $color (session missing)" \
+                    -H "Title: Codex lane auto-launched" \
+                    -H "Priority: default" \
+                    -H "Tags: rocket" \
+                    "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+            else
+                log "WARN: Codex worktree missing for $color at $worktree"
+            fi
+        else
+            pane_cmd=$(tmux display-message -t "$session" -p '#{pane_current_command}' 2>/dev/null) || continue
+            case "$pane_cmd" in
+                codex|node)
+                    ;;
+                *)
+                    log "REVIVING dead Codex in $session (pane_cmd=$pane_cmd)"
+                    echo "$now" > "$cooldown_file"
+                    tmux send-keys -t "$session" "cd $worktree && codex --resume" Enter 2>/dev/null || \
+                        tmux send-keys -t "$session" "cd $worktree && codex" Enter 2>/dev/null || true
+                    revived_lanes=$((revived_lanes + 1))
+                    curl -sf -d "Lane idle watchdog: revived Codex $color (pane was $pane_cmd)" \
+                        -H "Title: Codex lane revived" \
                         -H "Priority: default" \
                         -H "Tags: recycle" \
                         "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
