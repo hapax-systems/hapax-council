@@ -6,6 +6,47 @@ enabled. The Tauri/WebKit `hapax-logos` preview is retired from production and
 must not be started by boot, visual-stack restart, deploy, rebuild, Stream Deck,
 or KDEConnect paths.
 
+## Security Dependency Disposition
+
+Status as of 2026-05-20: the native Tauri shell is a release blocker, not a
+shippable runtime. Current released Tauri 2.11.2 still resolves Linux through
+GTK3/WebKit2GTK and `glib 0.18.5`, which is inside GitHub advisory
+`GHSA-wrw7-89jp-8q8g` (`glib >=0.15.0, <0.20.0`; patched floor `0.20.0`).
+Cargo cannot force `glib 0.20.0` into that graph because `gtk 0.18.2` requires
+`glib ^0.18`.
+
+The active repository mitigation is to remove the retired Tauri runtime from
+the active Cargo lockfile. `hapax-logos/src-tauri` remains only as a small
+fail-closed Rust stub that exits with the decommission message; generated Tauri
+schemas are not part of the active build surface.
+
+Upstream blockers to recheck before any native-shell revival:
+
+- Tauri GTK4 migration: https://github.com/tauri-apps/tauri/issues/7335
+- `tauri-runtime` GTK4 migration: https://github.com/tauri-apps/tauri/issues/12562
+- `tauri` GTK4 migration: https://github.com/tauri-apps/tauri/issues/12563
+- Wry GTK4/WebKitGTK 6 migration: https://github.com/tauri-apps/wry/issues/1474
+- Open but not releasable migration PRs as of 2026-05-20:
+  https://github.com/tauri-apps/tauri/pull/14684,
+  https://github.com/tauri-apps/wry/pull/1530,
+  https://github.com/tauri-apps/tao/pull/1104,
+  https://github.com/tauri-apps/muda/pull/341.
+
+Recheck cadence: monthly, next on 2026-06-20, or sooner if Dependabot reports a
+patched released Tauri/wry/tao/muda path. Revival requires all of:
+
+- crates.io releases that move Linux to GTK4/WebKitGTK 6 or otherwise resolve
+  `glib >=0.20.0`;
+- this vulnerable-glib gate passes from `hapax-logos/src-tauri`:
+
+  ```bash
+  cargo tree --locked --prefix none \
+    | awk '/^glib v/ { version=$2; sub(/^v/, "", version); split(version, parts, "."); if (parts[1] == 0 && parts[2] < 20) { print; bad = 1 } } END { exit bad }'
+  ```
+
+- `cargo check --locked` passes from `hapax-logos/src-tauri`;
+- the release-blocker note above is replaced with a dated validation entry.
+
 ## Retired Runtime
 
 These user units are decommissioned:
