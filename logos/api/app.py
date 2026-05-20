@@ -1028,6 +1028,7 @@ from logos.api.routes.studio_compositor import router as studio_compositor_route
 from logos.api.routes.studio_effects import router as studio_effects_router
 from logos.api.routes.vault import router as vault_router
 from logos.api.routes.watch import router as watch_router
+from logos.api.routes.wcs_health import router as wcs_health_router
 from logos.api.routes.working_mode import router as working_mode_router
 from logos.api.routes.x402 import router as x402_router
 
@@ -1070,6 +1071,7 @@ app.include_router(predictions_router)
 app.include_router(x402_router)
 app.include_router(payment_rails_router)
 app.include_router(stripe_webhook_router)
+app.include_router(wcs_health_router)
 
 # Mount HLS segment directory for live stream serving
 # Override .ts MIME type: Starlette defaults to Qt Linguist (text/vnd.trolltech.linguist)
