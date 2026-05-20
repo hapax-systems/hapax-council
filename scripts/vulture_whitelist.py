@@ -3678,3 +3678,15 @@ lookup_speech_event
 recent_public_speech
 _clear_tmux_cache_for_tests
 _clear_tmux_session_cache_for_tests
+
+from shared.organ_visual_map import (
+    organ_ids,
+    visual_techniques_for_organ,
+    organs_using_technique,
+    shader_node_ids,
+)
+
+organ_ids
+visual_techniques_for_organ
+organs_using_technique
+shader_node_ids
