@@ -105,6 +105,7 @@ class CameraPipeline:
         target_fps = self._frame_cache_target_fps_for_source(source_fps)
         self._frame_cache_sample_interval_s = 1.0 / target_fps
         self._next_frame_cache_sample_at = 0.0
+        self._predecode_target_fps = self._predecode_target_fps_for_source(source_fps)
 
     @property
     def role(self) -> str:
@@ -152,6 +153,25 @@ class CameraPipeline:
             return False
         self._next_frame_cache_sample_at = now + self._frame_cache_sample_interval_s
         return True
+
+    @staticmethod
+    def _predecode_target_fps_for_source(fps: float) -> int | None:
+        """Return an optional 3D-mode pre-decode rate cap.
+
+        The frame-cache gate prevents unnecessary Python copies, but it still
+        lets every upstream MJPEG buffer hit ``jpegdec``. In 3D mode the
+        source-publisher cadence is the consumer contract, so excess compressed
+        frames should be dropped before decode. Outside 3D mode the producer
+        remains a full-cadence interpipe source for the legacy compositor path.
+        """
+        if os.environ.get("HAPAX_3D_COMPOSITOR") != "1":
+            return None
+        source_fps = max(1.0, float(fps))
+        target = CameraPipeline._frame_cache_target_fps_for_source(source_fps)
+        target_int = max(1, int(round(target)))
+        if target_int >= int(round(source_fps)):
+            return None
+        return target_int
 
     @staticmethod
     def _effective_source_fps(spec: CameraSpec, fallback_fps: int) -> int:
@@ -246,6 +266,33 @@ class CameraPipeline:
             # queue, not at v4l2.
             decode_queue: Any = None
             if self._spec.input_format == "mjpeg":
+                predecode_rate: Any = None
+                predecode_caps: Any = None
+                if self._predecode_target_fps is not None:
+                    predecode_rate = Gst.ElementFactory.make(
+                        "videorate", f"predec_rate_{self._role_safe}"
+                    )
+                    if predecode_rate is None:
+                        raise RuntimeError(f"{self._spec.role}: videorate factory failed")
+                    predecode_rate.set_property("drop-only", True)
+                    predecode_rate.set_property("max-rate", self._predecode_target_fps)
+
+                    predecode_caps = Gst.ElementFactory.make(
+                        "capsfilter", f"predec_caps_{self._role_safe}"
+                    )
+                    if predecode_caps is None:
+                        raise RuntimeError(
+                            f"{self._spec.role}: predecode capsfilter factory failed"
+                        )
+                    predecode_caps.set_property(
+                        "caps",
+                        Gst.Caps.from_string(
+                            f"image/jpeg,width={self._spec.width},"
+                            f"height={self._spec.height},"
+                            f"framerate={self._predecode_target_fps}/1"
+                        ),
+                    )
+
                 decode_queue = Gst.ElementFactory.make("queue", f"decq_{self._role_safe}")
                 if decode_queue is None:
                     raise RuntimeError(f"{self._spec.role}: queue factory failed")
@@ -310,6 +357,8 @@ class CameraPipeline:
             sink.set_property("forward-eos", False)
 
             elements = [src, src_caps, watchdog]
+            if self._spec.input_format == "mjpeg" and self._predecode_target_fps is not None:
+                elements.extend([predecode_rate, predecode_caps])
             if decode_queue is not None:
                 elements.append(decode_queue)
             if decoder is not None:

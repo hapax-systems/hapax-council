@@ -370,6 +370,50 @@ class TestDecodeQueueCapacity:
         )
         cam.teardown()
 
+    def test_3d_mjpeg_path_rate_limits_before_decode(self, gst, monkeypatch) -> None:
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        monkeypatch.setenv("HAPAX_3D_COMPOSITOR", "1")
+        monkeypatch.setenv("HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS", "6")
+
+        Gst, _ = gst
+        spec = self._mjpeg_spec("predecode-limit")
+        cam = CameraPipeline(spec=spec, gst=Gst, fps=30)
+        try:
+            cam.build()
+        except Exception:
+            pass
+        pipeline = cam._pipeline
+        assert pipeline is not None, "build() must construct the pipeline object"
+
+        predecode_rate = pipeline.get_by_name("predec_rate_predecode_limit")
+        predecode_caps = pipeline.get_by_name("predec_caps_predecode_limit")
+        assert predecode_rate is not None
+        assert predecode_caps is not None
+        assert predecode_rate.get_property("drop-only") is True
+        assert predecode_rate.get_property("max-rate") == 6
+        assert "framerate=(fraction)6/1" in predecode_caps.get_property("caps").to_string()
+        cam.teardown()
+
+    def test_legacy_mjpeg_path_does_not_rate_limit_before_decode(self, gst, monkeypatch) -> None:
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        monkeypatch.delenv("HAPAX_3D_COMPOSITOR", raising=False)
+        monkeypatch.setenv("HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS", "6")
+
+        Gst, _ = gst
+        spec = self._mjpeg_spec("legacy-decode")
+        cam = CameraPipeline(spec=spec, gst=Gst, fps=30)
+        try:
+            cam.build()
+        except Exception:
+            pass
+        pipeline = cam._pipeline
+        assert pipeline is not None, "build() must construct the pipeline object"
+        assert pipeline.get_by_name("predec_rate_legacy_decode") is None
+        assert pipeline.get_by_name("predec_caps_legacy_decode") is None
+        cam.teardown()
+
 
 class TestCameraOrientationNormalization:
     def _http_spec(
