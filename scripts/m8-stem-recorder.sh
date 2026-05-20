@@ -29,14 +29,29 @@ set -euo pipefail
 
 readonly STEM_DIR="${HAPAX_M8_STEM_DIR:-/var/lib/hapax/m8-stems}"
 readonly SOURCE_REGEX="${HAPAX_M8_SOURCE_REGEX:-alsa_input.usb-Dirtywave_M8_.*\.analog-stereo}"
+readonly SOURCE_WAIT_SECONDS="${HAPAX_M8_SOURCE_WAIT_SECONDS:-20}"
 
 mkdir -p "${STEM_DIR}"
 
-# Resolve the M8 source via the regex (handles serial-suffixed names).
-M8_SOURCE="$(pactl list short sources | awk '{print $2}' | grep -E "${SOURCE_REGEX}" | head -1 || true)"
+resolve_m8_source() {
+    pactl list short sources | awk '{print $2}' | grep -E "${SOURCE_REGEX}" | head -1 || true
+}
+
+# Resolve the M8 source via the regex (handles serial-suffixed names). The
+# service is udev-pulled, so PipeWire may lag the USB event; wait briefly, then
+# exit cleanly if the source is still absent. Absence is not a crash condition.
+M8_SOURCE=""
+deadline=$((SECONDS + SOURCE_WAIT_SECONDS))
+while [ "${SECONDS}" -le "${deadline}" ]; do
+    M8_SOURCE="$(resolve_m8_source)"
+    if [ -n "${M8_SOURCE}" ]; then
+        break
+    fi
+    sleep 1
+done
 if [ -z "${M8_SOURCE}" ]; then
     echo "m8-stem-recorder: no M8 USB audio source found matching ${SOURCE_REGEX}" >&2
-    exit 1
+    exit 0
 fi
 
 # Day-rotation: capture in 1h chunks aligned to UTC; sox concats trivially

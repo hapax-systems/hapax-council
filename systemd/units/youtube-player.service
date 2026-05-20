@@ -1,0 +1,24 @@
+[Unit]
+Description=YouTube Player — decode to v4l2loopback + PipeWire audio
+After=studio-compositor.service pipewire.service
+Wants=studio-compositor.service
+StartLimitIntervalSec=5min
+StartLimitBurst=6
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=XDG_RUNTIME_DIR=%t
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/youtube-player.py
+Restart=on-failure
+RestartSec=15s
+MemoryHigh=1500M
+MemoryMax=2G
+MemorySwapMax=1G
+
+[Install]
+WantedBy=default.target

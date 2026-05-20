@@ -1,0 +1,16 @@
+[Unit]
+Description=Hapax aseqnet MIDI bridge client
+After=network-online.target sound.target
+Wants=network-online.target
+StartLimitIntervalSec=5min
+StartLimitBurst=4
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-midi-bridge-client
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=default.target
