@@ -21,10 +21,11 @@ float blockHash(vec2 blockID, float seed) {
 
 void main() {
     vec2 uv = v_texcoord;
+    vec4 orig = texture2D(tex, uv);
 
     // Passthrough when intensity is zero
     if (u_intensity < 0.01) {
-        gl_FragColor = texture2D(tex, uv);
+        gl_FragColor = orig;
         return;
     }
 
@@ -58,7 +59,7 @@ void main() {
 
         } else if (effectType < 0.55) {
             // Brightness corruption + posterization
-            vec4 color = texture2D(tex, uv);
+            vec4 color = orig;
             float bright = blockHash(blockID, timeSlot + 4.0) * 2.0;
             color.rgb *= bright;
             color.rgb = floor(color.rgb * 4.0) / 4.0;
@@ -66,28 +67,29 @@ void main() {
 
         } else if (effectType < 0.85) {
             // Color channel swap
-            vec4 color = texture2D(tex, uv);
             float swapSeed = blockHash(blockID, timeSlot + 5.0);
             if (swapSeed < 0.33)
-                gl_FragColor = vec4(color.b, color.r, color.g, 1.0);
+                gl_FragColor = vec4(orig.b, orig.r, orig.g, orig.a);
             else if (swapSeed < 0.66)
-                gl_FragColor = vec4(color.g, color.b, color.r, 1.0);
+                gl_FragColor = vec4(orig.g, orig.b, orig.r, orig.a);
             else
-                gl_FragColor = vec4(color.r, color.b, color.g, 1.0);
+                gl_FragColor = vec4(orig.r, orig.b, orig.g, orig.a);
 
         } else if (effectType < 0.9) {
-            // Solid block (dead pixel block)
+            // Dead-pixel block, source-mixed so the live frame remains legible.
             float v = blockHash(blockID, timeSlot + 6.0);
-            gl_FragColor = vec4(vec3(v * 0.3), 1.0);
+            vec3 dead = vec3(v * 0.3);
+            gl_FragColor = vec4(mix(orig.rgb, dead, u_intensity * 0.45), orig.a);
         } else {
-            // Data pattern bleed
+            // Data pattern bleed, source-mixed rather than a replacement pane.
             vec2 pixel = gl_FragCoord.xy;
             float pattern = mod(pixel.x + pixel.y * 3.0, 8.0) / 8.0;
             float patternR = mod(pixel.x * 2.0 + pixel.y, 6.0) / 6.0;
-            gl_FragColor = vec4(pattern, patternR * 0.7, pattern * 0.5, 1.0);
+            vec3 data = vec3(pattern, patternR * 0.7, pattern * 0.5);
+            gl_FragColor = vec4(mix(orig.rgb, data, u_intensity * 0.35), orig.a);
         }
     } else {
         // --- Clean block ---
-        gl_FragColor = texture2D(tex, uv);
+        gl_FragColor = orig;
     }
 }

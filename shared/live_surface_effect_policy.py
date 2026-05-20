@@ -72,16 +72,14 @@ LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES = frozenset(
         "echo",
         "feedback",
         "fluid_sim",
-        "glitch_block",
         "halftone",
         "noise_gen",
         "noise_overlay",
         "palette_extract",
         "palette_remap",
-        "pixsort",
         "reaction_diffusion",
-        "scanlines",
         "slitscan",
+        "stutter",
         "thermal",
         "tile",
         "trail",
@@ -95,6 +93,29 @@ LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES = frozenset(
 # audited as source-preserving enough for live activation. Everything else
 # remains available through WGSL/autonomous drift, but not through legacy
 # graph-preset activation until fragment parity is proven.
+LIVE_SURFACE_GLSL_TEMPORAL_PENDING_VISUAL_EVIDENCE_NODE_TYPES = frozenset(
+    {
+        # These temporal accumulator fragments are not eligible through the
+        # legacy GLSL graph-preset path without node-specific visual evidence:
+        # the source must keep moving, no foreground pane/full-frame flood may
+        # appear, and no hard freeze may be visible under bounded params.
+        "slitscan",
+        "stutter",
+    }
+)
+
+LIVE_SURFACE_GLSL_SOURCE_BOUND_REPAIR_20260520_NODE_TYPES = frozenset(
+    {
+        # First activation tranche for compositor-effect-family-eligible-
+        # supply-source-bound-repair. This deliberately excludes temporal
+        # accumulator nodes until live negative evidence proves no freeze/pane
+        # behavior in the legacy GLSL path.
+        "glitch_block",
+        "pixsort",
+        "scanlines",
+    }
+)
+
 LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES = frozenset(
     {
         "bloom",
@@ -105,7 +126,7 @@ LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES = frozenset(
         "postprocess",
         "vignette",
     }
-)
+) | LIVE_SURFACE_GLSL_SOURCE_BOUND_REPAIR_20260520_NODE_TYPES
 
 
 CONTENT_SLOT_GUARDED_NODE_TYPES = frozenset({"content_layer", "sierpinski_content"})
@@ -495,7 +516,9 @@ __all__ = [
     "CONTENT_SLOT_GUARDED_NODE_TYPES",
     "LIVE_SURFACE_BLOCKED_NODE_TYPES",
     "LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES",
+    "LIVE_SURFACE_GLSL_SOURCE_BOUND_REPAIR_20260520_NODE_TYPES",
     "LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES",
+    "LIVE_SURFACE_GLSL_TEMPORAL_PENDING_VISUAL_EVIDENCE_NODE_TYPES",
     "LIVE_SURFACE_PARAM_BOUNDS",
     "ParamBound",
     "STRUCTURAL_NODE_TYPES",

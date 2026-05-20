@@ -39,6 +39,10 @@ from pathlib import Path
 from typing import Any
 
 from .graph_mutation_bus import write_graph_mutation
+from .preset_family_policy import (
+    family_policy_reason_counts,
+    policy_eligible_presets_for_family,
+)
 from .preset_family_selector import (
     pick_and_load_mutated,
     pick_family_with_role_bias,
@@ -323,7 +327,22 @@ def process_preset_recruitment(compositor: Any | None = None) -> bool:
         except Exception:
             log.debug("programme role bias failed (continuing)", exc_info=True)
 
-    hit = pick_and_load_mutated(family, last=_last_family_activated, seed=seed)
+    eligible_presets = policy_eligible_presets_for_family(family)
+    if not eligible_presets:
+        _last_recruitment_ts_seen = last_recruited_ts_f
+        log.info(
+            "preset recruitment: no policy-eligible preset for family=%r reasons=%s",
+            family,
+            family_policy_reason_counts(family),
+        )
+        return False
+
+    hit = pick_and_load_mutated(
+        family,
+        available=list(eligible_presets),
+        last=_last_family_activated,
+        seed=seed,
+    )
     if hit is None:
         log.debug("preset_family_selector returned no preset for family=%r", family)
         return False
