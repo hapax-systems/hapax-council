@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""Cascade-unblock cc-tasks whose depends_on are all satisfied.
+
+Called by cc-close after a task moves to done/closed, and also by the
+periodic reconciler timer as a safety net.
+
+Usage:
+    cc-cascade-unblock [<closed_task_id>]   # after a specific close
+    cc-cascade-unblock --reconcile           # full sweep
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+VAULT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
+ACTIVE = VAULT / "active"
+CLOSED = VAULT / "closed"
+
+
+def _done_task_ids() -> set[str]:
+    ids: set[str] = set()
+    for d in [ACTIVE, CLOSED]:
+        if not d.is_dir():
+            continue
+        for f in d.glob("*.md"):
+            text = f.read_text(errors="replace")
+            m = re.search(r"^status:\s*(\S+)", text, re.M)
+            if m and m.group(1) in ("done", "closed", "merged"):
+                tid = re.search(r"^task_id:\s*(.+)", text, re.M)
+                if tid:
+                    ids.add(tid.group(1).strip())
+                ids.add(f.stem)
+    return ids
+
+
+def _parse_depends(text: str) -> list[str]:
+    block = re.search(r"^depends_on:\s*\n((?:\s+-\s+.+\n)*)", text, re.M)
+    if block:
+        return [
+            d.strip().lstrip("- ").strip("\"'")
+            for d in block.group(1).strip().split("\n")
+            if d.strip()
+        ]
+    inline = re.search(r"^depends_on:\s*\[([^\]]*)\]", text, re.M)
+    if inline and inline.group(1).strip():
+        return [d.strip().strip("\"'") for d in inline.group(1).split(",") if d.strip()]
+    return []
+
+
+def cascade_unblock() -> int:
+    if not ACTIVE.is_dir():
+        return 0
+
+    done_ids = _done_task_ids()
+    unblocked = 0
+
+    for f in sorted(ACTIVE.glob("*.md")):
+        text = f.read_text(errors="replace")
+        status_m = re.search(r"^status:\s*(\S+)", text, re.M)
+        if not status_m or status_m.group(1) != "blocked":
+            continue
+
+        deps = _parse_depends(text)
+        if not deps:
+            continue
+
+        if not all(d in done_ids for d in deps):
+            continue
+
+        new = re.sub(r"^status: blocked", "status: offered", text, count=1, flags=re.M)
+        new = re.sub(
+            r'^blocked_reason: .+',
+            'blocked_reason: null',
+            new,
+            count=1,
+            flags=re.M,
+        )
+        f.write_text(new)
+        unblocked += 1
+        print(f"cc-cascade-unblock: {f.stem} -> offered (all deps satisfied)")
+
+    return unblocked
+
+
+if __name__ == "__main__":
+    n = cascade_unblock()
+    if n:
+        print(f"cc-cascade-unblock: unblocked {n} task(s)")
+    sys.exit(0)

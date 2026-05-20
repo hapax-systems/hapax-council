@@ -254,4 +254,12 @@ if [[ "$final_status" == "done" && "${HAPAX_REQUEST_RECONCILER_OFF:-0}" != "1" &
     python3 "$phase_advance" "$vault_root/closed/$(basename "$note_path")" "$task_id"
     set -e
   fi
+
+  # Cascade-unblock: transition blocked tasks whose depends_on are now all satisfied.
+  cascade="$SCRIPT_DIR/cc-cascade-unblock"
+  if [[ -x "$cascade" ]]; then
+    set +e
+    "$cascade" "$task_id"
+    set -e
+  fi
 fi
