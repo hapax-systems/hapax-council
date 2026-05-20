@@ -34,6 +34,10 @@ METHODOLOGY_DISPATCH="${HOME}/.local/bin/hapax-methodology-dispatch"
 # Skip alpha (integrator, always has operator) and RTE
 SKIP_LANES="${HAPAX_IDLE_SKIP_LANES:-alpha}"
 
+# Lanes that must always be running (operator directive: 4 Claude lanes at all times)
+REQUIRED_CLAUDE_LANES="${HAPAX_REQUIRED_CLAUDE_LANES:-beta gamma delta epsilon}"
+CLAUDE_LAUNCHER="${HOME}/.local/bin/hapax-claude"
+
 mkdir -p "$STATE_DIR"
 now=$(date +%s)
 
@@ -141,44 +145,72 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | sort); do
     esac
 done
 
-if [ "$lane_count" -eq 0 ]; then
-    log "no lanes found — checking for offered work to launch lanes"
+# ─── Ensure required Claude lanes are alive ─────────────────────────────────
 
-    offered_count=$(grep -rl '^status: offered' "$TASK_ROOT/" 2>/dev/null | wc -l)
-    if [ "$offered_count" -gt 0 ]; then
-        cooldown_file="$STATE_DIR/_lane_launch.last"
-        launch_cooldown=600  # 10 min between launch attempts
+launched_lanes=0
+revived_lanes=0
+
+if [ -x "$CLAUDE_LAUNCHER" ]; then
+    for role in $REQUIRED_CLAUDE_LANES; do
+        session="hapax-claude-${role}"
+        worktree="${HOME}/projects/hapax-council--${role}"
+
+        cooldown_file="$STATE_DIR/_lane_launch_${role}.last"
+        launch_cooldown=300  # 5 min between launch attempts per lane
         if [ -f "$cooldown_file" ]; then
-            last_launch=$(cat "$cooldown_file")
-            elapsed=$((now - last_launch))
+            last_attempt=$(cat "$cooldown_file")
+            elapsed=$((now - last_attempt))
             if [ "$elapsed" -lt "$launch_cooldown" ]; then
-                log "lane launch in cooldown (${elapsed}s / ${launch_cooldown}s)"
-                exit 0
+                continue
             fi
         fi
 
-        log "LAUNCHING: $offered_count offered tasks, no lanes running"
-        echo "$now" > "$cooldown_file"
-
-        CLAUDE_LAUNCHER="${HOME}/.local/bin/hapax-claude"
-        if [ -x "$CLAUDE_LAUNCHER" ]; then
-            for role in beta; do
-                if [ -d "${HOME}/projects/hapax-council--${role}" ]; then
-                    log "launching lane: $role"
-                    "$CLAUDE_LAUNCHER" --role "$role" --terminal tmux 2>/dev/null || true
-                    curl -sf -d "Lane idle watchdog: launched $role (no lanes were running, $offered_count tasks offered)" \
-                        -H "Title: Lane auto-launched" \
-                        -H "Priority: default" \
-                        -H "Tags: rocket" \
-                        "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
-                fi
-            done
+        if ! tmux has-session -t "$session" 2>/dev/null; then
+            # Session doesn't exist — launch it
+            if [ -d "$worktree" ]; then
+                log "LAUNCHING missing lane: $role"
+                echo "$now" > "$cooldown_file"
+                "$CLAUDE_LAUNCHER" --role "$role" --terminal tmux 2>/dev/null || true
+                launched_lanes=$((launched_lanes + 1))
+                curl -sf -d "Lane idle watchdog: launched $role (session missing)" \
+                    -H "Title: Lane auto-launched" \
+                    -H "Priority: default" \
+                    -H "Tags: rocket" \
+                    "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+            else
+                log "WARN: worktree missing for $role at $worktree"
+            fi
         else
-            log "WARN: hapax-claude launcher not found at $CLAUDE_LAUNCHER"
+            # Session exists — check if Claude is actually running in it
+            pane_cmd=$(tmux display-message -t "$session" -p '#{pane_current_command}' 2>/dev/null) || continue
+            case "$pane_cmd" in
+                claude|claude-code|node)
+                    # Claude is running, all good
+                    ;;
+                *)
+                    # Claude exited, shell is showing — relaunch
+                    log "REVIVING dead Claude in $session (pane_cmd=$pane_cmd)"
+                    echo "$now" > "$cooldown_file"
+                    tmux send-keys -t "$session" "claude --resume" Enter 2>/dev/null || \
+                        tmux send-keys -t "$session" "claude" Enter 2>/dev/null || true
+                    revived_lanes=$((revived_lanes + 1))
+                    curl -sf -d "Lane idle watchdog: revived $role (Claude had exited, pane was $pane_cmd)" \
+                        -H "Title: Lane revived" \
+                        -H "Priority: default" \
+                        -H "Tags: recycle" \
+                        "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+                    ;;
+            esac
         fi
-    else
-        log "no lanes and no offered tasks — nothing to launch"
-    fi
+    done
+fi
+
+if [ "$launched_lanes" -gt 0 ] || [ "$revived_lanes" -gt 0 ]; then
+    log "lane maintenance: launched=$launched_lanes revived=$revived_lanes"
+fi
+
+if [ "$lane_count" -eq 0 ]; then
+    log "no active lanes found after maintenance pass"
     exit 0
 fi
 
