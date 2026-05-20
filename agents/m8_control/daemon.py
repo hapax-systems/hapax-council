@@ -33,7 +33,17 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 log = logging.getLogger("m8_control")
 
 DEFAULT_SERIAL_PATH = Path("/dev/hapax-m8-serial")
-DEFAULT_UDS_PATH = Path("/run/hapax/m8-control.sock")
+
+
+def default_uds_path() -> Path:
+    """Return the user-scope runtime socket path for the M8 control daemon."""
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir:
+        return Path(runtime_dir) / "hapax" / "m8-control.sock"
+    return Path("/run") / "user" / str(os.getuid()) / "hapax" / "m8-control.sock"
+
+
+DEFAULT_UDS_PATH = default_uds_path()
 
 # Button name → bit index (per m8_libserialport.c). Symbolic names are
 # the canonical input; the daemon rejects unknown names with an error.
@@ -190,14 +200,14 @@ class M8ControlDaemon:
         self,
         *,
         serial_path: Path = DEFAULT_SERIAL_PATH,
-        uds_path: Path = DEFAULT_UDS_PATH,
+        uds_path: Path | None = None,
         # Injection points for tests — production uses `os.open` and
         # `asyncio.start_unix_server` directly.
         serial_opener: Callable[[Path], BinaryIO] | None = None,
         sleep_fn: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._serial_path = serial_path
-        self._uds_path = uds_path
+        self._uds_path = uds_path or default_uds_path()
         self._serial_opener = serial_opener or _default_serial_opener
         self._sleep_fn = sleep_fn
         self._serial_fd: BinaryIO | None = None

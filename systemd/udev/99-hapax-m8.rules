@@ -22,8 +22,12 @@ ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="16c0", ATTR{idProduct}=="048a"
 ACTION=="add", SUBSYSTEM=="tty", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="048a", \
     SYMLINK+="hapax-m8-serial"
 
-# Pull hapax-m8-monitor.service into the active dependency graph when
-# the M8 appears. Runs in the user systemd instance (matches the rest
-# of the application stack).
+# Pull M8 services into the active dependency graph when the M8 appears.
+# Runs in the user systemd instance (matches the rest of the application
+# stack). The control service has ConditionPathExists on the same symlink,
+# so manual starts while unplugged stay cleanly inactive.
 ACTION=="add", SUBSYSTEM=="tty", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="048a", \
     TAG+="systemd", ENV{SYSTEMD_USER_WANTS}+="hapax-m8-monitor.service"
+
+ACTION=="add", SUBSYSTEM=="tty", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="048a", \
+    TAG+="systemd", ENV{SYSTEMD_USER_WANTS}+="hapax-m8-control.service"

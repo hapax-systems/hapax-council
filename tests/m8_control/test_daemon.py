@@ -18,11 +18,13 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from agents.m8_control.client import M8ControlClient
 from agents.m8_control.daemon import (
     BUTTON_BITS,
     DEFAULT_HOLD_MS,
@@ -31,6 +33,7 @@ from agents.m8_control.daemon import (
     M8KeyjazzRequest,
     M8ResetRequest,
     M8ThemeRequest,
+    default_uds_path,
     encode_button,
     encode_keyjazz,
     encode_release,
@@ -258,6 +261,20 @@ def _record(sink: list[float], s: float):
         sink.append(s)
 
     return _co()
+
+
+class TestRuntimeSocketPath:
+    def test_default_uds_path_uses_xdg_runtime_dir(self, monkeypatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        expected = tmp_path / "hapax" / "m8-control.sock"
+        assert default_uds_path() == expected
+        assert M8ControlDaemon()._uds_path == expected
+        assert M8ControlClient()._uds_path == expected
+
+    def test_default_uds_path_falls_back_to_user_runtime_dir(self, monkeypatch) -> None:
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        expected = Path("/run") / "user" / str(os.getuid()) / "hapax" / "m8-control.sock"
+        assert default_uds_path() == expected
 
 
 # ── UDS round-trip ──────────────────────────────────────────────────
