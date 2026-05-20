@@ -3618,6 +3618,10 @@ ConceptMastery.add_concept
 register_programme_affordances
 EgressSafetyEnvelope.kill_switch_active
 
+from agents.studio_compositor.shadow_render_core import ShadowRenderCore
+
+ShadowRenderCore.update_source
+
 # Compositor incident cache reset hooks — tests call these through module
 # aliases so vulture does not see the static path.
 from agents.studio_compositor.coding_session_reveal import (
