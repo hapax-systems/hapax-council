@@ -337,15 +337,56 @@ class TestApplyGateState:
             assert c.args[0][3] == "0.0"
 
     @patch("subprocess.run")
-    def test_apply_refreshes_node_cache(self, mock_run: MagicMock) -> None:
-        """Cache invalidation each call catches respawned ffmpeg node IDs."""
+    def test_apply_skips_unchanged_gate_before_refresh_interval(self, mock_run: MagicMock) -> None:
+        """Unchanged gate state should not re-run pw-dump/wpctl every poll."""
         mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
         ctrl = SlotAudioControl(slot_count=3)
         ctrl.apply_gate_state(_FakeGate(enabled=True, active_slot=0))
         ctrl.apply_gate_state(_FakeGate(enabled=True, active_slot=0))
-        # pw-dump should have fired twice (once per apply_gate_state)
+
         pw_dump_calls = [c for c in mock_run.call_args_list if "pw-dump" in str(c)]
+        wpctl_calls = [c for c in mock_run.call_args_list if "wpctl" in str(c)]
+        assert len(pw_dump_calls) == 1
+        assert len(wpctl_calls) == 3
+
+    @patch("subprocess.run")
+    def test_apply_refreshes_node_cache_after_refresh_interval(self, mock_run: MagicMock) -> None:
+        """Bounded refresh still catches respawned ffmpeg node IDs."""
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.apply_gate_state(_FakeGate(enabled=True, active_slot=0))
+        ctrl._last_node_cache_refresh_monotonic -= ctrl._gate_cache_refresh_interval_s + 1
+        ctrl.apply_gate_state(_FakeGate(enabled=True, active_slot=0))
+
+        pw_dump_calls = [c for c in mock_run.call_args_list if "pw-dump" in str(c)]
+        wpctl_calls = [c for c in mock_run.call_args_list if "wpctl" in str(c)]
         assert len(pw_dump_calls) == 2
+        assert len(wpctl_calls) == 6
+
+    @patch("subprocess.run")
+    def test_gate_change_applies_immediately_without_extra_refresh(
+        self, mock_run: MagicMock
+    ) -> None:
+        mock_run.return_value = MagicMock(stdout=PW_DUMP_3_SLOTS, returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.apply_gate_state(_FakeGate(enabled=True, active_slot=0))
+        ctrl.apply_gate_state(_FakeGate(enabled=True, active_slot=1))
+
+        pw_dump_calls = [c for c in mock_run.call_args_list if "pw-dump" in str(c)]
+        wpctl_calls = [c for c in mock_run.call_args_list if "wpctl" in str(c)]
+        assert len(pw_dump_calls) == 1
+        assert len(wpctl_calls) == 6
+
+    @patch("subprocess.run")
+    def test_missing_nodes_do_not_refresh_per_slot(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(stdout="[]", returncode=0)
+        ctrl = SlotAudioControl(slot_count=3)
+        ctrl.apply_gate_state(_FakeGate(enabled=False))
+
+        pw_dump_calls = [c for c in mock_run.call_args_list if "pw-dump" in str(c)]
+        wpctl_calls = [c for c in mock_run.call_args_list if "wpctl" in str(c)]
+        assert len(pw_dump_calls) == 1
+        assert wpctl_calls == []
 
 
 class TestStartGatePoll:
