@@ -607,7 +607,7 @@ def _wireplumber_deny_script_text(boundary_node_pairs: tuple[str, ...]) -> str:
 -- Runtime policy data: ~/.config/hapax/audio-forbidden-links.conf
 -- Do not hand-edit; run scripts/generate-pipewire-audio-confs.py --write-wireplumber-deny-policy.
 --
--- Three-layer fail-closed behavior:
+-- Four-layer fail-closed behavior:
 --   1. Reject forbidden node-pair auto-targets before WirePlumber link-target.
 --   2. Remove exact forbidden port links if a client creates one directly.
 --   3. Deny optional-device fallback into Polyend capture unless source is Polyend.
@@ -772,17 +772,30 @@ SimpleEventHook {{
     local source = event:get_source ()
     local link = event:get_subject ()
     local key, source_node, target_node = link_key (source, link)
+    local pair_key = nil
+    if source_node ~= nil and target_node ~= nil then
+      pair_key = source_node .. "|" .. target_node
+    end
     local optional_denied = optional_device_fallback_denied (source_node, target_node)
-    if key == nil and not optional_denied then
+    if key == nil and pair_key == nil and not optional_denied then
       return
     end
 
     local policy = load_forbidden_policy ()
-    if (key == nil or not policy.links [key]) and not optional_denied then
+    local link_denied = key ~= nil and policy.links [key]
+    local pair_denied = pair_key ~= nil and policy.node_pairs [pair_key]
+    if not link_denied and not pair_denied and not optional_denied then
       return
     end
 
-    log:warning (link, "removing hapax forbidden audio link " .. tostring (key))
+    local message = "removing hapax forbidden audio link " .. tostring (key)
+    if pair_denied and not link_denied then
+      message = message .. " (node boundary " .. tostring (pair_key) .. ")"
+    end
+    if policy.degraded then
+      message = message .. " [DEGRADED: runtime policy missing, boundary deny active]"
+    end
+    log:warning (link, message)
     link:remove ()
   end
 }}:register ()
