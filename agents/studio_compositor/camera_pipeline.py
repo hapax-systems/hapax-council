@@ -102,7 +102,9 @@ class CameraPipeline:
         self._http_stop_event = threading.Event()
         self._http_thread: threading.Thread | None = None
         source_fps = self._effective_http_fps() if self._is_http_jpeg_source() else float(self._fps)
-        self._frame_cache_sample_every_n = self._frame_cache_sample_stride_for_fps(source_fps)
+        target_fps = self._frame_cache_target_fps_for_source(source_fps)
+        self._frame_cache_sample_interval_s = 1.0 / target_fps
+        self._next_frame_cache_sample_at = 0.0
 
     @property
     def role(self) -> str:
@@ -117,25 +119,39 @@ class CameraPipeline:
         return self._rebuild_count
 
     @staticmethod
-    def _frame_cache_sample_stride_for_fps(fps: float) -> int:
-        """Return a stride for the 3D compositor frame-cache bridge.
+    def _frame_cache_target_fps_for_source(fps: float) -> float:
+        """Return a monotonic-time frame-cache target for the 3D bridge.
 
         The incident baseline requires camera tiles to read as live, not as
-        periodically refreshed stills. The target defaults to 30 Hz and can be
-        lowered by environment only when resource pressure has been measured.
+        periodically refreshed stills. In 3D mode, the frame cache feeds the
+        source publisher rather than the legacy compositor, so the default
+        follows the source-publisher cadence instead of blindly copying every
+        decoded camera buffer.
         """
         source_fps = max(fps, 1.0)
-        raw_target = os.environ.get("HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS", "30")
+        default_target = (
+            os.environ.get("HAPAX_CAMERA_SOURCE_PUBLISH_FPS", "10")
+            if os.environ.get("HAPAX_3D_COMPOSITOR") == "1"
+            else "30"
+        )
+        raw_target = os.environ.get("HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS", default_target)
         try:
             target_fps = float(raw_target)
         except ValueError:
             log.warning(
-                "Invalid HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS=%r; using 30",
+                "Invalid HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS=%r; using %s",
                 raw_target,
+                default_target,
             )
-            target_fps = 30.0
-        target_fps = max(1.0, min(source_fps, target_fps))
-        return max(1, int(round(source_fps / target_fps)))
+            target_fps = float(default_target)
+        return max(1.0, min(source_fps, target_fps))
+
+    def _should_snapshot_frame_cache(self, now: float) -> bool:
+        """Gate frame-cache copies by time, not by observed buffer count."""
+        if now < self._next_frame_cache_sample_at:
+            return False
+        self._next_frame_cache_sample_at = now + self._frame_cache_sample_interval_s
+        return True
 
     @staticmethod
     def _effective_source_fps(spec: CameraSpec, fallback_fps: int) -> int:
@@ -835,20 +851,6 @@ class CameraPipeline:
             _, current, _ = self._pipeline.get_state(timeout=0)
             return current == Gst.State.PLAYING
 
-    # A+ Stage 3 (2026-04-17): sample one frame every N ticks into the
-    # last-good-frame cache so the fallback pipeline can render that
-    # frame instead of a black card when the primary drops.
-    #
-    # 2026-05-05: reduced from 15 (2 Hz at 30fps) to 3 (10 Hz at 30fps).
-    # 2026-05-15: made stride fps-aware. Fixed stride=3 was correct for
-    # 30fps color cameras but capped 10fps IR sources at ~3.3fps in the
-    # 3D compositor source bridge.
-    # 2026-05-15 incident follow-up: 10 Hz still reads as stale on the
-    # 3D livestream surface. Default the bridge to full source cadence
-    # (usually 30 Hz) and require explicit measured resource pressure to
-    # lower HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS.
-    _FRAME_CACHE_SAMPLE_EVERY_N = 3
-
     def _on_buffer_probe(self, pad: Any, info: Any) -> Any:
         """GStreamer pad probe: note frame arrival, update Phase 4 metrics,
         sample into last-good-frame cache, passthrough."""
@@ -859,14 +861,10 @@ class CameraPipeline:
             metrics.pad_probe_on_buffer(pad, info, self._spec.role)
         except Exception:
             log.exception("camera_pipeline %s: metrics pad probe raised", self._spec.role)
-        # A+ Stage 3: freeze-frame snapshot. Sampling counter lives on
-        # the instance so the cost is per-camera (no dict contention).
-        self._frame_cache_tick = getattr(self, "_frame_cache_tick", 0) + 1
-        sample_every_n = getattr(
-            self, "_frame_cache_sample_every_n", self._FRAME_CACHE_SAMPLE_EVERY_N
-        )
-        if self._frame_cache_tick >= sample_every_n:
-            self._frame_cache_tick = 0
+        # A+ Stage 3 / incident repair: sample by monotonic time so a camera
+        # that produces more buffers than its configured framerate cannot
+        # overrun the frame-cache target.
+        if self._should_snapshot_frame_cache(self._last_frame_monotonic):
             try:
                 self._snapshot_into_frame_cache(info)
             except Exception:
