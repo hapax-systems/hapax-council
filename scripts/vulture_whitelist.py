@@ -3853,3 +3853,5 @@ refuse_dirty_restart
 from shared.weekly_research_digest_producer import run_weekly_digest
 
 run_weekly_digest
+
+run_weekly_digest
