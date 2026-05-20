@@ -26,3 +26,12 @@ enable hapax-visual-pool-snapshot-harvester.timer
 enable hapax-segment-prep.timer
 enable hapax-obsidian-publish-sync.timer
 enable hapax-worktree-gc.timer
+enable hapax-backup-watchdog.timer
+enable hapax-container-cleanup.timer
+enable hapax-dataset-card-generator.timer
+enable hapax-l12-critical-usb-guard.timer
+enable hapax-omg-lol-fanout.timer
+enable hapax-ram-allocation-audit.timer
+enable hapax-v4l2-watchdog.timer
+enable hapax-velocity-digest.timer
+enable hapax-velocity-report.timer
