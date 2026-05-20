@@ -1,0 +1,10 @@
+[Unit]
+Description=Hapax monetization decision agent timer (disabled per ISAP)
+
+[Timer]
+OnCalendar=*-*-* 06,18:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

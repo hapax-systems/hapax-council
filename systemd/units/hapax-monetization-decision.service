@@ -1,0 +1,13 @@
+[Unit]
+Description=Hapax monetization decision agent (recommendation-only)
+After=network.target hapax-secrets.service
+Wants=hapax-secrets.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.monetization.decision_agent
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+
+[Install]
+WantedBy=multi-user.target
