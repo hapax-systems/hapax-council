@@ -20,7 +20,13 @@ PID_DIR = Path(f"/run/user/{os.getuid()}/hapax-claude")
 SHM_DIR = Path("/dev/shm/hapax-coordinator")
 SHM_FILE = SHM_DIR / "state.json"
 
-LANE_ROLES = ("beta", "gamma", "delta", "epsilon", "zeta")
+FALLBACK_LANE_ROLES = ("alpha", "beta", "gamma", "delta", "epsilon", "zeta")
+LANE_ROLES = FALLBACK_LANE_ROLES
+SESSION_PREFIXES = (
+    ("hapax-claude-", "claude"),
+    ("hapax-codex-", "codex"),
+    ("hapax-gemini-", "gemini"),
+)
 DISPATCH_COOLDOWN_S = 120.0
 
 
@@ -40,10 +46,21 @@ class Task:
 
 
 @dataclass
+class LaneDescriptor:
+    """A live tmux lane and its dispatch platform."""
+
+    role: str
+    session: str
+    platform: str
+
+
+@dataclass
 class LaneState:
     """Health snapshot of a single work lane."""
 
     role: str
+    session: str = ""
+    platform: str = "claude"
     alive: bool = False
     pid: int | None = None
     relay_age_s: float = float("inf")
@@ -81,7 +98,7 @@ class Coordinator:
             claimed_tasks=sum(1 for t in tasks if t.status in ("claimed", "in_progress")),
             lanes_alive=sum(1 for l in lanes.values() if l.alive),
             lanes_idle=sum(1 for l in lanes.values() if l.idle and l.alive),
-            lanes_total=len(LANE_ROLES),
+            lanes_total=len(lanes),
         )
 
         dispatches = 0
@@ -128,39 +145,61 @@ class Coordinator:
 
     def _check_lanes(self) -> dict[str, LaneState]:
         lanes: dict[str, LaneState] = {}
-        for role in LANE_ROLES:
-            lanes[role] = _check_lane(role)
+        descriptors = _discover_lanes()
+        if not descriptors:
+            descriptors = [
+                LaneDescriptor(role=role, session="", platform="claude")
+                for role in FALLBACK_LANE_ROLES
+            ]
+        for descriptor in descriptors:
+            lanes[descriptor.role] = _check_lane(descriptor)
         return lanes
 
     def _pick_lane(self, task: Task, idle_lanes: list[LaneState]) -> LaneState | None:
-        platforms = task.platform_suitability
+        platforms = {platform.lower() for platform in task.platform_suitability}
         for lane in idle_lanes:
-            if "any" in platforms or "claude" in platforms:
+            if "any" in platforms or lane.platform in platforms:
                 return lane
         return None
 
     def _dispatch(self, task: Task, lane: LaneState) -> bool:
-        msg = (
-            f"You are {lane.role}. Read ~/projects/hapax-council/CLAUDE.md. "
-            f"Claim and work cc-task {task.task_id}. "
-            f"Task file: {task.path}. "
-            f"{task.title}. PR when done."
-        )
-        headless = Path.home() / ".local/bin/hapax-claude-send"
-        if not headless.exists():
-            log.warning("hapax-claude-send not found, cannot dispatch to %s", lane.role)
+        dispatcher = Path.home() / "projects/hapax-council/scripts/hapax-methodology-dispatch"
+        if not dispatcher.exists():
+            log.warning("hapax-methodology-dispatch not found, cannot dispatch to %s", lane.role)
             return False
+
         try:
-            subprocess.run(
-                [str(headless), "--session", lane.role, "--", msg],
+            result = subprocess.run(
+                [
+                    str(dispatcher),
+                    "--task",
+                    task.task_id,
+                    "--lane",
+                    lane.role,
+                    "--platform",
+                    lane.platform,
+                    "--mode",
+                    "headless",
+                    "--launch",
+                ],
                 timeout=10,
                 capture_output=True,
+                text=True,
             )
-            log.info("Dispatched task %s to lane %s", task.task_id, lane.role)
-            return True
         except (subprocess.TimeoutExpired, OSError) as exc:
             log.warning("Dispatch to %s failed: %s", lane.role, exc)
             return False
+
+        if result.returncode != 0:
+            log.warning(
+                "Dispatch to %s failed via methodology dispatcher: %s",
+                lane.role,
+                result.stderr.strip(),
+            )
+            return False
+
+        log.info("Dispatched task %s to lane %s", task.task_id, lane.role)
+        return True
 
     def _write_state(self, state: CoordinatorState) -> None:
         SHM_DIR.mkdir(parents=True, exist_ok=True)
@@ -214,10 +253,129 @@ def _parse_task(path: Path) -> Task | None:
     )
 
 
-def _check_lane(role: str) -> LaneState:
-    state = LaneState(role=role)
+def _lane_from_tmux_session(session: str) -> LaneDescriptor | None:
+    for prefix, platform in SESSION_PREFIXES:
+        if session.startswith(prefix):
+            return LaneDescriptor(
+                role=session.removeprefix(prefix),
+                session=session,
+                platform=platform,
+            )
+    return None
 
-    pidfile = PID_DIR / f"{role}.pid"
+
+def _discover_lanes() -> list[LaneDescriptor]:
+    try:
+        proc = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            timeout=5,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if proc.returncode != 0:
+        return []
+
+    lanes: list[LaneDescriptor] = []
+    seen: set[str] = set()
+    for line in proc.stdout.splitlines():
+        descriptor = _lane_from_tmux_session(line.strip())
+        if descriptor is None or descriptor.role in seen:
+            continue
+        seen.add(descriptor.role)
+        lanes.append(descriptor)
+    return sorted(lanes, key=lambda lane: lane.role)
+
+
+def _relay_candidates(role: str, session: str = "") -> list[Path]:
+    candidates = [
+        RELAY_DIR / f"{role}.yaml",
+        RELAY_DIR / f"peer-status-{role}.yaml",
+    ]
+    if session:
+        candidates.append(RELAY_DIR / f"peer-status-{session}.yaml")
+    return list(dict.fromkeys(candidates))
+
+
+def _load_freshest_relay(role: str, session: str = "") -> tuple[dict, float | None]:
+    fresh_path: Path | None = None
+    fresh_mtime = -1.0
+    for path in _relay_candidates(role, session):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime > fresh_mtime:
+            fresh_path = path
+            fresh_mtime = mtime
+
+    if fresh_path is None:
+        return {}, None
+    try:
+        relay = yaml.safe_load(fresh_path.read_text(encoding="utf-8"))
+    except (yaml.YAMLError, OSError):
+        return {}, fresh_mtime
+    return relay if isinstance(relay, dict) else {}, fresh_mtime
+
+
+def _stringify_task(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        for key in ("task_id", "surface", "id", "name"):
+            nested = value.get(key)
+            if nested:
+                return str(nested)
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _claim_from_relay(relay: dict) -> str | None:
+    return _stringify_task(
+        relay.get("current_claim")
+        or relay.get("current_task")
+        or relay.get("task_id")
+        or relay.get("currently_working_on")
+    )
+
+
+def _relay_status_is_idle(value: object) -> bool | None:
+    if not isinstance(value, str) or not value:
+        return None
+    status = value.strip().lower().replace(" ", "-").replace("_", "-")
+    if status in {"queue-dry", "equilibrium", "idle"} or status.startswith("idle-"):
+        return True
+    if status in {"active", "executing", "claimed", "in-progress", "working", "retiring"}:
+        return False
+    return None
+
+
+def _active_task_candidates(role: str, session: str = "") -> list[Path]:
+    candidates = [
+        Path.home() / f".cache/hapax/cc-active-task-{role}",
+    ]
+    if session:
+        candidates.append(Path.home() / f".cache/hapax/cc-active-task-{session}")
+    return list(dict.fromkeys(candidates))
+
+
+def _check_lane(lane: str | LaneDescriptor) -> LaneState:
+    descriptor = (
+        lane
+        if isinstance(lane, LaneDescriptor)
+        else LaneDescriptor(role=lane, session="", platform="claude")
+    )
+    state = LaneState(
+        role=descriptor.role,
+        session=descriptor.session,
+        platform=descriptor.platform,
+        alive=bool(descriptor.session),
+    )
+
+    pidfile = PID_DIR / f"{descriptor.role}.pid"
     if pidfile.exists():
         try:
             pid = int(pidfile.read_text().strip())
@@ -227,22 +385,28 @@ def _check_lane(role: str) -> LaneState:
         except (ValueError, OSError):
             pass
 
-    relay_file = RELAY_DIR / f"{role}.yaml"
-    if relay_file.exists():
-        try:
-            state.relay_age_s = time.time() - relay_file.stat().st_mtime
-        except OSError:
-            pass
+    relay, relay_mtime = _load_freshest_relay(descriptor.role, descriptor.session)
+    if relay_mtime is not None:
+        state.relay_age_s = time.time() - relay_mtime
 
-    active_task_file = Path.home() / f".cache/hapax/cc-active-task-{role}"
-    if active_task_file.exists():
+    if relay:
+        relay_claim = _claim_from_relay(relay)
+        if relay_claim:
+            state.claimed_task = relay_claim
+            state.idle = False
+        relay_idle = _relay_status_is_idle(relay.get("status") or relay.get("session_status"))
+        if relay_idle is not None and not state.claimed_task:
+            state.idle = relay_idle
+
+    for active_task_file in _active_task_candidates(descriptor.role, descriptor.session):
         try:
             task_id = active_task_file.read_text().strip()
-            if task_id:
-                state.claimed_task = task_id
-                state.idle = False
         except OSError:
-            pass
+            continue
+        if task_id:
+            state.claimed_task = task_id
+            state.idle = False
+            break
 
     return state
 
@@ -250,6 +414,8 @@ def _check_lane(role: str) -> LaneState:
 def _lane_to_dict(lane: LaneState) -> dict:
     return {
         "role": lane.role,
+        "session": lane.session,
+        "platform": lane.platform,
         "alive": lane.alive,
         "pid": lane.pid,
         "relay_age_s": round(lane.relay_age_s, 1) if lane.relay_age_s != float("inf") else None,

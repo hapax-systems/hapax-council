@@ -10,11 +10,93 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from agents.coordination_tui.data import (
+    load_lanes,
     load_prs,
     load_quota,
     load_task_counts,
     load_tasks,
 )
+
+
+class TestLoadLanes:
+    @pytest.mark.asyncio
+    async def test_discovers_alpha_and_codex_lanes_from_tmux(self, tmp_path: Path) -> None:
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "peer-status-alpha.yaml").write_text(
+            textwrap.dedent("""\
+                session: alpha
+                platform: claude
+                session_status: QUEUE-DRY
+                current_claim: null
+                idle_seconds: 42
+            """),
+            encoding="utf-8",
+        )
+        (relay_dir / "peer-status-cx-red.yaml").write_text(
+            textwrap.dedent("""\
+                session: cx-red
+                platform: codex
+                session_status: ACTIVE
+                current_claim: codex-task
+                idle_seconds: 0
+            """),
+            encoding="utf-8",
+        )
+
+        tmux_sessions = "\n".join(
+            [
+                "hapax-claude-alpha",
+                "hapax-codex-cx-red",
+                "unrelated-session",
+            ]
+        )
+        with (
+            patch("agents.coordination_tui.data.RELAY_DIR", relay_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("agents.coordination_tui.data._run", new_callable=AsyncMock) as run,
+        ):
+            run.return_value = tmux_sessions
+            lanes = await load_lanes()
+
+        by_name = {lane.name: lane for lane in lanes}
+        assert set(by_name) == {"alpha", "cx-red"}
+        assert by_name["alpha"].platform == "claude"
+        assert by_name["alpha"].status == "idle"
+        assert by_name["alpha"].idle_seconds == 42
+        assert by_name["cx-red"].platform == "codex"
+        assert by_name["cx-red"].current_task == "codex-task"
+
+    @pytest.mark.asyncio
+    async def test_active_claim_file_overrides_stale_idle_relay(self, tmp_path: Path) -> None:
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "peer-status-cx-red.yaml").write_text(
+            textwrap.dedent("""\
+                session: cx-red
+                platform: codex
+                session_status: QUEUE-DRY
+                current_claim: null
+                idle_seconds: 1200
+            """),
+            encoding="utf-8",
+        )
+        claim_dir = tmp_path / ".cache/hapax"
+        claim_dir.mkdir(parents=True)
+        (claim_dir / "cc-active-task-cx-red").write_text("claim-file-task\n", encoding="utf-8")
+
+        with (
+            patch("agents.coordination_tui.data.RELAY_DIR", relay_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("agents.coordination_tui.data._run", new_callable=AsyncMock) as run,
+        ):
+            run.return_value = "hapax-codex-cx-red"
+            lanes = await load_lanes()
+
+        assert len(lanes) == 1
+        assert lanes[0].current_task == "claim-file-task"
+        assert lanes[0].status == "active"
+        assert lanes[0].idle_seconds == 0
 
 
 class TestLoadTasks:
