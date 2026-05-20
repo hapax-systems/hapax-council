@@ -160,13 +160,10 @@ routes:
     pipewire_node: input.loopback.sink.role.multimedia
     target_chain:
       - hapax-pc-loudnorm
-      - mpc-usb-output
-      - l12-usb-return-capture
-      - hapax-livestream-tap
-    route_class: default_multimedia
+    route_class: default_multimedia_fail_closed
     broadcast_eligible: false
     public_claim_allowed: false
-    broadcast_eligibility_basis: blocked_until_smoke
+    broadcast_eligibility_basis: disabled_pc_usb56_2026_05_20
     default_fallback_allowed: false
     rights_required: true
     provenance_required: true

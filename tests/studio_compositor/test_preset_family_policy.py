@@ -19,7 +19,7 @@ def _registry() -> ShaderRegistry:
 def test_glitch_dense_regains_source_bound_policy_eligible_candidates() -> None:
     eligible = set(policy_eligible_presets_for_family("glitch-dense", registry=_registry(), env={}))
 
-    assert eligible == {"pixsort_preset"}
+    assert eligible == {"arcane_ascii_glyph", "broadcast_vhs_decay", "pixsort_preset"}
 
 
 def test_audio_reactive_temporal_pixsort_variants_remain_blocked_without_visual_evidence() -> None:
@@ -27,7 +27,7 @@ def test_audio_reactive_temporal_pixsort_variants_remain_blocked_without_visual_
         policy_eligible_presets_for_family("audio-reactive", registry=_registry(), env={})
     )
 
-    assert eligible == set()
+    assert eligible == {"feedback_preset"}
 
 
 def test_family_inventory_reports_exact_remaining_block_reasons() -> None:
@@ -42,10 +42,10 @@ def test_family_inventory_reports_exact_remaining_block_reasons() -> None:
     assert by_preset["xerox_photocopy_decay"].reason == (
         "camera_legible_glsl_pending_source_bound_repair"
     )
-    assert by_preset["xerox_photocopy_decay"].matched == ("threshold_xerox", "threshold")
+    assert by_preset["xerox_photocopy_decay"].matched == ("grain_xerox", "noise_overlay")
 
     counts = family_policy_reason_counts("glitch-dense", registry=_registry(), env={})
-    assert counts == {"camera_legible_glsl_pending_source_bound_repair": 14}
+    assert counts == {"camera_legible_glsl_pending_source_bound_repair": 12}
 
 
 def test_remaining_blocked_family_presets_stay_mapped_to_policy_reasons() -> None:

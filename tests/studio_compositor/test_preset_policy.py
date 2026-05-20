@@ -137,10 +137,10 @@ def test_camera_legible_graph_policy_allows_bounded_bloom() -> None:
 def test_camera_legible_graph_policy_blocks_unrepaired_glsl_pane_nodes() -> None:
     graph = _graph(
         {
-            "halftone": NodeInstance(type="halftone", params={"dot_size": 6.0}),
+            "echo_node": NodeInstance(type="echo", params={"frame_count": 3.0}),
             "out": NodeInstance(type="output"),
         },
-        [["@live", "halftone"], ["halftone", "out"]],
+        [["@live", "echo_node"], ["echo_node", "out"]],
     )
 
     decision = evaluate_preset_graph_policy(
@@ -151,7 +151,7 @@ def test_camera_legible_graph_policy_blocks_unrepaired_glsl_pane_nodes() -> None
 
     assert decision.allowed is False
     assert decision.reason == "camera_legible_glsl_pending_source_bound_repair"
-    assert decision.matched == ("halftone", "halftone")
+    assert decision.matched == ("echo_node", "echo")
     bounded = apply_live_surface_param_bounds(
         "noise_overlay",
         {"intensity": 0.5, "animated": True},
@@ -326,10 +326,10 @@ def test_legacy_glsl_activation_fails_closed_for_unverified_nodes() -> None:
     registry = _registry()
     graph = _graph(
         {
-            "thermal": NodeInstance(type="thermal", params={"intensity": 0.3}),
+            "fb": NodeInstance(type="feedback", params={"decay": 0.9}),
             "out": NodeInstance(type="output"),
         },
-        [["@live", "thermal"], ["thermal", "out"]],
+        [["@live", "fb"], ["fb", "out"]],
     )
 
     decision = evaluate_preset_graph_policy(
@@ -340,8 +340,8 @@ def test_legacy_glsl_activation_fails_closed_for_unverified_nodes() -> None:
 
     assert decision.allowed is False
     assert decision.reason == "camera_legible_glsl_pending_source_bound_repair"
-    assert decision.matched == ("thermal", "thermal")
-    assert live_surface_policy_kind("thermal") == "bounded"
+    assert decision.matched == ("fb", "feedback")
+    assert live_surface_policy_kind("feedback") == "bounded"
 
 
 def test_legacy_glsl_source_bound_allowlist_is_explicit() -> None:
@@ -361,11 +361,11 @@ def test_legacy_glsl_source_bound_allowlist_is_explicit() -> None:
         )
 
     assert live_surface_glsl_requires_source_bound_repair(
-        "thermal",
+        "feedback",
         has_glsl_source=True,
     )
     assert not live_surface_glsl_requires_source_bound_repair(
-        "thermal",
+        "feedback",
         has_glsl_source=False,
     )
 

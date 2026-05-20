@@ -2334,6 +2334,16 @@ _audit_E_load_conf_ownership
 _audit_E_conf_ownership._unit_must_have_systemd_suffix
 _audit_E_conf_ownership_registry._no_duplicate_paths
 
+# Audio route-map compiler helpers are exercised through generator scripts and
+# route-map parity tests in the audio topology hardening train.
+from shared.audio_routing_policy import (
+    generated_desired_route_map_text,
+    generated_forbidden_route_map_text,
+)
+
+generated_desired_route_map_text
+generated_forbidden_route_map_text
+
 # Audio param-bridge schema (cc-task audio-audit-E-runtime-param-bridge Phase 0):
 # Phase 1 wires HTTP daemon at /audio/param/<chain>/<param> + pw-cli backend +
 # JSON persistence. Until then the schema models + lookup helpers + value
@@ -3864,3 +3874,9 @@ organ_ids
 visual_techniques_for_organ
 organs_using_technique
 shader_node_ids
+
+# React/watch-along adapter: entry point for content programming runner.
+# cc-task: react-watchalong-media-reference-adapter
+from shared.react_watchalong_adapter import build_render_plan
+
+build_render_plan

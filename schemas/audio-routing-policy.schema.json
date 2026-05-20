@@ -153,7 +153,15 @@
               "evidence_refs": {"minItems": 1},
               "default_fallback_allowed": {"const": false},
               "route_class": {
-                "not": {"enum": ["private", "notification", "default_multimedia", "monitor_bridge"]}
+                "not": {
+                  "enum": [
+                    "private",
+                    "notification",
+                    "default_multimedia",
+                    "default_multimedia_fail_closed",
+                    "monitor_bridge"
+                  ]
+                }
               }
             }
           }
@@ -161,7 +169,14 @@
         {
           "if": {
             "properties": {
-              "route_class": {"enum": ["private", "notification", "monitor_bridge"]}
+              "route_class": {
+                "enum": [
+                  "private",
+                  "notification",
+                  "default_multimedia_fail_closed",
+                  "monitor_bridge"
+                ]
+              }
             },
             "required": ["route_class"]
           },
@@ -251,6 +266,7 @@
         "broadcast_voice",
         "broadcast_content",
         "default_multimedia",
+        "default_multimedia_fail_closed",
         "instrument",
         "monitor_bridge"
       ]
@@ -261,7 +277,8 @@
         "explicit_policy",
         "private_refused",
         "blocked_until_smoke",
-        "non_round_trippable"
+        "non_round_trippable",
+        "disabled_pc_usb56_2026_05_20"
       ]
     },
     "refs": {

@@ -80,6 +80,7 @@ class _FakeRunner:
         self.gh_returncode = 0
         self.cc_close_returncodes: list[int] = []  # consumed in order
         self.cc_close_invocations: list[list[str]] = []
+        self.cc_close_envs: list[dict[str, str]] = []
 
     def __call__(
         self,
@@ -103,6 +104,7 @@ class _FakeRunner:
             )
         # Anything else is cc-close.
         self.cc_close_invocations.append(list(cmd))
+        self.cc_close_envs.append(dict(env or {}))
         rc = self.cc_close_returncodes.pop(0) if self.cc_close_returncodes else 0
         return subprocess.CompletedProcess(
             args=cmd,
@@ -266,6 +268,8 @@ class TestRunWatcher:
         assert any(cmd[-2:] == ["--pr", "100"] for cmd in runner.cc_close_invocations), (
             runner.cc_close_invocations
         )
+        assert runner.cc_close_envs[-1]["HAPAX_CC_TASK_CLOSURE_GATE_OFF"] == "1"
+        assert "HAPAX_PR_MERGE_GATE_OFF" not in runner.cc_close_envs[-1]
         # Cursor advanced.
         new_cursor = watcher.read_cursor(cursor)
         assert new_cursor == datetime(2026, 4, 26, 12, tzinfo=UTC)

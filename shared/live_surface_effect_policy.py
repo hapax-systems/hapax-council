@@ -65,24 +65,18 @@ LIVE_SURFACE_BLOCKED_NODE_TYPES = frozenset()
 # fragment parity is proven.
 LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES = frozenset(
     {
-        "ascii",
         "color_map",
         "diff",
-        "dither",
         "echo",
         "feedback",
         "fluid_sim",
-        "halftone",
         "noise_gen",
         "noise_overlay",
-        "palette_extract",
         "palette_remap",
         "reaction_diffusion",
         "slitscan",
         "stutter",
-        "thermal",
         "tile",
-        "trail",
         "tunnel",
         "voronoi_overlay",
     }
@@ -116,6 +110,37 @@ LIVE_SURFACE_GLSL_SOURCE_BOUND_REPAIR_20260520_NODE_TYPES = frozenset(
     }
 )
 
+LIVE_SURFACE_GLSL_WARM_MINIMAL_REPAIR_20260520_NODE_TYPES = frozenset(
+    {
+        # Second tranche: warm/minimal source-transforming effects. Each
+        # transforms source pixels without replacing the frame, creating a
+        # fourth-wall pane, or encouraging parasocial identity exposure.
+        # Bounded params prevent clean-camera legibility.
+        #
+        # ascii: cell grid replaces pixels but preserves source structure;
+        #   bounded cell_size 6-24, color_mode 0-1.
+        # dither: reduces color levels; source geometry intact; monochrome forced off.
+        # edge_detect: extracts contours from source; threshold 0.08-0.45.
+        # halftone: dot-pattern from source brightness; dot_size ≤ 8.
+        # palette_extract: swatch strip overlay; strip_opacity ≤ 0.45.
+        # thermal: false-color mapping of source brightness; intensity ≤ 0.40.
+        # threshold: binary threshold of source brightness; level 0.35-0.65.
+        # trail: temporal with fade ≥ 0.12, opacity ≤ 0.30, blend_mode forced additive.
+        # vhs: chroma shift + noise band on source; shift ≤ 4px, noise ≤ 0.35.
+        # NOTE: tunnel excluded — Rust policy (#3570) classifies it as non-safe
+        # spatial; deferred pending end-to-end cross-layer evidence.
+        "ascii",
+        "dither",
+        "edge_detect",
+        "halftone",
+        "palette_extract",
+        "thermal",
+        "threshold",
+        "trail",
+        "vhs",
+    }
+)
+
 LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES = (
     frozenset(
         {
@@ -129,6 +154,7 @@ LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES = (
         }
     )
     | LIVE_SURFACE_GLSL_SOURCE_BOUND_REPAIR_20260520_NODE_TYPES
+    | LIVE_SURFACE_GLSL_WARM_MINIMAL_REPAIR_20260520_NODE_TYPES
 )
 
 
@@ -521,6 +547,7 @@ __all__ = [
     "LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES",
     "LIVE_SURFACE_GLSL_SOURCE_BOUND_REPAIR_20260520_NODE_TYPES",
     "LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES",
+    "LIVE_SURFACE_GLSL_WARM_MINIMAL_REPAIR_20260520_NODE_TYPES",
     "LIVE_SURFACE_GLSL_TEMPORAL_PENDING_VISUAL_EVIDENCE_NODE_TYPES",
     "LIVE_SURFACE_PARAM_BOUNDS",
     "ParamBound",

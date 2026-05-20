@@ -8,11 +8,18 @@ from pathlib import Path
 import pytest
 
 from shared.audio_routing_policy import (
+    DEFAULT_FORBIDDEN_LINKS_PATH,
+    DEFAULT_LINK_MAP_PATH,
+    DEFAULT_WIREPLUMBER_DENY_CONF_PATH,
+    DEFAULT_WIREPLUMBER_DENY_SCRIPT_PATH,
     AudioRoutingPolicy,
     AudioRoutingPolicyError,
     RoutePolicy,
     audio_routing_manifest_json,
+    generated_route_map_texts,
+    generated_wireplumber_deny_policy_texts,
     load_audio_routing_policy,
+    load_audio_topology_descriptor,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -103,6 +110,98 @@ def test_generated_manifest_matches_golden_output() -> None:
 def test_generator_check_mode_does_not_mutate_live_routing() -> None:
     result = subprocess.run(
         ["uv", "run", "python", str(SCRIPT), "--check"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_generated_route_maps_match_golden_output() -> None:
+    policy = load_audio_routing_policy(POLICY)
+    topology = load_audio_topology_descriptor()
+    desired, forbidden = generated_route_map_texts(topology, policy)
+
+    assert desired == DEFAULT_LINK_MAP_PATH.read_text(encoding="utf-8")
+    assert forbidden == DEFAULT_FORBIDDEN_LINKS_PATH.read_text(encoding="utf-8")
+
+
+def test_generated_route_maps_keep_pc_aux45_forbidden_not_desired() -> None:
+    policy = load_audio_routing_policy(POLICY)
+    topology = load_audio_topology_descriptor()
+    desired, forbidden = generated_route_map_texts(topology, policy)
+
+    assert "playback_AUX4" not in desired
+    assert "playback_AUX5" not in desired
+    assert (
+        "hapax-pc-loudnorm-playback:output_FL|"
+        "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX4"
+    ) in forbidden
+    assert "input.loopback.sink.role.assistant-output" in forbidden
+    assert "input.loopback.sink.role.notification-output" in forbidden
+
+
+def test_generator_route_map_check_mode() -> None:
+    result = subprocess.run(
+        ["uv", "run", "python", str(SCRIPT), "--check-route-maps"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_generated_wireplumber_deny_policy_matches_golden_output() -> None:
+    deny_conf, deny_script = generated_wireplumber_deny_policy_texts()
+
+    assert deny_conf == DEFAULT_WIREPLUMBER_DENY_CONF_PATH.read_text(encoding="utf-8")
+    assert deny_script == DEFAULT_WIREPLUMBER_DENY_SCRIPT_PATH.read_text(encoding="utf-8")
+    assert "linking/hapax-deny-forbidden-target" in deny_script
+    assert "linking/hapax-remove-forbidden-port-link" in deny_script
+    assert "HAPAX_AUDIO_FORBIDDEN_LINKS" in deny_script
+    assert "optional_device_fallback_denied" in deny_script
+    assert "hapax-polyend-instrument-capture" in deny_script
+    assert "link:remove ()" in deny_script
+
+
+def test_generator_wireplumber_deny_policy_check_mode() -> None:
+    result = subprocess.run(
+        ["uv", "run", "python", str(SCRIPT), "--check-wireplumber-deny-policy"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_generator_installed_route_map_check_mode(tmp_path: Path) -> None:
+    policy = load_audio_routing_policy(POLICY)
+    topology = load_audio_topology_descriptor()
+    desired, forbidden = generated_route_map_texts(topology, policy)
+    installed_dir = tmp_path / "hapax"
+    installed_dir.mkdir()
+    (installed_dir / "audio-link-map.conf").write_text(desired, encoding="utf-8")
+    (installed_dir / "audio-forbidden-links.conf").write_text(forbidden, encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            str(SCRIPT),
+            "--check-installed-route-maps",
+            "--installed-hapax-dir",
+            str(installed_dir),
+        ],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
