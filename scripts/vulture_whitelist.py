@@ -3857,3 +3857,9 @@ from shared.audio_control_plane import (
 classify_service_health
 read_mutation_events
 refuse_dirty_restart
+
+# React/watch-along adapter: entry point for content programming runner.
+# cc-task: react-watchalong-media-reference-adapter
+from shared.react_watchalong_adapter import build_render_plan
+
+build_render_plan
