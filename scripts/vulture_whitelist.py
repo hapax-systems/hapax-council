@@ -3745,3 +3745,7 @@ get_wcs_health
 get_wcs_surface_health
 get_wcs_blocked_surfaces
 get_wcs_claimable_surfaces
+
+from shared.artifact_release_state import ArtifactReleaseState
+
+ArtifactReleaseState.from_records
