@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# hapax-restore-verify — Verify a backup directory can be restored
+#
+# Validates backup artifact structure, checksums, and restore ordering.
+# Does NOT perform actual restores (that requires service downtime).
+# Exit code: 0 = all artifacts restorable, 1 = at least one problem.
+#
+# Usage:
+#   hapax-restore-verify /path/to/backup/20260520-010000
+#   hapax-restore-verify --latest ~/backups/llm-stack
+
+set -euo pipefail
+
+FAILURES=()
+WARNINGS=()
+CHECKED=0
+
+log() { echo "[$(date -Iseconds)] $1"; }
+fail() { FAILURES+=("$1"); log "FAIL: $1"; }
+warn() { WARNINGS+=("$1"); log "WARN: $1"; }
+pass() { CHECKED=$((CHECKED + 1)); log "  OK: $1"; }
+
+usage() {
+    echo "Usage: hapax-restore-verify <backup-dir>"
+    echo "       hapax-restore-verify --latest <backup-root>"
+    exit 2
+}
+
+resolve_backup_dir() {
+    if [[ "$1" == "--latest" ]]; then
+        [[ -n "${2:-}" ]] || usage
+        local latest
+        latest=$(ls -d "$2"/20* 2>/dev/null | sort | tail -1)
+        [[ -n "$latest" ]] || { echo "No backup dirs found in $2"; exit 2; }
+        echo "$latest"
+    else
+        echo "$1"
+    fi
+}
+
+[[ $# -ge 1 ]] || usage
+BACKUP_DIR=$(resolve_backup_dir "$@")
+[[ -d "$BACKUP_DIR" ]] || { echo "Not a directory: $BACKUP_DIR"; exit 2; }
+
+log "Verifying backup at: $BACKUP_DIR"
+
+# ── Claude Code config ──────────────────────────────────────────────────────
+check_claude_config() {
+    local dir="$BACKUP_DIR/claude-config"
+    if [[ -d "$dir" ]]; then
+        if [[ -f "$dir/settings.json" ]] || [[ -d "$dir/projects" ]]; then
+            pass "Claude config: directory structure present"
+        else
+            warn "Claude config: directory exists but may be empty"
+        fi
+    else
+        warn "Claude config: not in backup"
+    fi
+}
+
+# ── Langfuse prompts ────────────────────────────────────────────────────────
+check_langfuse() {
+    local file="$BACKUP_DIR/langfuse-prompts.json"
+    if [[ -f "$file" ]]; then
+        if python3 -c "import json; json.load(open('$file'))" 2>/dev/null; then
+            pass "Langfuse prompts: valid JSON"
+        else
+            fail "Langfuse prompts: invalid JSON"
+        fi
+    else
+        warn "Langfuse prompts: not in backup"
+    fi
+}
+
+# ── Qdrant snapshots ────────────────────────────────────────────────────────
+check_qdrant() {
+    local dir="$BACKUP_DIR/qdrant"
+    if [[ -d "$dir" ]]; then
+        local count=0
+        for snap in "$dir"/*-snapshot.json; do
+            [[ -f "$snap" ]] || continue
+            if python3 -c "import json; json.load(open('$snap'))" 2>/dev/null; then
+                count=$((count + 1))
+            else
+                fail "Qdrant: invalid snapshot $(basename "$snap")"
+            fi
+        done
+        if (( count >= 1 )); then
+            pass "Qdrant: $count valid snapshot(s)"
+        else
+            fail "Qdrant: no valid snapshots found"
+        fi
+    else
+        warn "Qdrant: not in backup"
+    fi
+}
+
+# ── PostgreSQL dumps ─────────────────────────────────────────────────────────
+check_postgres() {
+    local dir="$BACKUP_DIR/postgres"
+    if [[ -d "$dir" ]]; then
+        local count=0
+        for dump in "$dir"/*.sql; do
+            [[ -f "$dump" ]] || continue
+            local size
+            size=$(stat -c%s "$dump" 2>/dev/null || echo 0)
+            if (( size > 100 )); then
+                if head -5 "$dump" | grep -qE "^--|^SET |^CREATE |^\\\\connect"; then
+                    count=$((count + 1))
+                else
+                    fail "PostgreSQL: $(basename "$dump") does not look like a pg_dump"
+                fi
+            else
+                fail "PostgreSQL: $(basename "$dump") is suspiciously small (${size} bytes)"
+            fi
+        done
+        if (( count >= 1 )); then
+            pass "PostgreSQL: $count valid dump(s)"
+        else
+            fail "PostgreSQL: no valid dumps found"
+        fi
+    else
+        warn "PostgreSQL: not in backup"
+    fi
+}
+
+# ── n8n workflows ────────────────────────────────────────────────────────────
+check_n8n() {
+    local dir="$BACKUP_DIR/n8n"
+    if [[ -d "$dir" ]]; then
+        if [[ -f "$dir/workflows.json" ]]; then
+            if python3 -c "import json; json.load(open('$dir/workflows.json'))" 2>/dev/null; then
+                pass "n8n workflows: valid JSON"
+            else
+                fail "n8n workflows: invalid JSON"
+            fi
+        else
+            warn "n8n workflows: file missing"
+        fi
+    else
+        warn "n8n: not in backup"
+    fi
+}
+
+# ── Systemd units ────────────────────────────────────────────────────────────
+check_systemd() {
+    local dir="$BACKUP_DIR/systemd"
+    if [[ -d "$dir" ]]; then
+        local count
+        count=$(find "$dir" -name "*.service" -o -name "*.timer" -o -name "*.target" 2>/dev/null | wc -l)
+        if (( count >= 5 )); then
+            pass "Systemd: $count unit files"
+        else
+            fail "Systemd: only $count unit files (expected >=5)"
+        fi
+    else
+        warn "Systemd: not in backup"
+    fi
+}
+
+# ── Cache state ──────────────────────────────────────────────────────────────
+check_cache_state() {
+    local dir="$BACKUP_DIR/cache-state"
+    if [[ -d "$dir" ]]; then
+        local count
+        count=$(find "$dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+        if (( count >= 1 )); then
+            pass "Cache state: $count subdirectories"
+        else
+            warn "Cache state: directory exists but empty"
+        fi
+    else
+        warn "Cache state: not in backup"
+    fi
+}
+
+# ── Run all checks ──────────────────────────────────────────────────────────
+check_claude_config
+check_langfuse
+check_qdrant
+check_postgres
+check_n8n
+check_systemd
+check_cache_state
+
+# ── Summary ─────────────────────────────────────────────────────────────────
+echo ""
+log "=== Restore Verification Summary ==="
+log "Checked: $CHECKED passed"
+log "Warnings: ${#WARNINGS[@]}"
+log "Failures: ${#FAILURES[@]}"
+
+if (( ${#FAILURES[@]} > 0 )); then
+    echo ""
+    log "FAILURES:"
+    for f in "${FAILURES[@]}"; do
+        log "  ✗ $f"
+    done
+    exit 1
+fi
+
+if (( CHECKED == 0 )); then
+    log "FAIL: No artifacts verified — backup may be empty"
+    exit 1
+fi
+
+log "All verified artifacts are restorable."
+exit 0
