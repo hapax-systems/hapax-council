@@ -33,10 +33,11 @@ frontend:
 imagination:
     cargo build --release -p hapax-imagination
 
-# Build Tauri logos binary with bundled frontend.
-# Dev-only: not part of production install/rebuild.
-logos: frontend
-    cargo build --release -p hapax-logos --features tauri/custom-protocol
+# Native Tauri logos shell is decommissioned; keep this target fail-closed so
+# local invocations do not reintroduce the retired GTK/WebKit stack.
+logos:
+    @echo "hapax-logos native Tauri shell is decommissioned; use 'just frontend' and logos-api :8051."
+    @exit 1
 
 # Build production binaries
 build: imagination
