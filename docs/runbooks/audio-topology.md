@@ -1,9 +1,9 @@
 # Audio Topology Runbook
 
 **Status:** canonical
-**Last updated:** 2026-04-18
+**Last updated:** 2026-05-20
 **Authority:** [`docs/superpowers/specs/2026-04-18-audio-pathways-audit-design.md`](../superpowers/specs/2026-04-18-audio-pathways-audit-design.md)
-**Verify live:** `scripts/audio-topology-check.sh`
+**Verify live:** `scripts/hapax-audio-topology truth`
 
 This runbook is the single source of truth for the hapax-council audio graph:
 which sources feed which consumers, which sinks back which outputs, how
@@ -447,7 +447,49 @@ is NOT yet wired into `PresenceEngine`. Open follow-on:
 
 Wire-up is an open task; T4.3 names it as the audit-pathways follow-on.
 
-## 10. Related
+## 10. What is entering PC audio? (Truth Surface)
+
+The canonical query for "what is entering PC audio and why?" is:
+
+```bash
+# Full live truth surface (requires PipeWire running):
+scripts/hapax-audio-topology truth
+
+# Offline (config-only, no live graph):
+scripts/hapax-audio-topology truth --offline
+
+# Machine-readable JSON:
+scripts/hapax-audio-topology truth --json
+
+# Against a saved pw-dump:
+scripts/hapax-audio-topology truth --dump-file /tmp/pw-dump.json
+```
+
+The truth surface answers three questions:
+
+1. **Live Capsule** — are source policy, route maps, deny rules, and the live
+   graph consistent? Hashes of `config/audio-routing.yaml`,
+   `audio-routing-policy.manifest.json`, `audio-forbidden-links.conf`, and
+   `audio-link-map.conf` are compared against the recorded capsule. Stale,
+   missing, or contradictory evidence is red-flagged.
+
+2. **Ingress Ledger** — for each declared source: role, route class,
+   exposure domain (broadcast/private/fail\_closed), target chain, livestream
+   eligibility, and whether the source's PipeWire node is present in the live
+   graph. Broadcast-eligible sources missing from the live graph are flagged.
+
+3. **Route-Class Matrix** — for each route class, the relationship to the
+   broadcast and private domains: allowed, forbidden, fail\_closed, or unknown,
+   with the governing reason.
+
+Physical devices (L-12, MPC, S-4, M8, etc.) are witnessed by matching their
+descriptor `pipewire_name` against the live graph. An absent device is flagged.
+The WirePlumber deny hook (`98-hapax-link-deny.conf`) and OBS egress
+(`livestream-tap → broadcast-master` edge) are also witnessed.
+
+Exit code 0 = all evidence nominal; exit code 1 = at least one warning.
+
+## 11. Related
 
 - Spec: `docs/superpowers/specs/2026-04-18-audio-pathways-audit-design.md`
 - Research: `/tmp/cvs-research-145.md` (ducking direction audit)
