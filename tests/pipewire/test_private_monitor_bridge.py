@@ -10,7 +10,7 @@ CONF_REPO_PATH = (
     / "pipewire"
     / "hapax-private-monitor-bridge.conf"
 )
-MPC_TARGET = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"
+MPC_TARGET = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
 
 
 def _active(text: str) -> str:

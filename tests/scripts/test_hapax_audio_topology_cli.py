@@ -708,7 +708,7 @@ class TestTtsBroadcastCheck:
                             "props": {
                                 "node.name": (
                                     "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00"
-                                    ".multichannel-output"
+                                    ".pro-output-0"
                                 ),
                                 "media.class": "Audio/Sink",
                                 "factory.name": "api.alsa.pcm.sink",

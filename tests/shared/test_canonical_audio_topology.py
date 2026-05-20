@@ -17,7 +17,7 @@ L12_SOURCE_NAME = (
 L12_RETURN_NAME = (
     "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"
 )
-MPC_OUTPUT_NAME = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"
+MPC_OUTPUT_NAME = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
 
 
 def _descriptor() -> TopologyDescriptor:

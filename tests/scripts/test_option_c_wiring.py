@@ -18,7 +18,7 @@ LEAK_GUARD_SCRIPT = REPO_ROOT / "scripts" / "hapax-private-broadcast-leak-guard"
 TOPOLOGY_AUDIT_SCRIPT = REPO_ROOT / "scripts" / "hapax-audio-topology"
 AUDIO_TOPOLOGY_YAML = REPO_ROOT / "config" / "audio-topology.yaml"
 
-MPC_SINK = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"
+MPC_SINK = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
 S4_USB_SINK = "alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output"
 
 

@@ -30,7 +30,7 @@ PW_CONF_DIR="${HAPAX_PIPEWIRE_CONF_DIR:-${HOME}/.config/pipewire/pipewire.conf.d
 FORBIDDEN_PRIVATE_TARGET_RE='alsa_output\.usb-ZOOM_Corporation_L-12|alsa_output\.usb-Torso_Electronics_S-4|hapax-livestream|hapax-livestream-tap|hapax-voice-fx-capture|hapax-pc-loudnorm|input\.loopback\.sink\.role\.multimedia'
 # HN private monitor audio routes through MPC Live III. S-4 is downstream/MIDI
 # in this path and is not an approved host-side audio target.
-PRIVATE_MONITOR_TARGET_RE='alsa_output\.usb-Akai_Professional_MPC_LIVE_III_.*\.multichannel-output'
+PRIVATE_MONITOR_TARGET_RE='alsa_output\.usb-Akai_Professional_MPC_LIVE_III_.*\.(multichannel-output|pro-output-0)'
 
 active_conf() {
     sed '/^[[:space:]]*#/d' "$1" 2>/dev/null || true

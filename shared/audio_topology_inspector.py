@@ -523,7 +523,7 @@ def check_tts_broadcast_path(
     source_name: str = "input.loopback.sink.role.broadcast",
     voice_fx_name: str = "hapax-voice-fx-capture",
     loudnorm_name: str = "hapax-loudnorm-capture",
-    mpc_output_name: str = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output",
+    mpc_output_name: str = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0",
     wet_return_name: str = "hapax-l12-usb-return-capture",
     target_name: str = "hapax-livestream-tap",
     master_name: str = "hapax-broadcast-master-capture",
