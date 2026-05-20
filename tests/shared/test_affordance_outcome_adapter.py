@@ -89,6 +89,8 @@ def test_only_witness_policy_outcomes_feed_positive_learning() -> None:
         ("coe:audio.public-tts:witnessed-success", WitnessPolicy.WITNESSED),
         ("coe:governance.no-expert:refused", WitnessPolicy.WITNESSED),
         ("coe:public-event.rvpe:accepted", WitnessPolicy.PUBLIC_EVENT_ADAPTER),
+        ("coe:visual.reverie-lane:witnessed-success", WitnessPolicy.WITNESSED),
+        ("coe:visual.compositor-overlay:witnessed-success", WitnessPolicy.WITNESSED),
     ]
 
 

@@ -141,11 +141,20 @@
       "selection_state": "selected",
       "command_ref": "command:tts.emit:turn-42",
       "route_ref": "route:pipewire.public-broadcast",
-      "substrate_refs": ["substrate:pipewire:public-audio"],
-      "programme_refs": ["programme:voice-route-smoke"],
+      "substrate_refs": [
+        "substrate:pipewire:public-audio"
+      ],
+      "programme_refs": [
+        "programme:voice-route-smoke"
+      ],
       "director_move_ref": null,
-      "evidence_envelope_refs": ["evidence-envelope:audio.egress:loudness-marker"],
-      "witness_refs": ["witness:audio.egress:marker-present", "witness:audio.egress:lufs"],
+      "evidence_envelope_refs": [
+        "evidence-envelope:audio.egress:loudness-marker"
+      ],
+      "witness_refs": [
+        "witness:audio.egress:marker-present",
+        "witness:audio.egress:lufs"
+      ],
       "expected_effect": {
         "effect_id": "effect:public-tts-audible",
         "description": "The requested TTS utterance is audible on the expected public audio route.",
@@ -163,7 +172,10 @@
         "allowed": true,
         "target": "affordance_activation",
         "reason": "Audio egress marker and loudness witness verified the declared effect.",
-        "required_witness_refs": ["witness:audio.egress:marker-present", "witness:audio.egress:lufs"],
+        "required_witness_refs": [
+          "witness:audio.egress:marker-present",
+          "witness:audio.egress:lufs"
+        ],
         "missing_witness_refs": [],
         "thompson_delta": 0.1,
         "context_association_delta": 0.05
@@ -178,7 +190,9 @@
       },
       "blocked_reasons": [],
       "refusal_or_correction_refs": [],
-      "health_refs": ["world-surface-health:audio.broadcast_voice.health"],
+      "health_refs": [
+        "world-surface-health:audio.broadcast_voice.health"
+      ],
       "privacy_state": "public_safe",
       "rights_state": "not_applicable",
       "freshness": {
@@ -190,7 +204,12 @@
       },
       "authority_ceiling": "internal_only",
       "witness_policy": "witnessed",
-      "verified_success": {"capability": true, "action": true, "public": false, "claim_posterior": false},
+      "verified_success": {
+        "capability": true,
+        "action": true,
+        "public": false,
+        "claim_posterior": false
+      },
       "public_claim_evidence": {
         "required": false,
         "present": false,
@@ -213,11 +232,19 @@
       "selection_state": "selected",
       "command_ref": "command:visual.activate:run-7",
       "route_ref": "route:reverie.frame-slot",
-      "substrate_refs": ["substrate:reverie:frame"],
-      "programme_refs": ["programme:visual-lane-smoke"],
+      "substrate_refs": [
+        "substrate:reverie:frame"
+      ],
+      "programme_refs": [
+        "programme:visual-lane-smoke"
+      ],
       "director_move_ref": "director-move:visual-lane:pulse",
-      "evidence_envelope_refs": ["evidence-envelope:visual.frame:black-frame"],
-      "witness_refs": ["witness:visual.frame:nonblank-failed"],
+      "evidence_envelope_refs": [
+        "evidence-envelope:visual.frame:black-frame"
+      ],
+      "witness_refs": [
+        "witness:visual.frame:nonblank-failed"
+      ],
       "expected_effect": {
         "effect_id": "effect:visual-frame-nonblank",
         "description": "The selected visual lane emits a fresh nonblank frame.",
@@ -235,7 +262,9 @@
         "allowed": true,
         "target": "affordance_activation",
         "reason": "The command applied, but the frame witness failed the nonblank check.",
-        "required_witness_refs": ["witness:visual.frame:nonblank-failed"],
+        "required_witness_refs": [
+          "witness:visual.frame:nonblank-failed"
+        ],
         "missing_witness_refs": [],
         "thompson_delta": -0.08,
         "context_association_delta": -0.02
@@ -248,9 +277,13 @@
         "claim_engine_refs": [],
         "reason": "A visual render failure is not a factual claim posterior."
       },
-      "blocked_reasons": ["world_effect_not_observed"],
+      "blocked_reasons": [
+        "world_effect_not_observed"
+      ],
       "refusal_or_correction_refs": [],
-      "health_refs": ["world-surface-health:visual.overlay.candidate"],
+      "health_refs": [
+        "world-surface-health:visual.overlay.candidate"
+      ],
       "privacy_state": "public_safe",
       "rights_state": "not_applicable",
       "freshness": {
@@ -262,7 +295,12 @@
       },
       "authority_ceiling": "internal_only",
       "witness_policy": "witnessed",
-      "verified_success": {"capability": false, "action": false, "public": false, "claim_posterior": false},
+      "verified_success": {
+        "capability": false,
+        "action": false,
+        "public": false,
+        "claim_posterior": false
+      },
       "public_claim_evidence": {
         "required": false,
         "present": false,
@@ -285,8 +323,12 @@
       "selection_state": "selected",
       "command_ref": null,
       "route_ref": null,
-      "substrate_refs": ["substrate:affordance:selection"],
-      "programme_refs": ["programme:tier-list:candidate"],
+      "substrate_refs": [
+        "substrate:affordance:selection"
+      ],
+      "programme_refs": [
+        "programme:tier-list:candidate"
+      ],
       "director_move_ref": null,
       "evidence_envelope_refs": [],
       "witness_refs": [],
@@ -308,7 +350,9 @@
         "target": "none",
         "reason": "Selection alone is not a witnessed outcome.",
         "required_witness_refs": [],
-        "missing_witness_refs": ["witness:artifact:emitted"],
+        "missing_witness_refs": [
+          "witness:artifact:emitted"
+        ],
         "thompson_delta": null,
         "context_association_delta": null
       },
@@ -320,9 +364,13 @@
         "claim_engine_refs": [],
         "reason": "Selected candidates have no claim evidence."
       },
-      "blocked_reasons": ["selected_only_no_world_effect"],
+      "blocked_reasons": [
+        "selected_only_no_world_effect"
+      ],
       "refusal_or_correction_refs": [],
-      "health_refs": ["world-surface-health:control.selected-scene.selected-only"],
+      "health_refs": [
+        "world-surface-health:control.selected-scene.selected-only"
+      ],
       "privacy_state": "unknown",
       "rights_state": "unknown",
       "freshness": {
@@ -334,7 +382,12 @@
       },
       "authority_ceiling": "no_claim",
       "witness_policy": "selected_only",
-      "verified_success": {"capability": false, "action": false, "public": false, "claim_posterior": false},
+      "verified_success": {
+        "capability": false,
+        "action": false,
+        "public": false,
+        "claim_posterior": false
+      },
       "public_claim_evidence": {
         "required": false,
         "present": false,
@@ -357,7 +410,9 @@
       "selection_state": "selected",
       "command_ref": "command:midi.transport:start",
       "route_ref": "route:midi:studio-control",
-      "substrate_refs": ["substrate:midi:studio-control"],
+      "substrate_refs": [
+        "substrate:midi:studio-control"
+      ],
       "programme_refs": [],
       "director_move_ref": "director-move:transport:start",
       "evidence_envelope_refs": [],
@@ -380,7 +435,9 @@
         "target": "none",
         "reason": "Command acceptance is execution evidence, not action success.",
         "required_witness_refs": [],
-        "missing_witness_refs": ["witness:midi.transport:readback"],
+        "missing_witness_refs": [
+          "witness:midi.transport:readback"
+        ],
         "thompson_delta": null,
         "context_association_delta": null
       },
@@ -392,9 +449,13 @@
         "claim_engine_refs": [],
         "reason": "Commanded-only action has no claim evidence."
       },
-      "blocked_reasons": ["commanded_only_no_readback"],
+      "blocked_reasons": [
+        "commanded_only_no_readback"
+      ],
       "refusal_or_correction_refs": [],
-      "health_refs": ["world-surface-health:control.midi-transport.commanded-only"],
+      "health_refs": [
+        "world-surface-health:control.midi-transport.commanded-only"
+      ],
       "privacy_state": "private_only",
       "rights_state": "not_applicable",
       "freshness": {
@@ -406,7 +467,12 @@
       },
       "authority_ceiling": "internal_only",
       "witness_policy": "commanded_only",
-      "verified_success": {"capability": false, "action": false, "public": false, "claim_posterior": false},
+      "verified_success": {
+        "capability": false,
+        "action": false,
+        "public": false,
+        "claim_posterior": false
+      },
       "public_claim_evidence": {
         "required": false,
         "present": false,
@@ -429,11 +495,17 @@
       "selection_state": "suppressed",
       "command_ref": null,
       "route_ref": "route:provider.search:policy-gate",
-      "substrate_refs": ["substrate:provider-router"],
-      "programme_refs": ["programme:evidence-audit"],
+      "substrate_refs": [
+        "substrate:provider-router"
+      ],
+      "programme_refs": [
+        "programme:evidence-audit"
+      ],
       "director_move_ref": null,
       "evidence_envelope_refs": [],
-      "witness_refs": ["witness:provider.policy:block"],
+      "witness_refs": [
+        "witness:provider.policy:block"
+      ],
       "expected_effect": {
         "effect_id": "effect:sources-acquired",
         "description": "A provider route acquires sources for a current-state claim.",
@@ -452,7 +524,9 @@
         "target": "none",
         "reason": "Provider route was blocked before source acquisition.",
         "required_witness_refs": [],
-        "missing_witness_refs": ["evidence-envelope:provider.search:sources"],
+        "missing_witness_refs": [
+          "evidence-envelope:provider.search:sources"
+        ],
         "thompson_delta": null,
         "context_association_delta": null
       },
@@ -464,9 +538,13 @@
         "claim_engine_refs": [],
         "reason": "Blocked source acquisition cannot update a claim posterior."
       },
-      "blocked_reasons": ["provider_policy_blocked"],
+      "blocked_reasons": [
+        "provider_policy_blocked"
+      ],
       "refusal_or_correction_refs": [],
-      "health_refs": ["world-surface-health:provider.tool-soundcloud.missing"],
+      "health_refs": [
+        "world-surface-health:provider.tool-soundcloud.missing"
+      ],
       "privacy_state": "blocked",
       "rights_state": "unknown",
       "freshness": {
@@ -478,7 +556,12 @@
       },
       "authority_ceiling": "no_claim",
       "witness_policy": "fixture_only",
-      "verified_success": {"capability": false, "action": false, "public": false, "claim_posterior": false},
+      "verified_success": {
+        "capability": false,
+        "action": false,
+        "public": false,
+        "claim_posterior": false
+      },
       "public_claim_evidence": {
         "required": false,
         "present": false,
@@ -501,11 +584,19 @@
       "selection_state": "selected",
       "command_ref": "command:gate.evaluate:claim-17",
       "route_ref": "route:governance:no-expert-gate",
-      "substrate_refs": ["substrate:grounding-gate"],
-      "programme_refs": ["programme:evidence-audit"],
+      "substrate_refs": [
+        "substrate:grounding-gate"
+      ],
+      "programme_refs": [
+        "programme:evidence-audit"
+      ],
       "director_move_ref": null,
-      "evidence_envelope_refs": ["evidence-envelope:claim-17:insufficient-authority"],
-      "witness_refs": ["witness:gate.no-expert:refusal-issued"],
+      "evidence_envelope_refs": [
+        "evidence-envelope:claim-17:insufficient-authority"
+      ],
+      "witness_refs": [
+        "witness:gate.no-expert:refusal-issued"
+      ],
       "expected_effect": {
         "effect_id": "effect:unsafe-claim-refused",
         "description": "The governance gate refuses a claim that lacks evidence authority.",
@@ -523,22 +614,36 @@
         "allowed": true,
         "target": "surface_health",
         "reason": "The governance capability produced a witnessed refusal; the refused original claim does not receive success.",
-        "required_witness_refs": ["witness:gate.no-expert:refusal-issued"],
+        "required_witness_refs": [
+          "witness:gate.no-expert:refusal-issued"
+        ],
         "missing_witness_refs": [],
         "thompson_delta": 0.04,
         "context_association_delta": 0.02
       },
       "claim_posterior_update": {
         "allowed": false,
-        "claim_ids": ["claim:17"],
-        "evidence_envelope_refs": ["evidence-envelope:claim-17:insufficient-authority"],
-        "gate_refs": ["gate:no-expert-system:refusal"],
+        "claim_ids": [
+          "claim:17"
+        ],
+        "evidence_envelope_refs": [
+          "evidence-envelope:claim-17:insufficient-authority"
+        ],
+        "gate_refs": [
+          "gate:no-expert-system:refusal"
+        ],
         "claim_engine_refs": [],
         "reason": "Refusal success does not update the refused claim as true."
       },
-      "blocked_reasons": ["refused_original_claim"],
-      "refusal_or_correction_refs": ["refusal:no-expert-system:claim-17"],
-      "health_refs": ["world-surface-health:refusal.no-expert.health"],
+      "blocked_reasons": [
+        "refused_original_claim"
+      ],
+      "refusal_or_correction_refs": [
+        "refusal:no-expert-system:claim-17"
+      ],
+      "health_refs": [
+        "world-surface-health:refusal.no-expert.health"
+      ],
       "privacy_state": "public_safe",
       "rights_state": "not_applicable",
       "freshness": {
@@ -550,7 +655,12 @@
       },
       "authority_ceiling": "internal_only",
       "witness_policy": "witnessed",
-      "verified_success": {"capability": true, "action": false, "public": false, "claim_posterior": false},
+      "verified_success": {
+        "capability": true,
+        "action": false,
+        "public": false,
+        "claim_posterior": false
+      },
       "public_claim_evidence": {
         "required": false,
         "present": false,
@@ -573,11 +683,19 @@
       "selection_state": "selected",
       "command_ref": "command:archive.replay:mount",
       "route_ref": "route:archive.replay:hls",
-      "substrate_refs": ["substrate:archive:hls"],
-      "programme_refs": ["programme:replay-audit"],
+      "substrate_refs": [
+        "substrate:archive:hls"
+      ],
+      "programme_refs": [
+        "programme:replay-audit"
+      ],
       "director_move_ref": null,
-      "evidence_envelope_refs": ["evidence-envelope:archive.replay:old-sidecar"],
-      "witness_refs": ["witness:archive.replay:stale-sidecar"],
+      "evidence_envelope_refs": [
+        "evidence-envelope:archive.replay:old-sidecar"
+      ],
+      "witness_refs": [
+        "witness:archive.replay:stale-sidecar"
+      ],
       "expected_effect": {
         "effect_id": "effect:archive-replay-current",
         "description": "The archive replay artifact has a fresh sidecar and public policy witness.",
@@ -596,21 +714,29 @@
         "target": "none",
         "reason": "The witness exists but exceeded the declared TTL.",
         "required_witness_refs": [],
-        "missing_witness_refs": ["witness:archive.replay:fresh-sidecar"],
+        "missing_witness_refs": [
+          "witness:archive.replay:fresh-sidecar"
+        ],
         "thompson_delta": null,
         "context_association_delta": null
       },
       "claim_posterior_update": {
         "allowed": false,
-        "claim_ids": ["claim:archive.replay.current"],
+        "claim_ids": [
+          "claim:archive.replay.current"
+        ],
         "evidence_envelope_refs": [],
         "gate_refs": [],
         "claim_engine_refs": [],
         "reason": "Stale archive witness cannot update current/public truth."
       },
-      "blocked_reasons": ["stale_witness"],
+      "blocked_reasons": [
+        "stale_witness"
+      ],
       "refusal_or_correction_refs": [],
-      "health_refs": ["world-surface-health:archive.session-replay.stale"],
+      "health_refs": [
+        "world-surface-health:archive.session-replay.stale"
+      ],
       "privacy_state": "archive_only",
       "rights_state": "unknown",
       "freshness": {
@@ -622,7 +748,12 @@
       },
       "authority_ceiling": "no_claim",
       "witness_policy": "stale",
-      "verified_success": {"capability": false, "action": false, "public": false, "claim_posterior": false},
+      "verified_success": {
+        "capability": false,
+        "action": false,
+        "public": false,
+        "claim_posterior": false
+      },
       "public_claim_evidence": {
         "required": false,
         "present": false,
@@ -645,8 +776,12 @@
       "selection_state": "selected",
       "command_ref": "command:tool.search:latest",
       "route_ref": "route:tool:search-provider",
-      "substrate_refs": ["substrate:tool-router"],
-      "programme_refs": ["programme:source-audit"],
+      "substrate_refs": [
+        "substrate:tool-router"
+      ],
+      "programme_refs": [
+        "programme:source-audit"
+      ],
       "director_move_ref": null,
       "evidence_envelope_refs": [],
       "witness_refs": [],
@@ -668,21 +803,29 @@
         "target": "none",
         "reason": "Required source artifacts are missing.",
         "required_witness_refs": [],
-        "missing_witness_refs": ["evidence-envelope:tool.source_acquisition:sources"],
+        "missing_witness_refs": [
+          "evidence-envelope:tool.source_acquisition:sources"
+        ],
         "thompson_delta": null,
         "context_association_delta": null
       },
       "claim_posterior_update": {
         "allowed": false,
-        "claim_ids": ["claim:provider.latest"],
+        "claim_ids": [
+          "claim:provider.latest"
+        ],
         "evidence_envelope_refs": [],
         "gate_refs": [],
         "claim_engine_refs": [],
         "reason": "Missing source artifacts cannot update a claim posterior."
       },
-      "blocked_reasons": ["missing_source_artifacts"],
+      "blocked_reasons": [
+        "missing_source_artifacts"
+      ],
       "refusal_or_correction_refs": [],
-      "health_refs": ["world-surface-health:provider.tool-soundcloud.missing"],
+      "health_refs": [
+        "world-surface-health:provider.tool-soundcloud.missing"
+      ],
       "privacy_state": "unknown",
       "rights_state": "missing",
       "freshness": {
@@ -694,7 +837,12 @@
       },
       "authority_ceiling": "no_claim",
       "witness_policy": "missing",
-      "verified_success": {"capability": false, "action": false, "public": false, "claim_posterior": false},
+      "verified_success": {
+        "capability": false,
+        "action": false,
+        "public": false,
+        "claim_posterior": false
+      },
       "public_claim_evidence": {
         "required": false,
         "present": false,
@@ -717,11 +865,15 @@
       "selection_state": "selected",
       "command_ref": null,
       "route_ref": "route:perception:context-model",
-      "substrate_refs": ["substrate:perception:model"],
+      "substrate_refs": [
+        "substrate:perception:model"
+      ],
       "programme_refs": [],
       "director_move_ref": null,
       "evidence_envelope_refs": [],
-      "witness_refs": ["inference:context:desk-present"],
+      "witness_refs": [
+        "inference:context:desk-present"
+      ],
       "expected_effect": {
         "effect_id": "effect:operator-desk-observed",
         "description": "A raw observation source witnesses operator desk presence.",
@@ -740,7 +892,9 @@
         "target": "none",
         "reason": "Inferred context is useful narrative material but not a witness.",
         "required_witness_refs": [],
-        "missing_witness_refs": ["witness:raw_observation:desk"],
+        "missing_witness_refs": [
+          "witness:raw_observation:desk"
+        ],
         "thompson_delta": null,
         "context_association_delta": null
       },
@@ -752,9 +906,13 @@
         "claim_engine_refs": [],
         "reason": "Inference cannot update action, live, public, or grounded success."
       },
-      "blocked_reasons": ["inferred_context_only"],
+      "blocked_reasons": [
+        "inferred_context_only"
+      ],
       "refusal_or_correction_refs": [],
-      "health_refs": ["world-surface-health:archive.local-pool.inferred"],
+      "health_refs": [
+        "world-surface-health:archive.local-pool.inferred"
+      ],
       "privacy_state": "private_only",
       "rights_state": "not_applicable",
       "freshness": {
@@ -766,7 +924,12 @@
       },
       "authority_ceiling": "speculative",
       "witness_policy": "inferred",
-      "verified_success": {"capability": false, "action": false, "public": false, "claim_posterior": false},
+      "verified_success": {
+        "capability": false,
+        "action": false,
+        "public": false,
+        "claim_posterior": false
+      },
       "public_claim_evidence": {
         "required": false,
         "present": false,
@@ -789,11 +952,17 @@
       "selection_state": "selected",
       "command_ref": "command:legacy-public-event.emit:segment-legacy",
       "route_ref": "route:public-event:legacy",
-      "substrate_refs": ["substrate:public-event:legacy"],
-      "programme_refs": ["programme:runner-refusal-harness"],
+      "substrate_refs": [
+        "substrate:public-event:legacy"
+      ],
+      "programme_refs": [
+        "programme:runner-refusal-harness"
+      ],
       "director_move_ref": "director-move:programme:legacy-public-event",
       "evidence_envelope_refs": [],
-      "witness_refs": ["legacy-public-event:segment-legacy"],
+      "witness_refs": [
+        "legacy-public-event:segment-legacy"
+      ],
       "expected_effect": {
         "effect_id": "effect:rvpe-public-event-accepted",
         "description": "A public event is represented as a ResearchVehiclePublicEvent with policy gate evidence.",
@@ -821,7 +990,9 @@
       },
       "claim_posterior_update": {
         "allowed": false,
-        "claim_ids": ["claim:legacy-public-event:unsupported"],
+        "claim_ids": [
+          "claim:legacy-public-event:unsupported"
+        ],
         "evidence_envelope_refs": [],
         "gate_refs": [],
         "claim_engine_refs": [],
@@ -832,7 +1003,9 @@
         "missing_public_event_gate"
       ],
       "refusal_or_correction_refs": [],
-      "health_refs": ["world-surface-health:public-event.legacy.blocked"],
+      "health_refs": [
+        "world-surface-health:public-event.legacy.blocked"
+      ],
       "privacy_state": "public_safe",
       "rights_state": "unknown",
       "freshness": {
@@ -844,7 +1017,12 @@
       },
       "authority_ceiling": "public_gate_required",
       "witness_policy": "legacy_public_event",
-      "verified_success": {"capability": false, "action": false, "public": false, "claim_posterior": false},
+      "verified_success": {
+        "capability": false,
+        "action": false,
+        "public": false,
+        "claim_posterior": false
+      },
       "public_claim_evidence": {
         "required": false,
         "present": false,
@@ -867,11 +1045,20 @@
       "selection_state": "selected",
       "command_ref": "command:rvpe.emit:segment-9",
       "route_ref": "route:rvpe:public-event",
-      "substrate_refs": ["substrate:public-event:rvpe"],
-      "programme_refs": ["programme:evidence-audit"],
+      "substrate_refs": [
+        "substrate:public-event:rvpe"
+      ],
+      "programme_refs": [
+        "programme:evidence-audit"
+      ],
       "director_move_ref": "director-move:programme:publish-segment",
-      "evidence_envelope_refs": ["evidence-envelope:segment-9:sources"],
-      "witness_refs": ["witness:rvpe:accepted", "witness:public-policy:gate-pass"],
+      "evidence_envelope_refs": [
+        "evidence-envelope:segment-9:sources"
+      ],
+      "witness_refs": [
+        "witness:rvpe:accepted",
+        "witness:public-policy:gate-pass"
+      ],
       "expected_effect": {
         "effect_id": "effect:public-event-accepted",
         "description": "The public-event adapter accepts an evidence-backed event with gate refs.",
@@ -889,22 +1076,36 @@
         "allowed": true,
         "target": "opportunity_model",
         "reason": "RVPE accepted the evidence-backed event under public policy.",
-        "required_witness_refs": ["witness:rvpe:accepted", "witness:public-policy:gate-pass"],
+        "required_witness_refs": [
+          "witness:rvpe:accepted",
+          "witness:public-policy:gate-pass"
+        ],
         "missing_witness_refs": [],
         "thompson_delta": 0.06,
         "context_association_delta": 0.03
       },
       "claim_posterior_update": {
         "allowed": true,
-        "claim_ids": ["claim:segment-9:source-backed"],
-        "evidence_envelope_refs": ["evidence-envelope:segment-9:sources"],
-        "gate_refs": ["gate:no-expert-system:pass", "gate:public-event-policy:accepted"],
-        "claim_engine_refs": ["claim-engine:posterior:segment-9"],
+        "claim_ids": [
+          "claim:segment-9:source-backed"
+        ],
+        "evidence_envelope_refs": [
+          "evidence-envelope:segment-9:sources"
+        ],
+        "gate_refs": [
+          "gate:no-expert-system:pass",
+          "gate:public-event-policy:accepted"
+        ],
+        "claim_engine_refs": [
+          "claim-engine:posterior:segment-9"
+        ],
         "reason": "Claim posterior update is allowed only because evidence envelope and public gate refs are present."
       },
       "blocked_reasons": [],
       "refusal_or_correction_refs": [],
-      "health_refs": ["world-surface-health:public-event.rvpe.health"],
+      "health_refs": [
+        "world-surface-health:public-event.rvpe.health"
+      ],
       "privacy_state": "public_safe",
       "rights_state": "public_clear",
       "freshness": {
@@ -916,34 +1117,483 @@
       },
       "authority_ceiling": "public_gate_required",
       "witness_policy": "public_event_adapter",
-      "verified_success": {"capability": true, "action": false, "public": true, "claim_posterior": true},
+      "verified_success": {
+        "capability": true,
+        "action": false,
+        "public": true,
+        "claim_posterior": true
+      },
       "public_claim_evidence": {
         "required": true,
         "present": true,
-        "evidence_envelope_refs": ["evidence-envelope:segment-9:sources"],
-        "public_event_refs": ["ResearchVehiclePublicEvent:segment-9"],
-        "gate_refs": ["gate:no-expert-system:pass", "gate:public-event-policy:accepted"],
+        "evidence_envelope_refs": [
+          "evidence-envelope:segment-9:sources"
+        ],
+        "public_event_refs": [
+          "ResearchVehiclePublicEvent:segment-9"
+        ],
+        "gate_refs": [
+          "gate:no-expert-system:pass",
+          "gate:public-event-policy:accepted"
+        ],
         "note": "Public-event success and claim posterior update are evidence-bound."
       },
       "operator_visible_summary": "RVPE accepted an evidence-backed public event with gate refs.",
       "fixture_case": "public_event_accepted"
+    },
+    {
+      "schema_version": 1,
+      "outcome_id": "coe:visual.reverie-lane:witnessed-success",
+      "created_at": "2026-05-20T15:30:00Z",
+      "capability_id": "capability:visual.reverie_lane",
+      "capability_name": "Reverie shader lane",
+      "attempt_kind": "express",
+      "selection_ref": "selection:visual.reverie:run-12",
+      "selection_state": "selected",
+      "command_ref": "command:visual.reverie.activate:run-12",
+      "route_ref": "route:reverie.wgsl-node",
+      "substrate_refs": [
+        "substrate:reverie:gpu-uniform-buffer"
+      ],
+      "programme_refs": [],
+      "director_move_ref": "director-move:reverie:intensity-pulse",
+      "evidence_envelope_refs": [
+        "evidence-envelope:visual.reverie:frame-captured"
+      ],
+      "witness_refs": [
+        "witness:visual.reverie:frame-nonblank",
+        "witness:visual.reverie:lane-active"
+      ],
+      "expected_effect": {
+        "effect_id": "effect:reverie-lane-rendered",
+        "description": "The recruited reverie shader node produces a fresh nonblank frame in its assigned lane.",
+        "witness_class": "visual_frame",
+        "public_claim_bearing": false,
+        "action_bearing": false
+      },
+      "outcome_status": "success",
+      "execution_status": "applied",
+      "manifestation_status": "witness_verified",
+      "claim_status": "not_claim_bearing",
+      "public_event_status": "not_public",
+      "learning_update": {
+        "policy": "success",
+        "allowed": true,
+        "target": "affordance_activation",
+        "reason": "Reverie lane rendered a fresh nonblank frame under witness.",
+        "required_witness_refs": [
+          "witness:visual.reverie:frame-nonblank",
+          "witness:visual.reverie:lane-active"
+        ],
+        "missing_witness_refs": [],
+        "thompson_delta": 0.05,
+        "context_association_delta": 0.01
+      },
+      "claim_posterior_update": {
+        "allowed": false,
+        "claim_ids": [],
+        "evidence_envelope_refs": [],
+        "gate_refs": [],
+        "claim_engine_refs": [],
+        "reason": "Visual render success is not a factual claim posterior."
+      },
+      "blocked_reasons": [],
+      "refusal_or_correction_refs": [],
+      "health_refs": [
+        "world-surface-health:visual.reverie.lane"
+      ],
+      "privacy_state": "public_safe",
+      "rights_state": "not_applicable",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 30,
+        "observed_age_s": 2,
+        "source_ref": "witness:visual.reverie:frame-nonblank",
+        "checked_at": "2026-05-20T15:30:00Z"
+      },
+      "authority_ceiling": "internal_only",
+      "witness_policy": "witnessed",
+      "verified_success": {
+        "capability": true,
+        "action": false,
+        "public": false,
+        "claim_posterior": false
+      },
+      "public_claim_evidence": {
+        "required": false,
+        "present": false,
+        "evidence_envelope_refs": [],
+        "public_event_refs": [],
+        "gate_refs": [],
+        "note": "No public claim attached to internal visual effect."
+      },
+      "operator_visible_summary": "Reverie shader lane rendered a fresh frame under witness.",
+      "fixture_case": "witnessed_success"
+    },
+    {
+      "schema_version": 1,
+      "outcome_id": "coe:visual.compositor-overlay:witnessed-success",
+      "created_at": "2026-05-20T15:30:01Z",
+      "capability_id": "capability:visual.compositor_overlay",
+      "capability_name": "Compositor cairo overlay",
+      "attempt_kind": "express",
+      "selection_ref": "selection:visual.overlay:run-8",
+      "selection_state": "selected",
+      "command_ref": "command:visual.overlay.activate:run-8",
+      "route_ref": "route:compositor.cairooverlay",
+      "substrate_refs": [
+        "substrate:compositor:cairo-ward"
+      ],
+      "programme_refs": [],
+      "director_move_ref": "director-move:compositor:ward-render",
+      "evidence_envelope_refs": [
+        "evidence-envelope:visual.overlay:frame-captured"
+      ],
+      "witness_refs": [
+        "witness:visual.overlay:frame-nonblank",
+        "witness:visual.overlay:ward-active"
+      ],
+      "expected_effect": {
+        "effect_id": "effect:compositor-overlay-rendered",
+        "description": "The recruited cairo overlay ward renders content into the compositor frame.",
+        "witness_class": "visual_frame",
+        "public_claim_bearing": false,
+        "action_bearing": false
+      },
+      "outcome_status": "success",
+      "execution_status": "applied",
+      "manifestation_status": "witness_verified",
+      "claim_status": "not_claim_bearing",
+      "public_event_status": "not_public",
+      "learning_update": {
+        "policy": "success",
+        "allowed": true,
+        "target": "affordance_activation",
+        "reason": "Compositor overlay ward rendered fresh content under witness.",
+        "required_witness_refs": [
+          "witness:visual.overlay:frame-nonblank",
+          "witness:visual.overlay:ward-active"
+        ],
+        "missing_witness_refs": [],
+        "thompson_delta": 0.05,
+        "context_association_delta": 0.01
+      },
+      "claim_posterior_update": {
+        "allowed": false,
+        "claim_ids": [],
+        "evidence_envelope_refs": [],
+        "gate_refs": [],
+        "claim_engine_refs": [],
+        "reason": "Visual overlay is not a factual claim."
+      },
+      "blocked_reasons": [],
+      "refusal_or_correction_refs": [],
+      "health_refs": [
+        "world-surface-health:visual.compositor.overlay"
+      ],
+      "privacy_state": "public_safe",
+      "rights_state": "not_applicable",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 30,
+        "observed_age_s": 3,
+        "source_ref": "witness:visual.overlay:frame-nonblank",
+        "checked_at": "2026-05-20T15:30:01Z"
+      },
+      "authority_ceiling": "internal_only",
+      "witness_policy": "witnessed",
+      "verified_success": {
+        "capability": true,
+        "action": false,
+        "public": false,
+        "claim_posterior": false
+      },
+      "public_claim_evidence": {
+        "required": false,
+        "present": false,
+        "evidence_envelope_refs": [],
+        "public_event_refs": [],
+        "gate_refs": [],
+        "note": "No public claim on internal overlay effect."
+      },
+      "operator_visible_summary": "Compositor overlay ward rendered fresh content under witness.",
+      "fixture_case": "witnessed_success"
+    },
+    {
+      "schema_version": 1,
+      "outcome_id": "coe:visual.frame:stale-witness",
+      "created_at": "2026-05-20T15:30:02Z",
+      "capability_id": "capability:visual.frame_render",
+      "capability_name": "Visual frame render",
+      "attempt_kind": "express",
+      "selection_ref": "selection:visual.frame:run-9",
+      "selection_state": "selected",
+      "command_ref": "command:visual.activate:run-9",
+      "route_ref": "route:reverie.frame-slot",
+      "substrate_refs": [
+        "substrate:reverie:frame"
+      ],
+      "programme_refs": [],
+      "director_move_ref": "director-move:visual-lane:pulse",
+      "evidence_envelope_refs": [],
+      "witness_refs": [
+        "witness:visual.frame:stale-45s"
+      ],
+      "expected_effect": {
+        "effect_id": "effect:visual-frame-nonblank",
+        "description": "The selected visual lane emits a fresh nonblank frame.",
+        "witness_class": "visual_frame",
+        "public_claim_bearing": false,
+        "action_bearing": false
+      },
+      "outcome_status": "stale",
+      "execution_status": "applied",
+      "manifestation_status": "witness_stale",
+      "claim_status": "not_claim_bearing",
+      "public_event_status": "not_public",
+      "learning_update": {
+        "policy": "defer",
+        "allowed": false,
+        "target": "none",
+        "reason": "Frame witness is stale (45s > 30s TTL). No learning update.",
+        "required_witness_refs": [
+          "witness:visual.frame:stale-45s"
+        ],
+        "missing_witness_refs": [],
+        "thompson_delta": 0.0,
+        "context_association_delta": 0.0
+      },
+      "claim_posterior_update": {
+        "allowed": false,
+        "claim_ids": [],
+        "evidence_envelope_refs": [],
+        "gate_refs": [],
+        "claim_engine_refs": [],
+        "reason": "Stale visual witness cannot update any claim."
+      },
+      "blocked_reasons": [
+        "stale_witness"
+      ],
+      "refusal_or_correction_refs": [],
+      "health_refs": [
+        "world-surface-health:visual.overlay.candidate"
+      ],
+      "privacy_state": "public_safe",
+      "rights_state": "not_applicable",
+      "freshness": {
+        "state": "stale",
+        "ttl_s": 30,
+        "observed_age_s": 45,
+        "source_ref": "witness:visual.frame:stale-45s",
+        "checked_at": "2026-05-20T15:30:02Z"
+      },
+      "authority_ceiling": "internal_only",
+      "witness_policy": "witnessed",
+      "verified_success": {
+        "capability": false,
+        "action": false,
+        "public": false,
+        "claim_posterior": false
+      },
+      "public_claim_evidence": {
+        "required": false,
+        "present": false,
+        "evidence_envelope_refs": [],
+        "public_event_refs": [],
+        "gate_refs": [],
+        "note": "Stale witness \u2014 no success claim possible."
+      },
+      "operator_visible_summary": "Visual command applied but frame witness is stale (45s > 30s TTL).",
+      "fixture_case": "stale"
+    },
+    {
+      "schema_version": 1,
+      "outcome_id": "coe:visual.frame:missing-witness",
+      "created_at": "2026-05-20T15:30:03Z",
+      "capability_id": "capability:visual.frame_render",
+      "capability_name": "Visual frame render",
+      "attempt_kind": "express",
+      "selection_ref": "selection:visual.frame:run-10",
+      "selection_state": "selected",
+      "command_ref": "command:visual.activate:run-10",
+      "route_ref": "route:reverie.frame-slot",
+      "substrate_refs": [
+        "substrate:reverie:frame"
+      ],
+      "programme_refs": [],
+      "director_move_ref": "director-move:visual-lane:pulse",
+      "evidence_envelope_refs": [],
+      "witness_refs": [],
+      "expected_effect": {
+        "effect_id": "effect:visual-frame-nonblank",
+        "description": "The selected visual lane emits a fresh nonblank frame.",
+        "witness_class": "visual_frame",
+        "public_claim_bearing": false,
+        "action_bearing": false
+      },
+      "outcome_status": "missing",
+      "execution_status": "applied",
+      "manifestation_status": "witness_unavailable",
+      "claim_status": "not_claim_bearing",
+      "public_event_status": "not_public",
+      "learning_update": {
+        "policy": "defer",
+        "allowed": false,
+        "target": "none",
+        "reason": "No frame witness exists. Cannot infer success or failure.",
+        "required_witness_refs": [],
+        "missing_witness_refs": [
+          "witness:visual.frame:expected-nonblank"
+        ],
+        "thompson_delta": 0.0,
+        "context_association_delta": 0.0
+      },
+      "claim_posterior_update": {
+        "allowed": false,
+        "claim_ids": [],
+        "evidence_envelope_refs": [],
+        "gate_refs": [],
+        "claim_engine_refs": [],
+        "reason": "Missing witness \u2014 no claim update."
+      },
+      "blocked_reasons": [
+        "missing_witness"
+      ],
+      "refusal_or_correction_refs": [],
+      "health_refs": [],
+      "privacy_state": "public_safe",
+      "rights_state": "not_applicable",
+      "freshness": {
+        "state": "missing",
+        "ttl_s": null,
+        "observed_age_s": null,
+        "source_ref": null,
+        "checked_at": "2026-05-20T15:30:03Z"
+      },
+      "authority_ceiling": "internal_only",
+      "witness_policy": "witnessed",
+      "verified_success": {
+        "capability": false,
+        "action": false,
+        "public": false,
+        "claim_posterior": false
+      },
+      "public_claim_evidence": {
+        "required": false,
+        "present": false,
+        "evidence_envelope_refs": [],
+        "public_event_refs": [],
+        "gate_refs": [],
+        "note": "Missing witness \u2014 no evidence."
+      },
+      "operator_visible_summary": "Visual command applied but no frame witness exists.",
+      "fixture_case": "missing"
+    },
+    {
+      "schema_version": 1,
+      "outcome_id": "coe:visual.compositor-lane:wrong-lane-failure",
+      "created_at": "2026-05-20T15:30:04Z",
+      "capability_id": "capability:visual.compositor_lane",
+      "capability_name": "Compositor camera lane",
+      "attempt_kind": "express",
+      "selection_ref": "selection:visual.compositor:run-5",
+      "selection_state": "selected",
+      "command_ref": "command:visual.lane.switch:run-5",
+      "route_ref": "route:compositor.camera-lane",
+      "substrate_refs": [
+        "substrate:compositor:camera-tile"
+      ],
+      "programme_refs": [],
+      "director_move_ref": "director-move:compositor:camera-switch",
+      "evidence_envelope_refs": [
+        "evidence-envelope:visual.lane:wrong-camera"
+      ],
+      "witness_refs": [
+        "witness:visual.lane:camera-mismatch"
+      ],
+      "expected_effect": {
+        "effect_id": "effect:compositor-lane-switch",
+        "description": "The compositor displays the requested camera in the target tile.",
+        "witness_class": "visual_frame",
+        "public_claim_bearing": false,
+        "action_bearing": false
+      },
+      "outcome_status": "failure",
+      "execution_status": "applied",
+      "manifestation_status": "witness_failed",
+      "claim_status": "not_claim_bearing",
+      "public_event_status": "not_public",
+      "learning_update": {
+        "policy": "failure",
+        "allowed": true,
+        "target": "affordance_activation",
+        "reason": "Lane switch applied but witness detected wrong camera in tile.",
+        "required_witness_refs": [
+          "witness:visual.lane:camera-mismatch"
+        ],
+        "missing_witness_refs": [],
+        "thompson_delta": -0.08,
+        "context_association_delta": -0.02
+      },
+      "claim_posterior_update": {
+        "allowed": false,
+        "claim_ids": [],
+        "evidence_envelope_refs": [],
+        "gate_refs": [],
+        "claim_engine_refs": [],
+        "reason": "Wrong-lane failure is not a factual claim."
+      },
+      "blocked_reasons": [
+        "world_effect_not_observed"
+      ],
+      "refusal_or_correction_refs": [],
+      "health_refs": [
+        "world-surface-health:visual.compositor.camera"
+      ],
+      "privacy_state": "public_safe",
+      "rights_state": "not_applicable",
+      "freshness": {
+        "state": "fresh",
+        "ttl_s": 30,
+        "observed_age_s": 1,
+        "source_ref": "witness:visual.lane:camera-mismatch",
+        "checked_at": "2026-05-20T15:30:04Z"
+      },
+      "authority_ceiling": "internal_only",
+      "witness_policy": "witnessed",
+      "verified_success": {
+        "capability": false,
+        "action": false,
+        "public": false,
+        "claim_posterior": false
+      },
+      "public_claim_evidence": {
+        "required": false,
+        "present": false,
+        "evidence_envelope_refs": [],
+        "public_event_refs": [],
+        "gate_refs": [],
+        "note": "Wrong-lane failure \u2014 no success claim."
+      },
+      "operator_visible_summary": "Compositor lane switch applied but wrong camera detected in target tile.",
+      "fixture_case": "witnessed_failure"
     }
   ],
   "summary": {
-    "total_outcomes": 11,
+    "total_outcomes": 16,
     "by_status": {
-      "success": 1,
-      "failure": 1,
-      "neutral_defer": 3,
       "blocked": 1,
-      "refused": 1,
-      "stale": 1,
-      "missing": 1,
+      "failure": 2,
       "inferred": 1,
-      "public_event_accepted": 1
+      "missing": 2,
+      "neutral_defer": 3,
+      "public_event_accepted": 1,
+      "refused": 1,
+      "stale": 2,
+      "success": 3
     },
-    "success_validated_count": 3,
-    "learning_update_allowed_count": 4,
+    "success_validated_count": 5,
+    "learning_update_allowed_count": 7,
     "claim_posterior_update_allowed_count": 1,
     "public_success_update_allowed_count": 2
   },
