@@ -164,7 +164,7 @@ class TestPipewireRouting:
         # Include the expected MPC handoff so this probes bypass detection.
         bad_conf = (
             "# both the governed handoff AND a livestream-tap bypass\n"
-            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"\n'
+            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"\n'
             "audio.position = [ AUX10 AUX11 ]\n"
             "node.autoconnect = false\n"
             'target.object = "hapax-livestream-tap"\n'
@@ -186,7 +186,7 @@ class TestPipewireRouting:
 
     def test_missing_aux_handoff_fails(self, smoke, tmp_path: Path):
         bad_conf = (
-            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"\n'
+            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"\n'
             "node.autoconnect = false\n"
         )
         path = tmp_path / "bad.conf"
@@ -197,7 +197,7 @@ class TestPipewireRouting:
 
     def test_autoconnect_enabled_fails(self, smoke, tmp_path: Path):
         bad_conf = (
-            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"\n'
+            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"\n'
             "audio.position = [ AUX10 AUX11 ]\n"
         )
         path = tmp_path / "bad.conf"

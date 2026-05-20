@@ -24,7 +24,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "scripts" / "hapax-private-monitor-recover"
 
-MPC_USB_SINK = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"
+MPC_USB_SINK = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
 S4_USB_SINK = "alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output"
 YETI_TARGET_LEGACY = "alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo"
 

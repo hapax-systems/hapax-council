@@ -8,7 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "audio-leak-guard.sh"
-MPC_TARGET = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"
+MPC_TARGET = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
 S4_TARGET = "alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output"
 YETI_TARGET = "alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo"
 

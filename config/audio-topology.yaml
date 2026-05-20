@@ -72,7 +72,7 @@ nodes:
 
   - id: mpc-usb-output
     kind: alsa_sink
-    pipewire_name: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    pipewire_name: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
     industrial_name: interface.mpc-live-iii.usb-out.multichannel
     description: |
       Akai MPC Live III USB multichannel playback endpoint. Under the
@@ -81,7 +81,10 @@ nodes:
       and private monitor AUX8/9. The MPC hardware mix exits over
       governed TRS outputs into L-12 CH9-12 for broadcast-bound returns;
       private monitor AUX8/9 is operator-routed inside the MPC and must
-      not be treated as an L-12/default fallback.
+      not be treated as an L-12/default fallback. The live PipeWire ALSA
+      profile is the MPC Pro profile (`pro-output-0`); the older
+      `multichannel-output` node name stays listed only as a deny-policy
+      legacy alias for PC USB 5/6 fail-closed protection.
     hw: hw:CARD=MPCB
     channels:
       count: 24
@@ -89,6 +92,7 @@ nodes:
     params:
       audit_role: mpc-first-broadcast-dsp
       host_to_mpc_channel_map: "music:AUX0/AUX1 voice:AUX2/AUX3 pc:disabled/fail-closed youtube:AUX6/AUX7 private-monitor:AUX8/AUX9"
+      legacy_pipewire_names: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
       private_monitor_endpoint: true
       private_monitor_positions: AUX8 AUX9
       private_monitor_route: private-monitor-via-mpc-live-iii
@@ -252,7 +256,7 @@ nodes:
       Fail-closed private-monitor bridge to MPC Live III AUX8/AUX9.
       The MPC owns the downstream private monitor routing. S-4 is not a
       required host-side ALSA playback target for this HN-readiness path.
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
     channels:
       count: 2
       positions: [FL, FR]
@@ -297,7 +301,7 @@ nodes:
       Fail-closed notification private-monitor bridge to MPC Live III
       AUX8/AUX9. It shares the same MPC private monitor ingress as the
       assistant private path.
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
     channels:
       count: 2
       positions: [FL, FR]
@@ -547,7 +551,7 @@ nodes:
     pipewire_name: hapax-loudnorm-capture
     industrial_name: chain.voice.loudnorm-capture
     description: TTS loudnorm capture side, output routed to MPC USB IN 3/4
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
     channels:
       count: 2
       positions: [FL, FR]
@@ -639,7 +643,7 @@ nodes:
     pipewire_name: hapax-music-loudnorm
     industrial_name: chain.music.loudnorm
     description: Music loudnorm capture side routed to MPC USB IN 1/2
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
     channels:
       count: 2
       positions: [FL, FR]
@@ -656,7 +660,7 @@ nodes:
     pipewire_name: hapax-yt-loudnorm
     industrial_name: chain.youtube.loudnorm
     description: YouTube bed loudnorm routed to MPC USB IN 7/8
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
     channels:
       count: 2
       positions: [FL, FR]
@@ -753,7 +757,7 @@ nodes:
     pipewire_name: hapax-m8-loudnorm
     industrial_name: chain.m8.loudnorm
     description: M8 instrument loudnorm exported on AUX10/AUX11 for reconciler-owned L-12 return
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
     channels:
       count: 2
       positions: [AUX10, AUX11]

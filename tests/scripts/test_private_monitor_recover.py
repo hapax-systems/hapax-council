@@ -10,7 +10,7 @@ from textwrap import dedent
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-private-monitor-recover"
-MPC_TARGET = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"
+MPC_TARGET = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
 BRIDGE_NODES = (
     "hapax-private-monitor-capture",
     "hapax-private-playback",
@@ -171,11 +171,11 @@ def _run(
     if stale_generated:
         install_path.parent.mkdir(parents=True, exist_ok=True)
         (install_path.parent / "private-monitor-output.conf").write_text(
-            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"\n',
+            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"\n',
             encoding="utf-8",
         )
         (install_path.parent / "notification-private-monitor-output.conf").write_text(
-            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"\n',
+            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"\n',
             encoding="utf-8",
         )
     status_path = tmp_path / "status.json"

@@ -138,6 +138,10 @@ def test_generated_route_maps_keep_pc_aux45_forbidden_not_desired() -> None:
     assert "playback_AUX5" not in desired
     assert (
         "hapax-pc-loudnorm-playback:output_FL|"
+        "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX4"
+    ) in forbidden
+    assert (
+        "hapax-pc-loudnorm-playback:output_FL|"
         "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX4"
     ) in forbidden
     assert "input.loopback.sink.role.assistant-output" in forbidden

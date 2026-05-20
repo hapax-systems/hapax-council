@@ -164,7 +164,7 @@ def _l12_contract_fixture() -> TopologyDescriptor:
               mpc_wet_return: true
           - id: mpc-usb-output
             kind: alsa_sink
-            pipewire_name: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+            pipewire_name: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
             hw: hw:MPCB,0
             channels:
               count: 24
@@ -197,7 +197,7 @@ def _l12_contract_fixture() -> TopologyDescriptor:
           - id: private-monitor-output
             kind: loopback
             pipewire_name: hapax-private-playback
-            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
             params:
               node.dont-fallback: true
               node.dont-reconnect: true
@@ -216,7 +216,7 @@ def _l12_contract_fixture() -> TopologyDescriptor:
           - id: notification-private-monitor-output
             kind: loopback
             pipewire_name: hapax-notification-private-playback
-            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
             params:
               node.dont-fallback: true
               node.dont-reconnect: true
@@ -245,7 +245,7 @@ def _l12_contract_fixture() -> TopologyDescriptor:
           - id: pc-loudnorm
             kind: filter_chain
             pipewire_name: hapax-pc-loudnorm
-            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
             params:
               notification_excluded: true
           - id: voice-fx
@@ -255,7 +255,7 @@ def _l12_contract_fixture() -> TopologyDescriptor:
           - id: tts-loudnorm
             kind: filter_chain
             pipewire_name: hapax-loudnorm-capture
-            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
             params:
               playback_positions: AUX2 AUX3
               broadcast_forward_path: mpc-usb-output l12-usb-return-capture hapax-livestream-tap
@@ -604,7 +604,7 @@ class TestTtsBroadcastPathCheck:
             ),
             _pw_node(
                 id=103,
-                node_name="alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output",
+                node_name="alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0",
                 media_class="Audio/Sink",
                 factory="api.alsa.pcm.sink",
                 hw="hw:7",
@@ -687,7 +687,7 @@ class TestTtsBroadcastPathCheck:
         ]
         result = check_tts_broadcast_path(pw_dump_to_descriptor(dump))
         assert result.ok is False
-        assert "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output" in (
+        assert "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0" in (
             result.missing_nodes
         )
 

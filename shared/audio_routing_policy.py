@@ -481,13 +481,15 @@ def _forbidden_links(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...
                     (f"{source}:{source_port}", f"{l12_return.pipewire_name}:{target_port}")
                 )
 
-    links.extend(
-        _pair_links(
-            _playback_name(pc),
-            mpc.pipewire_name,
-            target_ports=("playback_AUX4", "playback_AUX5"),
+    mpc_forbidden_targets = (mpc.pipewire_name, *_words(mpc.params.get("legacy_pipewire_names")))
+    for mpc_target in mpc_forbidden_targets:
+        links.extend(
+            _pair_links(
+                _playback_name(pc),
+                mpc_target,
+                target_ports=("playback_AUX4", "playback_AUX5"),
+            )
         )
-    )
     links.extend(_pair_links("hapax-tts-broadcast-playback", livestream.pipewire_name))
     links.extend(
         _pair_links(

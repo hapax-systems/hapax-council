@@ -98,7 +98,7 @@ DEFAULT_SINK = "hapax-music-loudnorm"
 # these links, but the music player also applies them at startup and
 # track boundaries so a mid-session PipeWire restart does not leave
 # music flowing into a dead loudnorm output while the reconciler catches up.
-_MPC_OUTPUT = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"
+_MPC_OUTPUT = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
 _LOUDNORM_MPC_LINKS: tuple[tuple[str, str], ...] = (
     ("hapax-music-loudnorm-playback:output_FL", f"{_MPC_OUTPUT}:playback_AUX0"),
     ("hapax-music-loudnorm-playback:output_FR", f"{_MPC_OUTPUT}:playback_AUX1"),

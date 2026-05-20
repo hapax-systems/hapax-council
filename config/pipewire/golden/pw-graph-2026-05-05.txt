@@ -86,9 +86,9 @@ hapax-music-loudnorm:playback_FL
 hapax-music-loudnorm:playback_FR
   |<- pw-cat:output_FR
 hapax-music-loudnorm-playback:output_FL
-  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX0
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX0
 hapax-music-loudnorm-playback:output_FR
-  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX1
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX1
 hapax-obs-broadcast-remap:capture_FL
   |-> OBS:input_FL
 hapax-obs-broadcast-remap:capture_FR
@@ -102,33 +102,33 @@ hapax-pc-loudnorm:playback_FL
 hapax-pc-loudnorm:playback_FR
   |<- output.loopback.sink.role.multimedia:output_FR
 hapax-pc-loudnorm-playback:output_FL
-  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX4
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX4
 hapax-pc-loudnorm-playback:output_FR
-  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX5
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX5
 hapax-private-playback:output_FL
   |-> alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output:playback_AUX0
-  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX8
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX8
 hapax-private-playback:output_FR
   |-> alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output:playback_AUX1
-  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX9
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX9
 hapax-private-monitor-capture:input_FL
   |<- hapax-private:monitor_FL
 hapax-private-monitor-capture:input_FR
   |<- hapax-private:monitor_FR
 hapax-notification-private-playback:output_FL
   |-> alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output:playback_AUX0
-  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX8
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX8
 hapax-notification-private-playback:output_FR
   |-> alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output:playback_AUX1
-  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX9
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX9
 hapax-notification-private-monitor-capture:input_FL
   |<- hapax-notification-private:monitor_FL
 hapax-notification-private-monitor-capture:input_FR
   |<- hapax-notification-private:monitor_FR
 hapax-yt-loudnorm-playback:output_FL
-  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX6
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX6
 hapax-yt-loudnorm-playback:output_FR
-  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX7
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX7
 hapax-voice-fx-capture:playback_FL
   |<- output.loopback.sink.role.broadcast:output_FL
 hapax-voice-fx-capture:playback_FR
@@ -142,9 +142,9 @@ hapax-loudnorm-capture:playback_FL
 hapax-loudnorm-capture:playback_FR
   |<- hapax-voice-fx-playback:output_FR
 hapax-loudnorm-playback:output_FL
-  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX2
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX2
 hapax-loudnorm-playback:output_FR
-  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX3
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX3
 output.loopback.sink.role.multimedia:output_FL
   |-> hapax-pc-loudnorm:playback_FL
 output.loopback.sink.role.multimedia:output_FR
@@ -167,26 +167,26 @@ alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output:pl
 alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output:playback_AUX1
   |<- hapax-private-playback:output_FR
   |<- hapax-notification-private-playback:output_FR
-alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX0
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX0
   |<- hapax-music-loudnorm-playback:output_FL
-alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX1
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX1
   |<- hapax-music-loudnorm-playback:output_FR
-alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX2
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX2
   |<- hapax-loudnorm-playback:output_FL
-alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX3
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX3
   |<- hapax-loudnorm-playback:output_FR
-alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX4
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX4
   |<- hapax-pc-loudnorm-playback:output_FL
-alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX5
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX5
   |<- hapax-pc-loudnorm-playback:output_FR
-alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX6
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX6
   |<- hapax-yt-loudnorm-playback:output_FL
-alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX7
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX7
   |<- hapax-yt-loudnorm-playback:output_FR
-alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX8
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX8
   |<- hapax-private-playback:output_FL
   |<- hapax-notification-private-playback:output_FL
-alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX9
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX9
   |<- hapax-private-playback:output_FR
   |<- hapax-notification-private-playback:output_FR
 alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL
