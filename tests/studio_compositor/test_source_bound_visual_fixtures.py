@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 from shared.live_surface_effect_policy import (
     LIVE_SURFACE_GLSL_SOURCE_BOUND_REPAIR_20260520_NODE_TYPES,
 )
+
+NODES_DIR = Path(__file__).resolve().parents[2] / "agents" / "shaders" / "nodes"
 
 
 def _moving_source(shift_x: int) -> np.ndarray:
@@ -128,3 +132,11 @@ def test_source_bound_repair_tranche_has_visual_negative_motion_evidence() -> No
         assert float(np.mean(np.abs(out_a - source_a))) <= 0.20, name
         assert float(luma_a.std()) >= 0.05, name
         assert float(np.mean(luma_a < 0.02)) <= 0.05, name
+
+
+def test_glitch_block_displacement_branch_preserves_source_alpha() -> None:
+    shader = (NODES_DIR / "glitch_block.frag").read_text(encoding="utf-8")
+
+    assert "gl_FragColor = vec4(r, g, b, 1.0)" not in shader
+    assert "vec4 displacedColor = texture2D(tex, displaced);" in shader
+    assert "gl_FragColor = vec4(r, g, b, displacedColor.a);" in shader

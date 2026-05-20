@@ -53,9 +53,10 @@ void main() {
             // RGB channel split
             float split = u_rgb_split * blockHash(blockID, timeSlot + 3.0) * 8.0 / u_width;
             float r = texture2D(tex, displaced + vec2(split, 0.0)).r;
-            float g = texture2D(tex, displaced).g;
+            vec4 displacedColor = texture2D(tex, displaced);
+            float g = displacedColor.g;
             float b = texture2D(tex, displaced - vec2(split, 0.0)).b;
-            gl_FragColor = vec4(r, g, b, 1.0);
+            gl_FragColor = vec4(r, g, b, displacedColor.a);
 
         } else if (effectType < 0.55) {
             // Brightness corruption + posterization
