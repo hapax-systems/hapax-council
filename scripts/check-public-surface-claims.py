@@ -11,6 +11,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from shared.github_public_claim_gate import (
+    GitHubMaterialEvidenceEnvelope,
+    evaluate_github_public_claims,
+    github_material_envelope_from_mapping,
+)
 from shared.publication_hardening.lint import LintFinding, lint_file
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +32,7 @@ DEFAULT_TARGETS = (
 )
 TOKEN_CLAIM_RULE = "Hapax.TokenCapitalClaimCeiling"
 SOURCE_DISPOSITION_RULE = "Hapax.PublicSurfaceSourceDisposition"
+GITHUB_PUBLIC_CLAIM_RULE = "Hapax.GitHubPublicClaimEvidenceGate"
 
 
 class RequiredInputError(ValueError):
@@ -191,6 +197,36 @@ def check_source_disposition(
     ]
 
 
+def load_github_material_envelope(path: Path) -> GitHubMaterialEvidenceEnvelope:
+    payload = load_required_json(path, label="github material envelope")
+    try:
+        return github_material_envelope_from_mapping(payload)
+    except (TypeError, ValueError) as exc:
+        raise RequiredInputError(f"github material envelope is malformed: {path}: {exc}") from exc
+
+
+def check_github_material_claims(
+    path: Path,
+    envelope: GitHubMaterialEvidenceEnvelope,
+) -> list[LintFinding]:
+    verdict = evaluate_github_public_claims(path.read_text(encoding="utf-8"), envelope)
+    findings: list[LintFinding] = []
+    for blocked in verdict.blocked_findings:
+        message = f"{blocked.claim_class.value}: {blocked.reason}"
+        if blocked.correction:
+            message = f"{message} Correction: {blocked.correction}"
+        findings.append(
+            LintFinding(
+                file=str(path),
+                line=1,
+                level="error",
+                rule=GITHUB_PUBLIC_CLAIM_RULE,
+                message=message,
+            )
+        )
+    return findings
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="*", type=Path, help="files or directories to scan")
@@ -212,6 +248,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="treat warnings as failures, not only errors",
     )
+    parser.add_argument(
+        "--github-material-envelope",
+        type=Path,
+        help="machine-readable envelope for GitHub README/profile/package/release claims",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -228,6 +269,11 @@ def main(argv: list[str] | None = None) -> int:
             source_reconciliation,
             report_path=args.source_reconciliation,
         )
+        github_material_envelope = (
+            load_github_material_envelope(args.github_material_envelope)
+            if args.github_material_envelope is not None
+            else None
+        )
     except RequiredInputError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -236,6 +282,8 @@ def main(argv: list[str] | None = None) -> int:
     for path in iter_files(paths):
         findings.extend(lint_file(path))
         findings.extend(check_token_claim_ceiling(path, token_claim_patterns))
+        if github_material_envelope is not None:
+            findings.extend(check_github_material_claims(path, github_material_envelope))
 
     if args.json:
         print(json.dumps([finding_to_dict(f) for f in findings], indent=2, sort_keys=True))

@@ -87,6 +87,33 @@ def _write_source_reconciliation(
     return path
 
 
+def _write_github_envelope(path: Path, **overrides: object) -> Path:
+    payload = {
+        "surface": "release_notes",
+        "repo": "ryanklee/hapax-council",
+        "source_commit": "abc123",
+        "current_source_commit": "abc123",
+        "current_source_refs": ["CLAUDE.md"],
+        "license_present": True,
+        "notice_present": True,
+        "citation_present": True,
+        "codemeta_present": True,
+        "zenodo_present": True,
+        "declared_license": "PolyForm-Strict-1.0.0",
+        "github_detected_license": "PolyForm-Strict-1.0.0",
+        "contributing_present": True,
+        "has_issues": False,
+        "has_discussions": False,
+        "has_wiki": False,
+        "sponsor_surface_active": False,
+        "settings_witness_refs": ["gh:repos/ryanklee/hapax-council"],
+        "research_status": "spec_ready",
+    }
+    payload.update(overrides)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
 def _run_gate(
     doc: Path,
     token_report: Path,
@@ -281,3 +308,27 @@ def test_public_surface_gate_missing_required_receipt_exits_2(tmp_path: Path) ->
 
     assert result.returncode == 2
     assert "token claim report not found" in result.stderr
+
+
+def test_public_surface_gate_applies_github_material_envelope(tmp_path: Path) -> None:
+    doc = tmp_path / "release.md"
+    doc.write_text(
+        "This release is an empirically validated public artifact ready for monetization.\n",
+        encoding="utf-8",
+    )
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    github_envelope = _write_github_envelope(tmp_path / "github-envelope.json")
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--github-material-envelope",
+        str(github_envelope),
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.GitHubPublicClaimEvidenceGate" in result.stdout
+    assert "research_status" in result.stdout
+    assert "monetization" in result.stdout
