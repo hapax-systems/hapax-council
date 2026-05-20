@@ -148,6 +148,8 @@ def _normalize_relay_status(value: object) -> str:
     if not isinstance(value, str) or not value:
         return ""
     status = value.strip().lower().replace(" ", "-").replace("_", "-")
+    if status in {"in-progress", "inprogress"} or status.startswith("in-progress-"):
+        return "in-progress"
     if status in {"queue-dry", "equilibrium"} or status.startswith("idle-"):
         return "idle"
     if status == "active":
@@ -223,7 +225,7 @@ async def load_lanes() -> list[LaneInfo]:
                 status = relay_status
 
         claim = _active_claim(lane, session)
-        if claim:
+        if claim and not current_task:
             current_task = claim
             status = "active"
             idle_seconds = 0

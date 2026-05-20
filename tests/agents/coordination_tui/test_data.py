@@ -98,6 +98,36 @@ class TestLoadLanes:
         assert lanes[0].status == "active"
         assert lanes[0].idle_seconds == 0
 
+    @pytest.mark.asyncio
+    async def test_relay_claim_beats_stale_active_claim_file(self, tmp_path: Path) -> None:
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "peer-status-cx-red.yaml").write_text(
+            textwrap.dedent("""\
+                session: cx-red
+                platform: codex
+                session_status: IN_PROGRESS
+                current_claim: relay-task
+                idle_seconds: 0
+            """),
+            encoding="utf-8",
+        )
+        claim_dir = tmp_path / ".cache/hapax"
+        claim_dir.mkdir(parents=True)
+        (claim_dir / "cc-active-task-cx-red").write_text("stale-task\n", encoding="utf-8")
+
+        with (
+            patch("agents.coordination_tui.data.RELAY_DIR", relay_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("agents.coordination_tui.data._run", new_callable=AsyncMock) as run,
+        ):
+            run.return_value = "hapax-codex-cx-red"
+            lanes = await load_lanes()
+
+        assert len(lanes) == 1
+        assert lanes[0].current_task == "relay-task"
+        assert lanes[0].status == "in-progress"
+
 
 class TestLoadTasks:
     def test_sorts_by_wsjf_descending(self, tmp_path: Path) -> None:

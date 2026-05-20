@@ -113,6 +113,36 @@ current_claim: null
         assert state.idle is True
         assert state.relay_age_s != float("inf")
 
+    def test_relay_claim_beats_stale_active_claim_file(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "peer-status-cx-red.yaml").write_text(
+            """session: cx-red
+platform: codex
+session_status: IN_PROGRESS
+current_claim: relay-task
+""",
+            encoding="utf-8",
+        )
+        claim_dir = tmp_path / ".cache/hapax"
+        claim_dir.mkdir(parents=True)
+        (claim_dir / "cc-active-task-cx-red").write_text("stale-task\n", encoding="utf-8")
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="cx-red",
+                    session="hapax-codex-cx-red",
+                    platform="codex",
+                )
+            )
+
+        assert state.claimed_task == "relay-task"
+        assert state.idle is False
+
     def test_dynamic_tmux_discovery_includes_alpha_and_codex(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
         relay_dir.mkdir()

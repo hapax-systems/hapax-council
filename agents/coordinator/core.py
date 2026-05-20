@@ -404,7 +404,8 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
         except OSError:
             continue
         if task_id:
-            state.claimed_task = task_id
+            if not state.claimed_task:
+                state.claimed_task = task_id
             state.idle = False
             break
 
