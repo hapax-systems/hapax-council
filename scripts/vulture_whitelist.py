@@ -3672,3 +3672,7 @@ from agents.studio_compositor.metrics import _clear_gpu_vram_poll_cache_for_test
 _clear_gpu_vram_poll_cache_for_tests
 _clear_tmux_cache_for_tests
 _clear_tmux_session_cache_for_tests
+
+from shared.operator_dossier_value_braid_adapter import DossierBraidOutput
+
+DossierBraidOutput._no_confidence_mutations
