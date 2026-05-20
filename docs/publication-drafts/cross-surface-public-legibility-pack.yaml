@@ -1,0 +1,176 @@
+schema_version: 1
+pack_id: cross-surface-public-legibility-pack
+generated_at: "2026-05-20T17:50:00Z"
+authority_case: CASE-RUNTIME-TRUTH-20260429
+
+spine: |
+  Hapax is a single-operator externalized executive function — a personal
+  operating environment that runs 24/7, combining 190+ specialized agents,
+  a live audiovisual compositor, voice interaction, and formal governance
+  under one constitutional framework. It is a research instrument for
+  studying how one person can build and sustain a coherent ambient
+  intelligence system, not an AI streamer setup or a creator business stack.
+
+prohibited_language:
+  - parasocial (community, family, tribe, followers)
+  - perk (tier, reward, exclusive access, member benefit)
+  - request (please support, help me, donate, fund)
+  - expert-system (AI assistant, smart home, productivity tool)
+  - false-promise (will change, revolutionary, disrupting)
+
+source_ref_policy: |
+  Every claim about research output, public events, artifacts, grants, or
+  revenue must carry at least one source ref. Unsourced claims are
+  prohibited in all variants.
+
+variants:
+  youtube:
+    surface: youtube_channel_about
+    max_length_chars: 1000
+    text: |
+      Hapax is a single-operator externalized executive function — a 24/7
+      personal operating environment with 190+ agents, live audiovisual
+      composition, voice interaction, and constitutional governance.
+
+      This channel documents the system's live operation: the livestream is
+      the research instrument running, not a performance. What you see is
+      the actual compositor output, actual voice daemon, actual effect drift,
+      and actual agent decisions.
+
+      Research areas: phenomenological engineering, ambient perception,
+      consent-gated modeling, audiovisual SDLC, and value-braid
+      prioritization.
+
+      All publication goes through a formal publication bus with
+      rights/privacy gates. No parasocial engagement, no perks, no
+      collective promises.
+    source_refs:
+      - "docs/superpowers/specs/2026-04-02-unified-semantic-recruitment-design.md"
+      - "agents/hapax_daimonion/ (voice daemon)"
+      - "agents/studio_compositor/ (live compositor)"
+
+  weblog:
+    surface: omg_weblog
+    max_length_chars: 2000
+    text: |
+      Hapax is a research instrument built as a personal operating
+      environment. It externalizes executive function through 190+
+      specialized agents, a constitutional governance framework (5 axioms,
+      weighted), reactive filesystem-as-bus architecture, and continuous
+      audiovisual composition.
+
+      The system runs on a single workstation with local LLM inference
+      (Command-R 35B), GPU visual rendering, and a 5-camera Pi fleet for
+      ambient perception. It is not a product, not a service, and not
+      seeking users.
+
+      Current research: phenomenological pre-reflective structure in ambient
+      systems, consent algebra for non-operator modeling, Bayesian
+      claim-confidence engines, and audiovisual SDLC for livestream truth.
+    source_refs:
+      - "hapax-constitution (governance spec)"
+      - "shared/claim.py (ClaimEngine)"
+      - "docs/research/phenomenology/ (research state)"
+
+  statuslog:
+    surface: omg_statuslog
+    max_length_chars: 500
+    text: |
+      Hapax: single-operator externalized executive function. 190+ agents,
+      live compositor, voice daemon, constitutional governance. Research
+      instrument, not a product.
+    source_refs: []
+
+  grant_packet:
+    surface: grant_application
+    max_length_chars: 5000
+    text: |
+      Hapax is a research instrument investigating how formal governance,
+      ambient perception, and constitutional constraints can make a
+      single-operator AI system coherent, accountable, and sustainable.
+
+      The system operates as a 24/7 personal operating environment with
+      190+ specialized agents organized in three tiers: interactive (Tauri
+      native app, waybar, VS Code), LLM-driven (pydantic-ai agents via
+      LiteLLM gateway routing to local Command-R 35B and cloud
+      Claude/Gemini), and deterministic (sync, health monitoring,
+      maintenance).
+
+      Research contributions include: a consent algebra requiring invariant
+      threading through transactional chains; a unified semantic recruitment
+      pipeline (AffordancePipeline) gating all agent activation through
+      embedding similarity, Thompson sampling, and governance veto; a
+      universal Bayesian claim-confidence engine (ClaimEngine[T]) replacing
+      ad-hoc confidence with calibrated posteriors; and an audiovisual SDLC
+      framework treating livestream output as testable truth rather than
+      performance artifact.
+
+      The system runs entirely on consumer hardware (single workstation,
+      24GB GPU, 5 Raspberry Pi cameras) and publishes through a formal
+      publication bus with per-artifact rights/privacy gates.
+    source_refs:
+      - "hapax-constitution/axioms/ (governance axioms)"
+      - "shared/governance/consent.py (consent algebra)"
+      - "shared/affordance_pipeline.py (unified recruitment)"
+      - "shared/claim.py (ClaimEngine)"
+      - "docs/superpowers/specs/2026-05-03-audio-graph-ssot-and-router-daemon-design.md"
+
+  support_page:
+    surface: support_offer_page
+    max_length_chars: 1500
+    text: |
+      Hapax is a research instrument, not a product. If you find the work
+      interesting, support is appreciated but comes with no perks, no
+      group access, no exclusive content, and no obligation.
+
+      What support funds: compute costs (cloud API for Claude/Gemini),
+      hardware maintenance (cameras, audio interface, workstation), and
+      research time.
+
+      What support does not buy: access, influence, priority, features, or
+      relationship. The system's governance is constitutional — supporter
+      identity stays out of public state, and no supporter input enters the
+      decision pipeline.
+    source_refs:
+      - "shared/governance/monetization_safety.py"
+      - "shared/monetization_readiness_ledger.py"
+
+  artifact_catalog:
+    surface: artifact_catalog_about
+    max_length_chars: 1000
+    text: |
+      Visual artifacts from the Hapax livestream compositor: condition
+      editions (stills, loops, visual packs), GEM murals, CBIP signal
+      editions, and archive-derived screen works.
+
+      All artifacts pass through rights/privacy gates before publication.
+      Provenance tokens link each artifact to its source broadcast,
+      programme, and public event. No raw private frames, no third-party
+      rights-risky media.
+    source_refs:
+      - "shared/aesthetic_condition_editions_ledger.py"
+      - "shared/condition_edition_marketplace_publisher.py"
+
+  stakeholder_brief:
+    surface: stakeholder_brief
+    max_length_chars: 3000
+    text: |
+      Hapax is a single-operator externalized executive function operating
+      as a 24/7 research instrument. Key metrics:
+
+      - 190+ specialized agents across 3 tiers
+      - 5 constitutional axioms with weighted enforcement
+      - 20 Docker containers + 25 systemd services
+      - 115 automated timers for sync, health, and maintenance
+      - 5-camera fleet with IR perception and Bayesian salience
+      - Live audiovisual compositor with 60+ WGSL shader nodes
+      - Formal publication bus with per-artifact gates (55 surfaces)
+      - Universal Bayesian claim-confidence engine
+
+      The system is not seeking investment, partnership, or users. It is a
+      research instrument studying ambient intelligence governance,
+      phenomenological engineering, and single-operator sustainability.
+    source_refs:
+      - "CLAUDE.md (architecture overview)"
+      - "shared/agent_registry.py (agent count)"
+      - "axioms/registry.yaml (governance axioms)"
