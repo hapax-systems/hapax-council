@@ -3847,3 +3847,8 @@ from shared.audio_control_plane import (
 classify_service_health
 read_mutation_events
 refuse_dirty_restart
+
+from agents.effect_graph.topology_variant import TopologyVariantGenerator
+
+TopologyVariantGenerator
+TopologyVariantGenerator.generate_variant
