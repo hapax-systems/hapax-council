@@ -3663,6 +3663,14 @@ ScrimValueConversionCueProjection.is_ready
 ScrimValueConversionCueProjection.is_held
 project_scrim_value_conversion_cue
 
+from agents.studio_compositor.camera_semantic_director import CameraSemanticDirector
+
+CameraSemanticDirector.current_hero
+CameraSemanticDirector.set_manual_override
+CameraSemanticDirector.propose_move
+CameraSemanticDirector.apply_move
+CameraSemanticDirector.reject_move
+
 from agents.studio_compositor.shadow_render_core import ShadowRenderCore
 
 ShadowRenderCore.update_source
