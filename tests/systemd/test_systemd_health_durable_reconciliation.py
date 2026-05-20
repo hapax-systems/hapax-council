@@ -134,20 +134,31 @@ class TestNoveltyShiftEmitter:
         assert (UNITS / "hapax-novelty-shift-emitter.service").is_file()
 
     def test_start_limit_disabled(self):
-        """StartLimitIntervalSec=0 must be set for 1s-cadence oneshot."""
+        """StartLimitIntervalSec=0 preserves restart resilience for the loop."""
         text = _unit_text("hapax-novelty-shift-emitter.service")
         val = _unit_value(text, "Unit", "StartLimitIntervalSec")
         assert val is not None, "StartLimitIntervalSec not set"
         assert val == "0", f"Expected 0, got {val}"
 
-    def test_timer_1s_cadence(self):
-        """Timer must fire every 1 second."""
+    def test_service_owns_1s_cadence(self):
+        """The service owns the 1s cadence without per-tick process spawning."""
+        text = _unit_text("hapax-novelty-shift-emitter.service")
+        exec_start = _unit_value(text, "Service", "ExecStart")
+        assert exec_start is not None
+        assert "agents.novelty_emitter" in exec_start
+        assert "--loop" in exec_start
+        assert "--interval 1" in exec_start
+
+    def test_timer_retired_behind_explicit_guard(self):
+        """The old timer must not be able to reintroduce 1s process spawning."""
         text = _unit_text("hapax-novelty-shift-emitter.timer")
-        val = _unit_value(text, "Timer", "OnUnitActiveSec")
-        assert val == "1s"
+        assert _unit_value(text, "Timer", "OnUnitActiveSec") is None
+        assert _unit_value(text, "Unit", "ConditionPathExists") == (
+            "/run/hapax/enable-retired-novelty-shift-timer"
+        )
 
     def test_timeout_is_reasonable(self):
-        """Oneshot timeout must be short enough for 1s cadence."""
+        """Startup timeout must be short enough to fail closed."""
         text = _unit_text("hapax-novelty-shift-emitter.service")
         val = _unit_value(text, "Service", "TimeoutStartSec")
         assert val is not None

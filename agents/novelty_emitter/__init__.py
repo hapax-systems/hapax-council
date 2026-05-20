@@ -37,6 +37,7 @@ __all__ = [
     "NoveltyShiftReading",
     "build_impingement_payload",
     "emit_if_shifted",
+    "run_loop",
 ]
 
 from agents.novelty_emitter._emitter import (
@@ -46,4 +47,5 @@ from agents.novelty_emitter._emitter import (
     NoveltyShiftReading,
     build_impingement_payload,
     emit_if_shifted,
+    run_loop,
 )

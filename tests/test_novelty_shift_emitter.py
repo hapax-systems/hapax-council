@@ -19,6 +19,7 @@ from agents.novelty_emitter import (
     NoveltyShiftReading,
     build_impingement_payload,
     emit_if_shifted,
+    run_loop,
 )
 from agents.novelty_emitter._emitter import (
     DEFAULT_IMPINGEMENTS_PATH,
@@ -203,6 +204,39 @@ class TestModuleEntryPoint:
         from agents.novelty_emitter import __main__
 
         assert hasattr(__main__, "main")
+
+
+class TestLongRunningLoop:
+    def test_run_loop_preserves_tick_semantics_without_process_restart(self) -> None:
+        class FakeEmitter(NoveltyShiftEmitter):
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def tick(self) -> dict:
+                self.calls += 1
+                return {"status": "absorbed", "calls": self.calls}
+
+        emitter = FakeEmitter()
+        reports: list[dict] = []
+        sleeps: list[float] = []
+
+        ticks = run_loop(
+            emitter=emitter,
+            interval_s=1.0,
+            max_ticks=3,
+            report_callback=reports.append,
+            sleep_fn=sleeps.append,
+            monotonic_fn=lambda: 0.0,
+        )
+
+        assert ticks == 3
+        assert emitter.calls == 3
+        assert [r["calls"] for r in reports] == [1, 2, 3]
+        assert sleeps == [1.0, 1.0]
+
+    def test_run_loop_rejects_invalid_interval(self) -> None:
+        with pytest.raises(ValueError, match="interval_s"):
+            run_loop(interval_s=0, max_ticks=1)
 
 
 @pytest.fixture(autouse=False)

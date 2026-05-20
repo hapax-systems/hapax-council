@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -526,3 +527,39 @@ def emit_if_shifted(
         state_path=state_path,
     )
     return emitter.tick()
+
+
+def run_loop(
+    *,
+    emitter: NoveltyShiftEmitter | None = None,
+    interval_s: float = 1.0,
+    max_ticks: int | None = None,
+    report_callback: Callable[[dict], None] | None = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    monotonic_fn: Callable[[], float] = time.monotonic,
+) -> int:
+    """Run the emitter as a long-lived loop while preserving tick cadence.
+
+    The original systemd shape used a 1-second timer that spawned ``uv`` and a
+    fresh Python interpreter for every tick. The cadence is useful; repeated
+    process startup is not. This helper keeps the same single-tick semantics
+    while letting systemd supervise one persistent process.
+    """
+    if interval_s <= 0:
+        raise ValueError("interval_s must be > 0")
+    if max_ticks is not None and max_ticks < 1:
+        raise ValueError("max_ticks must be >= 1 when provided")
+
+    active_emitter = emitter or NoveltyShiftEmitter()
+    ticks = 0
+    while max_ticks is None or ticks < max_ticks:
+        started = monotonic_fn()
+        report = active_emitter.tick()
+        ticks += 1
+        if report_callback is not None:
+            report_callback(report)
+        if max_ticks is not None and ticks >= max_ticks:
+            break
+        elapsed = max(0.0, monotonic_fn() - started)
+        sleep_fn(max(0.0, interval_s - elapsed))
+    return ticks

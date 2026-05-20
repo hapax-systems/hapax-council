@@ -1,15 +1,16 @@
 [Unit]
-Description=Hapax novelty-shift impingement emitter (cc-task u3)
+Description=Hapax novelty-shift impingement emitter (long-running loop)
 Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/novelty_emitter/_emitter.py
 After=hapax-daimonion.service hapax-secrets.service
 StartLimitIntervalSec=0
 
 [Service]
-Type=oneshot
+Type=simple
 WorkingDirectory=%h/projects/hapax-council
-ExecStart=/usr/bin/uv run python -m agents.novelty_emitter
+ExecStart=/usr/bin/uv run python -m agents.novelty_emitter --loop --interval 1
+Restart=always
+RestartSec=2
 TimeoutStartSec=10
-SuccessExitStatus=0
 
 [Install]
 WantedBy=default.target
