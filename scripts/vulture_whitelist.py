@@ -2586,6 +2586,23 @@ from agents.m8_control.daemon import M8ButtonRequest as _M8ButtonRequest
 
 _M8ButtonRequest._validate_button_names  # type: ignore[attr-defined]
 
+# EQI calibrator Pydantic validators are invoked dynamically by model
+# construction; the LLM path is an explicit fail-closed public entrypoint for
+# future non-authoritative scoring and is pinned by focused tests.
+from agents.epistemic_calibrator import (
+    BaselineScorerOutput,
+    CalibrationScore,
+    OverclaimSpan,
+    score_text_with_llm_non_authoritative,
+)
+
+OverclaimSpan._strip_text
+OverclaimSpan._validate_span
+CalibrationScore._validate_source_text_hash
+BaselineScorerOutput._validate_hashes
+BaselineScorerOutput._validate_axis_scores
+score_text_with_llm_non_authoritative
+
 # audio_graph SSOT (P1, this PR): Pydantic field_validator + model_validator
 # methods are invoked by pydantic via reflection during construction; vulture
 # can't see those call sites. Public-API methods are reserved for downstream
