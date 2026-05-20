@@ -48,27 +48,29 @@ log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) lane-idle: $*"; }
 # Claude: idle when "❯" prompt visible in last few lines.
 # When Claude is actively working, output streams and the prompt scrolls out.
 # When idle, ❯ sits in the last 5 lines with status bar below.
+# Context-full lanes (showing "/clear to save") are ALSO idle — they finished
+# work and need /clear + new task dispatch.
 is_claude_idle() {
     local pane="$1"
     local tail5
     tail5=$(echo "$pane" | tail -5)
 
-    # Idle: the ❯ prompt is in the last 5 lines
+    # Idle: the ❯ prompt is in the last 5 lines (includes context-full state)
     if echo "$tail5" | grep -q '❯'; then
-        # Confirm it's not a context-full state
-        if echo "$pane" | tail -10 | grep -q "/clear to save"; then
-            return 1  # context full, not "idle done"
-        fi
-        return 0  # idle at prompt
+        return 0
     fi
 
     # Permission prompts in the tail — blocked, not idle-done
-    # but also not actively working
     if echo "$tail5" | grep -qE '(Allow|Deny|bypass permissions on)'; then
         return 1
     fi
 
     return 1  # prompt not visible, assume working
+}
+
+is_claude_context_full() {
+    local pane="$1"
+    echo "$pane" | tail -10 | grep -q "/clear to save"
 }
 
 # Codex: idle when model line visible at bottom, no "Working" indicator
@@ -217,6 +219,7 @@ fi
 # ─── Idle detection pass ─────────────────────────────────────────────────────
 
 declare -A IDLE_LANES=()   # session_name -> idle_duration_s
+declare -A CTX_FULL=()     # session_name -> 1 if context-full (needs /clear before dispatch)
 active_count=0
 idle_count=0
 
@@ -229,7 +232,12 @@ for session in "${!LANES[@]}"; do
     # Check if idle based on platform
     is_idle=false
     case "$platform" in
-        claude)  is_claude_idle "$pane_text" && is_idle=true ;;
+        claude)
+            is_claude_idle "$pane_text" && is_idle=true
+            if [ "$is_idle" = true ] && is_claude_context_full "$pane_text"; then
+                CTX_FULL["$session"]=1
+            fi
+            ;;
         codex)   is_codex_idle "$pane_text"  && is_idle=true ;;
         gemini)  is_gemini_idle "$pane_text" && is_idle=true ;;
     esac
@@ -362,6 +370,13 @@ for session in "${!IDLE_LANES[@]}"; do
             dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. No offered tasks in queue. Waiting for intake pipeline to produce work."
             dispatch_target="queue-empty"
         fi
+    fi
+
+    # Context-full Claude lanes need /clear before dispatch
+    if [ "${CTX_FULL[$session]:-}" = "1" ] && [ "$platform" = "claude" ]; then
+        log "CLEARING context-full $session before dispatch"
+        tmux send-keys -t "$session" "/clear" Enter 2>/dev/null
+        sleep 5
     fi
 
     send_success=false
