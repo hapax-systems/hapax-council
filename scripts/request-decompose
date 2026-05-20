@@ -143,7 +143,12 @@ def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
             api_key=LITELLM_KEY,
         )
 
-        content = response.choices[0].message.content
+        content = response.choices[0].message.content or ""
+        content = content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1] if "\n" in content else content
+            if content.endswith("```"):
+                content = content[:-3].strip()
         data = json.loads(content)
         tasks_data = data.get("tasks", [])
 
