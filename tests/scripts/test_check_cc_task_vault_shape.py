@@ -76,6 +76,19 @@ def test_active_terminal_status_warns_by_default(
     assert "status_path_consistency" in _checks(result, severity="warning")
 
 
+def test_active_merge_queue_status_passes(
+    tmp_path: Path,
+    vault_shape_module: ModuleType,
+) -> None:
+    root = _write_valid_vault(tmp_path)
+    _write_task(root, "active", "queued-task", status="merge_queue", pr=123)
+
+    result = vault_shape_module.check_vault_shape(root)
+
+    assert result.ok is True
+    assert "status_path_consistency" not in _checks(result)
+
+
 def test_strict_mode_fails_on_warnings(tmp_path: Path, vault_shape_module: ModuleType) -> None:
     root = _write_valid_vault(tmp_path)
     _write_task(root, "active", "terminal-in-active", status="done")
