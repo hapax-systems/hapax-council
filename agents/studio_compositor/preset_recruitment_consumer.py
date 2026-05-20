@@ -42,6 +42,10 @@ from typing import Any
 from agents.effect_graph.types import EffectGraph
 
 from .graph_mutation_bus import write_graph_mutation
+from .preset_family_policy import (
+    family_policy_reason_counts,
+    policy_eligible_presets_for_family,
+)
 from .preset_family_selector import (
     pick_and_load_mutated,
     pick_family_with_role_bias,
@@ -286,7 +290,18 @@ def _pick_policy_allowed_mutated(
     before giving up on the recruitment.
     """
 
-    available = list(presets_for_family(family))
+    runtime = getattr(compositor, "_graph_runtime", None)
+    registry = getattr(runtime, "_registry", None)
+    eligible_presets = policy_eligible_presets_for_family(family, registry=registry)
+    if not eligible_presets:
+        log.info(
+            "preset recruitment: no policy-eligible preset for family=%r reasons=%s",
+            family,
+            family_policy_reason_counts(family, registry=registry),
+        )
+        return None
+
+    available = list(eligible_presets)
     blocked: list[_BlockedCandidate] = []
     tried: set[str] = set()
     attempt = 0

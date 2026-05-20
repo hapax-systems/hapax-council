@@ -1650,6 +1650,7 @@ def build_audit(
                     "agents/studio_compositor/preset_mutator.py",
                     "agents/studio_compositor/preset_recruitment_consumer.py",
                     "agents/studio_compositor/preset_policy.py",
+                    "agents/studio_compositor/preset_family_policy.py",
                     "agents/studio_compositor/preset_family_selector.py",
                     "agents/studio_compositor/chat_reactor.py",
                     "agents/studio_compositor/compositional_consumer.py",

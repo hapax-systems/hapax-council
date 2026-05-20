@@ -15,6 +15,8 @@ from agents.studio_compositor.preset_policy import (
 from shared.live_surface_effect_policy import (
     LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES,
     LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES,
+    LIVE_SURFACE_GLSL_SOURCE_BOUND_REPAIR_20260520_NODE_TYPES,
+    LIVE_SURFACE_GLSL_TEMPORAL_PENDING_VISUAL_EVIDENCE_NODE_TYPES,
     live_surface_glsl_requires_source_bound_repair,
     live_surface_policy_kind,
     live_surface_unclassified_node_types,
@@ -346,6 +348,9 @@ def test_legacy_glsl_source_bound_allowlist_is_explicit() -> None:
     registry = _registry()
 
     assert LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES
+    assert LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES.isdisjoint(
+        LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES
+    )
     for node_type in LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES:
         node_def = registry.get(node_type)
         assert node_def is not None
@@ -363,6 +368,83 @@ def test_legacy_glsl_source_bound_allowlist_is_explicit() -> None:
         "thermal",
         has_glsl_source=False,
     )
+
+
+def test_source_bound_glitch_tranche_is_non_temporal_bounded_and_not_content_slot_backed() -> None:
+    registry = _registry()
+
+    assert {
+        "glitch_block",
+        "pixsort",
+        "scanlines",
+    } == LIVE_SURFACE_GLSL_SOURCE_BOUND_REPAIR_20260520_NODE_TYPES
+    for node_type in LIVE_SURFACE_GLSL_SOURCE_BOUND_REPAIR_20260520_NODE_TYPES:
+        node_def = registry.get(node_type)
+        assert node_def is not None
+        assert node_def.glsl_source
+        assert live_surface_policy_kind(node_type) == "bounded"
+        assert not node_def.requires_content_slots
+        assert "content_slot" not in node_def.glsl_source
+        assert "tex_b" not in node_def.glsl_source
+        assert "tex_accum" not in node_def.glsl_source
+        assert not live_surface_glsl_requires_source_bound_repair(
+            node_type,
+            has_glsl_source=True,
+        )
+
+        graph = _graph(
+            {
+                node_type: NodeInstance(type=node_type),
+                "out": NodeInstance(type="output"),
+            },
+            [["@live", node_type], [node_type, "out"]],
+        )
+        decision = evaluate_preset_graph_policy(
+            graph,
+            registry=registry,
+            env=_camera_legible_env(),
+        )
+        assert decision.allowed is True
+
+    glitch_source = registry.get("glitch_block").glsl_source
+    assert glitch_source is not None
+    assert "gl_FragColor = vec4(pattern" not in glitch_source
+    assert "gl_FragColor = vec4(vec3" not in glitch_source
+    assert "mix(orig.rgb" in glitch_source
+
+
+def test_temporal_glsl_nodes_stay_blocked_until_visual_negative_evidence_exists() -> None:
+    registry = _registry()
+
+    assert {"slitscan", "stutter"} == LIVE_SURFACE_GLSL_TEMPORAL_PENDING_VISUAL_EVIDENCE_NODE_TYPES
+    assert LIVE_SURFACE_GLSL_TEMPORAL_PENDING_VISUAL_EVIDENCE_NODE_TYPES <= (
+        LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES
+    )
+    for node_type in LIVE_SURFACE_GLSL_TEMPORAL_PENDING_VISUAL_EVIDENCE_NODE_TYPES:
+        node_def = registry.get(node_type)
+        assert node_def is not None
+        assert node_def.glsl_source
+        assert "tex_accum" in node_def.glsl_source
+        assert live_surface_glsl_requires_source_bound_repair(
+            node_type,
+            has_glsl_source=True,
+        )
+
+        graph = _graph(
+            {
+                node_type: NodeInstance(type=node_type),
+                "out": NodeInstance(type="output"),
+            },
+            [["@live", node_type], [node_type, "out"]],
+        )
+        decision = evaluate_preset_graph_policy(
+            graph,
+            registry=registry,
+            env=_camera_legible_env(),
+        )
+        assert decision.allowed is False
+        assert decision.reason == "camera_legible_glsl_pending_source_bound_repair"
+        assert decision.matched == (node_type, node_type)
 
 
 def test_source_preserving_repaired_nodes_are_bounded_not_blocked() -> None:

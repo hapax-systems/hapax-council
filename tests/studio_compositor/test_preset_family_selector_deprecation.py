@@ -18,10 +18,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 MODULE_NAME = "preset_family_selector"
 
-# Known callers of preset_family_selector (grandfathered — do NOT add to this list).
+# Known callers of preset_family_selector. New runtime mutation paths should not
+# be added here; audited inventory/policy readers may be listed with rationale.
 KNOWN_IMPORTERS: frozenset[str] = frozenset(
     {
         "agents/studio_compositor/effects.py",
+        # Inventory-only policy prefilter for preset_recruitment_consumer; it does
+        # not activate random_mode or bypass the canonical mutation consumer.
+        "agents/studio_compositor/preset_family_policy.py",
         "agents/studio_compositor/preset_recruitment_consumer.py",
         "agents/studio_compositor/random_mode.py",
         "scripts/audit-preset-affordances.py",

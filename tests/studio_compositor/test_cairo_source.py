@@ -32,7 +32,8 @@ def test_source_protocol_skips_unchanged_cairo_surface_until_heartbeat(
     calls: list[dict[str, Any]] = []
 
     def _record_inject(*args: Any, **kwargs: Any) -> bool:
-        calls.append({"args": args, "kwargs": kwargs})
+        if args and args[0] == "flat":
+            calls.append({"args": args, "kwargs": kwargs})
         return True
 
     now = 100.0
@@ -71,12 +72,14 @@ def test_source_protocol_publishes_changed_cairo_surface_before_heartbeat(
     from agents.studio_compositor import cairo_source
 
     calls: list[dict[str, Any]] = []
+
+    def _record_inject(*args: Any, **kwargs: Any) -> bool:
+        if args and args[0] == "flat":
+            calls.append({"args": args, "kwargs": kwargs})
+        return True
+
     now = 100.0
-    monkeypatch.setattr(
-        content_injector,
-        "inject_rgba",
-        lambda *args, **kwargs: calls.append({"args": args, "kwargs": kwargs}) is None or True,
-    )
+    monkeypatch.setattr(content_injector, "inject_rgba", _record_inject)
     monkeypatch.setattr(cairo_source.time, "monotonic", lambda: now)
 
     source = _FlatSource()

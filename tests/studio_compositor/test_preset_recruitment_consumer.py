@@ -60,6 +60,17 @@ def _wait_for_thread(name: str = "preset-transition", timeout: float = 2.0) -> N
         time.sleep(0.01)
 
 
+def _allow_policy_eligible(
+    monkeypatch: pytest.MonkeyPatch,
+    presets: tuple[str, ...] = ("fake-preset",),
+) -> None:
+    monkeypatch.setattr(
+        prc,
+        "policy_eligible_presets_for_family",
+        lambda _family, **_kwargs: presets,
+    )
+
+
 def _minimal_graph(name: str, node_type: str = "colorgrade") -> dict[str, Any]:
     return {
         "name": name,
@@ -254,6 +265,7 @@ def test_process_dispatches_transition_on_first_recruitment(
     _write_recruitment(prc.RECRUITMENT_FILE, fam)
     fake_graph: dict[str, Any] = {"nodes": {}, "marker": "fake-graph"}
 
+    _allow_policy_eligible(monkeypatch)
     monkeypatch.setattr(prc, "pick_and_load_mutated", lambda *a, **kw: ("fake-preset", fake_graph))
     captured_writes: list[dict] = []
     monkeypatch.setattr(prc, "_write_mutation", captured_writes.append)
@@ -282,6 +294,7 @@ def test_process_skips_policy_blocked_candidate_and_uses_eligible_candidate(
 
     monkeypatch.setenv("HAPAX_SEGMENT_BIAS_DISABLED", "1")
     monkeypatch.setattr(prc, "presets_for_family", lambda _family: ("blocked", "eligible"))
+    _allow_policy_eligible(monkeypatch, ("blocked", "eligible"))
 
     def _fake_pick(
         _family: str,
@@ -324,6 +337,7 @@ def test_process_consumes_recruitment_when_all_candidates_policy_blocked(
 
     monkeypatch.setenv("HAPAX_SEGMENT_BIAS_DISABLED", "1")
     monkeypatch.setattr(prc, "presets_for_family", lambda _family: ("blocked",))
+    _allow_policy_eligible(monkeypatch, ("blocked",))
     monkeypatch.setattr(
         prc,
         "pick_and_load_mutated",
@@ -431,6 +445,7 @@ def test_process_accepts_fresh_recruitment_ttl(monkeypatch: pytest.MonkeyPatch) 
     fam = next(iter(family_names()))
     _write_recruitment(prc.RECRUITMENT_FILE, fam, ts=time.time() - 1.0, ttl_s=30.0)
     fake_graph: dict[str, Any] = {"nodes": {}, "marker": "fresh-ttl"}
+    _allow_policy_eligible(monkeypatch, ("p",))
     monkeypatch.setattr(prc, "pick_and_load_mutated", lambda *a, **kw: ("p", fake_graph))
     monkeypatch.setattr(
         prc,
@@ -443,6 +458,68 @@ def test_process_accepts_fresh_recruitment_ttl(monkeypatch: pytest.MonkeyPatch) 
     assert prc.process_preset_recruitment() is True
     _wait_for_thread()
     assert any(g.get("marker") == "fresh-ttl" for g in captured_writes)
+
+
+def test_process_filters_pick_to_policy_eligible_presets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ts = time.time()
+    _write_recruitment(prc.RECRUITMENT_FILE, "glitch-dense", ts=ts)
+    fake_graph: dict[str, Any] = {"nodes": {}, "marker": "policy-eligible"}
+    seen_available: list[list[str] | None] = []
+
+    def _fake_pick(family: str, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+        assert family == "glitch-dense"
+        seen_available.append(kwargs.get("available"))
+        return "pixsort_preset", fake_graph
+
+    monkeypatch.setenv("HAPAX_SEGMENT_BIAS_DISABLED", "1")
+    monkeypatch.setattr(
+        prc,
+        "policy_eligible_presets_for_family",
+        lambda family, **_kwargs: ("pixsort_preset",),
+    )
+    monkeypatch.setattr(prc, "pick_and_load_mutated", _fake_pick)
+    monkeypatch.setattr(
+        prc,
+        "_select_transition",
+        lambda: ("transition.cut.hard", PRIMITIVES["transition.cut.hard"]),
+    )
+    captured_writes: list[dict] = []
+    monkeypatch.setattr(prc, "_write_mutation", captured_writes.append)
+
+    assert prc.process_preset_recruitment() is True
+    _wait_for_thread()
+    assert seen_available == [["pixsort_preset"]]
+    assert any(g.get("marker") == "policy-eligible" for g in captured_writes)
+
+
+def test_process_consumes_family_with_no_policy_eligible_presets(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ts = time.time()
+    _write_recruitment(prc.RECRUITMENT_FILE, "audio-reactive", ts=ts)
+    monkeypatch.setenv("HAPAX_SEGMENT_BIAS_DISABLED", "1")
+    monkeypatch.setattr(prc, "policy_eligible_presets_for_family", lambda family, **_kwargs: ())
+    monkeypatch.setattr(
+        prc,
+        "family_policy_reason_counts",
+        lambda family, **_kwargs: {"camera_legible_glsl_pending_source_bound_repair": 16},
+    )
+    monkeypatch.setattr(
+        prc,
+        "pick_and_load_mutated",
+        lambda *a, **kw: pytest.fail("no eligible family must not pick a preset"),
+    )
+    caplog.set_level("INFO", logger=prc.log.name)
+
+    assert prc.process_preset_recruitment() is False
+    assert prc._last_recruitment_ts_seen == ts
+    assert any(
+        "no policy-eligible preset for family='audio-reactive'" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_process_rejects_recruitment_timestamp_too_far_in_future(
@@ -474,6 +551,7 @@ def test_single_write_transition_env_forces_cut_hard(monkeypatch: pytest.MonkeyP
     fake_graph: dict[str, Any] = {"nodes": {}, "marker": "single-write"}
 
     monkeypatch.setenv(prc._SINGLE_WRITE_TRANSITIONS_ENV, "1")
+    _allow_policy_eligible(monkeypatch, ("p",))
     monkeypatch.setattr(prc, "pick_and_load_mutated", lambda *a, **kw: ("p", fake_graph))
     monkeypatch.setattr(
         prc,
@@ -493,6 +571,7 @@ def test_process_cooldown_blocks_repeat_dispatch(monkeypatch: pytest.MonkeyPatch
 
     fam = next(iter(family_names()))
     _write_recruitment(prc.RECRUITMENT_FILE, fam)
+    _allow_policy_eligible(monkeypatch, ("p",))
     monkeypatch.setattr(prc, "pick_and_load_mutated", lambda *a, **kw: ("p", {"nodes": {}}))
     monkeypatch.setattr(
         prc,
@@ -535,6 +614,7 @@ def test_process_tracks_last_graph_for_transition_out(
 
     monkeypatch.setattr(prc, "_run_transition_async", _spy_run)
 
+    _allow_policy_eligible(monkeypatch, ("p1", "p2"))
     monkeypatch.setattr(prc, "pick_and_load_mutated", lambda *a, **kw: ("p1", graph_a))
     _write_recruitment(prc.RECRUITMENT_FILE, fam)
     assert prc.process_preset_recruitment() is True
