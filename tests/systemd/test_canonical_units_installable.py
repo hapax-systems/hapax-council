@@ -237,10 +237,14 @@ def test_canonical_25_execstart_repo_paths_exist() -> None:
 def test_m8_control_unit_is_device_conditioned_and_user_runtime_scoped() -> None:
     """M8 control must not restart-loop while the M8 serial device is absent."""
     unit = UNITS_DIR / "hapax-m8-control.service"
+    assert _raw_keys(unit, "Unit", "Documentation") == [
+        "https://github.com/hapax-systems/hapax-council/tree/main/agents/m8_control"
+    ]
     assert _raw_keys(unit, "Unit", "ConditionPathExists") == ["/dev/hapax-m8-serial"]
     assert "XDG_RUNTIME_DIR=%t" in _raw_keys(unit, "Service", "Environment")
     assert _raw_keys(unit, "Service", "RuntimeDirectory") == ["hapax"]
     assert "/run/hapax/m8-control.sock" not in unit.read_text(encoding="utf-8")
+    assert "follow-up edit" not in unit.read_text(encoding="utf-8")
 
 
 def test_m8_udev_rule_starts_control_service_when_device_appears() -> None:
