@@ -24,6 +24,7 @@ local FAIL_CLOSED_BOUNDARY_PAIRS = {
   ["hapax-notification-private-playback|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"] = true,
   ["hapax-pc-loudnorm-playback|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"] = true,
   ["hapax-loudnorm-playback|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"] = true,
+  ["hapax-pc-loudnorm-playback|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"] = true,
   ["hapax-pc-loudnorm-playback|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"] = true,
   ["hapax-tts-broadcast-playback|hapax-livestream-tap"] = true,
   ["hapax-livestream|hapax-broadcast-master-capture"] = true,
