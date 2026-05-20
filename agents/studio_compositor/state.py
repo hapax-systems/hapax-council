@@ -739,7 +739,7 @@ def state_reader_loop(compositor: Any) -> None:
                     # so pop before construction.
                     source_tag = parsed.pop("_source", None)
                     graph = EffectGraph(**parsed)
-                    from .preset_policy import evaluate_preset_policy
+                    from .preset_policy import evaluate_preset_graph_policy, evaluate_preset_policy
 
                     policy = evaluate_preset_policy(
                         graph.name,
@@ -757,6 +757,23 @@ def state_reader_loop(compositor: Any) -> None:
                         )
                         continue
                     graph = merge_default_modulations(graph)
+                    graph_policy = evaluate_preset_graph_policy(
+                        graph,
+                        preset_name=graph.name,
+                        aliases=(preset_hint,),
+                        registry=getattr(compositor._graph_runtime, "_registry", None),
+                    )
+                    if not graph_policy.allowed:
+                        log.warning(
+                            "preset load blocked by graph policy: %s — %s",
+                            graph.name,
+                            graph_policy.reason,
+                        )
+                        _metrics.record_preset_load_failed(
+                            preset=graph.name,
+                            reason=graph_policy.reason,
+                        )
+                        continue
                     compositor._graph_runtime.load_graph(graph)
                     compositor._current_preset_name = graph.name
                     if source_tag == "recruitment":

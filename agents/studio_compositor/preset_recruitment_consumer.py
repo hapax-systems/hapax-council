@@ -35,8 +35,11 @@ import os
 import random
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from agents.effect_graph.types import EffectGraph
 
 from .graph_mutation_bus import write_graph_mutation
 from .preset_family_selector import (
@@ -93,6 +96,14 @@ _last_activation_t: float = 0.0
 _last_family_activated: str | None = None
 _last_graph_activated: dict | None = None
 _last_recruitment_ts_seen: float = 0.0
+
+
+@dataclass(frozen=True)
+class _BlockedCandidate:
+    preset_name: str
+    reason: str
+    matched: tuple[str, ...] = ()
+
 
 # Single-flight lock so a primitive in flight cannot be interrupted by a
 # second one that started before it finished — interleaved brightness
@@ -197,6 +208,118 @@ def _select_transition() -> tuple[str, TransitionFn]:
         return recruited, PRIMITIVES[recruited]
     name = random.choice(TRANSITION_NAMES)
     return name, PRIMITIVES[name]
+
+
+def _graph_policy_block(
+    preset_name: str,
+    graph_payload: dict[str, Any],
+    *,
+    compositor: Any | None = None,
+) -> _BlockedCandidate | None:
+    """Return a block reason for a candidate graph, or None when eligible.
+
+    The live graph runtime already enforces this policy. Recruitment must also
+    preflight it so autonomous selection does not repeatedly write impossible
+    candidates into ``graph-mutation.json`` and force the state reader to emit
+    stack traces. Policy denial is ordinary selection feedback, not an
+    exceptional runtime event.
+    """
+
+    if not {"name", "nodes", "edges"}.issubset(graph_payload):
+        # Test doubles and transition sentinels may pass partial graph-shaped
+        # dicts. Production preset files are full EffectGraph payloads, so only
+        # full graphs participate in this policy preflight.
+        return None
+
+    from .effects import merge_default_modulations
+    from .preset_policy import evaluate_preset_graph_policy, evaluate_preset_policy
+
+    graph_name = graph_payload.get("name") if isinstance(graph_payload, dict) else None
+    aliases = (graph_name,) if isinstance(graph_name, str) and graph_name else ()
+    name_policy = evaluate_preset_policy(preset_name, aliases=aliases)
+    if not name_policy.allowed:
+        return _BlockedCandidate(
+            preset_name=preset_name,
+            reason=name_policy.reason,
+            matched=tuple(name_policy.matched),
+        )
+
+    try:
+        graph = EffectGraph(**graph_payload)
+    except Exception as exc:
+        return _BlockedCandidate(
+            preset_name=preset_name,
+            reason=type(exc).__name__,
+            matched=(),
+        )
+
+    graph = merge_default_modulations(graph)
+    runtime = getattr(compositor, "_graph_runtime", None)
+    registry = getattr(runtime, "_registry", None)
+    graph_policy = evaluate_preset_graph_policy(
+        graph,
+        preset_name=preset_name,
+        aliases=aliases,
+        registry=registry,
+    )
+    if graph_policy.allowed:
+        return None
+    return _BlockedCandidate(
+        preset_name=preset_name,
+        reason=graph_policy.reason,
+        matched=tuple(graph_policy.matched),
+    )
+
+
+def _pick_policy_allowed_mutated(
+    family: str,
+    *,
+    last: str | None,
+    seed: int,
+    compositor: Any | None,
+) -> tuple[str, dict[str, Any], list[_BlockedCandidate]] | None:
+    """Pick a mutated graph from ``family`` that passes live-surface policy.
+
+    Families intentionally remain broad, but during the current source-bound
+    repair window some legacy GLSL/content-slot candidates are invalid for the
+    live camera surface. Selection should keep looking within the same family
+    before giving up on the recruitment.
+    """
+
+    available = list(presets_for_family(family))
+    blocked: list[_BlockedCandidate] = []
+    tried: set[str] = set()
+    attempt = 0
+    while available:
+        hit = pick_and_load_mutated(
+            family,
+            available=available,
+            last=last,
+            seed=seed + attempt,
+        )
+        attempt += 1
+        if hit is None:
+            break
+        preset_name, graph = hit
+        if preset_name in tried:
+            break
+        tried.add(preset_name)
+        block = _graph_policy_block(preset_name, graph, compositor=compositor)
+        if block is None:
+            return preset_name, graph, blocked
+        blocked.append(block)
+        available = [candidate for candidate in available if candidate not in tried]
+
+    if blocked:
+        blocked_summary = ", ".join(f"{item.preset_name}:{item.reason}" for item in blocked[:6])
+        extra = "" if len(blocked) <= 6 else f" (+{len(blocked) - 6} more)"
+        log.warning(
+            "preset recruitment: no policy-eligible preset for family=%r; blocked=%s%s",
+            family,
+            blocked_summary,
+            extra,
+        )
+    return None
 
 
 def _run_transition_async(
@@ -323,11 +446,23 @@ def process_preset_recruitment(compositor: Any | None = None) -> bool:
         except Exception:
             log.debug("programme role bias failed (continuing)", exc_info=True)
 
-    hit = pick_and_load_mutated(family, last=_last_family_activated, seed=seed)
+    hit = _pick_policy_allowed_mutated(
+        family,
+        last=_last_family_activated,
+        seed=seed,
+        compositor=compositor,
+    )
     if hit is None:
+        _last_recruitment_ts_seen = last_recruited_ts_f
         log.debug("preset_family_selector returned no preset for family=%r", family)
         return False
-    preset_name, graph = hit
+    preset_name, graph, blocked = hit
+    if blocked:
+        log.info(
+            "preset recruitment: skipped %d policy-blocked candidate(s) before %r",
+            len(blocked),
+            preset_name,
+        )
     if _single_write_transitions_enabled():
         transition_name = "transition.cut.hard"
         transition_fn = PRIMITIVES[transition_name]
