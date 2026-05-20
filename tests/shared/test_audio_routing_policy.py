@@ -173,6 +173,17 @@ def test_generated_wireplumber_deny_policy_matches_golden_output() -> None:
     assert "hapax-polyend-instrument-capture" in deny_script
     assert "link:remove ()" in deny_script
 
+    assert "FAIL_CLOSED_BOUNDARY_PAIRS" in deny_script
+    assert "hapax-tts-broadcast-playback|hapax-livestream-tap" in deny_script
+    assert "hapax-pc-loudnorm-playback|" in deny_script
+    assert "hapax-private-playback|" in deny_script
+    assert (
+        "input.loopback.sink.role.assistant-output|input.loopback.sink.role.multimedia"
+        in deny_script
+    )
+    assert "policy.degraded = true" in deny_script
+    assert "fail-closed: using hardcoded boundary deny set" in deny_script
+
 
 def test_generator_wireplumber_deny_policy_check_mode() -> None:
     result = subprocess.run(
