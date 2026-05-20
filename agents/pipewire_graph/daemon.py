@@ -1,15 +1,15 @@
-"""Shadow-mode daemon for the audio graph SSOT.
+"""Audio graph SSOT daemon — shadow + active write path.
 
-The daemon has two loops:
+Two loops:
 
-* dry-run apply: compile the target graph and write a diff report to
-  ``~/hapax-state/pipewire-graph/shadow-runs/{timestamp}.json``.
+* dry-run / active apply: compile the target graph, diff against runtime,
+  and (in active mode only) write confs + pactl loads atomically.
 * egress observation: sample the OBS-bound monitor at 2 Hz and append
   health records to ``~/hapax-state/pipewire-graph/egress-health.jsonl``.
 
-P2 is observe-only. This module never writes PipeWire or WirePlumber
-configuration, never invokes ``pactl load-module``, and never enables or
-starts the systemd unit.
+P2-P3: observe-only shadow mode (default).
+P4: active write path with ``HAPAX_PIPEWIRE_GRAPH_ACTIVE=1``.
+Bypass: ``HAPAX_PIPEWIRE_GRAPH_BYPASS=1`` disables all apply logic.
 """
 
 from __future__ import annotations
@@ -69,6 +69,8 @@ class ShadowDaemonConfig:
     metrics_addr: str = "127.0.0.1"
     enable_ntfy: bool = True
     run_once: bool = False
+    active_mode: bool = False
+    bypass: bool = False
 
     @property
     def shadow_runs_dir(self) -> Path:
@@ -111,8 +113,16 @@ class ShadowDaemonConfig:
             return raw.strip().lower() not in {"", "0", "false", "no", "off"}
 
         state_root = _path("HAPAX_PIPEWIRE_GRAPH_STATE_ROOT") or DEFAULT_STATE_ROOT
+        active_mode = _bool("HAPAX_PIPEWIRE_GRAPH_ACTIVE", False)
+        bypass = _bool("HAPAX_PIPEWIRE_GRAPH_BYPASS", False)
+        if bypass:
+            log.warning("HAPAX_PIPEWIRE_GRAPH_BYPASS=1 — all apply logic disabled")
+        if active_mode:
+            log.info("HAPAX_PIPEWIRE_GRAPH_ACTIVE=1 — daemon will write confs and pactl")
         return cls(
             state_root=state_root,
+            active_mode=active_mode,
+            bypass=bypass,
             graph_descriptor_path=_path("HAPAX_PIPEWIRE_GRAPH_DESCRIPTOR"),
             pipewire_conf_dir=_path("HAPAX_PIPEWIRE_GRAPH_PIPEWIRE_CONF_DIR")
             or DEFAULT_PIPEWIRE_CONF_DIR,
@@ -283,6 +293,210 @@ def apply_dry_run(
     return report
 
 
+@dataclass(frozen=True)
+class ApplyResult:
+    """Outcome of a live apply attempt."""
+
+    result: str
+    snapshot_path: Path | None = None
+    confs_written: int = 0
+    pactl_loads_executed: int = 0
+    post_apply_passed: bool = False
+    rolled_back: bool = False
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "result": self.result,
+            "snapshot_path": str(self.snapshot_path) if self.snapshot_path else None,
+            "confs_written": self.confs_written,
+            "pactl_loads_executed": self.pactl_loads_executed,
+            "post_apply_passed": self.post_apply_passed,
+            "rolled_back": self.rolled_back,
+            "error": self.error,
+        }
+
+
+def apply_active(
+    graph: AudioGraph,
+    *,
+    state_root: Path = DEFAULT_STATE_ROOT,
+    pipewire_conf_dir: Path = DEFAULT_PIPEWIRE_CONF_DIR,
+    wireplumber_conf_dir: Path = DEFAULT_WIREPLUMBER_CONF_DIR,
+    now_utc: datetime | None = None,
+) -> ApplyResult:
+    """Compile and atomically apply the graph to the live PipeWire runtime.
+
+    Steps: snapshot → compile → pre-check → write confs → pactl loads →
+    settle → post-apply probes → commit or rollback.
+    """
+    import fcntl
+    import shutil
+    import subprocess
+
+    now = now_utc or datetime.now(UTC)
+    ts = _timestamp_for_path(now)
+    snapshot_dir = state_root / "snapshots" / ts
+    lock_path = state_root / "applier.lock"
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = lock_path.open("w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock_fd.close()
+        return ApplyResult(result="lock_contention", error="could not acquire applier lock")
+
+    try:
+        compiled = compile_descriptor(graph)
+        blocking = any(
+            str(getattr(v, "severity", "")).endswith("blocking")
+            for v in compiled.pre_apply_violations
+        )
+        if blocking:
+            return ApplyResult(result="refused", error="pre-apply violations are blocking")
+
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        for conf_dir, label in [
+            (pipewire_conf_dir, "pipewire"),
+            (wireplumber_conf_dir, "wireplumber"),
+        ]:
+            if conf_dir.exists():
+                dest = snapshot_dir / label
+                shutil.copytree(conf_dir, dest, dirs_exist_ok=True)
+        try:
+            pw_dump = subprocess.run(["pw-dump"], capture_output=True, text=True, timeout=10)
+            (snapshot_dir / "pw-dump.json").write_text(pw_dump.stdout)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            log.debug("pw-dump snapshot failed", exc_info=True)
+        try:
+            pactl_list = subprocess.run(
+                ["pactl", "list", "modules", "short"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            (snapshot_dir / "pactl-modules.txt").write_text(pactl_list.stdout)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            log.debug("pactl snapshot failed", exc_info=True)
+
+        confs_written = 0
+        for conf_dir, artefacts in [
+            (pipewire_conf_dir, compiled.pipewire_confs),
+            (wireplumber_conf_dir, compiled.wireplumber_confs),
+        ]:
+            for rel_path, text in artefacts.items():
+                target = conf_dir / rel_path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                tmp = target.with_suffix(target.suffix + ".tmp")
+                tmp.write_text(text, encoding="utf-8")
+                tmp.replace(target)
+                confs_written += 1
+
+        pactl_loads = 0
+        for load in compiled.pactl_loads:
+            args = ["pactl", "load-module", "module-loopback"]
+            if load.source:
+                args.append(f"source={load.source}")
+            if load.sink:
+                args.append(f"sink={load.sink}")
+            if load.latency_msec:
+                args.append(f"latency_msec={load.latency_msec}")
+            if load.source_dont_move:
+                args.append("source_dont_move=true")
+            if load.sink_dont_move:
+                args.append("sink_dont_move=true")
+            try:
+                subprocess.run(args, capture_output=True, text=True, timeout=10, check=True)
+                pactl_loads += 1
+            except (
+                subprocess.CalledProcessError,
+                subprocess.TimeoutExpired,
+                FileNotFoundError,
+            ) as exc:
+                log.warning("pactl load-module failed: %s", exc)
+
+        if confs_written > 0:
+            try:
+                subprocess.run(
+                    ["systemctl", "--user", "restart", "pipewire.service"],
+                    capture_output=True,
+                    timeout=10,
+                )
+                time.sleep(5.0)
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                log.warning("pipewire restart failed", exc_info=True)
+
+        post_passed = True
+        for probe in compiled.post_apply_probes:
+            try:
+                health = probe_egress_health()
+                if health.is_clipping or health.is_silent:
+                    post_passed = False
+                    log.warning("post-apply probe failed: %s", probe.name)
+            except Exception:
+                post_passed = False
+                log.warning("post-apply probe exception: %s", probe.name, exc_info=True)
+
+        if not post_passed:
+            log.warning("post-apply probes failed; rolling back from %s", snapshot_dir)
+            _rollback_from_snapshot(snapshot_dir, pipewire_conf_dir, wireplumber_conf_dir)
+            return ApplyResult(
+                result="rolled_back",
+                snapshot_path=snapshot_dir,
+                confs_written=confs_written,
+                pactl_loads_executed=pactl_loads,
+                post_apply_passed=False,
+                rolled_back=True,
+            )
+
+        report: dict[str, object] = {
+            "schema_version": 1,
+            "mode": "active",
+            "result": "ok",
+            "written_at": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "snapshot_path": str(snapshot_dir),
+            "confs_written": confs_written,
+            "pactl_loads": pactl_loads,
+        }
+        _atomic_write_json(state_root / "last-apply.json", report)
+
+        return ApplyResult(
+            result="ok",
+            snapshot_path=snapshot_dir,
+            confs_written=confs_written,
+            pactl_loads_executed=pactl_loads,
+            post_apply_passed=True,
+        )
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+
+
+def _rollback_from_snapshot(
+    snapshot_dir: Path,
+    pipewire_conf_dir: Path,
+    wireplumber_conf_dir: Path,
+) -> None:
+    import shutil
+
+    for label, conf_dir in [("pipewire", pipewire_conf_dir), ("wireplumber", wireplumber_conf_dir)]:
+        saved = snapshot_dir / label
+        if saved.exists() and conf_dir.exists():
+            shutil.rmtree(conf_dir)
+            shutil.copytree(saved, conf_dir)
+    try:
+        import subprocess
+
+        subprocess.run(
+            ["systemctl", "--user", "restart", "pipewire.service"],
+            capture_output=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        log.warning("rollback pipewire restart failed", exc_info=True)
+
+
 class ShadowPipewireGraphDaemon:
     """Coordinator for P2 dry-run and observe-only breaker loops."""
 
@@ -324,6 +538,34 @@ class ShadowPipewireGraphDaemon:
         )
         self.metrics.record_dry_run(str(report["result"]))
         return report
+
+    def apply(self, graph: AudioGraph | None = None) -> ApplyResult:
+        if self.config.bypass:
+            log.info("apply bypassed (HAPAX_PIPEWIRE_GRAPH_BYPASS=1)")
+            return ApplyResult(result="bypassed")
+        if not self.config.active_mode:
+            log.debug("apply skipped — not in active mode")
+            return ApplyResult(result="shadow_only")
+        target = graph or self.load_target_graph()
+        result = apply_active(
+            target,
+            state_root=self.config.state_root,
+            pipewire_conf_dir=self.config.pipewire_conf_dir,
+            wireplumber_conf_dir=self.config.wireplumber_conf_dir,
+        )
+        if result.result == "rolled_back":
+            log.warning("apply rolled back; engaging safe mute")
+            self.safe_mute.engage(
+                reason=f"apply rollback: {result.error or 'post-apply probes failed'}"
+            )
+            send_notification(
+                "PipeWire graph apply ROLLED BACK",
+                f"confs={result.confs_written} pactl={result.pactl_loads_executed}",
+                priority="urgent",
+                tags=["rotating_light"],
+                topic="audio-pipewire-graph",
+            )
+        return result
 
     def observe_once(self, health: EgressHealth | None = None) -> EgressHealth:
         sample = health or self.breaker.probe_once()
