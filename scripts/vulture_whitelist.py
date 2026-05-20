@@ -3864,3 +3864,5 @@ organ_ids
 visual_techniques_for_organ
 organs_using_technique
 shader_node_ids22a2f6842 (fix(ci): whitelist grounding_context and organ_visual_map for vulture gate)
+
+shader_node_ids
