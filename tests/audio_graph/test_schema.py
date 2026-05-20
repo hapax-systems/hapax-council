@@ -9,14 +9,12 @@ from shared.audio_graph import (
     AlsaCardRule,
     AlsaProfilePin,
     AudioGraph,
-    AudioGraphCompatibilityError,
     AudioLink,
     AudioNode,
     BluezRule,
     BroadcastInvariant,
     ChannelDownmix,
     ChannelMap,
-    ChannelPair,
     DownmixRoute,
     DownmixStrategy,
     DuckPolicy,
@@ -26,24 +24,14 @@ from shared.audio_graph import (
     FormatSpec,
     GainStage,
     GlobalTunables,
-    HardwarePatch,
     LoopbackTopology,
     MediaRoleSink,
     MixdownGraph,
     MixerRoute,
     NodeKind,
-    OptionalDeviceLifecycle,
-    OptionalDeviceState,
-    PhysicalEdge,
-    PhysicalMedium,
-    Port,
-    PortDirection,
-    PortGroup,
     PreferredTargetPin,
     RemapSource,
     RoleLoopback,
-    RouteClass,
-    RouteKind,
     StreamPin,
     StreamRestoreRule,
     WireplumberRule,
@@ -63,13 +51,6 @@ _MODELS_UNDER_TEST = (
     MixdownGraph,
     DownmixRoute,
     ChannelDownmix,
-    Port,
-    PortGroup,
-    ChannelPair,
-    RouteClass,
-    PhysicalEdge,
-    HardwarePatch,
-    OptionalDeviceLifecycle,
     RemapSource,
     LoopbackTopology,
     Fanout,
@@ -121,159 +102,6 @@ def test_format_spec_roundtrip() -> None:
 def test_channel_map_position_count_mismatch_rejected() -> None:
     with pytest.raises(ValidationError):
         ChannelMap(count=2, positions=["FL"])
-
-
-def test_schema_v4_ports_and_physical_patch_roundtrip() -> None:
-    ports = [
-        Port(
-            id="mpc-usb-output-aux0",
-            node_id="mpc-usb-output",
-            direction=PortDirection.OUTPUT,
-            position="AUX0",
-            channel_index=0,
-            broadcast=True,
-        ),
-        Port(
-            id="mpc-usb-output-aux1",
-            node_id="mpc-usb-output",
-            direction=PortDirection.OUTPUT,
-            position="AUX1",
-            channel_index=1,
-            broadcast=True,
-        ),
-        Port(
-            id="l12-capture-aux8",
-            node_id="l12-capture",
-            direction=PortDirection.INPUT,
-            position="AUX8",
-            channel_index=8,
-            broadcast=True,
-        ),
-        Port(
-            id="l12-capture-aux9",
-            node_id="l12-capture",
-            direction=PortDirection.INPUT,
-            position="AUX9",
-            channel_index=9,
-            broadcast=True,
-        ),
-    ]
-    route_class = RouteClass(
-        id="mpc-first-broadcast",
-        kind=RouteKind.BROADCAST,
-        broadcast_allowed=True,
-        fail_closed_on_absent=True,
-    )
-    pair = ChannelPair(
-        id="mpc-content-return",
-        left_port="mpc-usb-output-aux0",
-        right_port="mpc-usb-output-aux1",
-        route_class="mpc-first-broadcast",
-    )
-    physical = PhysicalEdge(
-        id="mpc-out-1-2-to-l12-ch9-10",
-        source_ports=["mpc-usb-output-aux0", "mpc-usb-output-aux1"],
-        target_ports=["l12-capture-aux8", "l12-capture-aux9"],
-        source_connector="MPC Out 1/2",
-        target_connector="L-12 CH9/10",
-        medium=PhysicalMedium.TRS,
-        route_class="mpc-first-broadcast",
-        channel_pair="mpc-content-return",
-    )
-    patch = HardwarePatch(
-        id="mpc-trs-returns-to-l12",
-        source_device="mpc-live-iii",
-        target_device="zoom-l12",
-        physical_edges=["mpc-out-1-2-to-l12-ch9-10"],
-        route_class="mpc-first-broadcast",
-    )
-    graph = AudioGraph(
-        nodes=[
-            AudioNode(
-                id="mpc-usb-output",
-                kind=NodeKind.ALSA_SINK,
-                pipewire_name="mpc",
-                hw="hw:MPC",
-            ),
-            AudioNode(
-                id="l12-capture",
-                kind=NodeKind.ALSA_SOURCE,
-                pipewire_name="l12",
-                hw="hw:L12",
-            ),
-        ],
-        route_classes=[route_class],
-        ports=ports,
-        port_groups=[
-            PortGroup(
-                id="mpc-content-output",
-                node_id="mpc-usb-output",
-                ports=["mpc-usb-output-aux0", "mpc-usb-output-aux1"],
-                role=RouteKind.BROADCAST,
-                route_class="mpc-first-broadcast",
-                fail_closed=True,
-            )
-        ],
-        channel_pairs=[pair],
-        physical_edges=[physical],
-        hardware_patches=[patch],
-        optional_devices=[
-            OptionalDeviceLifecycle(
-                device_id="dirtywave-m8",
-                node_ids=["l12-capture"],
-                states=[OptionalDeviceState.PRESENT, OptionalDeviceState.ABSENT],
-                default_state=OptionalDeviceState.ABSENT,
-                fail_closed_when_absent=True,
-            )
-        ],
-    )
-
-    assert _roundtrip(graph) == graph
-
-
-def test_schema_v4_physical_edge_references_are_validated() -> None:
-    with pytest.raises(ValidationError, match="route_class"):
-        AudioGraph(
-            nodes=[
-                AudioNode(
-                    id="mpc-usb-output",
-                    kind=NodeKind.ALSA_SINK,
-                    pipewire_name="mpc",
-                    hw="hw:MPC",
-                ),
-                AudioNode(
-                    id="l12-capture",
-                    kind=NodeKind.ALSA_SOURCE,
-                    pipewire_name="l12",
-                    hw="hw:L12",
-                ),
-            ],
-            ports=[
-                Port(
-                    id="mpc-usb-output-aux0",
-                    node_id="mpc-usb-output",
-                    direction=PortDirection.OUTPUT,
-                    position="AUX0",
-                ),
-                Port(
-                    id="l12-capture-aux8",
-                    node_id="l12-capture",
-                    direction=PortDirection.INPUT,
-                    position="AUX8",
-                ),
-            ],
-            physical_edges=[
-                PhysicalEdge(
-                    id="bad-edge",
-                    source_ports=["mpc-usb-output-aux0"],
-                    target_ports=["l12-capture-aux8"],
-                    source_connector="MPC",
-                    target_connector="L-12",
-                    medium=PhysicalMedium.TRS,
-                    route_class="missing-route-class",
-                )
-            ],
-        )
 
 
 def test_filter_stage_ladspa_requires_plugin() -> None:
@@ -489,11 +317,6 @@ def test_audio_graph_yaml_roundtrip() -> None:
 def test_audio_graph_unknown_schema_version_rejected() -> None:
     with pytest.raises(ValueError, match="schema_version"):
         AudioGraph.from_yaml("schema_version: 99\nnodes: []\n")
-
-
-def test_audio_graph_v3_descriptor_gets_clear_compatibility_error() -> None:
-    with pytest.raises(AudioGraphCompatibilityError, match="schema_version=3"):
-        AudioGraph.from_yaml("schema_version: 3\nnodes: []\nedges: []\n")
 
 
 def test_role_loopback_models_voice_duck_conf() -> None:

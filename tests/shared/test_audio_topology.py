@@ -269,21 +269,14 @@ class TestTopologyDescriptor:
         assert reloaded == d
 
     def test_schema_version_pinned(self) -> None:
-        # Schema v4 is current canonical input; v2/v3 still parse for back-compat.
+        # Schema v3 (audit F#8) is current; v2 still parses for back-compat.
         # v1 is no longer accepted — the v1 → v2 symbolic ALSA card-id
         # migration must complete before parsing succeeds.
-        d = TopologyDescriptor(
-            schema_version=4,
-            nodes=[Node(id="a", kind=NodeKind.TAP, pipewire_name="x")],
-        )
-        assert d.schema_version == 4
-
-    def test_schema_version_v4_accepted_for_canonical_migration(self) -> None:
-        d = TopologyDescriptor(
-            schema_version=4,
-            nodes=[Node(id="a", kind=NodeKind.TAP, pipewire_name="x")],
-        )
-        assert d.schema_version == 4
+        with pytest.raises(ValidationError):
+            TopologyDescriptor(
+                schema_version=4,  # future; not yet supported
+                nodes=[Node(id="a", kind=NodeKind.TAP, pipewire_name="x")],
+            )
 
     def test_schema_version_v3_accepted(self) -> None:
         d = TopologyDescriptor(

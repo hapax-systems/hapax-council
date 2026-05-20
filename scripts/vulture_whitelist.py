@@ -3836,3 +3836,14 @@ WcsHealthBlockerBus
 WcsHealthBlockerBus.all_healthy
 WcsHealthBlockerBus.public_live_blocked
 WcsHealthBlockerBus.monetized_blocked
+# Audio control-plane ledger: reconciler + restart-gate entry points.
+# cc-task: audio-control-plane-ledger-and-service-manifest
+from shared.audio_control_plane import (
+    classify_service_health,
+    read_mutation_events,
+    refuse_dirty_restart,
+)
+
+classify_service_health
+read_mutation_events
+refuse_dirty_restart

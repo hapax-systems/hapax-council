@@ -239,13 +239,7 @@ class TopologyDescriptor(BaseModel, frozen=True):
 
     Versioning: ``schema_version`` increments on breaking schema
     changes so older descriptors can be migrated explicitly. Current
-    canonical descriptor = 4 (2026-05-20 — AudioGraph v4 typed ports,
-    route classes, physical edges, hardware patches, and optional-device
-    lifecycle). This legacy parser intentionally accepts v4 and ignores
-    top-level v4-only sections so existing audit and CLI tools can keep
-    reading the canonical file during the migration.
-
-    Legacy schema 3 (2026-05-02 — Node typed filter-chain template params
+    = 3 (2026-05-02 — Node typed filter-chain template params
     ``chain_kind`` / ``limit_db`` / ``bias_db`` / ``release_s`` /
     ``remap_to_rear`` for the LADSPA loudnorm / duck / usb-bias
     generator templates, audit F#8). Schema 2 still parses for
@@ -255,7 +249,7 @@ class TopologyDescriptor(BaseModel, frozen=True):
     migration must complete before parsing succeeds.
     """
 
-    schema_version: Literal[2, 3, 4] = 3
+    schema_version: Literal[2, 3] = 3
     description: str = ""
     nodes: list[Node]
     edges: list[Edge] = Field(default_factory=list)
@@ -328,8 +322,8 @@ class TopologyDescriptor(BaseModel, frozen=True):
         # descriptors (or anything outside the supported window) fail with a
         # message that mentions the version, not a deeply-nested pydantic
         # Literal-mismatch error.
-        if isinstance(data, dict) and data.get("schema_version") not in (2, 3, 4):
+        if isinstance(data, dict) and data.get("schema_version") not in (2, 3):
             raise ValueError(
-                f"unknown schema_version: {data.get('schema_version')!r} (supported: 2, 3, 4)"
+                f"unknown schema_version: {data.get('schema_version')!r} (supported: 2, 3)"
             )
         return cls.model_validate(data)

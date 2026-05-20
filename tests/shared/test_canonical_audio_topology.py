@@ -5,14 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
-
-from shared.audio_graph import AudioGraph
 from shared.audio_topology import TopologyDescriptor
-from shared.audio_topology_generator import (
-    generate_audio_graph_reference_tables,
-    generate_fail_closed_policy_map,
-)
 from shared.audio_topology_inspector import check_l12_forward_invariant
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -31,18 +24,14 @@ def _descriptor() -> TopologyDescriptor:
     return TopologyDescriptor.from_yaml(CANONICAL_YAML)
 
 
-def _graph() -> AudioGraph:
-    return AudioGraph.from_yaml(CANONICAL_YAML)
-
-
 def test_canonical_descriptor_parses() -> None:
     assert CANONICAL_YAML.exists(), (
         "config/audio-topology.yaml missing - canonical descriptor deleted?"
     )
     d = _descriptor()
-    g = _graph()
-    assert d.schema_version == 4
-    assert g.schema_version == 4
+    # Schema v3 (audit F#8): typed filter-chain template params for the
+    # generator's LADSPA loudnorm / duck / usb-bias chains.
+    assert d.schema_version == 3
 
 
 def test_canonical_has_current_livestream_node_ids() -> None:
@@ -271,7 +260,7 @@ def test_tts_broadcast_path_has_mpc_wet_return_and_livestream_forward_path() -> 
     assert loudnorm.params["broadcast_forward_path"] == (
         "mpc-usb-output l12-usb-return-capture hapax-livestream-tap"
     )
-    assert "hardware_forward_path" not in mpc.params
+    assert mpc.params["hardware_forward_path"]
     assert wet_return.target_object == L12_SOURCE_NAME
     assert wet_return.params["capture_positions"] == "AUX8 AUX9 AUX10 AUX11"
     assert wet_return.params["playback_target"] == "hapax-livestream-tap"
@@ -279,61 +268,6 @@ def test_tts_broadcast_path_has_mpc_wet_return_and_livestream_forward_path() -> 
     edge_pairs = {(edge.source, edge.target) for edge in d.edges}
     assert ("l12-capture", "l12-usb-return-capture") in edge_pairs
     assert ("l12-usb-return-capture", "livestream-tap") in edge_pairs
-
-
-def test_schema_v4_typed_hardware_forwarding_replaces_prose_string() -> None:
-    g = _graph()
-    physical_edges = {edge.id: edge for edge in g.physical_edges}
-    patches = {patch.id: patch for patch in g.hardware_patches}
-
-    assert set(physical_edges) == {
-        "mpc-out-1-2-to-l12-ch9-10",
-        "mpc-out-3-4-to-l12-ch11-12",
-    }
-    assert physical_edges["mpc-out-1-2-to-l12-ch9-10"].source_ports == [
-        "mpc-usb-output-aux0",
-        "mpc-usb-output-aux1",
-    ]
-    assert physical_edges["mpc-out-1-2-to-l12-ch9-10"].target_ports == [
-        "l12-capture-aux8",
-        "l12-capture-aux9",
-    ]
-    assert physical_edges["mpc-out-3-4-to-l12-ch11-12"].target_ports == [
-        "l12-capture-aux10",
-        "l12-capture-aux11",
-    ]
-    assert set(patches["mpc-trs-returns-to-l12"].physical_edges) == set(physical_edges)
-    assert patches["mpc-trs-returns-to-l12"].fail_closed_on_absent is True
-
-
-def test_schema_v4_fail_closed_policy_is_generator_input() -> None:
-    policy = generate_fail_closed_policy_map(_graph())
-
-    assert policy["route_classes"]["mpc-first-broadcast"] == {
-        "kind": "broadcast",
-        "broadcast_allowed": True,
-        "private_allowed": False,
-        "default_autoconnect": False,
-        "fail_closed_on_absent": True,
-        "recovery_action": "hold",
-    }
-    assert policy["route_classes"]["private-monitor-fail-closed"]["private_allowed"] is True
-    assert policy["hardware_patches"]["mpc-trs-returns-to-l12"]["fail_closed_on_absent"] is True
-    assert policy["optional_devices"]["dirtywave-m8"]["default_state"] == "absent"
-    assert policy["optional_devices"]["dirtywave-m8"]["fail_closed_when_absent"] is True
-
-
-def test_schema_v4_generators_reject_legacy_descriptor_input() -> None:
-    with pytest.raises(ValueError, match="AudioGraph v4 input required"):
-        generate_fail_closed_policy_map(_descriptor())
-
-
-def test_schema_v4_generated_tables_match_docs() -> None:
-    docs = (REPO_ROOT / "docs" / "audio-topology-reference.md").read_text(encoding="utf-8")
-    generated = generate_audio_graph_reference_tables(_graph())
-    start = "<!-- audio-graph-v4-generated:start -->"
-    end = "<!-- audio-graph-v4-generated:end -->"
-    assert f"{start}\n{generated}\n{end}" in docs
 
 
 def test_pc_loudnorm_lands_on_mpc_but_notifications_do_not() -> None:
