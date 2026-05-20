@@ -302,6 +302,7 @@ def _is_authority_exempt(fields: dict[str, str | list[str]]) -> bool:
     non_mutating_tokens = {
         "audit",
         "intake",
+        "operator_action",
         "planning",
         "plan",
         "read-only",
@@ -319,8 +320,11 @@ missing_authority_fields: list[str] = []
 if not _is_authority_exempt(fields):
     if _is_nullish(fields.get("authority_case")):
         missing_authority_fields.append("authority_case")
-    if _is_nullish(fields.get("parent_spec")):
-        missing_authority_fields.append("parent_spec")
+    if all(
+        _is_nullish(fields.get(k))
+        for k in ("parent_spec", "parent_plan", "parent_request")
+    ):
+        missing_authority_fields.append("parent_spec (or parent_plan/parent_request)")
 
 if missing_authority_fields:
     print(
