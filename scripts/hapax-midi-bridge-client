@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# hapax-midi-bridge-client — guarded aseqnet client.
+#
+# The bridge peer is optional/physical. If the Pi endpoint is absent, exiting
+# successfully keeps systemd from restart-spinning; if an established bridge
+# later drops, aseqnet's non-zero exit remains a restartable failure.
+
+set -euo pipefail
+
+HOST="${HAPAX_MIDI_BRIDGE_HOST:-hapax-pi4.local}"
+PORT="${HAPAX_MIDI_BRIDGE_PORT:-9009}"
+CONNECT_TIMEOUT="${HAPAX_MIDI_BRIDGE_CONNECT_TIMEOUT:-2}"
+
+if ! timeout "${CONNECT_TIMEOUT}s" bash -c ":</dev/tcp/${HOST}/${PORT}" 2>/dev/null; then
+    echo "hapax-midi-bridge-client: ${HOST}:${PORT} unavailable; bridge not started" >&2
+    exit 0
+fi
+
+exec /usr/bin/aseqnet -p "${PORT}" "${HOST}"
