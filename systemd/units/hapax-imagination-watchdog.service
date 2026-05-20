@@ -7,6 +7,7 @@ Type=oneshot
 ExecStart=%h/.local/bin/hapax-imagination-watchdog.sh
 Environment=HAPAX_IMAG_WATCHDOG_FILE=/dev/shm/hapax-imagination/current.json
 Environment=HAPAX_IMAG_WATCHDOG_STALE_S=600
+Environment=HAPAX_IMAG_WATCHDOG_COOLDOWN_S=900
 Environment=HAPAX_IMAG_WATCHDOG_UNIT=hapax-imagination-loop.service
 Environment=HOME=/home/hapax
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus

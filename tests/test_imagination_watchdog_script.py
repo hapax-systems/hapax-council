@@ -22,6 +22,8 @@ def _run_watchdog(
     watch_file: Path,
     stale_s: int,
     unit: str = "hapax-imagination-loop.service",
+    state_file: Path | None = None,
+    cooldown_s: int | None = None,
 ) -> tuple[int, str]:
     """Invoke the watchdog in dry-run mode; return (exit_code, stdout)."""
     env = os.environ.copy()
@@ -29,6 +31,10 @@ def _run_watchdog(
     env["HAPAX_IMAG_WATCHDOG_STALE_S"] = str(stale_s)
     env["HAPAX_IMAG_WATCHDOG_UNIT"] = unit
     env["HAPAX_IMAG_WATCHDOG_DRY_RUN"] = "1"
+    if state_file is not None:
+        env["HAPAX_IMAG_WATCHDOG_STATE_FILE"] = str(state_file)
+    if cooldown_s is not None:
+        env["HAPAX_IMAG_WATCHDOG_COOLDOWN_S"] = str(cooldown_s)
     result = subprocess.run(
         ["bash", str(SCRIPT)],
         capture_output=True,
@@ -64,6 +70,25 @@ def test_stale_file_triggers_restart(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not SCRIPT.exists(), reason="watchdog script not present")
+def test_stale_file_with_recent_restart_is_cooldown_suppressed(tmp_path: Path) -> None:
+    """A stale file may alert, but it must not create a one-minute restart storm."""
+    f = tmp_path / "current.json"
+    state = tmp_path / "watchdog" / "last-restart"
+    state.parent.mkdir()
+    f.write_text("{}")
+    backdated = time.time() - 700
+    os.utime(f, (backdated, backdated))
+    state.write_text(str(int(time.time() - 30)))
+
+    code, out = _run_watchdog(watch_file=f, stale_s=600, state_file=state, cooldown_s=900)
+
+    assert code == 0
+    assert "stale:" in out
+    assert "restart suppressed by cooldown" in out
+    assert "DRY RUN — skipping restart" not in out
+
+
+@pytest.mark.skipif(not SCRIPT.exists(), reason="watchdog script not present")
 def test_missing_file_triggers_restart(tmp_path: Path) -> None:
     """When current.json is absent the loop is presumed dead — restart."""
     f = tmp_path / "does-not-exist.json"
@@ -71,6 +96,22 @@ def test_missing_file_triggers_restart(tmp_path: Path) -> None:
     assert code == 0
     assert "watch file missing" in out
     assert "restarting" in out
+
+
+@pytest.mark.skipif(not SCRIPT.exists(), reason="watchdog script not present")
+def test_missing_file_with_recent_restart_is_cooldown_suppressed(tmp_path: Path) -> None:
+    """Missing file handling also obeys cooldown; absence cannot storm restarts."""
+    f = tmp_path / "does-not-exist.json"
+    state = tmp_path / "watchdog" / "last-restart"
+    state.parent.mkdir()
+    state.write_text(str(int(time.time() - 30)))
+
+    code, out = _run_watchdog(watch_file=f, stale_s=600, state_file=state, cooldown_s=900)
+
+    assert code == 0
+    assert "watch file missing" in out
+    assert "restart suppressed by cooldown" in out
+    assert "DRY RUN — skipping restart" not in out
 
 
 @pytest.mark.skipif(not SCRIPT.exists(), reason="watchdog script not present")
