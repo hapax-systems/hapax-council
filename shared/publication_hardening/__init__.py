@@ -1,3 +1,10 @@
+from shared.publication_hardening.egress_safety import (
+    DEFAULT_RATE_LIMIT,
+    DEFAULT_RATE_WINDOW_HOURS,
+    EgressCheckResult,
+    EgressDecision,
+    EgressSafetyEnvelope,
+)
 from shared.publication_hardening.codebase import (
     CodebaseConsistencyVerifier,
     CodebaseDecision,
@@ -45,6 +52,11 @@ from shared.publication_hardening.review import (
 )
 
 __all__ = [
+    "DEFAULT_RATE_LIMIT",
+    "DEFAULT_RATE_WINDOW_HOURS",
+    "EgressCheckResult",
+    "EgressDecision",
+    "EgressSafetyEnvelope",
     "AttributionFinding",
     "CodebaseConsistencyVerifier",
     "CodebaseDecision",
