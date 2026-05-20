@@ -270,17 +270,23 @@ def test_tts_broadcast_path_has_mpc_wet_return_and_livestream_forward_path() -> 
     assert ("l12-usb-return-capture", "livestream-tap") in edge_pairs
 
 
-def test_pc_loudnorm_lands_on_mpc_but_notifications_do_not() -> None:
+def test_pc_loudnorm_is_fail_closed_and_notifications_do_not_enter_multimedia() -> None:
     d = _descriptor()
     pc = d.node_by_id("pc-loudnorm")
     role_multimedia = d.node_by_id("role-multimedia")
     role_notification = d.node_by_id("role-notification")
 
     assert role_multimedia.target_object == "hapax-pc-loudnorm"
-    assert pc.target_object == MPC_OUTPUT_NAME
-    assert pc.params["playback_positions"] == "AUX4 AUX5"
+    assert pc.target_object is None
+    assert pc.params["playback_positions"] == "disabled"
+    assert pc.params["mpc_usb_input_pair"] == "disabled"
     assert pc.params["notification_excluded"] is True
+    assert pc.params["fail_closed"] is True
     assert role_notification.target_object == "hapax-notification-private"
+
+    edge_pairs = {(edge.source, edge.target) for edge in d.edges}
+    assert ("pc-loudnorm", "mpc-usb-output") not in edge_pairs
+    assert ("pc-loudnorm", "livestream-tap") not in edge_pairs
 
 
 def test_s4_loopback_targets_livestream_tap() -> None:
