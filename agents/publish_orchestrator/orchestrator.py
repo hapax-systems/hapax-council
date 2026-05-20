@@ -69,6 +69,10 @@ from shared.publication_artifact_public_event import (
     PublicationArtifactEventStage,
     build_publication_artifact_public_event,
 )
+from shared.publication_hardening.egress_safety import (
+    EgressDecision,
+    EgressSafetyEnvelope,
+)
 from shared.publication_hardening.gate import (
     PublicationGateDecision,
     PublicationGateResult,
@@ -218,6 +222,7 @@ class Orchestrator:
         public_event_path: Path | None = PUBLIC_EVENT_PATH,
         review_pass: ReviewPass | None = None,
         hardening_gate: PublicationHardeningGate | None = None,
+        egress_envelope: EgressSafetyEnvelope | None = None,
         registry: CollectorRegistry = REGISTRY,
         tick_s: float = DEFAULT_TICK_S,
         max_workers: int = 8,
@@ -233,6 +238,7 @@ class Orchestrator:
             if hardening_gate is not None
             else PublicationHardeningGate(review_pass=self._review_pass)
         )
+        self._egress_envelope = egress_envelope or EgressSafetyEnvelope()
         self._tick_s = max(1.0, tick_s)
         self._max_workers = max(1, max_workers)
         self._stop_evt = threading.Event()
@@ -250,6 +256,20 @@ class Orchestrator:
 
     def run_once(self) -> int:
         """Process all approved artifacts in inbox; return count handled."""
+        egress_check = self._egress_envelope.check()
+        if egress_check.decision == EgressDecision.KILL_SWITCHED:
+            log.warning("egress kill switch active; skipping tick")
+            self.dispatches_total.labels(surface="__egress__", result="kill_switched").inc()
+            return 0
+        if egress_check.decision == EgressDecision.RATE_LIMITED:
+            log.info(
+                "egress rate limited (%d/%d); deferring",
+                egress_check.rate_window_count,
+                egress_check.rate_limit,
+            )
+            self.dispatches_total.labels(surface="__egress__", result="rate_limited").inc()
+            return 0
+
         inbox = self._state_root / INBOX_DIR_NAME
         if not inbox.exists():
             return 0

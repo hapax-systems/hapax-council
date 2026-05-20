@@ -3602,6 +3602,7 @@ from agents.studio_compositor.interview_unknowns_ward import InterviewUnknownsWa
 from logos.interview import branch_follow_up, request_background_research
 from shared.concept_mastery import ConceptMastery, compute_zpd_affordance_pressure
 from shared.programme import register_programme_affordances
+from shared.publication_hardening.egress_safety import EgressSafetyEnvelope
 
 _interview_question_violations
 InterviewDeltaWard
@@ -3615,3 +3616,4 @@ ConceptMastery.update_segment_covered
 ConceptMastery.update_chat_mention
 ConceptMastery.add_concept
 register_programme_affordances
+EgressSafetyEnvelope.kill_switch_active
