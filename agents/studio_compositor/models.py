@@ -72,6 +72,7 @@ class CameraSpec(BaseModel):
     angle: str = "unspecified"
     operator_visible: bool = False
     ambient_priority: int = 5
+    loopback_device: str | None = None
 
 
 class RecordingConfig(BaseModel):

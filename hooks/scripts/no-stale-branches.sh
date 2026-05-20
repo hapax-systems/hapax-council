@@ -237,6 +237,7 @@ while IFS= read -r branch; do
     [ "$short" = "HEAD" ] && continue
     [ "$branch" = "origin" ] && continue
     echo "$short" | grep -qE '^dependabot/' && continue
+    echo "$short" | grep -qE '^gh-readonly-queue/' && continue
     # Skip remote branches whose local counterpart is in another worktree
     echo "$other_wt_branches" | grep -qF "|${short}" && continue
     # Skip remote branches with open PRs (peer session in-flight delivery)

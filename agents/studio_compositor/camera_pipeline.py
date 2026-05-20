@@ -303,7 +303,22 @@ class CameraPipeline:
                 elements.append(flip)
             if normalize_scale is not None:
                 elements.append(normalize_scale)
-            elements.extend([out_caps, sink])
+            elements.append(out_caps)
+
+            use_loopback = bool(self._spec.loopback_device)
+            if use_loopback:
+                tee = Gst.ElementFactory.make("tee", f"loopback_tee_{self._role_safe}")
+                if tee is None:
+                    log.warning(
+                        "%s: tee factory failed, skipping loopback sidecar",
+                        self._spec.role,
+                    )
+                    use_loopback = False
+
+            if use_loopback:
+                elements.append(tee)
+            else:
+                elements.append(sink)
 
             for el in elements:
                 pipeline.add(el)
@@ -313,6 +328,22 @@ class CameraPipeline:
                     raise RuntimeError(
                         f"{self._spec.role}: failed to link "
                         f"{elements[i].get_name()} -> {elements[i + 1].get_name()}"
+                    )
+
+            if use_loopback:
+                pipeline.add(sink)
+                loopback_elements = self._build_loopback_branch(
+                    Gst, pipeline, self._spec.loopback_device
+                )
+                tee_compositor_pad = tee.request_pad_simple("src_%u")
+                if tee_compositor_pad.link(sink.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
+                    raise RuntimeError(f"{self._spec.role}: failed to link tee → interpipesink")
+                tee_loopback_pad = tee.request_pad_simple("src_%u")
+                lb_queue = loopback_elements[0]
+                if tee_loopback_pad.link(lb_queue.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
+                    log.warning(
+                        "%s: failed to link tee → loopback queue, loopback disabled",
+                        self._spec.role,
                     )
 
             # Frame-flow observation: a pad probe on the interpipesink sink pad
@@ -337,6 +368,45 @@ class CameraPipeline:
                 self._spec.input_format,
                 getattr(self._spec, "orientation", "identity"),
             )
+
+    def _build_loopback_branch(self, Gst: Any, pipeline: Any, device: str) -> list[Any]:
+        """Build the loopback sidecar branch: queue → videoconvert → capsfilter(YUY2) → v4l2sink.
+
+        Returns the element list so the caller can link the tee pad to the queue's sink.
+        All errors are non-fatal — a failed loopback never blocks the compositor path.
+        """
+        role = self._role_safe
+        queue = Gst.ElementFactory.make("queue", f"lb_queue_{role}")
+        queue.set_property("max-size-buffers", 2)
+        queue.set_property("leaky", 2)  # downstream
+
+        lb_convert = Gst.ElementFactory.make("videoconvert", f"lb_convert_{role}")
+
+        lb_caps = Gst.ElementFactory.make("capsfilter", f"lb_caps_{role}")
+        lb_caps.set_property(
+            "caps",
+            Gst.Caps.from_string(
+                f"video/x-raw,format=YUY2,width={self._spec.width},"
+                f"height={self._spec.height},framerate={self._fps}/1"
+            ),
+        )
+
+        lb_sink = Gst.ElementFactory.make("v4l2sink", f"lb_v4l2sink_{role}")
+        lb_sink.set_property("device", device)
+        lb_sink.set_property("sync", False)
+
+        elements = [queue, lb_convert, lb_caps, lb_sink]
+        for el in elements:
+            pipeline.add(el)
+        for i in range(len(elements) - 1):
+            if not elements[i].link(elements[i + 1]):
+                log.warning(
+                    "%s: loopback branch link failed: %s -> %s",
+                    self._spec.role,
+                    elements[i].get_name(),
+                    elements[i + 1].get_name(),
+                )
+        return elements
 
     def start(self) -> bool:
         """Transition to PLAYING. Returns False on failure."""
@@ -859,6 +929,14 @@ class CameraPipeline:
             message_text = err.message
             if "Failed to allocate a buffer" in message_text:
                 message_text = self._buffer_allocation_error_context()
+            if src.startswith("lb_"):
+                log.warning(
+                    "camera_pipeline %s loopback error (element=%s, non-fatal): %s",
+                    self._spec.role,
+                    src,
+                    message_text,
+                )
+                return True
             log.error(
                 "camera_pipeline %s error (element=%s): %s (debug=%s)",
                 self._spec.role,
