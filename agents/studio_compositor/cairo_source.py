@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import zlib
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
@@ -153,6 +154,9 @@ class CairoSourceRunner:
             if publish_ttl_ms is not None
             else max(3000, int(self._period * 5000))
         )
+        self._source_protocol_heartbeat_s = max(self._period, self._publish_ttl_ms / 2000.0)
+        self._last_source_protocol_signature: tuple[int, int, int, int, int] | None = None
+        self._last_source_protocol_publish_at = 0.0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._output_surface: cairo.ImageSurface | None = None
@@ -677,18 +681,33 @@ class CairoSourceRunner:
         displays them as textured quads at their z-plane depths.
         """
         try:
-            import numpy as np
-
             from agents.reverie.content_injector import inject_rgba
+
+            w = surface.get_width()
+            h = surface.get_height()
+            surface_data = surface.get_data()
+            signature = (
+                w,
+                h,
+                surface.get_stride(),
+                len(surface_data),
+                zlib.crc32(surface_data),
+            )
+            now = time.monotonic()
+            if (
+                signature == self._last_source_protocol_signature
+                and now - self._last_source_protocol_publish_at < self._source_protocol_heartbeat_s
+            ):
+                return
+
+            import numpy as np
 
             # Cairo FORMAT_ARGB32 is BGRA in memory on little-endian.
             # Swap B↔R channels using numpy (vectorized, ~100x faster).
-            w = surface.get_width()
-            h = surface.get_height()
-            buf = np.frombuffer(surface.get_data(), dtype=np.uint8).copy()
+            buf = np.frombuffer(surface_data, dtype=np.uint8).copy()
             buf = buf[: w * h * 4].reshape(-1, 4)
             buf[:, [0, 2]] = buf[:, [2, 0]]  # swap B↔R
-            inject_rgba(
+            published = inject_rgba(
                 self._source_id,
                 buf.tobytes(),
                 w,
@@ -698,6 +717,9 @@ class CairoSourceRunner:
                 tags=["ward", "cairo"],
                 ttl_ms=self._publish_ttl_ms,
             )
+            if published:
+                self._last_source_protocol_signature = signature
+                self._last_source_protocol_publish_at = now
         except ImportError:
             log.debug(
                 "content_injector unavailable; CairoSource %s output not published",

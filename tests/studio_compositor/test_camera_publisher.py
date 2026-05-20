@@ -1,5 +1,6 @@
 import importlib
 import json
+from pathlib import Path
 
 from agents.studio_compositor import camera_publisher, frame_cache
 from agents.studio_compositor.camera_publisher import CameraSourcePublisher
@@ -100,3 +101,33 @@ def test_default_3d_camera_source_publish_cadence_matches_consumer_scan(
     reloaded = importlib.reload(camera_publisher)
 
     assert abs(reloaded._DEFAULT_INTERVAL_S - 0.1) < 0.0001
+
+
+def test_write_source_creates_source_directory_once(tmp_path, monkeypatch) -> None:
+    publisher = CameraSourcePublisher(interval_s=1.0, sources_dir=tmp_path)
+    mkdir_calls: list[Path] = []
+    original_mkdir = Path.mkdir
+
+    def _counting_mkdir(self: Path, *args, **kwargs) -> None:
+        if self == tmp_path / "camera-brio-operator":
+            mkdir_calls.append(self)
+        original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", _counting_mkdir)
+
+    publisher._write_source(
+        "camera-brio-operator",
+        b"\0" * 16,
+        2,
+        2,
+        frame_sequence=1,
+    )
+    publisher._write_source(
+        "camera-brio-operator",
+        b"\1" * 16,
+        2,
+        2,
+        frame_sequence=2,
+    )
+
+    assert len(mkdir_calls) == 1
