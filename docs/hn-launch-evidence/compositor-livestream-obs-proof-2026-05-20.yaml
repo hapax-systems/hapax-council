@@ -1,0 +1,74 @@
+schema_version: 1
+proof_id: compositor-livestream-obs-proof-2026-05-20
+task_id: 20260510-hackernews-launch-pre-p0-compositor-livestream-obs-proof
+generated_at: "2026-05-20T18:05:00Z"
+overall_status: operator_action_required
+
+checks:
+  compositor_visual_surface:
+    status: fail
+    detail: >
+      studio-compositor.service is active. Camera classifications are
+      correct and fresh (6 RGB + 3 IR cameras with semantic roles).
+      However, frame truth files (frame.jpg, snapshot.jpg, fx-snapshot.jpg)
+      are missing — the GStreamer pipeline is not producing frames.
+      AoA/sierpinski ward is not in the active_wards list.
+    requires:
+      - Camera pipeline producing frames (USB cameras connected and negotiating)
+      - AoA ward activation (sierpinski layout mode or explicit ward enable)
+
+  youtube_livestream:
+    status: fail
+    detail: >
+      No active YouTube livestream video ID found. This check requires an
+      active RTMP stream to YouTube with a valid video ID.
+    requires:
+      - Operator starts YouTube livestream via OBS or direct RTMP
+      - Video ID populated in runtime state
+
+  obs_clean_feed:
+    status: fail
+    detail: >
+      hapax-obs-livestream.service is inactive. Egress state does not
+      allow a public live claim. Egress evidence failing: rtmp_output,
+      mediamtx_hls, hls_playlist, audio_floor.
+    requires:
+      - Start hapax-obs-livestream.service
+      - OBS scene configured with compositor v4l2 source
+      - RTMP output active to YouTube/MediaMTX
+      - Audio floor passing egress health check
+
+  logos_api:
+    status: warn
+    detail: >
+      Logos API overall status is 'failed' due to missing health history
+      file at rebuild worktree path. The API itself is reachable.
+      Classified as non-blocking HN launch warning.
+    accepted_mitigation: >
+      Health history path references a rebuild worktree that may not exist
+      during normal operation. The API endpoints themselves function correctly.
+
+passing_checks:
+  - programme_segments
+  - daimonion_voice_segments
+  - reverie_visual_surface
+  - github_readme
+  - omg_weblog
+
+camera_classifications_verified:
+  brio-operator: operator-face
+  c920-desk: operator-hands
+  c920-room: room-wide
+  c920-overhead: operator-desk-topdown
+  brio-room: outboard-gear
+  brio-synths: turntables
+  pi-noir-desk: ir-desk-hand-zone
+  pi-noir-room: ir-room-presence-zone
+  pi-noir-overhead: ir-overhead-hand-zone
+
+operator_action_checklist:
+  - Connect USB cameras and verify frame output in /dev/shm/hapax-compositor/
+  - Enable AoA/sierpinski ward
+  - Start hapax-obs-livestream.service
+  - Begin YouTube RTMP stream
+  - Re-run `scripts/hn-launch-systems-readiness` for fresh receipt
