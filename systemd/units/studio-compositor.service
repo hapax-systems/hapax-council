@@ -96,6 +96,16 @@ Environment=OTEL_BSP_MAX_QUEUE_SIZE=256
 Environment=OTEL_BSP_MAX_EXPORT_BATCH_SIZE=64
 Environment=OTEL_BSP_EXPORT_TIMEOUT=2000
 Environment=OTEL_BSP_SCHEDULE_DELAY=1000
+# The 3D camera bridge performs paced NV12->RGBA conversion for all live
+# camera textures. OpenCV defaults to host-core parallelism; each conversion
+# can otherwise fan out across the machine and fight GStreamer decoder
+# threads. Keep compositor-local native image work bounded unless a governed
+# performance task explicitly raises it with fresh evidence.
+Environment=OPENCV_FOR_THREADS_NUM=1
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=NUMEXPR_NUM_THREADS=1
 # Working set under 6 live cameras + 24-slot GL shader chain + MJPEG
 # decoders + three Cairo overlay threads + interpipe producer+fallback
 # pipelines plateaus at ~3.7 GB steady-state and spikes to ~3.9 GB
