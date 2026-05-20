@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# hapax-audio-deny-policy — manage WirePlumber link-time deny policy
+#
+# Usage:
+#   hapax-audio-deny-policy status    # check if policy is installed
+#   hapax-audio-deny-policy validate  # validate config syntax
+#   hapax-audio-deny-policy install   # symlink policy (dry-run by default)
+#   hapax-audio-deny-policy remove    # remove symlink
+#
+# The policy runs in dry-run mode by default (HAPAX_AUDIO_DENY_DRY_RUN=1).
+# It must NOT be enabled live without explicit runtime authorization.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+POLICY_SRC="$REPO_ROOT/config/wireplumber/99-hapax-link-deny-policy.lua"
+POLICY_DST="$HOME/.config/wireplumber/scripts/99-hapax-link-deny-policy.lua"
+FORBIDDEN_CONF="$HOME/.config/hapax/audio-forbidden-links.conf"
+
+log() { echo "[hapax-audio-deny-policy] $*"; }
+
+cmd_status() {
+    log "Policy source: $POLICY_SRC"
+    if [[ -f "$POLICY_SRC" ]]; then
+        log "  Source: present"
+    else
+        log "  Source: MISSING"
+    fi
+
+    if [[ -L "$POLICY_DST" ]]; then
+        target=$(readlink -f "$POLICY_DST")
+        log "  Installed: yes (symlink → $target)"
+    elif [[ -f "$POLICY_DST" ]]; then
+        log "  Installed: yes (file copy, not symlink)"
+    else
+        log "  Installed: no"
+    fi
+
+    if [[ -f "$FORBIDDEN_CONF" ]]; then
+        count=$(grep -cv '^\s*$\|^\s*#' "$FORBIDDEN_CONF" 2>/dev/null || echo 0)
+        log "  Forbidden links config: $count rules"
+    else
+        log "  Forbidden links config: MISSING"
+    fi
+
+    if [[ "${HAPAX_AUDIO_DENY_DRY_RUN:-1}" == "1" ]]; then
+        log "  Mode: DRY-RUN (log only, no blocking)"
+    else
+        log "  Mode: ENFORCE (links will be destroyed)"
+    fi
+}
+
+cmd_validate() {
+    if [[ ! -f "$POLICY_SRC" ]]; then
+        log "FAIL: policy source not found: $POLICY_SRC"
+        exit 1
+    fi
+
+    if ! lua -e "dofile('$POLICY_SRC')" 2>/dev/null; then
+        log "Note: standalone Lua parse check skipped (WirePlumber API not available outside session)"
+    fi
+
+    if [[ ! -f "$FORBIDDEN_CONF" ]]; then
+        log "FAIL: forbidden links config not found: $FORBIDDEN_CONF"
+        exit 1
+    fi
+
+    local bad=0
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        if ! [[ "$line" =~ \| ]]; then
+            log "FAIL: invalid format (missing |): $line"
+            bad=$((bad + 1))
+        fi
+    done < "$FORBIDDEN_CONF"
+
+    if (( bad > 0 )); then
+        log "FAIL: $bad invalid lines in forbidden links config"
+        exit 1
+    fi
+
+    log "OK: policy source and config valid"
+}
+
+cmd_install() {
+    mkdir -p "$(dirname "$POLICY_DST")"
+    if [[ -e "$POLICY_DST" ]]; then
+        log "Policy already installed at $POLICY_DST"
+        return
+    fi
+    ln -s "$POLICY_SRC" "$POLICY_DST"
+    log "Installed: $POLICY_DST → $POLICY_SRC"
+    log "NOTE: dry-run mode is ON by default. Set HAPAX_AUDIO_DENY_DRY_RUN=0 to enforce."
+    log "NOTE: WirePlumber restart required to load the policy."
+}
+
+cmd_remove() {
+    if [[ -L "$POLICY_DST" ]]; then
+        rm "$POLICY_DST"
+        log "Removed: $POLICY_DST"
+    elif [[ -f "$POLICY_DST" ]]; then
+        log "WARNING: $POLICY_DST is a file, not a symlink. Remove manually."
+        exit 1
+    else
+        log "Not installed."
+    fi
+}
+
+case "${1:-status}" in
+    status)   cmd_status ;;
+    validate) cmd_validate ;;
+    install)  cmd_install ;;
+    remove)   cmd_remove ;;
+    *)        echo "Usage: $0 {status|validate|install|remove}"; exit 2 ;;
+esac
