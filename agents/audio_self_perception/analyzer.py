@@ -56,7 +56,7 @@ class AudioPerception:
         }
 
 
-def analyze(samples: np.ndarray, sample_rate: int = 48000) -> AudioPerception:
+def analyze(samples: np.ndarray, sample_rate: int = 44100) -> AudioPerception:
     """Compute all four audio self-perception features from mono PCM.
 
     Accepts int16 (parecord raw) or float arrays. Returns an

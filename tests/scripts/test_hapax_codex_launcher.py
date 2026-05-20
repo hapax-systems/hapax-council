@@ -574,6 +574,55 @@ printf '%s\\n' "$@" > {tmux_args}
     assert "--no-claim" not in runner_text
 
 
+def test_terminal_tmux_allows_assigned_ready_state_task(tmp_path: Path) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    _write_active_task(
+        env,
+        "demo-task",
+        status="merge_queue",
+        assigned_to="cx-amber",
+    )
+    tmux_args = tmp_path / "tmux-args.txt"
+    fake_tmux = tmp_path / "bin" / "tmux"
+    fake_tmux.write_text(
+        f"""#!/usr/bin/env bash
+if [ "$1" = "has-session" ]; then
+  exit 1
+fi
+printf '%s\\n' "$@" > {tmux_args}
+"""
+    )
+    fake_tmux.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-amber",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--task",
+            "demo-task",
+            "--terminal",
+            "tmux",
+            "--force",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "hapax-codex-cx-amber"
+    runner = Path(tmux_args.read_text().strip().splitlines()[-1])
+    runner_text = runner.read_text()
+    assert "--session cx-amber" in runner_text
+    assert "--task demo-task" in runner_text
+
+
 def test_terminal_launch_refuses_non_offered_task_before_opening_foot(tmp_path: Path) -> None:
     env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
     _write_active_task(env, "demo-task", status="pr_open")
@@ -609,7 +658,7 @@ printf '%s\\n' "$@" > {foot_args}
     )
 
     assert result.returncode == 4
-    assert "current status is 'pr_open', not 'offered'" in result.stderr
+    assert "ready-state task is assigned to 'unassigned', not 'cx-blue'" in result.stderr
     assert not foot_args.exists()
     assert not list((tmp_path / "cache" / "hapax" / "codex-spawns").glob("*cx-blue-demo-task.md"))
 

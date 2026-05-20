@@ -67,7 +67,7 @@ DEFAULT_MONITOR_SOURCE: str = "hapax-broadcast-master.monitor"
 AWARENESS_STATE_PATH: Path = Path("/dev/shm/hapax-awareness/state.json")
 REFUSAL_LOG_PATH: Path = Path("/dev/shm/hapax-refusal/log.jsonl")
 
-SAMPLE_RATE_HZ: int = 48000
+SAMPLE_RATE_HZ: int = 44100
 CHANNEL_COUNT: int = 2
 SAMPLE_FORMAT: str = "s32le"
 SAMPLE_BYTES_PER_FRAME: int = 4 * CHANNEL_COUNT

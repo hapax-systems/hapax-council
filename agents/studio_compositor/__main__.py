@@ -12,10 +12,17 @@ from typing import Any
 
 import yaml
 
-from .compositor import StudioCompositor
 from .config import _default_config, load_config
 
 log = logging.getLogger(__name__)
+
+_NATIVE_THREAD_LIMIT_ENV_DEFAULTS = {
+    "OPENCV_FOR_THREADS_NUM": "1",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+}
 
 
 # systemd sd_notify integration — see camera epic Phase 1 design doc.
@@ -57,6 +64,38 @@ def sd_notify_status(msg: str) -> None:
         n.notify(f"STATUS={msg}")
 
 
+def _configure_native_thread_limits() -> None:
+    """Bound native image-processing thread pools before compositor import.
+
+    OpenCV defaults to the host core count for parallel regions. The 3D camera
+    bridge calls OpenCV from a paced publisher thread; allowing one conversion
+    to fan out across all cores made the publisher fight the GStreamer decode
+    threads. Keep compositor-native work sequential by default while preserving
+    explicit operator overrides.
+    """
+
+    for key, value in _NATIVE_THREAD_LIMIT_ENV_DEFAULTS.items():
+        os.environ.setdefault(key, value)
+
+    try:
+        import cv2
+    except Exception:
+        return
+
+    raw_threads = os.environ.get("OPENCV_FOR_THREADS_NUM", "1")
+    try:
+        threads = max(1, int(raw_threads))
+    except ValueError:
+        log.warning(
+            "Invalid OPENCV_FOR_THREADS_NUM=%r; leaving OpenCV thread count unchanged", raw_threads
+        )
+        return
+    try:
+        cv2.setNumThreads(threads)
+    except Exception:
+        log.debug("OpenCV setNumThreads(%s) failed", threads, exc_info=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Studio Compositor -- tiled camera output")
     parser.add_argument("--config", type=Path, help="Config YAML path")
@@ -82,11 +121,14 @@ def main() -> None:
     from agents._log_setup import configure_logging
 
     configure_logging(agent="studio-compositor", level="DEBUG" if args.verbose else None)
+    _configure_native_thread_limits()
 
     if args.default_config:
         cfg = _default_config()
         print(yaml.dump(json.loads(cfg.model_dump_json()), default_flow_style=False))
         sys.exit(0)
+
+    from .compositor import StudioCompositor
 
     cfg = load_config(path=args.config)
     if args.no_overlay:

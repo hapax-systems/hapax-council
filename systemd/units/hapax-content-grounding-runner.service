@@ -1,0 +1,23 @@
+[Unit]
+Description=Hapax content programming grounding runner
+After=hapax-secrets.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+EnvironmentFile=/run/user/1000/hapax-secrets.env
+Environment=CUDA_VISIBLE_DEVICES=""
+ExecStart=%h/.local/bin/uv run python scripts/run-content-programming-grounding-runner.py
+WorkingDirectory=%h/projects/hapax-council
+MemoryMax=512M
+CPUQuota=50%
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-content-grounding-runner
+
+[Install]
+WantedBy=default.target

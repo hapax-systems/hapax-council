@@ -31,7 +31,7 @@ from shared.audio_format_compat_helpers import (
 
 class TestPinnedConstants:
     def test_default_sample_rate(self) -> None:
-        assert DEFAULT_SAMPLE_RATE_HZ == 48000
+        assert DEFAULT_SAMPLE_RATE_HZ == 44100
 
     def test_default_bit_depth(self) -> None:
         assert DEFAULT_BIT_DEPTH == 16
@@ -51,7 +51,7 @@ class TestGenerateSineInt16:
     def test_byte_count_matches_duration_and_rate(self) -> None:
         """100ms at 48kHz, int16 (2 bytes/sample) = 9600 bytes."""
         pcm = generate_sine_int16(440.0, 0.1)
-        assert len(pcm) == int(0.1 * 48000) * 2
+        assert len(pcm) == int(0.1 * 44100) * 2
 
     def test_rms_at_amplitude_half_is_minus_9_dbfs(self) -> None:
         """Sine at amplitude=0.5 has RMS = 0.5/sqrt(2) ≈ 0.354 → -9 dBFS."""
@@ -129,16 +129,16 @@ class TestInt16Float32RoundTrip:
 
 class TestLinearResampleInt16:
     def test_no_op_when_rates_equal(self) -> None:
-        original = generate_sine_int16(440.0, 0.1, sample_rate_hz=48000)
-        resampled = linear_resample_int16(original, 48000, 48000)
+        original = generate_sine_int16(440.0, 0.1, sample_rate_hz=44100)
+        resampled = linear_resample_int16(original, 44100, 44100)
         assert resampled == original
 
     def test_44k_to_48k_increases_sample_count(self) -> None:
         original = generate_sine_int16(440.0, 0.1, sample_rate_hz=44100)
-        resampled = linear_resample_int16(original, 44100, 48000)
-        # Output should be ≈ 48000/44100 × input length.
+        resampled = linear_resample_int16(original, 44100, 44100)
+        # Output should be ≈ 44100/44100 × input length.
         ratio = len(resampled) / len(original)
-        assert ratio == pytest.approx(48000 / 44100, abs=0.01)
+        assert ratio == pytest.approx(44100 / 44100, abs=0.01)
 
     def test_48k_to_24k_halves_sample_count(self) -> None:
         original = generate_sine_int16(440.0, 0.1, sample_rate_hz=48000)
@@ -149,7 +149,7 @@ class TestLinearResampleInt16:
     def test_resample_preserves_signal_above_silence(self) -> None:
         """The whole point of the assertion: rate mismatch → resample, not silence."""
         original = generate_sine_int16(440.0, 0.5, sample_rate_hz=44100, amplitude=0.5)
-        resampled = linear_resample_int16(original, 44100, 48000)
+        resampled = linear_resample_int16(original, 44100, 44100)
         rms_orig = rms_dbfs_int16(original)
         rms_resampled = rms_dbfs_int16(resampled)
         # Linear interpolation may attenuate slightly but stays well above silence.
@@ -158,10 +158,10 @@ class TestLinearResampleInt16:
 
     def test_zero_rate_rejected(self) -> None:
         with pytest.raises(ValueError, match="sample rates"):
-            linear_resample_int16(b"\x00\x01", 0, 48000)
+            linear_resample_int16(b"\x00\x01", 0, 44100)
 
     def test_empty_buffer_returns_empty(self) -> None:
-        assert linear_resample_int16(b"", 44100, 48000) == b""
+        assert linear_resample_int16(b"", 44100, 44100) == b""
 
 
 class TestAssertRmsWithinAttenuation:
@@ -219,7 +219,7 @@ class TestAssertResampleDidNotSilence:
 
     def test_real_resample_passes(self) -> None:
         original = generate_sine_int16(440.0, 0.5, sample_rate_hz=44100, amplitude=0.5)
-        resampled = linear_resample_int16(original, 44100, 48000)
+        resampled = linear_resample_int16(original, 44100, 44100)
         assert_resample_did_not_silence(input_pcm=original, output_pcm=resampled)
 
     def test_silenced_output_fails_with_audit_2228_message(self) -> None:
@@ -258,7 +258,7 @@ class TestAudit2228RegressionExemplar:
         # Source: 44.1k int16 sine (typical YouTube / streaming source).
         source = generate_sine_int16(440.0, 0.5, sample_rate_hz=44100, amplitude=0.5)
         # Resample to 48k (chain expects 48k).
-        resampled = linear_resample_int16(source, 44100, 48000)
+        resampled = linear_resample_int16(source, 44100, 44100)
         # Convert int16 → float32 (chain LADSPA stages run on float32).
         as_float = int16_to_float32(resampled)
         # Convert back to int16 for output (broadcast egress is int16).

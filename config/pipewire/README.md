@@ -140,7 +140,7 @@ pactl info | grep 'Default Sink'
 pactl list short sinks | grep PreSonus_Studio_24c   # historical
 
 # 2. While a record is playing, confirm energy on the default-sink monitor.
-pw-cat --record --target @DEFAULT_MONITOR@ --format s16 --rate 48000 \
+pw-cat --record --target @DEFAULT_MONITOR@ --format s16 --rate 44100 \
     --channels 2 --latency 512 /tmp/vinyl-probe.wav &
 PID=$!
 sleep 3
@@ -254,7 +254,7 @@ Measure the output LUFS:
 
 ```fish
 pw-cat --record --target hapax-yt-loudnorm.monitor --format s16 \
-    --rate 48000 --channels 2 --latency 1024 /tmp/yt-bed-30s.wav &
+    --rate 44100 --channels 2 --latency 1024 /tmp/yt-bed-30s.wav &
 PID=$!; sleep 30; kill $PID
 ffmpeg -i /tmp/yt-bed-30s.wav -af loudnorm=print_format=summary -f null -
 # "Input Integrated" should land near -16 LUFS.

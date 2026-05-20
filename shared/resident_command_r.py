@@ -38,7 +38,7 @@ def tabby_model_url(chat_url: str | None = None) -> str:
 
 
 _tabby_unavailable_until: float = 0.0
-_TABBY_UNAVAILABLE_CACHE_S: float = 300.0
+_TABBY_UNAVAILABLE_CACHE_S: float = 30.0
 
 
 def loaded_tabby_model(chat_url: str | None = None) -> str | None:

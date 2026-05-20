@@ -188,6 +188,8 @@ class TestTmuxCapture:
     def test_capture_tmux_text_uses_bounded_tmux_command(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        _durf_module._clear_tmux_cache_for_tests()
+        monkeypatch.setenv("HAPAX_DURF_TMUX_BIN", "tmux")
         fake = MagicMock()
         fake.returncode = 0
         fake.stdout = "\x1b[31mone\x1b[0m\n" + "\n".join(["two", "three", "four", "five"])
@@ -212,6 +214,8 @@ class TestTmuxCapture:
     def test_missing_tmux_target_reports_suppression_reason(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        _durf_module._clear_tmux_cache_for_tests()
+        monkeypatch.setenv("HAPAX_DURF_TMUX_BIN", "tmux")
         fake = MagicMock()
         fake.returncode = 1
         fake.stdout = ""
@@ -223,6 +227,42 @@ class TestTmuxCapture:
         assert result.ok is False
         assert result.reason == "tmux_target_missing"
         assert "find pane" in (result.detail or "")
+
+    def test_missing_tmux_target_is_backed_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _durf_module._clear_tmux_cache_for_tests()
+        monkeypatch.setenv("HAPAX_DURF_TMUX_BIN", "tmux")
+        monkeypatch.setenv("HAPAX_DURF_TMUX_MISSING_TARGET_BACKOFF_S", "30")
+        fake = MagicMock()
+        fake.returncode = 1
+        fake.stdout = ""
+        fake.stderr = "can't find pane"
+        run_spy = MagicMock(return_value=fake)
+        monkeypatch.setattr(_durf_module.subprocess, "run", run_spy)
+
+        first = capture_tmux_text("missing:0.0", capture_lines=80)
+        second = capture_tmux_text("missing:0.0", capture_lines=80)
+
+        assert first.reason == "tmux_target_missing"
+        assert second.reason == "tmux_target_missing"
+        assert run_spy.call_count == 1
+
+    def test_successful_tmux_capture_is_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _durf_module._clear_tmux_cache_for_tests()
+        monkeypatch.setenv("HAPAX_DURF_TMUX_BIN", "tmux")
+        monkeypatch.setenv("HAPAX_DURF_TMUX_CAPTURE_CACHE_S", "30")
+        fake = MagicMock()
+        fake.returncode = 0
+        fake.stdout = "one\ntwo\n"
+        fake.stderr = ""
+        run_spy = MagicMock(return_value=fake)
+        monkeypatch.setattr(_durf_module.subprocess, "run", run_spy)
+
+        first = capture_tmux_text("hapax-codex-cx-cyan:0.0", capture_lines=3)
+        second = capture_tmux_text("hapax-codex-cx-cyan:0.0", capture_lines=3)
+
+        assert first.lines == ("one", "two")
+        assert second.lines == ("one", "two")
+        assert run_spy.call_count == 1
 
 
 class TestRedaction:

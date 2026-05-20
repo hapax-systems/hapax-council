@@ -211,9 +211,17 @@ def _gather_density_field() -> dict | None:
         data = _json.loads(field_path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return None
-        staleness = time.time() - data.get("computed_at", 0)
+        computed_at = data.get("computed_at", data.get("timestamp", 0))
+        staleness = time.time() - computed_at
         if staleness > 60.0:
             return None
+        zones = data.get("zones")
+        if not isinstance(zones, dict):
+            sources = data.get("sources")
+            zones = _zones_from_density_sources(sources if isinstance(sources, dict) else {})
+        top_items = data.get("top_5")
+        if not isinstance(top_items, list):
+            top_items = []
         return {
             "aggregate_density": data.get("aggregate_density"),
             "dominant_zone": data.get("dominant_zone"),
@@ -224,11 +232,52 @@ def _gather_density_field() -> dict | None:
                     "mode": z.get("mode"),
                     "top_signal": z.get("top_signal"),
                 }
-                for zone, z in (data.get("zones") or {}).items()
+                for zone, z in zones.items()
+                if isinstance(z, dict)
             },
+            "top_sources": [
+                {
+                    "source_id": s.get("source_id"),
+                    "density": s.get("density"),
+                }
+                for s in top_items[:5]
+                if isinstance(s, dict)
+            ],
         }
     except Exception:
         return None
+
+
+def _zones_from_density_sources(sources: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Backfill planner zones from older density SHM payloads."""
+    try:
+        from shared.information_density import density_temporal_mode, density_zone
+    except Exception:
+        return {}
+
+    buckets: dict[str, list[tuple[str, float]]] = {}
+    for source_id, payload in sources.items():
+        if not isinstance(payload, dict):
+            continue
+        try:
+            density = float(payload.get("density") or 0.0)
+        except (TypeError, ValueError):
+            density = 0.0
+        buckets.setdefault(density_zone(str(source_id)), []).append((str(source_id), density))
+
+    zones: dict[str, dict[str, Any]] = {}
+    for zone, values in buckets.items():
+        if not values:
+            continue
+        top_source, top_density = max(values, key=lambda item: item[1])
+        mean_density = sum(value for _, value in values) / len(values)
+        zones[zone] = {
+            "density": round(mean_density, 4),
+            "mode": density_temporal_mode(mean_density),
+            "top_signal": f"{top_source}={top_density:.3f}",
+            "top_source": top_source,
+        }
+    return zones
 
 
 def _gather_content_state(store: ProgrammePlanStore) -> dict | None:
@@ -589,6 +638,15 @@ def _maybe_author_plan(
     content_state = _gather_content_state(manager.store)
     density_field = _gather_density_field()
 
+    biography_summary = ""
+    try:
+        from shared.stream_biography import read_shm as _read_bio_shm
+
+        bio = _read_bio_shm()
+        biography_summary = bio.to_planner_summary()
+    except Exception:
+        log.debug("stream biography unavailable for planner", exc_info=True)
+
     try:
         plan = planner.plan(
             show_id=show_id,
@@ -598,6 +656,7 @@ def _maybe_author_plan(
             profile=profile,
             content_state=content_state,
             density_field=density_field,
+            stream_biography=biography_summary,
         )
     except Exception:
         log.warning("ProgrammePlanner.plan raised", exc_info=True)
@@ -847,8 +906,9 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
             log.debug("beat transition check failed", exc_info=True)
 
         try:
-            planner, last_plan_attempt_ts = _maybe_author_plan(
-                manager, planner, last_plan_attempt_ts
+            loop = asyncio.get_running_loop()
+            planner, last_plan_attempt_ts = await loop.run_in_executor(
+                None, _maybe_author_plan, manager, planner, last_plan_attempt_ts
             )
         except Exception:
             log.warning("_maybe_author_plan raised", exc_info=True)

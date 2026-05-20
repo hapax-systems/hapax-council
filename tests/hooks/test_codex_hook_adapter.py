@@ -166,6 +166,7 @@ def test_apply_patch_is_scanned_by_axiom_guard(tmp_path: Path) -> None:
             "tool_input": {"patch": patch},
         },
         home=tmp_path,
+        extra_env={"HAPAX_CC_TASK_GATE_OFF": "1"},
     )
     assert result["decision"] == "block"
     assert "single_user" in result["reason"]
@@ -186,7 +187,10 @@ def test_apply_patch_runs_pipewire_graph_edit_gate(tmp_path: Path) -> None:
             "tool_input": {"patch": patch},
         },
         home=tmp_path,
-        extra_env={"HAPAX_PIPEWIRE_GRAPH_LOCK_ROOT": str(tmp_path / "lock")},
+        extra_env={
+            "HAPAX_CC_TASK_GATE_OFF": "1",
+            "HAPAX_PIPEWIRE_GRAPH_LOCK_ROOT": str(tmp_path / "lock"),
+        },
     )
 
     assert result["decision"] == "block"

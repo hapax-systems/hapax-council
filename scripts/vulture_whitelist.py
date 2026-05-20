@@ -140,6 +140,12 @@ from shared.director_world_surface_snapshot import (
 from shared.director_world_surface_snapshot import (
     Freshness as DirectorWorldSurfaceFreshness,
 )
+from shared.egress_cadence_feasibility import (
+    assess_egress_cadence as _assess_egress_cadence,
+)
+
+_assess_egress_cadence
+
 from shared.formal_governance_runtime import (
     FormalConstraint as _FormalGovernanceFormalConstraint,
 )
@@ -3591,3 +3597,45 @@ from agents.studio_compositor.gem_canvas import GlyphCanvas
 
 GlyphCanvas.write_box
 GlyphCanvas.from_row_strings
+
+# Interview system + concept mastery — wards loaded dynamically by compositor,
+# interview methods called via CPAL, programme agents use concept mastery
+from agents.hapax_daimonion.daily_segment_prep import _interview_question_violations
+from agents.studio_compositor.interview_delta_ward import InterviewDeltaWard
+from agents.studio_compositor.interview_question_ward import InterviewQuestionWard
+from agents.studio_compositor.interview_transcript_ward import InterviewTranscriptWard
+from agents.studio_compositor.interview_unknowns_ward import InterviewUnknownsWard
+from logos.interview import branch_follow_up, request_background_research
+from shared.concept_mastery import ConceptMastery, compute_zpd_affordance_pressure
+from shared.programme import register_programme_affordances
+from shared.publication_hardening.egress_safety import EgressSafetyEnvelope
+
+_interview_question_violations
+InterviewDeltaWard
+InterviewQuestionWard
+InterviewTranscriptWard
+InterviewUnknownsWard
+branch_follow_up
+request_background_research
+compute_zpd_affordance_pressure
+ConceptMastery.update_segment_covered
+ConceptMastery.update_chat_mention
+ConceptMastery.add_concept
+register_programme_affordances
+EgressSafetyEnvelope.kill_switch_active
+
+from agents.studio_compositor.shadow_render_core import ShadowRenderCore
+
+ShadowRenderCore.update_source
+
+# Compositor incident cache reset hooks — tests call these through module
+# aliases so vulture does not see the static path.
+from agents.studio_compositor.coding_session_reveal import (
+    _clear_tmux_session_cache_for_tests,
+)
+from agents.studio_compositor.durf_source import _clear_tmux_cache_for_tests
+from agents.studio_compositor.metrics import _clear_gpu_vram_poll_cache_for_tests
+
+_clear_gpu_vram_poll_cache_for_tests
+_clear_tmux_cache_for_tests
+_clear_tmux_session_cache_for_tests

@@ -118,6 +118,24 @@ def route_logos_control_command(command: str, args: dict[str, Any]) -> LogosCont
             payload=dict(args),
         )
 
+    if command == "studio.interview.activate":
+        from shared.stream_mode import StreamMode, set_stream_mode
+
+        set_stream_mode(StreamMode.PUBLIC_RESEARCH)
+        _logos_api("PUT", "/api/stream/mode", {"mode": "public_research"}, command)
+        return LogosControlAction(
+            transport="compositor-uds",
+            command="compositor.layout.set",
+            payload={"layout": "segment-interview"},
+        )
+
+    if command == "studio.interview.deactivate":
+        return LogosControlAction(
+            transport="compositor-uds",
+            command="compositor.layout.set",
+            payload={"layout": "default"},
+        )
+
     if command in {"degraded.activate", "degraded.deactivate"} or command.startswith("compositor."):
         return LogosControlAction(
             transport="compositor-uds",

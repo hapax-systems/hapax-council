@@ -33,9 +33,13 @@ set -euo pipefail
 INPUT="$(cat)"
 TOOL="$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)" || exit 0
 
-[ "$TOOL" = "Bash" ] || exit 0
+# Accept Claude Code (Bash) and Codex (exec_command_pty, etc.) shell tools.
+case "$TOOL" in
+  Bash|exec_command_pty|exec_command|shell|shell_command|unified_exec) ;;
+  *) exit 0 ;;
+esac
 
-CMD="$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)" || exit 0
+CMD="$(echo "$INPUT" | jq -r '.tool_input.command // .tool_input.cmd // .tool_input.shell_command // empty' 2>/dev/null)" || exit 0
 [ -n "$CMD" ] || exit 0
 
 # Detect branch-creating commands
@@ -233,6 +237,7 @@ while IFS= read -r branch; do
     [ "$short" = "HEAD" ] && continue
     [ "$branch" = "origin" ] && continue
     echo "$short" | grep -qE '^dependabot/' && continue
+    echo "$short" | grep -qE '^gh-readonly-queue/' && continue
     # Skip remote branches whose local counterpart is in another worktree
     echo "$other_wt_branches" | grep -qF "|${short}" && continue
     # Skip remote branches with open PRs (peer session in-flight delivery)

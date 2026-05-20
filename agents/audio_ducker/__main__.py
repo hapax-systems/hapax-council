@@ -112,7 +112,7 @@ MUSIC_DUCK_NODE = "hapax-music-duck"
 TTS_DUCK_NODE = "hapax-tts-duck"
 
 # Audio capture format.
-SAMPLE_RATE = 48000
+SAMPLE_RATE = 44100
 RMS_WINDOW_MS = 50
 RMS_WINDOW_SAMPLES = int(SAMPLE_RATE * RMS_WINDOW_MS / 1000)
 

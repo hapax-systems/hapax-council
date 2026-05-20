@@ -152,7 +152,7 @@ class TestCaptureAndClassify:
 
         shm_dir = tmp_path / "hapax-audio-grounding"
         shm_file = shm_dir / "state.json"
-        raw_pcm = np.zeros(48000 * 5 * 2, dtype=np.int16).tobytes()
+        raw_pcm = np.zeros(44100 * 5 * 2, dtype=np.int16).tobytes()
 
         mock_probs = {label: 1.0 / len(SCENE_LABELS) for label in SCENE_LABELS}
         mock_probs["silence"] = 0.7

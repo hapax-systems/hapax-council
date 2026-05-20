@@ -458,6 +458,19 @@ class CpalRunner:
 
     async def _tick(self, dt: float) -> None:
         """Run one cognitive tick."""
+        # 0. Sync interview mode from active segment SHM
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+
+            _seg = _json.loads(
+                _Path("/dev/shm/hapax-compositor/active-segment.json").read_text("utf-8")
+            )
+            self._buffer.interview_mode = _seg.get("role", "") == "interview"
+        except (FileNotFoundError, _json.JSONDecodeError, OSError, AttributeError):
+            if hasattr(self._buffer, "interview_mode"):
+                self._buffer.interview_mode = False
+
         # 1. Update perception from buffer state
         frame = self._get_audio_frame()
         vad_prob = self._get_vad_prob()

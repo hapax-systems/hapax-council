@@ -135,7 +135,7 @@ class TestKokoroVoiceSegment:
         from agents.demo_pipeline.voice import get_wav_duration
 
         output = tmp_path / "dur_test.wav"
-        n_frames = 48000  # 2 seconds at 24kHz
+        n_frames = 44100  # 2 seconds at 24kHz
         with wave.open(str(output), "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)

@@ -41,6 +41,10 @@ SPEECH_END_SHORT = 30  # ~900ms — was 600ms, raised for dysfluent pauses
 SPEECH_END_LONG = 40  # ~1200ms — for long utterances > 3s
 SPEECH_END_DEFAULT = 33  # ~1000ms — was 750ms, raised for natural pauses
 
+INTERVIEW_SPEECH_END_SHORT = 50  # ~1500ms — interviewees pause to think
+INTERVIEW_SPEECH_END_LONG = 70  # ~2100ms — deep reflection mid-answer
+INTERVIEW_SPEECH_END_DEFAULT = 60  # ~1800ms — deliberate considered speech
+
 # Post-TTS cooldown: wait after TTS ends before listening again.
 # In dampened studio, room echo decays within 1-2s. Echo rejection
 # catches any residual TTS text that leaks through.
@@ -74,6 +78,7 @@ class ConversationBuffer:
         self._pending_utterance: bytes | None = None
         self._speaking_ended_at: float = 0.0
         self._speaking_started_at: float = 0.0
+        self._interview_mode = False
 
         # Adaptive speech-end: track speech duration for threshold adjustment
         self._speech_start_time: float = 0.0
@@ -107,6 +112,14 @@ class ConversationBuffer:
         conversation_pipeline and perception_state_writer readers.
         """
         return False
+
+    @property
+    def interview_mode(self) -> bool:
+        return self._interview_mode
+
+    @interview_mode.setter
+    def interview_mode(self, value: bool) -> None:
+        self._interview_mode = value
 
     @property
     def speech_frames_snapshot(self) -> list[bytes]:
@@ -202,12 +215,19 @@ class ConversationBuffer:
             if self._speech_active:
                 # Adaptive threshold: long utterances get more patience
                 speech_duration = time.monotonic() - self._speech_start_time
-                if speech_duration > 3.0:
-                    threshold = SPEECH_END_LONG  # ~1050ms
+                if self._interview_mode:
+                    if speech_duration > 3.0:
+                        threshold = INTERVIEW_SPEECH_END_LONG
+                    elif speech_duration < 1.0:
+                        threshold = INTERVIEW_SPEECH_END_SHORT
+                    else:
+                        threshold = INTERVIEW_SPEECH_END_DEFAULT
+                elif speech_duration > 3.0:
+                    threshold = SPEECH_END_LONG
                 elif speech_duration < 1.0:
-                    threshold = SPEECH_END_SHORT  # ~600ms
+                    threshold = SPEECH_END_SHORT
                 else:
-                    threshold = SPEECH_END_DEFAULT  # ~750ms
+                    threshold = SPEECH_END_DEFAULT
                 if self._consecutive_silence >= threshold:
                     self._emit_utterance()
 

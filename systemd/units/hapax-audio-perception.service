@@ -18,8 +18,8 @@ Environment=CUDA_VISIBLE_DEVICES=
 Environment=OMP_NUM_THREADS=2
 Environment=MKL_NUM_THREADS=2
 Environment=OPENBLAS_NUM_THREADS=2
-MemoryMax=2G
-MemoryHigh=1G
+MemoryMax=4G
+MemoryHigh=3G
 CPUQuota=200%
 StandardOutput=journal
 StandardError=journal

@@ -127,7 +127,6 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
         "device": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index0",
         "width": 640,
         "height": 480,
-        "framerate": 15,
         "input_format": "mjpeg",
         "semantic_role": "turntables",
         "subject_ontology": ["turntable", "vinyl"],
@@ -155,7 +154,10 @@ def _default_config() -> CompositorConfig:
 # correct classifications in ``_DEFAULT_CAMERAS``; this overlay is what
 # carries them through to deployments whose YAML predates Task #135. It
 # also carries per-role operational parameters whose absence would cause
-# legacy YAML to fall back to generic physical-camera behavior.
+# legacy YAML to fall back to generic physical-camera behavior. Capture
+# framerate is intentionally excluded: it is source/caps authority, not
+# classification authority, and loopback sources may only negotiate the
+# writer's live cadence.
 _DEFAULT_OVERLAY_FIELDS: tuple[str, ...] = (
     "semantic_role",
     "subject_ontology",

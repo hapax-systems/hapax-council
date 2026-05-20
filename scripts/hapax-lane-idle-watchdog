@@ -28,9 +28,17 @@ NTFY_TOPIC="${HAPAX_NTFY_TOPIC:-hapax}"
 NTFY_URL="${HAPAX_NTFY_URL:-http://localhost:8092}"
 CLAUDE_SEND="${HOME}/projects/hapax-council/scripts/hapax-claude-send"
 CODEX_SEND="${HOME}/projects/hapax-council/scripts/hapax-codex-send"
+CC_CLAIM="${HOME}/.local/bin/cc-claim"
+METHODOLOGY_DISPATCH="${HOME}/.local/bin/hapax-methodology-dispatch"
 
 # Skip alpha (integrator, always has operator) and RTE
 SKIP_LANES="${HAPAX_IDLE_SKIP_LANES:-alpha}"
+
+# Lanes that must always be running (operator directive: 4 of each at all times)
+REQUIRED_CLAUDE_LANES="${HAPAX_REQUIRED_CLAUDE_LANES:-beta gamma delta epsilon}"
+REQUIRED_CODEX_LANES="${HAPAX_REQUIRED_CODEX_LANES:-cx-cpu-bridge cx-effect-drift-current cx-preset-storm cx-visual-bandwidth}"
+CLAUDE_LAUNCHER="${HOME}/.local/bin/hapax-claude"
+CODEX_LAUNCHER="${HOME}/projects/hapax-council/scripts/hapax-codex"
 
 mkdir -p "$STATE_DIR"
 now=$(date +%s)
@@ -42,27 +50,29 @@ log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) lane-idle: $*"; }
 # Claude: idle when "❯" prompt visible in last few lines.
 # When Claude is actively working, output streams and the prompt scrolls out.
 # When idle, ❯ sits in the last 5 lines with status bar below.
+# Context-full lanes (showing "/clear to save") are ALSO idle — they finished
+# work and need /clear + new task dispatch.
 is_claude_idle() {
     local pane="$1"
     local tail5
     tail5=$(echo "$pane" | tail -5)
 
-    # Idle: the ❯ prompt is in the last 5 lines
+    # Idle: the ❯ prompt is in the last 5 lines (includes context-full state)
     if echo "$tail5" | grep -q '❯'; then
-        # Confirm it's not a context-full state
-        if echo "$pane" | tail -10 | grep -q "/clear to save"; then
-            return 1  # context full, not "idle done"
-        fi
-        return 0  # idle at prompt
+        return 0
     fi
 
     # Permission prompts in the tail — blocked, not idle-done
-    # but also not actively working
     if echo "$tail5" | grep -qE '(Allow|Deny|bypass permissions on)'; then
         return 1
     fi
 
     return 1  # prompt not visible, assume working
+}
+
+is_claude_context_full() {
+    local pane="$1"
+    echo "$pane" | tail -10 | grep -q "/clear to save"
 }
 
 # Codex: idle when model line visible at bottom, no "Working" indicator
@@ -113,6 +123,7 @@ is_gemini_idle() {
 # ─── Lane discovery ──────────────────────────────────────────────────────────
 
 declare -A LANES  # session_name -> platform
+lane_count=0
 
 for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | sort); do
     case "$session" in
@@ -123,26 +134,168 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | sort); do
                 [ "$lane" = "$skip" ] && continue 2
             done
             LANES["$session"]="claude"
+            lane_count=$((lane_count + 1))
             ;;
         hapax-codex-*)
             lane="${session#hapax-codex-}"
             LANES["$session"]="codex"
+            lane_count=$((lane_count + 1))
             ;;
         hapax-gemini-*)
             lane="${session#hapax-gemini-}"
             LANES["$session"]="gemini"
+            lane_count=$((lane_count + 1))
             ;;
     esac
 done
 
-if [ ${#LANES[@]} -eq 0 ]; then
-    log "no lanes found"
+# ─── Ensure required Claude lanes are alive ─────────────────────────────────
+
+launched_lanes=0
+revived_lanes=0
+
+if [ -x "$CLAUDE_LAUNCHER" ]; then
+    for role in $REQUIRED_CLAUDE_LANES; do
+        session="hapax-claude-${role}"
+        worktree="${HOME}/projects/hapax-council--${role}"
+
+        cooldown_file="$STATE_DIR/_lane_launch_${role}.last"
+        launch_cooldown=300  # 5 min between launch attempts per lane
+        if [ -f "$cooldown_file" ]; then
+            last_attempt=$(cat "$cooldown_file")
+            elapsed=$((now - last_attempt))
+            if [ "$elapsed" -lt "$launch_cooldown" ]; then
+                continue
+            fi
+        fi
+
+        if ! tmux has-session -t "$session" 2>/dev/null; then
+            # Session doesn't exist — launch it
+            if [ -d "$worktree" ]; then
+                log "LAUNCHING missing lane: $role"
+                echo "$now" > "$cooldown_file"
+                "$CLAUDE_LAUNCHER" --role "$role" --terminal tmux 2>/dev/null || true
+                launched_lanes=$((launched_lanes + 1))
+                curl -sf -d "Lane idle watchdog: launched $role (session missing)" \
+                    -H "Title: Lane auto-launched" \
+                    -H "Priority: default" \
+                    -H "Tags: rocket" \
+                    "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+            else
+                log "WARN: worktree missing for $role at $worktree"
+            fi
+        else
+            # Session exists — check if Claude is actually running in it.
+            # pane_current_command reports "fish" even when Claude (node) is
+            # running as a child process, so also check pane content for
+            # Claude's TUI indicators (❯ prompt, bypass permissions bar).
+            pane_cmd=$(tmux display-message -t "$session" -p '#{pane_current_command}' 2>/dev/null) || continue
+            pane_check=$(tmux capture-pane -t "$session" -p -S -5 2>/dev/null)
+            claude_tui=false
+            if echo "$pane_check" | grep -qE '(❯|bypass permissions|tokens)'; then
+                claude_tui=true
+            fi
+
+            case "$pane_cmd" in
+                claude|claude-code|node)
+                    ;; # running
+                *)
+                    if [ "$claude_tui" = true ]; then
+                        : # Claude runs as node child of fish — TUI visible, not dead
+                    else
+                        log "REVIVING dead Claude in $session (pane_cmd=$pane_cmd)"
+                        echo "$now" > "$cooldown_file"
+                        tmux send-keys -t "$session" "claude --resume" Enter 2>/dev/null || \
+                            tmux send-keys -t "$session" "claude" Enter 2>/dev/null || true
+                        revived_lanes=$((revived_lanes + 1))
+                        curl -sf -d "Lane idle watchdog: revived $role (Claude had exited, pane was $pane_cmd)" \
+                            -H "Title: Lane revived" \
+                            -H "Priority: default" \
+                            -H "Tags: recycle" \
+                            "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+                    fi
+                    ;;
+            esac
+        fi
+    done
+fi
+
+# ─── Ensure required Codex lanes are alive ─────────────────────────────────
+
+if [ -x "$CODEX_LAUNCHER" ]; then
+    for color in $REQUIRED_CODEX_LANES; do
+        session="hapax-codex-${color}"
+        worktree="${HOME}/projects/hapax-council--${color}"
+
+        cooldown_file="$STATE_DIR/_lane_launch_codex_${color}.last"
+        launch_cooldown=300
+        if [ -f "$cooldown_file" ]; then
+            last_attempt=$(cat "$cooldown_file")
+            elapsed=$((now - last_attempt))
+            if [ "$elapsed" -lt "$launch_cooldown" ]; then
+                continue
+            fi
+        fi
+
+        if ! tmux has-session -t "$session" 2>/dev/null; then
+            if [ -d "$worktree" ]; then
+                log "LAUNCHING missing Codex lane: $color"
+                echo "$now" > "$cooldown_file"
+                "$CODEX_LAUNCHER" --session "$color" --cd "$worktree" --terminal tmux 2>/dev/null || true
+                launched_lanes=$((launched_lanes + 1))
+                curl -sf -d "Lane idle watchdog: launched Codex $color (session missing)" \
+                    -H "Title: Codex lane auto-launched" \
+                    -H "Priority: default" \
+                    -H "Tags: rocket" \
+                    "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+            else
+                log "WARN: Codex worktree missing for $color at $worktree"
+            fi
+        else
+            pane_cmd=$(tmux display-message -t "$session" -p '#{pane_current_command}' 2>/dev/null) || continue
+            pane_check=$(tmux capture-pane -t "$session" -p -S -5 2>/dev/null)
+            codex_tui=false
+            if echo "$pane_check" | grep -qE '(Working|gpt-[0-9]|codex-|context left|› )'; then
+                codex_tui=true
+            fi
+
+            case "$pane_cmd" in
+                codex|node)
+                    ;;
+                *)
+                    if [ "$codex_tui" = true ]; then
+                        : # Codex runs as node child — TUI visible, not dead
+                    else
+                        log "REVIVING dead Codex in $session (pane_cmd=$pane_cmd)"
+                        echo "$now" > "$cooldown_file"
+                        tmux send-keys -t "$session" "cd $worktree && codex --resume" Enter 2>/dev/null || \
+                            tmux send-keys -t "$session" "cd $worktree && codex" Enter 2>/dev/null || true
+                        revived_lanes=$((revived_lanes + 1))
+                        curl -sf -d "Lane idle watchdog: revived Codex $color (pane was $pane_cmd)" \
+                            -H "Title: Codex lane revived" \
+                            -H "Priority: default" \
+                            -H "Tags: recycle" \
+                            "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+                    fi
+                    ;;
+            esac
+        fi
+    done
+fi
+
+if [ "$launched_lanes" -gt 0 ] || [ "$revived_lanes" -gt 0 ]; then
+    log "lane maintenance: launched=$launched_lanes revived=$revived_lanes"
+fi
+
+if [ "$lane_count" -eq 0 ]; then
+    log "no active lanes found after maintenance pass"
     exit 0
 fi
 
 # ─── Idle detection pass ─────────────────────────────────────────────────────
 
 declare -A IDLE_LANES=()   # session_name -> idle_duration_s
+declare -A CTX_FULL=()     # session_name -> 1 if context-full (needs /clear before dispatch)
 active_count=0
 idle_count=0
 
@@ -155,7 +308,12 @@ for session in "${!LANES[@]}"; do
     # Check if idle based on platform
     is_idle=false
     case "$platform" in
-        claude)  is_claude_idle "$pane_text" && is_idle=true ;;
+        claude)
+            is_claude_idle "$pane_text" && is_idle=true
+            if [ "$is_idle" = true ] && is_claude_context_full "$pane_text"; then
+                CTX_FULL["$session"]=1
+            fi
+            ;;
         codex)   is_codex_idle "$pane_text"  && is_idle=true ;;
         gemini)  is_gemini_idle "$pane_text" && is_idle=true ;;
     esac
@@ -182,13 +340,45 @@ for session in "${!LANES[@]}"; do
     fi
 done
 
-log "scan: ${#LANES[@]} lanes, $active_count active, $idle_count idle past threshold"
+log "scan: $lane_count lanes, $active_count active, $idle_count idle past threshold"
 
-if [ ${#IDLE_LANES[@]} -eq 0 ]; then
+if [ "$idle_count" -eq 0 ]; then
     exit 0
 fi
 
 # ─── Dispatch ALL idle lanes past cooldown ──────────────────────────────────
+
+pick_next_offered() {
+    local skip_lane="$1"
+    if [ ! -d "$TASK_ROOT" ]; then
+        return 0
+    fi
+    # Find offered+unassigned tasks, sort by WSJF descending, return top task_id
+    python3 -c "
+import os, re, sys
+from pathlib import Path
+task_root = Path('$TASK_ROOT')
+offered = []
+for f in task_root.glob('*.md'):
+    text = f.read_text()
+    status_m = re.search(r'^status:\s*(\S+)', text, re.M)
+    assigned_m = re.search(r'^assigned_to:\s*(.+)', text, re.M)
+    wsjf_m = re.search(r'^wsjf:\s*(\S+)', text, re.M)
+    if not status_m or status_m.group(1) != 'offered':
+        continue
+    assigned = (assigned_m.group(1).strip() if assigned_m else 'unassigned')
+    if assigned != 'unassigned':
+        continue
+    wsjf = float(wsjf_m.group(1)) if wsjf_m else 0
+    # Extract task_id (filename minus trailing descriptor)
+    task_id_m = re.match(r'^([a-zA-Z0-9_-]+?)(?:-[A-Z].*)?$', f.stem)
+    task_id = task_id_m.group(1) if task_id_m else f.stem
+    offered.append((wsjf, task_id, f.stem))
+offered.sort(reverse=True)
+if offered:
+    print(offered[0][2])
+" 2>/dev/null
+}
 
 find_claimed_task() {
     local assignee="$1"
@@ -238,8 +428,31 @@ for session in "${!IDLE_LANES[@]}"; do
         dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with an active task: $claimed. Resume work immediately. Ship a PR and cc-close --pr N after merge."
         dispatch_target="$claimed"
     else
-        dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with no active task. Do not claim work from the pool. Wait for an explicit parent/RTE assignment launched through hapax-methodology-dispatch --launch."
-        dispatch_target="governed-hold"
+        # Pick next WSJF task from offered queue and claim it for this lane
+        next_task=$(pick_next_offered "$lane")
+        if [ -n "$next_task" ]; then
+            task_title=$(grep -m1 "^title:" "$TASK_ROOT/${next_task}"*.md 2>/dev/null | sed 's/^title:[[:space:]]*//' | head -c 80)
+            log "CLAIMING $next_task for $lane ($platform)"
+            if HAPAX_AGENT_ROLE="$lane" "$CC_CLAIM" "$next_task" 2>/dev/null; then
+                dispatch_msg="IDLE WATCHDOG: Claimed task $next_task for you. Title: ${task_title:-unknown}. Read the task note at ~/Documents/Personal/20-projects/hapax-cc-tasks/active/ and begin work immediately. Ship a PR and cc-close --pr N after merge."
+                dispatch_target="$next_task"
+            else
+                log "CLAIM FAILED for $next_task -> $lane"
+                dispatch_msg="IDLE WATCHDOG: Tried to claim $next_task but cc-claim failed. Check the task queue manually: ls ~/Documents/Personal/20-projects/hapax-cc-tasks/active/"
+                dispatch_target="claim-failed"
+            fi
+        else
+            log "NO OFFERED TASKS for $lane — queue empty"
+            dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. No offered tasks in queue. Waiting for intake pipeline to produce work."
+            dispatch_target="queue-empty"
+        fi
+    fi
+
+    # Context-full Claude lanes need /clear before dispatch
+    if [ "${CTX_FULL[$session]:-}" = "1" ] && [ "$platform" = "claude" ]; then
+        log "CLEARING context-full $session before dispatch"
+        tmux send-keys -t "$session" "/clear" Enter 2>/dev/null
+        sleep 5
     fi
 
     send_success=false
@@ -247,14 +460,16 @@ for session in "${!IDLE_LANES[@]}"; do
         claude)
             if [ -x "$CLAUDE_SEND" ]; then
                 "$CLAUDE_SEND" --session "$lane" -- "$dispatch_msg" 2>/dev/null && send_success=true
-            else
+            fi
+            if [ "$send_success" = false ]; then
                 tmux send-keys -t "$session" "$dispatch_msg" Enter 2>/dev/null && send_success=true
             fi
             ;;
         codex)
             if [ -x "$CODEX_SEND" ]; then
                 "$CODEX_SEND" --session "$lane" -- "$dispatch_msg" 2>/dev/null && send_success=true
-            else
+            fi
+            if [ "$send_success" = false ]; then
                 tmux send-keys -t "$session" "$dispatch_msg" Enter 2>/dev/null && send_success=true
             fi
             ;;
@@ -280,21 +495,21 @@ for session in "${!IDLE_LANES[@]}"; do
 done
 
 if [ "$dispatched" -eq 0 ] && [ "$skipped_cooldown" -gt 0 ]; then
-    log "all ${#IDLE_LANES[@]} idle lanes in cooldown"
+    log "all $idle_count idle lanes in cooldown"
 fi
 
-log "dispatched $dispatched of ${#IDLE_LANES[@]} idle lanes"
+log "dispatched $dispatched of $idle_count idle lanes"
 
 # ─── Summary alert if many lanes idle ────────────────────────────────────────
 
-if [ ${#IDLE_LANES[@]} -ge 3 ]; then
+if [ "$idle_count" -ge 3 ]; then
     idle_summary=""
     for session in "${!IDLE_LANES[@]}"; do
         idle_s="${IDLE_LANES[$session]}"
         idle_summary+="$session(${idle_s}s) "
     done
-    log "WARNING: ${#IDLE_LANES[@]} lanes idle past threshold: $idle_summary"
-    curl -sf -d "Lane idle watchdog: ${#IDLE_LANES[@]} lanes idle — $idle_summary" \
+    log "WARNING: $idle_count lanes idle past threshold: $idle_summary"
+    curl -sf -d "Lane idle watchdog: $idle_count lanes idle — $idle_summary" \
         -H "Title: Multiple lanes idle" \
         -H "Priority: high" \
         -H "Tags: warning,robot" \

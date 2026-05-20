@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -45,6 +46,40 @@ _DEFAULT_RELEASE_MS = 350.0
 # subprocess calls per envelope, ~240 ms of wpctl wall time during the
 # ramp, then idle).
 _RAMP_STEPS = 8
+_DEFAULT_GATE_REFRESH_INTERVAL_S = 10.0
+_DEFAULT_GATE_POLL_INTERVAL_S = 2.0
+
+
+def _gate_refresh_interval_s() -> float:
+    raw = os.environ.get("HAPAX_SLOT_AUDIO_CACHE_REFRESH_S") or os.environ.get(
+        "HAPAX_AUDIO_GATE_REFRESH_INTERVAL_S"
+    )
+    if raw is None:
+        return _DEFAULT_GATE_REFRESH_INTERVAL_S
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        log.warning(
+            "Invalid HAPAX_AUDIO_GATE_REFRESH_INTERVAL_S=%r; using %.1f",
+            raw,
+            _DEFAULT_GATE_REFRESH_INTERVAL_S,
+        )
+        return _DEFAULT_GATE_REFRESH_INTERVAL_S
+
+
+def _gate_poll_interval_s() -> float:
+    raw = os.environ.get("HAPAX_SLOT_AUDIO_GATE_POLL_INTERVAL_S")
+    if raw is None:
+        return _DEFAULT_GATE_POLL_INTERVAL_S
+    try:
+        return max(0.25, float(raw))
+    except ValueError:
+        log.warning(
+            "Invalid HAPAX_SLOT_AUDIO_GATE_POLL_INTERVAL_S=%r; using %.1f",
+            raw,
+            _DEFAULT_GATE_POLL_INTERVAL_S,
+        )
+        return _DEFAULT_GATE_POLL_INTERVAL_S
 
 
 class SlotAudioControl:
@@ -75,11 +110,16 @@ class SlotAudioControl:
         # refresh so newly-spawned ffmpegs are picked up.
         self._gate_poll_thread: threading.Thread | None = None
         self._gate_poll_stop: threading.Event = threading.Event()
-        self._gate_poll_interval_s: float = 2.0
+        self._gate_poll_interval_s: float = _gate_poll_interval_s()
+        self._gate_cache_refresh_interval_s: float = _gate_refresh_interval_s()
+        self._last_node_cache_refresh_monotonic: float = 0.0
+        self._last_gate_signature: tuple[bool, int] | None = None
+        self._last_gate_apply_monotonic: float = 0.0
 
     def _refresh_cache(self) -> None:
         """Parse pw-dump to discover youtube-audio node IDs."""
         self._node_cache.clear()
+        self._last_node_cache_refresh_monotonic = time.monotonic()
         try:
             result = subprocess.run(
                 ["pw-dump"],
@@ -98,6 +138,11 @@ class SlotAudioControl:
         except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError) as exc:
             log.warning("pw-dump failed: %s", exc)
 
+    def _node_cache_refresh_due(self, now: float | None = None) -> bool:
+        if now is None:
+            now = time.monotonic()
+        return now - self._last_node_cache_refresh_monotonic >= self._gate_cache_refresh_interval_s
+
     def discover_node(self, stream_name: str) -> int | None:
         """Find PipeWire node ID for a named stream.
 
@@ -105,7 +150,7 @@ class SlotAudioControl:
         """
         if stream_name in self._node_cache:
             return self._node_cache[stream_name]
-        if not self._node_cache:
+        if self._node_cache_refresh_due():
             self._refresh_cache()
         return self._node_cache.get(stream_name)
 
@@ -167,23 +212,33 @@ class SlotAudioControl:
         """Apply a YouTubeGateState reading.
 
         Enabled gate → ``mute_all_except(gate.active_slot)``. Disabled
-        gate → ``mute_all()``. Forces a node cache refresh on each call
-        so respawned ffmpegs (new node IDs) are caught.
+        gate → ``mute_all()``.
 
         ``gate_state`` is typed as ``object`` rather than the concrete
         ``YouTubeGateState`` to avoid an import cycle: youtube_turn_taking
         already imports SlotAudioControl as a type reference. Duck typing
         on ``.enabled`` + ``.active_slot``.
         """
-        # Cache invalidation each call — cheap relative to wpctl IPC,
-        # and necessary because respawned ffmpegs change node IDs.
-        self._refresh_cache()
         enabled = bool(getattr(gate_state, "enabled", False))
         active_slot = int(getattr(gate_state, "active_slot", 0))
+        signature = (enabled, active_slot if enabled else -1)
+
+        now = time.monotonic()
+        refresh_due = (
+            now - self._last_node_cache_refresh_monotonic >= self._gate_cache_refresh_interval_s
+        )
+        if signature == self._last_gate_signature and not refresh_due:
+            return
+
+        if refresh_due or not self._node_cache:
+            self._refresh_cache()
+
         if enabled:
             self.mute_all_except(active_slot)
         else:
             self.mute_all()
+        self._last_gate_signature = signature
+        self._last_gate_apply_monotonic = now
 
     def start_gate_poll(
         self,

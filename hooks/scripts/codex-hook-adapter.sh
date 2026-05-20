@@ -155,6 +155,7 @@ normalize_shell_event() {
 run_pre_shell() {
   local event_json="$1"
   local hooks=(
+    cc-task-gate.sh
     session-name-enforcement.sh
     axiom-commit-scan.sh
     pip-guard.sh
@@ -165,9 +166,6 @@ run_pre_shell() {
     branch-switch-guard.sh
     docs-only-pr-warn.sh
   )
-  if [ "${HAPAX_CC_TASK_GATE:-0}" = "1" ]; then
-    hooks=(cc-task-gate.sh "${hooks[@]}")
-  fi
   local hook
   for hook in "${hooks[@]}"; do
     run_hook "$hook" "$event_json" || return 1
@@ -177,6 +175,7 @@ run_pre_shell() {
 run_pre_mutation_event() {
   local event_json="$1"
   local hooks=(
+    cc-task-gate.sh
     axiom-scan.sh
     pipewire-graph-edit-gate.sh
     work-resolution-gate.sh
@@ -185,9 +184,6 @@ run_pre_mutation_event() {
     pii-guard.sh
     relay-coordination-check.sh
   )
-  if [ "${HAPAX_CC_TASK_GATE:-0}" = "1" ]; then
-    hooks=(cc-task-gate.sh "${hooks[@]}")
-  fi
   local hook
   for hook in "${hooks[@]}"; do
     run_hook "$hook" "$event_json" || return 1

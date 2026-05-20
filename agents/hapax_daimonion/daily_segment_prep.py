@@ -354,6 +354,16 @@ _ROLE_VISUAL_HOOKS: dict[str, str] = {
         "  Skepticism: 'wait', 'hold on', 'not sure' -> challenge posture\n"
         "  Resolution: 'exactly', 'this is it', 'nailed it' -> synthesis posture\n\n"
     ),
+    "interview": (
+        "INTERVIEW QUESTION HOOKS — the stream renders a question card:\n"
+        "  Each beat is ONE QUESTION with context grounded in profile evidence.\n"
+        "  State the INFORMATION GAP this question addresses.\n"
+        "  Reference what the system already knows and what remains unknown.\n"
+        "  Do NOT perform warmth, curiosity, or rapport. Report operational need.\n"
+        "  After each answer, report what changed in the knowledge model.\n"
+        "  Example form: 'My model of [dimension] has [N] facts at [confidence]. "
+        "The gap: [specific unknown]. [Question].'\n\n"
+    ),
 }
 
 
@@ -471,6 +481,9 @@ def _build_full_segment_prompt(
             if role_value == "tier_list"
             else "- ordering_criterion: the EXPLICIT ordering rule (REQUIRED for top_10)\n"
             if role_value == "top_10"
+            else "- question_ladder: ordered questions with information gap + source evidence (REQUIRED for interview)\n"
+            "- answer_source_policy: how operator answers are grounded and verified\n"
+            if role_value == "interview"
             else ""
         )
         + "- claim_map, source_consequence_map, actionability_map, layout_need_map\n"
@@ -658,6 +671,97 @@ _HOST_STOCK_RE = _re.compile(
     r"[Ff]eel free to|[Ss]hare your thoughts|[Ss]tay tuned|"
     r"[Aa]s (?:always|we mentioned))"
 )
+
+
+def _summarize_actionability_failures(actionability: dict[str, Any]) -> str:
+    """One-line summary of which actionability checks failed."""
+    parts: list[str] = []
+    n = len(actionability.get("removed_unsupported_action_lines", []))
+    if n:
+        parts.append(f"{n} unsupported_action_lines")
+    n = len(actionability.get("personage_violations", []))
+    if n:
+        parts.append(f"{n} personage_violations")
+    n = len(actionability.get("detector_theater_lines", []))
+    if n:
+        parts.append(f"{n} detector_theater")
+    n = len(actionability.get("template_leaks", []))
+    if n:
+        parts.append(f"{n} template_leaks")
+    n = len(actionability.get("role_contract_failures", []))
+    if n:
+        parts.append(f"{n} role_contract_failures")
+    return ", ".join(parts) or "unknown"
+
+
+def _format_actionability_violations(actionability: dict[str, Any]) -> str:
+    """Format actionability violations as LLM-readable feedback for recomposition."""
+    sections: list[str] = []
+
+    personage = actionability.get("personage_violations", [])
+    if personage:
+        examples = sorted({v.get("line") or v.get("matched_text", "") for v in personage})
+        quoted = "\n".join(f'  - "{ex}"' for ex in examples[:8] if ex)
+        sections.append(
+            "## ACTIONABILITY REPAIR: Personage Violations\n"
+            "The previous draft was REJECTED because it used human-host language.\n"
+            "These exact phrases triggered validator rejection:\n"
+            f"{quoted}\n\n"
+            "REWRITE RULES:\n"
+            "- Replace 'we/our/let's' with third-person or bare assertions\n"
+            "- Replace 'We must consider' → 'The evidence requires'\n"
+            "- Replace 'Our first criterion' → 'The first criterion'\n"
+            "- Replace 'Let's dive into' → 'The analysis begins with'\n"
+            "- Hapax is a nonhuman system, not a podcast host\n"
+        )
+
+    removed = actionability.get("removed_unsupported_action_lines", [])
+    if removed:
+        lines = [r.get("line", "") if isinstance(r, dict) else str(r) for r in removed[:5]]
+        quoted = "\n".join(f'  - "{ln}"' for ln in lines if ln)
+        sections.append(
+            "## ACTIONABILITY REPAIR: Unsupported Action Claims\n"
+            "These lines claim visual/layout actions the runtime cannot support:\n"
+            f"{quoted}\n\n"
+            "REWRITE RULES:\n"
+            "- Do not issue camera, layout, surface, panel, or cue commands\n"
+            "- Use source citations, tier placements, or chat triggers instead\n"
+        )
+
+    leaks = actionability.get("template_leaks", [])
+    if leaks:
+        placeholders = sorted({p for lk in leaks for p in lk.get("placeholders", [])})
+        sections.append(
+            "## ACTIONABILITY REPAIR: Template Syntax Leaks\n"
+            f"These template placeholders must be replaced with actual content: "
+            f"{', '.join(placeholders[:10])}\n"
+            "Write the real topic, item, source names — not {placeholder} variables.\n"
+        )
+
+    contract_failures = actionability.get("role_contract_failures", [])
+    if contract_failures:
+        details = [f.get("detail", "") for f in contract_failures]
+        sections.append(
+            "## ACTIONABILITY REPAIR: Role Contract Failures\n"
+            + "\n".join(f"- {d}" for d in details if d)
+            + "\n"
+        )
+
+    theater = actionability.get("detector_theater_lines", [])
+    if theater:
+        lines = [t.get("line", "") if isinstance(t, dict) else str(t) for t in theater[:5]]
+        quoted = "\n".join(f'  - "{ln}"' for ln in lines if ln)
+        sections.append(
+            "## ACTIONABILITY REPAIR: Detector Theater\n"
+            "These lines attribute agency to detectors/sensors/classifiers:\n"
+            f"{quoted}\n"
+            "Rewrite without claiming detector/classifier/sensor proved or confirmed.\n"
+        )
+
+    if not sections:
+        return "## ACTIONABILITY REPAIR\nThe previous draft failed validation. Rewrite.\n"
+
+    return "\n".join(sections)
 
 
 def _scrub_host_posture(script: list[str]) -> list[str]:
@@ -989,6 +1093,28 @@ def _tier_list_placement_violations(
                     "beat_direction": direction,
                     "required_trigger": "Place [item] in [S/A/B/C/D]-tier",
                     "required_action_kind": "tier_chart",
+                }
+            )
+    return violations
+
+
+def _interview_question_violations(
+    *,
+    role: str,
+    script: list[str],
+) -> list[dict[str, Any]]:
+    """Check that interview beats contain question structure."""
+    if role != "interview":
+        return []
+    violations: list[dict[str, Any]] = []
+    question_re = re.compile(r"\?")
+    for i, beat in enumerate(script):
+        if not question_re.search(beat):
+            violations.append(
+                {
+                    "reason": "missing_question_mark",
+                    "beat_index": i,
+                    "note": "interview beats should contain at least one question",
                 }
             )
     return violations
@@ -1737,11 +1863,55 @@ def prep_segment(
         script,
         [str(item) for item in beats],
     )
+    if actionability["ok"] is not True and not getattr(
+        programme, "_actionability_recomposed", False
+    ):
+        feedback = _format_actionability_violations(actionability)
+        log.warning(
+            "prep_segment: actionability failed for %s — attempting recomposition: %s",
+            prog_id,
+            _summarize_actionability_failures(actionability),
+        )
+        repair_seed = f"{seed}\n\n{feedback}" if seed else feedback
+        repair_prompt = _build_full_segment_prompt(programme, repair_seed)
+        repair_raw = _call_llm(
+            repair_prompt,
+            prep_session=prep_session,
+            phase="recompose",
+            programme_id=prog_id,
+        )
+        repair_script, _ = _parse_segment_generation(repair_raw)
+        if repair_script and len(repair_script) >= len(beats):
+            repair_script = repair_script[: len(beats)]
+            repair_script = _scrub_host_posture(repair_script)
+            if role == "tier_list":
+                repair_script = _repair_tier_list_placement_phrases(repair_script)
+            repair_script = _repair_source_visible_beats(
+                repair_script, [str(item) for item in beats]
+            )
+            actionability = validate_segment_actionability(
+                repair_script,
+                [str(item) for item in beats],
+            )
+            if actionability["ok"] is True:
+                script = repair_script
+                log.info(
+                    "prep_segment: actionability recomposition succeeded for %s",
+                    prog_id,
+                )
+            else:
+                log.warning(
+                    "prep_segment: actionability recomposition still failed for %s: %s",
+                    prog_id,
+                    _summarize_actionability_failures(actionability),
+                )
+        object.__setattr__(programme, "_actionability_recomposed", True)
+
     if actionability["ok"] is not True:
         log.warning(
-            "prep_segment: quarantining %s with %d unsupported action claims",
+            "prep_segment: quarantining %s — actionability failures: %s",
             prog_id,
-            len(actionability["removed_unsupported_action_lines"]),
+            _summarize_actionability_failures(actionability),
         )
         diagnostic_path = prep_dir / diagnostic_name
         boundary = _diagnostic_boundary_contract()
@@ -1765,6 +1935,10 @@ def prep_segment(
                 "removed_unsupported_action_lines": actionability[
                     "removed_unsupported_action_lines"
                 ],
+                "personage_violations": actionability.get("personage_violations", []),
+                "detector_theater_lines": actionability.get("detector_theater_lines", []),
+                "template_leaks": actionability.get("template_leaks", []),
+                "role_contract_failures": actionability.get("role_contract_failures", []),
             },
             "prepped_at": datetime.now(tz=UTC).isoformat(),
             "prep_session_id": prep_session["prep_session_id"],
@@ -1778,6 +1952,7 @@ def prep_segment(
         tmp = diagnostic_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(diagnostic, indent=2, ensure_ascii=False), encoding="utf-8")
         tmp.replace(diagnostic_path)
+
         _write_prep_diagnostic_outcome(
             prep_dir,
             prep_session=prep_session,
@@ -1792,9 +1967,13 @@ def prep_segment(
             diagnostic_refs=[str(diagnostic_path)],
             refusal_metadata={
                 "rubric_version": ACTIONABILITY_RUBRIC_VERSION,
+                "failure_summary": _summarize_actionability_failures(actionability),
                 "removed_unsupported_action_line_count": len(
                     actionability["removed_unsupported_action_lines"]
                 ),
+                "personage_violation_count": len(actionability.get("personage_violations", [])),
+                "template_leak_count": len(actionability.get("template_leaks", [])),
+                "role_contract_failure_count": len(actionability.get("role_contract_failures", [])),
             },
         )
         return None

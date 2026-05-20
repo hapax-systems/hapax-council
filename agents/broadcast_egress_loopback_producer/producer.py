@@ -63,9 +63,8 @@ DEFAULT_WINDOW_SECONDS: Final[float] = 5.0
 #: latency tight when the broadcast actually drops.
 DEFAULT_TICK_SECONDS: Final[float] = 1.0
 
-#: Capture sample rate. parec's default for unspecified rate; matches
-#: PipeWire's default sink graph and avoids resample overhead.
-DEFAULT_SAMPLE_RATE_HZ: Final[int] = 48000
+#: Capture sample rate.  Matches PipeWire graph / L-12 hardware.
+DEFAULT_SAMPLE_RATE_HZ: Final[int] = 44100
 
 #: Silence floor in dBFS. Samples below this contribute to the
 #: silence_ratio numerator. -60 dBFS is well below typical room

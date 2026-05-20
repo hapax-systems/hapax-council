@@ -15,8 +15,8 @@ from shared.s4_audio_witness import (
 
 def test_is_s4_audio_present_when_device_listed(tmp_path: Path) -> None:
     fake_output = (
-        "136\thapax-s4-content\tPipeWire\tfloat32le 2ch 48000Hz\tSUSPENDED\n"
-        "200\talsa_output.usb-Torso_Electronics_S-4_1234-00.pro-audio\tPipeWire\ts32le 2ch 48000Hz\tIDLE\n"
+        "136\thapax-s4-content\tPipeWire\tfloat32le 2ch 44100Hz\tSUSPENDED\n"
+        "200\talsa_output.usb-Torso_Electronics_S-4_1234-00.pro-audio\tPipeWire\ts32le 2ch 44100Hz\tIDLE\n"
     )
     with patch("subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
@@ -25,7 +25,7 @@ def test_is_s4_audio_present_when_device_listed(tmp_path: Path) -> None:
 
 
 def test_is_s4_audio_present_when_not_listed() -> None:
-    fake_output = "136\thapax-s4-content\tPipeWire\tfloat32le 2ch 48000Hz\tSUSPENDED\n"
+    fake_output = "136\thapax-s4-content\tPipeWire\tfloat32le 2ch 44100Hz\tSUSPENDED\n"
     with patch("subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = fake_output

@@ -50,7 +50,7 @@ def test_stereo_position_pinned(raw_config: str) -> None:
 def test_native_format_pinned(raw_config: str) -> None:
     """S32 / 48 kHz matches the S-4 USB native format (avoids resample)."""
     assert "audio.format     = S32" in raw_config
-    assert "audio.rate       = 48000" in raw_config
+    assert "audio.rate       = 44100" in raw_config
 
 
 def test_braces_balanced(raw_config: str) -> None:

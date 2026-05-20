@@ -45,7 +45,7 @@ HAPAX_DUCKER_ONSET_DETECTION_LATENCY_MS: Histogram = Histogram(
 )
 
 
-def expected_rms_samples(window_ms: int, sample_rate_hz: int = 48000) -> int:
+def expected_rms_samples(window_ms: int, sample_rate_hz: int = 44100) -> int:
     """Compute RMS sample count from window width + sample rate.
 
     Pinned as a public helper so the Phase 1 swap in ``__main__.py`` can

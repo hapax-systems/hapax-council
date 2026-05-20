@@ -123,7 +123,8 @@ class PipelineManager:
                     # fallback frame arrives ~50-100ms later than the
                     # always-hot version, well under the 2s staleness
                     # threshold.
-                    fb = FallbackPipeline(spec, gst=self._Gst, fps=self._fps)
+                    source_fps = self._source_fps(spec)
+                    fb = FallbackPipeline(spec, gst=self._Gst, fps=source_fps)
                     fb.build()
                     self._fallbacks[spec.role] = fb
                 except Exception:
@@ -153,7 +154,7 @@ class PipelineManager:
                     cam = CameraPipeline(
                         spec,
                         gst=self._Gst,
-                        fps=self._fps,
+                        fps=source_fps,
                         on_error=self._handle_camera_error,
                     )
                     cam.build()
@@ -178,6 +179,17 @@ class PipelineManager:
         self._start_supervisor()
 
     # -------------------------------------------------- 720p bandwidth guard
+
+    def _source_fps(self, spec: CameraSpec) -> int:
+        raw = getattr(spec, "framerate", None)
+        if raw is None:
+            return self._fps
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            log.warning("camera %s: invalid framerate %r; using %dfps", spec.role, raw, self._fps)
+            return self._fps
+        return max(1, min(self._fps, value))
 
     @staticmethod
     def _assert_specs_under_720p(specs: list[CameraSpec]) -> None:

@@ -79,6 +79,9 @@ TAKEOUT_STATE_DIR: Path = HAPAX_CACHE_DIR / "takeout-ingest"
 AUDIO_PROCESSOR_CACHE_DIR: Path = HAPAX_CACHE_DIR / "audio-processor"
 HAPAX_TMP_WAV_DIR: Path = HAPAX_CACHE_DIR / "hapax" / "tmp-wav"
 
+# PipeWire audio graph sample rate (Hz).  L-12 hardware runs at 44.1 kHz.
+GRAPH_SAMPLE_RATE: int = 44100
+
 # Studio ingestion paths
 AUDIO_RAW_DIR: Path = HAPAX_HOME / "audio-recording" / "raw"
 AUDIO_ARCHIVE_DIR: Path = HAPAX_HOME / "audio-recording" / "archive"
@@ -112,8 +115,8 @@ MODELS: dict[str, str] = {
     # Gemini 3 family — Phase A substrate, ADD-ONLY (do not migrate
     # `fast`/`long-context` until smoke + 14d observability shows parity).
     # Per docs/research/2026-05-01-litellm-gemini-3-route-evaluation.md.
-    "fast-3": "gemini-3-flash-preview",
-    "long-context-3": "gemini-3-flash-preview",
+    "fast-3": "gemini-flash",
+    "long-context-3": "gemini-flash",
     "extraction": "gemini-3.1-flash-lite-preview",
     "scouting": "gemini-3.1-flash-lite-preview",
     # Vision route — cc-task jr-gemini-3-flash-vision-router-update.
@@ -121,7 +124,7 @@ MODELS: dict[str, str] = {
     # leader for 10fps DMN per-tick vision (~$0.00014/frame at low-res
     # 280-token mode). Callers MUST pass `media_resolution: "low"` in
     # extra_body alongside the existing `budget_tokens: 0` invariant.
-    "vision-fast": "gemini-3-flash-preview",
+    "vision-fast": "gemini-flash",
     # Perplexity Sonar family — search-grounded web models. ADD-ONLY.
     # Per docs/superpowers/specs/2026-05-15-perplexity-api-integration-design.md.
     "web-scout": "web-scout",

@@ -34,6 +34,7 @@ from shared.impingement import Impingement, ImpingementType
 from shared.programme import (
     Programme,
     ProgrammeConstraintEnvelope,
+    ProgrammeContent,
     ProgrammeRitual,
     ProgrammeRole,
     ProgrammeStatus,
@@ -53,6 +54,7 @@ def _programme(
     abort_predicates: list[str] | None = None,
     status: ProgrammeStatus = ProgrammeStatus.PENDING,
     started_at: float | None = None,
+    content: ProgrammeContent | None = None,
 ) -> Programme:
     return Programme(
         programme_id=pid,
@@ -68,6 +70,7 @@ def _programme(
             min_duration_s=min_s,
             max_duration_s=max_s,
         ),
+        content=content or ProgrammeContent(),
         parent_show_id="test-show",
     )
 
@@ -145,6 +148,87 @@ class TestDwellUpdatePerTick:
         assert decision.to_programme.actual_started_at == pytest.approx(1_500.0)
         # Choreographer fires.
         assert decision.impingements is not None
+
+    def test_first_pending_prefers_biography_gap_over_established_topic(
+        self,
+        store: ProgrammePlanStore,
+        chor: TransitionChoreographer,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from agents.programme_manager import manager as mgr_mod
+        from shared.stream_biography import GroundedConcept, StreamBiography
+
+        established = _programme(
+            "established",
+            content=ProgrammeContent(declared_topic="density field"),
+        )
+        gap = _programme(
+            "gap",
+            content=ProgrammeContent(declared_topic="stream biography"),
+        )
+        store.add(established)
+        store.add(gap)
+        monkeypatch.setattr(
+            mgr_mod.ProgrammeManager,
+            "_score_candidate_density_fit",
+            staticmethod(lambda _candidate: 1.0),
+        )
+        monkeypatch.setattr(
+            "shared.stream_biography.read_shm",
+            lambda: StreamBiography(
+                established_concepts=[
+                    GroundedConcept(concept="density field", grounding_confidence=0.9)
+                ],
+                total_segments_completed=3,
+            ),
+        )
+
+        decision = ProgrammeManager(store, chor, now_fn=lambda: 1_500.0).tick()
+
+        assert decision.to_programme is not None
+        assert decision.to_programme.programme_id == "gap"
+
+    def test_density_field_prefers_source_backed_candidate_under_pressure(
+        self,
+        store: ProgrammePlanStore,
+        chor: TransitionChoreographer,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from shared.stream_biography import StreamBiography
+
+        generic = _programme("generic", content=ProgrammeContent(declared_topic="arc"))
+        sourced = _programme(
+            "sourced",
+            content=ProgrammeContent(
+                declared_topic="arc",
+                narrative_beat="ground the arc with inspectable source evidence",
+                source_refs=["vault:narrative-arc.md"],
+                evidence_refs=["evidence:narrative-arc"],
+                segment_beats=[
+                    "open the source-backed narrative arc object",
+                    "compare the density evidence against the audience gap",
+                    "land the source-backed planning consequence",
+                ],
+            ),
+        )
+        store.add(generic)
+        store.add(sourced)
+        monkeypatch.setattr("shared.stream_biography.read_shm", lambda: StreamBiography())
+        monkeypatch.setattr(
+            "shared.information_density.InformationDensityField.read_shm",
+            staticmethod(
+                lambda: {
+                    "aggregate_density": 0.82,
+                    "sources": {"narrative": {"density": 0.9}},
+                    "top_5": [{"source_id": "narrative", "density": 0.9}],
+                }
+            ),
+        )
+
+        decision = ProgrammeManager(store, chor, now_fn=lambda: 1_500.0).tick()
+
+        assert decision.to_programme is not None
+        assert decision.to_programme.programme_id == "sourced"
 
 
 class TestPlannedTrigger:

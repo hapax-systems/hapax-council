@@ -1259,6 +1259,20 @@ wheels = [
 ]
 
 [[package]]
+name = "essentia"
+version = "2.1b6.dev1389"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", marker = "sys_platform == 'linux'" },
+    { name = "pyyaml", marker = "sys_platform == 'linux'" },
+    { name = "six", marker = "sys_platform == 'linux'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c0/24/8ed5806bb62c4d8e5bb6a83bda4d03d501465c804f6d7d2a678defb4f0e2/essentia-2.1b6.dev1389-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:5905c38da25d8ccf4259bd045e50242103a47f482b77559ec6899d4b463ca4e7", size = 13763604, upload-time = "2025-07-24T21:08:14.54Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/3e/c54b925a3582cc7e06ef578aa54fe174d5ea65fa7b12128bde7b1bde0128/essentia-2.1b6.dev1389-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:40815e145dc8841d464fc1af935ef7e6ff1d310ef8169019e8cf22c7670c8830", size = 13762439, upload-time = "2025-07-24T21:08:23.31Z" },
+]
+
+[[package]]
 name = "eval-type-backport"
 version = "0.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2070,12 +2084,15 @@ dependencies = [
     { name = "scikit-image", marker = "sys_platform == 'linux'" },
     { name = "sdnotify", marker = "sys_platform == 'linux'" },
     { name = "soundcloud-lib", marker = "sys_platform == 'linux'" },
+    { name = "torchvision", version = "0.21.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "torchvision", version = "0.25.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14' and sys_platform == 'linux'" },
     { name = "uvloop", marker = "sys_platform == 'linux'" },
     { name = "werkzeug", marker = "sys_platform == 'linux'" },
 ]
 
 [package.optional-dependencies]
 audio = [
+    { name = "essentia", marker = "sys_platform == 'linux'" },
     { name = "faster-whisper", marker = "sys_platform == 'linux'" },
     { name = "hsemotion-onnx", marker = "sys_platform == 'linux'" },
     { name = "mediapipe", marker = "sys_platform == 'linux'" },
@@ -2119,6 +2136,7 @@ ci = [
     { name = "watchdog", marker = "sys_platform == 'linux'" },
 ]
 host = [
+    { name = "essentia", marker = "sys_platform == 'linux'" },
     { name = "fastapi", marker = "sys_platform == 'linux'" },
     { name = "faster-whisper", marker = "sys_platform == 'linux'" },
     { name = "google-api-python-client", marker = "sys_platform == 'linux'" },
@@ -2210,6 +2228,7 @@ requires-dist = [
     { name = "atproto", specifier = ">=0.0.65" },
     { name = "chat-downloader", specifier = ">=0.2.8" },
     { name = "chatterbox-tts", git = "https://github.com/resemble-ai/chatterbox.git" },
+    { name = "essentia", marker = "extra == 'audio'", specifier = ">=2.1b6.dev1091,<=2.1b6.dev1389" },
     { name = "evdev", specifier = ">=1.9.3" },
     { name = "fastapi", specifier = ">=0.135.1" },
     { name = "fastapi", marker = "extra == 'logos-api'", specifier = ">=0.115.0" },
@@ -2292,6 +2311,7 @@ requires-dist = [
     { name = "sse-starlette", marker = "extra == 'logos-api'", specifier = ">=2.0.0" },
     { name = "textual", marker = "extra == 'tui'", specifier = ">=3.0" },
     { name = "torchaudio", marker = "extra == 'audio'", specifier = ">=2.0.0" },
+    { name = "torchvision", specifier = ">=0.21" },
     { name = "ultralytics", marker = "extra == 'studio'", specifier = ">=8.3.0" },
     { name = "uvicorn", marker = "extra == 'logos-api'", specifier = ">=0.34.0" },
     { name = "uvloop", specifier = ">=0.21.0" },

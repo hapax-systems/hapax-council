@@ -1,10 +1,12 @@
 """agents/audio_perception/daemon.py — CPU-only audio perception daemon.
 
-Captures from broadcast egress via parecord, computes speech/music
-classification, and writes structured JSON to /dev/shm for segment prep
-and other perception consumers.
+Captures from broadcast egress via parecord, classifies via ML models
+(CLAP, Essentia, pyannote), and writes structured JSON to /dev/shm for
+segment prep and other perception consumers.
 
-Zero VRAM: all inference runs on CPU (spectral band analysis + autocorrelation).
+Zero VRAM: all inference runs on CPU (CUDA_VISIBLE_DEVICES="").
+Graceful degradation: each model loads independently; if any fails,
+the daemon falls back to spectral heuristics for that capability.
 """
 
 from __future__ import annotations
@@ -20,13 +22,22 @@ from pathlib import Path
 
 import numpy as np
 
+from agents.audio_perception.models import (
+    CLAPClassifier,
+    EssentiaAnalyzer,
+    PyannoteSegmenter,
+    load_clap,
+    load_essentia,
+    load_pyannote,
+)
+
 log = logging.getLogger(__name__)
 
 OUTPUT_DIR = Path("/dev/shm/hapax-perception")
 OUTPUT_FILE = OUTPUT_DIR / "audio.json"
 
 CAPTURE_DURATION_S = 2.0
-SAMPLE_RATE = 48000
+SAMPLE_RATE = 44100
 TICK_INTERVAL_S = 1.0
 
 VOICE_LOW_HZ = 85.0
@@ -36,6 +47,8 @@ MUSIC_HIGH_HZ = 8000.0
 SPEECH_VOICE_RATIO_THRESHOLD = 0.45
 MUSIC_RATIO_THRESHOLD = 0.25
 SILENCE_DBFS = -50.0
+
+TICK_TIMEOUT_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -95,7 +108,10 @@ def _capture_audio(duration_s: float = CAPTURE_DURATION_S) -> np.ndarray | None:
     return np.frombuffer(bytes(captured[:n]), dtype=np.int16)
 
 
-def _compute_features(samples: np.ndarray) -> dict:
+# ── spectral fallback (used when ML models unavailable) ──────────────
+
+
+def _spectral_features(samples: np.ndarray) -> dict:
     floats = samples.astype(np.float64) / 32768.0
     rms = float(np.sqrt(np.mean(np.square(floats))))
     rms_dbfs = max(-120.0, 20.0 * math.log10(rms)) if rms > 0 else -120.0
@@ -105,40 +121,49 @@ def _compute_features(samples: np.ndarray) -> dict:
         spectrum = spectrum[1:-1]
     n_bins = spectrum.size
     if n_bins == 0:
-        return {"rms_dbfs": rms_dbfs, "voice_ratio": 0.0, "music_ratio": 0.0, "env_ratio": 0.0}
+        return {"rms_dbfs": rms_dbfs, "voice_ratio": 0.0, "music_ratio": 0.0}
 
     freqs = np.linspace(0, SAMPLE_RATE / 2.0, n_bins + 2)[1:-1]
     total_energy = float(np.sum(spectrum))
     if total_energy < 1e-20:
-        return {"rms_dbfs": rms_dbfs, "voice_ratio": 0.0, "music_ratio": 0.0, "env_ratio": 0.0}
+        return {"rms_dbfs": rms_dbfs, "voice_ratio": 0.0, "music_ratio": 0.0}
 
     voice_mask = (freqs >= VOICE_LOW_HZ) & (freqs <= VOICE_HIGH_HZ)
     music_mask = ((freqs >= MUSIC_LOW_HZ) & (freqs < VOICE_LOW_HZ)) | (
         (freqs > VOICE_HIGH_HZ) & (freqs <= MUSIC_HIGH_HZ)
     )
-    env_mask = ~voice_mask & ~music_mask
 
     voice_e = float(np.sum(spectrum[voice_mask])) if np.any(voice_mask) else 0.0
     music_e = float(np.sum(spectrum[music_mask])) if np.any(music_mask) else 0.0
-    env_e = float(np.sum(spectrum[env_mask])) if np.any(env_mask) else 0.0
+    env_e = total_energy - voice_e - music_e
     band_total = voice_e + music_e + env_e
 
     if band_total > 0:
         voice_ratio = voice_e / band_total
         music_ratio = music_e / band_total
-        env_ratio = env_e / band_total
     else:
-        voice_ratio = music_ratio = env_ratio = 0.0
+        voice_ratio = music_ratio = 0.0
 
-    return {
-        "rms_dbfs": rms_dbfs,
-        "voice_ratio": voice_ratio,
-        "music_ratio": music_ratio,
-        "env_ratio": env_ratio,
-    }
+    return {"rms_dbfs": rms_dbfs, "voice_ratio": voice_ratio, "music_ratio": music_ratio}
 
 
-def _estimate_bpm(samples: np.ndarray) -> int | None:
+def _spectral_scene(features: dict) -> tuple[str, float]:
+    rms = features["rms_dbfs"]
+    voice_r = features["voice_ratio"]
+    music_r = features["music_ratio"]
+
+    if rms < SILENCE_DBFS:
+        return "silence", 0.95
+    if voice_r > SPEECH_VOICE_RATIO_THRESHOLD and voice_r > music_r:
+        return "speech", min(0.95, voice_r)
+    if music_r > MUSIC_RATIO_THRESHOLD and music_r > voice_r:
+        return "music", min(0.95, music_r)
+    if voice_r > 0.3 and music_r > 0.15:
+        return "speech_over_music", min(0.9, (voice_r + music_r) / 2)
+    return "ambient", 0.5
+
+
+def _spectral_bpm(samples: np.ndarray) -> int | None:
     if len(samples) < SAMPLE_RATE:
         return None
     floats = np.abs(samples.astype(np.float64) / 32768.0)
@@ -165,24 +190,17 @@ def _estimate_bpm(samples: np.ndarray) -> int | None:
     return None
 
 
-def _classify_scene(features: dict) -> tuple[str, float]:
-    rms = features["rms_dbfs"]
-    voice_r = features["voice_ratio"]
-    music_r = features["music_ratio"]
-
-    if rms < SILENCE_DBFS:
-        return "silence", 0.95
-    if voice_r > SPEECH_VOICE_RATIO_THRESHOLD and voice_r > music_r:
-        return "speech", min(0.95, voice_r)
-    if music_r > MUSIC_RATIO_THRESHOLD and music_r > voice_r:
-        return "music", min(0.95, music_r)
-    if voice_r > 0.3 and music_r > 0.15:
-        return "speech_over_music", min(0.9, (voice_r + music_r) / 2)
-    return "ambient", 0.5
+# ── ML-enhanced perception ───────────────────────────────────────────
 
 
-def perceive_once() -> AudioPerceptionState:
+def perceive_once(
+    clap: CLAPClassifier | None,
+    essentia: EssentiaAnalyzer | None,
+    pyannote: PyannoteSegmenter | None,
+    skip_pyannote: bool = False,
+) -> AudioPerceptionState:
     samples = _capture_audio()
+    now = datetime.now(UTC).isoformat()
     if samples is None or len(samples) < 64:
         return AudioPerceptionState(
             is_speech=False,
@@ -195,27 +213,61 @@ def perceive_once() -> AudioPerceptionState:
             rms_dbfs=-120.0,
             voice_ratio=0.0,
             music_ratio=0.0,
-            updated_at=datetime.now(UTC).isoformat(),
+            updated_at=now,
         )
 
-    features = _compute_features(samples)
-    scene, confidence = _classify_scene(features)
-    bpm = _estimate_bpm(samples) if features["music_ratio"] > 0.15 else None
+    audio_f32 = samples.astype(np.float32) / 32768.0
+    spectral = _spectral_features(samples)
+
+    if clap is not None:
+        try:
+            scene, confidence = clap.classify(audio_f32)
+        except Exception:
+            log.warning("CLAP inference failed, using spectral fallback", exc_info=True)
+            scene, confidence = _spectral_scene(spectral)
+    else:
+        scene, confidence = _spectral_scene(spectral)
+
+    if essentia is not None:
+        try:
+            ess_result = essentia.analyze(audio_f32)
+            bpm = ess_result.get("bpm")
+            key = ess_result.get("key")
+            rms_dbfs = ess_result.get("rms_dbfs", -120.0)
+        except Exception:
+            log.warning("Essentia analysis failed", exc_info=True)
+            bpm = _spectral_bpm(samples) if scene in ("music", "speech_over_music") else None
+            key = None
+            rms_dbfs = spectral["rms_dbfs"]
+    else:
+        bpm = _spectral_bpm(samples) if scene in ("music", "speech_over_music") else None
+        key = None
+        rms_dbfs = spectral["rms_dbfs"]
+
+    speaker_id = None
+    if pyannote is not None and not skip_pyannote and scene in ("speech", "speech_over_music"):
+        try:
+            speaker_id = pyannote.segment(audio_f32)
+        except Exception:
+            log.warning("pyannote segmentation failed", exc_info=True)
+
     is_speech = scene in ("speech", "speech_over_music")
     music_playing = scene in ("music", "speech_over_music")
+    voice_ratio = spectral["voice_ratio"]
+    music_ratio = spectral["music_ratio"]
 
     return AudioPerceptionState(
         is_speech=is_speech,
-        speaker_id=None,
+        speaker_id=speaker_id,
         music_playing=music_playing,
         bpm=bpm,
-        key=None,
+        key=key,
         scene=scene,
         confidence=round(confidence, 3),
-        rms_dbfs=round(features["rms_dbfs"], 2),
-        voice_ratio=round(features["voice_ratio"], 4),
-        music_ratio=round(features["music_ratio"], 4),
-        updated_at=datetime.now(UTC).isoformat(),
+        rms_dbfs=round(rms_dbfs, 2),
+        voice_ratio=round(voice_ratio, 4),
+        music_ratio=round(music_ratio, 4),
+        updated_at=now,
     )
 
 
@@ -227,10 +279,23 @@ def write_state(state: AudioPerceptionState) -> None:
 
 
 def run_forever(tick_s: float = TICK_INTERVAL_S) -> None:
-    log.info("audio-perception daemon starting (tick=%.1fs)", tick_s)
+    log.info("audio-perception daemon starting — loading models...")
+    clap = load_clap()
+    essentia = load_essentia()
+    pyannote = load_pyannote()
+
+    loaded = [n for n, m in [("CLAP", clap), ("Essentia", essentia), ("pyannote", pyannote)] if m]
+    if loaded:
+        log.info("ML models loaded: %s", ", ".join(loaded))
+    else:
+        log.warning("No ML models loaded — running with spectral fallback only")
+
+    log.info("audio-perception daemon running (tick=%.1fs)", tick_s)
+    skip_pyannote = False
     while True:
+        t0 = time.monotonic()
         try:
-            state = perceive_once()
+            state = perceive_once(clap, essentia, pyannote, skip_pyannote=skip_pyannote)
             write_state(state)
             if state.scene != "capture_failed":
                 log.debug(
@@ -243,4 +308,12 @@ def run_forever(tick_s: float = TICK_INTERVAL_S) -> None:
                 )
         except Exception:
             log.exception("perception tick failed")
-        time.sleep(tick_s)
+
+        elapsed = time.monotonic() - t0
+        skip_pyannote = elapsed > TICK_TIMEOUT_S and pyannote is not None
+        if skip_pyannote:
+            log.debug("tick took %.1fs — skipping pyannote next tick", elapsed)
+
+        sleep_time = max(0.0, tick_s - elapsed)
+        if sleep_time > 0:
+            time.sleep(sleep_time)

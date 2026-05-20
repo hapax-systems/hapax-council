@@ -87,8 +87,33 @@ def test_inject_rgba_writes_requested_ttl(monkeypatch, tmp_path):
     from agents.reverie import content_injector
 
     monkeypatch.setattr(content_injector, "SOURCES_DIR", tmp_path / "sources")
+    (tmp_path / "sources").mkdir()
+    content_injector._CREATED_SOURCE_DIRS.clear()
 
     assert content_injector.inject_rgba("ttl-test", b"\0" * 16, 2, 2, ttl_ms=7000)
     manifest = json.loads((tmp_path / "sources" / "ttl-test" / "manifest.json").read_text())
 
     assert manifest["ttl_ms"] == 7000
+
+
+def test_inject_rgba_creates_source_directory_once(monkeypatch, tmp_path):
+    """Hot source-protocol paths should not mkdir-check every frame."""
+    from agents.reverie import content_injector
+
+    monkeypatch.setattr(content_injector, "SOURCES_DIR", tmp_path / "sources")
+    (tmp_path / "sources").mkdir()
+    content_injector._CREATED_SOURCE_DIRS.clear()
+    mkdir_calls: list[Path] = []
+    original_mkdir = Path.mkdir
+
+    def _counting_mkdir(self: Path, *args, **kwargs) -> None:
+        if self == tmp_path / "sources" / "hot-source":
+            mkdir_calls.append(self)
+        original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", _counting_mkdir)
+
+    assert content_injector.inject_rgba("hot-source", b"\0" * 16, 2, 2)
+    assert content_injector.inject_rgba("hot-source", b"\1" * 16, 2, 2)
+
+    assert len(mkdir_calls) == 1

@@ -49,6 +49,10 @@ class CameraSpec(BaseModel):
     orientation: str = "identity"
     input_format: str = "mjpeg"
     pixel_format: str | None = None
+    # Optional producer cadence. The compositor output may remain 30 fps while
+    # lower-rate sources such as Pi/IR HTTP JPEG cameras publish at their
+    # native cadence to avoid burning decode CPU on repeated frames.
+    framerate: int | None = None
     # GStreamer watchdog timeout for this camera producer. Physical USB
     # cameras should stay tight; RTSP/v4l2loopback bridge sources need more
     # tolerance for network/bridge jitter without thrashing the compositor.
@@ -68,6 +72,7 @@ class CameraSpec(BaseModel):
     angle: str = "unspecified"
     operator_visible: bool = False
     ambient_priority: int = 5
+    loopback_device: str | None = None
 
 
 class RecordingConfig(BaseModel):

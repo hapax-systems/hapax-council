@@ -44,7 +44,7 @@ log = logging.getLogger(__name__)
 
 # Monitor capture defaults — tuned for parecord raw output against the
 # null-audio-sink monitor ports the broadcast chain uses.
-DEFAULT_SAMPLE_RATE: Final[int] = 48000
+DEFAULT_SAMPLE_RATE: Final[int] = 44100
 DEFAULT_CHANNELS: Final[int] = 2
 DEFAULT_DURATION_S: Final[float] = 2.0
 

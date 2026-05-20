@@ -90,6 +90,48 @@ PredicateFn = Callable[[Programme], bool]
 PredicateRegistry = Mapping[str, PredicateFn]
 
 
+def _bounded_float(value: object) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(1.0, numeric))
+
+
+def _density_pressure(state: dict[str, object]) -> float:
+    pressure = _bounded_float(state.get("aggregate_density"))
+    sources = state.get("sources")
+    if isinstance(sources, dict):
+        for key in ("narrative", "audience"):
+            payload = sources.get(key)
+            if isinstance(payload, dict):
+                pressure = max(pressure, _bounded_float(payload.get("density")))
+    top_sources = state.get("top_5")
+    if not isinstance(top_sources, list):
+        top_sources = []
+    for item in top_sources:
+        if not isinstance(item, dict):
+            continue
+        source_id = str(item.get("source_id") or "")
+        if source_id.startswith(("narrative", "audience")):
+            pressure = max(pressure, _bounded_float(item.get("density")))
+    return pressure
+
+
+def _candidate_specificity(candidate: Programme) -> float:
+    content = candidate.content
+    evidence_count = len(content.source_refs) + len(content.evidence_refs)
+    evidence_count += len(content.source_packet_refs) + len(content.asset_attributions)
+    beat_count = len(content.segment_beats) + len(content.beat_cards)
+    contract_count = len(content.role_contract)
+    raw = evidence_count * 0.22 + min(beat_count, 12) * 0.05 + min(contract_count, 12) * 0.03
+    if content.declared_topic:
+        raw += 0.10
+    if content.narrative_beat:
+        raw += 0.10
+    return max(0.0, min(1.0, raw))
+
+
 class ProgrammeManager:
     """Lifecycle loop for the meso-tier programme layer.
 
@@ -356,7 +398,13 @@ class ProgrammeManager:
         )
 
     def _maybe_promote_first_pending(self) -> BoundaryDecision:
-        """When no programme is ACTIVE, promote the first PENDING in store order."""
+        """When no programme is ACTIVE, promote the best PENDING candidate.
+
+        Scores each pending programme prospectively against the stream
+        biography, then promotes the highest-scoring candidate. This
+        prefers candidates that close narrative gaps over those that
+        retread established ground.
+        """
         pending = [p for p in self.store.all() if p.status == ProgrammeStatus.PENDING]
         if not pending:
             return BoundaryDecision(
@@ -366,12 +414,95 @@ class ProgrammeManager:
                 impingements=None,
                 notes="no active programme; no pending programme to promote",
             )
-        first = pending[0]
+
+        # Score and sort by prospective quality (descending)
+        from shared.stream_biography import read_shm as read_bio_shm
+
+        bio = read_bio_shm()
+        scored = sorted(
+            pending,
+            key=lambda p: self._score_candidate_prospectively(p, bio),
+            reverse=True,
+        )
+        best = scored[0]
         return self._apply_transition(
             from_programme=None,
-            to_programme=first,
+            to_programme=best,
             trigger=BoundaryTrigger.PLANNED,
         )
+
+    def _score_candidate_prospectively(
+        self,
+        candidate: Programme,
+        biography: object,
+    ) -> float:
+        """Score a programme candidate against the stream biography.
+
+        Returns a multiplier in [0.5, 2.0]:
+        - 2.0 if the topic addresses ungrounded concepts (high information gap)
+        - 1.0 if neutral (no topic or no biography data)
+        - 0.5 if the topic covers already-established ground (low novelty)
+        """
+        from shared.stream_biography import StreamBiography
+
+        biography_score = 1.0
+        if not isinstance(biography, StreamBiography):
+            return biography_score * self._score_candidate_density_fit(candidate)
+
+        topic = candidate.content.declared_topic
+        if not topic:
+            return biography_score * self._score_candidate_density_fit(candidate)
+
+        # Check if the topic's concepts are already grounded
+        established = biography.established_concepts
+        if not established:
+            # No biography data yet — everything is ungrounded, high value
+            biography_score = 2.0
+            return biography_score * self._score_candidate_density_fit(candidate)
+
+        # Simple text match: check if the topic token appears in established concepts
+        topic_lower = topic.lower()
+        established_names = {c.concept.lower() for c in established}
+
+        # Count how many established concepts overlap with the topic
+        overlaps = sum(
+            1 for name in established_names if name in topic_lower or topic_lower in name
+        )
+
+        if overlaps == 0:
+            # Topic addresses ungrounded territory — high information gap
+            biography_score = 2.0
+        elif overlaps >= 2:
+            # Multiple established concepts overlap — low novelty
+            biography_score = 0.5
+        else:
+            # Single overlap — moderate novelty
+            biography_score = 1.0
+        return biography_score * self._score_candidate_density_fit(candidate)
+
+    @staticmethod
+    def _score_candidate_density_fit(candidate: Programme) -> float:
+        """Continuous density-field multiplier for prospective quality.
+
+        The density field does not pick a fixed sequence. It raises the
+        value of candidates that carry concrete evidence and beat structure
+        when live narrative/audience density is high, and otherwise stays
+        close to neutral.
+        """
+        try:
+            from shared.information_density import InformationDensityField
+
+            density_state = InformationDensityField.read_shm()
+        except Exception:
+            density_state = None
+        if not isinstance(density_state, dict):
+            return 1.0
+
+        pressure = _density_pressure(density_state)
+        if pressure <= 0.0:
+            return 1.0
+        specificity = _candidate_specificity(candidate)
+        return max(0.75, min(2.0, 0.75 + pressure * (0.50 + 0.75 * specificity)))
 
     def _next_pending_after(self, active: Programme) -> Programme | None:
         records = self.store.all()

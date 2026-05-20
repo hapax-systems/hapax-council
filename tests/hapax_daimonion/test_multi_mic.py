@@ -99,11 +99,11 @@ class TestMultiSourceAveraging:
 
 
 MOCK_PACTL_OUTPUT = """\
-49\talsa_input.usb-046d_HD_Pro_Webcam_C920_ABC123-02.analog-stereo\tPipeWireAudioSource\ts16le\t2ch\t48000Hz\tRUNNING
-50\talsa_input.usb-046d_HD_Pro_Webcam_C920_DEF456-02.analog-stereo\tPipeWireAudioSource\ts16le\t2ch\t48000Hz\tRUNNING
-51\talsa_input.usb-046d_HD_Pro_Webcam_C920_GHI789-02.analog-stereo\tPipeWireAudioSource\ts16le\t2ch\t48000Hz\tRUNNING
-52\talsa_input.usb-046d_BRIO_4K_Stream_Edition_JKL012-02.analog-stereo\tPipeWireAudioSource\ts16le\t2ch\t48000Hz\tIDLE
-53\talsa_output.pci-0000_0c_00.4.analog-stereo\tPipeWireAudioSink\ts32le\t2ch\t48000Hz\tRUNNING
+49\talsa_input.usb-046d_HD_Pro_Webcam_C920_ABC123-02.analog-stereo\tPipeWireAudioSource\ts16le\t2ch\t44100Hz\tRUNNING
+50\talsa_input.usb-046d_HD_Pro_Webcam_C920_DEF456-02.analog-stereo\tPipeWireAudioSource\ts16le\t2ch\t44100Hz\tRUNNING
+51\talsa_input.usb-046d_HD_Pro_Webcam_C920_GHI789-02.analog-stereo\tPipeWireAudioSource\ts16le\t2ch\t44100Hz\tRUNNING
+52\talsa_input.usb-046d_BRIO_4K_Stream_Edition_JKL012-02.analog-stereo\tPipeWireAudioSource\ts16le\t2ch\t44100Hz\tIDLE
+53\talsa_output.pci-0000_0c_00.4.analog-stereo\tPipeWireAudioSink\ts32le\t2ch\t44100Hz\tRUNNING
 """
 
 

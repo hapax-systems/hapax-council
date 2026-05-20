@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 
 # ── DSP constants ─────────────────────────────────────────────────────────────
 
-_SAMPLE_RATE = 48000
+_SAMPLE_RATE = 44100
 _FRAME_SAMPLES = 1024  # 21.3ms per frame, ~47 fps
 _FRAME_BYTES = _FRAME_SAMPLES * 2  # int16 = 2 bytes per sample
 _FFT_SIZE = _FRAME_SAMPLES

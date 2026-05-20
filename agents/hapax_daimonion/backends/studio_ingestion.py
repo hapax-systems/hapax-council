@@ -136,7 +136,7 @@ def _estimate_flow_score(activity: str, energy_rms: float, genre_confidence: flo
     return min(1.0, score)
 
 
-def _capture_audio(duration_s: float, sample_rate: int = 48000) -> np.ndarray | None:
+def _capture_audio(duration_s: float, sample_rate: int = 44100) -> np.ndarray | None:
     """Capture audio from the default PipeWire monitor source.
 
     Returns a 1-D float32 numpy array, or None on failure.
@@ -303,11 +303,11 @@ class StudioIngestionBackend:
         try:
             from agents._clap import classify_zero_shot
 
-            activity_scores = classify_zero_shot(waveform, _ACTIVITY_LABELS, sr=48000)
+            activity_scores = classify_zero_shot(waveform, _ACTIVITY_LABELS, sr=44100)
             top_activity_label = max(activity_scores, key=activity_scores.get)
             production_activity = _ACTIVITY_MAP.get(top_activity_label, "idle")
 
-            genre_scores = classify_zero_shot(waveform, _GENRE_LABELS, sr=48000)
+            genre_scores = classify_zero_shot(waveform, _GENRE_LABELS, sr=44100)
             top_genre = max(genre_scores, key=genre_scores.get)
             genre_confidence = genre_scores[top_genre]
 

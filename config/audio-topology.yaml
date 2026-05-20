@@ -669,7 +669,7 @@ nodes:
       positions: [FL, FR]
     params:
       audio.format: S32
-      audio.rate: 48000
+      audio.rate: 44100
       playback_node: hapax-s4-tap
 
   - id: m8-usb-source

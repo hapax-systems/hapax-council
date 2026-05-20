@@ -91,7 +91,7 @@ class M5DaemonConfig:
 
 # pw-top -b -n 1 output format (example):
 # S  ID QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR  NAME
-# S  34  1024  48000   0.15ms  0.12ms  0.7%  0.6%    0  alsa_output.usb-...
+# S  34  1024  44100   0.15ms  0.12ms  0.7%  0.6%    0  alsa_output.usb-...
 _PWTOP_LINE_RE = re.compile(
     r"^\s*\S+\s+"  # status
     r"(\d+)\s+"  # id

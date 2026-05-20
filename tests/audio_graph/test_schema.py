@@ -81,7 +81,7 @@ def test_every_model_is_frozen_and_forbids_extras() -> None:
 
 def test_extra_field_rejected() -> None:
     with pytest.raises(ValidationError):
-        FormatSpec(rate_hz=48000, channels=2, format="S32LE", unknown_extra="x")
+        FormatSpec(rate_hz=44100, channels=2, format="S32LE", unknown_extra="x")
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +95,7 @@ def _roundtrip(instance):
 
 
 def test_format_spec_roundtrip() -> None:
-    f = FormatSpec(rate_hz=48000, channels=14, format="S32LE")
+    f = FormatSpec(rate_hz=44100, channels=14, format="S32LE")
     assert _roundtrip(f) == f
 
 
@@ -374,7 +374,7 @@ def test_global_tunables_models_quantum_conf() -> None:
         default_clock_quantum=128,
         min_quantum=64,
         max_quantum=1024,
-        allowed_rates=[16000, 44100, 48000],
+        allowed_rates=[16000, 44100, 44100],
     )
     assert _roundtrip(g) == g
 
@@ -440,8 +440,8 @@ def test_l12_mixdown_expressed_via_ladspa_strategy() -> None:
         target_node="l12-evilpet-capture",
         strategy=DownmixStrategy.LADSPA_MIXDOWN,
         mixdown=mg,
-        source_format=FormatSpec(rate_hz=48000, channels=14, format="S32LE"),
-        target_format=FormatSpec(rate_hz=48000, channels=2, format="S32LE"),
+        source_format=FormatSpec(rate_hz=44100, channels=14, format="S32LE"),
+        target_format=FormatSpec(rate_hz=44100, channels=2, format="S32LE"),
     )
     assert _roundtrip(cdm) == cdm
     assert cdm.mixdown is not None

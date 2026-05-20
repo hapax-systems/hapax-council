@@ -210,6 +210,7 @@ class TestDiscovery:
         assert result[0].glyph == "C-//"
 
     def test_auto_detect_falls_back_to_tmux_ls(self, monkeypatch, tmp_path: Path) -> None:
+        csr._clear_tmux_session_cache_for_tests()
         monkeypatch.delenv(CODING_TARGET_ENV, raising=False)
         monkeypatch.delenv(CODING_PREFIX_ENV, raising=False)
         cfg = tmp_path / "panes.yaml"
@@ -227,7 +228,31 @@ class TestDiscovery:
         assert "hapax-claude-gamma" in names
         assert "scratchpad" not in names
 
+    def test_tmux_session_list_is_cached(self, monkeypatch, tmp_path: Path) -> None:
+        csr._clear_tmux_session_cache_for_tests()
+        monkeypatch.delenv(CODING_TARGET_ENV, raising=False)
+        monkeypatch.delenv(CODING_PREFIX_ENV, raising=False)
+        monkeypatch.setenv("HAPAX_DURF_CODING_SESSION_LIST_CACHE_S", "30")
+        monkeypatch.setenv("HAPAX_DURF_TMUX_BIN", "tmux")
+        cfg = tmp_path / "panes.yaml"
+        cfg.write_text("panes: []\n", encoding="utf-8")
+        fake = csr.subprocess.CompletedProcess(
+            args=["tmux"],
+            returncode=0,
+            stdout="coding-hapax\ndev-tools\n",
+            stderr="",
+        )
+
+        with patch.object(csr.subprocess, "run", return_value=fake) as run:
+            first = discover_coding_sessions(config_path=cfg)
+            second = discover_coding_sessions(config_path=cfg)
+
+        assert [c.session_name for c in first] == ["coding-hapax", "dev-tools"]
+        assert [c.session_name for c in second] == ["coding-hapax", "dev-tools"]
+        assert run.call_count == 1
+
     def test_env_prefix_override(self, monkeypatch, tmp_path: Path) -> None:
+        csr._clear_tmux_session_cache_for_tests()
         monkeypatch.delenv(CODING_TARGET_ENV, raising=False)
         monkeypatch.setenv(CODING_PREFIX_ENV, "scratch-")
         cfg = tmp_path / "panes.yaml"
@@ -244,6 +269,7 @@ class TestDiscovery:
         assert "coding-bar" not in names
 
     def test_empty_when_no_sources(self, monkeypatch, tmp_path: Path) -> None:
+        csr._clear_tmux_session_cache_for_tests()
         monkeypatch.delenv(CODING_TARGET_ENV, raising=False)
         monkeypatch.delenv(CODING_PREFIX_ENV, raising=False)
         with patch.object(csr, "_list_tmux_sessions", lambda timeout_s=1.0: ()):

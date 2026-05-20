@@ -24,12 +24,19 @@ if [[ -f "$ROLE_HELPER" ]]; then
   . "$ROLE_HELPER"
 fi
 
-if [[ $# -lt 1 ]]; then
-  echo "usage: cc-claim <task_id>" >&2
+force=false
+task_id=""
+for arg in "$@"; do
+  case "$arg" in
+    --force) force=true ;;
+    -*) echo "cc-claim: unknown flag '$arg'" >&2; exit 1 ;;
+    *) task_id="$arg" ;;
+  esac
+done
+if [[ -z "$task_id" ]]; then
+  echo "usage: cc-claim [--force] <task_id>" >&2
   exit 1
 fi
-
-task_id="$1"
 role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
 if [[ -z "$role" ]] && declare -F hapax_agent_role >/dev/null 2>&1; then
   role="$(hapax_agent_role 2>/dev/null || true)"
@@ -37,6 +44,37 @@ fi
 if [[ -z "$role" ]]; then
   echo "cc-claim: cannot determine role; set HAPAX_AGENT_ROLE, CODEX_ROLE, or CLAUDE_ROLE" >&2
   exit 1
+fi
+
+# --- Multi-claim prevention ---
+# A role must close its current task before claiming a new one.
+# Without this, Codex lanes bulk-claimed dozens of tasks with zero implementation.
+claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+if [[ -f "$claim_file" ]]; then
+  existing_task="$(head -n1 "$claim_file" | tr -d '[:space:]')"
+  if [[ -n "$existing_task" && "$existing_task" != "$task_id" ]]; then
+    vault_root_check="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+    existing_note=""
+    for c in "$vault_root_check/active/$existing_task-"*.md "$vault_root_check/active/$existing_task.md"; do
+      [[ -f "$c" ]] && existing_note="$c" && break
+    done
+    if [[ -n "$existing_note" ]]; then
+      existing_status="$(grep -oP '^status:\s*\K\S+' "$existing_note" 2>/dev/null || echo "unknown")"
+      case "$existing_status" in
+        done|completed|closed|withdrawn|superseded)
+          ;;
+        *)
+          echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
+          echo "  Close it first: cc-close $existing_task" >&2
+          echo "  Or force: cc-claim --force $task_id" >&2
+          if [[ "$force" != "true" ]]; then
+            exit 7
+          fi
+          echo "cc-claim: --force override — releasing prior claim on '$existing_task'" >&2
+          ;;
+      esac
+    fi
+  fi
 fi
 
 vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
@@ -66,7 +104,8 @@ if ! command -v python3 &>/dev/null; then
   exit 3
 fi
 
-# Verify status is offered + assigned_to is unassigned, then transition.
+# Verify status/ownership, then either claim offered work or resume owned
+# ready-state work (PR/merge-queue maintenance).
 python3 - "$note_path" "$role" "$task_id" <<'PYEOF'
 import re
 import sys
@@ -90,21 +129,41 @@ def _is_claimable_assignee(value: str) -> bool:
     return stripped == "unassigned" or stripped.lower() in _YAML_NULLS
 
 
-# Sanity: bail if status isn't offered (operator may have already claimed it
-# manually, or it's in_progress from another session).
-status_match = re.search(r"^status:\s*(\S+)$", text, flags=re.MULTILINE)
-if status_match and status_match.group(1) not in ("offered",):
-    print(
-        f"cc-claim: refusing to claim '{task_id}' — current status is '{status_match.group(1)}', not 'offered'",
-        file=sys.stderr,
-    )
-    sys.exit(4)
+READY_STATUSES = frozenset({"pr_open", "merge_queue"})
 
+
+status_match = re.search(r"^status:\s*(\S+)$", text, flags=re.MULTILINE)
+status = status_match.group(1) if status_match else "offered"
 assigned_match = re.search(r"^assigned_to:[ \t]*(.*)$", text, flags=re.MULTILINE)
-if assigned_match and not _is_claimable_assignee(assigned_match.group(1)):
-    assigned_to = _strip_scalar(assigned_match.group(1))
+assigned_raw = assigned_match.group(1) if assigned_match else "unassigned"
+assigned_to = _strip_scalar(assigned_raw)
+
+if status == "offered":
+    if assigned_match and not _is_claimable_assignee(assigned_raw):
+        print(
+            f"cc-claim: refusing to claim '{task_id}' — already assigned to '{assigned_to}'",
+            file=sys.stderr,
+        )
+        sys.exit(4)
+    claim_mode = "claim"
+elif status in READY_STATUSES:
+    if _is_claimable_assignee(assigned_raw):
+        print(
+            f"cc-claim: refusing to resume '{task_id}' — ready-state task is not assigned to '{role}'",
+            file=sys.stderr,
+        )
+        sys.exit(4)
+    if assigned_to != role:
+        print(
+            f"cc-claim: refusing to resume '{task_id}' — assigned to '{assigned_to}', not '{role}'",
+            file=sys.stderr,
+        )
+        sys.exit(4)
+    claim_mode = "resume"
+else:
     print(
-        f"cc-claim: refusing to claim '{task_id}' — already assigned to '{assigned_to}'",
+        f"cc-claim: refusing to claim '{task_id}' — current status is '{status}', "
+        "not 'offered' or an assigned ready state",
         file=sys.stderr,
     )
     sys.exit(4)
@@ -342,28 +401,44 @@ def _check_pr_merged(pr_number: str) -> str:
         return "unknown"
     except Exception:
         return "unknown"
+
+
+def _insert_session_log(note_text: str, log_line: str) -> str:
+    heading = re.search(
+        r"^## Session [Ll]og[ \t]*(?:\n|$)", note_text, flags=re.MULTILINE
+    )
+    if heading:
+        prefix = note_text[: heading.end()]
+        suffix = note_text[heading.end() :]
+        if not prefix.endswith("\n"):
+            prefix = f"{prefix}\n"
+        return f"{prefix}{log_line}{suffix}"
+    return f"{note_text.rstrip()}\n\n## Session log\n{log_line}"
+
+
 unmet: list[str] = []
-for dep_id in _parse_depends_on(text):
-    dep_path = _locate_task(vault_root, dep_id)
-    if dep_path is None:
-        unmet.append(f"{dep_id} (not found in vault)")
-        continue
-    dep_status = _frontmatter_status(dep_path.read_text(encoding="utf-8"))
-    if dep_status not in ("completed", "closed", "done"):
-        unmet.append(f"{dep_id} (status: {dep_status})")
-        continue
-    # Dependency is closed — check if it has a PR that must be merged
-    dep_text = dep_path.read_text(encoding="utf-8")
-    pr_num = _parse_pr_number(dep_text)
-    if pr_num:
-        pr_state = _check_pr_merged(pr_num)
-        if pr_state == "open":
-            unmet.append(f"{dep_id} (PR #{pr_num} still open — source not on main)")
-        elif pr_state == "closed_unmerged":
-            unmet.append(f"{dep_id} (PR #{pr_num} closed without merge — source lost)")
-        elif pr_state == "unknown":
-            # Fail closed: unknown PR state blocks dispatch
-            unmet.append(f"{dep_id} (PR #{pr_num} state unknown — cannot verify merge)")
+if claim_mode == "claim":
+    for dep_id in _parse_depends_on(text):
+        dep_path = _locate_task(vault_root, dep_id)
+        if dep_path is None:
+            unmet.append(f"{dep_id} (not found in vault)")
+            continue
+        dep_status = _frontmatter_status(dep_path.read_text(encoding="utf-8"))
+        if dep_status not in ("completed", "closed", "done"):
+            unmet.append(f"{dep_id} (status: {dep_status})")
+            continue
+        # Dependency is closed — check if it has a PR that must be merged
+        dep_text = dep_path.read_text(encoding="utf-8")
+        pr_num = _parse_pr_number(dep_text)
+        if pr_num:
+            pr_state = _check_pr_merged(pr_num)
+            if pr_state == "open":
+                unmet.append(f"{dep_id} (PR #{pr_num} still open — source not on main)")
+            elif pr_state == "closed_unmerged":
+                unmet.append(f"{dep_id} (PR #{pr_num} closed without merge — source lost)")
+            elif pr_state == "unknown":
+                # Fail closed: unknown PR state blocks dispatch
+                unmet.append(f"{dep_id} (PR #{pr_num} state unknown — cannot verify merge)")
 
 if unmet:
     print(f"cc-claim: BLOCKED — task '{task_id}' has unmet dependencies:", file=sys.stderr)
@@ -372,26 +447,29 @@ if unmet:
     print("\nResolve dependencies before claiming this task.", file=sys.stderr)
     sys.exit(5)
 
-text = re.sub(r"^status:.*$", "status: claimed", text, count=1, flags=re.MULTILINE)
-text = re.sub(
-    r"^assigned_to:.*$", f"assigned_to: {role}", text, count=1, flags=re.MULTILINE
-)
-text = re.sub(
-    r"^claimed_at:.*$", f"claimed_at: {now}", text, count=1, flags=re.MULTILINE
-)
+if claim_mode == "claim":
+    text = re.sub(r"^status:.*$", "status: claimed", text, count=1, flags=re.MULTILINE)
+    text = re.sub(
+        r"^assigned_to:.*$", f"assigned_to: {role}", text, count=1, flags=re.MULTILINE
+    )
+    text = re.sub(
+        r"^claimed_at:.*$", f"claimed_at: {now}", text, count=1, flags=re.MULTILINE
+    )
+    log_line = f"- {now} {role} claimed (cc-claim)\n"
+    result_message = f"cc-claim: claimed task '{task_id}' for role '{role}'"
+else:
+    log_line = f"- {now} {role} resumed ready-state task (cc-claim)\n"
+    result_message = f"cc-claim: resumed task '{task_id}' for role '{role}'"
+
 text = re.sub(
     r"^updated_at:.*$", f"updated_at: {now}", text, count=1, flags=re.MULTILINE
 )
-text = text.replace(
-    "## Session log\n",
-    f"## Session log\n- {now} {role} claimed (cc-claim)\n",
-    1,
-)
+text = _insert_session_log(text, log_line)
 
 tmp = path.with_suffix(path.suffix + ".tmp")
 tmp.write_text(text, encoding="utf-8")
 tmp.replace(path)
-print(f"cc-claim: claimed task '{task_id}' for role '{role}'")
+print(result_message)
 PYEOF
 
 # Write the per-role claim file the hook reads.

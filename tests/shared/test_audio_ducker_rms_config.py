@@ -56,16 +56,15 @@ class TestPinnedConstants:
 
 class TestExpectedRmsSamples:
     def test_legacy_matches_main_formula(self) -> None:
-        """At 48 kHz, 50 ms = 2400 samples. This must match the inline
-        derivation in __main__.py:113."""
-        assert expected_rms_samples(RMS_WINDOW_MS_LEGACY, 48000) == 2400
+        """At 44.1 kHz, 50 ms = 2205 samples."""
+        assert expected_rms_samples(RMS_WINDOW_MS_LEGACY, 44100) == 2205
 
-    def test_target_at_48k_is_960_samples(self) -> None:
-        assert expected_rms_samples(RMS_WINDOW_MS_TARGET, 48000) == 960
+    def test_target_at_44k1_is_882_samples(self) -> None:
+        assert expected_rms_samples(RMS_WINDOW_MS_TARGET, 44100) == 882
 
-    def test_default_sample_rate_is_48k(self) -> None:
-        """48 kHz is the canonical Studio 24c rate; pin the default."""
-        assert expected_rms_samples(20) == expected_rms_samples(20, 48000)
+    def test_default_sample_rate_is_44k1(self) -> None:
+        """44.1 kHz is the graph / L-12 rate; pin the default."""
+        assert expected_rms_samples(20) == expected_rms_samples(20, 44100)
 
     def test_zero_window_rejected(self) -> None:
         with pytest.raises(ValueError, match="window_ms must be positive"):

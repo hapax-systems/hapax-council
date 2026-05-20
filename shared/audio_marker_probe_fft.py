@@ -51,9 +51,8 @@ import numpy as np
 #: standard sample rate, survives speech codecs).
 DEFAULT_MARKER_FREQ_HZ: Final[float] = 17500.0
 
-#: Default sample rate. Matches the operator's audio interface
-#: (48 kHz).
-DEFAULT_SAMPLE_RATE_HZ: Final[int] = 48000
+#: Default sample rate.  Matches the PipeWire graph / L-12 hardware.
+DEFAULT_SAMPLE_RATE_HZ: Final[int] = 44100
 
 #: Default tone amplitude as a fraction of int16 full-scale. -20 dBFS
 #: keeps the marker quiet enough that it's unlikely to clip at any

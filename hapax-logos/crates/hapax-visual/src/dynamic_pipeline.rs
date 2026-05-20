@@ -217,6 +217,8 @@ struct PlanPass {
     #[serde(default)]
     chain_lineage: String,
     #[serde(default)]
+    structural_signature: String,
+    #[serde(default)]
     topology_signature: String,
     #[serde(default)]
     graph_motif: String,
@@ -335,6 +337,7 @@ struct DynamicPass {
     parameter_regions: Vec<serde_json::Value>,
     preset_chain_id: String,
     chain_lineage: String,
+    structural_signature: String,
     topology_signature: String,
     graph_motif: String,
     motif_node_index: Option<usize>,
@@ -1052,6 +1055,7 @@ impl DynamicPipeline {
                     parameter_regions: plan_pass.parameter_regions.clone(),
                     preset_chain_id: plan_pass.preset_chain_id.clone(),
                     chain_lineage: plan_pass.chain_lineage.clone(),
+                    structural_signature: plan_pass.structural_signature.clone(),
                     topology_signature: plan_pass.topology_signature.clone(),
                     graph_motif: plan_pass.graph_motif.clone(),
                     motif_node_index: plan_pass.motif_node_index,
@@ -1215,6 +1219,7 @@ impl DynamicPipeline {
                     parameter_regions: plan_pass.parameter_regions.clone(),
                     preset_chain_id: plan_pass.preset_chain_id.clone(),
                     chain_lineage: plan_pass.chain_lineage.clone(),
+                    structural_signature: plan_pass.structural_signature.clone(),
                     topology_signature: plan_pass.topology_signature.clone(),
                     graph_motif: plan_pass.graph_motif.clone(),
                     motif_node_index: plan_pass.motif_node_index,
@@ -1936,6 +1941,7 @@ impl DynamicPipeline {
                     "parameter_regions": pass.parameter_regions,
                     "preset_chain_id": pass.preset_chain_id,
                     "chain_lineage": pass.chain_lineage,
+                    "structural_signature": pass.structural_signature,
                     "topology_signature": pass.topology_signature,
                     "graph_motif": pass.graph_motif,
                     "motif_node_index": pass.motif_node_index,
@@ -2649,7 +2655,9 @@ mod tests {
                             "eviction_cadence": "fast",
                             "source_bound": true,
                             "full_surface": true,
-                            "effect_aliases": ["slicing"]
+                            "effect_aliases": ["slicing"],
+                            "structural_signature": "rng:slitscan:slitscan+vhs",
+                            "topology_signature": "rng:slitscan:slitscan:v42"
                         }
                     ]
                 }
@@ -2665,6 +2673,8 @@ mod tests {
         assert!(main[0].source_bound);
         assert!(main[0].full_surface);
         assert_eq!(main[0].effect_aliases, vec!["slicing"]);
+        assert_eq!(main[0].structural_signature, "rng:slitscan:slitscan+vhs");
+        assert_eq!(main[0].topology_signature, "rng:slitscan:slitscan:v42");
     }
 
     #[test]
@@ -3018,6 +3028,7 @@ mod tests {
             parameter_regions: Vec::new(),
             preset_chain_id: String::new(),
             chain_lineage: String::new(),
+            structural_signature: String::new(),
             topology_signature: String::new(),
             graph_motif: String::new(),
             motif_node_index: None,
@@ -3066,6 +3077,7 @@ mod tests {
             parameter_regions: Vec::new(),
             preset_chain_id: String::new(),
             chain_lineage: String::new(),
+            structural_signature: String::new(),
             topology_signature: String::new(),
             graph_motif: String::new(),
             motif_node_index: None,

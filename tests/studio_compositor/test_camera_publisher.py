@@ -1,5 +1,6 @@
 import importlib
 import json
+from pathlib import Path
 
 from agents.studio_compositor import camera_publisher, frame_cache
 from agents.studio_compositor.camera_publisher import CameraSourcePublisher
@@ -42,11 +43,36 @@ def test_3d_publisher_uses_frame_sequence_for_change_detection(tmp_path, monkeyp
     assert manifest_path.stat().st_mtime_ns == first_mtime
 
     frame_cache.update("brio-operator", b"\x12\x12\x12\x12\x80\x80", 2, 2)
+    publisher._next_publish_at["camera-brio-operator"] = 0.0
     publisher._tick_3d()
 
     manifest = json.loads(manifest_path.read_text())
     assert manifest["frame_sequence"] == 2
     assert (tmp_path / "camera-brio-operator" / "frame.rgba").stat().st_size == 16
+
+
+def test_3d_publisher_paces_sources_between_consumer_cadence_ticks(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_3D_COMPOSITOR", "1")
+    frame_cache.clear()
+    publisher = CameraSourcePublisher(interval_s=1.0, sources_dir=tmp_path)
+
+    frame_cache.update("brio-operator", b"\x10\x10\x10\x10\x80\x80", 2, 2)
+    publisher._tick_3d()
+
+    manifest_path = tmp_path / "camera-brio-operator" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["frame_sequence"] == 1
+
+    frame_cache.update("brio-operator", b"\x12\x12\x12\x12\x80\x80", 2, 2)
+    publisher._tick_3d()
+
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["frame_sequence"] == 1
+
+    publisher._next_publish_at["camera-brio-operator"] = 0.0
+    publisher._tick_3d()
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["frame_sequence"] == 2
 
 
 def test_nv12_to_rgba_returns_camera_sized_rgba() -> None:
@@ -58,8 +84,50 @@ def test_nv12_to_rgba_returns_camera_sized_rgba() -> None:
 
 
 def test_default_camera_source_publish_cadence_is_thirty_hz(monkeypatch) -> None:
+    monkeypatch.delenv("HAPAX_3D_COMPOSITOR", raising=False)
     monkeypatch.delenv("HAPAX_CAMERA_SOURCE_PUBLISH_INTERVAL_S", raising=False)
     monkeypatch.delenv("HAPAX_CAMERA_SOURCE_PUBLISH_FPS", raising=False)
     reloaded = importlib.reload(camera_publisher)
 
     assert abs(reloaded._DEFAULT_INTERVAL_S - (1.0 / 30.0)) < 0.0001
+
+
+def test_default_3d_camera_source_publish_cadence_matches_consumer_scan(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("HAPAX_3D_COMPOSITOR", "1")
+    monkeypatch.delenv("HAPAX_CAMERA_SOURCE_PUBLISH_INTERVAL_S", raising=False)
+    monkeypatch.delenv("HAPAX_CAMERA_SOURCE_PUBLISH_FPS", raising=False)
+    reloaded = importlib.reload(camera_publisher)
+
+    assert abs(reloaded._DEFAULT_INTERVAL_S - 0.1) < 0.0001
+
+
+def test_write_source_creates_source_directory_once(tmp_path, monkeypatch) -> None:
+    publisher = CameraSourcePublisher(interval_s=1.0, sources_dir=tmp_path)
+    mkdir_calls: list[Path] = []
+    original_mkdir = Path.mkdir
+
+    def _counting_mkdir(self: Path, *args, **kwargs) -> None:
+        if self == tmp_path / "camera-brio-operator":
+            mkdir_calls.append(self)
+        original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", _counting_mkdir)
+
+    publisher._write_source(
+        "camera-brio-operator",
+        b"\0" * 16,
+        2,
+        2,
+        frame_sequence=1,
+    )
+    publisher._write_source(
+        "camera-brio-operator",
+        b"\1" * 16,
+        2,
+        2,
+        frame_sequence=2,
+    )
+
+    assert len(mkdir_calls) == 1

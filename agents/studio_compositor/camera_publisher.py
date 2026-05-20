@@ -43,40 +43,52 @@ CAMERA_MAP: dict[str, str] = {
 }
 
 
-def _default_interval_s() -> float:
+def _is_3d_mode() -> bool:
+    return os.environ.get("HAPAX_3D_COMPOSITOR") == "1"
+
+
+def _default_publish_fps() -> float:
     """Return camera source-publisher cadence.
 
-    The 3D scene reads these RGBA sources as visible tiles. A 10 Hz bridge
-    made live cameras look stale; the incident baseline is full 30 Hz unless
-    an operator/resource policy explicitly lowers it.
+    The legacy JPEG/snapshot path can publish at compositor cadence. In 3D
+    mode, however, hapax-visual's ContentSourceManager scans the source
+    directory every 100 ms, so publishing camera RGBA files at 30 Hz mostly
+    burns CPU on frames the renderer cannot consume. Keep the 3D default at
+    the consumer cadence and let operators raise it explicitly when the
+    consumer scan cadence is also changed and measured.
     """
 
+    default_fps = 10.0 if _is_3d_mode() else 30.0
+    raw_fps = os.environ.get("HAPAX_CAMERA_SOURCE_PUBLISH_FPS", str(default_fps))
+    try:
+        return max(1.0, float(raw_fps))
+    except ValueError:
+        log.warning(
+            "Invalid HAPAX_CAMERA_SOURCE_PUBLISH_FPS=%r; using %.1f",
+            raw_fps,
+            default_fps,
+        )
+        return default_fps
+
+
+def _default_interval_s() -> float:
     raw_interval = os.environ.get("HAPAX_CAMERA_SOURCE_PUBLISH_INTERVAL_S")
     if raw_interval is not None:
         try:
             return max(0.001, float(raw_interval))
         except ValueError:
             log.warning(
-                "Invalid HAPAX_CAMERA_SOURCE_PUBLISH_INTERVAL_S=%r; using 30 Hz",
+                "Invalid HAPAX_CAMERA_SOURCE_PUBLISH_INTERVAL_S=%r; using FPS default",
                 raw_interval,
             )
-    raw_fps = os.environ.get("HAPAX_CAMERA_SOURCE_PUBLISH_FPS", "30")
-    try:
-        fps = float(raw_fps)
-    except ValueError:
-        log.warning("Invalid HAPAX_CAMERA_SOURCE_PUBLISH_FPS=%r; using 30", raw_fps)
-        fps = 30.0
-    return 1.0 / max(1.0, fps)
+    return 1.0 / _default_publish_fps()
 
 
 _DEFAULT_INTERVAL_S = _default_interval_s()
 
 # z_order=5 = OnScrim depth in the 3D scene
 _Z_ORDER = 5
-
-
-def _is_3d_mode() -> bool:
-    return os.environ.get("HAPAX_3D_COMPOSITOR") == "1"
+_CONTINUOUS_LOG_EVERY_FRAMES = 1000
 
 
 class CameraSourcePublisher:
@@ -97,6 +109,24 @@ class CameraSourcePublisher:
         self._publish_count = 0
         self._error_count = 0
         self._3d_mode = _is_3d_mode()
+        self._source_order = list(CAMERA_MAP.items())
+        self._next_publish_at: dict[str, float] = {}
+        self._poll_interval = self._compute_poll_interval(interval_s)
+        self._created_source_dirs: set[Path] = set()
+
+    def _compute_poll_interval(self, interval_s: float) -> float:
+        if not self._3d_mode:
+            return interval_s
+        # Poll faster than the per-source cadence so work is spread across the
+        # camera fleet instead of converting every source in one burst.
+        source_count = max(1, len(CAMERA_MAP))
+        return max(0.005, min(interval_s / source_count, 0.05))
+
+    def _ensure_source_dir(self, source_dir: Path) -> None:
+        if source_dir in self._created_source_dirs:
+            return
+        source_dir.mkdir(parents=True, exist_ok=True)
+        self._created_source_dirs.add(source_dir)
 
     def start(self) -> None:
         if self._thread is not None:
@@ -110,9 +140,10 @@ class CameraSourcePublisher:
         self._thread.start()
         mode = "3D/frame_cache" if self._3d_mode else "JPEG/snapshot"
         log.info(
-            "CameraSourcePublisher started: %d cameras, %.1f Hz, mode=%s",
+            "CameraSourcePublisher started: %d cameras, %.1f Hz/source, poll=%.3fs, mode=%s",
             len(CAMERA_MAP),
             1.0 / self._interval,
+            self._poll_interval,
             mode,
         )
 
@@ -133,7 +164,7 @@ class CameraSourcePublisher:
                 self._error_count += 1
                 if self._error_count % 50 == 1:
                     log.exception("CameraSourcePublisher tick error #%d", self._error_count)
-            self._stop.wait(self._interval)
+            self._stop.wait(self._poll_interval)
 
     def _tick(self) -> None:
         """Normal mode: read JPEG snapshots from compositor SHM."""
@@ -160,7 +191,16 @@ class CameraSourcePublisher:
         except ImportError:
             return
 
-        for snapshot_name, source_id in CAMERA_MAP.items():
+        now = time.monotonic()
+        phase_step = self._interval / max(1, len(self._source_order))
+        for index, (snapshot_name, source_id) in enumerate(self._source_order):
+            next_publish = self._next_publish_at.setdefault(
+                source_id,
+                now + (index * phase_step),
+            )
+            if now < next_publish:
+                continue
+
             # Map snapshot_name to camera role (they match)
             role = snapshot_name
             cached = frame_cache.get(role)
@@ -174,6 +214,7 @@ class CameraSourcePublisher:
                 continue
 
             self._publish_camera_nv12(cached, source_id, cache_id)
+            self._next_publish_at[source_id] = now + self._interval
 
     def _publish_camera_jpeg(self, jpeg_path: Path, source_id: str, mtime: float) -> None:
         try:
@@ -219,7 +260,7 @@ class CameraSourcePublisher:
                 return
 
             rgba = self._nv12_to_rgba(data, w, h)
-            rgba_bytes = rgba.tobytes()
+            rgba_bytes = memoryview(rgba.reshape(-1))
 
             self._write_source(
                 source_id,
@@ -231,7 +272,7 @@ class CameraSourcePublisher:
             self._mtimes[source_id] = cache_id
             self._publish_count += 1
 
-            if self._publish_count % 100 == 0:
+            if self._publish_count % _CONTINUOUS_LOG_EVERY_FRAMES == 0:
                 log.info(
                     "CameraSourcePublisher (3D): %d frames published (%d errors)",
                     self._publish_count,
@@ -277,14 +318,14 @@ class CameraSourcePublisher:
     def _write_source(
         self,
         source_id: str,
-        rgba_bytes: bytes,
+        rgba_bytes: bytes | memoryview,
         w: int,
         h: int,
         *,
         frame_sequence: int | None = None,
     ) -> None:
         source_dir = self._sources_dir / source_id
-        source_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_source_dir(source_dir)
 
         frame_path = source_dir / "frame.rgba"
         tmp_frame_path = source_dir / "frame.rgba.tmp"

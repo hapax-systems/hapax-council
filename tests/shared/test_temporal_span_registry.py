@@ -123,7 +123,7 @@ def test_alignment_excludes_incompatible_clock_domain_without_mapping_or_lineage
             "sequence_ids": ("audio-window-unmapped-wall-clock-0042",),
             "source_span_refs": (),
             "metadata": {
-                "sample_rate_hz": 48000,
+                "sample_rate_hz": 44100,
                 "channels": 2,
                 "join_key": "temporal_span_overlap",
                 "clock_domain_mapping_ref": "clock-map:other-session",

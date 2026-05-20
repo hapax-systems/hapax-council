@@ -19,7 +19,7 @@ def chime_dir(tmp_path):
         with wave.open(str(path), "wb") as f:
             f.setnchannels(1)
             f.setsampwidth(2)
-            f.setframerate(48000)
+            f.setframerate(44100)
             f.writeframes(samples.tobytes())
     return tmp_path
 

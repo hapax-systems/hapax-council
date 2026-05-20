@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
+from dataclasses import asdict
 
 from agents.audio_perception.daemon import run_forever
+from agents.audio_perception.models import load_clap, load_essentia, load_pyannote
 
 
 def main() -> None:
@@ -27,11 +30,11 @@ def main() -> None:
     if args.once:
         from agents.audio_perception.daemon import perceive_once, write_state
 
-        state = perceive_once()
+        clap = load_clap()
+        essentia = load_essentia()
+        pyannote = load_pyannote()
+        state = perceive_once(clap, essentia, pyannote)
         write_state(state)
-        import json
-        from dataclasses import asdict
-
         print(json.dumps(asdict(state), indent=2))
     else:
         run_forever(tick_s=args.tick_s)

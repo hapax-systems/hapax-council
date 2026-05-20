@@ -66,6 +66,7 @@ class CameraPipeline:
         v4l2src device=/dev/v4l/by-id/...
           ! capsfilter (image/jpeg or raw, native dimensions)
           ! watchdog timeout=<CameraSpec.watchdog_timeout_ms>
+          ! identity drop-probability=<3D decode shed> (if mjpeg, 3D mode)
           ! jpegdec              (if mjpeg)
           ! videoconvert
           ! capsfilter (video/x-raw, format=NV12, native dimensions)
@@ -83,7 +84,7 @@ class CameraPipeline:
     ) -> None:
         self._spec = spec
         self._Gst = gst
-        self._fps = fps
+        self._fps = self._effective_source_fps(spec, fps)
         self._on_error = on_error
         self._on_frame = on_frame
 
@@ -101,8 +102,12 @@ class CameraPipeline:
         self._http_appsrc: Any = None
         self._http_stop_event = threading.Event()
         self._http_thread: threading.Thread | None = None
-        source_fps = self._effective_http_fps() if self._is_http_jpeg_source() else float(fps)
-        self._frame_cache_sample_every_n = self._frame_cache_sample_stride_for_fps(source_fps)
+        source_fps = self._effective_http_fps() if self._is_http_jpeg_source() else float(self._fps)
+        target_fps = self._frame_cache_target_fps_for_source(source_fps)
+        self._frame_cache_sample_interval_s = 1.0 / target_fps
+        self._next_frame_cache_sample_at = 0.0
+        self._predecode_target_fps = self._predecode_target_fps_for_source(source_fps)
+        self._predecode_drop_probability = self._predecode_drop_probability_for_source(source_fps)
 
     @property
     def role(self) -> str:
@@ -117,25 +122,94 @@ class CameraPipeline:
         return self._rebuild_count
 
     @staticmethod
-    def _frame_cache_sample_stride_for_fps(fps: float) -> int:
-        """Return a stride for the 3D compositor frame-cache bridge.
+    def _frame_cache_target_fps_for_source(fps: float) -> float:
+        """Return a monotonic-time frame-cache target for the 3D bridge.
 
         The incident baseline requires camera tiles to read as live, not as
-        periodically refreshed stills. The target defaults to 30 Hz and can be
-        lowered by environment only when resource pressure has been measured.
+        periodically refreshed stills. In 3D mode, the frame cache feeds the
+        source publisher rather than the legacy compositor, so the default
+        follows the source-publisher cadence instead of blindly copying every
+        decoded camera buffer.
         """
         source_fps = max(fps, 1.0)
-        raw_target = os.environ.get("HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS", "30")
+        default_target = (
+            os.environ.get("HAPAX_CAMERA_SOURCE_PUBLISH_FPS", "10")
+            if os.environ.get("HAPAX_3D_COMPOSITOR") == "1"
+            else "30"
+        )
+        raw_target = os.environ.get("HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS", default_target)
         try:
             target_fps = float(raw_target)
         except ValueError:
             log.warning(
-                "Invalid HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS=%r; using 30",
+                "Invalid HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS=%r; using %s",
                 raw_target,
+                default_target,
             )
-            target_fps = 30.0
-        target_fps = max(1.0, min(source_fps, target_fps))
-        return max(1, int(round(source_fps / target_fps)))
+            target_fps = float(default_target)
+        return max(1.0, min(source_fps, target_fps))
+
+    def _should_snapshot_frame_cache(self, now: float) -> bool:
+        """Gate frame-cache copies by time, not by observed buffer count."""
+        if now < self._next_frame_cache_sample_at:
+            return False
+        self._next_frame_cache_sample_at = now + self._frame_cache_sample_interval_s
+        return True
+
+    @staticmethod
+    def _predecode_target_fps_for_source(fps: float) -> int | None:
+        """Return an optional 3D-mode pre-decode rate cap.
+
+        The frame-cache gate prevents unnecessary Python copies, but it still
+        lets every upstream MJPEG buffer hit ``jpegdec``. In 3D mode the
+        source-publisher cadence is the consumer contract, so excess compressed
+        frames should be dropped before decode. Outside 3D mode the producer
+        remains a full-cadence interpipe source for the legacy compositor path.
+        """
+        if os.environ.get("HAPAX_3D_COMPOSITOR") != "1":
+            return None
+        source_fps = max(1.0, float(fps))
+        target = CameraPipeline._frame_cache_target_fps_for_source(source_fps)
+        target_int = max(1, int(round(target)))
+        if target_int >= int(round(source_fps)):
+            return None
+        return target_int
+
+    @staticmethod
+    def _predecode_drop_probability_for_source(fps: float) -> float | None:
+        """Return a compressed-buffer drop probability for 3D MJPEG decode.
+
+        ``videorate`` only operates reliably on raw video. Putting it between
+        ``image/jpeg`` source caps and ``jpegdec`` causes live v4l2 MJPEG
+        sources to fail negotiation. A GStreamer ``identity`` dropper leaves
+        JPEG caps untouched while shedding excess compressed buffers before
+        the CPU-heavy decoder.
+        """
+        source_fps = max(1.0, float(fps))
+        target = CameraPipeline._predecode_target_fps_for_source(source_fps)
+        if target is None:
+            return None
+        drop_probability = 1.0 - (float(target) / source_fps)
+        return max(0.0, min(0.95, drop_probability))
+
+    @staticmethod
+    def _effective_source_fps(spec: CameraSpec, fallback_fps: int) -> int:
+        raw = getattr(spec, "framerate", None)
+        if raw is None:
+            return fallback_fps
+        if not isinstance(raw, (int, float, str)):
+            return fallback_fps
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            log.warning(
+                "camera_pipeline %s: invalid framerate %r; using %dfps",
+                getattr(spec, "role", "unknown"),
+                raw,
+                fallback_fps,
+            )
+            return fallback_fps
+        return max(1, min(fallback_fps, value))
 
     @property
     def last_frame_age_seconds(self) -> float:
@@ -211,6 +285,17 @@ class CameraPipeline:
             # queue, not at v4l2.
             decode_queue: Any = None
             if self._spec.input_format == "mjpeg":
+                predecode_drop: Any = None
+                if self._predecode_drop_probability is not None:
+                    predecode_drop = Gst.ElementFactory.make(
+                        "identity", f"predec_drop_{self._role_safe}"
+                    )
+                    if predecode_drop is None:
+                        raise RuntimeError(f"{self._spec.role}: identity factory failed")
+                    predecode_drop.set_property(
+                        "drop-probability", self._predecode_drop_probability
+                    )
+
                 decode_queue = Gst.ElementFactory.make("queue", f"decq_{self._role_safe}")
                 if decode_queue is None:
                     raise RuntimeError(f"{self._spec.role}: queue factory failed")
@@ -275,6 +360,8 @@ class CameraPipeline:
             sink.set_property("forward-eos", False)
 
             elements = [src, src_caps, watchdog]
+            if self._spec.input_format == "mjpeg" and predecode_drop is not None:
+                elements.append(predecode_drop)
             if decode_queue is not None:
                 elements.append(decode_queue)
             if decoder is not None:
@@ -284,7 +371,22 @@ class CameraPipeline:
                 elements.append(flip)
             if normalize_scale is not None:
                 elements.append(normalize_scale)
-            elements.extend([out_caps, sink])
+            elements.append(out_caps)
+
+            use_loopback = bool(self._spec.loopback_device)
+            if use_loopback:
+                tee = Gst.ElementFactory.make("tee", f"loopback_tee_{self._role_safe}")
+                if tee is None:
+                    log.warning(
+                        "%s: tee factory failed, skipping loopback sidecar",
+                        self._spec.role,
+                    )
+                    use_loopback = False
+
+            if use_loopback:
+                elements.append(tee)
+            else:
+                elements.append(sink)
 
             for el in elements:
                 pipeline.add(el)
@@ -294,6 +396,22 @@ class CameraPipeline:
                     raise RuntimeError(
                         f"{self._spec.role}: failed to link "
                         f"{elements[i].get_name()} -> {elements[i + 1].get_name()}"
+                    )
+
+            if use_loopback:
+                pipeline.add(sink)
+                loopback_elements = self._build_loopback_branch(
+                    Gst, pipeline, self._spec.loopback_device
+                )
+                tee_compositor_pad = tee.request_pad_simple("src_%u")
+                if tee_compositor_pad.link(sink.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
+                    raise RuntimeError(f"{self._spec.role}: failed to link tee → interpipesink")
+                tee_loopback_pad = tee.request_pad_simple("src_%u")
+                lb_queue = loopback_elements[0]
+                if tee_loopback_pad.link(lb_queue.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
+                    log.warning(
+                        "%s: failed to link tee → loopback queue, loopback disabled",
+                        self._spec.role,
                     )
 
             # Frame-flow observation: a pad probe on the interpipesink sink pad
@@ -318,6 +436,45 @@ class CameraPipeline:
                 self._spec.input_format,
                 getattr(self._spec, "orientation", "identity"),
             )
+
+    def _build_loopback_branch(self, Gst: Any, pipeline: Any, device: str) -> list[Any]:
+        """Build the loopback sidecar branch: queue → videoconvert → capsfilter(YUY2) → v4l2sink.
+
+        Returns the element list so the caller can link the tee pad to the queue's sink.
+        All errors are non-fatal — a failed loopback never blocks the compositor path.
+        """
+        role = self._role_safe
+        queue = Gst.ElementFactory.make("queue", f"lb_queue_{role}")
+        queue.set_property("max-size-buffers", 2)
+        queue.set_property("leaky", 2)  # downstream
+
+        lb_convert = Gst.ElementFactory.make("videoconvert", f"lb_convert_{role}")
+
+        lb_caps = Gst.ElementFactory.make("capsfilter", f"lb_caps_{role}")
+        lb_caps.set_property(
+            "caps",
+            Gst.Caps.from_string(
+                f"video/x-raw,format=YUY2,width={self._spec.width},"
+                f"height={self._spec.height},framerate={self._fps}/1"
+            ),
+        )
+
+        lb_sink = Gst.ElementFactory.make("v4l2sink", f"lb_v4l2sink_{role}")
+        lb_sink.set_property("device", device)
+        lb_sink.set_property("sync", False)
+
+        elements = [queue, lb_convert, lb_caps, lb_sink]
+        for el in elements:
+            pipeline.add(el)
+        for i in range(len(elements) - 1):
+            if not elements[i].link(elements[i + 1]):
+                log.warning(
+                    "%s: loopback branch link failed: %s -> %s",
+                    self._spec.role,
+                    elements[i].get_name(),
+                    elements[i + 1].get_name(),
+                )
+        return elements
 
     def start(self) -> bool:
         """Transition to PLAYING. Returns False on failure."""
@@ -746,20 +903,6 @@ class CameraPipeline:
             _, current, _ = self._pipeline.get_state(timeout=0)
             return current == Gst.State.PLAYING
 
-    # A+ Stage 3 (2026-04-17): sample one frame every N ticks into the
-    # last-good-frame cache so the fallback pipeline can render that
-    # frame instead of a black card when the primary drops.
-    #
-    # 2026-05-05: reduced from 15 (2 Hz at 30fps) to 3 (10 Hz at 30fps).
-    # 2026-05-15: made stride fps-aware. Fixed stride=3 was correct for
-    # 30fps color cameras but capped 10fps IR sources at ~3.3fps in the
-    # 3D compositor source bridge.
-    # 2026-05-15 incident follow-up: 10 Hz still reads as stale on the
-    # 3D livestream surface. Default the bridge to full source cadence
-    # (usually 30 Hz) and require explicit measured resource pressure to
-    # lower HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS.
-    _FRAME_CACHE_SAMPLE_EVERY_N = 3
-
     def _on_buffer_probe(self, pad: Any, info: Any) -> Any:
         """GStreamer pad probe: note frame arrival, update Phase 4 metrics,
         sample into last-good-frame cache, passthrough."""
@@ -770,14 +913,10 @@ class CameraPipeline:
             metrics.pad_probe_on_buffer(pad, info, self._spec.role)
         except Exception:
             log.exception("camera_pipeline %s: metrics pad probe raised", self._spec.role)
-        # A+ Stage 3: freeze-frame snapshot. Sampling counter lives on
-        # the instance so the cost is per-camera (no dict contention).
-        self._frame_cache_tick = getattr(self, "_frame_cache_tick", 0) + 1
-        sample_every_n = getattr(
-            self, "_frame_cache_sample_every_n", self._FRAME_CACHE_SAMPLE_EVERY_N
-        )
-        if self._frame_cache_tick >= sample_every_n:
-            self._frame_cache_tick = 0
+        # A+ Stage 3 / incident repair: sample by monotonic time so a camera
+        # that produces more buffers than its configured framerate cannot
+        # overrun the frame-cache target.
+        if self._should_snapshot_frame_cache(self._last_frame_monotonic):
             try:
                 self._snapshot_into_frame_cache(info)
             except Exception:
@@ -840,6 +979,14 @@ class CameraPipeline:
             message_text = err.message
             if "Failed to allocate a buffer" in message_text:
                 message_text = self._buffer_allocation_error_context()
+            if src.startswith("lb_"):
+                log.warning(
+                    "camera_pipeline %s loopback error (element=%s, non-fatal): %s",
+                    self._spec.role,
+                    src,
+                    message_text,
+                )
+                return True
             log.error(
                 "camera_pipeline %s error (element=%s): %s (debug=%s)",
                 self._spec.role,
