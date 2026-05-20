@@ -3847,3 +3847,9 @@ from shared.audio_control_plane import (
 classify_service_health
 read_mutation_events
 refuse_dirty_restart
+
+# Weekly research digest producer: async entry point invoked by timer.
+# cc-task: weekly-research-digest-producer
+from shared.weekly_research_digest_producer import run_weekly_digest
+
+run_weekly_digest
