@@ -48,6 +48,7 @@ from shared.audio_topology import (
 )
 from shared.audio_topology_generator import generate_confs
 from shared.audio_topology_inspector import (
+    build_topology_truth,
     check_l12_broadcast_scene_active,
     check_l12_forward_invariant,
     check_tts_broadcast_path,
@@ -1032,6 +1033,111 @@ def cmd_watchdog(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_truth(args: argparse.Namespace) -> int:
+    """Live topology truth surface: capsule, ingress ledger, route-class matrix."""
+    from pathlib import Path
+
+    repo_root = Path(args.repo_root) if args.repo_root else Path(__file__).resolve().parents[1]
+
+    topology_descriptor = None
+    if args.descriptor:
+        topology_descriptor = _load(args.descriptor)
+
+    live = None
+    if args.dump_file:
+        live = descriptor_from_dump_file(args.dump_file)
+    elif not args.offline:
+        try:
+            live = descriptor_from_live()
+        except Exception as exc:
+            print(f"warning: live graph unavailable: {exc}", file=sys.stderr)
+
+    truth = build_topology_truth(repo_root, live, topology_descriptor)
+
+    if getattr(args, "json", False):
+        import json
+        from dataclasses import asdict
+
+        print(json.dumps(asdict(truth), indent=2, sort_keys=True))
+        return 1 if truth.warnings else 0
+
+    _print_truth(truth, live_available=live is not None)
+    return 1 if truth.warnings else 0
+
+
+def _print_truth(truth, *, live_available: bool) -> None:
+    c = truth.capsule
+
+    print("=" * 72)
+    print("AUDIO TOPOLOGY TRUTH SURFACE")
+    print("=" * 72)
+    print(f"timestamp: {c.timestamp}")
+    print()
+
+    print("── Live Capsule ──")
+    print(f"  source_policy_hash:  {c.source_policy_hash}")
+    print(f"  route_map_hash:      {c.route_map_hash}")
+    print(f"  deny_policy_hash:    {c.deny_policy_hash}")
+    print(f"  link_map_hash:       {c.link_map_hash}")
+    if live_available:
+        print(f"  live_graph:          {c.live_node_count} nodes, {c.live_edge_count} edges")
+    else:
+        print("  live_graph:          (offline — no pw-dump)")
+    print(f"  wireplumber_deny:    {'PRESENT' if c.wireplumber_deny_present else 'MISSING'}")
+    print(f"  obs_egress:          {'WITNESSED' if c.obs_egress_witness else 'NOT WITNESSED'}")
+    print()
+
+    if c.physical_devices:
+        print("── Physical Devices ──")
+        for d in c.physical_devices:
+            status = "LIVE" if d.live_present else "ABSENT"
+            serial = f"  serial={d.serial_fragment}" if d.serial_fragment else ""
+            print(f"  {d.descriptor_id:<30} [{d.kind}]  hw={d.hw}  {status}{serial}")
+        print()
+
+    if c.stale_sources:
+        print("── Capsule Freshness ──")
+        for s in c.stale_sources:
+            print(f"  STALE: {s}")
+        print()
+
+    print("── Ingress Ledger: What is entering PC audio? ──")
+    print(
+        f"  {'SOURCE':<28} {'ROLE':<14} {'CLASS':<32} {'DOMAIN':<12} "
+        f"{'LIVESTREAM':<11} {'LIVE'}"
+    )
+    print("  " + "-" * 110)
+    for entry in truth.ingress:
+        ls = "YES" if entry.livestream_eligible else "no"
+        lp = "LIVE" if entry.live_present else "---"
+        if not live_available:
+            lp = "n/a"
+        print(
+            f"  {entry.source_id:<28} {entry.role:<14} {entry.route_class:<32} "
+            f"{entry.exposure_domain:<12} {ls:<11} {lp}"
+        )
+    print()
+
+    print("── Route-Class Matrix ──")
+    print(f"  {'ROUTE CLASS':<36} {'→ DOMAIN':<14} {'STATUS':<14} REASON")
+    print("  " + "-" * 100)
+    for edge in truth.route_matrix:
+        print(
+            f"  {edge.route_class:<36} {edge.target_domain:<14} "
+            f"{edge.status:<14} {edge.reason}"
+        )
+    print()
+
+    if truth.warnings:
+        print("── Warnings (red-flagged) ──")
+        for w in truth.warnings:
+            print(f"  ** {w}")
+        print()
+    else:
+        print("── No warnings — all evidence nominal ──")
+        print()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="hapax-audio-topology",
@@ -1271,6 +1377,37 @@ def main() -> int:
         help="Profile to re-activate for --auto-fix (default: output:analog-stereo).",
     )
     p_pin_check.set_defaults(func=cmd_pin_check)
+
+    p_truth = sub.add_parser(
+        "truth",
+        help="Live topology truth surface: capsule, ingress ledger, route-class matrix.",
+    )
+    p_truth.add_argument(
+        "--descriptor",
+        default="config/audio-topology.yaml",
+        help="Topology descriptor path (default: config/audio-topology.yaml).",
+    )
+    p_truth.add_argument(
+        "--dump-file",
+        help="Saved pw-dump JSON path instead of invoking pw-dump live.",
+    )
+    p_truth.add_argument(
+        "--offline",
+        action="store_true",
+        help="Skip live pw-dump (show config-only evidence).",
+    )
+    p_truth.add_argument(
+        "--repo-root",
+        dest="repo_root",
+        default=None,
+        help="Repository root directory (default: auto-detected from script location).",
+    )
+    p_truth.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the truth surface as JSON.",
+    )
+    p_truth.set_defaults(func=cmd_truth)
 
     args = parser.parse_args()
     return args.func(args)

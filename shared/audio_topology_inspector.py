@@ -58,6 +58,7 @@ References:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import subprocess
@@ -1162,3 +1163,336 @@ def _reachable_from(
 
 def _can_reach(graph: dict[str, set[str]], source: str, target: str) -> bool:
     return target in _reachable_from(graph, source)
+
+
+# ---------------------------------------------------------------------------
+# Topology Truth Surface
+# ---------------------------------------------------------------------------
+
+TRACKED_CAPSULE_SOURCES: tuple[str, ...] = (
+    "config/audio-topology.yaml",
+    "config/audio-routing.yaml",
+    "config/pipewire/generated/audio-routing-policy.manifest.json",
+    "config/hapax/audio-forbidden-links.conf",
+    "config/hapax/audio-link-map.conf",
+)
+
+
+@dataclass(frozen=True)
+class IngressLedgerEntry:
+    source_id: str
+    producer: str
+    role: str
+    route_class: str
+    exposure_domain: str
+    target_chain: tuple[str, ...]
+    livestream_eligible: bool
+    pipewire_node: str
+    live_present: bool
+
+
+@dataclass(frozen=True)
+class RouteClassEdge:
+    route_class: str
+    target_domain: str
+    status: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class DeviceWitness:
+    descriptor_id: str
+    pipewire_name: str
+    hw: str | None
+    kind: str
+    live_present: bool
+    serial_fragment: str | None
+
+
+@dataclass(frozen=True)
+class LiveTopologyCapsule:
+    source_policy_hash: str
+    route_map_hash: str
+    deny_policy_hash: str
+    link_map_hash: str
+    live_node_count: int
+    live_edge_count: int
+    wireplumber_deny_present: bool
+    obs_egress_witness: bool
+    physical_devices: tuple[DeviceWitness, ...]
+    current_hashes: dict[str, str]
+    recorded_hashes: dict[str, str]
+    stale_sources: tuple[str, ...]
+    timestamp: str
+
+
+@dataclass(frozen=True)
+class TopologyTruth:
+    capsule: LiveTopologyCapsule
+    ingress: tuple[IngressLedgerEntry, ...]
+    route_matrix: tuple[RouteClassEdge, ...]
+    warnings: tuple[str, ...]
+
+
+def _hash_file_short(path: Path) -> str:
+    if not path.exists():
+        return "MISSING"
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+
+
+def _exposure_domain_from_route(route: dict[str, Any]) -> str:
+    if route.get("broadcast_eligible"):
+        return "broadcast"
+    rc = str(route.get("route_class", ""))
+    if "private" in rc or "notification" in rc:
+        return "private"
+    if "fail_closed" in rc:
+        return "fail_closed"
+    return "private"
+
+
+def _extract_serial_fragment(pipewire_name: str) -> str | None:
+    if not pipewire_name.startswith("alsa_"):
+        return None
+    parts = pipewire_name.split(".")
+    if len(parts) < 2:
+        return None
+    usb_part = parts[1]
+    if not usb_part.startswith("usb-"):
+        return None
+    segments = usb_part.split("-")
+    for seg in reversed(segments):
+        if seg and not seg.isdigit() and len(seg) > 1:
+            return seg
+    return None
+
+
+def build_ingress_ledger(
+    routing_config: dict[str, Any],
+    live: TopologyDescriptor | None = None,
+) -> tuple[IngressLedgerEntry, ...]:
+    live_names: set[str] = set()
+    if live is not None:
+        live_names = {node.pipewire_name for node in live.nodes}
+
+    entries: list[IngressLedgerEntry] = []
+    for route in routing_config.get("routes", []):
+        pw_node = route.get("pipewire_node", "")
+        entries.append(
+            IngressLedgerEntry(
+                source_id=route.get("source_id", ""),
+                producer=route.get("producer", ""),
+                role=route.get("role", ""),
+                route_class=route.get("route_class", ""),
+                exposure_domain=_exposure_domain_from_route(route),
+                target_chain=tuple(route.get("target_chain", [])),
+                livestream_eligible=bool(route.get("broadcast_eligible", False)),
+                pipewire_node=pw_node,
+                live_present=pw_node in live_names,
+            )
+        )
+    return tuple(entries)
+
+
+def build_route_class_matrix(
+    routing_config: dict[str, Any],
+) -> tuple[RouteClassEdge, ...]:
+    fail_closed = routing_config.get("fail_closed_policy", {})
+    routes = routing_config.get("routes", [])
+    route_classes = sorted({r.get("route_class", "") for r in routes if r.get("route_class")})
+
+    edges: list[RouteClassEdge] = []
+    for rc in route_classes:
+        rc_routes = [r for r in routes if r.get("route_class") == rc]
+        any_broadcast = any(r.get("broadcast_eligible") for r in rc_routes)
+
+        if any_broadcast:
+            n = sum(1 for r in rc_routes if r.get("broadcast_eligible"))
+            edges.append(
+                RouteClassEdge(
+                    route_class=rc,
+                    target_domain="broadcast",
+                    status="allowed",
+                    reason=f"broadcast_eligible=true on {n}/{len(rc_routes)} route(s)",
+                )
+            )
+        elif "fail_closed" in rc:
+            edges.append(
+                RouteClassEdge(
+                    route_class=rc,
+                    target_domain="broadcast",
+                    status="fail_closed",
+                    reason=(
+                        f"unknown_source_broadcast_eligible="
+                        f"{fail_closed.get('unknown_source_broadcast_eligible', 'unset')}"
+                    ),
+                )
+            )
+        else:
+            basis_set = {r.get("broadcast_eligibility_basis", "") for r in rc_routes}
+            edges.append(
+                RouteClassEdge(
+                    route_class=rc,
+                    target_domain="broadcast",
+                    status="forbidden",
+                    reason=f"broadcast_eligible=false; basis={', '.join(sorted(basis_set))}",
+                )
+            )
+
+        if "private" in rc or "notification" in rc:
+            edges.append(
+                RouteClassEdge(
+                    route_class=rc,
+                    target_domain="private",
+                    status="allowed",
+                    reason=f"route_class={rc} targets private domain",
+                )
+            )
+        else:
+            edges.append(
+                RouteClassEdge(
+                    route_class=rc,
+                    target_domain="private",
+                    status="forbidden",
+                    reason=f"route_class={rc} does not target private domain",
+                )
+            )
+
+    return tuple(edges)
+
+
+def build_live_capsule(
+    repo_root: Path,
+    live: TopologyDescriptor | None = None,
+    topology_descriptor: TopologyDescriptor | None = None,
+) -> LiveTopologyCapsule:
+    from datetime import UTC, datetime
+
+    import yaml
+
+    current_hashes: dict[str, str] = {}
+    for rel in TRACKED_CAPSULE_SOURCES:
+        current_hashes[rel] = _hash_file_short(repo_root / rel)
+
+    capsule_path = repo_root / "config" / "audio-current-capsule.yaml"
+    recorded_hashes: dict[str, str] = {}
+    if capsule_path.exists():
+        try:
+            data = yaml.safe_load(capsule_path.read_text())
+            if isinstance(data, dict):
+                recorded_hashes = data.get("source_hashes", {})
+        except Exception:
+            pass
+
+    stale: list[str] = []
+    for rel, current in current_hashes.items():
+        recorded = recorded_hashes.get(rel)
+        if recorded is None:
+            stale.append(f"{rel}: not tracked in capsule")
+        elif current == "MISSING":
+            stale.append(f"{rel}: source file missing")
+        elif current != recorded:
+            stale.append(f"{rel}: hash drift ({recorded} -> {current})")
+
+    deny_conf = repo_root / "config" / "wireplumber" / "98-hapax-link-deny.conf"
+
+    obs_egress = False
+    if live is not None:
+        live_by_name = {n.pipewire_name: n for n in live.nodes}
+        tap = live_by_name.get("hapax-livestream-tap")
+        master = live_by_name.get("hapax-broadcast-master-capture")
+        if tap is not None and master is not None:
+            obs_egress = any(e.source == tap.id and e.target == master.id for e in live.edges)
+
+    devices: list[DeviceWitness] = []
+    if topology_descriptor is not None:
+        live_names = {n.pipewire_name for n in live.nodes} if live else set()
+        for node in topology_descriptor.nodes:
+            if node.hw is None:
+                continue
+            devices.append(
+                DeviceWitness(
+                    descriptor_id=node.id,
+                    pipewire_name=node.pipewire_name,
+                    hw=node.hw,
+                    kind=node.kind.value,
+                    live_present=node.pipewire_name in live_names,
+                    serial_fragment=_extract_serial_fragment(node.pipewire_name),
+                )
+            )
+
+    return LiveTopologyCapsule(
+        source_policy_hash=current_hashes.get("config/audio-routing.yaml", "MISSING"),
+        route_map_hash=current_hashes.get(
+            "config/pipewire/generated/audio-routing-policy.manifest.json", "MISSING"
+        ),
+        deny_policy_hash=current_hashes.get("config/hapax/audio-forbidden-links.conf", "MISSING"),
+        link_map_hash=current_hashes.get("config/hapax/audio-link-map.conf", "MISSING"),
+        live_node_count=len(live.nodes) if live else 0,
+        live_edge_count=len(live.edges) if live else 0,
+        wireplumber_deny_present=deny_conf.exists(),
+        obs_egress_witness=obs_egress,
+        physical_devices=tuple(devices),
+        current_hashes=current_hashes,
+        recorded_hashes=recorded_hashes,
+        stale_sources=tuple(stale),
+        timestamp=datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+    )
+
+
+def build_topology_truth(
+    repo_root: Path,
+    live: TopologyDescriptor | None = None,
+    topology_descriptor: TopologyDescriptor | None = None,
+) -> TopologyTruth:
+    import yaml
+
+    routing_path = repo_root / "config" / "audio-routing.yaml"
+    routing_config: dict[str, Any] = {}
+    if routing_path.exists():
+        try:
+            routing_config = yaml.safe_load(routing_path.read_text()) or {}
+        except Exception:
+            pass
+
+    capsule = build_live_capsule(repo_root, live, topology_descriptor)
+    ingress = build_ingress_ledger(routing_config, live)
+    route_matrix = build_route_class_matrix(routing_config)
+
+    warnings: list[str] = []
+
+    for s in capsule.stale_sources:
+        warnings.append(f"STALE: {s}")
+
+    if not capsule.wireplumber_deny_present:
+        warnings.append(
+            "MISSING: WirePlumber deny hook (config/wireplumber/98-hapax-link-deny.conf)"
+        )
+
+    if live is not None and not capsule.obs_egress_witness:
+        warnings.append(
+            "MISSING: OBS egress witness — livestream-tap -> broadcast-master edge not found"
+        )
+
+    if live is not None:
+        for device in capsule.physical_devices:
+            if not device.live_present:
+                warnings.append(
+                    f"MISSING: device {device.descriptor_id} ({device.pipewire_name}) "
+                    f"not in live graph"
+                )
+
+    if live is not None:
+        for entry in ingress:
+            if not entry.live_present and entry.livestream_eligible:
+                warnings.append(
+                    f"MISSING: broadcast-eligible source {entry.source_id} "
+                    f"({entry.pipewire_node}) not in live graph"
+                )
+
+    return TopologyTruth(
+        capsule=capsule,
+        ingress=ingress,
+        route_matrix=route_matrix,
+        warnings=tuple(warnings),
+    )
