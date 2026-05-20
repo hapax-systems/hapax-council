@@ -377,7 +377,7 @@ def resolve_playback_decision(
             ),
             safety_gate=safety_gate,
         )
-    if not tts_permission.allowed:
+    if not tts_permission.allowed and not stream_public:
         return _blocked_decision(
             destination=destination,
             route=route,
