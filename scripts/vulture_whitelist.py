@@ -3873,3 +3873,10 @@ from shared.audio_restart_proof_gate import (
 format_failure_report
 run_restart_proof_gate
 write_witness
+
+# Replay card marketplace publisher: systemd-timer entry point + test
+# call path. No static import from a __main__ module.
+# cc-task: replay-card-marketplace-publisher
+from agents.publication_bus.replay_card_publisher import ReplayCardPublisher
+
+ReplayCardPublisher.publish_card
