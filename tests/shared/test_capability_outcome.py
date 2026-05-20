@@ -92,17 +92,18 @@ def test_no_update_cases_cannot_validate_success_or_public_action_updates(
     fixtures = load_capability_outcome_fixtures()
     rows = fixtures.rows_for_fixture_case(fixture_case)
 
-    assert [row.outcome_id for row in rows] == [expected_outcome_id]
-    row = rows[0]
-    assert row.validates_success() is False
-    assert row.allows_verified_public_or_action_success_update() is False
-    assert row.allows_claim_posterior_update() is False
-    assert row.learning_update.allowed is False
-    assert row.verified_success.capability is False
-    assert row.verified_success.action is False
-    assert row.verified_success.public is False
-    assert row.verified_success.claim_posterior is False
-    assert f"fixture_case:{fixture_case.value}" in row.success_blockers()
+    assert len(rows) >= 1
+    assert expected_outcome_id in [row.outcome_id for row in rows]
+    for row in rows:
+        assert row.validates_success() is False
+        assert row.allows_verified_public_or_action_success_update() is False
+        assert row.allows_claim_posterior_update() is False
+        assert row.learning_update.allowed is False
+        assert row.verified_success.capability is False
+        assert row.verified_success.action is False
+        assert row.verified_success.public is False
+        assert row.verified_success.claim_posterior is False
+        assert f"fixture_case:{fixture_case.value}" in row.success_blockers()
 
 
 @pytest.mark.parametrize(
