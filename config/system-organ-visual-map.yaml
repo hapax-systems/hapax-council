@@ -1,0 +1,164 @@
+schema_version: 1
+description: >
+  Maps Hapax system subsystems (organs) to their visual representation
+  techniques on compositor and Logos surfaces. Each organ declares which
+  visual channels it can occupy and what rendering technique expresses
+  its state.
+
+visual_techniques:
+  shader_node:
+    description: "WGSL shader node in the reverie vocabulary"
+    surface: compositor
+    rendering: gpu
+  cairo_ward:
+    description: "Cairo-rendered overlay ward on the compositor"
+    surface: compositor
+    rendering: cpu
+  logos_panel:
+    description: "React panel in the Logos Tauri app"
+    surface: logos
+    rendering: webview
+  stimmung_tint:
+    description: "Gruvbox/Solarized palette modulation via Stimmung"
+    surface: all
+    rendering: css_vars
+  density_pip:
+    description: "Signal density pip on CBIP bar"
+    surface: compositor
+    rendering: cairo_ward
+
+organs:
+  - id: daimonion
+    name: "Hapax Daimonion"
+    description: "Voice daemon — STT, LLM conversation, TTS"
+    tier: T1
+    visual_representations:
+      - technique: cairo_ward
+        ward_id: voice-state
+        expresses: "speaking/listening/idle/muted state"
+      - technique: logos_panel
+        panel_id: conversation
+        expresses: "conversation history and turn state"
+      - technique: stimmung_tint
+        channel: speech_posture
+        expresses: "voice affect modulates palette warmth"
+
+  - id: compositor
+    name: "Studio Compositor"
+    description: "GStreamer camera pipeline + shader chain + wards"
+    tier: T1
+    visual_representations:
+      - technique: shader_node
+        node_ids: ["noise", "rd", "color", "drift", "breath", "feedback"]
+        expresses: "always-on vocabulary renders compositor aliveness"
+      - technique: cairo_ward
+        ward_id: layout-mode
+        expresses: "current layout mode (balanced/packed/sierpinski/aoa)"
+
+  - id: imagination
+    name: "Hapax Imagination"
+    description: "GPU visual expression daemon — reverie shader graphs"
+    tier: T1
+    visual_representations:
+      - technique: shader_node
+        node_ids: ["content_layer", "postprocess"]
+        expresses: "imagination intent rendered as visual content"
+      - technique: density_pip
+        pip_id: imagination-activity
+        expresses: "imagination recruitment frequency"
+
+  - id: perception
+    name: "Perception Fusion"
+    description: "IR fleet + camera classification fusion"
+    tier: T2
+    visual_representations:
+      - technique: cairo_ward
+        ward_id: perception-state
+        expresses: "person presence, gaze direction, hand state"
+      - technique: density_pip
+        pip_id: perception-confidence
+        expresses: "fusion confidence level"
+
+  - id: affordance_pipeline
+    name: "Affordance Pipeline"
+    description: "Unified semantic recruitment — impingement to activation"
+    tier: T2
+    visual_representations:
+      - technique: logos_panel
+        panel_id: affordances
+        expresses: "recruited affordances and their scores"
+      - technique: density_pip
+        pip_id: recruitment-rate
+        expresses: "affordance recruitment frequency"
+
+  - id: programme_manager
+    name: "Programme Manager"
+    description: "Content programme lifecycle — scheduling, execution, archive"
+    tier: T2
+    visual_representations:
+      - technique: cairo_ward
+        ward_id: programme-state
+        expresses: "active programme, beat position, segment progress"
+      - technique: logos_panel
+        panel_id: programme
+        expresses: "programme queue and history"
+
+  - id: reactive_engine
+    name: "Reactive Engine"
+    description: "Filesystem-as-bus inotify cascade"
+    tier: T3
+    visual_representations:
+      - technique: density_pip
+        pip_id: reactive-events
+        expresses: "event cascade frequency"
+
+  - id: health_monitor
+    name: "Health Monitor"
+    description: "119-check health surveillance"
+    tier: T3
+    visual_representations:
+      - technique: logos_panel
+        panel_id: health
+        expresses: "health status grid"
+      - technique: stimmung_tint
+        channel: system_health
+        expresses: "degraded health shifts palette toward warning tones"
+
+  - id: claim_engine
+    name: "Claim Engine"
+    description: "Bayesian posterior tracking for all system claims"
+    tier: T2
+    visual_representations:
+      - technique: logos_panel
+        panel_id: claims
+        expresses: "claim posteriors and confidence bands"
+
+  - id: temporal_bands
+    name: "Temporal Bands"
+    description: "Retention/protention/impression time consciousness"
+    tier: T2
+    visual_representations:
+      - technique: stimmung_tint
+        channel: temporal_freshness
+        expresses: "impression staleness modulates visual urgency"
+      - technique: density_pip
+        pip_id: temporal-surprise
+        expresses: "surprise count from temporal band"
+
+  - id: publication_bus
+    name: "Publication Bus"
+    description: "55-surface publication with tier gates"
+    tier: T2
+    visual_representations:
+      - technique: logos_panel
+        panel_id: publication
+        expresses: "publication surface status and tier"
+
+  - id: content_resolver
+    name: "Content Resolver"
+    description: "Content resolution and media lookup"
+    tier: T3
+    visual_representations:
+      - technique: density_pip
+        pip_id: content-resolution
+        expresses: "content resolution request rate"

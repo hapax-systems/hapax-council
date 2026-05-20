@@ -3795,6 +3795,7 @@ recent_public_speech
 _clear_tmux_cache_for_tests
 _clear_tmux_session_cache_for_tests
 
+
 from shared.operator_dossier_value_braid_adapter import DossierBraidOutput
 
 DossierBraidOutput._no_confidence_mutations
