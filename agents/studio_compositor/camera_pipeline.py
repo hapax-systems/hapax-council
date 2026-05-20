@@ -66,6 +66,7 @@ class CameraPipeline:
         v4l2src device=/dev/v4l/by-id/...
           ! capsfilter (image/jpeg or raw, native dimensions)
           ! watchdog timeout=<CameraSpec.watchdog_timeout_ms>
+          ! identity drop-probability=<3D decode shed> (if mjpeg, 3D mode)
           ! jpegdec              (if mjpeg)
           ! videoconvert
           ! capsfilter (video/x-raw, format=NV12, native dimensions)
@@ -106,6 +107,7 @@ class CameraPipeline:
         self._frame_cache_sample_interval_s = 1.0 / target_fps
         self._next_frame_cache_sample_at = 0.0
         self._predecode_target_fps = self._predecode_target_fps_for_source(source_fps)
+        self._predecode_drop_probability = self._predecode_drop_probability_for_source(source_fps)
 
     @property
     def role(self) -> str:
@@ -172,6 +174,23 @@ class CameraPipeline:
         if target_int >= int(round(source_fps)):
             return None
         return target_int
+
+    @staticmethod
+    def _predecode_drop_probability_for_source(fps: float) -> float | None:
+        """Return a compressed-buffer drop probability for 3D MJPEG decode.
+
+        ``videorate`` only operates reliably on raw video. Putting it between
+        ``image/jpeg`` source caps and ``jpegdec`` causes live v4l2 MJPEG
+        sources to fail negotiation. A GStreamer ``identity`` dropper leaves
+        JPEG caps untouched while shedding excess compressed buffers before
+        the CPU-heavy decoder.
+        """
+        source_fps = max(1.0, float(fps))
+        target = CameraPipeline._predecode_target_fps_for_source(source_fps)
+        if target is None:
+            return None
+        drop_probability = 1.0 - (float(target) / source_fps)
+        return max(0.0, min(0.95, drop_probability))
 
     @staticmethod
     def _effective_source_fps(spec: CameraSpec, fallback_fps: int) -> int:
@@ -266,31 +285,15 @@ class CameraPipeline:
             # queue, not at v4l2.
             decode_queue: Any = None
             if self._spec.input_format == "mjpeg":
-                predecode_rate: Any = None
-                predecode_caps: Any = None
-                if self._predecode_target_fps is not None:
-                    predecode_rate = Gst.ElementFactory.make(
-                        "videorate", f"predec_rate_{self._role_safe}"
+                predecode_drop: Any = None
+                if self._predecode_drop_probability is not None:
+                    predecode_drop = Gst.ElementFactory.make(
+                        "identity", f"predec_drop_{self._role_safe}"
                     )
-                    if predecode_rate is None:
-                        raise RuntimeError(f"{self._spec.role}: videorate factory failed")
-                    predecode_rate.set_property("drop-only", True)
-                    predecode_rate.set_property("max-rate", self._predecode_target_fps)
-
-                    predecode_caps = Gst.ElementFactory.make(
-                        "capsfilter", f"predec_caps_{self._role_safe}"
-                    )
-                    if predecode_caps is None:
-                        raise RuntimeError(
-                            f"{self._spec.role}: predecode capsfilter factory failed"
-                        )
-                    predecode_caps.set_property(
-                        "caps",
-                        Gst.Caps.from_string(
-                            f"image/jpeg,width={self._spec.width},"
-                            f"height={self._spec.height},"
-                            f"framerate={self._predecode_target_fps}/1"
-                        ),
+                    if predecode_drop is None:
+                        raise RuntimeError(f"{self._spec.role}: identity factory failed")
+                    predecode_drop.set_property(
+                        "drop-probability", self._predecode_drop_probability
                     )
 
                 decode_queue = Gst.ElementFactory.make("queue", f"decq_{self._role_safe}")
@@ -357,8 +360,8 @@ class CameraPipeline:
             sink.set_property("forward-eos", False)
 
             elements = [src, src_caps, watchdog]
-            if self._spec.input_format == "mjpeg" and self._predecode_target_fps is not None:
-                elements.extend([predecode_rate, predecode_caps])
+            if self._spec.input_format == "mjpeg" and predecode_drop is not None:
+                elements.append(predecode_drop)
             if decode_queue is not None:
                 elements.append(decode_queue)
             if decoder is not None:
