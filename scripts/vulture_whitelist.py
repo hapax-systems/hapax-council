@@ -3624,6 +3624,35 @@ ConceptMastery.add_concept
 register_programme_affordances
 EgressSafetyEnvelope.kill_switch_active
 
+# Anti-visualizer governance invariants — tested via
+# tests/governance/test_anti_visualizer.py; runtime wiring pending
+# scrim invariant integration (not dead code).
+from shared.governance.scrim_invariants.anti_visualizer import (
+    AntiVisualizerOracle,
+    calibrate,
+    make_default_projector,
+)
+
+AntiVisualizerOracle.should_dampen
+calibrate
+make_default_projector
+# Dataclass fields accessed via instances (vulture false positives).
+from shared.governance.scrim_invariants.anti_visualizer import (
+    FrameObservables,
+    VisualizerScore,
+)
+
+FrameObservables.mean_luminance
+FrameObservables.rotational_second_moment
+VisualizerScore.period_agreement
+VisualizerScore.silence_guard
+
+# Scrim profile policy Literal fields — populated from YAML fixtures.
+from shared.programme_scrim_profile_policy import LegibilityConstraints
+
+LegibilityConstraints.anti_visualizer_required
+LegibilityConstraints.audio_reactive_visualizer_allowed
+
 from agents.studio_compositor.shadow_render_core import ShadowRenderCore
 
 ShadowRenderCore.update_source
