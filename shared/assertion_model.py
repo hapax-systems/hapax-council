@@ -55,6 +55,19 @@ class ProvenanceRecord(BaseModel):
     modification_history: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class GovernanceStatus(StrEnum):
+    AUTHORITATIVE = "authoritative"
+    CONSTITUTIONAL = "constitutional"
+    DERIVED = "derived"
+    PROPOSED = "proposed"
+    RETIRED = "retired"
+
+
+class AIFNodeType(StrEnum):
+    I_NODE = "I-node"
+    S_NODE = "S-node"
+
+
 class Assertion(BaseModel):
     assertion_id: str = ""
     text: str
@@ -62,15 +75,20 @@ class Assertion(BaseModel):
     source_type: SourceType
     source_uri: str
     source_span: tuple[int, int] | None = None
-    confidence: float = 1.0
+    source_line: int | None = None
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     score: float | None = Field(default=None, ge=0.0, le=1.0)
     value_scores: dict[str, float] = Field(default_factory=dict)
     domain: str = "general"
     assertion_type: AssertionType
+    governance_status: GovernanceStatus = GovernanceStatus.DERIVED
+    aif_node_type: AIFNodeType = AIFNodeType.I_NODE
     provenance: ProvenanceRecord = Field(default_factory=ProvenanceRecord)
     tags: list[str] = Field(default_factory=list)
     supersedes: str | None = None
     superseded_by: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     def model_post_init(self, _context: Any) -> None:
         if not self.assertion_id:
@@ -100,6 +118,8 @@ def extract_from_axiom_registry(registry_path: str) -> list[Assertion]:
                 confidence=1.0,
                 domain="constitutional",
                 assertion_type=AssertionType.AXIOM,
+                governance_status=GovernanceStatus.AUTHORITATIVE,
+                aif_node_type=AIFNodeType.I_NODE,
                 tags=[
                     f"weight:{axiom.get('weight', 0)}",
                     f"scope:{axiom.get('scope', 'unknown')}",
@@ -144,6 +164,8 @@ def extract_from_implications(implications_dir: str) -> list[Assertion]:
                     confidence=1.0,
                     domain="constitutional",
                     assertion_type=AssertionType.IMPLICATION,
+                    governance_status=GovernanceStatus.CONSTITUTIONAL,
+                    aif_node_type=AIFNodeType.I_NODE,
                     tags=[
                         f"axiom:{item.get('axiom', item.get('source_axiom', 'unknown'))}",
                         f"id:{item.get('id', 'unknown')}",
