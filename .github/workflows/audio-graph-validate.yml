@@ -3,26 +3,34 @@ name: audio-graph-validate
 on:
   push:
     branches: [main]
-    paths:
+    paths: &audio-authority-paths
       - "shared/audio_graph/**"
       - "shared/audio_topology*.py"
-      - "scripts/hapax-audio-graph-validate"
+      - "shared/audio_loudness*.py"
+      - "shared/audio_canary*.py"
+      - "scripts/hapax-audio-*"
+      - "scripts/check-audio-*.py"
+      - "scripts/generate-pipewire-audio-confs.py"
+      - "scripts/audit-audio-topology.sh"
+      - "scripts/audio-*.sh"
       - "tests/audio_graph/**"
       - "config/audio-topology.yaml"
+      - "config/audio-routing.yaml"
+      - "config/audio-conf-*.yaml"
+      - "config/audio-current-capsule.yaml"
       - "config/pipewire/**"
       - "config/wireplumber/**"
+      - "config/hapax/audio-*.conf"
+      - "config/hapax/audio-*.yaml"
+      - "docs/audio-topology-reference.md"
+      - "docs/audio/**"
+      - "hooks/scripts/*audio*"
       - ".github/workflows/audio-graph-validate.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "shared/audio_graph/**"
-      - "shared/audio_topology*.py"
-      - "scripts/hapax-audio-graph-validate"
-      - "tests/audio_graph/**"
-      - "config/audio-topology.yaml"
-      - "config/pipewire/**"
-      - "config/wireplumber/**"
-      - ".github/workflows/audio-graph-validate.yml"
+    paths: *audio-authority-paths
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -69,6 +77,10 @@ jobs:
           else
             echo "config/pipewire not present; skipping in-tree decomposition"
           fi
+      - name: Check audio AuthorityCase metadata
+        run: uv run python scripts/check-audio-authority-case.py --strict
+      - name: Check audio current-capsule freshness
+        run: uv run python scripts/check-audio-current-capsule-staleness.py
       - name: Upload validator JSON
         if: always()
         uses: actions/upload-artifact@v4
