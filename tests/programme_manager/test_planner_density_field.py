@@ -232,6 +232,34 @@ def test_render_context_density_field_present() -> None:
     assert '"dominant_zone": "perception"' in context
 
 
+def test_planner_prompt_carries_narrative_arc_density_instruction() -> None:
+    """Planner prompt tells the model to use biography + density as gradients."""
+    from agents.programme_manager.planner import ProgrammePlanner
+
+    prompts: list[str] = []
+
+    def stub_llm(prompt: str) -> str:
+        prompts.append(prompt)
+        return "{}"
+
+    planner = ProgrammePlanner(llm_fn=stub_llm, max_retries=0)
+    planner.plan(
+        show_id="show-test-density",
+        density_field={
+            "aggregate_density": 0.9,
+            "dominant_zone": "narrative",
+            "dominant_mode": "alarm",
+            "zones": {"narrative": {"density": 0.9, "mode": "alarm"}},
+        },
+        stream_biography="Narrative stage: inchoate\nIntroductions: NONE",
+    )
+
+    assert prompts
+    assert "## Narrative arc awareness" in prompts[0]
+    assert "Use density as a planning gradient" in prompts[0]
+    assert "Narrative stage: inchoate" in prompts[0]
+
+
 def test_planner_plan_accepts_density_field_kwarg() -> None:
     """ProgrammePlanner.plan() accepts density_field without error."""
     from agents.programme_manager.planner import ProgrammePlanner

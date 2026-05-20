@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 
 _CHRONICLE_API = "http://localhost:8051/api/chronicle"
 _PROGRAMME_STORE = Path.home() / "hapax-state" / "programmes.jsonl"
+_PROGRAMME_OUTCOME_ROOT = Path.home() / "hapax-state" / "programmes"
 
 
 def _fetch_chronicle(limit: int = 50) -> list[dict]:
@@ -52,17 +53,33 @@ def _fetch_chronicle(limit: int = 50) -> list[dict]:
 
 
 def _count_completed_segments() -> int:
+    store_count = 0
     if not _PROGRAMME_STORE.exists():
-        return 0
-    count = 0
-    for line in _PROGRAMME_STORE.read_text().strip().splitlines():
-        try:
-            prog = json.loads(line)
-            if prog.get("status") == "completed":
-                count += 1
-        except json.JSONDecodeError:
-            continue
-    return count
+        store_count = 0
+    else:
+        for line in _PROGRAMME_STORE.read_text().strip().splitlines():
+            try:
+                prog = json.loads(line)
+                if prog.get("status") == "completed":
+                    store_count += 1
+            except json.JSONDecodeError:
+                continue
+
+    outcome_count = 0
+    if _PROGRAMME_OUTCOME_ROOT.exists():
+        for path in _PROGRAMME_OUTCOME_ROOT.glob("*/*.jsonl"):
+            try:
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if str(event.get("event", "")).startswith("ended_"):
+                        outcome_count += 1
+                        break
+            except OSError:
+                continue
+    return max(store_count, outcome_count)
 
 
 async def _query_grounding(chronicle_events: list[dict]) -> dict:

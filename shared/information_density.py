@@ -24,6 +24,7 @@ import json
 import logging
 import math
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,19 @@ W_SURPRISE = 0.3
 W_NOVELTY = 0.3
 W_ACTIVITY = 0.2
 W_RELEVANCE = 0.2
+
+_ZONE_PREFIXES: dict[str, str] = {
+    "audio": "audio",
+    "biometric": "body",
+    "compositor": "visual",
+    "desk": "perception",
+    "ir": "perception",
+    "mixer": "audio",
+    "narrative": "narrative",
+    "perception": "perception",
+    "stimmung": "stimmung",
+    "system": "system",
+}
 
 
 @dataclass
@@ -294,11 +308,18 @@ class InformationDensityField:
 
     def write_shm(self) -> None:
         now = time.time()
+        densities = self.all_densities()
+        zones = _zone_summaries(densities.values())
+        dominant_zone = _dominant_zone(zones)
         payload = {
             "timestamp": now,
+            "computed_at": now,
             "aggregate_density": round(self.aggregate_density(), 4),
             "source_count": len(self._sources),
-            "sources": {sid: d.to_dict() for sid, d in self.all_densities().items()},
+            "sources": {sid: d.to_dict() for sid, d in densities.items()},
+            "zones": zones,
+            "dominant_zone": dominant_zone,
+            "dominant_mode": zones.get(dominant_zone, {}).get("mode") if dominant_zone else None,
             "top_5": [d.to_dict() for d in self.top_sources(5)],
         }
         try:
@@ -316,6 +337,52 @@ class InformationDensityField:
             return json.loads(DENSITY_FIELD_SHM.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return None
+
+
+def density_temporal_mode(density: float) -> str:
+    """Return the coarse temporal mode label used by density consumers."""
+    if density >= 0.75:
+        return "alarm"
+    if density >= 0.50:
+        return "sustained"
+    if density >= 0.30:
+        return "rising"
+    return "baseline"
+
+
+def density_zone(source_id: str) -> str:
+    """Map a source id to a planner-readable zone."""
+    prefix = source_id.split(".", 1)[0].strip().lower()
+    return _ZONE_PREFIXES.get(prefix, prefix or "unknown")
+
+
+def _zone_summaries(densities: Iterable[SourceDensity]) -> dict[str, dict[str, Any]]:
+    buckets: dict[str, list[SourceDensity]] = {}
+    for density in densities:
+        if not isinstance(density, SourceDensity):
+            continue
+        buckets.setdefault(density_zone(density.source_id), []).append(density)
+
+    summaries: dict[str, dict[str, Any]] = {}
+    for zone, values in buckets.items():
+        if not values:
+            continue
+        top = max(values, key=lambda d: d.density)
+        mean_density = sum(d.density for d in values) / len(values)
+        summaries[zone] = {
+            "density": round(mean_density, 4),
+            "mode": density_temporal_mode(mean_density),
+            "top_signal": f"{top.source_id}={top.density:.3f}",
+            "top_source": top.source_id,
+            "source_count": len(values),
+        }
+    return summaries
+
+
+def _dominant_zone(zones: dict[str, dict[str, Any]]) -> str | None:
+    if not zones:
+        return None
+    return max(zones, key=lambda zone: float(zones[zone].get("density") or 0.0))
 
 
 def _digamma(x: float) -> float:
