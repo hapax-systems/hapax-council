@@ -37,8 +37,13 @@ patched released Tauri/wry/tao/muda path. Revival requires all of:
 
 - crates.io releases that move Linux to GTK4/WebKitGTK 6 or otherwise resolve
   `glib >=0.20.0`;
-- `cargo tree -i glib@0.18.5 --locked` from `hapax-logos/src-tauri` returns no
-  package match;
+- this vulnerable-glib gate passes from `hapax-logos/src-tauri`:
+
+  ```bash
+  cargo tree --locked --prefix none \
+    | awk '/^glib v/ { version=$2; sub(/^v/, "", version); split(version, parts, "."); if (parts[1] == 0 && parts[2] < 20) { print; bad = 1 } } END { exit bad }'
+  ```
+
 - `cargo check --locked` passes from `hapax-logos/src-tauri`;
 - the release-blocker note above is replaced with a dated validation entry.
 
