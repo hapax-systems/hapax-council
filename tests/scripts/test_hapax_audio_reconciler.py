@@ -53,9 +53,9 @@ def test_reconciler_only_mutates_missing_or_forbidden_present_links(tmp_path: Pa
     )
     fake_pw_link.write_text(
         "#!/usr/bin/env bash\n"
-        "if [ \"$1\" = \"-l\" ]; then cat \"$PW_LINK_GRAPH\"; exit 0; fi\n"
-        "if [ \"$1\" = \"-d\" ]; then printf 'disconnect %s %s\\n' \"$2\" \"$3\" >> \"$PW_LINK_CALLS\"; exit 0; fi\n"
-        "printf 'connect %s %s\\n' \"$1\" \"$2\" >> \"$PW_LINK_CALLS\"\n",
+        'if [ "$1" = "-l" ]; then cat "$PW_LINK_GRAPH"; exit 0; fi\n'
+        'if [ "$1" = "-d" ]; then printf \'disconnect %s %s\\n\' "$2" "$3" >> "$PW_LINK_CALLS"; exit 0; fi\n'
+        'printf \'connect %s %s\\n\' "$1" "$2" >> "$PW_LINK_CALLS"\n',
         encoding="utf-8",
     )
     fake_pw_link.chmod(0o755)
