@@ -29,13 +29,14 @@ const ASSERTIVE_TARGET_DEPARTURE_FRACTION: f32 = 0.45;
 const MIN_ACTIVE_ANCHOR_EFFECTS: usize = 3;
 const MAX_ACTIVE_CONDITIONAL_EFFECTS: usize = 1;
 const MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS: usize = 3;
+const MIN_ACTIVE_DRAMATIC_VARIATION_EFFECTS: usize = 3;
 const MIN_ACTIVE_GENERATED_CHAIN_SLOTS: usize = 3;
 const MIN_GENERATED_CHAIN_NODES: usize = 3;
 const MAX_GENERATED_CHAIN_NODES: usize = 5;
 const RECENT_EFFECT_MEMORY: usize = 36;
 const COVERAGE_EVENT_MEMORY: usize = 192;
-const PARAM_ORBIT_BASE_RATE: f32 = 0.11;
-const PARAM_ORBIT_SECONDARY_RATE: f32 = 0.047;
+const PARAM_ORBIT_BASE_RATE: f32 = 0.15;
+const PARAM_ORBIT_SECONDARY_RATE: f32 = 0.069;
 
 fn shader_nodes_dir() -> PathBuf {
     if let Ok(path) = std::env::var("HAPAX_SHADER_NODES_DIR") {
@@ -86,6 +87,7 @@ struct ChainSeed {
 struct GeneratedChain {
     id: String,
     lineage: String,
+    structural_signature: String,
     topology_signature: String,
     anchor: &'static str,
     nodes: Vec<&'static str>,
@@ -296,9 +298,9 @@ pub static SHADERS: &[ShaderDef] = &[
         is_spatial: false,
         passthrough: &[("block_size", 16.0), ("intensity", 0.0), ("rgb_split", 0.0)],
         active_ranges: &[
-            ("block_size", 10.0, 28.0),
-            ("intensity", 0.06, 0.20),
-            ("rgb_split", 0.04, 0.18),
+            ("block_size", 8.0, 28.0),
+            ("intensity", 0.10, 0.34),
+            ("rgb_split", 0.10, 0.36),
         ],
         param_order: &["block_size", "intensity", "rgb_split"],
     },
@@ -322,7 +324,7 @@ pub static SHADERS: &[ShaderDef] = &[
         family: "edge",
         is_spatial: false,
         passthrough: &[("threshold", 1.0), ("color_mode", 0.0)],
-        active_ranges: &[("threshold", 0.08, 0.40), ("color_mode", 0.32, 0.78)],
+        active_ranges: &[("threshold", 0.04, 0.28), ("color_mode", 0.45, 0.95)],
         param_order: &["threshold", "color_mode"],
     },
     ShaderDef {
@@ -337,9 +339,9 @@ pub static SHADERS: &[ShaderDef] = &[
             ("color_mode", 0.0),
         ],
         active_ranges: &[
-            ("displacement", 3.0, 16.0),
-            ("line_density", 3.0, 12.0),
-            ("line_width", 1.0, 2.5),
+            ("displacement", 5.0, 28.0),
+            ("line_density", 4.0, 16.0),
+            ("line_width", 1.2, 3.4),
             ("color_mode", 0.0, 1.0),
         ],
         param_order: &["displacement", "line_density", "line_width", "color_mode"],
@@ -351,9 +353,9 @@ pub static SHADERS: &[ShaderDef] = &[
         is_spatial: false,
         passthrough: &[("offset_x", 0.0), ("offset_y", 0.0), ("intensity", 0.0)],
         active_ranges: &[
-            ("offset_x", -2.2, 2.2),
-            ("offset_y", -0.9, 0.9),
-            ("intensity", 0.24, 0.78),
+            ("offset_x", -4.8, 4.8),
+            ("offset_y", -2.2, 2.2),
+            ("intensity", 0.42, 0.95),
         ],
         param_order: &["offset_x", "offset_y", "intensity"],
     },
@@ -389,7 +391,7 @@ pub static SHADERS: &[ShaderDef] = &[
         family: "tonal",
         is_spatial: false,
         passthrough: &[("edge_glow", -1.0), ("palette_shift", 0.0)],
-        active_ranges: &[("edge_glow", 0.22, 0.65), ("palette_shift", 0.0, 1.0)],
+        active_ranges: &[("edge_glow", 0.35, 0.85), ("palette_shift", 0.0, 1.0)],
         param_order: &["edge_glow", "palette_shift"],
     },
     ShaderDef {
@@ -398,7 +400,7 @@ pub static SHADERS: &[ShaderDef] = &[
         family: "texture",
         is_spatial: false,
         passthrough: &[("dot_size", 0.5), ("color_mode", 1.0)],
-        active_ranges: &[("dot_size", 1.2, 3.4), ("color_mode", 1.0, 1.0)],
+        active_ranges: &[("dot_size", 1.6, 5.2), ("color_mode", 1.0, 1.0)],
         param_order: &["dot_size", "color_mode"],
     },
     ShaderDef {
@@ -407,7 +409,7 @@ pub static SHADERS: &[ShaderDef] = &[
         family: "tonal",
         is_spatial: false,
         passthrough: &[("levels", 256.0), ("gamma", 1.0)],
-        active_ranges: &[("levels", 4.0, 16.0), ("gamma", 0.85, 1.2)],
+        active_ranges: &[("levels", 3.0, 10.0), ("gamma", 0.85, 1.2)],
         param_order: &["levels", "gamma"],
     },
     ShaderDef {
@@ -509,7 +511,7 @@ pub static SHADERS: &[ShaderDef] = &[
         ],
         active_ranges: &[
             ("matrix_size", 4.0, 4.0),
-            ("color_levels", 4.0, 16.0),
+            ("color_levels", 3.0, 10.0),
             ("monochrome", 0.0, 0.0),
         ],
         param_order: &["matrix_size", "color_levels", "monochrome"],
@@ -758,9 +760,9 @@ pub static SHADERS: &[ShaderDef] = &[
             ("direction", 0.0),
         ],
         active_ranges: &[
-            ("threshold_low", 0.35, 0.55),
-            ("threshold_high", 0.62, 0.82),
-            ("sort_length", 10.0, 34.0),
+            ("threshold_low", 0.25, 0.50),
+            ("threshold_high", 0.58, 0.88),
+            ("sort_length", 20.0, 72.0),
             ("direction", 0.0, 1.0),
         ],
         param_order: &[
@@ -873,7 +875,7 @@ pub static SHADERS: &[ShaderDef] = &[
         ],
         active_ranges: &[
             ("green_intensity", 0.35, 0.70),
-            ("brightness", 1.0, 1.20),
+            ("brightness", 1.0, 1.08),
             ("contrast", 1.0, 1.15),
         ],
         param_order: &["green_intensity", "brightness", "contrast"],
@@ -970,11 +972,11 @@ pub static SHADERS: &[ShaderDef] = &[
             ("color_a", 0.0),
         ],
         active_ranges: &[
-            ("active", 0.10, 0.35),
+            ("active", 0.22, 0.58),
             ("color_r", 0.2, 1.0),
             ("color_g", 0.2, 1.0),
             ("color_b", 0.2, 1.0),
-            ("color_a", 0.02, 0.08),
+            ("color_a", 0.05, 0.14),
         ],
         param_order: &["active", "color_r", "color_g", "color_b", "color_a"],
     },
@@ -1041,12 +1043,12 @@ pub static SHADERS: &[ShaderDef] = &[
         ],
         active_ranges: &[
             ("shape", 0.0, 2.0),
-            ("thickness", 0.7, 2.5),
+            ("thickness", 0.9, 3.2),
             ("color_r", 0.2, 1.0),
             ("color_g", 0.2, 1.0),
             ("color_b", 0.2, 1.0),
-            ("color_a", 0.04, 0.16),
-            ("scale", 0.35, 0.80),
+            ("color_a", 0.08, 0.28),
+            ("scale", 0.45, 0.95),
         ],
         param_order: &[
             "shape",
@@ -1102,10 +1104,10 @@ pub static SHADERS: &[ShaderDef] = &[
         ],
         active_ranges: &[
             ("viscosity", 0.001, 0.006),
-            ("vorticity", 0.2, 1.0),
+            ("vorticity", 0.45, 1.6),
             ("dissipation", 0.94, 0.995),
-            ("speed", 0.2, 1.0),
-            ("amount", 0.04, 0.14),
+            ("speed", 0.4, 1.4),
+            ("amount", 0.08, 0.28),
         ],
         param_order: &["viscosity", "vorticity", "dissipation", "speed", "amount"],
     },
@@ -1127,8 +1129,8 @@ pub static SHADERS: &[ShaderDef] = &[
             ("kill_rate", 0.045, 0.066),
             ("diffusion_a", 0.8, 1.2),
             ("diffusion_b", 0.35, 0.65),
-            ("speed", 0.3, 1.0),
-            ("amount", 0.035, 0.13),
+            ("speed", 0.4, 1.3),
+            ("amount", 0.08, 0.25),
         ],
         param_order: &[
             "feed_rate",
@@ -1358,6 +1360,18 @@ mod tests {
                 Some(trimmed[name_start + 2..name_end].trim().to_string())
             })
             .collect()
+    }
+
+    fn generated_chain_for_test(anchor: &'static str, nodes: Vec<&'static str>) -> GeneratedChain {
+        GeneratedChain {
+            id: format!("rng-chain:{anchor}:test:0000"),
+            lineage: "rng-constrained:test".to_string(),
+            structural_signature: chain_structural_signature(anchor, &nodes),
+            topology_signature: format!("rng:{}:{}:vtest", anchor, nodes.join(":")),
+            anchor,
+            nodes,
+            param_seed: 0xC0FFEE,
+        }
     }
 
     #[test]
@@ -1729,6 +1743,12 @@ mod tests {
                 "effect passes must publish preset/motif chain identity"
             );
             assert!(
+                pass["structural_signature"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty()),
+                "effect passes must publish structural signature for real chain diversity evidence"
+            );
+            assert!(
                 pass["topology_signature"]
                     .as_str()
                     .is_some_and(|s| !s.is_empty()),
@@ -1737,6 +1757,81 @@ mod tests {
         }
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn generated_chains_avoid_structural_duplicates_not_only_variant_ids() {
+        let pixsort = shader_idx_by_name("pixsort").unwrap();
+        let active_structural_signature = chain_structural_signature(
+            "pixsort",
+            &["pixsort", "chromatic_aberration", "glitch_block"],
+        );
+        let active_structural_signatures = vec![active_structural_signature.clone()];
+        let active_node_names = vec![
+            "chromatic_aberration",
+            "glitch_block",
+            "scanlines",
+            "edge_detect",
+        ];
+        let mut rng = SimpleRng::new(0x5A1E);
+        let chain = synthesize_chain_for_shader_avoiding(
+            &mut rng,
+            pixsort,
+            &active_structural_signatures,
+            &active_node_names,
+        );
+
+        assert_ne!(
+            chain.structural_signature, active_structural_signature,
+            "a new param/topology variant is not enough if the node set duplicates an active chain"
+        );
+        let reused_companions = chain
+            .nodes
+            .iter()
+            .filter(|node| **node != "pixsort" && active_node_names.contains(node))
+            .count();
+        assert!(
+            reused_companions < chain.nodes.len().saturating_sub(1),
+            "generated chains should prefer fresh companion nodes when the active surface already uses {:?}",
+            active_node_names
+        );
+    }
+
+    #[test]
+    fn generated_chain_seed_selection_prefers_low_active_node_overlap() {
+        let pixsort = shader_idx_by_name("pixsort").unwrap();
+        let active_node_names = vec!["chromatic_aberration", "glitch_block"];
+        let mut rng = SimpleRng::new(0x51A7);
+        let chain =
+            synthesize_chain_for_shader_avoiding(&mut rng, pixsort, &[], &active_node_names);
+
+        assert!(
+            chain.nodes.contains(&"palette_remap") || chain.nodes.contains(&"scanlines"),
+            "pixsort should choose a low-overlap seed/companion set, got {:?}",
+            chain.nodes
+        );
+        assert!(
+            !chain.nodes.contains(&"glitch_block")
+                && !chain.nodes.contains(&"chromatic_aberration"),
+            "active companion reuse flattens apparent variety; got {:?}",
+            chain.nodes
+        );
+    }
+
+    #[test]
+    fn generated_chains_limit_serial_tonal_stacks() {
+        let thermal = shader_idx_by_name("thermal").unwrap();
+        let mut rng = SimpleRng::new(0x70A1);
+
+        for _ in 0..24 {
+            let chain = synthesize_chain_for_shader_avoiding(&mut rng, thermal, &[], &[]);
+            let tonal_count = chain_family_count(&chain.nodes, "tonal");
+            assert!(
+                tonal_count <= chain_family_limit("tonal"),
+                "serial tonal stacks read as luma pumping, got {:?}",
+                chain.nodes
+            );
+        }
     }
 
     #[test]
@@ -2235,6 +2330,10 @@ mod tests {
             .iter()
             .filter(|def| is_high_impingement_anchor(def))
             .count();
+        let dramatic_variation_count = active
+            .iter()
+            .filter(|def| is_dramatic_variation_anchor(def))
+            .count();
 
         assert!(
             anchor_count >= MIN_ACTIVE_ANCHOR_EFFECTS,
@@ -2249,6 +2348,11 @@ mod tests {
         assert!(
             high_impingement_count >= MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS,
             "active set needs multiple high-impingement anchors; got {:?}",
+            active.iter().map(|def| def.name).collect::<Vec<&str>>()
+        );
+        assert!(
+            dramatic_variation_count >= MIN_ACTIVE_DRAMATIC_VARIATION_EFFECTS,
+            "active set needs multiple dramatic variation anchors; got {:?}",
             active.iter().map(|def| def.name).collect::<Vec<&str>>()
         );
 
@@ -2273,6 +2377,11 @@ mod tests {
             .take(ACTIVE_SLOT_TARGET)
             .filter(|idx| is_high_impingement_anchor(&SHADERS[**idx]))
             .count();
+        let active_dramatic_variation = pool
+            .iter()
+            .take(ACTIVE_SLOT_TARGET)
+            .filter(|idx| is_dramatic_variation_anchor(&SHADERS[**idx]))
+            .count();
 
         for group in COMPOSED_SURFACE_BASELINE_GROUPS {
             assert!(
@@ -2283,6 +2392,10 @@ mod tests {
         assert!(
             active_high_impingement >= MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS,
             "accepted allowed set must retain high-impingement anchors"
+        );
+        assert!(
+            active_dramatic_variation >= MIN_ACTIVE_DRAMATIC_VARIATION_EFFECTS,
+            "accepted allowed set must retain dramatic-variation anchors"
         );
     }
 
@@ -2583,12 +2696,61 @@ mod tests {
     }
 
     #[test]
+    fn recycle_preserves_dramatic_variation_floor_not_only_tonal_activity() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-dramatic-floor-recycle-{}.json",
+            std::process::id()
+        ));
+        let mut engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+
+        for (slot, shader_name) in engine.slots.iter_mut().take(4).zip([
+            "glitch_block",
+            "color_map",
+            "thermal",
+            "kuwahara",
+        ]) {
+            slot.shader_idx = shader_idx_by_name(shader_name).unwrap();
+            slot.phase = Phase::Peak;
+            slot.needs_recycle = false;
+        }
+        engine.slots[4].shader_idx = shader_idx_by_name("blend").unwrap();
+        engine.slots[4].phase = Phase::Falling;
+        engine.slots[4].needs_recycle = true;
+        engine.allowed_shader_indices = Some(
+            [
+                "glitch_block",
+                "color_map",
+                "thermal",
+                "kuwahara",
+                "blend",
+                "posterize",
+                "palette_remap",
+            ]
+            .iter()
+            .map(|name| shader_idx_by_name(name).unwrap())
+            .collect(),
+        );
+
+        engine.recycle_slot(4);
+
+        assert!(
+            is_dramatic_variation_anchor(&SHADERS[engine.slots[4].shader_idx]),
+            "recycling must preserve the dramatic-variation floor instead of selecting a quieter tonal/support node"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn recycle_restores_missing_visible_group_even_when_recently_used() {
         let path = std::env::temp_dir().join(format!(
             "hapax-effect-drift-test-plan-missing-group-recycle-{}.json",
             std::process::id()
         ));
         let mut engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+        for slot in &mut engine.slots {
+            slot.chain = None;
+        }
 
         for (slot, shader_name) in engine.slots.iter_mut().take(4).zip([
             "glitch_block",
@@ -2643,14 +2805,16 @@ mod tests {
             slot.shader_idx = shader_idx_by_name(shader_name).unwrap();
             slot.phase = Phase::Peak;
             slot.needs_recycle = false;
+            slot.chain = None;
         }
         engine.slots[4].shader_idx = shader_idx_by_name("kuwahara").unwrap();
         engine.slots[4].phase = Phase::Falling;
         engine.slots[4].needs_recycle = true;
+        engine.slots[4].chain = None;
 
         let pixsort = shader_idx_by_name("pixsort").unwrap();
         let thermal = shader_idx_by_name("thermal").unwrap();
-        let edge_detect = shader_idx_by_name("edge_detect").unwrap();
+        let posterize = shader_idx_by_name("posterize").unwrap();
         engine.allowed_shader_indices = Some(
             [
                 "glitch_block",
@@ -2660,21 +2824,21 @@ mod tests {
                 "kuwahara",
                 "pixsort",
                 "thermal",
-                "edge_detect",
+                "posterize",
             ]
             .iter()
             .map(|name| shader_idx_by_name(name).unwrap())
             .collect(),
         );
         engine.selection_counts[thermal] = 40;
-        engine.selection_counts[edge_detect] = 40;
+        engine.selection_counts[posterize] = 40;
         engine.selection_counts[pixsort] = 0;
         engine.coverage_events.clear();
-        for idx in [thermal, edge_detect].into_iter().cycle().take(60) {
+        for idx in [thermal, posterize].into_iter().cycle().take(60) {
             engine.record_selection(idx, "single-node".to_string(), Vec::new());
         }
         engine.selection_counts[thermal] = 40;
-        engine.selection_counts[edge_detect] = 40;
+        engine.selection_counts[posterize] = 40;
         engine.selection_counts[pixsort] = 0;
 
         engine.recycle_slot(4);
@@ -2682,6 +2846,66 @@ mod tests {
         assert_eq!(
             engine.slots[4].shader_idx, pixsort,
             "once hard live-surface invariants are satisfied, recycling should pay coverage debt instead of randomly reusing over-covered families"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn recycle_avoids_primary_already_present_inside_active_chain() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-chain-primary-overlap-{}.json",
+            std::process::id()
+        ));
+        let mut engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+        for slot in &mut engine.slots {
+            slot.chain = None;
+            slot.phase = Phase::Peak;
+            slot.needs_recycle = false;
+        }
+
+        for (slot, shader_name) in engine.slots.iter_mut().take(4).zip([
+            "scanlines",
+            "glitch_block",
+            "color_map",
+            "fluid_sim",
+        ]) {
+            slot.shader_idx = shader_idx_by_name(shader_name).unwrap();
+        }
+        engine.slots[0].chain = Some(generated_chain_for_test(
+            "scanlines",
+            vec!["scanlines", "pixsort", "vhs"],
+        ));
+        engine.slots[4].shader_idx = shader_idx_by_name("kuwahara").unwrap();
+        engine.slots[4].phase = Phase::Falling;
+        engine.slots[4].needs_recycle = true;
+        engine.allowed_shader_indices = Some(
+            [
+                "scanlines",
+                "glitch_block",
+                "color_map",
+                "fluid_sim",
+                "kuwahara",
+                "pixsort",
+                "thermal",
+            ]
+            .iter()
+            .map(|name| shader_idx_by_name(name).unwrap())
+            .collect(),
+        );
+
+        let thermal = shader_idx_by_name("thermal").unwrap();
+        engine.selection_counts[thermal] = 80;
+        engine.coverage_events.clear();
+        for _ in 0..80 {
+            engine.record_selection(thermal, "single-node".to_string(), Vec::new());
+        }
+
+        engine.recycle_slot(4);
+
+        assert_eq!(
+            SHADERS[engine.slots[4].shader_idx].name, "thermal",
+            "candidate primaries already present as active chain companions should not be reselected as if they were fresh"
         );
 
         let _ = std::fs::remove_file(path);
@@ -3586,6 +3810,7 @@ struct SlotPlanNode {
     chain_node_index: usize,
     preset_chain_id: String,
     chain_lineage: String,
+    structural_signature: String,
     topology_signature: String,
     graph_motif: String,
     param_seed: u64,
@@ -3687,15 +3912,113 @@ fn push_unique_node(nodes: &mut Vec<&'static str>, node_name: &'static str) {
     }
 }
 
-fn chain_companion_candidates(anchor_idx: usize, nodes: &[&'static str]) -> Vec<usize> {
+fn chain_family_count(nodes: &[&'static str], family: &str) -> usize {
+    nodes
+        .iter()
+        .filter_map(|node_name| shader_idx_by_name(node_name))
+        .filter(|node_idx| SHADERS[*node_idx].family == family)
+        .count()
+}
+
+fn chain_family_limit(family: &str) -> usize {
+    match family {
+        // Tonal nodes are useful as companions, but serial tonal stacks read
+        // as whole-frame luma pumping rather than material variation.
+        "tonal" => 1,
+        // Compositing and temporal nodes are high-risk support layers in the
+        // flattened composed-surface route.
+        "compositing" => 1,
+        "temporal" => 2,
+        _ => 3,
+    }
+}
+
+fn can_add_chain_node(nodes: &[&'static str], node_name: &'static str) -> bool {
+    let Some(node_idx) = shader_idx_by_name(node_name) else {
+        return false;
+    };
+    let family = SHADERS[node_idx].family;
+    chain_family_count(nodes, family) < chain_family_limit(family)
+}
+
+fn push_unique_chain_node(nodes: &mut Vec<&'static str>, node_name: &'static str) {
+    if !nodes.contains(&node_name) && can_add_chain_node(nodes, node_name) {
+        nodes.push(node_name);
+    }
+}
+
+fn seed_nodes_for_shader(shader_idx: usize, seed: &ChainSeed) -> Vec<&'static str> {
+    let anchor = SHADERS[shader_idx].name;
+    let mut seeded_nodes = vec![anchor];
+    for node_name in seed.nodes {
+        if shader_idx_by_name(node_name)
+            .map(|idx| is_composed_surface_drift_candidate(&SHADERS[idx]))
+            .unwrap_or(false)
+        {
+            push_unique_chain_node(&mut seeded_nodes, node_name);
+        }
+    }
+    seeded_nodes
+}
+
+fn active_node_overlap(nodes: &[&'static str], active_node_names: &[&'static str]) -> usize {
+    nodes
+        .iter()
+        .filter(|node_name| active_node_names.contains(node_name))
+        .count()
+}
+
+fn low_overlap_seed_candidates(
+    seed_candidates: &[usize],
+    active_structural_signatures: &[String],
+    active_node_names: &[&'static str],
+    anchor_idx: usize,
+    require_structural_freshness: bool,
+) -> Vec<usize> {
+    let anchor = SHADERS[anchor_idx].name;
+    let scored: Vec<(usize, usize)> = seed_candidates
+        .iter()
+        .copied()
+        .filter_map(|seed_idx| {
+            let seed = &CHAIN_SEEDS[seed_idx];
+            let seeded_nodes = seed_nodes_for_shader(anchor_idx, seed);
+            let structural_signature = chain_structural_signature(anchor, &seeded_nodes);
+            if require_structural_freshness
+                && active_structural_signatures.contains(&structural_signature)
+            {
+                return None;
+            }
+            Some((
+                seed_idx,
+                active_node_overlap(&seeded_nodes, active_node_names),
+            ))
+        })
+        .collect();
+
+    let Some(min_overlap) = scored.iter().map(|(_, overlap)| *overlap).min() else {
+        return Vec::new();
+    };
+    scored
+        .into_iter()
+        .filter(|(_, overlap)| *overlap == min_overlap)
+        .map(|(seed_idx, _)| seed_idx)
+        .collect()
+}
+
+fn chain_companion_candidates(
+    anchor_idx: usize,
+    nodes: &[&'static str],
+    active_node_names: &[&'static str],
+) -> Vec<usize> {
     let anchor_family = SHADERS[anchor_idx].family;
-    SHADERS
+    let candidates: Vec<usize> = SHADERS
         .iter()
         .enumerate()
         .filter(|(idx, def)| {
             *idx != anchor_idx
                 && is_composed_surface_drift_candidate(def)
                 && !nodes.contains(&def.name)
+                && can_add_chain_node(nodes, def.name)
         })
         .filter(|(_, def)| {
             def.family != anchor_family
@@ -3707,28 +4030,52 @@ fn chain_companion_candidates(anchor_idx: usize, nodes: &[&'static str]) -> Vec<
                     < 2
         })
         .map(|(idx, _)| idx)
-        .collect()
+        .collect();
+
+    let fresh: Vec<usize> = candidates
+        .iter()
+        .copied()
+        .filter(|idx| !active_node_names.contains(&SHADERS[*idx].name))
+        .collect();
+    if fresh.len() >= MIN_GENERATED_CHAIN_NODES.saturating_sub(nodes.len()).max(1) {
+        fresh
+    } else {
+        candidates
+    }
+}
+
+fn chain_structural_signature(anchor: &str, nodes: &[&'static str]) -> String {
+    let mut canonical_nodes = nodes.to_vec();
+    canonical_nodes.sort_unstable();
+    format!("rng:{}:{}", anchor, canonical_nodes.join("+"))
 }
 
 fn synthesize_chain_once(
     rng: &mut SimpleRng,
     shader_idx: usize,
-    active_signatures: &[String],
+    active_structural_signatures: &[String],
+    active_node_names: &[&'static str],
 ) -> GeneratedChain {
     let anchor = SHADERS[shader_idx].name;
     let seed_candidates = chain_seed_candidates_for_shader(shader_idx);
-    let fresh_seed_candidates: Vec<usize> = seed_candidates
-        .iter()
-        .copied()
-        .filter(|seed_idx| {
-            let seed = &CHAIN_SEEDS[*seed_idx];
-            !active_signatures
-                .iter()
-                .any(|signature| signature.contains(seed.topology_signature))
-        })
-        .collect();
+    let fresh_seed_candidates = low_overlap_seed_candidates(
+        &seed_candidates,
+        active_structural_signatures,
+        active_node_names,
+        shader_idx,
+        true,
+    );
+    let low_overlap_seed_candidates = low_overlap_seed_candidates(
+        &seed_candidates,
+        active_structural_signatures,
+        active_node_names,
+        shader_idx,
+        false,
+    );
     let seed_idx = if !fresh_seed_candidates.is_empty() {
         choose_chain_seed_from_candidates(rng, &fresh_seed_candidates)
+    } else if !low_overlap_seed_candidates.is_empty() {
+        choose_chain_seed_from_candidates(rng, &low_overlap_seed_candidates)
     } else {
         choose_chain_seed_from_candidates(rng, &seed_candidates)
     };
@@ -3751,26 +4098,26 @@ fn synthesize_chain_once(
                 continue;
             }
             if rng.next_f32() < 0.72 || nodes.len() < MIN_GENERATED_CHAIN_NODES {
-                push_unique_node(&mut nodes, node_name);
+                push_unique_chain_node(&mut nodes, node_name);
             }
         }
     }
 
     while nodes.len() < MIN_GENERATED_CHAIN_NODES {
-        let candidates = chain_companion_candidates(shader_idx, &nodes);
+        let candidates = chain_companion_candidates(shader_idx, &nodes, active_node_names);
         if candidates.is_empty() {
             break;
         }
         let candidate_idx = (rng.next_f32() * candidates.len() as f32) as usize % candidates.len();
-        push_unique_node(&mut nodes, SHADERS[candidates[candidate_idx]].name);
+        push_unique_chain_node(&mut nodes, SHADERS[candidates[candidate_idx]].name);
     }
 
     if nodes.len() < MAX_GENERATED_CHAIN_NODES && rng.next_f32() < 0.68 {
-        let candidates = chain_companion_candidates(shader_idx, &nodes);
+        let candidates = chain_companion_candidates(shader_idx, &nodes, active_node_names);
         if !candidates.is_empty() {
             let candidate_idx =
                 (rng.next_f32() * candidates.len() as f32) as usize % candidates.len();
-            push_unique_node(&mut nodes, SHADERS[candidates[candidate_idx]].name);
+            push_unique_chain_node(&mut nodes, SHADERS[candidates[candidate_idx]].name);
         }
     }
 
@@ -3784,6 +4131,7 @@ fn synthesize_chain_once(
         .map(|seed| format!("rng-constrained:{}", seed.lineage))
         .unwrap_or_else(|| format!("rng-constrained:{}", SHADERS[shader_idx].family));
     let node_signature = nodes.join(":");
+    let structural_signature = chain_structural_signature(anchor, &nodes);
     let variant = param_seed % 9973;
     let topology_signature = format!("rng:{}:{}:v{}", anchor, node_signature, variant);
     let id = format!(
@@ -3796,6 +4144,7 @@ fn synthesize_chain_once(
     GeneratedChain {
         id,
         lineage,
+        structural_signature,
         topology_signature,
         anchor,
         nodes,
@@ -3806,19 +4155,33 @@ fn synthesize_chain_once(
 fn synthesize_chain_for_shader_avoiding(
     rng: &mut SimpleRng,
     shader_idx: usize,
-    active_signatures: &[String],
+    active_structural_signatures: &[String],
+    active_node_names: &[&'static str],
 ) -> GeneratedChain {
-    let mut fallback = synthesize_chain_once(rng, shader_idx, active_signatures);
+    let mut fallback = synthesize_chain_once(
+        rng,
+        shader_idx,
+        active_structural_signatures,
+        active_node_names,
+    );
     for _ in 0..8 {
-        if !active_signatures.contains(&fallback.topology_signature) {
+        if !active_structural_signatures.contains(&fallback.structural_signature) {
             return fallback;
         }
-        fallback = synthesize_chain_once(rng, shader_idx, active_signatures);
+        fallback = synthesize_chain_once(
+            rng,
+            shader_idx,
+            active_structural_signatures,
+            active_node_names,
+        );
     }
     fallback
 }
 
-fn shader_can_generate_fresh_chain(shader_idx: usize, active_signatures: &[String]) -> bool {
+fn shader_can_generate_fresh_chain(
+    shader_idx: usize,
+    active_structural_signatures: &[String],
+) -> bool {
     if chain_seed_candidates_for_shader(shader_idx).is_empty() {
         return true;
     }
@@ -3826,14 +4189,15 @@ fn shader_can_generate_fresh_chain(shader_idx: usize, active_signatures: &[Strin
     let seed_signatures: Vec<String> = chain_seed_candidates_for_shader(shader_idx)
         .iter()
         .filter_map(|idx| CHAIN_SEEDS.get(*idx))
-        .map(|seed| format!("rng:{}:{}", anchor, seed.topology_signature))
+        .map(|seed| {
+            let seeded_nodes = seed_nodes_for_shader(shader_idx, seed);
+            chain_structural_signature(anchor, &seeded_nodes)
+        })
         .collect();
     seed_signatures.is_empty()
-        || seed_signatures.iter().any(|signature| {
-            !active_signatures
-                .iter()
-                .any(|active| active.contains(signature))
-        })
+        || seed_signatures
+            .iter()
+            .any(|signature| !active_structural_signatures.contains(signature))
 }
 
 fn slot_chain_id(slot: &SlotState) -> String {
@@ -3859,6 +4223,7 @@ fn slot_plan_nodes(slot_index: usize, slot: &SlotState) -> Vec<SlotPlanNode> {
                     chain_node_index,
                     preset_chain_id: chain.id.clone(),
                     chain_lineage: chain.lineage.clone(),
+                    structural_signature: chain.structural_signature.clone(),
                     topology_signature: chain.topology_signature.clone(),
                     graph_motif: chain.anchor.to_string(),
                     param_seed: chain
@@ -3880,6 +4245,7 @@ fn slot_plan_nodes(slot_index: usize, slot: &SlotState) -> Vec<SlotPlanNode> {
                     chain_node_index: 0,
                     preset_chain_id: "single-node".to_string(),
                     chain_lineage: def.family.to_string(),
+                    structural_signature: def.name.to_string(),
                     topology_signature: def.name.to_string(),
                     graph_motif: def.name.to_string(),
                     param_seed: ((slot_index as u64) << 32) ^ (slot.shader_idx as u64),
@@ -4288,6 +4654,33 @@ fn is_high_impingement_anchor(def: &ShaderDef) -> bool {
     )
 }
 
+fn is_dramatic_variation_anchor(def: &ShaderDef) -> bool {
+    matches!(
+        def.name,
+        "ascii"
+            | "chromatic_aberration"
+            | "dither"
+            | "diff"
+            | "edge_detect"
+            | "fluid_sim"
+            | "glitch_block"
+            | "grain_bump"
+            | "halftone"
+            | "noise_gen"
+            | "particle_system"
+            | "pixsort"
+            | "posterize"
+            | "reaction_diffusion"
+            | "rutt_etra"
+            | "scanlines"
+            | "strobe"
+            | "thermal"
+            | "threshold"
+            | "vhs"
+            | "waveform_render"
+    )
+}
+
 fn is_baseline_visible(def: &ShaderDef) -> bool {
     matches!(
         def.name,
@@ -4435,6 +4828,17 @@ fn drift_pool_invariant_failures(indices: &[usize]) -> Vec<String> {
         failures.push(format!(
             "has {} high-impingement anchor(s), need at least {}",
             high_impingement_count, MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS
+        ));
+    }
+
+    let dramatic_variation_count = indices
+        .iter()
+        .filter(|idx| is_dramatic_variation_anchor(&SHADERS[**idx]))
+        .count();
+    if dramatic_variation_count < MIN_ACTIVE_DRAMATIC_VARIATION_EFFECTS {
+        failures.push(format!(
+            "has {} dramatic-variation anchor(s), need at least {}",
+            dramatic_variation_count, MIN_ACTIVE_DRAMATIC_VARIATION_EFFECTS
         ));
     }
 
@@ -4613,6 +5017,47 @@ fn choose_initial_pool(rng: &mut SimpleRng, selectable: &[usize]) -> Vec<usize> 
         }
     }
 
+    for idx in shuffled.iter().copied() {
+        if selected
+            .iter()
+            .take(ACTIVE_SLOT_TARGET)
+            .filter(|idx| is_dramatic_variation_anchor(&SHADERS[**idx]))
+            .count()
+            >= MIN_ACTIVE_DRAMATIC_VARIATION_EFFECTS
+        {
+            break;
+        }
+        if !selected.contains(&idx) && is_dramatic_variation_anchor(&SHADERS[idx]) {
+            selected.push(idx);
+        }
+    }
+    if selected
+        .iter()
+        .take(ACTIVE_SLOT_TARGET)
+        .filter(|idx| is_dramatic_variation_anchor(&SHADERS[**idx]))
+        .count()
+        < MIN_ACTIVE_DRAMATIC_VARIATION_EFFECTS
+    {
+        let replacement = shuffled
+            .iter()
+            .copied()
+            .filter(|idx| !selected.contains(idx) && is_dramatic_variation_anchor(&SHADERS[*idx]))
+            .find_map(|idx| {
+                selected
+                    .iter()
+                    .take(ACTIVE_SLOT_TARGET)
+                    .position(|selected_idx| {
+                        !is_dramatic_variation_anchor(&SHADERS[*selected_idx])
+                            && visibility_group(&SHADERS[*selected_idx])
+                                == visibility_group(&SHADERS[idx])
+                    })
+                    .map(|pos| (pos, idx))
+            });
+        if let Some((pos, idx)) = replacement {
+            selected[pos] = idx;
+        }
+    }
+
     for idx in shuffled {
         if selected.len() >= POOL_SIZE {
             break;
@@ -4714,13 +5159,16 @@ impl SlotDriftEngine {
         }
 
         let mut initial_chain_signatures = Vec::new();
+        let mut initial_chain_node_names = Vec::new();
         for slot in &mut slots {
             let chain = synthesize_chain_for_shader_avoiding(
                 &mut rng,
                 slot.shader_idx,
                 &initial_chain_signatures,
+                &initial_chain_node_names,
             );
-            initial_chain_signatures.push(chain.topology_signature.clone());
+            initial_chain_signatures.push(chain.structural_signature.clone());
+            initial_chain_node_names.extend(chain.nodes.iter().copied());
             slot.chain = Some(chain);
         }
 
@@ -4956,6 +5404,9 @@ impl SlotDriftEngine {
         score -= recent_penalty * 3.0;
         if is_high_impingement_anchor(def) {
             score += 5.0;
+        }
+        if is_dramatic_variation_anchor(def) {
+            score += 22.0;
         }
         if is_baseline_visible(def) && !is_visible_anchor(def) && lifetime == 0.0 {
             score += 20.0;
@@ -5197,7 +5648,7 @@ impl SlotDriftEngine {
                 idle[(self.rng.next_f32() * idle.len() as f32) as usize % idle.len()]
             };
 
-            let active_chain_signatures: Vec<String> = self
+            let active_structural_signatures: Vec<String> = self
                 .slots
                 .iter()
                 .enumerate()
@@ -5207,7 +5658,21 @@ impl SlotDriftEngine {
                 .filter_map(|(_, slot)| {
                     slot.chain
                         .as_ref()
-                        .map(|chain| chain.topology_signature.clone())
+                        .map(|chain| chain.structural_signature.clone())
+                })
+                .collect();
+            let active_node_names: Vec<&'static str> = self
+                .slots
+                .iter()
+                .enumerate()
+                .filter(|(slot_idx, slot)| {
+                    *slot_idx != chosen_idx && slot.phase != Phase::Idle && slot.chain.is_some()
+                })
+                .flat_map(|(_, slot)| {
+                    slot.chain
+                        .as_ref()
+                        .into_iter()
+                        .flat_map(|chain| chain.nodes.iter().copied())
                 })
                 .collect();
             let slot = &mut self.slots[chosen_idx];
@@ -5215,7 +5680,8 @@ impl SlotDriftEngine {
             slot.chain = Some(synthesize_chain_for_shader_avoiding(
                 &mut self.rng,
                 slot.shader_idx,
-                &active_chain_signatures,
+                &active_structural_signatures,
+                &active_node_names,
             ));
             slot.phase = Phase::Rising;
             slot.phase_duration = fade_in_duration(def, &mut self.rng);
@@ -5252,20 +5718,11 @@ impl SlotDriftEngine {
             .filter(|i| is_composed_surface_drift_candidate(&SHADERS[*i]))
             .filter(|i| !current_types.contains(i))
             .collect();
-        let fresh_candidates: Vec<usize> = non_current_candidates
-            .iter()
-            .copied()
-            .filter(|i| !recently.contains(i))
-            .collect();
-        let candidates = if fresh_candidates.is_empty() {
-            non_current_candidates.clone()
-        } else {
-            fresh_candidates
-        };
         if non_current_candidates.is_empty() {
             self.slots[idx].needs_recycle = false;
             return;
         }
+        let hard_floor_candidates = non_current_candidates.clone();
 
         let active_visible_groups: Vec<&str> = self
             .slots
@@ -5309,7 +5766,17 @@ impl SlotDriftEngine {
                     && is_high_impingement_anchor(&SHADERS[slot.shader_idx])
             })
             .count();
-        let active_chain_signatures: Vec<String> = self
+        let active_dramatic_variation_count = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(slot_idx, slot)| {
+                *slot_idx != idx
+                    && slot.phase != Phase::Idle
+                    && is_dramatic_variation_anchor(&SHADERS[slot.shader_idx])
+            })
+            .count();
+        let active_structural_signatures: Vec<String> = self
             .slots
             .iter()
             .enumerate()
@@ -5319,22 +5786,65 @@ impl SlotDriftEngine {
             .filter_map(|(_, slot)| {
                 slot.chain
                     .as_ref()
-                    .map(|chain| chain.topology_signature.clone())
+                    .map(|chain| chain.structural_signature.clone())
             })
             .collect();
-        let active_generated_chain_count = active_chain_signatures.len();
+        let mut active_node_names: Vec<&'static str> = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(slot_idx, slot)| {
+                *slot_idx != idx && slot.phase != Phase::Idle && slot.chain.is_some()
+            })
+            .flat_map(|(_, slot)| {
+                slot.chain
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|chain| chain.nodes.iter().copied())
+            })
+            .collect();
+        if let Some(retiring_chain) = &self.slots[idx].chain {
+            active_node_names.extend(retiring_chain.nodes.iter().copied());
+        }
+        let chain_fresh_non_current_candidates: Vec<usize> = non_current_candidates
+            .iter()
+            .copied()
+            .filter(|i| {
+                !active_node_names.contains(&SHADERS[*i].name)
+                    && shader_can_generate_fresh_chain(*i, &active_structural_signatures)
+            })
+            .collect();
+        let non_current_candidates = if chain_fresh_non_current_candidates.is_empty() {
+            non_current_candidates
+        } else {
+            chain_fresh_non_current_candidates
+        };
+        let fresh_candidates: Vec<usize> = non_current_candidates
+            .iter()
+            .copied()
+            .filter(|i| !recently.contains(i))
+            .collect();
+        let candidates = if fresh_candidates.is_empty() {
+            non_current_candidates.clone()
+        } else {
+            fresh_candidates
+        };
+        let active_generated_chain_count = active_structural_signatures.len();
         let candidate_preserves_hard_floor = |idx: usize| {
             let def = &SHADERS[idx];
             let candidate_anchor = usize::from(is_visible_anchor(def));
             let candidate_high_impingement = usize::from(is_high_impingement_anchor(def));
+            let candidate_dramatic_variation = usize::from(is_dramatic_variation_anchor(def));
             let candidate_conditional = usize::from(is_conditionally_low_salience(def));
             active_anchor_count + candidate_anchor >= MIN_ACTIVE_ANCHOR_EFFECTS
                 && active_high_impingement_count + candidate_high_impingement
                     >= MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS
+                && active_dramatic_variation_count + candidate_dramatic_variation
+                    >= MIN_ACTIVE_DRAMATIC_VARIATION_EFFECTS
                 && active_conditional_count + candidate_conditional
                     <= MAX_ACTIVE_CONDITIONAL_EFFECTS
         };
-        let preferred: Vec<usize> = non_current_candidates
+        let preferred: Vec<usize> = hard_floor_candidates
             .iter()
             .copied()
             .filter(|i| {
@@ -5347,11 +5857,24 @@ impl SlotDriftEngine {
         let preferred: Vec<usize> = if preferred.is_empty()
             && active_high_impingement_count < MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS
         {
-            non_current_candidates
+            hard_floor_candidates
                 .iter()
                 .copied()
                 .filter(|i| {
                     is_high_impingement_anchor(&SHADERS[*i]) && candidate_preserves_hard_floor(*i)
+                })
+                .collect()
+        } else {
+            preferred
+        };
+        let preferred: Vec<usize> = if preferred.is_empty()
+            && active_dramatic_variation_count < MIN_ACTIVE_DRAMATIC_VARIATION_EFFECTS
+        {
+            hard_floor_candidates
+                .iter()
+                .copied()
+                .filter(|i| {
+                    is_dramatic_variation_anchor(&SHADERS[*i]) && candidate_preserves_hard_floor(*i)
                 })
                 .collect()
         } else {
@@ -5410,7 +5933,7 @@ impl SlotDriftEngine {
                 .filter(|i| {
                     is_baseline_visible(&SHADERS[*i])
                         && candidate_preserves_hard_floor(*i)
-                        && shader_can_generate_fresh_chain(*i, &active_chain_signatures)
+                        && shader_can_generate_fresh_chain(*i, &active_structural_signatures)
                 })
                 .collect()
         } else {
@@ -5425,8 +5948,12 @@ impl SlotDriftEngine {
         let old_idx = self.slots[idx].shader_idx;
         let new_idx = self.pick_candidate_by_coverage(&candidates, idx);
         let def = &SHADERS[new_idx];
-        let selected_chain =
-            synthesize_chain_for_shader_avoiding(&mut self.rng, new_idx, &active_chain_signatures);
+        let selected_chain = synthesize_chain_for_shader_avoiding(
+            &mut self.rng,
+            new_idx,
+            &active_structural_signatures,
+            &active_node_names,
+        );
 
         self.slots[idx].shader_idx = new_idx;
         self.slots[idx].chain = Some(selected_chain);
@@ -5675,6 +6202,7 @@ impl SlotDriftEngine {
                     "parameter_regions": parameter_regions_json(def, &target),
                     "preset_chain_id": node.preset_chain_id,
                     "chain_lineage": node.chain_lineage,
+                    "structural_signature": node.structural_signature,
                     "topology_signature": node.topology_signature,
                     "graph_motif": node.graph_motif,
                     "motif_node_index": node.chain_node_index,
