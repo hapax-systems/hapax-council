@@ -89,6 +89,7 @@ def inject_text(
     height: int = 360,
     tags: list[str] | None = None,
     ttl_ms: int = 0,
+    sources_dir: Path | None = None,
 ) -> bool:
     """Inject rendered text into the visual surface."""
     try:
@@ -104,6 +105,7 @@ def inject_text(
             z_order=z_order,
             tags=tags,
             ttl_ms=ttl_ms,
+            sources_dir=sources_dir,
         )
     except Exception:
         log.debug("Failed to inject text %s", source_id, exc_info=True)
@@ -120,9 +122,12 @@ def inject_rgba(
     blend_mode: str = "screen",
     tags: list[str] | None = None,
     ttl_ms: int = 0,
+    sources_dir: Path | None = None,
 ) -> bool:
     """Inject raw RGBA bytes into the visual surface. Lowest-level API."""
-    source_dir = SOURCES_DIR / source_id
+    if sources_dir is None:
+        sources_dir = SOURCES_DIR
+    source_dir = sources_dir / source_id
     _ensure_source_dir(source_dir)
 
     try:
