@@ -3671,6 +3671,10 @@ from shared.operator_dossier_value_braid_adapter import DossierBraidAdapterOutpu
 
 DossierBraidAdapterOutput._no_confidence_mutations
 
+from shared.condition_edition_marketplace_publisher import CatalogEntry
+
+CatalogEntry._purchaser_never_public
+
 # Compositor incident cache reset hooks — tests call these through module
 # aliases so vulture does not see the static path.
 from agents.studio_compositor.coding_session_reveal import (
