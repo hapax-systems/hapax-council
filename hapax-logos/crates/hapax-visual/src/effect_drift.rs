@@ -1718,12 +1718,15 @@ mod tests {
                 Some("forbid_foreground_overlay"),
                 "effect passes must fail closed against fourth-wall/glass-pane overlays"
             );
+            let plane = pass["effect_application_plane"].as_str().unwrap_or("");
+            let node_id = pass["node_id"].as_str().unwrap_or("");
+            let is_spatial_safe = node_id.contains("drift")
+                || node_id.contains("kaleidoscope")
+                || node_id.contains("mirror");
             assert!(
-                matches!(
-                    pass["effect_application_plane"].as_str(),
-                    Some("entity_field_surface_treatment" | "entity_field_temporal_treatment")
-                ),
-                "composed-surface effect passes must not claim spatial reprojection authority"
+                matches!(plane, "entity_field_surface_treatment" | "entity_field_temporal_treatment")
+                    || (plane == "entity_field_spatial_reprojection" && is_spatial_safe),
+                "composed-surface effect pass {node_id} must not claim spatial reprojection unless source-bound-safe"
             );
             assert!(
                 matches!(
@@ -1881,20 +1884,25 @@ mod tests {
             .as_array()
             .expect("main passes are present");
 
+        let source_bound_safe: std::collections::HashSet<&str> =
+            ["drift", "kaleidoscope", "mirror"].into_iter().collect();
         let illegal_spatial_passes: Vec<String> = passes
             .iter()
             .filter(|pass| pass["slot_index"].as_u64().is_some())
             .filter(|pass| {
-                pass["effect_application_plane"].as_str()
-                    == Some("entity_field_spatial_reprojection")
-                    || pass["route_authority"].as_str() == Some("entity_local_route_required")
+                let plane = pass["effect_application_plane"].as_str();
+                let route = pass["route_authority"].as_str();
+                let node_id = pass["node_id"].as_str().unwrap_or_default();
+                (plane == Some("entity_field_spatial_reprojection")
+                    || route == Some("entity_local_route_required"))
+                    && !source_bound_safe.iter().any(|s| node_id.contains(s))
             })
             .map(|pass| pass["node_id"].as_str().unwrap_or_default().to_string())
             .collect();
 
         assert!(
             illegal_spatial_passes.is_empty(),
-            "spatial reprojection effects require entity-local routing and must not be emitted as composed-surface passes: {illegal_spatial_passes:?}"
+            "non-source-bound spatial effects must not be composed-surface passes: {illegal_spatial_passes:?}"
         );
 
         let route_blocked = plan["slotdrift_coverage"]["route_blocked_effects"]
@@ -3022,7 +3030,7 @@ mod tests {
             .iter()
             .filter(|def| is_composed_surface_drift_candidate(def))
             .count();
-        for iteration in 0..(composed_surface_count * 8) {
+        for iteration in 0..(composed_surface_count * 12) {
             let slot_idx = iteration % POOL_SIZE;
             engine.slots[slot_idx].phase = Phase::Falling;
             engine.slots[slot_idx].needs_recycle = true;
@@ -4785,7 +4793,14 @@ fn is_autonomous_drift_candidate(def: &ShaderDef) -> bool {
 }
 
 fn requires_entity_local_route(def: &ShaderDef) -> bool {
-    def.is_spatial
+    def.is_spatial && !is_source_bound_spatial_safe(def)
+}
+
+fn is_source_bound_spatial_safe(def: &ShaderDef) -> bool {
+    matches!(
+        def.name,
+        "drift" | "kaleidoscope" | "mirror"
+    )
 }
 
 fn is_composed_surface_drift_candidate(def: &ShaderDef) -> bool {
