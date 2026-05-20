@@ -140,6 +140,12 @@ from shared.director_world_surface_snapshot import (
 from shared.director_world_surface_snapshot import (
     Freshness as DirectorWorldSurfaceFreshness,
 )
+from shared.egress_cadence_feasibility import (
+    assess_egress_cadence as _assess_egress_cadence,
+)
+
+_assess_egress_cadence
+
 from shared.formal_governance_runtime import (
     FormalConstraint as _FormalGovernanceFormalConstraint,
 )
