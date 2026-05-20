@@ -1599,6 +1599,39 @@ mod tests {
             "coverage ledger must expose parameter-region coverage debt"
         );
 
+        for node_id in ["fb", "post"] {
+            let pass = passes
+                .iter()
+                .find(|pass| pass["node_id"].as_str() == Some(node_id))
+                .unwrap_or_else(|| panic!("{node_id} bookend pass must be present"));
+            assert_eq!(
+                pass["source_bound"].as_bool(),
+                Some(true),
+                "{node_id} bookend must be accounted as source-bound"
+            );
+            assert_eq!(
+                pass["full_surface"].as_bool(),
+                Some(true),
+                "{node_id} bookend must be accounted as full-surface"
+            );
+            assert_eq!(
+                pass["fourth_wall_policy"].as_str(),
+                Some("forbid_foreground_overlay"),
+                "{node_id} bookend must forbid foreground/fourth-wall overlay"
+            );
+            assert_eq!(
+                pass["effect_binding"].as_str(),
+                Some("bounded_bookend"),
+                "{node_id} bookend must be classified as a bounded control stage"
+            );
+            assert!(
+                pass["effect_application_plane"]
+                    .as_str()
+                    .is_some_and(|plane| plane.starts_with("entity_field_")),
+                "{node_id} bookend must declare an entity-field application plane"
+            );
+        }
+
         let effect_passes: Vec<&serde_json::Value> = passes
             .iter()
             .filter(|pass| {
@@ -6238,6 +6271,24 @@ impl SlotDriftEngine {
                 "output": layer,
                 "uniforms": u, "param_order": po,
                 "temporal": true,
+                "effect_scope": "composed_live_surface",
+                "effect_family": FEEDBACK_DEF.family,
+                "visibility_group": "temporal",
+                "eviction_cadence": "slow",
+                "source_bound": true,
+                "full_surface": true,
+                "effect_binding": "bounded_bookend",
+                "effect_application_plane": "entity_field_temporal_treatment",
+                "fourth_wall_policy": "forbid_foreground_overlay",
+                "coverage_role": "supporting_conditional",
+                "effect_aliases": ["feedback_bookend"],
+                "slot_phase": "bookend",
+                "slot_intensity": 0.0,
+                "preset_chain_id": "bookend:feedback",
+                "chain_lineage": "slotdrift-bookend:feedback",
+                "structural_signature": "bookend:feedback",
+                "topology_signature": "bookend:feedback",
+                "graph_motif": "feedback_bookend",
             }));
             prev_output = layer;
         }
@@ -6260,6 +6311,24 @@ impl SlotDriftEngine {
                 "type": "render", "backend": "wgsl_render",
                 "inputs": [prev_output], "output": "final",
                 "uniforms": u, "param_order": po,
+                "effect_scope": "composed_live_surface",
+                "effect_family": POSTPROCESS_DEF.family,
+                "visibility_group": "postprocess",
+                "eviction_cadence": "slow",
+                "source_bound": true,
+                "full_surface": true,
+                "effect_binding": "bounded_bookend",
+                "effect_application_plane": "entity_field_surface_treatment",
+                "fourth_wall_policy": "forbid_foreground_overlay",
+                "coverage_role": "supporting_conditional",
+                "effect_aliases": ["postprocess_bookend", "anti_parasocial_bookend"],
+                "slot_phase": "bookend",
+                "slot_intensity": 0.0,
+                "preset_chain_id": "bookend:postprocess",
+                "chain_lineage": "slotdrift-bookend:postprocess",
+                "structural_signature": "bookend:postprocess",
+                "topology_signature": "bookend:postprocess",
+                "graph_motif": "postprocess_bookend",
             }));
         }
 
