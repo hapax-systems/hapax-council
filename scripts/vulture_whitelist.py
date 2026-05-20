@@ -3657,6 +3657,10 @@ from agents.studio_compositor.shadow_render_core import ShadowRenderCore
 
 ShadowRenderCore.update_source
 
+from shared.operator_dossier_value_braid_adapter import DossierBraidAdapterOutput
+
+DossierBraidAdapterOutput._no_confidence_mutations
+
 # Compositor incident cache reset hooks — tests call these through module
 # aliases so vulture does not see the static path.
 from agents.studio_compositor.coding_session_reveal import (
@@ -3678,3 +3682,7 @@ lookup_speech_event
 recent_public_speech
 _clear_tmux_cache_for_tests
 _clear_tmux_session_cache_for_tests
+
+from shared.operator_dossier_value_braid_adapter import DossierBraidOutput
+
+DossierBraidOutput._no_confidence_mutations
