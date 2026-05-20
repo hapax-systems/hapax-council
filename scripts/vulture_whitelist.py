@@ -3766,3 +3766,9 @@ get_wcs_claimable_surfaces
 from shared.artifact_release_state import ArtifactReleaseState
 
 ArtifactReleaseState.from_records
+from shared.wcs_health_blocker_bus import WcsHealthBlockerBus
+
+WcsHealthBlockerBus
+WcsHealthBlockerBus.all_healthy
+WcsHealthBlockerBus.public_live_blocked
+WcsHealthBlockerBus.monetized_blocked
