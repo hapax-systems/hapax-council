@@ -6,7 +6,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-WorkingDirectory=%h/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 ExecStart=/usr/bin/uv run python -m agents.novelty_emitter --loop --interval 1
 Restart=always
 RestartSec=2
