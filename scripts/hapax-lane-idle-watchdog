@@ -439,14 +439,16 @@ for session in "${!IDLE_LANES[@]}"; do
         claude)
             if [ -x "$CLAUDE_SEND" ]; then
                 "$CLAUDE_SEND" --session "$lane" -- "$dispatch_msg" 2>/dev/null && send_success=true
-            else
+            fi
+            if [ "$send_success" = false ]; then
                 tmux send-keys -t "$session" "$dispatch_msg" Enter 2>/dev/null && send_success=true
             fi
             ;;
         codex)
             if [ -x "$CODEX_SEND" ]; then
                 "$CODEX_SEND" --session "$lane" -- "$dispatch_msg" 2>/dev/null && send_success=true
-            else
+            fi
+            if [ "$send_success" = false ]; then
                 tmux send-keys -t "$session" "$dispatch_msg" Enter 2>/dev/null && send_success=true
             fi
             ;;
