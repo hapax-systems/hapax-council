@@ -27,6 +27,14 @@
         "threshold": 0.16
       }
     },
+    "bloom_glow": {
+      "type": "bloom",
+      "params": {
+        "intensity": 0.6,
+        "radius": 12,
+        "threshold": 0.4
+      }
+    },
     "chroma_neon": {
       "type": "chromatic_aberration",
       "params": {
@@ -58,6 +66,10 @@
     ],
     [
       "edge_grid",
+      "bloom_glow"
+    ],
+    [
+      "bloom_glow",
       "chroma_neon"
     ],
     [
