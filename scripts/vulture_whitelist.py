@@ -3847,3 +3847,8 @@ from shared.audio_control_plane import (
 classify_service_health
 read_mutation_events
 refuse_dirty_restart
+
+from shared.pr_merge_announcement_producer import build_pr_merge_event, emit_pr_merge_event
+
+build_pr_merge_event
+emit_pr_merge_event
