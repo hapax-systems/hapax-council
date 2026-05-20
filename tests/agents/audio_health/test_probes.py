@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import subprocess
 from unittest.mock import patch
 
+from agents.audio_health import probes
 from agents.audio_health.probes import ProbeConfig, resolve_parecord_target
 
 
@@ -60,3 +62,24 @@ def test_resolve_parecord_target_preserves_legacy_fallback_without_discovery() -
         assert resolve_parecord_target("hapax-broadcast-master", cfg) == (
             "hapax-broadcast-master.monitor"
         )
+
+
+def test_pactl_short_names_caches_repeated_discovery() -> None:
+    probes._PACTL_SHORT_CACHE.clear()
+    cfg = ProbeConfig(pactl_path="pactl")
+    completed = subprocess.CompletedProcess(
+        ["pactl", "list", "sources", "short"],
+        0,
+        stdout="1\thapax-broadcast-master\tmodule\tformat\tRUNNING\n",
+        stderr="",
+    )
+
+    with (
+        patch("agents.audio_health.probes.shutil.which", return_value="/usr/bin/pactl"),
+        patch("agents.audio_health.probes.subprocess.run", return_value=completed) as run,
+    ):
+        assert probes._pactl_short_names("sources", cfg) == {"hapax-broadcast-master"}
+        assert probes._pactl_short_names("sources", cfg) == {"hapax-broadcast-master"}
+
+    assert run.call_count == 1
+    probes._PACTL_SHORT_CACHE.clear()

@@ -117,7 +117,18 @@ def test_tap_input_parser_ignores_adjacent_livestream_output_block(tmp_path: Pat
     result = _run_with_graph(tmp_path, _base_graph())
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "livestream-tap has only L12 inputs" in result.stdout
+    assert "livestream-tap has only authorized inputs" in result.stdout
+    assert "unexpected source" not in result.stdout
+
+
+def test_tap_input_parser_allows_policy_authorized_s4_direct_tap(tmp_path: Path) -> None:
+    result = _run_with_graph(
+        tmp_path,
+        _base_graph("|<- hapax-s4-tap:output_FL\n"),
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "livestream-tap has only authorized inputs" in result.stdout
     assert "unexpected source" not in result.stdout
 
 
@@ -128,8 +139,35 @@ def test_tap_input_parser_fails_direct_non_l12_input(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 1
-    assert "livestream-tap has only L12 inputs" in result.stdout
+    assert "livestream-tap has only authorized inputs" in result.stdout
     assert "hapax-direct-bypass-playback:output_FL" in result.stdout
+
+
+def test_tap_input_parser_fails_unowned_polyend_direct_tap(tmp_path: Path) -> None:
+    result = _run_with_graph(
+        tmp_path,
+        _base_graph("|<- hapax-polyend-loudnorm-playback:output_FL\n"),
+    )
+
+    assert result.returncode == 1
+    assert "livestream-tap has only authorized inputs" in result.stdout
+    assert "hapax-polyend-loudnorm-playback:output_FL" in result.stdout
+
+
+def test_tts_direct_bypass_guard_follows_multiline_link_blocks(tmp_path: Path) -> None:
+    graph = _base_graph() + textwrap.dedent(
+        """
+
+        hapax-tts-broadcast-playback:output_FL
+        |-> hapax-livestream-tap:playback_FL
+        """
+    )
+
+    result = _run_with_graph(tmp_path, graph)
+
+    assert result.returncode == 1
+    assert "no TTS bypass to livestream-tap" in result.stdout
+    assert "BYPASS DETECTED" in result.stdout
 
 
 def test_l12_wet_return_capture_requires_upstream_aux_links(tmp_path: Path) -> None:

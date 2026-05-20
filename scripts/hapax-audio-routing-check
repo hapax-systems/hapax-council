@@ -16,8 +16,10 @@
 #   2. NO direct TTS bypass to livestream-tap. hapax-tts-broadcast-playback
 #      must NOT exist or be connected to hapax-livestream-tap.
 #
-#   3. Livestream tap inputs: ONLY l12-evilpet-playback and l12-usb-return-playback
-#      feed into hapax-livestream-tap. Nothing else.
+#   3. Livestream tap inputs: only route-policy-authorized producers feed
+#      hapax-livestream-tap. L-12 wet-return sources remain the default
+#      path; the S-4 direct content tap is explicitly owned by
+#      config/audio-routing.yaml#s4-content.
 #
 #   4. OBS chain: broadcast-normalized → obs-broadcast-remap → OBS
 #
@@ -90,12 +92,11 @@ echo ""
 # ── Invariant 2: NO direct TTS bypass ──
 echo "Chain 2: TTS Bypass Guard"
 
-if echo "$GRAPH" | grep -q "hapax-tts-broadcast-playback"; then
-    if echo "$GRAPH" | grep "hapax-tts-broadcast-playback" | grep -q "hapax-livestream-tap"; then
-        check "no TTS bypass to livestream-tap" "BYPASS DETECTED — tts-broadcast-playback → livestream-tap"
-    else
-        check "no TTS bypass to livestream-tap" "PASS (node exists but not connected to tap)"
-    fi
+if link_present "hapax-tts-broadcast-playback:output_FL" "hapax-livestream-tap:playback_FL" \
+    || link_present "hapax-tts-broadcast-playback:output_FR" "hapax-livestream-tap:playback_FR"; then
+    check "no TTS bypass to livestream-tap" "BYPASS DETECTED — tts-broadcast-playback → livestream-tap"
+elif echo "$GRAPH" | grep -q "hapax-tts-broadcast-playback"; then
+    check "no TTS bypass to livestream-tap" "PASS (node exists but not connected to tap)"
 else
     check "no TTS bypass to livestream-tap" "PASS"
 fi
@@ -110,13 +111,19 @@ TAP_INPUTS=$(printf '%s\n' "$GRAPH" | awk '
     /^[^[:space:]|]/ { in_tap = 0 }
     in_tap && /^[[:space:]]*\|<-/ { print }
 ')
-ALLOWED_TAP_SOURCES="^[[:space:]]*\|<-[[:space:]]+(hapax-l12-evilpet-playback|hapax-l12-usb-return-playback):"
+# Source authority:
+# - L-12 sources are the MPC-first wet return / processor return.
+# - hapax-s4-tap is explicitly broadcast-eligible in
+#   config/audio-routing.yaml#s4-content and config/audio-topology.yaml#s4-loopback.
+# Polyend and the retired hapax-tts-broadcast bridge are intentionally not
+# listed here until route policy owns them.
+ALLOWED_TAP_SOURCES="^[[:space:]]*\|<-[[:space:]]+(hapax-l12-evilpet-playback|hapax-l12-usb-return-playback|hapax-s4-tap):"
 UNEXPECTED=$(printf '%s\n' "$TAP_INPUTS" | grep -vE "$ALLOWED_TAP_SOURCES" | grep -v "^$" || true)
 
 if [ -z "$UNEXPECTED" ]; then
-    check "livestream-tap has only L12 inputs" "PASS"
+    check "livestream-tap has only authorized inputs" "PASS"
 else
-    check "livestream-tap has only L12 inputs" "unexpected source(s): $UNEXPECTED"
+    check "livestream-tap has only authorized inputs" "unexpected source(s): $UNEXPECTED"
 fi
 
 echo ""
@@ -162,7 +169,7 @@ fi
 # Check for any .conf that creates a PLAYBACK node targeting livestream-tap
 # that is NOT one of the legitimate L12/S4 sources.
 # Legitimate: hapax-l12-evilpet-capture, hapax-l12-usb-return-capture,
-#             hapax-s4-loopback (these ARE the sources that feed the tap).
+#             hapax-s4-loopback (route-policy-authorized tap sources).
 # Bypass:     anything else creating a playback→livestream-tap path.
 LEGIT_TAP_SOURCES="hapax-l12-evilpet|hapax-l12-usb-return|hapax-s4-loopback|hapax-broadcast-master"
 SUSPECT=$(grep -rl "target.object.*livestream-tap" ~/.config/pipewire/pipewire.conf.d/*.conf 2>/dev/null | while read f; do

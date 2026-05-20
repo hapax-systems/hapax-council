@@ -758,8 +758,7 @@ nodes:
     kind: filter_chain
     pipewire_name: hapax-polyend-loudnorm
     industrial_name: chain.polyend.loudnorm
-    description: Polyend instrument loudnorm routed directly to livestream tap
-    target_object: hapax-livestream-tap
+    description: Polyend instrument loudnorm, fail-closed until route policy owns broadcast activation
     channels:
       count: 2
       positions: [FL, FR]
@@ -768,8 +767,9 @@ nodes:
     release_s: 0.20
     params:
       audit_classification: external-hardware-optional
-      bypasses_l12: true
-      playback_target: hapax-livestream-tap
+      no_direct_livestream_tap: true
+      node.autoconnect: false
+      blocked_until_route_policy_owner: true
 
 edges:
   # Live edges the inspector can observe directly.
@@ -796,9 +796,6 @@ edges:
 
   - source: polyend-instrument-capture
     target: polyend-loudnorm
-
-  - source: polyend-loudnorm
-    target: livestream-tap
 
   - source: private-sink
     target: private-monitor-capture

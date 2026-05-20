@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# hapax-audio-reconciler - continuous desired-state enforcement for broadcast audio links
+#
+# The reconciler owns broadcast-critical PipeWire links from
+# ~/.config/hapax/audio-link-map.conf and privacy/safety disconnects from
+# ~/.config/hapax/audio-forbidden-links.conf. It samples the graph once per
+# tick and only mutates missing/present edges; this keeps the control plane
+# quiet while preserving fast repair.
+
+set -euo pipefail
+
+INTERVAL_S="${HAPAX_RECONCILER_INTERVAL_S:-2.0}"
+LOGFILE="${HAPAX_RECONCILER_LOG:-/tmp/hapax-audio-reconciler.log}"
+LINK_MAP="${HAPAX_RECONCILER_LINK_MAP:-/home/hapax/.config/hapax/audio-link-map.conf}"
+FORBIDDEN_FILE="${HAPAX_RECONCILER_FORBIDDEN_LINKS:-/home/hapax/.config/hapax/audio-forbidden-links.conf}"
+PW_LINK="${HAPAX_RECONCILER_PW_LINK:-pw-link}"
+ONCE="${HAPAX_RECONCILER_ONCE:-0}"
+
+declare -a DESIRED_LINKS=()
+declare -a FORBIDDEN_LINKS=()
+declare -A PRESENT_LINKS=()
+declare -A PRESENT_PORTS=()
+GRAPH=""
+
+log() {
+    printf '%s [reconciler] %s\n' "$(date -Iseconds)" "$*" >> "$LOGFILE"
+}
+
+trim_policy_line() {
+    local line="$1"
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    printf '%s\n' "$line"
+}
+
+load_link_map() {
+    DESIRED_LINKS=()
+    if [[ ! -f "$LINK_MAP" ]]; then
+        log "FATAL: link map not found: $LINK_MAP"
+        exit 1
+    fi
+    local line
+    while IFS= read -r line; do
+        line="$(trim_policy_line "$line")"
+        [[ -z "$line" ]] && continue
+        DESIRED_LINKS+=("$line")
+    done < "$LINK_MAP"
+    log "loaded ${#DESIRED_LINKS[@]} desired links from $LINK_MAP"
+}
+
+load_forbidden_links() {
+    FORBIDDEN_LINKS=()
+    [[ ! -f "$FORBIDDEN_FILE" ]] && return
+    local line
+    while IFS= read -r line; do
+        line="$(trim_policy_line "$line")"
+        [[ -z "$line" ]] && continue
+        FORBIDDEN_LINKS+=("$line")
+    done < "$FORBIDDEN_FILE"
+    if ((${#FORBIDDEN_LINKS[@]} > 0)); then
+        log "loaded ${#FORBIDDEN_LINKS[@]} forbidden link patterns"
+    fi
+}
+
+refresh_graph() {
+    if ! GRAPH="$("$PW_LINK" -l 2>/dev/null)"; then
+        GRAPH=""
+        PRESENT_LINKS=()
+        PRESENT_PORTS=()
+        log "WARN: could not read PipeWire link graph"
+        return 1
+    fi
+    PRESENT_LINKS=()
+    PRESENT_PORTS=()
+    local raw line current_port linked_port
+    current_port=""
+    while IFS= read -r raw; do
+        line="$(trim_policy_line "$raw")"
+        [[ -z "$line" ]] && continue
+        if [[ "$line" == "|->"* ]]; then
+            linked_port="$(trim_policy_line "${line#|->}")"
+            [[ -n "$current_port" && -n "$linked_port" ]] || continue
+            PRESENT_PORTS["$linked_port"]=1
+            PRESENT_LINKS["$current_port|$linked_port"]=1
+            continue
+        fi
+        if [[ "$line" == "|<-"* ]]; then
+            linked_port="$(trim_policy_line "${line#|<-}")"
+            [[ -n "$current_port" && -n "$linked_port" ]] || continue
+            PRESENT_PORTS["$linked_port"]=1
+            PRESENT_LINKS["$linked_port|$current_port"]=1
+            continue
+        fi
+        current_port="$line"
+        PRESENT_PORTS["$current_port"]=1
+    done <<< "$GRAPH"
+}
+
+link_present() {
+    local source_port="$1"
+    local target_port="$2"
+    [[ -n "${PRESENT_LINKS["$source_port|$target_port"]+x}" ]]
+}
+
+port_present() {
+    local port="$1"
+    [[ -n "${PRESENT_PORTS["$port"]+x}" ]]
+}
+
+enforce_links() {
+    local failures=0
+    local created=0
+    local missing_endpoints=0
+    local skipped=0
+    local link src tgt err
+
+    for link in "${DESIRED_LINKS[@]}"; do
+        src="${link%%|*}"
+        tgt="${link##*|}"
+        if link_present "$src" "$tgt"; then
+            ((skipped += 1))
+            continue
+        fi
+        if ! port_present "$src" || ! port_present "$tgt"; then
+            ((missing_endpoints += 1))
+            continue
+        fi
+        err="$("$PW_LINK" "$src" "$tgt" 2>&1)" && {
+            ((created += 1))
+            continue
+        }
+        if [[ "$err" == *"File exists"* ]]; then
+            ((skipped += 1))
+            continue
+        fi
+        ((failures += 1))
+    done
+
+    if ((created > 0)); then
+        log "created $created missing link(s); skipped $skipped already-present link(s)"
+    fi
+    if ((missing_endpoints > 0 && tick % 60 == 0)); then
+        log "deferred $missing_endpoints/${#DESIRED_LINKS[@]} link(s) with absent endpoint ports"
+    fi
+    if ((failures > 0 && tick % 60 == 0)); then
+        log "WARN: $failures/${#DESIRED_LINKS[@]} links could not be established (nodes may not exist yet)"
+    fi
+}
+
+enforce_forbidden() {
+    local destroyed=0
+    local link src tgt
+    for link in "${FORBIDDEN_LINKS[@]}"; do
+        src="${link%%|*}"
+        tgt="${link##*|}"
+        if ! link_present "$src" "$tgt"; then
+            continue
+        fi
+        if "$PW_LINK" -d "$src" "$tgt" 2>/dev/null; then
+            ((destroyed += 1))
+            log "ALERT: destroyed forbidden link $src -> $tgt"
+        fi
+    done
+    if ((destroyed > 0)); then
+        refresh_graph || true
+    fi
+}
+
+log "=== hapax-audio-reconciler starting ==="
+log "interval=${INTERVAL_S}s link_map=$LINK_MAP forbidden=$FORBIDDEN_FILE"
+
+load_link_map
+load_forbidden_links
+
+tick=0
+while true; do
+    refresh_graph || true
+    enforce_links
+    enforce_forbidden
+
+    ((tick += 1))
+    if ((tick % 60 == 0)); then
+        load_link_map
+        load_forbidden_links
+    fi
+
+    if [[ "$ONCE" == "1" ]]; then
+        break
+    fi
+    sleep "$INTERVAL_S"
+done

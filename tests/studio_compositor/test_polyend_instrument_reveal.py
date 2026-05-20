@@ -354,18 +354,23 @@ class TestRegistrationAndConfig:
         udev = (
             REPO_ROOT / "config/udev/rules.d/50-hapax-usb-audio-video-noautosuspend.rules"
         ).read_text(encoding="utf-8")
-        assert 'target.object = "hapax-livestream-tap"' in pipewire
+        assert 'target.object = "hapax-livestream-tap"' not in pipewire
+        assert "node.autoconnect = false" in pipewire
+        assert "node.dont-reconnect = true" in pipewire
         assert "ZOOM_Corporation_L-12" not in pipewire
         assert 'device.vendor.id = "0x1fc9"' in wireplumber
         assert "node.dont-reconnect = true" in wireplumber
         assert 'ATTR{idVendor}=="1fc9"' in udev
 
-    def test_canonical_audio_topology_declares_polyend_direct_tap(self) -> None:
+    def test_canonical_audio_topology_keeps_polyend_fail_closed_until_policy_owner(
+        self,
+    ) -> None:
         descriptor = TopologyDescriptor.from_yaml(REPO_ROOT / "config/audio-topology.yaml")
         loudnorm = descriptor.node_by_id("polyend-loudnorm")
         assert loudnorm.pipewire_name == "hapax-polyend-loudnorm"
-        assert loudnorm.target_object == "hapax-livestream-tap"
-        assert loudnorm.params["playback_target"] == "hapax-livestream-tap"
+        assert loudnorm.target_object is None
+        assert loudnorm.params["no_direct_livestream_tap"] is True
+        assert loudnorm.params["blocked_until_route_policy_owner"] is True
 
     def test_audio_conf_consistency_gate_accepts_polyend_conf(self) -> None:
         spec = importlib.util.spec_from_file_location(

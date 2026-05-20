@@ -494,14 +494,26 @@ if [ "${#SCRIPTS[@]}" -gt 0 ]; then
     mkdir -p "$LOCAL_BIN"
     for f in "${SCRIPTS[@]}"; do
         base="$(basename "$f")"
+        dest="$LOCAL_BIN/$base"
         if [ -f "$REPO/$f" ]; then
             chmod +x "$REPO/$f" 2>/dev/null || true
-            if [ ! -L "$LOCAL_BIN/$base" ] || [ "$(readlink "$LOCAL_BIN/$base")" != "$REPO/$f" ]; then
-                ln -sfv "$REPO/$f" "$LOCAL_BIN/$base"
+            if [ ! -L "$dest" ] || [ "$(readlink "$dest")" != "$REPO/$f" ]; then
+                ln -sfv "$REPO/$f" "$dest"
             fi
         else
-            rm -fv "$LOCAL_BIN/$base" || true
+            rm -fv "$dest" || true
         fi
+        matches="$(
+            { grep -l -F "$dest" "$REPO/systemd/units/"*.service 2>/dev/null || true; \
+              grep -l -F "$f" "$REPO/systemd/units/"*.service 2>/dev/null || true; } | sort -u
+        )"
+        for unit_path in $matches; do
+            base_unit="$(basename "$unit_path")"
+            if systemctl --user is-active --quiet "$base_unit"; then
+                echo "  restarting $base_unit (uses $dest)"
+                systemctl --user restart "$base_unit"
+            fi
+        done
     done
     DID_ANYTHING=1
 fi

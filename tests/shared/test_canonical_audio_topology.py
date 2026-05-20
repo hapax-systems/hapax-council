@@ -317,6 +317,25 @@ def test_m8_loudnorm_is_reconciler_owned_and_missing_hardware_is_classified() ->
     assert ("m8-loudnorm", "livestream-tap") not in edge_pairs
 
 
+def test_polyend_loudnorm_is_fail_closed_until_route_policy_owns_broadcast() -> None:
+    d = _descriptor()
+    polyend_source = d.node_by_id("polyend-instrument-source")
+    polyend_capture = d.node_by_id("polyend-instrument-capture")
+    polyend_loudnorm = d.node_by_id("polyend-loudnorm")
+
+    assert polyend_source.params["audit_classification"] == "external-hardware-optional"
+    assert polyend_capture.target_object == polyend_source.pipewire_name
+    assert polyend_loudnorm.target_object is None
+    assert polyend_loudnorm.params["no_direct_livestream_tap"] is True
+    assert polyend_loudnorm.params["node.autoconnect"] is False
+    assert polyend_loudnorm.params["blocked_until_route_policy_owner"] is True
+
+    edge_pairs = {(edge.source, edge.target) for edge in d.edges}
+    assert ("polyend-instrument-source", "polyend-instrument-capture") in edge_pairs
+    assert ("polyend-instrument-capture", "polyend-loudnorm") in edge_pairs
+    assert ("polyend-loudnorm", "livestream-tap") not in edge_pairs
+
+
 def test_respeaker_xvf3800_is_optional_sidechat_capture_not_rode_replacement() -> None:
     d = _descriptor()
     source = d.node_by_id("respeaker-xvf3800-array-source")

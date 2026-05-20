@@ -45,6 +45,7 @@ from shared.audio_topology import TopologyDescriptor
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PIPEWIRE_DIR = REPO_ROOT / "config" / "pipewire"
+GENERATED_PIPEWIRE_DIR = PIPEWIRE_DIR / "generated" / "pipewire"
 WIREPLUMBER_DIR = REPO_ROOT / "config" / "wireplumber"
 CANONICAL_TOPOLOGY = REPO_ROOT / "config" / "audio-topology.yaml"
 HAPAX_LINK_MAP = REPO_ROOT / "config" / "hapax" / "audio-link-map.conf"
@@ -100,6 +101,22 @@ def test_v3_tts_chain_routes_through_mpc_l12_wet_return() -> None:
     forbidden = _strip_comments(_read_conf(HAPAX_FORBIDDEN_LINKS))
     assert "hapax-tts-broadcast-playback:output_FL|hapax-livestream-tap:playback_FL" in forbidden
     assert "hapax-tts-broadcast-playback:output_FR|hapax-livestream-tap:playback_FR" in forbidden
+
+    tts_duck_conf = _strip_comments(_read_conf(PIPEWIRE_DIR / "hapax-tts-duck.conf"))
+    assert "hapax-tts-broadcast-playback" not in tts_duck_conf
+    assert 'target.object = "hapax-livestream-tap"' not in tts_duck_conf
+
+
+def test_generated_tts_artifacts_do_not_reintroduce_direct_broadcast_bridge() -> None:
+    generated_tts_duck = _strip_comments(_read_conf(GENERATED_PIPEWIRE_DIR / "tts-duck.conf"))
+    generated_tts_bridge = _strip_comments(
+        _read_conf(GENERATED_PIPEWIRE_DIR / "tts-broadcast-playback.conf")
+    )
+
+    assert 'target.object = "hapax-livestream-tap"' not in generated_tts_duck
+    assert 'target.object = "hapax-livestream-tap"' not in generated_tts_bridge
+    assert "node.autoconnect = false" in generated_tts_duck
+    assert "node.autoconnect = false" in generated_tts_bridge
 
 
 def test_reconciler_map_owns_only_mpc_private_monitor_outputs() -> None:
@@ -190,6 +207,14 @@ def test_m8_loudnorm_routes_through_l12_not_direct_to_stream() -> None:
         "M8 loudnorm must NOT terminate at hapax-livestream-tap directly; "
         "nothing goes straight to stream (operator directive 2026-05-02)"
     )
+
+
+def test_generated_m8_loudnorm_routes_through_mpc_l12_not_direct_to_stream() -> None:
+    code = _strip_comments(_read_conf(GENERATED_PIPEWIRE_DIR / "m8-loudnorm.conf"))
+    assert MPC_OUTPUT_NODE in code
+    assert "audio.position = [ AUX10 AUX11 ]" in code
+    assert "node.autoconnect = false" in code
+    assert 'target.object = "hapax-livestream-tap"' not in code
 
 
 def test_m8_link_map_uses_live_aux_ports_not_stale_fl_fr() -> None:

@@ -289,6 +289,54 @@ def test_hapax_runtime_config_deploys_to_user_config_and_restarts_reconciler(
     assert record["deploy_groups"]["hapax_runtime_config"] == [config_path]
 
 
+def test_hapax_script_deploy_restarts_active_units_that_reference_local_bin(
+    tmp_path: Path,
+) -> None:
+    script_path = "scripts/hapax-audio-reconciler"
+    unit_path = "systemd/units/hapax-audio-reconciler.service"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            script_path: "#!/usr/bin/env bash\necho reconciler\n",
+            unit_path: (
+                "[Unit]\n"
+                "Description=Reconciler\n"
+                "\n"
+                "[Service]\n"
+                "ExecStart=%h/.local/bin/hapax-audio-reconciler\n"
+            ),
+        },
+    )
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    installed = home / ".local" / "bin" / "hapax-audio-reconciler"
+    assert installed.is_symlink()
+    assert installed.resolve() == repo / script_path
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "--user restart hapax-audio-reconciler.service" in calls
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["hapax_scripts"] == [script_path]
+
+
 def test_deploy_rejects_commit_ranges_before_touching_targets() -> None:
     result = subprocess.run(
         [str(SCRIPT), "HEAD..HEAD"],
