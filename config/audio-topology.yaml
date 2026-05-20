@@ -77,7 +77,7 @@ nodes:
     description: |
       Akai MPC Live III USB multichannel playback endpoint. Under the
       MPC-first baseline, host-side broadcast sources land here first:
-      music AUX0/1, Hapax voice AUX2/3, PC AUX4/5, YouTube AUX6/7,
+      music AUX0/1, Hapax voice AUX2/3, YouTube AUX6/7,
       and private monitor AUX8/9. The MPC hardware mix exits over
       governed TRS outputs into L-12 CH9-12 for broadcast-bound returns;
       private monitor AUX8/9 is operator-routed inside the MPC and must
@@ -88,7 +88,7 @@ nodes:
       positions: [AUX0, AUX1, AUX2, AUX3, AUX4, AUX5, AUX6, AUX7, AUX8, AUX9, AUX10, AUX11, AUX12, AUX13, AUX14, AUX15, AUX16, AUX17, AUX18, AUX19, AUX20, AUX21, AUX22, AUX23]
     params:
       audit_role: mpc-first-broadcast-dsp
-      host_to_mpc_channel_map: "music:AUX0/AUX1 voice:AUX2/AUX3 pc:AUX4/AUX5 youtube:AUX6/AUX7 private-monitor:AUX8/AUX9"
+      host_to_mpc_channel_map: "music:AUX0/AUX1 voice:AUX2/AUX3 pc:disabled/fail-closed youtube:AUX6/AUX7 private-monitor:AUX8/AUX9"
       private_monitor_endpoint: true
       private_monitor_positions: AUX8 AUX9
       private_monitor_route: private-monitor-via-mpc-live-iii
@@ -455,11 +455,21 @@ nodes:
     kind: loopback
     pipewire_name: input.loopback.sink.role.multimedia
     industrial_name: role.multimedia.loopback-sink
-    description: Default multimedia role, routed through PC loudnorm
+    description: Default multimedia role, dead-ended at PC loudnorm with no MPC/livestream egress
     target_object: hapax-pc-loudnorm
     channels:
       count: 2
       positions: [FL, FR]
+    params:
+      device.intended-roles: '[ "Music", "Movie", "Game", "Multimedia" ]'
+      policy.role-based.priority: 10
+      policy.role-based.action.same-priority: mix
+      policy.role-based.action.lower-priority: mix
+      policy.role-based.preferred-target: hapax-pc-loudnorm
+      node.dont-fallback: true
+      node.dont-reconnect: true
+      node.dont-move: true
+      state.restore: false
 
   - id: role-notification
     kind: loopback
@@ -470,6 +480,16 @@ nodes:
     channels:
       count: 2
       positions: [FL, FR]
+    params:
+      device.intended-roles: '[ "Notification" ]'
+      policy.role-based.priority: 20
+      policy.role-based.action.same-priority: mix
+      policy.role-based.action.lower-priority: mix
+      policy.role-based.preferred-target: hapax-notification-private
+      node.dont-fallback: true
+      node.dont-reconnect: true
+      node.dont-move: true
+      state.restore: false
 
   - id: role-assistant
     kind: loopback
@@ -480,6 +500,16 @@ nodes:
     channels:
       count: 2
       positions: [FL, FR]
+    params:
+      device.intended-roles: '[ "Assistant" ]'
+      policy.role-based.priority: 40
+      policy.role-based.action.same-priority: mix
+      policy.role-based.action.lower-priority: duck
+      policy.role-based.preferred-target: hapax-private
+      node.dont-fallback: true
+      node.dont-reconnect: true
+      node.dont-move: true
+      state.restore: false
 
   - id: role-broadcast
     kind: loopback
@@ -490,6 +520,16 @@ nodes:
     channels:
       count: 2
       positions: [FL, FR]
+    params:
+      device.intended-roles: '[ "Broadcast" ]'
+      policy.role-based.priority: 40
+      policy.role-based.action.same-priority: mix
+      policy.role-based.action.lower-priority: duck
+      policy.role-based.preferred-target: hapax-voice-fx-capture
+      node.dont-fallback: true
+      node.dont-reconnect: true
+      node.dont-move: true
+      state.restore: false
 
   # Broadcast-bound TTS chain.
   - id: voice-fx
@@ -526,8 +566,8 @@ nodes:
     kind: filter_chain
     pipewire_name: hapax-pc-loudnorm
     industrial_name: chain.desktop.loudnorm
-    description: PC-wide loudnorm sink routed to MPC USB IN 5/6
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    description: PC-wide loudnorm sink, fail-closed and not routed to MPC USB IN 5/6
+    target_object: null
     channels:
       count: 2
       positions: [FL, FR]
@@ -535,9 +575,10 @@ nodes:
     limit_db: -18.0
     release_s: 0.20
     params:
-      playback_positions: AUX4 AUX5
-      mpc_usb_input_pair: AUX4 AUX5
+      playback_positions: disabled
+      mpc_usb_input_pair: disabled
       notification_excluded: true
+      fail_closed: true
 
   - id: pc-router
     kind: tap
@@ -753,6 +794,11 @@ nodes:
     params:
       audit_classification: external-hardware-optional
       fallback_to_l12_is_runtime_drift: true
+      node.autoconnect: false
+      node.dont-fallback: true
+      node.dont-reconnect: true
+      node.dont-move: true
+      state.restore: false
 
   - id: polyend-loudnorm
     kind: filter_chain

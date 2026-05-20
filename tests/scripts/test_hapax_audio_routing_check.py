@@ -170,6 +170,78 @@ def test_tts_direct_bypass_guard_follows_multiline_link_blocks(tmp_path: Path) -
     assert "BYPASS DETECTED" in result.stdout
 
 
+def test_pc_usb56_failclosed_guard_rejects_pc_loudnorm_to_mpc(tmp_path: Path) -> None:
+    graph = _base_graph() + textwrap.dedent(
+        """
+
+        hapax-pc-loudnorm-playback:output_FL
+        |-> Akai Professional MPC Live III:playback_AUX4
+        hapax-pc-loudnorm-playback:output_FR
+        |-> Akai Professional MPC Live III:playback_AUX5
+        """
+    )
+
+    result = _run_with_graph(tmp_path, graph)
+
+    assert result.returncode == 1
+    assert "PC USB 5/6 is fail-closed" in result.stdout
+    assert "PC loudnorm is feeding MPC AUX4/5" in result.stdout
+
+
+def test_assistant_private_fallback_to_multimedia_is_rejected(tmp_path: Path) -> None:
+    graph = _base_graph() + textwrap.dedent(
+        """
+
+        input.loopback.sink.role.assistant-output:output_FL
+        |-> input.loopback.sink.role.multimedia:playback_FL
+        input.loopback.sink.role.assistant-output:output_FR
+        |-> input.loopback.sink.role.multimedia:playback_FR
+        """
+    )
+
+    result = _run_with_graph(tmp_path, graph)
+
+    assert result.returncode == 1
+    assert "assistant/private does not fall into multimedia" in result.stdout
+    assert "assistant role is feeding multimedia/PC" in result.stdout
+
+
+def test_livestream_tap_bridge_fallback_to_multimedia_is_rejected(tmp_path: Path) -> None:
+    graph = _base_graph() + textwrap.dedent(
+        """
+
+        output.loopback-2939205-13:output_FL
+        |-> input.loopback.sink.role.multimedia:playback_FL
+        output.loopback-2939205-13:output_FR
+        |-> input.loopback.sink.role.multimedia:playback_FR
+        """
+    )
+
+    result = _run_with_graph(tmp_path, graph)
+
+    assert result.returncode == 1
+    assert "livestream tap bridge does not fall into multimedia" in result.stdout
+    assert "tap bridge is feeding multimedia/PC" in result.stdout
+
+
+def test_optional_polyend_capture_fallback_to_webcam_or_l12_is_rejected(tmp_path: Path) -> None:
+    graph = _base_graph() + textwrap.dedent(
+        """
+
+        alsa_input.usb-046d_Logitech_BRIO_43B0576A-03.analog-stereo:capture_FL
+        |-> hapax-polyend-instrument-capture:input_1
+        alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX0
+        |-> hapax-polyend-instrument-capture:input_2
+        """
+    )
+
+    result = _run_with_graph(tmp_path, graph)
+
+    assert result.returncode == 1
+    assert "optional Polyend capture is fail-closed" in result.stdout
+    assert "Polyend capture fell back to webcam/L-12/default capture" in result.stdout
+
+
 def test_l12_wet_return_capture_requires_upstream_aux_links(tmp_path: Path) -> None:
     graph = "\n".join(
         line

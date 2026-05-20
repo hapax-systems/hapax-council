@@ -29,6 +29,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -48,6 +51,21 @@ link_present() {
         line == src { within = 1; next }
         line !~ /^\|/ { within = 0 }
         within && line ~ /^\|->/ && index(line, target) { found = 1 }
+        END { exit found ? 0 : 1 }
+    '
+}
+
+regex_link_present() {
+    local source_re="$1"
+    local target_re="$2"
+    printf '%s\n' "$GRAPH" | awk -v src_re="$source_re" -v target_re="$target_re" '
+        {
+            line = $0
+            sub(/^[[:space:]]*/, "", line)
+        }
+        line ~ src_re { within = 1; next }
+        line !~ /^\|/ { within = 0 }
+        within && line ~ /^\|->/ && line ~ target_re { found = 1 }
         END { exit found ? 0 : 1 }
     '
 }
@@ -153,6 +171,60 @@ if [ "$MPC_INPUTS" -ge 10 ]; then
     check "MPC has ≥10 AUX channel references" "PASS ($MPC_INPUTS found)"
 else
     check "MPC has ≥10 AUX channel references" "only $MPC_INPUTS (expected ≥10)"
+fi
+
+echo ""
+echo "Chain 5b: Livestream / Non-Livestream Boundary Guard"
+
+if link_present "hapax-pc-loudnorm-playback:output_FL" "playback_AUX4" \
+    || link_present "hapax-pc-loudnorm-playback:output_FR" "playback_AUX5"; then
+    check "PC USB 5/6 is fail-closed" "PC loudnorm is feeding MPC AUX4/5"
+else
+    check "PC USB 5/6 is fail-closed" "PASS"
+fi
+
+if link_present "input.loopback.sink.role.assistant-output:output_FL" "input.loopback.sink.role.multimedia:playback_FL" \
+    || link_present "input.loopback.sink.role.assistant-output:output_FR" "input.loopback.sink.role.multimedia:playback_FR"; then
+    check "assistant/private does not fall into multimedia" "assistant role is feeding multimedia/PC"
+else
+    check "assistant/private does not fall into multimedia" "PASS"
+fi
+
+if regex_link_present '^output[.]loopback-[0-9]+-[0-9]+:output_(FL|FR)$' 'input[.]loopback[.]sink[.]role[.]multimedia:playback_(FL|FR)' ; then
+    check "livestream tap bridge does not fall into multimedia" "tap bridge is feeding multimedia/PC"
+else
+    check "livestream tap bridge does not fall into multimedia" "PASS"
+fi
+
+if regex_link_present '^alsa_input[.]usb-.*(Logitech|C920|BRIO|ZOOM_Corporation_L-12).*:capture_' 'hapax-polyend-instrument-capture:input_[12]' ; then
+    check "optional Polyend capture is fail-closed" "Polyend capture fell back to webcam/L-12/default capture"
+else
+    check "optional Polyend capture is fail-closed" "PASS"
+fi
+
+echo ""
+echo "Chain 5c: WirePlumber Link-Time Deny Policy"
+
+WP_DENY_CONF_SOURCE="${HAPAX_WP_DENY_CONF_SOURCE:-$REPO_ROOT/config/wireplumber/98-hapax-link-deny.conf}"
+WP_DENY_SCRIPT_SOURCE="${HAPAX_WP_DENY_SCRIPT_SOURCE:-$REPO_ROOT/config/wireplumber/scripts/hapax/link-deny.lua}"
+WP_DENY_CONF_INSTALLED="${HAPAX_WP_DENY_CONF_INSTALLED:-$HOME/.config/wireplumber/wireplumber.conf.d/98-hapax-link-deny.conf}"
+WP_DENY_SCRIPT_INSTALLED="${HAPAX_WP_DENY_SCRIPT_INSTALLED:-$HOME/.config/wireplumber/scripts/hapax/link-deny.lua}"
+
+if [ -f "$WP_DENY_CONF_SOURCE" ] && [ -f "$WP_DENY_SCRIPT_SOURCE" ]; then
+    check "WirePlumber deny source artifacts present" "PASS"
+else
+    check "WirePlumber deny source artifacts present" "missing source policy"
+fi
+
+if [ -f "$WP_DENY_CONF_INSTALLED" ] && [ -f "$WP_DENY_SCRIPT_INSTALLED" ]; then
+    if cmp -s "$WP_DENY_CONF_SOURCE" "$WP_DENY_CONF_INSTALLED" \
+        && cmp -s "$WP_DENY_SCRIPT_SOURCE" "$WP_DENY_SCRIPT_INSTALLED"; then
+        echo -e "  ${GREEN}[OK]${NC}   WirePlumber deny policy installed and matches source"
+    else
+        echo -e "  ${YELLOW}[WARN]${NC} WirePlumber deny policy installed but differs from source"
+    fi
+else
+    echo -e "  ${YELLOW}[WARN]${NC} WirePlumber deny policy not installed live (source-only unless runtime-authorized)"
 fi
 
 # ── Invariant 6: No .conf files that create bypass paths ──
