@@ -43,6 +43,15 @@ def test_predecode_rate_cap_follows_3d_frame_cache_target(monkeypatch) -> None:
     assert CameraPipeline._predecode_target_fps_for_source(6) is None
 
 
+def test_predecode_drop_probability_preserves_compressed_caps(monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_3D_COMPOSITOR", "1")
+    monkeypatch.setenv("HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS", "6")
+
+    assert round(CameraPipeline._predecode_drop_probability_for_source(30) or 0.0, 6) == 0.8
+    assert round(CameraPipeline._predecode_drop_probability_for_source(15) or 0.0, 6) == 0.6
+    assert CameraPipeline._predecode_drop_probability_for_source(6) is None
+
+
 def test_frame_cache_snapshot_gate_uses_monotonic_time() -> None:
     pipeline = object.__new__(CameraPipeline)
     pipeline._frame_cache_sample_interval_s = 0.5
