@@ -16,11 +16,14 @@ import yaml
 from shared.assertion_model import (
     Assertion,
     AssertionType,
+    GovernanceStatus,
     ProvenanceRecord,
     SourceType,
 )
 
-EXTRACTION_VERSION = "1.0"
+EXTRACTION_VERSION = "2.0"
+
+PROCESSED_STATE_FILENAME = ".prose-extractor-processed.json"
 
 _DEONTIC_RE = re.compile(
     r"(?:^|\n)\s*[-*]?\s*([^\n]*\b(?:MUST|NEVER|ALWAYS|MANDATORY|PROTECTED)\b[^\n]*)",
@@ -88,6 +91,7 @@ def extract_from_claude_md(path: Path) -> list[Assertion]:
                 confidence=0.85,
                 domain="operational",
                 assertion_type=AssertionType.CONSTRAINT,
+                governance_status=GovernanceStatus.AUTHORITATIVE,
                 provenance=ProvenanceRecord(
                     extraction_method="prose_claude_md_deontic",
                     extraction_version=EXTRACTION_VERSION,
@@ -282,4 +286,136 @@ def extract_from_directory(
         for md in sorted(root.rglob("*.md")):
             results.extend(extract_from_relay_artifact(md))
 
+    return results
+
+
+def extract_from_obsidian_note(path: Path) -> list[Assertion]:
+    """Extract assertions from an Obsidian vault note using deontic + section strategies."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+
+    fm, body = _parse_frontmatter(text)
+    assertions: list[Assertion] = []
+
+    for sentence, line, keyword in _extract_deontic_lines(body):
+        assertions.append(
+            Assertion(
+                text=sentence,
+                source_type=SourceType.MARKDOWN,
+                source_uri=str(path),
+                source_span=(line, line),
+                confidence=0.75,
+                domain=str(fm.get("type", "general")),
+                assertion_type=AssertionType.CONSTRAINT,
+                governance_status=GovernanceStatus.DERIVED,
+                provenance=ProvenanceRecord(
+                    extraction_method="prose_obsidian_deontic",
+                    extraction_version=EXTRACTION_VERSION,
+                ),
+                tags=[f"keyword:{keyword}", f"vault_type:{fm.get('type', 'unknown')}"],
+            )
+        )
+
+    for m in _DECISION_HEADER_RE.finditer(body):
+        section_type = m.group(1).lower()
+        section_body = _extract_section_body(body, m.start())
+        if not section_body:
+            continue
+        first_para = re.split(r"\n\n+", section_body)[0]
+        first_para = re.sub(r"\s+", " ", first_para).strip()
+        if not first_para or len(first_para) < 10:
+            continue
+
+        a_type = (
+            AssertionType.DECISION
+            if section_type in ("decision", "conclusion")
+            else AssertionType.CLAIM
+        )
+        line = _line_number_of(body, m.start())
+        assertions.append(
+            Assertion(
+                text=first_para,
+                source_type=SourceType.MARKDOWN,
+                source_uri=str(path),
+                source_span=(line, line),
+                confidence=0.7,
+                domain=str(fm.get("type", "general")),
+                assertion_type=a_type,
+                governance_status=GovernanceStatus.DERIVED,
+                provenance=ProvenanceRecord(
+                    extraction_method="prose_obsidian_section",
+                    extraction_version=EXTRACTION_VERSION,
+                ),
+                tags=[f"section_type:{section_type}"],
+            )
+        )
+
+    return assertions
+
+
+import json as _json
+
+
+class ProcessedState:
+    """Track which files have been processed for resumable extraction."""
+
+    def __init__(self, state_path: Path) -> None:
+        self._path = state_path
+        self._processed: dict[str, str] = {}
+        if state_path.exists():
+            try:
+                self._processed = _json.loads(state_path.read_text())
+            except Exception:
+                self._processed = {}
+
+    def is_processed(self, file_path: Path) -> bool:
+        key = str(file_path)
+        if key not in self._processed:
+            return False
+        try:
+            mtime = str(file_path.stat().st_mtime)
+        except OSError:
+            return False
+        return self._processed[key] == mtime
+
+    def mark_processed(self, file_path: Path) -> None:
+        try:
+            self._processed[str(file_path)] = str(file_path.stat().st_mtime)
+        except OSError:
+            pass
+
+    def save(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.write_text(_json.dumps(self._processed, indent=2))
+
+
+def extract_from_directory_resumable(
+    root: Path,
+    *,
+    source_kind: str = "obsidian",
+    state_dir: Path | None = None,
+) -> list[Assertion]:
+    """Extract assertions with resumable state tracking."""
+    state_path = (state_dir or root) / PROCESSED_STATE_FILENAME
+    state = ProcessedState(state_path)
+    results: list[Assertion] = []
+
+    if source_kind == "obsidian":
+        for md in sorted(root.rglob("*.md")):
+            if md.name in ("MEMORY.md", "CHANGELOG.md"):
+                continue
+            if state.is_processed(md):
+                continue
+            results.extend(extract_from_obsidian_note(md))
+            state.mark_processed(md)
+    elif source_kind == "claude_md":
+        for md in sorted(root.rglob("CLAUDE.md")):
+            if state.is_processed(md):
+                continue
+            results.extend(extract_from_claude_md(md))
+            state.mark_processed(md)
+
+    state.save()
     return results

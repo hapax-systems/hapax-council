@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from shared.assertion_model import AssertionType, SourceType
+from shared.assertion_model import AssertionType, GovernanceStatus, SourceType
 from shared.prose_assertion_extractor import (
+    ProcessedState,
     extract_from_claude_md,
     extract_from_directory,
+    extract_from_directory_resumable,
     extract_from_memory_file,
+    extract_from_obsidian_note,
     extract_from_relay_artifact,
 )
 
@@ -425,3 +428,64 @@ class TestAssertionIdDeterminism:
         r1 = extract_from_claude_md(p1)
         r2 = extract_from_claude_md(p2)
         assert r1[0].assertion_id != r2[0].assertion_id
+
+
+class TestGovernanceStatusOnClaudeMd:
+    def test_claude_md_has_authoritative_governance(self, tmp_path: Path) -> None:
+        p = _write_md(tmp_path, "CLAUDE.md", "MUST validate input.\n")
+        results = extract_from_claude_md(p)
+        assert results[0].governance_status == GovernanceStatus.AUTHORITATIVE
+
+
+class TestObsidianExtraction:
+    def test_deontic_extraction(self, tmp_path: Path) -> None:
+        p = _write_md(
+            tmp_path,
+            "note.md",
+            "---\ntype: goal\n---\n\n# Goal\n\nMUST ship by Friday.\n",
+        )
+        results = extract_from_obsidian_note(p)
+        assert len(results) == 1
+        assert "MUST" in results[0].text
+        assert results[0].governance_status == GovernanceStatus.DERIVED
+        assert "vault_type:goal" in results[0].tags
+
+    def test_decision_section(self, tmp_path: Path) -> None:
+        p = _write_md(
+            tmp_path,
+            "research.md",
+            "# Research\n\n## Decision\n\nProceed with the consolidated approach.\n",
+        )
+        results = extract_from_obsidian_note(p)
+        assert any(r.assertion_type == AssertionType.DECISION for r in results)
+
+    def test_no_extraction_from_plain_note(self, tmp_path: Path) -> None:
+        p = _write_md(tmp_path, "daily.md", "# Daily Note\n\nHad coffee.\n")
+        results = extract_from_obsidian_note(p)
+        assert len(results) == 0
+
+
+class TestResumableExtraction:
+    def test_skips_already_processed(self, tmp_path: Path) -> None:
+        _write_md(tmp_path, "a.md", "MUST do A.\n")
+        _write_md(tmp_path, "b.md", "MUST do B.\n")
+        r1 = extract_from_directory_resumable(tmp_path, source_kind="obsidian")
+        assert len(r1) == 2
+        r2 = extract_from_directory_resumable(tmp_path, source_kind="obsidian")
+        assert len(r2) == 0
+
+    def test_reprocesses_modified_file(self, tmp_path: Path) -> None:
+        p = _write_md(tmp_path, "a.md", "MUST do A.\n")
+        extract_from_directory_resumable(tmp_path, source_kind="obsidian")
+        import time
+
+        time.sleep(0.05)
+        p.write_text("MUST do A v2.\nNEVER skip B.\n")
+        r2 = extract_from_directory_resumable(tmp_path, source_kind="obsidian")
+        assert len(r2) == 2
+
+    def test_state_persists(self, tmp_path: Path) -> None:
+        _write_md(tmp_path, "a.md", "MUST do A.\n")
+        extract_from_directory_resumable(tmp_path, source_kind="obsidian")
+        state = ProcessedState(tmp_path / ".prose-extractor-processed.json")
+        assert state.is_processed(tmp_path / "a.md")
