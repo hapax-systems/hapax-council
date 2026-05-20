@@ -32,6 +32,15 @@ from shared.archive_replay_sidecar_index import (
     ArchiveReplaySidecarIndexMetrics,
 )
 from shared.artifact_taxonomy import DispositionState, validate_artifact
+from shared.audio_reactivity_runtime_witness import (
+    AudioReactivityRuntimeWitnessFixture as _AudioReactivityRuntimeWitnessFixture,
+)
+from shared.audio_reactivity_runtime_witness import (
+    RuntimeAudioLedgerRowFixture as _RuntimeAudioLedgerRowFixture,
+)
+from shared.audio_reactivity_runtime_witness import (
+    VisualResponseFixture as _VisualResponseFixture,
+)
 from shared.audio_topology_inspector import check_l12_forward_invariant
 from shared.audio_world_surface_fixtures import AudioSurfaceFixture, AudioWorldSurfaceFixtureSet
 from shared.bayesian_camera_salience_world_surface import (
@@ -296,6 +305,12 @@ _FormalGovernanceFormalConstraint._contract
 _FormalGovernanceOperationRecord._aware
 _export_formal_governance_runtime
 _formal_constraint_template_frontmatter
+
+# Audio reactivity runtime witness fixture validators are invoked by Pydantic
+# model validation when loading the fixture packet.
+_RuntimeAudioLedgerRowFixture._validate_active_source_evidence
+_VisualResponseFixture._validate_response_witnesses
+_AudioReactivityRuntimeWitnessFixture._validate_expected_state
 
 # Public-API context manager. Called by the five per-outcome smoke tests
 # (vocal / programme_authoring / director_moves / chat_reactivity /
