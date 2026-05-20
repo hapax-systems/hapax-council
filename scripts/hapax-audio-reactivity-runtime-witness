@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Dry-run CLI for the audio reactivity runtime witness harness."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.audio_reactivity_runtime_witness import (  # noqa: E402
+    AudioReactivityRuntimeWitnessError,
+    evaluate_runtime_witness_fixture_set,
+    load_audio_reactivity_runtime_witness_fixtures,
+    read_runtime_shape_probe,
+    write_runtime_witness_trace,
+)
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Evaluate fixture/dry-run audio reactivity runtime witnesses.",
+    )
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="evaluate fixture contracts without live audio actions",
+    )
+    mode.add_argument(
+        "--run",
+        action="store_true",
+        help="refuse live execution; this harness is fixture/dry-run only",
+    )
+    parser.add_argument(
+        "--fixture",
+        type=Path,
+        default=None,
+        help="fixture JSON path; defaults to config/audio-reactivity-runtime-witness-fixtures.json",
+    )
+    parser.add_argument(
+        "--case",
+        action="append",
+        dest="cases",
+        help="fixture_case to evaluate; repeat for multiple cases",
+    )
+    parser.add_argument(
+        "--trace-out",
+        type=Path,
+        default=None,
+        help="append durable JSONL calibration trace records to this path",
+    )
+    parser.add_argument(
+        "--probe-shm-shape",
+        action="store_true",
+        help="include shape-only /dev/shm JSON probe output; does not certify live audio",
+    )
+    parser.add_argument(
+        "--unified-reactivity",
+        type=Path,
+        default=None,
+        help="override unified-reactivity.json path for --probe-shm-shape",
+    )
+    parser.add_argument(
+        "--audio-ledger",
+        type=Path,
+        default=None,
+        help="override audio-source-ledger.json path for --probe-shm-shape",
+    )
+    parser.add_argument(
+        "--broadcast-health",
+        type=Path,
+        default=None,
+        help="override audio-safe-for-broadcast.json path for --probe-shm-shape",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    if args.run:
+        print(
+            "refusing live audio reactivity witness: fixture/dry-run harness only",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        fixtures = (
+            load_audio_reactivity_runtime_witness_fixtures(args.fixture)
+            if args.fixture
+            else load_audio_reactivity_runtime_witness_fixtures()
+        )
+        results = evaluate_runtime_witness_fixture_set(fixtures, cases=args.cases)
+        if args.trace_out:
+            write_runtime_witness_trace(results, path=args.trace_out)
+    except (AudioReactivityRuntimeWitnessError, KeyError) as exc:
+        print(f"audio reactivity runtime witness dry-run failed: {exc}", file=sys.stderr)
+        return 1
+
+    result_payload = [result.model_dump(mode="json") for result in results]
+    if args.probe_shm_shape:
+        shape = read_runtime_shape_probe(
+            unified_reactivity_path=args.unified_reactivity
+            if args.unified_reactivity
+            else Path("/dev/shm/hapax-compositor/unified-reactivity.json"),
+            audio_source_ledger_path=args.audio_ledger
+            if args.audio_ledger
+            else Path("/dev/shm/hapax-compositor/audio-source-ledger.json"),
+            broadcast_health_path=args.broadcast_health
+            if args.broadcast_health
+            else Path("/dev/shm/hapax-broadcast/audio-safe-for-broadcast.json"),
+        )
+        print(
+            json.dumps(
+                {
+                    "results": result_payload,
+                    "runtime_shape": shape.model_dump(mode="json"),
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(json.dumps(result_payload, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

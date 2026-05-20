@@ -1,0 +1,696 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "audio-reactivity-runtime-witness-fixtures-v1",
+  "schema_ref": "schemas/audio-reactivity-runtime-witness.schema.json",
+  "generated_from": [
+    "vault:audit:2026-04-29-audio-visual-reactivity-tightening-research",
+    "vault-task:audio-reactivity-runtime-witness-and-calibration-harness",
+    "shared:audio_source_evidence",
+    "shared:governance.scrim_invariants.anti_visualizer",
+    "shared:visual_variance_ledger"
+  ],
+  "declared_at": "2026-05-20T18:50:17Z",
+  "producer": "cx-preset-storm",
+  "required_fixture_cases": [
+    "false_activity_process_liveness",
+    "stale_activity_music_marker",
+    "wrong_source_youtube_react_audio",
+    "audible_programme_visual_source_silent",
+    "silent_broadcast_egress",
+    "legitimate_high_reactivity_music",
+    "visualizer_register_blocked"
+  ],
+  "stimulus_kinds": [
+    "silence",
+    "music",
+    "youtube_react_audio",
+    "tts",
+    "operator_voice",
+    "contact_desk",
+    "m8_s4",
+    "broadcast_egress",
+    "mixed_source"
+  ],
+  "states": ["passed", "failed", "blocked"],
+  "fail_closed_policy": {
+    "process_liveness_certifies_audio_source": false,
+    "route_existence_certifies_visual_source": false,
+    "public_egress_certifies_visual_source": false,
+    "visual_response_without_frame_witness": false,
+    "anti_visualizer_threshold_bypass": false,
+    "runtime_shape_probe_certifies_live_audio": false
+  },
+  "fixtures": [
+    {
+      "schema_version": 1,
+      "fixture_case": "false_activity_process_liveness",
+      "witness_id": "audio.react.witness.false_process.youtube",
+      "stimulus_kind": "silence",
+      "expected_source_role": "youtube",
+      "expected_visual_source_id": "youtube-bed",
+      "requires_public_egress": true,
+      "requires_visual_response": true,
+      "source_refs": [
+        "fixture:stimulus:silence",
+        "shm:hapax-compositor/yt-audio-state.json",
+        "config/audio-routing.yaml#youtube-bed"
+      ],
+      "ledger_rows": [
+        {
+          "source_id": "youtube-bed",
+          "role": "youtube",
+          "active": false,
+          "freshness": "fresh",
+          "activity_basis": "process_activity",
+          "rms": 0.0,
+          "public_audible": false,
+          "visual_modulation_permitted": false,
+          "process_live": true,
+          "evidence_refs": ["shm:hapax-compositor/yt-audio-state.json"],
+          "blocking_reasons": [
+            "source_signal_silent",
+            "process_activity_not_signal_evidence"
+          ]
+        }
+      ],
+      "programme_egress": {
+        "programme_path_active": false,
+        "egress_audible": false,
+        "egress_source_id": "broadcast-egress",
+        "loudness_lufs_i": null,
+        "observed_at": "2026-05-20T18:50:17Z",
+        "evidence_refs": ["fixture:broadcast-egress:silent"]
+      },
+      "visual_response": {
+        "visual_response_id": "visual.response.youtube.react.silence.false",
+        "response_present": false,
+        "frame_witness_ref": null,
+        "lane_witness_ref": null,
+        "variance_ledger_ref": null,
+        "observed_at": null,
+        "modulation_range": [0.0, 0.0],
+        "anti_visualizer_score": 0.0,
+        "anti_visualizer_threshold": 0.45,
+        "visualizer_register": false
+      },
+      "expected_state": "failed",
+      "expected_failure_class": "false_process_activity"
+    },
+    {
+      "schema_version": 1,
+      "fixture_case": "stale_activity_music_marker",
+      "witness_id": "audio.react.witness.stale.music",
+      "stimulus_kind": "music",
+      "expected_source_role": "music",
+      "expected_visual_source_id": "music-bed",
+      "requires_public_egress": true,
+      "requires_visual_response": true,
+      "source_refs": [
+        "fixture:stimulus:music",
+        "marker:music-level-probe:old",
+        "config/audio-routing.yaml#music-bed"
+      ],
+      "ledger_rows": [
+        {
+          "source_id": "music-bed",
+          "role": "music",
+          "active": false,
+          "freshness": "stale",
+          "activity_basis": "explicit_marker",
+          "rms": 0.42,
+          "public_audible": true,
+          "visual_modulation_permitted": false,
+          "process_live": false,
+          "evidence_refs": ["marker:music-level-probe:old"],
+          "blocking_reasons": ["source_evidence_stale"]
+        }
+      ],
+      "programme_egress": {
+        "programme_path_active": true,
+        "egress_audible": true,
+        "egress_source_id": "broadcast-egress",
+        "loudness_lufs_i": -14.7,
+        "observed_at": "2026-05-20T18:50:18Z",
+        "evidence_refs": ["shm:hapax-broadcast/audio-safe-for-broadcast.json"]
+      },
+      "visual_response": {
+        "visual_response_id": "visual.response.music.stale",
+        "response_present": false,
+        "frame_witness_ref": null,
+        "lane_witness_ref": null,
+        "variance_ledger_ref": null,
+        "observed_at": null,
+        "modulation_range": [0.0, 0.0],
+        "anti_visualizer_score": 0.1,
+        "anti_visualizer_threshold": 0.45,
+        "visualizer_register": false
+      },
+      "expected_state": "blocked",
+      "expected_failure_class": "stale_audio_evidence"
+    },
+    {
+      "schema_version": 1,
+      "fixture_case": "wrong_source_youtube_react_audio",
+      "witness_id": "audio.react.witness.wrong_source.youtube_over_music",
+      "stimulus_kind": "youtube_react_audio",
+      "expected_source_role": "music",
+      "expected_visual_source_id": "music-bed",
+      "requires_public_egress": true,
+      "requires_visual_response": true,
+      "source_refs": [
+        "fixture:stimulus:yt-react-audio",
+        "config/audio-routing.yaml#youtube-bed",
+        "config/audio-routing.yaml#music-bed"
+      ],
+      "ledger_rows": [
+        {
+          "source_id": "music-bed",
+          "role": "music",
+          "active": false,
+          "freshness": "fresh",
+          "activity_basis": "missing",
+          "rms": 0.0,
+          "public_audible": false,
+          "visual_modulation_permitted": false,
+          "process_live": false,
+          "evidence_refs": ["shm:hapax-compositor/unified-reactivity.json#music"],
+          "blocking_reasons": ["source_signal_silent"]
+        },
+        {
+          "source_id": "youtube-bed",
+          "role": "youtube",
+          "active": true,
+          "freshness": "fresh",
+          "activity_basis": "measured_signal",
+          "rms": 0.56,
+          "public_audible": true,
+          "visual_modulation_permitted": true,
+          "process_live": true,
+          "evidence_refs": ["shm:hapax-compositor/unified-reactivity.json#youtube"],
+          "blocking_reasons": []
+        }
+      ],
+      "programme_egress": {
+        "programme_path_active": true,
+        "egress_audible": true,
+        "egress_source_id": "broadcast-egress",
+        "loudness_lufs_i": -15.0,
+        "observed_at": "2026-05-20T18:50:19Z",
+        "evidence_refs": ["fixture:broadcast-egress:youtube-audible"]
+      },
+      "visual_response": {
+        "visual_response_id": "visual.response.music.expected.youtube.active",
+        "response_present": true,
+        "frame_witness_ref": "frame:egress:yt-react-audio:001",
+        "lane_witness_ref": "lane:reverie:yt-react-audio:001",
+        "variance_ledger_ref": "variance-ledger:yt-react-audio:001",
+        "observed_at": "2026-05-20T18:50:19Z",
+        "modulation_range": [0.08, 0.21],
+        "anti_visualizer_score": 0.15,
+        "anti_visualizer_threshold": 0.45,
+        "visualizer_register": false
+      },
+      "expected_state": "failed",
+      "expected_failure_class": "wrong_source_role"
+    },
+    {
+      "schema_version": 1,
+      "fixture_case": "audible_programme_visual_source_silent",
+      "witness_id": "audio.react.witness.egress_audible.visual_source_silent",
+      "stimulus_kind": "broadcast_egress",
+      "expected_source_role": "music",
+      "expected_visual_source_id": "music-bed",
+      "requires_public_egress": true,
+      "requires_visual_response": true,
+      "source_refs": [
+        "fixture:stimulus:broadcast-egress",
+        "shm:hapax-broadcast/audio-safe-for-broadcast.json",
+        "config/audio-routing.yaml#music-bed"
+      ],
+      "ledger_rows": [
+        {
+          "source_id": "music-bed",
+          "role": "music",
+          "active": false,
+          "freshness": "fresh",
+          "activity_basis": "missing",
+          "rms": 0.0,
+          "public_audible": false,
+          "visual_modulation_permitted": false,
+          "process_live": false,
+          "evidence_refs": ["shm:hapax-compositor/unified-reactivity.json#music"],
+          "blocking_reasons": ["source_signal_silent"]
+        },
+        {
+          "source_id": "broadcast-egress",
+          "role": "broadcast_egress",
+          "active": true,
+          "freshness": "fresh",
+          "activity_basis": "broadcast_health",
+          "rms": 0.0,
+          "public_audible": true,
+          "visual_modulation_permitted": false,
+          "process_live": false,
+          "evidence_refs": ["shm:hapax-broadcast/audio-safe-for-broadcast.json"],
+          "blocking_reasons": []
+        }
+      ],
+      "programme_egress": {
+        "programme_path_active": true,
+        "egress_audible": true,
+        "egress_source_id": "broadcast-egress",
+        "loudness_lufs_i": -14.2,
+        "observed_at": "2026-05-20T18:50:20Z",
+        "evidence_refs": ["shm:hapax-broadcast/audio-safe-for-broadcast.json"]
+      },
+      "visual_response": {
+        "visual_response_id": "visual.response.music.source.silent",
+        "response_present": false,
+        "frame_witness_ref": null,
+        "lane_witness_ref": null,
+        "variance_ledger_ref": null,
+        "observed_at": null,
+        "modulation_range": [0.0, 0.0],
+        "anti_visualizer_score": 0.12,
+        "anti_visualizer_threshold": 0.45,
+        "visualizer_register": false
+      },
+      "expected_state": "failed",
+      "expected_failure_class": "visual_source_silent"
+    },
+    {
+      "schema_version": 1,
+      "fixture_case": "silent_broadcast_egress",
+      "witness_id": "audio.react.witness.tts.silent_egress",
+      "stimulus_kind": "tts",
+      "expected_source_role": "tts",
+      "expected_visual_source_id": "broadcast-tts",
+      "requires_public_egress": true,
+      "requires_visual_response": true,
+      "source_refs": [
+        "fixture:stimulus:tts",
+        "config/audio-routing.yaml#broadcast-tts",
+        "shm:hapax-compositor/unified-reactivity.json#tts"
+      ],
+      "ledger_rows": [
+        {
+          "source_id": "broadcast-tts",
+          "role": "tts",
+          "active": true,
+          "freshness": "fresh",
+          "activity_basis": "measured_signal",
+          "rms": 0.63,
+          "public_audible": false,
+          "visual_modulation_permitted": true,
+          "process_live": true,
+          "evidence_refs": ["shm:hapax-compositor/unified-reactivity.json#tts"],
+          "blocking_reasons": []
+        },
+        {
+          "source_id": "broadcast-egress",
+          "role": "broadcast_egress",
+          "active": false,
+          "freshness": "fresh",
+          "activity_basis": "missing",
+          "rms": 0.0,
+          "public_audible": false,
+          "visual_modulation_permitted": false,
+          "process_live": false,
+          "evidence_refs": ["shm:hapax-broadcast/audio-safe-for-broadcast.json"],
+          "blocking_reasons": ["broadcast_egress_not_public_audible"]
+        }
+      ],
+      "programme_egress": {
+        "programme_path_active": true,
+        "egress_audible": false,
+        "egress_source_id": "broadcast-egress",
+        "loudness_lufs_i": null,
+        "observed_at": "2026-05-20T18:50:21Z",
+        "evidence_refs": ["shm:hapax-broadcast/audio-safe-for-broadcast.json"]
+      },
+      "visual_response": {
+        "visual_response_id": "visual.response.tts.egress.silent",
+        "response_present": true,
+        "frame_witness_ref": "frame:egress:tts:001",
+        "lane_witness_ref": "lane:reverie:tts:001",
+        "variance_ledger_ref": "variance-ledger:tts:001",
+        "observed_at": "2026-05-20T18:50:21Z",
+        "modulation_range": [0.06, 0.18],
+        "anti_visualizer_score": 0.25,
+        "anti_visualizer_threshold": 0.45,
+        "visualizer_register": false
+      },
+      "expected_state": "failed",
+      "expected_failure_class": "broadcast_egress_silent"
+    },
+    {
+      "schema_version": 1,
+      "fixture_case": "legitimate_high_reactivity_music",
+      "witness_id": "audio.react.witness.music.legitimate_high_reactivity",
+      "stimulus_kind": "music",
+      "expected_source_role": "music",
+      "expected_visual_source_id": "music-bed",
+      "requires_public_egress": true,
+      "requires_visual_response": true,
+      "source_refs": [
+        "fixture:stimulus:music:high-reactivity",
+        "config/audio-routing.yaml#music-bed",
+        "shm:hapax-compositor/unified-reactivity.json#music"
+      ],
+      "ledger_rows": [
+        {
+          "source_id": "music-bed",
+          "role": "music",
+          "active": true,
+          "freshness": "fresh",
+          "activity_basis": "measured_signal",
+          "rms": 0.72,
+          "public_audible": true,
+          "visual_modulation_permitted": true,
+          "process_live": true,
+          "evidence_refs": ["shm:hapax-compositor/unified-reactivity.json#music"],
+          "blocking_reasons": []
+        },
+        {
+          "source_id": "broadcast-egress",
+          "role": "broadcast_egress",
+          "active": true,
+          "freshness": "fresh",
+          "activity_basis": "broadcast_health",
+          "rms": 0.0,
+          "public_audible": true,
+          "visual_modulation_permitted": false,
+          "process_live": false,
+          "evidence_refs": ["shm:hapax-broadcast/audio-safe-for-broadcast.json"],
+          "blocking_reasons": []
+        }
+      ],
+      "programme_egress": {
+        "programme_path_active": true,
+        "egress_audible": true,
+        "egress_source_id": "broadcast-egress",
+        "loudness_lufs_i": -14.1,
+        "observed_at": "2026-05-20T18:50:22Z",
+        "evidence_refs": ["shm:hapax-broadcast/audio-safe-for-broadcast.json"]
+      },
+      "visual_response": {
+        "visual_response_id": "visual.response.music.high-reactivity.structural",
+        "response_present": true,
+        "frame_witness_ref": "frame:egress:music-high-reactivity:001",
+        "lane_witness_ref": "lane:reverie:music-high-reactivity:001",
+        "variance_ledger_ref": "variance-ledger:music-high-reactivity:001",
+        "observed_at": "2026-05-20T18:50:22Z",
+        "modulation_range": [0.18, 0.64],
+        "anti_visualizer_score": 0.31,
+        "anti_visualizer_threshold": 0.45,
+        "visualizer_register": false
+      },
+      "expected_state": "passed",
+      "expected_failure_class": null
+    },
+    {
+      "schema_version": 1,
+      "fixture_case": "visualizer_register_blocked",
+      "witness_id": "audio.react.witness.music.visualizer_register_blocked",
+      "stimulus_kind": "music",
+      "expected_source_role": "music",
+      "expected_visual_source_id": "music-bed",
+      "requires_public_egress": true,
+      "requires_visual_response": true,
+      "source_refs": [
+        "fixture:stimulus:music:visualizer-register",
+        "config/audio-routing.yaml#music-bed",
+        "shared:governance.scrim_invariants.anti_visualizer"
+      ],
+      "ledger_rows": [
+        {
+          "source_id": "music-bed",
+          "role": "music",
+          "active": true,
+          "freshness": "fresh",
+          "activity_basis": "measured_signal",
+          "rms": 0.76,
+          "public_audible": true,
+          "visual_modulation_permitted": true,
+          "process_live": true,
+          "evidence_refs": ["shm:hapax-compositor/unified-reactivity.json#music"],
+          "blocking_reasons": []
+        }
+      ],
+      "programme_egress": {
+        "programme_path_active": true,
+        "egress_audible": true,
+        "egress_source_id": "broadcast-egress",
+        "loudness_lufs_i": -14.0,
+        "observed_at": "2026-05-20T18:50:23Z",
+        "evidence_refs": ["fixture:broadcast-egress:music-visualizer"]
+      },
+      "visual_response": {
+        "visual_response_id": "visual.response.music.visualizer-register",
+        "response_present": true,
+        "frame_witness_ref": "frame:egress:music-visualizer:001",
+        "lane_witness_ref": "lane:reverie:music-visualizer:001",
+        "variance_ledger_ref": "variance-ledger:music-visualizer:001",
+        "observed_at": "2026-05-20T18:50:23Z",
+        "modulation_range": [0.42, 0.98],
+        "anti_visualizer_score": 0.82,
+        "anti_visualizer_threshold": 0.45,
+        "visualizer_register": true
+      },
+      "expected_state": "failed",
+      "expected_failure_class": "visualizer_register_exceeded"
+    },
+    {
+      "schema_version": 1,
+      "fixture_case": "operator_voice_private_calibration",
+      "witness_id": "audio.react.witness.operator_voice.private_calibration",
+      "stimulus_kind": "operator_voice",
+      "expected_source_role": "operator_voice",
+      "expected_visual_source_id": "operator-voice-monitor",
+      "requires_public_egress": false,
+      "requires_visual_response": true,
+      "source_refs": [
+        "fixture:stimulus:operator-voice",
+        "privacy:operator-voice-private-calibration"
+      ],
+      "ledger_rows": [
+        {
+          "source_id": "operator-voice-monitor",
+          "role": "operator_voice",
+          "active": true,
+          "freshness": "fresh",
+          "activity_basis": "measured_signal",
+          "rms": 0.44,
+          "public_audible": false,
+          "visual_modulation_permitted": true,
+          "process_live": true,
+          "evidence_refs": ["fixture:operator-voice:private-monitor"],
+          "blocking_reasons": []
+        }
+      ],
+      "programme_egress": {
+        "programme_path_active": false,
+        "egress_audible": false,
+        "egress_source_id": "broadcast-egress",
+        "loudness_lufs_i": null,
+        "observed_at": "2026-05-20T18:50:24Z",
+        "evidence_refs": ["fixture:no-public-operator-voice-egress"]
+      },
+      "visual_response": {
+        "visual_response_id": "visual.response.operator-voice.private-calibration",
+        "response_present": true,
+        "frame_witness_ref": "frame:private:operator-voice:001",
+        "lane_witness_ref": "lane:reverie:operator-voice:001",
+        "variance_ledger_ref": "variance-ledger:operator-voice:001",
+        "observed_at": "2026-05-20T18:50:24Z",
+        "modulation_range": [0.04, 0.13],
+        "anti_visualizer_score": 0.2,
+        "anti_visualizer_threshold": 0.45,
+        "visualizer_register": false
+      },
+      "expected_state": "passed",
+      "expected_failure_class": null
+    },
+    {
+      "schema_version": 1,
+      "fixture_case": "desk_contact_cadence_calibration",
+      "witness_id": "audio.react.witness.desk_contact.cadence",
+      "stimulus_kind": "contact_desk",
+      "expected_source_role": "desk_contact",
+      "expected_visual_source_id": "desk",
+      "requires_public_egress": false,
+      "requires_visual_response": true,
+      "source_refs": [
+        "fixture:stimulus:contact-desk",
+        "shm:hapax-compositor/unified-reactivity.json#desk"
+      ],
+      "ledger_rows": [
+        {
+          "source_id": "desk",
+          "role": "desk_contact",
+          "active": true,
+          "freshness": "fresh",
+          "activity_basis": "measured_signal",
+          "rms": 0.38,
+          "public_audible": false,
+          "visual_modulation_permitted": true,
+          "process_live": true,
+          "evidence_refs": ["shm:hapax-compositor/unified-reactivity.json#desk"],
+          "blocking_reasons": []
+        }
+      ],
+      "programme_egress": {
+        "programme_path_active": false,
+        "egress_audible": false,
+        "egress_source_id": "broadcast-egress",
+        "loudness_lufs_i": null,
+        "observed_at": "2026-05-20T18:50:25Z",
+        "evidence_refs": ["fixture:desk-contact-private-calibration"]
+      },
+      "visual_response": {
+        "visual_response_id": "visual.response.desk-contact.cadence",
+        "response_present": true,
+        "frame_witness_ref": "frame:private:desk-contact:001",
+        "lane_witness_ref": "lane:reverie:desk-contact:001",
+        "variance_ledger_ref": "variance-ledger:desk-contact:001",
+        "observed_at": "2026-05-20T18:50:25Z",
+        "modulation_range": [0.03, 0.11],
+        "anti_visualizer_score": 0.19,
+        "anti_visualizer_threshold": 0.45,
+        "visualizer_register": false
+      },
+      "expected_state": "passed",
+      "expected_failure_class": null
+    },
+    {
+      "schema_version": 1,
+      "fixture_case": "m8_s4_dual_instrument_calibration",
+      "witness_id": "audio.react.witness.instrument.m8_s4",
+      "stimulus_kind": "m8_s4",
+      "expected_source_role": "instrument",
+      "expected_visual_source_id": "m8-instrument",
+      "requires_public_egress": true,
+      "requires_visual_response": true,
+      "source_refs": [
+        "fixture:stimulus:m8-s4",
+        "config/audio-routing.yaml#m8-instrument",
+        "config/audio-routing.yaml#s4-content"
+      ],
+      "ledger_rows": [
+        {
+          "source_id": "m8-instrument",
+          "role": "instrument",
+          "active": true,
+          "freshness": "fresh",
+          "activity_basis": "measured_signal",
+          "rms": 0.68,
+          "public_audible": true,
+          "visual_modulation_permitted": true,
+          "process_live": true,
+          "evidence_refs": ["shm:hapax-compositor/unified-reactivity.json#m8"],
+          "blocking_reasons": []
+        },
+        {
+          "source_id": "s4-content",
+          "role": "instrument",
+          "active": true,
+          "freshness": "fresh",
+          "activity_basis": "measured_signal",
+          "rms": 0.51,
+          "public_audible": true,
+          "visual_modulation_permitted": true,
+          "process_live": true,
+          "evidence_refs": ["shm:hapax-compositor/unified-reactivity.json#s4"],
+          "blocking_reasons": []
+        }
+      ],
+      "programme_egress": {
+        "programme_path_active": true,
+        "egress_audible": true,
+        "egress_source_id": "broadcast-egress",
+        "loudness_lufs_i": -14.5,
+        "observed_at": "2026-05-20T18:50:26Z",
+        "evidence_refs": ["fixture:broadcast-egress:m8-s4"]
+      },
+      "visual_response": {
+        "visual_response_id": "visual.response.instrument.m8-s4",
+        "response_present": true,
+        "frame_witness_ref": "frame:egress:m8-s4:001",
+        "lane_witness_ref": "lane:reverie:m8-s4:001",
+        "variance_ledger_ref": "variance-ledger:m8-s4:001",
+        "observed_at": "2026-05-20T18:50:26Z",
+        "modulation_range": [0.16, 0.48],
+        "anti_visualizer_score": 0.34,
+        "anti_visualizer_threshold": 0.45,
+        "visualizer_register": false
+      },
+      "expected_state": "passed",
+      "expected_failure_class": null
+    },
+    {
+      "schema_version": 1,
+      "fixture_case": "mixed_source_music_over_tts",
+      "witness_id": "audio.react.witness.mixed.music_over_tts",
+      "stimulus_kind": "mixed_source",
+      "expected_source_role": "music",
+      "expected_visual_source_id": "music-bed",
+      "requires_public_egress": true,
+      "requires_visual_response": true,
+      "source_refs": [
+        "fixture:stimulus:mixed-source",
+        "config/audio-routing.yaml#music-bed",
+        "config/audio-routing.yaml#broadcast-tts"
+      ],
+      "ledger_rows": [
+        {
+          "source_id": "music-bed",
+          "role": "music",
+          "active": true,
+          "freshness": "fresh",
+          "activity_basis": "measured_signal",
+          "rms": 0.58,
+          "public_audible": true,
+          "visual_modulation_permitted": true,
+          "process_live": true,
+          "evidence_refs": ["shm:hapax-compositor/unified-reactivity.json#music"],
+          "blocking_reasons": []
+        },
+        {
+          "source_id": "broadcast-tts",
+          "role": "tts",
+          "active": true,
+          "freshness": "fresh",
+          "activity_basis": "measured_signal",
+          "rms": 0.24,
+          "public_audible": true,
+          "visual_modulation_permitted": false,
+          "process_live": true,
+          "evidence_refs": ["shm:hapax-compositor/unified-reactivity.json#tts"],
+          "blocking_reasons": []
+        }
+      ],
+      "programme_egress": {
+        "programme_path_active": true,
+        "egress_audible": true,
+        "egress_source_id": "broadcast-egress",
+        "loudness_lufs_i": -14.4,
+        "observed_at": "2026-05-20T18:50:27Z",
+        "evidence_refs": ["fixture:broadcast-egress:mixed-source"]
+      },
+      "visual_response": {
+        "visual_response_id": "visual.response.mixed.music-selected",
+        "response_present": true,
+        "frame_witness_ref": "frame:egress:mixed-source:001",
+        "lane_witness_ref": "lane:reverie:mixed-source:001",
+        "variance_ledger_ref": "variance-ledger:mixed-source:001",
+        "observed_at": "2026-05-20T18:50:27Z",
+        "modulation_range": [0.12, 0.37],
+        "anti_visualizer_score": 0.27,
+        "anti_visualizer_threshold": 0.45,
+        "visualizer_register": false
+      },
+      "expected_state": "passed",
+      "expected_failure_class": null
+    }
+  ]
+}
