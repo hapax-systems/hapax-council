@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 from agents.coordinator.core import (
     Coordinator,
     CoordinatorState,
+    LaneDescriptor,
     LaneState,
     Task,
     _check_lane,
@@ -77,9 +79,92 @@ class TestLaneState:
         lane = LaneState(role="beta", alive=True, pid=12345, claimed_task="fix-bug")
         d = _lane_to_dict(lane)
         assert d["role"] == "beta"
+        assert d["platform"] == "claude"
         assert d["alive"] is True
         assert d["pid"] == 12345
         assert d["claimed_task"] == "fix-bug"
+
+    def test_peer_status_fallback_marks_queue_dry_lane_idle(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "peer-status-cx-red.yaml").write_text(
+            """session: cx-red
+platform: codex
+session_status: QUEUE-DRY
+current_claim: null
+""",
+            encoding="utf-8",
+        )
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="cx-red",
+                    session="hapax-codex-cx-red",
+                    platform="codex",
+                )
+            )
+
+        assert state.alive is True
+        assert state.platform == "codex"
+        assert state.idle is True
+        assert state.relay_age_s != float("inf")
+
+    def test_relay_claim_beats_stale_active_claim_file(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / "peer-status-cx-red.yaml").write_text(
+            """session: cx-red
+platform: codex
+session_status: IN_PROGRESS
+current_claim: relay-task
+""",
+            encoding="utf-8",
+        )
+        claim_dir = tmp_path / ".cache/hapax"
+        claim_dir.mkdir(parents=True)
+        (claim_dir / "cc-active-task-cx-red").write_text("stale-task\n", encoding="utf-8")
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role="cx-red",
+                    session="hapax-codex-cx-red",
+                    platform="codex",
+                )
+            )
+
+        assert state.claimed_task == "relay-task"
+        assert state.idle is False
+
+    def test_dynamic_tmux_discovery_includes_alpha_and_codex(self, tmp_path: Path):
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        completed = subprocess.CompletedProcess(
+            args=["tmux"],
+            returncode=0,
+            stdout="hapax-claude-alpha\nhapax-codex-cx-red\nwork\n",
+            stderr="",
+        )
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("agents.coordinator.core.subprocess.run", return_value=completed),
+        ):
+            lanes = Coordinator()._check_lanes()
+
+        assert set(lanes) == {"alpha", "cx-red"}
+        assert lanes["alpha"].alive is True
+        assert lanes["alpha"].platform == "claude"
+        assert lanes["cx-red"].alive is True
+        assert lanes["cx-red"].platform == "codex"
 
 
 class TestCoordinatorState:
@@ -122,6 +207,24 @@ class TestPickLane:
         assert result is not None
         assert result.role == "beta"
 
+    def test_picks_codex_compatible_lane(self):
+        coordinator = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="deterministic_ok",
+            path=Path("/dev/null"),
+        )
+        lanes = [LaneState(role="cx-red", platform="codex", alive=True, idle=True)]
+        result = coordinator._pick_lane(task, lanes)
+        assert result is not None
+        assert result.role == "cx-red"
+
     def test_returns_none_when_no_match(self):
         coordinator = Coordinator()
         task = Task(
@@ -138,6 +241,52 @@ class TestPickLane:
         lanes = [LaneState(role="beta", alive=True, idle=True)]
         result = coordinator._pick_lane(task, lanes)
         assert result is None
+
+
+class TestDispatch:
+    def test_dispatch_uses_methodology_dispatcher(self, tmp_path: Path):
+        dispatcher = tmp_path / "projects/hapax-council/scripts/hapax-methodology-dispatch"
+        dispatcher.parent.mkdir(parents=True)
+        dispatcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        dispatcher.chmod(0o755)
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("codex",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        lane = LaneState(role="cx-red", platform="codex", alive=True, idle=True)
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("agents.coordinator.core.subprocess.run", side_effect=fake_run),
+        ):
+            assert Coordinator()._dispatch(task, lane) is True
+
+        assert calls == [
+            [
+                str(dispatcher),
+                "--task",
+                "t1",
+                "--lane",
+                "cx-red",
+                "--platform",
+                "codex",
+                "--mode",
+                "headless",
+                "--launch",
+            ]
+        ]
 
 
 class TestScanTasks:

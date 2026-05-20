@@ -23,6 +23,12 @@ CODEX_SEND = Path.home() / "projects/hapax-council/scripts/hapax-codex-send"
 
 Platform = Literal["claude", "codex", "gemini"]
 
+SESSION_PREFIXES: tuple[tuple[str, Platform], ...] = (
+    ("hapax-claude-", "claude"),
+    ("hapax-codex-", "codex"),
+    ("hapax-gemini-", "gemini"),
+)
+
 
 @dataclass(frozen=True)
 class LaneInfo:
@@ -88,6 +94,90 @@ async def _run(cmd: list[str], timeout: float = 10.0) -> str:
         return ""
 
 
+def _lane_from_tmux_session(session: str) -> tuple[str, Platform] | None:
+    for prefix, platform in SESSION_PREFIXES:
+        if session.startswith(prefix):
+            return session.removeprefix(prefix), platform
+    return None
+
+
+def _relay_candidates(lane: str, session: str) -> list[Path]:
+    candidates = [
+        RELAY_DIR / f"{lane}.yaml",
+        RELAY_DIR / f"peer-status-{lane}.yaml",
+        RELAY_DIR / f"peer-status-{session}.yaml",
+    ]
+    return list(dict.fromkeys(candidates))
+
+
+def _load_freshest_relay(lane: str, session: str) -> dict:
+    fresh_path: Path | None = None
+    fresh_mtime = -1.0
+    for path in _relay_candidates(lane, session):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime > fresh_mtime:
+            fresh_path = path
+            fresh_mtime = mtime
+
+    if fresh_path is None:
+        return {}
+
+    try:
+        relay = yaml.safe_load(fresh_path.read_text(encoding="utf-8"))
+    except (yaml.YAMLError, OSError):
+        return {}
+    return relay if isinstance(relay, dict) else {}
+
+
+def _stringify_task(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        for key in ("task_id", "surface", "id", "name"):
+            nested = value.get(key)
+            if nested:
+                return str(nested)
+        return ""
+    return str(value)
+
+
+def _normalize_relay_status(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        return ""
+    status = value.strip().lower().replace(" ", "-").replace("_", "-")
+    if status in {"in-progress", "inprogress"} or status.startswith("in-progress-"):
+        return "in-progress"
+    if status in {"queue-dry", "equilibrium"} or status.startswith("idle-"):
+        return "idle"
+    if status == "active":
+        return "active"
+    if status == "retiring":
+        return "retiring"
+    return status.split("-", 1)[0]
+
+
+def _active_task_candidates(lane: str, session: str) -> list[Path]:
+    candidates = [
+        Path.home() / f".cache/hapax/cc-active-task-{lane}",
+        Path.home() / f".cache/hapax/cc-active-task-{session}",
+    ]
+    return list(dict.fromkeys(candidates))
+
+
+def _active_claim(lane: str, session: str) -> str:
+    for path in _active_task_candidates(lane, session):
+        try:
+            task_id = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if task_id:
+            return task_id
+    return ""
+
+
 async def load_lanes() -> list[LaneInfo]:
     raw = await _run(["tmux", "list-sessions", "-F", "#{session_name}"])
     if not raw:
@@ -97,21 +187,10 @@ async def load_lanes() -> list[LaneInfo]:
     lanes: list[LaneInfo] = []
 
     for session in sorted(raw.splitlines()):
-        platform: Platform
-        if session.startswith("hapax-claude-"):
-            lane = session.removeprefix("hapax-claude-")
-            platform = "claude"
-        elif session.startswith("hapax-codex-"):
-            lane = session.removeprefix("hapax-codex-")
-            platform = "codex"
-        elif session.startswith("hapax-gemini-"):
-            lane = session.removeprefix("hapax-gemini-")
-            platform = "gemini"
-        else:
+        parsed = _lane_from_tmux_session(session)
+        if parsed is None:
             continue
-
-        if lane == "alpha":
-            continue
+        lane, platform = parsed
 
         status = "active"
         idle_seconds = 0
@@ -127,24 +206,29 @@ async def load_lanes() -> list[LaneInfo]:
 
         current_task = ""
         current_pr = ""
-        relay_file = RELAY_DIR / f"{lane}.yaml"
-        if relay_file.exists():
-            try:
-                relay = yaml.safe_load(relay_file.read_text())
-                if isinstance(relay, dict):
-                    current_task = str(
-                        relay.get("current_claim", "") or relay.get("current_task", "") or ""
-                    )
-                    current_pr = str(relay.get("current_pr", "") or "")
-                    relay_status = relay.get("status", "")
-                    if relay_status and isinstance(relay_status, str):
-                        status = (
-                            relay_status.lower().split("_")[0]
-                            if "_" in relay_status
-                            else relay_status.lower()
-                        )
-            except (yaml.YAMLError, OSError):
-                pass
+        relay = _load_freshest_relay(lane, session)
+        if relay:
+            current_task = _stringify_task(
+                relay.get("current_claim")
+                or relay.get("current_task")
+                or relay.get("task_id")
+                or relay.get("currently_working_on")
+            )
+            current_pr = str(relay.get("current_pr") or relay.get("pr") or "")
+            relay_idle_seconds = relay.get("idle_seconds")
+            if isinstance(relay_idle_seconds, (int, float)):
+                idle_seconds = max(0, int(relay_idle_seconds))
+            relay_status = _normalize_relay_status(
+                relay.get("status") or relay.get("session_status")
+            )
+            if relay_status:
+                status = relay_status
+
+        claim = _active_claim(lane, session)
+        if claim and not current_task:
+            current_task = claim
+            status = "active"
+            idle_seconds = 0
 
         lanes.append(
             LaneInfo(
