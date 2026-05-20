@@ -106,18 +106,44 @@ write `/dev/shm/hapax-compositor/broadcast-mode.json` through
 | hapax-content-resolver | 512M | -800 | content resolver |
 | hapax-watch-receiver | 256M | -800 | Wear OS biometrics |
 | hapax-recent-impingements | 128M | -800 | salience overlay producer |
+| stimmung-sync | 2G | default | MemoryHigh=1G; role-specific source ceiling after 2026-05-13 `CONSTRAINT_MEMCG` evidence |
 
 **System-wide memory infrastructure:**
 
-- **Swap topology**: zram (31G zstd, priority=100) as tier-1 + `/samples/swapfile` (32G, priority=5) as tier-2 backstop. Total 63G swap on 62G RAM.
+- **128GB host memory policy**: the retired 62G RAM / 63G swap inventory is
+  not current source truth for this host. Runtime zram/swap sizing must be
+  verified from a read-only host receipt before any zram-generator or swapfile
+  change; source policy currently treats zram saturation, global RAM pressure,
+  and service-local cgroup OOMs as separate incident classes.
 - **Kernel reclaim tuning** (`/etc/sysctl.d/99-hapax-memory.conf`):
   - `vm.min_free_kbytes=524288` — 512MB allocation buffer (raised from default 66MB) to prevent cascade OOM under transient spikes
   - `vm.watermark_scale_factor=100` — kswapd reclaims at 1% pressure (default 10 is too late under zram+heavy-IO)
   - `vm.swappiness=5` — tuned for 128GB RAM with audio/livestream workload (low swap preference)
+- **`stimmung-sync.service` ceiling rationale**: the 2026-05-13 incident was
+  service-local cgroup pressure, not global RAM exhaustion: `stimmung-sync` was
+  killed under `CONSTRAINT_MEMCG` at the old 128M hard ceiling while the host
+  still had tens of GiB available. A runtime mitigation completed at 56.9M
+  peak with a 512M hard ceiling; source now keeps this periodic RAG/state sync
+  job at `MemoryHigh=1G` and `MemoryMax=2G` to absorb Python import,
+  embedding, and persistence bursts while remaining bounded. This is not a
+  blanket limit increase for 128M utility timers.
 - **earlyoom** (`/etc/default/earlyoom`): fires SIGTERM @ 5% avail / 5% swap-free, SIGKILL @ 2.5%.
   - `--prefer`: `cargo|rustc|ld.lld|chrome|electron|node|claude|next-server|ffmpeg|bwrap` (expendable targets for OOM)
   - `--avoid`: `Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar|hapax-imagination|hapax-daimonion|studio-compositor|logos-api|officium-api` (stack protection)
 - **System-level OOM overrides**: earlyoom (-1000), docker (-900), pipewire/wireplumber (-900).
+
+**Runtime application / receipt path:** source changes in this directory are
+not host mutation authority. A runtime-authorized follow-on task must first
+record a read-only receipt:
+
+- `free -h`
+- `zramctl --raw --output NAME,DISKSIZE,DATA,COMPR,ALGORITHM,PRIO`
+- `cat /proc/swaps`
+- `cat /proc/sys/vm/swappiness`
+- `systemctl --user show stimmung-sync.service -p MemoryHigh -p MemoryMax -p MemoryPeak -p NRestarts -p ActiveState -p Result --no-pager`
+
+Only that separate runtime path may perform sysctl writes, zram-generator
+changes, daemon reloads, unit installation, or service restarts.
 
 **Design principle**: prevent global OOM by bounding the transient memory spikers (cargo builds, ffmpeg) and giving kernel reclaim a larger buffer. Critical stack services are additionally protected via `OOMScoreAdjust=-500/-800` so the kernel strongly prefers killing unbounded leaf processes (interactive Claude sessions, transient tools) over the stack in a true crisis. Interactive Claude sessions run in `session-N.scope` under `user-1000.slice` (not `user@1000.service`) and are intentionally left uncapped + unprotected — they are the designated sacrifice target.
 
