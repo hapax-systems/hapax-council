@@ -3664,7 +3664,17 @@ from agents.studio_compositor.coding_session_reveal import (
 )
 from agents.studio_compositor.durf_source import _clear_tmux_cache_for_tests
 from agents.studio_compositor.metrics import _clear_gpu_vram_poll_cache_for_tests
+from shared.public_speech_index import (
+    PublicSpeechEventRecord,
+    lookup_speech_event,
+    recent_public_speech,
+)
+
+PublicSpeechEventRecord._validate_public_broadcast_has_egress
+PublicSpeechEventRecord._validate_private_not_public
 
 _clear_gpu_vram_poll_cache_for_tests
+lookup_speech_event
+recent_public_speech
 _clear_tmux_cache_for_tests
 _clear_tmux_session_cache_for_tests
