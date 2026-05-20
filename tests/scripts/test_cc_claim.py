@@ -291,6 +291,117 @@ def test_assigned_to_other_role_blocks_claim(tmp_path: Path) -> None:
     assert "status: offered" in note.read_text(encoding="utf-8")
 
 
+def test_pr_open_assigned_to_same_role_resumes_without_status_change(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "active",
+        "review-fix",
+        status="pr_open",
+        assigned_to="cx-test",
+    )
+
+    result = _claim(home, "review-fix")
+
+    assert result.returncode == 0, result.stderr
+    text = note.read_text(encoding="utf-8")
+    assert "status: pr_open" in text
+    assert "assigned_to: cx-test" in text
+    assert "claimed_at: null" in text
+    assert "resumed ready-state task (cc-claim)" in text
+    assert (home / ".cache" / "hapax" / "cc-active-task-cx-test").read_text(
+        encoding="utf-8"
+    ).strip() == "review-fix"
+
+
+def test_ready_state_resume_uses_existing_session_log_heading_case(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "active",
+        "capital-log",
+        status="pr_open",
+        assigned_to="cx-test",
+    )
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("## Session log", "## Session Log"),
+        encoding="utf-8",
+    )
+
+    result = _claim(home, "capital-log")
+
+    assert result.returncode == 0, result.stderr
+    text = note.read_text(encoding="utf-8")
+    assert "## Session Log\n- " in text
+    assert "resumed ready-state task (cc-claim)" in text
+    assert "## Session log" not in text
+
+
+def test_merge_queue_assigned_to_same_role_resumes_without_status_change(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "active",
+        "queue-followup",
+        status="merge_queue",
+        assigned_to="cx-test",
+    )
+
+    result = _claim(home, "queue-followup")
+
+    assert result.returncode == 0, result.stderr
+    text = note.read_text(encoding="utf-8")
+    assert "status: merge_queue" in text
+    assert "assigned_to: cx-test" in text
+    assert "claimed_at: null" in text
+    assert "resumed ready-state task (cc-claim)" in text
+    assert (home / ".cache" / "hapax" / "cc-active-task-cx-test").read_text(
+        encoding="utf-8"
+    ).strip() == "queue-followup"
+
+
+def test_pr_open_unassigned_blocks_resume(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "active",
+        "unowned-review",
+        status="pr_open",
+        assigned_to="unassigned",
+    )
+
+    result = _claim(home, "unowned-review")
+
+    assert result.returncode == 4
+    assert "ready-state task is not assigned to 'cx-test'" in result.stderr
+    assert "status: pr_open" in note.read_text(encoding="utf-8")
+    assert not (home / ".cache" / "hapax" / "cc-active-task-cx-test").exists()
+
+
+def test_merge_queue_different_assignee_blocks_resume(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "active",
+        "other-queue",
+        status="merge_queue",
+        assigned_to="cx-other",
+    )
+
+    result = _claim(home, "other-queue")
+
+    assert result.returncode == 4
+    assert "assigned to 'cx-other', not 'cx-test'" in result.stderr
+    assert "status: merge_queue" in note.read_text(encoding="utf-8")
+    assert not (home / ".cache" / "hapax" / "cc-active-task-cx-test").exists()
+
+
 def test_depends_on_null_scalar_means_no_dependencies(tmp_path: Path) -> None:
     home = tmp_path / "home"
     note = _write_task(home, "active", "null-dep", depends_on="null")

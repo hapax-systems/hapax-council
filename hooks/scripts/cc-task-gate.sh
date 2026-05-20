@@ -316,6 +316,10 @@ EOF
     # PR-open is fine for further edits (CI fixes, review feedback).
     # Fall through to AuthorityCase validation (section 10).
     ;;
+  merge_queue)
+    # Merge-queue is fine for queue/closeout maintenance by the owning lane.
+    # Fall through to AuthorityCase validation (section 10).
+    ;;
   done|withdrawn|superseded)
     cat >&2 <<EOF
 cc-task-gate: BLOCKED — task '$task_id' is terminal ('$status').

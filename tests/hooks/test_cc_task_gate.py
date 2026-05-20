@@ -12,6 +12,7 @@ Tests cover the full decision matrix from cc-task-gate.sh:
   - status: in_progress → allow
   - status: claimed → allow + auto-transition to in_progress
   - status: pr_open → allow (CI fixes / review feedback)
+  - status: merge_queue → allow (queue / closeout maintenance)
   - vault unreadable → fail-OPEN (allow, log warning)
   - HAPAX_CC_TASK_GATE_OFF=1 → bypass entirely
 """
@@ -226,6 +227,15 @@ class TestStatusGating:
 
     def test_pr_open_allows(self, tmp_path: Path) -> None:
         _make_vault(tmp_path, status="pr_open", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0
+
+    def test_merge_queue_allows(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="merge_queue", assigned="alpha")
         _write_claim(tmp_path, "alpha", "test-001")
         result = _run_hook(
             {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
