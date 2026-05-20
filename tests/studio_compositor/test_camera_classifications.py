@@ -442,10 +442,13 @@ class TestUserYamlClassificationOverlay:
         assert by_role["brio-operator"].subject_ontology == ["person"]
         assert by_role["brio-operator"].operator_visible is True
         assert by_role["brio-operator"].watchdog_timeout_ms == 5000
+        assert by_role["brio-operator"].framerate == 15
         assert by_role["c920-overhead"].subject_ontology == ["hands", "mpc", "desk"]
         assert by_role["c920-overhead"].angle == "top-down"
         assert by_role["c920-overhead"].watchdog_timeout_ms == 5000
+        assert by_role["c920-overhead"].framerate == 15
         assert by_role["brio-synths"].subject_ontology == ["turntable", "vinyl"]
+        assert by_role["brio-synths"].framerate == 15
 
     def test_yaml_classification_wins_over_default(self, tmp_path: Path) -> None:
         """The overlay is fill-the-blanks, not clobber: when the YAML
