@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -103,6 +104,41 @@ class TestTickOnce:
         assert receipt.status is ActionReceiptStatus.ERROR
         assert "structural_intent_publish_failed" in receipt.error_refs
         assert receipt.applied_refs == []
+
+
+class TestDefaultLlmBackpressure:
+    def test_default_llm_skips_when_local_route_lock_is_held(self):
+        import agents.studio_compositor.director_loop as dl_mod
+
+        assert dl_mod._DIRECTOR_LLM_LOCK.acquire(blocking=False)
+        try:
+            with patch("subprocess.run") as mock_pass:
+                with patch("urllib.request.urlopen") as mock_urlopen:
+                    assert sd._default_llm_fn("prompt") == ""
+        finally:
+            dl_mod._DIRECTOR_LLM_LOCK.release()
+
+        mock_pass.assert_not_called()
+        mock_urlopen.assert_not_called()
+
+    def test_default_llm_timeout_releases_local_route_lock(self):
+        import agents.studio_compositor.director_loop as dl_mod
+
+        with patch("subprocess.run") as mock_pass:
+            mock_pass.return_value.stdout = "test-key\n"
+            with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+                with pytest.raises(TimeoutError):
+                    sd._default_llm_fn("prompt")
+
+        assert dl_mod._DIRECTOR_LLM_LOCK.acquire(blocking=False)
+        dl_mod._DIRECTOR_LLM_LOCK.release()
+
+    def test_tick_once_catches_default_llm_timeout(self):
+        director = sd.StructuralDirector(
+            llm_fn=lambda _prompt: (_ for _ in ()).throw(TimeoutError("timed out"))
+        )
+
+        assert director.tick_once() is None
 
     def test_fallback_structural_request_ids_are_distinct(self, tmp_path):
         def stub_llm(prompt: str) -> str:

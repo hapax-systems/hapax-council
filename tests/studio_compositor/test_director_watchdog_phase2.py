@@ -16,6 +16,7 @@ integration is exercised by the existing director_loop integration suite.
 
 from __future__ import annotations
 
+import time
 from unittest.mock import patch
 
 import pytest  # noqa: TC002 — runtime import for fixtures + decorators
@@ -115,6 +116,21 @@ class TestSingleFlightLock:
         assert dl_mod._DIRECTOR_LLM_LOCK.acquire(blocking=False)
         dl_mod._DIRECTOR_LLM_LOCK.release()
 
+    def test_backoff_skips_without_acquiring_route_lock(self) -> None:
+        director = _make_director()
+        director._activity_llm_backoff_until = time.monotonic() + 30.0
+        with patch.object(dl_mod, "LITELLM_KEY", "dummy"):
+            with patch.object(director, "_call_activity_llm_locked") as mock_locked:
+                with patch(
+                    "shared.director_observability.emit_director_tick_skipped_in_flight"
+                ) as mock_emit:
+                    result = director._call_activity_llm("prompt", None)
+        assert result == ""
+        mock_locked.assert_not_called()
+        mock_emit.assert_called_once_with(reason="llm_backoff")
+        assert dl_mod._DIRECTOR_LLM_LOCK.acquire(blocking=False)
+        dl_mod._DIRECTOR_LLM_LOCK.release()
+
 
 class TestSpeakMicromoveGate:
     def test_micromove_speaks_on_first_llm_empty_tick(self) -> None:
@@ -169,3 +185,14 @@ class TestSpeakMicromoveGate:
             with patch.object(director, "_speak_activity", side_effect=RuntimeError("tts down")):
                 # Must not raise.
                 director._emit_micromove_fallback(reason="llm_empty", condition_id="test")
+
+    def test_speech_does_not_queue_behind_in_flight_synthesis(self) -> None:
+        director = _make_director()
+        assert director._transition_lock.acquire(blocking=False)
+        try:
+            with patch.object(dl_mod.threading, "Thread") as mock_thread:
+                director._speak_activity("hello", "observe")
+        finally:
+            director._transition_lock.release()
+        mock_thread.assert_not_called()
+        assert director._state != "SPEAKING"
