@@ -8,19 +8,22 @@ Documentation=cc-task m8-remote-button-control-daemon
 # until that edit lands, this unit can be started manually via
 # `systemctl --user start hapax-m8-control`.
 After=graphical-session.target
+ConditionPathExists=/dev/hapax-m8-serial
 PartOf=hapax.target
 StopWhenUnneeded=yes
 
 [Service]
 Type=simple
 ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.m8_control
+Environment=XDG_RUNTIME_DIR=%t
 Restart=on-failure
 RestartSec=2
 TimeoutStartSec=10
 MemoryMax=64M
 # Run with the same user as the rest of the application stack —
-# UDS at /run/hapax/m8-control.sock with mode 0600 means only the
-# operator can submit commands.
+# UDS at %t/hapax/m8-control.sock with mode 0600 means only the operator
+# can submit commands. RuntimeDirectory creates %t/hapax in the user
+# manager; a user service must not write directly under /run/hapax.
 RuntimeDirectory=hapax
 RuntimeDirectoryMode=0700
 

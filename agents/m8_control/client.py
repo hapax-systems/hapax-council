@@ -10,14 +10,14 @@ import json
 import socket
 from pathlib import Path
 
-from agents.m8_control.daemon import DEFAULT_UDS_PATH
+from agents.m8_control.daemon import default_uds_path
 
 
 class M8ControlClient:
     """Synchronous UDS client. One request per connection."""
 
-    def __init__(self, uds_path: Path = DEFAULT_UDS_PATH, *, timeout_s: float = 1.0) -> None:
-        self._uds_path = uds_path
+    def __init__(self, uds_path: Path | None = None, *, timeout_s: float = 1.0) -> None:
+        self._uds_path = uds_path or default_uds_path()
         self._timeout_s = timeout_s
 
     def _send(self, payload: dict) -> dict:

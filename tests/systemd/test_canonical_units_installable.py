@@ -234,6 +234,23 @@ def test_canonical_25_execstart_repo_paths_exist() -> None:
     assert not failures, f"Repo-relative ExecStart path(s) missing on disk: {failures}"
 
 
+def test_m8_control_unit_is_device_conditioned_and_user_runtime_scoped() -> None:
+    """M8 control must not restart-loop while the M8 serial device is absent."""
+    unit = UNITS_DIR / "hapax-m8-control.service"
+    assert _raw_keys(unit, "Unit", "ConditionPathExists") == ["/dev/hapax-m8-serial"]
+    assert "XDG_RUNTIME_DIR=%t" in _raw_keys(unit, "Service", "Environment")
+    assert _raw_keys(unit, "Service", "RuntimeDirectory") == ["hapax"]
+    assert "/run/hapax/m8-control.sock" not in unit.read_text(encoding="utf-8")
+
+
+def test_m8_udev_rule_starts_control_service_when_device_appears() -> None:
+    """The control daemon is useful only when udev has created the M8 symlink."""
+    rules = (REPO_ROOT / "systemd" / "udev" / "99-hapax-m8.rules").read_text(encoding="utf-8")
+    assert 'SYMLINK+="hapax-m8-serial"' in rules
+    assert 'ENV{SYSTEMD_USER_WANTS}+="hapax-m8-monitor.service"' in rules
+    assert 'ENV{SYSTEMD_USER_WANTS}+="hapax-m8-control.service"' in rules
+
+
 # ─────────────────── soft sanity check (warn, don't fail) ───────────────────
 # A few pre-existing units use multi-line ExecStart with embedded shell
 # quoting that's valid for systemd but trips strict configparser-style
