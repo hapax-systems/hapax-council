@@ -1,12 +1,10 @@
 [Unit]
 Description=Hapax M8 remote button control daemon (UDS → serial 'C' command)
-Documentation=cc-task m8-remote-button-control-daemon
+Documentation=https://github.com/hapax-systems/hapax-council/tree/main/agents/m8_control
 # Pulled into the active graph by the same udev rule that pulls
 # hapax-m8-monitor (systemd/udev/99-hapax-m8.rules) when the M8 USB
-# device appears. The udev rule's SYSTEMD_USER_WANTS will need a
-# follow-up edit to add this service alongside hapax-m8-monitor;
-# until that edit lands, this unit can be started manually via
-# `systemctl --user start hapax-m8-control`.
+# device appears. The same stable symlink gates manual starts via
+# ConditionPathExists, so unplugged systems stay cleanly inactive.
 After=graphical-session.target
 ConditionPathExists=/dev/hapax-m8-serial
 PartOf=hapax.target
