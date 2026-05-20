@@ -3766,3 +3766,12 @@ get_wcs_claimable_surfaces
 from shared.artifact_release_state import ArtifactReleaseState
 
 ArtifactReleaseState.from_records
+# Condition edition provenance ledger v2: Pydantic validators + ledger
+# query methods consumed by downstream marketplace/demo-kit publishers.
+# cc-task: condition-edition-provenance-ledger-v2
+from shared.condition_edition_provenance_ledger import ProvenanceLedger
+
+ProvenanceLedger._validate_fail_closed
+ProvenanceLedger.by_release_state
+ProvenanceLedger.for_marketplace
+ProvenanceLedger.for_demo_kit
