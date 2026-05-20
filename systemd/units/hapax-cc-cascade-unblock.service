@@ -1,0 +1,9 @@
+[Unit]
+Description=Hapax CC task cascade unblock reconciler
+After=hapax-secrets.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/hapax-council/scripts/cc-cascade-unblock --reconcile
+Environment=HOME=%h
+TimeoutStartSec=30
