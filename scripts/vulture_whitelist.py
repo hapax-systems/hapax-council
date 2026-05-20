@@ -3848,3 +3848,19 @@ from shared.audio_control_plane import (
 classify_service_health
 read_mutation_events
 refuse_dirty_restart
+
+from shared.grounding_context import GroundingContextVerifier
+
+GroundingContextVerifier.log_turn_verification
+
+from shared.organ_visual_map import (
+    organ_ids,
+    visual_techniques_for_organ,
+    organs_using_technique,
+    shader_node_ids,
+)
+
+organ_ids
+visual_techniques_for_organ
+organs_using_technique
+shader_node_ids22a2f6842 (fix(ci): whitelist grounding_context and organ_visual_map for vulture gate)
