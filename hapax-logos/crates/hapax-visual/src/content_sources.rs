@@ -1263,6 +1263,13 @@ impl ContentSourceManager {
         self.sources.values().any(|s| s.current_opacity > 0.001)
     }
 
+    pub fn visible_source_count(&self) -> usize {
+        self.sources
+            .values()
+            .filter(|source| Self::source_is_visible(source))
+            .count()
+    }
+
     pub fn source_count(&self) -> usize {
         self.sources.len()
     }

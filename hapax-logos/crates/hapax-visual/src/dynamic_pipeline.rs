@@ -51,6 +51,10 @@ fn should_write_consumer_output(frame_count: u64, half_rate: bool) -> bool {
     !half_rate || frame_count.is_multiple_of(2)
 }
 
+fn source_presence_gate_closed(source_count: usize) -> bool {
+    source_count < MIN_SOURCE_BOUND_EFFECT_SOURCES
+}
+
 const PLAN_DIR: &str = "/dev/shm/hapax-imagination/pipeline";
 const PLAN_FILE: &str = "/dev/shm/hapax-imagination/pipeline/plan.json";
 const UNIFORMS_JSON: &str = "/dev/shm/hapax-imagination/uniforms.json";
@@ -58,6 +62,7 @@ const SHARED_UNIFORMS_WGSL: &str = include_str!("shaders/uniforms.wgsl");
 const SHARED_VERTEX_WGSL: &str = include_str!("shaders/fullscreen_quad.wgsl");
 const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const EFFECT_DRIFT_STATE_FILE: &str = "/dev/shm/hapax-visual/effect-drift-state.json";
+const MIN_SOURCE_BOUND_EFFECT_SOURCES: usize = 4;
 
 // --- Plan JSON schema ---
 
@@ -1330,6 +1335,12 @@ impl DynamicPipeline {
         content_sources: Option<&ContentSourceManager>,
     ) {
         self.try_reload(device);
+        let source_presence_count = content_sources
+            .map(ContentSourceManager::visible_source_count)
+            .unwrap_or(MIN_SOURCE_BOUND_EFFECT_SOURCES);
+        let source_presence_fail_closed = content_sources
+            .map(|_| source_presence_gate_closed(source_presence_count))
+            .unwrap_or(false);
 
         // Build uniform data from state
         let mut uniform_data =
@@ -1457,52 +1468,66 @@ impl DynamicPipeline {
         }
 
         // ── Drift engine tick ──────────────────────────────────────
-        if let Some(ref mut drift) = self.drift_engine {
-            let dt = 1.0 / 30.0; // approximate frame time
-            let drift_uniforms = drift.tick(time, dt);
-            let slot_metadata = drift.slot_runtime_metadata();
-            if !drift_uniforms.is_empty() {
-                // Apply drift uniforms to passes
-                for pass in &mut self.passes {
-                    if pass.params_buffer.is_none() || pass.param_order.is_empty() {
-                        continue;
-                    }
-                    let mut updated = false;
-                    for (i, name) in pass.param_order.iter().enumerate() {
-                        if i >= pass.current_params.len() {
-                            break;
+        if !source_presence_fail_closed {
+            if let Some(ref mut drift) = self.drift_engine {
+                let dt = 1.0 / 30.0; // approximate frame time
+                let drift_uniforms = drift.tick(time, dt);
+                let slot_metadata = drift.slot_runtime_metadata();
+                if !drift_uniforms.is_empty() {
+                    // Apply drift uniforms to passes
+                    for pass in &mut self.passes {
+                        if pass.params_buffer.is_none() || pass.param_order.is_empty() {
+                            continue;
                         }
-                        let key = format!("{}.{}", pass.node_id, name);
-                        if let Some((_, val)) = drift_uniforms.iter().find(|(k, _)| k == &key) {
-                            if (pass.current_params[i] - val).abs() > 0.0001 {
-                                pass.current_params[i] = *val;
-                                updated = true;
+                        let mut updated = false;
+                        for (i, name) in pass.param_order.iter().enumerate() {
+                            if i >= pass.current_params.len() {
+                                break;
+                            }
+                            let key = format!("{}.{}", pass.node_id, name);
+                            if let Some((_, val)) = drift_uniforms.iter().find(|(k, _)| k == &key) {
+                                if (pass.current_params[i] - val).abs() > 0.0001 {
+                                    pass.current_params[i] = *val;
+                                    updated = true;
+                                }
+                            }
+                        }
+                        if updated {
+                            if let Some(ref buf) = pass.params_buffer {
+                                queue.write_buffer(
+                                    buf,
+                                    0,
+                                    bytemuck::cast_slice(&pass.current_params),
+                                );
                             }
                         }
                     }
-                    if updated {
-                        if let Some(ref buf) = pass.params_buffer {
-                            queue.write_buffer(buf, 0, bytemuck::cast_slice(&pass.current_params));
-                        }
+                }
+                for metadata in slot_metadata {
+                    if let Some(pass) = self.passes.iter_mut().find(|pass| {
+                        pass.slot_index == Some(metadata.slot_index)
+                            && pass.node_id == metadata.node_id
+                    }) {
+                        pass.slot_phase = metadata.slot_phase.to_string();
+                        pass.slot_intensity = metadata.slot_intensity;
+                        pass.selection_count = metadata.selection_count;
+                        pass.coverage_window_count = metadata.coverage_window_count;
+                        pass.parameter_regions = metadata.parameter_regions;
                     }
                 }
             }
-            for metadata in slot_metadata {
-                if let Some(pass) = self.passes.iter_mut().find(|pass| {
-                    pass.slot_index == Some(metadata.slot_index) && pass.node_id == metadata.node_id
-                }) {
-                    pass.slot_phase = metadata.slot_phase.to_string();
-                    pass.slot_intensity = metadata.slot_intensity;
-                    pass.selection_count = metadata.selection_count;
-                    pass.coverage_window_count = metadata.coverage_window_count;
-                    pass.parameter_regions = metadata.parameter_regions;
-                }
-            }
+        } else if self.frame_count.is_multiple_of(30) {
+            log::warn!(
+                "dynamic_pipeline: source-presence gate fail-closed \
+                 (visible_sources={}, min={}); bypassing effect passes",
+                source_presence_count,
+                MIN_SOURCE_BOUND_EFFECT_SOURCES
+            );
         }
         if let Some(overrides) = uniform_overrides.as_ref() {
             self.apply_bounded_bookend_overrides(queue, overrides);
         }
-        self.publish_effect_state();
+        self.publish_effect_state(source_presence_count, source_presence_fail_closed);
 
         self.uniform_buffer.update(queue, &uniform_data);
 
@@ -1536,278 +1561,298 @@ impl DynamicPipeline {
             return;
         }
 
-        // If any pass references @live but no external source populates it,
-        // fill it with a procedural gradient so shaders have visible input.
-        // Without this, @live resolves to a black texture and the entire
-        // pipeline produces near-black output.
-        // Phase 3 3D: skip noise if set_live_texture_override() was called
-        // this frame — the 3D scene output is already in @live.
-        let needs_live = self
-            .passes
-            .iter()
-            .any(|p| p.inputs.iter().any(|i| i == "@live"));
-        if needs_live && !self.live_texture_overridden {
+        if source_presence_fail_closed {
             self.ensure_texture(device, "@live");
-            if let Some(live_tex) = self.intermediate("@live") {
-                let w = self.width as usize;
-                let h = self.height as usize;
-                let mut pixels = vec![0u8; w * h * 4];
-                let t = time;
-
-                // Simple hash-based noise (cheaper than proper FBM but visually rich)
-                #[inline]
-                fn hash(x: f32, y: f32) -> f32 {
-                    // Two-axis hash — avoids diagonal correlation from single dot product
-                    let h = ((x * 127.1 + y * 311.7).sin() * 43758.547
-                        + (x * 269.5 + y * 183.3).cos() * 28_461.32)
-                        * 0.5;
-                    h - h.floor()
-                }
-                #[inline]
-                fn noise(x: f32, y: f32) -> f32 {
-                    let ix = x.floor();
-                    let iy = y.floor();
-                    let fx = x - ix;
-                    let fy = y - iy;
-                    let sx = fx * fx * (3.0 - 2.0 * fx);
-                    let sy = fy * fy * (3.0 - 2.0 * fy);
-                    let a = hash(ix, iy);
-                    let b = hash(ix + 1.0, iy);
-                    let c = hash(ix, iy + 1.0);
-                    let d = hash(ix + 1.0, iy + 1.0);
-                    a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy
-                }
-                fn fbm(mut x: f32, mut y: f32, octaves: u32) -> f32 {
-                    let mut v = 0.0f32;
-                    let mut a = 0.5f32;
-                    for _ in 0..octaves {
-                        v += a * noise(x, y);
-                        x = x * 2.0 + 100.0;
-                        y = y * 2.0 + 100.0;
-                        a *= 0.5;
-                    }
-                    v
-                }
-
-                for y in 0..h {
-                    for x in 0..w {
-                        let u = x as f32 / w as f32 * 4.0;
-                        let v = y as f32 / h as f32 * 3.0;
-                        // Three FBM layers at different scales, offsets, and time rates
-                        // to produce rich, non-diagonal noise patterns
-                        let n1 = fbm(u * 3.0 + t * 0.08 + 17.3, v * 2.5 - t * 0.05 + 41.7, 5);
-                        let n2 = fbm(v * 2.0 + t * 0.03 + 89.1, u * 3.5 - t * 0.07 + 63.2, 4);
-                        let n3 = fbm(
-                            u * 1.5 + v * 1.5 + t * 0.04 + 137.0,
-                            u * 1.0 - v * 2.0 + t * 0.02 + 211.0,
-                            4,
-                        );
-                        let r = (n1 * 0.8 + n2 * 0.4 + 0.3).clamp(0.0, 1.0);
-                        let g = (n2 * 0.7 + n3 * 0.3 + 0.25).clamp(0.0, 1.0);
-                        let b_val = (n3 * 0.6 + n1 * 0.3 + 0.3).clamp(0.0, 1.0);
-                        let idx = (y * w + x) * 4;
-                        pixels[idx] = (r * 255.0) as u8;
-                        pixels[idx + 1] = (g * 255.0) as u8;
-                        pixels[idx + 2] = (b_val * 255.0) as u8;
-                        pixels[idx + 3] = 255;
-                    }
-                }
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &live_tex.texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &pixels,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some((w * 4) as u32),
-                        rows_per_image: Some(h as u32),
-                    },
-                    wgpu::Extent3d {
-                        width: self.width,
-                        height: self.height,
-                        depth_or_array_layers: 1,
-                    },
-                );
-            }
-        }
-
-        self.prime_temporal_textures(&mut encoder);
-
-        // Execute each pass
-        if self.frame_count < 5 {
-            log::debug!(
-                "CHAIN DIAGNOSTIC: {} passes, intermediates: {:?}",
-                self.passes.len(),
-                self.intermediate_names().collect::<Vec<_>>()
-            );
-            for (i, p) in self.passes.iter().enumerate() {
-                log::debug!(
-                    "  pass[{}] node_id={} inputs={:?} output={} has_pipeline={} has_params={}",
-                    i,
-                    p.node_id,
-                    p.inputs,
-                    p.output,
-                    p.render_pipeline.is_some(),
-                    p.params_buffer.is_some()
-                );
-            }
-        }
-        for pass in &self.passes {
-            // Backend dispatch (Phase 3a/3b). Today wgsl_render falls through
-            // to the existing render/compute path below; cairo content is
-            // uploaded by the Python CairoSourceRunner via ContentSourceManager
-            // and consumed by content_layer/sierpinski_content (which are
-            // wgsl_render passes themselves), so the cairo arm is currently
-            // a no-op observer. Future sub-phases (3c text, 3d image_file)
-            // add branches here. Unknown backends are logged at debug level
-            // and skipped — a misconfigured manifest cannot crash the
-            // pipeline.
-            match pass.backend.as_str() {
-                "wgsl_render" => {
-                    // Existing path — falls through to the render/compute
-                    // dispatch below.
-                }
-                "cairo" => {
-                    // Phase 3b: Python CairoSourceRunner publishes RGBA via
-                    // the source protocol; the wgsl pass that consumes the
-                    // content reads it via content_slot_*. Nothing to do at
-                    // dispatch time today.
-                    log::trace!(
-                        "dynamic_pipeline: cairo backend pass '{}' (no-op observer)",
-                        pass.node_id,
-                    );
-                    continue;
-                }
-                other => {
-                    // Audit follow-up: was `log::debug!`, which hid the
-                    // fact that the pipeline JSON had referenced a
-                    // backend the executor doesn't implement — the user
-                    // saw a black frame with no explanation. Warn so
-                    // schema-to-executor drift surfaces immediately.
-                    log::warn!(
-                        "dynamic_pipeline: skipping pass '{}' with unknown backend '{}' \
-                         (output will be black for this pass)",
-                        pass.node_id,
-                        other,
-                    );
-                    continue;
-                }
-            }
-
-            let is_temporal = pass.inputs.iter().any(|n| n.starts_with("@accum_"));
-
-            if let Some(ref render_pipeline) = pass.render_pipeline {
-                let mut pass_uniform_data = uniform_data;
-                pass_uniform_data.slot_opacities =
-                    slot_opacities_for_pass(pass, content_sources, content_slot_opacities);
-                self.uniform_buffer.update(queue, &pass_uniform_data);
-
-                let input_bind_group = self.create_input_bind_group(
-                    device,
-                    &pass.inputs,
-                    &pass.output,
-                    pass.requires_content_slots,
-                    &pass.slot_family,
-                    &pass.node_id,
-                    content_sources,
-                );
-
-                // Resolve output texture view
-                let output_view = match self.intermediate(&pass.output) {
-                    Some(tex) => &tex.view,
-                    None => {
-                        if self.frame_count < 10 {
-                            log::warn!(
-                                "CHAIN SKIP: pass '{}' output '{}' NOT in intermediates",
-                                pass.node_id,
-                                pass.output
-                            );
-                        }
-                        continue;
-                    }
+            self.ensure_texture(device, MAIN_FINAL_TEXTURE);
+            if let (Some(live_tex), Some(final_tex)) = (
+                self.intermediate("@live"),
+                self.intermediate(MAIN_FINAL_TEXTURE),
+            ) {
+                let size = wgpu::Extent3d {
+                    width: self.width,
+                    height: self.height,
+                    depth_or_array_layers: 1,
                 };
+                encoder.copy_texture_to_texture(
+                    live_tex.texture.as_image_copy(),
+                    final_tex.texture.as_image_copy(),
+                    size,
+                );
+            }
+        } else {
+            // If any pass references @live but no external source populates it,
+            // fill it with a procedural gradient so shaders have visible input.
+            // Without this, @live resolves to a black texture and the entire
+            // pipeline produces near-black output.
+            // Phase 3 3D: skip noise if set_live_texture_override() was called
+            // this frame — the 3D scene output is already in @live.
+            let needs_live = self
+                .passes
+                .iter()
+                .any(|p| p.inputs.iter().any(|i| i == "@live"));
+            if needs_live && !self.live_texture_overridden {
+                self.ensure_texture(device, "@live");
+                if let Some(live_tex) = self.intermediate("@live") {
+                    let w = self.width as usize;
+                    let h = self.height as usize;
+                    let mut pixels = vec![0u8; w * h * 4];
+                    let t = time;
 
-                {
-                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some(&pass.node_id),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: output_view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: 0.0,
-                                    g: 0.0,
-                                    b: 0.0,
-                                    a: 0.0,
-                                }),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        ..Default::default()
-                    });
-
-                    rpass.set_pipeline(render_pipeline);
-                    rpass.set_bind_group(0, &self.uniform_buffer.bind_group, &[]);
-                    rpass.set_bind_group(1, &input_bind_group, &[]);
-                    if let Some(ref pbg) = pass.params_bind_group {
-                        rpass.set_bind_group(2, pbg, &[]);
+                    // Simple hash-based noise (cheaper than proper FBM but visually rich)
+                    #[inline]
+                    fn hash(x: f32, y: f32) -> f32 {
+                        // Two-axis hash — avoids diagonal correlation from single dot product
+                        let h = ((x * 127.1 + y * 311.7).sin() * 43758.547
+                            + (x * 269.5 + y * 183.3).cos() * 28_461.32)
+                            * 0.5;
+                        h - h.floor()
                     }
-                    rpass.draw(0..3, 0..1);
-                } // render pass dropped here
+                    #[inline]
+                    fn noise(x: f32, y: f32) -> f32 {
+                        let ix = x.floor();
+                        let iy = y.floor();
+                        let fx = x - ix;
+                        let fy = y - iy;
+                        let sx = fx * fx * (3.0 - 2.0 * fx);
+                        let sy = fy * fy * (3.0 - 2.0 * fy);
+                        let a = hash(ix, iy);
+                        let b = hash(ix + 1.0, iy);
+                        let c = hash(ix, iy + 1.0);
+                        let d = hash(ix + 1.0, iy + 1.0);
+                        a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy
+                    }
+                    fn fbm(mut x: f32, mut y: f32, octaves: u32) -> f32 {
+                        let mut v = 0.0f32;
+                        let mut a = 0.5f32;
+                        for _ in 0..octaves {
+                            v += a * noise(x, y);
+                            x = x * 2.0 + 100.0;
+                            y = y * 2.0 + 100.0;
+                            a *= 0.5;
+                        }
+                        v
+                    }
 
-                // Copy output to temporal buffer for next frame's feedback
-                if is_temporal {
-                    if let (Some(src), Some(dst)) = (
-                        self.intermediate(&pass.output),
-                        self.temporal_textures.get(&pass.node_id),
-                    ) {
-                        let copy_size = wgpu::Extent3d {
+                    for y in 0..h {
+                        for x in 0..w {
+                            let u = x as f32 / w as f32 * 4.0;
+                            let v = y as f32 / h as f32 * 3.0;
+                            // Three FBM layers at different scales, offsets, and time rates
+                            // to produce rich, non-diagonal noise patterns
+                            let n1 = fbm(u * 3.0 + t * 0.08 + 17.3, v * 2.5 - t * 0.05 + 41.7, 5);
+                            let n2 = fbm(v * 2.0 + t * 0.03 + 89.1, u * 3.5 - t * 0.07 + 63.2, 4);
+                            let n3 = fbm(
+                                u * 1.5 + v * 1.5 + t * 0.04 + 137.0,
+                                u * 1.0 - v * 2.0 + t * 0.02 + 211.0,
+                                4,
+                            );
+                            let r = (n1 * 0.8 + n2 * 0.4 + 0.3).clamp(0.0, 1.0);
+                            let g = (n2 * 0.7 + n3 * 0.3 + 0.25).clamp(0.0, 1.0);
+                            let b_val = (n3 * 0.6 + n1 * 0.3 + 0.3).clamp(0.0, 1.0);
+                            let idx = (y * w + x) * 4;
+                            pixels[idx] = (r * 255.0) as u8;
+                            pixels[idx + 1] = (g * 255.0) as u8;
+                            pixels[idx + 2] = (b_val * 255.0) as u8;
+                            pixels[idx + 3] = 255;
+                        }
+                    }
+                    queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &live_tex.texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        &pixels,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some((w * 4) as u32),
+                            rows_per_image: Some(h as u32),
+                        },
+                        wgpu::Extent3d {
                             width: self.width,
                             height: self.height,
                             depth_or_array_layers: 1,
-                        };
-                        encoder.copy_texture_to_texture(
-                            src.texture.as_image_copy(),
-                            dst.texture.as_image_copy(),
-                            copy_size,
+                        },
+                    );
+                }
+            }
+
+            self.prime_temporal_textures(&mut encoder);
+
+            // Execute each pass
+            if self.frame_count < 5 {
+                log::debug!(
+                    "CHAIN DIAGNOSTIC: {} passes, intermediates: {:?}",
+                    self.passes.len(),
+                    self.intermediate_names().collect::<Vec<_>>()
+                );
+                for (i, p) in self.passes.iter().enumerate() {
+                    log::debug!(
+                        "  pass[{}] node_id={} inputs={:?} output={} has_pipeline={} has_params={}",
+                        i,
+                        p.node_id,
+                        p.inputs,
+                        p.output,
+                        p.render_pipeline.is_some(),
+                        p.params_buffer.is_some()
+                    );
+                }
+            }
+            for pass in &self.passes {
+                // Backend dispatch (Phase 3a/3b). Today wgsl_render falls through
+                // to the existing render/compute path below; cairo content is
+                // uploaded by the Python CairoSourceRunner via ContentSourceManager
+                // and consumed by content_layer/sierpinski_content (which are
+                // wgsl_render passes themselves), so the cairo arm is currently
+                // a no-op observer. Future sub-phases (3c text, 3d image_file)
+                // add branches here. Unknown backends are logged at debug level
+                // and skipped — a misconfigured manifest cannot crash the
+                // pipeline.
+                match pass.backend.as_str() {
+                    "wgsl_render" => {
+                        // Existing path — falls through to the render/compute
+                        // dispatch below.
+                    }
+                    "cairo" => {
+                        // Phase 3b: Python CairoSourceRunner publishes RGBA via
+                        // the source protocol; the wgsl pass that consumes the
+                        // content reads it via content_slot_*. Nothing to do at
+                        // dispatch time today.
+                        log::trace!(
+                            "dynamic_pipeline: cairo backend pass '{}' (no-op observer)",
+                            pass.node_id,
                         );
+                        continue;
+                    }
+                    other => {
+                        // Audit follow-up: was `log::debug!`, which hid the
+                        // fact that the pipeline JSON had referenced a
+                        // backend the executor doesn't implement — the user
+                        // saw a black frame with no explanation. Warn so
+                        // schema-to-executor drift surfaces immediately.
+                        log::warn!(
+                            "dynamic_pipeline: skipping pass '{}' with unknown backend '{}' \
+                         (output will be black for this pass)",
+                            pass.node_id,
+                            other,
+                        );
+                        continue;
                     }
                 }
-            } else if let Some(ref compute_pipeline) = pass.compute_pipeline {
-                let mut pass_uniform_data = uniform_data;
-                pass_uniform_data.slot_opacities =
-                    slot_opacities_for_pass(pass, content_sources, content_slot_opacities);
-                self.uniform_buffer.update(queue, &pass_uniform_data);
 
-                let input_bind_group = self.create_input_bind_group(
-                    device,
-                    &pass.inputs,
-                    &pass.output,
-                    pass.requires_content_slots,
-                    &pass.slot_family,
-                    &pass.node_id,
-                    content_sources,
-                );
-                let storage_bind_group = self.create_storage_bind_group(device, &pass.output);
+                let is_temporal = pass.inputs.iter().any(|n| n.starts_with("@accum_"));
 
-                let workgroups_x = self.width.div_ceil(8);
-                let workgroups_y = self.height.div_ceil(8);
+                if let Some(ref render_pipeline) = pass.render_pipeline {
+                    let mut pass_uniform_data = uniform_data;
+                    pass_uniform_data.slot_opacities =
+                        slot_opacities_for_pass(pass, content_sources, content_slot_opacities);
+                    self.uniform_buffer.update(queue, &pass_uniform_data);
 
-                for _ in 0..pass.steps_per_frame {
-                    let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                        label: Some(&pass.node_id),
-                        timestamp_writes: None,
-                    });
+                    let input_bind_group = self.create_input_bind_group(
+                        device,
+                        &pass.inputs,
+                        &pass.output,
+                        pass.requires_content_slots,
+                        &pass.slot_family,
+                        &pass.node_id,
+                        content_sources,
+                    );
 
-                    cpass.set_pipeline(compute_pipeline);
-                    cpass.set_bind_group(0, &self.uniform_buffer.bind_group, &[]);
-                    cpass.set_bind_group(1, &input_bind_group, &[]);
-                    cpass.set_bind_group(2, &storage_bind_group, &[]);
-                    cpass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
+                    // Resolve output texture view
+                    let output_view = match self.intermediate(&pass.output) {
+                        Some(tex) => &tex.view,
+                        None => {
+                            if self.frame_count < 10 {
+                                log::warn!(
+                                    "CHAIN SKIP: pass '{}' output '{}' NOT in intermediates",
+                                    pass.node_id,
+                                    pass.output
+                                );
+                            }
+                            continue;
+                        }
+                    };
+
+                    {
+                        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some(&pass.node_id),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: output_view,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                                        r: 0.0,
+                                        g: 0.0,
+                                        b: 0.0,
+                                        a: 0.0,
+                                    }),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            ..Default::default()
+                        });
+
+                        rpass.set_pipeline(render_pipeline);
+                        rpass.set_bind_group(0, &self.uniform_buffer.bind_group, &[]);
+                        rpass.set_bind_group(1, &input_bind_group, &[]);
+                        if let Some(ref pbg) = pass.params_bind_group {
+                            rpass.set_bind_group(2, pbg, &[]);
+                        }
+                        rpass.draw(0..3, 0..1);
+                    } // render pass dropped here
+
+                    // Copy output to temporal buffer for next frame's feedback
+                    if is_temporal {
+                        if let (Some(src), Some(dst)) = (
+                            self.intermediate(&pass.output),
+                            self.temporal_textures.get(&pass.node_id),
+                        ) {
+                            let copy_size = wgpu::Extent3d {
+                                width: self.width,
+                                height: self.height,
+                                depth_or_array_layers: 1,
+                            };
+                            encoder.copy_texture_to_texture(
+                                src.texture.as_image_copy(),
+                                dst.texture.as_image_copy(),
+                                copy_size,
+                            );
+                        }
+                    }
+                } else if let Some(ref compute_pipeline) = pass.compute_pipeline {
+                    let mut pass_uniform_data = uniform_data;
+                    pass_uniform_data.slot_opacities =
+                        slot_opacities_for_pass(pass, content_sources, content_slot_opacities);
+                    self.uniform_buffer.update(queue, &pass_uniform_data);
+
+                    let input_bind_group = self.create_input_bind_group(
+                        device,
+                        &pass.inputs,
+                        &pass.output,
+                        pass.requires_content_slots,
+                        &pass.slot_family,
+                        &pass.node_id,
+                        content_sources,
+                    );
+                    let storage_bind_group = self.create_storage_bind_group(device, &pass.output);
+
+                    let workgroups_x = self.width.div_ceil(8);
+                    let workgroups_y = self.height.div_ceil(8);
+
+                    for _ in 0..pass.steps_per_frame {
+                        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            label: Some(&pass.node_id),
+                            timestamp_writes: None,
+                        });
+
+                        cpass.set_pipeline(compute_pipeline);
+                        cpass.set_bind_group(0, &self.uniform_buffer.bind_group, &[]);
+                        cpass.set_bind_group(1, &input_bind_group, &[]);
+                        cpass.set_bind_group(2, &storage_bind_group, &[]);
+                        cpass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
+                    }
                 }
             }
         }
@@ -1968,7 +2013,11 @@ impl DynamicPipeline {
         }
     }
 
-    fn publish_effect_state(&self) {
+    fn publish_effect_state(
+        &self,
+        source_presence_count: usize,
+        source_presence_fail_closed: bool,
+    ) {
         if !self.frame_count.is_multiple_of(30) {
             return;
         }
@@ -2042,6 +2091,12 @@ impl DynamicPipeline {
             "frame_count": self.frame_count,
             "non_neutral_pass_count": non_neutral_pass_count,
             "pass_count": self.passes.len(),
+            "source_presence": {
+                "visible_source_count": source_presence_count,
+                "minimum_effect_source_count": MIN_SOURCE_BOUND_EFFECT_SOURCES,
+                "fail_closed": source_presence_fail_closed,
+                "effect_binding": "source_presence_gated",
+            },
             "slotdrift_coverage": self.slotdrift_coverage,
             "passes": passes,
         });
@@ -2683,6 +2738,19 @@ mod tests {
         assert!(!should_write_consumer_output(1, true));
         assert!(should_write_consumer_output(2, true));
         assert!(!should_write_consumer_output(3, true));
+    }
+
+    #[test]
+    fn source_presence_gate_fails_closed_below_live_surface_floor() {
+        assert!(source_presence_gate_closed(0));
+        assert!(source_presence_gate_closed(1));
+        assert!(source_presence_gate_closed(3));
+        assert!(!source_presence_gate_closed(
+            MIN_SOURCE_BOUND_EFFECT_SOURCES
+        ));
+        assert!(!source_presence_gate_closed(
+            MIN_SOURCE_BOUND_EFFECT_SOURCES + 1
+        ));
     }
 
     #[test]

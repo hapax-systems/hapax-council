@@ -1884,25 +1884,21 @@ mod tests {
             .as_array()
             .expect("main passes are present");
 
-        let source_bound_safe: std::collections::HashSet<&str> =
-            ["drift", "kaleidoscope", "mirror"].into_iter().collect();
         let illegal_spatial_passes: Vec<String> = passes
             .iter()
             .filter(|pass| pass["slot_index"].as_u64().is_some())
             .filter(|pass| {
                 let plane = pass["effect_application_plane"].as_str();
                 let route = pass["route_authority"].as_str();
-                let node_id = pass["node_id"].as_str().unwrap_or_default();
-                (plane == Some("entity_field_spatial_reprojection")
-                    || route == Some("entity_local_route_required"))
-                    && !source_bound_safe.iter().any(|s| node_id.contains(s))
+                plane == Some("entity_field_spatial_reprojection")
+                    || route == Some("entity_local_route_required")
             })
             .map(|pass| pass["node_id"].as_str().unwrap_or_default().to_string())
             .collect();
 
         assert!(
             illegal_spatial_passes.is_empty(),
-            "non-source-bound spatial effects must not be composed-surface passes: {illegal_spatial_passes:?}"
+            "spatial reprojection effects must not be composed-surface passes until they have an entity-local route: {illegal_spatial_passes:?}"
         );
 
         let route_blocked = plan["slotdrift_coverage"]["route_blocked_effects"]
@@ -4793,14 +4789,7 @@ fn is_autonomous_drift_candidate(def: &ShaderDef) -> bool {
 }
 
 fn requires_entity_local_route(def: &ShaderDef) -> bool {
-    def.is_spatial && !is_source_bound_spatial_safe(def)
-}
-
-fn is_source_bound_spatial_safe(def: &ShaderDef) -> bool {
-    matches!(
-        def.name,
-        "drift" | "kaleidoscope" | "mirror"
-    )
+    def.is_spatial
 }
 
 fn is_composed_surface_drift_candidate(def: &ShaderDef) -> bool {
