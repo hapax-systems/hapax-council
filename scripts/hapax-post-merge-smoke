@@ -100,6 +100,19 @@ bridge_inactive_expected_for_live_mode() {
     if grep -Eq '(^|[[:space:]])HAPAX_V4L2_BRIDGE_ENABLED=0([[:space:]]|$)' <<< "$compositor_env"; then
         return 0
     fi
+    if grep -Eq '(^|[[:space:]])HAPAX_3D_COMPOSITOR=1([[:space:]]|$)' <<< "$compositor_env"; then
+        return 0
+    fi
+
+    if systemctl --user is-active --quiet hapax-imagination.service 2>/dev/null; then
+        local imagination_env
+        imagination_env="$(
+            systemctl --user show hapax-imagination.service -p Environment --value 2>/dev/null || true
+        )"
+        if grep -Eq '(^|[[:space:]])HAPAX_IMAGINATION_V4L2_OUTPUT=1([[:space:]]|$)' <<< "$imagination_env"; then
+            return 0
+        fi
+    fi
     return 1
 }
 

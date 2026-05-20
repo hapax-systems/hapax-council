@@ -86,7 +86,11 @@ Environment=HAPAX_COMPOSITOR_LAYOUT_PATH=%h/.config/hapax-compositor/layouts/def
 # C2+C3 findings. Defaults are correct today; this makes the intent
 # durable in the unit file itself.
 Environment=CUDA_VISIBLE_DEVICES=0
-Environment=HAPAX_V4L2_BRIDGE_ENABLED=1
+# Direct 3D V4L2 is the active livestream egress path. Keep the bridge sidecar
+# opt-in so stale bridge units cannot restart-loop while hapax-imagination owns
+# /dev/video42. Fallback bridge mode remains available by setting this to 1 in
+# a later operator drop-in and restarting studio-compositor + hapax-v4l2-bridge.
+Environment=HAPAX_V4L2_BRIDGE_ENABLED=0
 # Cap OpenTelemetry BatchSpanProcessor so Langfuse outages can't fill the
 # Python heap with pending spans — same treatment as hapax-daimonion got
 # in PR #731's OOM-cascade containment. Defaults are 2048 queue and 30 s

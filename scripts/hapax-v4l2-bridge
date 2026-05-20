@@ -47,12 +47,31 @@ socket_listening() {
     '
 }
 
-studio_compositor_bridge_enabled() {
+unit_environment() {
+    local unit="$1"
     command -v systemctl >/dev/null 2>&1 || return 1
+    systemctl --user show "$unit" -p Environment --value 2>/dev/null || true
+}
+
+unit_active() {
+    local unit="$1"
+    command -v systemctl >/dev/null 2>&1 || return 1
+    systemctl --user is-active --quiet "$unit" >/dev/null 2>&1
+}
+
+studio_compositor_environment() {
+    unit_environment studio-compositor.service
+}
+
+env_has_truthy_assignment() {
+    local env_text="$1"
+    local key="$2"
+    grep -Eq "(^|[[:space:]])${key}=1([[:space:]]|$)" <<< "$env_text"
+}
+
+studio_compositor_bridge_enabled() {
     local compositor_env
-    compositor_env="$(
-        systemctl --user show studio-compositor.service -p Environment --value 2>/dev/null || true
-    )"
+    compositor_env="$(studio_compositor_environment)" || return 1
     if grep -Eq '(^|[[:space:]])HAPAX_V4L2_BRIDGE_ENABLED=0([[:space:]]|$)' <<< "$compositor_env"; then
         printf '0\n'
         return 0
@@ -64,9 +83,34 @@ studio_compositor_bridge_enabled() {
     return 1
 }
 
+direct_v4l2_owner_reason() {
+    local compositor_env
+    compositor_env="$(studio_compositor_environment)" || compositor_env=""
+    if env_has_truthy_assignment "$compositor_env" "HAPAX_3D_COMPOSITOR"; then
+        printf 'studio-compositor HAPAX_3D_COMPOSITOR=1\n'
+        return 0
+    fi
+
+    if unit_active hapax-imagination.service; then
+        local imagination_env
+        imagination_env="$(unit_environment hapax-imagination.service)" || imagination_env=""
+        if env_has_truthy_assignment "$imagination_env" "HAPAX_IMAGINATION_V4L2_OUTPUT"; then
+            printf 'hapax-imagination HAPAX_IMAGINATION_V4L2_OUTPUT=1\n'
+            return 0
+        fi
+    fi
+    return 1
+}
+
 bridge_disabled_reason() {
     if [[ "${HAPAX_V4L2_BRIDGE_ENABLED:-1}" != "1" ]]; then
         printf 'HAPAX_V4L2_BRIDGE_ENABLED=%s\n' "${HAPAX_V4L2_BRIDGE_ENABLED}"
+        return 0
+    fi
+
+    local direct_reason
+    if direct_reason="$(direct_v4l2_owner_reason)"; then
+        printf 'direct v4l2 owner active: %s\n' "$direct_reason"
         return 0
     fi
 
