@@ -101,6 +101,10 @@ def test_v3_tts_chain_routes_through_mpc_l12_wet_return() -> None:
     assert "hapax-tts-broadcast-playback:output_FL|hapax-livestream-tap:playback_FL" in forbidden
     assert "hapax-tts-broadcast-playback:output_FR|hapax-livestream-tap:playback_FR" in forbidden
 
+    tts_duck_conf = _strip_comments(_read_conf(PIPEWIRE_DIR / "hapax-tts-duck.conf"))
+    assert "hapax-tts-broadcast-playback" not in tts_duck_conf
+    assert 'target.object = "hapax-livestream-tap"' not in tts_duck_conf
+
 
 def test_reconciler_map_owns_only_mpc_private_monitor_outputs() -> None:
     """Private monitor playback is explicitly pinned to MPC AUX8/AUX9 only."""
