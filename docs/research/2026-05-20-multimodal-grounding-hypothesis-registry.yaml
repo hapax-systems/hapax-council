@@ -1,0 +1,268 @@
+schema_version: 1
+registry_id: multimodal-grounding-hypothesis-registry-v1
+authority_case: CASE-20260509-MULTIMODAL-
+created_at: "2026-05-20"
+source_passes:
+  - phase1a-grounding-inventory-audit
+  - phase1b-adjacent-domain-survey
+  - phase1c-hypothesis-registry
+
+hypotheses:
+  - id: H1
+    name: "Cross-modal coordination necessity"
+    statement: >
+      Effective multimodal grounding in Hapax requires an explicit
+      coordination mechanism between perceptual (camera, IR, audio) and
+      text-based (LLM, vault, codebase) grounding channels, rather than
+      independent parallel paths.
+    source_pass: phase1a-grounding-inventory-audit
+    classification: contested
+    supporting_evidence:
+      - source: "phase1a inventory"
+        detail: >
+          Current pipeline shows text-mediated bottleneck: perception → text
+          summary → LLM → action. Removing the bottleneck requires coordination.
+      - source: "temporal bands architecture"
+        detail: >
+          Retention/protention/impression already coordinate across time scales,
+          suggesting a coordination pattern exists and works.
+    contradicting_evidence:
+      - source: "embodied robotics literature"
+        detail: >
+          Brooks (1991) subsumption architecture and modern parallel-pathway
+          robotics (e.g., ROS2 behavior trees) demonstrate effective multimodal
+          systems WITHOUT an executive coordinator. Parallel reactive paths with
+          priority arbitration can achieve coherent behavior.
+      - source: "stigmergic mesh hypothesis"
+        detail: >
+          Hapax's own filesystem-as-bus architecture is explicitly non-coordinated
+          — agents trace artifacts, not messages. Adding explicit coordination
+          contradicts the founding architectural principle.
+    hapax_applicability: >
+      The robotics counter-evidence applies partially: Hapax IS a parallel-path
+      system (filesystem-as-bus). However, Hapax differs from robot subsumption
+      in that its perceptual channels feed into LLM turns that produce speech
+      acts with truth claims. A robot moving an arm doesn't make claims; Hapax
+      speaking "the room is empty" does. The coordination needed is not
+      behavioral but epistemic — ensuring perceptual evidence is fresh when
+      grounding a truth claim.
+    experiment:
+      design: >
+        Compare claim accuracy (operator-rated) between: (A) current text-mediated
+        path (perception → summary → LLM), (B) parallel-path with no coordination
+        (perception available but not gated), (C) gated path with freshness
+        constraint (perception → freshness check → LLM only if fresh).
+      metric: "Operator-rated claim accuracy on 50 environmental assertions"
+      duration: "2 weeks (collect 50 assertions per condition)"
+      feasibility: "High — requires only GroundingContextEnvelope freshness toggle"
+
+  - id: H2
+    name: "Perceptual grounding reduces hallucination"
+    statement: >
+      Providing current perceptual state (camera, IR, audio) to the LLM
+      reduces environmental hallucinations compared to text-only context.
+    source_pass: phase1a-grounding-inventory-audit
+    classification: untested
+    supporting_evidence:
+      - source: "grounding context envelope"
+        detail: >
+          The clause verifier already catches stale "now/currently" claims
+          when impressions are stale, suggesting perceptual grounding prevents
+          at least some hallucinations.
+    contradicting_evidence:
+      - source: "none identified"
+        detail: "No contradicting evidence found in current research passes."
+    experiment:
+      design: >
+        A/B test: 100 LLM turns with vs. without perceptual context injected.
+        Operator labels each turn for environmental accuracy.
+      metric: "Environmental hallucination rate (false positive environmental claims)"
+      duration: "1 week"
+      feasibility: "High — toggle perceptual context in system prompt"
+
+  - id: H3
+    name: "Temporal freshness is the primary grounding constraint"
+    statement: >
+      The dominant failure mode in multimodal grounding is staleness —
+      using outdated perceptual evidence for current-world claims — rather
+      than modality mismatch or sensor error.
+    source_pass: phase1a-grounding-inventory-audit
+    classification: supported
+    supporting_evidence:
+      - source: "clause verifier implementation"
+        detail: >
+          The existing verifier's primary gate is freshness-based: stale
+          impressions block "now/currently" claims. This was designed from
+          observed failure modes.
+      - source: "temporal bands architecture"
+        detail: >
+          The entire temporal band system exists to track freshness, retention,
+          and protention — evidence that staleness is recognized as the primary
+          constraint.
+    contradicting_evidence:
+      - source: "sensor error scenarios"
+        detail: >
+          IR sensors occasionally misclassify (e.g., heat source as person).
+          Sensor error is a distinct failure mode from staleness.
+    experiment:
+      design: >
+        Categorize 100 grounding failures by root cause: staleness, sensor error,
+        modality mismatch, missing sensor, other. Measure relative frequency.
+      metric: "Proportion of failures attributable to staleness vs other causes"
+      duration: "2 weeks of passive collection"
+      feasibility: "Medium — requires grounding failure logging"
+
+  - id: H4
+    name: "Self-perception of rendered output enables aesthetic self-correction"
+    statement: >
+      If the compositor perceives its own rendered output (via final frame
+      classifier), the drift engine can correct aesthetic drift without
+      operator intervention.
+    source_pass: phase1b-adjacent-domain-survey
+    classification: untested
+    supporting_evidence:
+      - source: "adjacent domain survey §5"
+        detail: >
+          Closed-loop visual control (intent → render → perceive → adjust)
+          is architecturally feasible. The final frame classifier already
+          exists.
+    contradicting_evidence:
+      - source: "oscillation risk"
+        detail: >
+          Without damping, the feedback loop may oscillate between effect
+          states. The survey identified this as a non-trivial architectural
+          consequence.
+    experiment:
+      design: >
+        Enable final frame classification feedback to drift parameters
+        with damping (update rate = drift_tick_rate / 4). Measure visual
+        variance stability over 1-hour runs with vs. without feedback.
+      metric: "Effect state change frequency and visual variance score stability"
+      duration: "1 week (10 paired 1-hour runs)"
+      feasibility: "Medium — requires feedback wiring + damping mechanism"
+
+  - id: H5
+    name: "Audio grounding bypasses text mediation for presence"
+    statement: >
+      STT voice activity detection can serve as a low-latency operator
+      presence signal that bypasses the text-mediated perception path.
+    source_pass: phase1b-adjacent-domain-survey
+    classification: untested
+    supporting_evidence:
+      - source: "adjacent domain survey §4"
+        detail: >
+          stt_voice_activity_detected is already a binary signal from the
+          STT frontend. Wiring it as presence indicator is a small task.
+    contradicting_evidence:
+      - source: "none identified"
+        detail: "Audio-only presence has false positives (TV, music)."
+    experiment:
+      design: >
+        Compare presence detection latency and accuracy between:
+        (A) IR → text → LLM path (current), (B) STT voice activity
+        signal (proposed). Measure latency from operator speech onset
+        to system presence acknowledgment.
+      metric: "Detection latency (ms) and false positive rate over 50 presence events"
+      duration: "3 days"
+      feasibility: "High — signal exists, needs routing only"
+
+  - id: H6
+    name: "Perceptual assertions require different epistemic tracking"
+    statement: >
+      Text-grounded and perceptually-grounded assertions have different
+      epistemic decay characteristics and should not share a single
+      confidence posterior.
+    source_pass: phase1b-adjacent-domain-survey
+    classification: supported
+    supporting_evidence:
+      - source: "adjacent domain survey §1"
+        detail: >
+          Text-grounded assertions carry verifiable citation chains.
+          Perceptual assertions carry temporal witnesses that decay.
+          Different staleness profiles require different tracking.
+    contradicting_evidence:
+      - source: "simplicity argument"
+        detail: >
+          A unified posterior with a modality tag may be simpler to
+          implement and reason about than dual-track confidence.
+    experiment:
+      design: >
+        Implement both: (A) unified posterior with modality tag, (B)
+        separate tracks. Compare calibration error over 200 mixed
+        assertions using operator ground truth.
+      metric: "Calibration error (expected confidence vs. operator accuracy rating)"
+      duration: "4 weeks (requires labeled assertion dataset)"
+      feasibility: "Low — requires both implementations + labeled data"
+
+  - id: H7
+    name: "Embodiment strengthens the CHI research contribution"
+    statement: >
+      Framing Hapax as an 'embodied stigmergic cognitive mesh' produces
+      a stronger CHI 2027 contribution than the current 'stigmergic
+      cognitive mesh' framing.
+    source_pass: phase1b-adjacent-domain-survey
+    classification: supported
+    supporting_evidence:
+      - source: "adjacent domain survey §3"
+        detail: >
+          Two reasons: (1) novelty differentiation from swarm intelligence
+          literature, (2) empirical grounding via testable hypotheses about
+          perceptual self-correction.
+    contradicting_evidence:
+      - source: "scope risk"
+        detail: >
+          Adding embodiment expands the paper scope and may dilute the
+          core stigmergic coordination contribution.
+    experiment:
+      design: >
+        Write two 300-word abstracts: (A) stigmergic mesh only, (B)
+        embodied stigmergic mesh. Submit both to 3 domain experts for
+        blind evaluation of novelty, clarity, and contribution strength.
+      metric: "Expert ratings on novelty (1-5) and contribution strength (1-5)"
+      duration: "2 weeks (expert scheduling)"
+      feasibility: "Medium — requires expert access"
+
+  - id: H8
+    name: "Publication evidence can include perceptual artifacts"
+    statement: >
+      Frame captures and compositor state snapshots with provenance metadata
+      can serve as publication bus evidence alongside codebase evidence.
+    source_pass: phase1b-adjacent-domain-survey
+    classification: untested
+    supporting_evidence:
+      - source: "AVSDLC visual evidence contract"
+        detail: "Already defines what visual evidence needs for quality review."
+    contradicting_evidence:
+      - source: "reproducibility concern"
+        detail: "Perceptual artifacts are temporally bound and not independently reproducible."
+    experiment:
+      design: >
+        Produce 10 publication claims backed by frame capture evidence only.
+        Evaluate whether reviewers can independently verify claims from the
+        artifacts + provenance metadata alone.
+      metric: "Reviewer agreement on claim support (yes/no) for 10 claims"
+      duration: "1 week"
+      feasibility: "High — uses existing frame capture tooling"
+
+  - id: H9
+    name: "Multimodal grounding is necessary for livestream quality"
+    statement: >
+      Livestream broadcast quality (audience retention, visual coherence)
+      improves measurably when the system uses multimodal grounding vs.
+      text-only context for content programming decisions.
+    source_pass: phase1a-grounding-inventory-audit
+    classification: untested
+    supporting_evidence:
+      - source: "content programming architecture"
+        detail: "Programme scheduler already considers WCS health snapshots."
+    contradicting_evidence:
+      - source: "none identified"
+        detail: "No A/B data exists yet."
+    experiment:
+      design: >
+        Compare 10 programme runs with full multimodal grounding vs. 10
+        with text-only context. Measure visual coherence score and audience
+        engagement metrics.
+      metric: "Visual variance stability + chat engagement rate"
+      duration: "2 weeks"
+      feasibility: "Low — requires sufficient audience for engagement metrics"
