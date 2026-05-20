@@ -23,7 +23,9 @@ def test_glitch_dense_regains_source_bound_policy_eligible_candidates() -> None:
 
 
 def test_audio_reactive_temporal_pixsort_variants_remain_blocked_without_visual_evidence() -> None:
-    eligible = set(policy_eligible_presets_for_family("audio-reactive", registry=_registry(), env={}))
+    eligible = set(
+        policy_eligible_presets_for_family("audio-reactive", registry=_registry(), env={})
+    )
 
     assert eligible == set()
 

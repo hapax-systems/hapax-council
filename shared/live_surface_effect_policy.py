@@ -116,17 +116,20 @@ LIVE_SURFACE_GLSL_SOURCE_BOUND_REPAIR_20260520_NODE_TYPES = frozenset(
     }
 )
 
-LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES = frozenset(
-    {
-        "bloom",
-        "chromatic_aberration",
-        "colorgrade",
-        "palette",
-        "posterize",
-        "postprocess",
-        "vignette",
-    }
-) | LIVE_SURFACE_GLSL_SOURCE_BOUND_REPAIR_20260520_NODE_TYPES
+LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES = (
+    frozenset(
+        {
+            "bloom",
+            "chromatic_aberration",
+            "colorgrade",
+            "palette",
+            "posterize",
+            "postprocess",
+            "vignette",
+        }
+    )
+    | LIVE_SURFACE_GLSL_SOURCE_BOUND_REPAIR_20260520_NODE_TYPES
+)
 
 
 CONTENT_SLOT_GUARDED_NODE_TYPES = frozenset({"content_layer", "sierpinski_content"})

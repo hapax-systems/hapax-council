@@ -31,7 +31,7 @@ def _scanlines(frame: np.ndarray) -> np.ndarray:
     out = frame.copy()
     rows = np.arange(frame.shape[0], dtype=np.float32)
     line = ((rows % 4.0) >= (4.0 - 1.5)).astype(np.float32)
-    out *= (1.0 - line[:, None, None] * 0.18)
+    out *= 1.0 - line[:, None, None] * 0.18
     return np.clip(out, 0.0, 1.0)
 
 
