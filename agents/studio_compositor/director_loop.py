@@ -835,6 +835,13 @@ _DIRECTOR_LLM_LOCK = threading.Lock()
 # narratives.
 _MICROMOVE_SPEAK_EVERY_N = 5
 
+# Local LLM saturation backpressure. A timeout means the request already spent
+# its wall-clock budget in LiteLLM/TabbyAPI; immediately queuing another
+# director prompt compounds the incident. Keep visual micromove fallback active
+# while giving the local route a bounded recovery window.
+_ACTIVITY_LLM_BACKOFF_BASE_S = float(os.environ.get("HAPAX_DIRECTOR_LLM_BACKOFF_BASE_S", "60"))
+_ACTIVITY_LLM_BACKOFF_MAX_S = float(os.environ.get("HAPAX_DIRECTOR_LLM_BACKOFF_MAX_S", "180"))
+
 # Routes known to accept ``image_url`` content in the OpenAI-compatible
 # messages body. Anything else → images stripped at the call site.
 MULTIMODAL_ROUTES: frozenset[str] = frozenset(
@@ -2390,6 +2397,8 @@ class DirectorLoop:
         self._last_album_track = ""  # for vinyl track-change detection
         self._tts_client = DaimonionTtsClient(socket_path=_default_tts_socket_path())
         self._transition_lock = threading.Lock()
+        self._activity_llm_backoff_until: float = 0.0
+        self._activity_llm_timeout_streak: int = 0
         self._audio_control: SlotAudioControl | None = None
         self._running = False
         self._thread = None
@@ -4281,6 +4290,18 @@ class DirectorLoop:
         if not LITELLM_KEY:
             return ""
 
+        backoff_remaining_s = self._activity_llm_backoff_remaining_s()
+        if backoff_remaining_s > 0:
+            from shared.director_observability import emit_director_tick_skipped_in_flight
+
+            emit_director_tick_skipped_in_flight(reason="llm_backoff")
+            log.info(
+                "director tick skipped: local LLM route in backoff for %.1fs (route=%s)",
+                backoff_remaining_s,
+                DIRECTOR_MODEL,
+            )
+            return ""
+
         if not _DIRECTOR_LLM_LOCK.acquire(blocking=False):
             from shared.director_observability import emit_director_tick_skipped_in_flight
 
@@ -4295,6 +4316,27 @@ class DirectorLoop:
             return self._call_activity_llm_locked(prompt, images)
         finally:
             _DIRECTOR_LLM_LOCK.release()
+
+    def _activity_llm_backoff_remaining_s(self) -> float:
+        return max(0.0, self._activity_llm_backoff_until - time.monotonic())
+
+    def _record_activity_llm_success(self) -> None:
+        self._activity_llm_timeout_streak = 0
+        self._activity_llm_backoff_until = 0.0
+
+    def _record_activity_llm_timeout(self) -> None:
+        self._activity_llm_timeout_streak = min(self._activity_llm_timeout_streak + 1, 3)
+        backoff_s = min(
+            _ACTIVITY_LLM_BACKOFF_MAX_S,
+            _ACTIVITY_LLM_BACKOFF_BASE_S * self._activity_llm_timeout_streak,
+        )
+        self._activity_llm_backoff_until = time.monotonic() + backoff_s
+        log.warning(
+            "director local LLM timeout; backing off route=%s for %.1fs (streak=%d)",
+            DIRECTOR_MODEL,
+            backoff_s,
+            self._activity_llm_timeout_streak,
+        )
 
     def _call_activity_llm_locked(self, prompt: str, images: list | None) -> str:
         """Body of _call_activity_llm split out so the lock acquire/release
@@ -4610,20 +4652,32 @@ class DirectorLoop:
                         comment=self._activity,
                     )
 
+                self._record_activity_llm_success()
                 return raw_content.strip()
+        except TimeoutError:
+            log.exception("Activity LLM call failed")
+            self._record_activity_llm_timeout()
+            return ""
         except Exception:
             log.exception("Activity LLM call failed")
             return ""
 
     def _speak_activity(self, text: str, activity: str) -> None:
         """Speak text, then advance slot if reacting. Single thread, locked."""
+        if not self._transition_lock.acquire(blocking=False):
+            log.info(
+                "speech skipped: previous speech/transition still in flight (activity=%s)",
+                activity,
+            )
+            return
+
         self._state = "SPEAKING"
         self._reactor.set_text(text)
         self._reactor.set_speaking(True)
         log.info("%s [%s]: %s", activity.upper(), self._activity, text[:80])
 
         def _do_speak_and_advance():
-            with self._transition_lock:
+            try:
                 # W3.1+W3.2: smooth attack/release envelope replaces the
                 # binary mute_all() cliff. Beta's Sprint 4 F2 noted the
                 # old binary mute sounded like silence-then-voice-then-
@@ -4677,10 +4731,19 @@ class DirectorLoop:
                 self._reactor.set_speaking(False)
                 self._reactor.set_text("")
                 self._state = "IDLE"
+            finally:
+                self._transition_lock.release()
 
-        threading.Thread(
-            target=_do_speak_and_advance, daemon=True, name=f"speak-{activity}"
-        ).start()
+        try:
+            threading.Thread(
+                target=_do_speak_and_advance, daemon=True, name=f"speak-{activity}"
+            ).start()
+        except Exception:
+            self._transition_lock.release()
+            self._reactor.set_speaking(False)
+            self._reactor.set_text("")
+            self._state = "IDLE"
+            raise
 
     def _post_chat_textback(self, text: str) -> None:
         """Post the director's chat narration back to YouTube live chat.

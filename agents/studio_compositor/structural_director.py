@@ -417,41 +417,48 @@ def _default_llm_fn(prompt: str) -> str:
     import subprocess
     import urllib.request
 
-    litellm_url = "http://localhost:4000/v1/chat/completions"
-    # Reuse the same key fetch as director_loop._get_litellm_key
-    try:
-        result = subprocess.run(
-            ["pass", "show", "litellm/master-key"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        key = result.stdout.strip()
-    except Exception:
-        key = ""
-    body = json.dumps(
-        {
-            "model": os.environ.get("HAPAX_STRUCTURAL_MODEL", "local-fast"),
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 320,
-            "temperature": 0.7,
-        }
-    ).encode()
-    req = urllib.request.Request(
-        litellm_url,
-        body,
-        {"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
-    )
-    started = time.time()
-    # Publish LLM-in-flight marker so the ThinkingIndicator Cairo source
-    # pulses while the structural tier is mid-call.
-    from agents.studio_compositor.director_loop import _LLMInFlight
+    from agents.studio_compositor.director_loop import _DIRECTOR_LLM_LOCK, _LLMInFlight
 
-    with _LLMInFlight(
-        tier="structural", model=os.environ.get("HAPAX_STRUCTURAL_MODEL", "local-fast")
-    ):
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            data = json.loads(resp.read())
+    if not _DIRECTOR_LLM_LOCK.acquire(blocking=False):
+        log.info("structural tick skipped: local LLM route already in flight")
+        return ""
+
+    litellm_url = "http://localhost:4000/v1/chat/completions"
+    try:
+        # Reuse the same key fetch as director_loop._get_litellm_key
+        try:
+            result = subprocess.run(
+                ["pass", "show", "litellm/master-key"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            key = result.stdout.strip()
+        except Exception:
+            key = ""
+        body = json.dumps(
+            {
+                "model": os.environ.get("HAPAX_STRUCTURAL_MODEL", "local-fast"),
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 320,
+                "temperature": 0.7,
+            }
+        ).encode()
+        req = urllib.request.Request(
+            litellm_url,
+            body,
+            {"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+        )
+        started = time.time()
+        # Publish LLM-in-flight marker so the ThinkingIndicator Cairo source
+        # pulses while the structural tier is mid-call.
+        with _LLMInFlight(
+            tier="structural", model=os.environ.get("HAPAX_STRUCTURAL_MODEL", "local-fast")
+        ):
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                data = json.loads(resp.read())
+    finally:
+        _DIRECTOR_LLM_LOCK.release()
     elapsed = time.time() - started
     try:
         from shared.director_observability import observe_llm_latency

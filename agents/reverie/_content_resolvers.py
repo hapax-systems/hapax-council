@@ -36,6 +36,7 @@ def resolve_narrative_text(
         z_order=20,
         tags=["content", "recruited", "narrative"],
         ttl_ms=RECRUITED_CONTENT_TTL_MS,
+        sources_dir=sources_dir,
     )
 
 
@@ -49,7 +50,12 @@ def resolve_episodic_recall(
     try:
         embedding = embed_safe(narrative, prefix="search_query")
         if embedding is None:
-            return _fallback_text("episodic_recall", f"Recalling: {narrative[:80]}", level)
+            return _fallback_text(
+                "episodic_recall",
+                f"Recalling: {narrative[:80]}",
+                level,
+                sources_dir=sources_dir,
+            )
 
         client = get_qdrant()
         results = client.query_points(
@@ -58,7 +64,12 @@ def resolve_episodic_recall(
             limit=3,
         ).points
         if not results:
-            return _fallback_text("episodic_recall", f"No episodes match: {narrative[:80]}", level)
+            return _fallback_text(
+                "episodic_recall",
+                f"No episodes match: {narrative[:80]}",
+                level,
+                sources_dir=sources_dir,
+            )
 
         # Recency penalty
         recent_set = set(recent_ids) if recent_ids is not None else set()
@@ -71,10 +82,15 @@ def resolve_episodic_recall(
         text = selected.payload.get(
             "narrative", selected.payload.get("text", str(selected.payload))
         )
-        return _inject_recalled_text("episodic_recall", text[:400], level)
+        return _inject_recalled_text("episodic_recall", text[:400], level, sources_dir=sources_dir)
     except Exception:
         log.debug("Episodic recall failed", exc_info=True)
-        return _fallback_text("episodic_recall", f"Recalling: {narrative[:80]}", level)
+        return _fallback_text(
+            "episodic_recall",
+            f"Recalling: {narrative[:80]}",
+            level,
+            sources_dir=sources_dir,
+        )
 
 
 def resolve_knowledge_recall(
@@ -93,7 +109,12 @@ def resolve_knowledge_recall(
     try:
         embedding = embed_safe(narrative, prefix="search_query")
         if embedding is None:
-            return _fallback_text("knowledge_recall", f"Searching: {narrative[:80]}", level)
+            return _fallback_text(
+                "knowledge_recall",
+                f"Searching: {narrative[:80]}",
+                level,
+                sources_dir=sources_dir,
+            )
 
         client = get_qdrant()
         results = client.query_points(
@@ -103,7 +124,10 @@ def resolve_knowledge_recall(
         ).points
         if not results:
             return _fallback_text(
-                "knowledge_recall", f"No documents match: {narrative[:80]}", level
+                "knowledge_recall",
+                f"No documents match: {narrative[:80]}",
+                level,
+                sources_dir=sources_dir,
             )
 
         # Dedup by filename (same document chunked multiple times)
@@ -125,10 +149,15 @@ def resolve_knowledge_recall(
             recent_ids.append(str(selected.id))
 
         text = selected.payload.get("text", selected.payload.get("content", str(selected.payload)))
-        return _inject_recalled_text("knowledge_recall", text[:400], level)
+        return _inject_recalled_text("knowledge_recall", text[:400], level, sources_dir=sources_dir)
     except Exception:
         log.debug("Knowledge recall failed", exc_info=True)
-        return _fallback_text("knowledge_recall", f"Searching: {narrative[:80]}", level)
+        return _fallback_text(
+            "knowledge_recall",
+            f"Searching: {narrative[:80]}",
+            level,
+            sources_dir=sources_dir,
+        )
 
 
 def resolve_profile_recall(
@@ -141,7 +170,12 @@ def resolve_profile_recall(
     try:
         embedding = embed_safe(narrative, prefix="search_query")
         if embedding is None:
-            return _fallback_text("profile_recall", f"Profile: {narrative[:80]}", level)
+            return _fallback_text(
+                "profile_recall",
+                f"Profile: {narrative[:80]}",
+                level,
+                sources_dir=sources_dir,
+            )
 
         client = get_qdrant()
         results = client.query_points(
@@ -150,13 +184,25 @@ def resolve_profile_recall(
             limit=2,
         ).points
         if not results:
-            return _fallback_text("profile_recall", f"No profile match: {narrative[:80]}", level)
+            return _fallback_text(
+                "profile_recall",
+                f"No profile match: {narrative[:80]}",
+                level,
+                sources_dir=sources_dir,
+            )
 
         facts = [p.payload.get("fact", str(p.payload))[:150] for p in results]
-        return _inject_recalled_text("profile_recall", "\n".join(facts), level)
+        return _inject_recalled_text(
+            "profile_recall", "\n".join(facts), level, sources_dir=sources_dir
+        )
     except Exception:
         log.debug("Profile recall failed", exc_info=True)
-        return _fallback_text("profile_recall", f"Profile: {narrative[:80]}", level)
+        return _fallback_text(
+            "profile_recall",
+            f"Profile: {narrative[:80]}",
+            level,
+            sources_dir=sources_dir,
+        )
 
 
 def resolve_waveform_viz(
@@ -180,6 +226,7 @@ def resolve_waveform_viz(
             f"Audio: {waveform}",
             level * 0.5,
             WAVEFORM_CONTENT_TTL_MS,
+            sources_dir=sources_dir,
         )
     except Exception:
         log.debug("Waveform viz failed", exc_info=True)
@@ -191,6 +238,7 @@ def _inject_recalled_text(
     text: str,
     level: float,
     ttl_ms: int = RECRUITED_CONTENT_TTL_MS,
+    sources_dir: Path = SOURCES_DIR,
 ) -> bool:
     """Write recalled text to the sources protocol."""
     from agents.reverie.content_injector import inject_text
@@ -202,10 +250,16 @@ def _inject_recalled_text(
         z_order=15,
         tags=["content", "recruited", "recall"],
         ttl_ms=ttl_ms,
+        sources_dir=sources_dir,
     )
 
 
-def _fallback_text(source_suffix: str, text: str, level: float) -> bool:
+def _fallback_text(
+    source_suffix: str,
+    text: str,
+    level: float,
+    sources_dir: Path = SOURCES_DIR,
+) -> bool:
     """Fallback: render the query itself as visible text."""
     from agents.reverie.content_injector import inject_text
 
@@ -216,6 +270,7 @@ def _fallback_text(source_suffix: str, text: str, level: float) -> bool:
         z_order=15,
         tags=["content", "recruited", "fallback"],
         ttl_ms=RECRUITED_CONTENT_TTL_MS,
+        sources_dir=sources_dir,
     )
 
 

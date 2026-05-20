@@ -118,7 +118,7 @@ def _patch_inject():
     """Patch _inject_recalled_text and capture what was injected."""
     captured = []
 
-    def side_effect(source_suffix, text, level):
+    def side_effect(source_suffix, text, level, *args, **kwargs):
         captured.append(text)
         return True
 
