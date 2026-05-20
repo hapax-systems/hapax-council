@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,34 @@ _FOLLOW_MODE_CONTROLLER: FollowModeController | None = None
 _STREAM_MODE_INTENT_PATH = Path("/dev/shm/hapax-compositor/stream-mode-intent.json")
 _HERO_CAMERA_OVERRIDE_PATH = Path("/dev/shm/hapax-compositor/hero-camera-override.json")
 _ACTION_RECEIPTS_JSONL = Path("/dev/shm/hapax-compositor/action-receipts.jsonl")
+_LEGACY_STUDIO_FX_3D_SKIP_LOGGED = False
+
+
+def legacy_studio_fx_mutations_enabled_in_3d() -> bool:
+    """Return whether 3D mode should still run legacy studio graph writers.
+
+    In 3D direct-output mode, `hapax-imagination` owns the visible effect
+    chain and `/dev/video42`. The studio compositor still publishes sources,
+    but its old GStreamer graph-mutation consumers no longer feed the visible
+    surface and can burn CPU by repeatedly writing transition graphs. Keep them
+    disabled by default in 3D mode while allowing an explicit incident override.
+    """
+
+    if os.environ.get("HAPAX_3D_COMPOSITOR") != "1":
+        return True
+    raw = os.environ.get("HAPAX_3D_ENABLE_LEGACY_STUDIO_FX_MUTATIONS", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _log_legacy_studio_fx_3d_skip_once() -> None:
+    global _LEGACY_STUDIO_FX_3D_SKIP_LOGGED
+    if _LEGACY_STUDIO_FX_3D_SKIP_LOGGED:
+        return
+    _LEGACY_STUDIO_FX_3D_SKIP_LOGGED = True
+    log.info(
+        "3D direct output: skipping legacy studio graph recruitment consumers; "
+        "hapax-imagination owns live effect drift"
+    )
 
 
 def _get_follow_mode_controller() -> FollowModeController:
@@ -911,18 +940,21 @@ def state_reader_loop(compositor: Any) -> None:
         # on whatever activated at boot). 8s cooldown protects against thrash.
         # Per operator directive 2026-04-20: 'no random_mode; all effects
         # recruited by Hapax via director loop and content programming'.
-        try:
-            from .preset_recruitment_consumer import process_preset_recruitment
+        if legacy_studio_fx_mutations_enabled_in_3d():
+            try:
+                from .preset_recruitment_consumer import process_preset_recruitment
 
-            # Pass the compositor so the consumer can extend
-            # _user_preset_hold_until on a successful dispatch — protects
-            # the recruitment-driven chain change from being clobbered by
-            # the 30 fps atmospheric governance tick. Without this hold,
-            # tick_governance reverts to _STATE_MATRIX defaults within
-            # 33 ms (the halftone-monoculture symptom).
-            process_preset_recruitment(compositor)
-        except Exception:
-            log.exception("process_preset_recruitment raised (non-fatal)")
+                # Pass the compositor so the consumer can extend
+                # _user_preset_hold_until on a successful dispatch — protects
+                # the recruitment-driven chain change from being clobbered by
+                # the 30 fps atmospheric governance tick. Without this hold,
+                # tick_governance reverts to _STATE_MATRIX defaults within
+                # 33 ms (the halftone-monoculture symptom).
+                process_preset_recruitment(compositor)
+            except Exception:
+                log.exception("process_preset_recruitment raised (non-fatal)")
+        else:
+            _log_legacy_studio_fx_3d_skip_once()
 
         # Graph-patch recruitment consumer — closes the chain-composition
         # primitive (architectural fix per memory
@@ -935,21 +967,24 @@ def state_reader_loop(compositor: Any) -> None:
         # granularity. The two consumers can coexist — preset recruitment
         # changes the family, patch recruitment adds/removes specific nodes
         # within whatever graph is live.
-        try:
-            from .graph_patch_consumer import (
-                process_graph_patch_recruitment,
-                set_current_graph_provider,
-            )
+        if legacy_studio_fx_mutations_enabled_in_3d():
+            try:
+                from .graph_patch_consumer import (
+                    process_graph_patch_recruitment,
+                    set_current_graph_provider,
+                )
 
-            # Bind the live graph provider once; idempotent on re-entry.
-            if compositor._graph_runtime is not None and not getattr(
-                compositor, "_graph_patch_provider_set", False
-            ):
-                set_current_graph_provider(lambda: compositor._graph_runtime.current_graph)
-                compositor._graph_patch_provider_set = True
-            process_graph_patch_recruitment()
-        except Exception:
-            log.exception("process_graph_patch_recruitment raised (non-fatal)")
+                # Bind the live graph provider once; idempotent on re-entry.
+                if compositor._graph_runtime is not None and not getattr(
+                    compositor, "_graph_patch_provider_set", False
+                ):
+                    set_current_graph_provider(lambda: compositor._graph_runtime.current_graph)
+                    compositor._graph_patch_provider_set = True
+                process_graph_patch_recruitment()
+            except Exception:
+                log.exception("process_graph_patch_recruitment raised (non-fatal)")
+        else:
+            _log_legacy_studio_fx_3d_skip_once()
 
         # Vinyl mode toggle (Stream Deck / API)
         vinyl_path = SNAPSHOT_DIR / "vinyl-mode.txt"
