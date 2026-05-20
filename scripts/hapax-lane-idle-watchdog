@@ -57,13 +57,13 @@ is_claude_idle() {
     local tail5
     tail5=$(echo "$pane" | tail -5)
 
-    # Idle: the ❯ prompt is in the last 5 lines (includes context-full state)
-    if echo "$tail5" | grep -q '❯'; then
+    # Idle: the ❯ prompt OR ⏵⏵ (bypass-mode prompt) in the last 5 lines
+    if echo "$tail5" | grep -qE '❯|⏵⏵'; then
         return 0
     fi
 
     # Permission prompts in the tail — blocked, not idle-done
-    if echo "$tail5" | grep -qE '(Allow|Deny|bypass permissions on)'; then
+    if echo "$tail5" | grep -qE '(Allow|Deny)'; then
         return 1
     fi
 
