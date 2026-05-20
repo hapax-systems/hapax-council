@@ -1,9 +1,9 @@
 [Unit]
-Description=Hapax novelty-shift impingement emitter (1s cadence)
+Description=Hapax novelty-shift impingement emitter timer (retired; service owns cadence)
+ConditionPathExists=/run/hapax/enable-retired-novelty-shift-timer
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=1s
 AccuracySec=200ms
 Unit=hapax-novelty-shift-emitter.service
 
