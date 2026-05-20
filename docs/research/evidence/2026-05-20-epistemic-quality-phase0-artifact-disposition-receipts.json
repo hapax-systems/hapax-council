@@ -1,0 +1,486 @@
+{
+  "schema_version": 1,
+  "artifact_index_id": "epistemic-quality-phase0-artifact-disposition-receipts-2026-05-20",
+  "generated_at": "2026-05-20T17:24:12Z",
+  "authority_case": "REQ-20260512-epistemic-quality-infrastructure",
+  "parent_request": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+  "cc_task": "epistemic-quality-phase0-artifact-disposition-receipts",
+  "claim_ceiling": "support_non_authoritative; this receipt records artifact disposition and failed/missing Phase 0 predicates only",
+  "phase0_predicates": {
+    "manifest_record_count_is_200": true,
+    "source_notes_count_is_200": true,
+    "strict_label_validation_ok": false,
+    "strict_label_count": 10,
+    "strict_label_target": 200,
+    "phase0_validation_gate_status": "not_enough_labels",
+    "phase0_hard_gate_passed": false,
+    "labels_complete": false,
+    "scores_complete": false,
+    "primary_axis_spearman_ge_0_70_p_lt_0_001": false,
+    "axis_ablation_spearman_ge_0_40": false,
+    "domain_spearman_ge_0_60": false,
+    "tier_b_not_more_than_half_sd_below_tier_a": false,
+    "vacuous_hedging_not_above_tier_a_median": false,
+    "relabel_present": false,
+    "relabel_rows_present": false,
+    "round1_relabel_subset_complete": false,
+    "relabel_count_is_40": false,
+    "relabel_delay_ge_7_days": false,
+    "kappa_by_axis_ge_0_75": false,
+    "overall_kappa_ge_0_75": false,
+    "reliability_gate_passed": false
+  },
+  "blocking_predicates": [
+    {
+      "predicate": "strict_label_validation_ok",
+      "value": false,
+      "source_artifact_id": "phase0-label-validation-strict-current-v0-json",
+      "blocker": "Only 10 of 200 required round-one label rows are present; relabel freeze file is missing."
+    },
+    {
+      "predicate": "labels_complete",
+      "value": false,
+      "source_artifact_id": "phase0-validation-gate-current-v0-json",
+      "blocker": "Current validation-gate report has valid_round1_count=0 because existing label rows use id rather than the gate contract's manifest_id field, and the remaining required rows are absent."
+    },
+    {
+      "predicate": "scores_complete",
+      "value": false,
+      "source_artifact_id": "phase0-validation-gate-current-v0-json",
+      "blocker": "No scorer output rows are present for the 200 manifest records."
+    },
+    {
+      "predicate": "reliability_gate_passed",
+      "value": false,
+      "source_artifact_id": "phase0-relabel-reliability-report-v0-json",
+      "blocker": "No relabel rows are present; only 2 relabel-subset records have valid round-one labels under the reliability report."
+    }
+  ],
+  "consumer_authority_denials": {
+    "publication": {
+      "authority_granted": false,
+      "denied_authority": [
+        "public claim upgrade",
+        "publication-bus release decision",
+        "automated copy acceptance",
+        "evidence-bound novelty or quality claims"
+      ],
+      "reason": "phase0_hard_gate_passed=false, scores_complete=false, labels_complete=false, reliability_gate_passed=false; independent publication hardening gates remain required even after Phase 0 passes"
+    },
+    "token_capital": {
+      "authority_granted": false,
+      "denied_authority": [
+        "Token Capital claim upgrade",
+        "downstream contribution proof",
+        "economic value or appreciation claims",
+        "source-coverage substitution"
+      ],
+      "reason": "EQI Phase 0 is not passed and cannot replace RAG/source-coverage, answer-faithfulness, downstream-contribution, privacy, legal, or publication gates"
+    }
+  },
+  "artifact_records": [
+    {
+      "artifact_id": "phase0-golden-dataset-v0-curated",
+      "kind": "dataset_manifest",
+      "canonical_path": "vault://Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/phase0-golden-dataset-v0-curated.jsonl",
+      "privacy_class": "internal_mixed",
+      "source_refs": [
+        "PR #3197",
+        "phase0-source-notes-v0",
+        "REQ-20260512-epistemic-quality-infrastructure Phase 0 Gate"
+      ],
+      "request_backlink": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+      "task_backlinks": [
+        "epistemic-quality-phase0-source-curation-and-privacy-screen",
+        "epistemic-quality-phase0-artifact-disposition-receipts"
+      ],
+      "disposition": "canonical_current_unlabeled_manifest",
+      "freshness": {
+        "observed_at": "2026-05-20T17:24:12Z",
+        "basis": "sha256_and_200_record_validation",
+        "stale_when": "manifest hash changes or source curation is superseded"
+      },
+      "authority_ceiling": "candidate_unlabeled_not_public_authority",
+      "sha256": "927f2b75e6f3e887dcebf008ba5e612e73fff8f099fa7c8317f5e532d5cf37c0",
+      "row_count": 200
+    },
+    {
+      "artifact_id": "phase0-source-notes-v0",
+      "kind": "source_curation_notes",
+      "canonical_path": "vault://Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/phase0-source-notes-v0.jsonl",
+      "privacy_class": "internal_mixed",
+      "source_refs": [
+        "PR #3197",
+        "phase0-golden-dataset-v0-curated"
+      ],
+      "request_backlink": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+      "task_backlinks": [
+        "epistemic-quality-phase0-source-curation-and-privacy-screen",
+        "epistemic-quality-phase0-artifact-disposition-receipts"
+      ],
+      "disposition": "canonical_source_curation_receipt",
+      "freshness": {
+        "observed_at": "2026-05-20T17:24:12Z",
+        "basis": "sha256_and_200_source_note_rows",
+        "stale_when": "manifest rows or privacy/source screens are superseded"
+      },
+      "authority_ceiling": "source_curation_receipt_only_no_phase0_pass",
+      "sha256": "2650b9b67e9fb4bcf42c68199580e5af36daf17fe21da3e1328388ee14772a95",
+      "row_count": 200
+    },
+    {
+      "artifact_id": "phase0-source-curation-report-v0",
+      "kind": "source_curation_report",
+      "canonical_path": "vault://Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/phase0-source-curation-report-v0.md",
+      "privacy_class": "internal",
+      "source_refs": [
+        "PR #3197",
+        "phase0-golden-dataset-v0-curated",
+        "phase0-source-notes-v0"
+      ],
+      "request_backlink": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+      "task_backlinks": [
+        "epistemic-quality-phase0-source-curation-and-privacy-screen",
+        "epistemic-quality-phase0-artifact-disposition-receipts"
+      ],
+      "disposition": "canonical_curation_report",
+      "freshness": {
+        "observed_at": "2026-05-20T17:24:12Z",
+        "basis": "sha256",
+        "stale_when": "curated manifest or source notes change"
+      },
+      "authority_ceiling": "support_non_authoritative_source_curation_receipt",
+      "sha256": "81eacd1733f7f8ef1a33bafbed4df2971015ef331b03c8fae1a3d28b52687596"
+    },
+    {
+      "artifact_id": "phase0-human-labels-round1-v0",
+      "kind": "round_one_label_artifact",
+      "canonical_path": "vault://Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/phase0-human-labels-round1-v0.jsonl",
+      "privacy_class": "internal",
+      "source_refs": [
+        "PR #3550",
+        "phase0-golden-dataset-v0-curated",
+        "phase0-label-validation-strict-current-v0-json"
+      ],
+      "request_backlink": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+      "task_backlinks": [
+        "epistemic-quality-phase0-label-entry-round1",
+        "epistemic-quality-phase0-artifact-disposition-receipts"
+      ],
+      "disposition": "partial_round_one_labels_blocked",
+      "freshness": {
+        "observed_at": "2026-05-20T17:24:12Z",
+        "basis": "sha256_and_strict_label_validation",
+        "stale_when": "label rows, manifest hash, or label schema are changed"
+      },
+      "authority_ceiling": "partial_label_receipt_no_phase0_authority",
+      "sha256": "86a5fc8bf836d72ca18b16ea488316dc2c6d6c8c2834d3fa5fa28e6c9fd2d842",
+      "row_count": 10,
+      "blockers": [
+        "190 manifest records unlabeled",
+        "relabel freeze file not found",
+        "current validation-gate contract sees 0 valid round-one rows because manifest_id is absent"
+      ]
+    },
+    {
+      "artifact_id": "phase0-council-labels-round1-v0-tmp",
+      "kind": "intermediate_council_label_output",
+      "canonical_path": "vault://Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/phase0-council-labels-round1-v0-tmp.jsonl",
+      "privacy_class": "internal",
+      "source_refs": [
+        "council-eqi-phase0-run",
+        "phase0-review-queue-round1-v0"
+      ],
+      "request_backlink": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+      "task_backlinks": [
+        "council-eqi-phase0-run",
+        "epistemic-quality-phase0-artifact-disposition-receipts"
+      ],
+      "disposition": "intermediate_not_operator_ground_truth",
+      "freshness": {
+        "observed_at": "2026-05-20T17:24:12Z",
+        "basis": "sha256_and_row_count",
+        "stale_when": "operator ratifies, rejects, or supersedes council rows"
+      },
+      "authority_ceiling": "support_non_authoritative_review_input_only",
+      "sha256": "b6ac8edf6f6ba2f021f04e66be4d554539feeea1aab321d951352bcc98998b5f",
+      "row_count": 172
+    },
+    {
+      "artifact_id": "phase0-review-queue-round1-v0",
+      "kind": "operator_review_queue",
+      "canonical_path": "vault://Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/phase0-review-queue-round1-v0.jsonl",
+      "privacy_class": "internal",
+      "source_refs": [
+        "council-eqi-phase0-run",
+        "phase0-review-queue-operator-review"
+      ],
+      "request_backlink": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+      "task_backlinks": [
+        "council-eqi-phase0-run",
+        "epistemic-quality-phase0-artifact-disposition-receipts"
+      ],
+      "disposition": "operator_review_pending",
+      "freshness": {
+        "observed_at": "2026-05-20T17:24:12Z",
+        "basis": "sha256_and_row_count",
+        "stale_when": "operator review queue is completed or regenerated"
+      },
+      "authority_ceiling": "review_queue_only_no_ground_truth",
+      "sha256": "27f44f9e55912d846d348fde9131c533cf08aa9b905fcb45489b849e7dde101f",
+      "row_count": 28
+    },
+    {
+      "artifact_id": "phase0-review-queue-operator-review",
+      "kind": "operator_review_packet",
+      "canonical_path": "vault://Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/phase0-review-queue-operator-review.md",
+      "privacy_class": "internal",
+      "source_refs": [
+        "phase0-review-queue-round1-v0",
+        "council-eqi-phase0-run"
+      ],
+      "request_backlink": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+      "task_backlinks": [
+        "council-eqi-phase0-run",
+        "epistemic-quality-phase0-artifact-disposition-receipts"
+      ],
+      "disposition": "operator_review_packet_pending",
+      "freshness": {
+        "observed_at": "2026-05-20T17:24:12Z",
+        "basis": "sha256",
+        "stale_when": "review queue is completed, revised, or superseded"
+      },
+      "authority_ceiling": "operator_action_packet_only_no_phase0_pass",
+      "sha256": "e3d9c1d9ea9178d9a27c2b6328530b84b32e4b6921884f177818a375cd12357e"
+    },
+    {
+      "artifact_id": "phase0-label-validation-strict-current-v0-json",
+      "kind": "strict_label_validation_report",
+      "canonical_path": "vault://Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/phase0-label-validation-strict-current-v0.json",
+      "privacy_class": "internal",
+      "source_refs": [
+        "scripts/validate-epistemic-labels.py --strict --json",
+        "phase0-human-labels-round1-v0",
+        "phase0-golden-dataset-v0-curated"
+      ],
+      "request_backlink": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+      "task_backlinks": [
+        "epistemic-quality-phase0-label-entry-round1",
+        "epistemic-quality-phase0-artifact-disposition-receipts"
+      ],
+      "disposition": "canonical_current_fail_closed_label_report",
+      "freshness": {
+        "observed_at": "2026-05-20T17:24:12Z",
+        "basis": "sha256_and_command_output",
+        "stale_when": "manifest, labels, or validator changes"
+      },
+      "authority_ceiling": "negative_result_receipt_only_no_phase0_authority",
+      "sha256": "a4c513f9bfcba2eb8926d1474d03495fba9be83f62aff800e00c8b40855d0231",
+      "status": "ok_false",
+      "blockers": [
+        "190 manifest records unlabeled",
+        "Relabel freeze file not found"
+      ]
+    },
+    {
+      "artifact_id": "phase0-validation-gate-current-v0-json",
+      "kind": "phase0_validation_gate_report",
+      "canonical_path": "vault://Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/phase0-validation-gate-current-v0.json",
+      "privacy_class": "internal",
+      "source_refs": [
+        "scripts/epistemic_quality_dataset.py validate-gate",
+        "phase0-golden-dataset-v0-curated",
+        "phase0-human-labels-round1-v0",
+        "/dev/null scorer stream for explicit missing-score negative result"
+      ],
+      "request_backlink": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+      "task_backlinks": [
+        "epistemic-quality-phase0-validation-harness",
+        "epistemic-quality-phase0-artifact-disposition-receipts"
+      ],
+      "disposition": "canonical_current_fail_closed_validation_report",
+      "freshness": {
+        "observed_at": "2026-05-20T17:24:12Z",
+        "basis": "sha256_and_gate_predicates",
+        "stale_when": "manifest, labels, scorer outputs, relabel rows, or gate code changes"
+      },
+      "authority_ceiling": "negative_result_receipt_only_no_phase0_authority",
+      "sha256": "9b3b2405bb23135102c2314ba2372080e0243ffe2b4c8c3172111987be4494dc",
+      "status": "not_enough_labels",
+      "blockers": [
+        "labels_complete=false",
+        "scores_complete=false",
+        "phase0_hard_gate_passed=false"
+      ]
+    },
+    {
+      "artifact_id": "phase0-validation-gate-current-v0-md",
+      "kind": "phase0_validation_gate_human_report",
+      "canonical_path": "vault://Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/phase0-validation-gate-current-v0.md",
+      "privacy_class": "internal",
+      "source_refs": [
+        "phase0-validation-gate-current-v0-json"
+      ],
+      "request_backlink": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+      "task_backlinks": [
+        "epistemic-quality-phase0-validation-harness",
+        "epistemic-quality-phase0-artifact-disposition-receipts"
+      ],
+      "disposition": "canonical_current_fail_closed_human_report",
+      "freshness": {
+        "observed_at": "2026-05-20T17:24:12Z",
+        "basis": "sha256",
+        "stale_when": "JSON validation report changes"
+      },
+      "authority_ceiling": "human_readable_negative_result_receipt_only",
+      "sha256": "d7296371b5fbe286652386518092b7a3bcc2286d023ecca90dcd29c1ebf94497"
+    },
+    {
+      "artifact_id": "phase0-relabel-reliability-report-v0-json",
+      "kind": "delayed_relabel_reliability_report",
+      "canonical_path": "vault://Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/phase0-relabel-reliability-report-v0.json",
+      "privacy_class": "internal",
+      "source_refs": [
+        "PR #3569",
+        "scripts/validate-epistemic-labels.py --reliability-report --json",
+        "phase0-human-labels-round1-v0"
+      ],
+      "request_backlink": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+      "task_backlinks": [
+        "epistemic-quality-phase0-relabel-reliability-gate",
+        "epistemic-quality-phase0-artifact-disposition-receipts"
+      ],
+      "disposition": "canonical_current_fail_closed_reliability_report",
+      "freshness": {
+        "observed_at": "2026-05-20T17:24:12Z",
+        "basis": "sha256_and_reliability_predicates",
+        "stale_when": "round-one labels, relabel labels, manifest, or reliability code changes"
+      },
+      "authority_ceiling": "negative_result_receipt_only_no_phase0_authority",
+      "sha256": "7ed5f590079b2fae8bdefe1f2f288e3d8f026e6fdf43dfec49fc5ebc8b5158c2",
+      "status": "missing_relabels",
+      "blockers": [
+        "relabel_rows_present=false",
+        "relabel_count_is_40=false",
+        "relabel_delay_ge_7_days=false",
+        "kappa_by_axis_ge_0_75=false",
+        "overall_kappa_ge_0_75=false"
+      ]
+    },
+    {
+      "artifact_id": "phase0-relabel-reliability-report-v0-md",
+      "kind": "delayed_relabel_reliability_human_report",
+      "canonical_path": "vault://Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/phase0-relabel-reliability-report-v0.md",
+      "privacy_class": "internal",
+      "source_refs": [
+        "phase0-relabel-reliability-report-v0-json"
+      ],
+      "request_backlink": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+      "task_backlinks": [
+        "epistemic-quality-phase0-relabel-reliability-gate",
+        "epistemic-quality-phase0-artifact-disposition-receipts"
+      ],
+      "disposition": "canonical_current_fail_closed_human_report",
+      "freshness": {
+        "observed_at": "2026-05-20T17:24:12Z",
+        "basis": "sha256",
+        "stale_when": "JSON reliability report changes"
+      },
+      "authority_ceiling": "human_readable_negative_result_receipt_only",
+      "sha256": "e7568cacc0049cc3f3b1995e57ac5ea861330bed76200d46919cb5db107f0a34"
+    },
+    {
+      "artifact_id": "phase0-scorer-outputs-current-absence",
+      "kind": "negative_result_missing_scorer_outputs",
+      "canonical_path": "vault://Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/phase0-validation-gate-current-v0.json",
+      "privacy_class": "internal",
+      "source_refs": [
+        "phase0-validation-gate-current-v0-json",
+        "score_validation.valid_score_count=0"
+      ],
+      "request_backlink": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+      "task_backlinks": [
+        "epistemic-quality-phase0-validation-harness",
+        "epistemic-quality-phase0-artifact-disposition-receipts"
+      ],
+      "disposition": "missing_scorer_outputs_recorded",
+      "freshness": {
+        "observed_at": "2026-05-20T17:24:12Z",
+        "basis": "validation-gate report hash",
+        "stale_when": "a scorer output artifact is produced or the validation gate is rerun"
+      },
+      "authority_ceiling": "absence_receipt_no_scorer_or_public_authority",
+      "sha256": "9b3b2405bb23135102c2314ba2372080e0243ffe2b4c8c3172111987be4494dc"
+    },
+    {
+      "artifact_id": "phase0-human-relabel-labels-current-absence",
+      "kind": "negative_result_missing_relabel_rows",
+      "canonical_path": "vault://Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/phase0-relabel-reliability-report-v0.json",
+      "privacy_class": "internal",
+      "source_refs": [
+        "phase0-relabel-reliability-report-v0-json",
+        "labels.relabel_row_count=0"
+      ],
+      "request_backlink": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+      "task_backlinks": [
+        "epistemic-quality-phase0-relabel-reliability-gate",
+        "epistemic-quality-phase0-artifact-disposition-receipts"
+      ],
+      "disposition": "missing_relabel_rows_recorded",
+      "freshness": {
+        "observed_at": "2026-05-20T17:24:12Z",
+        "basis": "reliability report hash",
+        "stale_when": "a relabel artifact is produced or the reliability report is rerun"
+      },
+      "authority_ceiling": "absence_receipt_no_reliability_or_public_authority",
+      "sha256": "7ed5f590079b2fae8bdefe1f2f288e3d8f026e6fdf43dfec49fc5ebc8b5158c2"
+    },
+    {
+      "artifact_id": "phase0-labeling-pack-v0-curated",
+      "kind": "labeling_packet",
+      "canonical_path": "vault://Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/phase0-labeling-pack-v0-curated.md",
+      "privacy_class": "internal",
+      "source_refs": [
+        "PR #3197",
+        "phase0-golden-dataset-v0-curated"
+      ],
+      "request_backlink": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+      "task_backlinks": [
+        "epistemic-quality-phase0-source-curation-and-privacy-screen",
+        "epistemic-quality-phase0-artifact-disposition-receipts"
+      ],
+      "disposition": "canonical_labeling_packet",
+      "freshness": {
+        "observed_at": "2026-05-20T17:24:12Z",
+        "basis": "sha256",
+        "stale_when": "curated manifest or labeling instructions change"
+      },
+      "authority_ceiling": "operator_labeling_support_only",
+      "sha256": "1f32f7051d5173737583b665b71ee20d1324cf6f55f65173a75d6ba4aecc9827"
+    },
+    {
+      "artifact_id": "phase0-operator-labeling-readiness-2026-05-13",
+      "kind": "operator_readiness_packet",
+      "canonical_path": "vault://Documents/Personal/20-projects/hapax-research/datasets/epistemic-quality/phase0-operator-labeling-readiness-2026-05-13.md",
+      "privacy_class": "internal",
+      "source_refs": [
+        "eqi-phase0-operator-labeling-pack-readiness",
+        "phase0-golden-dataset-v0-curated",
+        "phase0-labeling-pack-v0-curated"
+      ],
+      "request_backlink": "vault://Documents/Personal/20-projects/hapax-requests/active/REQ-20260512-epistemic-quality-infrastructure.md",
+      "task_backlinks": [
+        "eqi-phase0-operator-labeling-pack-readiness",
+        "epistemic-quality-phase0-artifact-disposition-receipts"
+      ],
+      "disposition": "canonical_operator_readiness_packet",
+      "freshness": {
+        "observed_at": "2026-05-20T17:24:12Z",
+        "basis": "sha256",
+        "stale_when": "manifest, label schema, or relabel process changes"
+      },
+      "authority_ceiling": "operator_action_support_only_no_phase0_pass",
+      "sha256": "75a343e830c1acdbb257d6bd97a24116d70c2c15e8ceea6e708aa0ac555d7ebc"
+    }
+  ]
+}
