@@ -25,7 +25,10 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import subprocess
+import threading
+import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -62,6 +65,8 @@ _MAX_CAPTURE_LINES = 120
 _MAX_LINE_CHARS = 180
 _DEFAULT_STALE_AFTER_S = 20.0
 _DEFAULT_MAX_VISIBLE_PANES = 4
+_DEFAULT_TMUX_CAPTURE_CACHE_S = 1.5
+_DEFAULT_TMUX_MISSING_BACKOFF_S = 15.0
 
 _ENTER_RAMP_MS = 400.0
 _EXIT_RAMP_MS = 600.0
@@ -79,6 +84,9 @@ _DEFAULT_GLYPHS = {
 }
 
 _YAML_MAPPING_CACHE: dict[Path, tuple[tuple[int, int], dict[str, Any]]] = {}
+_TMUX_BIN_CACHE: str | None | bool = False
+_TMUX_CACHE_LOCK = threading.Lock()
+_TMUX_CAPTURE_CACHE: dict[tuple[str, int], tuple[float, TmuxCaptureResult]] = {}
 
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -210,6 +218,78 @@ def _bounded_line_count(value: int) -> int:
     return max(1, min(value, _MAX_CAPTURE_LINES))
 
 
+def _float_env(name: str, default: float, *, minimum: float = 0.0) -> float:
+    try:
+        return max(minimum, float(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _tmux_capture_cache_s() -> float:
+    return _float_env(
+        "HAPAX_DURF_TMUX_CAPTURE_CACHE_S",
+        _DEFAULT_TMUX_CAPTURE_CACHE_S,
+        minimum=0.0,
+    )
+
+
+def _tmux_missing_backoff_s() -> float:
+    return _float_env(
+        "HAPAX_DURF_TMUX_MISSING_TARGET_BACKOFF_S",
+        _DEFAULT_TMUX_MISSING_BACKOFF_S,
+        minimum=0.0,
+    )
+
+
+def _tmux_executable() -> str | None:
+    """Resolve tmux once so repeated captures do not pay PATH-search cost."""
+    override = os.environ.get("HAPAX_DURF_TMUX_BIN", "").strip()
+    if override:
+        return override
+    global _TMUX_BIN_CACHE
+    with _TMUX_CACHE_LOCK:
+        if _TMUX_BIN_CACHE is False:
+            _TMUX_BIN_CACHE = shutil.which("tmux")
+        return _TMUX_BIN_CACHE if isinstance(_TMUX_BIN_CACHE, str) else None
+
+
+def _cached_tmux_capture(
+    key: tuple[str, int],
+    *,
+    now: float,
+) -> TmuxCaptureResult | None:
+    with _TMUX_CACHE_LOCK:
+        cached = _TMUX_CAPTURE_CACHE.get(key)
+    if cached is None:
+        return None
+    captured_at, result = cached
+    ttl = _tmux_capture_cache_s() if result.ok else _tmux_missing_backoff_s()
+    if ttl <= 0.0 or now - captured_at >= ttl:
+        return None
+    return result
+
+
+def _store_tmux_capture(
+    key: tuple[str, int],
+    *,
+    now: float,
+    result: TmuxCaptureResult,
+) -> None:
+    ttl = _tmux_capture_cache_s() if result.ok else _tmux_missing_backoff_s()
+    if ttl <= 0.0:
+        return
+    with _TMUX_CACHE_LOCK:
+        _TMUX_CAPTURE_CACHE[key] = (now, result)
+
+
+def _clear_tmux_cache_for_tests() -> None:
+    """Reset tmux executable/result caches for deterministic tests."""
+    global _TMUX_BIN_CACHE
+    with _TMUX_CACHE_LOCK:
+        _TMUX_BIN_CACHE = False
+        _TMUX_CAPTURE_CACHE.clear()
+
+
 def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
@@ -270,8 +350,14 @@ def capture_tmux_text(
 ) -> TmuxCaptureResult:
     """Capture a bounded tmux pane buffer without ANSI escape sequences."""
     bounded = _bounded_line_count(capture_lines)
+    cache_key = (tmux_target, bounded)
+    now = time.monotonic()
+    cached = _cached_tmux_capture(cache_key, now=now)
+    if cached is not None:
+        return cached
+    tmux_bin = _tmux_executable()
     cmd = (
-        "tmux",
+        tmux_bin or "tmux",
         "capture-pane",
         "-p",
         "-S",
@@ -279,34 +365,48 @@ def capture_tmux_text(
         "-t",
         tmux_target,
     )
+    if tmux_bin is None:
+        result = TmuxCaptureResult(False, reason="tmux_unavailable", command=cmd)
+        _store_tmux_capture(cache_key, now=now, result=result)
+        return result
     try:
-        result = subprocess.run(
+        proc = subprocess.run(
             list(cmd),
             capture_output=True,
             text=True,
             timeout=timeout_s,
         )
     except subprocess.TimeoutExpired:
-        return TmuxCaptureResult(False, reason="tmux_capture_timeout", command=cmd)
+        result = TmuxCaptureResult(False, reason="tmux_capture_timeout", command=cmd)
+        _store_tmux_capture(cache_key, now=now, result=result)
+        return result
     except FileNotFoundError:
-        return TmuxCaptureResult(False, reason="tmux_unavailable", command=cmd)
+        result = TmuxCaptureResult(False, reason="tmux_unavailable", command=cmd)
+        _store_tmux_capture(cache_key, now=now, result=result)
+        return result
     except OSError as exc:
-        return TmuxCaptureResult(
+        result = TmuxCaptureResult(
             False,
             reason="tmux_capture_error",
             detail=str(exc),
             command=cmd,
         )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()[:200] or "tmux capture failed"
-        return TmuxCaptureResult(
+        _store_tmux_capture(cache_key, now=now, result=result)
+        return result
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()[:200] or "tmux capture failed"
+        result = TmuxCaptureResult(
             False,
             reason="tmux_target_missing",
             detail=detail,
             command=cmd,
         )
-    lines = sanitize_terminal_lines(tuple(result.stdout.splitlines()), max_lines=bounded)
-    return TmuxCaptureResult(True, lines=lines, command=cmd)
+        _store_tmux_capture(cache_key, now=now, result=result)
+        return result
+    lines = sanitize_terminal_lines(tuple(proc.stdout.splitlines()), max_lines=bounded)
+    result = TmuxCaptureResult(True, lines=lines, command=cmd)
+    _store_tmux_capture(cache_key, now=now, result=result)
+    return result
 
 
 def is_pane_stale(pane: DURFPaneState, *, now: float, stale_after_s: float) -> bool:

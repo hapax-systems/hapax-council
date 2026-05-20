@@ -322,6 +322,7 @@ class TestCompositorVramGauge:
     nvidia-smi the gauge stays at 0 (no crash)."""
 
     def test_update_gpu_vram_does_not_crash_without_nvidia_smi(self) -> None:
+        metrics._clear_gpu_vram_poll_cache_for_tests()
         # Don't patch anything — on CI nvidia-smi is missing, so this
         # exercises the FileNotFoundError path. On the dev rig it
         # exercises the happy path. Either way the call must not raise.
@@ -331,6 +332,23 @@ class TestCompositorVramGauge:
         # nvidia-smi) or a positive integer up to ~100 GB.
         assert v >= 0
         assert v < 100 * 1024 * 1024 * 1024
+
+    def test_update_gpu_vram_is_throttled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        metrics._clear_gpu_vram_poll_cache_for_tests()
+        monkeypatch.setenv("HAPAX_NVIDIA_SMI_BIN", "nvidia-smi")
+        monkeypatch.setenv("HAPAX_COMPOSITOR_GPU_VRAM_POLL_INTERVAL_S", "30")
+        fake = mock.Mock()
+        fake.returncode = 0
+        fake.stdout = f"{metrics.os.getpid()}, 7\n"
+        fake.stderr = ""
+        run_spy = mock.Mock(return_value=fake)
+        monkeypatch.setattr(metrics.subprocess, "run", run_spy)
+
+        metrics._update_gpu_vram()
+        metrics._update_gpu_vram()
+
+        assert metrics.COMP_GPU_VRAM_BYTES._value.get() == 7 * 1024 * 1024
+        assert run_spy.call_count == 1
 
 
 class TestAudioDspHistogram:

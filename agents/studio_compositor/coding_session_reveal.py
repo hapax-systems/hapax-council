@@ -119,6 +119,7 @@ DEFAULT_AUTO_DETECT_PREFIXES: tuple[str, ...] = (
 _DEFAULT_CAPTURE_LINES = 80
 _DEFAULT_STALE_AFTER_S = 20.0
 _POLL_INTERVAL_S = 0.5
+_DEFAULT_TMUX_SESSION_LIST_CACHE_S = 10.0
 _ENTER_RAMP_S = 0.4
 _EXIT_RAMP_S = 0.6
 _EXIT_HYSTERESIS_S = 4.0
@@ -126,6 +127,8 @@ _FRONTED_ALPHA = 0.90
 _METADATA_CACHE_TTL_S = 10.0
 _DEFAULT_REPO_PATH = Path(os.path.expanduser("~/projects/hapax-council"))
 _RAW_BYPASS_WARNED = False
+_TMUX_SESSION_CACHE_LOCK = threading.Lock()
+_TMUX_SESSION_CACHE: tuple[float, tuple[str, ...]] | None = None
 
 _LEGAL_FIRST = "Ryan"
 _LEGAL_MIDDLE = "Lee"
@@ -320,23 +323,65 @@ def _read_yaml_mapping(path: Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _float_env(name: str, default: float, *, minimum: float = 0.0) -> float:
+    try:
+        return max(minimum, float(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _tmux_session_list_cache_s() -> float:
+    return _float_env(
+        "HAPAX_DURF_CODING_SESSION_LIST_CACHE_S",
+        _DEFAULT_TMUX_SESSION_LIST_CACHE_S,
+        minimum=0.0,
+    )
+
+
+def _clear_tmux_session_cache_for_tests() -> None:
+    global _TMUX_SESSION_CACHE
+    with _TMUX_SESSION_CACHE_LOCK:
+        _TMUX_SESSION_CACHE = None
+
+
 def _list_tmux_sessions(timeout_s: float = 1.0) -> tuple[str, ...]:
     """Return tmux session names via ``tmux list-sessions -F#S``.
 
     Empty tuple on tmux missing / no sessions / parse failure.
     """
+    global _TMUX_SESSION_CACHE
+    ttl = _tmux_session_list_cache_s()
+    now = time.monotonic()
+    if ttl > 0.0:
+        with _TMUX_SESSION_CACHE_LOCK:
+            cached = _TMUX_SESSION_CACHE
+        if cached is not None and now - cached[0] < ttl:
+            return cached[1]
+    tmux_bin = _durf_module._tmux_executable()
+    if tmux_bin is None:
+        sessions: tuple[str, ...] = ()
+        if ttl > 0.0:
+            with _TMUX_SESSION_CACHE_LOCK:
+                _TMUX_SESSION_CACHE = (now, sessions)
+        return sessions
     try:
         result = subprocess.run(
-            ["tmux", "list-sessions", "-F", "#S"],
+            [tmux_bin, "list-sessions", "-F", "#S"],
             capture_output=True,
             text=True,
             timeout=timeout_s,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return ()
-    if result.returncode != 0:
-        return ()
-    return tuple(line.strip() for line in result.stdout.splitlines() if line.strip())
+        sessions: tuple[str, ...] = ()
+    else:
+        if result.returncode != 0:
+            sessions = ()
+        else:
+            sessions = tuple(line.strip() for line in result.stdout.splitlines() if line.strip())
+    if ttl > 0.0:
+        with _TMUX_SESSION_CACHE_LOCK:
+            _TMUX_SESSION_CACHE = (now, sessions)
+    return sessions
 
 
 def _resolve_prefixes(config_prefixes: tuple[str, ...] | None) -> tuple[str, ...]:
