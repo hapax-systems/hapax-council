@@ -3863,3 +3863,13 @@ refuse_dirty_restart
 from shared.react_watchalong_adapter import build_render_plan
 
 build_render_plan
+
+from shared.audio_restart_proof_gate import (
+    format_failure_report,
+    run_restart_proof_gate,
+    write_witness,
+)
+
+format_failure_report
+run_restart_proof_gate
+write_witness
