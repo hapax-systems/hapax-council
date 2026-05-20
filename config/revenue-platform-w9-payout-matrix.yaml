@@ -1,0 +1,192 @@
+schema_version: 1
+description: >
+  Revenue platform W-9 and payout rollout matrix.
+  Operator-only submissions — agents build and validate the checklist,
+  operator performs each platform's tax/payout steps directly.
+created_at: "2026-05-20"
+authority_case: CASE-WYOMING-LLC-DBA-LEGAL-ENTITY-BOOTSTRAP
+
+name_tin_matching:
+  description: >
+    All platforms must match the legal entity name and TIN from
+    the IRS CP 575 or 147C letter exactly.
+  source: "https://www.irs.gov/forms-pubs/about-form-w-9"
+  fields:
+    - legal_name
+    - ein_or_tin
+    - business_type
+    - business_address
+
+platforms:
+  - id: stripe
+    name: Stripe
+    category: payment_processor
+    w9_required: true
+    payout_setup_required: true
+    status: not_started
+    blocker: null
+    operator_steps:
+      - Submit W-9 via Stripe Dashboard > Settings > Tax information
+      - Verify legal entity name/type matches CP 575
+      - Add business bank account for payouts
+      - Enable payouts
+    source_links:
+      - "https://support.stripe.com/questions/requirements-for-having-a-us-stripe-account"
+      - "https://support.stripe.com/questions/tax-forms"
+    review_latency_estimate: "1-3 business days"
+    evidence_path: null
+    notes: null
+
+  - id: github_sponsors
+    name: GitHub Sponsors
+    category: sponsorship
+    w9_required: true
+    payout_setup_required: true
+    status: not_started
+    blocker: null
+    operator_steps:
+      - Submit W-9 via GitHub Sponsors settings
+      - Configure payout via Stripe Connect or fiscal host
+      - Verify legal entity name matches CP 575
+      - Publish Sponsors profile
+    source_links:
+      - "https://docs.github.com/en/sponsors/receiving-sponsorships-through-github-sponsors/tax-information-for-github-sponsors"
+      - "https://docs.github.com/en/sponsors/receiving-sponsorships-through-github-sponsors/managing-your-payouts-from-github-sponsors"
+    review_latency_estimate: "1-5 business days"
+    evidence_path: null
+    notes: null
+
+  - id: patreon
+    name: Patreon
+    category: membership
+    w9_required: true
+    payout_setup_required: true
+    status: not_started
+    blocker: null
+    operator_steps:
+      - Submit W-9 via Patreon Settings > Tax Info
+      - Add payout method (PayPal or direct deposit)
+      - Verify legal entity name matches CP 575
+    source_links:
+      - "https://support.patreon.com/hc/en-us/articles/360043163011-Tax-Forms-on-Patreon"
+    review_latency_estimate: "Immediate to 3 business days"
+    evidence_path: null
+    notes: null
+
+  - id: substack
+    name: Substack
+    category: newsletter
+    w9_required: true
+    payout_setup_required: true
+    status: not_started
+    blocker: null
+    operator_steps:
+      - Submit W-9 via Substack Dashboard > Payments
+      - Connect Stripe account for payouts
+      - Verify legal entity name matches CP 575
+    source_links:
+      - "https://support.substack.com/hc/en-us/articles/360037466012-How-do-I-set-up-payments-"
+    review_latency_estimate: "1-3 business days (Stripe side)"
+    evidence_path: null
+    notes: null
+
+  - id: youtube
+    name: YouTube (AdSense)
+    category: advertising
+    w9_required: true
+    payout_setup_required: true
+    status: not_started
+    blocker: null
+    operator_steps:
+      - Submit W-9 via Google AdSense > Payments > Manage settings > Tax info
+      - Add payment method in AdSense
+      - Verify legal entity name and EIN match CP 575
+      - Meet YouTube Partner Program threshold
+    source_links:
+      - "https://support.google.com/adsense/answer/7539903"
+      - "https://support.google.com/youtube/answer/72857"
+    review_latency_estimate: "1-7 business days"
+    evidence_path: null
+    notes: null
+
+  - id: twitch
+    name: Twitch
+    category: streaming
+    w9_required: true
+    payout_setup_required: true
+    status: not_started
+    blocker: null
+    operator_steps:
+      - Submit W-9 via Twitch Dashboard > Settings > Channel > Revenue
+      - Add payout method
+      - Verify legal entity name matches CP 575
+    source_links:
+      - "https://help.twitch.tv/s/article/tax-information"
+    review_latency_estimate: "1-5 business days"
+    evidence_path: null
+    notes: null
+
+  - id: liberapay
+    name: Liberapay
+    category: donation
+    w9_required: false
+    payout_setup_required: true
+    status: not_started
+    blocker: null
+    operator_steps:
+      - Connect Stripe or PayPal account
+      - Configure payout schedule
+    source_links:
+      - "https://liberapay.com/about/faq"
+    review_latency_estimate: "Immediate"
+    evidence_path: null
+    notes: "Liberapay does not collect W-9 — tax reporting is the operator's responsibility."
+
+  - id: open_collective
+    name: Open Collective
+    category: fiscal_host
+    w9_required: true
+    payout_setup_required: true
+    status: not_started
+    blocker: null
+    operator_steps:
+      - Apply to or create a fiscal host
+      - Submit W-9 to the fiscal host
+      - Configure payout method
+    source_links:
+      - "https://docs.opencollective.com/help/fiscal-hosts/fiscal-hosts"
+    review_latency_estimate: "3-10 business days (fiscal host dependent)"
+    evidence_path: null
+    notes: null
+
+  - id: omg_lol_pay
+    name: omg.lol Pay
+    category: tipping
+    w9_required: false
+    payout_setup_required: true
+    status: not_started
+    blocker: null
+    operator_steps:
+      - Configure payment link via omg.lol profile
+      - Connect Stripe account if available
+    source_links:
+      - "https://home.omg.lol/info"
+    review_latency_estimate: "Immediate"
+    evidence_path: null
+    notes: "Micro-tipping surface. Tax reporting is operator's responsibility."
+
+  - id: ko_fi
+    name: Ko-fi
+    category: tipping
+    w9_required: false
+    payout_setup_required: true
+    status: not_started
+    blocker: null
+    operator_steps:
+      - Connect PayPal or Stripe account
+      - Configure donation page
+    source_links:
+      - "https://help.ko-fi.com/hc/en-us"
+    review_latency_estimate: "Immediate"
+    evidence_path: null
+    notes: "Ko-fi does not collect W-9 — tax reporting is the operator's responsibility."
