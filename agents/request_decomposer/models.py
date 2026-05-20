@@ -48,6 +48,29 @@ class TaskSpec(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _needs_authority_case(self) -> TaskSpec:
+        import re
+
+        if self.kind in {"research_packet", "operator_action"}:
+            return self
+        if not re.match(r"^CASE-[A-Z0-9-]+$", self.authority_case):
+            msg = (
+                f"task {self.task_id} has invalid authority_case "
+                f"'{self.authority_case}' — must match CASE-[A-Z0-9-]+"
+            )
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _needs_parent_lineage(self) -> TaskSpec:
+        if self.kind in {"research_packet", "operator_action"}:
+            return self
+        if not (self.parent_spec or self.parent_request):
+            msg = f"task {self.task_id} has no parent_spec or parent_request"
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
     def _needs_acceptance_criteria(self) -> TaskSpec:
         if not self.acceptance_criteria:
             msg = f"task {self.task_id} has no acceptance criteria"

@@ -56,6 +56,53 @@ class TestTaskSpec:
                 acceptance_criteria=[],
             )
 
+    def test_missing_authority_case_rejected(self):
+        with pytest.raises(ValueError, match="authority_case"):
+            TaskSpec(
+                task_id="test-no-auth",
+                title="No auth case",
+                parent_request="REQ-test.md",
+                acceptance_criteria=["Done"],
+            )
+
+    def test_invalid_authority_case_rejected(self):
+        with pytest.raises(ValueError, match="authority_case"):
+            TaskSpec(
+                task_id="test-bad-auth",
+                title="Bad auth case",
+                parent_request="REQ-test.md",
+                authority_case="not-a-case",
+                acceptance_criteria=["Done"],
+            )
+
+    def test_research_packet_exempt_from_authority_case(self):
+        t = TaskSpec(
+            task_id="test-research",
+            title="Research task",
+            kind="research_packet",
+            acceptance_criteria=["Done"],
+        )
+        assert t.authority_case == ""
+
+    def test_missing_parent_lineage_rejected(self):
+        with pytest.raises(ValueError, match="no parent_spec or parent_request"):
+            TaskSpec(
+                task_id="test-no-parent",
+                title="No parent",
+                authority_case="CASE-TEST",
+                acceptance_criteria=["Done"],
+            )
+
+    def test_parent_spec_satisfies_lineage(self):
+        t = TaskSpec(
+            task_id="test-spec",
+            title="Has spec",
+            authority_case="CASE-TEST",
+            parent_spec="/some/spec.md",
+            acceptance_criteria=["Done"],
+        )
+        assert t.parent_spec == "/some/spec.md"
+
 
 class TestRequestDecomposition:
     def _make_task(self, task_id: str, **kw) -> TaskSpec:

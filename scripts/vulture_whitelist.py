@@ -3696,3 +3696,8 @@ _clear_tmux_session_cache_for_tests
 from shared.operator_dossier_value_braid_adapter import DossierBraidOutput
 
 DossierBraidOutput._no_confidence_mutations
+
+from agents.request_decomposer.models import TaskSpec
+
+TaskSpec._needs_authority_case
+TaskSpec._needs_parent_lineage
