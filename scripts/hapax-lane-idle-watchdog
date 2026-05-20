@@ -375,8 +375,8 @@ for f in task_root.glob('*.md'):
     task_id = task_id_m.group(1) if task_id_m else f.stem
     offered.append((wsjf, task_id, f.stem))
 offered.sort(reverse=True)
-if offered:
-    print(offered[0][2])
+for o in offered:
+    print(o[2])
 " 2>/dev/null
 }
 
@@ -428,23 +428,32 @@ for session in "${!IDLE_LANES[@]}"; do
         dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with an active task: $claimed. Resume work immediately. Ship a PR and cc-close --pr N after merge."
         dispatch_target="$claimed"
     else
-        # Pick next WSJF task from offered queue and claim it for this lane
-        next_task=$(pick_next_offered "$lane")
-        if [ -n "$next_task" ]; then
+        # Pick next WSJF task from offered queue, try each until claim succeeds
+        offered_list=$(pick_next_offered "$lane")
+        claim_ok=false
+        while IFS= read -r next_task; do
+            [ -z "$next_task" ] && continue
             task_title=$(grep -m1 "^title:" "$TASK_ROOT/${next_task}"*.md 2>/dev/null | sed 's/^title:[[:space:]]*//' | head -c 80)
             log "CLAIMING $next_task for $lane ($platform)"
             if HAPAX_AGENT_ROLE="$lane" "$CC_CLAIM" "$next_task" 2>/dev/null; then
                 dispatch_msg="IDLE WATCHDOG: Claimed task $next_task for you. Title: ${task_title:-unknown}. Read the task note at ~/Documents/Personal/20-projects/hapax-cc-tasks/active/ and begin work immediately. Ship a PR and cc-close --pr N after merge."
                 dispatch_target="$next_task"
+                claim_ok=true
+                break
             else
-                log "CLAIM FAILED for $next_task -> $lane"
-                dispatch_msg="IDLE WATCHDOG: Tried to claim $next_task but cc-claim failed. Check the task queue manually: ls ~/Documents/Personal/20-projects/hapax-cc-tasks/active/"
-                dispatch_target="claim-failed"
+                log "CLAIM FAILED for $next_task -> $lane (trying next)"
             fi
-        else
-            log "NO OFFERED TASKS for $lane — queue empty"
-            dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. No offered tasks in queue. Waiting for intake pipeline to produce work."
-            dispatch_target="queue-empty"
+        done <<< "$offered_list"
+        if [ "$claim_ok" = false ]; then
+            if [ -n "$offered_list" ]; then
+                log "ALL CLAIMS FAILED for $lane — no claimable tasks"
+                dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. All offered tasks failed governance checks. Waiting for intake pipeline to produce claimable work."
+                dispatch_target="all-claims-failed"
+            else
+                log "NO OFFERED TASKS for $lane — queue empty"
+                dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. No offered tasks in queue. Waiting for intake pipeline to produce work."
+                dispatch_target="queue-empty"
+            fi
         fi
     fi
 
