@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from shared.assertion_model import (
+    AIFNodeType,
     Assertion,
     AssertionType,
+    GovernanceStatus,
     ProvenanceRecord,
     SourceType,
     extract_from_axiom_registry,
@@ -131,3 +133,58 @@ class TestImplicationExtraction:
     def test_returns_empty_for_missing_dir(self) -> None:
         assertions = extract_from_implications("/nonexistent/dir")
         assert assertions == []
+
+
+class TestGovernanceAndAIFFields:
+    def test_axioms_have_authoritative_governance_status(self) -> None:
+        registry = Path("axioms/registry.yaml")
+        if not registry.exists():
+            return
+        assertions = extract_from_axiom_registry(str(registry))
+        assert len(assertions) >= 5
+        assert all(a.governance_status == GovernanceStatus.AUTHORITATIVE for a in assertions)
+
+    def test_implications_have_constitutional_governance_status(self) -> None:
+        impl_dir = Path("axioms/implications")
+        if not impl_dir.is_dir():
+            impl_dir = Path("../hapax-constitution/axioms/implications")
+        if not impl_dir.is_dir():
+            return
+        assertions = extract_from_implications(str(impl_dir))
+        assert len(assertions) > 0
+        assert all(a.governance_status == GovernanceStatus.CONSTITUTIONAL for a in assertions)
+
+    def test_axioms_are_i_nodes(self) -> None:
+        registry = Path("axioms/registry.yaml")
+        if not registry.exists():
+            return
+        assertions = extract_from_axiom_registry(str(registry))
+        assert all(a.aif_node_type == AIFNodeType.I_NODE for a in assertions)
+
+    def test_assertion_roundtrip_serialization(self) -> None:
+        a = Assertion(
+            text="test roundtrip",
+            source_type=SourceType.GOVERNANCE,
+            source_uri="axioms/registry.yaml",
+            assertion_type=AssertionType.AXIOM,
+            governance_status=GovernanceStatus.AUTHORITATIVE,
+            aif_node_type=AIFNodeType.I_NODE,
+            confidence=0.95,
+        )
+        dumped = a.model_dump_json()
+        restored = Assertion.model_validate_json(dumped)
+        assert restored.assertion_id == a.assertion_id
+        assert restored.text == a.text
+        assert restored.governance_status == GovernanceStatus.AUTHORITATIVE
+        assert restored.aif_node_type == AIFNodeType.I_NODE
+        assert restored.confidence == 0.95
+
+    def test_assertion_has_created_and_updated_timestamps(self) -> None:
+        a = Assertion(
+            text="timestamp test",
+            source_type=SourceType.CODE,
+            source_uri="test.py",
+            assertion_type=AssertionType.FACT,
+        )
+        assert a.created_at is not None
+        assert a.updated_at is not None
