@@ -1,10 +1,3 @@
-from shared.publication_hardening.egress_safety import (
-    DEFAULT_RATE_LIMIT,
-    DEFAULT_RATE_WINDOW_HOURS,
-    EgressCheckResult,
-    EgressDecision,
-    EgressSafetyEnvelope,
-)
 from shared.publication_hardening.codebase import (
     CodebaseConsistencyVerifier,
     CodebaseDecision,
@@ -14,6 +7,13 @@ from shared.publication_hardening.codebase import (
     NumericClaim,
     ShellSyntaxChecker,
     verify_publication_codebase,
+)
+from shared.publication_hardening.egress_safety import (
+    DEFAULT_RATE_LIMIT,
+    DEFAULT_RATE_WINDOW_HOURS,
+    EgressCheckResult,
+    EgressDecision,
+    EgressSafetyEnvelope,
 )
 from shared.publication_hardening.entity_checker import (
     AttributionFinding,
