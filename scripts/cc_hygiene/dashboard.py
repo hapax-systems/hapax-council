@@ -73,6 +73,12 @@ KILLSWITCH_ENV = "HAPAX_CC_HYGIENE_OFF"
 EVENT_TAIL_LIMIT = 20
 """Number of most-recent hygiene events to surface."""
 
+EVENT_TAIL_INITIAL_BYTES = 256 * 1024
+"""Initial suffix window read from the append-only event log."""
+
+EVENT_TAIL_MAX_BYTES = 16 * 1024 * 1024
+"""Hard cap for event-tail reads; keeps dashboard render cost bounded."""
+
 RESEARCH_PIPELINE_LIMIT = 12
 """Maximum research-backed active tasks rendered in the mobile dashboard."""
 
@@ -82,6 +88,64 @@ RESEARCH_PIPELINE_LIMIT = 12
 # ---------------------------------------------------------------------------
 
 
+def _read_event_log_suffix(path: Path, size: int) -> tuple[str, bool] | None:
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            file_size = fh.tell()
+            start = max(0, file_size - size)
+            fh.seek(start)
+            raw = fh.read(file_size - start)
+    except OSError:
+        return None
+
+    if start > 0:
+        first_newline = raw.find(b"\n")
+        if first_newline >= 0:
+            raw = raw[first_newline + 1 :]
+    return raw.decode("utf-8", errors="replace"), start == 0
+
+
+def _events_from_yaml_block(block_text: str) -> list[dict[str, Any]]:
+    stripped = block_text.strip()
+    if not stripped or stripped.endswith("events: []"):
+        return []
+    try:
+        block = yaml.safe_load(block_text) or {}
+    except yaml.YAMLError:
+        return []
+    events = block.get("events", []) or []
+    return [evt for evt in events if isinstance(evt, dict)]
+
+
+def _parse_event_log_suffix(text: str, *, limit: int) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    search_end = len(text)
+
+    while len(events) < limit:
+        close_idx = text.rfind("\n```", 0, search_end)
+        while close_idx >= 0 and text.startswith("\n```yaml", close_idx):
+            close_idx = text.rfind("\n```", 0, close_idx)
+        if close_idx < 0:
+            break
+
+        open_idx = text.rfind("```yaml", 0, close_idx)
+        if open_idx < 0:
+            break
+        block_start = text.find("\n", open_idx)
+        if block_start < 0:
+            break
+
+        block_events = _events_from_yaml_block(text[block_start + 1 : close_idx])
+        for evt in reversed(block_events):
+            events.append(evt)
+            if len(events) >= limit:
+                break
+        search_end = open_idx
+
+    return events[:limit]
+
+
 def _read_event_log_tail(path: Path, *, limit: int = EVENT_TAIL_LIMIT) -> list[dict[str, Any]]:
     """Return up to ``limit`` most-recent events from the markdown event log.
 
@@ -89,41 +153,25 @@ def _read_event_log_tail(path: Path, *, limit: int = EVENT_TAIL_LIMIT) -> list[d
     ``## sweep <iso>`` headings + fenced YAML blocks containing
     ``{sweep_timestamp, killswitch_active, events: [...]}``.
 
+    This intentionally reads from the end of the append-only log in bounded
+    byte windows. The live log is tens of MB; the dashboard only needs recent
+    events and must not parse the whole file during every sweeper run.
+
     Tolerant of missing/malformed log: returns ``[]`` rather than raise.
     """
-    if not path.exists():
-        return []
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+    if limit <= 0 or not path.exists():
         return []
 
-    events: list[dict[str, Any]] = []
-    in_block = False
-    block_lines: list[str] = []
-    for line in text.splitlines():
-        if line.startswith("```yaml"):
-            in_block = True
-            block_lines = []
-            continue
-        if line.startswith("```") and in_block:
-            in_block = False
-            try:
-                block = yaml.safe_load("\n".join(block_lines)) or {}
-            except yaml.YAMLError:
-                block_lines = []
-                continue
-            block_lines = []
-            for evt in block.get("events", []) or []:
-                if isinstance(evt, dict):
-                    events.append(evt)
-            continue
-        if in_block:
-            block_lines.append(line)
-
-    # Most-recent first
-    events.reverse()
-    return events[:limit]
+    window = EVENT_TAIL_INITIAL_BYTES
+    while True:
+        suffix = _read_event_log_suffix(path, window)
+        if suffix is None:
+            return []
+        text, fully_read = suffix
+        events = _parse_event_log_suffix(text, limit=limit)
+        if len(events) >= limit or fully_read or window >= EVENT_TAIL_MAX_BYTES:
+            return events
+        window = min(window * 2, EVENT_TAIL_MAX_BYTES)
 
 
 # ---------------------------------------------------------------------------
@@ -546,7 +594,9 @@ def _replace_sentinel_block(existing: str, block: str) -> str:
 __all__ = [
     "DEFAULT_DASHBOARD_PATH",
     "DEFAULT_VAULT_ACTIVE",
+    "EVENT_TAIL_INITIAL_BYTES",
     "EVENT_TAIL_LIMIT",
+    "EVENT_TAIL_MAX_BYTES",
     "KILLSWITCH_ENV",
     "SENTINEL_END",
     "SENTINEL_START",
