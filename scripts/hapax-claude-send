@@ -348,6 +348,11 @@ tmux_target_is_claude() {
       return 0
       ;;
     *)
+      local pane_pid
+      pane_pid="$(tmux display-message -p -t "hapax-claude-$SESSION" '#{pane_pid}' 2>/dev/null || true)"
+      if [ -n "$pane_pid" ] && pgrep -P "$pane_pid" -x claude >/dev/null 2>&1; then
+        return 0
+      fi
       return 1
       ;;
   esac
