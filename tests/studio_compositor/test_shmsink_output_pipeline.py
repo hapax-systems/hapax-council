@@ -303,19 +303,20 @@ class TestPipelineSelection:
 
 
 class TestSystemdBridgeActivation:
-    """Verifies the systemd unit enables the shmsink bridge path."""
+    """Verifies the systemd unit keeps bridge fallback opt-in."""
 
-    def test_compositor_service_enables_bridge(self) -> None:
+    def test_compositor_service_defaults_to_direct_v4l2(self) -> None:
         service = (Path(__file__).parents[2] / "systemd/units/studio-compositor.service").read_text(
             encoding="utf-8"
         )
-        assert "HAPAX_V4L2_BRIDGE_ENABLED=1" in service
+        assert "HAPAX_V4L2_BRIDGE_ENABLED=0" in service
 
-    def test_compositor_dropin_enables_bridge(self) -> None:
+    def test_compositor_dropin_keeps_bridge_fallback_opt_in(self) -> None:
         dropin = (
             Path(__file__).parents[2] / "systemd/units/studio-compositor.service.d/v4l2-bridge.conf"
         ).read_text(encoding="utf-8")
-        assert "HAPAX_V4L2_BRIDGE_ENABLED=1" in dropin
+        assert "HAPAX_V4L2_BRIDGE_ENABLED=0" in dropin
+        assert "fallback" in dropin
 
     def test_compositor_service_creates_shm_directory(self) -> None:
         service = (Path(__file__).parents[2] / "systemd/units/studio-compositor.service").read_text(

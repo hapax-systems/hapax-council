@@ -326,6 +326,42 @@ exit 1
         assert "services-restarted" not in result.stderr
         assert "hapax-v4l2-bridge.service not active" not in result.stderr
 
+    def test_bridge_unit_inactive_passes_when_3d_direct_mode_is_active(
+        self, tmp_path: Path
+    ) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {"systemd/units/hapax-v4l2-bridge.service": "[Service]\nType=simple\n"},
+        )
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": """
+if [ "$2" = "is-active" ]; then exit 3; fi
+if [ "$2" = "show" ] && [ "$3" = "studio-compositor.service" ] && [ "$5" = "Environment" ]; then
+  echo "HAPAX_V4L2_BRIDGE_ENABLED=1 HAPAX_3D_COMPOSITOR=1"
+  exit 0
+fi
+if [ "$2" = "show" ]; then
+  case "$5" in
+    Type) echo simple ;;
+    Result) echo success ;;
+    ExecMainStatus) echo 0 ;;
+    UnitFileState) echo enabled ;;
+  esac
+  exit 0
+fi
+exit 1
+""",
+            },
+        )
+
+        assert result.returncode == 0
+        assert "services-restarted" not in result.stderr
+        assert "hapax-v4l2-bridge.service not active" not in result.stderr
+
     def test_bridge_unit_inactive_fails_when_compositor_expects_bridge(
         self, tmp_path: Path
     ) -> None:

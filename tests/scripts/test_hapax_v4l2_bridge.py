@@ -66,6 +66,86 @@ def test_bridge_exits_cleanly_when_compositor_selects_direct_egress(tmp_path: Pa
     assert "disabled by studio-compositor HAPAX_V4L2_BRIDGE_ENABLED=0" in result.stdout
 
 
+def test_bridge_exits_cleanly_when_compositor_3d_direct_mode_is_active(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$2" = "show" ] && [ "$3" = "studio-compositor.service" ]; then\n'
+        "  echo 'HAPAX_V4L2_BRIDGE_ENABLED=1 HAPAX_3D_COMPOSITOR=1'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 1\n"
+    )
+    systemctl.chmod(0o755)
+    env = os.environ.copy()
+    env["HAPAX_V4L2_BRIDGE_ENABLED"] = "1"
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+    result = subprocess.run(
+        [
+            str(SCRIPT),
+            "--device",
+            str(tmp_path / "missing-device"),
+            "--socket",
+            str(tmp_path / "missing.sock"),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert "direct v4l2 owner active: studio-compositor HAPAX_3D_COMPOSITOR=1" in result.stdout
+
+
+def test_bridge_exits_cleanly_when_imagination_owns_direct_v4l2(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$2" = "show" ] && [ "$3" = "studio-compositor.service" ]; then\n'
+        "  echo 'HAPAX_V4L2_BRIDGE_ENABLED=1 HAPAX_3D_COMPOSITOR=0'\n"
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$2" = "is-active" ] && [ "$4" = "hapax-imagination.service" ]; then\n'
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$2" = "show" ] && [ "$3" = "hapax-imagination.service" ]; then\n'
+        "  echo 'HAPAX_IMAGINATION_V4L2_OUTPUT=1 HAPAX_IMAGINATION_HEADLESS=1'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 1\n"
+    )
+    systemctl.chmod(0o755)
+    env = os.environ.copy()
+    env["HAPAX_V4L2_BRIDGE_ENABLED"] = "1"
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+    result = subprocess.run(
+        [
+            str(SCRIPT),
+            "--device",
+            str(tmp_path / "missing-device"),
+            "--socket",
+            str(tmp_path / "missing.sock"),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert (
+        "direct v4l2 owner active: hapax-imagination HAPAX_IMAGINATION_V4L2_OUTPUT=1"
+        in result.stdout
+    )
+
+
 def test_check_requires_socket_by_default(tmp_path: Path) -> None:
     device = tmp_path / "not-a-real-device"
     env = os.environ.copy()
