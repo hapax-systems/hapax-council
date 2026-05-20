@@ -151,6 +151,44 @@ def test_task_gate_allows_readonly_shell_without_claim(tmp_path: Path) -> None:
     assert result.get("continue") is True
 
 
+def test_shell_command_runs_cc_task_closure_gate_for_codex(tmp_path: Path) -> None:
+    active = tmp_path / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+    closed = tmp_path / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    note = active / "unchecked-task.md"
+    note.write_text(
+        """---
+type: cc-task
+task_id: unchecked-task
+status: in_progress
+---
+
+# Unchecked Task
+
+## Acceptance criteria
+
+- [ ] Should block closure
+""",
+        encoding="utf-8",
+    )
+
+    result = _run_adapter(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "exec_command",
+            "tool_input": {"cmd": f"mv {note} {closed}/"},
+        },
+        home=tmp_path,
+        extra_env={"HAPAX_CC_TASK_GATE_OFF": "1"},
+    )
+
+    assert result["decision"] == "block"
+    assert "cc-task-closure-gate.sh" in result["reason"]
+    assert "unchecked Acceptance criteria" in result["reason"]
+
+
 def test_apply_patch_is_scanned_by_axiom_guard(tmp_path: Path) -> None:
     patch = """*** Begin Patch
 *** Add File: agents/example_user_manager.py
