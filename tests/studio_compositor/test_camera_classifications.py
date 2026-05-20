@@ -450,9 +450,7 @@ class TestUserYamlClassificationOverlay:
         assert by_role["brio-synths"].subject_ontology == ["turntable", "vinyl"]
         assert by_role["brio-synths"].framerate is None
 
-    def test_yaml_framerate_wins_over_default_classification_overlay(
-        self, tmp_path: Path
-    ) -> None:
+    def test_yaml_framerate_wins_over_default_classification_overlay(self, tmp_path: Path) -> None:
         """Per-source capture cadence is source authority, not overlay metadata.
 
         The semantic overlay may fill classifications and watchdog tolerance,
