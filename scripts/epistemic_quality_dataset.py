@@ -16,6 +16,8 @@ from typing import Any
 
 import jsonschema
 
+from agents.epistemic_calibrator import baseline_score_rows
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RESEARCH_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-research"
 DEFAULT_CC_TASK_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
@@ -1124,6 +1126,13 @@ def parse_utc_timestamp(value: Any) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+def parse_cli_utc_timestamp(value: str) -> datetime:
+    parsed = parse_utc_timestamp(value)
+    if parsed is None:
+        raise argparse.ArgumentTypeError(f"not an ISO-8601 UTC timestamp: {value}")
+    return parsed
+
+
 def _is_int_1_to_5(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 5
 
@@ -1792,6 +1801,18 @@ def main(argv: list[str] | None = None) -> int:
     validate_gate.add_argument("--report-json", type=Path, required=True)
     validate_gate.add_argument("--report-md", type=Path, required=True)
 
+    score_baseline = sub.add_parser(
+        "score-baseline",
+        help="write non-authoritative deterministic baseline scorer outputs",
+    )
+    score_baseline.add_argument("--manifest", type=Path, required=True)
+    score_baseline.add_argument("--output", type=Path, required=True)
+    score_baseline.add_argument(
+        "--scored-at",
+        type=parse_cli_utc_timestamp,
+        help="optional fixed UTC timestamp for reproducible scorer rows",
+    )
+
     curate = sub.add_parser("curate", help="build source-curated manifest and source notes")
     curate.add_argument("--research-root", type=Path, default=DEFAULT_RESEARCH_ROOT)
     curate.add_argument("--output", type=Path, required=True)
@@ -1861,6 +1882,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote gate Markdown report to {args.report_md}")
         print(f"status={report['status']}")
         return 0 if report["passed"] else 1
+
+    if args.command == "score-baseline":
+        records = read_jsonl(args.manifest)
+        manifest_hash = file_sha256(args.manifest)
+        manifest_errors = validate_records(records, TIER_COUNTS)
+        if manifest_errors:
+            for error in manifest_errors:
+                print(error)
+            return 1
+        rows = baseline_score_rows(
+            records,
+            manifest_hash=manifest_hash,
+            scored_at=args.scored_at,
+        )
+        write_jsonl(args.output, rows)
+        print(f"wrote {len(rows)} baseline score rows to {args.output}")
+        print(f"manifest_hash={manifest_hash}")
+        print("authority_level=support_non_authoritative")
+        return 0
 
     if args.command == "curate":
         records, source_notes = build_curated_records(

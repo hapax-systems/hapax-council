@@ -695,3 +695,42 @@ def test_validate_gate_fails_vacuous_hedging_adversary(tmp_path: Path) -> None:
     report = json.loads(report_json.read_text(encoding="utf-8"))
     assert report["status"] == "labels_present_gate_failed"
     assert report["predicates"]["vacuous_hedging_not_above_tier_a_median"] is False
+
+
+def test_score_baseline_outputs_are_validation_runner_consumable(tmp_path: Path) -> None:
+    records = _phase0_fixture_records()
+    manifest = tmp_path / "manifest.jsonl"
+    eqd.write_jsonl(manifest, records)
+    manifest_hash = eqd.file_sha256(manifest)
+    scores = tmp_path / "scores.jsonl"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "score-baseline",
+            "--manifest",
+            str(manifest),
+            "--output",
+            str(scores),
+            "--scored-at",
+            "2026-05-20T17:30:00Z",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    rows = [json.loads(line) for line in scores.read_text(encoding="utf-8").splitlines()]
+    errors, valid_by_id = eqd.validate_score_rows(
+        records,
+        rows,
+        manifest_hash=manifest_hash,
+    )
+    assert errors == []
+    assert len(valid_by_id) == len(records)
+    assert rows[0]["scorer"] == "epistemic_calibrator_baseline_v0"
+    assert rows[0]["authority_level"] == "support_non_authoritative"
+    assert rows[0]["calibration"]["source_text_hash"] == records[0]["excerpt_hash"]
