@@ -3705,3 +3705,17 @@ from agents.request_decomposer.models import TaskSpec
 
 TaskSpec._needs_authority_case
 TaskSpec._needs_parent_lineage
+
+# WCS health dashboard API: FastAPI route functions are dynamically dispatched.
+# cc-task: world-surface-health-api-dashboard
+from logos.api.routes.wcs_health import (
+    get_wcs_blocked_surfaces,
+    get_wcs_claimable_surfaces,
+    get_wcs_health,
+    get_wcs_surface_health,
+)
+
+get_wcs_health
+get_wcs_surface_health
+get_wcs_blocked_surfaces
+get_wcs_claimable_surfaces
