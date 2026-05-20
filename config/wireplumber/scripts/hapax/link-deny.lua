@@ -3,10 +3,12 @@
 -- Runtime policy data: ~/.config/hapax/audio-forbidden-links.conf
 -- Do not hand-edit; run scripts/generate-pipewire-audio-confs.py --write-wireplumber-deny-policy.
 --
--- Two-layer fail-closed behavior:
+-- Three-layer fail-closed behavior:
 --   1. Reject forbidden node-pair auto-targets before WirePlumber link-target.
 --   2. Remove exact forbidden port links if a client creates one directly.
 --   3. Deny optional-device fallback into Polyend capture unless source is Polyend.
+--   4. When the runtime policy file is missing or unreadable, fall back to a
+--      hardcoded boundary-deny set so boundary crossings are never silently admitted.
 
 lutils = require ("linking-utils")
 log = Log.open_topic ("s-linking.hapax-deny")
@@ -17,6 +19,20 @@ if forbidden_path == nil or forbidden_path == "" then
   forbidden_path = home .. "/.config/hapax/audio-forbidden-links.conf"
 end
 
+local FAIL_CLOSED_BOUNDARY_PAIRS = {
+  ["hapax-private-playback|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"] = true,
+  ["hapax-notification-private-playback|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"] = true,
+  ["hapax-pc-loudnorm-playback|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"] = true,
+  ["hapax-loudnorm-playback|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"] = true,
+  ["hapax-pc-loudnorm-playback|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"] = true,
+  ["hapax-tts-broadcast-playback|hapax-livestream-tap"] = true,
+  ["hapax-livestream|hapax-broadcast-master-capture"] = true,
+  ["output.loopback.sink.role.assistant|input.loopback.sink.role.multimedia"] = true,
+  ["input.loopback.sink.role.assistant-output|input.loopback.sink.role.multimedia"] = true,
+  ["output.loopback.sink.role.notification|input.loopback.sink.role.multimedia"] = true,
+  ["input.loopback.sink.role.notification-output|input.loopback.sink.role.multimedia"] = true,
+}
+
 local function trim_policy_line (line)
   line = string.gsub (line, "#.*$", "")
   line = string.gsub (line, "^%s+", "")
@@ -25,10 +41,15 @@ local function trim_policy_line (line)
 end
 
 local function load_forbidden_policy ()
-  local policy = { links = {}, node_pairs = {} }
+  local policy = { links = {}, node_pairs = {}, degraded = false }
   local file = io.open (forbidden_path, "r")
   if file == nil then
-    log:warning ("forbidden link map not found: " .. tostring (forbidden_path))
+    log:warning ("forbidden link map not found: " .. tostring (forbidden_path)
+        .. "; fail-closed: using hardcoded boundary deny set")
+    policy.degraded = true
+    for pair, _ in pairs (FAIL_CLOSED_BOUNDARY_PAIRS) do
+      policy.node_pairs [pair] = true
+    end
     return policy
   end
 
@@ -136,6 +157,9 @@ SimpleEventHook {
 
     local node = si:get_associated_proxy ("node")
     local message = "hapax forbidden audio route: " .. source_node .. " -> " .. target_node
+    if policy.degraded then
+      message = message .. " [DEGRADED: runtime policy missing, boundary deny active]"
+    end
     log:warning (si, message)
     event:set_data ("target", nil)
     lutils.sendClientError (event, node, -13, message)

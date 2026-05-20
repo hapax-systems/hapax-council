@@ -209,6 +209,8 @@ WP_DENY_CONF_SOURCE="${HAPAX_WP_DENY_CONF_SOURCE:-$REPO_ROOT/config/wireplumber/
 WP_DENY_SCRIPT_SOURCE="${HAPAX_WP_DENY_SCRIPT_SOURCE:-$REPO_ROOT/config/wireplumber/scripts/hapax/link-deny.lua}"
 WP_DENY_CONF_INSTALLED="${HAPAX_WP_DENY_CONF_INSTALLED:-$HOME/.config/wireplumber/wireplumber.conf.d/98-hapax-link-deny.conf}"
 WP_DENY_SCRIPT_INSTALLED="${HAPAX_WP_DENY_SCRIPT_INSTALLED:-$HOME/.config/wireplumber/scripts/hapax/link-deny.lua}"
+FORBIDDEN_LINKS_SOURCE="${HAPAX_FORBIDDEN_LINKS_SOURCE:-$REPO_ROOT/config/hapax/audio-forbidden-links.conf}"
+FORBIDDEN_LINKS_RUNTIME="${HAPAX_FORBIDDEN_LINKS_RUNTIME:-$HOME/.config/hapax/audio-forbidden-links.conf}"
 
 if [ -f "$WP_DENY_CONF_SOURCE" ] && [ -f "$WP_DENY_SCRIPT_SOURCE" ]; then
     check "WirePlumber deny source artifacts present" "PASS"
@@ -216,15 +218,39 @@ else
     check "WirePlumber deny source artifacts present" "missing source policy"
 fi
 
+if [ -f "$FORBIDDEN_LINKS_SOURCE" ]; then
+    check "forbidden links source conf present" "PASS"
+else
+    check "forbidden links source conf present" "missing: $FORBIDDEN_LINKS_SOURCE"
+fi
+
+if [ -f "$FORBIDDEN_LINKS_RUNTIME" ]; then
+    if cmp -s "$FORBIDDEN_LINKS_SOURCE" "$FORBIDDEN_LINKS_RUNTIME"; then
+        check "forbidden links runtime conf matches source" "PASS"
+    else
+        check "forbidden links runtime conf matches source" "runtime file differs from source — reinstall required"
+    fi
+else
+    check "forbidden links runtime conf present" "missing: deny hook will run in degraded fail-closed mode"
+fi
+
 if [ -f "$WP_DENY_CONF_INSTALLED" ] && [ -f "$WP_DENY_SCRIPT_INSTALLED" ]; then
     if cmp -s "$WP_DENY_CONF_SOURCE" "$WP_DENY_CONF_INSTALLED" \
         && cmp -s "$WP_DENY_SCRIPT_SOURCE" "$WP_DENY_SCRIPT_INSTALLED"; then
-        echo -e "  ${GREEN}[OK]${NC}   WirePlumber deny policy installed and matches source"
+        check "WirePlumber deny policy installed matches source" "PASS"
     else
-        echo -e "  ${YELLOW}[WARN]${NC} WirePlumber deny policy installed but differs from source"
+        check "WirePlumber deny policy installed matches source" "installed policy differs from source — stale hook"
     fi
 else
-    echo -e "  ${YELLOW}[WARN]${NC} WirePlumber deny policy not installed live (source-only unless runtime-authorized)"
+    check "WirePlumber deny policy not installed" "deny hook absent from live WirePlumber — boundaries unguarded at link-time"
+fi
+
+if [ -f "$WP_DENY_SCRIPT_INSTALLED" ] && [ -r "$WP_DENY_SCRIPT_INSTALLED" ]; then
+    if grep -q "FAIL_CLOSED_BOUNDARY_PAIRS" "$WP_DENY_SCRIPT_INSTALLED"; then
+        check "installed deny hook has fail-closed boundary set" "PASS"
+    else
+        check "installed deny hook has fail-closed boundary set" "hook lacks FAIL_CLOSED_BOUNDARY_PAIRS — pre-fail-closed version"
+    fi
 fi
 
 # ── Invariant 6: No .conf files that create bypass paths ──

@@ -7,5 +7,6 @@ Type=oneshot
 ExecStart=%h/.local/bin/hapax-audio-routing-check
 StandardOutput=journal
 StandardError=journal
-# On failure, log prominently but don't crash anything
-SuccessExitStatus=1 2
+# Exit 1 = invariant violation, exit 2 = PipeWire not running.
+# Both are genuine failures that must surface to systemd so
+# 'systemctl --user status' and alerting see them.

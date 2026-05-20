@@ -302,14 +302,30 @@ def generated_forbidden_route_map_text(
     return generated_route_map_texts(topology, policy)[1]
 
 
-def generated_wireplumber_deny_policy_texts() -> tuple[str, str]:
+def _boundary_node_pairs(forbidden: tuple[tuple[str, str], ...]) -> tuple[str, ...]:
+    """Extract unique source_node|target_node boundary pairs from forbidden links."""
+    pairs: dict[str, None] = {}
+    for source_port, target_port in forbidden:
+        source_node = source_port.split(":")[0]
+        target_node = target_port.split(":")[0]
+        pairs[f"{source_node}|{target_node}"] = None
+    return tuple(pairs)
+
+
+def generated_wireplumber_deny_policy_texts(
+    topology: TopologyDescriptor | None = None,
+) -> tuple[str, str]:
     """Generate WirePlumber source artifacts for fail-closed link denial.
 
-    The Lua hook reads the installed reconciler forbidden-link map at runtime,
-    so the exact port rules remain generated from the topology/policy compiler
-    instead of being hand-mirrored in WirePlumber-specific source.
+    Embeds a hardcoded minimum boundary-deny node-pair set directly in the Lua
+    so that a missing runtime policy file still denies boundary crossings
+    (fail-closed) instead of silently admitting all links (fail-open).
     """
-    return (_wireplumber_deny_conf_text(), _wireplumber_deny_script_text())
+    if topology is None:
+        topology = load_audio_topology_descriptor()
+    forbidden = _forbidden_links(topology)
+    node_pairs = _boundary_node_pairs(forbidden)
+    return (_wireplumber_deny_conf_text(), _wireplumber_deny_script_text(node_pairs))
 
 
 def _node(topology: TopologyDescriptor, node_id: str) -> Node:
@@ -584,16 +600,19 @@ wireplumber.components = [
 """
 
 
-def _wireplumber_deny_script_text() -> str:
-    return """-- GENERATED: Hapax WirePlumber link-time deny hook.
+def _wireplumber_deny_script_text(boundary_node_pairs: tuple[str, ...]) -> str:
+    lua_table_entries = "\n".join(f'  ["{pair}"] = true,' for pair in boundary_node_pairs)
+    return f"""-- GENERATED: Hapax WirePlumber link-time deny hook.
 -- Source: shared.audio_routing_policy.generated_wireplumber_deny_policy_texts
 -- Runtime policy data: ~/.config/hapax/audio-forbidden-links.conf
 -- Do not hand-edit; run scripts/generate-pipewire-audio-confs.py --write-wireplumber-deny-policy.
 --
--- Two-layer fail-closed behavior:
+-- Three-layer fail-closed behavior:
 --   1. Reject forbidden node-pair auto-targets before WirePlumber link-target.
 --   2. Remove exact forbidden port links if a client creates one directly.
 --   3. Deny optional-device fallback into Polyend capture unless source is Polyend.
+--   4. When the runtime policy file is missing or unreadable, fall back to a
+--      hardcoded boundary-deny set so boundary crossings are never silently admitted.
 
 lutils = require ("linking-utils")
 log = Log.open_topic ("s-linking.hapax-deny")
@@ -604,6 +623,10 @@ if forbidden_path == nil or forbidden_path == "" then
   forbidden_path = home .. "/.config/hapax/audio-forbidden-links.conf"
 end
 
+local FAIL_CLOSED_BOUNDARY_PAIRS = {{
+{lua_table_entries}
+}}
+
 local function trim_policy_line (line)
   line = string.gsub (line, "#.*$", "")
   line = string.gsub (line, "^%s+", "")
@@ -612,10 +635,15 @@ local function trim_policy_line (line)
 end
 
 local function load_forbidden_policy ()
-  local policy = { links = {}, node_pairs = {} }
+  local policy = {{ links = {{}}, node_pairs = {{}}, degraded = false }}
   local file = io.open (forbidden_path, "r")
   if file == nil then
-    log:warning ("forbidden link map not found: " .. tostring (forbidden_path))
+    log:warning ("forbidden link map not found: " .. tostring (forbidden_path)
+        .. "; fail-closed: using hardcoded boundary deny set")
+    policy.degraded = true
+    for pair, _ in pairs (FAIL_CLOSED_BOUNDARY_PAIRS) do
+      policy.node_pairs [pair] = true
+    end
     return policy
   end
 
@@ -642,9 +670,9 @@ local function lookup_bound (source, manager_name, bound_id)
   if om == nil then
     return nil
   end
-  return om:lookup {
-    Constraint { "bound-id", "=", tonumber (bound_id), type = "gobject" },
-  }
+  return om:lookup {{
+    Constraint {{ "bound-id", "=", tonumber (bound_id), type = "gobject" }},
+  }}
 end
 
 local function node_name (source, node_id)
@@ -684,15 +712,15 @@ local function link_key (source, link)
       source_node, target_node
 end
 
-SimpleEventHook {
+SimpleEventHook {{
   name = "linking/hapax-deny-forbidden-target",
   after = "linking/prepare-link",
   before = "linking/link-target",
-  interests = {
-    EventInterest {
-      Constraint { "event.type", "=", "select-target" },
-    },
-  },
+  interests = {{
+    EventInterest {{
+      Constraint {{ "event.type", "=", "select-target" }},
+    }},
+  }},
   execute = function (event)
     local _, _, si, si_props, _, target = lutils:unwrap_select_target_event (event)
     if target == nil then
@@ -723,20 +751,23 @@ SimpleEventHook {
 
     local node = si:get_associated_proxy ("node")
     local message = "hapax forbidden audio route: " .. source_node .. " -> " .. target_node
+    if policy.degraded then
+      message = message .. " [DEGRADED: runtime policy missing, boundary deny active]"
+    end
     log:warning (si, message)
     event:set_data ("target", nil)
     lutils.sendClientError (event, node, -13, message)
     event:stop_processing ()
   end
-}:register ()
+}}:register ()
 
-SimpleEventHook {
+SimpleEventHook {{
   name = "linking/hapax-remove-forbidden-port-link",
-  interests = {
-    EventInterest {
-      Constraint { "event.type", "=", "link-added" },
-    },
-  },
+  interests = {{
+    EventInterest {{
+      Constraint {{ "event.type", "=", "link-added" }},
+    }},
+  }},
   execute = function (event)
     local source = event:get_source ()
     local link = event:get_subject ()
@@ -754,7 +785,7 @@ SimpleEventHook {
     log:warning (link, "removing hapax forbidden audio link " .. tostring (key))
     link:remove ()
   end
-}:register ()
+}}:register ()
 """
 
 
