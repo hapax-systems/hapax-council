@@ -28,6 +28,7 @@ import subprocess
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Final
 
 import numpy as np
@@ -41,6 +42,10 @@ from agents.audio_health.classifier import (
 )
 
 log = logging.getLogger(__name__)
+
+PACTL_SHORT_CACHE_TTL_S: Final[float] = 10.0
+_PACTL_SHORT_CACHE: dict[tuple[str, str], tuple[float, frozenset[str]]] = {}
+_PACTL_SHORT_CACHE_LOCK = Lock()
 
 # Monitor capture defaults — tuned for parecord raw output against the
 # null-audio-sink monitor ports the broadcast chain uses.
@@ -200,6 +205,15 @@ def _pactl_short_names(kind: str, config: ProbeConfig) -> set[str]:
     if shutil.which(config.pactl_path) is None:
         return set()
 
+    cache_key = (config.pactl_path, kind)
+    now = time.monotonic()
+    with _PACTL_SHORT_CACHE_LOCK:
+        cached = _PACTL_SHORT_CACHE.get(cache_key)
+        if cached is not None:
+            cached_at, names = cached
+            if now - cached_at <= PACTL_SHORT_CACHE_TTL_S:
+                return set(names)
+
     try:
         result = subprocess.run(
             [config.pactl_path, "list", kind, "short"],
@@ -219,6 +233,8 @@ def _pactl_short_names(kind: str, config: ProbeConfig) -> set[str]:
         parts = line.split("\t")
         if len(parts) >= 2 and parts[1].strip():
             names.add(parts[1].strip())
+    with _PACTL_SHORT_CACHE_LOCK:
+        _PACTL_SHORT_CACHE[cache_key] = (time.monotonic(), frozenset(names))
     return names
 
 

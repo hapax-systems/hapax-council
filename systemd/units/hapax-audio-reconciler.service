@@ -1,0 +1,18 @@
+[Unit]
+Description=Hapax Audio Reconciler - continuous desired-state enforcement for broadcast PipeWire links
+Documentation=file:///home/hapax/.config/hapax/audio-link-map.conf
+After=pipewire.service wireplumber.service
+Requires=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/hapax-audio-reconciler
+Restart=always
+RestartSec=2
+Environment=HAPAX_RECONCILER_INTERVAL_S=2.0
+Environment=HAPAX_RECONCILER_LOG=/tmp/hapax-audio-reconciler.log
+Environment=HAPAX_RECONCILER_LINK_MAP=%h/.config/hapax/audio-link-map.conf
+Environment=HAPAX_RECONCILER_FORBIDDEN_LINKS=%h/.config/hapax/audio-forbidden-links.conf
+
+[Install]
+WantedBy=default.target
