@@ -28,6 +28,21 @@ def test_frame_cache_target_can_be_lowered_when_measured(monkeypatch) -> None:
     assert CameraPipeline._frame_cache_target_fps_for_source(10) == 10
 
 
+def test_predecode_rate_cap_disabled_outside_3d(monkeypatch) -> None:
+    monkeypatch.delenv("HAPAX_3D_COMPOSITOR", raising=False)
+    monkeypatch.setenv("HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS", "6")
+
+    assert CameraPipeline._predecode_target_fps_for_source(30) is None
+
+
+def test_predecode_rate_cap_follows_3d_frame_cache_target(monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_3D_COMPOSITOR", "1")
+    monkeypatch.setenv("HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS", "6")
+
+    assert CameraPipeline._predecode_target_fps_for_source(30) == 6
+    assert CameraPipeline._predecode_target_fps_for_source(6) is None
+
+
 def test_frame_cache_snapshot_gate_uses_monotonic_time() -> None:
     pipeline = object.__new__(CameraPipeline)
     pipeline._frame_cache_sample_interval_s = 0.5
