@@ -3855,9 +3855,9 @@ GroundingContextVerifier.log_turn_verification
 
 from shared.organ_visual_map import (
     organ_ids,
-    visual_techniques_for_organ,
     organs_using_technique,
     shader_node_ids,
+    visual_techniques_for_organ,
 )
 
 organ_ids
