@@ -1,9 +1,11 @@
 """agents/audience_perception.py — Audience state perception daemon.
 
 Polls audience metrics and writes to /dev/shm/hapax-perception/audience.json.
-Currently a stub: reads from a manual override file or falls back to zeros.
-When YouTube Data API auth is configured, _poll_youtube_api() will provide
-live viewer count, chat rate, and watch time.
+Reads a manual override first, then the YouTube viewer-count producer's
+SHM output, and enriches every sample with BKT concept-mastery pressure.
+The viewer-count producer owns the direct YouTube Data API call; this
+daemon turns that public metric into the planner/audience perception
+shape consumed by the narrative density layer.
 
 Zero external dependencies — stdlib only.
 """
@@ -22,6 +24,8 @@ log = logging.getLogger(__name__)
 OUTPUT_DIR = Path("/dev/shm/hapax-perception")
 OUTPUT_FILE = OUTPUT_DIR / "audience.json"
 OVERRIDE_FILE = OUTPUT_DIR / "audience-override.json"
+VIEWER_COUNT_FILE = Path("/dev/shm/hapax-compositor/youtube-viewer-count.txt")
+CHAT_RECENT_FILE = Path("/dev/shm/hapax-chat/recent.jsonl")
 
 POLL_INTERVAL_S = 2.0
 
@@ -33,14 +37,94 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def _poll_youtube_api() -> dict[str, Any] | None:
-    """Poll YouTube Data API for live audience metrics.
+def _read_viewer_count(path: Path | None = None) -> int | None:
+    path = path or VIEWER_COUNT_FILE
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        return max(0, int(text))
+    except ValueError:
+        log.warning("invalid viewer-count payload at %s: %r", path, text)
+        return None
 
-    Returns None until YouTube API auth is configured. When implemented,
-    returns dict with viewer_count, chat_rate_per_min, avg_watch_time_s,
-    and subscriber_delta.
+
+def _read_chat_rate_per_min(path: Path | None = None, *, now: float | None = None) -> float:
+    """Estimate recent chat rate from the chat reader ring buffer."""
+    path = path or CHAT_RECENT_FILE
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (FileNotFoundError, OSError):
+        return 0.0
+    if not lines:
+        return 0.0
+    current = now if now is not None else time.time()
+    recent = 0
+    for line in lines[-200:]:
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        ts = item.get("timestamp", item.get("ts", item.get("received_at")))
+        try:
+            stamp = float(ts)
+        except (TypeError, ValueError):
+            continue
+        if current - stamp <= 60.0:
+            recent += 1
+    return float(recent)
+
+
+def _concept_mastery_payload() -> dict[str, Any]:
+    try:
+        from shared.concept_mastery import ConceptMastery, compute_zpd_affordance_pressure
+
+        pressure = compute_zpd_affordance_pressure()
+        mastery = ConceptMastery.read_shm()
+        all_mastery = mastery.all_mastery() if mastery is not None else {}
+        return {
+            "tracked_count": len(all_mastery),
+            "zpd_concepts": pressure.get("zpd_concepts", []),
+            "unknown_concepts": pressure.get("unknown_concepts", []),
+            "zpd_pressure": float(pressure.get("zpd_pressure") or 0.0),
+            "unknown_pressure": float(pressure.get("unknown_pressure") or 0.0),
+        }
+    except Exception:
+        log.debug("concept mastery enrichment failed", exc_info=True)
+        return {
+            "tracked_count": 0,
+            "zpd_concepts": [],
+            "unknown_concepts": [],
+            "zpd_pressure": 0.0,
+            "unknown_pressure": 0.0,
+        }
+
+
+def _enrich_with_concept_mastery(state: dict[str, Any]) -> dict[str, Any]:
+    mastery = _concept_mastery_payload()
+    state["concept_mastery"] = mastery
+    state["zpd_pressure"] = mastery["zpd_pressure"]
+    state["unknown_pressure"] = mastery["unknown_pressure"]
+    return state
+
+
+def _poll_youtube_api() -> dict[str, Any] | None:
+    """Read live audience metrics derived from the YouTube API producer.
+
+    Returns None until the viewer-count producer has published a sample.
+    ``scripts/hapax-youtube-viewer-count-producer`` owns the direct
+    ``videos.list`` call and writes the concurrent viewer count to SHM.
     """
-    return None
+    viewer_count = _read_viewer_count()
+    if viewer_count is None:
+        return None
+    return {
+        "viewer_count": viewer_count,
+        "chat_rate_per_min": _read_chat_rate_per_min(),
+        "avg_watch_time_s": 0.0,
+        "subscriber_delta": 0,
+    }
 
 
 def _poll_audience() -> dict[str, Any]:
@@ -48,28 +132,32 @@ def _poll_audience() -> dict[str, Any]:
     # Manual override path — operator can drop a file to simulate audience
     override = _read_json(OVERRIDE_FILE)
     if override is not None:
-        return {
-            "viewer_count": override.get("viewer_count", 0),
-            "chat_rate_per_min": override.get("chat_rate_per_min", 0.0),
-            "avg_watch_time_s": override.get("avg_watch_time_s", 0.0),
-            "subscriber_delta": override.get("subscriber_delta", 0),
-            "source": "override",
-        }
+        return _enrich_with_concept_mastery(
+            {
+                "viewer_count": override.get("viewer_count", 0),
+                "chat_rate_per_min": override.get("chat_rate_per_min", 0.0),
+                "avg_watch_time_s": override.get("avg_watch_time_s", 0.0),
+                "subscriber_delta": override.get("subscriber_delta", 0),
+                "source": "override",
+            }
+        )
 
-    # YouTube API path — stub for now
+    # YouTube API path — via the dedicated producer's SHM output.
     yt = _poll_youtube_api()
     if yt is not None:
         yt["source"] = "youtube_api"
-        return yt
+        return _enrich_with_concept_mastery(yt)
 
     # Fallback — no audience data available
-    return {
-        "viewer_count": 0,
-        "chat_rate_per_min": 0.0,
-        "avg_watch_time_s": 0.0,
-        "subscriber_delta": 0,
-        "source": "fallback",
-    }
+    return _enrich_with_concept_mastery(
+        {
+            "viewer_count": 0,
+            "chat_rate_per_min": 0.0,
+            "avg_watch_time_s": 0.0,
+            "subscriber_delta": 0,
+            "source": "fallback",
+        }
+    )
 
 
 def _write_state(state: dict[str, Any]) -> None:

@@ -130,6 +130,32 @@ class StreamBiography:
     def record_event(self, event: NarrativeEvent) -> None:
         self.narrative_events.append(event)
 
+    def latest_narrative_stage(self) -> str:
+        for event in reversed(self.narrative_events):
+            if event.event_type == "stage_assessment" and event.description:
+                return event.description
+        if (
+            self.total_segments_completed == 0
+            and not self.established_concepts
+            and not self.introductions
+        ):
+            return "inchoate"
+        if self.total_segments_completed < 2 or not self.introductions:
+            return "opening"
+        if len(self.established_concepts) < 3:
+            return "developing"
+        return "established"
+
+    def evidence_gaps(self) -> list[str]:
+        gaps: list[str] = []
+        if not self.introductions:
+            gaps.append("operator/system introduction absent")
+        if not self.established_concepts:
+            gaps.append("no established concepts")
+        if self.total_segments_completed == 0:
+            gaps.append("no completed segments")
+        return gaps
+
     def to_dict(self) -> dict:
         return {
             "established_concepts": [c.to_dict() for c in self.established_concepts],
@@ -157,6 +183,8 @@ class StreamBiography:
 
     def to_planner_summary(self) -> str:
         parts: list[str] = []
+        stage = self.latest_narrative_stage()
+        parts.append(f"Narrative stage: {stage}")
         parts.append(
             f"Stream age: {self.total_stream_hours:.1f}h, {self.total_segments_completed} segments completed"
         )
@@ -176,6 +204,12 @@ class StreamBiography:
                 parts.append(f"  - {i.subject}")
         else:
             parts.append("Introductions: NONE — operator and system have not been introduced")
+
+        gaps = self.evidence_gaps()
+        if gaps:
+            parts.append("Evidence gaps:")
+            for gap in gaps:
+                parts.append(f"  - {gap}")
 
         return "\n".join(parts)
 

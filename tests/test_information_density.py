@@ -9,7 +9,11 @@ Proves the density computation can distinguish:
 
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from shared.information_density import (
     BayesianSurpriseModel,
@@ -162,6 +166,24 @@ class TestInformationDensityField(unittest.TestCase):
             field.update("trend", 5.0)
         d = field.update("trend", 80.0)
         assert d.trend > 0, f"Trend should be positive after increase, got {d.trend}"
+
+    def test_write_shm_exposes_planner_density_contract(self) -> None:
+        with TemporaryDirectory() as tmp:
+            shm = Path(tmp) / "state.json"
+            with patch("shared.information_density.DENSITY_FIELD_SHM", shm):
+                field = InformationDensityField()
+                field.register_source("narrative", obs_min=0.0, obs_max=1.0)
+                field.register_source("audience.viewer_count", obs_min=0.0, obs_max=10.0)
+                field.update("narrative", 0.9, relevance=0.8)
+                field.update("audience.viewer_count", 7.0, relevance=0.7)
+                field.write_shm()
+
+            payload = json.loads(shm.read_text(encoding="utf-8"))
+            assert "computed_at" in payload
+            assert payload["dominant_zone"] in payload["zones"]
+            assert payload["dominant_mode"] == payload["zones"][payload["dominant_zone"]]["mode"]
+            assert "narrative" in payload["zones"]
+            assert payload["zones"]["narrative"]["top_source"] == "narrative"
 
 
 if __name__ == "__main__":

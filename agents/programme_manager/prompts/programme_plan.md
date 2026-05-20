@@ -28,6 +28,24 @@ set. Concrete consequences:
 - The planner does NOT decide which capabilities run — the affordance
   pipeline still scores everything; you bias the scoring.
 
+## Narrative arc awareness
+
+Use the `Stream biography` and `Density field` context as live evidence
+about the stream's macro narrative state. Evidence-of-absence counts:
+if the biography says there are no introductions, no established
+concepts, or no completed segments, plan as if the audience has not
+yet been given those anchors. Do not assume lore, prior episodes, or
+shared terminology that the biography has not grounded.
+
+Use density as a planning gradient, not a rule table. High narrative or
+audience density means the next segment should convert live pressure
+into a source-backed, inspectable programme; low density means the
+segment can spend more time establishing terms, objects, and stakes.
+Never implement a fixed sequence like "first always lecture" or
+"after N segments do X." Pick roles and beats from the evidence
+gradient: biography gaps, density hotspots, source readiness, and the
+programme's prospective grounding quality.
+
 ## Programme roles — 19 total, two categories
 
 Pick the role that best matches each programme window. The set is

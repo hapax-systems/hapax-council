@@ -167,7 +167,8 @@ class NarrativeSource:
     - activity:  Shannon entropy over chronicle event types (variety of things happening)
     - surprise:  1 - mean(cosine_sim(transcript, anchors)) — high when ungrounded
     - novelty:   BOCPD change-point probability on transcript embedding magnitude
-    - relevance: viewer_count / max(viewer_count, 1) normalized [0,1]
+    - relevance: saturating audience signal from viewer count, chat rate,
+      watch-time, and BKT concept-mastery pressure
     """
 
     def __init__(self, anchor_vectors: list[list[float]]) -> None:
@@ -278,12 +279,39 @@ class NarrativeSource:
         return self._bocpd.update(magnitude)
 
     def _compute_relevance(self) -> float:
-        """Viewer count normalized to [0,1]. Read from audience SHM."""
+        """Audience relevance from public audience state + BKT mastery pressure."""
         audience_data = _read_json(AUDIENCE_SHM)
         if audience_data is None:
             return 0.0
         viewer_count = _extract_float(audience_data, "viewer_count", "viewers", "count")
-        return min(1.0, viewer_count / max(viewer_count, 1.0))
+        chat_rate = _extract_float(audience_data, "chat_rate_per_min", "chat_rate")
+        watch_time = _extract_float(audience_data, "avg_watch_time_s", "average_watch_time_s")
+        mastery = audience_data.get("concept_mastery")
+        mastery_pressure = 0.0
+        if isinstance(mastery, dict):
+            mastery_pressure = max(
+                _extract_float(mastery, "zpd_pressure"),
+                _extract_float(mastery, "unknown_pressure"),
+            )
+        else:
+            mastery_pressure = max(
+                _extract_float(audience_data, "zpd_pressure"),
+                _extract_float(audience_data, "unknown_pressure"),
+            )
+
+        viewer_component = 1.0 - math.exp(-max(0.0, viewer_count) / 10.0)
+        chat_component = 1.0 - math.exp(-max(0.0, chat_rate) / 5.0)
+        watch_component = min(1.0, max(0.0, watch_time) / 600.0)
+        return max(
+            0.0,
+            min(
+                1.0,
+                viewer_component * 0.35
+                + chat_component * 0.25
+                + watch_component * 0.15
+                + max(0.0, min(1.0, mastery_pressure)) * 0.25,
+            ),
+        )
 
 
 SOURCE_REGISTRY: list[dict[str, Any]] = [
