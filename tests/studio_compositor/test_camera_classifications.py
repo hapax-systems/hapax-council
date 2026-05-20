@@ -442,13 +442,44 @@ class TestUserYamlClassificationOverlay:
         assert by_role["brio-operator"].subject_ontology == ["person"]
         assert by_role["brio-operator"].operator_visible is True
         assert by_role["brio-operator"].watchdog_timeout_ms == 5000
-        assert by_role["brio-operator"].framerate == 15
+        assert by_role["brio-operator"].framerate is None
         assert by_role["c920-overhead"].subject_ontology == ["hands", "mpc", "desk"]
         assert by_role["c920-overhead"].angle == "top-down"
         assert by_role["c920-overhead"].watchdog_timeout_ms == 5000
-        assert by_role["c920-overhead"].framerate == 15
+        assert by_role["c920-overhead"].framerate is None
         assert by_role["brio-synths"].subject_ontology == ["turntable", "vinyl"]
-        assert by_role["brio-synths"].framerate == 15
+        assert by_role["brio-synths"].framerate is None
+
+    def test_yaml_framerate_wins_over_default_classification_overlay(self, tmp_path: Path) -> None:
+        """Per-source capture cadence is source authority, not overlay metadata.
+
+        The semantic overlay may fill classifications and watchdog tolerance,
+        but it must not invent a framerate for loopback or physical cameras.
+        When YAML supplies one explicitly, it still wins.
+        """
+        from agents.studio_compositor.config import load_config
+
+        yaml_path = tmp_path / "config.yaml"
+        yaml_path.write_text(
+            "cameras:\n"
+            "- role: brio-operator\n"
+            "  device: /dev/video60\n"
+            "  width: 1280\n"
+            "  height: 720\n"
+            "- role: c920-desk\n"
+            "  device: /dev/video0\n"
+            "  width: 1280\n"
+            "  height: 720\n"
+            "  framerate: 15\n",
+            encoding="utf-8",
+        )
+
+        cfg = load_config(path=yaml_path)
+        by_role = {cam.role: cam for cam in cfg.cameras}
+        assert by_role["brio-operator"].semantic_role == "operator-face"
+        assert by_role["brio-operator"].framerate is None
+        assert by_role["c920-desk"].semantic_role == "operator-hands"
+        assert by_role["c920-desk"].framerate == 15
 
     def test_yaml_classification_wins_over_default(self, tmp_path: Path) -> None:
         """The overlay is fill-the-blanks, not clobber: when the YAML

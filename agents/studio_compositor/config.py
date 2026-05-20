@@ -64,7 +64,6 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
         "device": "/dev/video60",
         "width": 1280,
         "height": 720,
-        "framerate": 15,
         "input_format": "mjpeg",
         "watchdog_timeout_ms": 5000,
         "hero": True,
@@ -79,7 +78,6 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
         "device": "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_2657DFCF-video-index0",
         "width": 1280,
         "height": 720,
-        "framerate": 15,
         "input_format": "mjpeg",
         "semantic_role": "operator-hands",
         "subject_ontology": ["hands", "mpc"],
@@ -92,7 +90,6 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
         "device": "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_86B6B75F-video-index0",
         "width": 1280,
         "height": 720,
-        "framerate": 15,
         "input_format": "mjpeg",
         "semantic_role": "room-wide",
         "subject_ontology": ["room", "person"],
@@ -105,7 +102,6 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
         "device": "/dev/video61",
         "width": 1280,
         "height": 720,
-        "framerate": 15,
         "input_format": "mjpeg",
         "watchdog_timeout_ms": 5000,
         "semantic_role": "operator-desk-topdown",
@@ -119,7 +115,6 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
         "device": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_43B0576A-video-index0",
         "width": 1280,
         "height": 720,
-        "framerate": 15,
         "input_format": "mjpeg",
         "semantic_role": "outboard-gear",
         "subject_ontology": ["eurorack", "outboard"],
@@ -132,7 +127,6 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
         "device": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index0",
         "width": 640,
         "height": 480,
-        "framerate": 15,
         "input_format": "mjpeg",
         "semantic_role": "turntables",
         "subject_ontology": ["turntable", "vinyl"],
@@ -160,7 +154,10 @@ def _default_config() -> CompositorConfig:
 # correct classifications in ``_DEFAULT_CAMERAS``; this overlay is what
 # carries them through to deployments whose YAML predates Task #135. It
 # also carries per-role operational parameters whose absence would cause
-# legacy YAML to fall back to generic physical-camera behavior.
+# legacy YAML to fall back to generic physical-camera behavior. Capture
+# framerate is intentionally excluded: it is source/caps authority, not
+# classification authority, and loopback sources may only negotiate the
+# writer's live cadence.
 _DEFAULT_OVERLAY_FIELDS: tuple[str, ...] = (
     "semantic_role",
     "subject_ontology",
@@ -168,7 +165,6 @@ _DEFAULT_OVERLAY_FIELDS: tuple[str, ...] = (
     "operator_visible",
     "ambient_priority",
     "watchdog_timeout_ms",
-    "framerate",
 )
 
 
