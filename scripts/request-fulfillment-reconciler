@@ -131,6 +131,10 @@ def scalar(value: Any) -> str:
     return "" if text in {"null", "None", "~"} else text
 
 
+def is_request_type(frontmatter: dict[str, Any]) -> bool:
+    return scalar(frontmatter.get("type")) in {"hapax-request", "request"}
+
+
 def list_value(value: Any) -> list[str]:
     if value is None:
         return []
@@ -163,7 +167,7 @@ def resolve_request_key(ref: str, active_dir: Path, request_index: dict[str, Pat
     expanded = Path(os.path.expanduser(ref))
     if expanded.is_file():
         note = parse_frontmatter(expanded)
-        if note and scalar(note.frontmatter.get("type")) == "hapax-request":
+        if note and is_request_type(note.frontmatter):
             return expanded.name
     name = Path(ref).name
     if name in request_index:
@@ -173,7 +177,7 @@ def resolve_request_key(ref: str, active_dir: Path, request_index: dict[str, Pat
     if name.startswith("REQ-"):
         for candidate in sorted(active_dir.glob(f"{name}*.md")):
             note = parse_frontmatter(candidate)
-            if note and scalar(note.frontmatter.get("type")) == "hapax-request":
+            if note and is_request_type(note.frontmatter):
                 return candidate.name
     return None
 
@@ -279,7 +283,7 @@ def decide_request(
     destination = closed_dir / request_note.path.name
     if destination.exists():
         reason = "closed_destination_exists"
-    elif scalar(frontmatter.get("type")) != "hapax-request":
+    elif not is_request_type(frontmatter):
         reason = "not_hapax_request"
     elif status == "fulfilled":
         reason = "eligible"
@@ -316,8 +320,11 @@ def decide_request(
             reason = "no_fulfilling_task_evidence"
         else:
             # AC gate: check request-level acceptance criteria before allowing closure
-            request_text = request_note.path.read_text(encoding="utf-8") if request_note.path.exists() else ""
+            request_text = (
+                request_note.path.read_text(encoding="utf-8") if request_note.path.exists() else ""
+            )
             import re as _re
+
             _ac_unchecked = _re.findall(r"^- \[ \]", request_text, _re.MULTILINE)
             _ac_checked = _re.findall(r"^- \[x\]", request_text, _re.MULTILINE)
             if _ac_unchecked and not _ac_checked:
@@ -333,7 +340,11 @@ def decide_request(
                     _fulfilled_phases = set()
                     for _ft in fulfilling:
                         for _pn in _phase_nums:
-                            if f"phase{_pn}" in _ft.lower() or f"phase-{_pn}" in _ft.lower() or f"phase_{_pn}" in _ft.lower():
+                            if (
+                                f"phase{_pn}" in _ft.lower()
+                                or f"phase-{_pn}" in _ft.lower()
+                                or f"phase_{_pn}" in _ft.lower()
+                            ):
                                 _fulfilled_phases.add(_pn)
                     _missing_phases = [p for p in _phase_nums if p not in _fulfilled_phases]
                     if _missing_phases:

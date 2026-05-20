@@ -172,13 +172,14 @@ def fetch_merged_prs(
     return out
 
 
-def find_linked_task(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) -> LinkedTask | None:
-    """Locate the vault cc-task note (in ``active/``) whose ``pr: N`` matches."""
+def find_linked_tasks(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) -> list[LinkedTask]:
+    """Locate vault cc-task notes (in ``active/``) whose ``pr: N`` matches."""
     active = vault_root / "active"
     if not active.is_dir():
-        return None
+        return []
     pr_pattern = re.compile(rf"^pr:\s*{pr_number}\s*$", flags=re.MULTILINE)
     task_id_pattern = re.compile(r"^task_id:\s*(.+?)\s*$", flags=re.MULTILINE)
+    tasks: list[LinkedTask] = []
     for note in sorted(active.glob("*.md")):
         try:
             text = note.read_text(encoding="utf-8")
@@ -189,8 +190,20 @@ def find_linked_task(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) -
         m = task_id_pattern.search(text)
         if not m:
             continue
-        return LinkedTask(task_id=m.group(1).strip(), note_path=note, pr_number=pr_number)
-    return None
+        tasks.append(LinkedTask(task_id=m.group(1).strip(), note_path=note, pr_number=pr_number))
+    return tasks
+
+
+def find_linked_task(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) -> LinkedTask | None:
+    """Locate the first vault cc-task note linked to ``pr_number``.
+
+    Kept for older callers/tests; the watcher itself closes every linked active task.
+    """
+    tasks = find_linked_tasks(pr_number, vault_root=vault_root)
+    return tasks[0] if tasks else None
+
+
+_LEGACY_API_ENTRYPOINTS = (find_linked_task,)
 
 
 def close_linked_task(
@@ -271,35 +284,43 @@ def run_watcher(
     linked = 0
     closed = 0
     failed = 0
-    newest_seen = cursor  # start where we were; bump on each successful close
+    newest_seen = cursor  # start where we were; bump only across a failure-free prefix
+    first_failure_at: datetime | None = None
     for pr in sorted(merged, key=lambda p: p.merged_at):
-        task = find_linked_task(pr.number, vault_root=vault_root)
-        if task is None:
+        tasks = find_linked_tasks(pr.number, vault_root=vault_root)
+        if not tasks:
             LOG.info("PR #%d (%s) has no linked cc-task; skipping", pr.number, pr.head_branch)
-            # Still advance cursor — no work to lose.
-            if pr.merged_at > newest_seen:
+            # Still advance cursor for the success prefix — no work to lose.
+            if first_failure_at is None and pr.merged_at > newest_seen:
                 newest_seen = pr.merged_at
             continue
-        linked += 1
+        linked += len(tasks)
         if dry_run:
-            LOG.info(
-                "[dry-run] would cc-close task %s for PR #%d (merged %s)",
-                task.task_id,
-                pr.number,
-                pr.merged_at.isoformat(),
-            )
-            closed += 1
-            if pr.merged_at > newest_seen:
+            for task in tasks:
+                LOG.info(
+                    "[dry-run] would cc-close task %s for PR #%d (merged %s)",
+                    task.task_id,
+                    pr.number,
+                    pr.merged_at.isoformat(),
+                )
+            closed += len(tasks)
+            if first_failure_at is None and pr.merged_at > newest_seen:
                 newest_seen = pr.merged_at
             continue
-        ok = close_linked_task(task, repo_root=repo_root, runner=runner)
-        if ok:
-            closed += 1
-            if pr.merged_at > newest_seen:
-                newest_seen = pr.merged_at
-        else:
+        pr_failed = False
+        for task in tasks:
+            ok = close_linked_task(task, repo_root=repo_root, runner=runner)
+            if ok:
+                closed += 1
+            else:
+                pr_failed = True
+        if pr_failed:
             failed += 1
+            if first_failure_at is None:
+                first_failure_at = pr.merged_at
             # Do NOT advance cursor past a failed close — retry next cycle.
+        elif first_failure_at is None and pr.merged_at > newest_seen:
+            newest_seen = pr.merged_at
 
     if newest_seen > cursor and not dry_run:
         write_cursor(cursor_path, newest_seen)

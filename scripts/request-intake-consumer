@@ -91,13 +91,33 @@ compact_value() {
   tr -d '[:space:]'
 }
 
+is_request_type() {
+  local req_type
+  req_type="$(printf '%s' "${1:-}" | compact_value)"
+  [[ "$req_type" == "hapax-request" || "$req_type" == "request" ]]
+}
+
+request_id_for_note() {
+  local note="$1"
+  local req_id req_type
+  req_id="$(frontmatter_value request_id "$note" | compact_value)"
+  if [[ -n "$req_id" ]]; then
+    printf '%s\n' "$req_id"
+    return 0
+  fi
+  req_type="$(frontmatter_value type "$note" | compact_value)"
+  if [[ "$req_type" == "request" ]]; then
+    basename "$note" .md
+  fi
+}
+
 request_key_for_ref() {
   local ref="$1"
   [[ -z "$ref" || "$ref" == "null" || "$ref" == "None" || "$ref" == "unassigned" ]] && return 0
 
   local expanded="${ref/#\~/$HOME}"
   if [[ -f "$expanded" ]]; then
-    if [[ "$(frontmatter_value type "$expanded" | compact_value)" == "hapax-request" ]]; then
+    if is_request_type "$(frontmatter_value type "$expanded")"; then
       basename "$expanded"
     fi
     return 0
@@ -105,7 +125,7 @@ request_key_for_ref() {
 
   local base="${ref##*/}"
   if [[ -f "$ACTIVE_DIR/$base" ]]; then
-    if [[ "$(frontmatter_value type "$ACTIVE_DIR/$base" | compact_value)" == "hapax-request" ]]; then
+    if is_request_type "$(frontmatter_value type "$ACTIVE_DIR/$base")"; then
       printf '%s\n' "$base"
     fi
     return 0
@@ -115,7 +135,7 @@ request_key_for_ref() {
     local match
     for match in "$ACTIVE_DIR"/"$base"*.md; do
       [[ -f "$match" ]] || continue
-      if [[ "$(frontmatter_value type "$match" | compact_value)" == "hapax-request" ]]; then
+      if is_request_type "$(frontmatter_value type "$match")"; then
         basename "$match"
         return 0
       fi
@@ -246,6 +266,10 @@ def scalar(data: dict[str, object], key: str) -> str:
     return "" if text in {"", "null", "None", "unassigned"} else text
 
 
+def is_request_type(data: dict[str, object]) -> bool:
+    return scalar(data, "type") in {"hapax-request", "request"}
+
+
 def list_value(data: dict[str, object], key: str) -> list[str]:
     value = data.get(key, [])
     if isinstance(value, list):
@@ -293,16 +317,16 @@ def request_key_for_ref(value: str) -> str | None:
     expanded = Path(os.path.expanduser(value))
     if expanded.is_file():
         data = parse_frontmatter(expanded)
-        return expanded.name if scalar(data, "type") == "hapax-request" else None
+        return expanded.name if is_request_type(data) else None
     name = Path(value).name
     direct = requests_dir / name
     if direct.is_file():
         data = parse_frontmatter(direct)
-        return direct.name if scalar(data, "type") == "hapax-request" else None
+        return direct.name if is_request_type(data) else None
     if name.startswith("REQ-"):
         for candidate in sorted(requests_dir.glob(f"{name}*.md")):
             data = parse_frontmatter(candidate)
-            if scalar(data, "type") == "hapax-request":
+            if is_request_type(data):
                 return candidate.name
     return None
 
@@ -360,9 +384,9 @@ route_metadata_items: list[dict[str, object]] = []
 
 for request_path in sorted(requests_dir.glob("*.md")):
     data = parse_frontmatter(request_path)
-    if scalar(data, "type") != "hapax-request":
+    if not is_request_type(data):
         continue
-    request_id = scalar(data, "request_id")
+    request_id = scalar(data, "request_id") or request_path.stem
     if not request_id:
         continue
     status = scalar(data, "status")
@@ -587,9 +611,9 @@ write_planning_feed() {
 
   for note in "$ACTIVE_DIR"/*.md; do
     [[ -f "$note" ]] || continue
-    [[ "$(frontmatter_value type "$note" | compact_value)" == "hapax-request" ]] || continue
+    is_request_type "$(frontmatter_value type "$note")" || continue
     local req_id
-    req_id="$(frontmatter_value request_id "$note" | compact_value)"
+    req_id="$(request_id_for_note "$note")"
     [[ -z "$req_id" ]] && continue
 
     total_requests=$((total_requests + 1))
@@ -737,9 +761,9 @@ for note in "$ACTIVE_DIR"/*.md; do
     malformed_lines="${malformed_lines}    MALFORMED $(basename "$note") — missing type\n"
     continue
   fi
-  [[ "$req_type" == "hapax-request" ]] || continue
+  is_request_type "$req_type" || continue
 
-  req_id="$(frontmatter_value request_id "$note" | compact_value)"
+  req_id="$(request_id_for_note "$note")"
   status="$(frontmatter_value status "$note" | compact_value)"
   title="$(frontmatter_value title "$note")"
   updated_at="$(frontmatter_value updated_at "$note" | compact_value)"
