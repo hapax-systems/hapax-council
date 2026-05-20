@@ -183,6 +183,25 @@ def test_generated_wireplumber_deny_policy_matches_golden_output() -> None:
     )
     assert "policy.degraded = true" in deny_script
     assert "fail-closed: using hardcoded boundary deny set" in deny_script
+    assert "local pair_key = nil" in deny_script
+    assert "policy.node_pairs [pair_key]" in deny_script
+    assert "(node boundary " in deny_script
+
+
+def test_forbidden_node_pairs_do_not_overlap_desired_node_pairs() -> None:
+    policy = load_audio_routing_policy(POLICY)
+    topology = load_audio_topology_descriptor()
+    desired, forbidden = generated_route_map_texts(topology, policy)
+
+    def node_pairs(text: str) -> set[tuple[str, str]]:
+        return {
+            (source.split(":", maxsplit=1)[0], target.split(":", maxsplit=1)[0])
+            for line in text.splitlines()
+            if line and not line.startswith("#")
+            for source, target in [line.split("|", maxsplit=1)]
+        }
+
+    assert node_pairs(desired).isdisjoint(node_pairs(forbidden))
 
 
 def test_generator_wireplumber_deny_policy_check_mode() -> None:
