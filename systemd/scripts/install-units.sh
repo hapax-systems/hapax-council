@@ -70,6 +70,9 @@ AUTO_ENABLE_SERVICES=(
     hapax-parametric-modulation-heartbeat.service    # PR #2252 (supersedes hapax-preset-bias-heartbeat above)
     hapax-hls-no-cache.service                       # live-surface proof egress; must not stay repo-only
     hapax-live-surface-guard.service                 # live-surface observability/remediation daemon
+    hapax-camera-loopback-setup.service              # oneshot Before=compositor; per-camera v4l2loopback devices
+    hapax-chronicle-high-salience-public-event-producer.service
+    hapax-coordinator.service
 )
 # Privacy / safety-critical timers that MUST be enabled. The script's
 # sweep loop also enables every linked-but-not-enabled timer, so this
