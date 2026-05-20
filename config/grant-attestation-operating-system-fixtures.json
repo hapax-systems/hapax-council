@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "grant_attestation_operating_system",
+  "source_refs": [
+    "cc-task:grant-attestation-operating-system",
+    "cc-task:grant-opportunity-scout-attestation-queue",
+    "cc-task:application-obligation-refusal-gate",
+    "cc-task:institutional-fit-source-registry",
+    "plan:2026-04-29-next-high-value-direction-runtime-truth-conversion"
+  ],
+  "fixtures": [
+    {
+      "fixture_id": "eligible_compute_credit",
+      "opportunity_fixture_id": "compute_credit_private_evidence",
+      "source_row_id": "anthropic-research-credits",
+      "lifecycle_state": "eligible",
+      "evidence_intake": {
+        "reusable_evidence_packet_refs": ["funding-evidence:core-private-v0"],
+        "demo_kit_refs": ["demo-kit:runtime-truth-private-v0"],
+        "n1_methodology_refs": ["cc-task:n1-methodology-dossier"],
+        "public_event_proof_refs": ["rvpe:private-proof-hold"],
+        "scout_evidence_packet_refs": ["grant-evidence:compute-credit-bootstrap"],
+        "privacy_labeled": true,
+        "provenance_labeled": true,
+        "public_release_allowed": false,
+        "monetization_allowed": false,
+        "institutional_public_claim_allowed": false
+      },
+      "expected_lifecycle_state": "eligible",
+      "expected_operator_actions": ["one_time_bootstrap"]
+    },
+    {
+      "fixture_id": "drafted_compute_credit",
+      "opportunity_fixture_id": "compute_credit_private_evidence",
+      "source_row_id": "anthropic-research-credits",
+      "lifecycle_state": "drafted",
+      "evidence_intake": {
+        "reusable_evidence_packet_refs": ["funding-evidence:core-private-v0"],
+        "demo_kit_refs": ["demo-kit:runtime-truth-private-v0"],
+        "n1_methodology_refs": ["cc-task:n1-methodology-dossier"],
+        "public_event_proof_refs": ["rvpe:private-proof-hold"],
+        "scout_evidence_packet_refs": ["grant-evidence:compute-credit-bootstrap"],
+        "privacy_labeled": true,
+        "provenance_labeled": true,
+        "public_release_allowed": false,
+        "monetization_allowed": false,
+        "institutional_public_claim_allowed": false
+      },
+      "draft_packet_ref": "grant-draft:compute-credit-bootstrap-v0",
+      "expected_lifecycle_state": "drafted",
+      "expected_operator_actions": ["one_time_bootstrap"]
+    },
+    {
+      "fixture_id": "ready_residency_attestation",
+      "opportunity_fixture_id": "residency_demo_attestation_guarded",
+      "source_row_id": "macdowell-residency",
+      "lifecycle_state": "ready_for_attestation",
+      "evidence_intake": {
+        "reusable_evidence_packet_refs": ["funding-evidence:core-private-v0"],
+        "demo_kit_refs": ["demo-kit:residency-private-v0"],
+        "n1_methodology_refs": ["cc-task:n1-methodology-dossier"],
+        "public_event_proof_refs": ["rvpe:demo-candidate-private"],
+        "scout_evidence_packet_refs": ["grant-evidence:residency-demo-review"],
+        "privacy_labeled": true,
+        "provenance_labeled": true,
+        "public_release_allowed": false,
+        "monetization_allowed": false,
+        "institutional_public_claim_allowed": false
+      },
+      "draft_packet_ref": "grant-draft:residency-demo-review-v0",
+      "expected_lifecycle_state": "ready_for_attestation",
+      "expected_operator_actions": ["explicit_legal_attestation", "guarded_public_demo_review"]
+    },
+    {
+      "fixture_id": "refused_fake_affiliation",
+      "opportunity_fixture_id": "fake_affiliation_refused",
+      "source_row_id": "openai-safety-fellowship",
+      "lifecycle_state": "discovered",
+      "evidence_intake": {
+        "reusable_evidence_packet_refs": ["funding-evidence:core-private-v0"],
+        "demo_kit_refs": ["demo-kit:runtime-truth-private-v0"],
+        "n1_methodology_refs": ["cc-task:n1-methodology-dossier"],
+        "public_event_proof_refs": ["rvpe:private-proof-hold"],
+        "scout_evidence_packet_refs": ["grant-evidence:fake-affiliation-refused"],
+        "privacy_labeled": true,
+        "provenance_labeled": true,
+        "public_release_allowed": false,
+        "monetization_allowed": false,
+        "institutional_public_claim_allowed": false
+      },
+      "expected_lifecycle_state": "refused",
+      "expected_refusal_reasons": ["fake_affiliation"]
+    },
+    {
+      "fixture_id": "submitted_openai_after_attestation",
+      "opportunity_fixture_id": "openai_fast_path_referenced_not_overwritten",
+      "source_row_id": "openai-safety-fellowship",
+      "lifecycle_state": "submitted",
+      "evidence_intake": {
+        "reusable_evidence_packet_refs": ["funding-evidence:core-private-v0"],
+        "demo_kit_refs": ["demo-kit:runtime-truth-private-v0"],
+        "n1_methodology_refs": ["cc-task:n1-methodology-dossier"],
+        "public_event_proof_refs": ["rvpe:private-proof-hold"],
+        "scout_evidence_packet_refs": ["grant-evidence:openai-safety-fellowship-fast-packet"],
+        "privacy_labeled": true,
+        "provenance_labeled": true,
+        "public_release_allowed": false,
+        "monetization_allowed": false,
+        "institutional_public_claim_allowed": false
+      },
+      "draft_packet_ref": "grant-draft:openai-safety-fellowship-fast-packet-v0",
+      "operator_attestation_ref": "operator-attestation:openai-safety-fellowship-2026-05-02",
+      "submitted_at": "2026-05-02T12:00:00Z",
+      "outcome_evidence_refs": ["submission-receipt:openai-safety-fellowship-2026-05-02"],
+      "posterior_update_refs": ["posterior:grant-application-submitted"],
+      "stakeholder_report_refs": ["stakeholder:grant-submission-count"],
+      "expected_lifecycle_state": "submitted",
+      "expected_operator_actions": ["explicit_legal_attestation", "one_time_bootstrap"]
+    },
+    {
+      "fixture_id": "follow_up_compute_credit",
+      "opportunity_fixture_id": "compute_credit_private_evidence",
+      "source_row_id": "anthropic-research-credits",
+      "lifecycle_state": "follow_up",
+      "evidence_intake": {
+        "reusable_evidence_packet_refs": ["funding-evidence:core-private-v0"],
+        "demo_kit_refs": ["demo-kit:runtime-truth-private-v0"],
+        "n1_methodology_refs": ["cc-task:n1-methodology-dossier"],
+        "public_event_proof_refs": ["rvpe:private-proof-hold"],
+        "scout_evidence_packet_refs": ["grant-evidence:compute-credit-bootstrap"],
+        "privacy_labeled": true,
+        "provenance_labeled": true,
+        "public_release_allowed": false,
+        "monetization_allowed": false,
+        "institutional_public_claim_allowed": false
+      },
+      "draft_packet_ref": "grant-draft:compute-credit-bootstrap-v0",
+      "follow_up_due_at": "2026-05-08",
+      "outcome_evidence_refs": ["grant-outcome:compute-credit-follow-up-due"],
+      "posterior_update_refs": ["posterior:grant-follow-up-due"],
+      "stakeholder_report_refs": ["stakeholder:grant-follow-up-state"],
+      "expected_lifecycle_state": "follow_up",
+      "expected_operator_actions": ["one_time_bootstrap"]
+    }
+  ]
+}

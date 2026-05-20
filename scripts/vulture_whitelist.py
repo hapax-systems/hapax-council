@@ -1221,6 +1221,24 @@ SourceRow._validate_no_false_affiliation
 FundingAmount._validate_range
 default_registry
 
+# Grant attestation operating system: public read-side API for downstream
+# grant outcome feedback and reusable funding evidence-packet tasks. Pydantic
+# validators are invoked dynamically while materializing records from fixtures.
+from shared.grant_attestation_operating_system import (
+    GrantOperatingRecord,
+    evaluate_grant_operating_record,
+    load_grant_operating_fixtures,
+    materialize_grant_operating_record,
+)
+
+GrantOperatingRecord._validate_lifecycle_guards
+GrantOperatingRecord.attestation_state
+GrantOperatingRecord.deadline_status
+GrantOperatingRecord.follow_up_required
+evaluate_grant_operating_record
+load_grant_operating_fixtures
+materialize_grant_operating_record
+
 # Director control-move WCS normalizer: public read-side API for the
 # director loop's move resolution path. Phase 2+ wires the loop to call
 # normalize_director_control_move; Phase 1 ships scaffolding + tests.
