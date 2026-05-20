@@ -8,7 +8,7 @@ operator's live vault during tests; everything is fixture-scoped.
 from __future__ import annotations
 
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -18,8 +18,10 @@ if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
 from cc_hygiene.dashboard import (  # noqa: E402
+    EVENT_TAIL_INITIAL_BYTES,
     SENTINEL_END,
     SENTINEL_START,
+    _read_event_log_tail,
     render_block,
     render_unavailable_block,
     update_dashboard,
@@ -66,6 +68,47 @@ def _build_state(*, sessions: list[SessionState] | None = None) -> HygieneState:
 def _build_event_log(path: Path, events: list[HygieneEvent]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     append_events(events, _now(), path=path)
+
+
+class _GuardedBinaryFile:
+    def __init__(self, wrapped: Any, *, max_read_size: int) -> None:
+        self._wrapped = wrapped
+        self._max_read_size = max_read_size
+        self.read_sizes: list[int] = []
+
+    def __enter__(self) -> _GuardedBinaryFile:
+        self._wrapped.__enter__()
+        return self
+
+    def __exit__(self, *args: Any) -> Any:
+        return self._wrapped.__exit__(*args)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._wrapped, name)
+
+    def read(self, size: int = -1) -> bytes:
+        assert 0 <= size <= self._max_read_size
+        self.read_sizes.append(size)
+        return self._wrapped.read(size)
+
+
+class _GuardedPath:
+    def __init__(self, path: Path, *, max_read_size: int) -> None:
+        self.path = path
+        self.read_sizes: list[int] = []
+        self._max_read_size = max_read_size
+
+    def exists(self) -> bool:
+        return self.path.exists()
+
+    def open(self, mode: str = "r", *args: Any, **kwargs: Any) -> _GuardedBinaryFile:
+        assert mode == "rb"
+        guarded = _GuardedBinaryFile(
+            self.path.open(mode, *args, **kwargs),
+            max_read_size=self._max_read_size,
+        )
+        self.read_sizes = guarded.read_sizes
+        return guarded
 
 
 # ----------------------------------------------------------------------------
@@ -145,6 +188,69 @@ def test_render_block_event_tail_renders(tmp_path: Path) -> None:
     block = render_block(state, event_log_path=event_log, vault_active=active, now=_now())
     assert "duplicate_claim" in block
     assert "cc-task-DUPE" in block
+
+
+def test_event_log_tail_uses_bounded_suffix_reads_and_preserves_recent_events(
+    tmp_path: Path,
+) -> None:
+    event_log = tmp_path / "cc-hygiene-events.md"
+    event_log.write_text("# existing event log\n\n" + ("padding line\n" * 25_000), encoding="utf-8")
+    for idx in range(30):
+        append_events(
+            [
+                HygieneEvent(
+                    timestamp=_now() + timedelta(minutes=idx),
+                    check_id="duplicate_claim",
+                    severity="warning",
+                    task_id=f"cc-task-{idx:02d}",
+                    message=f"event-{idx:02d}",
+                )
+            ],
+            _now() + timedelta(minutes=idx),
+            path=event_log,
+        )
+    guarded = _GuardedPath(event_log, max_read_size=EVENT_TAIL_INITIAL_BYTES)
+
+    events = _read_event_log_tail(guarded, limit=5)  # type: ignore[arg-type]
+
+    assert [event["message"] for event in events] == [
+        "event-29",
+        "event-28",
+        "event-27",
+        "event-26",
+        "event-25",
+    ]
+    assert guarded.read_sizes
+    assert max(guarded.read_sizes) <= EVENT_TAIL_INITIAL_BYTES
+
+
+def test_event_log_tail_preserves_existing_same_block_order(tmp_path: Path) -> None:
+    event_log = tmp_path / "cc-hygiene-events.md"
+    append_events(
+        [
+            HygieneEvent(
+                timestamp=_now(),
+                check_id="duplicate_claim",
+                severity="warning",
+                message="first in appended block",
+            ),
+            HygieneEvent(
+                timestamp=_now() + timedelta(seconds=1),
+                check_id="orphan_pr",
+                severity="warning",
+                message="second in appended block",
+            ),
+        ],
+        _now(),
+        path=event_log,
+    )
+
+    events = _read_event_log_tail(event_log, limit=2)
+
+    assert [event["message"] for event in events] == [
+        "second in appended block",
+        "first in appended block",
+    ]
 
 
 def test_live_session_severity_uses_current_sweep_not_event_tail(tmp_path: Path) -> None:
