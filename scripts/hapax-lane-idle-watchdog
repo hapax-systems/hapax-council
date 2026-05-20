@@ -185,24 +185,35 @@ if [ -x "$CLAUDE_LAUNCHER" ]; then
                 log "WARN: worktree missing for $role at $worktree"
             fi
         else
-            # Session exists — check if Claude is actually running in it
+            # Session exists — check if Claude is actually running in it.
+            # pane_current_command reports "fish" even when Claude (node) is
+            # running as a child process, so also check pane content for
+            # Claude's TUI indicators (❯ prompt, bypass permissions bar).
             pane_cmd=$(tmux display-message -t "$session" -p '#{pane_current_command}' 2>/dev/null) || continue
+            pane_check=$(tmux capture-pane -t "$session" -p -S -5 2>/dev/null)
+            claude_tui=false
+            if echo "$pane_check" | grep -qE '(❯|bypass permissions|tokens)'; then
+                claude_tui=true
+            fi
+
             case "$pane_cmd" in
                 claude|claude-code|node)
-                    # Claude is running, all good
-                    ;;
+                    ;; # running
                 *)
-                    # Claude exited, shell is showing — relaunch
-                    log "REVIVING dead Claude in $session (pane_cmd=$pane_cmd)"
-                    echo "$now" > "$cooldown_file"
-                    tmux send-keys -t "$session" "claude --resume" Enter 2>/dev/null || \
-                        tmux send-keys -t "$session" "claude" Enter 2>/dev/null || true
-                    revived_lanes=$((revived_lanes + 1))
-                    curl -sf -d "Lane idle watchdog: revived $role (Claude had exited, pane was $pane_cmd)" \
-                        -H "Title: Lane revived" \
-                        -H "Priority: default" \
-                        -H "Tags: recycle" \
-                        "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+                    if [ "$claude_tui" = true ]; then
+                        : # Claude runs as node child of fish — TUI visible, not dead
+                    else
+                        log "REVIVING dead Claude in $session (pane_cmd=$pane_cmd)"
+                        echo "$now" > "$cooldown_file"
+                        tmux send-keys -t "$session" "claude --resume" Enter 2>/dev/null || \
+                            tmux send-keys -t "$session" "claude" Enter 2>/dev/null || true
+                        revived_lanes=$((revived_lanes + 1))
+                        curl -sf -d "Lane idle watchdog: revived $role (Claude had exited, pane was $pane_cmd)" \
+                            -H "Title: Lane revived" \
+                            -H "Priority: default" \
+                            -H "Tags: recycle" \
+                            "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+                    fi
                     ;;
             esac
         fi
@@ -242,20 +253,30 @@ if [ -x "$CODEX_LAUNCHER" ]; then
             fi
         else
             pane_cmd=$(tmux display-message -t "$session" -p '#{pane_current_command}' 2>/dev/null) || continue
+            pane_check=$(tmux capture-pane -t "$session" -p -S -5 2>/dev/null)
+            codex_tui=false
+            if echo "$pane_check" | grep -qE '(Working|gpt-[0-9]|codex-|context left|› )'; then
+                codex_tui=true
+            fi
+
             case "$pane_cmd" in
                 codex|node)
                     ;;
                 *)
-                    log "REVIVING dead Codex in $session (pane_cmd=$pane_cmd)"
-                    echo "$now" > "$cooldown_file"
-                    tmux send-keys -t "$session" "cd $worktree && codex --resume" Enter 2>/dev/null || \
-                        tmux send-keys -t "$session" "cd $worktree && codex" Enter 2>/dev/null || true
-                    revived_lanes=$((revived_lanes + 1))
-                    curl -sf -d "Lane idle watchdog: revived Codex $color (pane was $pane_cmd)" \
-                        -H "Title: Codex lane revived" \
-                        -H "Priority: default" \
-                        -H "Tags: recycle" \
-                        "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+                    if [ "$codex_tui" = true ]; then
+                        : # Codex runs as node child — TUI visible, not dead
+                    else
+                        log "REVIVING dead Codex in $session (pane_cmd=$pane_cmd)"
+                        echo "$now" > "$cooldown_file"
+                        tmux send-keys -t "$session" "cd $worktree && codex --resume" Enter 2>/dev/null || \
+                            tmux send-keys -t "$session" "cd $worktree && codex" Enter 2>/dev/null || true
+                        revived_lanes=$((revived_lanes + 1))
+                        curl -sf -d "Lane idle watchdog: revived Codex $color (pane was $pane_cmd)" \
+                            -H "Title: Codex lane revived" \
+                            -H "Priority: default" \
+                            -H "Tags: recycle" \
+                            "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+                    fi
                     ;;
             esac
         fi
