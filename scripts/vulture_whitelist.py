@@ -3653,6 +3653,16 @@ from shared.programme_scrim_profile_policy import LegibilityConstraints
 LegibilityConstraints.anti_visualizer_required
 LegibilityConstraints.audio_reactive_visualizer_allowed
 
+# Scrim value-conversion cue policy validators are invoked dynamically by
+# Pydantic, and the projector is a source contract for the downstream director
+# adapter / packaging compiler. Focused tests pin the no-grant boundary, but
+# the diff-range vulture pass does not count test callsites.
+ScrimValueConversionCueInput._target_family_must_match_cue_family
+ScrimValueConversionCueProjection._validate_no_grant_boundary
+ScrimValueConversionCueProjection.is_ready
+ScrimValueConversionCueProjection.is_held
+project_scrim_value_conversion_cue
+
 from agents.studio_compositor.shadow_render_core import ShadowRenderCore
 
 ShadowRenderCore.update_source
