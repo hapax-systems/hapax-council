@@ -77,6 +77,7 @@ LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES = frozenset(
         "slitscan",
         "stutter",
         "tile",
+        "tunnel",
         "voronoi_overlay",
     }
 )
@@ -125,8 +126,9 @@ LIVE_SURFACE_GLSL_WARM_MINIMAL_REPAIR_20260520_NODE_TYPES = frozenset(
         # thermal: false-color mapping of source brightness; intensity ≤ 0.40.
         # threshold: binary threshold of source brightness; level 0.35-0.65.
         # trail: temporal with fade ≥ 0.12, opacity ≤ 0.30, blend_mode forced additive.
-        # tunnel: radial zoom from source; radius 0.08-0.24, speed ≤ 0.18.
         # vhs: chroma shift + noise band on source; shift ≤ 4px, noise ≤ 0.35.
+        # NOTE: tunnel excluded — Rust policy (#3570) classifies it as non-safe
+        # spatial; deferred pending end-to-end cross-layer evidence.
         "ascii",
         "dither",
         "edge_detect",
@@ -135,7 +137,6 @@ LIVE_SURFACE_GLSL_WARM_MINIMAL_REPAIR_20260520_NODE_TYPES = frozenset(
         "thermal",
         "threshold",
         "trail",
-        "tunnel",
         "vhs",
     }
 )
