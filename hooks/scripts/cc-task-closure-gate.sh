@@ -16,10 +16,10 @@
 # Pattern: closure = "I worked on it" instead of "criteria met".
 #
 # Reads PreToolUse JSON from stdin per the Claude Code hook contract.
-# Inspects ``tool_input.command`` for ``mv`` / ``git mv`` invocations
-# whose path patterns match the active→closed transition. Calls the
-# pure-logic gate ``scripts/cc-task-closure-check.py`` to read the
-# source file and answer "any unchecked AC?" — exits 2 (block) if so.
+# Inspects ``tool_input.command`` for shell or Python file-move
+# invocations whose path patterns match the active→closed transition.
+# Calls the pure-logic gate ``scripts/cc-task-closure-check.py`` to read
+# the source file and answer "any unchecked AC?" — exits 2 (block) if so.
 #
 # Bypass: ``HAPAX_CC_TASK_CLOSURE_GATE_OFF=1`` disables the hook
 # (incident response only).
@@ -75,19 +75,22 @@ if tool_name != "Bash":
     sys.exit(0)
 
 cmd = (payload.get("tool_input") or {}).get("command") or ""
-# Match `mv` or `git mv` followed by a path under
-# `hapax-cc-tasks/active/` and a destination under
-# `hapax-cc-tasks/closed/`. Tolerate flags between the verb and paths.
-mv_re = re.compile(
-    r"\b(?:git\s+)?mv\b.*?(?P<src>\S*hapax-cc-tasks/active/[A-Za-z0-9._/-]+\.md)"
-    r".*?(?P<dst>\S*hapax-cc-tasks/closed/[A-Za-z0-9._/-]*)"
+# Match any active cc-task note and any closed cc-task destination in the
+# same command. This covers `mv`, `git mv`, Python `shutil.move`, and
+# `Path.rename` snippets while still ignoring non-closure file movement.
+path_re = re.compile(
+    r"(?P<path>['\"]?[^'\"\s,()]*hapax-cc-tasks/(?:active|closed)/"
+    r"[A-Za-z0-9._/-]+\.md['\"]?)"
 )
-m = mv_re.search(cmd)
-if not m:
+paths = [m.group("path").strip("'\"") for m in path_re.finditer(cmd)]
+src = next((p for p in paths if "/hapax-cc-tasks/active/" in p and p.endswith(".md")), "")
+has_closed_destination = any("/hapax-cc-tasks/closed/" in p for p in paths) or bool(
+    re.search(r"\S*hapax-cc-tasks/closed(?:/|\s|$)", cmd)
+)
+if not src or not has_closed_destination:
     print("PASS: not an active->closed cc-task mv")
     sys.exit(0)
 
-src = m.group("src")
 print(f"GATE_CHECK: {src}")
 PYEOF
 )

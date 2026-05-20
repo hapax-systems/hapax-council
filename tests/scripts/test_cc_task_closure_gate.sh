@@ -161,25 +161,32 @@ assert_eq "hook PASSES mv of all-checked" 0 \
 assert_eq "hook BLOCKS git mv of unchecked" 2 \
   "$(run_hook_with_command "git mv $ACTIVE/unchecked-task.md $CLOSED/")"
 
-# 8. Hook on a non-cc-task mv (regular file): PASS
+# 8. Hook on Python shutil.move active→closed: BLOCK
+assert_eq "hook BLOCKS python shutil.move of unchecked" 2 \
+  "$(run_hook_with_command "python3 - <<'PY'
+import shutil
+shutil.move('$ACTIVE/unchecked-task.md', '$CLOSED/unchecked-task.md')
+PY")"
+
+# 9. Hook on a non-cc-task mv (regular file): PASS
 assert_eq "hook PASSES mv of unrelated file" 0 \
   "$(run_hook_with_command "mv /tmp/foo.txt /tmp/bar.txt")"
 
-# 9. Hook on `mv active/x.md other-dir/`: PASS (not active→closed)
+# 10. Hook on `mv active/x.md other-dir/`: PASS (not active→closed)
 assert_eq "hook PASSES mv to non-closed/" 0 \
   "$(run_hook_with_command "mv $ACTIVE/unchecked-task.md $TMP/elsewhere.md")"
 
-# 10. Hook on a non-Bash tool: PASS (not in scope)
+# 11. Hook on a non-Bash tool: PASS (not in scope)
 non_bash_payload='{"tool_name":"Read","tool_input":{"file_path":"/tmp/x"}}'
 assert_eq "hook PASSES non-Bash tool" 0 \
   "$(echo "$non_bash_payload" | bash "$HOOK" 2>/dev/null && echo 0 || echo $?)"
 
-# 11. Hook with HAPAX_CC_TASK_CLOSURE_GATE_OFF=1 + unchecked: PASS
+# 12. Hook with HAPAX_CC_TASK_CLOSURE_GATE_OFF=1 + unchecked: PASS
 assert_eq "env-off bypasses hook on unchecked" 0 \
   "$(HAPAX_CC_TASK_CLOSURE_GATE_OFF=1 bash -c "echo '$(python3 -c "import json; print(json.dumps({'tool_name':'Bash','tool_input':{'command':'mv $ACTIVE/unchecked-task.md $CLOSED/'}}))")' | bash '$HOOK'" 2>/dev/null && echo 0 || echo $?)"
 
 echo "=== cc-close integration tests ==="
-# 12. cc-close BLOCKS unchecked closure with the gate logic in-process.
+# 13. cc-close BLOCKS unchecked closure with the gate logic in-process.
 CC_CLOSE="$REPO_ROOT/scripts/cc-close"
 CC_TMP=$(mktemp -d)
 CC_VAULT="$CC_TMP/Documents/Personal/20-projects/hapax-cc-tasks"

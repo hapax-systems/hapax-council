@@ -211,6 +211,10 @@ def close_linked_task(
     # cc-close uses CLAUDE_ROLE only for the log line (not gating); the
     # watcher is not a session, so a synthetic value is fine.
     env.setdefault("CLAUDE_ROLE", role)
+    # The watcher only sees PRs after GitHub has merged them. Preserve the
+    # PR-merge evidence gate, but bypass the task-checkbox closure gate so a
+    # stale unchecked box cannot strand already-merged work in active/.
+    env["HAPAX_CC_TASK_CLOSURE_GATE_OFF"] = "1"
     cmd = [str(cc_close), task.task_id, "--pr", str(task.pr_number)]
     LOG.info("closing task %s for PR #%d", task.task_id, task.pr_number)
     try:

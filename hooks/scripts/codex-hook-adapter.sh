@@ -162,6 +162,7 @@ run_pre_shell() {
     no-stale-branches.sh
     canonical-worktree-protect.sh
     safe-stash-guard.sh
+    cc-task-closure-gate.sh
     conductor-pre.sh
     branch-switch-guard.sh
     docs-only-pr-warn.sh
