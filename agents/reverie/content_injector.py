@@ -17,11 +17,24 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from pathlib import Path
 
 log = logging.getLogger("reverie.injector")
 
 SOURCES_DIR = Path("/dev/shm/hapax-imagination/sources")
+_CREATED_SOURCE_DIRS: set[Path] = set()
+_SOURCE_DIRS_LOCK = threading.Lock()
+
+
+def _ensure_source_dir(source_dir: Path) -> None:
+    if source_dir in _CREATED_SOURCE_DIRS:
+        return
+    with _SOURCE_DIRS_LOCK:
+        if source_dir in _CREATED_SOURCE_DIRS:
+            return
+        source_dir.mkdir(parents=True, exist_ok=True)
+        _CREATED_SOURCE_DIRS.add(source_dir)
 
 
 def inject_image(
@@ -110,7 +123,7 @@ def inject_rgba(
 ) -> bool:
     """Inject raw RGBA bytes into the visual surface. Lowest-level API."""
     source_dir = SOURCES_DIR / source_id
-    source_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_source_dir(source_dir)
 
     try:
         tmp_frame = source_dir / "frame.tmp"

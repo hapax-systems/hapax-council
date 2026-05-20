@@ -112,6 +112,7 @@ class CameraSourcePublisher:
         self._source_order = list(CAMERA_MAP.items())
         self._next_publish_at: dict[str, float] = {}
         self._poll_interval = self._compute_poll_interval(interval_s)
+        self._created_source_dirs: set[Path] = set()
 
     def _compute_poll_interval(self, interval_s: float) -> float:
         if not self._3d_mode:
@@ -120,6 +121,12 @@ class CameraSourcePublisher:
         # camera fleet instead of converting every source in one burst.
         source_count = max(1, len(CAMERA_MAP))
         return max(0.005, min(interval_s / source_count, 0.05))
+
+    def _ensure_source_dir(self, source_dir: Path) -> None:
+        if source_dir in self._created_source_dirs:
+            return
+        source_dir.mkdir(parents=True, exist_ok=True)
+        self._created_source_dirs.add(source_dir)
 
     def start(self) -> None:
         if self._thread is not None:
@@ -318,7 +325,7 @@ class CameraSourcePublisher:
         frame_sequence: int | None = None,
     ) -> None:
         source_dir = self._sources_dir / source_id
-        source_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_source_dir(source_dir)
 
         frame_path = source_dir / "frame.rgba"
         tmp_frame_path = source_dir / "frame.rgba.tmp"
