@@ -2697,6 +2697,46 @@ _AG_AudioGraph2._downmixes_reference_valid_nodes  # type: ignore[attr-defined]
 _AG_AudioGraph2.node_by_pipewire_name
 _AG_AudioGraph2.to_yaml
 
+# AudioGraph schema v4 migration (cc-task audio-v4-graph-schema-migration):
+# Pydantic invokes these validators through model construction; generated docs
+# and route-policy tooling import the two generator entry points dynamically.
+from shared.audio_graph.schema import (
+    AudioGraph as _AG_AudioGraphV4,
+)
+from shared.audio_graph.schema import (
+    ChannelPair as _AG_ChannelPairV4,
+)
+from shared.audio_graph.schema import (
+    OptionalDeviceLifecycle as _AG_OptionalDeviceLifecycleV4,
+)
+from shared.audio_graph.schema import (
+    PhysicalEdge as _AG_PhysicalEdgeV4,
+)
+from shared.audio_graph.schema import (
+    RouteClass as _AG_RouteClassV4,
+)
+from shared.audio_topology_generator import (
+    generate_audio_graph_reference_tables as _AG_generate_reference_tables_v4,
+)
+from shared.audio_topology_generator import (
+    generate_fail_closed_policy_map as _AG_generate_fail_closed_policy_map_v4,
+)
+
+_AG_ChannelPairV4._left_and_right_are_distinct  # type: ignore[attr-defined]
+_AG_RouteClassV4._route_has_allowed_surface  # type: ignore[attr-defined]
+_AG_PhysicalEdgeV4._port_lists_match  # type: ignore[attr-defined]
+_AG_OptionalDeviceLifecycleV4._default_state_in_states  # type: ignore[attr-defined]
+_AG_AudioGraphV4._accept_legacy_edges_key  # type: ignore[attr-defined]
+_AG_AudioGraphV4._ports_reference_valid_nodes  # type: ignore[attr-defined]
+_AG_AudioGraphV4._route_classes_unique  # type: ignore[attr-defined]
+_AG_AudioGraphV4._port_groups_reference_valid_ports  # type: ignore[attr-defined]
+_AG_AudioGraphV4._channel_pairs_reference_valid_ports  # type: ignore[attr-defined]
+_AG_AudioGraphV4._physical_edges_reference_valid_schema_data  # type: ignore[attr-defined]
+_AG_AudioGraphV4._hardware_patches_reference_valid_edges  # type: ignore[attr-defined]
+_AG_AudioGraphV4._optional_devices_reference_valid_nodes  # type: ignore[attr-defined]
+_AG_generate_reference_tables_v4
+_AG_generate_fail_closed_policy_map_v4
+
 # TopologyDescriptor industrial naming validators — Pydantic reflection
 # call path is not visible to vulture, but config/audio-topology.yaml
 # parsing invokes them.
@@ -3798,6 +3838,6 @@ from shared.audio_control_plane import (
     refuse_dirty_restart,
 )
 
+classify_service_health
 read_mutation_events
 refuse_dirty_restart
-classify_service_health
