@@ -4,11 +4,14 @@
 **Request:** `REQ-20260510-visibility-engine`
 **Authority case:** `CASE-VISIBILITY-ENGINE-001`
 **Authority item:** `VISIBILITY-ENGINE-EGRESS-SAFETY-GATE-ISAP`
-**Task:** `visibility-engine-egress-safety-gate-isap`
+**Task:** `20260510-visibility-engine-phase0-research-egress-safety-gate`
 **Status:** implementation authorization packet; no runtime activation
 **Risk tier:** T2 public-egress expansion
 
 ## 1. Decision
+
+Runtime activation verdict: **NO-GO for broad visibility runtime activation**;
+**GO only for implementing the V0 source gate described below**.
 
 Broad visibility activation remains blocked until the next source slice
 implements a single pre-egress decision gate for every increased autonomous
@@ -27,6 +30,13 @@ timers, starting services, changing credentials, moving artifacts into
 `publish/inbox/`, removing source-activation holds, or performing any public
 egress.
 
+| Runtime state | Verdict | Reason |
+| --- | --- | --- |
+| Current clean `origin/main` | NO-GO for broad visibility activation | Existing envelope is global-only and lacks per-surface budgets, dry-run fanout receipts, explicit surface classification receipts, and spike containment evidence. |
+| `visibility-engine-egress-safety-gate-v0` source implementation | GO | Source-only mutation may add the gate, receipts, metrics, and tests. |
+| Dry-run volume replay after V0 | GO only when no public publisher client is called | Needed to prove volume, classification, idempotency, and receipts before public writes. |
+| Production public fanout above current baseline | NO-GO until Section 11 criteria pass | Public egress expansion without the V0 gate would make unexpected broadcast spikes plausible. |
+
 ## 2. Dependency Receipt
 
 The task was blocked on the publication-bus/default-surface and legacy omg.lol
@@ -35,10 +45,11 @@ source queue. That queue is now resolved:
 | Dependency | PR | Merge receipt | Consequence |
 | --- | --- | --- | --- |
 | `visibility-engine-publication-bus-default-surface-audit-v0` | #3229 | merged 2026-05-13T18:16:46Z, `79d94868ceae91a81458d3c0948e73e3686d7bf5` | weblog direct fanout is opt-in; canonical default is `omg-weblog` only |
-| `visibility-engine-non-broadcast-producer-readiness-v0` | #3230 | merged per request note | weblog producer is bus-only by default; non-broadcast units are source-pinned |
+| `visibility-engine-non-broadcast-producer-readiness-v0` | #3230 | merged 2026-05-13T18:08:13Z, `ec0dcde33086748b10c34addc66a84c7cd4793f5` | weblog producer is bus-only by default; non-broadcast units are source-pinned |
 | `visibility-engine-legacy-omg-surface-bus-reconciliation-v0` | #3231 | merged 2026-05-13T18:41:32Z, `b9d1fc419c8ae5d1d729fa30c66a533832172e29` | legacy omg.lol paths are classified as RVPE-backed, orchestrator-backed, guarded legacy, or refused |
 
-This ISAP was prepared against clean `origin/main` after those merges.
+This ISAP was re-evaluated against clean `origin/main` at
+`2c434972d` on 2026-05-20 after those merges.
 
 ## 3. Current Source Baseline
 
@@ -227,7 +238,51 @@ Minimum fields:
 Receipts must avoid private excerpts and credential values. Operator-visible
 does not mean public.
 
-## 11. Pass Criteria For Broad Visibility Activation
+## 11. GO/NO-GO Criteria For Runtime Activation
+
+Broad visibility runtime activation is **GO** only when every required
+predicate below is true. Any false predicate is a **NO-GO** for enabling timers,
+starting services, moving artifacts into `publish/inbox/`, or removing
+source-activation holds.
+
+| Gate | GO predicate | NO-GO condition |
+| --- | --- | --- |
+| Source gate presence | Every increased autonomous publication path calls the same V0 pre-egress gate before any public client. | Any path can call a public publisher directly or through a legacy helper without the gate. |
+| Surface classification | Every target surface is registry-backed, RVPE/orchestrator-backed and broad-eligible, conditional with a current bootstrap receipt, or refused/rejected. | Unknown surface, refused surface, or guarded-legacy surface can be silently skipped or retried. |
+| Budgets | Global and per-surface hourly/daily/concurrency budgets are source-controlled and tests prove holds before public calls. | Only a global cap exists, caps are env-only raises, or one surface can exhaust the whole visibility envelope. |
+| Dry-run | One global dry-run switch exercises classification, hardening, budget, idempotency, receipts, and metrics while calling zero publisher clients. | Dry-run is surface-local only, partial, or cannot prove no public egress. |
+| Idempotency | Duplicate artifacts/events produce no second public write and consume no success budget. | Retry loops or event replays can produce duplicate posts. |
+| Receipts | Each pass/hold/reject writes an operator-visible JSON receipt with reason codes before dispatch. | Decisions only appear in process logs or after publisher calls. |
+| Kill switch | File kill switch produces `hold` before inbox processing and before any rolling fanout worker dispatch. | Kill switch only covers the publish orchestrator artifact path. |
+| Activation discipline | Implementation PR ships source/tests/docs only; runtime activation is a separate, dated operator/governance action. | Source PR also enables timers, starts services, changes credentials, or publishes test posts. |
+
+Runtime activation must start with a dry-run replay. Public writes may begin
+only after the dry-run receipts prove the intended daily volume, surface mix,
+budget behavior, and duplicate handling.
+
+## 12. Unexpected Broadcast Spike Risks And Mitigations
+
+The phrase "broadcast spike" here means an unexpected burst of public egress:
+many posts, many surface writes, duplicate fanout, or a retry storm. It does
+not require livestream/audio broadcast involvement.
+
+| Spike risk | Plausible trigger | Required mitigation | Verification |
+| --- | --- | --- | --- |
+| Backlog flush | A producer starts after days of accumulated events and drains them into `publish/inbox/` or RVPE at once. | Rolling budgets plus per-surface caps; dry-run replay before removing source holds; candidate receipts include source cursor and budget state. | Test seeded backlog over cap and assert `hold` with no publisher calls. |
+| Fanout multiplier | One artifact targets weblog, Mastodon, Bluesky, Are.na, Bridgy, and legacy omg.lol helpers simultaneously. | Surface classification gate plus per-surface budgets; direct weblog-derived downstream fanout stays opt-in unless source URL sequencing is proven. | Test multi-surface artifact and assert each surface has an independent budget/classification receipt. |
+| Duplicate replay | Cursor reset, event-id ledger loss, branch rollback, or artifact re-drop replays the same content. | Preserve existing idempotency owners; duplicate decision writes receipt but performs no public write and consumes no success budget. | Test duplicate event/artifact across orchestrator and surface-event paths. |
+| Retry storm | Temporary auth/rate/network failures are retried every tick across many surfaces. | Retryable failures are `hold` with retry owner/backoff metadata; missing credentials remain terminal configuration failures unless explicitly re-dropped. | Test repeated retryable failure does not increase public call count or success budget. |
+| Credential restoration burst | A missing credential or bootstrap receipt becomes available and previously held candidates all become eligible. | Budget still applies after credential recovery; conditional surfaces require current bootstrap receipts and begin in dry-run for broad visibility. | Test held candidates after bootstrap are released only within cap. |
+| Timer overlap | Multiple systemd timers or manual invocations overlap, bypassing per-process counters. | Success-budget accounting reads persisted receipts, not process memory; concurrency cap applies across current in-flight receipts. | Test two gate instances sharing the same state root. |
+| Legacy bypass | Guarded legacy omg.lol utilities are called by a new producer outside publication-bus/RVPE lifecycle. | `shared.legacy_omg_surface_policy` classification is load-bearing; guarded legacy broad fanout is `reject`. | Test guarded legacy surface requested for broad visibility rejects. |
+| Operator bulk move | Many approved artifacts are moved from draft to inbox at once. | Operator action remains allowed, but gate budgets and receipts pace public writes; excess holds rather than publishes. | Dry-run with representative bulk inbox and assert no cap breach. |
+| Source activation profile mistake | A deployment enables every visibility timer/profile at once. | Runtime activation is separate from source implementation; source-controlled activation profile must start in global dry-run and include source holds. | Activation checklist requires dry-run receipts before public profile switch. |
+
+These mitigations are mandatory for V0 because the request target is tens of
+drops per day. The system should be able to generate high volume internally
+without creating high public volume until the gate deliberately releases it.
+
+## 13. Pass Criteria For Broad Visibility Activation
 
 The future V0 implementation may be accepted only when all of these are true:
 
@@ -242,18 +297,20 @@ The future V0 implementation may be accepted only when all of these are true:
   and performs zero public egress.
 - No service is enabled or restarted as part of the implementation PR.
 
-## 12. Acceptance Mapping
+## 14. Acceptance Mapping
 
 This ISAP satisfies the planning slice as follows:
 
 | Requirement | Disposition |
 | --- | --- |
-| Dependency queue resolved before planning | #3229 and #3231 are merged; source baseline is clean `origin/main` |
-| Pass/hold/reject behavior | Sections 5 and 11 define behavior and validation |
+| Dependency queue resolved before planning | #3229, #3230, and #3231 are merged; source baseline is clean `origin/main` |
+| Pass/hold/reject behavior | Sections 5, 11, and 13 define behavior and validation |
 | Rate limits and caps | Section 6 defines global and per-surface defaults |
 | Idempotency | Section 8 binds existing owners and duplicate behavior |
 | Kill switch | Sections 5, 6, 9, and 10 preserve file kill switch semantics |
 | Dry-run mode | Section 9 requires global no-egress dry run |
 | Operator-visible receipts | Section 10 defines the receipt contract |
 | Bus-backed/refused/legacy-scoped surfaces | Section 7 defines classification requirements |
-| No activation/public egress | Sections 1 and 4 prohibit runtime activation and public writes |
+| GO/NO-GO criteria | Sections 1 and 11 define runtime activation criteria |
+| Unexpected broadcast spike risks and mitigations | Section 12 defines spike scenarios, mitigations, and verification requirements |
+| No activation/public egress | Sections 1, 4, and 11 prohibit runtime activation and public writes |
