@@ -1,6 +1,6 @@
 {
   "generated_at": "2026-05-21T13:56:57Z",
-  "repo_root": "/home/hapax/projects/hapax-council--delta",
+  "repo_root": ".",
   "total_orphaned_modules": 533,
   "total_orphaned_loc": 130638,
   "named_orphans_found": [

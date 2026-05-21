@@ -174,7 +174,7 @@ def main() -> int:
 
     output = {
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "repo_root": str(ROOT),
+        "repo_root": ".",
         "total_orphaned_modules": len(orphans),
         "total_orphaned_loc": sum(o["loc"] for o in orphans),
         "named_orphans_found": [o["path"] for o in orphans if o["named_orphan"]],
