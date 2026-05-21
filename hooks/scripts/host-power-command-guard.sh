@@ -34,6 +34,7 @@ SYSTEMCTL_POWER_SUBCOMMANDS = {
     "poweroff",
     "reboot",
     "halt",
+    "shutdown",
     "kexec",
     "soft-reboot",
     "suspend-then-hibernate",
@@ -46,6 +47,11 @@ SHELLS = {"bash", "sh", "zsh", "fish"}
 SEGMENT_SEPARATORS = {";", "&&", "||", "|", "\n"}
 GROUP_TOKENS = {"(", ")", "{", "}"}
 WRAPPERS = {"command", "builtin", "exec", "noglob", "time"}
+SUSPICIOUS_POWER_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])"
+    r"(?:poweroff|reboot|halt|shutdown|kexec|systemctl|loginctl)"
+    r"(?![A-Za-z0-9_.-])"
+)
 
 
 def strip_heredoc_bodies(text: str) -> str:
@@ -183,6 +189,8 @@ def detect(text: str) -> str | None:
     try:
         tokens = shell_tokens(strip_heredoc_bodies(text))
     except ValueError:
+        if SUSPICIOUS_POWER_TOKEN_RE.search(text):
+            return "unparseable command containing host power token"
         return None
     at_segment_start = True
     for index, token in enumerate(tokens):

@@ -36,6 +36,11 @@ class TestBlocksPowerCommands:
         result = _run(_bash("sudo /usr/bin/systemctl reboot"))
         assert result.returncode == 2
 
+    def test_blocks_systemctl_shutdown(self) -> None:
+        result = _run(_bash("sudo /usr/bin/systemctl shutdown"))
+        assert result.returncode == 2
+        assert "systemctl shutdown" in result.stderr
+
     def test_blocks_direct_poweroff(self) -> None:
         result = _run(_bash("poweroff"))
         assert result.returncode == 2
@@ -55,6 +60,11 @@ class TestBlocksPowerCommands:
     def test_blocks_env_wrapped_command(self) -> None:
         result = _run(_bash("env FOO=1 sudo -n systemctl halt"))
         assert result.returncode == 2
+
+    def test_blocks_malformed_command_with_power_token(self) -> None:
+        result = _run(_bash("bash -c 'sudo systemctl poweroff"))
+        assert result.returncode == 2
+        assert "unparseable command containing host power token" in result.stderr
 
 
 class TestAllowsNonPowerCommands:
@@ -83,6 +93,10 @@ class TestAllowsNonPowerCommands:
             ')"'
         )
         result = _run(_bash(command))
+        assert result.returncode == 0
+
+    def test_allows_malformed_non_power_command(self) -> None:
+        result = _run(_bash("python -c 'unterminated"))
         assert result.returncode == 0
 
 
