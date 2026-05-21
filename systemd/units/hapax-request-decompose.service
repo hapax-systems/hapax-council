@@ -2,12 +2,14 @@
 Description=Hapax request decomposer — LLM-backed atomic task creation
 After=hapax-secrets.service
 Wants=hapax-secrets.service
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/request-decompose
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/hapax/projects/hapax-council
-ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python scripts/request-decompose --scan
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/request-decompose --scan
 EnvironmentFile=/run/user/1000/hapax-secrets.env
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=HOME=/home/hapax
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 TimeoutStartSec=300
