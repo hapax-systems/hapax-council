@@ -17,6 +17,7 @@ tags = ["pii", "name"]
 paths = [
   '''hooks/''',
   '''tests/''',
+  '''docs/audits/''',
   '''\.gitleaks\.toml''',
   '''^CITATION\.cff$''',
   '''^codemeta\.json$''',
