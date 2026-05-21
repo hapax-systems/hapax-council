@@ -73,6 +73,22 @@ def _claim(home: Path, task_id: str, force: bool = False) -> subprocess.Complete
     return subprocess.run(cmd, env=env, text=True, capture_output=True, check=False)
 
 
+def _run_claim_audit(home: Path, *args: str, ps_text: str = "") -> subprocess.CompletedProcess[str]:
+    ps_fixture = home / "claim-audit-ps.txt"
+    ps_fixture.parent.mkdir(parents=True, exist_ok=True)
+    ps_fixture.write_text(ps_text, encoding="utf-8")
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["HAPAX_CLAIM_AUDIT_PS_FIXTURE"] = str(ps_fixture)
+    return subprocess.run(
+        ["bash", str(CLAIM_AUDIT), *args],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def _run_hook(
     script: Path, tool_name: str, command: str = "", home: str = "/tmp"
 ) -> subprocess.CompletedProcess[str]:
@@ -194,15 +210,7 @@ def test_audit_detects_phantom_claim(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    env = os.environ.copy()
-    env["HOME"] = str(home)
-    r = subprocess.run(
-        ["bash", str(CLAIM_AUDIT), "--stale-hours=1"],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    r = _run_claim_audit(home, "--stale-hours=1")
     assert r.returncode == 1
     assert "PHANTOM" in r.stdout
     assert "phantom-task" in r.stdout
@@ -226,15 +234,7 @@ def test_audit_releases_phantom_claim(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    env = os.environ.copy()
-    env["HOME"] = str(home)
-    r = subprocess.run(
-        ["bash", str(CLAIM_AUDIT), "--release", "--stale-hours=1"],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    r = _run_claim_audit(home, "--release", "--stale-hours=1")
     assert r.returncode == 0
     assert "CLEARED stale claim cache cc-active-task-cx-stale" in r.stdout
     assert not claim_file.exists()
@@ -269,15 +269,7 @@ def test_audit_preserves_mismatched_claim_cache(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    env = os.environ.copy()
-    env["HOME"] = str(home)
-    r = subprocess.run(
-        ["bash", str(CLAIM_AUDIT), "--release", "--stale-hours=1"],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    r = _run_claim_audit(home, "--release", "--stale-hours=1")
     assert r.returncode == 1
     assert "KEPT claim cache cc-active-task-codex-stale" in r.stdout
     assert claim_file.read_text(encoding="utf-8") == "different-task\n"
@@ -299,18 +291,10 @@ def test_audit_release_clears_already_released_claim_cache(tmp_path: Path) -> No
     claim_file = cache / "cc-active-task-codex-queue"
     claim_file.write_text("already-released\n", encoding="utf-8")
 
-    env = os.environ.copy()
-    env["HOME"] = str(home)
-    r = subprocess.run(
-        ["bash", str(CLAIM_AUDIT), "--release", "--stale-hours=1"],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    r = _run_claim_audit(home, "--release", "--stale-hours=1")
     assert r.returncode == 0
     assert "CLEARED stale claim cache cc-active-task-codex-queue" in r.stdout
-    assert "no phantom claims found" in r.stdout
+    assert "no phantom claims or claim/lane coherence issues found" in r.stdout
     assert not claim_file.exists()
 
 
@@ -329,16 +313,93 @@ def test_audit_release_clears_claim_cache_for_closed_task(tmp_path: Path) -> Non
     claim_file = cache / "cc-active-task-codex-closed"
     claim_file.write_text("closed-task\n", encoding="utf-8")
 
-    env = os.environ.copy()
-    env["HOME"] = str(home)
-    r = subprocess.run(
-        ["bash", str(CLAIM_AUDIT), "--release", "--stale-hours=1"],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    r = _run_claim_audit(home, "--release", "--stale-hours=1")
     assert r.returncode == 0
     assert "CLEARED stale claim cache cc-active-task-codex-closed" in r.stdout
     assert "status=not_active" in r.stdout
     assert not claim_file.exists()
+
+
+def test_audit_reports_missing_claim_cache_in_read_only_mode(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(
+        home,
+        "missing-cache",
+        status="in_progress",
+        assigned_to="alpha",
+    )
+
+    r = _run_claim_audit(home, "--stale-hours=999")
+
+    assert r.returncode == 1
+    assert "claim coherence issue" in r.stdout
+    assert "CACHE_MISSING: missing-cache assigned=alpha" in r.stdout
+
+
+def test_audit_reports_mismatched_claim_cache_in_read_only_mode(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(
+        home,
+        "expected-task",
+        status="claimed",
+        assigned_to="codex-mismatch",
+    )
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-codex-mismatch").write_text("other-task\n", encoding="utf-8")
+
+    r = _run_claim_audit(home, "--stale-hours=999")
+
+    assert r.returncode == 1
+    assert "CACHE_MISMATCH: expected-task assigned=codex-mismatch" in r.stdout
+    assert "cache_task=other-task" in r.stdout
+
+
+def test_audit_reports_stale_resumed_process_for_closed_task(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "closed-task",
+        status="done",
+        assigned_to="codex-primary",
+    )
+    closed_note = _task_root(home) / "closed" / note.name
+    note.replace(closed_note)
+    ps_text = (
+        "123 456 env CODEX_ROLE=codex-primary codex Resume governed task "
+        "closed-task after session logout\n"
+    )
+
+    r = _run_claim_audit(home, "--stale-hours=999", ps_text=ps_text)
+
+    assert r.returncode == 1
+    assert "live process coherence issue" in r.stdout
+    assert "PROCESS_TASK_NOT_ACTIVE" in r.stdout
+    assert "task_state=closed:done" in r.stdout
+
+
+def test_audit_accepts_coherent_resumed_process(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "live-task",
+        status="claimed",
+        assigned_to="codex-live",
+    )
+    text = note.read_text(encoding="utf-8")
+    note.write_text(
+        text.replace("claimed_at: null", "claimed_at: 2026-05-09T00:00:00Z"),
+        encoding="utf-8",
+    )
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-codex-live").write_text("live-task\n", encoding="utf-8")
+    ps_text = (
+        "123 456 env CODEX_ROLE=codex-live codex Resume governed task "
+        "live-task after session logout\n"
+    )
+
+    r = _run_claim_audit(home, "--stale-hours=99999", ps_text=ps_text)
+
+    assert r.returncode == 0
+    assert "no phantom claims or claim/lane coherence issues found" in r.stdout
