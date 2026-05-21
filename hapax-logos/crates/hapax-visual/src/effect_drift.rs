@@ -16,7 +16,6 @@ const FAST_FADE_OUT_S: f32 = 6.0;
 const STAGGER_S: f32 = 6.0;
 const POOL_SIZE: usize = 5; // Five visible slots: four active, one rotating/recruiting.
 const ACTIVE_SLOT_TARGET: usize = 4;
-const PARAM_DRIFT_RATE: f32 = 0.036;
 const TICK_DIVISOR: u64 = 5; // ~6Hz at 30fps
 const SPATIAL_PEAK_RANGE: (f32, f32) = (0.82, 0.98);
 const NONSPATIAL_PEAK_RANGE: (f32, f32) = (0.96, 1.0);
@@ -30,13 +29,15 @@ const MIN_ACTIVE_ANCHOR_EFFECTS: usize = 3;
 const MAX_ACTIVE_CONDITIONAL_EFFECTS: usize = 1;
 const MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS: usize = 3;
 const MIN_ACTIVE_DRAMATIC_VARIATION_EFFECTS: usize = 3;
+const MIN_ACTIVE_PUNCTUATION_EFFECTS: usize = 2;
 const MIN_ACTIVE_GENERATED_CHAIN_SLOTS: usize = 3;
 const MIN_GENERATED_CHAIN_NODES: usize = 3;
 const MAX_GENERATED_CHAIN_NODES: usize = 5;
 const RECENT_EFFECT_MEMORY: usize = 36;
 const COVERAGE_EVENT_MEMORY: usize = 192;
-const PARAM_ORBIT_BASE_RATE: f32 = 0.15;
-const PARAM_ORBIT_SECONDARY_RATE: f32 = 0.069;
+const PARAM_REGIME_MIN_HOLD_S: f32 = 1.35;
+const PARAM_REGIME_MAX_HOLD_S: f32 = 3.40;
+const PARAM_REGIME_CROSSFADE_FRACTION: f32 = 0.16;
 
 fn shader_nodes_dir() -> PathBuf {
     if let Ok(path) = std::env::var("HAPAX_SHADER_NODES_DIR") {
@@ -1328,6 +1329,50 @@ fn recruit_warm_progress(def: &ShaderDef) -> f32 {
     }
 }
 
+fn lifecycle_rise_intensity(def: &ShaderDef, progress: f32, peak: f32) -> f32 {
+    let progress = progress.clamp(0.0, 1.0);
+    if is_fast_evict(def) || is_punctuation_anchor(def) {
+        let attack = (progress / 0.28).clamp(0.0, 1.0);
+        let attack = attack * attack * (3.0 - 2.0 * attack);
+        let floor = peak * 0.72;
+        let late = ((progress - 0.28) / 0.72).clamp(0.0, 1.0);
+        let late = late * late * (3.0 - 2.0 * late);
+        return floor * attack + (peak - floor) * late;
+    }
+
+    let staged = if progress < 0.42 {
+        0.62 * (progress / 0.42).clamp(0.0, 1.0)
+    } else if progress < 0.78 {
+        0.62
+    } else {
+        0.62 + 0.38 * ((progress - 0.78) / 0.22).clamp(0.0, 1.0)
+    };
+    peak * staged
+}
+
+fn lifecycle_fall_intensity(def: &ShaderDef, progress: f32, peak: f32) -> f32 {
+    let progress = progress.clamp(0.0, 1.0);
+    if is_fast_evict(def) || is_punctuation_anchor(def) {
+        if progress < 0.55 {
+            return peak;
+        }
+        let drop = ((progress - 0.55) / 0.45).clamp(0.0, 1.0);
+        let drop = drop * drop * (3.0 - 2.0 * drop);
+        return peak * (1.0 - drop);
+    }
+
+    if progress < 0.40 {
+        return peak * 0.86;
+    }
+    let drop = ((progress - 0.40) / 0.60).clamp(0.0, 1.0);
+    let drop = drop * drop * (3.0 - 2.0 * drop);
+    peak * (0.86 * (1.0 - drop))
+}
+
+fn lifecycle_warm_intensity(def: &ShaderDef, progress: f32, peak: f32) -> f32 {
+    lifecycle_rise_intensity(def, progress, peak).max(INITIAL_VISIBLE_FLOOR.min(peak))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1478,6 +1523,89 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn punctuation_targets_do_not_land_in_low_driver_regions() {
+        let mut rng = SimpleRng::new(42);
+
+        for def in SHADERS
+            .iter()
+            .filter(|def| is_composed_surface_drift_candidate(def))
+            .filter(|def| is_punctuation_anchor(def))
+        {
+            let target = SlotDriftEngine::random_target(&mut rng, def);
+            for (name, value) in target {
+                if assertive_min_normalized(def, &name).is_some() {
+                    assert_ne!(
+                        parameter_region(def, &name, value),
+                        "low",
+                        "{}.{} punctuation driver target {} must not satisfy the scheduler while reading as low-impact",
+                        def.name,
+                        name,
+                        value
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn punctuation_lifecycle_attacks_and_retires_as_an_inflection_not_a_breath() {
+        let def = SHADERS
+            .iter()
+            .find(|def| def.name == "glitch_block")
+            .expect("glitch block effect");
+        let peak = 0.98;
+
+        assert!(
+            lifecycle_rise_intensity(def, 0.30, peak) >= peak * 0.70,
+            "punctuation effects should become visible early instead of spending most of fade-in near passthrough"
+        );
+        assert!(
+            lifecycle_fall_intensity(def, 0.50, peak) >= peak * 0.95,
+            "punctuation effects should hold identity before dropping out"
+        );
+        assert!(
+            lifecycle_fall_intensity(def, 0.90, peak) <= peak * 0.30,
+            "punctuation effects should exit decisively after the hold"
+        );
+    }
+
+    #[test]
+    fn parameter_regimes_hold_values_instead_of_continuously_sine_sweeping() {
+        let shader_idx = shader_idx_by_name("glitch_block").expect("glitch block");
+        let def = &SHADERS[shader_idx];
+        let param_index = def
+            .param_order
+            .iter()
+            .position(|name| *name == "intensity")
+            .expect("intensity param");
+        let seed = parameter_regime_seed(1, 0, shader_idx, param_index);
+        let hold = parameter_regime_hold_seconds(seed);
+        let phase = parameter_regime_phase_offset(seed, hold);
+        let bucket_start = hold * 4.0 - phase;
+        let first = held_parameter_regime(
+            def,
+            1,
+            0,
+            shader_idx,
+            param_index,
+            bucket_start + hold * 0.34,
+        );
+        let second = held_parameter_regime(
+            def,
+            1,
+            0,
+            shader_idx,
+            param_index,
+            bucket_start + hold * 0.52,
+        );
+
+        assert!(
+            (first - second).abs() < 0.0001,
+            "parameter regimes should plateau inside a hold bucket instead of continuously tracing a sine; {first} vs {second}"
+        );
     }
 
     #[test]
@@ -2039,48 +2167,36 @@ mod tests {
     }
 
     #[test]
-    fn parameter_orbit_is_visible_without_brightness_or_alpha_pumping() {
+    fn parameter_regime_is_visible_without_brightness_pumping() {
         let representative = SHADERS.iter().find(|def| def.name == "warp").unwrap();
+        let seed = parameter_regime_seed(0, 0, shader_idx_by_name("warp").unwrap(), 1);
 
         assert!(
-            PARAM_ORBIT_BASE_RATE >= 0.10 && PARAM_ORBIT_SECONDARY_RATE >= 0.04,
-            "structural parameter orbits must be fast enough to be witnessed inside a one-minute sample"
+            parameter_regime_hold_seconds(seed) <= PARAM_REGIME_MAX_HOLD_S,
+            "structural parameter regimes must turn over fast enough to be witnessed inside a one-minute sample"
         );
-        assert_eq!(parameter_orbit_depth(representative, "brightness"), 0.0);
-        assert_eq!(parameter_orbit_depth(representative, "alpha"), 0.0);
+        assert_eq!(parameter_regime_depth(representative, "brightness"), 0.0);
         assert!(
-            parameter_orbit_depth(representative, "slice_amplitude") >= 0.20,
-            "non-opacity structural parameters should carry visible continuous variation"
+            parameter_regime_depth(representative, "slice_amplitude") >= 0.20,
+            "structural parameters should carry visible held-regime variation"
         );
     }
 
     #[test]
-    fn fast_evict_replacement_matches_retirement_energy() {
-        let fast_floor = FAST_RETIRE_INTENSITY_FLOOR;
-        let warm_progress = FAST_RECRUIT_WARM_PROGRESS;
-        let warm_smooth = warm_progress * warm_progress * (3.0 - 2.0 * warm_progress);
-
+    fn fast_evict_replacement_reenters_as_visible_inflection() {
         for def in SHADERS.iter().filter(|def| is_fast_evict(def)) {
             let peak_range = if def.is_spatial {
                 SPATIAL_PEAK_RANGE
             } else {
                 NONSPATIAL_PEAK_RANGE
             };
-            let min_warm_intensity = peak_range.0 * warm_smooth;
-            let max_warm_intensity = peak_range.1 * warm_smooth;
+            let min_warm_intensity =
+                lifecycle_warm_intensity(def, recruit_warm_progress(def), peak_range.0);
             assert!(
-                min_warm_intensity + 0.05 >= fast_floor,
-                "{} warm-start minimum {:.3} falls too far below fast retire floor {:.3}",
+                min_warm_intensity >= peak_range.0 * 0.68,
+                "{} warm-start minimum {:.3} is too close to passthrough for punctuation repair",
                 def.name,
-                min_warm_intensity,
-                fast_floor
-            );
-            assert!(
-                max_warm_intensity <= fast_floor + 0.06,
-                "{} warm-start maximum {:.3} jumps above fast retire floor {:.3}",
-                def.name,
-                max_warm_intensity,
-                fast_floor
+                min_warm_intensity
             );
         }
     }
@@ -2371,6 +2487,10 @@ mod tests {
             .iter()
             .filter(|def| is_dramatic_variation_anchor(def))
             .count();
+        let punctuation_count = active
+            .iter()
+            .filter(|def| is_punctuation_anchor(def))
+            .count();
 
         assert!(
             anchor_count >= MIN_ACTIVE_ANCHOR_EFFECTS,
@@ -2390,6 +2510,11 @@ mod tests {
         assert!(
             dramatic_variation_count >= MIN_ACTIVE_DRAMATIC_VARIATION_EFFECTS,
             "active set needs multiple dramatic variation anchors; got {:?}",
+            active.iter().map(|def| def.name).collect::<Vec<&str>>()
+        );
+        assert!(
+            punctuation_count >= MIN_ACTIVE_PUNCTUATION_EFFECTS,
+            "active set needs punctuation anchors that break broad sameyness; got {:?}",
             active.iter().map(|def| def.name).collect::<Vec<&str>>()
         );
 
@@ -2419,6 +2544,11 @@ mod tests {
             .take(ACTIVE_SLOT_TARGET)
             .filter(|idx| is_dramatic_variation_anchor(&SHADERS[**idx]))
             .count();
+        let active_punctuation = pool
+            .iter()
+            .take(ACTIVE_SLOT_TARGET)
+            .filter(|idx| is_punctuation_anchor(&SHADERS[**idx]))
+            .count();
 
         for group in COMPOSED_SURFACE_BASELINE_GROUPS {
             assert!(
@@ -2433,6 +2563,10 @@ mod tests {
         assert!(
             active_dramatic_variation >= MIN_ACTIVE_DRAMATIC_VARIATION_EFFECTS,
             "accepted allowed set must retain dramatic-variation anchors"
+        );
+        assert!(
+            active_punctuation >= MIN_ACTIVE_PUNCTUATION_EFFECTS,
+            "accepted allowed set must retain punctuation anchors"
         );
     }
 
@@ -4304,7 +4438,9 @@ fn random_peak_intensity(rng: &mut SimpleRng, def: &ShaderDef) -> f32 {
 }
 
 fn target_departure_fraction(def: &ShaderDef) -> f32 {
-    if is_fast_evict(def) {
+    if is_punctuation_anchor(def) {
+        0.68
+    } else if is_fast_evict(def) {
         0.60
     } else if def.is_spatial {
         0.50
@@ -4328,30 +4464,32 @@ fn assertive_target_value(
     let raw = rng.range(lo, hi);
     let range = hi - lo;
     let min_delta = range * target_departure_fraction(def);
-    if (raw - passthrough).abs() >= min_delta {
-        return raw;
-    }
+    let value = if (raw - passthrough).abs() >= min_delta {
+        raw
+    } else {
+        let lower = (passthrough - min_delta).clamp(lo, hi);
+        let upper = (passthrough + min_delta).clamp(lo, hi);
+        let lower_delta = (lower - passthrough).abs();
+        let upper_delta = (upper - passthrough).abs();
 
-    let lower = (passthrough - min_delta).clamp(lo, hi);
-    let upper = (passthrough + min_delta).clamp(lo, hi);
-    let lower_delta = (lower - passthrough).abs();
-    let upper_delta = (upper - passthrough).abs();
-
-    let value = if lower_delta >= min_delta && upper_delta >= min_delta {
-        if rng.next_f32() < 0.5 {
+        if lower_delta >= min_delta && upper_delta >= min_delta {
+            if rng.next_f32() < 0.5 {
+                lower
+            } else {
+                upper
+            }
+        } else if lower_delta >= min_delta {
+            lower
+        } else if upper_delta >= min_delta {
+            upper
+        } else if lower_delta > upper_delta {
             lower
         } else {
             upper
         }
-    } else if lower_delta >= min_delta {
-        lower
-    } else if upper_delta >= min_delta {
-        upper
-    } else if lower_delta > upper_delta {
-        lower
-    } else {
-        upper
     };
+
+    let value = bias_assertive_target_region(def, param_name, value, lo, hi);
 
     if param_name == "brightness" {
         value.max(1.0).clamp(lo, hi)
@@ -4383,6 +4521,8 @@ fn deterministic_assertive_target_value(
     } else {
         (passthrough - min_delta).clamp(lo, hi)
     };
+
+    let value = bias_assertive_target_region(def, param_name, value, lo, hi);
 
     if param_name == "brightness" {
         value.max(1.0).clamp(lo, hi)
@@ -4441,32 +4581,27 @@ fn interpolated_param_value(
     let mut interpolated = passthrough + (active_value - passthrough) * intensity;
 
     if intensity > 0.05 && span > 0.001 {
-        let phase_seed =
-            (slot_index * 17 + node_index * 23 + param_index * 7 + shader_idx * 13) as f32 * 0.1;
-        let freq = 0.16 + 0.09 * ((slot_index * 3 + node_index * 5 + param_index * 11) % 7) as f32;
-        let sine = (now * freq + phase_seed).sin();
-        let mod_depth = if def.is_spatial { 0.16 } else { 0.38 };
-        interpolated += sine * mod_depth * span * intensity;
-
-        let drift_scale = PARAM_DRIFT_RATE * if def.is_spatial { 0.3 } else { 1.0 };
-        let noise = ((now * 1.7 + phase_seed * 3.1).sin() * 0.5) * drift_scale * span;
-        interpolated += noise;
-
         let (lo, hi) = active_range_for(def, param_name)
             .unwrap_or((passthrough.min(active_value), passthrough.max(active_value)));
-        let orbit_depth = parameter_orbit_depth(def, param_name);
-        if orbit_depth > 0.0 {
-            let active_span = (hi - lo).abs();
-            let primary = (now * PARAM_ORBIT_BASE_RATE + phase_seed * 2.7).sin();
-            let secondary = (now * PARAM_ORBIT_SECONDARY_RATE + phase_seed * 5.1).sin();
-            let orbit = (primary * 0.72) + (secondary * 0.28);
-            interpolated += orbit * orbit_depth * active_span * intensity;
+        let active_span = (hi - lo).abs();
+        let regime_depth = parameter_regime_depth(def, param_name);
+        if regime_depth > 0.0 && active_span > 0.0 {
+            let regime =
+                held_parameter_regime(def, slot_index, node_index, shader_idx, param_index, now);
+            interpolated += regime * regime_depth * active_span * intensity;
         }
         let lo = if param_name == "brightness" {
             lo.max(1.0)
         } else {
             lo
         };
+        if let Some(min_norm) = assertive_min_normalized(def, param_name) {
+            let min_value = lo + (hi - lo) * min_norm;
+            let runtime_floor = passthrough + (min_value - passthrough) * intensity;
+            if runtime_floor > passthrough {
+                interpolated = interpolated.max(runtime_floor);
+            }
+        }
         interpolated = interpolated.clamp(lo, hi);
     }
 
@@ -4546,15 +4681,105 @@ fn active_range_for(def: &ShaderDef, param_name: &str) -> Option<(f32, f32)> {
         .map(|(_, lo, hi)| (*lo, *hi))
 }
 
-fn parameter_orbit_depth(def: &ShaderDef, param_name: &str) -> f32 {
+fn splitmix64(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9E3779B97F4A7C15);
+    let mut mixed = value;
+    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D049BB133111EB);
+    mixed ^ (mixed >> 31)
+}
+
+fn unit_hash(seed: u64) -> f32 {
+    ((splitmix64(seed) >> 40) as f32) / 16_777_215.0
+}
+
+fn smoothstep01(value: f32) -> f32 {
+    let t = value.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn parameter_regime_seed(
+    slot_index: usize,
+    node_index: usize,
+    shader_idx: usize,
+    param_index: usize,
+) -> u64 {
+    0xD1B54A32D192ED03u64
+        ^ (slot_index as u64).wrapping_mul(0x9E3779B185EBCA87)
+        ^ (node_index as u64).wrapping_mul(0xC2B2AE3D27D4EB4F)
+        ^ (shader_idx as u64).wrapping_mul(0x165667B19E3779F9)
+        ^ (param_index as u64).wrapping_mul(0x85EBCA77C2B2AE63)
+}
+
+fn parameter_regime_hold_seconds(seed: u64) -> f32 {
+    PARAM_REGIME_MIN_HOLD_S
+        + unit_hash(seed ^ 0xA24BAED4963EE407) * (PARAM_REGIME_MAX_HOLD_S - PARAM_REGIME_MIN_HOLD_S)
+}
+
+fn parameter_regime_phase_offset(seed: u64, hold_seconds: f32) -> f32 {
+    unit_hash(seed ^ 0x9FB21C651E98DF25) * hold_seconds
+}
+
+fn regime_level(def: &ShaderDef, seed: u64, bucket: u64) -> f32 {
+    let u = unit_hash(seed ^ bucket.wrapping_mul(0xD6E8FEB86659FD93));
+    if is_punctuation_anchor(def) {
+        match u {
+            x if x < 0.14 => -0.78,
+            x if x < 0.30 => -0.28,
+            x if x < 0.54 => 0.38,
+            x if x < 0.80 => 0.78,
+            _ => 1.0,
+        }
+    } else {
+        match u {
+            x if x < 0.18 => -0.82,
+            x if x < 0.38 => -0.42,
+            x if x < 0.62 => 0.0,
+            x if x < 0.82 => 0.46,
+            _ => 0.84,
+        }
+    }
+}
+
+fn held_parameter_regime(
+    def: &ShaderDef,
+    slot_index: usize,
+    node_index: usize,
+    shader_idx: usize,
+    param_index: usize,
+    now: f32,
+) -> f32 {
+    let seed = parameter_regime_seed(slot_index, node_index, shader_idx, param_index);
+    let hold_seconds = parameter_regime_hold_seconds(seed);
+    let shifted = (now.max(0.0) + parameter_regime_phase_offset(seed, hold_seconds)) / hold_seconds;
+    let bucket = shifted.floor().max(0.0) as u64;
+    let local = shifted - bucket as f32;
+    let current = regime_level(def, seed, bucket);
+    if local >= PARAM_REGIME_CROSSFADE_FRACTION || bucket == 0 {
+        return current;
+    }
+
+    let previous = regime_level(def, seed, bucket - 1);
+    let t = smoothstep01(local / PARAM_REGIME_CROSSFADE_FRACTION);
+    previous + (current - previous) * t
+}
+
+fn parameter_regime_depth(def: &ShaderDef, param_name: &str) -> f32 {
     match param_name {
-        // Brightness and opacity-like parameters can read as global pumping
-        // when their safe ranges are traversed too broadly. Keep those as
-        // target-local modulation; let the more structural parameters carry
-        // variety.
-        "brightness" | "alpha" | "opacity" | "time" => 0.0,
+        // Brightness reads as global pumping when its safe range is traversed
+        // broadly. Let structural and source-gated parameters carry variety.
+        "brightness" | "time" => 0.0,
+        "alpha" | "opacity" | "color_a" => {
+            if is_punctuation_anchor(def) {
+                0.10
+            } else {
+                0.0
+            }
+        }
         "strength" | "intensity" | "blend" => {
-            if def.is_spatial {
+            if is_punctuation_anchor(def) {
+                0.20
+            } else if def.is_spatial {
                 0.14
             } else if is_fast_evict(def) {
                 0.18
@@ -4563,9 +4788,41 @@ fn parameter_orbit_depth(def: &ShaderDef, param_name: &str) -> f32 {
             }
         }
         _ if def.is_spatial => 0.22,
+        _ if is_punctuation_anchor(def) => 0.30,
         _ if is_fast_evict(def) => 0.34,
         _ => 0.26,
     }
+}
+
+fn assertive_min_normalized(def: &ShaderDef, param_name: &str) -> Option<f32> {
+    if !is_punctuation_anchor(def) {
+        return None;
+    }
+
+    match param_name {
+        "active" | "amount" | "alpha" | "blend" | "chroma_shift" | "color_a" | "dot_size"
+        | "edge_glow" | "intensity" | "opacity" | "rgb_split" | "sort_length" | "speed"
+        | "strength" | "thickness" | "vorticity" => Some(0.62),
+        "scale" => Some(0.54),
+        _ => None,
+    }
+}
+
+fn bias_assertive_target_region(
+    def: &ShaderDef,
+    param_name: &str,
+    value: f32,
+    lo: f32,
+    hi: f32,
+) -> f32 {
+    let Some(min_norm) = assertive_min_normalized(def, param_name) else {
+        return value;
+    };
+    if (hi - lo).abs() <= f32::EPSILON {
+        return value;
+    }
+    let min_value = lo + (hi - lo) * min_norm;
+    value.max(min_value).clamp(lo, hi)
 }
 
 fn parameter_region(def: &ShaderDef, param_name: &str, value: f32) -> &'static str {
@@ -4710,6 +4967,32 @@ fn is_dramatic_variation_anchor(def: &ShaderDef) -> bool {
             | "reaction_diffusion"
             | "rutt_etra"
             | "scanlines"
+            | "strobe"
+            | "thermal"
+            | "threshold"
+            | "vhs"
+            | "waveform_render"
+    )
+}
+
+fn is_punctuation_anchor(def: &ShaderDef) -> bool {
+    matches!(
+        def.name,
+        // These are composed-surface effects that visibly change the scene's
+        // identity at 1080p. They are allowed to be short-dwell and assertive;
+        // quieter texture helpers cannot satisfy this floor by themselves.
+        "ascii"
+            | "chromatic_aberration"
+            | "color_map"
+            | "dither"
+            | "edge_detect"
+            | "fluid_sim"
+            | "glitch_block"
+            | "halftone"
+            | "noise_gen"
+            | "particle_system"
+            | "pixsort"
+            | "posterize"
             | "strobe"
             | "thermal"
             | "threshold"
@@ -4876,6 +5159,17 @@ fn drift_pool_invariant_failures(indices: &[usize]) -> Vec<String> {
         failures.push(format!(
             "has {} dramatic-variation anchor(s), need at least {}",
             dramatic_variation_count, MIN_ACTIVE_DRAMATIC_VARIATION_EFFECTS
+        ));
+    }
+
+    let punctuation_count = indices
+        .iter()
+        .filter(|idx| is_punctuation_anchor(&SHADERS[**idx]))
+        .count();
+    if punctuation_count < MIN_ACTIVE_PUNCTUATION_EFFECTS {
+        failures.push(format!(
+            "has {} punctuation anchor(s), need at least {}",
+            punctuation_count, MIN_ACTIVE_PUNCTUATION_EFFECTS
         ));
     }
 
@@ -5088,6 +5382,43 @@ fn choose_initial_pool(rng: &mut SimpleRng, selectable: &[usize]) -> Vec<usize> 
                             && visibility_group(&SHADERS[*selected_idx])
                                 == visibility_group(&SHADERS[idx])
                     })
+                    .map(|pos| (pos, idx))
+            });
+        if let Some((pos, idx)) = replacement {
+            selected[pos] = idx;
+        }
+    }
+
+    for idx in shuffled.iter().copied() {
+        if selected
+            .iter()
+            .take(ACTIVE_SLOT_TARGET)
+            .filter(|idx| is_punctuation_anchor(&SHADERS[**idx]))
+            .count()
+            >= MIN_ACTIVE_PUNCTUATION_EFFECTS
+        {
+            break;
+        }
+        if !selected.contains(&idx) && is_punctuation_anchor(&SHADERS[idx]) {
+            selected.push(idx);
+        }
+    }
+    if selected
+        .iter()
+        .take(ACTIVE_SLOT_TARGET)
+        .filter(|idx| is_punctuation_anchor(&SHADERS[**idx]))
+        .count()
+        < MIN_ACTIVE_PUNCTUATION_EFFECTS
+    {
+        let replacement = shuffled
+            .iter()
+            .copied()
+            .filter(|idx| !selected.contains(idx) && is_punctuation_anchor(&SHADERS[*idx]))
+            .find_map(|idx| {
+                selected
+                    .iter()
+                    .take(ACTIVE_SLOT_TARGET)
+                    .position(|selected_idx| !is_punctuation_anchor(&SHADERS[*selected_idx]))
                     .map(|pos| (pos, idx))
             });
         if let Some((pos, idx)) = replacement {
@@ -5445,6 +5776,9 @@ impl SlotDriftEngine {
         if is_dramatic_variation_anchor(def) {
             score += 22.0;
         }
+        if is_punctuation_anchor(def) {
+            score += 18.0;
+        }
         if is_baseline_visible(def) && !is_visible_anchor(def) && lifetime == 0.0 {
             score += 20.0;
         }
@@ -5520,9 +5854,9 @@ impl SlotDriftEngine {
                     self.slots[i].active_target = Self::random_target(&mut self.rng, def);
                     self.slots[i].peak_intensity = random_peak_intensity(&mut self.rng, def);
                     let warm_progress = recruit_warm_progress(def);
-                    let warm_smooth = warm_progress * warm_progress * (3.0 - 2.0 * warm_progress);
                     self.slots[i].phase_start = time - self.slots[i].phase_duration * warm_progress;
-                    self.slots[i].intensity = self.slots[i].peak_intensity * warm_smooth;
+                    self.slots[i].intensity =
+                        lifecycle_warm_intensity(def, warm_progress, self.slots[i].peak_intensity);
                     self.record_selection_for_slot(i);
                     log::info!(
                         "SlotDrift: zero-crossing → slot {} now {} (fading in)",
@@ -5561,12 +5895,11 @@ impl SlotDriftEngine {
             Phase::Rising => {
                 let elapsed = now - slot.phase_start;
                 let progress = (elapsed / slot.phase_duration).min(1.0);
-                let smooth = progress * progress * (3.0 - 2.0 * progress);
-                slot.intensity = smooth * slot.peak_intensity;
+                let def = &SHADERS[slot.shader_idx];
+                slot.intensity = lifecycle_rise_intensity(def, progress, slot.peak_intensity);
                 if progress >= 1.0 {
                     slot.phase = Phase::Peak;
                     slot.phase_start = now;
-                    let def = &SHADERS[slot.shader_idx];
                     slot.phase_duration = peak_hold_duration(def, &mut self.rng);
                     log::info!(
                         "SlotDrift: slot {} ({}) → PEAK ({:.0}s, intensity={:.2})",
@@ -5602,9 +5935,8 @@ impl SlotDriftEngine {
             Phase::Falling => {
                 let elapsed = now - slot.phase_start;
                 let progress = (elapsed / slot.phase_duration).min(1.0);
-                let inv = 1.0 - progress;
-                slot.intensity = slot.peak_intensity * inv * inv * (3.0 - 2.0 * inv);
                 let def = &SHADERS[slot.shader_idx];
+                slot.intensity = lifecycle_fall_intensity(def, progress, slot.peak_intensity);
                 if progress >= 1.0 || slot.intensity <= retire_intensity_floor(def) {
                     // Near-zero crossing: effect is now below the visible
                     // baseline, so recycle it before a slot spends long
@@ -5725,9 +6057,8 @@ impl SlotDriftEngine {
             slot.active_target = Self::random_target(&mut self.rng, def);
             slot.peak_intensity = random_peak_intensity(&mut self.rng, def);
             let warm_progress = recruit_warm_progress(def);
-            let warm_smooth = warm_progress * warm_progress * (3.0 - 2.0 * warm_progress);
             slot.phase_start = now - slot.phase_duration * warm_progress;
-            slot.intensity = slot.peak_intensity * warm_smooth;
+            slot.intensity = lifecycle_warm_intensity(def, warm_progress, slot.peak_intensity);
             self.record_selection_for_slot(chosen_idx);
             self.last_activation = now;
             self.next_stagger = STAGGER_S * self.rng.range(0.7, 1.3);
@@ -5813,6 +6144,16 @@ impl SlotDriftEngine {
                     && is_dramatic_variation_anchor(&SHADERS[slot.shader_idx])
             })
             .count();
+        let active_punctuation_count = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(slot_idx, slot)| {
+                *slot_idx != idx
+                    && slot.phase != Phase::Idle
+                    && is_punctuation_anchor(&SHADERS[slot.shader_idx])
+            })
+            .count();
         let active_structural_signatures: Vec<String> = self
             .slots
             .iter()
@@ -5872,12 +6213,15 @@ impl SlotDriftEngine {
             let candidate_anchor = usize::from(is_visible_anchor(def));
             let candidate_high_impingement = usize::from(is_high_impingement_anchor(def));
             let candidate_dramatic_variation = usize::from(is_dramatic_variation_anchor(def));
+            let candidate_punctuation = usize::from(is_punctuation_anchor(def));
             let candidate_conditional = usize::from(is_conditionally_low_salience(def));
             active_anchor_count + candidate_anchor >= MIN_ACTIVE_ANCHOR_EFFECTS
                 && active_high_impingement_count + candidate_high_impingement
                     >= MIN_ACTIVE_HIGH_IMPINGEMENT_EFFECTS
                 && active_dramatic_variation_count + candidate_dramatic_variation
                     >= MIN_ACTIVE_DRAMATIC_VARIATION_EFFECTS
+                && active_punctuation_count + candidate_punctuation
+                    >= MIN_ACTIVE_PUNCTUATION_EFFECTS
                 && active_conditional_count + candidate_conditional
                     <= MAX_ACTIVE_CONDITIONAL_EFFECTS
         };
@@ -5917,6 +6261,18 @@ impl SlotDriftEngine {
         } else {
             preferred
         };
+        let preferred: Vec<usize> =
+            if preferred.is_empty() && active_punctuation_count < MIN_ACTIVE_PUNCTUATION_EFFECTS {
+                hard_floor_candidates
+                    .iter()
+                    .copied()
+                    .filter(|i| {
+                        is_punctuation_anchor(&SHADERS[*i]) && candidate_preserves_hard_floor(*i)
+                    })
+                    .collect()
+            } else {
+                preferred
+            };
         let preferred: Vec<usize> = if preferred.is_empty() {
             candidates
                 .iter()
