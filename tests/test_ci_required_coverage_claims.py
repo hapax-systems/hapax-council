@@ -315,3 +315,61 @@ def test_docs_only_warning_no_longer_recommends_carrier_workaround() -> None:
 
     assert "no carrier file is required" in current_guidance
     assert "required-check sentinels" in current_guidance
+
+
+AUDIO_SAFETY_SLICE_PATHS = (
+    "shared/audio_routing_policy.py",
+    "shared/audio_control_plane.py",
+    "shared/audio_restart_proof_gate.py",
+    "shared/audio_topology*.py",
+    "shared/audio_canary*.py",
+    "config/audio-topology.yaml",
+    "config/audio-routing.yaml",
+    "config/wireplumber/**",
+    "config/hapax/audio-*.conf",
+    "config/pipewire/**",
+    "scripts/hapax-wireplumber-*",
+    "docs/audio-topology-reference.md",
+)
+
+AUDIO_SAFETY_SLICE_TESTS = (
+    "tests/shared/test_audio_routing_policy.py",
+    "tests/scripts/test_hapax_audio_routing_check.py",
+    "tests/shared/test_canonical_audio_topology.py",
+    "tests/shared/test_audio_topology_inspector.py",
+    "tests/docs/test_audio_current_capsule.py",
+)
+
+
+def test_audio_graph_validate_workflow_triggers_on_audio_authority_paths() -> None:
+    workflow_text = _read(".github/workflows/audio-graph-validate.yml")
+
+    for path_pattern in AUDIO_SAFETY_SLICE_PATHS:
+        assert path_pattern in workflow_text, (
+            f"audio-graph-validate.yml missing path trigger: {path_pattern}"
+        )
+
+
+def test_audio_graph_validate_workflow_runs_safety_slice_tests() -> None:
+    workflow_text = _read(".github/workflows/audio-graph-validate.yml")
+
+    for test_path in AUDIO_SAFETY_SLICE_TESTS:
+        assert test_path in workflow_text, (
+            f"audio-graph-validate.yml missing safety slice test: {test_path}"
+        )
+
+
+def test_audio_graph_validate_runs_generator_freshness_check() -> None:
+    workflow_text = _read(".github/workflows/audio-graph-validate.yml")
+
+    assert "generate-pipewire-audio-confs.py" in workflow_text
+    assert "--check" in workflow_text
+    assert "--check-route-maps" in workflow_text
+    assert "--check-wireplumber-deny-policy" in workflow_text
+
+
+def test_audio_graph_validate_triggers_on_pull_request_and_merge_group() -> None:
+    workflow_text = _read(".github/workflows/audio-graph-validate.yml")
+
+    assert "pull_request:" in workflow_text
+    assert "merge_group:" in workflow_text
