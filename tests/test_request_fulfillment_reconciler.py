@@ -20,6 +20,7 @@ def _write_request(
     status: str = "accepted_for_planning",
     downstream_tasks: list[str] | None = None,
     request_type: str = "hapax-request",
+    extra_frontmatter: dict[str, object] | None = None,
 ) -> None:
     frontmatter = {
         "type": request_type,
@@ -31,6 +32,8 @@ def _write_request(
     }
     if downstream_tasks is not None:
         frontmatter["downstream_tasks"] = downstream_tasks
+    if extra_frontmatter:
+        frontmatter.update(extra_frontmatter)
     path.write_text(
         "---\n" + yaml.safe_dump(frontmatter, sort_keys=False).strip() + "\n---\n\n# Request\n",
         encoding="utf-8",
@@ -44,6 +47,7 @@ def _write_task(
     status: str = "done",
     parent_request: str = "",
     body: str = "# Task\n",
+    extra_frontmatter: dict[str, object] | None = None,
 ) -> None:
     frontmatter = {
         "type": "cc-task",
@@ -57,6 +61,8 @@ def _write_task(
         "parent_spec": "/tmp/test-spec.md",
         "depends_on": [],
     }
+    if extra_frontmatter:
+        frontmatter.update(extra_frontmatter)
     path.write_text(
         "---\n" + yaml.safe_dump(frontmatter, sort_keys=False).strip() + "\n---\n\n" + body,
         encoding="utf-8",
@@ -215,6 +221,69 @@ def test_missing_downstream_task_blocks_request_closure(tmp_path: Path) -> None:
     assert payload["eligible_count"] == 0
     assert payload["blocked"][0]["reason"] == "missing_linked_tasks"
     assert (active / "REQ-004.md").exists()
+
+
+def test_avsdlc_impacted_request_without_evidence_blocks_closure(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    _write_request(
+        active / "REQ-VIS.md",
+        "REQ-VIS",
+        downstream_tasks=["T-VIS"],
+        extra_frontmatter={"avsdlc_axes": ["visual"]},
+    )
+    _write_task(task_closed / "T-VIS.md", "T-VIS", status="done")
+
+    result = _run(tmp_path, "--dry-run", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 0
+    blocked = payload["blocked"][0]
+    assert blocked["reason"] == "avsdlc_release_gate_blocked"
+    assert "request:missing:avsdlc_dossier" in blocked["avsdlc_blockers"]
+    assert "request:missing:visual_witness" in blocked["avsdlc_blockers"]
+    assert (active / "REQ-VIS.md").exists()
+
+
+def test_avsdlc_visual_audio_audiovisual_request_with_fresh_witnesses_closes(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    _write_request(
+        active / "REQ-AV.md",
+        "REQ-AV",
+        downstream_tasks=["T-AV"],
+        extra_frontmatter={
+            "avsdlc_axes": ["visual", "audio", "audiovisual"],
+            "avsdlc_dossier": "docs/evidence/av.md",
+            "visual_witness": "artifacts/frame.png",
+            "audio_witness": "artifacts/lufs.json",
+            "audiovisual_witness": "artifacts/sync.md",
+            "runtime_media_impact": True,
+            "runtime_media_witness": "artifacts/live-witness.md",
+            "avsdlc_evidence_collected_at": 4102444800,
+        },
+    )
+    _write_task(task_closed / "T-AV.md", "T-AV", status="done")
+
+    result = _run(tmp_path, "--apply", "--json", "--now", "2026-05-18T01:00:00Z")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 1
+    assert payload["applied_count"] == 1
+    assert not (active / "REQ-AV.md").exists()
+    assert (closed / "REQ-AV.md").exists()
 
 
 def test_prefulfilled_active_request_moves_without_task_inference(tmp_path: Path) -> None:
