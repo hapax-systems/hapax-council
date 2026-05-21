@@ -252,12 +252,12 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let shadow = soft_shadow_at(hit, grid.light_position.xyz);
         let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 3.6);
 
-        let ambient = vec3<f32>(0.04, 0.05, 0.10);
-        let diffuse = light_color * ndotl * 0.18 * shadow;
-        let specular = light_color * spec * 0.40 * shadow;
-        let rim = light_color * fresnel * 0.52;
+        let ambient = vec3<f32>(0.07, 0.08, 0.15);
+        let diffuse = light_color * ndotl * 0.26 * shadow;
+        let specular = light_color * spec * 0.48 * shadow;
+        let rim = light_color * fresnel * 0.62;
         var sphere_color = ambient + diffuse + specular + rim;
-        let sphere_alpha = clamp(0.10 + fresnel * 0.28 + spec * 0.14, 0.08, 0.42);
+        let sphere_alpha = clamp(0.15 + fresnel * 0.30 + spec * 0.15, 0.13, 0.46);
         return FragOutput(vec4<f32>(sphere_color, sphere_alpha), 1.0);
     }
 
