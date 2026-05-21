@@ -133,3 +133,69 @@ def test_blocks_ready_task_with_unrepairable_route_metadata(tmp_path: Path) -> N
     assert result.returncode == 7
     assert "route metadata is not dispatchable" in result.stderr
     assert "status: ready" in task.read_text(encoding="utf-8")
+
+
+def _run_reconcile(vault: Path, *, dry_run: bool = False) -> subprocess.CompletedProcess[str]:
+    cmd = [str(SCRIPT), "--reconcile", "--vault-root", str(vault)]
+    if dry_run:
+        cmd.append("--dry-run")
+    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+
+def _write_task(vault: Path, task_id: str, *, status: str, depends_on: str) -> Path:
+    return _write(
+        vault / "active" / f"{task_id}.md",
+        f"""\
+---
+type: cc-task
+task_id: {task_id}
+title: "{task_id}"
+status: {status}
+assigned_to: null
+priority: p1
+wsjf: 5.0
+depends_on:
+  - {depends_on}
+created_at: 2026-05-17T00:00:00Z
+updated_at: 2026-05-17T00:00:00Z
+parent_request: request.md
+authority_case: CASE-TEST-001
+parent_spec: spec.md
+quality_floor: deterministic_ok
+mutation_surface: vault_docs
+authority_level: authoritative
+route_metadata_schema: 1
+kind: planning
+---
+
+# {task_id}
+""",
+    )
+
+
+def test_reconcile_promotes_satisfied_and_skips_unsatisfied(tmp_path: Path) -> None:
+    vault = tmp_path / "tasks"
+    _write_dep(vault, status="done")
+    t1 = _write_task(vault, "task-satisfied", status="ready", depends_on="dep")
+    t2 = _write_task(vault, "task-blocked", status="ready", depends_on="missing-dep")
+    t3 = _write_task(vault, "task-offered", status="offered", depends_on="dep")
+
+    result = _run_reconcile(vault)
+
+    assert result.returncode == 0
+    assert "1 promoted, 1 skipped" in result.stdout
+    assert "status: offered" in t1.read_text(encoding="utf-8")
+    assert "status: ready" in t2.read_text(encoding="utf-8")
+    assert "status: offered" in t3.read_text(encoding="utf-8")
+
+
+def test_reconcile_dry_run_does_not_modify(tmp_path: Path) -> None:
+    vault = tmp_path / "tasks"
+    _write_dep(vault, status="done")
+    t1 = _write_task(vault, "task-ready", status="ready", depends_on="dep")
+
+    result = _run_reconcile(vault, dry_run=True)
+
+    assert result.returncode == 0
+    assert "dry-run" in result.stdout
+    assert "status: ready" in t1.read_text(encoding="utf-8")

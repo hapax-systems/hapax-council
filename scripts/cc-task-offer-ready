@@ -70,7 +70,9 @@ def normalize_list(value: object) -> list[str]:
     return [text]
 
 
-def locate_task(vault_root: Path, task_id: str, *, search_closed_first: bool = False) -> Path | None:
+def locate_task(
+    vault_root: Path, task_id: str, *, search_closed_first: bool = False
+) -> Path | None:
     subdirs = ("closed", "active") if search_closed_first else ("active", "closed")
     for subdir in subdirs:
         root = vault_root / subdir
@@ -356,9 +358,51 @@ def promote(task_id: str, *, vault_root: Path, dry_run: bool) -> int:
     return 0
 
 
+def reconcile(*, vault_root: Path, dry_run: bool) -> int:
+    """Sweep all ready tasks and promote those with satisfied dependencies."""
+    active = vault_root / "active"
+    if not active.is_dir():
+        return 0
+
+    promoted = 0
+    skipped = 0
+    for path in sorted(active.glob("*.md")):
+        try:
+            fields = parse_fields(path)
+        except (ValueError, yaml.YAMLError, OSError):
+            continue
+        status = strip_scalar(fields.get("status", ""))
+        if status != "ready":
+            continue
+
+        task_id = strip_scalar(fields.get("task_id", path.stem))
+        try:
+            rc = promote(task_id, vault_root=vault_root, dry_run=dry_run)
+        except OSError:
+            skipped += 1
+            continue
+        if rc == 0:
+            promoted += 1
+        else:
+            skipped += 1
+
+    if promoted or skipped:
+        mode = "dry-run " if dry_run else ""
+        print(
+            f"cc-task-offer-ready: {mode}reconcile complete — "
+            f"{promoted} promoted, {skipped} skipped"
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("task_id")
+    parser.add_argument("task_id", nargs="?", default=None)
+    parser.add_argument(
+        "--reconcile",
+        action="store_true",
+        help="sweep all ready tasks and promote those with satisfied dependencies",
+    )
     parser.add_argument(
         "--vault-root",
         type=Path,
@@ -367,7 +411,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
-    return promote(args.task_id, vault_root=args.vault_root.expanduser(), dry_run=args.dry_run)
+    vault = args.vault_root.expanduser()
+
+    if args.reconcile:
+        return reconcile(vault_root=vault, dry_run=args.dry_run)
+
+    if not args.task_id:
+        parser.error("task_id is required unless --reconcile is given")
+
+    return promote(args.task_id, vault_root=vault, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

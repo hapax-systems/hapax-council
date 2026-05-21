@@ -1,0 +1,10 @@
+[Unit]
+Description=Hapax CC task ready-to-offered promotion (every 5 min)
+
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=300
+AccuracySec=30
+
+[Install]
+WantedBy=timers.target
