@@ -70,6 +70,7 @@ def list_classes() -> list[str]:
 
 def _register_builtins() -> None:
     from agents.studio_compositor.album_overlay import AlbumOverlayCairoSource
+    from agents.studio_compositor.aoa_renderer import AoaCairoSource
     from agents.studio_compositor.captions_source import CaptionsCairoSource
     from agents.studio_compositor.cbip_signal_density import (
         CBIPSignalDensityCairoSource,
@@ -96,7 +97,6 @@ def _register_builtins() -> None:
         StanceIndicatorCairoSource,
     )
     from agents.studio_compositor.research_marker_overlay import ResearchMarkerOverlay
-    from agents.studio_compositor.aoa_renderer import AoaCairoSource
     from agents.studio_compositor.stream_overlay import StreamOverlayCairoSource
     from agents.studio_compositor.token_pole import TokenPoleCairoSource
 

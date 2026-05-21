@@ -6,9 +6,9 @@ from unittest.mock import patch
 from PIL import Image
 
 from agents.studio_compositor import director_loop as director_loop_module
-from agents.studio_compositor.director_loop import DirectorLoop
 from agents.studio_compositor.aoa_loader import AoaLoader
 from agents.studio_compositor.aoa_renderer import AoaCairoSource
+from agents.studio_compositor.director_loop import DirectorLoop
 from agents.visual_pool.repository import LocalVisualPool
 
 

@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from agents.studio_compositor.director_loop import DirectorLoop
 from agents.studio_compositor.aoa_loader import AoaLoader
+from agents.studio_compositor.director_loop import DirectorLoop
 from agents.visual_pool.repository import LocalVisualPool
 
 _REPO = Path(__file__).resolve().parents[2]
