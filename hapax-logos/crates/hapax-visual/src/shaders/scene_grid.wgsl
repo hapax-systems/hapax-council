@@ -250,8 +250,6 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let half_vec = normalize(to_light + view_dir);
         let spec = pow(max(dot(sn, half_vec), 0.0), 64.0);
         let shadow = soft_shadow_at(hit, grid.light_position.xyz);
-        let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 2.0);
-
         let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 2.2);
 
         let ambient = vec3<f32>(0.05, 0.06, 0.12);
