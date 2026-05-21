@@ -185,6 +185,14 @@ if [[ "$final_status" == "done" ]]; then
       exit "$disp_rc"
     fi
   fi
+
+  # Sibling-task advisory check — warns about stalled siblings under the same
+  # parent request. Advisory only (exit 0), prevents the remediation execution
+  # gap found by CCTV disconfirmation (PR #3659).
+  SIBLING_CHECKER="$SCRIPT_DIR/cc-close-sibling-check.py"
+  if [[ -f "$SIBLING_CHECKER" ]]; then
+    python3 "$SIBLING_CHECKER" "$note_path" || true
+  fi
 fi
 
 python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" <<'PYEOF'
