@@ -3879,3 +3879,9 @@ from shared.audio_restart_proof_gate import (
 format_failure_report
 run_restart_proof_gate
 write_witness
+
+# Prose assertion extractor: resumable entry point for daemon/CLI.
+# cc-task: 20260509-unb-airy-discursive-p-phase2-build-prose-extractor
+from shared.prose_assertion_extractor import extract_from_directory_resumable
+
+extract_from_directory_resumable
