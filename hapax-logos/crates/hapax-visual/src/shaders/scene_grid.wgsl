@@ -258,7 +258,7 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let rim = light_color * fresnel * 0.52;
         var sphere_color = ambient + diffuse + specular + rim;
         let sphere_alpha = clamp(0.10 + fresnel * 0.28 + spec * 0.14, 0.08, 0.42);
-        return FragOutput(vec4<f32>(sphere_color, sphere_alpha), sphere_depth);
+        return FragOutput(vec4<f32>(sphere_color, sphere_alpha), 1.0);
     }
 
     if in.plane_kind > 2.5 {
