@@ -67,6 +67,7 @@ from shared.capability_classification_inventory import (
     capability_classification_rows_by_id,
     validate_daimonion_tool_affordance_parity,
 )
+from shared.capability_evidence_card import CapabilityEvidenceCard as _CapabilityEvidenceCard
 from shared.capability_outcome import (
     CapabilityOutcomeEnvelope,
     CapabilityOutcomeFixtureSet,
@@ -811,6 +812,11 @@ DirectorProgrammeFormatActionRow._validate_fail_closed_programme_action
 DirectorProgrammeFormatActionProjection._validate_projection_coverage
 DirectorProgrammeFormatActionProjection.rows_for_state
 DirectorProgrammeFormatActionProjection.require_action
+
+# Capability evidence cards are a Phase 0 source contract. The admissibility
+# predicate is exercised by tests here and consumed by downstream dispatch/
+# receipt adapters after the schema PR lands.
+_CapabilityEvidenceCard.is_admissible_for
 
 # Capability outcome envelope helpers are the public contract for downstream
 # affordance outcome adapters, dispatch audits, public-event adapters, and
