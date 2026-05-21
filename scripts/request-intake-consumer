@@ -143,6 +143,56 @@ request_key_for_ref() {
   fi
 }
 
+cctv_intake_receipt_for_note() {
+  local note="$1"
+  local field value
+  for field in cctv_intake_receipt cctv_intake_receipt_path cctv_receipt intake_receipt; do
+    value="$(frontmatter_value "$field" "$note" | compact_value)"
+    if [[ -n "$value" && "$value" != "null" && "$value" != "None" && "$value" != "unassigned" ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+  done
+  return 0
+}
+
+cctv_intake_admission_for_note() {
+  local note="$1"
+  local field value
+  for field in cctv_intake_verdict intake_verdict cctv_verdict cctv_intake_recommendation intake_recommendation; do
+    value="$(frontmatter_value "$field" "$note" | compact_value)"
+    if [[ -n "$value" && "$value" != "null" && "$value" != "None" && "$value" != "unassigned" ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+  done
+  return 0
+}
+
+cctv_intake_blocker_for_note() {
+  local note="$1"
+  local receipt admission
+  receipt="$(cctv_intake_receipt_for_note "$note")"
+  admission="$(cctv_intake_admission_for_note "$note")"
+  if [[ -z "$receipt" ]]; then
+    printf '%s\n' "missing_cctv_intake_receipt"
+    return 0
+  fi
+  if [[ -z "$admission" ]]; then
+    printf '%s\n' "missing_cctv_intake_verdict"
+    return 0
+  fi
+  case "$admission" in
+    ready_to_plan|advance|admitted)
+      return 0
+      ;;
+    *)
+      printf 'cctv_intake_not_ready:%s\n' "$admission"
+      return 0
+      ;;
+  esac
+}
+
 build_task_index() {
   declare -gA _ti_offered _ti_claimed _ti_done _ti_last_activity
   for td in "$TASKS_DIR/active" "$TASKS_DIR/closed"; do
@@ -264,6 +314,42 @@ def scalar(data: dict[str, object], key: str) -> str:
         return ""
     text = str(value).strip()
     return "" if text in {"", "null", "None", "unassigned"} else text
+
+
+def first_scalar(data: dict[str, object], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = scalar(data, key)
+        if value:
+            return value
+    return ""
+
+
+CCTV_READY_ADMISSION_VALUES = {"ready_to_plan", "advance", "admitted"}
+CCTV_INTAKE_RECEIPT_FIELDS = (
+    "cctv_intake_receipt",
+    "cctv_intake_receipt_path",
+    "cctv_receipt",
+    "intake_receipt",
+)
+CCTV_INTAKE_ADMISSION_FIELDS = (
+    "cctv_intake_verdict",
+    "intake_verdict",
+    "cctv_verdict",
+    "cctv_intake_recommendation",
+    "intake_recommendation",
+)
+
+
+def cctv_intake_blocker(data: dict[str, object]) -> str | None:
+    receipt = first_scalar(data, CCTV_INTAKE_RECEIPT_FIELDS)
+    if not receipt:
+        return "missing_cctv_intake_receipt"
+    admission = first_scalar(data, CCTV_INTAKE_ADMISSION_FIELDS)
+    if not admission:
+        return "missing_cctv_intake_verdict"
+    if admission not in CCTV_READY_ADMISSION_VALUES:
+        return f"cctv_intake_not_ready:{admission}"
+    return None
 
 
 def is_request_type(data: dict[str, object]) -> bool:
@@ -393,6 +479,7 @@ for request_path in sorted(requests_dir.glob("*.md")):
     planning_case = scalar(data, "planning_case")
     intake_owner = scalar(data, "intake_owner")
     counts = task_index.get(request_path.name, {"offered": 0, "claimed": 0, "done": 0})
+    intake_blocker = cctv_intake_blocker(data)
     if status == "fulfilled":
         coverage = "fulfilled"
     elif counts["claimed"] > 0:
@@ -401,6 +488,8 @@ for request_path in sorted(requests_dir.glob("*.md")):
         coverage = "task_offered"
     elif counts["done"] > 0:
         coverage = "task_complete_only"
+    elif status == "accepted_for_planning" and intake_blocker:
+        coverage = "needs_cctv_hardening"
     elif planning_case:
         coverage = "case_linked"
     elif intake_owner:
@@ -421,9 +510,10 @@ for request_path in sorted(requests_dir.glob("*.md")):
     elif coverage == "task_complete_only" and hours >= thresholds["stale_completion"]:
         staleness = "stale_completion"
 
-    if staleness or coverage == "untracked":
+    if staleness or coverage in {"untracked", "needs_cctv_hardening"}:
         action_by_coverage = {
             "untracked": "needs triage and intake assignment",
+            "needs_cctv_hardening": "needs CCTV intake admission",
             "assigned_only": "needs authority case creation",
             "case_linked": "needs task creation under case",
             "task_offered": "has offered tasks awaiting claim",
@@ -431,6 +521,7 @@ for request_path in sorted(requests_dir.glob("*.md")):
         }
         urgency_by_coverage = {
             "untracked": 1,
+            "needs_cctv_hardening": 2,
             "assigned_only": 3,
             "case_linked": 4,
             "task_offered": 5,
@@ -446,6 +537,7 @@ for request_path in sorted(requests_dir.glob("*.md")):
                 "urgency_rank": urgency_by_coverage.get(coverage, 9),
                 "age_hours": hours,
                 "staleness": staleness,
+                "cctv_intake_blocker": intake_blocker,
             }
         )
 
@@ -600,7 +692,7 @@ write_planning_feed() {
   mkdir -p "$(dirname "$PLANNING_FEED_PATH")"
 
   local total_requests=0
-  local c_untracked=0 c_assigned_only=0 c_case_linked=0
+  local c_untracked=0 c_assigned_only=0 c_case_linked=0 c_needs_cctv_hardening=0
   local c_task_offered=0 c_task_active=0 c_task_complete_only=0 c_fulfilled=0
   local s_stale_captured=0 s_stale_assignment=0 s_stale_case=0
   local s_stale_offered=0 s_stale_completion=0
@@ -617,12 +709,13 @@ write_planning_feed() {
     [[ -z "$req_id" ]] && continue
 
     total_requests=$((total_requests + 1))
-    local pf_status pf_title intake_owner planning_case pf_updated_at
+    local pf_status pf_title intake_owner planning_case pf_updated_at cctv_blocker
     pf_status="$(frontmatter_value status "$note" | compact_value)"
     pf_title="$(frontmatter_value title "$note")"
     intake_owner="$(frontmatter_value intake_owner "$note" | compact_value)"
     planning_case="$(frontmatter_value planning_case "$note" | compact_value)"
     pf_updated_at="$(frontmatter_value updated_at "$note" | compact_value)"
+    cctv_blocker="$(cctv_intake_blocker_for_note "$note" | compact_value)"
     [[ "$planning_case" == "null" ]] && planning_case=""
     [[ "$intake_owner" == "null" || "$intake_owner" == "unassigned" ]] && intake_owner=""
 
@@ -645,6 +738,8 @@ write_planning_feed() {
       coverage="task_offered"; c_task_offered=$((c_task_offered + 1))
     elif [[ $done_count -gt 0 ]]; then
       coverage="task_complete_only"; c_task_complete_only=$((c_task_complete_only + 1))
+    elif [[ "$pf_status" == "accepted_for_planning" && -n "$cctv_blocker" ]]; then
+      coverage="needs_cctv_hardening"; c_needs_cctv_hardening=$((c_needs_cctv_hardening + 1))
     elif [[ -n "$planning_case" ]]; then
       coverage="case_linked"; c_case_linked=$((c_case_linked + 1))
     elif [[ -n "$intake_owner" ]]; then
@@ -686,19 +781,24 @@ write_planning_feed() {
     [[ -n "$staleness_flag" ]] && staleness_json="\"$staleness_flag\""
     local last_json="null"
     [[ -n "$last_activity" ]] && last_json="\"$last_activity\""
-    local jtitle
+    local jtitle jblocker cctv_blocker_json="null"
     jtitle=$(printf '%s' "$pf_title" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    if [[ -n "$cctv_blocker" ]]; then
+      jblocker=$(printf '%s' "$cctv_blocker" | sed 's/\\/\\\\/g; s/"/\\"/g')
+      cctv_blocker_json="\"$jblocker\""
+    fi
 
     local comma=""
     [[ $first_req -eq 0 ]] && comma=","
     first_req=0
     requests_json="${requests_json}${comma}
-    {\"request_id\":\"${req_id}\",\"title\":\"${jtitle}\",\"status\":\"${pf_status}\",\"coverage\":\"${coverage}\",\"planning_case\":\"${planning_case}\",\"active_tasks\":${active_tasks},\"closed_tasks\":${done_count},\"total_tasks\":${total_tasks},\"last_task_activity\":${last_json},\"staleness\":${staleness_json}}"
+    {\"request_id\":\"${req_id}\",\"title\":\"${jtitle}\",\"status\":\"${pf_status}\",\"coverage\":\"${coverage}\",\"planning_case\":\"${planning_case}\",\"cctv_intake_blocker\":${cctv_blocker_json},\"active_tasks\":${active_tasks},\"closed_tasks\":${done_count},\"total_tasks\":${total_tasks},\"last_task_activity\":${last_json},\"staleness\":${staleness_json}}"
 
-    if [[ -n "$staleness_flag" || "$coverage" == "untracked" ]]; then
+    if [[ -n "$staleness_flag" || "$coverage" == "untracked" || "$coverage" == "needs_cctv_hardening" ]]; then
       local action=""
       case "$coverage" in
         untracked) action="needs triage and intake assignment" ;;
+        needs_cctv_hardening) action="needs CCTV intake admission" ;;
         assigned_only) action="needs authority case creation" ;;
         case_linked) action="needs task creation under case" ;;
         task_offered) action="has offered tasks awaiting claim" ;;
@@ -709,7 +809,7 @@ write_planning_feed() {
       [[ $first_attn -eq 0 ]] && comma=","
       first_attn=0
       attention_json="${attention_json}${comma}
-    {\"request_id\":\"${req_id}\",\"coverage\":\"${coverage}\",\"staleness\":${staleness_json},\"age_hours\":${age_hours},\"action\":\"${action}\"}"
+    {\"request_id\":\"${req_id}\",\"coverage\":\"${coverage}\",\"staleness\":${staleness_json},\"age_hours\":${age_hours},\"action\":\"${action}\",\"cctv_intake_blocker\":${cctv_blocker_json}}"
     fi
   done
 
@@ -725,6 +825,7 @@ write_planning_feed() {
     "untracked": ${c_untracked},
     "assigned_only": ${c_assigned_only},
     "case_linked": ${c_case_linked},
+    "needs_cctv_hardening": ${c_needs_cctv_hardening},
     "task_offered": ${c_task_offered},
     "task_active": ${c_task_active},
     "task_complete_only": ${c_task_complete_only},

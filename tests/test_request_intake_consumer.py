@@ -29,6 +29,7 @@ def _write_request(
     updated_at: str = "2026-05-08T15:00:00Z",
     request_type: str = "hapax-request",
     include_request_id: bool = True,
+    extra_frontmatter: dict[str, object] | None = None,
 ) -> None:
     frontmatter = f"---\ntype: {request_type}\n"
     if include_request_id:
@@ -38,6 +39,8 @@ def _write_request(
         frontmatter += f"intake_owner: {intake_owner}\n"
     if planning_case:
         frontmatter += f"planning_case: {planning_case}\n"
+    for key, value in (extra_frontmatter or {}).items():
+        frontmatter += f"{key}: {value}\n"
     frontmatter += "---\n"
     path.write_text(frontmatter, encoding="utf-8")
 
@@ -135,6 +138,12 @@ def _run(
         env=env,
         timeout=10,
     )
+
+
+CCTV_ADMITTED_FRONTMATTER = {
+    "cctv_intake_receipt": "receipt://REQ-test",
+    "cctv_intake_verdict": "ready_to_plan",
+}
 
 
 def test_no_requests_dir_exits_cleanly(tmp_path: Path) -> None:
@@ -436,6 +445,7 @@ def test_planning_feed_case_linked_coverage(tmp_path: Path) -> None:
         "REQ-012",
         status="accepted_for_planning",
         planning_case="CASE-TEST-001",
+        extra_frontmatter=CCTV_ADMITTED_FRONTMATTER,
     )
 
     feed = tmp_path / "planning-feed.json"
@@ -445,6 +455,39 @@ def test_planning_feed_case_linked_coverage(tmp_path: Path) -> None:
     data = json.loads(feed.read_text())
     assert data["requests"][0]["coverage"] == "case_linked"
     assert data["coverage_summary"]["case_linked"] == 1
+
+
+def test_planning_feed_cctv_hold_is_separate_from_untracked(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+
+    _write_request(
+        active / "REQ-CCTV.md",
+        "REQ-CCTV",
+        status="accepted_for_planning",
+        planning_case="CASE-TEST-001",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    request = data["requests"][0]
+    assert request["coverage"] == "needs_cctv_hardening"
+    assert request["cctv_intake_blocker"] == "missing_cctv_intake_receipt"
+    assert data["coverage_summary"]["needs_cctv_hardening"] == 1
+    assert data["coverage_summary"]["untracked"] == 0
+
+    attention = data["attention_required"][0]
+    assert attention["coverage"] == "needs_cctv_hardening"
+    assert attention["action"] == "needs CCTV intake admission"
+    assert attention["cctv_intake_blocker"] == "missing_cctv_intake_receipt"
+
+    planning_item = data["dispatch"]["planning_queue"][0]
+    assert planning_item["coverage"] == "needs_cctv_hardening"
+    assert planning_item["action_needed"] == "needs CCTV intake admission"
+    assert planning_item["cctv_intake_blocker"] == "missing_cctv_intake_receipt"
 
 
 def test_planning_feed_untracked_coverage(tmp_path: Path) -> None:
@@ -638,7 +681,12 @@ def test_planning_feed_counts_request_backlinks_from_parent_plan_and_spec(
 
     request_path = active / "REQ-HN.md"
     _write_request(request_path, "REQ-HN", status="accepted_for_planning")
-    _write_request(active / "REQ-NOISE.md", "REQ-NOISE", status="accepted_for_planning")
+    _write_request(
+        active / "REQ-NOISE.md",
+        "REQ-NOISE",
+        status="accepted_for_planning",
+        extra_frontmatter=CCTV_ADMITTED_FRONTMATTER,
+    )
 
     _write_task(
         tasks_active / "T-plan.md",
