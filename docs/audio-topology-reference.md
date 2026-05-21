@@ -139,11 +139,11 @@ role.assistant → hapax-private (null sink)
 | hapax-pc-loudnorm-playback | false | true | yes | FULL |
 | hapax-yt-loudnorm-playback | false | true | yes | FULL |
 | hapax-music-duck-playback | — | true | yes | FULL |
-| hapax-pc-broadcast-playback | false | true | — | GUARDED |
+| hapax-pc-broadcast-playback | false | true | — | QUARANTINED |
 | hapax-polyend-loudnorm-playback | false | true | — | GUARDED |
 | hapax-private-playback | false | true | yes | FULL + HEAVY |
 | hapax-notification-private-playback | false | true | yes | FULL + HEAVY |
-| hapax-pc-monitor-playback | — | true | — | TARGET + HEAVY |
+| hapax-pc-monitor-playback | — | true | — | QUARANTINED |
 | hapax-m8-loudnorm-playback | false | true | yes | FULL |
 
 ## 7. Reconciler & Sidechain Ducking
