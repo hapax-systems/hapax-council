@@ -45,27 +45,59 @@ from shared.audio_industrial_naming import validate_industrial_audio_name
 
 
 class NodeKind(StrEnum):
-    """Types of nodes in a PipeWire audio graph.
-
-    Each kind maps to a specific PipeWire primitive:
-
-    - ``alsa_source`` / ``alsa_sink``: hardware endpoints (an ALSA PCM
-      device wrapped by PipeWire). E.g. L6 USB capture, Ryzen HD Audio
-      line-out.
-    - ``filter_chain``: a ``libpipewire-module-filter-chain`` instance.
-      Covers the voice-fx biquad chain, the L6 Main Mix makeup-gain
-      node, any future LADSPA stack.
-    - ``loopback``: a ``libpipewire-module-loopback`` bridging two
-      endpoints (e.g. hapax-livestream virtual sink → Ryzen analog).
-    - ``tap``: a null-sink or virtual sink consumed by OBS/the
-      compositor — a fan-out point.
-    """
-
     ALSA_SOURCE = "alsa_source"
     ALSA_SINK = "alsa_sink"
     FILTER_CHAIN = "filter_chain"
     LOOPBACK = "loopback"
     TAP = "tap"
+
+
+class ExposureDomain(StrEnum):
+    BROADCAST = "broadcast"
+    PRIVATE = "private"
+    MONITOR = "monitor"
+    FAIL_CLOSED = "fail_closed"
+    INSTRUMENT = "instrument"
+    HARDWARE_INTERFACE = "hardware_interface"
+
+
+class RouteIntent(StrEnum):
+    BROADCAST_VOICE = "broadcast_voice"
+    BROADCAST_CONTENT = "broadcast_content"
+    BROADCAST_MUSIC = "broadcast_music"
+    BROADCAST_EGRESS = "broadcast_egress"
+    PRIVATE_ASSISTANT = "private_assistant"
+    PRIVATE_NOTIFICATION = "private_notification"
+    PRIVATE_MONITOR = "private_monitor"
+    FAIL_CLOSED_RESERVED = "fail_closed_reserved"
+    INSTRUMENT_CAPTURE = "instrument_capture"
+    HARDWARE_RETURN = "hardware_return"
+
+
+BROADCAST_DOMAINS: frozenset[ExposureDomain] = frozenset(
+    {ExposureDomain.BROADCAST, ExposureDomain.INSTRUMENT, ExposureDomain.HARDWARE_INTERFACE}
+)
+NON_BROADCAST_DOMAINS: frozenset[ExposureDomain] = frozenset(
+    {ExposureDomain.PRIVATE, ExposureDomain.MONITOR, ExposureDomain.FAIL_CLOSED}
+)
+BROADCAST_INTENTS: frozenset[RouteIntent] = frozenset(
+    {
+        RouteIntent.BROADCAST_VOICE,
+        RouteIntent.BROADCAST_CONTENT,
+        RouteIntent.BROADCAST_MUSIC,
+        RouteIntent.BROADCAST_EGRESS,
+        RouteIntent.INSTRUMENT_CAPTURE,
+        RouteIntent.HARDWARE_RETURN,
+    }
+)
+
+
+class MpcAuxPortGroup(BaseModel, frozen=True):
+    aux_pair: tuple[str, str]
+    semantic_class: str
+    exposure_domain: ExposureDomain
+    route_intent: RouteIntent
+    description: str = ""
 
 
 class ChannelMap(BaseModel, frozen=True):
@@ -156,6 +188,7 @@ class Node(BaseModel, frozen=True):
     pipewire_name: str
     industrial_name: str | None = None
     description: str = ""
+    exposure_domain: ExposureDomain | None = None
     target_object: str | None = None
     hw: str | None = None
     channels: ChannelMap = Field(
@@ -216,6 +249,7 @@ class Edge(BaseModel, frozen=True):
     source_port: str | None = None
     target: str
     target_port: str | None = None
+    route_intent: RouteIntent | None = None
     makeup_gain_db: float = 0.0
 
     @field_validator("makeup_gain_db")
@@ -249,10 +283,11 @@ class TopologyDescriptor(BaseModel, frozen=True):
     migration must complete before parsing succeeds.
     """
 
-    schema_version: Literal[2, 3] = 3
+    schema_version: Literal[2, 3, 4] = 4
     description: str = ""
     nodes: list[Node]
     edges: list[Edge] = Field(default_factory=list)
+    port_groups: list[MpcAuxPortGroup] = Field(default_factory=list)
 
     @field_validator("nodes")
     @classmethod
@@ -292,6 +327,27 @@ class TopologyDescriptor(BaseModel, frozen=True):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _domain_compatibility(self) -> TopologyDescriptor:
+        if self.schema_version < 4:
+            return self
+        node_map = {n.id: n for n in self.nodes}
+        for edge in self.edges:
+            src = node_map[edge.source]
+            tgt = node_map[edge.target]
+            if src.exposure_domain is None or tgt.exposure_domain is None:
+                continue
+            if (
+                src.exposure_domain in NON_BROADCAST_DOMAINS
+                and tgt.exposure_domain == ExposureDomain.BROADCAST
+            ):
+                raise ValueError(
+                    f"Edge {edge.source!r} → {edge.target!r}: "
+                    f"non-broadcast domain {src.exposure_domain.value!r} "
+                    f"cannot route to broadcast domain node"
+                )
+        return self
+
     def node_by_id(self, node_id: str) -> Node:
         for n in self.nodes:
             if n.id == node_id:
@@ -322,8 +378,8 @@ class TopologyDescriptor(BaseModel, frozen=True):
         # descriptors (or anything outside the supported window) fail with a
         # message that mentions the version, not a deeply-nested pydantic
         # Literal-mismatch error.
-        if isinstance(data, dict) and data.get("schema_version") not in (2, 3):
+        if isinstance(data, dict) and data.get("schema_version") not in (2, 3, 4):
             raise ValueError(
-                f"unknown schema_version: {data.get('schema_version')!r} (supported: 2, 3)"
+                f"unknown schema_version: {data.get('schema_version')!r} (supported: 2, 3, 4)"
             )
         return cls.model_validate(data)

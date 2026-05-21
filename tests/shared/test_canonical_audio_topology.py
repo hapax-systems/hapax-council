@@ -5,7 +5,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from shared.audio_topology import TopologyDescriptor
+from shared.audio_topology import (
+    BROADCAST_DOMAINS,
+    NON_BROADCAST_DOMAINS,
+    ExposureDomain,
+    RouteIntent,
+    TopologyDescriptor,
+)
 from shared.audio_topology_inspector import check_l12_forward_invariant
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -31,7 +37,7 @@ def test_canonical_descriptor_parses() -> None:
     d = _descriptor()
     # Schema v3 (audit F#8): typed filter-chain template params for the
     # generator's LADSPA loudnorm / duck / usb-bias chains.
-    assert d.schema_version == 3
+    assert d.schema_version == 4
 
 
 def test_canonical_has_current_livestream_node_ids() -> None:
@@ -400,7 +406,108 @@ def test_respeaker_xvf3800_is_optional_sidechat_capture_not_rode_replacement() -
 
 
 def test_l12_forward_invariant_static_guard_passes() -> None:
-    """Canonical descriptor must satisfy the L-12 forward/private route guard."""
     result = check_l12_forward_invariant(_descriptor())
-
     assert result.ok, result.format()
+
+
+def test_all_nodes_have_exposure_domain() -> None:
+    d = _descriptor()
+    missing = [n.id for n in d.nodes if n.exposure_domain is None]
+    assert missing == [], f"nodes missing exposure_domain: {missing}"
+
+
+def test_broadcast_chain_nodes_are_broadcast_domain() -> None:
+    d = _descriptor()
+    broadcast_chain = {
+        "livestream-tap",
+        "broadcast-master-capture",
+        "broadcast-normalized-capture",
+        "obs-broadcast-remap-capture",
+        "voice-fx",
+        "tts-loudnorm",
+        "music-loudnorm",
+        "yt-loudnorm",
+    }
+    for nid in broadcast_chain:
+        node = d.node_by_id(nid)
+        assert node.exposure_domain in BROADCAST_DOMAINS, (
+            f"{nid}: expected broadcast-compatible domain, got {node.exposure_domain}"
+        )
+
+
+def test_private_nodes_are_non_broadcast_domain() -> None:
+    d = _descriptor()
+    private_chain = {
+        "private-sink",
+        "notification-private-sink",
+        "private-monitor-capture",
+        "private-monitor-output",
+        "notification-private-monitor-capture",
+        "notification-private-monitor-output",
+        "role-assistant",
+        "role-notification",
+    }
+    for nid in private_chain:
+        node = d.node_by_id(nid)
+        assert node.exposure_domain in NON_BROADCAST_DOMAINS, (
+            f"{nid}: expected non-broadcast domain, got {node.exposure_domain}"
+        )
+
+
+def test_pc_fail_closed_nodes_are_fail_closed_domain() -> None:
+    d = _descriptor()
+    for nid in ("pc-loudnorm", "pc-router", "pc-monitor", "pc-broadcast", "role-multimedia"):
+        node = d.node_by_id(nid)
+        assert node.exposure_domain == ExposureDomain.FAIL_CLOSED, (
+            f"{nid}: expected fail_closed domain, got {node.exposure_domain}"
+        )
+
+
+def test_mpc_port_groups_cover_all_five_pairs() -> None:
+    d = _descriptor()
+    assert len(d.port_groups) == 5
+    pairs = {tuple(pg.aux_pair) for pg in d.port_groups}
+    assert ("AUX0", "AUX1") in pairs
+    assert ("AUX4", "AUX5") in pairs
+    assert ("AUX8", "AUX9") in pairs
+
+
+def test_mpc_aux45_is_fail_closed() -> None:
+    d = _descriptor()
+    pg = next(pg for pg in d.port_groups if tuple(pg.aux_pair) == ("AUX4", "AUX5"))
+    assert pg.exposure_domain == ExposureDomain.FAIL_CLOSED
+    assert pg.route_intent == RouteIntent.FAIL_CLOSED_RESERVED
+
+
+def test_mpc_aux89_is_private() -> None:
+    d = _descriptor()
+    pg = next(pg for pg in d.port_groups if tuple(pg.aux_pair) == ("AUX8", "AUX9"))
+    assert pg.exposure_domain == ExposureDomain.PRIVATE
+    assert pg.route_intent == RouteIntent.PRIVATE_MONITOR
+
+
+def test_no_edge_from_non_broadcast_to_broadcast_domain() -> None:
+    d = _descriptor()
+    node_map = {n.id: n for n in d.nodes}
+    violations = []
+    for edge in d.edges:
+        src, tgt = node_map[edge.source], node_map[edge.target]
+        if src.exposure_domain is None or tgt.exposure_domain is None:
+            continue
+        if (
+            src.exposure_domain in NON_BROADCAST_DOMAINS
+            and tgt.exposure_domain == ExposureDomain.BROADCAST
+        ):
+            violations.append(f"{edge.source} -> {edge.target}")
+    assert violations == [], f"non-broadcast->broadcast edges: {violations}"
+
+
+def test_private_aux89_cannot_reach_livestream_by_topology() -> None:
+    d = _descriptor()
+    private_nodes = {n.id for n in d.nodes if n.exposure_domain == ExposureDomain.PRIVATE}
+    broadcast_nodes = {n.id for n in d.nodes if n.exposure_domain == ExposureDomain.BROADCAST}
+    for edge in d.edges:
+        if edge.source in private_nodes:
+            assert edge.target not in broadcast_nodes, (
+                f"private node {edge.source} routes to broadcast {edge.target}"
+            )
