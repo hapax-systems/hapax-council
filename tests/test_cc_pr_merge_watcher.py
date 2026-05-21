@@ -275,7 +275,7 @@ class TestRunWatcher:
         assert any(cmd[-2:] == ["--pr", "100"] for cmd in runner.cc_close_invocations), (
             runner.cc_close_invocations
         )
-        assert runner.cc_close_envs[-1]["HAPAX_CC_TASK_CLOSURE_GATE_OFF"] == "1"
+        assert "HAPAX_CC_TASK_CLOSURE_GATE_OFF" not in runner.cc_close_envs[-1]
         assert "HAPAX_PR_MERGE_GATE_OFF" not in runner.cc_close_envs[-1]
         # Cursor advanced.
         new_cursor = watcher.read_cursor(cursor)
