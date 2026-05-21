@@ -550,7 +550,9 @@ def test_l12_udev_policy_runs_critical_guard_and_hotplug_recovery() -> None:
     assert 'ATTR{idProduct}=="03d5"' in noautosuspend
     assert 'ATTR{power/control}="on"' in noautosuspend
     assert 'ATTR{power/autosuspend_delay_ms}="-1"' in noautosuspend
-    assert noautosuspend.count('ATTR{power/autosuspend_delay_ms}="-1"') >= 7
+    assert 'ATTR{idVendor}=="1d6b"' in noautosuspend
+    assert 'SUBSYSTEM=="pci", ATTR{class}=="0x0c0330", ATTR{power/control}="on"' in noautosuspend
+    assert noautosuspend.count('ATTR{power/autosuspend_delay_ms}="-1"') >= 8
     assert 'RUN+="/usr/local/bin/hapax-l12-critical-usb-guard"' in noautosuspend
 
     assert 'ENV{SYSTEMD_USER_WANTS}+="hapax-usb-topology-witness.service"' in s4_policy

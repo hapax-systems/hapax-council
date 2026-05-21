@@ -8,6 +8,13 @@
 # Zoom MIDI (381a) — Erica Synths (uses 381a not 1686 despite being audio)
 # Polyend / Torso-class USB instruments (1fc9) — activity reveal + S-4 alt VID
 
+# USB root hubs and xHCI controllers must not runtime-suspend either. The
+# individual leaf-device rules are not enough for the livestream rig because
+# a sleeping upstream hub/controller can still drop cameras or class-compliant
+# audio even when the device's own power/control node is pinned.
+ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1d6b", ATTR{power/control}="on", ATTR{power/autosuspend_delay_ms}="-1"
+ACTION!="remove", SUBSYSTEM=="pci", ATTR{class}=="0x0c0330", ATTR{power/control}="on"
+
 ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="046d", ATTR{power/control}="on", ATTR{power/autosuspend_delay_ms}="-1"
 ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="b58e", ATTR{power/control}="on", ATTR{power/autosuspend_delay_ms}="-1"
 ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1686", ATTR{power/control}="on", ATTR{power/autosuspend_delay_ms}="-1"
