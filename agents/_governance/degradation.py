@@ -9,7 +9,7 @@ Degradation levels:
     3 — Existence only ("You have 3 events today" with no detail)
     4 — Suppress (return nothing)
 
-Default is Level 2 (abstraction). Level 3/4 reserved for future use.
+Default is Level 2 (abstraction).
 """
 
 from __future__ import annotations
@@ -118,17 +118,51 @@ DEGRADATION_FNS: dict[str, object] = {
 }
 
 
-def degrade(content: str, unconsented: frozenset[str], category: str = "default") -> str:
-    """Apply category-appropriate degradation to content.
+def degrade_to_existence(category: str, item_count: int) -> str:
+    """Level 3: acknowledge existence without any detail."""
+    category_labels = {
+        "calendar": "calendar events",
+        "email": "emails",
+        "document": "documents",
+        "contact": "contacts",
+        "task": "tasks",
+    }
+    label = category_labels.get(category, f"{category} items")
+    if item_count == 0:
+        return f"No {label} found."
+    if item_count == 1:
+        return f"You have 1 {label.rstrip('s')} (details withheld pending consent)."
+    return f"You have {item_count} {label} (details withheld pending consent)."
+
+
+def degrade_to_suppression() -> str:
+    """Level 4: return nothing."""
+    return ""
+
+
+def degrade(
+    content: str,
+    unconsented: frozenset[str],
+    category: str = "default",
+    *,
+    level: int = 2,
+    item_count: int = 1,
+) -> str:
+    """Apply level-appropriate degradation to content.
 
     Args:
         content: The text to degrade.
         unconsented: Set of person identifiers that lack consent.
         category: Data category ("calendar", "email", "document", or "default").
-
-    Returns:
-        Content with unconsented person identifiers abstracted.
+        level: Degradation level (1-4). Default 2 for backward compatibility.
+        item_count: Number of items (used by level 3).
     """
+    if level <= 1 or not unconsented:
+        return content
+    if level == 3:
+        return degrade_to_existence(category, item_count)
+    if level >= 4:
+        return degrade_to_suppression()
     fn = DEGRADATION_FNS.get(category, degrade_default)
     return fn(content, unconsented)
 
