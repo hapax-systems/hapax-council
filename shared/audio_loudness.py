@@ -111,15 +111,10 @@ MASTER_INPUT_MAKEUP_DB: float = 16.0
 MUSIC_TO_L12_PEAK_DBFS: float = -18.0
 MUSIC_LIMITER_RELEASE_MS: float = 200.0
 
-# ── PC monitor and broadcast paths (Phase 3 PC volume isolation) ──────
-#
-# PC audio forks at `hapax-pc-router` (null-sink) into two independent
-# filter-chain subscribers. Monitor → Yeti headphone (off-L-12, soft limit
-# matching listener-side YouTube target). Broadcast → L-12 USB return RL/RR
-# at -18 dBFS to match music chain line-level convention.
-#
-# PR A: these constants document the hapax-pc-router.conf file values.
-# PR B: volume-isolation daemon will read these for runtime per-source trim.
+# ── PC monitor and broadcast paths — QUARANTINED ──────
+# Formerly Phase 3 PC volume isolation. Conf removed; topology nodes
+# quarantined. Reactivation requires a new AuthorityCase.
+# Constants retained for reference only — not consumed by any active path.
 PC_MONITOR_TARGET_LUFS_I: float = -14.0
 PC_MONITOR_TRUE_PEAK_DBTP: float = -1.0
 PC_BROADCAST_TARGET_LUFS_I: float = -18.0
