@@ -11,6 +11,10 @@ struct SceneUniforms {
     shader_kind: f32,
     payload_pane_ordinal: f32,
     payload_mode: f32,
+    local_effect_kind: f32,
+    local_effect_mix: f32,
+    local_effect_param_a: f32,
+    local_effect_param_b: f32,
 };
 
 @group(0) @binding(0)
@@ -186,6 +190,302 @@ fn payload_luma(color: vec3<f32>) -> f32 {
 fn line_mask(dist: f32, width: f32, feather: f32) -> f32 {
     let derivative = aa_feather(dist, feather);
     return 1.0 - smoothstep(width, width + derivative, dist);
+}
+
+fn local_effect_geometry_presence(color: vec3<f32>) -> f32 {
+    let luma = dot(color, vec3<f32>(0.299, 0.587, 0.114));
+    return max(smoothstep(0.025, 0.14, luma), 0.22);
+}
+
+fn local_effect_noise(p: vec2<f32>) -> f32 {
+    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.547);
+}
+
+fn entity_local_mirror(uv: vec2<f32>, original: vec4<f32>) -> vec4<f32> {
+    var folded_uv = uv;
+    let axis = scene.local_effect_param_a;
+    let position = clamp(scene.local_effect_param_b, 0.30, 0.70);
+    if axis < 0.5 {
+        if uv.x > position {
+            folded_uv.x = (2.0 * position) - uv.x;
+        }
+    } else {
+        if uv.y > position {
+            folded_uv.y = (2.0 * position) - uv.y;
+        }
+    }
+    folded_uv = clamp(folded_uv, vec2<f32>(0.001), vec2<f32>(0.999));
+    let folded = textureSample(quad_texture, quad_sampler, folded_uv);
+    let fold_dist = abs(select(uv.x, uv.y, axis > 0.5) - position);
+    let fold_glint = 1.0 - smoothstep(0.0, 0.11, fold_dist);
+    let delta = folded.rgb - original.rgb;
+    let edge_presence = smoothstep(0.06, 0.38, length(delta));
+    let geometry_presence = local_effect_geometry_presence(original.rgb);
+    let tint = vec3<f32>(0.18, 0.68, 0.96);
+    let lifted = original.rgb + (max(delta, vec3<f32>(0.0)) * edge_presence * 0.58 + tint * fold_glint * 0.12)
+        * scene.local_effect_mix
+        * geometry_presence;
+    return vec4<f32>(max(original.rgb, lifted), original.a);
+}
+
+fn entity_local_kaleidoscope(uv: vec2<f32>, original: vec4<f32>) -> vec4<f32> {
+    let center = vec2<f32>(0.5, 0.5);
+    let centered = uv - center;
+    var angle = atan2(centered.y, centered.x) + scene.local_effect_param_b * 0.18;
+    let radius = length(centered);
+    let segments = clamp(scene.local_effect_param_a, 3.0, 7.0);
+    let segment_angle = 6.2831853 / segments;
+    angle = angle - floor(angle / segment_angle) * segment_angle;
+    if angle > segment_angle * 0.5 {
+        angle = segment_angle - angle;
+    }
+    let warped_uv = clamp(center + radius * vec2<f32>(cos(angle), sin(angle)), vec2<f32>(0.001), vec2<f32>(0.999));
+    let warped = textureSample(quad_texture, quad_sampler, warped_uv);
+    let segment_line = 1.0 - smoothstep(0.0, 0.040, abs(angle - segment_angle * 0.5));
+    let delta = warped.rgb - original.rgb;
+    let edge_presence = smoothstep(0.06, 0.40, length(delta));
+    let geometry_presence = local_effect_geometry_presence(original.rgb);
+    let tint = vec3<f32>(0.82, 0.22, 0.96);
+    let lifted = original.rgb + (max(delta, vec3<f32>(0.0)) * edge_presence * 0.54 + tint * segment_line * 0.07)
+        * scene.local_effect_mix
+        * geometry_presence;
+    return vec4<f32>(max(original.rgb, lifted), original.a);
+}
+
+fn entity_local_warp(uv: vec2<f32>, original: vec4<f32>) -> vec4<f32> {
+    let slices = clamp(scene.local_effect_param_a, 4.0, 11.0);
+    let slice_idx = floor(uv.y * slices);
+    let slice_phase = scene.local_effect_param_b + slice_idx * 0.47;
+    let shift = (sin(slice_phase) * 0.026) + (sin(slice_phase * 2.31) * 0.012);
+    let shear = (uv.y - 0.5) * sin(scene.local_effect_param_b * 0.7) * 0.030;
+    let warped_uv = clamp(vec2<f32>(uv.x + shift + shear, uv.y), vec2<f32>(0.001), vec2<f32>(0.999));
+    let warped = textureSample(quad_texture, quad_sampler, warped_uv);
+    let slice_line = smoothstep(0.965, 1.0, fract(uv.y * slices));
+    let delta = warped.rgb - original.rgb;
+    let edge_presence = smoothstep(0.05, 0.36, length(delta));
+    let geometry_presence = local_effect_geometry_presence(original.rgb);
+    let tint = vec3<f32>(0.12, 0.78, 0.68);
+    let lifted = original.rgb + (max(delta, vec3<f32>(0.0)) * edge_presence * 0.62 + tint * slice_line * 0.045)
+        * scene.local_effect_mix
+        * geometry_presence;
+    return vec4<f32>(max(original.rgb, lifted), original.a);
+}
+
+fn entity_local_fisheye(uv: vec2<f32>, original: vec4<f32>) -> vec4<f32> {
+    let center = vec2<f32>(0.5, 0.5) + vec2<f32>(cos(scene.local_effect_param_b), sin(scene.local_effect_param_b * 0.83)) * 0.055;
+    let centered = uv - center;
+    let radius = length(centered);
+    let theta = atan2(centered.y, centered.x);
+    let strength = clamp(scene.local_effect_param_a, 0.10, 0.58);
+    let rd = radius * (1.0 + strength * radius * radius);
+    let zoom = 1.0 + sin(scene.local_effect_param_b * 0.71) * 0.035;
+    let warped_uv = clamp(center + (rd * vec2<f32>(cos(theta), sin(theta)) / vec2<f32>(zoom)), vec2<f32>(0.001), vec2<f32>(0.999));
+    let warped = textureSample(quad_texture, quad_sampler, warped_uv);
+    let delta = warped.rgb - original.rgb;
+    let edge_presence = smoothstep(0.06, 0.40, length(delta));
+    let geometry_presence = local_effect_geometry_presence(original.rgb);
+    let radial_glint = smoothstep(0.08, 0.42, radius) * (1.0 - smoothstep(0.42, 0.76, radius));
+    let tint = vec3<f32>(0.20, 0.62, 0.95);
+    let lifted = original.rgb + (max(delta, vec3<f32>(0.0)) * edge_presence * 0.64 + tint * radial_glint * 0.045)
+        * scene.local_effect_mix
+        * geometry_presence
+        * strength;
+    return vec4<f32>(max(original.rgb, lifted), original.a);
+}
+
+fn entity_local_transform(uv: vec2<f32>, original: vec4<f32>) -> vec4<f32> {
+    let pivot = vec2<f32>(0.5, 0.5) + vec2<f32>(sin(scene.local_effect_param_b), cos(scene.local_effect_param_b * 0.73)) * 0.055;
+    var p = uv - pivot;
+    let rotation = sin(scene.local_effect_param_b) * clamp(scene.local_effect_param_a, 0.0, 0.12);
+    let c = cos(rotation);
+    let s = sin(rotation);
+    p = mat2x2<f32>(vec2<f32>(c, s), vec2<f32>(-s, c)) * p;
+    let scale = vec2<f32>(
+        1.0 + abs(sin(scene.local_effect_param_b * 0.61)) * 0.055,
+        1.0 + abs(cos(scene.local_effect_param_b * 0.47)) * 0.042,
+    );
+    let offset = vec2<f32>(sin(scene.local_effect_param_b * 1.7), cos(scene.local_effect_param_b * 1.3)) * 0.020;
+    let transformed_uv = clamp((p / scale) + pivot - offset, vec2<f32>(0.001), vec2<f32>(0.999));
+    let transformed = textureSample(quad_texture, quad_sampler, transformed_uv);
+    let delta = transformed.rgb - original.rgb;
+    let edge_presence = smoothstep(0.06, 0.42, length(delta));
+    let geometry_presence = local_effect_geometry_presence(original.rgb);
+    let pivot_glint = 1.0 - smoothstep(0.0, 0.36, length(uv - pivot));
+    let tint = vec3<f32>(0.52, 0.30, 0.95);
+    let lifted = original.rgb + (max(delta, vec3<f32>(0.0)) * edge_presence * 0.64 + tint * pivot_glint * 0.030)
+        * scene.local_effect_mix
+        * geometry_presence;
+    return vec4<f32>(max(original.rgb, lifted), original.a);
+}
+
+fn entity_local_displacement_map(uv: vec2<f32>, original: vec4<f32>) -> vec4<f32> {
+    let frequency = 5.0 + scene.local_effect_param_a * 28.0;
+    let n1 = local_effect_noise(uv * frequency + vec2<f32>(scene.local_effect_param_b, 0.0));
+    let n2 = local_effect_noise(uv * (frequency * 1.7) + vec2<f32>(0.0, scene.local_effect_param_b * 1.3));
+    let offset = (vec2<f32>(n1, n2) - vec2<f32>(0.5)) * scene.local_effect_param_a * 0.18;
+    let warped_uv = clamp(uv + offset, vec2<f32>(0.001), vec2<f32>(0.999));
+    let warped = textureSample(quad_texture, quad_sampler, warped_uv);
+    let delta = warped.rgb - original.rgb;
+    let edge_presence = smoothstep(0.05, 0.38, length(delta));
+    let offset_energy = smoothstep(0.002, 0.045, length(offset));
+    let geometry_presence = local_effect_geometry_presence(original.rgb);
+    let tint = vec3<f32>(0.95, 0.36, 0.14);
+    let lifted = original.rgb + (max(delta, vec3<f32>(0.0)) * edge_presence * 0.72 + tint * offset_energy * 0.035)
+        * scene.local_effect_mix
+        * geometry_presence;
+    return vec4<f32>(max(original.rgb, lifted), original.a);
+}
+
+fn entity_local_droste(uv: vec2<f32>, original: vec4<f32>) -> vec4<f32> {
+    let center = vec2<f32>(0.5, 0.5);
+    let p = uv - center;
+    let radius = length(p);
+    let theta = atan2(p.y, p.x);
+    let logr = log(max(radius, 0.0001));
+    let spiral = 0.22 + 0.66 * abs(sin(scene.local_effect_param_b * 0.37));
+    let zoom_phase = scene.local_effect_param_b * clamp(scene.local_effect_param_a, 0.12, 0.42);
+    var angle = theta + spiral * logr - zoom_phase;
+    let scale_phase = logr - zoom_phase * 0.5;
+    let branch_count = 1.0 + floor(abs(sin(scene.local_effect_param_b * 0.53)) * 4.0);
+    let sector = 6.2831853 / branch_count;
+    angle = angle - floor(angle / sector) * sector;
+    let scale = exp((scale_phase - floor(scale_phase / 0.6931472) * 0.6931472) - 0.6931472);
+    let warped_uv = fract(vec2<f32>(cos(angle), sin(angle)) * scale + center);
+    let warped = textureSample(quad_texture, quad_sampler, warped_uv);
+    let delta = warped.rgb - original.rgb;
+    let edge_presence = smoothstep(0.06, 0.42, length(delta));
+    let geometry_presence = local_effect_geometry_presence(original.rgb);
+    let outer_ring = smoothstep(0.12, 0.48, radius);
+    let ring_glint = 1.0 - smoothstep(0.0, 0.055, abs(fract(logr / 0.6931472) - 0.5));
+    let tint = vec3<f32>(0.88, 0.20, 0.58);
+    let lifted = original.rgb + (max(delta, vec3<f32>(0.0)) * edge_presence * 0.62 + tint * ring_glint * 0.035)
+        * scene.local_effect_mix
+        * geometry_presence
+        * outer_ring;
+    return vec4<f32>(max(original.rgb, lifted), original.a);
+}
+
+fn entity_local_tunnel(uv: vec2<f32>, original: vec4<f32>) -> vec4<f32> {
+    let centered = uv - vec2<f32>(0.5);
+    let radius = length(centered);
+    let angle = atan2(centered.y, centered.x);
+    let tunnel_r = (0.08 + scene.local_effect_param_a * 0.20) / (radius + 0.001) + scene.local_effect_param_b * 0.08;
+    var tunnel_a = (angle / 3.1415927) + scene.local_effect_param_a * tunnel_r * 0.10;
+    tunnel_a = tunnel_a + sin(tunnel_r * (1.2 + scene.local_effect_param_a * 4.8)) * 0.075;
+    let warped_uv = fract(vec2<f32>(tunnel_a, tunnel_r));
+    let tunnel = textureSample(quad_texture, quad_sampler, warped_uv);
+    let delta = tunnel.rgb - original.rgb;
+    let edge_presence = smoothstep(0.06, 0.42, length(delta));
+    let edge_weight = smoothstep(0.08, 0.44, radius);
+    let geometry_presence = local_effect_geometry_presence(original.rgb);
+    let ray = pow(max(0.0, sin(tunnel_a * 18.0) * 0.5 + 0.5), 5.0);
+    let tint = vec3<f32>(0.10, 0.78, 0.72);
+    let lifted = original.rgb + (max(delta, vec3<f32>(0.0)) * edge_presence * 0.64 + tint * ray * 0.028)
+        * scene.local_effect_mix
+        * geometry_presence
+        * edge_weight;
+    return vec4<f32>(max(original.rgb, lifted), original.a);
+}
+
+fn entity_local_tile(uv: vec2<f32>, original: vec4<f32>) -> vec4<f32> {
+    let counts = vec2<f32>(clamp(scene.local_effect_param_a, 1.8, 5.5));
+    let tiled_space = uv * counts;
+    let cell = floor(tiled_space);
+    var f = fract(tiled_space);
+    if scene.local_effect_param_b > 0.5 {
+        if (cell.x - floor(cell.x / 2.0) * 2.0) > 0.5 {
+            f.x = 1.0 - f.x;
+        }
+        if (cell.y - floor(cell.y / 2.0) * 2.0) > 0.5 {
+            f.y = 1.0 - f.y;
+        }
+    }
+    let gap = 0.018 + 0.018 * abs(sin(scene.local_effect_param_b * 6.2831853));
+    let edge = max(
+        1.0 - smoothstep(0.0, gap, min(f.x, 1.0 - f.x)),
+        1.0 - smoothstep(0.0, gap, min(f.y, 1.0 - f.y)),
+    );
+    let tiled = textureSample(quad_texture, quad_sampler, clamp(f, vec2<f32>(0.001), vec2<f32>(0.999)));
+    let delta = tiled.rgb - original.rgb;
+    let detail_presence = smoothstep(0.08, 0.46, length(delta));
+    let geometry_presence = local_effect_geometry_presence(original.rgb);
+    let tint = vec3<f32>(0.10, 0.58, 0.72);
+    let lifted = original.rgb + (max(delta, vec3<f32>(0.0)) * detail_presence * 0.62 + tint * edge * 0.055)
+        * scene.local_effect_mix
+        * geometry_presence;
+    return vec4<f32>(max(original.rgb, lifted), original.a);
+}
+
+fn entity_local_drift(uv: vec2<f32>, original: vec4<f32>) -> vec4<f32> {
+    let frequency = 2.5 + scene.local_effect_param_a * 70.0;
+    let n1 = local_effect_noise(uv * frequency + vec2<f32>(scene.local_effect_param_b * 0.17));
+    let n2 = local_effect_noise(uv * frequency * 1.61 + vec2<f32>(scene.local_effect_param_b * 0.29, scene.local_effect_param_b * 0.11));
+    let drift_vector = vec2<f32>(n1, n2) - vec2<f32>(0.5);
+    let offset = drift_vector * scene.local_effect_param_a * 0.80;
+    let drifted = textureSample(quad_texture, quad_sampler, clamp(uv + offset, vec2<f32>(0.001), vec2<f32>(0.999)));
+    let delta = drifted.rgb - original.rgb;
+    let edge_presence = smoothstep(0.05, 0.34, length(delta));
+    let geometry_presence = local_effect_geometry_presence(original.rgb);
+    let tint = vec3<f32>(0.30, 0.88, 0.34);
+    let lifted = original.rgb + (max(delta, vec3<f32>(0.0)) * edge_presence * 0.62 + tint * length(offset) * 0.70)
+        * scene.local_effect_mix
+        * geometry_presence;
+    return vec4<f32>(max(original.rgb, lifted), original.a);
+}
+
+fn entity_local_breathing(uv: vec2<f32>, original: vec4<f32>) -> vec4<f32> {
+    let center = vec2<f32>(0.5, 0.5);
+    let scale = 1.0 + sin(scene.local_effect_param_b) * clamp(scene.local_effect_param_a, 0.0, 0.026);
+    let warped_uv = clamp(((uv - center) / vec2<f32>(scale)) + center, vec2<f32>(0.001), vec2<f32>(0.999));
+    let warped = textureSample(quad_texture, quad_sampler, warped_uv);
+    let delta = warped.rgb - original.rgb;
+    let edge_presence = smoothstep(0.04, 0.30, length(delta));
+    let geometry_presence = local_effect_geometry_presence(original.rgb);
+    let tint = vec3<f32>(0.95, 0.62, 0.18);
+    let lifted = original.rgb + (max(delta, vec3<f32>(0.0)) * edge_presence * 0.48 + tint * abs(scale - 1.0) * 0.50)
+        * scene.local_effect_mix
+        * geometry_presence;
+    return vec4<f32>(max(original.rgb, lifted), original.a);
+}
+
+fn apply_entity_local_spatial_effect(uv: vec2<f32>, original: vec4<f32>) -> vec4<f32> {
+    if scene.local_effect_mix <= 0.001 {
+        return original;
+    }
+    if scene.local_effect_kind > 0.5 && scene.local_effect_kind < 1.5 {
+        return entity_local_mirror(uv, original);
+    }
+    if scene.local_effect_kind > 1.5 && scene.local_effect_kind < 2.5 {
+        return entity_local_kaleidoscope(uv, original);
+    }
+    if scene.local_effect_kind > 2.5 && scene.local_effect_kind < 3.5 {
+        return entity_local_warp(uv, original);
+    }
+    if scene.local_effect_kind > 3.5 && scene.local_effect_kind < 4.5 {
+        return entity_local_fisheye(uv, original);
+    }
+    if scene.local_effect_kind > 4.5 && scene.local_effect_kind < 5.5 {
+        return entity_local_transform(uv, original);
+    }
+    if scene.local_effect_kind > 5.5 && scene.local_effect_kind < 6.5 {
+        return entity_local_displacement_map(uv, original);
+    }
+    if scene.local_effect_kind > 6.5 && scene.local_effect_kind < 7.5 {
+        return entity_local_droste(uv, original);
+    }
+    if scene.local_effect_kind > 7.5 && scene.local_effect_kind < 8.5 {
+        return entity_local_tunnel(uv, original);
+    }
+    if scene.local_effect_kind > 8.5 && scene.local_effect_kind < 9.5 {
+        return entity_local_tile(uv, original);
+    }
+    if scene.local_effect_kind > 9.5 && scene.local_effect_kind < 10.5 {
+        return entity_local_drift(uv, original);
+    }
+    if scene.local_effect_kind > 10.5 && scene.local_effect_kind < 11.5 {
+        return entity_local_breathing(uv, original);
+    }
+    return original;
 }
 
 fn aoa_face_vertex(a: vec3<f32>, b: vec3<f32>, c: vec3<f32>, d: vec3<f32>, face_idx: u32, corner_idx: u32) -> vec3<f32> {
@@ -443,5 +743,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let tex_color = textureSample(quad_texture, quad_sampler, in.uv);
-    return vec4<f32>(tex_color.rgb, tex_color.a * scene.opacity);
+    let treated = apply_entity_local_spatial_effect(in.uv, tex_color);
+    return vec4<f32>(treated.rgb, treated.a * scene.opacity);
 }

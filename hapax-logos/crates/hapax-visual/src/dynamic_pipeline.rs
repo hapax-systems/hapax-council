@@ -224,6 +224,8 @@ struct PlanPass {
     #[serde(default)]
     effect_binding: String,
     #[serde(default)]
+    route_authority: String,
+    #[serde(default)]
     effect_application_plane: String,
     #[serde(default)]
     fourth_wall_policy: String,
@@ -359,6 +361,7 @@ struct DynamicPass {
     source_bound: bool,
     full_surface: bool,
     effect_binding: String,
+    route_authority: String,
     effect_application_plane: String,
     fourth_wall_policy: String,
     coverage_role: String,
@@ -449,6 +452,7 @@ fn update_dynamic_pass_metadata_from_plan(
     pass.source_bound = plan_pass.source_bound;
     pass.full_surface = plan_pass.full_surface;
     pass.effect_binding = plan_pass.effect_binding.clone();
+    pass.route_authority = plan_pass.route_authority.clone();
     pass.effect_application_plane = plan_pass.effect_application_plane.clone();
     pass.fourth_wall_policy = plan_pass.fourth_wall_policy.clone();
     pass.coverage_role = plan_pass.coverage_role.clone();
@@ -1268,6 +1272,7 @@ impl DynamicPipeline {
                     source_bound: plan_pass.source_bound,
                     full_surface: plan_pass.full_surface,
                     effect_binding: plan_pass.effect_binding.clone(),
+                    route_authority: plan_pass.route_authority.clone(),
                     effect_application_plane: plan_pass.effect_application_plane.clone(),
                     fourth_wall_policy: plan_pass.fourth_wall_policy.clone(),
                     coverage_role: plan_pass.coverage_role.clone(),
@@ -1409,6 +1414,7 @@ impl DynamicPipeline {
                     source_bound: plan_pass.source_bound,
                     full_surface: plan_pass.full_surface,
                     effect_binding: plan_pass.effect_binding.clone(),
+                    route_authority: plan_pass.route_authority.clone(),
                     effect_application_plane: plan_pass.effect_application_plane.clone(),
                     fourth_wall_policy: plan_pass.fourth_wall_policy.clone(),
                     coverage_role: plan_pass.coverage_role.clone(),
@@ -2257,6 +2263,7 @@ impl DynamicPipeline {
                         "none"
                     },
                     "effect_binding": pass.effect_binding,
+                    "route_authority": pass.route_authority,
                     "effect_application_plane": pass.effect_application_plane,
                     "fourth_wall_policy": pass.fourth_wall_policy,
                     "coverage_role": pass.coverage_role,
@@ -3489,6 +3496,7 @@ mod tests {
             source_bound: false,
             full_surface: false,
             effect_binding: String::new(),
+            route_authority: String::new(),
             effect_application_plane: String::new(),
             fourth_wall_policy: String::new(),
             coverage_role: String::new(),
@@ -3540,6 +3548,7 @@ mod tests {
             source_bound: false,
             full_surface: false,
             effect_binding: String::new(),
+            route_authority: String::new(),
             effect_application_plane: String::new(),
             fourth_wall_policy: String::new(),
             coverage_role: String::new(),

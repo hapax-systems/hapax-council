@@ -34,6 +34,10 @@ struct SceneUniformData {
     shader_kind: f32,
     payload_pane_ordinal: f32,
     payload_mode: f32,
+    local_effect_kind: f32,
+    local_effect_mix: f32,
+    local_effect_param_a: f32,
+    local_effect_param_b: f32,
 }
 
 /// Single rectangle that can cast a soft shadow onto room planes.
@@ -64,10 +68,198 @@ struct GridUniformData {
 
 /// Maximum number of scene nodes we can render per frame.
 const MAX_SCENE_NODES: usize = 128;
+const ENTITY_LOCAL_EFFECT_STATE_FILE: &str = "/dev/shm/hapax-visual/entity-local-effect-state.json";
+const ENTITY_LOCAL_SPATIAL_EFFECT_COUNT: u32 = 11;
 /// Content quads are translucent compositing surfaces. They must be drawn
 /// back-to-front without writing depth, otherwise alpha-transparent regions
 /// become invisible occluding panes.
 const CONTENT_QUAD_DEPTH_WRITE_ENABLED: bool = false;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntityLocalSpatialEffectKind {
+    None,
+    Mirror,
+    Kaleidoscope,
+    Warp,
+    Fisheye,
+    Transform,
+    DisplacementMap,
+    Droste,
+    Tunnel,
+    Tile,
+    Drift,
+    Breathing,
+}
+
+impl EntityLocalSpatialEffectKind {
+    fn as_f32(self) -> f32 {
+        match self {
+            EntityLocalSpatialEffectKind::None => 0.0,
+            EntityLocalSpatialEffectKind::Mirror => 1.0,
+            EntityLocalSpatialEffectKind::Kaleidoscope => 2.0,
+            EntityLocalSpatialEffectKind::Warp => 3.0,
+            EntityLocalSpatialEffectKind::Fisheye => 4.0,
+            EntityLocalSpatialEffectKind::Transform => 5.0,
+            EntityLocalSpatialEffectKind::DisplacementMap => 6.0,
+            EntityLocalSpatialEffectKind::Droste => 7.0,
+            EntityLocalSpatialEffectKind::Tunnel => 8.0,
+            EntityLocalSpatialEffectKind::Tile => 9.0,
+            EntityLocalSpatialEffectKind::Drift => 10.0,
+            EntityLocalSpatialEffectKind::Breathing => 11.0,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            EntityLocalSpatialEffectKind::None => "none",
+            EntityLocalSpatialEffectKind::Mirror => "mirror",
+            EntityLocalSpatialEffectKind::Kaleidoscope => "kaleidoscope",
+            EntityLocalSpatialEffectKind::Warp => "warp",
+            EntityLocalSpatialEffectKind::Fisheye => "fisheye",
+            EntityLocalSpatialEffectKind::Transform => "transform",
+            EntityLocalSpatialEffectKind::DisplacementMap => "displacement_map",
+            EntityLocalSpatialEffectKind::Droste => "droste",
+            EntityLocalSpatialEffectKind::Tunnel => "tunnel",
+            EntityLocalSpatialEffectKind::Tile => "tile",
+            EntityLocalSpatialEffectKind::Drift => "drift",
+            EntityLocalSpatialEffectKind::Breathing => "breathing",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct EntityLocalSpatialEffect {
+    kind: EntityLocalSpatialEffectKind,
+    mix: f32,
+    param_a: f32,
+    param_b: f32,
+}
+
+impl EntityLocalSpatialEffect {
+    fn none() -> Self {
+        Self {
+            kind: EntityLocalSpatialEffectKind::None,
+            mix: 0.0,
+            param_a: 0.0,
+            param_b: 0.0,
+        }
+    }
+
+    fn is_active(self) -> bool {
+        self.kind != EntityLocalSpatialEffectKind::None && self.mix > 0.001
+    }
+}
+
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn stable_label_phase(label: &str) -> f32 {
+    let mut hash = 0u32;
+    for byte in label.bytes() {
+        hash = hash.wrapping_mul(16_777_619) ^ u32::from(byte);
+    }
+    (hash % 10_000) as f32 / 10_000.0
+}
+
+fn local_effect_envelope(t: f32) -> f32 {
+    let fade_in = smoothstep(0.05, 0.26, t);
+    let fade_out = 1.0 - smoothstep(0.74, 0.95, t);
+    (fade_in * fade_out).clamp(0.0, 1.0)
+}
+
+fn entity_local_spatial_effect_for_node(
+    node: &SceneNode,
+    time: f32,
+    sorted_ordinal: usize,
+) -> EntityLocalSpatialEffect {
+    if node.content_source_id.is_none()
+        || node.shader != crate::scene::SceneNodeShader::Textured
+        || node.opacity < 0.001
+    {
+        return EntityLocalSpatialEffect::none();
+    }
+
+    let label_phase = stable_label_phase(&node.label);
+    let cycle = time * 0.080 + label_phase * 3.0 + sorted_ordinal as f32 * 0.173;
+    let phase = cycle.fract();
+    let envelope = local_effect_envelope(phase);
+    if envelope <= 0.001 {
+        return EntityLocalSpatialEffect::none();
+    }
+
+    let effect_index = cycle.floor() as u32 % ENTITY_LOCAL_SPATIAL_EFFECT_COUNT;
+    let mix = (0.34 + 0.30 * envelope).clamp(0.0, 0.68);
+    match effect_index {
+        0 => EntityLocalSpatialEffect {
+            kind: EntityLocalSpatialEffectKind::Mirror,
+            mix,
+            param_a: ((label_phase * 5.0).floor() as u32 % 2) as f32,
+            param_b: 0.36 + 0.28 * phase,
+        },
+        1 => EntityLocalSpatialEffect {
+            kind: EntityLocalSpatialEffectKind::Kaleidoscope,
+            mix,
+            param_a: 3.0 + ((label_phase * 7.0).floor() as u32 % 4) as f32,
+            param_b: phase * std::f32::consts::TAU,
+        },
+        2 => EntityLocalSpatialEffect {
+            kind: EntityLocalSpatialEffectKind::Warp,
+            mix,
+            param_a: 4.0 + ((sorted_ordinal as u32 % 5) as f32 * 1.5),
+            param_b: phase * std::f32::consts::TAU,
+        },
+        3 => EntityLocalSpatialEffect {
+            kind: EntityLocalSpatialEffectKind::Fisheye,
+            mix,
+            param_a: 0.20 + 0.34 * envelope,
+            param_b: (phase + label_phase) * std::f32::consts::TAU,
+        },
+        4 => EntityLocalSpatialEffect {
+            kind: EntityLocalSpatialEffectKind::Transform,
+            mix,
+            param_a: 0.04 + 0.08 * envelope,
+            param_b: (phase * 1.7 + label_phase) * std::f32::consts::TAU,
+        },
+        5 => EntityLocalSpatialEffect {
+            kind: EntityLocalSpatialEffectKind::DisplacementMap,
+            mix,
+            param_a: 0.05 + 0.13 * envelope,
+            param_b: (phase * 2.0 + label_phase) * std::f32::consts::TAU,
+        },
+        6 => EntityLocalSpatialEffect {
+            kind: EntityLocalSpatialEffectKind::Droste,
+            mix,
+            param_a: 0.16 + 0.26 * envelope,
+            param_b: (phase + label_phase * 0.5) * std::f32::consts::TAU,
+        },
+        7 => EntityLocalSpatialEffect {
+            kind: EntityLocalSpatialEffectKind::Tunnel,
+            mix,
+            param_a: 0.18 + 0.40 * envelope,
+            param_b: (phase * 1.5 + label_phase) * std::f32::consts::TAU,
+        },
+        8 => EntityLocalSpatialEffect {
+            kind: EntityLocalSpatialEffectKind::Tile,
+            mix,
+            param_a: 2.0 + ((sorted_ordinal as u32 + (label_phase * 5.0) as u32) % 4) as f32,
+            param_b: phase,
+        },
+        9 => EntityLocalSpatialEffect {
+            kind: EntityLocalSpatialEffectKind::Drift,
+            mix,
+            param_a: 0.018 + 0.042 * envelope,
+            param_b: (phase * 1.3 + label_phase) * std::f32::consts::TAU,
+        },
+        _ => EntityLocalSpatialEffect {
+            kind: EntityLocalSpatialEffectKind::Breathing,
+            mix,
+            param_a: 0.010 + 0.016 * envelope,
+            param_b: phase * std::f32::consts::TAU,
+        },
+    }
+}
 
 fn sanitized_scene_sample_count(raw: Option<&str>) -> u32 {
     match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
@@ -217,6 +409,7 @@ pub struct SceneRenderer {
     placeholder_view: wgpu::TextureView,
     width: u32,
     height: u32,
+    frame_count: u64,
     // Grid rendering
     grid_pipeline: wgpu::RenderPipeline,
     grid_uniform_buffer: wgpu::Buffer,
@@ -558,6 +751,7 @@ impl SceneRenderer {
             placeholder_view,
             width,
             height,
+            frame_count: 0,
             grid_pipeline,
             grid_uniform_buffer,
             grid_uniform_bind_group,
@@ -573,6 +767,8 @@ impl SceneRenderer {
         time: f32,
         content_source_mgr: Option<&ContentSourceManager>,
     ) -> &wgpu::TextureView {
+        self.frame_count = self.frame_count.wrapping_add(1);
+
         // Update camera before scene construction so AoA pane LOD gates match the drawn frame.
         self.camera.apply_orbital_drift(time);
 
@@ -655,6 +851,7 @@ impl SceneRenderer {
 
             // Pre-upload ALL node uniforms before the render pass draws
             let mut draw_list: Vec<(u32, wgpu::BindGroup, u32)> = Vec::new();
+            let mut active_entity_local_effects = Vec::new();
             for (slot, &idx) in sorted_indices.iter().enumerate() {
                 let node = &scene[idx];
                 if node.opacity < 0.001 {
@@ -664,6 +861,7 @@ impl SceneRenderer {
                     break;
                 }
 
+                let local_effect = entity_local_spatial_effect_for_node(node, time, slot);
                 let uniform_data = SceneUniformData {
                     model: node.model_matrix().to_cols_array_2d(),
                     view: view.to_cols_array_2d(),
@@ -676,6 +874,10 @@ impl SceneRenderer {
                     payload_mode: node
                         .aoa_payload_mode
                         .map_or(0.0, |mode| mode.shader_payload_mode()),
+                    local_effect_kind: local_effect.kind.as_f32(),
+                    local_effect_mix: local_effect.mix,
+                    local_effect_param_a: local_effect.param_a,
+                    local_effect_param_b: local_effect.param_b,
                 };
                 let offset = (slot as u64) * (self.uniform_align as u64);
                 queue.write_buffer(
@@ -714,7 +916,26 @@ impl SceneRenderer {
                     tex_bind_group,
                     node.shader.vertex_count(),
                 ));
+
+                if local_effect.is_active() {
+                    active_entity_local_effects.push(serde_json::json!({
+                        "node_label": node.label,
+                        "content_source_id": node.content_source_id.as_deref(),
+                        "effect": local_effect.kind.name(),
+                        "effect_scope": "entity_local_scene_node",
+                        "effect_family": "atmospheric",
+                        "effect_binding": "source_plane_uv",
+                        "effect_application_plane": "entity_field_spatial_reprojection",
+                        "route_authority": "entity_local_source_plane",
+                        "fourth_wall_policy": "forbid_foreground_overlay",
+                        "output_plane_route": false,
+                        "mix": local_effect.mix,
+                        "param_a": local_effect.param_a,
+                        "param_b": local_effect.param_b,
+                    }));
+                }
             }
+            self.publish_entity_local_effect_state(&active_entity_local_effects);
 
             // Now draw with dynamic offsets — each draw uses its own uniform slice
             for (dyn_offset, tex_bg, vertex_count) in &draw_list {
@@ -727,6 +948,98 @@ impl SceneRenderer {
         queue.submit(std::iter::once(encoder.finish()));
 
         &self.output_view
+    }
+
+    fn publish_entity_local_effect_state(&self, active_effects: &[serde_json::Value]) {
+        if !self.frame_count.is_multiple_of(30) {
+            return;
+        }
+
+        let payload = serde_json::json!({
+            "schema": "entity-local-effect-state-v1",
+            "frame_count": self.frame_count,
+            "route": {
+                "effect_scope": "entity_local_scene_node",
+                "effect_binding": "source_plane_uv",
+                "effect_application_plane": "entity_field_spatial_reprojection",
+                "route_authority": "entity_local_source_plane",
+                "fourth_wall_policy": "forbid_foreground_overlay",
+                "output_plane_route": false,
+            },
+            "candidate_effects": [
+                {
+                    "name": "mirror",
+                    "prior_route_authority": "entity_local_route_required",
+                    "restored_route_authority": "entity_local_source_plane",
+                },
+                {
+                    "name": "kaleidoscope",
+                    "prior_route_authority": "entity_local_route_required",
+                    "restored_route_authority": "entity_local_source_plane",
+                },
+                {
+                    "name": "warp",
+                    "prior_route_authority": "entity_local_route_required",
+                    "restored_route_authority": "entity_local_source_plane",
+                },
+                {
+                    "name": "fisheye",
+                    "prior_route_authority": "entity_local_route_required",
+                    "restored_route_authority": "entity_local_source_plane",
+                },
+                {
+                    "name": "transform",
+                    "prior_route_authority": "entity_local_route_required",
+                    "restored_route_authority": "entity_local_source_plane",
+                },
+                {
+                    "name": "displacement_map",
+                    "prior_route_authority": "entity_local_route_required",
+                    "restored_route_authority": "entity_local_source_plane",
+                },
+                {
+                    "name": "droste",
+                    "prior_route_authority": "entity_local_route_required",
+                    "restored_route_authority": "entity_local_source_plane",
+                },
+                {
+                    "name": "tunnel",
+                    "prior_route_authority": "entity_local_route_required",
+                    "restored_route_authority": "entity_local_source_plane",
+                },
+                {
+                    "name": "tile",
+                    "prior_route_authority": "entity_local_route_required",
+                    "restored_route_authority": "entity_local_source_plane",
+                },
+                {
+                    "name": "drift",
+                    "prior_route_authority": "entity_local_route_required",
+                    "restored_route_authority": "entity_local_source_plane",
+                },
+                {
+                    "name": "breathing",
+                    "prior_route_authority": "entity_local_route_required",
+                    "restored_route_authority": "entity_local_source_plane",
+                },
+            ],
+            "active_effect_count": active_effects.len(),
+            "active_effects": active_effects,
+        });
+
+        let path = std::path::Path::new(ENTITY_LOCAL_EFFECT_STATE_FILE);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(
+            &tmp,
+            serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+        )
+        .is_ok()
+        {
+            let _ = std::fs::rename(tmp, path);
+        }
     }
 
     pub fn width(&self) -> u32 {
@@ -855,6 +1168,95 @@ mod tests {
         assert!(
             SCENE_QUAD_WGSL.contains("fwidth"),
             "AoA and pane geometry should use derivative-aware AA, not fixed output-plane smoothing"
+        );
+    }
+
+    #[test]
+    fn entity_local_spatial_route_only_attaches_to_textured_content_nodes() {
+        let mut textured = SceneNode::new("camera-brio");
+        textured.content_source_id = Some("camera-brio".to_string());
+        let effect = entity_local_spatial_effect_for_node(&textured, 12.0, 0);
+        assert!(
+            effect.is_active(),
+            "textured source planes should be eligible for entity-local spatial treatment"
+        );
+
+        let mut aoa = SceneNode::new("aperture-of-apertures");
+        aoa.shader = crate::scene::SceneNodeShader::ApertureOfApertures;
+        aoa.content_source_id = Some("pane-source".to_string());
+        assert_eq!(
+            entity_local_spatial_effect_for_node(&aoa, 12.0, 0).kind,
+            EntityLocalSpatialEffectKind::None,
+            "AoA pane-local payloads need their own pane route, not the source-plane quad route"
+        );
+
+        let no_source = SceneNode::new("world-grid");
+        assert_eq!(
+            entity_local_spatial_effect_for_node(&no_source, 12.0, 0).kind,
+            EntityLocalSpatialEffectKind::None,
+            "world/grid geometry must not get a source-plane texture route"
+        );
+    }
+
+    #[test]
+    fn entity_local_spatial_effects_are_declared_in_quad_shader_not_fourth_wall_pipeline() {
+        assert!(
+            SCENE_QUAD_WGSL.contains("apply_entity_local_spatial_effect"),
+            "entity-local spatial repair must live in the scene quad shader"
+        );
+        assert!(
+            SCENE_QUAD_WGSL.contains("scene.local_effect_kind"),
+            "entity-local route should be uniformed per scene entity"
+        );
+        assert!(
+            SCENE_QUAD_WGSL.contains("textureSample(quad_texture, quad_sampler"),
+            "entity-local effects must sample the bound entity texture, not composed @live"
+        );
+    }
+
+    #[test]
+    fn scene_quad_shader_parses_after_entity_local_effect_route_changes() {
+        naga::front::wgsl::parse_str(SCENE_QUAD_WGSL)
+            .expect("scene quad WGSL must parse before live compositor deployment");
+    }
+
+    #[test]
+    fn entity_local_runtime_state_schema_declares_no_output_plane_route() {
+        assert_eq!(
+            ENTITY_LOCAL_EFFECT_STATE_FILE,
+            "/dev/shm/hapax-visual/entity-local-effect-state.json"
+        );
+        assert_eq!(EntityLocalSpatialEffectKind::Mirror.name(), "mirror");
+        assert_eq!(
+            EntityLocalSpatialEffectKind::Kaleidoscope.name(),
+            "kaleidoscope"
+        );
+        assert_eq!(EntityLocalSpatialEffectKind::Warp.name(), "warp");
+    }
+
+    #[test]
+    fn entity_local_route_covers_stateless_spatial_family_without_slitscan() {
+        for restored in [
+            "mirror",
+            "kaleidoscope",
+            "warp",
+            "fisheye",
+            "transform",
+            "displacement_map",
+            "droste",
+            "tunnel",
+            "tile",
+            "drift",
+            "breathing",
+        ] {
+            assert!(
+                SCENE_QUAD_WGSL.contains(&format!("entity_local_{}", restored)),
+                "{restored} should have a source-plane entity-local route"
+            );
+        }
+        assert!(
+            !SCENE_QUAD_WGSL.contains("entity_local_slitscan"),
+            "slitscan needs per-source temporal accumulators before restoration"
         );
     }
 
