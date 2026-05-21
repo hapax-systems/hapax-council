@@ -292,6 +292,27 @@ def test_historical_non_fulfilling_closed_statuses_block_request(
     assert payload["blocked"][0]["blocking_tasks"] == [f"T-HIST:{task_status}:closed"]
 
 
+def test_explicit_downstream_task_slug_matches_short_task_id(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    task_slug = "ef7b-184-dynamic-livestream-audit-catalog-research-split-ex"
+    _write_request(active / "REQ-ALIAS.md", "REQ-ALIAS", downstream_tasks=[task_slug])
+    _write_task(task_closed / f"{task_slug}.md", "ef7b-184", status="done")
+
+    result = _run(tmp_path, "--dry-run", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 1
+    assert payload["blocked"] == []
+    assert payload["eligible"][0]["linked_tasks"] == [task_slug]
+    assert payload["eligible"][0]["fulfilling_tasks"] == ["ef7b-184"]
+
+
 def test_grouped_covered_requests_are_linked_from_task_body(tmp_path: Path) -> None:
     active = tmp_path / "requests" / "active"
     closed = tmp_path / "requests" / "closed"

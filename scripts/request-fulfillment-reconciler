@@ -307,6 +307,7 @@ def decide_request(
         reason = ""
 
     fulfilling: list[str] = []
+    fulfilling_evidence_keys: set[str] = set()
     blocking: list[str] = []
     missing: list[str] = []
     avsdlc_blockers: list[str] = []
@@ -316,6 +317,8 @@ def decide_request(
             missing.append(linked_id)
         elif record.fulfilling:
             fulfilling.append(record.task_id)
+            fulfilling_evidence_keys.add(record.task_id)
+            fulfilling_evidence_keys.add(linked_id)
         elif record.blocking:
             blocking.append(f"{record.task_id}:{record.status or 'unknown'}:{record.directory}")
 
@@ -325,7 +328,7 @@ def decide_request(
             reason = "missing_linked_tasks"
         elif blocking:
             reason = "linked_tasks_not_fulfilled"
-        elif status != "fulfilled" and not (set(fulfilling) & explicit_fulfillment_tasks):
+        elif status != "fulfilled" and not (fulfilling_evidence_keys & explicit_fulfillment_tasks):
             reason = "no_fulfilling_task_evidence"
         else:
             ac_state = acceptance_criteria_state(request_note.raw)
