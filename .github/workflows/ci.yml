@@ -798,6 +798,15 @@ jobs:
           fi
           echo "Tests failed (pytest exit $PYTEST_EXIT)"
           exit 1
+      - name: Governance coverage gate
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
+        env:
+          LITELLM_BASE_URL: "http://0.0.0.0:1"
+          QDRANT_URL: "http://0.0.0.0:1"
+          OLLAMA_HOST: "http://0.0.0.0:1"
+          OTEL_SDK_DISABLED: "true"
+          LANGFUSE_HOST: "http://0.0.0.0:1"
+        run: uv run --no-sync python scripts/ci_governance_coverage_gate.py
 
   homage-visual-regression:
     needs: post_merge_duplicate_filter
