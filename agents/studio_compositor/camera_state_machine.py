@@ -67,11 +67,12 @@ class CameraStateMachine:
     increments on any failure path (RECOVERY_FAILED, mid-stream
     PIPELINE_ERROR / FRAME_FLOW_STALE / WATCHDOG_FIRED) and resets only
     on operator action (OPERATOR_FORCE_RECONNECT, DEVICE_ADDED,
-    OPERATOR_REARM) or sustained frame flow (FRAME_FLOW_OBSERVED while
-    HEALTHY). RECOVERY_SUCCEEDED alone does NOT reset — GStreamer can
-    reach PLAYING then fail on the first buffer (e.g., USB isoc
-    bandwidth exhaustion), in which case the reconnect loop would
-    otherwise run forever at 1 Hz without ever escalating to DEAD.
+    OPERATOR_REARM), a physical device re-add (DEVICE_ADDED), or
+    sustained frame flow (FRAME_FLOW_OBSERVED while HEALTHY).
+    RECOVERY_SUCCEEDED alone does NOT reset — GStreamer can reach
+    PLAYING then fail on the first buffer (e.g., USB isoc bandwidth
+    exhaustion), in which case the reconnect loop would otherwise run
+    forever at 1 Hz without ever escalating to DEAD.
     """
 
     def __init__(
@@ -231,6 +232,9 @@ class CameraStateMachine:
             if e == EventKind.OPERATOR_REARM:
                 self._consecutive_failures = 0
                 return CameraState.OFFLINE
+            if e == EventKind.DEVICE_ADDED:
+                self._consecutive_failures = 0
+                return CameraState.RECOVERING
             return None
 
         return None
