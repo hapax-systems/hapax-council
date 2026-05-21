@@ -12,4 +12,5 @@ EnvironmentFile=/run/user/1000/hapax-secrets.env
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=HAPAX_REQUEST_DECOMPOSE_LIMIT=3
 TimeoutStartSec=300
