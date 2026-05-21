@@ -824,3 +824,50 @@ class TestFallbackHardGates:
         candidate = self._candidate(content_risk="tier_4_risky")
 
         assert self._select_fallback(p, candidate) == []
+
+
+def test_interrupt_path_runs_consent_gate():
+    """Interrupt handlers must pass through hard gates — no bypass."""
+    from unittest.mock import patch
+
+    from shared.affordance_pipeline import AffordancePipeline
+
+    p = AffordancePipeline()
+    p.register_interrupt("test_token", "consent_gated_cap", "test_daemon")
+
+    imp = Impingement(
+        timestamp=time.time(),
+        source="test",
+        type=ImpingementType.ABSOLUTE_THRESHOLD,
+        strength=1.0,
+        content={"metric": "test"},
+        interrupt_token="test_token",
+    )
+
+    with patch.object(p, "_consent_allows", return_value=False):
+        results = p.select(imp)
+        assert results == [], "Interrupt candidates must be blocked when consent gate denies"
+
+
+def test_interrupt_path_runs_monetization_gate():
+    """Interrupt handlers must pass through monetization gate."""
+    from unittest.mock import patch
+
+    from shared.affordance_pipeline import AffordancePipeline
+    from shared.governance.monetization_safety import GATE
+
+    p = AffordancePipeline()
+    p.register_interrupt("test_token", "risky_cap", "test_daemon")
+
+    imp = Impingement(
+        timestamp=time.time(),
+        source="test",
+        type=ImpingementType.ABSOLUTE_THRESHOLD,
+        strength=1.0,
+        content={"metric": "test"},
+        interrupt_token="test_token",
+    )
+
+    with patch.object(GATE, "candidate_filter", return_value=[]):
+        results = p.select(imp)
+        assert results == [], "Interrupt candidates must be blocked when monetization gate denies"

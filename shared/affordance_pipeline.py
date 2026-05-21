@@ -714,6 +714,8 @@ class AffordancePipeline:
                     )
                     for h in handlers
                 ]
+                trace["stages"]["interrupt_handlers_pre_gate"] = len(result)
+                result, _ = self._apply_hard_gates(result, trace)
                 winner = result[0] if result else None
                 self._metrics.record_selection(
                     impingement_source=impingement.source,
