@@ -7,6 +7,7 @@ import argparse
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -49,6 +50,19 @@ CRITICAL_ARTIFACTS = (
     ("cc_hygiene_state", Path("cc-hygiene-state.json"), 900),
     ("security_signal_intake_state", Path("security-signal-intake-state.json"), 7200),
 )
+
+CRITICAL_UNIT_CONTENT_CONTRACTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "hapax-request-intake-consumer.service": (
+        (
+            "fulfillment_report_environment",
+            "Environment=HAPAX_REQUEST_FULFILLMENT_REPORT=%h/.cache/hapax/request-fulfillment-reconciler.json",
+        ),
+        (
+            "fulfillment_reconciler_exec_start_post",
+            "ExecStartPost=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/request-fulfillment-reconciler --apply --write-report --report-path %h/.cache/hapax/request-fulfillment-reconciler.json --quiet",
+        ),
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -187,6 +201,19 @@ def collect_runtime_units() -> dict[str, RuntimeUnit]:
     return merge_runtime(unit_files, active_units)
 
 
+def cat_runtime_unit(name: str) -> str | None:
+    proc = subprocess.run(
+        ["systemctl", "--user", "cat", name, "--no-pager"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
 def classify_unit_findings(specs: list[UnitSpec], runtime: dict[str, RuntimeUnit]) -> list[Finding]:
     findings: list[Finding] = []
     spec_names = {spec.name for spec in specs}
@@ -243,6 +270,66 @@ def classify_unit_findings(specs: list[UnitSpec], runtime: dict[str, RuntimeUnit
     return findings
 
 
+def classify_unit_content_findings(
+    unit_dir: Path,
+    runtime: dict[str, RuntimeUnit],
+    *,
+    unit_text_loader: Callable[[str], str | None] = cat_runtime_unit,
+    contracts: dict[str, tuple[tuple[str, str], ...]] = CRITICAL_UNIT_CONTENT_CONTRACTS,
+) -> list[Finding]:
+    findings: list[Finding] = []
+    for unit_name, requirements in contracts.items():
+        repo_unit = unit_dir / unit_name
+        if not repo_unit.is_file():
+            findings.append(
+                Finding(
+                    severity="critical",
+                    kind="critical_unit_source_contract_missing",
+                    subject=unit_name,
+                    detail=f"{repo_unit} is missing",
+                )
+            )
+            continue
+
+        row = runtime.get(unit_name)
+        if row is None:
+            continue
+
+        repo_text = repo_unit.read_text(encoding="utf-8")
+        runtime_text = unit_text_loader(unit_name)
+        if runtime_text is None:
+            findings.append(
+                Finding(
+                    severity="critical",
+                    kind="critical_unit_content_unreadable",
+                    subject=unit_name,
+                    detail="systemctl --user cat could not read installed unit text",
+                )
+            )
+            continue
+
+        for label, snippet in requirements:
+            if snippet not in repo_text:
+                findings.append(
+                    Finding(
+                        severity="critical",
+                        kind="critical_unit_source_contract_missing",
+                        subject=unit_name,
+                        detail=f"canonical unit is missing required contract {label}",
+                    )
+                )
+            elif snippet not in runtime_text:
+                findings.append(
+                    Finding(
+                        severity="critical",
+                        kind="critical_unit_content_drift",
+                        subject=unit_name,
+                        detail=f"installed unit is missing required contract {label}",
+                    )
+                )
+    return findings
+
+
 def classify_artifact_findings(cache_root: Path, now: datetime) -> list[Finding]:
     findings: list[Finding] = []
     for label, relative_path, ttl_seconds in CRITICAL_ARTIFACTS:
@@ -295,7 +382,9 @@ def render_text(payload: dict[str, object]) -> str:
 def build_payload(unit_dir: Path, cache_root: Path) -> dict[str, object]:
     now = datetime.now(UTC)
     specs = repo_unit_specs(unit_dir)
-    findings = classify_unit_findings(specs, collect_runtime_units())
+    runtime = collect_runtime_units()
+    findings = classify_unit_findings(specs, runtime)
+    findings.extend(classify_unit_content_findings(unit_dir, runtime))
     findings.extend(classify_artifact_findings(cache_root, now))
     findings = sorted(
         findings, key=lambda item: (item.severity != "critical", item.kind, item.subject)
