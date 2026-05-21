@@ -75,7 +75,6 @@ LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES = frozenset(
         "palette_remap",
         "reaction_diffusion",
         "slitscan",
-        "stutter",
         "tile",
         "tunnel",
         "voronoi_overlay",
@@ -94,6 +93,16 @@ LIVE_SURFACE_GLSL_TEMPORAL_PENDING_VISUAL_EVIDENCE_NODE_TYPES = frozenset(
         # the source must keep moving, no foreground pane/full-frame flood may
         # appear, and no hard freeze may be visible under bounded params.
         "slitscan",
+    }
+)
+
+LIVE_SURFACE_GLSL_TEMPORAL_AUDIO_REACTIVE_REPAIR_20260521_NODE_TYPES = frozenset(
+    {
+        # Temporal audio-reactive tranche: stutter admitted with positive live
+        # evidence (PR #3650). Recruited in slot3_3, no freeze (transition
+        # delta 0.017-0.061), forbid_foreground_overlay, source_bound=true.
+        # Bounded params: check_interval >= 20, freeze_chance <= 0.08,
+        # freeze_max <= 2.0, replay_frames <= 1.
         "stutter",
     }
 )
@@ -155,6 +164,7 @@ LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES = (
     )
     | LIVE_SURFACE_GLSL_SOURCE_BOUND_REPAIR_20260520_NODE_TYPES
     | LIVE_SURFACE_GLSL_WARM_MINIMAL_REPAIR_20260520_NODE_TYPES
+    | LIVE_SURFACE_GLSL_TEMPORAL_AUDIO_REACTIVE_REPAIR_20260521_NODE_TYPES
 )
 
 
@@ -547,6 +557,7 @@ __all__ = [
     "LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES",
     "LIVE_SURFACE_GLSL_SOURCE_BOUND_REPAIR_20260520_NODE_TYPES",
     "LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES",
+    "LIVE_SURFACE_GLSL_TEMPORAL_AUDIO_REACTIVE_REPAIR_20260521_NODE_TYPES",
     "LIVE_SURFACE_GLSL_WARM_MINIMAL_REPAIR_20260520_NODE_TYPES",
     "LIVE_SURFACE_GLSL_TEMPORAL_PENDING_VISUAL_EVIDENCE_NODE_TYPES",
     "LIVE_SURFACE_PARAM_BOUNDS",
