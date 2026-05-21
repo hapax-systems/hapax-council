@@ -40,6 +40,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from shared.merge_queue_lineage import DEFAULT_LEDGER_PATH, read_jsonl_records  # noqa: E402
 from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
+from shared.sdlc_lifecycle import task_closure_validity  # noqa: E402
 
 LOG = logging.getLogger("cc-pr-autoqueue")
 
@@ -506,7 +507,12 @@ def _matching_tasks(pr: PullRequest, tasks: list[TaskNote]) -> list[TaskNote]:
     return [task for task in tasks if task.branch == pr.head_ref]
 
 
-def _task_blockers(task: TaskNote, *, require_route_metadata: bool) -> list[str]:
+def _task_blockers(
+    task: TaskNote,
+    *,
+    require_route_metadata: bool,
+    open_pr_number: int | None = None,
+) -> list[str]:
     blockers: list[str] = []
     if not task.authority_case:
         blockers.append("task_missing_authority_case")
@@ -518,6 +524,25 @@ def _task_blockers(task: TaskNote, *, require_route_metadata: bool) -> list[str]
     if task.folder == "closed":
         if task.status not in CLOSED_READY_STATUSES:
             blockers.append(f"closed_task_status_not_ready:{task.status or 'missing'}")
+        try:
+            note_text = task.path.read_text(encoding="utf-8")
+        except OSError as exc:
+            blockers.append(f"closed_task_unreadable:{exc}")
+        else:
+
+            def _pr_state_lookup(pr_number: str) -> str:
+                if open_pr_number is not None and pr_number == str(open_pr_number):
+                    return "open"
+                return "unknown"
+
+            validity = task_closure_validity(
+                note_text,
+                pr_state_lookup=_pr_state_lookup,
+                require_route_metadata=require_route_metadata,
+            )
+            blockers.extend(f"closed_task_closure_invalid:{reason}" for reason in validity.blockers)
+            if task.pr is None and open_pr_number is not None:
+                blockers.append(f"closed_task_linked_to_open_pr_without_pr_field:{open_pr_number}")
     elif task.status not in ACTIVE_READY_STATUSES:
         blockers.append(f"active_task_status_not_ready:{task.status or 'missing'}")
 
@@ -614,6 +639,7 @@ def classify_pr(
             blockers = _task_blockers(
                 matched_task,
                 require_route_metadata=require_route_metadata,
+                open_pr_number=pr.number,
             )
             if len(matches) == 1:
                 reasons.extend(blockers)

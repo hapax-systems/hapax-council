@@ -52,22 +52,21 @@ def test_check_pr_merged_function_exists():
 def test_pr_gate_blocks_open_pr():
     """The code must block when a PR is 'open'."""
     py_code = _extract_python(SCRIPT)
-    assert 'pr_state == "open"' in py_code
-    assert "still open" in py_code
+    assert "task_closure_validity(" in py_code
+    assert 'return "open"' in py_code
 
 
 def test_pr_gate_blocks_closed_unmerged():
     """The code must block when a PR was closed without merge."""
     py_code = _extract_python(SCRIPT)
-    assert 'pr_state == "closed_unmerged"' in py_code
-    assert "closed without merge" in py_code
+    assert 'return "closed_unmerged"' in py_code
 
 
 def test_pr_gate_fails_closed_on_unknown():
     """Unknown PR state must fail closed (block), not pass."""
     py_code = _extract_python(SCRIPT)
-    assert 'pr_state == "unknown"' in py_code
-    assert "cannot verify merge" in py_code
+    assert 'return "unknown"' in py_code
+    assert "require_route_metadata=True" in py_code
 
 
 def test_pr_gate_allows_merged():
@@ -84,11 +83,11 @@ def test_pr_gate_allows_merged():
 
 
 def test_dependency_gate_checks_status_first():
-    """Status check (completed/closed/done) must happen before PR check."""
+    """The dependency gate uses the shared closure-validity predicate."""
     py_code = _extract_python(SCRIPT)
-    status_pos = py_code.index("dep_status not in")
-    pr_pos = py_code.index("pr_num = _parse_pr_number")
-    assert status_pos < pr_pos, "Status check must precede PR check"
+    dep_pos = py_code.index("for dep_id in _parse_depends_on")
+    predicate_pos = py_code.index("task_closure_validity(")
+    assert dep_pos < predicate_pos, "Dependency checks must call the shared predicate"
 
 
 def test_uses_gh_cli():
