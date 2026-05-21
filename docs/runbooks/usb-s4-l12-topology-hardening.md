@@ -16,8 +16,9 @@ replug witness:
   L-12/MPC; unrouted desktop audio must stay on the local Ryzen monitor path
   unless an explicit governed filter-chain targets the broadcast path.
 - Six Logitech cameras are off the CalDigit audio controller path
-  `pci-0000:71:00.0`.
-- `usbcore.usbfs_memory_mb=128` and `uvcvideo.quirks=0x100` are live.
+  `pci-0000:71:00.0` and are referenced by stable `/dev/v4l/by-id` paths.
+- `usbcore.usbfs_memory_mb=128`, `usbcore.autosuspend=-1`, and
+  `uvcvideo.quirks=0x100` are live.
 - S-4 mass-storage and CDC Ethernet functions are ignored by desktop/network
   managers while S-4 audio/MIDI remain available.
 
@@ -63,6 +64,7 @@ Kernel command-line parameters must be carried by the bootloader too:
 ```bash
 cat config/kernel-cmdline/hapax-usb-reliability.params
 grep -F 'usbcore.usbfs_memory_mb=128' /etc/default/limine
+grep -F 'usbcore.autosuspend=-1' /etc/default/limine
 grep -F 'uvcvideo.quirks=0x100' /etc/default/limine
 ```
 
@@ -76,6 +78,7 @@ After reboot:
 
 ```bash
 cat /sys/module/usbcore/parameters/usbfs_memory_mb
+cat /sys/module/usbcore/parameters/autosuspend
 cat /sys/module/uvcvideo/parameters/quirks
 scripts/hapax-usb-topology-witness --status-path /tmp/hapax-usb-topology-status.json
 jq . /tmp/hapax-usb-topology-status.json
@@ -84,6 +87,7 @@ jq . /tmp/hapax-usb-topology-status.json
 Expected:
 
 - `usbfs_memory_mb` is `128`.
+- `usbcore` autosuspend is `-1`.
 - `uvcvideo` quirks is `256` or `0x100`.
 - Witness `ok` is `true`.
 - S-4/L-12 `stable_id` values are populated when those devices are present.
@@ -154,6 +158,9 @@ jq '.cameras[] | {serial, path, on_caldigit_audio_controller}' \
 ```
 
 Expected: every Logitech camera has `on_caldigit_audio_controller=false`.
+The default policy treats any required RGB camera on the CalDigit branch as a
+hard issue. Temporary exceptions must be entered as explicit known absences or
+incident-local policy, not left as the normal baseline.
 
 ## Status JSON Contract
 

@@ -110,6 +110,26 @@ def known_good_snapshot() -> dict[str, object]:
                 "path": "pci-0000:73:00.4-usb-0:3:1.0",
                 "on_caldigit_audio_controller": "false",
             },
+            {
+                "serial": "2657DFCF",
+                "path": "pci-0000:09:00.0-usb-0:12.3:1.0",
+                "on_caldigit_audio_controller": "false",
+            },
+            {
+                "serial": "7B88C71F",
+                "path": "pci-0000:09:00.0-usb-0:2:1.0",
+                "on_caldigit_audio_controller": "false",
+            },
+            {
+                "serial": "43B0576A",
+                "path": "pci-0000:09:00.0-usb-0:9.3:1.0",
+                "on_caldigit_audio_controller": "false",
+            },
+            {
+                "serial": "9726C031",
+                "path": "pci-0000:73:00.4-usb-0:1:1.0",
+                "on_caldigit_audio_controller": "false",
+            },
         ],
     }
 
@@ -242,7 +262,9 @@ def test_witness_reports_kernel_policy_and_camera_drift(tmp_path: Path) -> None:
     assert any(issue.startswith("camera_on_caldigit:9726C031") for issue in status["issues"])
 
 
-def test_witness_demotes_configured_s4_absence_and_c920_placement(tmp_path: Path) -> None:
+def test_witness_demotes_configured_s4_absence_with_direct_pc_camera_topology(
+    tmp_path: Path,
+) -> None:
     snapshot = known_good_snapshot()
     snapshot["s4"] = {
         "device": "",
@@ -266,13 +288,6 @@ def test_witness_demotes_configured_s4_absence_and_c920_placement(tmp_path: Path
     snapshot["alsa_capture"] = ""
     snapshot["midi_clients"] = ""
     snapshot["amidi_ports"] = ""
-    snapshot["cameras"] = [
-        {
-            "serial": "86B6B75F",
-            "path": "pci-0000:71:00.0-usb-0:1.1.2.2:1.0",
-            "on_caldigit_audio_controller": "true",
-        }
-    ]
 
     result = run_witness(tmp_path, snapshot)
 
@@ -281,10 +296,8 @@ def test_witness_demotes_configured_s4_absence_and_c920_placement(tmp_path: Path
     assert status["ok"] is True
     assert status["issues"] == []
     assert "s4_usb_missing_known_absence:hardware_fault_diagnosed_2026-05-08" in status["warnings"]
-    assert any(
-        warning.startswith("camera_on_caldigit_accepted:86B6B75F") for warning in status["warnings"]
-    )
-    assert "cameras_off_caldigit=0" in result.stdout
+    assert not any(warning.startswith("camera_on_caldigit") for warning in status["warnings"])
+    assert "cameras_off_caldigit=6" in result.stdout
 
 
 def test_witness_keeps_l12_absence_hard_even_with_policy(tmp_path: Path) -> None:
@@ -412,6 +425,16 @@ def test_installer_dry_run_lists_durable_policy_files(tmp_path: Path) -> None:
     assert not (tmp_path / "root").exists()
 
 
+def test_kernel_cmdline_disables_usb_autosuspend() -> None:
+    text = (REPO_ROOT / "config" / "kernel-cmdline" / "hapax-usb-reliability.params").read_text(
+        encoding="utf-8"
+    )
+
+    assert "usbcore.usbfs_memory_mb=128" in text
+    assert "usbcore.autosuspend=-1" in text
+    assert "uvcvideo.quirks=0x100" in text
+
+
 def test_bandwidth_watchdog_uses_dmesg_not_journalctl_follower() -> None:
     text = WATCHDOG.read_text(encoding="utf-8")
 
@@ -437,6 +460,7 @@ def test_l12_udev_policy_runs_critical_guard_and_hotplug_recovery() -> None:
     assert 'ATTR{idProduct}=="03d5"' in noautosuspend
     assert 'ATTR{power/control}="on"' in noautosuspend
     assert 'ATTR{power/autosuspend_delay_ms}="-1"' in noautosuspend
+    assert noautosuspend.count('ATTR{power/autosuspend_delay_ms}="-1"') >= 7
     assert 'RUN+="/usr/local/bin/hapax-l12-critical-usb-guard"' in noautosuspend
 
     assert 'ENV{SYSTEMD_USER_WANTS}+="hapax-usb-topology-witness.service"' in s4_policy
@@ -487,16 +511,9 @@ def test_witness_fails_when_required_camera_missing(tmp_path: Path) -> None:
     assert "required_camera_missing:c920-room:86B6B75F" in status["issues"]
 
 
-def test_witness_passes_when_required_camera_present(tmp_path: Path) -> None:
-    """c920-room serial 86B6B75F on a non-CalDigit path must pass required check."""
+def test_witness_passes_when_required_cameras_present(tmp_path: Path) -> None:
+    """All required Logitech RGB cameras on non-CalDigit paths must pass."""
     snapshot = known_good_snapshot()
-    snapshot["cameras"] = [
-        {
-            "serial": "86B6B75F",
-            "path": "pci-0000:73:00.4-usb-0:3:1.0",
-            "on_caldigit_audio_controller": "false",
-        }
-    ]
 
     result = run_witness(tmp_path, snapshot)
 
@@ -506,8 +523,8 @@ def test_witness_passes_when_required_camera_present(tmp_path: Path) -> None:
     assert not any("required_camera_missing" in i for i in status["issues"])
 
 
-def test_witness_passes_when_required_camera_on_accepted_caldigit(tmp_path: Path) -> None:
-    """c920-room on accepted CalDigit path: warning for placement, but passes required check."""
+def test_witness_fails_when_required_camera_is_on_caldigit(tmp_path: Path) -> None:
+    """The default policy no longer accepts RGB cameras on the CalDigit audio branch."""
     snapshot = known_good_snapshot()
     snapshot["s4"] = {
         "device": "",
@@ -522,21 +539,20 @@ def test_witness_passes_when_required_camera_on_accepted_caldigit(tmp_path: Path
     snapshot["alsa_capture"] = ""
     snapshot["midi_clients"] = ""
     snapshot["amidi_ports"] = ""
-    snapshot["cameras"] = [
-        {
-            "serial": "86B6B75F",
-            "path": "pci-0000:71:00.0-usb-0:1.1.2.2:1.0",
-            "on_caldigit_audio_controller": "true",
-        }
-    ]
+    for camera in snapshot["cameras"]:
+        if camera["serial"] == "86B6B75F":
+            camera["path"] = "pci-0000:71:00.0-usb-0:1.1.2.2:1.0"
+            camera["on_caldigit_audio_controller"] = "true"
 
     result = run_witness(tmp_path, snapshot)
 
-    assert result.returncode == 0, result.stdout
+    assert result.returncode == 2
     status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
-    assert status["ok"] is True
+    assert status["ok"] is False
+    assert "camera_on_caldigit:86B6B75F:pci-0000:71:00.0-usb-0:1.1.2.2:1.0" in status[
+        "issues"
+    ]
     assert not any("required_camera_missing" in i for i in status["issues"])
-    assert any("camera_on_caldigit_accepted:86B6B75F" in w for w in status["warnings"])
 
 
 def test_witness_demotes_required_camera_absence_with_known_absence_policy(
@@ -603,6 +619,7 @@ def test_runbook_names_required_validation_and_emergency_cases() -> None:
 
     for required in [
         "usbcore.usbfs_memory_mb=128",
+        "usbcore.autosuspend=-1",
         "uvcvideo.quirks=0x100",
         "UDISKS_IGNORE=1",
         "NM_UNMANAGED=1",

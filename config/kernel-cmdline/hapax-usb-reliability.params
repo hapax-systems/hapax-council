@@ -1,1 +1,1 @@
-usbcore.usbfs_memory_mb=128 uvcvideo.quirks=0x100
+usbcore.usbfs_memory_mb=128 usbcore.autosuspend=-1 uvcvideo.quirks=0x100

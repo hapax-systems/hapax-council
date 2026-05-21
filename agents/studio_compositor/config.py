@@ -61,7 +61,7 @@ LAYOUT_COORD_SCALE = OUTPUT_WIDTH / 1920.0
 _DEFAULT_CAMERAS: list[dict[str, Any]] = [
     {
         "role": "brio-operator",
-        "device": "/dev/video60",
+        "device": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_5342C819-video-index0",
         "width": 1280,
         "height": 720,
         "input_format": "mjpeg",
@@ -99,7 +99,7 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
     },
     {
         "role": "c920-overhead",
-        "device": "/dev/video61",
+        "device": "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_7B88C71F-video-index0",
         "width": 1280,
         "height": 720,
         "input_format": "mjpeg",

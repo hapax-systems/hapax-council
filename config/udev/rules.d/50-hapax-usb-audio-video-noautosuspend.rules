@@ -8,12 +8,12 @@
 # Zoom MIDI (381a) — Erica Synths (uses 381a not 1686 despite being audio)
 # Polyend / Torso-class USB instruments (1fc9) — activity reveal + S-4 alt VID
 
-ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="046d", ATTR{power/control}="on"
-ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="b58e", ATTR{power/control}="on"
-ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1686", ATTR{power/control}="on"
-ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="19f7", ATTR{power/control}="on"
-ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="381a", ATTR{power/control}="on"
-ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1fc9", ATTR{power/control}="on"
+ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="046d", ATTR{power/control}="on", ATTR{power/autosuspend_delay_ms}="-1"
+ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="b58e", ATTR{power/control}="on", ATTR{power/autosuspend_delay_ms}="-1"
+ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1686", ATTR{power/control}="on", ATTR{power/autosuspend_delay_ms}="-1"
+ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="19f7", ATTR{power/control}="on", ATTR{power/autosuspend_delay_ms}="-1"
+ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="381a", ATTR{power/control}="on", ATTR{power/autosuspend_delay_ms}="-1"
+ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1fc9", ATTR{power/control}="on", ATTR{power/autosuspend_delay_ms}="-1"
 
 # ZOOM LiveTrak L-12 is a critical broadcast-audio device. Pin the leaf device
 # harder than the generic vendor rule, and let the L-12 guard handle parent
@@ -23,5 +23,5 @@ ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}==
 # Catch-all for any USB interface that declares Audio or Video class
 # (fallback if vendor match misses something new).
 # Uses RUN to write into the parent device's power/control node.
-ACTION=="add", SUBSYSTEM=="usb", ATTR{bInterfaceClass}=="01", RUN+="/bin/sh -c 'echo on > /sys/%p/../power/control 2>/dev/null || true'"
-ACTION=="add", SUBSYSTEM=="usb", ATTR{bInterfaceClass}=="0e", RUN+="/bin/sh -c 'echo on > /sys/%p/../power/control 2>/dev/null || true'"
+ACTION!="remove", SUBSYSTEM=="usb", ATTR{bInterfaceClass}=="01", RUN+="/bin/sh -c 'echo on > /sys/%p/../power/control 2>/dev/null || true; echo -1 > /sys/%p/../power/autosuspend_delay_ms 2>/dev/null || true'"
+ACTION!="remove", SUBSYSTEM=="usb", ATTR{bInterfaceClass}=="0e", RUN+="/bin/sh -c 'echo on > /sys/%p/../power/control 2>/dev/null || true; echo -1 > /sys/%p/../power/autosuspend_delay_ms 2>/dev/null || true'"
