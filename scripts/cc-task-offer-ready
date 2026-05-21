@@ -369,14 +369,18 @@ def reconcile(*, vault_root: Path, dry_run: bool) -> int:
     for path in sorted(active.glob("*.md")):
         try:
             fields = parse_fields(path)
-        except (ValueError, yaml.YAMLError):
+        except (ValueError, yaml.YAMLError, OSError):
             continue
         status = strip_scalar(fields.get("status", ""))
         if status != "ready":
             continue
 
         task_id = strip_scalar(fields.get("task_id", path.stem))
-        rc = promote(task_id, vault_root=vault_root, dry_run=dry_run)
+        try:
+            rc = promote(task_id, vault_root=vault_root, dry_run=dry_run)
+        except OSError:
+            skipped += 1
+            continue
         if rc == 0:
             promoted += 1
         else:
