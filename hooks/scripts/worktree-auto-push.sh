@@ -7,7 +7,9 @@
 #          ~/projects/hapax-council/.git/hooks/post-commit
 #
 # Only fires in worktree directories (not the main working tree).
-# Only on non-main branches. Fire-and-forget (push failures are silent).
+# Only on non-main branches. Push failures warn on stderr but never block.
+
+set -euo pipefail
 
 branch=$(git symbolic-ref --short HEAD 2>/dev/null || true)
 [ -n "$branch" ] || exit 0
@@ -19,7 +21,11 @@ commondir=$(git rev-parse --git-common-dir 2>/dev/null || true)
 [ -n "$gitdir" ] && [ -n "$commondir" ] || exit 0
 [ "$gitdir" != "$commondir" ] || exit 0
 
-# Fire-and-forget push — never block the commit
-git push -u origin HEAD >/dev/null 2>&1 &
+# Push in background — warn on failure, never block
+(
+  if ! git push -u origin HEAD >/dev/null 2>&1; then
+    echo "worktree-auto-push: WARNING: push failed for $branch (network or remote issue)" >&2
+  fi
+) &
 disown 2>/dev/null || true
 exit 0
