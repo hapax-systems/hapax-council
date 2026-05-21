@@ -62,7 +62,8 @@ struct GridUniformData {
     light_color: [f32; 4],
     time: f32,
     occluder_count: u32,
-    _pad: [f32; 2],
+    sphere_warmth: f32,
+    _pad1: f32,
     occluders: [GridOccluderData; MAX_GRID_SHADOW_OCCLUDERS],
 }
 
@@ -309,6 +310,22 @@ fn build_live_scene_from_active(
 
 fn vec4(v: Vec3, w: f32) -> [f32; 4] {
     [v.x, v.y, v.z, w]
+}
+
+fn read_sphere_warmth() -> f32 {
+    static LAST: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let frame = LAST.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if frame % 30 != 0 {
+        return f32::from_bits(LAST.load(std::sync::atomic::Ordering::Relaxed));
+    }
+    let warmth = std::fs::read_to_string("/dev/shm/hapax-compositor/color-resonance.json")
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("warmth")?.as_f64())
+        .map(|w| w as f32)
+        .unwrap_or(0.5);
+    LAST.store(warmth.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    warmth
 }
 
 fn synthwave_light_color(time: f32) -> [f32; 4] {
@@ -711,7 +728,7 @@ impl SceneRenderer {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_compare: wgpu::CompareFunction::Always,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -834,13 +851,14 @@ impl SceneRenderer {
                     light_color: synthwave_light_color(time),
                     time,
                     occluder_count,
-                    _pad: [0.0; 2],
+                    sphere_warmth: read_sphere_warmth(),
+                    _pad1: 0.0,
                     occluders,
                 };
                 queue.write_buffer(&self.grid_uniform_buffer, 0, bytemuck::bytes_of(&grid_data));
                 pass.set_pipeline(&self.grid_pipeline);
                 pass.set_bind_group(0, &self.grid_uniform_bind_group, &[]);
-                pass.draw(0..48, 0..1); // Outer room grids + visible light marker + volumetric rays
+                pass.draw(0..48, 0..1); // Room grids + light + volumetric rays
             }
 
             // ── Draw content quads ───────────────────────────────────
@@ -943,6 +961,11 @@ impl SceneRenderer {
                 pass.set_bind_group(1, tex_bg, &[]);
                 pass.draw(0..*vertex_count, 0..1);
             }
+
+            // ── AoA insphere — drawn AFTER content quads so it composites on top ──
+            pass.set_pipeline(&self.grid_pipeline);
+            pass.set_bind_group(0, &self.grid_uniform_bind_group, &[]);
+            pass.draw(48..54, 0..1);
         }
 
         queue.submit(std::iter::once(encoder.finish()));

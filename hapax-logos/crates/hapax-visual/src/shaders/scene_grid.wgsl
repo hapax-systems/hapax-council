@@ -18,7 +18,7 @@ struct GridUniforms {
     light_color: vec4<f32>,
     time: f32,
     occluder_count: u32,
-    _pad0: f32,
+    sphere_warmth: f32,
     _pad1: f32,
     occluders: array<GridOccluder, 16>,
 };
@@ -156,6 +156,15 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
         // not a hardware raytracing dependency.
         world = grid.light_position.xyz + vec3<f32>(lp.x * 0.28, lp.y * 0.28, 0.0);
         n = vec3<f32>(0.0, 0.0, 1.0);
+    } else if quad_idx == 8u {
+        // AoA insphere — ray-marched in fragment shader.
+        // Billboard oversized to contain the sphere from any angle.
+        let sphere_center = vec3<f32>(0.0, -0.4875, -1.36);
+        let extent = 0.56;
+        let vr = normalize(vec3<f32>(grid.view[0][0], grid.view[1][0], grid.view[2][0]));
+        let vu = normalize(vec3<f32>(grid.view[0][1], grid.view[1][1], grid.view[2][1]));
+        world = sphere_center + vr * lp.x * extent + vu * lp.y * extent;
+        n = -normalize(vec3<f32>(grid.view[0][2], grid.view[1][2], grid.view[2][2]));
     } else {
         // Soft volumetric beam billboards from the moving light into the room.
         let start = grid.light_position.xyz;
@@ -192,11 +201,69 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
     return out;
 }
 
+struct FragOutput {
+    @location(0) color: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+};
+
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(in: VertexOutput) -> FragOutput {
     let wp = in.world_pos;
     let t = grid.time;
     let light_color = grid.light_color.rgb;
+    let raster_depth = in.position.z;
+
+    if in.plane_kind > 7.5 {
+        // AoA insphere — ray-sphere intersection for perspective-correct 3D shading.
+        let sphere_center = vec3<f32>(0.0, -0.4875, -1.36);
+        let sphere_radius = 0.4777;
+
+        let vt = grid.view[3].xyz;
+        let cam_pos = -vec3<f32>(
+            grid.view[0][0] * vt.x + grid.view[1][0] * vt.y + grid.view[2][0] * vt.z,
+            grid.view[0][1] * vt.x + grid.view[1][1] * vt.y + grid.view[2][1] * vt.z,
+            grid.view[0][2] * vt.x + grid.view[1][2] * vt.y + grid.view[2][2] * vt.z,
+        );
+        let ray_dir = normalize(wp - cam_pos);
+
+        let oc = cam_pos - sphere_center;
+        let b = dot(oc, ray_dir);
+        let c = dot(oc, oc) - sphere_radius * sphere_radius;
+        let discriminant = b * b - c;
+        if discriminant < 0.0 {
+            discard;
+        }
+        let t_hit = -b - sqrt(discriminant);
+        if t_hit < 0.0 {
+            discard;
+        }
+        let hit = cam_pos + ray_dir * t_hit;
+        let sn = normalize(hit - sphere_center);
+
+        // Project hit point to clip space for correct depth.
+        let hit_clip = grid.projection * grid.view * vec4<f32>(hit, 1.0);
+        let sphere_depth = hit_clip.z / hit_clip.w;
+
+        let to_light = normalize(grid.light_position.xyz - hit);
+        let ndotl = max(dot(sn, to_light), 0.0);
+        let view_dir = normalize(cam_pos - hit);
+        let half_vec = normalize(to_light + view_dir);
+        let spec = pow(max(dot(sn, half_vec), 0.0), 64.0);
+        let shadow = soft_shadow_at(hit, grid.light_position.xyz);
+        let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 2.2);
+
+        // Sphere color temperature driven by system warmth signal.
+        let w = clamp(grid.sphere_warmth, 0.0, 1.0);
+        let cool = vec3<f32>(0.08, 0.14, 0.28);
+        let warm = vec3<f32>(0.28, 0.16, 0.06);
+        let ambient = mix(cool, warm, w);
+        let diffuse = light_color * ndotl * 0.24 * shadow;
+        let specular = light_color * spec * 0.48 * shadow;
+        let rim = (light_color + mix(vec3<f32>(0.10, 0.18, 0.28), vec3<f32>(0.28, 0.14, 0.06), w)) * fresnel * 0.90;
+        var sphere_color = ambient + diffuse + specular + rim;
+        let sphere_alpha = clamp(0.10 + fresnel * 0.34 + spec * 0.14, 0.08, 0.50);
+        return FragOutput(vec4<f32>(sphere_color, sphere_alpha), 0.999);
+    }
 
     if in.plane_kind > 2.5 {
         if in.plane_kind < 3.5 {
@@ -205,7 +272,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let halo = smoothstep(1.0, 0.08, d);
             let alpha = clamp(core * 0.58 + halo * 0.22, 0.0, 0.72);
             let color = light_color * (0.85 + core * 1.4);
-            return vec4<f32>(color, alpha);
+            return FragOutput(vec4<f32>(color, alpha), 0.999);
         }
 
         let across = abs(in.local_pos.x);
@@ -215,7 +282,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let shimmer = 0.88;
         let alpha = center * taper * shimmer * 0.22;
         let color = light_color * (0.36 + 0.42 * center);
-        return vec4<f32>(color, alpha);
+        return FragOutput(vec4<f32>(color, alpha), 1.0);
     }
 
     var gc: vec2<f32>;
@@ -253,11 +320,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let weave = 0.5 + 0.5 * sin(gc.x * 2.1 + gc.y * 1.7);
         let shadow = soft_shadow_at(wp, grid.light_position.xyz);
         let room_light = point_light_at(wp, in.normal) * shadow;
-        var base_alpha = 0.110;
+        var base_alpha = 0.200;
         if abs(in.normal.z) > 0.5 {
-            base_alpha = 0.190;
+            base_alpha = 0.320;
         } else if is_floor_or_ceiling {
-            base_alpha = 0.170;
+            base_alpha = 0.280;
         }
         let texture_signal = clamp(0.52 + 0.38 * material + 0.14 * weave + 0.24 * dot_alpha, 0.42, 1.0);
         var plane_color = vec3<f32>(0.120, 0.135, 0.190)
@@ -266,7 +333,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             + vec3<f32>(0.022, 0.032, 0.048) * stipple_hash(cell + vec2<f32>(3.0, 7.0));
         plane_color = plane_color * (0.70 + 0.30 * shadow);
         let alpha = base_alpha * texture_signal * dist_fade * (0.86 + 0.14 * shadow);
-        return vec4<f32>(plane_color * texture_signal, alpha);
+        return FragOutput(vec4<f32>(plane_color * texture_signal, alpha), raster_depth);
     }
 
     // Synthwave neon: cycle cyan → magenta → blue
@@ -298,5 +365,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         color = color * 0.88;
     }
 
-    return vec4<f32>(color, alpha);
+    return FragOutput(vec4<f32>(color, alpha), raster_depth);
 }
