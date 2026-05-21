@@ -106,6 +106,9 @@ def test_known_decommissioned_units_present() -> None:
     assert "logos-dev.service" in units
     # Hermes8B retirement (cc-task retire-tabbyapi-hermes8b-audit-unit, PR #1950)
     assert "tabbyapi-hermes8b.service" in units
+    # Post-reboot stale symlink cleanup (2026-05-21 SDLC repair).
+    assert "hapax-relay-heartbeat.service" in units
+    assert "hapax-relay-heartbeat.timer" in units
     # Future retirements add their own per-unit pins (e.g.
     # ``test_discord_webhook_decommission.py``); the cross-cutting
     # invariants above (array parses, no shadows) cover them at the
