@@ -3885,3 +3885,8 @@ write_witness
 from shared.prose_assertion_extractor import extract_from_directory_resumable
 
 extract_from_directory_resumable
+
+# EvalReceiptV1: Pydantic model_validator hook invoked at construction.
+from shared.eval_receipt import EvalReceiptV1
+
+EvalReceiptV1._replayable_requires_artifacts_and_hashes
