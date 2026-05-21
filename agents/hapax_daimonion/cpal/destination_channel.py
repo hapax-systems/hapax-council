@@ -335,8 +335,7 @@ def resolve_playback_decision(
         "public_route_state": route.state.value,
         "public_route_reason_code": route.reason_code,
     }
-    stream_public = _stream_mode_is_public()
-    if not intent["present"] and not stream_public:
+    if not intent["present"]:
         return _blocked_decision(
             destination=destination,
             route=route,
@@ -346,7 +345,7 @@ def resolve_playback_decision(
             ),
             safety_gate=safety_gate,
         )
-    if not programme_auth["authorized"] and not stream_public:
+    if not programme_auth["authorized"]:
         return _blocked_decision(
             destination=destination,
             route=route,
@@ -356,7 +355,7 @@ def resolve_playback_decision(
             ),
             safety_gate=safety_gate,
         )
-    if bridge_metadata["required"] and not bridge_metadata["authorized"] and not stream_public:
+    if bridge_metadata["required"] and not bridge_metadata["authorized"]:
         return _blocked_decision(
             destination=destination,
             route=route,
@@ -367,7 +366,7 @@ def resolve_playback_decision(
             ),
             safety_gate=safety_gate,
         )
-    if not audio_health.safe and not stream_public:
+    if not audio_health.safe:
         return _blocked_decision(
             destination=destination,
             route=route,
@@ -377,7 +376,7 @@ def resolve_playback_decision(
             ),
             safety_gate=safety_gate,
         )
-    if not tts_permission.allowed and not stream_public:
+    if not tts_permission.allowed:
         return _blocked_decision(
             destination=destination,
             route=route,
