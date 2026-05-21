@@ -245,6 +245,38 @@ class TestWriter:
                 assert "route_metadata_schema: 1" in content
                 assert "mutation_scope_refs:" in content
 
+    def test_real_write_frontmatter_is_yaml_safe(self):
+        with tempfile.TemporaryDirectory() as td:
+            decomp = RequestDecomposition(
+                request_id="test-write",
+                request_path="/tmp/test.md",
+                tasks=[
+                    TaskSpec(
+                        task_id="write-phase1",
+                        title="Phase 1",
+                        parent_request="REQ-test.md",
+                        authority_case="CASE-TEST",
+                        acceptance_criteria=["Schema exists"],
+                    ),
+                    TaskSpec(
+                        task_id="write-phase2",
+                        title="Phase 2",
+                        depends_on=["write-phase1"],
+                        status="blocked",
+                        blocked_reason="Depends on: write-phase1",
+                        parent_request="REQ-test.md",
+                        authority_case="CASE-TEST",
+                        acceptance_criteria=["API works"],
+                    ),
+                ],
+            )
+
+            paths = write_decomposition(decomp, Path(td))
+            phase2 = [p for p in paths if "phase2" in p.name][0]
+
+            frontmatter, _body = parse_frontmatter(phase2.read_text(encoding="utf-8"))
+            assert frontmatter["blocked_reason"] == "Depends on: write-phase1"
+
     def test_blocks_computed(self):
         with tempfile.TemporaryDirectory() as td:
             paths = write_decomposition(self._make_decomp(), Path(td))
