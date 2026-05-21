@@ -343,21 +343,29 @@ class TestSystemdChecks:
         from agents.health_monitor import check_systemd_services
 
         with patch("agents.health_monitor.utils.run_cmd", new_callable=AsyncMock) as mock:
+            active_timers = {
+                "profile-update",
+                "digest",
+                "knowledge-maint",
+                "hapax-source-activate",
+                "hapax-cc-pr-autoqueue",
+                "hapax-cc-pr-merge-watcher",
+                "hapax-request-decompose",
+                "hapax-request-intake-consumer",
+            }
 
             async def side_effect(cmd, **kwargs):
                 unit = cmd[-1] if cmd else ""
-                if "is-active" in cmd and "profile-update" in unit:
-                    return (0, "active", "")
-                if "is-active" in cmd and "digest" in unit:
-                    return (0, "active", "")
-                if "is-active" in cmd and "knowledge-maint" in unit:
-                    return (0, "active", "")
+                if "is-active" in cmd:
+                    for name in active_timers:
+                        if name in unit:
+                            return (0, "active", "")
+                    if "midi-route" in unit:
+                        return (3, "inactive", "")
                 if "is-enabled" in cmd:
                     return (0, "enabled", "")
                 if "list-timers" in cmd:
                     return (0, "NEXT  LEFT  LAST  PASSED  UNIT  ACTIVATES\nMon 2026...", "")
-                if "is-active" in cmd and "midi-route" in unit:
-                    return (3, "inactive", "")
                 return (0, "", "")
 
             mock.side_effect = side_effect

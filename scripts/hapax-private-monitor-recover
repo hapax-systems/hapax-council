@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 EXACT_PRIVATE_MONITOR_TARGET = (
-    "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"
+    "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
 )
 BRIDGE_REPO_PATH = Path("config/pipewire/hapax-private-monitor-bridge.conf")
 DEFAULT_INSTALL_PATH = (

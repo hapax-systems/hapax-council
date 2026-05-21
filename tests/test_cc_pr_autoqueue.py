@@ -11,6 +11,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import yaml
+
 from shared.merge_queue_lineage import MergeQueueLineageRecord, write_jsonl_records
 
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
@@ -55,6 +57,7 @@ def _write_task(
     kind: str = "implementation",
     tags: list[str] | None = None,
     queue_admission: str | None = None,
+    extra_frontmatter: dict[str, object] | None = None,
 ) -> Path:
     path = vault / folder / f"{task_id}.md"
     pr_line = f"pr: {pr}" if pr is not None else "pr: null"
@@ -76,6 +79,9 @@ def _write_task(
         if queue_admission is not None
         else "queue_admission: null"
     )
+    extra_lines = ""
+    if extra_frontmatter:
+        extra_lines = yaml.safe_dump(extra_frontmatter, sort_keys=False).strip() + "\n"
     path.write_text(
         f"""---
 type: cc-task
@@ -92,7 +98,7 @@ kind: {kind}
 {route_line}
 {tags_line}
 {queue_admission_line}
----
+{extra_lines}---
 
 # {task_id}
 
@@ -126,6 +132,7 @@ def _pr(
         "title": title or f"PR {number}",
         "body": body,
         "headRefName": branch or f"feat/{number}",
+        "headRefOid": f"sha-{number}",
         "isDraft": draft,
         "mergeStateStatus": merge_state,
         "labels": [{"name": label} for label in labels or []],
@@ -167,6 +174,8 @@ class _FakeRunner:
             "dequeuePullRequest" in part for part in cmd
         ):
             return subprocess.CompletedProcess(cmd, 0, '{"data":{"dequeuePullRequest":{}}}', "")
+        if cmd[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in cmd[4]:
+            return subprocess.CompletedProcess(cmd, 0, '{"state":"ok"}', "")
         if cmd[:3] == ["gh", "api", "graphql"]:
             nodes = [{"pullRequest": {"number": number}} for number in sorted(self.queued_prs)]
             payload = {
@@ -202,7 +211,37 @@ def test_queue_green_governed_pr(tmp_path: Path) -> None:
 
     assert report["counts"]["queue"] == 1
     assert report["mutations"][0]["ok"] is True
+    assert any(
+        call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-42"]
+        and f"context={autoqueue.AUTOQUEUE_ADMISSION_CONTEXT}" in call
+        and "state=success" in call
+        for call in runner.calls
+    )
     assert ["gh", "pr", "merge", "42", "--repo", "owner/repo", "--merge"] in runner.calls
+
+
+def test_does_not_queue_when_admission_status_write_fails(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=142)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(142)]
+
+    def failing_runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in cmd[4]:
+            return subprocess.CompletedProcess(cmd, 1, "", "status denied")
+        return runner(cmd, **kwargs)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=failing_runner,
+    )
+
+    assert report["mutations"][0]["ok"] is False
+    assert report["mutations"][0]["admission_status"]["ok"] is False
+    assert not any(call[:4] == ["gh", "pr", "merge", "142"] for call in runner.calls)
 
 
 def test_enable_auto_merge_for_pending_governed_pr(tmp_path: Path) -> None:
@@ -312,6 +351,53 @@ def test_blocks_failed_dirty_draft_and_hold_prs(tmp_path: Path) -> None:
     assert "hold_labels:do-not-merge" in reasons[4]
 
 
+def test_ignores_prior_autoqueue_admission_checks_when_classifying_checks(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=49)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(
+            49,
+            checks=[
+                _check("lint"),
+                _check("test"),
+                _check("typecheck"),
+                _check("web-build"),
+                _check("vscode-build"),
+                {
+                    "__typename": "StatusContext",
+                    "context": autoqueue.AUTOQUEUE_ADMISSION_CONTEXT,
+                    "state": "FAILURE",
+                },
+                {
+                    "__typename": "CheckRun",
+                    "name": "pr-admission",
+                    "conclusion": "FAILURE",
+                },
+            ],
+        )
+    ]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert not report["decisions"][0].get("reasons")
+    assert any(
+        call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-49"]
+        and f"context={autoqueue.AUTOQUEUE_ADMISSION_CONTEXT}" in call
+        and "state=success" in call
+        for call in runner.calls
+    )
+
+
 def test_blocks_missing_or_legacy_task_metadata(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="legacy", pr=50, route_metadata_schema=None)
@@ -328,6 +414,57 @@ def test_blocks_missing_or_legacy_task_metadata(tmp_path: Path) -> None:
     reasons = {item["pr"]: item["reasons"] for item in report["decisions"]}
     assert "task_missing_route_metadata_schema_1" in reasons[50]
     assert "missing_cc_task_link" in reasons[51]
+
+
+def test_blocks_avsdlc_impacted_task_without_release_evidence(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="audio-task",
+        pr=52,
+        extra_frontmatter={"avsdlc_axes": ["audio"]},
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(52)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    reasons = report["decisions"][0]["reasons"]
+    assert "avsdlc_release_gate:missing:avsdlc_dossier" in reasons
+    assert "avsdlc_release_gate:missing:audio_witness" in reasons
+
+
+def test_queues_avsdlc_impacted_task_with_fresh_release_evidence(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="audio-task",
+        pr=53,
+        extra_frontmatter={
+            "avsdlc_axes": ["audio"],
+            "avsdlc_dossier": "docs/evidence/audio.md",
+            "audio_witness": "artifacts/lufs.json",
+            "avsdlc_evidence_collected_at": 4102444800,
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(53)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert "reasons" not in report["decisions"][0]
 
 
 def test_blocks_unchecked_pr_checklist_items(tmp_path: Path) -> None:
@@ -570,6 +707,7 @@ def test_disables_auto_merge_when_armed_pr_is_now_blocked(tmp_path: Path) -> Non
     )
 
     assert report["counts"]["disable_auto_merge"] == 1
+    assert report["mutations"][0]["admission_status"]["state"] == "failure"
     assert ["gh", "pr", "merge", "80", "--repo", "owner/repo", "--disable-auto"] in runner.calls
 
 

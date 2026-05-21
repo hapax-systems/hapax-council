@@ -161,6 +161,13 @@ class TestFindLinkedTask:
         _write_note(vault, task_id="task-A", pr=42)
         assert watcher.find_linked_task(999, vault_root=vault) is None
 
+    def test_finds_all_matching_tasks(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        _write_note(vault, task_id="task-A", pr=42)
+        _write_note(vault, task_id="task-B", pr=42)
+        tasks = watcher.find_linked_tasks(42, vault_root=vault)
+        assert [task.task_id for task in tasks] == ["task-A", "task-B"]
+
     def test_returns_none_when_active_dir_missing(self, tmp_path: Path) -> None:
         vault = tmp_path / "ghost-vault"
         # Don't create it.
@@ -268,7 +275,7 @@ class TestRunWatcher:
         assert any(cmd[-2:] == ["--pr", "100"] for cmd in runner.cc_close_invocations), (
             runner.cc_close_invocations
         )
-        assert runner.cc_close_envs[-1]["HAPAX_CC_TASK_CLOSURE_GATE_OFF"] == "1"
+        assert "HAPAX_CC_TASK_CLOSURE_GATE_OFF" not in runner.cc_close_envs[-1]
         assert "HAPAX_PR_MERGE_GATE_OFF" not in runner.cc_close_envs[-1]
         # Cursor advanced.
         new_cursor = watcher.read_cursor(cursor)
@@ -334,6 +341,61 @@ class TestRunWatcher:
         # failed close (13:00).
         new_cursor = watcher.read_cursor(cursor)
         assert new_cursor == datetime(2026, 4, 26, 12, tzinfo=UTC), new_cursor
+
+    def test_failed_close_blocks_later_unlinked_cursor_advance(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        _write_note(vault, task_id="task-A", pr=100)
+        cursor = tmp_path / "cursor.txt"
+        cursor_start = datetime(2026, 4, 26, 0, tzinfo=UTC)
+        watcher.write_cursor(cursor, cursor_start)
+
+        cc_close = tmp_path / "scripts" / "cc-close"
+        cc_close.parent.mkdir(parents=True, exist_ok=True)
+        cc_close.write_text("#!/bin/sh\nexit 0\n")
+        cc_close.chmod(0o755)
+
+        runner = _FakeRunner()
+        runner.gh_payload = [
+            {"number": 100, "mergedAt": "2026-04-26T12:00:00Z", "headRefName": "feat/a"},
+            {"number": 101, "mergedAt": "2026-04-26T13:00:00Z", "headRefName": "feat/b"},
+        ]
+        runner.cc_close_returncodes = [1]
+
+        counters = watcher.run_watcher(
+            cursor_path=cursor,
+            vault_root=vault,
+            repo_root=tmp_path,
+            runner=runner,
+        )
+        assert counters["failed"] == 1
+        assert counters["closed"] == 0
+        assert watcher.read_cursor(cursor) == cursor_start
+
+    def test_closes_all_tasks_linked_to_one_pr(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        _write_note(vault, task_id="task-A", pr=100)
+        _write_note(vault, task_id="task-B", pr=100)
+        cursor = tmp_path / "cursor.txt"
+        watcher.write_cursor(cursor, datetime(2026, 4, 26, 0, tzinfo=UTC))
+
+        cc_close = tmp_path / "scripts" / "cc-close"
+        cc_close.parent.mkdir(parents=True, exist_ok=True)
+        cc_close.write_text("#!/bin/sh\nexit 0\n")
+        cc_close.chmod(0o755)
+
+        runner = _FakeRunner()
+        runner.gh_payload = [
+            {"number": 100, "mergedAt": "2026-04-26T12:00:00Z", "headRefName": "feat/a"},
+        ]
+
+        counters = watcher.run_watcher(
+            cursor_path=cursor,
+            vault_root=vault,
+            repo_root=tmp_path,
+            runner=runner,
+        )
+        assert counters == {"merged": 1, "linked": 2, "closed": 2, "failed": 0, "skipped": 0}
+        assert [cmd[1] for cmd in runner.cc_close_invocations] == ["task-A", "task-B"]
 
     def test_killswitch_skips(self, tmp_path: Path, monkeypatch: Any) -> None:
         vault = _make_vault(tmp_path)

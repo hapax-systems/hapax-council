@@ -55,6 +55,32 @@ fn source_presence_gate_closed(source_count: usize) -> bool {
     source_count < MIN_SOURCE_BOUND_EFFECT_SOURCES
 }
 
+fn source_bound_runtime_mask_required_for_plan_pass(pass: &PlanPass) -> bool {
+    pass.source_bound
+        && pass.full_surface
+        && pass.effect_scope == "composed_live_surface"
+        && pass.fourth_wall_policy == "forbid_foreground_overlay"
+}
+
+fn source_bound_runtime_mask_required(pass: &DynamicPass) -> bool {
+    pass.source_bound
+        && pass.full_surface
+        && pass.effect_scope == "composed_live_surface"
+        && pass.fourth_wall_policy == "forbid_foreground_overlay"
+}
+
+fn source_bound_base_input_name(inputs: &[String]) -> Option<&str> {
+    inputs
+        .iter()
+        .find(|name| !name.starts_with("@accum_") && !name.starts_with("content_slot_"))
+        .or_else(|| inputs.first())
+        .map(String::as_str)
+}
+
+fn source_bound_effect_texture_name(output_name: &str, node_id: &str) -> String {
+    format!("{output_name}:source-bound-effect:{node_id}")
+}
+
 const PLAN_DIR: &str = "/dev/shm/hapax-imagination/pipeline";
 const PLAN_FILE: &str = "/dev/shm/hapax-imagination/pipeline/plan.json";
 const UNIFORMS_JSON: &str = "/dev/shm/hapax-imagination/uniforms.json";
@@ -674,6 +700,8 @@ pub struct DynamicPipeline {
     input_bind_group_layouts: HashMap<usize, wgpu::BindGroupLayout>,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group_layout: wgpu::BindGroupLayout,
+    source_bound_composite_pipeline: wgpu::RenderPipeline,
+    source_bound_composite_bind_group_layout: wgpu::BindGroupLayout,
     params_bind_group: wgpu::BindGroup,
     params_bind_group_layout: wgpu::BindGroupLayout,
     #[allow(dead_code)]
@@ -802,6 +830,92 @@ impl DynamicPipeline {
             cache: None,
         });
 
+        let source_bound_composite_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("source-bound composite bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        let source_bound_composite_shader =
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("source-bound composite shader"),
+                source: wgpu::ShaderSource::Wgsl(SOURCE_BOUND_COMPOSITE_WGSL.into()),
+            });
+
+        let source_bound_composite_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("source-bound composite pipeline layout"),
+                bind_group_layouts: &[&source_bound_composite_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let source_bound_composite_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("source-bound composite pipeline"),
+                layout: Some(&source_bound_composite_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &source_bound_composite_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &source_bound_composite_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: TEXTURE_FORMAT,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+
         // File watcher
         let pending = Arc::new(AtomicBool::new(false));
         let pending_clone = pending.clone();
@@ -869,6 +983,8 @@ impl DynamicPipeline {
             input_bind_group_layouts: HashMap::new(),
             blit_pipeline,
             blit_bind_group_layout,
+            source_bound_composite_pipeline,
+            source_bound_composite_bind_group_layout,
             params_bind_group,
             params_bind_group_layout: params_bgl,
             surface_format,
@@ -1007,6 +1123,12 @@ impl DynamicPipeline {
             }
             if !texture_names.contains(&pass.output) {
                 texture_names.push(pass.output.clone());
+            }
+            if source_bound_runtime_mask_required_for_plan_pass(pass) {
+                let scratch = source_bound_effect_texture_name(&pass.output, &pass.node_id);
+                if !texture_names.contains(&scratch) {
+                    texture_names.push(scratch);
+                }
             }
         }
 
@@ -1759,15 +1881,22 @@ impl DynamicPipeline {
                         content_sources,
                     );
 
+                    let source_bound_mask_required = source_bound_runtime_mask_required(pass);
+                    let render_output_name = if source_bound_mask_required {
+                        source_bound_effect_texture_name(&pass.output, &pass.node_id)
+                    } else {
+                        pass.output.clone()
+                    };
+
                     // Resolve output texture view
-                    let output_view = match self.intermediate(&pass.output) {
+                    let output_view = match self.intermediate(&render_output_name) {
                         Some(tex) => &tex.view,
                         None => {
                             if self.frame_count < 10 {
                                 log::warn!(
                                     "CHAIN SKIP: pass '{}' output '{}' NOT in intermediates",
                                     pass.node_id,
-                                    pass.output
+                                    render_output_name
                                 );
                             }
                             continue;
@@ -1802,6 +1931,69 @@ impl DynamicPipeline {
                         }
                         rpass.draw(0..3, 0..1);
                     } // render pass dropped here
+
+                    if source_bound_mask_required {
+                        if let Some(base_input) = source_bound_base_input_name(&pass.inputs) {
+                            if let Some(composite_bg) = self
+                                .create_source_bound_composite_bind_group(
+                                    device,
+                                    base_input,
+                                    &render_output_name,
+                                )
+                            {
+                                if let Some(final_output) = self.intermediate(&pass.output) {
+                                    let mut rpass =
+                                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                            label: Some("source-bound runtime composite"),
+                                            color_attachments: &[Some(
+                                                wgpu::RenderPassColorAttachment {
+                                                    view: &final_output.view,
+                                                    resolve_target: None,
+                                                    ops: wgpu::Operations {
+                                                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                                                            r: 0.0,
+                                                            g: 0.0,
+                                                            b: 0.0,
+                                                            a: 0.0,
+                                                        }),
+                                                        store: wgpu::StoreOp::Store,
+                                                    },
+                                                },
+                                            )],
+                                            depth_stencil_attachment: None,
+                                            ..Default::default()
+                                        });
+
+                                    rpass.set_pipeline(&self.source_bound_composite_pipeline);
+                                    rpass.set_bind_group(0, &composite_bg, &[]);
+                                    rpass.draw(0..3, 0..1);
+                                }
+                            } else if let (Some(base), Some(output)) = (
+                                self.intermediate(base_input),
+                                self.intermediate(&pass.output),
+                            ) {
+                                let size = wgpu::Extent3d {
+                                    width: self.width,
+                                    height: self.height,
+                                    depth_or_array_layers: 1,
+                                };
+                                encoder.copy_texture_to_texture(
+                                    base.texture.as_image_copy(),
+                                    output.texture.as_image_copy(),
+                                    size,
+                                );
+                                if self.frame_count.is_multiple_of(30) {
+                                    log::warn!(
+                                        "dynamic_pipeline: pass '{}' source-bound mask \
+                                         bind failed; copied '{}' to '{}' fail-closed",
+                                        pass.node_id,
+                                        base_input,
+                                        pass.output
+                                    );
+                                }
+                            }
+                        }
+                    }
 
                     // Copy output to temporal buffer for next frame's feedback
                     if is_temporal {
@@ -2058,6 +2250,12 @@ impl DynamicPipeline {
                     "eviction_cadence": pass.eviction_cadence,
                     "source_bound": pass.source_bound,
                     "full_surface": pass.full_surface,
+                    "runtime_source_bound_mask": source_bound_runtime_mask_required(pass),
+                    "runtime_source_bound_mask_basis": if source_bound_runtime_mask_required(pass) {
+                        "live_scene_luma"
+                    } else {
+                        "none"
+                    },
                     "effect_binding": pass.effect_binding,
                     "effect_application_plane": pass.effect_application_plane,
                     "fourth_wall_policy": pass.fourth_wall_policy,
@@ -2684,7 +2882,89 @@ impl DynamicPipeline {
             }],
         })
     }
+
+    fn create_source_bound_composite_bind_group(
+        &self,
+        device: &wgpu::Device,
+        base_name: &str,
+        effect_name: &str,
+    ) -> Option<wgpu::BindGroup> {
+        let base = self.intermediate(base_name)?;
+        let effect = self.intermediate(effect_name)?;
+        let live = self
+            .intermediate("@live")
+            .or_else(|| self.intermediate(base_name))?;
+
+        Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("source-bound composite bg"),
+            layout: &self.source_bound_composite_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&base.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&effect.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&live.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        }))
+    }
 }
+
+const SOURCE_BOUND_COMPOSITE_WGSL: &str = r#"
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var out: VertexOutput;
+    let x = f32(i32(vertex_index & 1u)) * 4.0 - 1.0;
+    let y = f32(i32(vertex_index >> 1u)) * 4.0 - 1.0;
+    out.position = vec4<f32>(x, y, 0.0, 1.0);
+    out.uv = vec2<f32>((x + 1.0) * 0.5, (1.0 - y) * 0.5);
+    return out;
+}
+
+@group(0) @binding(0)
+var base_texture: texture_2d<f32>;
+@group(0) @binding(1)
+var effect_texture: texture_2d<f32>;
+@group(0) @binding(2)
+var live_texture: texture_2d<f32>;
+@group(0) @binding(3)
+var tex_sampler: sampler;
+
+fn luma(rgb: vec3<f32>) -> f32 {
+    return dot(rgb, vec3<f32>(0.299, 0.587, 0.114));
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let base = textureSample(base_texture, tex_sampler, in.uv);
+    let effect = textureSample(effect_texture, tex_sampler, in.uv);
+    let live = textureSample(live_texture, tex_sampler, in.uv);
+
+    let base_presence = smoothstep(0.018, 0.14, luma(base.rgb));
+    let live_presence = smoothstep(0.018, 0.14, luma(live.rgb));
+    let entity_presence = clamp(max(base_presence, live_presence), 0.0, 1.0);
+
+    // The effect may be dramatic inside visible geometry, but it cannot
+    // paint an output-plane pane over visually empty space.
+    let rgb = mix(base.rgb, effect.rgb, entity_presence);
+    return vec4<f32>(rgb, base.a);
+}
+"#;
 
 /// Inline blit shader: samples a texture and outputs it.
 const BLIT_WGSL: &str = r#"
@@ -2943,6 +3223,41 @@ mod tests {
         // matches what namespace_texture_name produces for the main
         // target's final output.
         assert_eq!(MAIN_FINAL_TEXTURE, &namespace_texture_name("final", "main"));
+    }
+
+    #[test]
+    fn source_bound_runtime_mask_is_required_for_forbidden_fourth_wall_passes() {
+        let mut pass = make_pass("slot0_0_strobe", "strobe.wgsl");
+        pass.effect_scope = "composed_live_surface".to_string();
+        pass.fourth_wall_policy = "forbid_foreground_overlay".to_string();
+        pass.source_bound = true;
+        pass.full_surface = true;
+
+        assert!(source_bound_runtime_mask_required_for_plan_pass(&pass));
+
+        pass.fourth_wall_policy = "legacy_passthrough".to_string();
+        assert!(!source_bound_runtime_mask_required_for_plan_pass(&pass));
+    }
+
+    #[test]
+    fn source_bound_base_input_prefers_non_accumulator_frame_input() {
+        let inputs = vec![
+            "@accum_stutter".to_string(),
+            "main:layer_7".to_string(),
+            "content_slot_0".to_string(),
+        ];
+
+        assert_eq!(source_bound_base_input_name(&inputs), Some("main:layer_7"));
+    }
+
+    #[test]
+    fn source_bound_effect_texture_name_stays_distinct_from_output() {
+        let output = "main:layer_3";
+        let scratch = source_bound_effect_texture_name(output, "slot1_2_slitscan");
+
+        assert_ne!(scratch, output);
+        assert!(scratch.contains(output));
+        assert!(scratch.contains("slot1_2_slitscan"));
     }
 
     #[test]

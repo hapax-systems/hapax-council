@@ -7,6 +7,7 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "request-fulfillment-reconciler"
@@ -19,9 +20,12 @@ def _write_request(
     *,
     status: str = "accepted_for_planning",
     downstream_tasks: list[str] | None = None,
+    request_type: str = "hapax-request",
+    extra_frontmatter: dict[str, object] | None = None,
+    body: str = "# Request\n",
 ) -> None:
     frontmatter = {
-        "type": "hapax-request",
+        "type": request_type,
         "request_id": request_id,
         "title": f"{request_id} title",
         "status": status,
@@ -30,8 +34,10 @@ def _write_request(
     }
     if downstream_tasks is not None:
         frontmatter["downstream_tasks"] = downstream_tasks
+    if extra_frontmatter:
+        frontmatter.update(extra_frontmatter)
     path.write_text(
-        "---\n" + yaml.safe_dump(frontmatter, sort_keys=False).strip() + "\n---\n\n# Request\n",
+        "---\n" + yaml.safe_dump(frontmatter, sort_keys=False).strip() + "\n---\n\n" + body,
         encoding="utf-8",
     )
 
@@ -43,6 +49,7 @@ def _write_task(
     status: str = "done",
     parent_request: str = "",
     body: str = "# Task\n",
+    extra_frontmatter: dict[str, object] | None = None,
 ) -> None:
     frontmatter = {
         "type": "cc-task",
@@ -56,6 +63,8 @@ def _write_task(
         "parent_spec": "/tmp/test-spec.md",
         "depends_on": [],
     }
+    if extra_frontmatter:
+        frontmatter.update(extra_frontmatter)
     path.write_text(
         "---\n" + yaml.safe_dump(frontmatter, sort_keys=False).strip() + "\n---\n\n" + body,
         encoding="utf-8",
@@ -150,6 +159,139 @@ def test_active_linked_task_blocks_request_closure(tmp_path: Path) -> None:
     assert not (closed / "REQ-003.md").exists()
 
 
+def test_implicit_only_linkage_requires_explicit_fulfillment(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    request = active / "REQ-IMPLICIT.md"
+    _write_request(request, "REQ-IMPLICIT")
+    _write_task(
+        task_closed / "T-IMPLICIT.md",
+        "T-IMPLICIT",
+        status="done",
+        parent_request=str(request),
+    )
+
+    result = _run(tmp_path, "--dry-run", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 0
+    assert payload["blocked"][0]["reason"] == "implicit_linkage_requires_explicit_fulfillment"
+
+
+def test_no_linked_tasks_reported_without_mutating(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    _write_request(active / "REQ-NO-LINK.md", "REQ-NO-LINK")
+
+    result = _run(tmp_path, "--apply", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["blocked"][0]["reason"] == "no_linked_tasks"
+    assert (active / "REQ-NO-LINK.md").exists()
+
+
+@pytest.mark.parametrize("status", ["active", "phase0_active"])
+def test_active_request_statuses_close_with_explicit_fulfillment(
+    tmp_path: Path, status: str
+) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    _write_request(
+        active / f"REQ-{status}.md", f"REQ-{status}", status=status, downstream_tasks=["T-1"]
+    )
+    _write_task(task_closed / "T-1.md", "T-1", status="done")
+
+    result = _run(tmp_path, "--apply", "--json", "--now", "2026-05-18T01:00:00Z")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 1
+    assert payload["applied_count"] == 1
+
+
+def test_legacy_request_type_can_be_fulfilled(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    _write_request(
+        active / "REQ-LEGACY.md",
+        "REQ-LEGACY",
+        downstream_tasks=["T-LEGACY"],
+        request_type="request",
+    )
+    _write_task(task_closed / "T-LEGACY.md", "T-LEGACY", status="done")
+
+    result = _run(tmp_path, "--apply", "--json", "--now", "2026-05-18T01:00:00Z")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 1
+    assert not (active / "REQ-LEGACY.md").exists()
+    metadata = _frontmatter(closed / "REQ-LEGACY.md")
+    assert metadata["status"] == "fulfilled"
+    assert metadata["type"] == "request"
+
+
+@pytest.mark.parametrize("task_status", ["completed", "resolved"])
+def test_historical_fulfilling_closed_statuses_close_request(
+    tmp_path: Path, task_status: str
+) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    _write_request(active / "REQ-HIST-FULFILL.md", "REQ-HIST-FULFILL", downstream_tasks=["T-HIST"])
+    _write_task(task_closed / "T-HIST.md", "T-HIST", status=task_status)
+
+    result = _run(tmp_path, "--dry-run", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "task_status",
+    ["closed_superseded", "withdrawn_stale", "not_applicable", "deferred"],
+)
+def test_historical_non_fulfilling_closed_statuses_block_request(
+    tmp_path: Path, task_status: str
+) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    _write_request(active / "REQ-HIST-BLOCK.md", "REQ-HIST-BLOCK", downstream_tasks=["T-HIST"])
+    _write_task(task_closed / "T-HIST.md", "T-HIST", status=task_status)
+
+    result = _run(tmp_path, "--dry-run", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 0
+    assert payload["blocked"][0]["reason"] == "linked_tasks_not_fulfilled"
+    assert payload["blocked"][0]["blocking_tasks"] == [f"T-HIST:{task_status}:closed"]
+
+
 def test_grouped_covered_requests_are_linked_from_task_body(tmp_path: Path) -> None:
     active = tmp_path / "requests" / "active"
     closed = tmp_path / "requests" / "closed"
@@ -188,6 +330,124 @@ def test_missing_downstream_task_blocks_request_closure(tmp_path: Path) -> None:
     assert payload["eligible_count"] == 0
     assert payload["blocked"][0]["reason"] == "missing_linked_tasks"
     assert (active / "REQ-004.md").exists()
+
+
+def test_partial_request_acceptance_criteria_blocks_closure(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    _write_request(
+        active / "REQ-AC.md",
+        "REQ-AC",
+        downstream_tasks=["T-AC"],
+        body=(
+            "# Request\n\n"
+            "## Acceptance Criteria\n\n"
+            "- [x] First observable outcome is satisfied\n"
+            "- [ ] Second observable outcome is not satisfied\n"
+            "\n## Notes\n\n"
+            "- [ ] This note checkbox is outside AC and must not matter\n"
+        ),
+    )
+    _write_task(task_closed / "T-AC.md", "T-AC", status="done")
+
+    result = _run(tmp_path, "--dry-run", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 0
+    assert payload["blocked"][0]["reason"] == "request_ac_incomplete"
+
+
+def test_explicit_downstream_multiphase_fulfillment_does_not_use_task_id_heuristic(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    _write_request(
+        active / "REQ-MULTI.md",
+        "REQ-MULTI",
+        downstream_tasks=["T-alpha", "T-beta"],
+        body="# Request\n\n### Phase 1\n\nDo one.\n\n### Phase 2\n\nDo two.\n",
+    )
+    _write_task(task_closed / "T-alpha.md", "T-alpha", status="done")
+    _write_task(task_closed / "T-beta.md", "T-beta", status="done")
+
+    result = _run(tmp_path, "--dry-run", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 1
+
+
+def test_avsdlc_impacted_request_without_evidence_blocks_closure(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    _write_request(
+        active / "REQ-VIS.md",
+        "REQ-VIS",
+        downstream_tasks=["T-VIS"],
+        extra_frontmatter={"avsdlc_axes": ["visual"]},
+    )
+    _write_task(task_closed / "T-VIS.md", "T-VIS", status="done")
+
+    result = _run(tmp_path, "--dry-run", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 0
+    blocked = payload["blocked"][0]
+    assert blocked["reason"] == "avsdlc_release_gate_blocked"
+    assert "request:missing:avsdlc_dossier" in blocked["avsdlc_blockers"]
+    assert "request:missing:visual_witness" in blocked["avsdlc_blockers"]
+    assert (active / "REQ-VIS.md").exists()
+
+
+def test_avsdlc_visual_audio_audiovisual_request_with_fresh_witnesses_closes(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    _write_request(
+        active / "REQ-AV.md",
+        "REQ-AV",
+        downstream_tasks=["T-AV"],
+        extra_frontmatter={
+            "avsdlc_axes": ["visual", "audio", "audiovisual"],
+            "avsdlc_dossier": "docs/evidence/av.md",
+            "visual_witness": "artifacts/frame.png",
+            "audio_witness": "artifacts/lufs.json",
+            "audiovisual_witness": "artifacts/sync.md",
+            "runtime_media_impact": True,
+            "runtime_media_witness": "artifacts/live-witness.md",
+            "avsdlc_evidence_collected_at": 4102444800,
+        },
+    )
+    _write_task(task_closed / "T-AV.md", "T-AV", status="done")
+
+    result = _run(tmp_path, "--apply", "--json", "--now", "2026-05-18T01:00:00Z")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 1
+    assert payload["applied_count"] == 1
+    assert not (active / "REQ-AV.md").exists()
+    assert (closed / "REQ-AV.md").exists()
 
 
 def test_prefulfilled_active_request_moves_without_task_inference(tmp_path: Path) -> None:

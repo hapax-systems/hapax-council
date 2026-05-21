@@ -19,38 +19,24 @@ from typing import Any
 
 import yaml
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
+from shared.sdlc_lifecycle import (  # noqa: E402
+    REQUEST_CLOSEABLE_STATUSES,
+    REQUEST_TERMINAL_SKIP_STATUSES,
+    TASK_CLOSED_STATUSES,
+    TASK_FULFILLING_CLOSED_STATUSES,
+    TASK_NON_FULFILLING_CLOSED_STATUSES,
+    acceptance_criteria_state,
+)
+
 DEFAULT_REQUESTS_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-requests"
 DEFAULT_TASKS_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 DEFAULT_REPORT_PATH = Path.home() / ".cache" / "hapax" / "request-fulfillment-reconciler.json"
 
-ACTIVE_TASK_STATUSES = {
-    "offered",
-    "claimed",
-    "in_progress",
-    "pr_open",
-    "ci_green",
-    "blocked",
-}
-FULFILLING_TASK_STATUSES = {"done", "closed", "complete"}
-NON_FULFILLING_TASK_STATUSES = {"withdrawn", "superseded", "rejected"}
-REQUEST_TERMINAL_SKIP_STATUSES = {
-    "rejected",
-    "deferred",
-    "superseded",
-    "withdrawn",
-    "closed",
-}
-REQUEST_CLOSEABLE_STATUSES = {
-    "",
-    "captured",
-    "triage",
-    "clarification_needed",
-    "clarification_answered",
-    "normalized",
-    "operator_confirmation",
-    "accepted_for_planning",
-    "planned",
-}
 REQUEST_ID_RE = re.compile(r"\b(REQ-[A-Z0-9][A-Z0-9-]*(?:-\d{6})?)\b")
 
 
@@ -68,21 +54,21 @@ class TaskRecord:
     path: Path
     status: str
     directory: str
+    frontmatter: dict[str, Any] = field(default_factory=dict)
     request_keys: set[str] = field(default_factory=set)
     covered_request_ids: set[str] = field(default_factory=set)
 
     @property
     def fulfilling(self) -> bool:
-        return self.directory == "closed" and self.status in FULFILLING_TASK_STATUSES
+        return self.directory == "closed" and self.status in TASK_FULFILLING_CLOSED_STATUSES
 
     @property
     def blocking(self) -> bool:
         if self.directory == "active":
             return True
-        return (
-            self.status in NON_FULFILLING_TASK_STATUSES
-            or self.status not in FULFILLING_TASK_STATUSES
-        )
+        if self.status in TASK_NON_FULFILLING_CLOSED_STATUSES:
+            return True
+        return self.status not in TASK_CLOSED_STATUSES
 
 
 @dataclass
@@ -96,6 +82,7 @@ class ReconcileDecision:
     fulfilling_tasks: list[str]
     blocking_tasks: list[str]
     missing_tasks: list[str]
+    avsdlc_blockers: list[str] = field(default_factory=list)
     destination: str | None = None
     applied: bool = False
 
@@ -131,6 +118,10 @@ def scalar(value: Any) -> str:
     return "" if text in {"null", "None", "~"} else text
 
 
+def is_request_type(frontmatter: dict[str, Any]) -> bool:
+    return scalar(frontmatter.get("type")) in {"hapax-request", "request"}
+
+
 def list_value(value: Any) -> list[str]:
     if value is None:
         return []
@@ -163,7 +154,7 @@ def resolve_request_key(ref: str, active_dir: Path, request_index: dict[str, Pat
     expanded = Path(os.path.expanduser(ref))
     if expanded.is_file():
         note = parse_frontmatter(expanded)
-        if note and scalar(note.frontmatter.get("type")) == "hapax-request":
+        if note and is_request_type(note.frontmatter):
             return expanded.name
     name = Path(ref).name
     if name in request_index:
@@ -173,7 +164,7 @@ def resolve_request_key(ref: str, active_dir: Path, request_index: dict[str, Pat
     if name.startswith("REQ-"):
         for candidate in sorted(active_dir.glob(f"{name}*.md")):
             note = parse_frontmatter(candidate)
-            if note and scalar(note.frontmatter.get("type")) == "hapax-request":
+            if note and is_request_type(note.frontmatter):
                 return candidate.name
     return None
 
@@ -215,6 +206,7 @@ def build_task_records(
                 path=path,
                 status=scalar(note.frontmatter.get("status")),
                 directory=task_dir_name,
+                frontmatter=dict(note.frontmatter),
             )
             for field_name in ("parent_request", "parent_plan", "parent_spec"):
                 for ref in list_value(note.frontmatter.get(field_name)):
@@ -248,6 +240,26 @@ def task_ids_for_request(
     return linked, explicit
 
 
+def avsdlc_blockers_for_request(
+    request_note: MarkdownNote,
+    linked_tasks: set[str],
+    records: dict[str, TaskRecord],
+) -> list[str]:
+    blockers: list[str] = []
+    request_result = evaluate_avsdlc_release_gate(request_note.frontmatter)
+    blockers.extend(f"request:{blocker}" for blocker in request_result.blockers)
+
+    seen: set[str] = set()
+    for linked_id in sorted(linked_tasks):
+        record = records.get(linked_id)
+        if record is None or record.task_id in seen:
+            continue
+        seen.add(record.task_id)
+        task_result = evaluate_avsdlc_release_gate(record.frontmatter)
+        blockers.extend(f"task:{record.task_id}:{blocker}" for blocker in task_result.blockers)
+    return blockers
+
+
 def decide_request(
     request_note: MarkdownNote,
     records: dict[str, TaskRecord],
@@ -279,7 +291,7 @@ def decide_request(
     destination = closed_dir / request_note.path.name
     if destination.exists():
         reason = "closed_destination_exists"
-    elif scalar(frontmatter.get("type")) != "hapax-request":
+    elif not is_request_type(frontmatter):
         reason = "not_hapax_request"
     elif status == "fulfilled":
         reason = "eligible"
@@ -297,6 +309,7 @@ def decide_request(
     fulfilling: list[str] = []
     blocking: list[str] = []
     missing: list[str] = []
+    avsdlc_blockers: list[str] = []
     for linked_id in sorted(linked_tasks):
         record = records.get(linked_id)
         if record is None:
@@ -315,33 +328,16 @@ def decide_request(
         elif status != "fulfilled" and not (set(fulfilling) & explicit_fulfillment_tasks):
             reason = "no_fulfilling_task_evidence"
         else:
-            # AC gate: check request-level acceptance criteria before allowing closure
-            request_text = request_note.path.read_text(encoding="utf-8") if request_note.path.exists() else ""
-            import re as _re
-            _ac_unchecked = _re.findall(r"^- \[ \]", request_text, _re.MULTILINE)
-            _ac_checked = _re.findall(r"^- \[x\]", request_text, _re.MULTILINE)
-            if _ac_unchecked and not _ac_checked:
-                reason = "request_ac_all_unchecked"
-            elif _ac_unchecked:
+            ac_state = acceptance_criteria_state(request_note.raw)
+            if ac_state.unchecked_items:
                 reason = "request_ac_incomplete"
             else:
-                # Phase awareness: detect multi-phase requests and block
-                # closure when later phases have no fulfilling tasks.
-                _phases = _re.findall(r"###?\s*Phase\s*(\d+)", request_text, _re.IGNORECASE)
-                if len(_phases) > 1:
-                    _phase_nums = sorted(set(int(p) for p in _phases))
-                    _fulfilled_phases = set()
-                    for _ft in fulfilling:
-                        for _pn in _phase_nums:
-                            if f"phase{_pn}" in _ft.lower() or f"phase-{_pn}" in _ft.lower() or f"phase_{_pn}" in _ft.lower():
-                                _fulfilled_phases.add(_pn)
-                    _missing_phases = [p for p in _phase_nums if p not in _fulfilled_phases]
-                    if _missing_phases:
-                        reason = "unfulfilled_phases"
-                    else:
-                        reason = "eligible"
-                else:
-                    reason = "eligible"
+                reason = "eligible"
+
+    if reason == "eligible":
+        avsdlc_blockers = avsdlc_blockers_for_request(request_note, linked_tasks, records)
+        if avsdlc_blockers:
+            reason = "avsdlc_release_gate_blocked"
 
     return ReconcileDecision(
         request_id=request_id,
@@ -353,6 +349,7 @@ def decide_request(
         fulfilling_tasks=sorted(set(fulfilling)),
         blocking_tasks=blocking,
         missing_tasks=missing,
+        avsdlc_blockers=avsdlc_blockers,
         destination=str(destination) if reason == "eligible" else None,
     )
 

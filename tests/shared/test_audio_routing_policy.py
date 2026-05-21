@@ -138,6 +138,10 @@ def test_generated_route_maps_keep_pc_aux45_forbidden_not_desired() -> None:
     assert "playback_AUX5" not in desired
     assert (
         "hapax-pc-loudnorm-playback:output_FL|"
+        "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX4"
+    ) in forbidden
+    assert (
+        "hapax-pc-loudnorm-playback:output_FL|"
         "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX4"
     ) in forbidden
     assert "input.loopback.sink.role.assistant-output" in forbidden
@@ -168,6 +172,36 @@ def test_generated_wireplumber_deny_policy_matches_golden_output() -> None:
     assert "optional_device_fallback_denied" in deny_script
     assert "hapax-polyend-instrument-capture" in deny_script
     assert "link:remove ()" in deny_script
+
+    assert "FAIL_CLOSED_BOUNDARY_PAIRS" in deny_script
+    assert "hapax-tts-broadcast-playback|hapax-livestream-tap" in deny_script
+    assert "hapax-pc-loudnorm-playback|" in deny_script
+    assert "hapax-private-playback|" in deny_script
+    assert (
+        "input.loopback.sink.role.assistant-output|input.loopback.sink.role.multimedia"
+        in deny_script
+    )
+    assert "policy.degraded = true" in deny_script
+    assert "fail-closed: using hardcoded boundary deny set" in deny_script
+    assert "local pair_key = nil" in deny_script
+    assert "policy.node_pairs [pair_key]" in deny_script
+    assert "(node boundary " in deny_script
+
+
+def test_forbidden_node_pairs_do_not_overlap_desired_node_pairs() -> None:
+    policy = load_audio_routing_policy(POLICY)
+    topology = load_audio_topology_descriptor()
+    desired, forbidden = generated_route_map_texts(topology, policy)
+
+    def node_pairs(text: str) -> set[tuple[str, str]]:
+        return {
+            (source.split(":", maxsplit=1)[0], target.split(":", maxsplit=1)[0])
+            for line in text.splitlines()
+            if line and not line.startswith("#")
+            for source, target in [line.split("|", maxsplit=1)]
+        }
+
+    assert node_pairs(desired).isdisjoint(node_pairs(forbidden))
 
 
 def test_generator_wireplumber_deny_policy_check_mode() -> None:

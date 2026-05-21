@@ -16,6 +16,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from shared.frontmatter import parse_frontmatter_with_diagnostics
 from shared.route_metadata_schema import RouteMetadataStatus, assess_route_metadata
+from shared.sdlc_lifecycle import (
+    TASK_ACTIVE_STATUSES,
+    TASK_CLOSED_STATUSES,
+    TASK_TERMINAL_STATUSES,
+)
 
 DEFAULT_VAULT_ROOT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
 DEFAULT_REQUESTS_ROOT = Path.home() / "Documents/Personal/20-projects/hapax-requests"
@@ -56,10 +61,10 @@ REQUIRED_TASK_FIELDS_BY_DIR = {
     "refused": REFUSED_TASK_FIELDS,
 }
 
-ACTIVE_STATUSES = {"offered", "claimed", "in_progress", "blocked", "pr_open"}
-CLOSED_STATUSES = {"closed", "completed", "done", "superseded", "withdrawn"}
+ACTIVE_STATUSES = TASK_ACTIVE_STATUSES
+CLOSED_STATUSES = TASK_CLOSED_STATUSES
 REFUSED_STATUSES = {"refused"}
-TERMINAL_STATUSES = CLOSED_STATUSES | REFUSED_STATUSES
+TERMINAL_STATUSES = TASK_TERMINAL_STATUSES | REFUSED_STATUSES
 
 REQUIRED_DASHBOARDS = {
     "cc-active.md": (

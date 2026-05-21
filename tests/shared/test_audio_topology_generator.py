@@ -197,7 +197,7 @@ class TestLoopbackFragment:
                     id="private-monitor-output",
                     kind=NodeKind.LOOPBACK,
                     pipewire_name="hapax-private-playback",
-                    target_object="alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output",
+                    target_object="alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0",
                     params={
                         "capture_source": "hapax-private",
                         "stream.capture.sink": True,
@@ -218,7 +218,7 @@ class TestLoopbackFragment:
         assert 'target.object = "hapax-private"' in text
         assert "stream.capture.sink = true" in text
         assert (
-            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"'
+            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"'
             in text
         )
         assert "node.autoconnect = false" in text

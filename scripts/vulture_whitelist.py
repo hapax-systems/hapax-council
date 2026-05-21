@@ -41,7 +41,7 @@ from shared.audio_reactivity_runtime_witness import (
 from shared.audio_reactivity_runtime_witness import (
     VisualResponseFixture as _VisualResponseFixture,
 )
-from shared.audio_topology_inspector import check_l12_forward_invariant
+from shared.audio_topology_inspector import build_topology_truth, check_l12_forward_invariant
 from shared.audio_world_surface_fixtures import AudioSurfaceFixture, AudioWorldSurfaceFixtureSet
 from shared.bayesian_camera_salience_world_surface import (
     CameraEvidenceRow,
@@ -524,6 +524,7 @@ studio_audio_safe_for_broadcast
 # CLI tests; vulture scans scripts as Python modules but does not see that
 # entrypoint as a static importer.
 check_l12_forward_invariant
+build_topology_truth
 
 # Director vocabulary is a contract surface for future programme scheduler and
 # content runner consumers. Pydantic calls validators dynamically; exported view
@@ -3862,3 +3863,19 @@ from shared.pr_merge_announcement_producer import build_pr_merge_event, emit_pr_
 
 build_pr_merge_event
 emit_pr_merge_event
+
+# React/watch-along adapter: entry point for content programming runner.
+# cc-task: react-watchalong-media-reference-adapter
+from shared.react_watchalong_adapter import build_render_plan
+
+build_render_plan
+
+from shared.audio_restart_proof_gate import (
+    format_failure_report,
+    run_restart_proof_gate,
+    write_witness,
+)
+
+format_failure_report
+run_restart_proof_gate
+write_witness

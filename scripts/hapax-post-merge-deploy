@@ -143,6 +143,21 @@ deploy_groups = {
     "hapax_scripts": lines("HAPAX_TRACE_SCRIPTS"),
     "unit_backing_scripts": lines("HAPAX_TRACE_SCRIPT_PY"),
 }
+runtime_media_groups = [
+    name
+    for name in (
+        "pipewire",
+        "hapax_runtime_config",
+        "wireplumber",
+        "systemd_units",
+        "systemd_system_units",
+        "systemd_dropins",
+        "systemd_watchdogs",
+        "hapax_scripts",
+        "unit_backing_scripts",
+    )
+    if deploy_groups[name]
+]
 record = {
     "schema_version": 1,
     "event": "post_merge_deploy",
@@ -156,6 +171,11 @@ record = {
     "manual_deploy_needed": any(deploy_groups.values()),
     "manual_deploy_executed": manual_deploy_executed,
     "systemd_unclassified": lines("HAPAX_TRACE_SYSTEMD_UNCLASSIFIED"),
+    "avsdlc": {
+        "gate_point": "S9 post-merge production witness",
+        "runtime_media_witness_required": bool(runtime_media_groups),
+        "runtime_media_witness_groups": runtime_media_groups,
+    },
 }
 
 path.parent.mkdir(parents=True, exist_ok=True)

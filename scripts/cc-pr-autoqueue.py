@@ -39,6 +39,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared.merge_queue_lineage import DEFAULT_LEDGER_PATH, read_jsonl_records  # noqa: E402
+from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
 
 LOG = logging.getLogger("cc-pr-autoqueue")
 
@@ -72,6 +73,8 @@ HOLD_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 DEFAULT_REQUIRED_CHECKS = ("lint", "test", "typecheck", "web-build", "vscode-build")
+AUTOQUEUE_ADMISSION_CONTEXT = "hapax/autoqueue-admission"
+AUTOQUEUE_IGNORED_CHECK_CONTEXTS = {AUTOQUEUE_ADMISSION_CONTEXT, "pr-admission"}
 CI_REPAIR_KINDS = {"cicd-speedup", "ci-repair", "ci-speedup", "merge-queue-repair"}
 CI_REPAIR_TAGS = {"cicd", "ci", "autoqueue"}
 INDEPENDENT_QUEUE_ADMISSION = {"independent", "independent_route"}
@@ -113,6 +116,7 @@ class PullRequest:
     node_id: str | None
     title: str
     head_ref: str
+    head_sha: str | None
     body: str
     is_draft: bool
     merge_state_status: str
@@ -137,6 +141,7 @@ class TaskNote:
     kind: str | None
     tags: tuple[str, ...] = ()
     queue_admission: str | None = None
+    frontmatter: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -272,6 +277,8 @@ def summarize_checks(items: list[dict[str, Any]]) -> CheckSummary:
             pending.append("malformed-check")
             continue
         name = _check_name(item)
+        if name in AUTOQUEUE_IGNORED_CHECK_CONTEXTS:
+            continue
         raw_state = item.get("conclusion") or item.get("state") or item.get("status")
         state = str(raw_state or "").upper()
         if state in PASS_STATES:
@@ -309,6 +316,7 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         head_ref=_scalar(item.get("headRefName")) or "",
         body=str(item.get("body") or ""),
         is_draft=bool(item.get("isDraft")),
+        head_sha=_scalar(item.get("headRefOid")),
         merge_state_status=str(item.get("mergeStateStatus") or "").upper(),
         labels=_labels_from_payload(item),
         review_decision=_scalar(item.get("reviewDecision")),
@@ -344,6 +352,7 @@ def fetch_open_prs(
                 "title",
                 "body",
                 "headRefName",
+                "headRefOid",
                 "isDraft",
                 "mergeStateStatus",
                 "labels",
@@ -484,6 +493,7 @@ def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
                     kind=(_scalar(fm.get("kind")) or "").lower() or None,
                     tags=tuple(tag.lower() for tag in _string_tuple(fm.get("tags"))),
                     queue_admission=((_scalar(fm.get("queue_admission")) or "").lower() or None),
+                    frontmatter=dict(fm),
                 )
             )
     return notes
@@ -510,6 +520,9 @@ def _task_blockers(task: TaskNote, *, require_route_metadata: bool) -> list[str]
             blockers.append(f"closed_task_status_not_ready:{task.status or 'missing'}")
     elif task.status not in ACTIVE_READY_STATUSES:
         blockers.append(f"active_task_status_not_ready:{task.status or 'missing'}")
+
+    avsdlc_gate = evaluate_avsdlc_release_gate(task.frontmatter)
+    blockers.extend(f"avsdlc_release_gate:{blocker}" for blocker in avsdlc_gate.blockers)
     return blockers
 
 
@@ -727,6 +740,70 @@ def merge_pr(
     return True, output
 
 
+def _status_description(text: str, *, limit: int = 140) -> str:
+    compact = " ".join(text.split())
+    return compact if len(compact) <= limit else compact[: limit - 1].rstrip() + "…"
+
+
+def _admission_status_for(decision: Decision) -> tuple[str, str] | None:
+    if decision.action in {
+        "queue",
+        "enable_auto_merge",
+        "already_queued",
+        "already_auto_merge_enabled",
+    }:
+        return "success", _status_description(f"cc-pr-autoqueue admitted: {decision.action}")
+
+    if decision.action in {"blocked", "dequeue", "disable_auto_merge"}:
+        reasons = "; ".join(decision.reasons or ("not ready for merge queue",))
+        return "failure", _status_description(f"cc-pr-autoqueue blocked: {reasons}")
+
+    return None
+
+
+def set_autoqueue_admission_status(
+    decision: Decision,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
+) -> tuple[bool, str] | None:
+    """Write the server-visible autoqueue admission proof for a PR head SHA."""
+    runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
+    status = _admission_status_for(decision)
+    if status is None:
+        return None
+    if not decision.pr.head_sha:
+        return False, "missing_head_sha"
+    state, description = status
+    cmd = [
+        "gh",
+        "api",
+        "-X",
+        "POST",
+        f"repos/{repo}/statuses/{decision.pr.head_sha}",
+        "-f",
+        f"state={state}",
+        "-f",
+        f"context={AUTOQUEUE_ADMISSION_CONTEXT}",
+        "-f",
+        f"description={description}",
+    ]
+    proc = runner(
+        cmd,
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    output = (proc.stdout or proc.stderr or "").strip()
+    if proc.returncode != 0:
+        return False, output or f"status write failed rc={proc.returncode}"
+    return True, output
+
+
 def _decision_is_non_ready(decision: Decision) -> bool:
     return decision.action in {"blocked", "dequeue", "disable_auto_merge"} and bool(
         decision.reasons
@@ -902,21 +979,59 @@ def run_reconciler(
     mutation_results: list[dict[str, Any]] = []
     if apply:
         for decision in decisions:
+            status_result = set_autoqueue_admission_status(
+                decision, repo=repo, repo_root=repo_root, runner=runner
+            )
             if decision.action not in {
                 "queue",
                 "enable_auto_merge",
                 "disable_auto_merge",
                 "dequeue",
             }:
+                if status_result is not None:
+                    ok, message = status_result
+                    mutation_results.append(
+                        {
+                            **decision.as_dict(),
+                            "action": "set_admission_status",
+                            "status_state": _admission_status_for(decision)[0],
+                            "ok": ok,
+                            "message": message,
+                        }
+                    )
+                continue
+            if (
+                decision.action in {"queue", "enable_auto_merge"}
+                and status_result is not None
+                and not status_result[0]
+            ):
+                mutation_results.append(
+                    {
+                        **decision.as_dict(),
+                        "ok": False,
+                        "message": "admission status write failed; queue mutation skipped",
+                        "admission_status": {
+                            "state": _admission_status_for(decision)[0],
+                            "ok": status_result[0],
+                            "message": status_result[1],
+                        },
+                    }
+                )
                 continue
             ok, message = merge_pr(decision, repo=repo, repo_root=repo_root, runner=runner)
-            mutation_results.append(
-                {
-                    **decision.as_dict(),
-                    "ok": ok,
-                    "message": message,
+            result = {
+                **decision.as_dict(),
+                "ok": ok,
+                "message": message,
+            }
+            if status_result is not None:
+                status_ok, status_message = status_result
+                result["admission_status"] = {
+                    "state": _admission_status_for(decision)[0],
+                    "ok": status_ok,
+                    "message": status_message,
                 }
-            )
+            mutation_results.append(result)
 
     return {
         "repo": repo,

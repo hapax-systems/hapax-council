@@ -3,26 +3,38 @@ name: audio-graph-validate
 on:
   push:
     branches: [main]
-    paths:
+    paths: &audio-authority-paths
       - "shared/audio_graph/**"
       - "shared/audio_topology*.py"
-      - "scripts/hapax-audio-graph-validate"
+      - "shared/audio_loudness*.py"
+      - "shared/audio_canary*.py"
+      - "shared/audio_routing_policy.py"
+      - "shared/audio_control_plane.py"
+      - "shared/audio_restart_proof_gate.py"
+      - "scripts/hapax-audio-*"
+      - "scripts/hapax-wireplumber-*"
+      - "scripts/check-audio-*.py"
+      - "scripts/generate-pipewire-audio-confs.py"
+      - "scripts/audit-audio-topology.sh"
+      - "scripts/audio-*.sh"
       - "tests/audio_graph/**"
       - "config/audio-topology.yaml"
+      - "config/audio-routing.yaml"
+      - "config/audio-conf-*.yaml"
+      - "config/audio-current-capsule.yaml"
       - "config/pipewire/**"
       - "config/wireplumber/**"
+      - "config/hapax/audio-*.conf"
+      - "config/hapax/audio-*.yaml"
+      - "docs/audio-topology-reference.md"
+      - "docs/audio/**"
+      - "hooks/scripts/*audio*"
       - ".github/workflows/audio-graph-validate.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "shared/audio_graph/**"
-      - "shared/audio_topology*.py"
-      - "scripts/hapax-audio-graph-validate"
-      - "tests/audio_graph/**"
-      - "config/audio-topology.yaml"
-      - "config/pipewire/**"
-      - "config/wireplumber/**"
-      - ".github/workflows/audio-graph-validate.yml"
+    paths: *audio-authority-paths
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -69,6 +81,22 @@ jobs:
           else
             echo "config/pipewire not present; skipping in-tree decomposition"
           fi
+      - name: Check generator freshness (route maps + WirePlumber deny policy)
+        run: |
+          uv run python scripts/generate-pipewire-audio-confs.py \
+            --check --check-route-maps --check-wireplumber-deny-policy
+      - name: Run audio routing policy + topology + inspector + deny tests
+        run: |
+          uv run pytest tests/shared/test_audio_routing_policy.py \
+                        tests/scripts/test_hapax_audio_routing_check.py \
+                        tests/shared/test_canonical_audio_topology.py \
+                        tests/shared/test_audio_topology_inspector.py \
+                        tests/docs/test_audio_current_capsule.py \
+                        -q --no-header
+      - name: Check audio AuthorityCase metadata
+        run: uv run python scripts/check-audio-authority-case.py --strict
+      - name: Check audio current-capsule freshness
+        run: uv run python scripts/check-audio-current-capsule-staleness.py
       - name: Upload validator JSON
         if: always()
         uses: actions/upload-artifact@v4

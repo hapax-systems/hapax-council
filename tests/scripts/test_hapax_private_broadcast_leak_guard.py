@@ -534,7 +534,8 @@ def test_layer_b_pins_mpc_target_with_fail_closed_props() -> None:
     assert "target.object" in body
     assert "Akai_Professional_MPC_LIVE_III" in body
     assert "Torso_Electronics_S-4" not in body
-    assert "multichannel-output" in body
+    assert "pro-output-0" in body
+    assert "multichannel-output" not in body
     assert "node.dont-fallback = true" in body
     assert "node.linger = true" in body
     assert "priority.session = -1" in body

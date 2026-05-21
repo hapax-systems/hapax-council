@@ -12,6 +12,7 @@
 set -euo pipefail
 
 VAULT_ROOT="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+CLAIM_CACHE_DIR="${HAPAX_CLAIM_CACHE_DIR:-$HOME/.cache/hapax}"
 STALE_HOURS="${CODEX_CLAIM_STALE_HOURS:-6}"
 RELEASE=false
 NTFY_URL="${NTFY_URL:-https://ntfy.sh}"
@@ -27,7 +28,10 @@ done
 stale_threshold=$((STALE_HOURS * 3600))
 now_epoch=$(date +%s)
 phantom_count=0
+cache_mismatch_count=0
+stale_cache_count=0
 report=""
+cache_report=""
 
 for note in "$VAULT_ROOT/active/"*.md; do
   [ -f "$note" ] || continue
@@ -74,13 +78,58 @@ for note in "$VAULT_ROOT/active/"*.md; do
       sed -i "s/^updated_at:.*/updated_at: $now_iso/" "$note"
       sed -i "/^## Session log$/a\\- $now_iso codex-claim-audit released phantom claim (${assigned}, ${age_h}h stale)" "$note"
       report="${report}    → RELEASED back to offered\n"
+      claim_file="$CLAIM_CACHE_DIR/cc-active-task-$assigned"
+      if [ -f "$claim_file" ]; then
+        claimed_task=$(sed -n '1p' "$claim_file" 2>/dev/null || true)
+        if [ "$claimed_task" = "$task_id" ]; then
+          rm -f "$claim_file"
+          report="${report}    → CLEARED stale claim cache $(basename "$claim_file")\n"
+        else
+          cache_mismatch_count=$((cache_mismatch_count + 1))
+          report="${report}    → KEPT claim cache $(basename "$claim_file") because it names ${claimed_task:-<empty>}\n"
+        fi
+      fi
     fi
   fi
 done
 
+if [ "$RELEASE" = true ] && [ -d "$CLAIM_CACHE_DIR" ]; then
+  for claim_file in "$CLAIM_CACHE_DIR"/cc-active-task-*; do
+    [ -f "$claim_file" ] || continue
+    assigned="${claim_file##*/cc-active-task-}"
+    claimed_task=$(sed -n '1p' "$claim_file" 2>/dev/null || true)
+    [ -n "$claimed_task" ] || continue
+
+    note="$VAULT_ROOT/active/$claimed_task.md"
+    if [ ! -f "$note" ]; then
+      rm -f "$claim_file"
+      stale_cache_count=$((stale_cache_count + 1))
+      cache_report="${cache_report}  CLEARED stale claim cache $(basename "$claim_file") task=${claimed_task} status=not_active\n"
+      continue
+    fi
+
+    note_assigned=$(grep -oP '^assigned_to:\s*\K\S+' "$note" 2>/dev/null || echo "")
+    note_status=$(grep -oP '^status:\s*\K\S+' "$note" 2>/dev/null || echo "")
+    case "$note_status" in
+      claimed|in_progress) note_is_active_claim=true ;;
+      *) note_is_active_claim=false ;;
+    esac
+
+    if [ "$note_is_active_claim" = false ] || [ "$note_assigned" != "$assigned" ]; then
+      rm -f "$claim_file"
+      stale_cache_count=$((stale_cache_count + 1))
+      cache_report="${cache_report}  CLEARED stale claim cache $(basename "$claim_file") task=${claimed_task} assigned=${note_assigned:-<none>} status=${note_status:-<none>}\n"
+    fi
+  done
+fi
+
 if [ "$phantom_count" -gt 0 ]; then
   printf "codex-claim-audit: %d phantom claim(s) found\n" "$phantom_count"
   printf '%b' "$report"
+  if [ "$stale_cache_count" -gt 0 ]; then
+    printf "codex-claim-audit: %d stale claim cache file(s) cleared\n" "$stale_cache_count"
+    printf '%b' "$cache_report"
+  fi
 
   if command -v curl >/dev/null 2>&1; then
     curl -s \
@@ -90,8 +139,15 @@ if [ "$phantom_count" -gt 0 ]; then
       -H "Tags: warning,robot" \
       "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
   fi
+  if [ "$RELEASE" = true ] && [ "$cache_mismatch_count" -eq 0 ]; then
+    exit 0
+  fi
   exit 1
 else
+  if [ "$stale_cache_count" -gt 0 ]; then
+    printf "codex-claim-audit: %d stale claim cache file(s) cleared\n" "$stale_cache_count"
+    printf '%b' "$cache_report"
+  fi
   echo "codex-claim-audit: no phantom claims found"
   exit 0
 fi

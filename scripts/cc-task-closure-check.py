@@ -33,43 +33,27 @@ cases — a broken gate must not brick closures.
 from __future__ import annotations
 
 import os
-import re
 import sys
 from pathlib import Path
 
-#: Match the `## Acceptance criteria` heading. Tolerates trailing whitespace.
-_ACCEPTANCE_HEADING = re.compile(r"^##\s+Acceptance\s+criteria\s*$", re.IGNORECASE | re.MULTILINE)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-#: Match unchecked checkbox lines: ``- [ ]`` (with literal space). The
-#: leading hyphen + ``[ ]`` + space is the GitHub-flavored markdown
-#: convention used across the vault. Checked / N/A checkboxes
-#: (``- [x]``, ``- [X]``, ``- [-]``) are intentionally NOT matched —
-#: only blockers are interesting to the gate.
-_UNCHECKED_CHECKBOX = re.compile(r"^\s*-\s+\[\s\]\s+(.*)$", re.MULTILINE)
-
-#: Headings that terminate the AC section if encountered. Stops at
-#: the next ``## ...`` heading to avoid scanning post-AC sections
-#: like ``## Closure evidence`` or ``## WSJF`` for unchecked items.
-_NEXT_HEADING = re.compile(r"^##\s+", re.MULTILINE)
+from shared.sdlc_lifecycle import acceptance_criteria_state  # noqa: E402
 
 
 def acceptance_criteria_section(text: str) -> str | None:
-    """Return the substring of ``text`` between the ``## Acceptance criteria``
-    heading and the next ``## ...`` heading (or EOF). Returns ``None``
-    when no AC heading is present (substantive supersession docs etc).
-    """
-    m = _ACCEPTANCE_HEADING.search(text)
-    if m is None:
-        return None
-    start = m.end()
-    next_heading = _NEXT_HEADING.search(text, pos=start)
-    end = next_heading.start() if next_heading else len(text)
-    return text[start:end]
+    """Compatibility wrapper for callers importing this script directly."""
+    from shared.sdlc_lifecycle import acceptance_criteria_section as _section
+
+    return _section(text)
 
 
 def unchecked_items(ac_section: str) -> list[str]:
     """Return descriptions of every unchecked AC checkbox line."""
-    return [m.group(1).strip() for m in _UNCHECKED_CHECKBOX.finditer(ac_section)]
+    state = acceptance_criteria_state(f"## Acceptance criteria\n{ac_section}")
+    return list(state.unchecked_items)
 
 
 def gate(path: Path) -> tuple[int, str]:
@@ -90,11 +74,11 @@ def gate(path: Path) -> tuple[int, str]:
     except OSError as exc:
         return 0, f"fail-OPEN: source unreadable ({exc})"
 
-    section = acceptance_criteria_section(text)
-    if section is None:
+    ac_state = acceptance_criteria_state(text)
+    if not ac_state.section_present:
         return 0, "no Acceptance criteria section — closure permitted"
 
-    unchecked = unchecked_items(section)
+    unchecked = list(ac_state.unchecked_items)
     if not unchecked:
         return 0, "all Acceptance criteria checkboxes satisfied"
 

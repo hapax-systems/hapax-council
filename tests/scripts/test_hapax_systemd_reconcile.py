@@ -16,12 +16,36 @@ to avoid mutating live systemd state; operator runs --apply manually.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "hapax-systemd-reconcile.sh"
+
+
+def _run_with_fake_systemd(
+    tmp_path: Path,
+    *args: str,
+    user_dir: Path | None = None,
+    repo_units: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    fake_user_dir = user_dir or tmp_path / "systemd-user"
+    fake_repo_units = repo_units or tmp_path / "repo-units"
+    fake_user_dir.mkdir(parents=True, exist_ok=True)
+    fake_repo_units.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["HAPAX_SYSTEMD_USER_DIR"] = str(fake_user_dir)
+    env["HAPAX_SYSTEMD_REPO_UNITS"] = str(fake_repo_units)
+    env["HAPAX_SYSTEMCTL"] = "true"
+    return subprocess.run(
+        [str(SCRIPT), *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
 
 
 class TestScriptPresent:
@@ -72,6 +96,55 @@ class TestDryRun:
         )
         assert "not found" not in r.stderr
         assert ".local/systemd/units" not in r.stderr
+
+    def test_dry_run_reports_broken_hapax_symlink_missing_from_systemctl(
+        self, tmp_path: Path
+    ) -> None:
+        user_dir = tmp_path / "systemd-user"
+        repo_units = tmp_path / "repo-units"
+        user_dir.mkdir()
+        repo_units.mkdir()
+        (user_dir / "hapax-gone.service").symlink_to(repo_units / "hapax-gone.service")
+
+        r = _run_with_fake_systemd(tmp_path, user_dir=user_dir, repo_units=repo_units)
+
+        assert r.returncode == 1
+        assert "hapax-gone.service" in r.stdout
+        assert "Detected 1 drifted unit" in r.stdout
+
+    def test_dry_run_ignores_repo_backed_hapax_symlink(self, tmp_path: Path) -> None:
+        user_dir = tmp_path / "systemd-user"
+        repo_units = tmp_path / "repo-units"
+        user_dir.mkdir()
+        repo_units.mkdir()
+        target = repo_units / "hapax-backed.service"
+        target.write_text("[Unit]\nDescription=backed\n", encoding="utf-8")
+        (user_dir / "hapax-backed.service").symlink_to(target)
+
+        r = _run_with_fake_systemd(tmp_path, user_dir=user_dir, repo_units=repo_units)
+
+        assert r.returncode == 0
+        assert "no drift" in r.stdout.lower()
+
+    def test_apply_removes_broken_hapax_symlink_idempotently(self, tmp_path: Path) -> None:
+        user_dir = tmp_path / "systemd-user"
+        repo_units = tmp_path / "repo-units"
+        user_dir.mkdir()
+        repo_units.mkdir()
+        stale_link = user_dir / "hapax-gone.timer"
+        stale_link.symlink_to(repo_units / "hapax-gone.timer")
+
+        first = _run_with_fake_systemd(
+            tmp_path, "--apply", user_dir=user_dir, repo_units=repo_units
+        )
+        second = _run_with_fake_systemd(
+            tmp_path, "--apply", user_dir=user_dir, repo_units=repo_units
+        )
+
+        assert first.returncode == 0
+        assert "reconciled 1 unit" in first.stdout
+        assert not stale_link.is_symlink()
+        assert second.returncode == 0
 
 
 class TestScriptNotes:

@@ -109,8 +109,21 @@ jobs:
             docs_only=false
           fi
 
+          is_audio_authority_path() {
+            local path="$1"
+            case "$path" in
+              docs/audio-topology-reference.md|docs/audio|docs/audio/*) return 0 ;;
+              config/audio-*|config/pipewire/*|config/wireplumber/*) return 0 ;;
+              config/hapax/audio-*) return 0 ;;
+            esac
+            return 1
+          }
+
           docs_only_path() {
             local path="$1"
+            if is_audio_authority_path "$path"; then
+              return 1
+            fi
             case "$path" in
               docs|docs/*|lab-journal|lab-journal/*|research|research/*)
                 return 0

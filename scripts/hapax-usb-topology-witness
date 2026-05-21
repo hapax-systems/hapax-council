@@ -454,6 +454,23 @@ def validate(
             else:
                 issues.append(f"camera_on_caldigit:{serial}:{path}")
 
+    present_serials = {c.get("serial", "") for c in snapshot.get("cameras", [])}
+    for req in policy.get("required_cameras", []):
+        if not isinstance(req, dict):
+            continue
+        role = req.get("role", "unknown")
+        serial = req.get("serial", "")
+        if not serial:
+            continue
+        absence = configured_known_absence(policy, f"camera:{role}", serial)
+        if serial not in present_serials:
+            if absence:
+                warnings.append(
+                    f"required_camera_absent_known:{role}:{serial}:{policy_reason(absence)}"
+                )
+            else:
+                issues.append(f"required_camera_missing:{role}:{serial}")
+
     if repair:
         if start_user_unit("hapax-audio-router.service"):
             repairs.append("hapax_audio_router_active")

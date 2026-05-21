@@ -486,8 +486,8 @@ def test_loudnorm_mpc_link_pairs_cover_both_channels() -> None:
         "hapax-music-loudnorm-playback:output_FR",
     }
     assert targets == {
-        "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX0",
-        "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX1",
+        "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX0",
+        "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX1",
     }
 
 

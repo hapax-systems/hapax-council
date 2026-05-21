@@ -8,6 +8,7 @@ audio hardware in CI.
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 import textwrap
@@ -15,6 +16,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-audio-routing-check"
+WP_DENY_CONF_SOURCE = REPO_ROOT / "config" / "wireplumber" / "98-hapax-link-deny.conf"
+WP_DENY_SCRIPT_SOURCE = REPO_ROOT / "config" / "wireplumber" / "scripts" / "hapax" / "link-deny.lua"
+FORBIDDEN_LINKS_SOURCE = REPO_ROOT / "config" / "hapax" / "audio-forbidden-links.conf"
 
 
 def _base_graph(extra_tap_inputs: str = "") -> str:
@@ -64,9 +68,27 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def _run_with_graph(tmp_path: Path, graph: str) -> subprocess.CompletedProcess[str]:
+def _install_deny_policy(home: Path) -> None:
+    """Install WirePlumber deny policy and forbidden links into the fake HOME."""
+    wp_conf_dir = home / ".config" / "wireplumber" / "wireplumber.conf.d"
+    wp_script_dir = home / ".config" / "wireplumber" / "scripts" / "hapax"
+    hapax_conf_dir = home / ".config" / "hapax"
+    wp_conf_dir.mkdir(parents=True, exist_ok=True)
+    wp_script_dir.mkdir(parents=True, exist_ok=True)
+    hapax_conf_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(WP_DENY_CONF_SOURCE, wp_conf_dir / WP_DENY_CONF_SOURCE.name)
+    shutil.copy2(WP_DENY_SCRIPT_SOURCE, wp_script_dir / WP_DENY_SCRIPT_SOURCE.name)
+    shutil.copy2(FORBIDDEN_LINKS_SOURCE, hapax_conf_dir / FORBIDDEN_LINKS_SOURCE.name)
+
+
+def _run_with_graph(
+    tmp_path: Path,
+    graph: str,
+    *,
+    install_deny: bool = True,
+) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
+    bin_dir.mkdir(exist_ok=True)
 
     _write_executable(
         bin_dir / "pw-link",
@@ -97,7 +119,9 @@ def _run_with_graph(tmp_path: Path, graph: str) -> subprocess.CompletedProcess[s
     )
 
     home = tmp_path / "home"
-    (home / ".config" / "pipewire" / "pipewire.conf.d").mkdir(parents=True)
+    (home / ".config" / "pipewire" / "pipewire.conf.d").mkdir(parents=True, exist_ok=True)
+    if install_deny:
+        _install_deny_policy(home)
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -254,3 +278,60 @@ def test_l12_wet_return_capture_requires_upstream_aux_links(tmp_path: Path) -> N
     assert result.returncode == 1
     assert "L-12 AUX8 → l12-usb-return-capture linked" in result.stdout
     assert "MISSING" in result.stdout
+
+
+def test_deny_policy_missing_forbidden_links_runtime_hard_fails(tmp_path: Path) -> None:
+    result = _run_with_graph(tmp_path, _base_graph(), install_deny=False)
+
+    assert result.returncode == 1
+    assert "forbidden links runtime conf present" in result.stdout
+    assert "deny hook will run in degraded fail-closed mode" in result.stdout
+
+
+def test_deny_policy_not_installed_hard_fails(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    hapax_conf_dir = home / ".config" / "hapax"
+    hapax_conf_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(FORBIDDEN_LINKS_SOURCE, hapax_conf_dir / FORBIDDEN_LINKS_SOURCE.name)
+
+    result = _run_with_graph(tmp_path, _base_graph(), install_deny=False)
+
+    assert result.returncode == 1
+    assert "WirePlumber deny policy not installed" in result.stdout
+    assert "boundaries unguarded at link-time" in result.stdout
+
+
+def test_deny_policy_stale_installed_conf_hard_fails(tmp_path: Path) -> None:
+    result = _run_with_graph(tmp_path, _base_graph(), install_deny=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    home = tmp_path / "home"
+    stale_conf = home / ".config" / "wireplumber" / "wireplumber.conf.d" / "98-hapax-link-deny.conf"
+    stale_conf.write_text("# stale content\n")
+
+    result = _run_with_graph(tmp_path, _base_graph(), install_deny=False)
+
+    assert result.returncode == 1
+    assert "installed policy differs from source" in result.stdout
+
+
+def test_deny_policy_stale_forbidden_links_runtime_hard_fails(tmp_path: Path) -> None:
+    result = _run_with_graph(tmp_path, _base_graph(), install_deny=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    home = tmp_path / "home"
+    stale_links = home / ".config" / "hapax" / "audio-forbidden-links.conf"
+    stale_links.write_text("# stale forbidden links\n")
+
+    result = _run_with_graph(tmp_path, _base_graph(), install_deny=False)
+
+    assert result.returncode == 1
+    assert "runtime file differs from source" in result.stdout
+
+
+def test_deny_policy_fully_installed_passes(tmp_path: Path) -> None:
+    result = _run_with_graph(tmp_path, _base_graph(), install_deny=True)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "WirePlumber deny policy installed matches source" in result.stdout
+    assert "forbidden links runtime conf matches source" in result.stdout

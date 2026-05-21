@@ -6,10 +6,12 @@ ISAP: SLICE-006-RELEASE-OPS (CASE-SDLC-REFORM-001)
 from __future__ import annotations
 
 from shared.release_gate import (
+    AVSDLC_EVIDENCE_FRESHNESS_SECONDS,
     PublicCurrentnessWitness,
     ReleaseCandidateRecord,
     RollbackPlan,
     check_public_currentness,
+    evaluate_avsdlc_release_gate,
     run_orr_lite,
     validate_rollback_plan,
 )
@@ -198,3 +200,114 @@ def test_public_currentness_all_ok() -> None:
         claim_safe=True,
     )
     assert check_public_currentness(w) == []
+
+
+# -- AVSDLC release evidence gate --------------------------------------
+
+
+def test_avsdlc_gate_passes_when_no_impacted_axes_or_surface() -> None:
+    result = evaluate_avsdlc_release_gate({"mutation_surface": "source"})
+
+    assert result.passed
+    assert not result.required
+    assert not result.blockers
+
+
+def test_avsdlc_gate_blocks_obvious_visual_surface_without_axis_classification() -> None:
+    result = evaluate_avsdlc_release_gate(
+        {"mutation_scope_refs": ["agents/studio_compositor/layout.py"]}
+    )
+
+    assert not result.passed
+    assert result.required
+    assert "avsdlc_axes_missing:visual" in result.blockers
+
+
+def test_avsdlc_gate_blocks_runtime_media_without_axis_classification() -> None:
+    result = evaluate_avsdlc_release_gate({"runtime_media_impact": True})
+
+    assert not result.passed
+    assert "avsdlc_axes_missing:audiovisual" in result.blockers
+
+
+def test_avsdlc_gate_does_not_treat_required_as_visual_ui_marker() -> None:
+    result = evaluate_avsdlc_release_gate(
+        {"mutation_scope_refs": ["tests/test_ci_required_coverage_claims.py"]}
+    )
+
+    assert result.passed
+    assert result.inferred_axes == []
+
+
+def test_avsdlc_gate_allows_explicit_no_axis_classification() -> None:
+    result = evaluate_avsdlc_release_gate(
+        {
+            "avsdlc_axes": "none",
+            "tags": ["audio"],
+            "mutation_scope_refs": ["tests/shared/test_audio_routing_policy.py"],
+        }
+    )
+
+    assert result.passed
+    assert result.inferred_axes == ["audio"]
+
+
+def test_avsdlc_gate_blocks_visual_axis_missing_dossier_witness_and_freshness() -> None:
+    result = evaluate_avsdlc_release_gate({"avsdlc_axes": ["visual"]})
+
+    assert not result.passed
+    assert "missing:avsdlc_dossier" in result.blockers
+    assert "missing:visual_witness" in result.blockers
+    assert "missing:avsdlc_evidence_collected_at" in result.blockers
+
+
+def test_avsdlc_gate_passes_with_fresh_visual_evidence() -> None:
+    now = 1_800_000_000.0
+
+    result = evaluate_avsdlc_release_gate(
+        {
+            "avsdlc_axes": ["visual"],
+            "avsdlc_dossier": "docs/evidence/visual.md",
+            "visual_witness": "artifacts/frame.png",
+            "avsdlc_evidence_collected_at": now - 60,
+        },
+        now=now,
+    )
+
+    assert result.passed
+    assert not result.blockers
+
+
+def test_avsdlc_gate_blocks_stale_audio_evidence() -> None:
+    now = 1_800_000_000.0
+
+    result = evaluate_avsdlc_release_gate(
+        {
+            "avsdlc_axes": ["audio"],
+            "avsdlc_dossier": "docs/evidence/audio.md",
+            "audio_witness": "artifacts/lufs.json",
+            "avsdlc_evidence_collected_at": now - AVSDLC_EVIDENCE_FRESHNESS_SECONDS - 1,
+        },
+        now=now,
+    )
+
+    assert not result.passed
+    assert "stale:avsdlc_evidence_collected_at" in result.blockers
+
+
+def test_avsdlc_gate_requires_audiovisual_and_runtime_media_witnesses() -> None:
+    now = 1_800_000_000.0
+
+    result = evaluate_avsdlc_release_gate(
+        {
+            "avsdlc_axes": ["audiovisual"],
+            "avsdlc_dossier": "docs/evidence/av.md",
+            "avsdlc_evidence_collected_at": now,
+            "runtime_media_impact": True,
+        },
+        now=now,
+    )
+
+    assert not result.passed
+    assert "missing:audiovisual_witness" in result.blockers
+    assert "missing:runtime_media_witness" in result.blockers

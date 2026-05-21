@@ -16,6 +16,31 @@ async def check_systemd_services() -> list[CheckResult]:
         ("profile-update.timer", True, "systemctl --user enable --now profile-update.timer"),
         ("digest.timer", True, "systemctl --user enable --now digest.timer"),
         ("knowledge-maint.timer", True, "systemctl --user enable --now knowledge-maint.timer"),
+        (
+            "hapax-source-activate.timer",
+            True,
+            "systemctl --user enable --now hapax-source-activate.timer",
+        ),
+        (
+            "hapax-cc-pr-autoqueue.timer",
+            True,
+            "systemctl --user enable --now hapax-cc-pr-autoqueue.timer",
+        ),
+        (
+            "hapax-cc-pr-merge-watcher.timer",
+            True,
+            "systemctl --user enable --now hapax-cc-pr-merge-watcher.timer",
+        ),
+        (
+            "hapax-request-decompose.timer",
+            True,
+            "systemctl --user enable --now hapax-request-decompose.timer",
+        ),
+        (
+            "hapax-request-intake-consumer.timer",
+            True,
+            "systemctl --user enable --now hapax-request-intake-consumer.timer",
+        ),
         ("midi-route.service", False, None),
     ]
     results: list[CheckResult] = []

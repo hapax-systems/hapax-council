@@ -17,13 +17,13 @@ from unittest.mock import patch
 
 import pytest
 
+from agents.studio_compositor import semantic_verb_consumer as semantic_verb_module
 from agents.studio_compositor.semantic_verb_consumer import (
     DEFAULT_ENVELOPE_PATH,
     DEFAULT_TRANSITION_BIAS_PATH,
     VERB_CONSUMER_ROUTES,
     SemanticVerbConsumer,
     all_verbs,
-    hapax_semantic_verb_consumed_total,
     route_for,
     verbs_for_route,
 )
@@ -32,13 +32,15 @@ from shared.director_semantic_verbs import SEMANTIC_VERBS
 
 @pytest.fixture(autouse=True)
 def _reset_counter():
-    hapax_semantic_verb_consumed_total.clear()
+    semantic_verb_module.hapax_semantic_verb_consumed_total.clear()
     yield
-    hapax_semantic_verb_consumed_total.clear()
+    semantic_verb_module.hapax_semantic_verb_consumed_total.clear()
 
 
 def _counter(verb: str, outcome: str) -> float:
-    return hapax_semantic_verb_consumed_total.labels(verb=verb, outcome=outcome)._value.get()
+    return semantic_verb_module.hapax_semantic_verb_consumed_total.labels(
+        verb=verb, outcome=outcome
+    )._value.get()
 
 
 class TestRoutingTableNoOrphans:

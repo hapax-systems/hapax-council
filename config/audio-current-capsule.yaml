@@ -1,0 +1,8 @@
+schema_version: 1
+description: Audio current-capsule freshness hashes. Auto-generated.
+source_hashes:
+  config/audio-topology.yaml: fe8e48820298dfac
+  config/audio-routing.yaml: 226ed19935ec5eab
+  config/pipewire/generated/audio-routing-policy.manifest.json: 53c657b513482ce4
+  config/hapax/audio-forbidden-links.conf: 7d9ff64b9875d4f1
+  config/hapax/audio-link-map.conf: 6def2a377e97d29f

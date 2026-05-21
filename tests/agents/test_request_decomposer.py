@@ -2,13 +2,34 @@
 
 from __future__ import annotations
 
+import importlib.util
+import json
+import sys
 import tempfile
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from agents.request_decomposer.models import RequestDecomposition, TaskSpec
 from agents.request_decomposer.writer import write_decomposition
+from shared.frontmatter import parse_frontmatter
+
+_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_request_decompose_module() -> ModuleType:
+    if "request_decompose_script" in sys.modules:
+        return sys.modules["request_decompose_script"]
+    path = _ROOT / "scripts" / "request-decompose"
+    loader = SourceFileLoader("request_decompose_script", str(path))
+    spec = importlib.util.spec_from_loader("request_decompose_script", loader)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["request_decompose_script"] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 class TestTaskSpec:
@@ -222,6 +243,40 @@ class TestWriter:
                 content = p.read_text()
                 assert "type: cc-task" in content
                 assert "parent_request: REQ-test.md" in content
+                assert "route_metadata_schema: 1" in content
+                assert "mutation_scope_refs:" in content
+
+    def test_real_write_frontmatter_is_yaml_safe(self):
+        with tempfile.TemporaryDirectory() as td:
+            decomp = RequestDecomposition(
+                request_id="test-write",
+                request_path="/tmp/test.md",
+                tasks=[
+                    TaskSpec(
+                        task_id="write-phase1",
+                        title="Phase 1",
+                        parent_request="REQ-test.md",
+                        authority_case="CASE-TEST",
+                        acceptance_criteria=["Schema exists"],
+                    ),
+                    TaskSpec(
+                        task_id="write-phase2",
+                        title="Phase 2",
+                        depends_on=["write-phase1"],
+                        status="blocked",
+                        blocked_reason="Depends on: write-phase1",
+                        parent_request="REQ-test.md",
+                        authority_case="CASE-TEST",
+                        acceptance_criteria=["API works"],
+                    ),
+                ],
+            )
+
+            paths = write_decomposition(decomp, Path(td))
+            phase2 = [p for p in paths if "phase2" in p.name][0]
+
+            frontmatter, _body = parse_frontmatter(phase2.read_text(encoding="utf-8"))
+            assert frontmatter["blocked_reason"] == "Depends on: write-phase1"
 
     def test_blocks_computed(self):
         with tempfile.TemporaryDirectory() as td:
@@ -235,3 +290,343 @@ class TestWriter:
             write_decomposition(self._make_decomp(), Path(td))
             with pytest.raises(FileExistsError):
                 write_decomposition(self._make_decomp(), Path(td))
+
+    def test_real_write_links_parent_request_downstream_tasks(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            request = root / "REQ-test.md"
+            request.write_text(
+                """---
+type: hapax-request
+request_id: REQ-test
+status: accepted_for_planning
+---
+
+# Request
+
+Body.
+""",
+                encoding="utf-8",
+            )
+            decomp = self._make_decomp()
+            decomp.request_path = str(request)
+
+            write_decomposition(decomp, root / "tasks")
+
+            frontmatter, _body = parse_frontmatter(request)
+            assert frontmatter["downstream_tasks"] == ["write-phase1", "write-phase2"]
+            assert frontmatter["decomposition_model"] == "balanced"
+            assert frontmatter["decomposition_task_count"] == 2
+
+    def test_dry_run_does_not_link_parent_request(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            request = root / "REQ-test.md"
+            original = """---
+type: hapax-request
+request_id: REQ-test
+status: accepted_for_planning
+---
+
+# Request
+"""
+            request.write_text(original, encoding="utf-8")
+            decomp = self._make_decomp()
+            decomp.request_path = str(request)
+
+            write_decomposition(decomp, root / "tasks", dry_run=True)
+
+            assert request.read_text(encoding="utf-8") == original
+
+
+class TestRequestDecomposeScan:
+    def _request_data(self, tmp_path: Path, frontmatter: dict[str, object]) -> dict[str, object]:
+        request_path = tmp_path / "REQ-test.md"
+        return {
+            "path": str(request_path),
+            "filename": request_path.name,
+            "frontmatter": frontmatter,
+            "body": "# Request\n",
+        }
+
+    def test_scan_limit_prefers_cli_then_env(self):
+        script = _load_request_decompose_module()
+
+        assert script._parse_scan_limit(2, "3") == 2
+        assert script._parse_scan_limit(None, "3") == 3
+        assert script._parse_scan_limit(None, None) is None
+        assert script._parse_scan_limit(None, "") is None
+
+    @pytest.mark.parametrize("value", [0, -1, "0", "not-a-number"])
+    def test_scan_limit_rejects_non_positive_values(self, value):
+        script = _load_request_decompose_module()
+
+        with pytest.raises(ValueError, match="positive integer"):
+            script._parse_scan_limit(None, value)
+
+    def test_scan_limit_selects_prefix(self):
+        script = _load_request_decompose_module()
+        requests = [Path("a.md"), Path("b.md"), Path("c.md")]
+
+        assert script._limit_scan_requests(requests, None) == requests
+        assert script._limit_scan_requests(requests, 2) == requests[:2]
+        assert script._limit_scan_requests(requests, 10) == requests
+
+    def test_scan_uses_full_frontmatter_for_parent_request(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+
+        request = requests / "REQ-long.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-long
+status: accepted_for_planning
+owner: test
+padding:
+  - aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  - bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  - ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  - ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        task = tasks / "active" / "linked.md"
+        task.write_text(
+            """---
+type: cc-task
+task_id: linked
+status: offered
+padding:
+  - aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  - bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  - ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  - ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+parent_request: REQ-long.md
+---
+
+# Task
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+
+        assert script._find_undecomposed_requests() == []
+
+    def test_decomposition_admission_allows_ready_cctv_request(self, tmp_path):
+        script = _load_request_decompose_module()
+        request_data = self._request_data(
+            tmp_path,
+            {
+                "status": "accepted_for_planning",
+                "cctv_intake_receipt": "receipt://REQ-test",
+                "cctv_intake_verdict": "ready_to_plan",
+                "planning_case": "CASE-TEST-001",
+            },
+        )
+
+        assert script._decomposition_admission_blockers(request_data) == []
+
+    def test_decomposition_admission_blocks_missing_cctv_receipt(self, tmp_path):
+        script = _load_request_decompose_module()
+        request_data = self._request_data(
+            tmp_path,
+            {
+                "status": "accepted_for_planning",
+                "cctv_intake_verdict": "ready_to_plan",
+                "planning_case": "CASE-TEST-001",
+            },
+        )
+
+        assert "missing_cctv_intake_receipt" in script._decomposition_admission_blockers(
+            request_data
+        )
+
+    def test_decomposition_admission_blocks_non_ready_cctv_verdict(self, tmp_path):
+        script = _load_request_decompose_module()
+        request_data = self._request_data(
+            tmp_path,
+            {
+                "status": "accepted_for_planning",
+                "cctv_intake_receipt": "receipt://REQ-test",
+                "cctv_intake_verdict": "needs_hardening",
+                "planning_case": "CASE-TEST-001",
+            },
+        )
+
+        assert "cctv_intake_not_ready:needs_hardening" in (
+            script._decomposition_admission_blockers(request_data)
+        )
+
+    def test_decomposition_admission_blocks_missing_authority_case(self, tmp_path):
+        script = _load_request_decompose_module()
+        request_data = self._request_data(
+            tmp_path,
+            {
+                "status": "accepted_for_planning",
+                "cctv_intake_receipt": "receipt://REQ-test",
+                "cctv_intake_verdict": "ready_to_plan",
+            },
+        )
+
+        assert "missing_authority_case" in script._decomposition_admission_blockers(request_data)
+
+    def test_single_request_blocks_before_llm_without_cctv(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        request = tmp_path / "REQ-blocked.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-blocked
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+
+        def fail_if_called(_request_data):
+            raise AssertionError("LLM should not run before CCTV admission")
+
+        monkeypatch.setattr(script, "_decompose_with_llm", fail_if_called)
+        monkeypatch.setattr(sys, "argv", ["request-decompose", str(request), "--dry-run"])
+
+        assert script.main() == 1
+
+    def test_scan_blocks_before_llm_without_cctv(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+        (requests / "REQ-blocked.md").write_text(
+            """---
+type: hapax-request
+request_id: REQ-blocked
+status: accepted_for_planning
+planning_case: CASE-TEST-001
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+
+        def fail_if_called(_request_data):
+            raise AssertionError("LLM should not run before CCTV admission")
+
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+        monkeypatch.setattr(script, "_decompose_with_llm", fail_if_called)
+        monkeypatch.setattr(sys, "argv", ["request-decompose", "--scan", "--dry-run"])
+
+        assert script.main() == 0
+
+    def test_decomposition_uses_real_authority_case_without_fallback(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+
+        def completion(**_kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(
+                                {
+                                    "tasks": [
+                                        {
+                                            "task_id": "req-test-build",
+                                            "title": "Build it",
+                                            "kind": "build",
+                                            "acceptance_criteria": ["Done"],
+                                        }
+                                    ]
+                                }
+                            )
+                        )
+                    )
+                ]
+            )
+
+        monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(completion=completion))
+
+        request_data = self._request_data(
+            tmp_path,
+            {
+                "status": "accepted_for_planning",
+                "planning_case": "CASE-REAL-001",
+            },
+        )
+
+        decomp = script._decompose_with_llm(request_data)
+
+        assert decomp is not None
+        assert decomp.tasks[0].authority_case == "CASE-REAL-001"
+
+    def test_decomposition_fails_without_authority_instead_of_fabricating_case(
+        self, tmp_path, monkeypatch
+    ):
+        script = _load_request_decompose_module()
+
+        def completion(**_kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(
+                                {
+                                    "tasks": [
+                                        {
+                                            "task_id": "req-test-build",
+                                            "title": "Build it",
+                                            "kind": "build",
+                                            "acceptance_criteria": ["Done"],
+                                        }
+                                    ]
+                                }
+                            )
+                        )
+                    )
+                ]
+            )
+
+        monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(completion=completion))
+
+        assert script._decompose_with_llm(self._request_data(tmp_path, {})) is None
+
+    def test_scan_skips_requests_with_downstream_tasks(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+        requests = tmp_path / "requests" / "active"
+        tasks = tmp_path / "tasks"
+        requests.mkdir(parents=True)
+        (tasks / "active").mkdir(parents=True)
+        (tasks / "closed").mkdir(parents=True)
+
+        request = requests / "REQ-linked.md"
+        request.write_text(
+            """---
+type: hapax-request
+request_id: REQ-linked
+status: accepted_for_planning
+downstream_tasks:
+  - already-linked
+---
+
+# Request
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(script, "REQUESTS_DIR", requests)
+        monkeypatch.setattr(script, "TASKS_DIR", tasks)
+
+        assert script._find_undecomposed_requests() == []

@@ -72,7 +72,7 @@ nodes:
 
   - id: mpc-usb-output
     kind: alsa_sink
-    pipewire_name: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    pipewire_name: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
     industrial_name: interface.mpc-live-iii.usb-out.multichannel
     description: |
       Akai MPC Live III USB multichannel playback endpoint. Under the
@@ -81,7 +81,10 @@ nodes:
       and private monitor AUX8/9. The MPC hardware mix exits over
       governed TRS outputs into L-12 CH9-12 for broadcast-bound returns;
       private monitor AUX8/9 is operator-routed inside the MPC and must
-      not be treated as an L-12/default fallback.
+      not be treated as an L-12/default fallback. The live PipeWire ALSA
+      profile is the MPC Pro profile (`pro-output-0`); the older
+      `multichannel-output` node name stays listed only as a deny-policy
+      legacy alias for PC USB 5/6 fail-closed protection.
     hw: hw:CARD=MPCB
     channels:
       count: 24
@@ -89,6 +92,7 @@ nodes:
     params:
       audit_role: mpc-first-broadcast-dsp
       host_to_mpc_channel_map: "music:AUX0/AUX1 voice:AUX2/AUX3 pc:disabled/fail-closed youtube:AUX6/AUX7 private-monitor:AUX8/AUX9"
+      legacy_pipewire_names: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
       private_monitor_endpoint: true
       private_monitor_positions: AUX8 AUX9
       private_monitor_route: private-monitor-via-mpc-live-iii
@@ -252,7 +256,7 @@ nodes:
       Fail-closed private-monitor bridge to MPC Live III AUX8/AUX9.
       The MPC owns the downstream private monitor routing. S-4 is not a
       required host-side ALSA playback target for this HN-readiness path.
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
     channels:
       count: 2
       positions: [FL, FR]
@@ -297,7 +301,7 @@ nodes:
       Fail-closed notification private-monitor bridge to MPC Live III
       AUX8/AUX9. It shares the same MPC private monitor ingress as the
       assistant private path.
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
     channels:
       count: 2
       positions: [FL, FR]
@@ -547,7 +551,7 @@ nodes:
     pipewire_name: hapax-loudnorm-capture
     industrial_name: chain.voice.loudnorm-capture
     description: TTS loudnorm capture side, output routed to MPC USB IN 3/4
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
     channels:
       count: 2
       positions: [FL, FR]
@@ -584,20 +588,20 @@ nodes:
     kind: tap
     pipewire_name: hapax-pc-router
     industrial_name: bus.desktop.router
-    description: PC audio fork point — null-sink with monitor, dormant until PR B
+    description: "[QUARANTINED] PC audio fork point — was dormant Phase 3 PC volume isolation"
     channels:
       count: 2
       positions: [FL, FR]
     params:
       monitor.passthrough: true
-      dormant_until_pr_b: true
-      audit_classification: dormant-pr-b
+      quarantined: true
+      quarantine_reason: "Dormant PC broadcast path has no AuthorityCase for activation; conf removed to prevent accidental L-12/livestream exposure"
 
   - id: pc-monitor
     kind: filter_chain
     pipewire_name: hapax-pc-monitor
     industrial_name: chain.desktop.monitor
-    description: Operator headphone path — limiter -1 dBTP to Yeti, private off-L-12
+    description: "[QUARANTINED] Operator headphone path — was limiter -1 dBTP to Yeti"
     target_object: hapax-pc-router
     channels:
       count: 2
@@ -611,13 +615,14 @@ nodes:
       forbidden_target_family: l12-broadcast
       ladspa_plugin: fast_lookahead_limiter_1913
       limit_db: -1.0
-      audit_classification: dormant-pr-b
+      quarantined: true
+      quarantine_reason: "Dormant PC monitor path; conf removed with pc-router quarantine"
 
   - id: pc-broadcast
     kind: filter_chain
     pipewire_name: hapax-pc-broadcast
     industrial_name: chain.desktop.broadcast
-    description: L-12 broadcast path — limiter -18 dBFS to L-12 USB return RL/RR
+    description: "[QUARANTINED] L-12 broadcast path — was limiter -18 dBFS to L-12 USB return RL/RR"
     target_object: hapax-pc-router
     channels:
       count: 2
@@ -631,15 +636,15 @@ nodes:
       allowed_l12_return_direction: broadcast
       ladspa_plugin: fast_lookahead_limiter_1913
       limit_db: -18.0
-      dormant_until_pr_b: true
-      audit_classification: dormant-pr-b
+      quarantined: true
+      quarantine_reason: "Dormant PC broadcast to L-12 has no AuthorityCase; conf removed to prevent accidental livestream exposure"
 
   - id: music-loudnorm
     kind: filter_chain
     pipewire_name: hapax-music-loudnorm
     industrial_name: chain.music.loudnorm
     description: Music loudnorm capture side routed to MPC USB IN 1/2
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
     channels:
       count: 2
       positions: [FL, FR]
@@ -656,7 +661,7 @@ nodes:
     pipewire_name: hapax-yt-loudnorm
     industrial_name: chain.youtube.loudnorm
     description: YouTube bed loudnorm routed to MPC USB IN 7/8
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
     channels:
       count: 2
       positions: [FL, FR]
@@ -753,7 +758,7 @@ nodes:
     pipewire_name: hapax-m8-loudnorm
     industrial_name: chain.m8.loudnorm
     description: M8 instrument loudnorm exported on AUX10/AUX11 for reconciler-owned L-12 return
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
     channels:
       count: 2
       positions: [AUX10, AUX11]
@@ -877,10 +882,9 @@ edges:
   - source: m8-loudnorm
     target: l12-usb-return
 
-  # PR A — hapax-pc-router fork (Phase 3 PC volume isolation foundation).
-  # Both subscribers read pc-router's monitor port. Dormant in PR A
-  # (WirePlumber preferred-target stays on hapax-pc-loudnorm). PR B flips
-  # the preferred-target so apps land on pc-router and these edges activate.
+  # QUARANTINED — formerly Phase 3 PC volume isolation edges. Conf removed;
+  # reactivation requires a new AuthorityCase. Edges retained so the
+  # topology descriptor stays self-consistent with the quarantined nodes.
   - source: pc-router
     target: pc-monitor
 

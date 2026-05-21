@@ -708,7 +708,7 @@ class TestTtsBroadcastCheck:
                             "props": {
                                 "node.name": (
                                     "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00"
-                                    ".multichannel-output"
+                                    ".pro-output-0"
                                 ),
                                 "media.class": "Audio/Sink",
                                 "factory.name": "api.alsa.pcm.sink",
@@ -1025,3 +1025,54 @@ class TestInvalidDescriptor:
         result = _run(["describe", str(bad)])
         assert result.returncode == 1
         assert "source not in" in result.stderr
+
+
+# --- truth subcommand ---
+
+
+class TestTruthSubcommand:
+    def test_truth_offline_shows_sections(self, tmp_path: Path) -> None:
+        result = _run(["truth", "--offline"])
+        assert result.returncode == 0
+        assert "AUDIO TOPOLOGY TRUTH SURFACE" in result.stdout
+        assert "Live Capsule" in result.stdout
+        assert "Ingress Ledger" in result.stdout
+        assert "Route-Class Matrix" in result.stdout
+
+    def test_truth_offline_json(self, tmp_path: Path) -> None:
+        import json
+
+        result = _run(["truth", "--offline", "--json"])
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert "capsule" in data
+        assert "ingress" in data
+        assert "route_matrix" in data
+        assert "warnings" in data
+
+    def test_truth_offline_ingress_distinguishes_livestream(self, tmp_path: Path) -> None:
+        result = _run(["truth", "--offline"])
+        assert result.returncode == 0
+        lines = result.stdout.splitlines()
+        ingress_lines = [
+            l
+            for l in lines
+            if any(
+                rc in l
+                for rc in [
+                    "broadcast_voice",
+                    "broadcast_content",
+                    "private",
+                    "notification",
+                    "instrument",
+                ]
+            )
+        ]
+        yes_lines = [l for l in ingress_lines if "YES" in l]
+        no_lines = [l for l in ingress_lines if l.strip() and "no" in l.split()]
+        assert yes_lines, "Expected at least one livestream-eligible source"
+        assert no_lines, "Expected at least one non-livestream source"
+
+    def test_truth_offline_no_live_graph_warnings(self, tmp_path: Path) -> None:
+        result = _run(["truth", "--offline"])
+        assert "not in live graph" not in result.stdout
