@@ -840,7 +840,7 @@ impl SceneRenderer {
                 queue.write_buffer(&self.grid_uniform_buffer, 0, bytemuck::bytes_of(&grid_data));
                 pass.set_pipeline(&self.grid_pipeline);
                 pass.set_bind_group(0, &self.grid_uniform_bind_group, &[]);
-                pass.draw(0..48, 0..1); // Outer room grids + visible light marker + volumetric rays
+                pass.draw(0..54, 0..1); // Outer room grids + light marker + volumetric rays + AoA inner sphere
             }
 
             // ── Draw content quads ───────────────────────────────────

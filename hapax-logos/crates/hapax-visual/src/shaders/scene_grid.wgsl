@@ -156,6 +156,14 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
         // not a hardware raytracing dependency.
         world = grid.light_position.xyz + vec3<f32>(lp.x * 0.28, lp.y * 0.28, 0.0);
         n = vec3<f32>(0.0, 0.0, 1.0);
+    } else if quad_idx == 8u {
+        // AoA inner sphere billboard at tetrix centroid.
+        let center = vec3<f32>(0.0, -0.094, 0.10);
+        let radius = 0.18;
+        let view_right = normalize(vec3<f32>(grid.view[0][0], grid.view[1][0], grid.view[2][0]));
+        let view_up = normalize(vec3<f32>(grid.view[0][1], grid.view[1][1], grid.view[2][1]));
+        world = center + view_right * lp.x * radius + view_up * lp.y * radius;
+        n = normalize(vec3<f32>(grid.view[0][2], grid.view[1][2], grid.view[2][2]));
     } else {
         // Soft volumetric beam billboards from the moving light into the room.
         let start = grid.light_position.xyz;
@@ -197,6 +205,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let wp = in.world_pos;
     let t = grid.time;
     let light_color = grid.light_color.rgb;
+
+    if in.plane_kind > 7.5 {
+        // AoA inner sphere — inscribed core at tetrix centroid.
+        let d = length(in.local_pos);
+        if d > 1.0 {
+            discard;
+        }
+        let fresnel = pow(d, 2.2);
+        let rim = smoothstep(0.62, 0.98, d);
+        let inner_glow = smoothstep(0.58, 0.0, d) * 0.28;
+        let sphere_alpha = clamp(rim * 0.42 + inner_glow + fresnel * 0.14, 0.0, 0.52);
+        let shadow = soft_shadow_at(wp, grid.light_position.xyz);
+        let room_light = point_light_at(wp, in.normal) * shadow;
+        var sphere_color = light_color * (0.30 + rim * 0.65 + room_light * 0.18);
+        sphere_color = sphere_color + vec3<f32>(0.04, 0.06, 0.12) * inner_glow * 3.0;
+        return vec4<f32>(sphere_color, sphere_alpha * (0.82 + 0.18 * shadow));
+    }
 
     if in.plane_kind > 2.5 {
         if in.plane_kind < 3.5 {
@@ -253,11 +278,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let weave = 0.5 + 0.5 * sin(gc.x * 2.1 + gc.y * 1.7);
         let shadow = soft_shadow_at(wp, grid.light_position.xyz);
         let room_light = point_light_at(wp, in.normal) * shadow;
-        var base_alpha = 0.110;
+        var base_alpha = 0.200;
         if abs(in.normal.z) > 0.5 {
-            base_alpha = 0.190;
+            base_alpha = 0.320;
         } else if is_floor_or_ceiling {
-            base_alpha = 0.170;
+            base_alpha = 0.280;
         }
         let texture_signal = clamp(0.52 + 0.38 * material + 0.14 * weave + 0.24 * dot_alpha, 0.42, 1.0);
         var plane_color = vec3<f32>(0.120, 0.135, 0.190)
