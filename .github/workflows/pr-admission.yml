@@ -20,11 +20,21 @@ name: pr-admission
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - enqueued
+      - auto_merge_enabled
+      - auto_merge_disabled
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
   pull-requests: read
+  statuses: read
 
 jobs:
   pr-admission:
@@ -66,7 +76,7 @@ jobs:
         env:
           MODE: ${{ steps.state.outputs.mode }}
           SNAPSHOT: ${{ steps.state.outputs.snapshot }}
-          BRANCH: ${{ github.head_ref }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
@@ -97,3 +107,12 @@ jobs:
           echo "  - If this is a critical exception, operator can mint a token."
           echo "  - Otherwise wait for drain to clear and freeze to lift."
           exit 1
+
+      - name: Evaluate queue admission proof
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/queue-admission-proof-check.py \
+            --repo "${{ github.repository }}" \
+            --event-path "$GITHUB_EVENT_PATH"
