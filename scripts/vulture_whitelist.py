@@ -541,6 +541,15 @@ Accept._network_caip_eip155
 Accept._amount_is_numeric_string
 SettlementResponse._network_caip_eip155
 
+# Evidence Explorer schema validators are invoked by Pydantic during private
+# explorer record validation; vulture cannot follow field_validator dispatch.
+from shared.evidence_explorer_schema import EvidenceExplorerRecord as _EvidenceExplorerRecord
+
+_EvidenceExplorerRecord._required_text_is_not_blank
+_EvidenceExplorerRecord._timestamp_must_be_timezone_aware
+_EvidenceExplorerRecord._hashes_are_named_strings
+_EvidenceExplorerRecord._facet_keys_are_named
+
 # Pydantic invokes model validators dynamically during model validation.
 DirectorControlMoveAuditRecord._validate_boundary_and_evidence
 TemporalEvidenceEnvelope._validate_temporal_authority
