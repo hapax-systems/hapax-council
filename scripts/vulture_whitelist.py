@@ -3859,6 +3859,11 @@ classify_service_health
 read_mutation_events
 refuse_dirty_restart
 
+from shared.pr_merge_announcement_producer import build_pr_merge_event, emit_pr_merge_event
+
+build_pr_merge_event
+emit_pr_merge_event
+
 # React/watch-along adapter: entry point for content programming runner.
 # cc-task: react-watchalong-media-reference-adapter
 from shared.react_watchalong_adapter import build_render_plan
