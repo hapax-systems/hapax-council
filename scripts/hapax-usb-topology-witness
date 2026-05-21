@@ -60,12 +60,21 @@ CALDIGIT_CONTROLLER = "pci-0000:71:00.0"
 STATUS_PATH = Path("/dev/shm/hapax-usb/topology-status.json")
 SCRIPT_POLICY_PATH = Path(__file__).resolve().parents[1] / "config" / "usb-topology-policy.json"
 INSTALLED_POLICY_PATH = Path.home() / ".config" / "hapax" / "usb-topology-policy.json"
+INSTALLED_BIN_PATH = Path.home() / ".local" / "bin" / "hapax-usb-topology-witness"
+
+
+def invoked_as_installed_bin() -> bool:
+    return Path(sys.argv[0]).expanduser().resolve(strict=False) == INSTALLED_BIN_PATH.resolve(
+        strict=False
+    )
 
 
 def default_policy_path() -> Path:
     env_path = os.environ.get("HAPAX_USB_TOPOLOGY_POLICY")
     if env_path:
         return Path(env_path)
+    if invoked_as_installed_bin() and INSTALLED_POLICY_PATH.exists():
+        return INSTALLED_POLICY_PATH
     if SCRIPT_POLICY_PATH.exists():
         return SCRIPT_POLICY_PATH
     return INSTALLED_POLICY_PATH

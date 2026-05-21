@@ -367,6 +367,24 @@ def test_copied_witness_uses_installed_policy_env_path(tmp_path: Path) -> None:
     assert "s4_usb_missing_known_absence:hardware_fault_diagnosed_2026-05-08" in output["warnings"]
 
 
+def test_installed_witness_prefers_installed_policy_by_default(monkeypatch, tmp_path: Path) -> None:
+    witness = load_witness_module()
+    installed_bin = tmp_path / "home" / ".local" / "bin" / "hapax-usb-topology-witness"
+    installed_policy = tmp_path / "home" / ".config" / "hapax" / "usb-topology-policy.json"
+    source_policy = tmp_path / "source" / "config" / "usb-topology-policy.json"
+    installed_policy.parent.mkdir(parents=True)
+    source_policy.parent.mkdir(parents=True)
+    installed_policy.write_text("{}", encoding="utf-8")
+    source_policy.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(witness, "INSTALLED_BIN_PATH", installed_bin)
+    monkeypatch.setattr(witness, "INSTALLED_POLICY_PATH", installed_policy)
+    monkeypatch.setattr(witness, "SCRIPT_POLICY_PATH", source_policy)
+    monkeypatch.setattr(witness.sys, "argv", [str(installed_bin)])
+
+    assert witness.default_policy_path() == installed_policy
+
+
 def test_start_user_unit_reports_repair_only_when_start_needed() -> None:
     witness = load_witness_module()
     active = subprocess.CompletedProcess(["systemctl"], 0, "", "")
@@ -423,6 +441,78 @@ def test_installer_dry_run_lists_durable_policy_files(tmp_path: Path) -> None:
     assert "hapax-usb-topology-witness.timer" in result.stdout
     assert "hapax-usb-reliability.params" in result.stdout
     assert not (tmp_path / "root").exists()
+
+
+def test_installer_preserves_live_policy_fields_on_apply(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    root = tmp_path / "root"
+    policy = home / ".config" / "hapax" / "usb-topology-policy.json"
+    policy.parent.mkdir(parents=True)
+    policy.write_text(
+        json.dumps(
+            {
+                "known_absences": {
+                    "camera:brio-room": {
+                        "enabled": True,
+                        "serial": "43B0576A",
+                        "reason": "operator_removed_for_repair",
+                    }
+                },
+                "accepted_caldigit_cameras": [
+                    {
+                        "enabled": True,
+                        "serial": "86B6B75F",
+                        "path": "pci-0000:71:00.0-usb-0:1.1.2.2:1.0",
+                        "reason": "stale_incident_exception",
+                    }
+                ],
+                "required_cameras": [
+                    {
+                        "role": "c920-room",
+                        "serial": "86B6B75F",
+                        "vendor_id": "046d",
+                        "reason": "live_local_required_camera",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    systemctl.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+
+    result = subprocess.run(
+        [str(INSTALLER), "--root", str(root), "--home", str(home)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    installed = json.loads(policy.read_text(encoding="utf-8"))
+    assert installed["known_absences"]["camera:brio-room"]["reason"] == (
+        "operator_removed_for_repair"
+    )
+    assert installed["accepted_caldigit_cameras"] == []
+    required_by_role = {entry["role"]: entry for entry in installed["required_cameras"]}
+    assert required_by_role["brio-operator"]["serial"] == "5342C819"
+    assert required_by_role["c920-room"]["reason"] == "live_local_required_camera"
+
+    check = subprocess.run(
+        [str(INSTALLER), "--check", "--root", str(root), "--home", str(home)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert check.returncode == 0, check.stdout
 
 
 def test_kernel_cmdline_disables_usb_autosuspend() -> None:
@@ -549,9 +639,7 @@ def test_witness_fails_when_required_camera_is_on_caldigit(tmp_path: Path) -> No
     assert result.returncode == 2
     status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
     assert status["ok"] is False
-    assert "camera_on_caldigit:86B6B75F:pci-0000:71:00.0-usb-0:1.1.2.2:1.0" in status[
-        "issues"
-    ]
+    assert "camera_on_caldigit:86B6B75F:pci-0000:71:00.0-usb-0:1.1.2.2:1.0" in status["issues"]
     assert not any("required_camera_missing" in i for i in status["issues"])
 
 

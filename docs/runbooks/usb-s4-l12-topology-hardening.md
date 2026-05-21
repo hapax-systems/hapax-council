@@ -59,6 +59,11 @@ Apply host files:
 scripts/install-usb-topology-hardening.sh
 ```
 
+The installer merges `known_absences` and `required_cameras` from the existing
+user policy into the source baseline so live-local absence and required-camera
+policy is not overwritten by a source activation. CalDigit camera exceptions
+remain source-controlled and should stay empty in the normal direct-PC baseline.
+
 Kernel command-line parameters must be carried by the bootloader too:
 
 ```bash

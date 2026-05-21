@@ -9,6 +9,15 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MODE="apply"
 ROOT=""
 HOME_DIR="$HOME"
+PYTHON_BIN="${PYTHON:-python3}"
+TMP_FILES=()
+
+cleanup() {
+    for tmp in "${TMP_FILES[@]}"; do
+        rm -f "$tmp"
+    done
+}
+trap cleanup EXIT
 
 usage() {
     cat <<'EOF'
@@ -116,6 +125,96 @@ install_file() {
     esac
 }
 
+merged_policy_source() {
+    local src="$1"
+    local dst="$2"
+    local tmp
+
+    tmp="$(mktemp)"
+    TMP_FILES+=("$tmp")
+
+    "$PYTHON_BIN" - "$src" "$dst" "$tmp" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+source_path = Path(sys.argv[1])
+installed_path = Path(sys.argv[2])
+output_path = Path(sys.argv[3])
+
+
+def read_policy(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    if not isinstance(data, dict):
+        raise SystemExit(f"USB topology policy must be a JSON object: {path}")
+    return data
+
+
+def merge_required_cameras(
+    source: list[object],
+    installed: list[object],
+) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str]] = []
+
+    for entry in [*source, *installed]:
+        if not isinstance(entry, dict):
+            continue
+        role = str(entry.get("role", ""))
+        serial = str(entry.get("serial", ""))
+        key = (role, serial)
+        if key == ("", ""):
+            continue
+        if key not in merged:
+            order.append(key)
+        merged[key] = dict(entry)
+
+    return [merged[key] for key in order]
+
+
+source_policy = read_policy(source_path)
+installed_policy = read_policy(installed_path)
+merged_policy = dict(source_policy)
+
+source_absences = source_policy.get("known_absences", {})
+installed_absences = installed_policy.get("known_absences", {})
+if isinstance(source_absences, dict) or isinstance(installed_absences, dict):
+    merged_policy["known_absences"] = {
+        **(source_absences if isinstance(source_absences, dict) else {}),
+        **(installed_absences if isinstance(installed_absences, dict) else {}),
+    }
+
+merged_policy["required_cameras"] = merge_required_cameras(
+    source_policy.get("required_cameras", []),
+    installed_policy.get("required_cameras", []),
+)
+
+output_path.write_text(json.dumps(merged_policy, indent=2) + "\n", encoding="utf-8")
+PY
+
+    printf '%s\n' "$tmp"
+}
+
+install_policy_file() {
+    local src="$1"
+    local dst="$2"
+    local mode="$3"
+    local scope="$4"
+    local effective_src="$src"
+
+    if [[ "$MODE" != "dry-run" && -f "$dst" ]]; then
+        effective_src="$(merged_policy_source "$src" "$dst")"
+    fi
+
+    install_file "$effective_src" "$dst" "$mode" "$scope"
+}
+
 status=0
 
 system_installs=(
@@ -154,7 +253,11 @@ done
 
 for entry in "${user_installs[@]}"; do
     IFS='|' read -r src dst mode <<< "$entry"
-    install_file "$src" "$dst" "$mode" user || status=1
+    if [[ "$src" == "$REPO_DIR/config/usb-topology-policy.json" ]]; then
+        install_policy_file "$src" "$dst" "$mode" user || status=1
+    else
+        install_file "$src" "$dst" "$mode" user || status=1
+    fi
 done
 
 if [[ "$MODE" == "check" ]]; then
