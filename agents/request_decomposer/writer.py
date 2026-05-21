@@ -19,54 +19,44 @@ DEFAULT_TASK_ROOT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks
 
 def _render_task_note(task: TaskSpec, blocks: list[str]) -> str:
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    depends = "\n".join(f"  - {d}" for d in task.depends_on) if task.depends_on else "  []"
-    blocks_yaml = "\n".join(f"  - {b}" for b in blocks) if blocks else "  []"
     scope_refs = [f"cc-task:{task.task_id}"]
     if task.parent_request:
         scope_refs.append(f"request:{task.parent_request}")
     if task.parent_spec:
         scope_refs.append(str(task.parent_spec))
-    scope_yaml = "\n".join(f"  - {ref}" for ref in scope_refs)
     ac_lines = "\n".join(f"- [ ] {c}" for c in task.acceptance_criteria)
 
-    return f"""---
-type: cc-task
-task_id: {task.task_id}
-title: "{task.title}"
-status: {task.status}
-blocked_reason: {task.blocked_reason or "null"}
-assigned_to: unassigned
-priority: {task.priority}
-wsjf: {task.wsjf}
-effort_class: {task.effort_class}
-quality_floor: {task.quality_floor}
-mutation_surface: {task.mutation_surface}
-mutation_scope_refs:
-{scope_yaml}
-authority_level: {task.authority_level}
-route_metadata_schema: 1
-kind: {task.kind}
-risk_tier: T2
-depends_on:
-{depends}
-blocks:
-{blocks_yaml}
-branch: null
-pr: null
-created_at: {now}
-updated_at: {now}
-claimed_at: null
-completed_at: null
-parent_request: {task.parent_request}
-parent_spec: {task.parent_spec or "null"}
-authority_case: {task.authority_case}
-tags:
-  - cc-task
-  - {task.priority}
-  - auto-decomposed
----
-
-# {task.title}
+    frontmatter = {
+        "type": "cc-task",
+        "task_id": task.task_id,
+        "title": task.title,
+        "status": task.status,
+        "blocked_reason": task.blocked_reason,
+        "assigned_to": "unassigned",
+        "priority": task.priority,
+        "wsjf": task.wsjf,
+        "effort_class": task.effort_class,
+        "quality_floor": task.quality_floor,
+        "mutation_surface": task.mutation_surface,
+        "mutation_scope_refs": scope_refs,
+        "authority_level": task.authority_level,
+        "route_metadata_schema": 1,
+        "kind": task.kind,
+        "risk_tier": "T2",
+        "depends_on": task.depends_on,
+        "blocks": blocks,
+        "branch": None,
+        "pr": None,
+        "created_at": now,
+        "updated_at": now,
+        "claimed_at": None,
+        "completed_at": None,
+        "parent_request": task.parent_request,
+        "parent_spec": task.parent_spec,
+        "authority_case": task.authority_case,
+        "tags": ["cc-task", task.priority, "auto-decomposed"],
+    }
+    body = f"""# {task.title}
 
 {task.intent}
 
@@ -74,6 +64,7 @@ tags:
 
 {ac_lines}
 """
+    return _render_note(frontmatter, body)
 
 
 def _compute_blocks(tasks: list[TaskSpec]) -> dict[str, list[str]]:
