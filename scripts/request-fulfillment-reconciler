@@ -24,39 +24,19 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
+from shared.sdlc_lifecycle import (  # noqa: E402
+    REQUEST_CLOSEABLE_STATUSES,
+    REQUEST_TERMINAL_SKIP_STATUSES,
+    TASK_CLOSED_STATUSES,
+    TASK_FULFILLING_CLOSED_STATUSES,
+    TASK_NON_FULFILLING_CLOSED_STATUSES,
+    acceptance_criteria_state,
+)
 
 DEFAULT_REQUESTS_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-requests"
 DEFAULT_TASKS_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 DEFAULT_REPORT_PATH = Path.home() / ".cache" / "hapax" / "request-fulfillment-reconciler.json"
 
-ACTIVE_TASK_STATUSES = {
-    "offered",
-    "claimed",
-    "in_progress",
-    "pr_open",
-    "ci_green",
-    "blocked",
-}
-FULFILLING_TASK_STATUSES = {"done", "closed", "complete"}
-NON_FULFILLING_TASK_STATUSES = {"withdrawn", "superseded", "rejected"}
-REQUEST_TERMINAL_SKIP_STATUSES = {
-    "rejected",
-    "deferred",
-    "superseded",
-    "withdrawn",
-    "closed",
-}
-REQUEST_CLOSEABLE_STATUSES = {
-    "",
-    "captured",
-    "triage",
-    "clarification_needed",
-    "clarification_answered",
-    "normalized",
-    "operator_confirmation",
-    "accepted_for_planning",
-    "planned",
-}
 REQUEST_ID_RE = re.compile(r"\b(REQ-[A-Z0-9][A-Z0-9-]*(?:-\d{6})?)\b")
 
 
@@ -80,16 +60,15 @@ class TaskRecord:
 
     @property
     def fulfilling(self) -> bool:
-        return self.directory == "closed" and self.status in FULFILLING_TASK_STATUSES
+        return self.directory == "closed" and self.status in TASK_FULFILLING_CLOSED_STATUSES
 
     @property
     def blocking(self) -> bool:
         if self.directory == "active":
             return True
-        return (
-            self.status in NON_FULFILLING_TASK_STATUSES
-            or self.status not in FULFILLING_TASK_STATUSES
-        )
+        if self.status in TASK_NON_FULFILLING_CLOSED_STATUSES:
+            return True
+        return self.status not in TASK_CLOSED_STATUSES
 
 
 @dataclass
@@ -349,40 +328,11 @@ def decide_request(
         elif status != "fulfilled" and not (set(fulfilling) & explicit_fulfillment_tasks):
             reason = "no_fulfilling_task_evidence"
         else:
-            # AC gate: check request-level acceptance criteria before allowing closure
-            request_text = (
-                request_note.path.read_text(encoding="utf-8") if request_note.path.exists() else ""
-            )
-            import re as _re
-
-            _ac_unchecked = _re.findall(r"^- \[ \]", request_text, _re.MULTILINE)
-            _ac_checked = _re.findall(r"^- \[x\]", request_text, _re.MULTILINE)
-            if _ac_unchecked and not _ac_checked:
-                reason = "request_ac_all_unchecked"
-            elif _ac_unchecked:
+            ac_state = acceptance_criteria_state(request_note.raw)
+            if ac_state.unchecked_items:
                 reason = "request_ac_incomplete"
             else:
-                # Phase awareness: detect multi-phase requests and block
-                # closure when later phases have no fulfilling tasks.
-                _phases = _re.findall(r"###?\s*Phase\s*(\d+)", request_text, _re.IGNORECASE)
-                if len(_phases) > 1:
-                    _phase_nums = sorted(set(int(p) for p in _phases))
-                    _fulfilled_phases = set()
-                    for _ft in fulfilling:
-                        for _pn in _phase_nums:
-                            if (
-                                f"phase{_pn}" in _ft.lower()
-                                or f"phase-{_pn}" in _ft.lower()
-                                or f"phase_{_pn}" in _ft.lower()
-                            ):
-                                _fulfilled_phases.add(_pn)
-                    _missing_phases = [p for p in _phase_nums if p not in _fulfilled_phases]
-                    if _missing_phases:
-                        reason = "unfulfilled_phases"
-                    else:
-                        reason = "eligible"
-                else:
-                    reason = "eligible"
+                reason = "eligible"
 
     if reason == "eligible":
         avsdlc_blockers = avsdlc_blockers_for_request(request_note, linked_tasks, records)

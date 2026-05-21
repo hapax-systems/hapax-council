@@ -89,6 +89,31 @@ def test_active_merge_queue_status_passes(
     assert "status_path_consistency" not in _checks(result)
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        "completed",
+        "resolved",
+        "closed_superseded",
+        "withdrawn_stale",
+        "not_applicable",
+        "deferred",
+    ],
+)
+def test_historical_closed_status_vocabulary_is_shared(
+    tmp_path: Path,
+    vault_shape_module: ModuleType,
+    status: str,
+) -> None:
+    root = _write_valid_vault(tmp_path)
+    _write_task(root, "closed", f"historical-{status}", status=status)
+
+    result = vault_shape_module.check_vault_shape(root)
+
+    assert result.ok is True
+    assert "status_path_consistency" not in _checks(result)
+
+
 def test_strict_mode_fails_on_warnings(tmp_path: Path, vault_shape_module: ModuleType) -> None:
     root = _write_valid_vault(tmp_path)
     _write_task(root, "active", "terminal-in-active", status="done")
