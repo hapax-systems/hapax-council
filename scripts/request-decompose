@@ -297,7 +297,7 @@ def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
                     parent_request=request_data["filename"],
                     authority_case=authority,
                     parent_spec=parent_spec,
-                    status="blocked" if t.get("depends_on") else "offered",
+                    status="ready" if t.get("depends_on") else "offered",
                     blocked_reason=(
                         f"Depends on: {', '.join(t['depends_on'])}" if t.get("depends_on") else None
                     ),
@@ -396,7 +396,9 @@ def main() -> int:
             skipped_existing,
         )
         if skipped_admission:
-            _log.info("%d selected requests held by decomposition admission gate", skipped_admission)
+            _log.info(
+                "%d selected requests held by decomposition admission gate", skipped_admission
+            )
         return 0
 
     if args.request_path:

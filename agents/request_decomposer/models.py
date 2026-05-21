@@ -4,7 +4,27 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+QualityFloorValue = Literal[
+    "frontier_required",
+    "frontier_review_required",
+    "deterministic_ok",
+]
+MutationSurfaceValue = Literal[
+    "none",
+    "vault_docs",
+    "source",
+    "runtime",
+    "public",
+    "provider_spend",
+]
+AuthorityLevelValue = Literal[
+    "authoritative",
+    "support_non_authoritative",
+    "evidence_receipt",
+    "relay_only",
+]
 
 
 class TaskSpec(BaseModel):
@@ -22,7 +42,7 @@ class TaskSpec(BaseModel):
         "research_packet",
         "verification",
     ] = "build"
-    status: Literal["offered", "blocked"] = "offered"
+    status: Literal["offered", "ready", "blocked"] = "offered"
     priority: str = "p2"
     wsjf: float = 5.0
     depends_on: list[str] = Field(default_factory=list)
@@ -32,13 +52,47 @@ class TaskSpec(BaseModel):
     parent_spec: str | None = None
     blocked_reason: str | None = None
 
-    quality_floor: str = "deterministic_ok"
-    mutation_surface: str = "source"
-    authority_level: str = "authoritative"
+    quality_floor: QualityFloorValue = "deterministic_ok"
+    mutation_surface: MutationSurfaceValue = "source"
+    authority_level: AuthorityLevelValue = "authoritative"
     effort_class: str = "standard"
 
     intent: str = ""
     acceptance_criteria: list[str] = Field(default_factory=list)
+
+    @field_validator("mutation_surface", mode="before")
+    @classmethod
+    def _normalize_mutation_surface(cls, value: object) -> object:
+        if value in {"docs", "planning", "vault"}:
+            return "vault_docs"
+        if isinstance(value, str):
+            text = value.strip()
+            if "/" in text or text.startswith(("agents", "hooks", "logos", "scripts", "shared")):
+                return "source"
+        return value
+
+    @field_validator("authority_level", mode="before")
+    @classmethod
+    def _normalize_authority_level(cls, value: object) -> object:
+        if value in {"delegated", "session"}:
+            return "authoritative"
+        return value
+
+    @field_validator("quality_floor", mode="before")
+    @classmethod
+    def _normalize_quality_floor(cls, value: object) -> object:
+        if value == "production":
+            return "frontier_required"
+        return value
+
+    @model_validator(mode="after")
+    def _normalize_route_metadata(self) -> TaskSpec:
+        if (
+            self.quality_floor == "frontier_review_required"
+            and self.authority_level == "authoritative"
+        ):
+            self.quality_floor = "frontier_required"
+        return self
 
     @model_validator(mode="after")
     def _blocked_needs_reason(self) -> TaskSpec:
