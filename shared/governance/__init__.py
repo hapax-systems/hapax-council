@@ -9,6 +9,13 @@ Hapax-specific modules (consent_gate, consent_channels, content_risk,
 monetization_safety, etc.) remain here as they depend on council internals.
 """
 
+import sys
+from pathlib import Path
+
+_AGENTGOV_SRC = Path(__file__).resolve().parents[2] / "packages" / "agentgov" / "src"
+if _AGENTGOV_SRC.is_dir():
+    sys.path.insert(0, str(_AGENTGOV_SRC))
+
 from agentgov import (
     Candidate,
     CarrierFact,

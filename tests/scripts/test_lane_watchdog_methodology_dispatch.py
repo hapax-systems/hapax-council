@@ -83,13 +83,16 @@ def _base_env(tmp_path: Path, *, session: str, pane: str) -> dict[str, str]:
     return env
 
 
-def test_idle_watchdog_auto_claims_from_offered_queue() -> None:
+def test_idle_watchdog_uses_methodology_dispatch_for_offered_queue() -> None:
     text = IDLE_WATCHDOG.read_text(encoding="utf-8")
     assert "pick_next_offered" in text
-    assert "CC_CLAIM" in text
-    assert "Claimed task" in text
+    assert "methodology_dispatch_prompt" in text
+    assert "METHODOLOGY_DISPATCH" in text
+    assert "--print-prompt" in text
+    assert "FAILED to launch Codex lane" in text
+    assert "CC_CLAIM" not in text
+    assert "Claimed task" not in text
     assert "No offered tasks in queue" in text
-    assert "--print-prompt" not in text
 
 
 def test_rate_limit_watchdog_holds_for_methodology_launch() -> None:
@@ -125,6 +128,45 @@ def test_idle_watchdog_sends_queue_empty_when_no_tasks_available(tmp_path: Path)
     assert result.returncode == 0, result.stderr
     sent = Path(env["TMUX_SENT"]).read_text(encoding="utf-8")
     assert "No offered tasks in queue" in sent
+    assert "cc-claim" not in sent
+
+
+def test_idle_watchdog_sends_governed_dispatch_packet_for_offered_task(tmp_path: Path) -> None:
+    env = _base_env(
+        tmp_path,
+        session="hapax-codex-cx-red",
+        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+    )
+    task_dir = (
+        Path(env["HOME"]) / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+    )
+    task_dir.mkdir(parents=True)
+    (task_dir / "dispatchable-task.md").write_text(
+        "---\nstatus: offered\nassigned_to: unassigned\nwsjf: 20\n---\n# Task\n",
+        encoding="utf-8",
+    )
+    dispatcher = Path(env["HOME"]) / ".local" / "bin" / "hapax-methodology-dispatch"
+    dispatcher.parent.mkdir(parents=True)
+    dispatch_calls = tmp_path / "dispatch-calls.txt"
+    _write_executable(
+        dispatcher,
+        f"""
+        #!/usr/bin/env bash
+        printf '%s\n' "$*" >> {dispatch_calls}
+        printf '%s\n' "SDLC GOVERNED DISPATCH."
+        printf '%s\n' "Task: dispatchable-task"
+        printf '%s\n' "Lane: cx-red"
+        """,
+    )
+
+    result = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    sent = Path(env["TMUX_SENT"]).read_text(encoding="utf-8")
+    calls = dispatch_calls.read_text(encoding="utf-8")
+    assert "SDLC GOVERNED DISPATCH." in sent
+    assert "Task: dispatchable-task" in sent
+    assert "--task dispatchable-task --lane cx-red --platform codex" in calls
     assert "cc-claim" not in sent
 
 

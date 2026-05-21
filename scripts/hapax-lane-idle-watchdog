@@ -28,8 +28,7 @@ NTFY_TOPIC="${HAPAX_NTFY_TOPIC:-hapax}"
 NTFY_URL="${HAPAX_NTFY_URL:-http://localhost:8092}"
 CLAUDE_SEND="${HOME}/projects/hapax-council/scripts/hapax-claude-send"
 CODEX_SEND="${HOME}/projects/hapax-council/scripts/hapax-codex-send"
-CC_CLAIM="${HOME}/.local/bin/cc-claim"
-METHODOLOGY_DISPATCH="${HOME}/.local/bin/hapax-methodology-dispatch"
+METHODOLOGY_DISPATCH="${HAPAX_METHODOLOGY_DISPATCH:-$HOME/.local/bin/hapax-methodology-dispatch}"
 
 # Skip alpha (integrator, always has operator) and RTE
 SKIP_LANES="${HAPAX_IDLE_SKIP_LANES:-alpha}"
@@ -174,13 +173,19 @@ if [ -x "$CLAUDE_LAUNCHER" ]; then
             if [ -d "$worktree" ]; then
                 log "LAUNCHING missing lane: $role"
                 echo "$now" > "$cooldown_file"
-                "$CLAUDE_LAUNCHER" --role "$role" --terminal tmux 2>/dev/null || true
-                launched_lanes=$((launched_lanes + 1))
-                curl -sf -d "Lane idle watchdog: launched $role (session missing)" \
-                    -H "Title: Lane auto-launched" \
-                    -H "Priority: default" \
-                    -H "Tags: rocket" \
-                    "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+                launch_err="$STATE_DIR/${session}.launch.err"
+                if "$CLAUDE_LAUNCHER" --role "$role" --terminal tmux >"$launch_err" 2>&1; then
+                    launched_lanes=$((launched_lanes + 1))
+                    curl -sf -d "Lane idle watchdog: launched $role (session missing)" \
+                        -H "Title: Lane auto-launched" \
+                        -H "Priority: default" \
+                        -H "Tags: rocket" \
+                        "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+                else
+                    launch_reason="$(tr '\n' ' ' <"$launch_err" 2>/dev/null | head -c 240 || true)"
+                    log "FAILED to launch lane $role: ${launch_reason:-unknown launcher failure}"
+                fi
+                rm -f "$launch_err" 2>/dev/null || true
             else
                 log "WARN: worktree missing for $role at $worktree"
             fi
@@ -241,13 +246,19 @@ if [ -x "$CODEX_LAUNCHER" ]; then
             if [ -d "$worktree" ]; then
                 log "LAUNCHING missing Codex lane: $color"
                 echo "$now" > "$cooldown_file"
-                "$CODEX_LAUNCHER" --session "$color" --cd "$worktree" --terminal tmux 2>/dev/null || true
-                launched_lanes=$((launched_lanes + 1))
-                curl -sf -d "Lane idle watchdog: launched Codex $color (session missing)" \
-                    -H "Title: Codex lane auto-launched" \
-                    -H "Priority: default" \
-                    -H "Tags: rocket" \
-                    "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+                launch_err="$STATE_DIR/${session}.launch.err"
+                if "$CODEX_LAUNCHER" --session "$color" --cd "$worktree" --terminal tmux >"$launch_err" 2>&1; then
+                    launched_lanes=$((launched_lanes + 1))
+                    curl -sf -d "Lane idle watchdog: launched Codex $color (session missing)" \
+                        -H "Title: Codex lane auto-launched" \
+                        -H "Priority: default" \
+                        -H "Tags: rocket" \
+                        "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+                else
+                    launch_reason="$(tr '\n' ' ' <"$launch_err" 2>/dev/null | head -c 240 || true)"
+                    log "FAILED to launch Codex lane $color: ${launch_reason:-unknown launcher failure}"
+                fi
+                rm -f "$launch_err" 2>/dev/null || true
             else
                 log "WARN: Codex worktree missing for $color at $worktree"
             fi
@@ -297,6 +308,7 @@ fi
 declare -A IDLE_LANES=()   # session_name -> idle_duration_s
 declare -A CTX_FULL=()     # session_name -> 1 if context-full (needs /clear before dispatch)
 active_count=0
+idle_observed_count=0
 idle_count=0
 
 for session in "${!LANES[@]}"; do
@@ -321,6 +333,7 @@ for session in "${!LANES[@]}"; do
     state_file="$STATE_DIR/${session}.idle_since"
 
     if [ "$is_idle" = true ]; then
+        idle_observed_count=$((idle_observed_count + 1))
         # Record when we first saw this lane idle
         if [ -f "$state_file" ]; then
             idle_since=$(cat "$state_file")
@@ -340,7 +353,8 @@ for session in "${!LANES[@]}"; do
     fi
 done
 
-log "scan: $lane_count lanes, $active_count active, $idle_count idle past threshold"
+idle_below_threshold=$((idle_observed_count - idle_count))
+log "scan: $lane_count lanes, $active_count active, $idle_below_threshold idle below threshold, $idle_count idle past threshold"
 
 if [ "$idle_count" -eq 0 ]; then
     exit 0
@@ -398,6 +412,39 @@ find_claimed_task() {
     return 1
 }
 
+methodology_dispatch_prompt() {
+    local task_id="$1"
+    local lane="$2"
+    local platform="$3"
+    local err_file="$STATE_DIR/${lane}.${task_id}.methodology-dispatch.err"
+    local output
+    local rc
+
+    if [ ! -x "$METHODOLOGY_DISPATCH" ]; then
+        log "METHODOLOGY DISPATCH UNAVAILABLE for $task_id -> $lane: $METHODOLOGY_DISPATCH"
+        return 127
+    fi
+
+    if output="$("$METHODOLOGY_DISPATCH" \
+        --task "$task_id" \
+        --lane "$lane" \
+        --platform "$platform" \
+        --mode headless \
+        --profile full \
+        --print-prompt \
+        2>"$err_file")"; then
+        rm -f "$err_file" 2>/dev/null || true
+        printf '%s\n' "$output"
+        return 0
+    fi
+
+    rc=$?
+    dispatch_error="$(tr '\n' ' ' <"$err_file" 2>/dev/null | head -c 240 || true)"
+    rm -f "$err_file" 2>/dev/null || true
+    log "METHODOLOGY DISPATCH FAILED for $task_id -> $lane ($platform): ${dispatch_error:-rc=$rc}"
+    return "$rc"
+}
+
 dispatched=0
 skipped_cooldown=0
 
@@ -428,27 +475,26 @@ for session in "${!IDLE_LANES[@]}"; do
         dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with an active task: $claimed. Resume work immediately. Ship a PR and cc-close --pr N after merge."
         dispatch_target="$claimed"
     else
-        # Pick next WSJF task from offered queue, try each until claim succeeds
+        # Pick candidate offered tasks, then let hapax-methodology-dispatch
+        # decide whether this lane may receive the work packet.
         offered_list=$(pick_next_offered "$lane")
-        claim_ok=false
+        dispatch_ok=false
         while IFS= read -r next_task; do
             [ -z "$next_task" ] && continue
-            task_title=$(grep -m1 "^title:" "$TASK_ROOT/${next_task}"*.md 2>/dev/null | sed 's/^title:[[:space:]]*//' | head -c 80)
-            log "CLAIMING $next_task for $lane ($platform)"
-            if HAPAX_AGENT_ROLE="$lane" "$CC_CLAIM" "$next_task" 2>/dev/null; then
-                dispatch_msg="IDLE WATCHDOG: Claimed task $next_task for you. Title: ${task_title:-unknown}. Read the task note at ~/Documents/Personal/20-projects/hapax-cc-tasks/active/ and begin work immediately. Ship a PR and cc-close --pr N after merge."
+            log "VALIDATING methodology dispatch $next_task for $lane ($platform)"
+            if dispatch_msg="$(methodology_dispatch_prompt "$next_task" "$lane" "$platform")"; then
                 dispatch_target="$next_task"
-                claim_ok=true
+                dispatch_ok=true
                 break
             else
-                log "CLAIM FAILED for $next_task -> $lane (trying next)"
+                log "DISPATCH VALIDATION FAILED for $next_task -> $lane (trying next)"
             fi
         done <<< "$offered_list"
-        if [ "$claim_ok" = false ]; then
+        if [ "$dispatch_ok" = false ]; then
             if [ -n "$offered_list" ]; then
-                log "ALL CLAIMS FAILED for $lane — no claimable tasks"
-                dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. All offered tasks failed governance checks. Waiting for intake pipeline to produce claimable work."
-                dispatch_target="all-claims-failed"
+                log "ALL METHODOLOGY DISPATCHES FAILED for $lane — no dispatchable tasks"
+                dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. All offered tasks failed methodology dispatch checks. Waiting for intake pipeline to produce dispatchable work."
+                dispatch_target="all-dispatches-failed"
             else
                 log "NO OFFERED TASKS for $lane — queue empty"
                 dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. No offered tasks in queue. Waiting for intake pipeline to produce work."
