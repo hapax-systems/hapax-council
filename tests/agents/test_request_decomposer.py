@@ -307,6 +307,29 @@ status: accepted_for_planning
 
 
 class TestRequestDecomposeScan:
+    def test_scan_limit_prefers_cli_then_env(self):
+        script = _load_request_decompose_module()
+
+        assert script._parse_scan_limit(2, "3") == 2
+        assert script._parse_scan_limit(None, "3") == 3
+        assert script._parse_scan_limit(None, None) is None
+        assert script._parse_scan_limit(None, "") is None
+
+    @pytest.mark.parametrize("value", [0, -1, "0", "not-a-number"])
+    def test_scan_limit_rejects_non_positive_values(self, value):
+        script = _load_request_decompose_module()
+
+        with pytest.raises(ValueError, match="positive integer"):
+            script._parse_scan_limit(None, value)
+
+    def test_scan_limit_selects_prefix(self):
+        script = _load_request_decompose_module()
+        requests = [Path("a.md"), Path("b.md"), Path("c.md")]
+
+        assert script._limit_scan_requests(requests, None) == requests
+        assert script._limit_scan_requests(requests, 2) == requests[:2]
+        assert script._limit_scan_requests(requests, 10) == requests
+
     def test_scan_uses_full_frontmatter_for_parent_request(self, tmp_path, monkeypatch):
         script = _load_request_decompose_module()
         requests = tmp_path / "requests" / "active"

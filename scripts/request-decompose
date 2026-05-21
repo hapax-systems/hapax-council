@@ -33,6 +33,7 @@ _log = logging.getLogger(__name__)
 
 REQUESTS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-requests/active"
 TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
+SCAN_LIMIT_ENV = "HAPAX_REQUEST_DECOMPOSE_LIMIT"
 
 DECOMPOSITION_PROMPT = """\
 You are the Hapax request decomposition engine. Given a request note,
@@ -146,6 +147,27 @@ def _find_undecomposed_requests() -> list[Path]:
     return undecomposed
 
 
+def _parse_scan_limit(cli_limit: int | None, env_value: str | None) -> int | None:
+    value: int | str | None = cli_limit
+    if value is None:
+        value = env_value
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        limit = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"scan limit must be a positive integer, got {value!r}") from exc
+    if limit < 1:
+        raise ValueError(f"scan limit must be a positive integer, got {value!r}")
+    return limit
+
+
+def _limit_scan_requests(requests: list[Path], limit: int | None) -> list[Path]:
+    if limit is None:
+        return requests
+    return requests[:limit]
+
+
 def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
     """Call LLM to decompose. Returns None on failure (fail-closed)."""
     try:
@@ -243,16 +265,36 @@ def main() -> int:
         "--scan", action="store_true", help="Find and decompose all undecomposed requests"
     )
     parser.add_argument("--dry-run", action="store_true", help="Show what would be created")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help=(
+            "Maximum accepted requests to decompose in this scan. Defaults to "
+            f"${SCAN_LIMIT_ENV} when set."
+        ),
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     if args.scan:
+        try:
+            scan_limit = _parse_scan_limit(args.limit, os.environ.get(SCAN_LIMIT_ENV))
+        except ValueError as exc:
+            parser.error(str(exc))
         undecomposed = _find_undecomposed_requests()
         _log.info("Found %d undecomposed requests", len(undecomposed))
+        selected = _limit_scan_requests(undecomposed, scan_limit)
+        if scan_limit is not None:
+            _log.info(
+                "Selected %d of %d undecomposed requests for this run (limit %d)",
+                len(selected),
+                len(undecomposed),
+                scan_limit,
+            )
         total_tasks = 0
         skipped_existing = 0
-        for req_path in undecomposed:
+        for req_path in selected:
             req_data = _read_request(req_path)
             decomp = _decompose_with_llm(req_data)
             if decomp is None:
@@ -273,8 +315,10 @@ def main() -> int:
                 _log.info("Wrote %d tasks for %s", len(paths), req_path.name)
                 total_tasks += len(paths)
         _log.info(
-            "Total: %d tasks created from %d requests (%d skipped existing)",
+            "Total: %d tasks created from %d selected requests "
+            "(%d backlog requests, %d skipped existing)",
             total_tasks,
+            len(selected),
             len(undecomposed),
             skipped_existing,
         )

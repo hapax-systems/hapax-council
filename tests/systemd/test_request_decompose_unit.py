@@ -33,6 +33,7 @@ def test_request_decompose_unit_uses_source_activation_worktree() -> None:
     assert "Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin" in service_text
     assert "Environment=HOME=%h" in service_text
     assert f"Environment=PYTHONPATH={ACTIVE_WORKTREE}" in service_text
+    assert "Environment=HAPAX_REQUEST_DECOMPOSE_LIMIT=3" in service_text
 
     execution_lines = [
         line
