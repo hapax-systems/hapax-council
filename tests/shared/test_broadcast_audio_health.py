@@ -35,6 +35,8 @@ def _paths(tmp_path: Path) -> BroadcastAudioHealthPaths:
         audio_ducker_state=tmp_path / "audio-ducker-state.json",
         voice_output_witness=tmp_path / "voice-output-witness.json",
         egress_loopback_witness=tmp_path / "egress-loopback.json",
+        signal_flow_witness=tmp_path / "signal-flow.json",
+        leak_guard_witness=tmp_path / "leak-guard-status.json",
     )
 
 
@@ -80,10 +82,63 @@ def _audio_ducker_state(**overrides: object) -> dict:
     return payload
 
 
+def _signal_flow_witness(**overrides: object) -> dict:
+    payload = {
+        "checked_at": NOW,
+        "tick_count": 42,
+        "livestream_active": True,
+        "stages": [
+            {
+                "stage": "hapax-broadcast-master",
+                "classification": "music_voice",
+                "captured_at": NOW,
+                "duration_s": 2.0,
+                "measurement": {"rms_dbfs": -18.0, "peak_dbfs": -3.0},
+                "error": None,
+                "ok": True,
+            },
+            {
+                "stage": "hapax-broadcast-normalized",
+                "classification": "music_voice",
+                "captured_at": NOW,
+                "duration_s": 2.0,
+                "measurement": {"rms_dbfs": -14.0, "peak_dbfs": -1.0},
+                "error": None,
+                "ok": True,
+            },
+            {
+                "stage": "hapax-obs-broadcast-remap",
+                "classification": "music_voice",
+                "captured_at": NOW,
+                "duration_s": 2.0,
+                "measurement": {"rms_dbfs": -14.0, "peak_dbfs": -1.0},
+                "error": None,
+                "ok": True,
+            },
+        ],
+        "recent_events": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _leak_guard_witness(**overrides: object) -> dict:
+    payload: dict = {
+        "ok": True,
+        "leak_count": 0,
+        "leaks": [],
+        "repair_enabled": False,
+    }
+    payload.update(overrides)
+    return payload
+
+
 def _write_clear_runtime_states(paths: BroadcastAudioHealthPaths) -> None:
     _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
     _write_json(paths.audio_ducker_state, _audio_ducker_state())
     _write_json(paths.egress_loopback_witness, _live_loopback_witness())
+    _write_json(paths.signal_flow_witness, _signal_flow_witness())
+    _write_json(paths.leak_guard_witness, _leak_guard_witness())
 
 
 def _healthy_obs_egress_links() -> str:
@@ -705,6 +760,8 @@ def test_audio_ducker_idle_retired_readback_is_non_blocking(tmp_path: Path) -> N
     readback_error = "duck_l/r Gain 1 not present in PipeWire Props"
     _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
     _write_json(paths.egress_loopback_witness, _live_loopback_witness())
+    _write_json(paths.signal_flow_witness, _signal_flow_witness())
+    _write_json(paths.leak_guard_witness, _leak_guard_witness())
     _write_json(
         paths.audio_ducker_state,
         _audio_ducker_state(
@@ -1046,3 +1103,231 @@ def test_egress_loopback_witness_happy_path_populates_evidence(tmp_path: Path) -
     # No loopback-related contributions to blocking/warnings.
     assert not any(c.startswith("egress_loopback") for c in _codes(health))
     assert not any(w.code.startswith("egress_loopback") for w in health.warnings)
+
+
+# ---------------------------------------------------------------------------
+# Signal-flow witness tests
+# ---------------------------------------------------------------------------
+
+
+def test_signal_flow_missing_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    paths.signal_flow_witness.unlink()
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "signal_flow_missing" in _codes(health)
+
+
+def test_signal_flow_stale_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    _write_json(paths.signal_flow_witness, _signal_flow_witness(), age_s=200.0)
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "signal_flow_stale" in _codes(health)
+
+
+def test_signal_flow_topology_violation_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    noisy_witness = _signal_flow_witness()
+    noisy_witness["stages"][2]["classification"] = "clipping"
+    _write_json(paths.signal_flow_witness, noisy_witness)
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "signal_flow_topology_violation" in _codes(health)
+    assert (
+        "hapax-obs-broadcast-remap:clipping"
+        in health.evidence["signal_flow"]["topology_violations"]
+    )
+
+
+def test_signal_flow_noise_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    noisy_witness = _signal_flow_witness()
+    noisy_witness["stages"][0]["classification"] = "noise"
+    _write_json(paths.signal_flow_witness, noisy_witness)
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "signal_flow_topology_violation" in _codes(health)
+
+
+def test_signal_flow_content_idle_warns_not_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    silent_witness = _signal_flow_witness()
+    for stage in silent_witness["stages"]:
+        stage["classification"] = "silent"
+    _write_json(paths.signal_flow_witness, silent_witness)
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert "signal_flow_topology_violation" not in _codes(health)
+    assert "signal_flow_content_idle" in {w.code for w in health.warnings}
+
+
+def test_signal_flow_probe_error_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    error_witness = _signal_flow_witness()
+    error_witness["stages"][1]["error"] = "parec_failed:exit_1"
+    error_witness["stages"][1]["classification"] = "music_voice"
+    _write_json(paths.signal_flow_witness, error_witness)
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "signal_flow_topology_violation" in _codes(health)
+
+
+def test_signal_flow_healthy_populates_evidence(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    record = health.evidence["signal_flow"]
+    assert record["status"] == "live"
+    assert len(record["stages"]) == 3
+    assert record["topology_violations"] == []
+    assert record["content_idle_stages"] == []
+    assert not any(c.startswith("signal_flow") for c in _codes(health))
+
+
+def test_signal_flow_malformed_stages_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    _write_json(paths.signal_flow_witness, {"stages": "not_a_list"})
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "signal_flow_malformed" in _codes(health)
+
+
+# ---------------------------------------------------------------------------
+# Leak-guard witness tests
+# ---------------------------------------------------------------------------
+
+
+def test_leak_guard_missing_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    paths.leak_guard_witness.unlink()
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "leak_guard_witness_missing" in _codes(health)
+
+
+def test_leak_guard_stale_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    _write_json(paths.leak_guard_witness, _leak_guard_witness(), age_s=200.0)
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "leak_guard_witness_stale" in _codes(health)
+
+
+def test_leak_guard_leak_detected_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    _write_json(
+        paths.leak_guard_witness,
+        _leak_guard_witness(
+            ok=False,
+            leak_count=2,
+            leaks=["hapax-private:out -> livestream-tap:in"],
+        ),
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "leak_guard_witness_leak_detected" in _codes(health)
+
+
+def test_leak_guard_healthy_populates_evidence(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    record = health.evidence["leak_guard_witness"]
+    assert record["status"] == "ok"
+    assert record["ok"] is True
+    assert record["leak_count"] == 0
+    assert not any(c.startswith("leak_guard") for c in _codes(health))

@@ -44,6 +44,8 @@ DEFAULT_AUDIO_SAFETY_STATE = Path("/dev/shm/hapax-audio-safety/state.json")
 DEFAULT_AUDIO_DUCKER_STATE = Path("/dev/shm/hapax-audio-ducker/state.json")
 DEFAULT_VOICE_OUTPUT_WITNESS = Path("/dev/shm/hapax-daimonion/voice-output-witness.json")
 DEFAULT_EGRESS_LOOPBACK_WITNESS = Path("/dev/shm/hapax-broadcast/egress-loopback.json")
+DEFAULT_SIGNAL_FLOW_WITNESS = Path("/dev/shm/hapax-audio/signal-flow.json")
+DEFAULT_LEAK_GUARD_WITNESS = Path("/dev/shm/hapax-private-broadcast/status.json")
 
 TOPOLOGY_VERIFY_COMMAND = (
     "scripts/hapax-audio-topology",
@@ -145,6 +147,12 @@ class BroadcastAudioHealthPaths:
     audio_ducker_state: Path = DEFAULT_AUDIO_DUCKER_STATE
     voice_output_witness: Path = DEFAULT_VOICE_OUTPUT_WITNESS
     egress_loopback_witness: Path = DEFAULT_EGRESS_LOOPBACK_WITNESS
+    signal_flow_witness: Path = DEFAULT_SIGNAL_FLOW_WITNESS
+    leak_guard_witness: Path = DEFAULT_LEAK_GUARD_WITNESS
+
+
+SIGNAL_FLOW_TOPOLOGY_VIOLATIONS = frozenset({"noise", "clipping", "NOISE", "CLIPPING"})
+SIGNAL_FLOW_CONTENT_IDLE = frozenset({"silent", "SILENT"})
 
 
 @dataclass(frozen=True)
@@ -157,6 +165,8 @@ class BroadcastAudioHealthThresholds:
     loudness_timeout_extra_s: float = 8.0
     loudness_duration_s: int = 10
     loopback_max_age_s: float = 60.0
+    signal_flow_max_age_s: float = 90.0
+    leak_guard_max_age_s: float = 90.0
     silence_ratio_max: float = 0.85
     rms_dbfs_floor: float = -55.0
     # The health probe samples only a short live window. Use a 10 s window
@@ -315,6 +325,21 @@ def resolve_broadcast_audio_health(
         evidence=evidence,
         blocking=blocking,
         warnings=warnings,
+    )
+    _evaluate_signal_flow_witness(
+        p.signal_flow_witness,
+        current,
+        t,
+        evidence=evidence,
+        blocking=blocking,
+        warnings=warnings,
+    )
+    _evaluate_leak_guard_witness(
+        p.leak_guard_witness,
+        current,
+        t,
+        evidence=evidence,
+        blocking=blocking,
     )
     _evaluate_health_predicate_drift(evidence=evidence, blocking=blocking)
     _evaluate_voice_output_witness(
@@ -847,6 +872,186 @@ def _evaluate_egress_loopback(
                 ),
                 evidence_refs=["egress_loopback"],
             )
+        )
+
+
+def _evaluate_signal_flow_witness(
+    path: Path,
+    now: float,
+    thresholds: BroadcastAudioHealthThresholds,
+    *,
+    evidence: dict[str, Any],
+    blocking: list[AudioHealthReason],
+    warnings: list[AudioHealthReason],
+) -> None:
+    data, age_s, error = _read_json_file(path, now)
+    record: dict[str, Any] = {
+        "signal_flow_path": str(path),
+        "signal_flow_age_s": age_s,
+    }
+    if error is not None:
+        record["status"] = "unknown"
+        record["error"] = error
+        evidence["signal_flow"] = record
+        _block(
+            blocking,
+            code=f"signal_flow_{error}",
+            owner=str(path),
+            message=f"signal-flow witness is {error}",
+            evidence_refs=["signal_flow"],
+        )
+        return
+    if age_s is None or age_s > thresholds.signal_flow_max_age_s:
+        record["status"] = "stale"
+        evidence["signal_flow"] = record
+        _block(
+            blocking,
+            code="signal_flow_stale",
+            owner=str(path),
+            message=(
+                f"signal-flow witness is stale ({age_s}s > {thresholds.signal_flow_max_age_s}s)"
+            ),
+            evidence_refs=["signal_flow"],
+        )
+        return
+
+    stages = data.get("stages", [])
+    if not isinstance(stages, list):
+        record["status"] = "malformed"
+        evidence["signal_flow"] = record
+        _block(
+            blocking,
+            code="signal_flow_malformed",
+            owner=str(path),
+            message="signal-flow witness stages field is not a list",
+            evidence_refs=["signal_flow"],
+        )
+        return
+
+    stage_summaries: list[dict[str, Any]] = []
+    topology_violations: list[str] = []
+    content_idle_stages: list[str] = []
+    for stage_data in stages:
+        if not isinstance(stage_data, dict):
+            continue
+        stage_name = str(stage_data.get("stage", "unknown"))
+        classification = str(stage_data.get("classification", "unknown"))
+        ok = stage_data.get("ok", False)
+        stage_error = stage_data.get("error")
+        stage_summaries.append(
+            {
+                "stage": stage_name,
+                "classification": classification,
+                "ok": ok,
+                "error": stage_error,
+            }
+        )
+        if stage_error:
+            topology_violations.append(f"{stage_name}:probe_error")
+        elif classification in SIGNAL_FLOW_TOPOLOGY_VIOLATIONS:
+            topology_violations.append(f"{stage_name}:{classification}")
+        elif classification in SIGNAL_FLOW_CONTENT_IDLE:
+            content_idle_stages.append(stage_name)
+
+    record.update(
+        {
+            "status": "live",
+            "checked_at": data.get("checked_at"),
+            "tick_count": data.get("tick_count"),
+            "livestream_active": data.get("livestream_active"),
+            "stages": stage_summaries,
+            "topology_violations": topology_violations,
+            "content_idle_stages": content_idle_stages,
+        }
+    )
+    evidence["signal_flow"] = record
+
+    if topology_violations:
+        _block(
+            blocking,
+            code="signal_flow_topology_violation",
+            owner=str(path),
+            message=(
+                f"signal-flow witness reports topology violations: "
+                f"{', '.join(topology_violations[:3])}"
+            ),
+            evidence_refs=["signal_flow"],
+        )
+    elif content_idle_stages:
+        warnings.append(
+            AudioHealthReason(
+                code="signal_flow_content_idle",
+                severity=ReasonSeverity.WARNING,
+                owner=str(path),
+                message=(
+                    f"signal-flow stages are content-idle (silent): "
+                    f"{', '.join(content_idle_stages[:3])}"
+                ),
+                evidence_refs=["signal_flow"],
+            )
+        )
+
+
+def _evaluate_leak_guard_witness(
+    path: Path,
+    now: float,
+    thresholds: BroadcastAudioHealthThresholds,
+    *,
+    evidence: dict[str, Any],
+    blocking: list[AudioHealthReason],
+) -> None:
+    data, age_s, error = _read_json_file(path, now)
+    record: dict[str, Any] = {
+        "leak_guard_path": str(path),
+        "leak_guard_age_s": age_s,
+    }
+    if error is not None:
+        record["status"] = "unknown"
+        record["error"] = error
+        evidence["leak_guard_witness"] = record
+        _block(
+            blocking,
+            code=f"leak_guard_witness_{error}",
+            owner=str(path),
+            message=f"leak-guard witness is {error}",
+            evidence_refs=["leak_guard_witness"],
+        )
+        return
+    if age_s is None or age_s > thresholds.leak_guard_max_age_s:
+        record["status"] = "stale"
+        evidence["leak_guard_witness"] = record
+        _block(
+            blocking,
+            code="leak_guard_witness_stale",
+            owner=str(path),
+            message=(
+                f"leak-guard witness is stale ({age_s}s > {thresholds.leak_guard_max_age_s}s)"
+            ),
+            evidence_refs=["leak_guard_witness"],
+        )
+        return
+
+    ok = data.get("ok", False)
+    leak_count = data.get("leak_count", 0)
+    leaks = data.get("leaks", [])
+    record.update(
+        {
+            "status": "ok" if ok else "leak_detected",
+            "ok": ok,
+            "leak_count": leak_count,
+            "leaks": leaks[:5] if isinstance(leaks, list) else [],
+        }
+    )
+    evidence["leak_guard_witness"] = record
+
+    if not ok:
+        leak_summary = f"{leak_count} leak(s)" if isinstance(leak_count, int) else "leak(s)"
+        _block(
+            blocking,
+            code="leak_guard_witness_leak_detected",
+            owner=str(path),
+            message=f"leak-guard witness reports {leak_summary} from private to broadcast",
+            evidence_refs=["leak_guard_witness"],
         )
 
 
@@ -1434,6 +1639,8 @@ def _owners() -> dict[str, str]:
         "voice_output_witness": str(DEFAULT_VOICE_OUTPUT_WITNESS),
         "runtime_safety": "hapax-audio-safety.service",
         "audio_ducker": "hapax-audio-ducker.service",
+        "signal_flow": "hapax-audio-signal-assertion.service",
+        "leak_guard_witness": "hapax-private-broadcast-leak-guard.timer",
         "health_consumer": "livestream-health-group",
     }
 
@@ -1532,7 +1739,11 @@ __all__ = [
     "BroadcastAudioHealthThresholds",
     "BroadcastAudioStatus",
     "CommandResult",
+    "DEFAULT_LEAK_GUARD_WITNESS",
+    "DEFAULT_SIGNAL_FLOW_WITNESS",
     "DEFAULT_VOICE_OUTPUT_WITNESS",
+    "SIGNAL_FLOW_CONTENT_IDLE",
+    "SIGNAL_FLOW_TOPOLOGY_VIOLATIONS",
     "ServiceStatus",
     "read_broadcast_audio_health_state",
     "resolve_broadcast_audio_health",

@@ -263,6 +263,11 @@ class Orchestrator:
         if not _transition_to(self._client, self._tracking.incoming_broadcast_id, "testing"):
             self._fail_rotation_step("transition_testing")
             return
+
+        if not self._audio_health_gate():
+            self._fail_rotation_step("audio_health_gate")
+            return
+
         if not _transition_to(self._client, self._tracking.incoming_broadcast_id, "live"):
             self._fail_rotation_step("transition_live")
             return
@@ -316,6 +321,24 @@ class Orchestrator:
         self._tracking.rotation_attempt = 0
         self._set_state(State.ACTIVE)
         log.info("rotation complete: new active=%s (duration %.1fs)", incoming_id, duration_s)
+
+    def _audio_health_gate(self) -> bool:
+        try:
+            from shared.broadcast_audio_health import read_broadcast_audio_health_state
+
+            health = read_broadcast_audio_health_state()
+            if health.safe:
+                return True
+            codes = [r.code for r in health.blocking_reasons[:3]]
+            log.warning(
+                "audio health gate blocked transition to live: %s",
+                ", ".join(codes),
+            )
+            emit("audio_health_gate_blocked", {"blocking_codes": codes, "status": health.status})
+            return False
+        except Exception:
+            log.exception("audio health gate raised — failing closed")
+            return False
 
     def _fail_rotation_step(self, step: str) -> None:
         self._tracking.rotation_attempt += 1
