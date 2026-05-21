@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 const OUTPUT_DIR: &str = "/dev/shm/hapax-visual";
 const OUTPUT_FILE: &str = "/dev/shm/hapax-visual/frame.rgba";
@@ -9,6 +10,7 @@ const JPEG_TMP_FILE: &str = "/dev/shm/hapax-visual/frame.jpg.tmp";
 const JPEG_QUALITY: i32 = 80;
 const EGRESS_METRICS_FILE: &str = "/dev/shm/hapax-visual/egress.prom";
 const EGRESS_METRICS_TMP_FILE: &str = "/dev/shm/hapax-visual/egress.prom.tmp";
+const DEFAULT_DIAGNOSTIC_EVERY_N: u64 = 1;
 
 /// Second RGBA output path, consumed by the studio compositor's
 /// `ShmRgbaReader` as an `external_rgba` source. A sidecar JSON file at
@@ -37,6 +39,22 @@ pub struct ShmOutput {
     /// Direct v4l2 output — writes RGBA frames to a loopback device.
     /// Initialized when HAPAX_IMAGINATION_V4L2_OUTPUT=1.
     v4l2: crate::v4l2_output::V4l2Output,
+    clean_data: Vec<u8>,
+    jpeg_every_n: u64,
+    side_output_every_n: u64,
+    timings: OutputTimings,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct OutputTimings {
+    readback_micros: u64,
+    copy_micros: u64,
+    raw_rgba_write_micros: u64,
+    jpeg_write_micros: u64,
+    v4l2_micros: u64,
+    side_output_micros: u64,
+    metrics_write_micros: u64,
+    total_micros: u64,
 }
 
 impl ShmOutput {
@@ -60,6 +78,9 @@ impl ShmOutput {
         });
 
         let v4l2 = crate::v4l2_output::V4l2Output::new(width, height);
+        let clean_data = Vec::with_capacity((bytes_per_row * height) as usize);
+        let jpeg_every_n = env_every_n("HAPAX_IMAGINATION_JPEG_EVERY_N");
+        let side_output_every_n = env_every_n("HAPAX_IMAGINATION_SIDE_OUTPUT_EVERY_N");
 
         Self {
             staging_buffer,
@@ -71,6 +92,10 @@ impl ShmOutput {
             jpeg_compressor,
             frame_count: 0,
             v4l2,
+            clean_data,
+            jpeg_every_n,
+            side_output_every_n,
+            timings: OutputTimings::default(),
         }
     }
 
@@ -110,17 +135,22 @@ impl ShmOutput {
 
     /// Convert RGBA pixels to JPEG, writing atomically to /dev/shm.
     /// The composite texture is Rgba8Unorm — bytes are in R,G,B,A order.
-    fn write_jpeg(&mut self, rgba_data: &[u8]) {
-        let compressor = match self.jpeg_compressor.as_mut() {
+    fn write_jpeg(
+        jpeg_compressor: &mut Option<turbojpeg::Compressor>,
+        width: u32,
+        height: u32,
+        rgba_data: &[u8],
+    ) {
+        let compressor = match jpeg_compressor.as_mut() {
             Some(c) => c,
             None => return,
         };
 
         let image = turbojpeg::Image {
             pixels: rgba_data,
-            width: self.width as usize,
-            pitch: self.width as usize * 4,
-            height: self.height as usize,
+            width: width as usize,
+            pitch: width as usize * 4,
+            height: height as usize,
             format: turbojpeg::PixelFormat::RGBX,
         };
 
@@ -139,6 +169,8 @@ impl ShmOutput {
             return;
         }
 
+        let total_start = Instant::now();
+        let mut timings = OutputTimings::default();
         let slice = self.staging_buffer.slice(..);
         let height = self.height;
         let bytes_per_row = self.bytes_per_row;
@@ -153,6 +185,7 @@ impl ShmOutput {
         // Block until GPU readback completes. The active direct-v4l2 3D
         // surface calls this every rendered frame to satisfy the 30fps
         // consumer-boundary contract; typical readback is <2ms.
+        let readback_start = Instant::now();
         device.poll(wgpu::Maintain::Wait);
 
         match rx.recv_timeout(std::time::Duration::from_millis(5)) {
@@ -163,54 +196,81 @@ impl ShmOutput {
                 return;
             }
         }
+        timings.readback_micros = elapsed_micros(readback_start);
 
         let data = slice.get_mapped_range();
 
         // Build clean pixel data (strip row padding if needed).
-        // Always produce an owned Vec so we can drop the mapped range before
-        // calling write_jpeg (which needs &mut self).
-        let clean_data: Vec<u8> = if padded_bytes_per_row == bytes_per_row {
-            data.to_vec()
+        // Reuse the allocation across frames; at 1080p this avoids allocating
+        // a fresh 8 MiB Vec every consumer-boundary tick.
+        let copy_start = Instant::now();
+        self.clean_data.clear();
+        if padded_bytes_per_row == bytes_per_row {
+            self.clean_data.extend_from_slice(&data);
         } else {
-            let mut buf = Vec::with_capacity((bytes_per_row * height) as usize);
             for row in 0..height {
                 let start = (row * padded_bytes_per_row) as usize;
                 let end = start + bytes_per_row as usize;
-                buf.extend_from_slice(&data[start..end]);
+                self.clean_data.extend_from_slice(&data[start..end]);
             }
-            buf
         };
+        timings.copy_micros = elapsed_micros(copy_start);
 
         // Release GPU mapping before further work
         drop(data);
         self.staging_buffer.unmap();
 
         // Write raw RGBA
+        let raw_start = Instant::now();
         if let Ok(mut file) = fs::File::create(OUTPUT_FILE) {
-            file.write_all(&clean_data).ok();
+            file.write_all(&self.clean_data).ok();
+        }
+        timings.raw_rgba_write_micros = elapsed_micros(raw_start);
+
+        self.frame_count = self.frame_count.wrapping_add(1);
+
+        if should_publish_every(self.frame_count, self.jpeg_every_n) {
+            let jpeg_start = Instant::now();
+            Self::write_jpeg(
+                &mut self.jpeg_compressor,
+                self.width,
+                self.height,
+                &self.clean_data,
+            );
+            timings.jpeg_write_micros = elapsed_micros(jpeg_start);
         }
 
-        // Write JPEG
-        self.write_jpeg(&clean_data);
+        // Write to v4l2 loopback (if enabled)
+        let v4l2_start = Instant::now();
+        self.v4l2.write_frame(&self.clean_data);
+        timings.v4l2_micros = elapsed_micros(v4l2_start);
 
         // Write the source-registry side output. Non-fatal on error —
         // reverie keeps rendering and the compositor's
         // compositor_source_frame_age_seconds metric catches chronic
         // staleness. Dormant in main until Phase D wires ShmRgbaReader.
-        self.frame_count = self.frame_count.wrapping_add(1);
+        if should_publish_every(self.frame_count, self.side_output_every_n) {
+            let side_start = Instant::now();
+            let _ = write_side_output(
+                Path::new(SIDE_OUTPUT_FILE),
+                &self.clean_data,
+                self.width,
+                self.height,
+                self.bytes_per_row,
+                self.frame_count,
+            );
+            timings.side_output_micros = elapsed_micros(side_start);
+        }
 
-        // Write to v4l2 loopback (if enabled)
-        self.v4l2.write_frame(&clean_data);
+        timings.total_micros = elapsed_micros(total_start);
+        // The metrics write duration is only known after writing the metrics
+        // file, so publish the previous frame's observed metrics-write cost.
+        timings.metrics_write_micros = self.timings.metrics_write_micros;
+        self.timings = timings;
 
-        let _ = write_side_output(
-            Path::new(SIDE_OUTPUT_FILE),
-            &clean_data,
-            self.width,
-            self.height,
-            self.bytes_per_row,
-            self.frame_count,
-        );
+        let metrics_start = Instant::now();
         self.write_egress_metrics();
+        self.timings.metrics_write_micros = elapsed_micros(metrics_start);
     }
 
     fn write_egress_metrics(&self) {
@@ -246,6 +306,58 @@ impl ShmOutput {
                 "hapax_imagination_v4l2_reconnects_total {}",
                 v4l2.reopen_count
             ),
+            "# HELP hapax_imagination_output_stage_duration_micros Last observed output-stage duration by stage".to_string(),
+            "# TYPE hapax_imagination_output_stage_duration_micros gauge".to_string(),
+            format!(
+                "hapax_imagination_output_stage_duration_micros{{stage=\"readback\"}} {}",
+                self.timings.readback_micros
+            ),
+            format!(
+                "hapax_imagination_output_stage_duration_micros{{stage=\"copy\"}} {}",
+                self.timings.copy_micros
+            ),
+            format!(
+                "hapax_imagination_output_stage_duration_micros{{stage=\"raw_rgba_write\"}} {}",
+                self.timings.raw_rgba_write_micros
+            ),
+            format!(
+                "hapax_imagination_output_stage_duration_micros{{stage=\"jpeg_write\"}} {}",
+                self.timings.jpeg_write_micros
+            ),
+            format!(
+                "hapax_imagination_output_stage_duration_micros{{stage=\"v4l2\"}} {}",
+                self.timings.v4l2_micros
+            ),
+            format!(
+                "hapax_imagination_output_stage_duration_micros{{stage=\"side_output\"}} {}",
+                self.timings.side_output_micros
+            ),
+            format!(
+                "hapax_imagination_output_stage_duration_micros{{stage=\"metrics_write\"}} {}",
+                self.timings.metrics_write_micros
+            ),
+            format!(
+                "hapax_imagination_output_stage_duration_micros{{stage=\"total\"}} {}",
+                self.timings.total_micros
+            ),
+            "# HELP hapax_imagination_v4l2_stage_duration_micros Last observed direct V4L2 stage duration".to_string(),
+            "# TYPE hapax_imagination_v4l2_stage_duration_micros gauge".to_string(),
+            format!(
+                "hapax_imagination_v4l2_stage_duration_micros{{stage=\"convert\"}} {}",
+                v4l2.last_conversion_micros
+            ),
+            format!(
+                "hapax_imagination_v4l2_stage_duration_micros{{stage=\"write_syscall\"}} {}",
+                v4l2.last_write_syscall_micros
+            ),
+            format!(
+                "hapax_imagination_v4l2_stage_duration_micros{{stage=\"total\"}} {}",
+                v4l2.last_frame_micros
+            ),
+            format!(
+                "hapax_imagination_v4l2_stage_duration_micros{{stage=\"max_total\"}} {}",
+                v4l2.max_frame_micros
+            ),
         ];
         if let Some(age) = v4l2.last_write_age_seconds {
             lines.push(
@@ -269,6 +381,8 @@ impl ShmOutput {
         self.height = height;
         self.bytes_per_row = width * 4;
         self.padded_bytes_per_row = align_up(self.bytes_per_row, 256);
+        self.clean_data
+            .reserve((self.bytes_per_row * height) as usize);
 
         self.staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("shm output staging"),
@@ -281,6 +395,22 @@ impl ShmOutput {
 
 fn align_up(value: u32, alignment: u32) -> u32 {
     (value + alignment - 1) & !(alignment - 1)
+}
+
+fn elapsed_micros(start: Instant) -> u64 {
+    start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
+}
+
+fn env_every_n(name: &str) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_DIAGNOSTIC_EVERY_N)
+}
+
+fn should_publish_every(frame_count: u64, every_n: u64) -> bool {
+    every_n <= 1 || frame_count.is_multiple_of(every_n)
 }
 
 /// Sidecar path for a given RGBA shm output path — appends `.json`, so
@@ -421,5 +551,18 @@ mod tests {
 
         assert!(nested.exists());
         assert!(sidecar_path(&nested).exists());
+    }
+
+    #[test]
+    fn should_publish_every_allows_default_every_frame() {
+        assert!(should_publish_every(1, 1));
+        assert!(should_publish_every(2, 1));
+    }
+
+    #[test]
+    fn should_publish_every_decimates_on_modulus() {
+        assert!(!should_publish_every(29, 30));
+        assert!(should_publish_every(30, 30));
+        assert!(!should_publish_every(31, 30));
     }
 }

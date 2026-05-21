@@ -26,6 +26,10 @@ pub struct V4l2Output {
     error_count: u64,
     reopen_count: u64,
     last_write: Instant,
+    last_conversion_micros: u64,
+    last_write_syscall_micros: u64,
+    last_frame_micros: u64,
+    max_frame_micros: u64,
     enabled: bool,
 }
 
@@ -38,6 +42,10 @@ pub struct V4l2Metrics {
     pub error_count: u64,
     pub reopen_count: u64,
     pub last_write_age_seconds: Option<f64>,
+    pub last_conversion_micros: u64,
+    pub last_write_syscall_micros: u64,
+    pub last_frame_micros: u64,
+    pub max_frame_micros: u64,
 }
 
 impl V4l2Output {
@@ -62,6 +70,10 @@ impl V4l2Output {
             error_count: 0,
             reopen_count: 0,
             last_write: Instant::now(),
+            last_conversion_micros: 0,
+            last_write_syscall_micros: 0,
+            last_frame_micros: 0,
+            max_frame_micros: 0,
             enabled,
         };
 
@@ -88,6 +100,10 @@ impl V4l2Output {
             reopen_count: self.reopen_count,
             last_write_age_seconds: (self.write_count > 0)
                 .then(|| self.last_write.elapsed().as_secs_f64()),
+            last_conversion_micros: self.last_conversion_micros,
+            last_write_syscall_micros: self.last_write_syscall_micros,
+            last_frame_micros: self.last_frame_micros,
+            max_frame_micros: self.max_frame_micros,
         }
     }
 
@@ -151,56 +167,13 @@ impl V4l2Output {
             }
         }
 
-        // RGBA → NV12 conversion (BT.601 limited range)
-        // Y plane: one byte per pixel
-        // UV plane: one Cb,Cr pair per 2×2 block, interleaved
-        let (y_plane, uv_plane) = self.nv12_buf.split_at_mut(w * h);
-
-        for row in 0..h {
-            let rgba_row = &rgba_data[row * w * 4..(row + 1) * w * 4];
-            let y_row = &mut y_plane[row * w..(row + 1) * w];
-
-            for col in 0..w {
-                let r = rgba_row[col * 4] as f32;
-                let g = rgba_row[col * 4 + 1] as f32;
-                let b = rgba_row[col * 4 + 2] as f32;
-
-                y_row[col] = (16.0 + 0.257 * r + 0.504 * g + 0.098 * b).clamp(16.0, 235.0) as u8;
-            }
-
-            // UV: process only even rows
-            if row % 2 == 0 && row + 1 < h {
-                let uv_row = &mut uv_plane[(row / 2) * w..((row / 2) + 1) * w];
-                let rgba_row_next = &rgba_data[(row + 1) * w * 4..(row + 2) * w * 4];
-
-                for col in (0..w).step_by(2) {
-                    // Average 2×2 block
-                    let r = (rgba_row[col * 4] as f32
-                        + rgba_row[(col + 1) * 4] as f32
-                        + rgba_row_next[col * 4] as f32
-                        + rgba_row_next[(col + 1) * 4] as f32)
-                        * 0.25;
-                    let g = (rgba_row[col * 4 + 1] as f32
-                        + rgba_row[(col + 1) * 4 + 1] as f32
-                        + rgba_row_next[col * 4 + 1] as f32
-                        + rgba_row_next[(col + 1) * 4 + 1] as f32)
-                        * 0.25;
-                    let b = (rgba_row[col * 4 + 2] as f32
-                        + rgba_row[(col + 1) * 4 + 2] as f32
-                        + rgba_row_next[col * 4 + 2] as f32
-                        + rgba_row_next[(col + 1) * 4 + 2] as f32)
-                        * 0.25;
-
-                    let cb = (128.0 - 0.148 * r - 0.291 * g + 0.439 * b).clamp(16.0, 240.0) as u8;
-                    let cr = (128.0 + 0.439 * r - 0.368 * g - 0.071 * b).clamp(16.0, 240.0) as u8;
-
-                    uv_row[col] = cb;
-                    uv_row[col + 1] = cr;
-                }
-            }
-        }
+        let frame_start = Instant::now();
+        let conversion_start = Instant::now();
+        rgba_to_nv12_bt601(rgba_data, w, h, &mut self.nv12_buf);
+        self.last_conversion_micros = elapsed_micros(conversion_start);
 
         // Write NV12 frame to v4l2 device
+        let write_start = Instant::now();
         let written = unsafe {
             libc::write(
                 self.fd,
@@ -208,6 +181,7 @@ impl V4l2Output {
                 self.nv12_buf.len(),
             )
         };
+        self.last_write_syscall_micros = elapsed_micros(write_start);
 
         if written < 0 {
             let err = std::io::Error::last_os_error();
@@ -238,11 +212,19 @@ impl V4l2Output {
         self.write_count += 1;
         self.write_bytes_total += written as u64;
         self.last_write = Instant::now();
+        self.last_frame_micros = elapsed_micros(frame_start);
+        self.max_frame_micros = self.max_frame_micros.max(self.last_frame_micros);
 
         if self.write_count % 900 == 0 {
             info!(
-                "v4l2: {} frames written to {} (errors: {}, reopens: {})",
-                self.write_count, self.device_path, self.error_count, self.reopen_count
+                "v4l2: {} frames written to {} (errors: {}, reopens: {}, last={}us convert={}us write={}us)",
+                self.write_count,
+                self.device_path,
+                self.error_count,
+                self.reopen_count,
+                self.last_frame_micros,
+                self.last_conversion_micros,
+                self.last_write_syscall_micros
             );
         }
 
@@ -253,6 +235,88 @@ impl V4l2Output {
 impl Drop for V4l2Output {
     fn drop(&mut self) {
         self.close_device();
+    }
+}
+
+fn elapsed_micros(start: Instant) -> u64 {
+    start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
+}
+
+fn y_limited_bt601(r: u8, g: u8, b: u8) -> u8 {
+    let value = ((66 * i32::from(r) + 129 * i32::from(g) + 25 * i32::from(b) + 128) >> 8) + 16;
+    value.clamp(16, 235) as u8
+}
+
+fn cb_limited_bt601(r: u8, g: u8, b: u8) -> u8 {
+    let value = ((-38 * i32::from(r) - 74 * i32::from(g) + 112 * i32::from(b) + 128) >> 8) + 128;
+    value.clamp(16, 240) as u8
+}
+
+fn cr_limited_bt601(r: u8, g: u8, b: u8) -> u8 {
+    let value = ((112 * i32::from(r) - 94 * i32::from(g) - 18 * i32::from(b) + 128) >> 8) + 128;
+    value.clamp(16, 240) as u8
+}
+
+fn avg4(a: u8, b: u8, c: u8, d: u8) -> u8 {
+    ((u16::from(a) + u16::from(b) + u16::from(c) + u16::from(d) + 2) >> 2) as u8
+}
+
+fn rgba_to_nv12_bt601(rgba_data: &[u8], width: usize, height: usize, nv12_buf: &mut [u8]) {
+    let y_len = width * height;
+    let (y_plane, uv_plane) = nv12_buf.split_at_mut(y_len);
+
+    for row in (0..height).step_by(2) {
+        let row_a = &rgba_data[row * width * 4..(row + 1) * width * 4];
+        let y_a = &mut y_plane[row * width..(row + 1) * width];
+        let has_row_b = row + 1 < height;
+
+        if has_row_b {
+            let row_b = &rgba_data[(row + 1) * width * 4..(row + 2) * width * 4];
+            let (upper_y, lower_y) = y_plane.split_at_mut((row + 1) * width);
+            let y_b = &mut lower_y[..width];
+            let y_a = &mut upper_y[row * width..(row + 1) * width];
+            let uv_row = &mut uv_plane[(row / 2) * width..((row / 2) + 1) * width];
+
+            for col in (0..width).step_by(2) {
+                let a = col * 4;
+                let b = ((col + 1).min(width - 1)) * 4;
+
+                let r00 = row_a[a];
+                let g00 = row_a[a + 1];
+                let b00 = row_a[a + 2];
+                let r01 = row_a[b];
+                let g01 = row_a[b + 1];
+                let b01 = row_a[b + 2];
+                let r10 = row_b[a];
+                let g10 = row_b[a + 1];
+                let b10 = row_b[a + 2];
+                let r11 = row_b[b];
+                let g11 = row_b[b + 1];
+                let b11 = row_b[b + 2];
+
+                y_a[col] = y_limited_bt601(r00, g00, b00);
+                if col + 1 < width {
+                    y_a[col + 1] = y_limited_bt601(r01, g01, b01);
+                }
+                y_b[col] = y_limited_bt601(r10, g10, b10);
+                if col + 1 < width {
+                    y_b[col + 1] = y_limited_bt601(r11, g11, b11);
+                }
+
+                let r = avg4(r00, r01, r10, r11);
+                let g = avg4(g00, g01, g10, g11);
+                let b = avg4(b00, b01, b10, b11);
+                uv_row[col] = cb_limited_bt601(r, g, b);
+                if col + 1 < width {
+                    uv_row[col + 1] = cr_limited_bt601(r, g, b);
+                }
+            }
+        } else {
+            for col in 0..width {
+                let px = col * 4;
+                y_a[col] = y_limited_bt601(row_a[px], row_a[px + 1], row_a[px + 2]);
+            }
+        }
     }
 }
 
@@ -273,6 +337,10 @@ mod tests {
                 error_count: 0,
                 reopen_count: 0,
                 last_write_age_seconds: None,
+                last_conversion_micros: 0,
+                last_write_syscall_micros: 0,
+                last_frame_micros: 0,
+                max_frame_micros: 0,
             }
         );
     }
@@ -288,5 +356,29 @@ mod tests {
     fn nv12_buffer_960x540() {
         let out = V4l2Output::new(960, 540);
         assert_eq!(out.nv12_buf.len(), 960 * 540 * 3 / 2);
+    }
+
+    #[test]
+    fn rgba_to_nv12_converts_black_and_white() {
+        let rgba = [
+            0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255,
+        ];
+        let mut nv12 = vec![0; 2 * 2 * 3 / 2];
+
+        rgba_to_nv12_bt601(&rgba, 2, 2, &mut nv12);
+
+        assert_eq!(&nv12[..4], &[16, 235, 16, 235]);
+        assert_eq!(&nv12[4..], &[128, 128]);
+    }
+
+    #[test]
+    fn rgba_to_nv12_handles_odd_width_without_overrun() {
+        let rgba = vec![0x80; 3 * 2 * 4];
+        let mut nv12 = vec![0; 3 * 2 * 3 / 2];
+
+        rgba_to_nv12_bt601(&rgba, 3, 2, &mut nv12);
+
+        assert_eq!(nv12.len(), 9);
+        assert!(nv12.iter().any(|v| *v != 0));
     }
 }
