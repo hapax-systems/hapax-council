@@ -1,0 +1,547 @@
+schema_version: 2
+registry_id: multimodal-grounding-hypothesis-registry-v2
+authority_case: CASE-20260509-MULTIMODAL-
+created_at: "2026-05-21"
+supersedes: multimodal-grounding-hypothesis-registry-v1
+source_passes:
+  - phase1a-grounding-inventory-audit
+  - phase1b-adjacent-domain-survey
+  - phase1c-hypothesis-registry
+phase: 2
+status: pre-empirical
+note: >
+  Phase 2 refinement of Phase 1c registry. Experiment designs sharpened using
+  grounding inventory audit findings. Hypotheses unchanged in classification
+  until Phase 2a/2b/2c empirical results are collected. Two new hypotheses
+  (H10, H11) added from Phase 1 findings.
+
+req_numbering_reconciliation:
+  note: >
+    Parent REQ (REQ-20260509-multimodal-grounding-research-pipeline) used
+    H1-H7 with different semantics than this registry. Phase 1c reframed
+    hypotheses based on evidence. This map preserves traceability.
+  mapping:
+    - req_id: REQ-H1
+      registry_id: H1
+      note: "Both address cross-modal coordination necessity"
+    - req_id: REQ-H2
+      registry_id: null
+      note: "Filesystem sufficiency subsumed into H1 experiment condition B"
+    - req_id: REQ-H3
+      registry_id: null
+      note: "Grounded routing subsumed into H1 experiment condition C"
+    - req_id: REQ-H4
+      registry_id: null
+      note: "Tool result re-entry deferred to Phase 5 per REQ"
+    - req_id: REQ-H5
+      registry_id: H10
+      note: "Specialized vs unified modality models — new H10"
+    - req_id: REQ-H6
+      registry_id: null
+      note: "AffordancePipeline as coordinator — tested implicitly via H1"
+    - req_id: REQ-H7
+      registry_id: H5
+      note: "Audio grounding bypasses text — covered by H5 + Phase 2b task"
+
+hypotheses:
+  - id: H1
+    name: "Cross-modal coordination necessity"
+    statement: >
+      Effective multimodal grounding in Hapax requires an explicit
+      coordination mechanism between perceptual (camera, IR, audio) and
+      text-based (LLM, vault, codebase) grounding channels, rather than
+      independent parallel paths.
+    source_pass: phase1a-grounding-inventory-audit
+    classification: contested
+    phase2_relevance: deferred
+    phase2_note: >
+      Phase 2 focuses on audio-only grounding (H5). H1 is testable only
+      after at least two modalities are deployed (Phase 4 per REQ).
+    supporting_evidence:
+      - source: "phase1a inventory"
+        detail: >
+          Current pipeline shows text-mediated bottleneck: perception → text
+          summary → LLM → action. Removing the bottleneck requires coordination.
+      - source: "temporal bands architecture"
+        detail: >
+          Retention/protention/impression already coordinate across time scales,
+          suggesting a coordination pattern exists and works.
+      - source: "phase1a grounding flow diagram"
+        detail: >
+          10 LLM sites + 6 embedding sites + 7 perceptual field readers all
+          funnel through a text pool before grounding decisions. The bottleneck
+          is structural, not incidental.
+    contradicting_evidence:
+      - source: "embodied robotics literature"
+        detail: >
+          Brooks (1991) subsumption architecture and modern parallel-pathway
+          robotics (e.g., ROS2 behavior trees) demonstrate effective multimodal
+          systems WITHOUT an executive coordinator. Parallel reactive paths with
+          priority arbitration can achieve coherent behavior.
+      - source: "stigmergic mesh hypothesis"
+        detail: >
+          Hapax's own filesystem-as-bus architecture is explicitly non-coordinated
+          — agents trace artifacts, not messages. Adding explicit coordination
+          contradicts the founding architectural principle.
+    hapax_applicability: >
+      The robotics counter-evidence applies partially: Hapax IS a parallel-path
+      system (filesystem-as-bus). However, Hapax differs from robot subsumption
+      in that its perceptual channels feed into LLM turns that produce speech
+      acts with truth claims. A robot moving an arm doesn't make claims; Hapax
+      speaking "the room is empty" does. The coordination needed is not
+      behavioral but epistemic — ensuring perceptual evidence is fresh when
+      grounding a truth claim.
+    experiment:
+      design: >
+        Compare claim accuracy (operator-rated) between: (A) current text-mediated
+        path (perception → summary → LLM), (B) parallel-path with no coordination
+        (perception available but not gated), (C) gated path with freshness
+        constraint (perception → freshness check → LLM only if fresh).
+      metric: "Operator-rated claim accuracy on 50 environmental assertions"
+      duration: "2 weeks (collect 50 assertions per condition)"
+      feasibility: "High — requires only GroundingContextEnvelope freshness toggle"
+      phase: 4
+      depends_on:
+        - "Phase 2 audio grounding deployed"
+        - "Phase 3 vision grounding deployed"
+
+  - id: H2
+    name: "Perceptual grounding reduces hallucination"
+    statement: >
+      Providing current perceptual state (camera, IR, audio) to the LLM
+      reduces environmental hallucinations compared to text-only context.
+    source_pass: phase1a-grounding-inventory-audit
+    classification: untested
+    phase2_relevance: indirect
+    phase2_note: >
+      Phase 2c (information preservation measurement) provides partial
+      evidence: if text-reduction destroys signal that would prevent
+      hallucination, this supports H2 indirectly.
+    supporting_evidence:
+      - source: "grounding context envelope"
+        detail: >
+          The clause verifier already catches stale "now/currently" claims
+          when impressions are stale, suggesting perceptual grounding prevents
+          at least some hallucinations.
+      - source: "phase1a inventory: primary bottlenecks"
+        detail: >
+          Three primary bottleneck sites identified where full perceptual signal
+          is reduced to text: audio_perception (audio→label), camera_classifier
+          (video→JSON), visual_layer_aggregator (multi-sensor→text). Each
+          represents information loss where hallucination could fill the gap.
+    contradicting_evidence:
+      - source: "none identified"
+        detail: "No contradicting evidence found in current research passes."
+    experiment:
+      design: >
+        A/B test: 100 LLM turns with vs. without perceptual context injected.
+        Operator labels each turn for environmental accuracy. Phase 2 variant:
+        use audio-only perceptual context (CLAP labels + pyannote speaker state)
+        as partial test before full multimodal injection.
+      metric: "Environmental hallucination rate (false positive environmental claims)"
+      duration: "1 week"
+      feasibility: "High — toggle perceptual context in system prompt"
+      phase: 2
+      depends_on:
+        - "Phase 2a audio stack deployed"
+
+  - id: H3
+    name: "Temporal freshness is the primary grounding constraint"
+    statement: >
+      The dominant failure mode in multimodal grounding is staleness —
+      using outdated perceptual evidence for current-world claims — rather
+      than modality mismatch or sensor error.
+    source_pass: phase1a-grounding-inventory-audit
+    classification: supported
+    phase2_relevance: contextual
+    phase2_note: >
+      Phase 2 does not directly test H3, but the information preservation
+      measurement (2c) will reveal whether temporal decay or signal type
+      matters more for grounding quality.
+    supporting_evidence:
+      - source: "clause verifier implementation"
+        detail: >
+          The existing verifier's primary gate is freshness-based: stale
+          impressions block "now/currently" claims. This was designed from
+          observed failure modes.
+      - source: "temporal bands architecture"
+        detail: >
+          The entire temporal band system exists to track freshness, retention,
+          and protention — evidence that staleness is recognized as the primary
+          constraint.
+      - source: "phase1a inventory: info loss column"
+        detail: >
+          Of 23 cataloged grounding sites, 15 show temporal information loss
+          (flattening of temporal patterns, loss of temporal witnesses). Only 5
+          show modality-mismatch loss. Temporal dominates.
+    contradicting_evidence:
+      - source: "sensor error scenarios"
+        detail: >
+          IR sensors occasionally misclassify (e.g., heat source as person).
+          Sensor error is a distinct failure mode from staleness.
+    experiment:
+      design: >
+        Categorize 100 grounding failures by root cause: staleness, sensor error,
+        modality mismatch, missing sensor, other. Measure relative frequency.
+      metric: "Proportion of failures attributable to staleness vs other causes"
+      duration: "2 weeks of passive collection"
+      feasibility: "Medium — requires grounding failure logging"
+      phase: 3
+      depends_on:
+        - "Grounding failure logger deployed"
+
+  - id: H4
+    name: "Self-perception of rendered output enables aesthetic self-correction"
+    statement: >
+      If the compositor perceives its own rendered output (via final frame
+      classifier), the drift engine can correct aesthetic drift without
+      operator intervention.
+    source_pass: phase1b-adjacent-domain-survey
+    classification: untested
+    phase2_relevance: none
+    phase2_note: "Phase 3+ concern. Not touched by audio grounding evaluation."
+    supporting_evidence:
+      - source: "adjacent domain survey §5"
+        detail: >
+          Closed-loop visual control (intent → render → perceive → adjust)
+          is architecturally feasible. The final frame classifier already
+          exists.
+      - source: "adjacent domain survey §5: damping requirement"
+        detail: >
+          Survey identified specific requirement: feedback latency must exceed
+          drift tick rate by 4× minimum to prevent oscillation. This makes the
+          hypothesis testable with a concrete damping parameter.
+    contradicting_evidence:
+      - source: "oscillation risk"
+        detail: >
+          Without damping, the feedback loop may oscillate between effect
+          states. The survey identified this as a non-trivial architectural
+          consequence.
+    experiment:
+      design: >
+        Enable final frame classification feedback to drift parameters
+        with damping (update rate = drift_tick_rate / 4). Measure visual
+        variance stability over 1-hour runs with vs. without feedback.
+      metric: "Effect state change frequency and visual variance score stability"
+      duration: "1 week (10 paired 1-hour runs)"
+      feasibility: "Medium — requires feedback wiring + damping mechanism"
+      phase: 3
+      depends_on:
+        - "Florence-2 or equivalent deployed on 5060 Ti"
+
+  - id: H5
+    name: "Audio grounding bypasses text mediation for presence"
+    statement: >
+      Audio grounding tools (pyannote speaker detection, CLAP scene
+      classification, Essentia music analysis) provide immediate value
+      without requiring cross-modal coordination, bypassing the current
+      text-mediated perception path for specific operations.
+    source_pass: phase1b-adjacent-domain-survey
+    classification: untested
+    phase2_relevance: primary
+    phase2_note: >
+      This is the primary hypothesis tested by Phase 2b (H7 evaluation per
+      REQ numbering). Three concrete sub-tests defined in Phase 2b task.
+    supporting_evidence:
+      - source: "adjacent domain survey §4"
+        detail: >
+          stt_voice_activity_detected is already a binary signal from the
+          STT frontend. Wiring it as presence indicator is a small task.
+      - source: "phase1a inventory: audio perception daemon"
+        detail: >
+          audio_perception/daemon.py is flagged as a PRIMARY BOTTLENECK:
+          full audio → text label. Audio grounding tools operate on raw audio
+          without this text reduction step.
+      - source: "phase1a inventory: CLAP already exists"
+        detail: >
+          agents/_clap.py already implements CLAP audio → 512d vector
+          embedding. The infrastructure for non-text audio representation exists.
+    contradicting_evidence:
+      - source: "false positive risk"
+        detail: "Audio-only presence has false positives (TV, music, external noise)."
+    experiment:
+      design: >
+        Three sub-tests (defined in Phase 2b task):
+        Test 1: pyannote speaker detection vs. text-mediated "operator speaking"
+        detection. Side-by-side precision/recall on labeled windows.
+        Test 2: CLAP scene classification vs. Command-R-mediated path for
+        programme decisions. Three decision scenarios compared.
+        Test 3: Essentia music analysis providing information currently absent
+        (tempo/key/genre/energy). Practical value assessment.
+      metric: >
+        T1: detection latency (ms) + precision/recall.
+        T2: utility score per scenario (0-3 scale).
+        T3: binary — does the info exist elsewhere? + value judgment.
+      duration: "3 days (post-48h collection from Phase 2a)"
+      feasibility: "High — signals exist, comparison is analytical"
+      phase: 2
+      depends_on:
+        - "Phase 2a: 48h audio stack data collected"
+      tested_by_task: 20260509-multimodal-grounding-phase2b-h7-evaluation
+
+  - id: H6
+    name: "Perceptual assertions require different epistemic tracking"
+    statement: >
+      Text-grounded and perceptually-grounded assertions have different
+      epistemic decay characteristics and should not share a single
+      confidence posterior.
+    source_pass: phase1b-adjacent-domain-survey
+    classification: supported
+    phase2_relevance: indirect
+    phase2_note: >
+      Phase 2c (information preservation) will measure what text-reduction
+      destroys. If temporal/decay characteristics dominate the lost signal,
+      this strengthens H6.
+    supporting_evidence:
+      - source: "adjacent domain survey §1"
+        detail: >
+          Text-grounded assertions carry verifiable citation chains.
+          Perceptual assertions carry temporal witnesses that decay.
+          Different staleness profiles require different tracking.
+      - source: "adjacent domain survey §1: grounding_modality field"
+        detail: >
+          Survey recommends assertion type system needs grounding_modality
+          field (text/perceptual/multimodal) and staleness-aware confidence
+          decay for perceptual claims. This is a concrete design requirement.
+    contradicting_evidence:
+      - source: "simplicity argument"
+        detail: >
+          A unified posterior with a modality tag may be simpler to
+          implement and reason about than dual-track confidence.
+    experiment:
+      design: >
+        Implement both: (A) unified posterior with modality tag, (B)
+        separate tracks. Compare calibration error over 200 mixed
+        assertions using operator ground truth.
+      metric: "Calibration error (expected confidence vs. operator accuracy rating)"
+      duration: "4 weeks (requires labeled assertion dataset)"
+      feasibility: "Low — requires both implementations + labeled data"
+      phase: 4
+      depends_on:
+        - "Audio + vision grounding deployed"
+        - "Unb-AIRy assertion plane extended with modality field"
+
+  - id: H7
+    name: "Embodiment strengthens the CHI research contribution"
+    statement: >
+      Framing Hapax as an 'embodied stigmergic cognitive mesh' produces
+      a stronger CHI 2027 contribution than the current 'stigmergic
+      cognitive mesh' framing.
+    source_pass: phase1b-adjacent-domain-survey
+    classification: supported
+    phase2_relevance: none
+    phase2_note: "CHI framing question. Independent of audio evaluation."
+    supporting_evidence:
+      - source: "adjacent domain survey §3"
+        detail: >
+          Two reasons: (1) novelty differentiation from swarm intelligence
+          literature, (2) empirical grounding via testable hypotheses about
+          perceptual self-correction.
+      - source: "adjacent domain survey §3: homunculus avoidance"
+        detail: >
+          Survey raises but does not resolve homunculus problem. If resolved
+          (by distinguishing self-generated from environmental signals), the
+          contribution is even stronger.
+    contradicting_evidence:
+      - source: "scope risk"
+        detail: >
+          Adding embodiment expands the paper scope and may dilute the
+          core stigmergic coordination contribution.
+    experiment:
+      design: >
+        Write two 300-word abstracts: (A) stigmergic mesh only, (B)
+        embodied stigmergic mesh. Submit both to 3 domain experts for
+        blind evaluation of novelty, clarity, and contribution strength.
+      metric: "Expert ratings on novelty (1-5) and contribution strength (1-5)"
+      duration: "2 weeks (expert scheduling)"
+      feasibility: "Medium — requires expert access"
+      phase: independent
+      depends_on: []
+
+  - id: H8
+    name: "Publication evidence can include perceptual artifacts"
+    statement: >
+      Frame captures and compositor state snapshots with provenance metadata
+      can serve as publication bus evidence alongside codebase evidence.
+    source_pass: phase1b-adjacent-domain-survey
+    classification: untested
+    phase2_relevance: none
+    phase2_note: "Publication bus concern. Independent of audio evaluation."
+    supporting_evidence:
+      - source: "AVSDLC visual evidence contract"
+        detail: "Already defines what visual evidence needs for quality review."
+      - source: "adjacent domain survey §2"
+        detail: >
+          Provenance requirements identified: camera ID, timestamp, compositor
+          version, effect state hash. Existing AVSDLC contract can be extended.
+    contradicting_evidence:
+      - source: "reproducibility concern"
+        detail: "Perceptual artifacts are temporally bound and not independently reproducible."
+    experiment:
+      design: >
+        Produce 10 publication claims backed by frame capture evidence only.
+        Evaluate whether reviewers can independently verify claims from the
+        artifacts + provenance metadata alone.
+      metric: "Reviewer agreement on claim support (yes/no) for 10 claims"
+      duration: "1 week"
+      feasibility: "High — uses existing frame capture tooling"
+      phase: independent
+      depends_on:
+        - "Frame capture provenance metadata implemented"
+
+  - id: H9
+    name: "Multimodal grounding is necessary for livestream quality"
+    statement: >
+      Livestream broadcast quality (audience retention, visual coherence)
+      improves measurably when the system uses multimodal grounding vs.
+      text-only context for content programming decisions.
+    source_pass: phase1a-grounding-inventory-audit
+    classification: untested
+    phase2_relevance: indirect
+    phase2_note: >
+      Phase 2 audio grounding may inform programme decisions (Test 2 in Phase 2b).
+      If CLAP scene classification improves programme choices, H9 gains partial
+      support from a single modality.
+    supporting_evidence:
+      - source: "content programming architecture"
+        detail: "Programme scheduler already considers WCS health snapshots."
+      - source: "phase1a inventory: content_programmer/grounding_runner.py"
+        detail: >
+          Grounding runner explicitly reduces visual/audio evidence to text
+          summaries. Programme decisions operate on lossy input.
+    contradicting_evidence:
+      - source: "none identified"
+        detail: "No A/B data exists yet."
+    experiment:
+      design: >
+        Compare 10 programme runs with full multimodal grounding vs. 10
+        with text-only context. Measure visual coherence score and audience
+        engagement metrics.
+      metric: "Visual variance stability + chat engagement rate"
+      duration: "2 weeks"
+      feasibility: "Low — requires sufficient audience for engagement metrics"
+      phase: 4
+      depends_on:
+        - "Audio + vision grounding deployed"
+        - "Programme scheduler integrated with grounding signals"
+
+  - id: H10
+    name: "Specialized audio grounders outperform unified VLM at hapax's VRAM budget"
+    statement: >
+      For audio grounding specifically, dedicated CPU-only tools (CLAP +
+      pyannote + Essentia) provide better grounding signal per watt than
+      routing audio through a unified multimodal model (e.g., Qwen3-VL
+      with audio), given hapax's 24GB+16GB VRAM constraint.
+    source_pass: phase1a-grounding-inventory-audit
+    classification: untested
+    phase2_relevance: primary
+    phase2_note: >
+      Phase 2a deploys the specialized stack. Phase 2b measures its utility.
+      If the specialized stack provides sufficient value, H10 is supported
+      without needing to test the VLM alternative (since the VLM would consume
+      scarce VRAM that Command-R currently occupies).
+    supporting_evidence:
+      - source: "VRAM budget constraint"
+        detail: >
+          24GB 3090 hosts Command-R 35B EXL3 (13+13 split). Adding a VLM
+          would require displacing Command-R or accepting quality loss from
+          a smaller model. CPU-only audio tools avoid this tradeoff entirely.
+      - source: "phase1a inventory: _clap.py exists"
+        detail: >
+          CLAP already runs on CPU in the codebase (agents/_clap.py). The
+          specialized approach has existing infrastructure.
+    contradicting_evidence:
+      - source: "unified model simplicity"
+        detail: >
+          A single unified model (Qwen3-VL-4B or similar) handles all
+          modalities with one inference call, reducing integration complexity.
+          If it fits alongside Command-R, it might be simpler to maintain.
+    experiment:
+      design: >
+        Phase 2 tests the specialized stack alone. If Phase 3 deploys Florence-2
+        on the 5060 Ti, compare: does adding a small VLM (Qwen3-VL-4B, ~3GB VRAM)
+        provide better audio grounding than the dedicated CPU tools? Test same
+        audio events through both paths.
+      metric: >
+        Signal quality per unit resource: (information bits preserved) /
+        (VRAM GB consumed + CPU threads consumed).
+      duration: "1 week (post Phase 3 deployment)"
+      feasibility: "Medium — requires Phase 3 VLM to be deployed for comparison"
+      phase: 3
+      depends_on:
+        - "Phase 2 specialized stack evaluated"
+        - "Phase 3 VLM deployed on 5060 Ti"
+
+  - id: H11
+    name: "Text reduction destroys grounding-relevant signal for hapax use cases"
+    statement: >
+      The current text-mediated path (Whisper → transcript → LLM) destroys
+      audio signal that is relevant to hapax's specific grounding decisions
+      (presence, programme state, studio activity classification), and this
+      lost signal is recoverable via dedicated audio grounding tools.
+    source_pass: phase1a-grounding-inventory-audit
+    classification: untested
+    phase2_relevance: primary
+    phase2_note: >
+      This is the primary hypothesis tested by Phase 2c (information
+      preservation measurement). Direct comparison of both paths on
+      same audio events.
+    supporting_evidence:
+      - source: "phase1a inventory: three primary bottlenecks"
+        detail: >
+          Inventory audit identified three PRIMARY BOTTLENECK sites where
+          rich perceptual signal collapses to text: audio_perception daemon,
+          camera_classifier_publisher, visual_layer_aggregator. The audio
+          bottleneck is the target of Phase 2 testing.
+      - source: "phase1a grounding flow diagram"
+        detail: >
+          Mermaid diagram shows all audio paths funnel through a text pool
+          (STT transcript or audio health labels) before reaching grounding
+          decisions. Non-text paths (CLAP 512d embedding) exist but bypass
+          the text pool — they're underutilized.
+    contradicting_evidence:
+      - source: "sufficiency argument"
+        detail: >
+          The system currently functions with text-mediated audio. If
+          Whisper transcription captures enough for grounding decisions,
+          additional signal may be noise rather than information.
+    experiment:
+      design: >
+        For 10+ audio events across diverse studio states, capture both:
+        (A) Whisper → text → Command-R path output,
+        (B) CLAP + pyannote + Essentia → structured JSON path output.
+        Build comparison table: info in B but not A, info in A but not B,
+        info in both. For 3+ hapax use cases, judge whether B's unique
+        info matters.
+      metric: >
+        Percentage of grounding-relevant signal destroyed by text reduction,
+        measured per use case. Binary judgment: does the preserved info change
+        a grounding decision?
+      duration: "1 week (post-48h data from Phase 2a)"
+      feasibility: "High — both paths run on same audio, comparison is analytical"
+      phase: 2
+      depends_on:
+        - "Phase 2a: 48h audio stack data collected"
+      tested_by_task: 20260509-multimodal-grounding-phase2c-information-preservation-measurement
+
+phase2_experiment_map:
+  note: >
+    Maps Phase 2 empirical tasks to the hypotheses they test. This enables
+    the Phase 2 gate synthesis to update hypothesis classifications based
+    on empirical results.
+  tasks:
+    - task_id: 20260509-multimodal-grounding-phase2a-audio-stack-deployment
+      tests_hypotheses: []
+      enables_testing_of: [H5, H10, H11]
+      note: "Infrastructure deployment. No hypothesis tested directly — enables 2b and 2c."
+    - task_id: 20260509-multimodal-grounding-phase2b-h7-evaluation
+      tests_hypotheses: [H5]
+      contributes_evidence_to: [H2, H9, H10]
+      note: "Primary H5 test. Indirect evidence for H2 (if audio presence reduces hallucination), H9 (if programme decisions improve), H10 (if specialized tools suffice)."
+    - task_id: 20260509-multimodal-grounding-phase2c-information-preservation-measurement
+      tests_hypotheses: [H11]
+      contributes_evidence_to: [H3, H5, H6]
+      note: "Primary H11 test. If temporal signal dominates lost info, supports H3. If audio-specific info is recoverable, supports H5. If decay characteristics differ by modality, supports H6."
+    - task_id: 20260509-multimodal-grounding-phase2c-hypothesis-registry
+      tests_hypotheses: []
+      note: "This task. Registry update, not empirical work."
