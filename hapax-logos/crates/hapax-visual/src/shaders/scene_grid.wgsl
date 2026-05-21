@@ -250,15 +250,17 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let half_vec = normalize(to_light + view_dir);
         let spec = pow(max(dot(sn, half_vec), 0.0), 64.0);
         let shadow = soft_shadow_at(hit, grid.light_position.xyz);
-        let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 3.6);
+        let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 2.0);
 
-        let ambient = vec3<f32>(0.07, 0.08, 0.15);
-        let diffuse = light_color * ndotl * 0.26 * shadow;
+        let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 2.2);
+
+        let ambient = vec3<f32>(0.05, 0.06, 0.12);
+        let diffuse = light_color * ndotl * 0.24 * shadow;
         let specular = light_color * spec * 0.48 * shadow;
-        let rim = light_color * fresnel * 0.62;
+        let rim = (light_color + vec3<f32>(0.12, 0.16, 0.24)) * fresnel * 0.90;
         var sphere_color = ambient + diffuse + specular + rim;
-        let sphere_alpha = clamp(0.15 + fresnel * 0.30 + spec * 0.15, 0.13, 0.46);
-        return FragOutput(vec4<f32>(sphere_color, sphere_alpha), 1.0);
+        let sphere_alpha = clamp(0.10 + fresnel * 0.34 + spec * 0.14, 0.08, 0.50);
+        return FragOutput(vec4<f32>(sphere_color, sphere_alpha), 0.999);
     }
 
     if in.plane_kind > 2.5 {
@@ -268,7 +270,7 @@ fn fs_main(in: VertexOutput) -> FragOutput {
             let halo = smoothstep(1.0, 0.08, d);
             let alpha = clamp(core * 0.58 + halo * 0.22, 0.0, 0.72);
             let color = light_color * (0.85 + core * 1.4);
-            return FragOutput(vec4<f32>(color, alpha), raster_depth);
+            return FragOutput(vec4<f32>(color, alpha), 0.999);
         }
 
         let across = abs(in.local_pos.x);
@@ -278,7 +280,7 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let shimmer = 0.88;
         let alpha = center * taper * shimmer * 0.22;
         let color = light_color * (0.36 + 0.42 * center);
-        return FragOutput(vec4<f32>(color, alpha), raster_depth);
+        return FragOutput(vec4<f32>(color, alpha), 1.0);
     }
 
     var gc: vec2<f32>;

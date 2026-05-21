@@ -840,7 +840,7 @@ impl SceneRenderer {
                 queue.write_buffer(&self.grid_uniform_buffer, 0, bytemuck::bytes_of(&grid_data));
                 pass.set_pipeline(&self.grid_pipeline);
                 pass.set_bind_group(0, &self.grid_uniform_bind_group, &[]);
-                pass.draw(0..54, 0..1); // Room grids + light + volumetric rays + AoA insphere
+                pass.draw(0..48, 0..1); // Room grids + light + volumetric rays
             }
 
             // ── Draw content quads ───────────────────────────────────
@@ -943,6 +943,11 @@ impl SceneRenderer {
                 pass.set_bind_group(1, tex_bg, &[]);
                 pass.draw(0..*vertex_count, 0..1);
             }
+
+            // ── AoA insphere — drawn AFTER content quads so it composites on top ──
+            pass.set_pipeline(&self.grid_pipeline);
+            pass.set_bind_group(0, &self.grid_uniform_bind_group, &[]);
+            pass.draw(48..54, 0..1);
         }
 
         queue.submit(std::iter::once(encoder.finish()));
