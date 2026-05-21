@@ -201,3 +201,55 @@ def test_close_triggered_cascade_does_not_validate_unrelated_closed_tasks(
     assert module.cascade_unblock("valid-dep") == 1
     assert checked_prs == ["123"]
     assert "status: offered" in target.read_text(encoding="utf-8")
+
+
+def test_cascade_withdraw_when_all_deps_nonfulfilling(tmp_path: Path) -> None:
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+    _write_task(vault, "active", "dep-a", status="withdrawn")
+    _write_task(vault, "active", "dep-b", status="superseded")
+    target = _write_task(
+        vault,
+        "active",
+        "downstream",
+        status="ready",
+        depends_on=["dep-a", "dep-b"],
+    )
+
+    assert module.cascade_withdraw() == 1
+    text = target.read_text(encoding="utf-8")
+    assert "status: withdrawn" in text
+    assert "all dependencies withdrawn/cancelled" in text
+
+
+def test_cascade_withdraw_skips_mixed_deps(tmp_path: Path) -> None:
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+    _write_task(vault, "closed", "dep-done", status="done")
+    _write_task(vault, "active", "dep-withdrawn", status="withdrawn")
+    target = _write_task(
+        vault,
+        "active",
+        "downstream",
+        status="blocked",
+        depends_on=["dep-done", "dep-withdrawn"],
+    )
+
+    assert module.cascade_withdraw() == 0
+    assert "status: blocked" in target.read_text(encoding="utf-8")
+
+
+def test_cascade_withdraw_skips_already_withdrawn(tmp_path: Path) -> None:
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+    _write_task(vault, "active", "dep-a", status="withdrawn")
+    target = _write_task(
+        vault,
+        "active",
+        "downstream",
+        status="withdrawn",
+        depends_on=["dep-a"],
+    )
+
+    assert module.cascade_withdraw() == 0
+    assert "status: withdrawn" in target.read_text(encoding="utf-8")
