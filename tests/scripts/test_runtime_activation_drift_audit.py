@@ -155,6 +155,93 @@ def test_fresh_artifacts_have_no_findings(tmp_path: Path) -> None:
     assert audit.classify_artifact_findings(tmp_path, now) == []
 
 
+def test_critical_request_intake_unit_content_drift_is_critical(tmp_path: Path) -> None:
+    unit = tmp_path / "hapax-request-intake-consumer.service"
+    unit.write_text(
+        "[Unit]\n"
+        "ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/request-intake-consumer\n"
+        "ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/request-fulfillment-reconciler\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "Environment=HAPAX_REQUEST_RECEIPTS=%h/.cache/hapax/request-receipts\n"
+        "Environment=HAPAX_REQUEST_INTAKE_STATE=%h/.cache/hapax/request-intake-state.json\n"
+        "Environment=HAPAX_REQUEST_FULFILLMENT_REPORT=%h/.cache/hapax/request-fulfillment-reconciler.json\n"
+        "Environment=HAPAX_AGENT_NAME=request-intake-consumer\n"
+        "ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/request-intake-consumer --write-receipt --write-state --write-planning-feed\n"
+        "ExecStartPost=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/request-fulfillment-reconciler --apply --write-report --report-path %h/.cache/hapax/request-fulfillment-reconciler.json --quiet\n",
+        encoding="utf-8",
+    )
+    runtime = {
+        unit.name: audit.RuntimeUnit(
+            name=unit.name,
+            file_state="static",
+            active_state="inactive",
+            sub_state="dead",
+        )
+    }
+    stale_runtime_text = (
+        "[Unit]\n"
+        "ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/request-intake-consumer\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "Environment=HAPAX_REQUEST_RECEIPTS=%h/.cache/hapax/request-receipts\n"
+        "Environment=HAPAX_REQUEST_INTAKE_STATE=%h/.cache/hapax/request-intake-state.json\n"
+        "Environment=HAPAX_AGENT_NAME=request-intake-consumer\n"
+        "ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/request-intake-consumer --write-receipt --write-state --write-planning-feed\n"
+    )
+
+    findings = audit.classify_unit_content_findings(
+        tmp_path,
+        runtime,
+        unit_text_loader=lambda _name: stale_runtime_text,
+    )
+
+    assert [
+        (finding.severity, finding.kind, finding.subject, finding.detail) for finding in findings
+    ] == [
+        (
+            "critical",
+            "critical_unit_content_drift",
+            "hapax-request-intake-consumer.service",
+            "installed unit is missing required contract fulfillment_report_environment",
+        ),
+        (
+            "critical",
+            "critical_unit_content_drift",
+            "hapax-request-intake-consumer.service",
+            "installed unit is missing required contract fulfillment_reconciler_exec_start_post",
+        ),
+    ]
+
+
+def test_critical_request_intake_unit_content_match_has_no_findings(tmp_path: Path) -> None:
+    unit = tmp_path / "hapax-request-intake-consumer.service"
+    unit_text = (
+        "[Service]\n"
+        "Environment=HAPAX_REQUEST_FULFILLMENT_REPORT=%h/.cache/hapax/request-fulfillment-reconciler.json\n"
+        "ExecStartPost=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/request-fulfillment-reconciler --apply --write-report --report-path %h/.cache/hapax/request-fulfillment-reconciler.json --quiet\n"
+    )
+    unit.write_text(unit_text, encoding="utf-8")
+    runtime = {
+        unit.name: audit.RuntimeUnit(
+            name=unit.name,
+            file_state="static",
+            active_state="inactive",
+            sub_state="dead",
+        )
+    }
+
+    findings = audit.classify_unit_content_findings(
+        tmp_path,
+        runtime,
+        unit_text_loader=lambda _name: unit_text,
+    )
+
+    assert findings == []
+
+
 def test_security_signal_artifact_matches_systemd_state_contract() -> None:
     artifacts = {label: relative_path for label, relative_path, _ in audit.CRITICAL_ARTIFACTS}
 
