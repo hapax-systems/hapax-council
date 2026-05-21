@@ -157,13 +157,14 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
         world = grid.light_position.xyz + vec3<f32>(lp.x * 0.28, lp.y * 0.28, 0.0);
         n = vec3<f32>(0.0, 0.0, 1.0);
     } else if quad_idx == 8u {
-        // AoA inner sphere billboard at tetrix centroid.
-        let center = vec3<f32>(0.0, -0.094, 0.10);
-        let radius = 0.18;
-        let view_right = normalize(vec3<f32>(grid.view[0][0], grid.view[1][0], grid.view[2][0]));
-        let view_up = normalize(vec3<f32>(grid.view[0][1], grid.view[1][1], grid.view[2][1]));
-        world = center + view_right * lp.x * radius + view_up * lp.y * radius;
-        n = normalize(vec3<f32>(grid.view[0][2], grid.view[1][2], grid.view[2][2]));
+        // AoA insphere — ray-marched in fragment shader.
+        // Billboard oversized to contain the sphere from any angle.
+        let sphere_center = vec3<f32>(0.0, -0.4875, -1.36);
+        let extent = 0.56;
+        let vr = normalize(vec3<f32>(grid.view[0][0], grid.view[1][0], grid.view[2][0]));
+        let vu = normalize(vec3<f32>(grid.view[0][1], grid.view[1][1], grid.view[2][1]));
+        world = sphere_center + vr * lp.x * extent + vu * lp.y * extent;
+        n = -normalize(vec3<f32>(grid.view[0][2], grid.view[1][2], grid.view[2][2]));
     } else {
         // Soft volumetric beam billboards from the moving light into the room.
         let start = grid.light_position.xyz;
@@ -207,20 +208,52 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let light_color = grid.light_color.rgb;
 
     if in.plane_kind > 7.5 {
-        // AoA inner sphere — inscribed core at tetrix centroid.
-        let d = length(in.local_pos);
-        if d > 1.0 {
+        // AoA insphere — ray-sphere intersection for perspective-correct 3D shading.
+        // Perfectly fitted to the central octahedral void of the tetrix (depth 1).
+        let sphere_center = vec3<f32>(0.0, -0.4875, -1.36);
+        let sphere_radius = 0.4777;
+
+        // Camera position from the inverse view matrix.
+        let vt = grid.view[3].xyz;
+        let cam_pos = -vec3<f32>(
+            grid.view[0][0] * vt.x + grid.view[1][0] * vt.y + grid.view[2][0] * vt.z,
+            grid.view[0][1] * vt.x + grid.view[1][1] * vt.y + grid.view[2][1] * vt.z,
+            grid.view[0][2] * vt.x + grid.view[1][2] * vt.y + grid.view[2][2] * vt.z,
+        );
+        let ray_dir = normalize(wp - cam_pos);
+
+        // Analytic ray-sphere intersection.
+        let oc = cam_pos - sphere_center;
+        let b = dot(oc, ray_dir);
+        let c = dot(oc, oc) - sphere_radius * sphere_radius;
+        let discriminant = b * b - c;
+        if discriminant < 0.0 {
             discard;
         }
-        let fresnel = pow(d, 2.2);
-        let rim = smoothstep(0.62, 0.98, d);
-        let inner_glow = smoothstep(0.58, 0.0, d) * 0.28;
-        let sphere_alpha = clamp(rim * 0.42 + inner_glow + fresnel * 0.14, 0.0, 0.52);
-        let shadow = soft_shadow_at(wp, grid.light_position.xyz);
-        let room_light = point_light_at(wp, in.normal) * shadow;
-        var sphere_color = light_color * (0.30 + rim * 0.65 + room_light * 0.18);
-        sphere_color = sphere_color + vec3<f32>(0.04, 0.06, 0.12) * inner_glow * 3.0;
-        return vec4<f32>(sphere_color, sphere_alpha * (0.82 + 0.18 * shadow));
+        let t_hit = -b - sqrt(discriminant);
+        if t_hit < 0.0 {
+            discard;
+        }
+        let hit = cam_pos + ray_dir * t_hit;
+        let sn = normalize(hit - sphere_center);
+
+        // Perspective-correct Phong shading.
+        let to_light = normalize(grid.light_position.xyz - hit);
+        let ndotl = max(dot(sn, to_light), 0.0);
+        let view_dir = normalize(cam_pos - hit);
+        let half_vec = normalize(to_light + view_dir);
+        let spec = pow(max(dot(sn, half_vec), 0.0), 48.0);
+        let shadow = soft_shadow_at(hit, grid.light_position.xyz);
+        let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 2.8);
+
+        let ambient = vec3<f32>(0.10, 0.12, 0.22);
+        let diffuse = light_color * ndotl * 0.42 * shadow;
+        let specular = light_color * spec * 0.72 * shadow;
+        let rim = light_color * fresnel * 0.85;
+        let emission = vec3<f32>(0.06, 0.09, 0.18);
+        var sphere_color = ambient + diffuse + specular + rim + emission;
+        let sphere_alpha = clamp(0.28 + fresnel * 0.38 + ndotl * 0.12 + spec * 0.22, 0.26, 0.68);
+        return vec4<f32>(sphere_color, sphere_alpha);
     }
 
     if in.plane_kind > 2.5 {
