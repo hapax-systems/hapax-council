@@ -100,7 +100,7 @@ def test_cascade_unblocks_only_when_dependency_closure_is_valid(tmp_path: Path) 
         depends_on=["valid-dep"],
     )
 
-    assert module.cascade_unblock() == 1
+    assert module.cascade_unblock("valid-dep") == 1
     text = target.read_text(encoding="utf-8")
     assert "status: offered" in text
     assert "blocked_reason: null" in text
@@ -125,7 +125,7 @@ def test_cascade_keeps_unchecked_acceptance_dependency_blocked(tmp_path: Path) -
         depends_on=["false-dep"],
     )
 
-    assert module.cascade_unblock() == 0
+    assert module.cascade_unblock("false-dep") == 0
     text = target.read_text(encoding="utf-8")
     assert "status: blocked" in text
     assert "unchecked_acceptance_criteria:Evidence exists" in text
@@ -144,7 +144,7 @@ def test_cascade_keeps_open_pr_dependency_blocked(tmp_path: Path) -> None:
         depends_on=["open-pr-dep"],
     )
 
-    assert module.cascade_unblock() == 0
+    assert module.cascade_unblock("open-pr-dep") == 0
     assert "pr_open:456" in target.read_text(encoding="utf-8")
 
 
@@ -168,7 +168,36 @@ def test_cascade_keeps_malformed_route_dependency_blocked(tmp_path: Path) -> Non
         depends_on=["bad-route-dep"],
     )
 
-    assert module.cascade_unblock() == 0
+    assert module.cascade_unblock("bad-route-dep") == 0
     text = target.read_text(encoding="utf-8")
     assert "status: blocked" in text
     assert "route_metadata:" in text
+
+
+def test_close_triggered_cascade_does_not_validate_unrelated_closed_tasks(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+    checked_prs: list[str] = []
+
+    def check_pr(pr_number: str) -> str:
+        checked_prs.append(pr_number)
+        if pr_number == "999":
+            raise AssertionError("unrelated PR should not be checked")
+        return "merged"
+
+    module._check_pr_merged = check_pr
+    _write_task(vault, "closed", "valid-dep", status="done", pr=123)
+    _write_task(vault, "closed", "unrelated-dep", status="done", pr=999)
+    target = _write_task(
+        vault,
+        "active",
+        "target",
+        status="blocked",
+        depends_on=["valid-dep"],
+    )
+
+    assert module.cascade_unblock("valid-dep") == 1
+    assert checked_prs == ["123"]
+    assert "status: offered" in target.read_text(encoding="utf-8")

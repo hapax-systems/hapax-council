@@ -66,7 +66,35 @@ def _frontmatter_task_id(text: str) -> str | None:
     return None
 
 
-def _dependency_validity() -> tuple[set[str], dict[str, tuple[str, ...]]]:
+def _locate_task(task_id: str) -> Path | None:
+    for root in (ACTIVE, CLOSED):
+        exact = root / f"{task_id}.md"
+        if exact.is_file():
+            return exact
+        for candidate in root.glob(f"{task_id}-*.md"):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _task_aliases(path: Path, text: str) -> set[str]:
+    aliases = {path.stem}
+    task_id = _frontmatter_task_id(text)
+    if task_id:
+        aliases.add(task_id)
+    return aliases
+
+
+def _trigger_aliases(trigger_task_id: str | None) -> set[str]:
+    if not trigger_task_id:
+        return set()
+    path = _locate_task(trigger_task_id)
+    if path is None:
+        return {trigger_task_id}
+    return _task_aliases(path, path.read_text(errors="replace"))
+
+
+def _dependency_validity(dep_ids: set[str]) -> tuple[set[str], dict[str, tuple[str, ...]]]:
     satisfied: set[str] = set()
     blockers: dict[str, tuple[str, ...]] = {}
     pr_state_cache: dict[str, str] = {}
@@ -76,25 +104,23 @@ def _dependency_validity() -> tuple[set[str], dict[str, tuple[str, ...]]]:
             pr_state_cache[pr_number] = _check_pr_merged(pr_number)
         return pr_state_cache[pr_number]
 
-    for d in [ACTIVE, CLOSED]:
-        if not d.is_dir():
+    for dep_id in sorted(dep_ids):
+        path = _locate_task(dep_id)
+        if path is None:
+            blockers[dep_id] = ("dependency_not_found",)
             continue
-        for f in d.glob("*.md"):
-            text = f.read_text(errors="replace")
-            validity = task_closure_validity(
-                text,
-                pr_state_lookup=cached_pr_state,
-                require_route_metadata=True,
-            )
-            ids = {f.stem}
-            task_id = _frontmatter_task_id(text)
-            if task_id:
-                ids.add(task_id)
-            if validity.valid:
-                satisfied.update(ids)
-            else:
-                for task_id in ids:
-                    blockers[task_id] = validity.blockers
+        text = path.read_text(errors="replace")
+        validity = task_closure_validity(
+            text,
+            pr_state_lookup=cached_pr_state,
+            require_route_metadata=True,
+        )
+        ids = _task_aliases(path, text)
+        if validity.valid:
+            satisfied.update(ids)
+        else:
+            for task_id in ids:
+                blockers[task_id] = validity.blockers
     return satisfied, blockers
 
 
@@ -112,12 +138,12 @@ def _parse_depends(text: str) -> list[str]:
     return []
 
 
-def cascade_unblock() -> int:
+def _blocked_candidates(trigger_task_id: str | None) -> list[tuple[Path, str, list[str]]]:
     if not ACTIVE.is_dir():
-        return 0
+        return []
 
-    satisfied_ids, blockers_by_id = _dependency_validity()
-    unblocked = 0
+    trigger_aliases = _trigger_aliases(trigger_task_id)
+    candidates: list[tuple[Path, str, list[str]]] = []
 
     for f in sorted(ACTIVE.glob("*.md")):
         text = f.read_text(errors="replace")
@@ -128,6 +154,23 @@ def cascade_unblock() -> int:
         deps = _parse_depends(text)
         if not deps:
             continue
+        if trigger_aliases and not trigger_aliases.intersection(deps):
+            continue
+        candidates.append((f, text, deps))
+
+    return candidates
+
+
+def cascade_unblock(trigger_task_id: str | None = None) -> int:
+    candidates = _blocked_candidates(trigger_task_id)
+    if not candidates:
+        return 0
+
+    required_dep_ids = {dep for _, _, deps in candidates for dep in deps}
+    satisfied_ids, blockers_by_id = _dependency_validity(required_dep_ids)
+    unblocked = 0
+
+    for f, text, deps in candidates:
 
         unmet = [dep for dep in deps if dep not in satisfied_ids]
         if unmet:
@@ -167,7 +210,10 @@ def cascade_unblock() -> int:
 
 
 if __name__ == "__main__":
-    n = cascade_unblock()
+    trigger = None
+    if len(sys.argv) > 1 and sys.argv[1] != "--reconcile":
+        trigger = sys.argv[1]
+    n = cascade_unblock(trigger)
     if n:
         print(f"cc-cascade-unblock: unblocked {n} task(s)")
     sys.exit(0)
