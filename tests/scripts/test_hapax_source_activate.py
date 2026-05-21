@@ -68,6 +68,18 @@ def _make_repos(tmp_path: Path) -> tuple[Path, Path, str]:
     return canonical, origin, new_sha
 
 
+def _advance_origin(tmp_path: Path, origin: Path, message: str = "advance again") -> str:
+    updater = tmp_path / f"updater-{message.replace(' ', '-')}"
+    _git(tmp_path, "clone", str(origin), str(updater))
+    _git(updater, "config", "user.email", "source-activate@example.test")
+    _git(updater, "config", "user.name", "Source Activate")
+    _write(updater / "README.md", f"base\n{message}\n")
+    _git(updater, "add", "README.md")
+    _git(updater, "commit", "-m", message)
+    _git(updater, "push", "origin", "main")
+    return _git(updater, "rev-parse", "HEAD")
+
+
 def _run_activate(
     tmp_path: Path,
     canonical: Path,
@@ -138,6 +150,35 @@ def test_activation_hold_exits_before_fetch_reset_symlink_sweep_or_deploy(
     assert receipt["status"] == "held"
     assert receipt["deploy_status"] == "skipped_hold"
     assert receipt["active_source_head"] == "unknown"
+
+
+def test_audio_critical_active_drift_holds_before_reset_or_deploy(tmp_path: Path) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    active_source = tmp_path / "active-source"
+    _write(
+        active_source / "config" / "voice-output-routes.yaml",
+        "schema_version: 1\nroles:\n  private_monitor:\n    sink_name: hapax-private\n",
+    )
+    latest_sha = _advance_origin(tmp_path, origin, "advance after audio drift")
+    assert latest_sha != active_sha
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert "audio-critical drift" in second.stderr
+    assert "config/voice-output-routes.yaml" in second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == active_sha
+    assert (active_source / "config" / "voice-output-routes.yaml").exists()
+    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [active_sha]
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "held"
+    assert receipt["deploy_status"] == "skipped_audio_critical_drift"
+    assert receipt["origin_main_sha"] == latest_sha
+    assert receipt["active_source_head"] == active_sha
+    assert "config/voice-output-routes.yaml" in receipt["message"]
 
 
 def test_same_sha_rerun_writes_no_op_and_does_not_redeploy(tmp_path: Path) -> None:

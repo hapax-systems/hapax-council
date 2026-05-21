@@ -5,6 +5,8 @@
 # ROLE rather than hard-coding PipeWire target names. Roles are the
 # fixed enum below; sink_name values are operator-curated PipeWire
 # sink identifiers (the same string ``pw-cat --target=...`` accepts).
+# Runtime repair 2026-05-21: private/director audio remains on the private
+# null sink. ``hapax-voice-monitor`` is retired and must not be targeted.
 #
 # Operator can edit this file at runtime; the router reloads on
 # next route() call when the file mtime advances.
@@ -12,28 +14,26 @@
 schema_version: 1
 roles:
   assistant:
-    sink_name: hapax-voice-fx-capture
+    sink_name: hapax-private
     description: |
-      Operator-private TTS path through the voice FX chain to the
-      master loudnorm chain (`hapax-loudnorm-capture`), then onward
-      to the L-12 → Evil Pet → broadcast route.
+      Operator-private TTS path to the private null sink. It is audible only
+      through the explicit private monitor bridge and never through the
+      livestream chain.
 
   broadcast:
-    sink_name: hapax-livestream
+    sink_name: hapax-voice-fx-capture
     description: |
-      Public-facing voice path on the livestream. Hapax-on-air.
-      Single canonical sink so director cannot accidentally
-      double-route to the broadcast bus.
+      Public-facing voice path through voice FX and loudnorm before the
+      MPC/L-12 livestream return.
 
   private_monitor:
-    sink_name: hapax-voice-monitor
+    sink_name: hapax-private
     description: |
-      Local headphone monitor for studio mixing checks. Never the
-      same sink as the broadcast role; never the same sink as the
-      operator-private assistant role.
+      Local private monitor route via the private null sink. Never the same
+      sink as the broadcast role.
 
   notification:
-    sink_name: hapax-notification-sink
+    sink_name: hapax-notification-private
     description: |
       Short non-speech audio (chimes, alerts). Routed through the
-      notification loopback for a separate gain stage from speech.
+      private notification loopback for a separate gain stage from speech.

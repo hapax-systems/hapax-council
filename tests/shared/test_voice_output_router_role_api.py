@@ -220,3 +220,26 @@ class TestDefaultConfigShipped:
                 f"role {role!r} must be configured in default routes"
             )
             assert result.sink_name, f"role {role!r} must have non-empty sink_name"
+
+    def test_default_yaml_keeps_private_roles_private(self) -> None:
+        """The shipped role map must not route private/director roles to public sinks."""
+
+        router = VoiceOutputRouter()
+        expected = {
+            "assistant": "hapax-private",
+            "broadcast": "hapax-voice-fx-capture",
+            "private_monitor": "hapax-private",
+            "notification": "hapax-notification-private",
+        }
+
+        for role, sink_name in expected.items():
+            assert router.route(role).sink_name == sink_name
+
+        shipped_sinks = {router.route(role).sink_name for role in VOICE_ROLES}
+        assert "hapax-voice-monitor" not in shipped_sinks
+        assert "hapax-notification-sink" not in shipped_sinks
+        assert "hapax-livestream" not in {
+            router.route("assistant").sink_name,
+            router.route("private_monitor").sink_name,
+            router.route("notification").sink_name,
+        }

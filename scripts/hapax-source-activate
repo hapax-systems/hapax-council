@@ -39,6 +39,26 @@ dependency_sync_message=""
 quarantined_untracked_count=0
 quarantined_untracked_path=""
 quarantined_symlink_count=0
+audio_critical_paths=(
+    agents/studio_compositor/director_loop.py
+    config/audio-routing.yaml
+    config/audio-topology.yaml
+    config/hapax/audio-forbidden-links.conf
+    config/hapax/audio-link-map.conf
+    config/pipewire
+    config/voice-output-routes.yaml
+    config/wireplumber
+    scripts/hapax-source-activate
+    scripts/hapax-audio-reconciler
+    scripts/hapax-audio-routing-check
+    scripts/hapax-audio-topology
+    scripts/hapax-private-monitor-recover
+    scripts/hapax-usb-topology-witness
+    shared/audio_routing_policy.py
+    shared/audio_topology_generator.py
+    shared/audio_topology_inspector.py
+    shared/voice_output_router.py
+)
 
 canonical_snapshot() {
     if [[ -d "$CANONICAL_REPO/.git" || -f "$CANONICAL_REPO/.git" ]]; then
@@ -142,6 +162,40 @@ with history.open("a", encoding="utf-8") as fh:
 PY
 }
 
+hold_on_audio_critical_active_drift() {
+    if [[ "$FORCE" == "1" || ! -e "$ACTIVE_WORKTREE/.git" ]]; then
+        return 0
+    fi
+
+    local -a drift_lines
+    mapfile -t drift_lines < <(
+        git -C "$ACTIVE_WORKTREE" status --porcelain=v1 -- "${audio_critical_paths[@]}" \
+            | sed '/^$/d'
+    )
+    if [[ "${#drift_lines[@]}" -eq 0 ]]; then
+        return 0
+    fi
+
+    active_head="$(git -C "$ACTIVE_WORKTREE" rev-parse HEAD 2>/dev/null || echo unknown)"
+    local drift_summary
+    drift_summary="$(
+        printf '%s\n' "${drift_lines[@]}" \
+            | sed 's/^...//' \
+            | sort -u \
+            | head -n 12 \
+            | tr '\n' ',' \
+            | sed 's/,$//'
+    )"
+    write_receipt \
+        "held" \
+        "skipped_audio_critical_drift" \
+        "0" \
+        "audio-critical activation drift active: $drift_summary"
+    echo "hapax-source-activate: held because active source has audio-critical drift: $drift_summary" >&2
+    echo "hapax-source-activate: sourceize the drift or rerun with --force after explicit operator approval" >&2
+    exit 0
+}
+
 if [[ "${HAPAX_SOURCE_ACTIVATE_HOLD:-0}" == "1" || -f "$STATE_DIR/HOLD" ]]; then
     if [[ -e "$ACTIVE_WORKTREE/.git" ]]; then
         active_head="$(git -C "$ACTIVE_WORKTREE" rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -161,6 +215,7 @@ fi
 
 git -C "$CANONICAL_REPO" fetch origin main --quiet
 origin_sha="$(git -C "$CANONICAL_REPO" rev-parse origin/main)"
+hold_on_audio_critical_active_drift
 
 if [[ ! -e "$ACTIVE_WORKTREE/.git" ]]; then
     if [[ -e "$ACTIVE_WORKTREE" ]] && [[ -n "$(find "$ACTIVE_WORKTREE" -mindepth 1 -maxdepth 1 2>/dev/null | head -n 1)" ]]; then
