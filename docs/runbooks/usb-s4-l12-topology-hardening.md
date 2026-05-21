@@ -139,8 +139,9 @@ Expected policy:
 
 - L-12 sink/source are present in `pactl list short sinks` and
   `pactl list short sources`.
-- The default sink is the Ryzen/local-monitor sink governed by
-  `config/wireplumber/10-default-sink-ryzen.conf`, not the L-12 or MPC.
+- The default sink is the fail-closed `hapax-pc-loudnorm` sink governed by
+  `config/wireplumber/10-default-sink-ryzen.conf`, not any physical hardware
+  sink such as L-12, MPC, S-4, M8, Yeti, HDMI, or Bluetooth.
 - The default source may remain L-12 while explicit operator-capture policy is
   unchanged.
 

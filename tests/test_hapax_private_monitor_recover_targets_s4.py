@@ -101,7 +101,6 @@ def test_script_validate_repo_bridge_requires_mpc_target(
         "node.linger = true\n"
         "state.restore = false\n"
         'target.object = "hapax-private"\n'
-        'target.object = "hapax-notification-private"\n'
     )
     repo_bridge.write_text(valid_bridge, encoding="utf-8")
     # Should not raise.

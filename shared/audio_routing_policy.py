@@ -282,7 +282,7 @@ def generated_route_map_texts(
     generated, not hand-mirrored prose.
     """
     _assert_pc_route_fail_closed(policy)
-    desired = _desired_links(topology)
+    desired = _desired_links(topology, policy)
     forbidden = _forbidden_links(topology)
     _assert_no_route_map_contradictions(desired, forbidden)
     return _link_map_text(desired), _forbidden_link_map_text(forbidden)
@@ -352,6 +352,27 @@ def _words(value: str | int | float | bool | None) -> tuple[str, ...]:
     return tuple(value.split()) if isinstance(value, str) else ()
 
 
+def _policy_route(policy: AudioRoutingPolicy, source_id: str) -> RoutePolicy:
+    route = next((route for route in policy.routes if route.source_id == source_id), None)
+    if route is None:
+        raise AudioRoutingPolicyError(f"{source_id} route missing from audio-routing policy")
+    return route
+
+
+def _broadcast_route_enabled(policy: AudioRoutingPolicy, source_id: str) -> bool:
+    route = _policy_route(policy, source_id)
+    return route.broadcast_eligible and route.broadcast_eligibility_basis == "explicit_policy"
+
+
+def _private_tts_route_enabled(policy: AudioRoutingPolicy) -> bool:
+    route = _policy_route(policy, "assistant-private")
+    return (
+        route.route_class == "private"
+        and route.broadcast_eligible is False
+        and route.broadcast_eligibility_basis == "private_refused"
+    )
+
+
 def _pair_links(
     source: str,
     target: str,
@@ -381,9 +402,11 @@ def _loudnorm_to_mpc_links(node: Node, mpc: Node) -> list[tuple[str, str]]:
     )
 
 
-def _desired_links(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...]:
+def _desired_links(
+    topology: TopologyDescriptor,
+    policy: AudioRoutingPolicy,
+) -> tuple[tuple[str, str], ...]:
     l12 = _node(topology, "l12-capture")
-    l12_return = _node(topology, "l12-usb-return")
     l12_evilpet = _node(topology, "l12-evilpet-capture")
     l12_wet = _node(topology, "l12-usb-return-capture")
     livestream = _node(topology, "livestream-tap")
@@ -391,18 +414,14 @@ def _desired_links(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...]:
     voice_fx = _node(topology, "voice-fx")
     tts = _node(topology, "tts-loudnorm")
     music = _node(topology, "music-loudnorm")
-    youtube = _node(topology, "yt-loudnorm")
     mpc = _node(topology, "mpc-usb-output")
     private_sink = _node(topology, "private-sink")
     private_capture = _node(topology, "private-monitor-capture")
     private_output = _node(topology, "private-monitor-output")
     notification_sink = _node(topology, "notification-private-sink")
-    notification_capture = _node(topology, "notification-private-monitor-capture")
-    notification_output = _node(topology, "notification-private-monitor-output")
     role_assistant = _node(topology, "role-assistant")
     role_notification = _node(topology, "role-notification")
     role_broadcast = _node(topology, "role-broadcast")
-    m8 = _node(topology, "m8-loudnorm")
 
     links: list[tuple[str, str]] = []
     links.extend(_pair_links(_playback_name(l12_evilpet), livestream.pipewire_name))
@@ -424,49 +443,36 @@ def _desired_links(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...]:
         )
     )
 
-    links.extend(
-        _pair_links(
-            _playback_name(voice_fx),
-            tts.pipewire_name,
-            target_ports=("playback_FL", "playback_FR"),
+    if _broadcast_route_enabled(policy, "broadcast-tts"):
+        links.extend(
+            _pair_links(
+                _playback_name(voice_fx),
+                tts.pipewire_name,
+                target_ports=("playback_FL", "playback_FR"),
+            )
         )
-    )
-    links.extend(_loudnorm_to_mpc_links(tts, mpc))
-    links.extend(_loudnorm_to_mpc_links(music, mpc))
+        links.extend(_loudnorm_to_mpc_links(tts, mpc))
 
-    m8_positions = m8.channels.positions or ["FL", "FR"]
-    links.extend(
-        _pair_links(
-            _playback_name(m8),
-            l12_return.pipewire_name,
-            source_ports=(f"output_{m8_positions[0]}", f"output_{m8_positions[1]}"),
-            target_ports=("playback_FL", "playback_FR"),
-        )
-    )
+    if _broadcast_route_enabled(policy, "music-bed"):
+        links.extend(_loudnorm_to_mpc_links(music, mpc))
 
-    links.extend(
-        _pair_links(
-            private_sink.pipewire_name,
-            private_capture.pipewire_name,
-            source_ports=("monitor_FL", "monitor_FR"),
-            target_ports=("input_FL", "input_FR"),
+    if _private_tts_route_enabled(policy):
+        links.extend(
+            _pair_links(
+                private_sink.pipewire_name,
+                private_capture.pipewire_name,
+                source_ports=("monitor_FL", "monitor_FR"),
+                target_ports=("input_FL", "input_FR"),
+            )
         )
-    )
-    links.extend(
-        _pair_links(
-            notification_sink.pipewire_name,
-            notification_capture.pipewire_name,
-            source_ports=("monitor_FL", "monitor_FR"),
-            target_ports=("input_FL", "input_FR"),
-        )
-    )
-    links.extend(_loudnorm_to_mpc_links(private_output, mpc))
-    links.extend(_loudnorm_to_mpc_links(notification_output, mpc))
+        links.extend(_loudnorm_to_mpc_links(private_output, mpc))
+        links.extend(_pair_links(_role_output_name(role_assistant), private_sink.pipewire_name))
 
-    links.extend(_pair_links(_role_output_name(role_assistant), private_sink.pipewire_name))
+    # Notifications are deliberately dead-ended at their null sink until
+    # notification-private monitoring has its own route authority. They must
+    # not share the private TTS MPC ingress by default.
     links.extend(_pair_links(_role_output_name(role_notification), notification_sink.pipewire_name))
     links.extend(_pair_links(_role_output_name(role_broadcast), voice_fx.pipewire_name))
-    links.extend(_loudnorm_to_mpc_links(youtube, mpc))
     return tuple(links)
 
 
@@ -480,6 +486,9 @@ def _forbidden_links(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...
     tts = _node(topology, "tts-loudnorm")
     private_output = _node(topology, "private-monitor-output")
     notification_output = _node(topology, "notification-private-monitor-output")
+    youtube = _node(topology, "yt-loudnorm")
+    m8 = _node(topology, "m8-loudnorm")
+    s4 = _node(topology, "s4-loopback")
     role_assistant = _node(topology, "role-assistant")
     role_notification = _node(topology, "role-notification")
     role_multimedia = _node(topology, "role-multimedia")
@@ -507,7 +516,40 @@ def _forbidden_links(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...
                 target_ports=("playback_AUX4", "playback_AUX5"),
             )
         )
+        links.extend(
+            _pair_links(
+                _playback_name(youtube),
+                mpc_target,
+                target_ports=("playback_AUX6", "playback_AUX7"),
+            )
+        )
+        links.extend(
+            _pair_links(
+                _playback_name(notification_output),
+                mpc_target,
+                target_ports=("playback_AUX8", "playback_AUX9"),
+            )
+        )
+        m8_positions = m8.channels.positions or ["FL", "FR"]
+        links.extend(
+            _pair_links(
+                _playback_name(m8),
+                mpc_target,
+                source_ports=(f"output_{m8_positions[0]}", f"output_{m8_positions[1]}"),
+                target_ports=("playback_AUX10", "playback_AUX11"),
+            )
+        )
+    m8_positions = m8.channels.positions or ["FL", "FR"]
+    links.extend(
+        _pair_links(
+            _playback_name(m8),
+            l12_return.pipewire_name,
+            source_ports=(f"output_{m8_positions[0]}", f"output_{m8_positions[1]}"),
+            target_ports=("playback_FL", "playback_FR"),
+        )
+    )
     links.extend(_pair_links("hapax-tts-broadcast-playback", livestream.pipewire_name))
+    links.extend(_pair_links(_playback_name(s4), livestream.pipewire_name))
     links.extend(
         _pair_links(
             legacy_livestream.pipewire_name,

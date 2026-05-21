@@ -232,23 +232,17 @@ _PRIVATE_FORBIDDEN_REACHABILITY = {
     "tts-loudnorm",
 }
 _PRIVATE_MONITOR_BRIDGES = {
-    # HN readiness private-monitor bridges target the MPC Live III endpoint;
-    # the port-level reconciler pins AUX8/AUX9. The third element of each
-    # tuple is the SET of allowed endpoint IDs.
+    # HN readiness private-TTS monitor bridge targets the MPC Live III
+    # endpoint; the port-level reconciler pins AUX8/AUX9. Notification-private
+    # remains dead-ended until it has separate route authority.
     "private-monitor-output": (
         "private-monitor-capture",
         "private-sink",
         ("mpc-usb-output",),
     ),
-    "notification-private-monitor-output": (
-        "notification-private-monitor-capture",
-        "notification-private-sink",
-        ("mpc-usb-output",),
-    ),
 }
 _PRIVATE_MONITOR_CAPTURE_NODES = {
     "private-monitor-capture": "private-sink",
-    "notification-private-monitor-capture": "notification-private-sink",
 }
 _PRIVATE_MONITOR_FAIL_CLOSED_PARAMS = {
     "node.dont-fallback": True,
@@ -859,6 +853,41 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
                     message=(f"{node_id} must be a fail-closed sink with no downstream target"),
                 )
             )
+
+    notification_monitor_ids = (
+        "notification-private-monitor-capture",
+        "notification-private-monitor-output",
+    )
+    notification_monitor_edges = {
+        ("notification-private-sink", "notification-private-monitor-capture"),
+        ("notification-private-monitor-capture", "notification-private-monitor-output"),
+        ("notification-private-monitor-output", "mpc-usb-output"),
+    }
+    for monitor_id in notification_monitor_ids:
+        monitor = node(monitor_id)
+        if monitor is None:
+            continue
+        if (
+            monitor.target_object is not None
+            or monitor.params.get("private_monitor_bridge") is True
+            or monitor.params.get("mpc_usb_input_pair") not in (None, "disabled")
+        ):
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code="notification_private_monitor_bridge_enabled",
+                    message=(
+                        f"{monitor_id} must stay disabled/no-egress until "
+                        "notification-private route authority exists"
+                    ),
+                )
+            )
+    for edge in sorted(notification_monitor_edges & edge_pairs):
+        violations.append(
+            L12ForwardInvariantViolation(
+                code="notification_private_monitor_bridge_enabled",
+                message=(f"{edge[0]} -> {edge[1]} is under-specified and must not be live"),
+            )
+        )
 
     for capture_id, source_id in _PRIVATE_MONITOR_CAPTURE_NODES.items():
         capture = node(capture_id)

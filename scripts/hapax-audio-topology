@@ -443,14 +443,7 @@ def _classify_live_extra_edge(
 
     # MPC-centric topology: private-monitor playback links to the MPC USB
     # multichannel output are canonical only when declared by the descriptor.
-    if (
-        source_name
-        in (
-            "hapax-private-playback",
-            "hapax-notification-private-playback",
-        )
-        and "Akai_Professional_MPC" in target_name
-    ):
+    if source_name == "hapax-private-playback" and "Akai_Professional_MPC" in target_name:
         return "private-monitor-mpc-live-iii-binding"
 
     # L-12 USB-return capture: edges feeding runtime-classified nodes
@@ -1102,10 +1095,7 @@ def _print_truth(truth, *, live_available: bool) -> None:
         print()
 
     print("── Ingress Ledger: What is entering PC audio? ──")
-    print(
-        f"  {'SOURCE':<28} {'ROLE':<14} {'CLASS':<32} {'DOMAIN':<12} "
-        f"{'LIVESTREAM':<11} {'LIVE'}"
-    )
+    print(f"  {'SOURCE':<28} {'ROLE':<14} {'CLASS':<32} {'DOMAIN':<12} {'LIVESTREAM':<11} {'LIVE'}")
     print("  " + "-" * 110)
     for entry in truth.ingress:
         ls = "YES" if entry.livestream_eligible else "no"
@@ -1122,10 +1112,7 @@ def _print_truth(truth, *, live_available: bool) -> None:
     print(f"  {'ROUTE CLASS':<36} {'→ DOMAIN':<14} {'STATUS':<14} REASON")
     print("  " + "-" * 100)
     for edge in truth.route_matrix:
-        print(
-            f"  {edge.route_class:<36} {edge.target_domain:<14} "
-            f"{edge.status:<14} {edge.reason}"
-        )
+        print(f"  {edge.route_class:<36} {edge.target_domain:<14} {edge.status:<14} {edge.reason}")
     print()
 
     if truth.warnings:

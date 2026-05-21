@@ -102,13 +102,13 @@ def test_parser_ignores_blank_lines_and_unrelated_text(guard: types.ModuleType) 
 # ---------------------------------------------------------------------------
 
 
-def test_detect_legitimate_yeti_route_is_not_flagged(guard: types.ModuleType) -> None:
+def test_detect_specified_mpc_private_route_is_not_flagged(guard: types.ModuleType) -> None:
     legitimate = textwrap.dedent(
         """\
         hapax-private-playback:output_FL
-          |-> alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo:playback_FL
+          |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX8
         hapax-private-playback:output_FR
-          |-> alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo:playback_FR
+          |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX9
         hapax-private:monitor_FL
           |-> hapax-private-monitor-capture:input_FL
         """
@@ -147,6 +147,26 @@ def test_detect_notification_private_to_broadcast(guard: types.ModuleType) -> No
     leaks = guard.detect_forbidden(edges)
     assert len(leaks) == 1
     assert leaks[0].target_node == "hapax-livestream-tap"
+
+
+def test_detect_notification_private_to_mpc_aux8_9(guard: types.ModuleType) -> None:
+    text = textwrap.dedent(
+        """\
+        hapax-notification-private-playback:output_FL
+          |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX8
+        hapax-notification-private:monitor_FL
+          |-> hapax-notification-private-monitor-capture:input_FL
+        """
+    )
+    edges = guard.parse_pw_link(text)
+    leaks = guard.detect_forbidden(edges)
+    assert {(leak.source_node, leak.target_node) for leak in leaks} == {
+        (
+            "hapax-notification-private-playback",
+            "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0",
+        ),
+        ("hapax-notification-private", "hapax-notification-private-monitor-capture"),
+    }
 
 
 def test_detect_covers_all_forbidden_target_families(guard: types.ModuleType) -> None:
@@ -328,7 +348,7 @@ def test_run_once_clean_graph_returns_ok(guard: types.ModuleType, tmp_path: Path
     legitimate = textwrap.dedent(
         """\
         hapax-private-playback:output_FL
-          |-> alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo:playback_FL
+          |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX8
         hapax-private:monitor_FL
           |-> hapax-private-monitor-capture:input_FL
         """
@@ -540,6 +560,7 @@ def test_layer_b_pins_mpc_target_with_fail_closed_props() -> None:
     assert "node.linger = true" in body
     assert "priority.session = -1" in body
     assert 'node.name = "hapax-private-playback"' in body
+    assert 'node.name = "hapax-notification-private-playback"' not in body
 
 
 def test_layer_b_yeti_pin_preserved_disabled() -> None:

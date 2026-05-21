@@ -14,8 +14,6 @@ MPC_TARGET = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
 BRIDGE_NODES = (
     "hapax-private-monitor-capture",
     "hapax-private-playback",
-    "hapax-notification-private-monitor-capture",
-    "hapax-notification-private-playback",
 )
 
 
@@ -44,26 +42,6 @@ def _bridge_nodes(*, fail_closed: bool = True) -> list[dict[str, object]]:
         ),
         _node(
             "hapax-private-playback",
-            {
-                "media.class": "Stream/Output/Audio",
-                "target.object": MPC_TARGET,
-                "node.dont-fallback": True,
-                "node.dont-reconnect": True,
-                "node.dont-move": True,
-                "node.linger": True,
-                "state.restore": False,
-            },
-        ),
-        _node(
-            "hapax-notification-private-monitor-capture",
-            {
-                "media.class": "Stream/Input/Audio",
-                "target.object": "hapax-notification-private",
-                "stream.capture.sink": True,
-            },
-        ),
-        _node(
-            "hapax-notification-private-playback",
             {
                 "media.class": "Stream/Output/Audio",
                 "target.object": MPC_TARGET,
@@ -111,24 +89,6 @@ def _repo_root(tmp_path: Path) -> Path:
                   }}
                   playback.props = {{
                     node.name = "hapax-private-playback"
-                    target.object = "{MPC_TARGET}"
-                    node.dont-fallback = true
-                    node.dont-reconnect = true
-                    node.dont-move = true
-                    node.linger = true
-                    state.restore = false
-                  }}
-                }}
-              }}
-              {{ name = libpipewire-module-loopback
-                args = {{
-                  capture.props = {{
-                    node.name = "hapax-notification-private-monitor-capture"
-                    stream.capture.sink = true
-                    target.object = "hapax-notification-private"
-                  }}
-                  playback.props = {{
-                    node.name = "hapax-notification-private-playback"
                     target.object = "{MPC_TARGET}"
                     node.dont-fallback = true
                     node.dont-reconnect = true

@@ -125,7 +125,8 @@ if printf '%s\n' "$NOTIFICATION_RUNTIME_ROUTE" | grep -Eq "$FORBIDDEN_PRIVATE_TA
 elif [ -z "$NOTIFICATION_RUNTIME_ROUTE" ]; then
     echo "OK  hapax-notification-private has no downstream playback bridge (fail-closed)"
 else
-    echo "OK  hapax-notification-private downstream route stays off broadcast: $NOTIFICATION_RUNTIME_ROUTE"
+    echo "FAIL hapax-notification-private has under-specified downstream playback egress: $NOTIFICATION_RUNTIME_ROUTE"
+    FAIL=1
 fi
 
 # Check 2: 55-retarget.conf is disabled.
@@ -217,9 +218,14 @@ PRIVATE_BRIDGE_ACTIVE=$(active_conf "$PRIVATE_BRIDGE_CONF")
 if [ -z "$PRIVATE_BRIDGE_ACTIVE" ]; then
     echo "OK  no explicit private monitor bridge configured (silent fail-closed posture)"
 else
+    if printf '%s\n' "$PRIVATE_BRIDGE_ACTIVE" \
+        | grep -Eq 'node\.name[[:space:]]*=[[:space:]]*"hapax-notification-private-(monitor-capture|playback)"'; then
+        echo "FAIL notification-private must not be present in the audible private monitor bridge"
+        FAIL=1
+    fi
+
     for pair in \
-        "hapax-private-monitor-capture|hapax-private" \
-        "hapax-notification-private-monitor-capture|hapax-notification-private"; do
+        "hapax-private-monitor-capture|hapax-private"; do
         capture_node=${pair%%|*}
         capture_target=${pair#*|}
         capture_block=$(node_block_from_active "$PRIVATE_BRIDGE_ACTIVE" "$capture_node")
@@ -238,7 +244,7 @@ else
         fi
     done
 
-    for playback_node in hapax-private-playback hapax-notification-private-playback; do
+    for playback_node in hapax-private-playback; do
         playback_block=$(node_block_from_active "$PRIVATE_BRIDGE_ACTIVE" "$playback_node")
         if [ -z "$playback_block" ]; then
             echo "FAIL missing private monitor playback node: $playback_node"

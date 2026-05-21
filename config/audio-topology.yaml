@@ -77,8 +77,11 @@ nodes:
     description: |
       Akai MPC Live III USB multichannel playback endpoint. Under the
       MPC-first baseline, host-side broadcast sources land here first:
-      music AUX0/1, Hapax voice AUX2/3, YouTube AUX6/7,
-      and private monitor AUX8/9. The MPC hardware mix exits over
+      SoundCloud/music AUX0/1, public livestream TTS AUX2/3,
+      and private TTS monitor AUX8/9. AUX4/5, AUX6/7, AUX10/11,
+      notifications, instruments, PC/default multimedia, and other
+      under-specified producers are disabled/fail-closed until a bounded
+      activation task explicitly promotes them. The MPC hardware mix exits over
       governed TRS outputs into L-12 CH9-12 for broadcast-bound returns;
       private monitor AUX8/9 is operator-routed inside the MPC and must
       not be treated as an L-12/default fallback. The live PipeWire ALSA
@@ -91,7 +94,7 @@ nodes:
       positions: [AUX0, AUX1, AUX2, AUX3, AUX4, AUX5, AUX6, AUX7, AUX8, AUX9, AUX10, AUX11, AUX12, AUX13, AUX14, AUX15, AUX16, AUX17, AUX18, AUX19, AUX20, AUX21, AUX22, AUX23]
     params:
       audit_role: mpc-first-broadcast-dsp
-      host_to_mpc_channel_map: "music:AUX0/AUX1 voice:AUX2/AUX3 pc:disabled/fail-closed youtube:AUX6/AUX7 private-monitor:AUX8/AUX9"
+      host_to_mpc_channel_map: "music-soundcloud:AUX0/AUX1 public-tts:AUX2/AUX3 pc:disabled/fail-closed youtube:disabled notification:disabled private-tts:AUX8/AUX9 other:disabled"
       legacy_pipewire_names: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
       private_monitor_endpoint: true
       private_monitor_positions: AUX8 AUX9
@@ -281,8 +284,7 @@ nodes:
     kind: filter_chain
     pipewire_name: hapax-notification-private-monitor-capture
     industrial_name: chain.notification.monitor-capture
-    description: Capture side for private notification monitor bridge
-    target_object: hapax-notification-private
+    description: Disabled capture side for notification monitor bridge
     channels:
       count: 2
       positions: [FL, FR]
@@ -290,7 +292,9 @@ nodes:
       stream.capture.sink: true
       state.restore: false
       stream.dont-remix: true
-      private_monitor_bridge: true
+      private_monitor_bridge: false
+      disabled_until_route_authority: true
+      monitor_capture_target: disabled
       audit_classification: private-monitor-hardware-dependent
 
   - id: notification-private-monitor-output
@@ -298,10 +302,10 @@ nodes:
     pipewire_name: hapax-notification-private-playback
     industrial_name: chain.notification.monitor-output
     description: |
-      Fail-closed notification private-monitor bridge to MPC Live III
-      AUX8/AUX9. It shares the same MPC private monitor ingress as the
-      assistant private path.
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
+      Disabled notification monitor bridge. Notifications remain
+      fail-closed at hapax-notification-private and must not share the
+      private TTS MPC AUX8/AUX9 ingress until notification-private audio
+      has explicit route authority.
     channels:
       count: 2
       positions: [FL, FR]
@@ -316,11 +320,12 @@ nodes:
       state.restore: false
       stream.dont-remix: true
       fail_closed_on_target_absent: true
-      private_monitor_bridge: true
+      private_monitor_bridge: false
+      disabled_until_route_authority: true
       audit_classification: private-monitor-hardware-dependent
-      playback_positions: AUX8 AUX9
-      mpc_usb_input_pair: AUX8 AUX9
-      private_monitor_route: private-monitor-via-mpc-live-iii
+      playback_positions: disabled
+      mpc_usb_input_pair: disabled
+      private_monitor_route: disabled-notification-private
 
   # L-12 capture into the livestream. Only AUX1/3/4/5 are bound; raw
   # vinyl, PC return, and MASTER channels stay unbound.
@@ -660,8 +665,7 @@ nodes:
     kind: filter_chain
     pipewire_name: hapax-yt-loudnorm
     industrial_name: chain.youtube.loudnorm
-    description: YouTube bed loudnorm routed to MPC USB IN 7/8
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
+    description: YouTube bed loudnorm, disabled until route policy explicitly promotes it
     channels:
       count: 2
       positions: [FL, FR]
@@ -669,8 +673,9 @@ nodes:
     limit_db: -18.0
     release_s: 0.20
     params:
-      playback_positions: AUX6 AUX7
-      mpc_usb_input_pair: AUX6 AUX7
+      playback_positions: disabled
+      mpc_usb_input_pair: disabled
+      disabled_until_route_authority: true
       no_software_duck: true
 
   - id: s4-source
@@ -708,8 +713,7 @@ nodes:
     kind: loopback
     pipewire_name: hapax-s4-content
     industrial_name: chain.s4.content-loopback
-    description: S-4 USB stereo content loopback to livestream tap
-    target_object: hapax-livestream-tap
+    description: S-4 USB stereo content loopback, disabled until route policy explicitly promotes it
     channels:
       count: 2
       positions: [FL, FR]
@@ -717,6 +721,8 @@ nodes:
       audio.format: S32
       audio.rate: 44100
       playback_node: hapax-s4-tap
+      disabled_until_route_authority: true
+      no_direct_livestream_tap: true
 
   - id: m8-usb-source
     kind: alsa_source
@@ -757,8 +763,7 @@ nodes:
     kind: filter_chain
     pipewire_name: hapax-m8-loudnorm
     industrial_name: chain.m8.loudnorm
-    description: M8 instrument loudnorm exported on AUX10/AUX11 for reconciler-owned L-12 return
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
+    description: M8 instrument loudnorm, disabled until route policy explicitly promotes it
     channels:
       count: 2
       positions: [AUX10, AUX11]
@@ -771,9 +776,10 @@ nodes:
       node.autoconnect: false
       allowed_l12_return_direction: broadcast
       playback_positions: AUX10 AUX11
-      playback_target: l12-usb-return
+      playback_target: disabled
+      disabled_until_route_authority: true
       reconciler_owned_handoff: true
-      broadcast_forward_path: hapax-m8-loudnorm-playback l12-usb-return hapax-livestream-tap
+      broadcast_forward_path: disabled
 
   - id: polyend-instrument-source
     kind: alsa_source
@@ -854,20 +860,11 @@ edges:
   - source: private-monitor-capture
     target: private-monitor-output
 
-  - source: notification-private-sink
-    target: notification-private-monitor-capture
-
-  - source: notification-private-monitor-capture
-    target: notification-private-monitor-output
-
-  # Canonical HN private-monitor route: both private monitor bridges write
+  # Canonical HN private-monitor route: private TTS writes
   # to the MPC Live III AUX8/AUX9 ingress. The downstream monitor path is
   # operator-routed inside the MPC and must never be replaced by default,
   # L-12, or broadcast fallbacks.
   - source: private-monitor-output
-    target: mpc-usb-output
-
-  - source: notification-private-monitor-output
     target: mpc-usb-output
 
   # Expected only when the M8 hardware source is present. When absent,
@@ -878,9 +875,6 @@ edges:
 
   - source: m8-instrument-capture
     target: m8-loudnorm
-
-  - source: m8-loudnorm
-    target: l12-usb-return
 
   # QUARANTINED — formerly Phase 3 PC volume isolation edges. Conf removed;
   # reactivation requires a new AuthorityCase. Edges retained so the

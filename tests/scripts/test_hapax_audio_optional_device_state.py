@@ -35,11 +35,11 @@ def test_policy_declares_known_storm_candidates_fail_closed() -> None:
     for node_name in (
         "hapax-m8-instrument-capture",
         "hapax-private-playback",
-        "hapax-notification-private-playback",
     ):
         assert f"node_name: {node_name}" in text
-    assert text.count("fail_closed_when_absent: true") == 3
-    assert text.count("autoconnect: false") == 3
+    assert "hapax-notification-private-playback" not in text
+    assert text.count("fail_closed_when_absent: true") == 2
+    assert text.count("autoconnect: false") == 2
 
 
 def test_absent_optional_targets_emit_absent_state() -> None:
@@ -50,7 +50,6 @@ def test_absent_optional_targets_emit_absent_state() -> None:
         [
             _node("hapax-m8-instrument-capture"),
             _node("hapax-private-playback"),
-            _node("hapax-notification-private-playback"),
         ],
     )
 
@@ -58,9 +57,8 @@ def test_absent_optional_targets_emit_absent_state() -> None:
     assert states == {
         "hapax-m8-instrument-capture": "absent",
         "hapax-private-playback": "absent",
-        "hapax-notification-private-playback": "absent",
     }
-    assert state["summary"]["absent"] == 3
+    assert state["summary"]["absent"] == 2
 
 
 def test_present_optional_target_emits_present_state(tmp_path: Path) -> None:

@@ -18,12 +18,12 @@
 #
 #   3. Livestream tap inputs: only route-policy-authorized producers feed
 #      hapax-livestream-tap. L-12 wet-return sources remain the default
-#      path; the S-4 direct content tap is explicitly owned by
-#      config/audio-routing.yaml#s4-content.
+#      path; S-4/direct content taps are blocked until explicitly promoted.
 #
 #   4. OBS chain: broadcast-normalized → obs-broadcast-remap → OBS
 #
-#   5. MPC receives audio on AUX0-9 from the various loudnorm playback nodes.
+#   5. MPC receives only the specified live software channels:
+#      SoundCloud/music AUX0/1, public TTS AUX2/3, private TTS AUX8/9.
 #
 # Exit codes: 0 = all good, 1 = invariant violation, 2 = PipeWire not running
 
@@ -68,6 +68,13 @@ regex_link_present() {
         within && line ~ /^\|->/ && line ~ target_re { found = 1 }
         END { exit found ? 0 : 1 }
     '
+}
+
+current_default_sink() {
+    if ! command -v pactl >/dev/null 2>&1; then
+        return 1
+    fi
+    pactl info 2>/dev/null | awk -F': ' '/^Default Sink:/ { print $2; exit }'
 }
 
 check() {
@@ -131,11 +138,10 @@ TAP_INPUTS=$(printf '%s\n' "$GRAPH" | awk '
 ')
 # Source authority:
 # - L-12 sources are the MPC-first wet return / processor return.
-# - hapax-s4-tap is explicitly broadcast-eligible in
-#   config/audio-routing.yaml#s4-content and config/audio-topology.yaml#s4-loopback.
-# Polyend and the retired hapax-tts-broadcast bridge are intentionally not
-# listed here until route policy owns them.
-ALLOWED_TAP_SOURCES="^[[:space:]]*\|<-[[:space:]]+(hapax-l12-evilpet-playback|hapax-l12-usb-return-playback|hapax-s4-tap):"
+# S-4, Polyend, M8, YouTube, notification, and the retired
+# hapax-tts-broadcast bridge are intentionally not listed here until route
+# policy owns and promotes them.
+ALLOWED_TAP_SOURCES="^[[:space:]]*\|<-[[:space:]]+(hapax-l12-evilpet-playback|hapax-l12-usb-return-playback):"
 UNEXPECTED=$(printf '%s\n' "$TAP_INPUTS" | grep -vE "$ALLOWED_TAP_SOURCES" | grep -v "^$" || true)
 
 if [ -z "$UNEXPECTED" ]; then
@@ -163,14 +169,28 @@ fi
 
 echo ""
 
-# ── Invariant 5: MPC receiving all sources ──
+# ── Invariant 5: MPC receiving only specified sources ──
 echo "Chain 5: MPC Input Assignments"
 
-MPC_INPUTS=$(echo "$GRAPH" | grep -c "Akai.*MPC.*playback_AUX" || true)
-if [ "$MPC_INPUTS" -ge 10 ]; then
-    check "MPC has ≥10 AUX channel references" "PASS ($MPC_INPUTS found)"
+if link_present "hapax-music-loudnorm-playback:output_FL" "playback_AUX0" \
+    && link_present "hapax-music-loudnorm-playback:output_FR" "playback_AUX1"; then
+    check "SoundCloud/music → MPC AUX0/1" "PASS"
 else
-    check "MPC has ≥10 AUX channel references" "only $MPC_INPUTS (expected ≥10)"
+    check "SoundCloud/music → MPC AUX0/1" "missing — music is not reaching MPC"
+fi
+
+if link_present "hapax-loudnorm-playback:output_FL" "playback_AUX2" \
+    && link_present "hapax-loudnorm-playback:output_FR" "playback_AUX3"; then
+    check "public TTS → MPC AUX2/3" "PASS"
+else
+    check "public TTS → MPC AUX2/3" "missing — public TTS is not reaching MPC"
+fi
+
+if link_present "hapax-private-playback:output_FL" "playback_AUX8" \
+    && link_present "hapax-private-playback:output_FR" "playback_AUX9"; then
+    check "private TTS → MPC AUX8/9" "PASS"
+else
+    check "private TTS → MPC AUX8/9" "missing — private TTS is not reaching MPC"
 fi
 
 echo ""
@@ -181,6 +201,36 @@ if link_present "hapax-pc-loudnorm-playback:output_FL" "playback_AUX4" \
     check "PC USB 5/6 is fail-closed" "PC loudnorm is feeding MPC AUX4/5"
 else
     check "PC USB 5/6 is fail-closed" "PASS"
+fi
+
+if link_present "hapax-yt-loudnorm-playback:output_FL" "playback_AUX6" \
+    || link_present "hapax-yt-loudnorm-playback:output_FR" "playback_AUX7"; then
+    check "YouTube AUX6/7 is disabled" "YT loudnorm is feeding MPC AUX6/7"
+else
+    check "YouTube AUX6/7 is disabled" "PASS"
+fi
+
+if link_present "hapax-notification-private-playback:output_FL" "playback_AUX8" \
+    || link_present "hapax-notification-private-playback:output_FR" "playback_AUX9"; then
+    check "notifications do not share private TTS AUX8/9" "notification-private is feeding MPC AUX8/9"
+else
+    check "notifications do not share private TTS AUX8/9" "PASS"
+fi
+
+if link_present "hapax-m8-loudnorm-playback:output_AUX10" "playback_AUX10" \
+    || link_present "hapax-m8-loudnorm-playback:output_AUX11" "playback_AUX11" \
+    || link_present "hapax-m8-loudnorm-playback:output_AUX10" "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL" \
+    || link_present "hapax-m8-loudnorm-playback:output_AUX11" "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FR"; then
+    check "M8/instrument route is disabled" "M8 loudnorm has a live MPC/L-12 egress"
+else
+    check "M8/instrument route is disabled" "PASS"
+fi
+
+if link_present "hapax-s4-tap:output_FL" "hapax-livestream-tap:playback_FL" \
+    || link_present "hapax-s4-tap:output_FR" "hapax-livestream-tap:playback_FR"; then
+    check "S-4 direct tap is disabled" "S-4 tap is feeding livestream"
+else
+    check "S-4 direct tap is disabled" "PASS"
 fi
 
 if link_present "input.loopback.sink.role.assistant-output:output_FL" "input.loopback.sink.role.multimedia:playback_FL" \
@@ -203,7 +253,26 @@ else
 fi
 
 echo ""
-echo "Chain 5c: WirePlumber Link-Time Deny Policy"
+echo "Chain 5c: Default Sink Fail-Closed Guard"
+
+DEFAULT_SINK="$(current_default_sink || true)"
+case "$DEFAULT_SINK" in
+    hapax-pc-loudnorm|input.loopback.sink.role.multimedia)
+        check "default/unclassified audio lands on fail-closed multimedia" "PASS ($DEFAULT_SINK)"
+        ;;
+    "")
+        check "default/unclassified audio lands on fail-closed multimedia" "could not read default sink"
+        ;;
+    *Akai_Professional_MPC_LIVE_III*|*ZOOM_Corporation_L-12*|*Torso_Electronics_S-4*|*Dirtywave_M8*|*Blue_Microphones_Yeti*|bluez_output.*|*hdmi*)
+        check "default/unclassified audio lands on fail-closed multimedia" "default sink is live/physical: $DEFAULT_SINK"
+        ;;
+    *)
+        check "default/unclassified audio lands on fail-closed multimedia" "unexpected default sink: $DEFAULT_SINK"
+        ;;
+esac
+
+echo ""
+echo "Chain 5d: WirePlumber Link-Time Deny Policy"
 
 WP_DENY_CONF_SOURCE="${HAPAX_WP_DENY_CONF_SOURCE:-$REPO_ROOT/config/wireplumber/98-hapax-link-deny.conf}"
 WP_DENY_SCRIPT_SOURCE="${HAPAX_WP_DENY_SCRIPT_SOURCE:-$REPO_ROOT/config/wireplumber/scripts/hapax/link-deny.lua}"
@@ -275,10 +344,9 @@ fi
 
 # Check for any .conf that creates a PLAYBACK node targeting livestream-tap
 # that is NOT one of the legitimate L12/S4 sources.
-# Legitimate: hapax-l12-evilpet-capture, hapax-l12-usb-return-capture,
-#             hapax-s4-loopback (route-policy-authorized tap sources).
+# Legitimate: hapax-l12-evilpet-capture, hapax-l12-usb-return-capture.
 # Bypass:     anything else creating a playback→livestream-tap path.
-LEGIT_TAP_SOURCES="hapax-l12-evilpet|hapax-l12-usb-return|hapax-s4-loopback|hapax-broadcast-master"
+LEGIT_TAP_SOURCES="hapax-l12-evilpet|hapax-l12-usb-return|hapax-broadcast-master"
 SUSPECT=$(grep -rl "target.object.*livestream-tap" ~/.config/pipewire/pipewire.conf.d/*.conf 2>/dev/null | while read f; do
     bn=$(basename "$f")
     if ! echo "$bn" | grep -qE "$LEGIT_TAP_SOURCES"; then

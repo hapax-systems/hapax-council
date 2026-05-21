@@ -93,8 +93,6 @@ routes:
     pipewire_node: input.loopback.sink.role.notification
     target_chain:
       - hapax-notification-private
-      - hapax-notification-private-monitor-capture
-      - hapax-notification-private-playback
     route_class: notification
     broadcast_eligible: false
     public_claim_allowed: false
@@ -114,7 +112,6 @@ routes:
     generated_artifact_owner: hand_mirrored
     artifact_refs:
       - config/pipewire/hapax-notification-private.conf
-      - config/pipewire/hapax-private-monitor-bridge.conf
       - config/wireplumber/92-hapax-notification-private.conf
       - config/wireplumber/50-hapax-voice-duck.conf
 
@@ -223,9 +220,6 @@ routes:
     pipewire_node: hapax-yt-loudnorm
     target_chain:
       - hapax-yt-loudnorm
-      - mpc-usb-output
-      - l12-usb-return-capture
-      - hapax-livestream-tap
     route_class: broadcast_content
     broadcast_eligible: false
     public_claim_allowed: false
@@ -287,11 +281,10 @@ routes:
     target_chain:
       - s4-output
       - hapax-s4-content
-      - hapax-livestream-tap
     route_class: instrument
-    broadcast_eligible: true
+    broadcast_eligible: false
     public_claim_allowed: false
-    broadcast_eligibility_basis: explicit_policy
+    broadcast_eligibility_basis: blocked_until_smoke
     default_fallback_allowed: false
     rights_required: true
     provenance_required: true
@@ -320,11 +313,10 @@ routes:
       - m8-usb-source
       - hapax-m8-instrument-capture
       - hapax-m8-loudnorm
-      - hapax-livestream-tap
     route_class: instrument
-    broadcast_eligible: true
+    broadcast_eligible: false
     public_claim_allowed: false
-    broadcast_eligibility_basis: explicit_policy
+    broadcast_eligibility_basis: blocked_until_smoke
     default_fallback_allowed: false
     rights_required: true
     provenance_required: true
@@ -352,11 +344,11 @@ artifacts:
   - path: config/pipewire/hapax-private-monitor-bridge.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#assistant-private
-    reason: Hardware-dependent private monitor bridge is policy-covered but remains hand-mirrored until generated fail-closed bridge parity exists.
+    reason: Hardware-dependent private TTS monitor bridge is policy-covered but remains hand-mirrored until generated fail-closed bridge parity exists; notification-private is intentionally excluded from the audible MPC bridge.
   - path: config/pipewire/hapax-notification-private.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#notification-private
-    reason: Notification null sink is policy-covered and fail-closed; generation waits for parity.
+    reason: Notification null sink is policy-covered and fail-closed, but has no live monitor bridge until notification-private routing is specified.
   - path: config/wireplumber/50-hapax-voice-duck.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts
@@ -416,11 +408,11 @@ artifacts:
   - path: config/pipewire/hapax-s4-loopback.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#s4-content
-    reason: S-4 content route is policy-covered and explicitly broadcast-eligible only with provenance.
+    reason: S-4 content route is policy-covered but not live/broadcast-eligible until a bounded activation task specifies it.
   - path: config/pipewire/hapax-m8-loudnorm.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#m8-instrument
-    reason: M8 route is hardware-optional and explicitly fails closed on fallback drift.
+    reason: M8 route is hardware-optional and non-live until a bounded activation task specifies the broadcast return.
 
 follow_ons:
   - id: audio-routing-policy-conf-generator-parity

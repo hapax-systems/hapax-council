@@ -210,13 +210,14 @@ def _l12_contract_fixture() -> TopologyDescriptor:
           - id: notification-private-monitor-capture
             kind: filter_chain
             pipewire_name: hapax-notification-private-monitor-capture
-            target_object: hapax-notification-private
             params:
               stream.capture.sink: true
+              private_monitor_bridge: false
+              disabled_until_route_authority: true
+              monitor_capture_target: disabled
           - id: notification-private-monitor-output
             kind: loopback
             pipewire_name: hapax-notification-private-playback
-            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
             params:
               node.dont-fallback: true
               node.dont-reconnect: true
@@ -224,8 +225,9 @@ def _l12_contract_fixture() -> TopologyDescriptor:
               node.linger: true
               state.restore: false
               fail_closed_on_target_absent: true
-              private_monitor_bridge: true
-              mpc_usb_input_pair: AUX8 AUX9
+              private_monitor_bridge: false
+              disabled_until_route_authority: true
+              mpc_usb_input_pair: disabled
           - id: role-multimedia
             kind: loopback
             pipewire_name: input.loopback.sink.role.multimedia
@@ -270,10 +272,6 @@ def _l12_contract_fixture() -> TopologyDescriptor:
             target: private-monitor-capture
           - source: private-monitor-capture
             target: private-monitor-output
-          - source: notification-private-sink
-            target: notification-private-monitor-capture
-          - source: notification-private-monitor-capture
-            target: notification-private-monitor-output
         """
     )
 
@@ -877,11 +875,11 @@ class TestL12ForwardInvariantCheck:
 
     def test_fails_when_private_monitor_bridge_can_fallback(self) -> None:
         descriptor = _l12_contract_fixture()
-        bridge = descriptor.node_by_id("notification-private-monitor-output")
+        bridge = descriptor.node_by_id("private-monitor-output")
         params = {**bridge.params, "node.dont-fallback": False}
         descriptor = _replace_node(
             descriptor,
-            "notification-private-monitor-output",
+            "private-monitor-output",
             params=params,
         )
 
@@ -890,6 +888,52 @@ class TestL12ForwardInvariantCheck:
         assert any(
             violation.code == "private_monitor_bridge_not_fail_closed"
             and "node.dont-fallback=True" in violation.message
+            for violation in result.violations
+        )
+
+    def test_fails_when_notification_monitor_bridge_is_enabled(self) -> None:
+        descriptor = _l12_contract_fixture()
+        capture = descriptor.node_by_id("notification-private-monitor-capture")
+        output = descriptor.node_by_id("notification-private-monitor-output")
+        nodes = [
+            node.model_copy(
+                update={
+                    "target_object": "hapax-notification-private",
+                    "params": {**node.params, "private_monitor_bridge": True},
+                }
+            )
+            if node.id == capture.id
+            else node.model_copy(
+                update={
+                    "target_object": "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0",
+                    "params": {
+                        **node.params,
+                        "private_monitor_bridge": True,
+                        "mpc_usb_input_pair": "AUX8 AUX9",
+                    },
+                }
+            )
+            if node.id == output.id
+            else node
+            for node in descriptor.nodes
+        ]
+        edges = (
+            *descriptor.edges,
+            type(descriptor.edges[0])(
+                source="notification-private-sink",
+                target="notification-private-monitor-capture",
+            ),
+            type(descriptor.edges[0])(
+                source="notification-private-monitor-capture",
+                target="notification-private-monitor-output",
+            ),
+        )
+        descriptor = descriptor.model_copy(update={"nodes": nodes, "edges": edges})
+
+        result = check_l12_forward_invariant(descriptor)
+
+        assert any(
+            violation.code == "notification_private_monitor_bridge_enabled"
             for violation in result.violations
         )
 

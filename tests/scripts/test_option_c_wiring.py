@@ -53,7 +53,7 @@ def test_wireplumber_pin_targets_mpc_not_s4_or_yeti() -> None:
     assert "Torso_Electronics_S-4" not in body
     assert "Blue_Microphones_Yeti" not in body
     assert 'node.name = "hapax-private-playback"' in body
-    assert 'node.name = "hapax-notification-private-playback"' in body
+    assert 'node.name = "hapax-notification-private-playback"' not in body
 
 
 def test_wireplumber_pin_preserves_fail_closed_props() -> None:
@@ -87,6 +87,18 @@ def test_private_to_other_mpc_ports_or_s4_is_forbidden(leak_guard: types.ModuleT
     }
 
 
+def test_notification_private_to_mpc_aux8_9_is_forbidden(leak_guard: types.ModuleType) -> None:
+    text = (
+        f"hapax-notification-private-playback:output_FL\n  |-> {MPC_SINK}:playback_AUX8\n"
+        f"hapax-notification-private-playback:output_FR\n  |-> {MPC_SINK}:playback_AUX9\n"
+    )
+    edges = leak_guard.parse_pw_link(text)
+    leaks = leak_guard.detect_forbidden(edges)
+    assert {(leak.source_node, leak.target_node) for leak in leaks} == {
+        ("hapax-notification-private-playback", MPC_SINK),
+    }
+
+
 def test_topology_mpc_carries_private_monitor_annotation(
     topology_yaml: dict[str, object],
 ) -> None:
@@ -106,12 +118,16 @@ def test_topology_private_monitor_edges_target_mpc(topology_yaml: dict[str, obje
     nodes = topology_yaml["nodes"]
     by_id = {node["id"]: node for node in nodes if isinstance(node, dict)}
     assert by_id["private-monitor-output"]["target_object"] == MPC_SINK
-    assert by_id["notification-private-monitor-output"]["target_object"] == MPC_SINK
+    assert by_id["notification-private-monitor-output"].get("target_object") is None
+    assert (
+        by_id["notification-private-monitor-output"]["params"]["disabled_until_route_authority"]
+        is True
+    )
 
     edges = topology_yaml["edges"]
     edge_set = {(edge["source"], edge["target"]) for edge in edges if isinstance(edge, dict)}
     assert ("private-monitor-output", "mpc-usb-output") in edge_set
-    assert ("notification-private-monitor-output", "mpc-usb-output") in edge_set
+    assert ("notification-private-monitor-output", "mpc-usb-output") not in edge_set
     assert ("private-monitor-output", "s4-output") not in edge_set
 
 
@@ -159,6 +175,6 @@ def test_inspector_private_monitor_bridge_allows_mpc_endpoint() -> None:
     )
 
     assert "private-monitor-mpc-live-iii-binding" in ALLOWED_RUNTIME_EDGE_CLASSIFICATIONS
-    for bridge_id in ("private-monitor-output", "notification-private-monitor-output"):
-        _capture_id, _source_id, allowed_endpoints = _PRIVATE_MONITOR_BRIDGES[bridge_id]
-        assert tuple(allowed_endpoints) == ("mpc-usb-output",)
+    assert tuple(_PRIVATE_MONITOR_BRIDGES) == ("private-monitor-output",)
+    _capture_id, _source_id, allowed_endpoints = _PRIVATE_MONITOR_BRIDGES["private-monitor-output"]
+    assert tuple(allowed_endpoints) == ("mpc-usb-output",)
