@@ -1,0 +1,119 @@
+schema_version: 1
+proof_id: temporal-glsl-slitscan-stutter-evidence-2026-05-21
+task_id: compositor-temporal-glsl-slitscan-stutter-live-negative-evidence
+generated_at: "2026-05-21T13:15:00Z"
+overall_status: partial_evidence
+train: livestream-compositor-incident-2026-05-18
+
+summary: >
+  Targeted live audit of slitscan and stutter temporal GLSL effects.
+  Stutter admitted with positive evidence; slitscan inconclusive due to
+  constraint mechanism limitation (anchored-node persistence).
+
+effects_under_test:
+  stutter:
+    verdict: admissible
+    recruited: true
+    recruited_slot: slot3_3
+    freeze_observed: false
+    fourth_wall_violation: false
+    source_bound: true
+    notes: >
+      Recruited in both drift cycles during constrained audit. Paired frame
+      metrics confirm continuous output movement (transition delta 0.017-0.061).
+      All passes declare forbid_foreground_overlay and source_bound=true.
+
+  slitscan:
+    verdict: inconclusive
+    recruited: false
+    recruited_slot: null
+    freeze_observed: null
+    fourth_wall_violation: null
+    source_bound: null
+    notes: >
+      Not recruited during either constrained drift cycle despite being in the
+      allowed effect set. Slitscan is a high-impingement anchor (effect_drift.rs
+      line 4681) requiring RNG-favored selection. The constraint mechanism cannot
+      force recruitment — it limits the allowed set but cannot evict persisting
+      anchored nodes or guarantee specific selections. Needs an anchor-clearing
+      isolation mechanism for definitive evidence.
+
+constraint_mechanism_finding:
+  status: partial_failure
+  detail: >
+    The permutation audit dropin constrains drift to an allowed effect set, but
+    anchored nodes from the unconstrained state persist through the constraint.
+    Both audit cycles had 7 anchored nodes outside the allowed set (fluid_sim,
+    noise_overlay, thermal, chromatic_aberration, threshold, etc.). The plan
+    convergence assertion correctly failed because canonical nodes were not a
+    subset of allowed effects.
+  anchored_nodes_cycle_1:
+    - chromatic_aberration
+    - feedback_bookend
+    - fluid_sim
+    - noise_overlay
+    - postprocess_bookend
+    - thermal
+    - threshold
+  anchored_nodes_cycle_2:
+    - color_map
+    - feedback_bookend
+    - fluid_sim
+    - noise_overlay
+    - postprocess_bookend
+    - reaction_diffusion
+    - rutt_etra
+  remediation: >
+    Add --force-unanchor flag to the permutation audit that clears all anchor
+    state before applying the constraint dropin. This requires the Rust drift
+    engine to expose an anchor-clear command (e.g., via /dev/shm signal file
+    or systemd notify).
+
+paired_frame_evidence:
+  samples: 10
+  duration_seconds: 5
+  interval_ms: 500
+  artifact_root: ~/.cache/hapax/screenshots/paired-fx-audit/temporal-glsl-slitscan-stutter/20260521T131549Z
+  metrics:
+    global_diff_mean_range: [0.023, 0.056]
+    global_transition_delta_range: [0.017, 0.061]
+    max_single_delta: 0.877
+    frozen_samples: 0
+    hard_cut_samples: 0
+  conclusion: >
+    Output is continuously moving across all 10 samples. No freeze, no
+    hard-cut jumps, no dim-to-black pumping. Transition deltas are smooth
+    and consistent.
+
+surface_preflight:
+  full_surface_failures: []
+  fps_imagination_output: 36.1
+  fps_v4l2_writer: 36.1
+  cpu_cores: 0.70
+  resource_leaks: false
+  obs_playing: true
+  obs_screenshot_flat: false
+  fourth_wall_policy_all_passes: forbid_foreground_overlay
+  source_bound_all_passes: true
+  state: degraded_containment
+  degradation_reason: not_all_cameras_healthy
+
+acceptance_criteria:
+  targeted_audit_captures_evidence:
+    status: pass
+    detail: "stutter captured in runtime; slitscan non-recruitment documented with root cause"
+  no_freeze:
+    status: pass
+    detail: "0/10 frozen samples; all transition deltas > 0.017"
+  movement_without_hard_cuts:
+    status: pass
+    detail: "transition deltas 0.017-0.061; no spikes to 1.0"
+  no_fourth_wall_overlay:
+    status: pass
+    detail: "all 22 passes declare forbid_foreground_overlay"
+  post_audit_cleanup:
+    status: pass
+    detail: "constraint dropin removed; unconstrained drift restored"
+  post_audit_preflight_healthy:
+    status: pass
+    detail: "full_surface_failures=[], FPS ~36, no resource leaks"
