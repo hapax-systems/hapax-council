@@ -7,18 +7,41 @@
       "operator_note": "S-4 USB hardware fault is known; absence is a warning until hardware is repaired or replaced."
     }
   },
-  "accepted_caldigit_cameras": [
-    {
-      "enabled": true,
-      "serial": "86B6B75F",
-      "path": "pci-0000:71:00.0-usb-0:1.1.2.2:1.0",
-      "reason": "post_128gb_install_accepted_room_c920_placement"
-    }
-  ],
+  "accepted_caldigit_cameras": [],
   "required_cameras": [
+    {
+      "role": "brio-operator",
+      "serial": "5342C819",
+      "vendor_id": "046d",
+      "reason": "livestream_compositor_required_source"
+    },
+    {
+      "role": "c920-desk",
+      "serial": "2657DFCF",
+      "vendor_id": "046d",
+      "reason": "livestream_compositor_required_source"
+    },
     {
       "role": "c920-room",
       "serial": "86B6B75F",
+      "vendor_id": "046d",
+      "reason": "livestream_compositor_required_source"
+    },
+    {
+      "role": "c920-overhead",
+      "serial": "7B88C71F",
+      "vendor_id": "046d",
+      "reason": "livestream_compositor_required_source"
+    },
+    {
+      "role": "brio-room",
+      "serial": "43B0576A",
+      "vendor_id": "046d",
+      "reason": "livestream_compositor_required_source"
+    },
+    {
+      "role": "brio-synths",
+      "serial": "9726C031",
       "vendor_id": "046d",
       "reason": "livestream_compositor_required_source"
     }
