@@ -167,3 +167,104 @@ class TestReplayProperties:
         report = replay_batch(records, _allow_all_chain())
         assert report.total == len(records)
         assert report.passed + report.failed + len(report.regressions) == report.total
+
+
+# ── Idempotency ───────────────────────────────────────────────────────────
+
+
+class TestReplayIdempotency:
+    def test_replaying_same_sequence_twice_yields_same_verdicts(self):
+        records = [
+            _make_record(id="r1", allowed=True),
+            _make_record(id="r2", allowed=False, denied_by=("old",)),
+            _make_record(id="r3", allowed=True),
+        ]
+        chain = _allow_all_chain()
+        report_1 = replay_batch(records, chain)
+        report_2 = replay_batch(records, chain)
+        verdicts_1 = [(c.record_id, c.verdict) for c in report_1.certificates]
+        verdicts_2 = [(c.record_id, c.verdict) for c in report_2.certificates]
+        assert verdicts_1 == verdicts_2
+
+    def test_single_decision_idempotent(self):
+        record = _make_record(id="idem", allowed=True)
+        chain = _deny_all_chain()
+        cert_1 = replay_decision(record, chain)
+        cert_2 = replay_decision(record, chain)
+        assert cert_1.verdict == cert_2.verdict
+        assert cert_1.current_allowed == cert_2.current_allowed
+        assert cert_1.current_denied_by == cert_2.current_denied_by
+
+
+# ── Out-of-order input handling ────────────────────────────────────────────
+
+
+class TestReplayOrdering:
+    def test_order_does_not_affect_individual_verdicts(self):
+        records = [
+            _make_record(id="a", allowed=True),
+            _make_record(id="b", allowed=False, denied_by=("x",)),
+            _make_record(id="c", allowed=True),
+        ]
+        chain = _allow_all_chain()
+        forward = replay_batch(records, chain)
+        backward = replay_batch(list(reversed(records)), chain)
+        fwd = {c.record_id: c.verdict for c in forward.certificates}
+        bwd = {c.record_id: c.verdict for c in backward.certificates}
+        assert fwd == bwd
+
+    def test_shuffled_batch_same_aggregate_counts(self):
+        records = [_make_record(id=f"r{i}", allowed=i % 2 == 0) for i in range(6)]
+        chain = _allow_all_chain()
+        original = replay_batch(records, chain)
+        shuffled = replay_batch(records[3:] + records[:3], chain)
+        assert original.passed == shuffled.passed
+        assert original.failed == shuffled.failed
+        assert len(original.regressions) == len(shuffled.regressions)
+
+
+# ── Malformed / corrupted input ────────────────────────────────────────────
+
+
+class TestReplayMalformedInput:
+    def test_empty_context_replays_without_error(self):
+        record = DecisionRecord(
+            id="empty-ctx",
+            timestamp="2026-05-16T00:00:00Z",
+            context={},
+            original_allowed=True,
+        )
+        cert = replay_decision(record, _allow_all_chain())
+        assert cert.verdict == ReplayVerdict.PASS
+
+    def test_none_values_in_context(self):
+        record = DecisionRecord(
+            id="none-ctx",
+            timestamp="2026-05-16T00:00:00Z",
+            context={"action": None, "extra": None},
+            original_allowed=True,
+        )
+        cert = replay_decision(record, _allow_all_chain())
+        assert isinstance(cert, ReplayCertificate)
+
+    def test_unexpected_context_keys_tolerated(self):
+        record = DecisionRecord(
+            id="extra-keys",
+            timestamp="2026-05-16T00:00:00Z",
+            context={"unknown_field": 42, "nested": {"deep": True}},
+            original_allowed=False,
+            original_denied_by=("rule",),
+        )
+        cert = replay_decision(record, _deny_all_chain())
+        assert cert.verdict == ReplayVerdict.PASS
+
+    def test_predicate_exception_propagates(self):
+        import pytest
+
+        def bad_predicate(_: dict) -> bool:
+            raise ValueError("corrupt data")
+
+        chain = VetoChain([Veto(name="bad", predicate=bad_predicate, axiom="test")])
+        record = _make_record(id="error")
+        with pytest.raises(ValueError, match="corrupt data"):
+            replay_decision(record, chain)
