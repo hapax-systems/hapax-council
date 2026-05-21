@@ -14,5 +14,13 @@
       "path": "pci-0000:71:00.0-usb-0:1.1.2.2:1.0",
       "reason": "post_128gb_install_accepted_room_c920_placement"
     }
+  ],
+  "required_cameras": [
+    {
+      "role": "c920-room",
+      "serial": "86B6B75F",
+      "vendor_id": "046d",
+      "reason": "livestream_compositor_required_source"
+    }
   ]
 }
