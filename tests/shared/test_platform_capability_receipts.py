@@ -7,7 +7,7 @@ import os
 import stat
 import subprocess
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from shared.dispatcher_policy import (
@@ -60,6 +60,10 @@ def _fake_binary(bin_dir: Path, name: str, output: str) -> None:
     target.chmod(target.stat().st_mode | stat.S_IXUSR)
 
 
+def _current_iso_z() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 def test_receipt_refresh_redacts_secret_env_and_records_missing_cli(tmp_path: Path) -> None:
     result = _run_receipts(
         tmp_path,
@@ -76,7 +80,9 @@ def test_receipt_refresh_redacts_secret_env_and_records_missing_cli(tmp_path: Pa
     assert all(item["redacted"] is True for item in receipt["config_refs"])
 
 
-def test_fresh_receipt_overlays_registry_with_explicit_quota_blocker(tmp_path: Path) -> None:
+def test_fresh_subscription_receipt_clears_account_live_quota_blocker(
+    tmp_path: Path,
+) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "codex", f"codex-cli 9.9.9 api_key={SECRET}")
@@ -89,12 +95,58 @@ def test_fresh_receipt_overlays_registry_with_explicit_quota_blocker(tmp_path: P
     route = registry.require("codex.headless.full")
 
     assert route.freshness.quota_checked_at is not None
-    assert "account_live_quota_receipt_absent" in route.freshness.evidence.quota.blocked_reasons
+    assert "account_live_quota_receipt_absent" not in route.blocked_reasons
+    assert "account_live_quota_receipt_absent" not in route.freshness.evidence.quota.blocked_reasons
+    assert route.route_state.value == "active"
     assert any(
         ref.startswith("platform-capability-receipt:codex:")
         for ref in route.freshness.evidence.quota.evidence_refs
     )
     assert route.tool_state[0].evidence_ref.startswith("platform-capability-receipt:codex:")
+
+
+def test_fresh_subscription_receipt_allows_dispatch_without_rollback(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
+    assert result.returncode == 0, result.stderr
+
+    sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
+    task_fields = {
+        "status": "claimed",
+        "assigned_to": "cx-green",
+        "authority_case": "CASE-CAPACITY-ROUTING-001",
+        "authority_item": "PLATFORM-RECEIPT-TEST",
+        "priority": "p0",
+        "wsjf": 12,
+        "route_metadata_schema": 1,
+        "quality_floor": "frontier_required",
+        "authority_level": "authoritative",
+        "mutation_surface": "source",
+        "mutation_scope_refs": ["shared/platform_capability_registry.py"],
+    }
+    request = build_dispatch_request(
+        task_id="platform-receipt-present",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=sources.registry,
+        registry_error=sources.registry_error,
+        quota_ledger=sources.quota_ledger,
+        quota_error=sources.quota_error,
+    )
+
+    decision = evaluate_dispatch_policy(request)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.route_policy_green is True
+    assert decision.registry_freshness_green is True
 
 
 def test_stale_receipt_is_not_consumed(tmp_path: Path) -> None:
