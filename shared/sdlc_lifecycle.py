@@ -76,18 +76,6 @@ class AcceptanceCriteriaState:
         return not self.unchecked_items
 
 
-def is_fulfilling_task_status(status: str) -> bool:
-    return status in TASK_FULFILLING_CLOSED_STATUSES
-
-
-def is_non_fulfilling_task_status(status: str) -> bool:
-    return status in TASK_NON_FULFILLING_CLOSED_STATUSES
-
-
-def is_known_closed_task_status(status: str) -> bool:
-    return status in TASK_CLOSED_STATUSES
-
-
 def acceptance_criteria_section(text: str) -> str | None:
     match = ACCEPTANCE_HEADING_RE.search(text)
     if match is None:

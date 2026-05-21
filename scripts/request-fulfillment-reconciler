@@ -27,10 +27,10 @@ from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     REQUEST_CLOSEABLE_STATUSES,
     REQUEST_TERMINAL_SKIP_STATUSES,
+    TASK_CLOSED_STATUSES,
+    TASK_FULFILLING_CLOSED_STATUSES,
+    TASK_NON_FULFILLING_CLOSED_STATUSES,
     acceptance_criteria_state,
-    is_fulfilling_task_status,
-    is_known_closed_task_status,
-    is_non_fulfilling_task_status,
 )
 
 DEFAULT_REQUESTS_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-requests"
@@ -60,15 +60,15 @@ class TaskRecord:
 
     @property
     def fulfilling(self) -> bool:
-        return self.directory == "closed" and is_fulfilling_task_status(self.status)
+        return self.directory == "closed" and self.status in TASK_FULFILLING_CLOSED_STATUSES
 
     @property
     def blocking(self) -> bool:
         if self.directory == "active":
             return True
-        if is_non_fulfilling_task_status(self.status):
+        if self.status in TASK_NON_FULFILLING_CLOSED_STATUSES:
             return True
-        return not is_known_closed_task_status(self.status)
+        return self.status not in TASK_CLOSED_STATUSES
 
 
 @dataclass
