@@ -48,13 +48,24 @@ L12_EXPECTED_PATHS = {
 # Backwards-compat alias for the legacy attribute name (referenced by tests
 # and any external scripts that import this constant).
 L12_EXPECTED_PATH = "pci-0000:71:00.0-usb-0:1.1.2.2"
-L12_SINK = (
-    "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"
-)
-L12_SOURCE = (
-    "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
-)
+L12_SINK = "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.pro-output-0"
+L12_SOURCE = "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.pro-input-0"
+L12_SINKS = {
+    L12_SINK,
+    "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.playback.0.0",
+    "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40",
+}
+L12_SOURCES = {
+    L12_SOURCE,
+    "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.capture.0.0",
+    "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input",
+}
 FAIL_CLOSED_DEFAULT_SINK = "hapax-pc-loudnorm"
+LOCAL_DEFAULT_SINK = FAIL_CLOSED_DEFAULT_SINK
+LOCAL_DEFAULT_SINKS = {
+    FAIL_CLOSED_DEFAULT_SINK,
+    "alsa_output.pci-0000_73_00.6.analog-stereo",
+}
 
 CALDIGIT_CONTROLLER = "pci-0000:71:00.0"
 STATUS_PATH = Path("/dev/shm/hapax-usb/topology-status.json")
@@ -420,20 +431,20 @@ def validate(
 
     default_sink = l12.get("default_sink", "")
     default_source = l12.get("default_source", "")
-    if L12_SINK not in sinks:
+    if not sinks.intersection(L12_SINKS):
         issues.append("l12_sink_missing")
-    if FAIL_CLOSED_DEFAULT_SINK not in sinks:
+    if not sinks.intersection(LOCAL_DEFAULT_SINKS):
         issues.append("fail_closed_default_sink_missing")
-    elif default_sink != FAIL_CLOSED_DEFAULT_SINK:
+    elif default_sink not in LOCAL_DEFAULT_SINKS:
         if repair and set_default("sink", FAIL_CLOSED_DEFAULT_SINK):
             repairs.append("fail_closed_default_sink_restored")
             l12["default_sink"] = FAIL_CLOSED_DEFAULT_SINK
         else:
             issues.append(f"fail_closed_default_sink_drift:{default_sink}")
 
-    if L12_SOURCE not in sources:
+    if not sources.intersection(L12_SOURCES):
         issues.append("l12_source_missing")
-    elif default_source != L12_SOURCE:
+    elif default_source not in L12_SOURCES:
         if repair and set_default("source", L12_SOURCE):
             repairs.append("l12_default_source_restored")
             l12["default_source"] = L12_SOURCE

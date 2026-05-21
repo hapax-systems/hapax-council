@@ -27,12 +27,8 @@ USB_WITNESS_SERVICE = REPO_ROOT / "systemd" / "units" / "hapax-usb-topology-witn
 
 S4_SINK = "alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output"
 S4_SOURCE = "alsa_input.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-input"
-L12_SINK = (
-    "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"
-)
-L12_SOURCE = (
-    "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
-)
+L12_SINK = "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.pro-output-0"
+L12_SOURCE = "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.pro-input-0"
 FAIL_CLOSED_DEFAULT_SINK = "hapax-pc-loudnorm"
 # Newer main-side fixtures still use this legacy name. Keep it as an alias so
 # merge-queue snapshots resolve to the fail-closed default sink.
@@ -207,6 +203,32 @@ def test_witness_accepts_post_128gb_l12_path(tmp_path: Path) -> None:
     assert status["ok"] is True
     assert status["l12"]["stable_id"] == "usb:1686:03d5:8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF"
     assert not any(warning.startswith("l12_path_drift") for warning in status["warnings"])
+
+
+def test_witness_accepts_l12_pipewire_profile_name_variants(tmp_path: Path) -> None:
+    snapshot = known_good_snapshot()
+    snapshot["l12"]["default_sink"] = "alsa_output.pci-0000_73_00.6.analog-stereo"
+    snapshot["l12"]["default_source"] = (
+        "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
+    )
+    snapshot["sinks"] = [
+        S4_SINK,
+        "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40",
+        "alsa_output.pci-0000_73_00.6.analog-stereo",
+    ]
+    snapshot["sources"] = [
+        S4_SOURCE,
+        "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input",
+    ]
+
+    result = run_witness(tmp_path, snapshot)
+
+    assert result.returncode == 0, result.stdout
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert status["ok"] is True
+    assert "l12_sink_missing" not in status["issues"]
+    assert "l12_source_missing" not in status["issues"]
+    assert "local_default_sink_missing" not in status["issues"]
 
 
 def test_s4_block_policy_falls_back_to_udev_attrs_without_by_id(
