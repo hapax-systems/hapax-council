@@ -208,7 +208,9 @@ def test_active_request_statuses_close_with_explicit_fulfillment(
     active.mkdir(parents=True)
     closed.mkdir(parents=True)
     task_closed.mkdir(parents=True)
-    _write_request(active / f"REQ-{status}.md", f"REQ-{status}", status=status, downstream_tasks=["T-1"])
+    _write_request(
+        active / f"REQ-{status}.md", f"REQ-{status}", status=status, downstream_tasks=["T-1"]
+    )
     _write_task(task_closed / "T-1.md", "T-1", status="done")
 
     result = _run(tmp_path, "--apply", "--json", "--now", "2026-05-18T01:00:00Z")

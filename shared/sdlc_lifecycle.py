@@ -59,9 +59,7 @@ REQUEST_CLOSEABLE_STATUSES = frozenset(
     }
 )
 
-ACCEPTANCE_HEADING_RE = re.compile(
-    r"^##\s+Acceptance\s+criteria\s*$", re.IGNORECASE | re.MULTILINE
-)
+ACCEPTANCE_HEADING_RE = re.compile(r"^##\s+Acceptance\s+criteria\s*$", re.IGNORECASE | re.MULTILINE)
 UNCHECKED_CHECKBOX_RE = re.compile(r"^\s*-\s+\[\s\]\s+(.*)$", re.MULTILINE)
 CHECKED_CHECKBOX_RE = re.compile(r"^\s*-\s+\[[xX]\]\s+(.*)$", re.MULTILINE)
 NEXT_HEADING_RE = re.compile(r"^##\s+", re.MULTILINE)
@@ -110,7 +108,9 @@ def acceptance_criteria_state(text: str) -> AcceptanceCriteriaState:
         )
     return AcceptanceCriteriaState(
         section_present=True,
-        checked_items=tuple(match.group(1).strip() for match in CHECKED_CHECKBOX_RE.finditer(section)),
+        checked_items=tuple(
+            match.group(1).strip() for match in CHECKED_CHECKBOX_RE.finditer(section)
+        ),
         unchecked_items=tuple(
             match.group(1).strip() for match in UNCHECKED_CHECKBOX_RE.finditer(section)
         ),
