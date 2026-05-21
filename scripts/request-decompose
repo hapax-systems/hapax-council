@@ -18,6 +18,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,21 @@ _log = logging.getLogger(__name__)
 REQUESTS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-requests/active"
 TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
 SCAN_LIMIT_ENV = "HAPAX_REQUEST_DECOMPOSE_LIMIT"
+AUTHORITY_CASE_RE = re.compile(r"^CASE-[A-Z0-9-]+$")
+CCTV_READY_ADMISSION_VALUES = {"ready_to_plan", "advance", "admitted"}
+CCTV_INTAKE_RECEIPT_FIELDS = (
+    "cctv_intake_receipt",
+    "cctv_intake_receipt_path",
+    "cctv_receipt",
+    "intake_receipt",
+)
+CCTV_INTAKE_ADMISSION_FIELDS = (
+    "cctv_intake_verdict",
+    "intake_verdict",
+    "cctv_verdict",
+    "cctv_intake_recommendation",
+    "intake_recommendation",
+)
 
 DECOMPOSITION_PROMPT = """\
 You are the Hapax request decomposition engine. Given a request note,
@@ -117,6 +133,53 @@ def _normalize_mutation_surface(value: Any) -> str:
     return normalized if normalized in allowed else "source"
 
 
+def _first_scalar(frontmatter: dict[str, Any], field_names: tuple[str, ...]) -> str:
+    for field_name in field_names:
+        value = _scalar(frontmatter.get(field_name))
+        if value:
+            return value
+    return ""
+
+
+def _authority_case(frontmatter: dict[str, Any]) -> str:
+    return _scalar(frontmatter.get("planning_case")) or _scalar(frontmatter.get("authority_case"))
+
+
+def _parent_spec_for_request(request_data: dict[str, Any]) -> str:
+    fm = request_data["frontmatter"]
+    return (
+        _scalar(fm.get("parent_spec"))
+        or _scalar(fm.get("parent_plan"))
+        or _scalar(request_data.get("path"))
+    )
+
+
+def _decomposition_admission_blockers(request_data: dict[str, Any]) -> list[str]:
+    fm = request_data["frontmatter"]
+    blockers: list[str] = []
+
+    receipt = _first_scalar(fm, CCTV_INTAKE_RECEIPT_FIELDS)
+    if not receipt:
+        blockers.append("missing_cctv_intake_receipt")
+
+    admission_value = _first_scalar(fm, CCTV_INTAKE_ADMISSION_FIELDS)
+    if not admission_value:
+        blockers.append("missing_cctv_intake_verdict")
+    elif admission_value not in CCTV_READY_ADMISSION_VALUES:
+        blockers.append(f"cctv_intake_not_ready:{admission_value}")
+
+    authority = _authority_case(fm)
+    if not authority:
+        blockers.append("missing_authority_case")
+    elif not AUTHORITY_CASE_RE.match(authority):
+        blockers.append(f"invalid_authority_case:{authority}")
+
+    if not _parent_spec_for_request(request_data):
+        blockers.append("missing_parent_lineage")
+
+    return blockers
+
+
 def _find_undecomposed_requests() -> list[Path]:
     task_parents = set()
     for d in [TASKS_DIR / "active", TASKS_DIR / "closed"]:
@@ -182,8 +245,8 @@ def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
     fm.get("title", request_data["filename"])[:60]
     req_wsjf = float(fm.get("wsjf", "5.0") or "5.0")
     req_priority = fm.get("priority", "medium")
-    authority = fm.get("planning_case") or fm.get("authority_case") or ""
-    parent_spec = fm.get("parent_spec") or fm.get("parent_plan") or request_data["path"]
+    authority = _authority_case(fm)
+    parent_spec = _parent_spec_for_request(request_data)
     slug = request_data["filename"].replace(".md", "").replace("REQ-", "").lower()[:30]
 
     try:
@@ -232,7 +295,7 @@ def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
                     depends_on=t.get("depends_on", []),
                     phase_index=t.get("phase_index", 0),
                     parent_request=request_data["filename"],
-                    authority_case=authority or f"CASE-{slug.upper()[:20]}",
+                    authority_case=authority,
                     parent_spec=parent_spec,
                     status="blocked" if t.get("depends_on") else "offered",
                     blocked_reason=(
@@ -294,8 +357,18 @@ def main() -> int:
             )
         total_tasks = 0
         skipped_existing = 0
+        skipped_admission = 0
         for req_path in selected:
             req_data = _read_request(req_path)
+            blockers = _decomposition_admission_blockers(req_data)
+            if blockers:
+                skipped_admission += 1
+                _log.warning(
+                    "Skipping %s: decomposition admission blocked: %s",
+                    req_path.name,
+                    ", ".join(blockers),
+                )
+                continue
             decomp = _decompose_with_llm(req_data)
             if decomp is None:
                 _log.warning("Failed to decompose %s (fail-closed)", req_path.name)
@@ -322,6 +395,8 @@ def main() -> int:
             len(undecomposed),
             skipped_existing,
         )
+        if skipped_admission:
+            _log.info("%d selected requests held by decomposition admission gate", skipped_admission)
         return 0
 
     if args.request_path:
@@ -330,6 +405,14 @@ def main() -> int:
             _log.error("Request not found: %s", req_path)
             return 1
         req_data = _read_request(req_path)
+        blockers = _decomposition_admission_blockers(req_data)
+        if blockers:
+            _log.error(
+                "Decomposition admission blocked for %s: %s",
+                req_path.name,
+                ", ".join(blockers),
+            )
+            return 1
         decomp = _decompose_with_llm(req_data)
         if decomp is None:
             _log.error("Decomposition failed (fail-closed)")
