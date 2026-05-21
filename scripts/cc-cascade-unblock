@@ -20,7 +20,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.sdlc_lifecycle import task_closure_validity  # noqa: E402
+from shared.sdlc_lifecycle import (  # noqa: E402
+    TASK_NON_FULFILLING_CLOSED_STATUSES,
+    task_closure_validity,
+)
 
 VAULT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
 ACTIVE = VAULT / "active"
@@ -171,7 +174,6 @@ def cascade_unblock(trigger_task_id: str | None = None) -> int:
     unblocked = 0
 
     for f, text, deps in candidates:
-
         unmet = [dep for dep in deps if dep not in satisfied_ids]
         if unmet:
             reasons: list[str] = []
@@ -209,11 +211,72 @@ def cascade_unblock(trigger_task_id: str | None = None) -> int:
     return unblocked
 
 
+def _dep_status(task_id: str) -> str:
+    path = _locate_task(task_id)
+    if path is None:
+        return ""
+    text = path.read_text(errors="replace")
+    m = re.search(r"^status:\s*(\S+)", text, re.M)
+    return m.group(1) if m else ""
+
+
+def cascade_withdraw() -> int:
+    """Auto-withdraw tasks whose ALL dependencies are in non-fulfilling terminal states."""
+    if not ACTIVE.is_dir():
+        return 0
+
+    withdrawn = 0
+    for f in sorted(ACTIVE.glob("*.md")):
+        try:
+            text = f.read_text(errors="replace")
+        except OSError:
+            continue
+        status_m = re.search(r"^status:\s*(\S+)", text, re.M)
+        if not status_m or status_m.group(1) in TASK_NON_FULFILLING_CLOSED_STATUSES:
+            continue
+
+        deps = _parse_depends(text)
+        if not deps:
+            continue
+
+        dep_statuses = [_dep_status(d) for d in deps]
+        if not all(s in TASK_NON_FULFILLING_CLOSED_STATUSES for s in dep_statuses):
+            continue
+
+        new = re.sub(
+            r"^status: \S+",
+            "status: withdrawn",
+            text,
+            count=1,
+            flags=re.M,
+        )
+        new = re.sub(
+            r"^blocked_reason: .+",
+            "blocked_reason: all dependencies withdrawn/cancelled",
+            new,
+            count=1,
+            flags=re.M,
+        )
+        f.write_text(new, encoding="utf-8")
+        withdrawn += 1
+        print(f"cc-cascade-unblock: {f.stem} -> withdrawn (all deps non-fulfilling)")
+
+    return withdrawn
+
+
 if __name__ == "__main__":
     trigger = None
-    if len(sys.argv) > 1 and sys.argv[1] != "--reconcile":
-        trigger = sys.argv[1]
+    reconcile = False
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--reconcile":
+            reconcile = True
+        else:
+            trigger = sys.argv[1]
     n = cascade_unblock(trigger)
     if n:
         print(f"cc-cascade-unblock: unblocked {n} task(s)")
+    if reconcile or trigger is None:
+        w = cascade_withdraw()
+        if w:
+            print(f"cc-cascade-unblock: withdrew {w} task(s)")
     sys.exit(0)

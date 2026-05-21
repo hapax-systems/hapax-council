@@ -333,6 +333,96 @@ def run_watcher(
     }
 
 
+def reconcile_stale_pr_states(
+    *,
+    vault_root: Path = DEFAULT_VAULT_ROOT,
+    repo_root: Path | None = None,
+    dry_run: bool = False,
+    runner: callable[..., subprocess.CompletedProcess] | None = None,
+) -> dict[str, int]:
+    """Find tasks with pr_open/merge_queue status whose PR is closed (not merged).
+
+    Transitions those tasks to blocked with a reason explaining the PR state.
+    """
+    runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
+    active = vault_root / "active"
+    if not active.is_dir():
+        return {"scanned": 0, "stale": 0}
+
+    pr_pattern = re.compile(r"^pr:\s*(\d+)\s*$", flags=re.MULTILINE)
+    status_pattern = re.compile(r"^status:\s*(pr_open|merge_queue)\s*$", flags=re.MULTILINE)
+    scanned = 0
+    stale = 0
+
+    for note in sorted(active.glob("*.md")):
+        try:
+            text = note.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        status_m = status_pattern.search(text)
+        if not status_m:
+            continue
+        pr_m = pr_pattern.search(text)
+        if not pr_m:
+            continue
+        scanned += 1
+        pr_num = pr_m.group(1)
+        try:
+            proc = runner(
+                ["gh", "pr", "view", pr_num, "--json", "state", "--jq", ".state"],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if proc.returncode != 0:
+            continue
+        pr_state = proc.stdout.strip()
+        if pr_state == "CLOSED":
+            stale += 1
+            if dry_run:
+                LOG.info(
+                    "[dry-run] would block task %s (PR #%s closed without merge)",
+                    note.stem,
+                    pr_num,
+                )
+                continue
+            new = re.sub(
+                r"^status: (pr_open|merge_queue)",
+                "status: blocked",
+                text,
+                count=1,
+                flags=re.MULTILINE,
+            )
+            new = re.sub(
+                r"^blocked_reason: .+",
+                f"blocked_reason: PR #{pr_num} closed without merge",
+                new,
+                count=1,
+                flags=re.MULTILINE,
+            )
+            if "blocked_reason:" not in new:
+                new = re.sub(
+                    r"^(status: blocked)",
+                    f"\\1\nblocked_reason: PR #{pr_num} closed without merge",
+                    new,
+                    count=1,
+                    flags=re.MULTILINE,
+                )
+            note.write_text(new, encoding="utf-8")
+            LOG.info(
+                "stale PR drain: %s -> blocked (PR #%s closed without merge)",
+                note.stem,
+                pr_num,
+            )
+
+    return {"scanned": scanned, "stale": stale}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -379,6 +469,14 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
     )
     LOG.info("watcher cycle done: %s", counters)
+
+    stale_counters = reconcile_stale_pr_states(
+        vault_root=args.vault_root,
+        repo_root=args.repo_root,
+        dry_run=args.dry_run,
+    )
+    if stale_counters["stale"]:
+        LOG.info("stale PR drain: %s", stale_counters)
     return 0
 
 
