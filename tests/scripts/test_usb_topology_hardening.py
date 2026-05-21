@@ -101,7 +101,12 @@ def known_good_snapshot() -> dict[str, object]:
                 "serial": "5342C819",
                 "path": "pci-0000:73:00.4-usb-0:2:1.0",
                 "on_caldigit_audio_controller": "false",
-            }
+            },
+            {
+                "serial": "86B6B75F",
+                "path": "pci-0000:73:00.4-usb-0:3:1.0",
+                "on_caldigit_audio_controller": "false",
+            },
         ],
     }
 
@@ -459,6 +464,135 @@ def test_midi_route_skips_cleanly_when_legacy_binary_absent() -> None:
 
     assert "ConditionPathExists=%h/.local/bin/midi-route" in text
     assert "Legacy optional route" in text
+
+
+def test_witness_fails_when_required_camera_missing(tmp_path: Path) -> None:
+    """c920-room serial 86B6B75F absent must produce a hard issue."""
+    snapshot = known_good_snapshot()
+    snapshot["cameras"] = [
+        {
+            "serial": "2657DFCF",
+            "path": "pci-0000:73:00.4-usb-0:2:1.0",
+            "on_caldigit_audio_controller": "false",
+        }
+    ]
+
+    result = run_witness(tmp_path, snapshot)
+
+    assert result.returncode == 2
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert "required_camera_missing:c920-room:86B6B75F" in status["issues"]
+
+
+def test_witness_passes_when_required_camera_present(tmp_path: Path) -> None:
+    """c920-room serial 86B6B75F on a non-CalDigit path must pass required check."""
+    snapshot = known_good_snapshot()
+    snapshot["cameras"] = [
+        {
+            "serial": "86B6B75F",
+            "path": "pci-0000:73:00.4-usb-0:3:1.0",
+            "on_caldigit_audio_controller": "false",
+        }
+    ]
+
+    result = run_witness(tmp_path, snapshot)
+
+    assert result.returncode == 0, result.stdout
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert status["ok"] is True
+    assert not any("required_camera_missing" in i for i in status["issues"])
+
+
+def test_witness_passes_when_required_camera_on_accepted_caldigit(tmp_path: Path) -> None:
+    """c920-room on accepted CalDigit path: warning for placement, but passes required check."""
+    snapshot = known_good_snapshot()
+    snapshot["s4"] = {
+        "device": "",
+        "path": "",
+        "power_control": "",
+        "block": {"node": "", "udisks_ignore": "", "modemmanager_ignore": ""},
+        "net": {"interface": "", "nm_unmanaged": "", "modemmanager_ignore": "", "nmcli_state": ""},
+    }
+    snapshot["sinks"] = [L12_SINK, LOCAL_DEFAULT_SINK]
+    snapshot["sources"] = [L12_SOURCE]
+    snapshot["alsa_playback"] = ""
+    snapshot["alsa_capture"] = ""
+    snapshot["midi_clients"] = ""
+    snapshot["amidi_ports"] = ""
+    snapshot["cameras"] = [
+        {
+            "serial": "86B6B75F",
+            "path": "pci-0000:71:00.0-usb-0:1.1.2.2:1.0",
+            "on_caldigit_audio_controller": "true",
+        }
+    ]
+
+    result = run_witness(tmp_path, snapshot)
+
+    assert result.returncode == 0, result.stdout
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert status["ok"] is True
+    assert not any("required_camera_missing" in i for i in status["issues"])
+    assert any("camera_on_caldigit_accepted:86B6B75F" in w for w in status["warnings"])
+
+
+def test_witness_demotes_required_camera_absence_with_known_absence_policy(
+    tmp_path: Path,
+) -> None:
+    """When policy declares camera:c920-room as known absence, demote to warning."""
+    snapshot = known_good_snapshot()
+    snapshot["cameras"] = []
+
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(
+        json.dumps(
+            {
+                "known_absences": {
+                    "s4": {
+                        "enabled": True,
+                        "serial": "fedcba9876543220",
+                        "reason": "hardware_fault_diagnosed_2026-05-08",
+                    },
+                    "camera:c920-room": {
+                        "enabled": True,
+                        "serial": "86B6B75F",
+                        "reason": "removed_for_repair",
+                    },
+                },
+                "required_cameras": [
+                    {
+                        "role": "c920-room",
+                        "serial": "86B6B75F",
+                        "vendor_id": "046d",
+                        "reason": "livestream_compositor_required_source",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fixture = tmp_path / "snapshot.json"
+    status_file = tmp_path / "status.json"
+    fixture.write_text(json.dumps(snapshot), encoding="utf-8")
+    subprocess.run(
+        [
+            str(WITNESS),
+            "--fixture",
+            str(fixture),
+            "--status-path",
+            str(status_file),
+            "--policy-path",
+            str(policy_path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    status = json.loads(status_file.read_text(encoding="utf-8"))
+    assert not any("required_camera_missing" in i for i in status["issues"])
+    assert any("required_camera_absent_known:c920-room:86B6B75F" in w for w in status["warnings"])
 
 
 def test_runbook_names_required_validation_and_emergency_cases() -> None:
