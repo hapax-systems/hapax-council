@@ -246,4 +246,29 @@ The aesthetic review gates integrate with the existing authority case SDLC:
 | S8 Release | All gates pass; release decision |
 | S9 Post-merge | Verify no aesthetic regression in production |
 
+### Mechanical Enforcement Points
+
+The release gate is enforced by shared AVSDLC evidence checks, not by operator
+memory. Impacted request and task notes must declare `avsdlc_axes` before
+release. Work that is audio/visual-adjacent but has no perceptual or runtime
+axis impact may declare `avsdlc_axes: none`; this is still a classification,
+not an implicit bypass. For each impacted item, the mechanical minimum is:
+
+- `avsdlc_dossier` (or equivalent quality dossier reference)
+- `avsdlc_evidence_collected_at` with fresh evidence
+- axis-specific witness fields: `visual_witness`, `audio_witness`,
+  `audiovisual_witness`, `theoretical_claim_map`, or the equivalent field for
+  the declared axis
+- `runtime_media_witness` when a visual/audio/audiovisual change touches a live
+  runtime or media surface
+
+Current hard gate points:
+
+| System point | Gate behavior |
+|---|---|
+| PR autoqueue | Blocks queueing or dequeues ready PRs when a linked cc-task is missing AVSDLC classification/evidence. |
+| Request fulfillment | Blocks active request closure when the request or any linked fulfilling task is missing fresh AVSDLC evidence. |
+| Source activation | The dispatch/source-activation boundary must carry task metadata; AVSDLC evidence is evaluated before queue/release and request closure. |
+| Post-merge deploy | Production traces record the S9 witness gate and whether runtime/media witness follow-up is required for deployed surfaces. |
+
 ---

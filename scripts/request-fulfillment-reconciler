@@ -19,6 +19,12 @@ from typing import Any
 
 import yaml
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
+
 DEFAULT_REQUESTS_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-requests"
 DEFAULT_TASKS_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 DEFAULT_REPORT_PATH = Path.home() / ".cache" / "hapax" / "request-fulfillment-reconciler.json"
@@ -68,6 +74,7 @@ class TaskRecord:
     path: Path
     status: str
     directory: str
+    frontmatter: dict[str, Any] = field(default_factory=dict)
     request_keys: set[str] = field(default_factory=set)
     covered_request_ids: set[str] = field(default_factory=set)
 
@@ -96,6 +103,7 @@ class ReconcileDecision:
     fulfilling_tasks: list[str]
     blocking_tasks: list[str]
     missing_tasks: list[str]
+    avsdlc_blockers: list[str] = field(default_factory=list)
     destination: str | None = None
     applied: bool = False
 
@@ -219,6 +227,7 @@ def build_task_records(
                 path=path,
                 status=scalar(note.frontmatter.get("status")),
                 directory=task_dir_name,
+                frontmatter=dict(note.frontmatter),
             )
             for field_name in ("parent_request", "parent_plan", "parent_spec"):
                 for ref in list_value(note.frontmatter.get(field_name)):
@@ -250,6 +259,26 @@ def task_ids_for_request(
         elif request_key in record.request_keys:
             linked.add(record.task_id)
     return linked, explicit
+
+
+def avsdlc_blockers_for_request(
+    request_note: MarkdownNote,
+    linked_tasks: set[str],
+    records: dict[str, TaskRecord],
+) -> list[str]:
+    blockers: list[str] = []
+    request_result = evaluate_avsdlc_release_gate(request_note.frontmatter)
+    blockers.extend(f"request:{blocker}" for blocker in request_result.blockers)
+
+    seen: set[str] = set()
+    for linked_id in sorted(linked_tasks):
+        record = records.get(linked_id)
+        if record is None or record.task_id in seen:
+            continue
+        seen.add(record.task_id)
+        task_result = evaluate_avsdlc_release_gate(record.frontmatter)
+        blockers.extend(f"task:{record.task_id}:{blocker}" for blocker in task_result.blockers)
+    return blockers
 
 
 def decide_request(
@@ -301,6 +330,7 @@ def decide_request(
     fulfilling: list[str] = []
     blocking: list[str] = []
     missing: list[str] = []
+    avsdlc_blockers: list[str] = []
     for linked_id in sorted(linked_tasks):
         record = records.get(linked_id)
         if record is None:
@@ -354,6 +384,11 @@ def decide_request(
                 else:
                     reason = "eligible"
 
+    if reason == "eligible":
+        avsdlc_blockers = avsdlc_blockers_for_request(request_note, linked_tasks, records)
+        if avsdlc_blockers:
+            reason = "avsdlc_release_gate_blocked"
+
     return ReconcileDecision(
         request_id=request_id,
         request_key=request_key,
@@ -364,6 +399,7 @@ def decide_request(
         fulfilling_tasks=sorted(set(fulfilling)),
         blocking_tasks=blocking,
         missing_tasks=missing,
+        avsdlc_blockers=avsdlc_blockers,
         destination=str(destination) if reason == "eligible" else None,
     )
 

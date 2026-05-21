@@ -39,6 +39,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared.merge_queue_lineage import DEFAULT_LEDGER_PATH, read_jsonl_records  # noqa: E402
+from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
 
 LOG = logging.getLogger("cc-pr-autoqueue")
 
@@ -137,6 +138,7 @@ class TaskNote:
     kind: str | None
     tags: tuple[str, ...] = ()
     queue_admission: str | None = None
+    frontmatter: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -484,6 +486,7 @@ def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
                     kind=(_scalar(fm.get("kind")) or "").lower() or None,
                     tags=tuple(tag.lower() for tag in _string_tuple(fm.get("tags"))),
                     queue_admission=((_scalar(fm.get("queue_admission")) or "").lower() or None),
+                    frontmatter=dict(fm),
                 )
             )
     return notes
@@ -510,6 +513,9 @@ def _task_blockers(task: TaskNote, *, require_route_metadata: bool) -> list[str]
             blockers.append(f"closed_task_status_not_ready:{task.status or 'missing'}")
     elif task.status not in ACTIVE_READY_STATUSES:
         blockers.append(f"active_task_status_not_ready:{task.status or 'missing'}")
+
+    avsdlc_gate = evaluate_avsdlc_release_gate(task.frontmatter)
+    blockers.extend(f"avsdlc_release_gate:{blocker}" for blocker in avsdlc_gate.blockers)
     return blockers
 
 

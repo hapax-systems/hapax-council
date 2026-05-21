@@ -120,6 +120,9 @@ def test_dry_run_writes_bounded_post_merge_trace(tmp_path: Path) -> None:
     assert records[-1]["deploy_groups"]["hapax_scripts"] == ["scripts/hapax-demo"]
     assert records[-1]["manual_deploy_needed"] is True
     assert records[-1]["manual_deploy_executed"] is False
+    assert records[-1]["avsdlc"]["gate_point"] == "S9 post-merge production witness"
+    assert records[-1]["avsdlc"]["runtime_media_witness_required"] is True
+    assert records[-1]["avsdlc"]["runtime_media_witness_groups"] == ["hapax_scripts"]
 
 
 def test_systemd_coverage_includes_dropins_presets_and_source_overrides() -> None:
