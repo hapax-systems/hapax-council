@@ -42,8 +42,9 @@ Usage: hapax-systemd-reconcile [--apply] [--quiet]
             dry-run and reports drift only.
   --quiet   Suppress per-unit chatter.
 
-Drift = systemd user unit is "linked" to ~/.config/systemd/user/ but
-has no matching file under ~/projects/hapax-council/systemd/units/.
+Drift = systemd user unit is "linked" to ~/.config/systemd/user/ or exists
+as a Hapax unit symlink there but has no matching file under
+~/projects/hapax-council/systemd/units/.
 HELP
             exit 0
             ;;
@@ -73,18 +74,37 @@ fi
 
 SCRIPT_DIR="$(cd -P "$(dirname "$REAL_SCRIPT_SOURCE")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_UNITS="$REPO_ROOT/systemd/units"
+REPO_UNITS="${HAPAX_SYSTEMD_REPO_UNITS:-$REPO_ROOT/systemd/units}"
+USER_UNIT_DIR="${HAPAX_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
+SYSTEMCTL="${HAPAX_SYSTEMCTL:-systemctl}"
 
 if [ ! -d "$REPO_UNITS" ]; then
     echo "error: $REPO_UNITS not found — cannot reconcile" >&2
     exit 2
 fi
 
-# Collect linked unit names (second column = "linked").
+# Collect linked unit names (second column = "linked") plus any Hapax unit
+# symlink present in the user unit directory. Broken symlinks can disappear
+# from `systemctl list-unit-files`, so filesystem discovery is the repair path.
 mapfile -t LINKED < <(
-    systemctl --user list-unit-files --full --no-pager 2>/dev/null \
+    $SYSTEMCTL --user list-unit-files --full --no-pager 2>/dev/null \
         | awk '$2=="linked"{print $1}'
 )
+
+if [ -d "$USER_UNIT_DIR" ]; then
+    for symlink in "$USER_UNIT_DIR"/*.service "$USER_UNIT_DIR"/*.timer "$USER_UNIT_DIR"/*.target "$USER_UNIT_DIR"/*.path; do
+        [ -L "$symlink" ] || continue
+        name="$(basename "$symlink")"
+        case "$name" in
+            hapax-*|logos-*|tabbyapi-*) LINKED+=("$name") ;;
+            *) ;;
+        esac
+    done
+fi
+
+if [ "${#LINKED[@]}" -gt 0 ]; then
+    mapfile -t LINKED < <(printf '%s\n' "${LINKED[@]}" | sort -u)
+fi
 
 if [ "${#LINKED[@]}" -eq 0 ]; then
     [ "$QUIET" -eq 0 ] && echo "no linked user units — nothing to reconcile"
@@ -124,12 +144,12 @@ echo "Applying reconciliation..."
 FAILED=()
 for unit in "${DRIFT[@]}"; do
     [ "$QUIET" -eq 0 ] && echo "disabling + unlinking: $unit"
-    if ! systemctl --user disable --now "$unit" 2>/dev/null; then
+    if ! $SYSTEMCTL --user disable --now "$unit" 2>/dev/null; then
         # disable failures are non-fatal — unit may already be disabled;
         # continue to unlink.
         [ "$QUIET" -eq 0 ] && echo "  (disable returned non-zero; continuing to unlink)"
     fi
-    symlink="$HOME/.config/systemd/user/$unit"
+    symlink="$USER_UNIT_DIR/$unit"
     if [ -L "$symlink" ] || [ -f "$symlink" ]; then
         if ! rm -f "$symlink"; then
             FAILED+=("$unit")
@@ -138,7 +158,7 @@ for unit in "${DRIFT[@]}"; do
     fi
 done
 
-systemctl --user daemon-reload 2>/dev/null || true
+$SYSTEMCTL --user daemon-reload 2>/dev/null || true
 
 if [ "${#FAILED[@]}" -gt 0 ]; then
     echo "Failed to fully reconcile ${#FAILED[@]}: ${FAILED[*]}" >&2
