@@ -101,7 +101,12 @@ if [ "$RELEASE" = true ] && [ -d "$CLAIM_CACHE_DIR" ]; then
     [ -n "$claimed_task" ] || continue
 
     note="$VAULT_ROOT/active/$claimed_task.md"
-    [ -f "$note" ] || continue
+    if [ ! -f "$note" ]; then
+      rm -f "$claim_file"
+      stale_cache_count=$((stale_cache_count + 1))
+      cache_report="${cache_report}  CLEARED stale claim cache $(basename "$claim_file") task=${claimed_task} status=not_active\n"
+      continue
+    fi
 
     note_assigned=$(grep -oP '^assigned_to:\s*\K\S+' "$note" 2>/dev/null || echo "")
     note_status=$(grep -oP '^status:\s*\K\S+' "$note" 2>/dev/null || echo "")

@@ -312,3 +312,33 @@ def test_audit_release_clears_already_released_claim_cache(tmp_path: Path) -> No
     assert "CLEARED stale claim cache cc-active-task-codex-queue" in r.stdout
     assert "no phantom claims found" in r.stdout
     assert not claim_file.exists()
+
+
+def test_audit_release_clears_claim_cache_for_closed_task(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "closed-task",
+        status="done",
+        assigned_to="codex-closed",
+    )
+    closed_note = _task_root(home) / "closed" / note.name
+    note.replace(closed_note)
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-codex-closed"
+    claim_file.write_text("closed-task\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    r = subprocess.run(
+        ["bash", str(CLAIM_AUDIT), "--release", "--stale-hours=1"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert r.returncode == 0
+    assert "CLEARED stale claim cache cc-active-task-codex-closed" in r.stdout
+    assert "status=not_active" in r.stdout
+    assert not claim_file.exists()
