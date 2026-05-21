@@ -106,13 +106,23 @@ fi
 
 # Verify status/ownership, then either claim offered work or resume owned
 # ready-state work (PR/merge-queue maintenance).
-python3 - "$note_path" "$role" "$task_id" <<'PYEOF'
+python3 - "$note_path" "$role" "$task_id" "$SCRIPT_DIR/.." <<'PYEOF'
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-path, role, task_id = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+path, role, task_id, repo_root = (
+    Path(sys.argv[1]),
+    sys.argv[2],
+    sys.argv[3],
+    Path(sys.argv[4]).resolve(),
+)
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from shared.sdlc_lifecycle import task_closure_validity  # noqa: E402
+
 text = path.read_text(encoding="utf-8")
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -427,22 +437,14 @@ if claim_mode == "claim":
         if dep_path is None:
             unmet.append(f"{dep_id} (not found in vault)")
             continue
-        dep_status = _frontmatter_status(dep_path.read_text(encoding="utf-8"))
-        if dep_status not in ("completed", "closed", "done"):
-            unmet.append(f"{dep_id} (status: {dep_status})")
-            continue
-        # Dependency is closed — check if it has a PR that must be merged
         dep_text = dep_path.read_text(encoding="utf-8")
-        pr_num = _parse_pr_number(dep_text)
-        if pr_num:
-            pr_state = _check_pr_merged(pr_num)
-            if pr_state == "open":
-                unmet.append(f"{dep_id} (PR #{pr_num} still open — source not on main)")
-            elif pr_state == "closed_unmerged":
-                unmet.append(f"{dep_id} (PR #{pr_num} closed without merge — source lost)")
-            elif pr_state == "unknown":
-                # Fail closed: unknown PR state blocks dispatch
-                unmet.append(f"{dep_id} (PR #{pr_num} state unknown — cannot verify merge)")
+        validity = task_closure_validity(
+            dep_text,
+            pr_state_lookup=_check_pr_merged,
+            require_route_metadata=True,
+        )
+        if not validity.valid:
+            unmet.append(f"{dep_id} ({'; '.join(validity.blockers)})")
 
 if unmet:
     print(f"cc-claim: BLOCKED — task '{task_id}' has unmet dependencies:", file=sys.stderr)

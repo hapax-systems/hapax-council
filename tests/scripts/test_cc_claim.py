@@ -26,6 +26,10 @@ def _write_task(
     task_type: str | None = None,
     authority_case: str | None = "CASE-TEST-001",
     parent_spec: str | None = "/tmp/isap-test.md",
+    quality_floor: str | None = "frontier_required",
+    mutation_surface: str | None = "source",
+    authority_level: str | None = "authoritative",
+    route_metadata_schema: int | None = 1,
     tags: list[str] | None = None,
     body: str = "",
 ) -> Path:
@@ -46,6 +50,14 @@ def _write_task(
         frontmatter.append(f"authority_case: {authority_case}")
     if parent_spec is not None:
         frontmatter.append(f"parent_spec: {parent_spec}")
+    if quality_floor is not None:
+        frontmatter.append(f"quality_floor: {quality_floor}")
+    if mutation_surface is not None:
+        frontmatter.append(f"mutation_surface: {mutation_surface}")
+    if authority_level is not None:
+        frontmatter.append(f"authority_level: {authority_level}")
+    if route_metadata_schema is not None:
+        frontmatter.append(f"route_metadata_schema: {route_metadata_schema}")
     if tags is not None:
         frontmatter.append("tags:")
         frontmatter.extend(f"  - {tag}" for tag in tags)
@@ -157,7 +169,7 @@ def test_nonterminal_frontmatter_dependency_blocks_claim(tmp_path: Path) -> None
 
     assert result.returncode == 5
     assert "unmet dependencies" in result.stderr
-    assert "unfinished-dep (status: in_progress)" in result.stderr
+    assert "unfinished-dep (status_not_fulfilling:in_progress)" in result.stderr
 
 
 def test_missing_frontmatter_dependency_blocks_claim(tmp_path: Path) -> None:
@@ -173,6 +185,55 @@ def test_missing_frontmatter_dependency_blocks_claim(tmp_path: Path) -> None:
 
     assert result.returncode == 5
     assert "missing-dep (not found in vault)" in result.stderr
+
+
+def test_unchecked_acceptance_dependency_blocks_claim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(
+        home,
+        "closed",
+        "false-done-dep",
+        status="done",
+        assigned_to="cx-peer",
+        body="## Acceptance criteria\n\n- [ ] Evidence exists\n",
+    )
+    _write_task(
+        home,
+        "active",
+        "claim-target",
+        depends_on="\n  - false-done-dep",
+    )
+
+    result = _claim(home, "claim-target")
+
+    assert result.returncode == 5
+    assert "unchecked_acceptance_criteria:Evidence exists" in result.stderr
+
+
+def test_malformed_route_metadata_dependency_blocks_claim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(
+        home,
+        "closed",
+        "bad-route-dep",
+        status="done",
+        assigned_to="cx-peer",
+        quality_floor="frontier_review_required",
+        authority_level="authoritative",
+        mutation_surface="source",
+    )
+    _write_task(
+        home,
+        "active",
+        "claim-target",
+        depends_on="\n  - bad-route-dep",
+    )
+
+    result = _claim(home, "claim-target")
+
+    assert result.returncode == 5
+    assert "route_metadata:" in result.stderr
+    assert "frontier_review_required artifacts cannot be authoritative directly" in result.stderr
 
 
 def test_build_task_with_null_parent_spec_blocks_claim(tmp_path: Path) -> None:

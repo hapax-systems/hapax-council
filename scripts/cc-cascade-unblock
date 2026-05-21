@@ -12,28 +12,90 @@ Usage:
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.sdlc_lifecycle import task_closure_validity  # noqa: E402
 
 VAULT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
 ACTIVE = VAULT / "active"
 CLOSED = VAULT / "closed"
 
 
-def _done_task_ids() -> set[str]:
-    ids: set[str] = set()
+def _check_pr_merged(pr_number: str) -> str:
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "view",
+                pr_number,
+                "--json",
+                "state,mergedAt",
+                "--jq",
+                '.state + "," + ((.mergedAt != null and .mergedAt != "") | tostring)',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=str(Path.home() / "projects" / "hapax-council"),
+        )
+    except Exception:
+        return "unknown"
+    if result.returncode != 0:
+        return "unknown"
+    parts = result.stdout.strip().split(",")
+    if len(parts) == 2 and parts[1] == "true":
+        return "merged"
+    if parts and parts[0] == "OPEN":
+        return "open"
+    if parts and parts[0] == "CLOSED":
+        return "closed_unmerged"
+    return "unknown"
+
+
+def _frontmatter_task_id(text: str) -> str | None:
+    tid = re.search(r"^task_id:\s*(.+)", text, re.M)
+    if tid:
+        return tid.group(1).strip().strip("\"'")
+    return None
+
+
+def _dependency_validity() -> tuple[set[str], dict[str, tuple[str, ...]]]:
+    satisfied: set[str] = set()
+    blockers: dict[str, tuple[str, ...]] = {}
+    pr_state_cache: dict[str, str] = {}
+
+    def cached_pr_state(pr_number: str) -> str:
+        if pr_number not in pr_state_cache:
+            pr_state_cache[pr_number] = _check_pr_merged(pr_number)
+        return pr_state_cache[pr_number]
+
     for d in [ACTIVE, CLOSED]:
         if not d.is_dir():
             continue
         for f in d.glob("*.md"):
             text = f.read_text(errors="replace")
-            m = re.search(r"^status:\s*(\S+)", text, re.M)
-            if m and m.group(1) in ("done", "closed", "merged"):
-                tid = re.search(r"^task_id:\s*(.+)", text, re.M)
-                if tid:
-                    ids.add(tid.group(1).strip())
-                ids.add(f.stem)
-    return ids
+            validity = task_closure_validity(
+                text,
+                pr_state_lookup=cached_pr_state,
+                require_route_metadata=True,
+            )
+            ids = {f.stem}
+            task_id = _frontmatter_task_id(text)
+            if task_id:
+                ids.add(task_id)
+            if validity.valid:
+                satisfied.update(ids)
+            else:
+                for task_id in ids:
+                    blockers[task_id] = validity.blockers
+    return satisfied, blockers
 
 
 def _parse_depends(text: str) -> list[str]:
@@ -54,7 +116,7 @@ def cascade_unblock() -> int:
     if not ACTIVE.is_dir():
         return 0
 
-    done_ids = _done_task_ids()
+    satisfied_ids, blockers_by_id = _dependency_validity()
     unblocked = 0
 
     for f in sorted(ACTIVE.glob("*.md")):
@@ -67,13 +129,32 @@ def cascade_unblock() -> int:
         if not deps:
             continue
 
-        if not all(d in done_ids for d in deps):
+        unmet = [dep for dep in deps if dep not in satisfied_ids]
+        if unmet:
+            reasons: list[str] = []
+            for dep in unmet:
+                dep_blockers = blockers_by_id.get(dep)
+                if dep_blockers:
+                    reasons.append(f"{dep} ({'; '.join(dep_blockers)})")
+                else:
+                    reasons.append(f"{dep} (not found or not closure-valid)")
+            blocked_reason = "waiting_for_closure_valid_dependencies: " + "; ".join(reasons)
+            if re.search(r"^blocked_reason: .+", text, re.M):
+                new = re.sub(
+                    r"^blocked_reason: .+",
+                    f"blocked_reason: {blocked_reason}",
+                    text,
+                    count=1,
+                    flags=re.M,
+                )
+                if new != text:
+                    f.write_text(new, encoding="utf-8")
             continue
 
         new = re.sub(r"^status: blocked", "status: offered", text, count=1, flags=re.M)
         new = re.sub(
-            r'^blocked_reason: .+',
-            'blocked_reason: null',
+            r"^blocked_reason: .+",
+            "blocked_reason: null",
             new,
             count=1,
             flags=re.M,

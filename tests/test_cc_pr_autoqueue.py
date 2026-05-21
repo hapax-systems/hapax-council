@@ -46,13 +46,16 @@ def _write_task(
     vault: Path,
     *,
     task_id: str,
-    folder: str = "closed",
-    status: str = "done",
+    folder: str = "active",
+    status: str = "ready",
     pr: int | None = None,
     branch: str | None = None,
     authority_case: str | None = "CASE-TEST",
     parent_spec: str | None = "docs/spec.md",
     route_metadata_schema: int | None = 1,
+    quality_floor: str | None = "frontier_required",
+    mutation_surface: str | None = "source",
+    authority_level: str | None = "authoritative",
     priority: str = "p2",
     kind: str = "implementation",
     tags: list[str] | None = None,
@@ -72,6 +75,19 @@ def _write_task(
         f"route_metadata_schema: {route_metadata_schema}"
         if route_metadata_schema is not None
         else "route_metadata_schema: null"
+    )
+    quality_line = (
+        f"quality_floor: {quality_floor}" if quality_floor is not None else "quality_floor: null"
+    )
+    mutation_line = (
+        f"mutation_surface: {mutation_surface}"
+        if mutation_surface is not None
+        else "mutation_surface: null"
+    )
+    authority_level_line = (
+        f"authority_level: {authority_level}"
+        if authority_level is not None
+        else "authority_level: null"
     )
     tags_line = f"tags: [{', '.join(tags or [])}]"
     queue_admission_line = (
@@ -96,6 +112,9 @@ kind: {kind}
 {authority_line}
 {parent_line}
 {route_line}
+{quality_line}
+{mutation_line}
+{authority_level_line}
 {tags_line}
 {queue_admission_line}
 {extra_lines}---
@@ -416,6 +435,59 @@ def test_blocks_missing_or_legacy_task_metadata(tmp_path: Path) -> None:
     assert "missing_cc_task_link" in reasons[51]
 
 
+def test_blocks_closed_task_linked_to_open_pr(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="false-closed", folder="closed", status="done", pr=54)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(54)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    assert "closed_task_closure_invalid:pr_open:54" in report["decisions"][0]["reasons"]
+
+
+def test_blocks_closed_task_with_unchecked_acceptance_criteria_and_open_pr(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    task_path = _write_task(
+        vault,
+        task_id="unchecked-closed",
+        folder="closed",
+        status="done",
+        pr=None,
+        branch="feat/unchecked",
+    )
+    task_path.write_text(
+        task_path.read_text(encoding="utf-8")
+        + "\n## Acceptance criteria\n\n- [ ] Closure evidence exists\n",
+        encoding="utf-8",
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(57, branch="feat/unchecked")]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    reasons = report["decisions"][0]["reasons"]
+    assert (
+        "closed_task_closure_invalid:unchecked_acceptance_criteria:Closure evidence exists"
+        in reasons
+    )
+    assert "closed_task_linked_to_open_pr_without_pr_field:57" in reasons
+
+
 def test_blocks_avsdlc_impacted_task_without_release_evidence(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     _write_task(
@@ -488,6 +560,79 @@ def test_blocks_unchecked_pr_checklist_items(tmp_path: Path) -> None:
     assert report["counts"]["blocked"] == 1
     assert any(
         reason.startswith("unchecked_pr_checklist:") for reason in report["decisions"][0]["reasons"]
+    )
+
+
+def test_blocks_closed_task_linked_to_still_open_pr(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="premature-close", folder="closed", status="done", pr=57)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(57)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    assert "closed_task_closure_invalid:pr_open:57" in report["decisions"][0]["reasons"]
+
+
+def test_blocks_closed_task_linked_by_branch_without_pr_field(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    task = _write_task(vault, task_id="unchecked-close", folder="closed", status="done", pr=58)
+    task.write_text(
+        task.read_text(encoding="utf-8")
+        + "\n## Acceptance criteria\n\n- [x] Deterministic tests pass\n- [ ] Runtime witness accepted\n",
+        encoding="utf-8",
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(58)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    reasons = report["decisions"][0]["reasons"]
+    assert (
+        "closed_task_closure_invalid:unchecked_acceptance_criteria:Runtime witness accepted"
+        in reasons
+    )
+    assert "closed_task_closure_invalid:pr_open:58" in reasons
+
+
+def test_blocks_closed_task_with_malformed_route_metadata(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="bad-route-close",
+        folder="closed",
+        status="done",
+        pr=59,
+        quality_floor="frontier_review_required",
+        authority_level="authoritative",
+        mutation_surface="source",
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(59)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    assert any(
+        reason.startswith("closed_task_closure_invalid:route_metadata:")
+        for reason in report["decisions"][0]["reasons"]
     )
 
 
