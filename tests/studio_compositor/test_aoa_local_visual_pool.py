@@ -7,8 +7,8 @@ from PIL import Image
 
 from agents.studio_compositor import director_loop as director_loop_module
 from agents.studio_compositor.director_loop import DirectorLoop
-from agents.studio_compositor.sierpinski_loader import SierpinskiLoader
-from agents.studio_compositor.sierpinski_renderer import SierpinskiCairoSource
+from agents.studio_compositor.aoa_loader import AoaLoader
+from agents.studio_compositor.aoa_renderer import AoaCairoSource
 from agents.visual_pool.repository import LocalVisualPool
 
 
@@ -30,9 +30,9 @@ def _seed_pool(root: Path, *, tier: str = "operator-cuts") -> Path:
     return asset.path
 
 
-def test_sierpinski_loader_publishes_local_visual_pool_asset(tmp_path: Path) -> None:
+def test_aoa_loader_publishes_local_visual_pool_asset(tmp_path: Path) -> None:
     frame = _seed_pool(tmp_path)
-    loader = SierpinskiLoader(pool_root=tmp_path / "visual", aesthetic_tags=("grain",))
+    loader = AoaLoader(pool_root=tmp_path / "visual", aesthetic_tags=("grain",))
     published: list[dict] = []
     removed: list[str] = []
 
@@ -53,9 +53,9 @@ def test_sierpinski_loader_publishes_local_visual_pool_asset(tmp_path: Path) -> 
     assert "tier_0_owned" in published[0]["tags"]
 
 
-def test_sierpinski_renderer_resolves_local_pool_frame(tmp_path: Path) -> None:
+def test_aoa_renderer_resolves_local_pool_frame(tmp_path: Path) -> None:
     frame = _seed_pool(tmp_path)
-    renderer = SierpinskiCairoSource()
+    renderer = AoaCairoSource()
     renderer._visual_pool_selector.pool = LocalVisualPool(tmp_path / "visual")
     renderer._visual_pool_selector._loaded_at = 0.0
 
@@ -64,7 +64,7 @@ def test_sierpinski_renderer_resolves_local_pool_frame(tmp_path: Path) -> None:
 
 def test_director_skips_playlist_cold_start_for_local_visual_slots(tmp_path: Path) -> None:
     frame = _seed_pool(tmp_path)
-    loader = SierpinskiLoader(pool_root=tmp_path / "visual", aesthetic_tags=("grain",))
+    loader = AoaLoader(pool_root=tmp_path / "visual", aesthetic_tags=("grain",))
     assert loader.video_slots[0].current_frame_path == frame
     director = DirectorLoop(video_slots=loader.video_slots, reactor_overlay=object())
 
@@ -77,7 +77,7 @@ def test_director_gathers_local_visual_frame_for_reaction_context(
     tmp_path: Path, monkeypatch
 ) -> None:
     frame = _seed_pool(tmp_path)
-    loader = SierpinskiLoader(pool_root=tmp_path / "visual", aesthetic_tags=("grain",))
+    loader = AoaLoader(pool_root=tmp_path / "visual", aesthetic_tags=("grain",))
     director = DirectorLoop(video_slots=loader.video_slots, reactor_overlay=object())
     monkeypatch.setattr(director_loop_module, "LLM_FRAME", tmp_path / "absent-llm-frame.jpg")
 

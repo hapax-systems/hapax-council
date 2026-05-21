@@ -700,7 +700,7 @@ class OverlayZoneManager:
         budget_tracker: BudgetTracker | None = None,
     ) -> None:
         # A+ Stage 2 audit B2 fix (2026-04-17): canvas dims pulled from
-        # config module constants. Same rationale as SierpinskiRenderer.
+        # config module constants. Same rationale as AoaRenderer.
         from .config import OUTPUT_HEIGHT, OUTPUT_WIDTH
 
         self._source = OverlayZonesCairoSource(zone_configs)

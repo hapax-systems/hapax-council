@@ -5,7 +5,7 @@ broadcast-safe local frame assets from ``~/hapax-pool/visual/`` by
 aesthetic tag and content-risk ceiling, then injects them into the wgpu
 content source protocol via ``content_injector``.
 
-The Sierpinski triangle shader (``sierpinski_content.wgsl``) handles
+The AoA shader (``aoa_content.wgsl``) handles
 the triangle-region masking and compositing on the GPU side. This
 loader is the data pipeline.
 
@@ -79,7 +79,7 @@ class VisualPoolSlotStub:
         self.current_asset()
 
 
-class SierpinskiLoader:
+class AoaLoader:
     """Publishes local visual-pool frames to the wgpu content source protocol.
 
     Each slot becomes a named source at
@@ -103,7 +103,7 @@ class SierpinskiLoader:
             aesthetic_tags=aesthetic_tags,
             max_content_risk=max_content_risk,
         )
-        self._egress_gate = EgressManifestGate(producer_id="studio_compositor.sierpinski_loader")
+        self._egress_gate = EgressManifestGate(producer_id="studio_compositor.aoa_loader")
         self.video_slots = [VisualPoolSlotStub(i, self._selector) for i in range(VIDEO_SLOT_COUNT)]
 
     def start(self) -> None:
@@ -117,7 +117,7 @@ class SierpinskiLoader:
         threading.Thread(
             target=self._start_director, daemon=True, name="sierpinski-director-init"
         ).start()
-        log.info("SierpinskiLoader started")
+        log.info("AoaLoader started")
 
     def _start_director(self) -> None:
         """Deferred director loop startup — waits briefly for local frames."""
@@ -141,7 +141,7 @@ class SierpinskiLoader:
                 programme_provider=programme_provider,
             )
             self._director.start()
-            log.info("DirectorLoop started via SierpinskiLoader")
+            log.info("DirectorLoop started via AoaLoader")
         except Exception:
             log.exception("DirectorLoop startup failed")
 

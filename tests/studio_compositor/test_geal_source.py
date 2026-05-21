@@ -360,9 +360,9 @@ def test_never_paints_inside_inscribed_video_rect() -> None:
     # Spec invariant: the centre of every inscribed rect must be
     # untouched (alpha = 0). Use Sierpinski's geometry cache to resolve
     # rect positions at this canvas size.
-    from agents.studio_compositor.sierpinski_renderer import SierpinskiCairoSource
+    from agents.studio_compositor.aoa_renderer import AoaCairoSource
 
-    geom = SierpinskiCairoSource().geometry_cache(target_depth=2, canvas_w=1280, canvas_h=720)
+    geom = AoaCairoSource().geometry_cache(target_depth=2, canvas_w=1280, canvas_h=720)
     for rx, ry, rw, rh in geom.inscribed_rects:
         cx = int(rx + rw * 0.5)
         cy = int(ry + rh * 0.5)

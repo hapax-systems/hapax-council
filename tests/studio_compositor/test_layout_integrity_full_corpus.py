@@ -26,7 +26,7 @@ Both invariants:
 
 Pure layout-side regression pin — no source code touched, no behavior
 change. Sources without ``params.class_name`` (those dispatched by
-``backend`` instead, e.g. ``token_pole``, ``sierpinski_renderer``) are
+``backend`` instead, e.g. ``token_pole``, ``aoa_renderer``) are
 skipped — they resolve through different registries and are out of
 scope here.
 """
@@ -80,7 +80,7 @@ def test_cairo_class_names_resolve(layout_path: Path) -> None:
         class_name = params.get("class_name")
         if not class_name:
             # Sources dispatched by backend (e.g., token_pole,
-            # sierpinski_renderer) resolve through different registries.
+            # aoa_renderer) resolve through different registries.
             continue
         if class_name not in _CAIRO_SOURCE_CLASSES:
             unresolved.append((source.get("id", "<no-id>"), class_name))

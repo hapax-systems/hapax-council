@@ -105,7 +105,7 @@ def test_hero_small_stage_can_move_to_pre_fx(monkeypatch) -> None:
     assert fx_chain._hero_small_overlay_stage() == "pre_fx"
 
 
-def test_ensure_base_cairo_sources_can_disable_sierpinski_renderers(monkeypatch) -> None:
+def test_ensure_base_cairo_sources_can_disable_aoa_renderers(monkeypatch) -> None:
     monkeypatch.setenv("HAPAX_SIERPINSKI_BASE_OVERLAY_ENABLED", "0")
     features: list[tuple[str, bool]] = []
     monkeypatch.setattr(
@@ -116,8 +116,8 @@ def test_ensure_base_cairo_sources_can_disable_sierpinski_renderers(monkeypatch)
     loader = SimpleNamespace(stop=MagicMock())
     renderer = SimpleNamespace(stop=MagicMock())
     compositor = SimpleNamespace(
-        _sierpinski_loader=loader,
-        _sierpinski_renderer=renderer,
+        _aoa_loader=loader,
+        _aoa_renderer=renderer,
         _geal_source=object(),
     )
 
@@ -125,8 +125,8 @@ def test_ensure_base_cairo_sources_can_disable_sierpinski_renderers(monkeypatch)
 
     loader.stop.assert_not_called()
     renderer.stop.assert_called_once_with()
-    assert compositor._sierpinski_loader is loader
-    assert compositor._sierpinski_renderer is None
+    assert compositor._aoa_loader is loader
+    assert compositor._aoa_renderer is None
     assert compositor._geal_source is None
     assert features == [("sierpinski_base_overlay", False)]
 
@@ -143,20 +143,20 @@ def test_ensure_base_cairo_sources_starts_loader_when_base_overlay_disabled(
             started.append(True)
 
     monkeypatch.setattr(
-        "agents.studio_compositor.sierpinski_loader.SierpinskiLoader",
+        "agents.studio_compositor.aoa_loader.AoaLoader",
         FakeLoader,
     )
     compositor = SimpleNamespace(
-        _sierpinski_loader=None,
-        _sierpinski_renderer=None,
+        _aoa_loader=None,
+        _aoa_renderer=None,
         _geal_source=object(),
     )
 
     fx_chain._ensure_base_cairo_sources(compositor)
 
-    assert isinstance(compositor._sierpinski_loader, FakeLoader)
+    assert isinstance(compositor._aoa_loader, FakeLoader)
     assert started == [True]
-    assert compositor._sierpinski_renderer is None
+    assert compositor._aoa_renderer is None
     assert compositor._geal_source is None
 
 

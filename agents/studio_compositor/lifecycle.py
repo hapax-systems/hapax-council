@@ -140,13 +140,13 @@ def _start_3d_director_runtime(compositor: Any) -> bool:
 
     if os.environ.get("HAPAX_3D_COMPOSITOR") != "1":
         return False
-    if getattr(compositor, "_sierpinski_loader", None) is not None:
+    if getattr(compositor, "_aoa_loader", None) is not None:
         return False
 
-    from .sierpinski_loader import SierpinskiLoader
+    from .aoa_loader import AoaLoader
 
-    compositor._sierpinski_loader = SierpinskiLoader()
-    compositor._sierpinski_loader.start()
+    compositor._aoa_loader = AoaLoader()
+    compositor._aoa_loader.start()
     log.info("3D compositor director runtime started via local visual source loader")
     return True
 

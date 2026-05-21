@@ -294,7 +294,7 @@ class TestAmplitudeBoundedClamp:
     the prior one-pole IIR (#2651 α=0.3, ~3-5 frame lag on alpha + line-
     width modulations) was replaced with instant-response clamping. The
     waveform DRAW still reads raw samples (that surface IS the audio).
-    Cross-ward consistency: same approach used in sierpinski_renderer.
+    Cross-ward consistency: same approach used in aoa_renderer.
     """
 
     def test_default_iir_alpha_is_one_for_tightness(self) -> None:

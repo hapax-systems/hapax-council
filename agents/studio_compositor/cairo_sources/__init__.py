@@ -8,7 +8,7 @@ bottom of this file, and it's declarable in any Layout.
 
 The Phase 3b compositor-unification epic already migrated the four core
 cairo sources into their ``*CairoSource`` classes (TokenPoleCairoSource,
-AlbumOverlayCairoSource, SierpinskiCairoSource, OverlayZonesCairoSource).
+AlbumOverlayCairoSource, AoaCairoSource, OverlayZonesCairoSource).
 This package re-exports three of them for the source-registry PR 1
 default layout (OverlayZones is deliberately left out — it renders at
 full canvas via DVD-bounce and isn't a natural-size PiP candidate; its
@@ -96,14 +96,14 @@ def _register_builtins() -> None:
         StanceIndicatorCairoSource,
     )
     from agents.studio_compositor.research_marker_overlay import ResearchMarkerOverlay
-    from agents.studio_compositor.sierpinski_renderer import SierpinskiCairoSource
+    from agents.studio_compositor.aoa_renderer import AoaCairoSource
     from agents.studio_compositor.stream_overlay import StreamOverlayCairoSource
     from agents.studio_compositor.token_pole import TokenPoleCairoSource
 
     register("TokenPoleCairoSource", TokenPoleCairoSource)
     register("AlbumOverlayCairoSource", AlbumOverlayCairoSource)
     register("CBIPSignalDensityCairoSource", CBIPSignalDensityCairoSource)
-    register("SierpinskiCairoSource", SierpinskiCairoSource)
+    register("AoaCairoSource", AoaCairoSource)
     # LRR Phase 9 §3.6 — scientific-register caption overlay. The
     # production default layout retired captions at GEM cutover; keep
     # the class registered for legacy rollback layouts and direct source

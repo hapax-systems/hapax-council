@@ -22,9 +22,9 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from agents.studio_compositor.sierpinski_renderer import (
+from agents.studio_compositor.aoa_renderer import (
     VIDEO_ATTENTION_PATH,
-    SierpinskiCairoSource,
+    AoaCairoSource,
 )
 
 if TYPE_CHECKING:
@@ -34,15 +34,15 @@ NOW = 1_776_000_000.0
 
 
 @pytest.fixture()
-def renderer() -> SierpinskiCairoSource:
-    return SierpinskiCairoSource()
+def renderer() -> AoaCairoSource:
+    return AoaCairoSource()
 
 
 @pytest.fixture()
 def attention_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect the publish path to a tmp file so tests don't touch /dev/shm."""
     path = tmp_path / "video-attention.f32"
-    monkeypatch.setattr("agents.studio_compositor.sierpinski_renderer.VIDEO_ATTENTION_PATH", path)
+    monkeypatch.setattr("agents.studio_compositor.aoa_renderer.VIDEO_ATTENTION_PATH", path)
     return path
 
 
@@ -58,7 +58,7 @@ def _cached_frame_surface() -> cairo.ImageSurface:
 
 
 def test_video_attention_default_is_zero(
-    renderer: SierpinskiCairoSource, attention_path: Path
+    renderer: AoaCairoSource, attention_path: Path
 ) -> None:
     """No frames loaded → 0.0."""
     renderer._publish_video_attention()
@@ -66,7 +66,7 @@ def test_video_attention_default_is_zero(
     assert _read_f32(attention_path) == pytest.approx(0.0)
 
 
-def test_video_attention_active_slot(renderer: SierpinskiCairoSource, attention_path: Path) -> None:
+def test_video_attention_active_slot(renderer: AoaCairoSource, attention_path: Path) -> None:
     """Fresh frame loaded in active slot → equals active-slot opacity (0.9)."""
     # Simulate a cached frame surface with a fresh mtime.
     fake_surface = _cached_frame_surface()
@@ -81,7 +81,7 @@ def test_video_attention_active_slot(renderer: SierpinskiCairoSource, attention_
 
 
 def test_video_attention_featured_slot_maxes_out(
-    renderer: SierpinskiCairoSource, attention_path: Path
+    renderer: AoaCairoSource, attention_path: Path
 ) -> None:
     """Featured slot with fresh frame → ~1.0."""
     fake_surface = _cached_frame_surface()
@@ -100,7 +100,7 @@ def test_video_attention_featured_slot_maxes_out(
 
 
 def test_video_attention_decays_after_2s(
-    renderer: SierpinskiCairoSource, attention_path: Path
+    renderer: AoaCairoSource, attention_path: Path
 ) -> None:
     """Stale frame (mtime age > 2s) → freshness < 1.0 (exponential decay)."""
     fake_surface = _cached_frame_surface()
@@ -117,7 +117,7 @@ def test_video_attention_decays_after_2s(
 
 
 def test_video_attention_picks_max_across_slots(
-    renderer: SierpinskiCairoSource, attention_path: Path
+    renderer: AoaCairoSource, attention_path: Path
 ) -> None:
     """Max across all slots, not sum — one hot slot dominates."""
     fake_surface = _cached_frame_surface()

@@ -16,12 +16,12 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-from agents.studio_compositor import sierpinski_renderer as sr
+from agents.studio_compositor import aoa_renderer as sr
 
 
 def _make_renderer():
-    """Bare SierpinskiCairoSource without the gi/cairo runner stack."""
-    return sr.SierpinskiCairoSource()
+    """Bare AoaCairoSource without the gi/cairo runner stack."""
+    return sr.AoaCairoSource()
 
 
 def test_slot_opacity_idle_default() -> None:

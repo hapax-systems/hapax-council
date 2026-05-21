@@ -4,10 +4,10 @@ Draws a 2-level Sierpinski triangle with local visual-pool frames masked into th
 corner regions and a waveform in the center void. Renders BEFORE the GL
 shader chain so glfeedback effects apply to the triangle.
 
-Phase 3b: the rendering logic lives in :class:`SierpinskiCairoSource`,
+Phase 3b: the rendering logic lives in :class:`AoaCairoSource`,
 which conforms to the :class:`CairoSource` protocol. The thread loop and
 output-surface caching are owned by :class:`CairoSourceRunner`. The
-:class:`SierpinskiRenderer` facade preserves the original public API
+:class:`AoaRenderer` facade preserves the original public API
 (``start``/``stop``/``draw``/``set_active_slot``/``set_audio_energy``)
 so existing call sites in ``fx_chain.py`` and ``overlay.py`` keep working.
 """
@@ -145,7 +145,7 @@ def _clamp01(value: float) -> float:
 class GeometryCache:
     """Sierpinski geometry computed up to ``target_depth``.
 
-    Produced by :meth:`SierpinskiCairoSource.geometry_cache`. Used by GEAL
+    Produced by :meth:`AoaCairoSource.geometry_cache`. Used by GEAL
     to render the 8-layer expressive stack (§5 of the spec). Kept
     side-by-side with the legacy ``_cached_*`` fields on the source —
     GEAL is a parallel reader, not a rewrite of the existing render path.
@@ -185,7 +185,7 @@ class GeometryCache:
     target_depth: int = 2
 
 
-class SierpinskiCairoSource(HomageTransitionalSource):
+class AoaCairoSource(HomageTransitionalSource):
     """HomageTransitionalSource implementation for the Sierpinski overlay.
 
     Owns the YouTube frame cache, active-slot state, and audio energy
@@ -880,7 +880,7 @@ class SierpinskiCairoSource(HomageTransitionalSource):
         cr.restore()
 
 
-class SierpinskiRenderer:
+class AoaRenderer:
     """Compositor-side facade around the polymorphic Cairo source pipeline.
 
     Preserves the original public API (``start``/``stop``/``draw``/
@@ -890,7 +890,7 @@ class SierpinskiRenderer:
 
     Internally:
 
-    * Holds a :class:`SierpinskiCairoSource` for the per-frame draw logic
+    * Holds a :class:`AoaCairoSource` for the per-frame draw logic
     * Holds a :class:`CairoSourceRunner` to drive it on a background
       thread at the configured FPS
     * Forwards ``draw()`` to the runner's cached output surface for the
@@ -906,7 +906,7 @@ class SierpinskiRenderer:
         # recover.
         from .config import OUTPUT_HEIGHT, OUTPUT_WIDTH
 
-        self._source = SierpinskiCairoSource()
+        self._source = AoaCairoSource()
         self._runner = CairoSourceRunner(
             source_id="sierpinski-lines",
             source=self._source,
@@ -923,7 +923,7 @@ class SierpinskiRenderer:
     def start(self) -> None:
         """Start the background render thread."""
         self._runner.start()
-        log.info("SierpinskiRenderer background thread started at %dfps", RENDER_FPS)
+        log.info("AoaRenderer background thread started at %dfps", RENDER_FPS)
 
     def stop(self) -> None:
         """Stop the background render thread."""

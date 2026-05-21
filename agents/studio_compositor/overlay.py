@@ -96,13 +96,13 @@ def on_draw(compositor: Any, overlay: Any, cr: Any, timestamp: int, duration: in
 
     if sierpinski_base_overlay_enabled():
         # Sierpinski triangle with video content (drawn BEFORE GL effects apply)
-        sierpinski = getattr(compositor, "_sierpinski_renderer", None)
+        sierpinski = getattr(compositor, "_aoa_renderer", None)
         if sierpinski is not None:
             # Feed audio energy for reactive line width
             if hasattr(compositor, "_cached_audio"):
                 sierpinski.set_audio_energy(compositor._cached_audio.get("mixer_energy", 0.0))
             # Sync active slot from loader to renderer
-            loader = getattr(compositor, "_sierpinski_loader", None)
+            loader = getattr(compositor, "_aoa_loader", None)
             if loader is not None:
                 sierpinski.set_active_slot(loader._active_slot)
             sierpinski.draw(cr, canvas_w, canvas_h)

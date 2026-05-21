@@ -54,7 +54,7 @@ def _cairo_source_class_names(layout_path: Path) -> Iterable[tuple[str, str]]:
         if not class_name:
             # Some Cairo sources are dispatched by ``backend`` rather
             # than ``params.class_name`` (e.g., ``backend: "token_pole"``,
-            # ``backend: "sierpinski_renderer"``). Those are resolved by
+            # ``backend: "aoa_renderer"``). Those are resolved by
             # the source-registry's per-backend dispatchers, not this
             # class registry — skip them defensively.
             continue

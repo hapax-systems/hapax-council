@@ -31,7 +31,7 @@ from agents.studio_compositor.m8_oscilloscope_source import (
     AMPLITUDE_IIR_ALPHA,
     LINE_WIDTH_AMPLITUDE_SCALE,
 )
-from agents.studio_compositor.sierpinski_renderer import (
+from agents.studio_compositor.aoa_renderer import (
     SIERPINSKI_AUDIO_ATTACK_ALPHA,
     SIERPINSKI_AUDIO_BURST_CLAMP,
     SIERPINSKI_AUDIO_RELEASE_ALPHA,

@@ -57,7 +57,7 @@ class PackedSlot:
 def _compute_packed_slots(canvas_w: int, canvas_h: int) -> list[PackedSlot]:
     """Compute camera slots flush along the Sierpinski triangle's side edges.
 
-    Geometry matches sierpinski_renderer (scale=0.75, y_offset=-0.02).
+    Geometry matches aoa_renderer (scale=0.75, y_offset=-0.02).
     """
     fw, fh = float(canvas_w), float(canvas_h)
 
@@ -69,7 +69,7 @@ def _compute_packed_slots(canvas_w: int, canvas_h: int) -> list[PackedSlot]:
     cy = fh * 0.5 + y_offset * fh
     half_base = scale * fh * 0.5
 
-    # Triangle vertices — MUST match sierpinski_renderer._get_triangle exactly
+    # Triangle vertices — MUST match aoa_renderer._get_triangle exactly
     apex = (cx, cy - tri_h * 0.667)
     bl = (cx - half_base, cy + tri_h * 0.333)
     br = (cx + half_base, cy + tri_h * 0.333)

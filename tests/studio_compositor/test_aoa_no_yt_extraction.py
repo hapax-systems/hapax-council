@@ -7,13 +7,13 @@ from unittest.mock import patch
 from PIL import Image
 
 from agents.studio_compositor.director_loop import DirectorLoop
-from agents.studio_compositor.sierpinski_loader import SierpinskiLoader
+from agents.studio_compositor.aoa_loader import AoaLoader
 from agents.visual_pool.repository import LocalVisualPool
 
 _REPO = Path(__file__).resolve().parents[2]
 _SIERPINSKI_FRAME_PATHS = [
-    _REPO / "agents" / "studio_compositor" / "sierpinski_loader.py",
-    _REPO / "agents" / "studio_compositor" / "sierpinski_renderer.py",
+    _REPO / "agents" / "studio_compositor" / "aoa_loader.py",
+    _REPO / "agents" / "studio_compositor" / "aoa_renderer.py",
     _REPO / "agents" / "visual_pool" / "repository.py",
     _REPO / "agents" / "visual_pool" / "__main__.py",
 ]
@@ -47,7 +47,7 @@ def test_sierpinski_frame_path_does_not_reference_yt_dlp() -> None:
 
 def test_local_visual_pool_slots_do_not_invoke_youtube_playlist_reload(tmp_path: Path) -> None:
     _seed_pool(tmp_path)
-    loader = SierpinskiLoader(pool_root=tmp_path / "visual", aesthetic_tags=("sierpinski",))
+    loader = AoaLoader(pool_root=tmp_path / "visual", aesthetic_tags=("sierpinski",))
     director = DirectorLoop(video_slots=loader.video_slots, reactor_overlay=object())
 
     with (
