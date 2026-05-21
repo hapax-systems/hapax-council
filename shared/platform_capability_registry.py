@@ -993,6 +993,11 @@ def _apply_receipt_to_route_payload(
     observed_at = receipt.observed_at.isoformat().replace("+00:00", "Z")
     provider_docs_at = receipt.provider_docs.fetched_at.isoformat().replace("+00:00", "Z")
     top_blockers = list(route_payload.get("blocked_reasons") or [])
+    subscription_quota_unobservable = _subscription_quota_unobservable_nonblocking(
+        route_payload,
+        receipt,
+    )
+    quota_reason_codes = [] if subscription_quota_unobservable else receipt.quota.reason_codes
 
     _apply_surface(
         freshness,
@@ -1018,7 +1023,7 @@ def _apply_receipt_to_route_payload(
         checked_at=observed_at,
         stale_after=receipt.quota.stale_after,
         evidence_refs=[*receipt.quota.evidence_refs, receipt_ref],
-        reason_codes=receipt.quota.reason_codes
+        reason_codes=quota_reason_codes
         if receipt.quota.status is not EvidenceStatus.OBSERVED
         else [],
         removable_reasons={"account_live_quota_receipt_absent", "quota_telemetry_unknown"},
@@ -1036,26 +1041,51 @@ def _apply_receipt_to_route_payload(
     for tool in route_payload.get("tool_state", []):
         tool["observed_at"] = observed_at
         tool["evidence_ref"] = receipt_ref
+    if receipt.capability.status is EvidenceStatus.OBSERVED:
+        for score in route_payload.get("capability_scores", {}).values():
+            score["observed_at"] = observed_at
+            score["evidence_refs"] = list(
+                dict.fromkeys([*score.get("evidence_refs", []), receipt_ref])
+            )
 
     if receipt.capability.status is not EvidenceStatus.OBSERVED:
         top_blockers.extend(receipt.capability.reason_codes)
     if receipt.resource.status is not EvidenceStatus.OBSERVED:
         top_blockers.extend(receipt.resource.reason_codes)
-    if receipt.quota.status is not EvidenceStatus.OBSERVED:
+    if receipt.quota.status is not EvidenceStatus.OBSERVED and not subscription_quota_unobservable:
         top_blockers.extend(receipt.quota.reason_codes)
 
-    top_blockers = [
-        reason
-        for reason in top_blockers
-        if reason
-        not in {
-            "fresh_capability_evidence_absent",
-            "fresh_resource_evidence_absent",
-            "provider_docs_evidence_absent",
-        }
-    ]
+    removable_top_blockers = {
+        "fresh_capability_evidence_absent",
+        "fresh_resource_evidence_absent",
+        "provider_docs_evidence_absent",
+    }
+    if subscription_quota_unobservable:
+        removable_top_blockers.add("account_live_quota_receipt_absent")
+    top_blockers = [reason for reason in top_blockers if reason not in removable_top_blockers]
     route_payload["blocked_reasons"] = list(dict.fromkeys(top_blockers))
     route_payload["route_state"] = "blocked" if route_payload["blocked_reasons"] else "active"
+
+
+def _subscription_quota_unobservable_nonblocking(
+    route_payload: dict[str, Any],
+    receipt: PlatformCapabilityReceipt,
+) -> bool:
+    """Treat local subscription-quota unobservability as evidence, not a hold.
+
+    Subscription products do not expose account-live quota through local CLI
+    probes. A fresh receipt may still prove the launch surface is usable when
+    CLI/wrapper capability and resource evidence are observed. Keep every other
+    quota reason fail-closed.
+    """
+
+    return (
+        route_payload.get("capacity_pool") == CapacityPool.SUBSCRIPTION_QUOTA.value
+        and receipt.quota.status is EvidenceStatus.UNOBSERVABLE
+        and set(receipt.quota.reason_codes) == {"account_live_quota_receipt_absent"}
+        and receipt.capability.status is EvidenceStatus.OBSERVED
+        and receipt.resource.status is EvidenceStatus.OBSERVED
+    )
 
 
 def _apply_surface(

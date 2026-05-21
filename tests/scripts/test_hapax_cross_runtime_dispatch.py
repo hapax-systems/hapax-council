@@ -74,7 +74,56 @@ def test_task_dispatch_delegates_to_methodology_dispatch(tmp_path: Path) -> None
         "beta",
         "--platform",
         "claude",
+        "--mode",
+        "headless",
+        "--profile",
+        "full",
         "--launch",
+    ]
+
+
+def test_task_dispatch_forwards_mq_profile_and_policy_flags(tmp_path: Path) -> None:
+    env, dispatcher_log = _env(tmp_path)
+
+    result = subprocess.run(
+        [
+            str(SCRIPT),
+            "--lane",
+            "beta",
+            "--platform",
+            "codex",
+            "--task",
+            "demo-task",
+            "--mq-message-id",
+            "msg-123",
+            "--runtime-mode",
+            "receipt-only",
+            "--profile",
+            "spark",
+            "--policy-rollback",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert dispatcher_log.read_text(encoding="utf-8").splitlines() == [
+        "--task",
+        "demo-task",
+        "--lane",
+        "beta",
+        "--platform",
+        "codex",
+        "--mode",
+        "receipt-only",
+        "--profile",
+        "spark",
+        "--launch",
+        "--mq-message-id",
+        "msg-123",
+        "--policy-rollback",
     ]
 
 

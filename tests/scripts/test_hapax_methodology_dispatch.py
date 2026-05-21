@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,6 +11,7 @@ from shared.relay_mq_envelope import Envelope
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
+RECEIPT_SCRIPT = REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 
 
@@ -49,6 +51,12 @@ def _fresh_registry(tmp_path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
+
+
+def _fake_binary(bin_dir: Path, name: str, output: str) -> None:
+    target = bin_dir / name
+    target.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n", encoding="utf-8")
+    target.chmod(0o755)
 
 
 def _default_route_metadata(frontmatter: str) -> str:
@@ -823,6 +831,85 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["launch_returncode"] == 0
     assert receipt["route_policy_action"] == "launch"
     assert receipt["route_policy_launch_allowed"] is True
+
+
+def test_launch_uses_subscription_receipt_without_policy_rollback(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+    receipt_dir = tmp_path / "receipts"
+    receipt_result = subprocess.run(
+        [
+            sys.executable,
+            str(RECEIPT_SCRIPT),
+            "--registry",
+            str(REGISTRY),
+            "--receipt-dir",
+            str(receipt_dir),
+            "--platform",
+            "codex",
+            "--json",
+        ],
+        env={**os.environ, "PATH": str(bin_dir)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert receipt_result.returncode == 0, receipt_result.stderr
+
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "launcher" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher),
+            "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(REGISTRY),
+            "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR": str(receipt_dir),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["route_policy_action"] == "launch"
+    assert receipt["route_policy_launch_allowed"] is True
+    assert receipt["route_policy_registry_freshness_green"] is True
+    assert receipt["route_policy_quota_freshness_green"] is True
+    assert receipt["route_policy_resource_freshness_green"] is True
+    assert receipt.get("route_policy_compatibility_mode") in {None, "none"}
 
 
 def test_policy_rollback_allows_full_profile_after_route_decision_receipt(

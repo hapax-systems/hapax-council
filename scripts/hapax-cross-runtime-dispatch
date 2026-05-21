@@ -37,6 +37,9 @@ Options:
   --mq-message-id ID   Durable relay MQ dispatch message id
   --advisory-only      Label terminal dispatch as non-authoritative
   --mode MODE          Workstream mode: single_lane|shared_coordinated|parallel_separate
+  --runtime-mode MODE  Methodology dispatch mode: headless|interactive|receipt-only
+  --profile PROFILE    Methodology dispatch capability profile
+  --policy-rollback    Forward explicit methodology dispatch rollback mode
   --reason REASON      Dispatch reason
   --dry-run            Show what would be dispatched without acting
   --list-eligible      List dispatch-eligible lanes
@@ -47,8 +50,9 @@ USAGE
 }
 
 # Parse arguments
-LANE="" PLATFORM="" TASK="" CASE_ID="" MQ_MESSAGE_ID="" MODE="single_lane" REASON="" DRY_RUN=false
+LANE="" PLATFORM="" TASK="" CASE_ID="" MQ_MESSAGE_ID="" MODE="single_lane" RUNTIME_MODE="headless" PROFILE="full" REASON="" DRY_RUN=false
 ADVISORY_ONLY=false
+POLICY_ROLLBACK=false
 LIST_ELIGIBLE=false CHECK_LANE=""
 
 while [[ $# -gt 0 ]]; do
@@ -60,6 +64,9 @@ while [[ $# -gt 0 ]]; do
         --mq-message-id) MQ_MESSAGE_ID="$2"; shift 2 ;;
         --advisory-only) ADVISORY_ONLY=true; shift ;;
         --mode)       MODE="$2"; shift 2 ;;
+        --runtime-mode|--methodology-mode) RUNTIME_MODE="$2"; shift 2 ;;
+        --profile)    PROFILE="$2"; shift 2 ;;
+        --policy-rollback) POLICY_ROLLBACK=true; shift ;;
         --reason)     REASON="$2"; shift 2 ;;
         --dry-run)    DRY_RUN=true; shift ;;
         --list-eligible) LIST_ELIGIBLE=true; shift ;;
@@ -302,6 +309,7 @@ echo "  case:        ${CASE_ID:-<none>}"
 echo "  mq:          ${DURABLE_MQ_REASON}"
 echo "  advisory:    ${ADVISORY_ONLY}"
 echo "  mode:        $MODE"
+echo "  runtime:     $RUNTIME_MODE/$PROFILE"
 echo "  reason:      ${REASON:-<none>}"
 
 if $DRY_RUN; then
@@ -347,11 +355,25 @@ if [[ -x "$METHODOLOGY_DISPATCH" ]]; then
     if [[ -z "$METHODOLOGY_DISPATCH_ENV" ]] && command -v uv >/dev/null 2>&1; then
         METHODOLOGY_CMD=(uv run python "$METHODOLOGY_DISPATCH")
     fi
-    echo "  delegating: ${METHODOLOGY_CMD[*]} --task $TASK --lane $LANE --platform $PLATFORM --launch"
+    DELEGATE_ARGS=(
+        --task "$TASK"
+        --lane "$LANE"
+        --platform "$PLATFORM"
+        --mode "$RUNTIME_MODE"
+        --profile "$PROFILE"
+        --launch
+    )
+    if [[ -n "$MQ_MESSAGE_ID" ]]; then
+        DELEGATE_ARGS+=(--mq-message-id "$MQ_MESSAGE_ID")
+    fi
+    if [[ "$POLICY_ROLLBACK" == "true" ]]; then
+        DELEGATE_ARGS+=(--policy-rollback)
+    fi
+    echo "  delegating: ${METHODOLOGY_CMD[*]} ${DELEGATE_ARGS[*]}"
     if [[ -z "$METHODOLOGY_DISPATCH_ENV" ]]; then
         export PYTHONPATH="$REPO_ROOT:$REPO_ROOT/packages/agentgov/src:${PYTHONPATH:-}"
     fi
-    exec "${METHODOLOGY_CMD[@]}" --task "$TASK" --lane "$LANE" --platform "$PLATFORM" --launch
+    exec "${METHODOLOGY_CMD[@]}" "${DELEGATE_ARGS[@]}"
 fi
 
 # Fallback: direct launcher (methodology-dispatch not available)

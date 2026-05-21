@@ -1530,6 +1530,13 @@ def _registry_freshness_green(request: DispatchRequest) -> bool:
 
 
 def _quota_freshness_green(request: DispatchRequest) -> bool:
+    capability = request.capability
+    if (
+        capability is not None
+        and capability.capacity_pool == "subscription_quota"
+        and capability.freshness_ok
+    ):
+        return not any("quota" in error for error in capability.freshness_errors)
     quota = request.quota
     if quota is None or not quota.available:
         return False
