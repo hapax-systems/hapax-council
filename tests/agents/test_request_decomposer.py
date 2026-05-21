@@ -15,6 +15,7 @@ import pytest
 from agents.request_decomposer.models import RequestDecomposition, TaskSpec
 from agents.request_decomposer.writer import write_decomposition
 from shared.frontmatter import parse_frontmatter
+from shared.route_metadata_schema import RouteMetadataStatus, assess_route_metadata
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -124,6 +125,59 @@ class TestTaskSpec:
         )
         assert t.parent_spec == "/some/spec.md"
 
+    def test_authoritative_frontier_review_tasks_normalize_to_frontier_required(self):
+        t = TaskSpec(
+            task_id="test-authoritative-route",
+            title="Authoritative route",
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            quality_floor="frontier_review_required",
+            authority_level="authoritative",
+            mutation_surface="source",
+            acceptance_criteria=["Done"],
+        )
+
+        assert t.quality_floor == "frontier_required"
+
+    def test_route_metadata_synonyms_normalize_before_write(self):
+        t = TaskSpec(
+            task_id="test-route-synonyms",
+            title="Route synonyms",
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            quality_floor="production",
+            mutation_surface="vault",
+            authority_level="session",
+            acceptance_criteria=["Done"],
+        )
+
+        assert t.quality_floor == "frontier_required"
+        assert t.mutation_surface == "vault_docs"
+        assert t.authority_level == "authoritative"
+
+    def test_path_like_mutation_surface_normalizes_to_source(self):
+        t = TaskSpec(
+            task_id="test-path-surface",
+            title="Path surface",
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            mutation_surface="agents/request_decomposer",
+            acceptance_criteria=["Done"],
+        )
+
+        assert t.mutation_surface == "source"
+
+    def test_invalid_route_metadata_values_rejected(self):
+        with pytest.raises(ValueError):
+            TaskSpec(
+                task_id="test-bad-route",
+                title="Bad route",
+                parent_request="REQ-test.md",
+                authority_case="CASE-TEST",
+                mutation_surface="filesystem",
+                acceptance_criteria=["Done"],
+            )
+
 
 class TestRequestDecomposition:
     def _make_task(self, task_id: str, **kw) -> TaskSpec:
@@ -182,6 +236,16 @@ class TestRequestDecomposition:
             ],
         )
         assert len(d.tasks) == 3
+
+    def test_ready_status_allowed_for_dependency_gated_tasks(self):
+        task = self._make_task("ready-task", status="ready", depends_on=["a"])
+        d = RequestDecomposition(
+            request_id="test",
+            request_path="/tmp/test.md",
+            tasks=[self._make_task("a"), task],
+        )
+
+        assert d.tasks[1].status == "ready"
 
     def test_missing_parent_request_rejected(self):
         with pytest.raises(ValueError, match="parent_request"):
@@ -284,6 +348,65 @@ class TestWriter:
             phase1 = [p for p in paths if "phase1" in p.name][0]
             content = phase1.read_text()
             assert "write-phase2" in content
+
+    def test_writer_emits_dispatchable_route_metadata(self):
+        decomp = RequestDecomposition(
+            request_id="test-route-write",
+            request_path="/tmp/test.md",
+            tasks=[
+                TaskSpec(
+                    task_id="write-route",
+                    title="Route metadata",
+                    parent_request="REQ-test.md",
+                    authority_case="CASE-TEST",
+                    parent_spec="/tmp/spec.md",
+                    quality_floor="frontier_review_required",
+                    authority_level="authoritative",
+                    mutation_surface="source",
+                    acceptance_criteria=["Route validates"],
+                    intent="Write dispatchable metadata.",
+                ),
+            ],
+        )
+        with tempfile.TemporaryDirectory() as td:
+            [path] = write_decomposition(decomp, Path(td))
+
+            fields, _body = parse_frontmatter(path)
+            assessment = assess_route_metadata(fields)
+
+        assert assessment.status != RouteMetadataStatus.MALFORMED
+        assert assessment.dispatchable
+        assert assessment.metadata is not None
+        assert assessment.metadata.quality_floor == "frontier_required"
+
+    def test_writer_emits_support_review_requirement_when_needed(self):
+        decomp = RequestDecomposition(
+            request_id="test-review-write",
+            request_path="/tmp/test.md",
+            tasks=[
+                TaskSpec(
+                    task_id="write-review",
+                    title="Review metadata",
+                    kind="research_packet",
+                    parent_request="REQ-test.md",
+                    quality_floor="frontier_review_required",
+                    authority_level="support_non_authoritative",
+                    mutation_surface="vault_docs",
+                    acceptance_criteria=["Route validates"],
+                    intent="Write support metadata.",
+                ),
+            ],
+        )
+        with tempfile.TemporaryDirectory() as td:
+            [path] = write_decomposition(decomp, Path(td))
+
+            fields, _body = parse_frontmatter(path)
+            assessment = assess_route_metadata(fields)
+
+        assert assessment.status != RouteMetadataStatus.MALFORMED
+        assert assessment.dispatchable
+        assert assessment.metadata is not None
+        assert assessment.metadata.review_requirement.support_artifact_allowed is True
 
     def test_refuses_overwrite(self):
         with tempfile.TemporaryDirectory() as td:
@@ -572,6 +695,58 @@ planning_case: CASE-TEST-001
 
         assert decomp is not None
         assert decomp.tasks[0].authority_case == "CASE-REAL-001"
+
+    def test_decomposition_marks_dependency_tasks_ready_for_offer_sweeper(
+        self, tmp_path, monkeypatch
+    ):
+        script = _load_request_decompose_module()
+
+        def completion(**_kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(
+                                {
+                                    "tasks": [
+                                        {
+                                            "task_id": "req-test-a",
+                                            "title": "Build A",
+                                            "kind": "build",
+                                            "acceptance_criteria": ["A done"],
+                                        },
+                                        {
+                                            "task_id": "req-test-b",
+                                            "title": "Build B",
+                                            "kind": "build",
+                                            "depends_on": ["req-test-a"],
+                                            "acceptance_criteria": ["B done"],
+                                        },
+                                    ]
+                                }
+                            )
+                        )
+                    )
+                ]
+            )
+
+        monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(completion=completion))
+
+        request_data = self._request_data(
+            tmp_path,
+            {
+                "filename": "REQ-test.md",
+                "status": "accepted_for_planning",
+                "planning_case": "CASE-REAL-001",
+            },
+        )
+
+        decomp = script._decompose_with_llm(request_data)
+
+        assert decomp is not None
+        assert decomp.tasks[0].status == "offered"
+        assert decomp.tasks[1].status == "ready"
+        assert decomp.tasks[1].blocked_reason == "Depends on: req-test-a"
 
     def test_decomposition_fails_without_authority_instead_of_fabricating_case(
         self, tmp_path, monkeypatch

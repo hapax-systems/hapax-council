@@ -56,6 +56,12 @@ def _render_task_note(task: TaskSpec, blocks: list[str]) -> str:
         "authority_case": task.authority_case,
         "tags": ["cc-task", task.priority, "auto-decomposed"],
     }
+    if task.quality_floor == "frontier_review_required":
+        frontmatter["review_requirement"] = {
+            "support_artifact_allowed": True,
+            "independent_review_required": True,
+            "authoritative_acceptor_profile": "frontier_full",
+        }
     body = f"""# {task.title}
 
 {task.intent}

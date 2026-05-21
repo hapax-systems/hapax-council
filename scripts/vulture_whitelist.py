@@ -3641,6 +3641,10 @@ get_fishbowl_defaults
 # Request decomposer — Pydantic model validators invoked by framework
 from agents.request_decomposer.models import RequestDecomposition, TaskSpec
 
+TaskSpec._normalize_authority_level
+TaskSpec._normalize_mutation_surface
+TaskSpec._normalize_quality_floor
+TaskSpec._normalize_route_metadata
 TaskSpec._blocked_needs_reason
 TaskSpec._needs_acceptance_criteria
 RequestDecomposition._validate_dag
@@ -3812,6 +3816,10 @@ DossierBraidOutput._no_confidence_mutations
 
 from agents.request_decomposer.models import TaskSpec
 
+TaskSpec._normalize_mutation_surface
+TaskSpec._normalize_authority_level
+TaskSpec._normalize_quality_floor
+TaskSpec._normalize_route_metadata
 TaskSpec._needs_authority_case
 TaskSpec._needs_parent_lineage
 
