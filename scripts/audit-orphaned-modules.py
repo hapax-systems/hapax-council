@@ -9,7 +9,6 @@ from __future__ import annotations
 import ast
 import json
 import subprocess
-import sys
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -114,7 +113,8 @@ def _last_commit_author(root: Path, rel_path: str) -> str:
             text=True,
             timeout=5,
         )
-        return result.stdout.strip() or "unknown"
+        name = result.stdout.strip() or "unknown"
+        return "The Operator" if name else "unknown"
     except Exception:
         return "unknown"
 
