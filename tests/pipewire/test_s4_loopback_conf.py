@@ -1,8 +1,7 @@
-"""Regression pin for the evilpet-s4-routing Phase 1 PipeWire conf.
+"""Regression pin for the S-4 fail-closed PipeWire conf.
 
-Pins the sink-name fixed point + module + target so a future edit
-can't silently break R3 routing (S-4 USB → livestream-tap, parallel
-to Evil Pet).
+Pins the sink-name fixed point and module while preventing stale live
+targets from silently re-enabling S-4 USB livestream egress.
 """
 
 from __future__ import annotations
@@ -31,9 +30,10 @@ def test_capture_sink_name_fixed_point(raw_config: str) -> None:
     assert 'node.name        = "hapax-s4-content"' in raw_config
 
 
-def test_playback_targets_livestream_tap(raw_config: str) -> None:
-    """R3 routing requires playback to land on the livestream tap."""
-    assert 'target.object    = "hapax-livestream-tap"' in raw_config
+def test_playback_has_no_livestream_tap_target(raw_config: str) -> None:
+    """S-4 is dormant until a bounded activation task proves a route."""
+    assert 'target.object    = "hapax-livestream-tap"' not in raw_config
+    assert "node.autoconnect = false" in raw_config
 
 
 def test_uses_loopback_module(raw_config: str) -> None:

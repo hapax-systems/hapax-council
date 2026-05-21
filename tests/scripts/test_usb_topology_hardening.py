@@ -34,6 +34,9 @@ L12_SOURCE = (
     "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
 )
 FAIL_CLOSED_DEFAULT_SINK = "hapax-pc-loudnorm"
+# Newer main-side fixtures still use this legacy name. Keep it as an alias so
+# merge-queue snapshots resolve to the fail-closed default sink.
+LOCAL_DEFAULT_SINK = FAIL_CLOSED_DEFAULT_SINK
 
 
 def load_witness_module() -> ModuleType:
