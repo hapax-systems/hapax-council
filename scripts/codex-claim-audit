@@ -3,7 +3,8 @@
 #
 # Scans all active tasks assigned to cx-* or codex-* roles. For each, checks:
 #   1. Is the task claimed/in_progress for > STALE_HOURS without a PR or branch?
-#   2. Does the assigned role have a live session (tmux/worktree)?
+#   2. Does the assigned role have a matching cc-active-task cache marker?
+#   3. Are live resumed lane processes still coherent with active task state?
 #
 # Reports phantom claims and optionally releases them (--release).
 #
@@ -30,28 +31,124 @@ now_epoch=$(date +%s)
 phantom_count=0
 cache_mismatch_count=0
 stale_cache_count=0
+coherence_count=0
+process_count=0
 report=""
 cache_report=""
+coherence_report=""
+process_report=""
+
+_strip_scalar() {
+  printf '%s' "$1" | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^['\"]//; s/['\"]$//"
+}
+
+_fm_value() {
+  local key="$1"
+  local path="$2"
+  grep -oP "^${key}:\s*\\K.*" "$path" 2>/dev/null | head -n1 | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^['\"]//; s/['\"]$//" || true
+}
+
+_is_claim_status() {
+  case "$1" in
+    claimed|in_progress) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_is_unassigned_role() {
+  case "$(_strip_scalar "$1" | tr '[:upper:]' '[:lower:]')" in
+    ""|null|none|"~"|unassigned|"[]") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_is_codexish_role() {
+  case "$1" in
+    cx-*|codex*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_claim_file_for() {
+  printf '%s/cc-active-task-%s' "$CLAIM_CACHE_DIR" "$1"
+}
+
+_claim_file_task() {
+  local claim_file="$1"
+  [ -f "$claim_file" ] || return 0
+  sed -n '1p' "$claim_file" 2>/dev/null | tr -d '[:space:]' || true
+}
+
+_active_note_for() {
+  local task_id="$1"
+  local exact="$VAULT_ROOT/active/$task_id.md"
+  if [ -f "$exact" ]; then
+    printf '%s' "$exact"
+    return 0
+  fi
+  for candidate in "$VAULT_ROOT/active/$task_id-"*.md; do
+    [ -f "$candidate" ] || continue
+    printf '%s' "$candidate"
+    return 0
+  done
+  return 1
+}
+
+_any_note_status_for() {
+  local task_id="$1"
+  local note=""
+  note="$(_active_note_for "$task_id" 2>/dev/null || true)"
+  if [ -n "$note" ]; then
+    printf 'active:%s' "$(_fm_value status "$note")"
+    return 0
+  fi
+  local exact="$VAULT_ROOT/closed/$task_id.md"
+  if [ -f "$exact" ]; then
+    printf 'closed:%s' "$(_fm_value status "$exact")"
+    return 0
+  fi
+  for candidate in "$VAULT_ROOT/closed/$task_id-"*.md; do
+    [ -f "$candidate" ] || continue
+    printf 'closed:%s' "$(_fm_value status "$candidate")"
+    return 0
+  done
+  printf 'missing:not_found'
+}
+
+_record_coherence() {
+  coherence_count=$((coherence_count + 1))
+  coherence_report="${coherence_report}  $1\n"
+}
+
+_record_process() {
+  process_count=$((process_count + 1))
+  process_report="${process_report}  $1\n"
+}
 
 for note in "$VAULT_ROOT/active/"*.md; do
   [ -f "$note" ] || continue
 
-  assigned=$(grep -oP '^assigned_to:\s*\K\S+' "$note" 2>/dev/null || echo "")
-  case "$assigned" in
-    cx-*|codex*) ;;
-    *) continue ;;
-  esac
+  assigned="$(_fm_value assigned_to "$note")"
+  status="$(_fm_value status "$note")"
+  _is_claim_status "$status" || continue
 
-  status=$(grep -oP '^status:\s*\K\S+' "$note" 2>/dev/null || echo "")
-  case "$status" in
-    claimed|in_progress) ;;
-    *) continue ;;
-  esac
+  task_id="$(_fm_value task_id "$note")"
+  [ -n "$task_id" ] || task_id="$(basename "$note" .md)"
+  pr="$(_fm_value pr "$note")"
+  branch="$(_fm_value branch "$note")"
+  claimed_at="$(_fm_value claimed_at "$note")"
 
-  task_id=$(grep -oP '^task_id:\s*\K\S+' "$note" 2>/dev/null || echo "$(basename "$note" .md)")
-  pr=$(grep -oP '^pr:\s*\K\S+' "$note" 2>/dev/null || echo "null")
-  branch=$(grep -oP '^branch:\s*\K\S+' "$note" 2>/dev/null || echo "null")
-  claimed_at=$(grep -oP '^claimed_at:\s*\K\S+' "$note" 2>/dev/null || echo "")
+  if ! _is_unassigned_role "$assigned"; then
+    claim_file="$(_claim_file_for "$assigned")"
+    claimed_task="$(_claim_file_task "$claim_file")"
+    if [ ! -f "$claim_file" ]; then
+      _record_coherence "CACHE_MISSING: ${task_id} assigned=${assigned} status=${status} expected=$(basename "$claim_file")"
+    elif [ "$claimed_task" != "$task_id" ]; then
+      _record_coherence "CACHE_MISMATCH: ${task_id} assigned=${assigned} status=${status} cache=$(basename "$claim_file") cache_task=${claimed_task:-<empty>}"
+    fi
+  fi
+
+  _is_codexish_role "$assigned" || continue
 
   if [ -n "$claimed_at" ] && [ "$claimed_at" != "null" ]; then
     claimed_epoch=$(date -d "$claimed_at" +%s 2>/dev/null || echo 0)
@@ -93,7 +190,7 @@ for note in "$VAULT_ROOT/active/"*.md; do
   fi
 done
 
-if [ "$RELEASE" = true ] && [ -d "$CLAIM_CACHE_DIR" ]; then
+if [ -d "$CLAIM_CACHE_DIR" ]; then
   for claim_file in "$CLAIM_CACHE_DIR"/cc-active-task-*; do
     [ -f "$claim_file" ] || continue
     assigned="${claim_file##*/cc-active-task-}"
@@ -102,30 +199,105 @@ if [ "$RELEASE" = true ] && [ -d "$CLAIM_CACHE_DIR" ]; then
 
     note="$VAULT_ROOT/active/$claimed_task.md"
     if [ ! -f "$note" ]; then
-      rm -f "$claim_file"
-      stale_cache_count=$((stale_cache_count + 1))
-      cache_report="${cache_report}  CLEARED stale claim cache $(basename "$claim_file") task=${claimed_task} status=not_active\n"
+      note="$(_active_note_for "$claimed_task" 2>/dev/null || true)"
+    fi
+    if [ ! -f "$note" ]; then
+      if [ "$RELEASE" = true ]; then
+        rm -f "$claim_file"
+        stale_cache_count=$((stale_cache_count + 1))
+        cache_report="${cache_report}  CLEARED stale claim cache $(basename "$claim_file") task=${claimed_task} status=not_active\n"
+      else
+        _record_coherence "CACHE_STALE: $(basename "$claim_file") task=${claimed_task} status=not_active"
+      fi
       continue
     fi
 
-    note_assigned=$(grep -oP '^assigned_to:\s*\K\S+' "$note" 2>/dev/null || echo "")
-    note_status=$(grep -oP '^status:\s*\K\S+' "$note" 2>/dev/null || echo "")
-    case "$note_status" in
-      claimed|in_progress) note_is_active_claim=true ;;
-      *) note_is_active_claim=false ;;
-    esac
+    note_assigned="$(_fm_value assigned_to "$note")"
+    note_status="$(_fm_value status "$note")"
+    if _is_claim_status "$note_status"; then
+      note_is_active_claim=true
+    else
+      note_is_active_claim=false
+    fi
 
     if [ "$note_is_active_claim" = false ] || [ "$note_assigned" != "$assigned" ]; then
-      rm -f "$claim_file"
-      stale_cache_count=$((stale_cache_count + 1))
-      cache_report="${cache_report}  CLEARED stale claim cache $(basename "$claim_file") task=${claimed_task} assigned=${note_assigned:-<none>} status=${note_status:-<none>}\n"
+      if [ "$RELEASE" = true ]; then
+        rm -f "$claim_file"
+        stale_cache_count=$((stale_cache_count + 1))
+        cache_report="${cache_report}  CLEARED stale claim cache $(basename "$claim_file") task=${claimed_task} assigned=${note_assigned:-<none>} status=${note_status:-<none>}\n"
+      else
+        _record_coherence "CACHE_STALE: $(basename "$claim_file") task=${claimed_task} assigned=${note_assigned:-<none>} status=${note_status:-<none>}"
+      fi
     fi
   done
 fi
 
-if [ "$phantom_count" -gt 0 ]; then
-  printf "codex-claim-audit: %d phantom claim(s) found\n" "$phantom_count"
-  printf '%b' "$report"
+process_input=""
+if [ -n "${HAPAX_CLAIM_AUDIT_PS_FIXTURE:-}" ]; then
+  process_input="$(cat "$HAPAX_CLAIM_AUDIT_PS_FIXTURE" 2>/dev/null || true)"
+else
+  process_input="$(ps -eo pid=,etimes=,args= 2>/dev/null || true)"
+fi
+
+declare -A seen_process_issue=()
+while IFS= read -r proc_line; do
+  case "$proc_line" in
+    *"Resume governed task "*) ;;
+    *) continue ;;
+  esac
+  task_id="$(printf '%s\n' "$proc_line" | sed -nE 's/.*Resume governed task ([^ ]+).*/\1/p' | head -n1)"
+  [ -n "$task_id" ] || continue
+  role="$(printf '%s\n' "$proc_line" | grep -oP '(HAPAX_AGENT_ROLE|CODEX_ROLE|CLAUDE_ROLE)=\K[^ ]+' | head -n1 || true)"
+  if [ -z "$role" ]; then
+    role="$(printf '%s\n' "$proc_line" | grep -oP 'cc-active-task-\K[^ /]+' | head -n1 || true)"
+  fi
+  [ -n "$role" ] || role="<unknown>"
+  pid="$(printf '%s\n' "$proc_line" | awk '{print $1}')"
+  age_s="$(printf '%s\n' "$proc_line" | awk '{print $2}')"
+  claim_file="$(_claim_file_for "$role")"
+  claimed_task="$(_claim_file_task "$claim_file")"
+  active_note="$(_active_note_for "$task_id" 2>/dev/null || true)"
+  reason=""
+  detail=""
+
+  if [ -z "$active_note" ]; then
+    reason="PROCESS_TASK_NOT_ACTIVE"
+    detail="task_state=$(_any_note_status_for "$task_id")"
+  elif ! _is_claim_status "$(_fm_value status "$active_note")"; then
+    reason="PROCESS_TASK_NOT_CLAIMED"
+    detail="task_status=$(_fm_value status "$active_note")"
+  elif [ "$role" != "<unknown>" ] && [ "$(_fm_value assigned_to "$active_note")" != "$role" ]; then
+    reason="PROCESS_ASSIGNEE_MISMATCH"
+    detail="note_assigned=$(_fm_value assigned_to "$active_note")"
+  elif [ "$claimed_task" != "$task_id" ]; then
+    reason="PROCESS_CACHE_MISMATCH"
+    detail="cache_task=${claimed_task:-<missing>}"
+  fi
+
+  [ -n "$reason" ] || continue
+  key="${role}|${task_id}|${reason}|${detail}"
+  if [ -n "${seen_process_issue[$key]:-}" ]; then
+    continue
+  fi
+  seen_process_issue[$key]=1
+  _record_process "${reason}: pid=${pid:-?} age_s=${age_s:-?} role=${role} task=${task_id} ${detail}"
+done <<< "$process_input"
+
+issue_count=$((phantom_count + coherence_count + process_count))
+
+if [ "$issue_count" -gt 0 ]; then
+  if [ "$phantom_count" -gt 0 ]; then
+    printf "codex-claim-audit: %d phantom claim(s) found\n" "$phantom_count"
+    printf '%b' "$report"
+  fi
+  if [ "$coherence_count" -gt 0 ]; then
+    printf "codex-claim-audit: %d claim coherence issue(s) found\n" "$coherence_count"
+    printf '%b' "$coherence_report"
+  fi
+  if [ "$process_count" -gt 0 ]; then
+    printf "codex-claim-audit: %d live process coherence issue(s) found\n" "$process_count"
+    printf '%b' "$process_report"
+  fi
   if [ "$stale_cache_count" -gt 0 ]; then
     printf "codex-claim-audit: %d stale claim cache file(s) cleared\n" "$stale_cache_count"
     printf '%b' "$cache_report"
@@ -133,13 +305,13 @@ if [ "$phantom_count" -gt 0 ]; then
 
   if command -v curl >/dev/null 2>&1; then
     curl -s \
-      -d "codex-claim-audit: $phantom_count phantom claim(s) detected" \
-      -H "Title: Codex Phantom Claims" \
+      -d "codex-claim-audit: $issue_count claim/lane issue(s) detected" \
+      -H "Title: Codex Claim/Lane Coherence" \
       -H "Priority: default" \
       -H "Tags: warning,robot" \
       "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
   fi
-  if [ "$RELEASE" = true ] && [ "$cache_mismatch_count" -eq 0 ]; then
+  if [ "$RELEASE" = true ] && [ "$cache_mismatch_count" -eq 0 ] && [ "$coherence_count" -eq 0 ] && [ "$process_count" -eq 0 ]; then
     exit 0
   fi
   exit 1
@@ -148,6 +320,6 @@ else
     printf "codex-claim-audit: %d stale claim cache file(s) cleared\n" "$stale_cache_count"
     printf '%b' "$cache_report"
   fi
-  echo "codex-claim-audit: no phantom claims found"
+  echo "codex-claim-audit: no phantom claims or claim/lane coherence issues found"
   exit 0
 fi
