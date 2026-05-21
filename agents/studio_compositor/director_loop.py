@@ -4790,7 +4790,7 @@ class DirectorLoop:
         """Play PCM via the role-keyed VoiceOutputRouter.
 
         Asks the router for the ``private_monitor`` semantic role
-        instead of hard-coding ``"input.loopback.sink.role.assistant"``.
+        instead of hard-coding the legacy assistant loopback sink.
         The role → sink mapping lives in
         ``config/voice-output-routes.yaml`` so the canonical decision
         is operator-editable in one place.
@@ -4800,10 +4800,9 @@ class DirectorLoop:
         ``voice-output-router-semantic-api`` (beta) which adds
         ``VoiceOutputRouter`` to ``shared.voice_output_router``.
 
-        Falls back to the literal sink when the router reports the
-        sink as ``unavailable`` so director audio doesn't go silent —
-        silence is the worse failure mode; the router surfaces the
-        unavailable state via its ``provenance`` field.
+        If the router reports the private route as unavailable, playback is
+        dropped. The router is the boundary between private and public audio;
+        there is no default-sink fallback.
         """
         try:
             if not hasattr(self, "_audio_output") or self._audio_output is None:
@@ -4812,7 +4811,13 @@ class DirectorLoop:
 
                 router = VoiceOutputRouter()
                 result = router.route("private_monitor")
-                target = result.sink_name or "input.loopback.sink.role.assistant"
+                target = result.sink_name
+                if target is None:
+                    log.warning(
+                        "Audio playback dropped: private_monitor route unavailable (%s)",
+                        result.provenance,
+                    )
+                    return
                 self._audio_output = PwAudioOutput(
                     sample_rate=24000,
                     channels=1,

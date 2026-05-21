@@ -62,26 +62,25 @@ def test_play_audio_uses_sink_name_attribute() -> None:
     assert "result.sink_name" in body
 
 
-def test_play_audio_falls_back_when_sink_unavailable() -> None:
+def test_play_audio_drops_when_sink_unavailable() -> None:
     """When the router reports ``sink_name == None`` (provenance
-    ``unavailable``), the director must fall back to the literal sink
-    so audio doesn't go silent. Pin the fallback so a future refactor
-    doesn't accidentally drop it."""
+    ``unavailable``), the director must fail closed instead of using a
+    default or legacy assistant sink."""
     body = _play_audio_body()
-    assert "input.loopback.sink.role.assistant" in body
+    assert "if target is None:" in body
+    assert "Audio playback dropped" in body
+    assert "return" in body
 
 
 def test_no_other_hardcoded_voice_sinks_in_director_loop() -> None:
     """The hardcoded sink replacement is exhaustive for director_loop:
-    the only remaining literal is the fallback in _play_audio + a
-    docstring reference inside the same method. Pin so future patches
-    don't sneak new hard-coded sinks past the role-keyed API."""
+    there must be no remaining literal loopback role sink. Pin so future
+    patches don't sneak new hard-coded sinks past the role-keyed API."""
     body = DIRECTOR_LOOP.read_text(encoding="utf-8")
     occurrences = body.count("input.loopback.sink.role.")
-    assert occurrences == 2, (
-        f"Expected 2 hardcoded loopback-sink references (fallback literal "
-        f"+ docstring mention); found {occurrences}. Each new occurrence "
+    assert occurrences == 0, (
+        f"Expected 0 hardcoded loopback-sink references; found {occurrences}. Each new occurrence "
         f"should go through the VoiceOutputRouter API."
     )
     body_block = _play_audio_body()
-    assert body_block.count("input.loopback.sink.role.") == 2
+    assert body_block.count("input.loopback.sink.role.") == 0
