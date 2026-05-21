@@ -155,6 +155,7 @@ normalize_shell_event() {
 run_pre_shell() {
   local event_json="$1"
   local hooks=(
+    host-power-command-guard.sh
     cc-task-gate.sh
     session-name-enforcement.sh
     axiom-commit-scan.sh
