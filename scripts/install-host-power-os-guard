@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Install or verify the Hapax OS-level host power guard.
+set -euo pipefail
+
+usage() {
+    cat <<'USAGE'
+usage: scripts/install-host-power-os-guard [--check] [--install] [--verify-live] [--no-reload]
+
+  --check        Validate repo policy artifacts only. This is the default.
+  --install      Install sudoers and polkit drop-ins under /etc.
+  --verify-live  Run non-executing live authorization checks after install.
+  --no-reload    Skip polkit reload/restart after install.
+USAGE
+}
+
+MODE="check"
+VERIFY_LIVE=0
+RELOAD_POLKIT=1
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --check)
+            MODE="check"
+            ;;
+        --install)
+            MODE="install"
+            ;;
+        --verify-live)
+            VERIFY_LIVE=1
+            ;;
+        --no-reload)
+            RELOAD_POLKIT=0
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+
+SUDOERS_SRC="$REPO_ROOT/config/sudoers.d/zz-hapax-host-power-deny"
+POLKIT_SRC="$REPO_ROOT/config/polkit-1/rules.d/49-hapax-host-power-deny.rules"
+SUDOERS_DEST="/etc/sudoers.d/zz-hapax-host-power-deny"
+LEGACY_SUDOERS_DEST="/etc/sudoers.d/99-hapax-host-power-deny"
+POLKIT_DEST="/etc/polkit-1/rules.d/49-hapax-host-power-deny.rules"
+
+require_file() {
+    local path="$1"
+    if [ ! -f "$path" ]; then
+        echo "missing required file: $path" >&2
+        exit 2
+    fi
+}
+
+validate_source() {
+    require_file "$SUDOERS_SRC"
+    require_file "$POLKIT_SRC"
+    visudo -cf "$SUDOERS_SRC" >/dev/null
+    python3 - "$POLKIT_SRC" <<'PYEOF'
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text()
+required_actions = {
+    "org.freedesktop.login1.power-off",
+    "org.freedesktop.login1.reboot",
+    "org.freedesktop.login1.halt",
+    "org.freedesktop.login1.suspend",
+    "org.freedesktop.login1.hibernate",
+    "org.freedesktop.login1.set-reboot-to-firmware-setup",
+}
+missing = sorted(action for action in required_actions if action not in text)
+if missing:
+    raise SystemExit(f"polkit rule missing actions: {', '.join(missing)}")
+if not re.search(r"subject\.user\s*!==\s*[\"']hapax[\"']", text):
+    raise SystemExit("polkit rule must target the hapax user")
+if "polkit.Result.NO" not in text:
+    raise SystemExit("polkit rule must deny matched actions")
+PYEOF
+}
+
+install_files() {
+    local polkit_group="root"
+    if getent group polkitd >/dev/null; then
+        polkit_group="polkitd"
+    fi
+
+    if [ -e "$LEGACY_SUDOERS_DEST" ]; then
+        sudo rm -f "$LEGACY_SUDOERS_DEST"
+    fi
+    sudo install -o root -g root -m 0440 "$SUDOERS_SRC" "$SUDOERS_DEST"
+    sudo visudo -cf "$SUDOERS_DEST" >/dev/null
+    sudo install -o root -g "$polkit_group" -m 0640 "$POLKIT_SRC" "$POLKIT_DEST"
+
+    if [ "$RELOAD_POLKIT" -eq 1 ]; then
+        sudo systemctl try-reload-or-restart polkit.service
+    fi
+}
+
+verify_live() {
+    set +e
+    sudo -n -l /usr/bin/systemctl poweroff >/tmp/hapax-host-power-sudo-poweroff.out 2>&1
+    local sudo_poweroff_rc=$?
+    sudo -n -l /usr/bin/poweroff >/tmp/hapax-host-power-sudo-direct.out 2>&1
+    local sudo_direct_rc=$?
+    pkcheck --action-id org.freedesktop.login1.power-off --process "$$" \
+        >/tmp/hapax-host-power-pkcheck-poweroff.out 2>&1
+    local pk_poweroff_rc=$?
+    set -e
+
+    if [ "$sudo_poweroff_rc" -eq 0 ]; then
+        echo "live verify failed: sudo still authorizes /usr/bin/systemctl poweroff" >&2
+        cat /tmp/hapax-host-power-sudo-poweroff.out >&2
+        exit 1
+    fi
+    if [ "$sudo_direct_rc" -eq 0 ]; then
+        echo "live verify failed: sudo still authorizes /usr/bin/poweroff" >&2
+        cat /tmp/hapax-host-power-sudo-direct.out >&2
+        exit 1
+    fi
+    if [ "$pk_poweroff_rc" -eq 0 ]; then
+        echo "live verify failed: pkcheck still authorizes login1 power-off" >&2
+        exit 1
+    fi
+
+    echo "live verify passed: sudo and polkit do not authorize host poweroff"
+}
+
+validate_source
+
+if [ "$MODE" = "install" ]; then
+    install_files
+fi
+
+if [ "$VERIFY_LIVE" -eq 1 ]; then
+    verify_live
+fi
+
+echo "host power OS guard ${MODE} complete"

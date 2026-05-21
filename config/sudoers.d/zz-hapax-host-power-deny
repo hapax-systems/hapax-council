@@ -1,0 +1,39 @@
+# Hapax host power guard.
+#
+# This file must sort after broad NOPASSWD drop-ins such as
+# /etc/sudoers.d/hapax-nopasswd so the final matching sudoers rule removes
+# direct host power authorization for the hapax user.
+#
+# It is a safety stop for operator and agent terminals; it is not a complete
+# sandbox while hapax still has broad root sudo rights.
+Cmnd_Alias HAPAX_HOST_POWER_DIRECT = \
+    /usr/bin/poweroff, \
+    /usr/bin/reboot, \
+    /usr/bin/halt, \
+    /usr/bin/shutdown
+
+Cmnd_Alias HAPAX_HOST_POWER_SYSTEMCTL = \
+    /usr/bin/systemctl *poweroff*, \
+    /usr/bin/systemctl *reboot*, \
+    /usr/bin/systemctl *halt*, \
+    /usr/bin/systemctl *kexec*, \
+    /usr/bin/systemctl *shutdown*, \
+    /usr/bin/systemctl *suspend*, \
+    /usr/bin/systemctl *hibernate*, \
+    /usr/bin/systemctl *hybrid-sleep*, \
+    /usr/bin/systemctl *suspend-then-hibernate*
+
+Cmnd_Alias HAPAX_HOST_POWER_LOGINCTL = \
+    /usr/bin/loginctl *poweroff*, \
+    /usr/bin/loginctl *reboot*, \
+    /usr/bin/loginctl *halt*, \
+    /usr/bin/loginctl *suspend*, \
+    /usr/bin/loginctl *hibernate*
+
+Cmnd_Alias HAPAX_HOST_POWER = \
+    HAPAX_HOST_POWER_DIRECT, \
+    HAPAX_HOST_POWER_SYSTEMCTL, \
+    HAPAX_HOST_POWER_LOGINCTL
+
+hapax ALL=(root) ALL, !HAPAX_HOST_POWER
+hapax ALL=(ALL:ALL) ALL, !HAPAX_HOST_POWER

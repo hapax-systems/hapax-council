@@ -1,0 +1,39 @@
+// Hapax host power guard.
+//
+// Deny active-session login1 power actions for the hapax user. Root remains a
+// break-glass route, and sudo direct power verbs are separately constrained by
+// config/sudoers.d/zz-hapax-host-power-deny.
+polkit.addRule(function(action, subject) {
+    var deniedActions = [
+        "org.freedesktop.login1.power-off",
+        "org.freedesktop.login1.power-off-multiple-sessions",
+        "org.freedesktop.login1.power-off-ignore-inhibit",
+        "org.freedesktop.login1.reboot",
+        "org.freedesktop.login1.reboot-multiple-sessions",
+        "org.freedesktop.login1.reboot-ignore-inhibit",
+        "org.freedesktop.login1.halt",
+        "org.freedesktop.login1.halt-multiple-sessions",
+        "org.freedesktop.login1.halt-ignore-inhibit",
+        "org.freedesktop.login1.suspend",
+        "org.freedesktop.login1.suspend-multiple-sessions",
+        "org.freedesktop.login1.suspend-ignore-inhibit",
+        "org.freedesktop.login1.hibernate",
+        "org.freedesktop.login1.hibernate-multiple-sessions",
+        "org.freedesktop.login1.hibernate-ignore-inhibit",
+        "org.freedesktop.login1.set-reboot-parameter",
+        "org.freedesktop.login1.set-reboot-to-firmware-setup",
+        "org.freedesktop.login1.set-reboot-to-boot-loader-menu",
+        "org.freedesktop.login1.set-reboot-to-boot-loader-entry"
+    ];
+
+    if (subject.user !== "hapax") {
+        return undefined;
+    }
+
+    if (deniedActions.indexOf(action.id) !== -1) {
+        polkit.log("hapax host power guard denied " + action.id + " for pid " + subject.pid);
+        return polkit.Result.NO;
+    }
+
+    return undefined;
+});
