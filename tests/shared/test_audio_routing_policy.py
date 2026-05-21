@@ -168,9 +168,14 @@ def test_generated_wireplumber_deny_policy_matches_golden_output() -> None:
     assert deny_script == DEFAULT_WIREPLUMBER_DENY_SCRIPT_PATH.read_text(encoding="utf-8")
     assert "linking/hapax-deny-forbidden-target" in deny_script
     assert "linking/hapax-remove-forbidden-port-link" in deny_script
-    assert "HAPAX_AUDIO_FORBIDDEN_LINKS" in deny_script
+    assert "HAPAX_AUDIO_FORBIDDEN_LINKS" not in deny_script
+    assert "io.open" not in deny_script
+    assert "FAIL_CLOSED_FORBIDDEN_LINKS" in deny_script
     assert "optional_device_fallback_denied" in deny_script
     assert "hapax-polyend-instrument-capture" in deny_script
+    assert "anonymous_loopback_to_multimedia_denied" in deny_script
+    assert "input.loopback.sink.role.multimedia" in deny_script
+    assert "output%.loopback%-%d+%-%d+" in deny_script
     assert "link:remove ()" in deny_script
 
     assert "FAIL_CLOSED_BOUNDARY_PAIRS" in deny_script
@@ -181,8 +186,8 @@ def test_generated_wireplumber_deny_policy_matches_golden_output() -> None:
         "input.loopback.sink.role.assistant-output|input.loopback.sink.role.multimedia"
         in deny_script
     )
-    assert "policy.degraded = true" in deny_script
-    assert "fail-closed: using hardcoded boundary deny set" in deny_script
+    assert "degraded = false" in deny_script
+    assert "WirePlumber's sandbox cannot lose the policy through missing file I/O" in deny_script
     assert "local pair_key = nil" in deny_script
     assert "policy.node_pairs [pair_key]" in deny_script
     assert "(node boundary " in deny_script

@@ -208,7 +208,8 @@ echo "Chain 5c: WirePlumber Link-Time Deny Policy"
 WP_DENY_CONF_SOURCE="${HAPAX_WP_DENY_CONF_SOURCE:-$REPO_ROOT/config/wireplumber/98-hapax-link-deny.conf}"
 WP_DENY_SCRIPT_SOURCE="${HAPAX_WP_DENY_SCRIPT_SOURCE:-$REPO_ROOT/config/wireplumber/scripts/hapax/link-deny.lua}"
 WP_DENY_CONF_INSTALLED="${HAPAX_WP_DENY_CONF_INSTALLED:-$HOME/.config/wireplumber/wireplumber.conf.d/98-hapax-link-deny.conf}"
-WP_DENY_SCRIPT_INSTALLED="${HAPAX_WP_DENY_SCRIPT_INSTALLED:-$HOME/.config/wireplumber/scripts/hapax/link-deny.lua}"
+WP_DENY_SCRIPT_INSTALLED="${HAPAX_WP_DENY_SCRIPT_INSTALLED:-$HOME/.local/share/wireplumber/scripts/hapax/link-deny.lua}"
+WP_DENY_SCRIPT_LEGACY_INSTALLED="${HAPAX_WP_DENY_SCRIPT_LEGACY_INSTALLED:-$HOME/.config/wireplumber/scripts/hapax/link-deny.lua}"
 FORBIDDEN_LINKS_SOURCE="${HAPAX_FORBIDDEN_LINKS_SOURCE:-$REPO_ROOT/config/hapax/audio-forbidden-links.conf}"
 FORBIDDEN_LINKS_RUNTIME="${HAPAX_FORBIDDEN_LINKS_RUNTIME:-$HOME/.config/hapax/audio-forbidden-links.conf}"
 
@@ -243,6 +244,14 @@ if [ -f "$WP_DENY_CONF_INSTALLED" ] && [ -f "$WP_DENY_SCRIPT_INSTALLED" ]; then
     fi
 else
     check "WirePlumber deny policy not installed" "deny hook absent from live WirePlumber — boundaries unguarded at link-time"
+fi
+
+wp_deny_script_legacy_real="$(realpath -m "$WP_DENY_SCRIPT_LEGACY_INSTALLED")"
+wp_deny_script_installed_real="$(realpath -m "$WP_DENY_SCRIPT_INSTALLED")"
+if [ -f "$WP_DENY_SCRIPT_LEGACY_INSTALLED" ] && [ "$wp_deny_script_legacy_real" != "$wp_deny_script_installed_real" ]; then
+    check "WirePlumber deny script installed in data path only" "legacy config script exists at $WP_DENY_SCRIPT_LEGACY_INSTALLED — reinstall fixed policy"
+else
+    check "WirePlumber deny script installed in data path only" "PASS"
 fi
 
 if [ -f "$WP_DENY_SCRIPT_INSTALLED" ] && [ -r "$WP_DENY_SCRIPT_INSTALLED" ]; then

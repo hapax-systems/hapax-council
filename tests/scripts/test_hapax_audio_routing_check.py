@@ -71,7 +71,7 @@ def _write_executable(path: Path, content: str) -> None:
 def _install_deny_policy(home: Path) -> None:
     """Install WirePlumber deny policy and forbidden links into the fake HOME."""
     wp_conf_dir = home / ".config" / "wireplumber" / "wireplumber.conf.d"
-    wp_script_dir = home / ".config" / "wireplumber" / "scripts" / "hapax"
+    wp_script_dir = home / ".local" / "share" / "wireplumber" / "scripts" / "hapax"
     hapax_conf_dir = home / ".config" / "hapax"
     wp_conf_dir.mkdir(parents=True, exist_ok=True)
     wp_script_dir.mkdir(parents=True, exist_ok=True)
@@ -86,6 +86,7 @@ def _run_with_graph(
     graph: str,
     *,
     install_deny: bool = True,
+    env_overrides: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -126,6 +127,7 @@ def _run_with_graph(
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "HOME": str(home),
+        **(env_overrides or {}),
     }
     return subprocess.run(
         [str(SCRIPT)],
@@ -313,6 +315,38 @@ def test_deny_policy_stale_installed_conf_hard_fails(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "installed policy differs from source" in result.stdout
+
+
+def test_deny_policy_legacy_config_script_hard_fails(tmp_path: Path) -> None:
+    result = _run_with_graph(tmp_path, _base_graph(), install_deny=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    home = tmp_path / "home"
+    legacy_script = home / ".config" / "wireplumber" / "scripts" / "hapax" / "link-deny.lua"
+    legacy_script.parent.mkdir(parents=True)
+    legacy_script.write_text("-- stale legacy script\n")
+
+    result = _run_with_graph(tmp_path, _base_graph(), install_deny=False)
+
+    assert result.returncode == 1
+    assert "WirePlumber deny script installed in data path only" in result.stdout
+    assert "legacy config script exists" in result.stdout
+
+
+def test_deny_policy_legacy_path_equal_to_data_path_is_not_stale(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    data_script = home / ".local" / "share" / "wireplumber" / "scripts" / "hapax" / "link-deny.lua"
+
+    result = _run_with_graph(
+        tmp_path,
+        _base_graph(),
+        install_deny=True,
+        env_overrides={"HAPAX_WP_DENY_SCRIPT_LEGACY_INSTALLED": str(data_script)},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "WirePlumber deny script installed in data path only" in result.stdout
+    assert "legacy config script exists" not in result.stdout
 
 
 def test_deny_policy_stale_forbidden_links_runtime_hard_fails(tmp_path: Path) -> None:
