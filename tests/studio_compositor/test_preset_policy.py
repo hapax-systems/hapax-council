@@ -16,6 +16,7 @@ from shared.live_surface_effect_policy import (
     LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES,
     LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES,
     LIVE_SURFACE_GLSL_SOURCE_BOUND_REPAIR_20260520_NODE_TYPES,
+    LIVE_SURFACE_GLSL_TEMPORAL_AUDIO_REACTIVE_REPAIR_20260521_NODE_TYPES,
     LIVE_SURFACE_GLSL_TEMPORAL_PENDING_VISUAL_EVIDENCE_NODE_TYPES,
     live_surface_glsl_requires_source_bound_repair,
     live_surface_policy_kind,
@@ -416,7 +417,7 @@ def test_source_bound_glitch_tranche_is_non_temporal_bounded_and_not_content_slo
 def test_temporal_glsl_nodes_stay_blocked_until_visual_negative_evidence_exists() -> None:
     registry = _registry()
 
-    assert {"slitscan", "stutter"} == LIVE_SURFACE_GLSL_TEMPORAL_PENDING_VISUAL_EVIDENCE_NODE_TYPES
+    assert {"slitscan"} == LIVE_SURFACE_GLSL_TEMPORAL_PENDING_VISUAL_EVIDENCE_NODE_TYPES
     assert LIVE_SURFACE_GLSL_TEMPORAL_PENDING_VISUAL_EVIDENCE_NODE_TYPES <= (
         LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES
     )
@@ -445,6 +446,48 @@ def test_temporal_glsl_nodes_stay_blocked_until_visual_negative_evidence_exists(
         assert decision.allowed is False
         assert decision.reason == "camera_legible_glsl_pending_source_bound_repair"
         assert decision.matched == (node_type, node_type)
+
+
+def test_temporal_audio_reactive_stutter_repair_is_source_bound_and_no_fourth_wall() -> None:
+    registry = _registry()
+
+    assert {"stutter"} == LIVE_SURFACE_GLSL_TEMPORAL_AUDIO_REACTIVE_REPAIR_20260521_NODE_TYPES
+    assert "stutter" in LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES
+    assert "stutter" not in LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES
+    assert "stutter" not in LIVE_SURFACE_GLSL_TEMPORAL_PENDING_VISUAL_EVIDENCE_NODE_TYPES
+
+    node_def = registry.get("stutter")
+    assert node_def is not None
+    assert node_def.glsl_source
+    assert live_surface_policy_kind("stutter") == "bounded"
+    assert not live_surface_glsl_requires_source_bound_repair(
+        "stutter",
+        has_glsl_source=True,
+    )
+
+    graph = _graph(
+        {
+            "stutter": NodeInstance(type="stutter"),
+            "out": NodeInstance(type="output"),
+        },
+        [["@live", "stutter"], ["stutter", "out"]],
+    )
+    decision = evaluate_preset_graph_policy(
+        graph,
+        registry=registry,
+        env=_camera_legible_env(),
+    )
+    assert decision.allowed is True
+
+
+def test_slitscan_remains_blocked_pending_visual_evidence() -> None:
+    assert "slitscan" in LIVE_SURFACE_GLSL_TEMPORAL_PENDING_VISUAL_EVIDENCE_NODE_TYPES
+    assert "slitscan" in LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES
+    assert "slitscan" not in LIVE_SURFACE_GLSL_SOURCE_BOUND_NODE_TYPES
+    assert live_surface_glsl_requires_source_bound_repair(
+        "slitscan",
+        has_glsl_source=True,
+    )
 
 
 def test_source_preserving_repaired_nodes_are_bounded_not_blocked() -> None:
