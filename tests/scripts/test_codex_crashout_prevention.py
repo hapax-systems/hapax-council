@@ -216,6 +216,10 @@ def test_audit_releases_phantom_claim(tmp_path: Path) -> None:
         status="claimed",
         assigned_to="cx-stale",
     )
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-cx-stale"
+    claim_file.write_text("release-me\n", encoding="utf-8")
     text = note.read_text(encoding="utf-8")
     note.write_text(
         text.replace("claimed_at: null", "claimed_at: 2026-01-01T00:00:00Z"),
@@ -224,13 +228,87 @@ def test_audit_releases_phantom_claim(tmp_path: Path) -> None:
 
     env = os.environ.copy()
     env["HOME"] = str(home)
-    subprocess.run(
+    r = subprocess.run(
         ["bash", str(CLAIM_AUDIT), "--release", "--stale-hours=1"],
         env=env,
         text=True,
         capture_output=True,
         check=False,
     )
+    assert r.returncode == 0
+    assert "CLEARED stale claim cache cc-active-task-cx-stale" in r.stdout
+    assert not claim_file.exists()
     updated = note.read_text(encoding="utf-8")
     assert "status: offered" in updated
     assert "assigned_to: unassigned" in updated
+
+
+def test_audit_preserves_mismatched_claim_cache(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "release-me",
+        status="claimed",
+        assigned_to="codex-stale",
+    )
+    live_note = _write_task(
+        home,
+        "different-task",
+        status="claimed",
+        assigned_to="codex-stale",
+    )
+    live_text = live_note.read_text(encoding="utf-8")
+    live_note.write_text(live_text.replace("pr: null", "pr: 9999"), encoding="utf-8")
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-codex-stale"
+    claim_file.write_text("different-task\n", encoding="utf-8")
+    text = note.read_text(encoding="utf-8")
+    note.write_text(
+        text.replace("claimed_at: null", "claimed_at: 2026-01-01T00:00:00Z"),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    r = subprocess.run(
+        ["bash", str(CLAIM_AUDIT), "--release", "--stale-hours=1"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert r.returncode == 1
+    assert "KEPT claim cache cc-active-task-codex-stale" in r.stdout
+    assert claim_file.read_text(encoding="utf-8") == "different-task\n"
+    updated = note.read_text(encoding="utf-8")
+    assert "status: offered" in updated
+    assert "assigned_to: unassigned" in updated
+
+
+def test_audit_release_clears_already_released_claim_cache(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(
+        home,
+        "already-released",
+        status="offered",
+        assigned_to="unassigned",
+    )
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-codex-queue"
+    claim_file.write_text("already-released\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    r = subprocess.run(
+        ["bash", str(CLAIM_AUDIT), "--release", "--stale-hours=1"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert r.returncode == 0
+    assert "CLEARED stale claim cache cc-active-task-codex-queue" in r.stdout
+    assert "no phantom claims found" in r.stdout
+    assert not claim_file.exists()
