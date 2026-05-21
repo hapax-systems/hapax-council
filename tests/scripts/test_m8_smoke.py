@@ -149,9 +149,9 @@ class TestLayoutWardId:
 
 class TestPipewireRouting:
     def test_live_conf_passes(self, smoke):
-        # The live config/pipewire/hapax-m8-loudnorm.conf routes through
-        # the bounded MPC AUX10/AUX11 handoff; the reconciler owns the
-        # downstream L-12 wet return.
+        # The live config/pipewire/hapax-m8-loudnorm.conf keeps M8 dormant
+        # by default: no live target, AUX10/AUX11 identity retained, and
+        # autoconnect disabled until bounded route activation.
         result = smoke._check_pipewire_routing()
         assert result.passed is True
 
@@ -161,10 +161,7 @@ class TestPipewireRouting:
         assert "missing" in result.detail.lower()
 
     def test_livestream_tap_bypass_fails(self, smoke, tmp_path: Path):
-        # Include the expected MPC handoff so this probes bypass detection.
         bad_conf = (
-            "# both the governed handoff AND a livestream-tap bypass\n"
-            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"\n'
             "audio.position = [ AUX10 AUX11 ]\n"
             "node.autoconnect = false\n"
             'target.object = "hapax-livestream-tap"\n'
@@ -176,19 +173,20 @@ class TestPipewireRouting:
         assert "livestream-tap" in result.detail
         assert "remove" in result.remediation.lower()
 
-    def test_no_mpc_handoff_target_fails(self, smoke, tmp_path: Path):
-        bad_conf = "# no target.object pointing at the MPC handoff\nname = silly\n"
+    def test_mpc_handoff_target_fails(self, smoke, tmp_path: Path):
+        bad_conf = (
+            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"\n'
+            "audio.position = [ AUX10 AUX11 ]\n"
+            "node.autoconnect = false\n"
+        )
         path = tmp_path / "bad.conf"
         path.write_text(bad_conf, encoding="utf-8")
         result = smoke._check_pipewire_routing(conf_path=path)
         assert result.passed is False
         assert "MPC" in result.detail
 
-    def test_missing_aux_handoff_fails(self, smoke, tmp_path: Path):
-        bad_conf = (
-            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"\n'
-            "node.autoconnect = false\n"
-        )
+    def test_missing_aux_identity_fails(self, smoke, tmp_path: Path):
+        bad_conf = "node.autoconnect = false\n"
         path = tmp_path / "bad.conf"
         path.write_text(bad_conf, encoding="utf-8")
         result = smoke._check_pipewire_routing(conf_path=path)
@@ -196,10 +194,7 @@ class TestPipewireRouting:
         assert "AUX10 AUX11" in result.detail
 
     def test_autoconnect_enabled_fails(self, smoke, tmp_path: Path):
-        bad_conf = (
-            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"\n'
-            "audio.position = [ AUX10 AUX11 ]\n"
-        )
+        bad_conf = "audio.position = [ AUX10 AUX11 ]\n"
         path = tmp_path / "bad.conf"
         path.write_text(bad_conf, encoding="utf-8")
         result = smoke._check_pipewire_routing(conf_path=path)

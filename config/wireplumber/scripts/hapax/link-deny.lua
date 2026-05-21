@@ -1,23 +1,84 @@
 -- GENERATED: Hapax WirePlumber link-time deny hook.
 -- Source: shared.audio_routing_policy.generated_wireplumber_deny_policy_texts
--- Runtime policy data: ~/.config/hapax/audio-forbidden-links.conf
+-- Policy data: embedded from generated forbidden route policy.
 -- Do not hand-edit; run scripts/generate-pipewire-audio-confs.py --write-wireplumber-deny-policy.
 --
 -- Four-layer fail-closed behavior:
 --   1. Reject forbidden node-pair auto-targets before WirePlumber link-target.
 --   2. Remove exact forbidden port links if a client creates one directly.
 --   3. Deny optional-device fallback into Polyend capture unless source is Polyend.
---   4. When the runtime policy file is missing or unreadable, fall back to a
---      hardcoded boundary-deny set so boundary crossings are never silently admitted.
+--   4. Carry the generated forbidden policy inside the Lua artifact so
+--      WirePlumber's sandbox cannot lose the policy through missing file I/O.
 
 lutils = require ("linking-utils")
 log = Log.open_topic ("s-linking.hapax-deny")
 
-local forbidden_path = os.getenv ("HAPAX_AUDIO_FORBIDDEN_LINKS")
-if forbidden_path == nil or forbidden_path == "" then
-  local home = os.getenv ("HOME") or "/home/hapax"
-  forbidden_path = home .. "/.config/hapax/audio-forbidden-links.conf"
-end
+local FAIL_CLOSED_FORBIDDEN_LINKS = {
+  ["hapax-private-playback:output_FL|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL"] = true,
+  ["hapax-private-playback:output_FL|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FR"] = true,
+  ["hapax-private-playback:output_FL|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_RL"] = true,
+  ["hapax-private-playback:output_FL|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_RR"] = true,
+  ["hapax-private-playback:output_FR|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL"] = true,
+  ["hapax-private-playback:output_FR|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FR"] = true,
+  ["hapax-private-playback:output_FR|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_RL"] = true,
+  ["hapax-private-playback:output_FR|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_RR"] = true,
+  ["hapax-notification-private-playback:output_FL|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL"] = true,
+  ["hapax-notification-private-playback:output_FL|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FR"] = true,
+  ["hapax-notification-private-playback:output_FL|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_RL"] = true,
+  ["hapax-notification-private-playback:output_FL|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_RR"] = true,
+  ["hapax-notification-private-playback:output_FR|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL"] = true,
+  ["hapax-notification-private-playback:output_FR|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FR"] = true,
+  ["hapax-notification-private-playback:output_FR|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_RL"] = true,
+  ["hapax-notification-private-playback:output_FR|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_RR"] = true,
+  ["hapax-pc-loudnorm-playback:output_FL|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL"] = true,
+  ["hapax-pc-loudnorm-playback:output_FL|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FR"] = true,
+  ["hapax-pc-loudnorm-playback:output_FL|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_RL"] = true,
+  ["hapax-pc-loudnorm-playback:output_FL|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_RR"] = true,
+  ["hapax-pc-loudnorm-playback:output_FR|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL"] = true,
+  ["hapax-pc-loudnorm-playback:output_FR|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FR"] = true,
+  ["hapax-pc-loudnorm-playback:output_FR|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_RL"] = true,
+  ["hapax-pc-loudnorm-playback:output_FR|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_RR"] = true,
+  ["hapax-loudnorm-playback:output_FL|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL"] = true,
+  ["hapax-loudnorm-playback:output_FL|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FR"] = true,
+  ["hapax-loudnorm-playback:output_FL|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_RL"] = true,
+  ["hapax-loudnorm-playback:output_FL|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_RR"] = true,
+  ["hapax-loudnorm-playback:output_FR|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL"] = true,
+  ["hapax-loudnorm-playback:output_FR|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FR"] = true,
+  ["hapax-loudnorm-playback:output_FR|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_RL"] = true,
+  ["hapax-loudnorm-playback:output_FR|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_RR"] = true,
+  ["hapax-pc-loudnorm-playback:output_FL|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX4"] = true,
+  ["hapax-pc-loudnorm-playback:output_FR|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX5"] = true,
+  ["hapax-yt-loudnorm-playback:output_FL|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX6"] = true,
+  ["hapax-yt-loudnorm-playback:output_FR|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX7"] = true,
+  ["hapax-notification-private-playback:output_FL|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX8"] = true,
+  ["hapax-notification-private-playback:output_FR|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX9"] = true,
+  ["hapax-m8-loudnorm-playback:output_AUX10|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX10"] = true,
+  ["hapax-m8-loudnorm-playback:output_AUX11|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX11"] = true,
+  ["hapax-pc-loudnorm-playback:output_FL|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX4"] = true,
+  ["hapax-pc-loudnorm-playback:output_FR|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX5"] = true,
+  ["hapax-yt-loudnorm-playback:output_FL|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX6"] = true,
+  ["hapax-yt-loudnorm-playback:output_FR|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX7"] = true,
+  ["hapax-notification-private-playback:output_FL|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX8"] = true,
+  ["hapax-notification-private-playback:output_FR|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX9"] = true,
+  ["hapax-m8-loudnorm-playback:output_AUX10|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX10"] = true,
+  ["hapax-m8-loudnorm-playback:output_AUX11|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX11"] = true,
+  ["hapax-m8-loudnorm-playback:output_AUX10|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL"] = true,
+  ["hapax-m8-loudnorm-playback:output_AUX11|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FR"] = true,
+  ["hapax-tts-broadcast-playback:output_FL|hapax-livestream-tap:playback_FL"] = true,
+  ["hapax-tts-broadcast-playback:output_FR|hapax-livestream-tap:playback_FR"] = true,
+  ["hapax-s4-tap:output_FL|hapax-livestream-tap:playback_FL"] = true,
+  ["hapax-s4-tap:output_FR|hapax-livestream-tap:playback_FR"] = true,
+  ["hapax-livestream:monitor_FL|hapax-broadcast-master-capture:input_FL"] = true,
+  ["hapax-livestream:monitor_FR|hapax-broadcast-master-capture:input_FR"] = true,
+  ["output.loopback.sink.role.assistant:output_FL|input.loopback.sink.role.multimedia:playback_FL"] = true,
+  ["output.loopback.sink.role.assistant:output_FR|input.loopback.sink.role.multimedia:playback_FR"] = true,
+  ["input.loopback.sink.role.assistant-output:output_FL|input.loopback.sink.role.multimedia:playback_FL"] = true,
+  ["input.loopback.sink.role.assistant-output:output_FR|input.loopback.sink.role.multimedia:playback_FR"] = true,
+  ["output.loopback.sink.role.notification:output_FL|input.loopback.sink.role.multimedia:playback_FL"] = true,
+  ["output.loopback.sink.role.notification:output_FR|input.loopback.sink.role.multimedia:playback_FR"] = true,
+  ["input.loopback.sink.role.notification-output:output_FL|input.loopback.sink.role.multimedia:playback_FL"] = true,
+  ["input.loopback.sink.role.notification-output:output_FR|input.loopback.sink.role.multimedia:playback_FR"] = true,
+}
 
 local FAIL_CLOSED_BOUNDARY_PAIRS = {
   ["hapax-private-playback|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"] = true,
@@ -25,8 +86,16 @@ local FAIL_CLOSED_BOUNDARY_PAIRS = {
   ["hapax-pc-loudnorm-playback|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"] = true,
   ["hapax-loudnorm-playback|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"] = true,
   ["hapax-pc-loudnorm-playback|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"] = true,
+  ["hapax-yt-loudnorm-playback|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"] = true,
+  ["hapax-notification-private-playback|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"] = true,
+  ["hapax-m8-loudnorm-playback|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"] = true,
   ["hapax-pc-loudnorm-playback|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"] = true,
+  ["hapax-yt-loudnorm-playback|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"] = true,
+  ["hapax-notification-private-playback|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"] = true,
+  ["hapax-m8-loudnorm-playback|alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"] = true,
+  ["hapax-m8-loudnorm-playback|alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"] = true,
   ["hapax-tts-broadcast-playback|hapax-livestream-tap"] = true,
+  ["hapax-s4-tap|hapax-livestream-tap"] = true,
   ["hapax-livestream|hapax-broadcast-master-capture"] = true,
   ["output.loopback.sink.role.assistant|input.loopback.sink.role.multimedia"] = true,
   ["input.loopback.sink.role.assistant-output|input.loopback.sink.role.multimedia"] = true,
@@ -34,39 +103,12 @@ local FAIL_CLOSED_BOUNDARY_PAIRS = {
   ["input.loopback.sink.role.notification-output|input.loopback.sink.role.multimedia"] = true,
 }
 
-local function trim_policy_line (line)
-  line = string.gsub (line, "#.*$", "")
-  line = string.gsub (line, "^%s+", "")
-  line = string.gsub (line, "%s+$", "")
-  return line
-end
-
 local function load_forbidden_policy ()
-  local policy = { links = {}, node_pairs = {}, degraded = false }
-  local file = io.open (forbidden_path, "r")
-  if file == nil then
-    log:warning ("forbidden link map not found: " .. tostring (forbidden_path)
-        .. "; fail-closed: using hardcoded boundary deny set")
-    policy.degraded = true
-    for pair, _ in pairs (FAIL_CLOSED_BOUNDARY_PAIRS) do
-      policy.node_pairs [pair] = true
-    end
-    return policy
-  end
-
-  for raw in file:lines () do
-    local line = trim_policy_line (raw)
-    if line ~= "" then
-      policy.links [line] = true
-      local source_node, _, target_node =
-          string.match (line, "^([^:]+):([^|]+)|([^:]+):(.+)$")
-      if source_node ~= nil and target_node ~= nil then
-        policy.node_pairs [source_node .. "|" .. target_node] = true
-      end
-    end
-  end
-  file:close ()
-  return policy
+  return {
+    links = FAIL_CLOSED_FORBIDDEN_LINKS,
+    node_pairs = FAIL_CLOSED_BOUNDARY_PAIRS,
+    degraded = false,
+  }
 end
 
 local function lookup_bound (source, manager_name, bound_id)
@@ -104,6 +146,12 @@ end
 
 local function optional_device_fallback_denied (source_node, target_node)
   return target_node == "hapax-polyend-instrument-capture" and not is_polyend_source (source_node)
+end
+
+local function anonymous_loopback_to_multimedia_denied (source_node, target_node)
+  return source_node ~= nil
+      and target_node == "input.loopback.sink.role.multimedia"
+      and string.match (source_node, "^output%.loopback%-%d+%-%d+$") ~= nil
 end
 
 local function link_key (source, link)
@@ -151,13 +199,18 @@ SimpleEventHook {
 
     local pair_key = source_node .. "|" .. target_node
     local policy = load_forbidden_policy ()
+    local dynamic_denied = anonymous_loopback_to_multimedia_denied (source_node, target_node)
     if not policy.node_pairs [pair_key]
-        and not optional_device_fallback_denied (source_node, target_node) then
+        and not optional_device_fallback_denied (source_node, target_node)
+        and not dynamic_denied then
       return
     end
 
     local node = si:get_associated_proxy ("node")
     local message = "hapax forbidden audio route: " .. source_node .. " -> " .. target_node
+    if dynamic_denied then
+      message = message .. " [dynamic anonymous-loopback boundary]"
+    end
     if policy.degraded then
       message = message .. " [DEGRADED: runtime policy missing, boundary deny active]"
     end
@@ -184,20 +237,24 @@ SimpleEventHook {
       pair_key = source_node .. "|" .. target_node
     end
     local optional_denied = optional_device_fallback_denied (source_node, target_node)
-    if key == nil and pair_key == nil and not optional_denied then
+    local dynamic_denied = anonymous_loopback_to_multimedia_denied (source_node, target_node)
+    if key == nil and pair_key == nil and not optional_denied and not dynamic_denied then
       return
     end
 
     local policy = load_forbidden_policy ()
     local link_denied = key ~= nil and policy.links [key]
     local pair_denied = pair_key ~= nil and policy.node_pairs [pair_key]
-    if not link_denied and not pair_denied and not optional_denied then
+    if not link_denied and not pair_denied and not optional_denied and not dynamic_denied then
       return
     end
 
     local message = "removing hapax forbidden audio link " .. tostring (key)
     if pair_denied and not link_denied then
       message = message .. " (node boundary " .. tostring (pair_key) .. ")"
+    end
+    if dynamic_denied then
+      message = message .. " (dynamic anonymous-loopback boundary)"
     end
     if policy.degraded then
       message = message .. " [DEGRADED: runtime policy missing, boundary deny active]"

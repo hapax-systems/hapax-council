@@ -282,7 +282,7 @@ def generated_route_map_texts(
     generated, not hand-mirrored prose.
     """
     _assert_pc_route_fail_closed(policy)
-    desired = _desired_links(topology)
+    desired = _desired_links(topology, policy)
     forbidden = _forbidden_links(topology)
     _assert_no_route_map_contradictions(desired, forbidden)
     return _link_map_text(desired), _forbidden_link_map_text(forbidden)
@@ -317,15 +317,16 @@ def generated_wireplumber_deny_policy_texts(
 ) -> tuple[str, str]:
     """Generate WirePlumber source artifacts for fail-closed link denial.
 
-    Embeds a hardcoded minimum boundary-deny node-pair set directly in the Lua
-    so that a missing runtime policy file still denies boundary crossings
-    (fail-closed) instead of silently admitting all links (fail-open).
+    Embeds the generated forbidden port-link and node-pair policy directly in
+    the Lua. WirePlumber 0.5's Lua sandbox does not expose file I/O globals, so
+    external runtime policy reads fail open unless the generated artifact is
+    self-contained.
     """
     if topology is None:
         topology = load_audio_topology_descriptor()
     forbidden = _forbidden_links(topology)
     node_pairs = _boundary_node_pairs(forbidden)
-    return (_wireplumber_deny_conf_text(), _wireplumber_deny_script_text(node_pairs))
+    return (_wireplumber_deny_conf_text(), _wireplumber_deny_script_text(forbidden, node_pairs))
 
 
 def _node(topology: TopologyDescriptor, node_id: str) -> Node:
@@ -349,6 +350,27 @@ def _role_output_name(node: Node) -> str:
 
 def _words(value: str | int | float | bool | None) -> tuple[str, ...]:
     return tuple(value.split()) if isinstance(value, str) else ()
+
+
+def _policy_route(policy: AudioRoutingPolicy, source_id: str) -> RoutePolicy:
+    route = next((route for route in policy.routes if route.source_id == source_id), None)
+    if route is None:
+        raise AudioRoutingPolicyError(f"{source_id} route missing from audio-routing policy")
+    return route
+
+
+def _broadcast_route_enabled(policy: AudioRoutingPolicy, source_id: str) -> bool:
+    route = _policy_route(policy, source_id)
+    return route.broadcast_eligible and route.broadcast_eligibility_basis == "explicit_policy"
+
+
+def _private_tts_route_enabled(policy: AudioRoutingPolicy) -> bool:
+    route = _policy_route(policy, "assistant-private")
+    return (
+        route.route_class == "private"
+        and route.broadcast_eligible is False
+        and route.broadcast_eligibility_basis == "private_refused"
+    )
 
 
 def _pair_links(
@@ -380,9 +402,11 @@ def _loudnorm_to_mpc_links(node: Node, mpc: Node) -> list[tuple[str, str]]:
     )
 
 
-def _desired_links(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...]:
+def _desired_links(
+    topology: TopologyDescriptor,
+    policy: AudioRoutingPolicy,
+) -> tuple[tuple[str, str], ...]:
     l12 = _node(topology, "l12-capture")
-    l12_return = _node(topology, "l12-usb-return")
     l12_evilpet = _node(topology, "l12-evilpet-capture")
     l12_wet = _node(topology, "l12-usb-return-capture")
     livestream = _node(topology, "livestream-tap")
@@ -390,18 +414,14 @@ def _desired_links(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...]:
     voice_fx = _node(topology, "voice-fx")
     tts = _node(topology, "tts-loudnorm")
     music = _node(topology, "music-loudnorm")
-    youtube = _node(topology, "yt-loudnorm")
     mpc = _node(topology, "mpc-usb-output")
     private_sink = _node(topology, "private-sink")
     private_capture = _node(topology, "private-monitor-capture")
     private_output = _node(topology, "private-monitor-output")
     notification_sink = _node(topology, "notification-private-sink")
-    notification_capture = _node(topology, "notification-private-monitor-capture")
-    notification_output = _node(topology, "notification-private-monitor-output")
     role_assistant = _node(topology, "role-assistant")
     role_notification = _node(topology, "role-notification")
     role_broadcast = _node(topology, "role-broadcast")
-    m8 = _node(topology, "m8-loudnorm")
 
     links: list[tuple[str, str]] = []
     links.extend(_pair_links(_playback_name(l12_evilpet), livestream.pipewire_name))
@@ -423,49 +443,36 @@ def _desired_links(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...]:
         )
     )
 
-    links.extend(
-        _pair_links(
-            _playback_name(voice_fx),
-            tts.pipewire_name,
-            target_ports=("playback_FL", "playback_FR"),
+    if _broadcast_route_enabled(policy, "broadcast-tts"):
+        links.extend(
+            _pair_links(
+                _playback_name(voice_fx),
+                tts.pipewire_name,
+                target_ports=("playback_FL", "playback_FR"),
+            )
         )
-    )
-    links.extend(_loudnorm_to_mpc_links(tts, mpc))
-    links.extend(_loudnorm_to_mpc_links(music, mpc))
+        links.extend(_loudnorm_to_mpc_links(tts, mpc))
 
-    m8_positions = m8.channels.positions or ["FL", "FR"]
-    links.extend(
-        _pair_links(
-            _playback_name(m8),
-            l12_return.pipewire_name,
-            source_ports=(f"output_{m8_positions[0]}", f"output_{m8_positions[1]}"),
-            target_ports=("playback_FL", "playback_FR"),
-        )
-    )
+    if _broadcast_route_enabled(policy, "music-bed"):
+        links.extend(_loudnorm_to_mpc_links(music, mpc))
 
-    links.extend(
-        _pair_links(
-            private_sink.pipewire_name,
-            private_capture.pipewire_name,
-            source_ports=("monitor_FL", "monitor_FR"),
-            target_ports=("input_FL", "input_FR"),
+    if _private_tts_route_enabled(policy):
+        links.extend(
+            _pair_links(
+                private_sink.pipewire_name,
+                private_capture.pipewire_name,
+                source_ports=("monitor_FL", "monitor_FR"),
+                target_ports=("input_FL", "input_FR"),
+            )
         )
-    )
-    links.extend(
-        _pair_links(
-            notification_sink.pipewire_name,
-            notification_capture.pipewire_name,
-            source_ports=("monitor_FL", "monitor_FR"),
-            target_ports=("input_FL", "input_FR"),
-        )
-    )
-    links.extend(_loudnorm_to_mpc_links(private_output, mpc))
-    links.extend(_loudnorm_to_mpc_links(notification_output, mpc))
+        links.extend(_loudnorm_to_mpc_links(private_output, mpc))
+        links.extend(_pair_links(_role_output_name(role_assistant), private_sink.pipewire_name))
 
-    links.extend(_pair_links(_role_output_name(role_assistant), private_sink.pipewire_name))
+    # Notifications are deliberately dead-ended at their null sink until
+    # notification-private monitoring has its own route authority. They must
+    # not share the private TTS MPC ingress by default.
     links.extend(_pair_links(_role_output_name(role_notification), notification_sink.pipewire_name))
     links.extend(_pair_links(_role_output_name(role_broadcast), voice_fx.pipewire_name))
-    links.extend(_loudnorm_to_mpc_links(youtube, mpc))
     return tuple(links)
 
 
@@ -479,6 +486,9 @@ def _forbidden_links(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...
     tts = _node(topology, "tts-loudnorm")
     private_output = _node(topology, "private-monitor-output")
     notification_output = _node(topology, "notification-private-monitor-output")
+    youtube = _node(topology, "yt-loudnorm")
+    m8 = _node(topology, "m8-loudnorm")
+    s4 = _node(topology, "s4-loopback")
     role_assistant = _node(topology, "role-assistant")
     role_notification = _node(topology, "role-notification")
     role_multimedia = _node(topology, "role-multimedia")
@@ -506,7 +516,40 @@ def _forbidden_links(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...
                 target_ports=("playback_AUX4", "playback_AUX5"),
             )
         )
+        links.extend(
+            _pair_links(
+                _playback_name(youtube),
+                mpc_target,
+                target_ports=("playback_AUX6", "playback_AUX7"),
+            )
+        )
+        links.extend(
+            _pair_links(
+                _playback_name(notification_output),
+                mpc_target,
+                target_ports=("playback_AUX8", "playback_AUX9"),
+            )
+        )
+        m8_positions = m8.channels.positions or ["FL", "FR"]
+        links.extend(
+            _pair_links(
+                _playback_name(m8),
+                mpc_target,
+                source_ports=(f"output_{m8_positions[0]}", f"output_{m8_positions[1]}"),
+                target_ports=("playback_AUX10", "playback_AUX11"),
+            )
+        )
+    m8_positions = m8.channels.positions or ["FL", "FR"]
+    links.extend(
+        _pair_links(
+            _playback_name(m8),
+            l12_return.pipewire_name,
+            source_ports=(f"output_{m8_positions[0]}", f"output_{m8_positions[1]}"),
+            target_ports=("playback_FL", "playback_FR"),
+        )
+    )
     links.extend(_pair_links("hapax-tts-broadcast-playback", livestream.pipewire_name))
+    links.extend(_pair_links(_playback_name(s4), livestream.pipewire_name))
     links.extend(
         _pair_links(
             legacy_livestream.pipewire_name,
@@ -577,11 +620,11 @@ def _forbidden_link_map_text(links: tuple[tuple[str, str], ...]) -> str:
 def _wireplumber_deny_conf_text() -> str:
     return """# GENERATED: Hapax WirePlumber link-time deny hook.
 # Source: shared.audio_routing_policy.generated_wireplumber_deny_policy_texts
-# Runtime policy data: ~/.config/hapax/audio-forbidden-links.conf
+# Policy data: embedded in hapax/link-deny.lua from generated forbidden links
 # Do not hand-edit; run scripts/generate-pipewire-audio-confs.py --write-wireplumber-deny-policy.
 #
-# This file is source policy only until installed into
-# ~/.config/wireplumber/wireplumber.conf.d by
+# Install this conf under ~/.config/wireplumber/wireplumber.conf.d and the Lua
+# script under ~/.local/share/wireplumber/scripts/hapax with
 # scripts/hapax-wireplumber-link-deny-policy --install.
 
 wireplumber.profiles = {
@@ -600,66 +643,43 @@ wireplumber.components = [
 """
 
 
-def _wireplumber_deny_script_text(boundary_node_pairs: tuple[str, ...]) -> str:
-    lua_table_entries = "\n".join(f'  ["{pair}"] = true,' for pair in boundary_node_pairs)
+def _wireplumber_deny_script_text(
+    forbidden_links: tuple[tuple[str, str], ...],
+    boundary_node_pairs: tuple[str, ...],
+) -> str:
+    link_entries = "\n".join(
+        f"  [{json.dumps(f'{source}|{target}')}] = true," for source, target in forbidden_links
+    )
+    pair_entries = "\n".join(f"  [{json.dumps(pair)}] = true," for pair in boundary_node_pairs)
     return f"""-- GENERATED: Hapax WirePlumber link-time deny hook.
 -- Source: shared.audio_routing_policy.generated_wireplumber_deny_policy_texts
--- Runtime policy data: ~/.config/hapax/audio-forbidden-links.conf
+-- Policy data: embedded from generated forbidden route policy.
 -- Do not hand-edit; run scripts/generate-pipewire-audio-confs.py --write-wireplumber-deny-policy.
 --
 -- Four-layer fail-closed behavior:
 --   1. Reject forbidden node-pair auto-targets before WirePlumber link-target.
 --   2. Remove exact forbidden port links if a client creates one directly.
 --   3. Deny optional-device fallback into Polyend capture unless source is Polyend.
---   4. When the runtime policy file is missing or unreadable, fall back to a
---      hardcoded boundary-deny set so boundary crossings are never silently admitted.
+--   4. Carry the generated forbidden policy inside the Lua artifact so
+--      WirePlumber's sandbox cannot lose the policy through missing file I/O.
 
 lutils = require ("linking-utils")
 log = Log.open_topic ("s-linking.hapax-deny")
 
-local forbidden_path = os.getenv ("HAPAX_AUDIO_FORBIDDEN_LINKS")
-if forbidden_path == nil or forbidden_path == "" then
-  local home = os.getenv ("HOME") or "/home/hapax"
-  forbidden_path = home .. "/.config/hapax/audio-forbidden-links.conf"
-end
-
-local FAIL_CLOSED_BOUNDARY_PAIRS = {{
-{lua_table_entries}
+local FAIL_CLOSED_FORBIDDEN_LINKS = {{
+{link_entries}
 }}
 
-local function trim_policy_line (line)
-  line = string.gsub (line, "#.*$", "")
-  line = string.gsub (line, "^%s+", "")
-  line = string.gsub (line, "%s+$", "")
-  return line
-end
+local FAIL_CLOSED_BOUNDARY_PAIRS = {{
+{pair_entries}
+}}
 
 local function load_forbidden_policy ()
-  local policy = {{ links = {{}}, node_pairs = {{}}, degraded = false }}
-  local file = io.open (forbidden_path, "r")
-  if file == nil then
-    log:warning ("forbidden link map not found: " .. tostring (forbidden_path)
-        .. "; fail-closed: using hardcoded boundary deny set")
-    policy.degraded = true
-    for pair, _ in pairs (FAIL_CLOSED_BOUNDARY_PAIRS) do
-      policy.node_pairs [pair] = true
-    end
-    return policy
-  end
-
-  for raw in file:lines () do
-    local line = trim_policy_line (raw)
-    if line ~= "" then
-      policy.links [line] = true
-      local source_node, _, target_node =
-          string.match (line, "^([^:]+):([^|]+)|([^:]+):(.+)$")
-      if source_node ~= nil and target_node ~= nil then
-        policy.node_pairs [source_node .. "|" .. target_node] = true
-      end
-    end
-  end
-  file:close ()
-  return policy
+  return {{
+    links = FAIL_CLOSED_FORBIDDEN_LINKS,
+    node_pairs = FAIL_CLOSED_BOUNDARY_PAIRS,
+    degraded = false,
+  }}
 end
 
 local function lookup_bound (source, manager_name, bound_id)
@@ -697,6 +717,12 @@ end
 
 local function optional_device_fallback_denied (source_node, target_node)
   return target_node == "hapax-polyend-instrument-capture" and not is_polyend_source (source_node)
+end
+
+local function anonymous_loopback_to_multimedia_denied (source_node, target_node)
+  return source_node ~= nil
+      and target_node == "input.loopback.sink.role.multimedia"
+      and string.match (source_node, "^output%.loopback%-%d+%-%d+$") ~= nil
 end
 
 local function link_key (source, link)
@@ -744,13 +770,18 @@ SimpleEventHook {{
 
     local pair_key = source_node .. "|" .. target_node
     local policy = load_forbidden_policy ()
+    local dynamic_denied = anonymous_loopback_to_multimedia_denied (source_node, target_node)
     if not policy.node_pairs [pair_key]
-        and not optional_device_fallback_denied (source_node, target_node) then
+        and not optional_device_fallback_denied (source_node, target_node)
+        and not dynamic_denied then
       return
     end
 
     local node = si:get_associated_proxy ("node")
     local message = "hapax forbidden audio route: " .. source_node .. " -> " .. target_node
+    if dynamic_denied then
+      message = message .. " [dynamic anonymous-loopback boundary]"
+    end
     if policy.degraded then
       message = message .. " [DEGRADED: runtime policy missing, boundary deny active]"
     end
@@ -777,20 +808,24 @@ SimpleEventHook {{
       pair_key = source_node .. "|" .. target_node
     end
     local optional_denied = optional_device_fallback_denied (source_node, target_node)
-    if key == nil and pair_key == nil and not optional_denied then
+    local dynamic_denied = anonymous_loopback_to_multimedia_denied (source_node, target_node)
+    if key == nil and pair_key == nil and not optional_denied and not dynamic_denied then
       return
     end
 
     local policy = load_forbidden_policy ()
     local link_denied = key ~= nil and policy.links [key]
     local pair_denied = pair_key ~= nil and policy.node_pairs [pair_key]
-    if not link_denied and not pair_denied and not optional_denied then
+    if not link_denied and not pair_denied and not optional_denied and not dynamic_denied then
       return
     end
 
     local message = "removing hapax forbidden audio link " .. tostring (key)
     if pair_denied and not link_denied then
       message = message .. " (node boundary " .. tostring (pair_key) .. ")"
+    end
+    if dynamic_denied then
+      message = message .. " (dynamic anonymous-loopback boundary)"
     end
     if policy.degraded then
       message = message .. " [DEGRADED: runtime policy missing, boundary deny active]"

@@ -26,16 +26,16 @@
   },
   "blocked_source_ids": [
     "assistant-private",
+    "m8-instrument",
     "multimedia-default",
     "notification-private",
+    "s4-content",
     "youtube-bed"
   ],
   "broadcast_eligible_source_ids": [
     "broadcast-tts",
     "l12-evilpet-capture",
-    "m8-instrument",
-    "music-bed",
-    "s4-content"
+    "music-bed"
   ],
   "default_sink_fallback_broadcast_eligible": false,
   "dry_run_only": true,

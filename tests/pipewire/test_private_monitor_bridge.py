@@ -55,28 +55,23 @@ def test_private_sink_monitor_is_captured_and_played_to_mpc_only() -> None:
     assert "Blue_Microphones_Yeti" not in playback
 
 
-def test_notification_private_sink_monitor_is_captured_and_played_to_mpc_only() -> None:
+def test_notification_private_sink_is_not_bridged_to_mpc() -> None:
     active = _active(_conf())
-    capture = _node_block(active, "hapax-notification-private-monitor-capture")
-    playback = _node_block(active, "hapax-notification-private-playback")
 
-    assert "stream.capture.sink = true" in capture
-    assert 'target.object = "hapax-notification-private"' in capture
-    assert f'target.object = "{MPC_TARGET}"' in playback
-    assert "Torso_Electronics_S-4" not in playback
-    assert "Blue_Microphones_Yeti" not in playback
+    assert "hapax-notification-private-monitor-capture" not in active
+    assert "hapax-notification-private-playback" not in active
+    assert 'target.object = "hapax-notification-private"' not in active
 
 
 def test_playback_streams_are_fail_closed_when_mpc_is_absent() -> None:
     active = _active(_conf())
-    for node_name in ("hapax-private-playback", "hapax-notification-private-playback"):
-        playback = _node_block(active, node_name)
-        assert "node.dont-fallback = true" in playback
-        assert "node.autoconnect = false" in playback
-        assert "node.dont-reconnect = true" in playback
-        assert "node.dont-move = true" in playback
-        assert "node.linger = true" in playback
-        assert "state.restore = false" in playback
+    playback = _node_block(active, "hapax-private-playback")
+    assert "node.dont-fallback = true" in playback
+    assert "node.autoconnect = false" in playback
+    assert "node.dont-reconnect = true" in playback
+    assert "node.dont-move = true" in playback
+    assert "node.linger = true" in playback
+    assert "state.restore = false" in playback
 
 
 def test_bridge_does_not_reference_broadcast_or_default_paths() -> None:

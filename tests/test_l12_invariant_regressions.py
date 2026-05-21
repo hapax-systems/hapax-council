@@ -30,11 +30,9 @@ silence incidents**, so the same incidents cannot recur silently:
   - v5 (playback node passive): pinned here — hapax-l12-evilpet-capture.conf
     playback.props MUST declare node.passive = false.
 
-  Plus the M8 forward-invariant (operator directive 2026-05-02 inverted
-  the prior bypass design): hapax-m8-loudnorm.conf MUST write to the
-  L-12 USB analog-surround output and MUST NOT terminate at
-  hapax-livestream-tap. Nothing goes straight to stream — every wet
-  audio source feeding broadcast passes through L-12 first.
+  Plus the current M8 invariant: M8 remains disabled/fail-closed until a
+  bounded route-activation task explicitly promotes it. It must not terminate
+  at hapax-livestream-tap, L-12, or MPC while under-specified.
 """
 
 from __future__ import annotations
@@ -58,10 +56,7 @@ MPC_OUTPUT_NODE = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-outpu
 L12_CAPTURE_NODE = (
     "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
 )
-PRIVATE_MONITOR_PLAYBACK_NODES = (
-    "hapax-private-playback",
-    "hapax-notification-private-playback",
-)
+PRIVATE_MONITOR_PLAYBACK_NODES = ("hapax-private-playback",)
 
 
 def _read_conf(path: Path) -> str:
@@ -119,38 +114,28 @@ def test_generated_tts_artifacts_do_not_reintroduce_direct_broadcast_bridge() ->
     assert "node.autoconnect = false" in generated_tts_bridge
 
 
-def test_reconciler_map_owns_only_mpc_private_monitor_outputs() -> None:
-    """Private monitor playback is explicitly pinned to MPC AUX8/AUX9 only."""
+def test_reconciler_map_owns_only_specified_mpc_private_tts_output() -> None:
+    """Only private TTS playback is explicitly pinned to MPC AUX8/AUX9."""
     link_map = _strip_comments(_read_conf(HAPAX_LINK_MAP))
     assert f"hapax-private-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX8" in link_map
     assert f"hapax-private-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX9" in link_map
-    assert (
-        f"hapax-notification-private-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX8" in link_map
-    )
-    assert (
-        f"hapax-notification-private-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX9" in link_map
-    )
 
     forbidden = _strip_comments(_read_conf(HAPAX_FORBIDDEN_LINKS))
     assert f"hapax-private-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX8" not in forbidden
     assert f"hapax-private-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX9" not in forbidden
     assert (
         f"hapax-notification-private-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX8"
-        not in forbidden
+        in forbidden
     )
     assert (
         f"hapax-notification-private-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX9"
-        not in forbidden
+        in forbidden
     )
 
     assert "hapax-private:monitor_FL|hapax-private-monitor-capture:input_FL" in link_map
     assert "hapax-private:monitor_FR|hapax-private-monitor-capture:input_FR" in link_map
-    assert (
-        "hapax-notification-private:monitor_FL|hapax-notification-private-monitor-capture:input_FL"
-    ) in link_map
-    assert (
-        "hapax-notification-private:monitor_FR|hapax-notification-private-monitor-capture:input_FR"
-    ) in link_map
+    assert "hapax-notification-private:monitor_FL|" not in link_map
+    assert "hapax-notification-private:monitor_FR|" not in link_map
     assert "output.loopback.sink.role.assistant:output_FL|hapax-private:playback_FL" in link_map
     assert "output.loopback.sink.role.assistant:output_FR|hapax-private:playback_FR" in link_map
     assert (
@@ -191,41 +176,35 @@ def test_v5_evilpet_playback_node_is_active_not_passive() -> None:
     )
 
 
-def test_m8_loudnorm_routes_through_l12_not_direct_to_stream() -> None:
-    """M8 forward-invariant (operator directive 2026-05-02): hapax-m8-loudnorm.conf
-    MUST expose reconciler-owned AUX10/AUX11 ports and MUST NOT terminate at
-    hapax-livestream-tap directly. The link map then carries the branch through
-    the L-12 return; nothing goes straight to stream."""
+def test_m8_loudnorm_has_no_live_target_while_under_specified() -> None:
+    """M8 is under-specified and must not have live MPC/L-12/stream egress."""
     conf_path = PIPEWIRE_DIR / "hapax-m8-loudnorm.conf"
     if not conf_path.exists():
         return  # M8 conf may not be deployed yet on all branches
     code = _strip_comments(_read_conf(conf_path))
-    assert MPC_OUTPUT_NODE in code
     assert "audio.position = [ AUX10 AUX11 ]" in code
     assert "node.autoconnect = false" in code
+    assert f'target.object = "{MPC_OUTPUT_NODE}"' not in code
+    assert f'target.object = "{L12_OUTPUT_NODE}"' not in code
     assert 'target.object = "hapax-livestream-tap"' not in code, (
-        "M8 loudnorm must NOT terminate at hapax-livestream-tap directly; "
-        "nothing goes straight to stream (operator directive 2026-05-02)"
+        "M8 loudnorm must NOT terminate at hapax-livestream-tap while under-specified"
     )
 
 
-def test_generated_m8_loudnorm_routes_through_mpc_l12_not_direct_to_stream() -> None:
+def test_generated_m8_loudnorm_is_fail_closed_not_live() -> None:
     code = _strip_comments(_read_conf(GENERATED_PIPEWIRE_DIR / "m8-loudnorm.conf"))
-    assert MPC_OUTPUT_NODE in code
     assert "audio.position = [ AUX10 AUX11 ]" in code
     assert "node.autoconnect = false" in code
+    assert f'target.object = "{MPC_OUTPUT_NODE}"' not in code
+    assert f'target.object = "{L12_OUTPUT_NODE}"' not in code
     assert 'target.object = "hapax-livestream-tap"' not in code
 
 
-def test_m8_link_map_uses_live_aux_ports_not_stale_fl_fr() -> None:
-    """The M8 loudnorm playback stream exposes AUX10/AUX11 in the live graph.
-
-    Stale FL/FR source ports make the reconciler retry absent ports on every
-    tick even when the M8 branch is intentionally inactive.
-    """
+def test_m8_link_map_has_no_live_egress() -> None:
+    """Under-specified M8 must not appear in desired live link map."""
     link_map = _strip_comments(_read_conf(HAPAX_LINK_MAP))
-    assert f"hapax-m8-loudnorm-playback:output_AUX10|{L12_OUTPUT_NODE}:playback_FL" in link_map
-    assert f"hapax-m8-loudnorm-playback:output_AUX11|{L12_OUTPUT_NODE}:playback_FR" in link_map
+    assert "hapax-m8-loudnorm-playback:output_AUX10|" not in link_map
+    assert "hapax-m8-loudnorm-playback:output_AUX11|" not in link_map
     assert "hapax-m8-loudnorm-playback:output_FL|" not in link_map
     assert "hapax-m8-loudnorm-playback:output_FR|" not in link_map
 

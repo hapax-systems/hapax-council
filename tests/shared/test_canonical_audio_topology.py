@@ -223,12 +223,16 @@ def test_private_and_notification_sinks_are_fail_closed() -> None:
     assert private_capture.params["stream.capture.sink"] is True
     assert private_output.target_object == mpc.pipewire_name
     assert private_output.params["mpc_usb_input_pair"] == "AUX8 AUX9"
-    assert notify_capture.target_object == "hapax-notification-private"
+    assert notify_capture.target_object is None
     assert notify_capture.params["stream.capture.sink"] is True
-    assert notify_output.target_object == mpc.pipewire_name
-    assert notify_output.params["mpc_usb_input_pair"] == "AUX8 AUX9"
+    assert notify_capture.params["monitor_capture_target"] == "disabled"
+    assert notify_capture.params["disabled_until_route_authority"] is True
+    assert notify_output.target_object is None
+    assert notify_output.params["mpc_usb_input_pair"] == "disabled"
+    assert notify_output.params["disabled_until_route_authority"] is True
+    assert notify_output.params["private_monitor_bridge"] is False
 
-    for bridge in (private_output, notify_output):
+    for bridge in (private_output,):
         assert bridge.params["node.dont-fallback"] is True
         assert bridge.params["node.dont-reconnect"] is True
         assert bridge.params["node.dont-move"] is True
@@ -238,11 +242,15 @@ def test_private_and_notification_sinks_are_fail_closed() -> None:
     edge_pairs = {(edge.source, edge.target) for edge in d.edges}
     assert ("private-sink", "private-monitor-capture") in edge_pairs
     assert ("private-monitor-capture", "private-monitor-output") in edge_pairs
-    assert ("notification-private-sink", "notification-private-monitor-capture") in edge_pairs
+    assert (
+        "notification-private-sink",
+        "notification-private-monitor-capture",
+    ) not in edge_pairs
     assert (
         "notification-private-monitor-capture",
         "notification-private-monitor-output",
-    ) in edge_pairs
+    ) not in edge_pairs
+    assert ("notification-private-monitor-output", "mpc-usb-output") not in edge_pairs
 
 
 def test_tts_broadcast_path_has_mpc_wet_return_and_livestream_forward_path() -> None:
@@ -289,15 +297,17 @@ def test_pc_loudnorm_is_fail_closed_and_notifications_do_not_enter_multimedia() 
     assert ("pc-loudnorm", "livestream-tap") not in edge_pairs
 
 
-def test_s4_loopback_targets_livestream_tap() -> None:
+def test_s4_loopback_is_disabled_until_route_authority() -> None:
     d = _descriptor()
     s4 = d.node_by_id("s4-loopback")
 
     assert s4.kind == "loopback"
     assert s4.pipewire_name == "hapax-s4-content"
-    assert s4.target_object == "hapax-livestream-tap"
+    assert s4.target_object is None
     assert s4.params["audio.format"] == "S32"
     assert s4.params["audio.rate"] == 44100
+    assert s4.params["disabled_until_route_authority"] is True
+    assert s4.params["no_direct_livestream_tap"] is True
 
 
 def test_m8_loudnorm_is_reconciler_owned_and_missing_hardware_is_classified() -> None:
@@ -310,16 +320,19 @@ def test_m8_loudnorm_is_reconciler_owned_and_missing_hardware_is_classified() ->
     assert m8_capture.target_object == m8_source.pipewire_name
     assert m8_capture.params["node.autoconnect"] is False
     assert m8_capture.params["fail_closed_on_target_absent"] is True
-    assert m8_loudnorm.target_object == MPC_OUTPUT_NAME
+    assert m8_loudnorm.target_object is None
     assert m8_loudnorm.channels.positions == ["AUX10", "AUX11"]
     assert m8_loudnorm.params["node.autoconnect"] is False
     assert m8_loudnorm.params["no_direct_livestream_tap"] is True
     assert m8_loudnorm.params["playback_positions"] == "AUX10 AUX11"
+    assert m8_loudnorm.params["playback_target"] == "disabled"
+    assert m8_loudnorm.params["disabled_until_route_authority"] is True
 
     edge_pairs = {(edge.source, edge.target) for edge in d.edges}
     assert ("m8-usb-source", "m8-instrument-capture") in edge_pairs
     assert ("m8-instrument-capture", "m8-loudnorm") in edge_pairs
-    assert ("m8-loudnorm", "l12-usb-return") in edge_pairs
+    assert ("m8-loudnorm", "l12-usb-return") not in edge_pairs
+    assert ("m8-loudnorm", "mpc-usb-output") not in edge_pairs
     assert ("m8-loudnorm", "livestream-tap") not in edge_pairs
 
 

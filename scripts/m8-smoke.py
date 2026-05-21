@@ -21,9 +21,9 @@ PR #2492 (cc-task ``activity-reveal-ward-p2-m8-migration``):
   ``config/compositor-layouts/default.json`` — same file the
   compositor loads.
 * PipeWire ``54-hapax-m8-instrument.conf`` (or
-  ``hapax-m8-loudnorm.conf``) is checked for "routes through the governed
-  MPC AUX10/AUX11 handoff, never bypasses to livestream-tap" — same invariant
-  ``test_re_splay_m8_layout_and_affordance.py`` enforces statically.
+  ``hapax-m8-loudnorm.conf``) is checked for the current fail-closed
+  contract: no live target by default, AUX10/AUX11 identity retained,
+  and autoconnect disabled until a bounded activation task proves a route.
 
 Usage:
 
@@ -210,7 +210,7 @@ def _check_pipewire_routing(
     *,
     conf_path: Path | None = None,
 ) -> CheckResult:
-    """Pipewire conf uses the governed MPC handoff, never livestream-tap."""
+    """PipeWire conf keeps M8 live egress disabled by default."""
 
     target = (
         conf_path
@@ -231,56 +231,42 @@ def _check_pipewire_routing(
     code_lines = [
         line for line in text.splitlines() if line.strip() and not line.strip().startswith("#")
     ]
-    target_lines = [line for line in code_lines if "target.object" in line]
-    for line in target_lines:
-        if 'target.object = "hapax-livestream-tap"' in line:
+    for forbidden in (
+        "Akai_Professional_MPC_LIVE_III",
+        "ZOOM_Corporation_L-12",
+        "hapax-livestream-tap",
+        "evilpet",
+    ):
+        if forbidden in text:
             return CheckResult(
                 name="pipewire_routing",
                 passed=False,
-                detail=f"conf bypasses L-12 with livestream-tap target: {line.strip()}",
+                detail=f"conf references live/retired target {forbidden}",
                 remediation=(
-                    "remove the direct livestream-tap target.object and route via L-12"
-                    " — see test_re_splay_m8_layout_and_affordance.py::test_m8_wireplumber_routes_through_l12_not_direct_to_stream"
+                    "remove live target hints from hapax-m8-loudnorm.conf; "
+                    "M8 must stay dormant until bounded route activation"
                 ),
             )
-        if "evilpet" in line:
-            return CheckResult(
-                name="pipewire_routing",
-                passed=False,
-                detail=f"conf references evilpet (deprecated): {line.strip()}",
-                remediation="strip evilpet references; route through the governed MPC/L-12 handoff",
-            )
-    has_mpc_handoff = any("Akai_Professional_MPC_LIVE_III" in line for line in target_lines)
     has_aux_handoff = any("audio.position = [ AUX10 AUX11 ]" in line for line in code_lines)
     has_disabled_autoconnect = any("node.autoconnect = false" in line for line in code_lines)
-    if not has_mpc_handoff:
-        return CheckResult(
-            name="pipewire_routing",
-            passed=False,
-            detail="conf has no target.object pointing at the governed MPC AUX10/AUX11 handoff",
-            remediation=(
-                "M8 loudnorm output must target the MPC Live III multichannel output; "
-                "the reconciler then owns AUX10/AUX11 into the L-12 wet return"
-            ),
-        )
     if not has_aux_handoff:
         return CheckResult(
             name="pipewire_routing",
             passed=False,
-            detail="conf does not declare audio.position = [ AUX10 AUX11 ] for the M8 handoff",
-            remediation="pin the M8 loudnorm playback ports to AUX10/AUX11 for the MPC/L-12 return path",
+            detail="conf does not declare audio.position = [ AUX10 AUX11 ] for M8 port identity",
+            remediation="pin the M8 loudnorm playback ports to AUX10/AUX11 for explicit activation",
         )
     if not has_disabled_autoconnect:
         return CheckResult(
             name="pipewire_routing",
             passed=False,
-            detail="conf leaves autoconnect enabled for the optional M8 handoff",
-            remediation="set node.autoconnect = false so the reconciler owns the bounded handoff",
+            detail="conf leaves autoconnect enabled for the optional M8 path",
+            remediation="set node.autoconnect = false so M8 remains dormant by default",
         )
     return CheckResult(
         name="pipewire_routing",
         passed=True,
-        detail="conf targets MPC AUX10/AUX11 handoff with autoconnect disabled; no livestream-tap bypass; no evilpet",
+        detail="conf is fail-closed: AUX10/AUX11 identity retained, autoconnect disabled, no live target",
     )
 
 

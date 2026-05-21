@@ -33,7 +33,10 @@ L12_SINK = (
 L12_SOURCE = (
     "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
 )
-LOCAL_DEFAULT_SINK = "alsa_output.pci-0000_73_00.6.analog-stereo"
+FAIL_CLOSED_DEFAULT_SINK = "hapax-pc-loudnorm"
+# Newer main-side fixtures still use this legacy name. Keep it as an alias so
+# merge-queue snapshots resolve to the fail-closed default sink.
+LOCAL_DEFAULT_SINK = FAIL_CLOSED_DEFAULT_SINK
 
 
 def load_witness_module() -> ModuleType:
@@ -87,10 +90,10 @@ def known_good_snapshot() -> dict[str, object]:
             "product": "L-12",
             "manufacturer": "ZOOM Corporation",
             "stable_id": "usb:1686:03d5:8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF",
-            "default_sink": LOCAL_DEFAULT_SINK,
+            "default_sink": FAIL_CLOSED_DEFAULT_SINK,
             "default_source": L12_SOURCE,
         },
-        "sinks": [S4_SINK, L12_SINK, LOCAL_DEFAULT_SINK],
+        "sinks": [S4_SINK, L12_SINK, FAIL_CLOSED_DEFAULT_SINK],
         "sources": [S4_SOURCE, L12_SOURCE],
         "alsa_playback": "card 11: S4 [S-4], device 0: USB Audio [USB Audio]",
         "alsa_capture": "card 11: S4 [S-4], device 0: USB Audio [USB Audio]",
@@ -257,7 +260,7 @@ def test_witness_demotes_configured_s4_absence_and_c920_placement(tmp_path: Path
             "nmcli_state": "",
         },
     }
-    snapshot["sinks"] = [L12_SINK, LOCAL_DEFAULT_SINK]
+    snapshot["sinks"] = [L12_SINK, FAIL_CLOSED_DEFAULT_SINK]
     snapshot["sources"] = [L12_SOURCE]
     snapshot["alsa_playback"] = ""
     snapshot["alsa_capture"] = ""
@@ -326,7 +329,7 @@ def test_copied_witness_uses_installed_policy_env_path(tmp_path: Path) -> None:
             "nmcli_state": "",
         },
     }
-    snapshot["sinks"] = [L12_SINK, LOCAL_DEFAULT_SINK]
+    snapshot["sinks"] = [L12_SINK, FAIL_CLOSED_DEFAULT_SINK]
     snapshot["sources"] = [L12_SOURCE]
     snapshot["alsa_playback"] = ""
     snapshot["alsa_capture"] = ""

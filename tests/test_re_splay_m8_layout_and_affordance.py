@@ -9,10 +9,9 @@ contracts the M8 ward depends on:
 2. ``shared/affordance_registry.py`` registers the
    ``studio.m8_lcd_reveal`` capability with the right
    OperationalProperties shape (medium=visual, consent_required=False).
-3. ``config/wireplumber/54-hapax-m8-instrument.conf`` declares the M8
-   audio routing path WITHOUT linking into any L-12 capture or output
-   node — vacuous-in-spirit satisfaction of
-   feedback_l12_equals_livestream_invariant.
+3. ``config/pipewire/hapax-m8-loudnorm.conf`` declares the M8 loudnorm
+   path as dormant by default: no MPC/L-12/livestream target, and
+   autoconnect disabled until bounded route activation.
 4. ``packages/m8c-hapax/PKGBUILD`` exists with the SHM build target
    (post-pivot from v4l2-loopback).
 
@@ -78,36 +77,28 @@ def test_studio_m8_lcd_reveal_affordance_registered() -> None:
     )
 
 
-def test_m8_wireplumber_routes_through_l12_not_direct_to_stream() -> None:
-    """Static check: M8 audio routing config's ``target.object``
-    declarations use the governed MPC AUX10/AUX11 handoff. The reconciler owns
-    the downstream L-12 wet return, and nothing goes straight to stream."""
+def test_m8_loudnorm_is_fail_closed_until_route_activation() -> None:
+    """Static check: M8 loudnorm keeps live egress disabled by default."""
     conf_path = REPO_ROOT / "config" / "pipewire" / "hapax-m8-loudnorm.conf"
     assert conf_path.exists(), "M8 pipewire loudnorm config missing"
     text = conf_path.read_text()
     code_lines = [
         line for line in text.splitlines() if line.strip() and not line.strip().startswith("#")
     ]
-    target_lines = [line for line in code_lines if "target.object" in line]
-    has_mpc_handoff = any("Akai_Professional_MPC_LIVE_III" in line for line in target_lines)
-    assert has_mpc_handoff, (
-        "M8 loudnorm must target the governed MPC AUX10/AUX11 handoff; "
-        "the reconciler owns the downstream L-12 wet return"
-    )
+    assert 'node.name = "hapax-m8-loudnorm-playback"' in text
+    assert 'node.description = "Hapax M8 Loudnorm (no live egress)"' in text
+    for forbidden in (
+        "Akai_Professional_MPC_LIVE_III",
+        "ZOOM_Corporation_L-12",
+        "hapax-livestream-tap",
+    ):
+        assert forbidden not in text, f"M8 loudnorm unexpectedly references live target {forbidden}"
     assert any("audio.position = [ AUX10 AUX11 ]" in line for line in code_lines), (
-        "M8 loudnorm playback must pin AUX10/AUX11 for the MPC/L-12 return path"
+        "M8 loudnorm playback must keep AUX10/AUX11 port identity for explicit activation"
     )
     assert any("node.autoconnect = false" in line for line in code_lines), (
-        "optional M8 handoff must keep autoconnect disabled so the reconciler owns it"
+        "optional M8 handoff must keep autoconnect disabled until route activation"
     )
-    # Inverse invariant: must NOT bypass L-12 by going straight to broadcast.
-    for line in target_lines:
-        assert 'target.object = "hapax-livestream-tap"' not in line, (
-            f"M8 config target.object bypasses L-12 to livestream-tap: {line.strip()}"
-        )
-        assert "evilpet" not in line, (
-            f"M8 config target.object references evilpet capture: {line.strip()}"
-        )
 
 
 def test_m8c_hapax_pkgbuild_uses_shm_target_post_pivot() -> None:

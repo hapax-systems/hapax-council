@@ -47,12 +47,16 @@ PRIVATE_SOURCE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^hapax-notification-private(?:[-:]|$)"),
 )
 
-# HN readiness uses MPC Live III AUX8/AUX9 as the private-monitor ingress.
-# S-4 USB audio is not an allowed private target in this path. A private
-# edge to the MPC Live III is accepted only for playback_AUX8/playback_AUX9;
-# every other MPC input pair remains broadcast/system audio surface.
+# HN readiness uses MPC Live III AUX8/AUX9 as the specified private-TTS
+# monitor ingress. S-4 USB audio is not an allowed private target in this
+# path. A private edge to the MPC Live III is accepted only from
+# `hapax-private-playback` to playback_AUX8/playback_AUX9; notification
+# private audio is under-specified and must have no downstream egress.
 MPC_LIVE_III_TARGET_RE = re.compile(r"^alsa_output\.usb-Akai_Professional_MPC_LIVE_III")
 MPC_PRIVATE_MONITOR_PORTS = frozenset({"playback_AUX8", "playback_AUX9"})
+NO_EGRESS_SOURCE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^hapax-notification-private(?:[-:]|$)"),
+)
 
 FORBIDDEN_TARGET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"ZOOM_Corporation_L-12"),
@@ -180,9 +184,32 @@ def detect_forbidden(edges: list[tuple[str, str]]) -> list[ForbiddenLink]:
         target_node = target_port.split(":", 1)[0]
         if not _matches_any(source_node, PRIVATE_SOURCE_PATTERNS):
             continue
+        if _matches_any(source_node, NO_EGRESS_SOURCE_PATTERNS):
+            key = (source_port, target_port)
+            if key in seen:
+                continue
+            seen.add(key)
+            leaks.append(ForbiddenLink(source_port=source_port, target_port=target_port))
+            continue
+        if source_node == "hapax-private-playback":
+            target_port_name = target_port.split(":", 1)[1] if ":" in target_port else ""
+            if (
+                MPC_LIVE_III_TARGET_RE.search(target_node)
+                and target_port_name in MPC_PRIVATE_MONITOR_PORTS
+            ):
+                continue
+            key = (source_port, target_port)
+            if key in seen:
+                continue
+            seen.add(key)
+            leaks.append(ForbiddenLink(source_port=source_port, target_port=target_port))
+            continue
         if MPC_LIVE_III_TARGET_RE.search(target_node):
             target_port_name = target_port.split(":", 1)[1] if ":" in target_port else ""
-            if target_port_name in MPC_PRIVATE_MONITOR_PORTS:
+            if (
+                source_node == "hapax-private-playback"
+                and target_port_name in MPC_PRIVATE_MONITOR_PORTS
+            ):
                 continue
             key = (source_port, target_port)
             if key in seen:

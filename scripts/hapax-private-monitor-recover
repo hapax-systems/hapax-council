@@ -20,9 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
-EXACT_PRIVATE_MONITOR_TARGET = (
-    "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
-)
+EXACT_PRIVATE_MONITOR_TARGET = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
 BRIDGE_REPO_PATH = Path("config/pipewire/hapax-private-monitor-bridge.conf")
 DEFAULT_INSTALL_PATH = (
     Path.home() / ".config" / "pipewire" / "pipewire.conf.d" / "hapax-private-monitor-bridge.conf"
@@ -31,8 +29,6 @@ DEFAULT_STATUS_PATH = Path("/dev/shm/hapax-audio/private-monitor-target.json")
 REQUIRED_BRIDGE_NODES = (
     "hapax-private-monitor-capture",
     "hapax-private-playback",
-    "hapax-notification-private-monitor-capture",
-    "hapax-notification-private-playback",
 )
 STALE_GENERATED_BRIDGE_CONFS = (
     "private-monitor-output.conf",
@@ -134,16 +130,9 @@ def _playback_node_is_fail_closed(props_by_name: dict[str, dict[str, Any]], node
 
 
 def _bridge_nodes_fail_closed(props_by_name: dict[str, dict[str, Any]]) -> bool:
-    return (
-        _capture_node_is_pinned(props_by_name, "hapax-private-monitor-capture", "hapax-private")
-        and _capture_node_is_pinned(
-            props_by_name,
-            "hapax-notification-private-monitor-capture",
-            "hapax-notification-private",
-        )
-        and _playback_node_is_fail_closed(props_by_name, "hapax-private-playback")
-        and _playback_node_is_fail_closed(props_by_name, "hapax-notification-private-playback")
-    )
+    return _capture_node_is_pinned(
+        props_by_name, "hapax-private-monitor-capture", "hapax-private"
+    ) and _playback_node_is_fail_closed(props_by_name, "hapax-private-playback")
 
 
 def _bridge_matches_repo(repo_bridge: Path, install_path: Path) -> bool:
@@ -162,7 +151,6 @@ def _validate_repo_bridge(repo_bridge: Path) -> None:
         "node.linger = true",
         "state.restore = false",
         'target.object = "hapax-private"',
-        'target.object = "hapax-notification-private"',
     )
     missing = [needle for needle in required if needle not in text]
     if missing:

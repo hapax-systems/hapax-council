@@ -23,9 +23,3 @@ branches:
     source_config: config/pipewire/hapax-private-monitor-bridge.conf
     fail_closed_when_absent: true
     autoconnect: false
-  - id: notification-private-monitor-output
-    node_name: hapax-notification-private-playback
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
-    source_config: config/pipewire/hapax-private-monitor-bridge.conf
-    fail_closed_when_absent: true
-    autoconnect: false

@@ -40,12 +40,16 @@ def test_policy_loader_covers_private_blocked_and_broadcast_sources() -> None:
     assistant = _route(policy, "assistant-private")
     notification = _route(policy, "notification-private")
     youtube = _route(policy, "youtube-bed")
+    s4 = _route(policy, "s4-content")
+    m8 = _route(policy, "m8-instrument")
 
     assert broadcast_tts is not None and broadcast_tts.broadcast_eligible is True
     assert music_bed is not None and music_bed.broadcast_eligible is True
     assert assistant is not None and assistant.broadcast_eligible is False
     assert notification is not None and notification.broadcast_eligible is False
     assert youtube is not None and youtube.broadcast_eligible is False
+    assert s4 is not None and s4.broadcast_eligible is False
+    assert m8 is not None and m8.broadcast_eligible is False
     assert _route(policy, "unmodeled-default-fallback") is None
 
 
@@ -148,6 +152,37 @@ def test_generated_route_maps_keep_pc_aux45_forbidden_not_desired() -> None:
     assert "input.loopback.sink.role.notification-output" in forbidden
 
 
+def test_generated_route_maps_only_allow_specified_mpc_channels() -> None:
+    policy = load_audio_routing_policy(POLICY)
+    topology = load_audio_topology_descriptor()
+    desired, forbidden = generated_route_map_texts(topology, policy)
+
+    assert "hapax-music-loudnorm-playback:output_FL|" in desired
+    assert "playback_AUX0" in desired
+    assert "playback_AUX1" in desired
+    assert "hapax-loudnorm-playback:output_FL|" in desired
+    assert "playback_AUX2" in desired
+    assert "playback_AUX3" in desired
+    assert "hapax-private-playback:output_FL|" in desired
+    assert "playback_AUX8" in desired
+    assert "playback_AUX9" in desired
+
+    for disallowed in (
+        "hapax-yt-loudnorm-playback",
+        "hapax-notification-private-playback",
+        "hapax-m8-loudnorm-playback",
+        "hapax-pc-loudnorm-playback",
+    ):
+        assert disallowed not in desired
+
+    assert "hapax-yt-loudnorm-playback:output_FL|" in forbidden
+    assert "playback_AUX6" in forbidden
+    assert "hapax-notification-private-playback:output_FL|" in forbidden
+    assert "playback_AUX8" in forbidden
+    assert "hapax-m8-loudnorm-playback:output_AUX10|" in forbidden
+    assert "hapax-s4-tap:output_FL|hapax-livestream-tap:playback_FL" in forbidden
+
+
 def test_generator_route_map_check_mode() -> None:
     result = subprocess.run(
         ["uv", "run", "python", str(SCRIPT), "--check-route-maps"],
@@ -168,21 +203,29 @@ def test_generated_wireplumber_deny_policy_matches_golden_output() -> None:
     assert deny_script == DEFAULT_WIREPLUMBER_DENY_SCRIPT_PATH.read_text(encoding="utf-8")
     assert "linking/hapax-deny-forbidden-target" in deny_script
     assert "linking/hapax-remove-forbidden-port-link" in deny_script
-    assert "HAPAX_AUDIO_FORBIDDEN_LINKS" in deny_script
+    assert "HAPAX_AUDIO_FORBIDDEN_LINKS" not in deny_script
+    assert "io.open" not in deny_script
+    assert "FAIL_CLOSED_FORBIDDEN_LINKS" in deny_script
     assert "optional_device_fallback_denied" in deny_script
     assert "hapax-polyend-instrument-capture" in deny_script
+    assert "anonymous_loopback_to_multimedia_denied" in deny_script
+    assert "input.loopback.sink.role.multimedia" in deny_script
+    assert "output%.loopback%-%d+%-%d+" in deny_script
     assert "link:remove ()" in deny_script
 
     assert "FAIL_CLOSED_BOUNDARY_PAIRS" in deny_script
     assert "hapax-tts-broadcast-playback|hapax-livestream-tap" in deny_script
     assert "hapax-pc-loudnorm-playback|" in deny_script
     assert "hapax-private-playback|" in deny_script
+    assert "hapax-yt-loudnorm-playback|" in deny_script
+    assert "hapax-notification-private-playback|" in deny_script
+    assert "hapax-s4-tap|hapax-livestream-tap" in deny_script
     assert (
         "input.loopback.sink.role.assistant-output|input.loopback.sink.role.multimedia"
         in deny_script
     )
-    assert "policy.degraded = true" in deny_script
-    assert "fail-closed: using hardcoded boundary deny set" in deny_script
+    assert "degraded = false" in deny_script
+    assert "WirePlumber's sandbox cannot lose the policy through missing file I/O" in deny_script
     assert "local pair_key = nil" in deny_script
     assert "policy.node_pairs [pair_key]" in deny_script
     assert "(node boundary " in deny_script

@@ -124,8 +124,31 @@ def _write_private_monitor_bridge(
     *,
     target: str = MPC_TARGET,
     include_dont_fallback: bool = True,
+    include_notification_bridge: bool = False,
 ) -> None:
     dont_fallback = "node.dont-fallback = true" if include_dont_fallback else ""
+    notification_bridge = ""
+    if include_notification_bridge:
+        notification_bridge = f"""
+  {{ name = libpipewire-module-loopback
+    args = {{
+      capture.props = {{
+        node.name = "hapax-notification-private-monitor-capture"
+        stream.capture.sink = true
+        target.object = "hapax-notification-private"
+      }}
+      playback.props = {{
+        node.name = "hapax-notification-private-playback"
+        target.object = "{target}"
+        node.dont-fallback = true
+        node.dont-reconnect = true
+        node.dont-move = true
+        node.linger = true
+        state.restore = false
+      }}
+    }}
+  }}
+"""
     conf_dir.joinpath("hapax-private-monitor-bridge.conf").write_text(
         f"""
 context.modules = [
@@ -147,24 +170,7 @@ context.modules = [
       }}
     }}
   }}
-  {{ name = libpipewire-module-loopback
-    args = {{
-      capture.props = {{
-        node.name = "hapax-notification-private-monitor-capture"
-        stream.capture.sink = true
-        target.object = "hapax-notification-private"
-      }}
-      playback.props = {{
-        node.name = "hapax-notification-private-playback"
-        target.object = "{target}"
-        node.dont-fallback = true
-        node.dont-reconnect = true
-        node.dont-move = true
-        node.linger = true
-        state.restore = false
-      }}
-    }}
-  }}
+{notification_bridge}
 ]
 """,
         encoding="utf-8",
@@ -270,10 +276,19 @@ def test_allows_explicit_mpc_private_monitor_bridge(tmp_path: Path) -> None:
     assert (
         "OK  hapax-private-playback static target is MPC Live III private monitor" in result.stdout
     )
-    assert (
-        "OK  hapax-notification-private-playback static target is MPC Live III private monitor"
-        in result.stdout
-    )
+
+
+def test_fails_when_explicit_private_monitor_bridge_includes_notification(
+    tmp_path: Path,
+) -> None:
+    conf_dir = _write_wireplumber_config(tmp_path)
+    pipewire_conf_dir = _write_pipewire_config(tmp_path)
+    _write_private_monitor_bridge(pipewire_conf_dir, include_notification_bridge=True)
+
+    result = _run_guard(conf_dir, tmp_path, pipewire_conf_dir=pipewire_conf_dir)
+
+    assert result.returncode == 1
+    assert "notification-private must not be present" in result.stdout
 
 
 def test_fails_when_explicit_private_monitor_bridge_targets_yeti(tmp_path: Path) -> None:

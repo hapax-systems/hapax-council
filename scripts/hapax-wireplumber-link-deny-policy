@@ -26,11 +26,23 @@ INSTALLED_CONF_REL = Path("wireplumber.conf.d") / DEFAULT_WIREPLUMBER_DENY_CONF_
 INSTALLED_SCRIPT_REL = Path("scripts") / "hapax" / DEFAULT_WIREPLUMBER_DENY_SCRIPT_PATH.name
 
 
-def _installed_paths(installed_wireplumber_dir: Path) -> dict[str, Path]:
+def _installed_paths(
+    installed_wireplumber_dir: Path,
+    installed_wireplumber_data_dir: Path,
+) -> dict[str, Path]:
     return {
         "conf": installed_wireplumber_dir / INSTALLED_CONF_REL,
-        "script": installed_wireplumber_dir / INSTALLED_SCRIPT_REL,
+        "script": installed_wireplumber_data_dir / INSTALLED_SCRIPT_REL,
+        "legacy_config_script": installed_wireplumber_dir / INSTALLED_SCRIPT_REL,
     }
+
+
+def _same_resolved_path(left: Path, right: Path) -> bool:
+    return left.resolve(strict=False) == right.resolve(strict=False)
+
+
+def _legacy_config_script_is_distinct(installed: dict[str, Path]) -> bool:
+    return not _same_resolved_path(installed["legacy_config_script"], installed["script"])
 
 
 def _source_paths() -> dict[str, Path]:
@@ -53,16 +65,23 @@ def _path_status(source: Path, installed: Path) -> dict[str, object]:
     }
 
 
-def status_payload(installed_wireplumber_dir: Path) -> dict[str, object]:
+def status_payload(
+    installed_wireplumber_dir: Path,
+    installed_wireplumber_data_dir: Path,
+) -> dict[str, object]:
     source = _source_paths()
-    installed = _installed_paths(installed_wireplumber_dir)
+    installed = _installed_paths(installed_wireplumber_dir, installed_wireplumber_data_dir)
     return {
         "runtime_auth_env": RUNTIME_AUTH_ENV,
         "runtime_authorized": os.environ.get(RUNTIME_AUTH_ENV) == "1",
         "installed_wireplumber_dir": str(installed_wireplumber_dir),
-        "files": {
-            name: _path_status(source[name], installed[name])
-            for name in ("conf", "script")
+        "installed_wireplumber_data_dir": str(installed_wireplumber_data_dir),
+        "files": {name: _path_status(source[name], installed[name]) for name in ("conf", "script")},
+        "legacy_config_script": {
+            "installed": str(installed["legacy_config_script"]),
+            "installed_exists": installed["legacy_config_script"].exists(),
+            "distinct_from_data_script": _legacy_config_script_is_distinct(installed),
+            "should_exist": False,
         },
     }
 
@@ -80,24 +99,36 @@ def check_source() -> list[str]:
     ]
 
 
-def check_installed(installed_wireplumber_dir: Path) -> list[str]:
+def check_installed(
+    installed_wireplumber_dir: Path,
+    installed_wireplumber_data_dir: Path,
+) -> list[str]:
     source = _source_paths()
-    installed = _installed_paths(installed_wireplumber_dir)
-    return [
+    installed = _installed_paths(installed_wireplumber_dir, installed_wireplumber_data_dir)
+    stale = [
         str(installed[name])
         for name in ("conf", "script")
         if not source[name].exists()
         or not installed[name].exists()
         or not filecmp.cmp(source[name], installed[name], shallow=False)
     ]
+    if _legacy_config_script_is_distinct(installed) and installed["legacy_config_script"].exists():
+        stale.append(f"{installed['legacy_config_script']} (legacy config script should be absent)")
+    return stale
 
 
-def install(installed_wireplumber_dir: Path, *, dry_run: bool) -> list[str]:
+def install(
+    installed_wireplumber_dir: Path,
+    installed_wireplumber_data_dir: Path,
+    *,
+    dry_run: bool,
+) -> list[str]:
     source = _source_paths()
-    installed = _installed_paths(installed_wireplumber_dir)
+    installed = _installed_paths(installed_wireplumber_dir, installed_wireplumber_data_dir)
     operations = [
         f"{source['conf']} -> {installed['conf']}",
         f"{source['script']} -> {installed['script']}",
+        f"remove legacy config script if present: {installed['legacy_config_script']}",
     ]
 
     if dry_run:
@@ -114,6 +145,8 @@ def install(installed_wireplumber_dir: Path, *, dry_run: bool) -> list[str]:
             raise SystemExit(f"source artifact missing: {source[name]}")
         installed[name].parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source[name], installed[name])
+    if _legacy_config_script_is_distinct(installed) and installed["legacy_config_script"].exists():
+        installed["legacy_config_script"].unlink()
     return operations
 
 
@@ -123,6 +156,11 @@ def main() -> int:
         "--installed-wireplumber-dir",
         type=Path,
         default=Path.home() / ".config" / "wireplumber",
+    )
+    parser.add_argument(
+        "--installed-wireplumber-data-dir",
+        type=Path,
+        default=Path.home() / ".local" / "share" / "wireplumber",
     )
     parser.add_argument("--check-source", action="store_true")
     parser.add_argument("--check-installed", action="store_true")
@@ -142,7 +180,11 @@ def main() -> int:
             )
 
     if args.install:
-        operations = install(args.installed_wireplumber_dir, dry_run=args.dry_run)
+        operations = install(
+            args.installed_wireplumber_dir,
+            args.installed_wireplumber_data_dir,
+            dry_run=args.dry_run,
+        )
         payload = {
             "dry_run": args.dry_run,
             "operations": operations,
@@ -156,15 +198,16 @@ def main() -> int:
                 print(f"{mode}: {operation}")
 
     if args.check_installed:
-        stale = check_installed(args.installed_wireplumber_dir)
+        stale = check_installed(args.installed_wireplumber_dir, args.installed_wireplumber_data_dir)
         if stale:
             raise SystemExit(
-                "installed WirePlumber deny artifact(s) differ from source: "
-                + ", ".join(stale)
+                "installed WirePlumber deny artifact(s) differ from source: " + ", ".join(stale)
             )
 
     if not (args.check_source or args.install or args.check_installed):
-        payload = status_payload(args.installed_wireplumber_dir)
+        payload = status_payload(
+            args.installed_wireplumber_dir, args.installed_wireplumber_data_dir
+        )
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
