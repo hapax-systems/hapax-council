@@ -201,19 +201,23 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
     return out;
 }
 
+struct FragOutput {
+    @location(0) color: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+};
+
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(in: VertexOutput) -> FragOutput {
     let wp = in.world_pos;
     let t = grid.time;
     let light_color = grid.light_color.rgb;
+    let raster_depth = in.position.z;
 
     if in.plane_kind > 7.5 {
         // AoA insphere — ray-sphere intersection for perspective-correct 3D shading.
-        // Perfectly fitted to the central octahedral void of the tetrix (depth 1).
         let sphere_center = vec3<f32>(0.0, -0.4875, -1.36);
         let sphere_radius = 0.4777;
 
-        // Camera position from the inverse view matrix.
         let vt = grid.view[3].xyz;
         let cam_pos = -vec3<f32>(
             grid.view[0][0] * vt.x + grid.view[1][0] * vt.y + grid.view[2][0] * vt.z,
@@ -222,7 +226,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         );
         let ray_dir = normalize(wp - cam_pos);
 
-        // Analytic ray-sphere intersection.
         let oc = cam_pos - sphere_center;
         let b = dot(oc, ray_dir);
         let c = dot(oc, oc) - sphere_radius * sphere_radius;
@@ -237,7 +240,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let hit = cam_pos + ray_dir * t_hit;
         let sn = normalize(hit - sphere_center);
 
-        // Perspective-correct Phong shading.
+        // Project hit point to clip space for correct depth.
+        let hit_clip = grid.projection * grid.view * vec4<f32>(hit, 1.0);
+        let sphere_depth = hit_clip.z / hit_clip.w;
+
         let to_light = normalize(grid.light_position.xyz - hit);
         let ndotl = max(dot(sn, to_light), 0.0);
         let view_dir = normalize(cam_pos - hit);
@@ -253,7 +259,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let emission = vec3<f32>(0.06, 0.09, 0.18);
         var sphere_color = ambient + diffuse + specular + rim + emission;
         let sphere_alpha = clamp(0.28 + fresnel * 0.38 + ndotl * 0.12 + spec * 0.22, 0.26, 0.68);
-        return vec4<f32>(sphere_color, sphere_alpha);
+        return FragOutput(vec4<f32>(sphere_color, sphere_alpha), sphere_depth);
     }
 
     if in.plane_kind > 2.5 {
@@ -263,7 +269,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let halo = smoothstep(1.0, 0.08, d);
             let alpha = clamp(core * 0.58 + halo * 0.22, 0.0, 0.72);
             let color = light_color * (0.85 + core * 1.4);
-            return vec4<f32>(color, alpha);
+            return FragOutput(vec4<f32>(color, alpha), raster_depth);
         }
 
         let across = abs(in.local_pos.x);
@@ -273,7 +279,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let shimmer = 0.88;
         let alpha = center * taper * shimmer * 0.22;
         let color = light_color * (0.36 + 0.42 * center);
-        return vec4<f32>(color, alpha);
+        return FragOutput(vec4<f32>(color, alpha), raster_depth);
     }
 
     var gc: vec2<f32>;
@@ -324,7 +330,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             + vec3<f32>(0.022, 0.032, 0.048) * stipple_hash(cell + vec2<f32>(3.0, 7.0));
         plane_color = plane_color * (0.70 + 0.30 * shadow);
         let alpha = base_alpha * texture_signal * dist_fade * (0.86 + 0.14 * shadow);
-        return vec4<f32>(plane_color * texture_signal, alpha);
+        return FragOutput(vec4<f32>(plane_color * texture_signal, alpha), raster_depth);
     }
 
     // Synthwave neon: cycle cyan → magenta → blue
@@ -356,5 +362,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         color = color * 0.88;
     }
 
-    return vec4<f32>(color, alpha);
+    return FragOutput(vec4<f32>(color, alpha), raster_depth);
 }
