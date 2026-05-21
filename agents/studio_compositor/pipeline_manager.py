@@ -369,6 +369,7 @@ class PipelineManager:
         sm = self._state_machines.get(role)
         if sm is None:
             return
+        old_state = sm.state
         sm.dispatch(
             Event(
                 EventKind.DEVICE_ADDED,
@@ -376,6 +377,11 @@ class PipelineManager:
                 source="udev",
             )
         )
+        if (
+            old_state in (CameraState.OFFLINE, CameraState.DEAD)
+            and sm.state == CameraState.RECOVERING
+        ):
+            self._schedule_reconnect(role, 0.0)
 
     def on_device_removed(self, role: str, reason: str) -> None:
         """Called from UdevCameraMonitor on a video4linux/usb remove event."""
@@ -608,6 +614,13 @@ class PipelineManager:
             cam = self._cameras.get(role)
             sm = self._state_machines.get(role)
         if cam is None:
+            return
+        if sm is not None and sm.state in (CameraState.HEALTHY, CameraState.DEAD):
+            log.info(
+                "supervisor: skipping stale reconnect for role=%s state=%s",
+                role,
+                sm.state.value,
+            )
             return
         log.info("supervisor: attempting reconnect for role=%s", role)
 

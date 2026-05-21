@@ -197,10 +197,11 @@ class TestDeadTransitions:
         sm.dispatch(Event(EventKind.BACKOFF_ELAPSED))
         assert sm.state == CameraState.DEAD
 
-    def test_device_added_from_dead_ignored(self) -> None:
-        sm = make_sm(start=CameraState.DEAD)
+    def test_device_added_from_dead_rearms_to_recovering(self) -> None:
+        sm = make_sm(start=CameraState.DEAD, consecutive_failures=MAX_CONSECUTIVE_FAILURES)
         sm.dispatch(Event(EventKind.DEVICE_ADDED))
-        assert sm.state == CameraState.DEAD
+        assert sm.state == CameraState.RECOVERING
+        assert sm.consecutive_failures == 0
 
 
 class TestBackoff:

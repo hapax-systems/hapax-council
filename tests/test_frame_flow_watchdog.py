@@ -147,6 +147,43 @@ class TestFrameFlowWatchdog:
         assert pm._state_machines["c920-desk"].state == CameraState.HEALTHY
         assert pm._state_machines["brio-room"].state == CameraState.HEALTHY
 
+    def test_device_added_rearms_dead_camera_and_schedules_reconnect(self) -> None:
+        pm = _make_pm(["c920-overhead"])
+        sm = pm._state_machines["c920-overhead"]
+        sm._state = CameraState.DEAD
+        sm._consecutive_failures = 10
+
+        pm.on_device_added("c920-overhead", "/dev/video17")
+
+        assert sm.state == CameraState.RECOVERING
+        assert sm.consecutive_failures == 0
+        assert pm._reconnect_queue
+        wake_at, role = pm._reconnect_queue[0]
+        assert role == "c920-overhead"
+        assert wake_at <= time.monotonic() + 0.5
+
+    def test_stale_reconnect_queue_does_not_rebuild_dead_camera(self) -> None:
+        pm = _make_pm(["c920-overhead"])
+        sm = pm._state_machines["c920-overhead"]
+        sm._state = CameraState.DEAD
+        cam = pm._cameras["c920-overhead"]
+
+        pm._attempt_reconnect("c920-overhead")
+
+        cam.rebuild.assert_not_called()
+        assert sm.state == CameraState.DEAD
+
+    def test_stale_reconnect_queue_does_not_rebuild_healthy_camera(self) -> None:
+        pm = _make_pm(["c920-overhead"])
+        sm = pm._state_machines["c920-overhead"]
+        sm._state = CameraState.HEALTHY
+        cam = pm._cameras["c920-overhead"]
+
+        pm._attempt_reconnect("c920-overhead")
+
+        cam.rebuild.assert_not_called()
+        assert sm.state == CameraState.HEALTHY
+
 
 class TestSwapToFallbackSwapCompletedDispatch:
     def test_dispatches_swap_completed_when_degraded(self) -> None:
