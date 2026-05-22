@@ -1,0 +1,936 @@
+[
+  {
+    "id": "cb-llm-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "Extension must support direct API calls to sanctioned providers (OpenAI, Anthropic) without requiring a localhost proxy.",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py",
+      "tests/test_sufficiency_probes.py"
+    ]
+  },
+  {
+    "id": "cb-data-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "Vault data flow must use only git via corporate-approved remote. Extension must never require direct network access to h",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "cb-degrade-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "Features depending on localhost services (RAG search, health status, embedding) must fail silently with informative UI, ",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py",
+      "tests/test_sufficiency_probes.py"
+    ]
+  },
+  {
+    "id": "cb-key-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "API credentials resolved from VS Code settings, environment variables, or pass store (in that order). Per-machine settin",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py",
+      "tests/test_sufficiency_probes.py"
+    ]
+  },
+  {
+    "id": "cb-secret-scan-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "All hapax repositories must have .gitignore patterns for sensitive files (.env, *.pem, *.key, credentials.json). No trac",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "cb-extensible-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Adding a new LLM provider must require only implementing a provider interface and adding a settings entry, not structura",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "cb-parity-001",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Core chat functionality (conversation, note context, slash commands) must work identically regardless of provider select",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "ex-init-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "All agents must be runnable with zero configuration or setup steps beyond environment variables.",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "ex-init-002",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Agent entry points must not require the operator to remember command-line arguments or flags.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-err-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "Error messages must include specific next actions, not just descriptions of what went wrong.",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_enforcement.py",
+      "tests/test_axiom_registry.py",
+      "tests/test_sufficiency_probes.py"
+    ]
+  },
+  {
+    "id": "ex-err-002",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Agents must gracefully handle missing dependencies and provide clear installation instructions.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-state-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Agents must persist their own state and resume work without requiring the operator to remember where they left off.",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "ex-state-002",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "State transitions and progress must be visible without the operator having to check logs or debug output.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-routine-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "Recurring tasks must be automated rather than requiring manual triggering by the operator.",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "ex-routine-002",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Agents like health_monitor and drift_detector must self-schedule and report completion status.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-cogload-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Configuration files must use sensible defaults and avoid requiring the operator to make low-stakes decisions.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-cogload-002",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Interactive prompts must not ask questions the system can reasonably answer itself.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-feedback-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Long-running agents must provide regular progress updates without being queried.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-feedback-002",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Success states must be explicitly confirmed rather than indicated by absence of error messages.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-context-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Agents must maintain sufficient context to explain their current state and recent actions when queried.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-context-002",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Status outputs must include timestamps and be human-readable without additional parsing.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-attention-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "Critical alerts must be delivered through external channels (notifications, email) rather than requiring log monitoring.",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "ex-error-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Error messages must include specific next steps rather than generic failure descriptions.",
+    "tested": true,
+    "test_refs": [
+      "tests/shared/test_axiom_audit.py"
+    ]
+  },
+  {
+    "id": "ex-error-002",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "System failures must provide automatic recovery or graceful degradation without operator diagnosis.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-config-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Configuration files must have comprehensive defaults that work in the operator's environment.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-depend-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Agent dependencies must be automatically resolved or clearly documented with installation scripts.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-ui-001",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Interactive prompts must timeout with sensible defaults rather than hanging indefinitely.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-ui-002",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Multi-step workflows must checkpoint progress to allow resumption after interruption.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-doc-001",
+    "axiom_id": "",
+    "tier": "T3",
+    "enforcement": "lint",
+    "text": "Documentation must focus on \"what this does for you\" rather than \"how this works internally\".",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-log-001",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Log messages must distinguish between \"needs attention\" and \"normal operation\" without requiring operator to learn what'",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-alert-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Alert conditions must be actionable and include enough context to respond without additional investigation.",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "ex-batch-001",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Batch operations must provide summary reports rather than requiring operator to synthesize results from logs.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-state-003",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "System must persist task context across interruptions to eliminate restart cognitive overhead.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-alert-004",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "Alert mechanisms (notify.py, alert_state.py) must proactively surface actionable items rather than requiring operator to",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py",
+      "tests/test_drift_detector_probe_reconcile.py",
+      "tests/test_sufficiency_probes.py"
+    ]
+  },
+  {
+    "id": "ex-config-005",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Configuration files must provide sensible defaults that work without operator customization.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-error-006",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Error handling must auto-recover or auto-escalate rather than leaving operator in undefined states requiring diagnosis.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-routine-007",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "Routine maintenance agents (knowledge_maint, health_monitor) must run autonomously on schedules, not on-demand.",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "ex-feedback-008",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Agent outputs must include clear next-action recommendations to reduce decision paralysis.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-cognitive-009",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Interfaces must minimize context switching by batching related information in single views (briefing.py, digest.py).",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "ex-memory-010",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "System must automatically capture and surface relevant historical context without requiring operator to recall or search",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "ex-interrupt-011",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Long-running processes must be resumable and provide progress indicators to support task switching.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-decision-012",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "When multiple options exist, system must recommend the path of least cognitive resistance as the default.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-delib-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Multi-round deliberations must pass at least 2 of 3 process-tracing hoop tests (position shift, argument tracing, counte",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "ex-delib-002",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Multi-round deliberation activation rate (fraction of pre-committed update conditions acknowledged as met) must exceed 1",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "ex-delib-003",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Concession asymmetry ratio across the rolling window of recent deliberations must not exceed 3.0x, indicating one agent ",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "ex-delib-004",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Deliberation activation rate trend must not show sustained decline across batches, which would indicate governance proce",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "ex-skill-health-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Skill definitions (SKILL.md files) must be syntactically valid. YAML frontmatter must include name and description. Embe",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "ex-governance-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Governance artifacts (precedents, audit entries) must have lifecycle management with escalation. Agent-created precedent",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "ex-prose-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "All LLM-generated text outputs \u2014 agent reports, briefings, documentation, status messages, demo scripts, and commit mess",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "it-consent-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "The system must not store, persist, or accumulate state about a specific non-operator person (location, presence pattern",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_judge_t0_properties.py"
+    ]
+  },
+  {
+    "id": "it-consent-002",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "A consent contract must record explicit opt-in by the subject. Implied consent, assumed consent, or operator-only consen",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_judge_t0_properties.py"
+    ]
+  },
+  {
+    "id": "it-inspect-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Each consent contract must specify a visibility mechanism through which the subject can inspect all data the system hold",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "it-revoke-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "Either party (operator or subject) may revoke a consent contract at any time. Upon revocation, the system must purge all",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py",
+      "tests/test_axiom_judge_t0_properties.py"
+    ]
+  },
+  {
+    "id": "it-scope-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Each consent contract must enumerate the specific data categories permitted (e.g., coarse_location, presence, biometrics",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "it-environmental-001",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Transient environmental perception (e.g., VAD detecting a voice, a figure appearing on a camera feed) does not require a",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "it-inference-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Inferred or derived state about a non-operator person (e.g., predicted arrival time, habitual patterns) counts as persis",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "it-audit-001",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "All consent contracts must be stored with creation timestamp, parties, scope, and revocation status. Contract history mu",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py",
+      "tests/test_consent.py"
+    ]
+  },
+  {
+    "id": "it-backend-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Any PerceptionBackend or data ingestion pathway that receives data about non-operator persons must verify an active cons",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "it-attribution-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Third-party content the system redistributes to any audience (stream overlays, omg.lol surfaces, CDN-published assets) m",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "mg-boundary-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "Never generate feedback language, performance evaluations, or coaching recommendations directed at individual team membe",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py",
+      "tests/test_executor.py",
+      "tests/test_output_enforcement.py",
+      "tests/shared/test_axiom_pattern_checker.py",
+      "tests/hooks/test_axiom_patterns.py"
+    ]
+  },
+  {
+    "id": "mg-boundary-002",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "Never suggest what the operator should say to a team member or draft language for delivery in people conversations.",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py",
+      "tests/hooks/test_axiom_patterns.py"
+    ]
+  },
+  {
+    "id": "mg-cadence-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "1:1 meeting cadence must be the primary staleness signal for people management, auto-detected from frontmatter date fiel",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "mg-selfreport-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Cognitive load assessment must come from operator self-report in frontmatter only, never from LLM inference about a pers",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "mg-deterministic-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Management state collection (people, meetings, coaching, feedback) must be fully deterministic with zero LLM calls.",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "mg-prep-001",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Prep agents focus on signal aggregation and open-loop surfacing, not people recommendations or relationship advice.",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "mg-bridge-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Work domain data respects the work/home boundary via the bridge zone. No work-specific PII leaks into personal domain to",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "su-auth-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "All authentication, authorization, and user management code must be removed or disabled since there is exactly one autho",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_enforcement.py",
+      "tests/test_axiom_registry.py",
+      "tests/test_axiom_tools.py",
+      "tests/test_capability_health.py",
+      "tests/test_axiom_judge_t0_properties.py",
+      "tests/shared/test_axiom_audit.py",
+      "tests/hooks/test_axiom_patterns.py"
+    ]
+  },
+  {
+    "id": "su-config-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Configuration files should hardcode the operator's preferences rather than providing generic defaults or multi-user opti",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-data-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "All data storage can assume single-user ownership without access control, permissions checks, or data isolation.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-privacy-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "Privacy controls, data anonymization, and consent mechanisms for the operator's own data are unnecessary since the user ",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py",
+      "tests/test_axiom_judge_t0_properties.py",
+      "tests/hooks/test_axiom_patterns.py"
+    ]
+  },
+  {
+    "id": "su-error-001",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Error messages can include sensitive debugging information since only the operator will see them.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-logging-001",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Logging can be more verbose and include personal details since logs are private to the operator.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-ui-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "User interfaces should optimize for the operator's specific workflows rather than general usability patterns.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-naming-001",
+    "axiom_id": "",
+    "tier": "T3",
+    "enforcement": "lint",
+    "text": "Code comments and variable names can reference the operator's personal context without explanation.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-security-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "Multi-tenant security measures, rate limiting per user, and user input validation for malicious intent are unnecessary.",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_judge_t0_properties.py"
+    ]
+  },
+  {
+    "id": "su-scale-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Performance optimizations should target single-user load patterns rather than concurrent multi-user scenarios.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-api-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "API endpoints can assume trusted caller and skip user verification, quotas, and abuse prevention.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-storage-001",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "File paths, database schemas, and data structures can use operator-specific identifiers without generalization.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-notification-001",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "All notifications, alerts, and communications can be addressed directly to the operator without user preference systems.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-deployment-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Deployment and infrastructure should optimize for single-instance usage rather than multi-tenant architecture.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-perf-001",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Performance optimizations should prioritize single-user workflows over multi-user scalability concerns.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-audit-001",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Audit logs and monitoring can omit user identification fields since all activity is attributed to the operator by defini",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-deploy-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "Deployment and infrastructure configuration must assume single-user access patterns and can skip multi-tenancy considera",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-feature-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "Features for user collaboration, sharing between users, or multi-user coordination must not be developed.",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_judge_t0_properties.py"
+    ]
+  },
+  {
+    "id": "su-decision-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "All architectural and design decisions must be evaluated primarily for how they serve the operator's specific needs rath",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_registry.py"
+    ]
+  },
+  {
+    "id": "su-paths-001",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "File paths and database queries must not dynamically construct user-specific paths or apply user-based filters.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-scaling-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "System architecture must not include user-based load balancing, user sharding, or per-user scaling mechanisms.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-cache-001",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Caching strategies must not implement user-specific cache keys or user-scoped cache invalidation patterns.",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-admin-001",
+    "axiom_id": "",
+    "tier": "T0",
+    "enforcement": "block",
+    "text": "Administrative interfaces, user management UIs, or role assignment systems must not exist since the single user is the a",
+    "tested": true,
+    "test_refs": [
+      "tests/test_axiom_judge_t0_properties.py",
+      "tests/hooks/test_axiom_patterns.py"
+    ]
+  },
+  {
+    "id": "su-notify-001",
+    "axiom_id": "",
+    "tier": "T2",
+    "enforcement": "warn",
+    "text": "Notification systems in shared/notify.py must not support user-specific notification preferences or multi-user delivery ",
+    "tested": false,
+    "test_refs": []
+  },
+  {
+    "id": "su-agents-001",
+    "axiom_id": "",
+    "tier": "T1",
+    "enforcement": "review",
+    "text": "AI agents must not implement user context switching, user permission checking, or user-specific behavior customization.",
+    "tested": false,
+    "test_refs": []
+  }
+]
