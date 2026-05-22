@@ -19,6 +19,7 @@ use crate::scene::{
 const SCENE_QUAD_WGSL: &str = include_str!("shaders/scene_quad.wgsl");
 // GRID_SHADER_VERSION: 1778811160
 const SCENE_GRID_WGSL: &str = include_str!("shaders/scene_grid.wgsl");
+const ENTITY_RESTORE_WGSL: &str = include_str!("shaders/entity_restore.wgsl");
 const MAX_GRID_SHADOW_OCCLUDERS: usize = 16;
 const DEFAULT_SCENE_SAMPLE_COUNT: u32 = 4;
 
@@ -454,6 +455,10 @@ pub struct SceneRenderer {
     // AoA heatmap
     heatmap_buffer: wgpu::Buffer,
     heatmap_bind_group: wgpu::BindGroup,
+    // Post-Reverie entity restoration
+    entity_restore_pipeline: wgpu::RenderPipeline,
+    entity_restore_bgl: wgpu::BindGroupLayout,
+    entity_restore_sampler: wgpu::Sampler,
 }
 
 impl SceneRenderer {
@@ -839,6 +844,81 @@ impl SceneRenderer {
             cache: None,
         });
 
+        // Entity restoration pipeline (post-Reverie)
+        let entity_restore_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("entity_restore"),
+            source: wgpu::ShaderSource::Wgsl(ENTITY_RESTORE_WGSL.into()),
+        });
+        let entity_restore_bgl =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("entity_restore_bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let entity_restore_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("entity_restore_layout"),
+                bind_group_layouts: &[&entity_restore_bgl],
+                push_constant_ranges: &[],
+            });
+        let entity_restore_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let entity_restore_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("entity_restore_pipeline"),
+                layout: Some(&entity_restore_layout),
+                vertex: wgpu::VertexState {
+                    module: &entity_restore_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &entity_restore_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+
         log::info!(
             "SceneRenderer initialized: {}x{}, fov={:.0}°, scene_msaa={}x",
             width,
@@ -876,7 +956,59 @@ impl SceneRenderer {
             reverie_sampler,
             heatmap_buffer,
             heatmap_bind_group,
+            entity_restore_pipeline,
+            entity_restore_bgl,
+            entity_restore_sampler,
         }
+    }
+
+    pub fn restore_entities(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        reverie_output: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+    ) {
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("entity_restore_bg"),
+            layout: &self.entity_restore_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(reverie_output),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.output_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.entity_restore_sampler),
+                },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("entity_restore_encoder"),
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("entity_restore_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.entity_restore_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..6, 0..1);
+        }
+        queue.submit(std::iter::once(encoder.finish()));
     }
 
     pub fn set_reverie_texture(&mut self, device: &wgpu::Device, view: &wgpu::TextureView) {

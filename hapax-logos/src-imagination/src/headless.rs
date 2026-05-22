@@ -327,6 +327,21 @@ impl Renderer {
             Some(&self.content_source_mgr),
         );
 
+        // Post-Reverie entity restoration: blend scene entity colors
+        // back onto the Reverie output so AoA pane heatmap colors and
+        // entity identity survive the effect chain.
+        if let (Some(scene), Some(reverie_view)) = (
+            self.scene_renderer.as_ref(),
+            self.pipeline.get_target_output_view("main"),
+        ) {
+            scene.restore_entities(
+                &self.device,
+                &self.queue,
+                reverie_view,
+                &self.offscreen_view,
+            );
+        }
+
         self.frame_count = self.frame_count.wrapping_add(1);
         if self.frame_count.is_multiple_of(600) {
             log::info!(
