@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# Launch Antigravity IDE as a Hapax audited full-worker coding interface.
+# Launch Antigravity CLI (agy) as a Hapax audited full-worker lane.
 #
-# Antigravity is a VS Code-based Electron IDE running the latest Opus model
-# with thinking enabled. Unlike Vibe (CLI, headless-capable) it is interactive-only —
-# the agent runs inside the IDE's chat panel, not via a `--prompt` CLI.
+# Antigravity CLI is Google's Go-based terminal agent (successor to Gemini CLI).
+# It runs in tmux sessions with Claude Opus or Gemini models.
 #
 # This launcher:
 #   - Resolves/creates the antigrav worktree
 #   - Refreshes per-worktree AGENTS.md
 #   - Optionally pre-stages a task-assignment inflection
 #   - Optionally runs cc-claim
-#   - Opens the worktree in Antigravity
+#   - Launches agy in a tmux session
 #
 # Usage:
 #   hapax-antigrav                                # open antigrav worktree in Antigravity
@@ -101,12 +100,9 @@ if [ "$SESSION" = "antigravity" ]; then
   SESSION="antigrav"
 fi
 
-ANTIGRAV_BIN="$(command -v antigravity || true)"
-if [ -z "$ANTIGRAV_BIN" ] && [ -x "/usr/bin/antigravity" ]; then
-  ANTIGRAV_BIN="/usr/bin/antigravity"
-fi
-if [ -z "$ANTIGRAV_BIN" ] && [ "$OPEN_IDE" -eq 1 ]; then
-  echo "hapax-antigrav: antigravity binary not found (expected /usr/bin/antigravity)" >&2
+ANTIGRAV_BIN="$(command -v agy || true)"
+if [ -z "$ANTIGRAV_BIN" ]; then
+  echo "hapax-antigrav: agy binary not found (install: curl -fsSL https://antigravity.google/cli/install.sh | bash)" >&2
   exit 4
 fi
 
@@ -267,7 +263,7 @@ Operational contract:
 - Code edits, tests, commits, and PRs are allowed only inside assigned scope.
 - Always PR; never merge your own PR.
 - When directed to clean up or continue outstanding workstreams, bring them to natural completion: verified and PR'd/mergeable or merged through normal checks, correctly closed/returned to queue, or made safe with exact blocker evidence and next action.
-- Co-author trailer: \`Co-Authored-By: Antigravity <noreply@anthropic.com>\`.
+- Co-author trailer: \`Co-Authored-By: Antigravity <noreply@google.com>\`.
 - Never use \`git stash pop\`, force-push, or commit with hook bypass.
 - If two fix attempts fail, revert your own changes for the task and write a relay note rather than stalling.
 
@@ -356,45 +352,23 @@ spawn:
   open_ide: $OPEN_IDE
 EOF
 
-# ---- launch IDE ----------------------------------------------------------
+# ---- launch CLI ----------------------------------------------------------
 
 if [ "$OPEN_IDE" -eq 0 ]; then
   echo "hapax-antigrav: --no-open; provisioning complete (worktree=$WORKDIR)"
   exit 0
 fi
 
-# Antigravity is interactive-only. We open the worktree in a new IDE window
-# (or reuse the last active one if requested) and let the operator drive
-# the chat panel from there.
-
-# Antigravity starts an agent-manager language server against the inherited
-# cwd. Keep that cwd aligned with the lane worktree so it does not resurrect
-# the broad ~/projects workspace and race MCP refresh during startup.
 cd "$WORKDIR"
 
-# Default to a fresh single worktree window. --disable-layout-restore and
-# --skip-add-to-recently-opened keep broad prior workspaces from rehydrating
-# and racing MCP refresh during startup. Disable only the broken Python env
-# helper; the Python/Ruff/Pyrefly coding extensions remain available.
-ANTIGRAV_DEFAULT_ARGS=(
-  --new-window
-  --disable-layout-restore
-  --skip-add-to-recently-opened
-  --disable-extension ms-python.vscode-python-envs
-)
-if [ "${#ANTIGRAV_EXTRA[@]}" -gt 0 ]; then
-  case " ${ANTIGRAV_EXTRA[*]} " in
-    *' --reuse-window '*|*' -r '*)
-      ANTIGRAV_DEFAULT_ARGS=(
-        --disable-layout-restore
-        --skip-add-to-recently-opened
-        --disable-extension ms-python.vscode-python-envs
-      )
-      ;;
-  esac
+TMUX_SESSION="hapax-antigrav-$SESSION"
+
+if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+  echo "hapax-antigrav: tmux session '$TMUX_SESSION' already exists" >&2
+  exit 0
 fi
 
-setsid -f "$ANTIGRAV_BIN" "${ANTIGRAV_DEFAULT_ARGS[@]}" "$WORKDIR" "${ANTIGRAV_EXTRA[@]}" >/dev/null 2>&1 || \
-  exec "$ANTIGRAV_BIN" "${ANTIGRAV_DEFAULT_ARGS[@]}" "$WORKDIR" "${ANTIGRAV_EXTRA[@]}"
+tmux new-session -d -s "$TMUX_SESSION" -c "$WORKDIR" \
+  "HAPAX_AGENT_INTERFACE=antigravity HAPAX_AGENT_NAME=$SESSION HAPAX_AGENT_ROLE=$SESSION CLAUDE_ROLE=$SESSION $ANTIGRAV_BIN --dangerously-skip-permissions ${ANTIGRAV_EXTRA[*]}"
 
-echo "hapax-antigrav: opened Antigravity on $WORKDIR" >&2
+echo "hapax-antigrav: launched agy in tmux session '$TMUX_SESSION' (worktree=$WORKDIR)" >&2
