@@ -916,36 +916,21 @@ class ConversationPipeline:
         )
 
         _bd = self._salience_router.last_breakdown if self._salience_router is not None else None
-        from shared.chronicle import ChronicleEvent, current_otel_ids
-        from shared.chronicle import record as chronicle_record
+        from shared.chronicle import current_otel_ids
 
         _trace_id, _span_id = current_otel_ids()
-        chronicle_record(
-            ChronicleEvent(
-                ts=time.time(),
-                trace_id=_trace_id,
-                span_id=_span_id,
-                parent_span_id=None,
-                source="hapax_daimonion",
-                event_type="semantics.interpretation",
-                evidence_class="route",
-                public_scope="diagnostic",
-                payload={
-                    "transcript": transcript[:500],
-                    "turn": self.turn_count,
-                    "tier": routing.tier.name,
-                    "model": routing.model or "",
-                    "routing_reason": routing.reason,
-                    "concern_overlap": _bd.concern_overlap if _bd else None,
-                    "novelty": _bd.novelty if _bd else None,
-                    "dialog_feature_score": _bd.dialog_feature_score if _bd else None,
-                    "raw_activation": _bd.raw_activation if _bd else None,
-                    "final_activation": _bd.final_activation if _bd else None,
-                    "override_reason": _bd.override if _bd else "",
-                    "activity_mode": self._activity_mode,
-                    "consent_phase": self._consent_phase,
-                },
-            )
+        _intent = getattr(self, "_last_intent_result", None)
+        _interpreted_as = f"{routing.tier.name}:{routing.model or ''}"
+        if _intent and getattr(_intent, "matched_pattern", ""):
+            _interpreted_as = f"intent:{_intent.matched_pattern}"
+        self._interp_trace_id = _trace_id
+        self._interp_span_id = _span_id
+        self._interp_confidence = _bd.final_activation if _bd else 0.0
+        self._interp_interpreted_as = _interpreted_as
+        self._interp_routing_reason = routing.reason
+        self._interp_transcript = transcript
+        self._interp_gqi_before = (
+            self._grounding_ledger.compute_gqi() if hasattr(self, "_grounding_ledger") else 0.0
         )
 
         # Record activation breakdown for diagnostics
@@ -1204,6 +1189,49 @@ class ConversationPipeline:
                 hapax_score(_utt_trace, "novelty", _bd.novelty)
                 hapax_score(_utt_trace, "concern_overlap", _bd.concern_overlap)
                 hapax_score(_utt_trace, "dialog_feature_score", _bd.dialog_feature_score)
+
+        # Emit socio-linguistic interpretation event with uptake evidence
+        try:
+            from shared.semantic_trace import emit_interpretation as _sl_emit
+
+            _gqi_after = (
+                self._grounding_ledger.compute_gqi() if hasattr(self, "_grounding_ledger") else 0.0
+            )
+            _gqi_before = getattr(self, "_interp_gqi_before", 0.0)
+            _ctx_sources: list[str] = []
+            if getattr(self, "_policy_fn", None):
+                _ctx_sources.append("policy")
+            if getattr(self, "_env_context_fn", None):
+                _ctx_sources.append("environment")
+            if getattr(self, "_render_phenomenal", None):
+                _ctx_sources.append("phenomenal")
+            if getattr(self, "_grounding_ledger", None):
+                _ctx_sources.append("grounding_directive")
+
+            _last_response = ""
+            if self.messages and self.messages[-1].get("role") == "assistant":
+                _last_response = str(self.messages[-1].get("content", ""))
+
+            _sl_emit(
+                source="hapax_daimonion",
+                input_summary=getattr(self, "_interp_transcript", ""),
+                interpreted_as=getattr(self, "_interp_interpreted_as", ""),
+                confidence=getattr(self, "_interp_confidence", 0.0),
+                alternatives_considered=[],
+                routing_reason=getattr(self, "_interp_routing_reason", ""),
+                context_sources=_ctx_sources,
+                trace_id=getattr(self, "_interp_trace_id", "0" * 32),
+                span_id=getattr(self, "_interp_span_id", "0" * 16),
+                extra_payload={
+                    "uptake": {
+                        "response_summary": _last_response[:200],
+                        "gqi_delta": round(_gqi_after - _gqi_before, 4),
+                    }
+                },
+            )
+        except Exception:
+            log.debug("semantic trace emission failed", exc_info=True)
+
         self.state = ConvState.LISTENING
 
     async def _generate_and_speak(self) -> None:
