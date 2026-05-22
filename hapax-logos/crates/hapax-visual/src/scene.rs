@@ -1089,45 +1089,74 @@ fn build_scene_from_source_refs(
         }
     }
 
+    // Semantic layout using the FULL scroom volume.
+    // Room: x ±15, y [-2.0, 2.5], z [-9.0, 2.0]. Camera at (0, 0, 2).
+    // AoA at (0, -0.30, -2.06). Use the space.
     let aoa_pos = authored_aoa_scene_node().position;
-    let cam_z = aoa_pos.z - 0.50;
-    let ward_z = aoa_pos.z - 1.00;
 
-    // LEFT: perception (cameras) — staggered grid, 2 columns
-    let cam_cols = 2usize;
+    // LEFT WALL: perception (cameras) — spread along left wall, y range [-1.5, 1.5]
     for (i, &src_idx) in perception.iter().enumerate() {
-        let col = i % cam_cols;
-        let row = i / cam_cols;
-        let x = aoa_pos.x - 2.8 - col as f32 * 1.2;
-        let y = aoa_pos.y + 0.8 - row as f32 * 0.70;
-        let z = cam_z - col as f32 * 0.30;
+        let n = perception.len().max(1);
+        let cols = 2usize;
+        let col = i % cols;
+        let row = i / cols;
+        let rows = (n + cols - 1) / cols;
+        let y_span = 2.4f32;
+        let y_start = aoa_pos.y + y_span * 0.5;
+        let y = y_start - row as f32 * (y_span / rows.max(1) as f32);
+        let x = -4.5 - col as f32 * 1.4;
+        let z = aoa_pos.z + 0.5 - col as f32 * 0.8;
         nodes.push(make_node(
             active_sources, src_idx,
             Vec3::new(x, y, z),
-            0.48, 1.0, 0.03,
+            0.52, 1.0, 0.05,
         ));
     }
 
-    // RIGHT: cognition + grounding + communication — all non-perception
-    // sources in a single right-side column at the same depth as cameras.
-    // This keeps all content at consistent perspective scale and avoids
-    // floor-grid overlay artifacts.
-    let mut right_sources: Vec<&usize> = Vec::new();
-    right_sources.extend(communication.iter());
-    right_sources.extend(cognition.iter());
-    right_sources.extend(grounding.iter());
-
-    let right_cols = 2usize;
-    for (i, &src_idx) in right_sources.iter().enumerate() {
-        let col = i % right_cols;
-        let row = i / right_cols;
-        let x = aoa_pos.x + 2.8 + col as f32 * 1.1;
-        let y = aoa_pos.y + 0.8 - row as f32 * 0.55;
-        let z = cam_z - col as f32 * 0.25;
+    // RIGHT WALL: cognition (wards) — spread along right wall
+    for (i, &src_idx) in cognition.iter().enumerate() {
+        let n = cognition.len().max(1);
+        let cols = 3usize;
+        let col = i % cols;
+        let row = i / cols;
+        let rows = (n + cols - 1) / cols;
+        let y_span = 2.4f32;
+        let y_start = aoa_pos.y + y_span * 0.5;
+        let y = y_start - row as f32 * (y_span / rows.max(1) as f32);
+        let x = 4.0 + col as f32 * 1.2;
+        let z = aoa_pos.z - 0.5 - col as f32 * 0.6;
         nodes.push(make_node(
-            active_sources, *src_idx,
+            active_sources, src_idx,
             Vec3::new(x, y, z),
-            0.36, 0.75, -0.03,
+            0.38, 0.75, -0.04,
+        ));
+    }
+
+    // TOP: communication — horizontal band near ceiling, behind AoA
+    for (i, &src_idx) in communication.iter().enumerate() {
+        let n = communication.len().max(1);
+        let frac = if n == 1 { 0.5 } else { i as f32 / (n - 1) as f32 };
+        let x = 8.0 * (frac - 0.5);
+        let y = 1.6 + (i % 2) as f32 * 0.35;
+        let z = aoa_pos.z - 2.0 - (i as f32 * 0.41).sin().abs() * 0.5;
+        nodes.push(make_node(
+            active_sources, src_idx,
+            Vec3::new(x, y, z),
+            0.32, 0.60, 0.0,
+        ));
+    }
+
+    // FRONT-BOTTOM: grounding — between camera and AoA, above floor
+    for (i, &src_idx) in grounding.iter().enumerate() {
+        let n = grounding.len().max(1);
+        let frac = if n == 1 { 0.5 } else { i as f32 / (n - 1) as f32 };
+        let x = 5.0 * (frac - 0.5);
+        let y = -1.2;
+        let z = aoa_pos.z + 1.5;
+        nodes.push(make_node(
+            active_sources, src_idx,
+            Vec3::new(x, y, z),
+            0.30, 0.55, 0.0,
         ));
     }
 
