@@ -3911,3 +3911,9 @@ from shared.trace_reader import TraceProvenance, read_trace_with_provenance
 
 TraceProvenance
 read_trace_with_provenance
+
+# Chat persona scorer: foundation for chat_author_is_operator calibration.
+# Consumer wire-in per REQ-20260521-chat-author-calibration Phase 6c-ii.B.
+from agents.hapax_daimonion.chat_persona_scorer import ChatPersonaScorer
+
+ChatPersonaScorer
