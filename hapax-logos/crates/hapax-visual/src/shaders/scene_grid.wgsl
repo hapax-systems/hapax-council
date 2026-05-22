@@ -277,23 +277,25 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let sphere_depth = hit_clip.z / hit_clip.w;
 
         // Full composited Reverie output on the sphere — the DMN's expression.
-        // Stereographic projection: center of frame → front of sphere,
-        // edges wrap around to back. Full coverage, coherent mapping.
-        let view_dir = normalize(cam_pos - hit);
-        let d = 1.0 + max(dot(sn, view_dir), 0.0);
-        let stereo_uv = vec2<f32>(
-            sn.x / d * 0.45 + 0.5,
-            sn.y / d * -0.45 + 0.5,
+        // Equirectangular UV from world-space normal — full sphere coverage.
+        let theta = atan2(sn.x, sn.z);
+        let phi = acos(clamp(sn.y, -1.0, 1.0));
+        let sphere_uv = vec2<f32>(
+            (theta + AOA_PI) / (2.0 * AOA_PI),
+            phi / AOA_PI,
         );
-        let reverie = textureSample(reverie_texture, reverie_sampler, stereo_uv);
+        let reverie = textureSample(reverie_texture, reverie_sampler, sphere_uv);
 
-        let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 2.2);
-        let rim = light_color * fresnel * 0.28;
+        let view_dir = normalize(cam_pos - hit);
+        let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 2.0);
+        let rim = light_color * fresnel * 0.30;
         let shadow = soft_shadow_at(hit, grid.light_position.xyz);
         let ndotl = max(dot(sn, normalize(grid.light_position.xyz - hit)), 0.0);
 
-        var sphere_color = reverie.rgb * (0.85 + ndotl * 0.2 * shadow) + rim;
-        let sphere_alpha = clamp(0.34 + fresnel * 0.20 + dot(reverie.rgb, vec3<f32>(0.33)) * 0.26, 0.30, 0.82);
+        // Boost Reverie content to be legible on the sphere.
+        let rev_sat = reverie.rgb * 1.5;
+        var sphere_color = rev_sat * (0.80 + ndotl * 0.25 * shadow) + rim;
+        let sphere_alpha = clamp(0.38 + fresnel * 0.18, 0.35, 0.78);
         return FragOutput(vec4<f32>(sphere_color, sphere_alpha), 0.999);
     }
 

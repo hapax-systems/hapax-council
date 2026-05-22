@@ -75,7 +75,7 @@ fn main_1() {
         clamp(2.0 - abs(h6 - 2.0), 0.0, 1.0),
         clamp(2.0 - abs(h6 - 4.0), 0.0, 1.0),
     ) * luma;
-    c = vec4<f32>(c.xyz + inject * mono_risk * 0.12, c.w);
+    c = vec4<f32>(c.xyz + inject * mono_risk * 0.28, c.w);
 
     fragColor = c;
     return;
