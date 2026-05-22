@@ -291,9 +291,11 @@ class ClaimEngine[T]:
 
         required = self._required_ticks_for_transition(self._state, target)
         if self._ticks_in_candidate_state >= required:
+            old_state = self._state
             self._state = target
             self._candidate_state = None
             self._ticks_in_candidate_state = 0
+            self._emit_posterior_to_chronicle(old_state, target)
 
     def _required_ticks_for_transition(self, frm: ClaimState, to: ClaimState) -> int:
         """Asymmetric per-claim dwell from TemporalProfile.
@@ -308,6 +310,24 @@ class ClaimEngine[T]:
             return self._profile.k_exit
         # UNCERTAIN ↔ RETRACTED transitions use the dedicated dwell
         return self._profile.k_uncertain
+
+    def _emit_posterior_to_chronicle(self, from_state: ClaimState, to_state: ClaimState) -> None:
+        try:
+            from shared.semantic_trace import emit_grounding
+
+            emit_grounding(
+                source=f"claim_engine:{self._name}",
+                checks_evaluated=[f"state_transition:{from_state}->{to_state}"],
+                converged=to_state == "ASSERTED",
+                confidence_bound=max(0.0, min(1.0, self._posterior)),
+                participants=[self._name],
+            )
+        except Exception:
+            pass
+
+    @property
+    def chronicle_source(self) -> str:
+        return f"claim_engine:{self._name}"
 
     # ── Read accessors ───────────────────────────────────────────────
 
