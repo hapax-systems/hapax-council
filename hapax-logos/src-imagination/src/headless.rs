@@ -276,6 +276,12 @@ impl Renderer {
 
         let opacities = self.content_source_mgr.slot_opacities();
 
+        // Sphere texture: YouTube source if available, else Reverie output.
+        if let Some(scene) = self.scene_renderer.as_mut() {
+            let yt_view = self.content_source_mgr.slot_view_for_family(0, "youtube_pip");
+            scene.set_reverie_texture(&self.device, yt_view);
+        }
+
         // HOMAGE Phase 6 - Ward↔Shader bidirectional coupling
         crate::homage_feedback::emit_shader_feedback(
             self.state_reader.smoothed.audio_energy as f64,
