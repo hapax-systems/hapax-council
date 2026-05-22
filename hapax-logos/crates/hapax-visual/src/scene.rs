@@ -113,8 +113,11 @@ const MADYA_RADIUS_MIN: f32 = 2.5;
 const MADYA_RADIUS_MAX: f32 = 4.5;
 const NISTA_RADIUS_MIN: f32 = 4.5;
 
+const ANCHOR_FLOOR_Y: f32 = -1.40;
+const ANCHOR_CEILING_Y: f32 = 2.10;
+
 fn scale_anchor_outward(local: Vec3, role: AnchorRole) -> Vec3 {
-    let dir = local - AOA_CENTROID;
+    let mut dir = local - AOA_CENTROID;
     let dist = dir.length();
     if dist < 0.001 {
         return local;
@@ -124,10 +127,17 @@ fn scale_anchor_outward(local: Vec3, role: AnchorRole) -> Vec3 {
         AnchorRole::Medium => NISTA_RADIUS_MIN + 0.3,
         AnchorRole::Low => NISTA_RADIUS_MIN + 1.5,
     };
-    if dist >= target_min {
-        return local;
+    let vertical_ratio = dir.y.abs() / dist;
+    if vertical_ratio > 0.7 {
+        let spread = if dir.x.abs() < 0.01 { 1.5 } else { 0.8 };
+        dir.x += if local.x >= 0.0 { spread } else { -spread };
+        dir.z -= 0.4;
     }
-    AOA_CENTROID + dir.normalize() * target_min
+    if dist < target_min {
+        AOA_CENTROID + dir.normalize() * target_min
+    } else {
+        AOA_CENTROID + dir.normalize() * dist
+    }
 }
 
 pub fn scene_anchors() -> Vec<SceneAnchor> {
