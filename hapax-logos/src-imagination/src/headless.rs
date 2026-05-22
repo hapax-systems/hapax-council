@@ -278,11 +278,15 @@ impl Renderer {
             true, // is_fresh
         );
 
+        // Pass previous frame's Reverie output to the sphere (1-frame latency).
+        if let (Some(scene), Some(view)) = (
+            self.scene_renderer.as_mut(),
+            self.pipeline.get_target_output_view("main"),
+        ) {
+            scene.set_reverie_texture(&self.device, view);
+        }
+
         // 3D scene render → inject into DynamicPipeline as @live
-        // Phase 3: the 3D scene output becomes the shader vocabulary's
-        // input texture. Shaders process the 3D scene exactly as they
-        // process the noise-generated fallback, but now with real
-        // perspective-rendered content sources.
         if let Some(mut scene) = self.scene_renderer.take() {
             scene.render(
                 &self.device,

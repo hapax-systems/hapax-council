@@ -26,6 +26,13 @@ struct GridUniforms {
 @group(0) @binding(0)
 var<uniform> grid: GridUniforms;
 
+@group(1) @binding(0)
+var reverie_texture: texture_2d<f32>;
+@group(1) @binding(1)
+var reverie_sampler: sampler;
+
+const AOA_PI: f32 = 3.14159265358979;
+
 fn stipple_hash(p: vec2<f32>) -> f32 {
     let q = vec2<f32>(
         dot(p, vec2<f32>(127.1, 311.7)),
@@ -244,24 +251,20 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let hit_clip = grid.projection * grid.view * vec4<f32>(hit, 1.0);
         let sphere_depth = hit_clip.z / hit_clip.w;
 
-        let to_light = normalize(grid.light_position.xyz - hit);
-        let ndotl = max(dot(sn, to_light), 0.0);
-        let view_dir = normalize(cam_pos - hit);
-        let half_vec = normalize(to_light + view_dir);
-        let spec = pow(max(dot(sn, half_vec), 0.0), 64.0);
-        let shadow = soft_shadow_at(hit, grid.light_position.xyz);
-        let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 2.2);
+        // Equirectangular UV from ray-sphere hit normal.
+        let theta = atan2(sn.x, sn.z);
+        let phi = acos(clamp(sn.y, -1.0, 1.0));
+        let eq_uv = vec2<f32>(
+            (theta + AOA_PI) / (2.0 * AOA_PI),
+            phi / AOA_PI,
+        );
+        let reverie = textureSample(reverie_texture, reverie_sampler, eq_uv);
 
-        // Sphere color temperature driven by system warmth signal.
-        let w = clamp(grid.sphere_warmth, 0.0, 1.0);
-        let cool = vec3<f32>(0.08, 0.14, 0.28);
-        let warm = vec3<f32>(0.28, 0.16, 0.06);
-        let ambient = mix(cool, warm, w);
-        let diffuse = light_color * ndotl * 0.24 * shadow;
-        let specular = light_color * spec * 0.48 * shadow;
-        let rim = (light_color + mix(vec3<f32>(0.10, 0.18, 0.28), vec3<f32>(0.28, 0.14, 0.06), w)) * fresnel * 0.90;
-        var sphere_color = ambient + diffuse + specular + rim;
-        let sphere_alpha = clamp(0.10 + fresnel * 0.34 + spec * 0.14, 0.08, 0.50);
+        let view_dir = normalize(cam_pos - hit);
+        let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 2.4);
+        let rim = light_color * fresnel * 0.32;
+        var sphere_color = reverie.rgb + rim;
+        let sphere_alpha = clamp(reverie.a * 0.82 + fresnel * 0.18, 0.12, 0.88);
         return FragOutput(vec4<f32>(sphere_color, sphere_alpha), 0.999);
     }
 

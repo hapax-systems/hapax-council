@@ -431,6 +431,10 @@ pub struct SceneRenderer {
     grid_pipeline: wgpu::RenderPipeline,
     grid_uniform_buffer: wgpu::Buffer,
     grid_uniform_bind_group: wgpu::BindGroup,
+    // Reverie sphere texture
+    grid_texture_bgl: wgpu::BindGroupLayout,
+    reverie_bind_group: wgpu::BindGroup,
+    reverie_sampler: wgpu::Sampler,
 }
 
 impl SceneRenderer {
@@ -696,9 +700,55 @@ impl SceneRenderer {
             }],
         });
 
+        let grid_texture_bgl =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("grid texture bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        let reverie_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let reverie_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("grid reverie fallback bg"),
+            layout: &grid_texture_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&placeholder_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&reverie_sampler),
+                },
+            ],
+        });
+
         let grid_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("grid pipeline layout"),
-            bind_group_layouts: &[&grid_uniform_bgl],
+            bind_group_layouts: &[&grid_uniform_bgl, &grid_texture_bgl],
             push_constant_ranges: &[],
         });
 
@@ -772,7 +822,27 @@ impl SceneRenderer {
             grid_pipeline,
             grid_uniform_buffer,
             grid_uniform_bind_group,
+            grid_texture_bgl,
+            reverie_bind_group,
+            reverie_sampler,
         }
+    }
+
+    pub fn set_reverie_texture(&mut self, device: &wgpu::Device, view: &wgpu::TextureView) {
+        self.reverie_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("grid reverie bg"),
+            layout: &self.grid_texture_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.reverie_sampler),
+                },
+            ],
+        });
     }
 
     /// Render the 3D scene. Builds the scene graph dynamically from
@@ -858,6 +928,7 @@ impl SceneRenderer {
                 queue.write_buffer(&self.grid_uniform_buffer, 0, bytemuck::bytes_of(&grid_data));
                 pass.set_pipeline(&self.grid_pipeline);
                 pass.set_bind_group(0, &self.grid_uniform_bind_group, &[]);
+                pass.set_bind_group(1, &self.reverie_bind_group, &[]);
                 pass.draw(0..48, 0..1); // Room grids + light + volumetric rays
             }
 
@@ -965,6 +1036,7 @@ impl SceneRenderer {
             // ── AoA insphere — drawn AFTER content quads so it composites on top ──
             pass.set_pipeline(&self.grid_pipeline);
             pass.set_bind_group(0, &self.grid_uniform_bind_group, &[]);
+            pass.set_bind_group(1, &self.reverie_bind_group, &[]);
             pass.draw(48..54, 0..1);
         }
 
