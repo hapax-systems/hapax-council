@@ -364,7 +364,16 @@ fn fs_main(in: VertexOutput) -> FragOutput {
             base_alpha = 0.42;
         }
         let texture_signal = clamp(0.52 + 0.38 * material + 0.14 * weave + 0.24 * dot_alpha, 0.42, 1.0);
-        var plane_color = vec3<f32>(0.18, 0.20, 0.30)
+        // Per-surface tint: floor warm, ceiling cool, walls neutral.
+        var surface_tint = vec3<f32>(0.18, 0.20, 0.30);
+        if is_floor_or_ceiling && in.normal.y > 0.5 {
+            surface_tint = vec3<f32>(0.22, 0.18, 0.16); // floor: warm
+        } else if is_floor_or_ceiling {
+            surface_tint = vec3<f32>(0.14, 0.18, 0.28); // ceiling: cool
+        } else if abs(in.normal.z) > 0.5 {
+            surface_tint = vec3<f32>(0.16, 0.20, 0.26); // back wall: blue
+        }
+        var plane_color = surface_tint
             + light_color * (0.10 + room_light * 0.32)
             + vec3<f32>(0.08, 0.10, 0.14) * material
             + vec3<f32>(0.04, 0.05, 0.08) * stipple_hash(cell + vec2<f32>(3.0, 7.0));
