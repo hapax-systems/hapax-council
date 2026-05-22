@@ -3,6 +3,7 @@
 Thin wrappers around chronicle.record() that build correctly-shaped
 ChronicleEvents with evidence_class="semantic_interpretation" and
 the appropriate event_type and payload structure.
+emit_interpretation truncates input_summary to 200 chars to bound event size.
 """
 
 from __future__ import annotations
@@ -12,6 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from shared.chronicle import CHRONICLE_FILE, ChronicleEvent, record
+
+
+def _clamp_confidence(v: float) -> float:
+    return max(0.0, min(1.0, v))
 
 
 def emit_interpretation(
@@ -26,21 +31,21 @@ def emit_interpretation(
     trace_id: str = "0" * 32,
     span_id: str = "0" * 16,
     parent_span_id: str | None = None,
-    extra_payload: dict[str, Any] | None = None,
+    uptake: dict[str, Any] | None = None,
     chronicle_path: Path = CHRONICLE_FILE,
 ) -> str:
     payload: dict[str, Any] = {
         "interpretation": {
             "input_summary": input_summary[:200],
             "interpreted_as": interpreted_as,
-            "confidence": confidence,
+            "confidence": _clamp_confidence(confidence),
             "alternatives_considered": alternatives_considered,
             "routing_reason": routing_reason,
             "context_sources": context_sources,
         }
     }
-    if extra_payload:
-        payload.update(extra_payload)
+    if uptake is not None:
+        payload["uptake"] = uptake
     event = ChronicleEvent(
         ts=time.time(),
         trace_id=trace_id,
@@ -114,7 +119,7 @@ def emit_grounding(
             "grounding": {
                 "checks_evaluated": checks_evaluated,
                 "converged": converged,
-                "confidence_bound": confidence_bound,
+                "confidence_bound": _clamp_confidence(confidence_bound),
                 "participants": participants,
             }
         },
@@ -145,7 +150,7 @@ def emit_relay_uptake(
             "relay_uptake": {
                 "message_id": message_id,
                 "interpretation_summary": interpretation_summary,
-                "interpretation_confidence": interpretation_confidence,
+                "interpretation_confidence": _clamp_confidence(interpretation_confidence),
             }
         },
         evidence_class="semantic_interpretation",

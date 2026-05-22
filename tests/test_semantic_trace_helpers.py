@@ -56,7 +56,7 @@ def test_emit_interpretation_truncates_input(tmp_path: Path):
     assert len(results[0].payload["interpretation"]["input_summary"]) == 200
 
 
-def test_emit_interpretation_with_extra_payload(tmp_path: Path):
+def test_emit_interpretation_with_uptake(tmp_path: Path):
     path = tmp_path / "events.jsonl"
     now = time.time()
     emit_interpretation(
@@ -67,12 +67,29 @@ def test_emit_interpretation_with_extra_payload(tmp_path: Path):
         alternatives_considered=[],
         routing_reason="pattern_match",
         context_sources=[],
-        extra_payload={"uptake": {"response_summary": "Hi!", "gqi_delta": 0.1}},
+        uptake={"response_summary": "Hi!", "gqi_delta": 0.1},
         chronicle_path=path,
     )
     results = query(since=now - 1, path=path)
     assert "uptake" in results[0].payload
     assert results[0].payload["uptake"]["gqi_delta"] == 0.1
+
+
+def test_confidence_clamped_to_bounds(tmp_path: Path):
+    path = tmp_path / "events.jsonl"
+    now = time.time()
+    emit_interpretation(
+        source="test",
+        input_summary="test",
+        interpreted_as="test",
+        confidence=5.0,
+        alternatives_considered=[],
+        routing_reason="test",
+        context_sources=[],
+        chronicle_path=path,
+    )
+    results = query(since=now - 1, path=path)
+    assert results[0].payload["interpretation"]["confidence"] == 1.0
 
 
 def test_emit_transformation_creates_chronicle_event(tmp_path: Path):

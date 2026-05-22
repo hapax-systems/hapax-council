@@ -90,6 +90,7 @@ def read_and_log_trace(
     Returns (data, context) where context contains the metadata needed
     to call emit_transformation() after the caller computes posterior_state.
     Returns (None, None) if the trace is stale or missing.
+    source_node is derived from path.parent.name (path must follow /dev/shm/{component}/ convention).
     """
     data = read_trace(path, stale_s)
     if data is None:

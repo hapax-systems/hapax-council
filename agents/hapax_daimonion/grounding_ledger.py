@@ -216,6 +216,8 @@ class GroundingLedger:
         converged: bool,
         confidence: float,
         *,
+        trace_id: str | None = None,
+        span_id: str | None = None,
         chronicle_path: Path | None = None,
     ) -> str:
         """Emit a grounding convergence/divergence event to Chronicle."""
@@ -228,6 +230,8 @@ class GroundingLedger:
             converged=converged,
             confidence_bound=confidence,
             participants=["hapax_daimonion"],
+            trace_id=trace_id or "0" * 32,
+            span_id=span_id or "0" * 16,
             chronicle_path=chronicle_path or CHRONICLE_FILE,
         )
 

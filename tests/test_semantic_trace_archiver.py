@@ -72,6 +72,34 @@ def test_archive_extracts_only_semantic_events(tmp_path: Path):
     assert all(line["evidence_class"] == "semantic_interpretation" for line in lines)
 
 
+def test_rotate_deletes_old_archives(tmp_path: Path):
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+
+    old_file = archive_dir / "2026-01-01.jsonl.zst"
+    old_file.write_bytes(b"old")
+    import os
+
+    old_mtime = time.time() - (91 * 86400)
+    os.utime(old_file, (old_mtime, old_mtime))
+
+    recent_file = archive_dir / "2026-05-20.jsonl.zst"
+    recent_file.write_bytes(b"recent")
+
+    chronicle_path = tmp_path / "events.jsonl"
+    chronicle_path.write_text("")
+
+    archive_day(
+        chronicle_path=chronicle_path,
+        archive_dir=archive_dir,
+        since=time.time() - 200,
+        until=time.time(),
+    )
+
+    assert not old_file.exists(), "91-day-old archive should be deleted"
+    assert recent_file.exists(), "recent archive should survive"
+
+
 def test_archive_empty_chronicle(tmp_path: Path):
     chronicle_path = tmp_path / "events.jsonl"
     chronicle_path.write_text("")
@@ -84,6 +112,4 @@ def test_archive_empty_chronicle(tmp_path: Path):
         since=now - 200,
         until=now,
     )
-    assert out.exists()
-    data = zstandard.ZstdDecompressor().decompress(out.read_bytes())
-    assert data.decode().strip() == ""
+    assert out is None, "Empty chronicle should not produce an archive"

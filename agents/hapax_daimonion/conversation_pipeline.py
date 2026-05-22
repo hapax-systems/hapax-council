@@ -923,14 +923,29 @@ class ConversationPipeline:
         _interpreted_as = f"{routing.tier.name}:{routing.model or ''}"
         if _intent and getattr(_intent, "matched_pattern", ""):
             _interpreted_as = f"intent:{_intent.matched_pattern}"
-        self._interp_trace_id = _trace_id
-        self._interp_span_id = _span_id
-        self._interp_confidence = _bd.final_activation if _bd else 0.0
-        self._interp_interpreted_as = _interpreted_as
-        self._interp_routing_reason = routing.reason
-        self._interp_transcript = transcript
-        self._interp_gqi_before = (
-            self._grounding_ledger.compute_gqi() if hasattr(self, "_grounding_ledger") else 0.0
+        # Stashed for deferred semantic trace emission at end of _process_utterance_inner
+        from dataclasses import dataclass as _dc
+
+        @_dc(frozen=True, slots=True)
+        class _InterpCtx:
+            trace_id: str
+            span_id: str
+            confidence: float
+            interpreted_as: str
+            routing_reason: str
+            transcript: str
+            gqi_before: float
+
+        self._interp_ctx: _InterpCtx | None = _InterpCtx(
+            trace_id=_trace_id,
+            span_id=_span_id,
+            confidence=_bd.final_activation if _bd else 0.0,
+            interpreted_as=_interpreted_as,
+            routing_reason=routing.reason,
+            transcript=transcript,
+            gqi_before=(
+                self._grounding_ledger.compute_gqi() if hasattr(self, "_grounding_ledger") else 0.0
+            ),
         )
 
         # Record activation breakdown for diagnostics
@@ -1191,46 +1206,48 @@ class ConversationPipeline:
                 hapax_score(_utt_trace, "dialog_feature_score", _bd.dialog_feature_score)
 
         # Emit socio-linguistic interpretation event with uptake evidence
-        try:
-            from shared.semantic_trace import emit_interpretation as _sl_emit
+        _ictx = getattr(self, "_interp_ctx", None)
+        if _ictx is not None:
+            try:
+                from shared.semantic_trace import emit_interpretation as _sl_emit
 
-            _gqi_after = (
-                self._grounding_ledger.compute_gqi() if hasattr(self, "_grounding_ledger") else 0.0
-            )
-            _gqi_before = getattr(self, "_interp_gqi_before", 0.0)
-            _ctx_sources: list[str] = []
-            if getattr(self, "_policy_fn", None):
-                _ctx_sources.append("policy")
-            if getattr(self, "_env_context_fn", None):
-                _ctx_sources.append("environment")
-            if getattr(self, "_render_phenomenal", None):
-                _ctx_sources.append("phenomenal")
-            if getattr(self, "_grounding_ledger", None):
-                _ctx_sources.append("grounding_directive")
+                _gqi_after = (
+                    self._grounding_ledger.compute_gqi()
+                    if hasattr(self, "_grounding_ledger")
+                    else 0.0
+                )
+                _ctx_sources: list[str] = []
+                if self._policy_fn is not None:
+                    _ctx_sources.append("policy")
+                if self._env_context_fn is not None:
+                    _ctx_sources.append("environment")
+                if not getattr(self, "_experiment_flags", {}).get("volatile_lockdown", False):
+                    _ctx_sources.append("phenomenal")
+                if hasattr(self, "_grounding_ledger"):
+                    _ctx_sources.append("grounding_directive")
 
-            _last_response = ""
-            if self.messages and self.messages[-1].get("role") == "assistant":
-                _last_response = str(self.messages[-1].get("content", ""))
+                _last_response = ""
+                if self.messages and self.messages[-1].get("role") == "assistant":
+                    _last_response = str(self.messages[-1].get("content", ""))
 
-            _sl_emit(
-                source="hapax_daimonion",
-                input_summary=getattr(self, "_interp_transcript", ""),
-                interpreted_as=getattr(self, "_interp_interpreted_as", ""),
-                confidence=getattr(self, "_interp_confidence", 0.0),
-                alternatives_considered=[],
-                routing_reason=getattr(self, "_interp_routing_reason", ""),
-                context_sources=_ctx_sources,
-                trace_id=getattr(self, "_interp_trace_id", "0" * 32),
-                span_id=getattr(self, "_interp_span_id", "0" * 16),
-                extra_payload={
-                    "uptake": {
+                _sl_emit(
+                    source="hapax_daimonion",
+                    input_summary=_ictx.transcript,
+                    interpreted_as=_ictx.interpreted_as,
+                    confidence=_ictx.confidence,
+                    alternatives_considered=[],
+                    routing_reason=_ictx.routing_reason,
+                    context_sources=_ctx_sources,
+                    trace_id=_ictx.trace_id,
+                    span_id=_ictx.span_id,
+                    uptake={
                         "response_summary": _last_response[:200],
-                        "gqi_delta": round(_gqi_after - _gqi_before, 4),
-                    }
-                },
-            )
-        except Exception:
-            log.debug("semantic trace emission failed", exc_info=True)
+                        "gqi_delta": round(_gqi_after - _ictx.gqi_before, 4),
+                    },
+                )
+                self._interp_ctx = None
+            except Exception:
+                log.warning("semantic trace emission failed", exc_info=True)
 
         self.state = ConvState.LISTENING
 

@@ -78,17 +78,25 @@ def get_grounding_trajectory(
 
 
 def _parse_relative(s: str) -> float:
+    from fastapi import HTTPException
+
     s = s.strip()
     if s.startswith("-"):
         body = s[1:]
+        if not body:
+            raise HTTPException(400, f"Invalid relative time: {s!r}")
         unit = body[-1]
+        multiplier = {"s": 1, "m": 60, "h": 3600, "d": 86400}.get(unit)
+        if multiplier is None:
+            raise HTTPException(400, f"Unknown time unit {unit!r} in {s!r} (expected s/m/h/d)")
         try:
             n = float(body[:-1])
-        except ValueError:
-            return time.time()
-        multiplier = {"s": 1, "m": 60, "h": 3600, "d": 86400}.get(unit, 3600)
+        except ValueError as e:
+            raise HTTPException(400, f"Invalid relative time: {s!r}") from e
         return time.time() - n * multiplier
     try:
         return float(s)
-    except ValueError:
-        return time.time()
+    except ValueError as e:
+        raise HTTPException(
+            400, f"Cannot parse time: {s!r} (expected relative like -1h or Unix timestamp)"
+        ) from e

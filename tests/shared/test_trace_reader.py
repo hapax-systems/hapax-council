@@ -1,6 +1,6 @@
 """Tests for shared.trace_reader.
 
-42-LOC staleness-checked /dev/shm trace reader. Untested before this
+Staleness-checked /dev/shm trace reader. Untested before this
 commit. Tests use real tmp files and ``os.utime`` to age them
 deterministically — no time mocking required since the function
 uses ``stat().st_mtime``.

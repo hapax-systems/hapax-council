@@ -125,6 +125,18 @@ def ensure_schema(db_path: Path) -> None:
     with _connect(db_path) as conn:
         conn.executescript(_SCHEMA_SQL)
         conn.executescript(_INDEX_SQL)
+        _migrate_interpretation_columns(conn)
+
+
+def _migrate_interpretation_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(recipients)").fetchall()}
+    for col, typ in [
+        ("interpretation_summary", "TEXT"),
+        ("interpretation_confidence", "REAL"),
+        ("interpreted_at", "TEXT"),
+    ]:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE recipients ADD COLUMN {col} {typ}")
 
 
 def _normalize_role(role: str) -> str:
