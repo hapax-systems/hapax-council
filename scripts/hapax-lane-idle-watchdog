@@ -412,7 +412,7 @@ find_claimed_task() {
     return 1
 }
 
-REFUSE_CACHE_TTL_S="${HAPAX_REFUSE_CACHE_TTL_S:-3600}"
+REFUSE_CACHE_TTL_S="${HAPAX_REFUSE_CACHE_TTL_S:-604800}"
 
 is_dispatch_refused_cached() {
     local lane="$1" task_id="$2"
@@ -471,7 +471,7 @@ methodology_dispatch_prompt() {
     rc=$?
     dispatch_error="$(tr '\n' ' ' <"$err_file" 2>/dev/null | head -c 240 || true)"
     rm -f "$err_file" 2>/dev/null || true
-    if echo "$dispatch_error" | grep -qE 'BLOCKED.*(refuse|not_mutable|unsupported|prohibited)'; then
+    if echo "$dispatch_error" | grep -qF 'BLOCKED'; then
         cache_dispatch_refusal "$lane" "$task_id" "$dispatch_error"
     fi
     log "METHODOLOGY DISPATCH FAILED for $task_id -> $lane ($platform): ${dispatch_error:-rc=$rc}"
