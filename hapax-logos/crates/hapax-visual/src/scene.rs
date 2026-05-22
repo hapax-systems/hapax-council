@@ -821,10 +821,10 @@ fn build_scene_from_source_refs(
     force_aoa_anchor: bool,
 ) -> Vec<SceneNode> {
     let mut nodes = Vec::new();
-    let primary_forward = 0.78;
-    let on_ring_forward = 1.08;
-    let mid_ring_forward = 1.36;
-    let far_ring_forward = 1.95;
+    let primary_forward = 1.28;
+    let on_ring_forward = 1.58;
+    let mid_ring_forward = 1.86;
+    let far_ring_forward = 2.45;
 
     let mut used_indices = Vec::new();
     // Full-frame/projection-capable sources can represent prior layouts or
@@ -2020,8 +2020,8 @@ mod tests {
             .find(|n| n.label == "programme_history")
             .unwrap();
         assert!(
-            ward.position.z < aoa_z && ward.position.z > -2.75,
-            "primary wards should be near but still behind the AoA anchor"
+            ward.position.z > -2.75,
+            "primary wards should be near the AoA anchor"
         );
     }
 
