@@ -210,6 +210,27 @@ class GroundingLedger:
         gqi = 0.50 * ewma + 0.25 * trend + 0.15 * neg_penalty + 0.10 * engagement
         return max(0.0, min(1.0, gqi))
 
+    def emit_grounding_span(
+        self,
+        checks: list[str],
+        converged: bool,
+        confidence: float,
+        *,
+        chronicle_path: Path | None = None,
+    ) -> str:
+        """Emit a grounding convergence/divergence event to Chronicle."""
+        from shared.chronicle import CHRONICLE_FILE
+        from shared.semantic_trace import emit_grounding
+
+        return emit_grounding(
+            source="hapax_daimonion",
+            checks_evaluated=checks,
+            converged=converged,
+            confidence_bound=confidence,
+            participants=["hapax_daimonion"],
+            chronicle_path=chronicle_path or CHRONICLE_FILE,
+        )
+
     def effort_calibration(self, activation: float = 0.5) -> EffortDecision:
         """2D effort calibration: activation × (1 - gqi_discount).
 
