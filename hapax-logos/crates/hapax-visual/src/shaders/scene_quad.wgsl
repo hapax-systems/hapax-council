@@ -759,8 +759,9 @@ fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
         clamp(2.0 - abs(h6 - 2.0), 0.0, 1.0),
         clamp(2.0 - abs(h6 - 4.0), 0.0, 1.0),
     );
-    let heat_tint = mix(tint, heat_rgb, clamp(heat_pulse * 0.4, 0.0, 0.35));
-    let sat_tint = heat_tint * (1.2 + heat_pulse * 0.6);
+    let heat_blend = clamp(heat_pulse * 0.6 + 0.08, 0.08, 0.50);
+    let heat_tint = mix(tint, heat_rgb, heat_blend);
+    let sat_tint = heat_tint * (1.3 + heat_pulse * 0.8);
     let tint_luma = dot(sat_tint, vec3<f32>(0.299, 0.587, 0.114));
     let hyper_sat = mix(vec3<f32>(tint_luma), sat_tint, 1.8);
     let color = hyper_sat * pane_energy + tint * aura * 0.22;
