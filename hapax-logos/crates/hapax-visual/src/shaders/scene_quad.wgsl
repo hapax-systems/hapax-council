@@ -725,21 +725,20 @@ fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
         * aa_line_mask(bary.z, 0.018, 0.042);
     let tint = aoa_face_tint(in.pane_info.x, inner_pane, in.local_pos, in.pane_info.z);
 
-    // Per-pane heatmap glow driven by pane ordinal + time.
+    // Per-pane heatmap — emissive intensity to punch through Reverie color grading.
     let pane_ord = u32(in.pane_info.z + 0.5);
     let pane_hash = fract(sin(f32(pane_ord) * 127.1 + 311.7) * 43758.5453);
-    let pane_phase = pane_hash * 6.28 + scene.opacity * 0.0; // stable per-pane phase
-    let heat_pulse = 0.3 + 0.7 * clamp(sin(pane_phase + f32(pane_ord) * 0.37) * 0.5 + 0.5, 0.0, 1.0);
-    let heat_color = tint * (0.6 + heat_pulse * 0.8);
+    let heat_pulse = 0.4 + 0.6 * clamp(sin(pane_hash * 6.28 + f32(pane_ord) * 0.37) * 0.5 + 0.5, 0.0, 1.0);
+    let emissive_tint = tint * (1.8 + heat_pulse * 1.6);
 
-    let fill = 0.10 + inner_pane * 0.03 + heat_pulse * 0.08;
-    let line = edge * (0.82 - inner_pane * 0.08);
-    let address = info_grid * (0.16 + inner_pane * 0.06);
-    let lattice = local_lattice * (0.14 + inner_pane * 0.06);
+    let fill = 0.14 + inner_pane * 0.04 + heat_pulse * 0.12;
+    let line = edge * (0.92 - inner_pane * 0.06);
+    let address = info_grid * (0.20 + inner_pane * 0.08);
+    let lattice = local_lattice * (0.16 + inner_pane * 0.07);
     let pane_energy = fill + line + address + lattice;
-    let aura = smoothstep(0.0, 0.8, line + address);
-    let color = heat_color * pane_energy + tint * aura * 0.18;
-    let alpha = clamp(fill * 0.78 + line * 0.68 + address * 0.48 + lattice * 0.40, 0.0, 0.90)
+    let aura = smoothstep(0.0, 0.7, line + address);
+    let color = emissive_tint * pane_energy + tint * aura * 0.28;
+    let alpha = clamp(fill * 0.82 + line * 0.72 + address * 0.52 + lattice * 0.44, 0.0, 0.92)
         * scene.opacity;
     return vec4<f32>(color, alpha);
 }
@@ -752,5 +751,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let tex_color = textureSample(quad_texture, quad_sampler, in.uv);
     let treated = apply_entity_local_spatial_effect(in.uv, tex_color);
-    return vec4<f32>(treated.rgb, treated.a * scene.opacity);
+    let emissive = treated.rgb * 1.8;
+    return vec4<f32>(emissive, treated.a * scene.opacity);
 }

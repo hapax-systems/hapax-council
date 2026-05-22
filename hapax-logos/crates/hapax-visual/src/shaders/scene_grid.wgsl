@@ -327,13 +327,13 @@ fn fs_main(in: VertexOutput) -> FragOutput {
             base_alpha = 0.280;
         }
         let texture_signal = clamp(0.52 + 0.38 * material + 0.14 * weave + 0.24 * dot_alpha, 0.42, 1.0);
-        var plane_color = vec3<f32>(0.120, 0.135, 0.190)
-            + light_color * (0.060 + room_light * 0.20)
-            + vec3<f32>(0.052, 0.068, 0.092) * material
-            + vec3<f32>(0.022, 0.032, 0.048) * stipple_hash(cell + vec2<f32>(3.0, 7.0));
+        var plane_color = vec3<f32>(0.18, 0.20, 0.30)
+            + light_color * (0.10 + room_light * 0.32)
+            + vec3<f32>(0.08, 0.10, 0.14) * material
+            + vec3<f32>(0.04, 0.05, 0.08) * stipple_hash(cell + vec2<f32>(3.0, 7.0));
         plane_color = plane_color * (0.70 + 0.30 * shadow);
         let alpha = base_alpha * texture_signal * dist_fade * (0.86 + 0.14 * shadow);
-        return FragOutput(vec4<f32>(plane_color * texture_signal, alpha), raster_depth);
+        return FragOutput(vec4<f32>(plane_color * texture_signal * 1.6, alpha), raster_depth);
     }
 
     // Synthwave neon: cycle cyan → magenta → blue
@@ -354,8 +354,8 @@ fn fs_main(in: VertexOutput) -> FragOutput {
     let shadow = soft_shadow_at(wp, grid.light_position.xyz);
     let room_light = point_light_at(wp, in.normal) * shadow;
 
-    color = color * 0.72 * glow * dist_fade;
-    color = color * (0.66 + 0.34 * shadow) + light_color * room_light * 0.22;
+    color = color * 1.4 * glow * dist_fade;
+    color = color * (0.66 + 0.34 * shadow) + light_color * room_light * 0.36;
     var alpha = major * 0.50 * dist_fade * (0.82 + 0.18 * shadow + 0.12 * room_light);
     if abs(in.normal.y) > 0.5 {
         alpha = alpha * 1.16;
