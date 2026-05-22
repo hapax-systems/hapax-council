@@ -1,0 +1,9 @@
+[Unit]
+Description=Hapax semantic trace daily archiver
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/hapax-council
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.semantic_trace_archiver
+Environment=CUDA_VISIBLE_DEVICES=

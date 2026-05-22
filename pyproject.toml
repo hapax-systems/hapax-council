@@ -59,6 +59,7 @@ dependencies = [
     "mastodon-py>=2.2.1",
     "mcp>=1.26",
     "hapax-agentgov",
+    "zstandard>=0.25.0",
 ]
 
 [project.optional-dependencies]
