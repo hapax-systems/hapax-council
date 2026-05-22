@@ -276,8 +276,8 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let hit_clip = grid.projection * grid.view * vec4<f32>(hit, 1.0);
         let sphere_depth = hit_clip.z / hit_clip.w;
 
-        // Full composited Reverie output on the sphere — the DMN's expression.
         // Equirectangular UV from world-space normal — full sphere coverage.
+        // Content wraps the sphere stably in world space.
         let theta = atan2(sn.x, sn.z);
         let phi = acos(clamp(sn.y, -1.0, 1.0));
         let sphere_uv = vec2<f32>(
@@ -306,7 +306,7 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let rev_content = max(reverie.rgb * 2.5, emissive_floor);
         var sphere_color = rev_content * (0.85 + ndotl * 0.2 * shadow) + rim;
         let sphere_alpha = clamp(0.78 + fresnel * 0.14, 0.76, 0.92);
-        return FragOutput(vec4<f32>(sphere_color, sphere_alpha), 0.999);
+        return FragOutput(vec4<f32>(sphere_color, sphere_alpha), clamp(sphere_depth, 0.0, 0.998));
     }
 
     if in.plane_kind > 2.5 {
