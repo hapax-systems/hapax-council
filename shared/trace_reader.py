@@ -65,7 +65,6 @@ def read_trace_with_provenance(
     was fresh. Callers use provenance to build causal chain logs.
     """
     age = trace_age(path)
-    was_fresh = age is not None and age <= stale_s
     data = read_trace(path, stale_s)
     return data, TraceProvenance(
         source_path=str(path),
@@ -73,6 +72,6 @@ def read_trace_with_provenance(
         timestamp=time.time(),
         age_s=age,
         stale_threshold_s=stale_s,
-        was_fresh=was_fresh,
+        was_fresh=data is not None,
         data_keys=frozenset(data.keys()) if data else None,
     )

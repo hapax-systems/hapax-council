@@ -39,7 +39,15 @@ class ChatPersonaScorer:
         self._fingerprint: np.ndarray | None = None
         if fingerprint_path.exists():
             try:
-                self._fingerprint = np.load(fingerprint_path)
+                loaded = np.load(fingerprint_path)
+                if loaded.shape == (768,) and np.issubdtype(loaded.dtype, np.floating):
+                    self._fingerprint = loaded
+                else:
+                    log.warning(
+                        "Persona fingerprint shape/dtype mismatch: %s %s",
+                        loaded.shape,
+                        loaded.dtype,
+                    )
             except Exception:
                 log.debug("Failed to load persona fingerprint", exc_info=True)
 
@@ -57,9 +65,12 @@ class ChatPersonaScorer:
             return None
         if not text.strip():
             return None
-        from agents._config import embed_safe
+        try:
+            from agents._config import embed_safe
 
-        vec = embed_safe(text, prefix="search_document")
+            vec = embed_safe(text, prefix="search_document")
+        except Exception:
+            return None
         if vec is None:
             return None
         sim = _cosine_similarity(np.array(vec), self._fingerprint)

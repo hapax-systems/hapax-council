@@ -77,7 +77,7 @@ class TestScorer:
 class TestEnroll:
     def test_enroll_creates_fingerprint(self, tmp_path: Path) -> None:
         out = tmp_path / "fp.npy"
-        fake_embeddings = [np.random.randn(768).tolist() for _ in range(5)]
+        fake_embeddings = [np.random.randn(768).tolist() for _ in range(3)]
         with patch("agents._config.embed_batch") as mock:
             mock.return_value = fake_embeddings
             ChatPersonaScorer.enroll(["msg1", "msg2", "msg3"], output_path=out)

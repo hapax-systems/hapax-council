@@ -243,14 +243,13 @@ def _tick_consent(daemon: VoiceDaemon, state) -> None:
         )
         _speaker_engine = _get_or_create_speaker_engine(daemon)
         _voice_bio: bool | None = None
-        _speaker_id = getattr(daemon, "_speaker_identifier", None)
-        if _speaker_id is not None and state.audio_bytes is not None:
-            try:
-                _result = _speaker_id.identify_audio(state.audio_bytes)
-                if _result is not None:
-                    _voice_bio = _result.label == "operator"
-            except Exception:
-                pass
+        _last_audio = getattr(daemon, "_last_speaker_id_result", None)
+        if _last_audio is not None:
+            if _last_audio == "operator":
+                _voice_bio = True
+            elif _last_audio == "not_operator":
+                _voice_bio = False
+            daemon._last_speaker_id_result = None
         _speaker_engine.tick(
             session_speaker_says_operator=raw_signal,
             voice_biometric_match=_voice_bio,
