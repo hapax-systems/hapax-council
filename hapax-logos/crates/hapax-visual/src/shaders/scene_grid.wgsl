@@ -288,8 +288,16 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let view_dir = normalize(cam_pos - hit);
         let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 2.4);
         let rim = light_color * fresnel * 0.32;
-        var sphere_color = reverie.rgb + rim;
-        let sphere_alpha = clamp(reverie.a * 0.82 + fresnel * 0.18, 0.12, 0.88);
+        // Use max(rgb, emissive floor) so the sphere always has a visible surface.
+        let rev_luma = max(max(reverie.r, reverie.g), reverie.b);
+        let w = clamp(grid.sphere_warmth, 0.0, 1.0);
+        let emissive_floor = mix(
+            vec3<f32>(0.06, 0.10, 0.22),
+            vec3<f32>(0.22, 0.12, 0.06),
+            w,
+        );
+        var sphere_color = max(reverie.rgb, emissive_floor) + rim;
+        let sphere_alpha = clamp(0.28 + fresnel * 0.22 + rev_luma * 0.30, 0.24, 0.82);
         return FragOutput(vec4<f32>(sphere_color, sphere_alpha), 0.999);
     }
 
