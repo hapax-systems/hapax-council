@@ -303,10 +303,10 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let floor_cool = vec3<f32>(0.06, 0.10, 0.22);
         let floor_warm = vec3<f32>(0.22, 0.12, 0.06);
         let emissive_floor = mix(floor_cool, floor_warm, w);
-        let rev_content = reverie.rgb * 3.0 + emissive_floor;
+        let rev_content = reverie.rgb * 4.0 + emissive_floor;
         let shading = 0.55 + ndotl * 0.45 * shadow;
         var sphere_color = rev_content * shading + rim;
-        let sphere_alpha = clamp(0.80 + fresnel * 0.12, 0.78, 0.92);
+        let sphere_alpha = clamp(0.88 + fresnel * 0.08, 0.86, 0.95);
         return FragOutput(vec4<f32>(sphere_color, sphere_alpha), 0.999);
     }
 
