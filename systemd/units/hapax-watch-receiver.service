@@ -6,7 +6,7 @@ OnFailure=notify-failure@%n.service
 [Service]
 Type=simple
 WorkingDirectory=/home/hapax/projects/hapax-council
-ExecStart=/home/hapax/projects/hapax-council/.venv/bin/uvicorn agents.watch_receiver:app --host 0.0.0.0 --port 8042
+ExecStart=/home/hapax/.local/bin/uv run uvicorn agents.watch_receiver:app --host 0.0.0.0 --port 8042
 Environment=HOME=/home/hapax
 Environment=HAPAX_HOME=/home/hapax
 Restart=always

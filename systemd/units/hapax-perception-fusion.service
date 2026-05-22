@@ -1,13 +1,16 @@
 [Unit]
 Description=Hapax perception fusion — aggregate multi-source perception to /dev/shm
-After=pipewire.service
-ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
+After=pipewire.service hapax-secrets.service
 
 [Service]
 Type=simple
 Environment=CUDA_VISIBLE_DEVICES=
-WorkingDirectory=%h/.cache/hapax/rebuild/worktree
-ExecStart=%h/.local/bin/uv run python -m agents.perception_fusion
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+EnvironmentFile=/run/user/1000/hapax-secrets.env
+WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStartPre=/bin/mkdir -p /dev/shm/hapax-perception
+ExecStart=/home/hapax/.local/bin/uv run python -m agents.perception_fusion
 Restart=on-failure
 RestartSec=5
 MemoryMax=256M

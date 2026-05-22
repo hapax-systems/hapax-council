@@ -7,6 +7,7 @@ OnFailure=notify-failure@%n.service
 [Service]
 Type=simple
 WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStartPre=/bin/mkdir -p /dev/shm/hapax-perception
 ExecStart=/home/hapax/.local/bin/uv run python -m agents.audio_perception
 Restart=always
 RestartSec=10
