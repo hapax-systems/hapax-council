@@ -69,6 +69,9 @@ CREATE TABLE IF NOT EXISTS recipients (
         )),
     reason TEXT,
     retry_count INTEGER NOT NULL DEFAULT 0,
+    interpretation_summary TEXT,
+    interpretation_confidence REAL,
+    interpreted_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(message_id, recipient)
