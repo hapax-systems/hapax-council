@@ -1064,9 +1064,9 @@ fn build_scene_from_source_refs(
         }
         let role = classify_source_entropy(id);
         let height = match role {
-            AnchorRole::High => 0.50,
-            AnchorRole::Medium => 0.40,
-            AnchorRole::Low => 0.20,
+            AnchorRole::High => 0.44,
+            AnchorRole::Medium => 0.36,
+            AnchorRole::Low => 0.28,
         };
         let ai = assign_anchor(&anchors, role, &anchor_used)
             .or_else(|| assign_anchor(&anchors, AnchorRole::Low, &anchor_used))
