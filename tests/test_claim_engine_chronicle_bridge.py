@@ -10,14 +10,14 @@ from shared.chronicle import ChronicleEvent, query
 from shared.claim import ClaimEngine, LRDerivation, TemporalProfile
 
 
-def _make_engine(name: str = "test-claim") -> ClaimEngine[bool]:
+def _make_engine(name: str = "test-claim", *, k_enter: int = 1) -> ClaimEngine[bool]:
     return ClaimEngine(
         name=name,
         prior=0.5,
         temporal_profile=TemporalProfile(
             enter_threshold=0.7,
             exit_threshold=0.3,
-            k_enter=1,
+            k_enter=k_enter,
             k_exit=1,
             k_uncertain=1,
         ),
@@ -39,7 +39,6 @@ class _redirect_record:
     """Context manager: patch record in both chronicle and semantic_trace modules."""
 
     def __init__(self, chronicle_path: Path) -> None:
-        self._path = chronicle_path
         from shared.chronicle import record as original_record
 
         self._original = original_record
@@ -100,12 +99,23 @@ def test_retraction_emits_grounding_diverged(tmp_path: Path):
 def test_no_emission_without_state_transition(tmp_path: Path):
     chronicle_path = tmp_path / "events.jsonl"
 
-    engine = _make_engine()
+    engine = _make_engine(k_enter=10)
 
     with _redirect_record(chronicle_path):
         engine.update("signal_a", True)
 
-    if not chronicle_path.exists():
-        return
-    lines = chronicle_path.read_text().strip().splitlines()
-    assert len(lines) == 0 or engine.state != "UNCERTAIN"
+    assert engine.state == "UNCERTAIN"
+    if chronicle_path.exists():
+        lines = chronicle_path.read_text().strip().splitlines()
+        assert len(lines) == 0
+
+
+def test_emit_failure_does_not_crash_state_machine(tmp_path: Path):
+    engine = _make_engine("crash-test")
+
+    with patch("shared.semantic_trace.emit_grounding", side_effect=RuntimeError("boom")):
+        for _ in range(5):
+            engine.update("signal_a", True)
+
+    assert engine.state == "ASSERTED"
+    assert engine.posterior > 0.7

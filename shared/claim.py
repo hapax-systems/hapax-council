@@ -16,6 +16,7 @@ inflight.
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import threading
@@ -24,6 +25,8 @@ from collections.abc import Callable
 from typing import Literal, TypeVar
 
 from pydantic import BaseModel, Field
+
+_log = logging.getLogger(__name__)
 
 # Fail-closed env name; "1" enables, anything else disables.
 _BYPASS_ENV = "HAPAX_BAYESIAN_BYPASS"
@@ -323,7 +326,13 @@ class ClaimEngine[T]:
                 participants=[self._name],
             )
         except Exception:
-            pass
+            _log.warning(
+                "chronicle emission failed for %s (%s->%s)",
+                self._name,
+                from_state,
+                to_state,
+                exc_info=True,
+            )
 
     @property
     def chronicle_source(self) -> str:
