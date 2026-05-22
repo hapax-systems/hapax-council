@@ -26,6 +26,11 @@ struct GridUniforms {
 @group(0) @binding(0)
 var<uniform> grid: GridUniforms;
 
+@group(1) @binding(0)
+var reverie_equirect: texture_2d<f32>;
+@group(1) @binding(1)
+var reverie_sampler: sampler;
+
 fn stipple_hash(p: vec2<f32>) -> f32 {
     let q = vec2<f32>(
         dot(p, vec2<f32>(127.1, 311.7)),
@@ -152,10 +157,12 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
         world = vec3<f32>(lp.x * 15.0, 2.5, lp.y * 8.0 - 4.0);
         n = vec3<f32>(0.0, -1.0, 0.0);
     } else if quad_idx == 3u {
-        // Visible point-light marker. This is intentionally authored geometry,
-        // not a hardware raytracing dependency.
-        world = grid.light_position.xyz + vec3<f32>(lp.x * 0.28, lp.y * 0.28, 0.0);
-        n = vec3<f32>(0.0, 0.0, 1.0);
+        // Camera-facing point-light marker (sphere billboard)
+        let right = vec3<f32>(grid.view[0].x, grid.view[1].x, grid.view[2].x);
+        let up = vec3<f32>(grid.view[0].y, grid.view[1].y, grid.view[2].y);
+        let radius = 0.28;
+        world = grid.light_position.xyz + right * lp.x * radius + up * lp.y * radius;
+        n = -vec3<f32>(grid.view[0].z, grid.view[1].z, grid.view[2].z);
     } else {
         // Soft volumetric beam billboards from the moving light into the room.
         let start = grid.light_position.xyz;
@@ -200,12 +207,33 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     if in.plane_kind > 2.5 {
         if in.plane_kind < 3.5 {
-            let d = length(in.local_pos);
-            let core = smoothstep(0.34, 0.02, d);
-            let halo = smoothstep(1.0, 0.08, d);
-            let alpha = clamp(core * 0.58 + halo * 0.22, 0.0, 0.72);
-            let color = light_color * (0.85 + core * 1.4);
-            return vec4<f32>(color, alpha);
+            let center = grid.light_position.xyz;
+            let radius = 0.28;
+            let view_mat = grid.view;
+            let r_t = transpose(mat3x3<f32>(view_mat[0].xyz, view_mat[1].xyz, view_mat[2].xyz));
+            let cam_pos = -r_t * view_mat[3].xyz;
+            let ray_dir = normalize(in.world_pos - cam_pos);
+            
+            let oc = cam_pos - center;
+            let b = dot(ray_dir, oc);
+            let c = dot(oc, oc) - radius * radius;
+            let discriminant = b * b - c;
+            
+            if discriminant < 0.0 {
+                // Render soft halo outside the sphere
+                let d = length(in.local_pos);
+                let halo = smoothstep(1.0, 0.7, d);
+                return vec4<f32>(light_color * 0.5, halo * 0.15);
+            }
+            
+            let t_hit = -b - sqrt(discriminant);
+            let hit = cam_pos + ray_dir * t_hit;
+            let normal = normalize(hit - center);
+            
+            let u = (atan2(normal.x, normal.z) + 3.14159265) / (2.0 * 3.14159265);
+            let v = acos(clamp(normal.y, -1.0, 1.0)) / 3.14159265;
+            let reverie_color = textureSample(reverie_equirect, reverie_sampler, vec2<f32>(u, v));
+            return vec4<f32>(reverie_color.rgb, 0.72);
         }
 
         let across = abs(in.local_pos.x);

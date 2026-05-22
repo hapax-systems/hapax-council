@@ -93,6 +93,7 @@ fn main_1() {
 
     let _e14 = v_texcoord_1;
     let _e15 = textureSample(tex, tex_sampler, _e14);
+    let original_color = _e15;
     color = _e15;
     source_luma = dot(color.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
     surface_presence = smoothstep(0.045f, 0.18f, source_luma);
@@ -105,8 +106,12 @@ fn main_1() {
     color.z = _e28.z;
     let _e35 = color;
     let _e37 = color;
-    let _e39 = global.u_brightness;
-    let _e40 = (_e37.xyz * _e39);
+    
+    // Scale brightness and saturation with warmth signal
+    let brightness_factor = global.u_brightness * (1.0 + uniforms.color_warmth * 0.15);
+    let saturation_factor = global.u_saturation * (1.0 + uniforms.color_warmth * 0.35);
+    
+    let _e40 = (_e37.xyz * brightness_factor);
     color.x = _e40.x;
     color.y = _e40.y;
     color.z = _e40.z;
@@ -136,8 +141,7 @@ fn main_1() {
     let _e90 = global.u_hue_rotate;
     hsv.x = fract((_e88.x + (_e90 / 360f)));
     let _e96 = hsv;
-    let _e98 = global.u_saturation;
-    hsv.y = (_e96.y * _e98);
+    hsv.y = (_e96.y * saturation_factor);
     let _e100 = color;
     let _e102 = hsv;
     let _e103 = hsv2rgb(_e102);
@@ -148,6 +152,12 @@ fn main_1() {
     let _e116 = clamp(_e110.xyz, vec3(0f), vec3(1f));
     let _e117 = color;
     graded = mix(_e117.xyz, _e116, vec3(surface_presence));
+    
+    // Emissive intensity protection for pane colors
+    let emissive_intensity = max(original_color.r, max(original_color.g, original_color.b));
+    let emissive_gate = smoothstep(0.6, 1.0, emissive_intensity);
+    graded = mix(graded, original_color.rgb, emissive_gate * 0.95);
+    
     fragColor = vec4<f32>(graded.x, graded.y, graded.z, _e117.w);
     return;
 }

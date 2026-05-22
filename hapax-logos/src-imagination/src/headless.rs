@@ -283,12 +283,14 @@ impl Renderer {
         // input texture. Shaders process the 3D scene exactly as they
         // process the noise-generated fallback, but now with real
         // perspective-rendered content sources.
+        let reverie_view = self.pipeline.get_target_output_view("main");
         if let Some(mut scene) = self.scene_renderer.take() {
             scene.render(
                 &self.device,
                 &self.queue,
                 time,
                 Some(&self.content_source_mgr),
+                reverie_view,
             );
 
             // Inject 3D scene output as @live for the shader chain

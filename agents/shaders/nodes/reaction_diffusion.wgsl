@@ -35,8 +35,14 @@ fn main_1() {
     let right = textureSample(tex_accum, tex_accum_sampler, uv + vec2<f32>(texel.x, 0.0));
     let top = textureSample(tex_accum, tex_accum_sampler, uv - vec2<f32>(0.0, texel.y));
     let bottom = textureSample(tex_accum, tex_accum_sampler, uv + vec2<f32>(0.0, texel.y));
-    let lap_a = left.x + right.x + top.x + bottom.x - (4.0 * a);
-    let lap_b = left.y + right.y + top.y + bottom.y - (4.0 * b);
+    
+    // Polar horizontal correction: scale horizontal laplacian steps by 1.0 / sin(v * PI)
+    let sin_v = sin(max(uv.y, 0.0001) * 3.14159265);
+    let polar_scale = 1.0 / clamp(sin_v, 0.05, 1.0);
+    
+    let lap_a = (left.x + right.x - 2.0 * a) * polar_scale + (top.x + bottom.x - 2.0 * a);
+    let lap_b = (left.y + right.y - 2.0 * b) * polar_scale + (top.y + bottom.y - 2.0 * b);
+    
     let reaction = a * b * b;
     let speed = clamp(global.u_speed, 0.0, 1.0);
     let da = (clamp(global.u_diffusion_a, 0.5, 1.5) * lap_a) - reaction + (clamp(global.u_feed_rate, 0.01, 0.1) * (1.0 - a));

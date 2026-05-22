@@ -1,0 +1,24 @@
+task_id: "20260522-reverie-spherical-surface"
+title: "Reverie Spherical Surface + Expressive Panes"
+wsjf: 5.0
+priority: "p1"
+status: "completed"
+assigned_to: "alpha"
+claimed_at: "2026-05-22T01:07:21Z"
+files_involved:
+  - "agents/shaders/nodes/noise_gen.wgsl"
+  - "agents/shaders/nodes/reaction_diffusion.wgsl"
+  - "agents/shaders/nodes/colorgrade.wgsl"
+  - "hapax-logos/crates/hapax-visual/src/shaders/scene_grid.wgsl"
+  - "hapax-logos/crates/hapax-visual/src/shaders/scene_quad.wgsl"
+  - "hapax-logos/crates/hapax-visual/src/scene_renderer.rs"
+  - "hapax-logos/src-imagination/src/headless.rs"
+governance_risks: "Modifying core 3D compositor logic. Must verify AOA insphere vertex projection, Matcap sampler blending, polar reaction diffusion Laplacian scale correction, and emissive warmth color grade protection."
+planned_verification:
+  - "Run cargo test in hapax-logos to verify 253 visual tests pass"
+  - "Run python pytest tests/reverie/ to verify 64 reverie tests pass"
+  - "Run python pytest tests/test_wgsl_validation.py to verify shader validation"
+verification_results:
+  - "Rust tests: 253 passed"
+  - "Python reverie tests: 64 passed"
+  - "Shader validation: 2 passed"

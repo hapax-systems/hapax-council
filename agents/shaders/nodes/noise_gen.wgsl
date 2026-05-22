@@ -19,22 +19,38 @@ var tex_sampler: sampler;
 @group(2) @binding(0)
 var<uniform> global: Params;
 
-fn hash(p: vec2<f32>) -> f32 {
-    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.547);
+fn hash3d(p: vec3<f32>) -> f32 {
+    let s = dot(p, vec3<f32>(127.1, 311.7, 74.7));
+    return fract(sin(s) * 43758.5453123);
 }
 
-fn noise(p: vec2<f32>) -> f32 {
+fn noise3d(p: vec3<f32>) -> f32 {
     let i = floor(p);
-    var f = fract(p);
-    f = f * f * (vec2(3.0) - (2.0 * f));
-    let a = hash(i);
-    let b = hash(i + vec2<f32>(1.0, 0.0));
-    let c = hash(i + vec2<f32>(0.0, 1.0));
-    let d = hash(i + vec2<f32>(1.0, 1.0));
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    let f = fract(p);
+    
+    let u = f * f * (3.0 - 2.0 * f);
+    
+    let n000 = hash3d(i + vec3<f32>(0.0, 0.0, 0.0));
+    let n100 = hash3d(i + vec3<f32>(1.0, 0.0, 0.0));
+    let n010 = hash3d(i + vec3<f32>(0.0, 1.0, 0.0));
+    let n110 = hash3d(i + vec3<f32>(1.0, 1.0, 0.0));
+    let n001 = hash3d(i + vec3<f32>(0.0, 0.0, 1.0));
+    let n101 = hash3d(i + vec3<f32>(1.0, 0.0, 1.0));
+    let n011 = hash3d(i + vec3<f32>(0.0, 1.0, 1.0));
+    let n111 = hash3d(i + vec3<f32>(1.0, 1.0, 1.0));
+    
+    let mix_x00 = mix(n000, n100, u.x);
+    let mix_x10 = mix(n010, n110, u.x);
+    let mix_x01 = mix(n001, n101, u.x);
+    let mix_x11 = mix(n011, n111, u.x);
+    
+    let mix_y0 = mix(mix_x00, mix_x10, u.y);
+    let mix_y1 = mix(mix_x01, mix_x11, u.y);
+    
+    return mix(mix_y0, mix_y1, u.z);
 }
 
-fn fbm(p_in: vec2<f32>, oct: f32) -> f32 {
+fn fbm3d(p_in: vec3<f32>, oct: f32) -> f32 {
     var p = p_in;
     var value = 0.0;
     var amp = 0.5;
@@ -42,8 +58,8 @@ fn fbm(p_in: vec2<f32>, oct: f32) -> f32 {
         if f32(i) >= oct {
             break;
         }
-        value = value + (amp * noise(p));
-        p = (p * 2.0) + vec2<f32>(100.0);
+        value = value + (amp * noise3d(p));
+        p = (p * 2.0) + vec3<f32>(100.0, 100.0, 100.0);
         amp = amp * 0.5;
     }
     return value;
@@ -52,8 +68,20 @@ fn fbm(p_in: vec2<f32>, oct: f32) -> f32 {
 fn main_1() {
     let uv = v_texcoord_1;
     let source = textureSample(tex, tex_sampler, uv);
-    let noise_uv = (uv * vec2<f32>(clamp(global.u_frequency_x, 0.5, 8.0), clamp(global.u_frequency_y, 0.5, 8.0))) + vec2<f32>(uniforms.time * clamp(global.u_speed, 0.0, 0.35) * 0.1);
-    let n = (fbm(noise_uv, clamp(global.u_octaves, 1.0, 4.0)) - 0.5) * 2.0;
+    
+    let PI = 3.14159265;
+    let theta = uv.x * 2.0 * PI - PI;
+    let phi = uv.y * PI;
+    let sphere_pos = vec3<f32>(sin(phi) * sin(theta), cos(phi), sin(phi) * cos(theta));
+    
+    let freq = vec3<f32>(
+        clamp(global.u_frequency_x, 0.5, 8.0),
+        clamp(global.u_frequency_y, 0.5, 8.0),
+        (clamp(global.u_frequency_x, 0.5, 8.0) + clamp(global.u_frequency_y, 0.5, 8.0)) * 0.5
+    );
+    let noise_pos = sphere_pos * freq + vec3<f32>(uniforms.time * clamp(global.u_speed, 0.0, 0.35) * 0.1);
+    
+    let n = (fbm3d(noise_pos, clamp(global.u_octaves, 1.0, 4.0)) - 0.5) * 2.0;
     let source_luma = dot(source.xyz, vec3<f32>(0.299, 0.587, 0.114));
     let surface_presence = smoothstep(0.035, 0.18, source_luma);
     let strength = surface_presence * clamp(global.u_amplitude, 0.0, 0.08);

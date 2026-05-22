@@ -681,7 +681,7 @@ impl SceneRenderer {
 
         let grid_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("grid pipeline layout"),
-            bind_group_layouts: &[&grid_uniform_bgl],
+            bind_group_layouts: &[&grid_uniform_bgl, &texture_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -766,6 +766,7 @@ impl SceneRenderer {
         queue: &wgpu::Queue,
         time: f32,
         content_source_mgr: Option<&ContentSourceManager>,
+        reverie_texture: Option<&wgpu::TextureView>,
     ) -> &wgpu::TextureView {
         self.frame_count = self.frame_count.wrapping_add(1);
 
@@ -840,6 +841,24 @@ impl SceneRenderer {
                 queue.write_buffer(&self.grid_uniform_buffer, 0, bytemuck::bytes_of(&grid_data));
                 pass.set_pipeline(&self.grid_pipeline);
                 pass.set_bind_group(0, &self.grid_uniform_bind_group, &[]);
+
+                let view_ref = reverie_texture.unwrap_or(&self.placeholder_view);
+                let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("grid texture bg"),
+                    layout: &self.texture_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(view_ref),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                    ],
+                });
+                pass.set_bind_group(1, &texture_bind_group, &[]);
+
                 pass.draw(0..48, 0..1); // Outer room grids + visible light marker + volumetric rays
             }
 

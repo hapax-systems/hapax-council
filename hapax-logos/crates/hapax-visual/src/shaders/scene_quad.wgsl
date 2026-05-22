@@ -628,7 +628,8 @@ fn aoa_vertex(vi: u32) -> VertexOutput {
     let pane_idx = (vi / 3u) % AOA_TOTAL_PANE_COUNT;
     let corner_idx = vi % 3u;
     let local = aoa_pane_vertex(a, b, c, d, pane_idx, corner_idx);
-    let world_pos = scene.model * vec4<f32>(local, 1.0);
+    let local_spherical = normalize(local) * 0.58;
+    let world_pos = scene.model * vec4<f32>(local_spherical, 1.0);
 
     var out: VertexOutput;
     out.position = scene.projection * scene.view * world_pos;
@@ -640,7 +641,7 @@ fn aoa_vertex(vi: u32) -> VertexOutput {
         f32(pane_idx),
         1.0,
     );
-    out.local_pos = local;
+    out.local_pos = local_spherical;
     return out;
 }
 
@@ -670,6 +671,11 @@ fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
     let inner_pane = in.pane_info.y;
     let info_uv = pane_information_uv_from_barycentric(bary);
     let inside = triangle_inside_mask_from_barycentric(bary);
+
+    let local_normal = normalize(in.local_pos);
+    let view_normal = normalize((scene.view * scene.model * vec4<f32>(local_normal, 0.0)).xyz);
+    let matcap_uv = vec2<f32>(view_normal.x * 0.5 + 0.5, 1.0 - (view_normal.y * 0.5 + 0.5));
+    let matcap_color = textureSample(quad_texture, quad_sampler, matcap_uv);
 
     if scene.payload_mode > 0.5 {
         let target_pane = u32(max(scene.payload_pane_ordinal, 0.0) + 0.5);
@@ -730,9 +736,14 @@ fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
     let lattice = local_lattice * (0.11 + inner_pane * 0.055);
     let pane_energy = fill + line + address + lattice;
     let aura = smoothstep(0.0, 0.9, line + address);
-    let color = tint * pane_energy + vec3<f32>(0.72, 0.38, 1.0) * aura * 0.12;
-    let alpha = clamp(fill * 0.70 + line * 0.62 + address * 0.42 + lattice * 0.36, 0.0, 0.88)
-        * scene.opacity;
+    
+    // Blend Matcap mapping (Reverie) and the neon pane colors/energy beautifully
+    let base_color = mix(matcap_color.rgb * (0.45 + pane_energy * 0.55), tint * pane_energy, 0.28);
+    let glow = tint * (line * 1.15 + address * 0.45 + lattice * 0.75) + vec3<f32>(0.72, 0.38, 1.0) * aura * 0.14;
+    let color = base_color + glow;
+    
+    // Ensure high alpha coverage (solid sphere look with no gaps, wrapping perfectly)
+    let alpha = clamp(0.68 + fill * 0.20 + line * 0.30 + address * 0.20, 0.92, 0.98) * scene.opacity;
     return vec4<f32>(color, alpha);
 }
 
