@@ -1137,13 +1137,13 @@ fn build_scene_from_source_refs(
         ));
     }
 
-    // BELOW: grounding — spread horizontally below AoA
+    // BELOW: grounding — spread horizontally below AoA but above floor (y=-2.0)
     for (i, &src_idx) in grounding.iter().enumerate() {
         let n = grounding.len().max(1);
         let frac = if n == 1 { 0.5 } else { i as f32 / (n - 1) as f32 };
         let x = aoa_pos.x + 3.2 * (frac - 0.5);
-        let y = aoa_pos.y - 1.3;
-        let z = ward_z + 0.10;
+        let y = aoa_pos.y - 0.85;
+        let z = ward_z + 0.30;
         nodes.push(make_node(
             active_sources, src_idx,
             Vec3::new(x, y, z),
