@@ -279,7 +279,8 @@ impl Renderer {
         );
 
         // 1. Reverie runs first — produces sphere texture data.
-        //    Its SHM write will be overridden by step 4.
+        //    Suppress its SHM write — scene will write its own.
+        self.pipeline.suppress_internal_shm = true;
         self.pipeline.render(
             &self.device,
             &self.queue,
