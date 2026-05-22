@@ -178,7 +178,7 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: OFFSCREEN_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let offscreen_view = offscreen_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -278,8 +278,8 @@ impl Renderer {
             true, // is_fresh
         );
 
-        // Reverie runs independently — its output feeds the sphere, NOT the
-        // final frame. Effects are inherent in objects, not overlaid globally.
+        // 1. Reverie runs first — produces sphere texture data.
+        //    Its SHM write will be overridden by step 4.
         self.pipeline.render(
             &self.device,
             &self.queue,
@@ -292,7 +292,7 @@ impl Renderer {
             Some(&self.content_source_mgr),
         );
 
-        // Pass Reverie's output to the sphere texture.
+        // 2. Pass Reverie's output to the sphere for this frame.
         if let (Some(scene), Some(view)) = (
             self.scene_renderer.as_mut(),
             self.pipeline.get_target_output_view("main"),
@@ -300,9 +300,7 @@ impl Renderer {
             scene.set_reverie_texture(&self.device, view);
         }
 
-        // 3D scene renders DIRECTLY to the final output — no Reverie processing.
-        // Entities keep their own colors. Effects are inherent in each entity's
-        // shader, not a global filter over everything.
+        // 3. Scene renders with entity colors intact — sphere shows Reverie.
         if let Some(mut scene) = self.scene_renderer.take() {
             scene.render(
                 &self.device,
@@ -311,20 +309,12 @@ impl Renderer {
                 Some(&self.content_source_mgr),
             );
 
-            // Scene output IS the final frame — blit to offscreen.
-            let mut encoder = self.device.create_command_encoder(
-                &wgpu::CommandEncoderDescriptor { label: Some("scene_to_offscreen") },
+            // 4. Write SCENE output to SHM/V4L2 (overrides Reverie's SHM write).
+            self.pipeline.write_external_frame(
+                &self.device,
+                &self.queue,
+                scene.output_texture(),
             );
-            encoder.copy_texture_to_texture(
-                scene.output_texture().as_image_copy(),
-                self.offscreen_texture.as_image_copy(),
-                wgpu::Extent3d {
-                    width: self.width,
-                    height: self.height,
-                    depth_or_array_layers: 1,
-                },
-            );
-            self.queue.submit(std::iter::once(encoder.finish()));
 
             if self.frame_count.is_multiple_of(30) {
                 self.write_proof_frame(&scene);

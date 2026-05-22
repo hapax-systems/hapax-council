@@ -2133,6 +2133,19 @@ impl DynamicPipeline {
     /// route the appropriate render target to the appropriate sink
     /// (v4l2, NDI, winit window, etc.). Returns None if the target
     /// doesn't exist in the current plan or hasn't rendered yet.
+    pub fn write_external_frame(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        source: &wgpu::Texture,
+    ) {
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("external_frame") });
+        self.shm_output.copy_to_staging(&mut encoder, source);
+        queue.submit(std::iter::once(encoder.finish()));
+        self.shm_output.write_frame(device);
+    }
+
     pub fn get_target_output_view(&self, target: &str) -> Option<&wgpu::TextureView> {
         let key = format!("{}:final", target);
         self.intermediate(&key).map(|t| &t.view)
