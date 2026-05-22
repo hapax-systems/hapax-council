@@ -283,26 +283,27 @@ impl Renderer {
             true, // is_fresh
         );
 
-        // Reverie runs for sphere texture data only (suppressed SHM output).
-        self.pipeline.suppress_internal_shm = true;
-        self.pipeline.render(
-            &self.device,
-            &self.queue,
-            &self.offscreen_view,
-            OFFSCREEN_FORMAT,
-            &self.state_reader,
-            dt,
-            time,
-            opacities,
-            Some(&self.content_source_mgr),
-        );
+        // Reverie runs every 10th frame for sphere texture (not every frame).
+        if self.frame_count % 10 == 0 {
+            self.pipeline.suppress_internal_shm = true;
+            self.pipeline.render(
+                &self.device,
+                &self.queue,
+                &self.offscreen_view,
+                OFFSCREEN_FORMAT,
+                &self.state_reader,
+                dt,
+                time,
+                opacities,
+                Some(&self.content_source_mgr),
+            );
 
-        // Pass Reverie output to sphere.
-        if let (Some(scene), Some(view)) = (
-            self.scene_renderer.as_mut(),
-            self.pipeline.get_target_output_view("main"),
-        ) {
-            scene.set_reverie_texture(&self.device, view);
+            if let (Some(scene), Some(view)) = (
+                self.scene_renderer.as_mut(),
+                self.pipeline.get_target_output_view("main"),
+            ) {
+                scene.set_reverie_texture(&self.device, view);
+            }
         }
 
         // Scene renders directly — drift effects inhere in objects.
