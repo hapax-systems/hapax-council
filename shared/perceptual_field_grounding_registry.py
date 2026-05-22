@@ -37,6 +37,7 @@ type EvidenceClass = Literal[
     "derived-state",
     "operator-command",
     "diagnostic",
+    "normative-force",
 ]
 
 type TemporalBand = Literal[

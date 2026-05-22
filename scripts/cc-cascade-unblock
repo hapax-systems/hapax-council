@@ -113,11 +113,15 @@ def _dependency_validity(dep_ids: set[str]) -> tuple[set[str], dict[str, tuple[s
             blockers[dep_id] = ("dependency_not_found",)
             continue
         text = path.read_text(errors="replace")
-        validity = task_closure_validity(
-            text,
-            pr_state_lookup=cached_pr_state,
-            require_route_metadata=True,
-        )
+        try:
+            validity = task_closure_validity(
+                text,
+                pr_state_lookup=cached_pr_state,
+                require_route_metadata=True,
+            )
+        except Exception:
+            blockers[dep_id] = ("frontmatter_parse_error",)
+            continue
         ids = _task_aliases(path, text)
         if validity.valid:
             satisfied.update(ids)
@@ -183,7 +187,8 @@ def cascade_unblock(trigger_task_id: str | None = None) -> int:
                     reasons.append(f"{dep} ({'; '.join(dep_blockers)})")
                 else:
                     reasons.append(f"{dep} (not found or not closure-valid)")
-            blocked_reason = "waiting_for_closure_valid_dependencies: " + "; ".join(reasons)
+            raw_reason = "waiting_for_closure_valid_dependencies: " + "; ".join(reasons)
+            blocked_reason = "'" + raw_reason.replace("'", "''") + "'"
             if re.search(r"^blocked_reason: .+", text, re.M):
                 new = re.sub(
                     r"^blocked_reason: .+",
