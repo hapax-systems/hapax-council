@@ -205,6 +205,8 @@ def rotate_history() -> None:
         log.info("Rotated health history: %d \u2192 %d lines", len(lines), len(trimmed))
     except Exception:
         with contextlib.suppress(OSError):
+            os.close(fd)
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
 

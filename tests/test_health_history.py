@@ -83,6 +83,47 @@ def test_rotate_with_rollup(tmp_path):
     assert hourly_path.exists()
 
 
+def test_rotate_with_rollup_creates_parent_dirs(tmp_path):
+    nested = tmp_path / "deep" / "nested" / "dir"
+    raw_path = nested / "raw.jsonl"
+    hourly_path = nested / "hourly.jsonl"
+    daily_path = nested / "daily.jsonl"
+
+    assert not nested.exists()
+
+    entries = [_make_entry(1, "healthy")]
+    # Parent dir doesn't exist yet — rotate_with_rollup should create it
+    nested.mkdir(parents=True)
+    raw_path.write_text("\n".join(json.dumps(e) for e in entries))
+
+    result = rotate_with_rollup(
+        raw_path=raw_path,
+        hourly_path=hourly_path,
+        daily_path=daily_path,
+    )
+    assert result["raw_kept"] >= 1
+    assert hourly_path.parent.exists()
+
+
+def test_rotate_with_rollup_creates_separate_parent_dirs(tmp_path):
+    raw_path = tmp_path / "a" / "raw.jsonl"
+    hourly_path = tmp_path / "b" / "hourly.jsonl"
+    daily_path = tmp_path / "c" / "daily.jsonl"
+
+    raw_path.parent.mkdir(parents=True)
+    entries = [_make_entry(1, "healthy")]
+    raw_path.write_text("\n".join(json.dumps(e) for e in entries))
+
+    result = rotate_with_rollup(
+        raw_path=raw_path,
+        hourly_path=hourly_path,
+        daily_path=daily_path,
+    )
+    assert result["raw_kept"] >= 1
+    assert hourly_path.parent.exists()
+    assert daily_path.parent.exists()
+
+
 def test_get_recurring_issues(tmp_path, monkeypatch):
     monkeypatch.setattr("shared.health_history.PROFILES_DIR", tmp_path)
     raw_path = tmp_path / "health-history.jsonl"

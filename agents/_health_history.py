@@ -230,6 +230,8 @@ def rotate_with_rollup(
     ]
 
     # Write back
+    for p in (raw_path, hourly_path, daily_path):
+        p.parent.mkdir(parents=True, exist_ok=True)
     raw_path.write_text("\n".join(json.dumps(e) for e in recent_raw) + "\n" if recent_raw else "")
     hourly_path.write_text(
         "\n".join(json.dumps(e) for e in hourly_kept) + "\n" if hourly_kept else ""
