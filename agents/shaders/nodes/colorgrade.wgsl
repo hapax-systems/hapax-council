@@ -148,6 +148,11 @@ fn main_1() {
     let _e116 = clamp(_e110.xyz, vec3(0f), vec3(1f));
     let _e117 = color;
     graded = mix(_e117.xyz, _e116, vec3(surface_presence));
+    // Preserve entity color identity: blend graded result back toward
+    // original so entity hue always shows through the color grade.
+    let original = textureSample(tex, tex_sampler, v_texcoord_1).xyz;
+    let entity_preserve = 0.45;
+    graded = mix(graded, original, vec3(entity_preserve * surface_presence));
     fragColor = vec4<f32>(graded.x, graded.y, graded.z, _e117.w);
     return;
 }

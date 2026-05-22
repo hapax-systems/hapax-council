@@ -283,30 +283,7 @@ impl Renderer {
             true, // is_fresh
         );
 
-        // Reverie runs every 10th frame for sphere texture (not every frame).
-        if self.frame_count % 10 == 0 {
-            self.pipeline.suppress_internal_shm = true;
-            self.pipeline.render(
-                &self.device,
-                &self.queue,
-                &self.offscreen_view,
-                OFFSCREEN_FORMAT,
-                &self.state_reader,
-                dt,
-                time,
-                opacities,
-                Some(&self.content_source_mgr),
-            );
-
-            if let (Some(scene), Some(view)) = (
-                self.scene_renderer.as_mut(),
-                self.pipeline.get_target_output_view("main"),
-            ) {
-                scene.set_reverie_texture(&self.device, view);
-            }
-        }
-
-        // Scene renders directly — drift effects inhere in objects.
+        // 3D scene render → inject into DynamicPipeline as @live
         if let Some(mut scene) = self.scene_renderer.take() {
             scene.render(
                 &self.device,
@@ -315,13 +292,11 @@ impl Renderer {
                 Some(&self.content_source_mgr),
             );
 
-            // Scene output → SHM/V4L2 directly. No Reverie involvement.
-            let mut encoder = self.device.create_command_encoder(
-                &wgpu::CommandEncoderDescriptor { label: Some("scene_shm") },
+            self.pipeline.set_live_texture_override(
+                &self.device,
+                &self.queue,
+                scene.output_texture(),
             );
-            self.scene_shm.copy_to_staging(&mut encoder, scene.output_texture());
-            self.queue.submit(std::iter::once(encoder.finish()));
-            self.scene_shm.write_frame(&self.device);
 
             if self.frame_count.is_multiple_of(30) {
                 self.write_proof_frame(&scene);
@@ -333,6 +308,20 @@ impl Renderer {
             }
             self.scene_renderer = Some(scene);
         }
+
+        // Run shader vocabulary pipeline
+        self.pipeline.suppress_internal_shm = false;
+        self.pipeline.render(
+            &self.device,
+            &self.queue,
+            &self.offscreen_view,
+            OFFSCREEN_FORMAT,
+            &self.state_reader,
+            dt,
+            time,
+            opacities,
+            Some(&self.content_source_mgr),
+        );
 
         self.frame_count = self.frame_count.wrapping_add(1);
         if self.frame_count.is_multiple_of(600) {
