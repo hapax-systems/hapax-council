@@ -645,22 +645,23 @@ fn aoa_vertex(vi: u32) -> VertexOutput {
 }
 
 fn aoa_face_tint(face: f32, inner_pane: f32, local_pos: vec3<f32>, pane_idx: f32) -> vec3<f32> {
-    var tint = vec3<f32>(1.0, 0.28, 0.74);
+    // Four maximally distinct hues for structural differentiation.
+    var tint = vec3<f32>(1.0, 0.12, 0.58);   // Face 0: hot pink (Composition)
     if face > 0.5 && face < 1.5 {
-        tint = vec3<f32>(0.30, 0.84, 1.0);
+        tint = vec3<f32>(0.08, 0.92, 1.0);   // Face 1: electric cyan (Modulation)
     } else if face > 1.5 && face < 2.5 {
-        tint = vec3<f32>(0.74, 0.42, 1.0);
+        tint = vec3<f32>(0.58, 0.18, 1.0);   // Face 2: deep violet (Surface)
     } else if face > 2.5 {
-        tint = vec3<f32>(1.0, 0.58, 0.20);
+        tint = vec3<f32>(1.0, 0.72, 0.04);   // Face 3: vivid amber (Programme)
     }
     let pane_u = u32(pane_idx + 0.5);
     let primary = aoa_neon_palette(aoa_primary_child_index(pane_u));
     let secondary = aoa_neon_palette(aoa_secondary_child_index(pane_u));
-    let lineage_mix = clamp(inner_pane * 0.12, 0.0, 0.32);
-    tint = mix(mix(tint, primary, clamp(inner_pane * 0.22, 0.0, 0.46)), secondary, lineage_mix);
+    let lineage_mix = clamp(inner_pane * 0.18, 0.0, 0.42);
+    tint = mix(mix(tint, primary, clamp(inner_pane * 0.28, 0.0, 0.52)), secondary, lineage_mix);
     let depth_signal = clamp((local_pos.z + 0.62) / 0.96, 0.0, 1.0);
     let height_signal = clamp((local_pos.y + 0.44) / 1.04, 0.0, 1.0);
-    return tint * (0.72 + depth_signal * 0.20 + height_signal * 0.18) * (1.0 - inner_pane * 0.045);
+    return tint * (0.82 + depth_signal * 0.22 + height_signal * 0.18) * (1.0 - inner_pane * 0.03);
 }
 
 fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
@@ -725,20 +726,23 @@ fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
         * aa_line_mask(bary.z, 0.018, 0.042);
     let tint = aoa_face_tint(in.pane_info.x, inner_pane, in.local_pos, in.pane_info.z);
 
-    // Per-pane heatmap — emissive intensity to punch through Reverie color grading.
+    // Per-pane heatmap — saturated color, not washed-out brightness.
     let pane_ord = u32(in.pane_info.z + 0.5);
     let pane_hash = fract(sin(f32(pane_ord) * 127.1 + 311.7) * 43758.5453);
     let heat_pulse = 0.4 + 0.6 * clamp(sin(pane_hash * 6.28 + f32(pane_ord) * 0.37) * 0.5 + 0.5, 0.0, 1.0);
-    let emissive_tint = tint * (1.8 + heat_pulse * 1.6);
 
-    let fill = 0.14 + inner_pane * 0.04 + heat_pulse * 0.12;
-    let line = edge * (0.92 - inner_pane * 0.06);
-    let address = info_grid * (0.20 + inner_pane * 0.08);
-    let lattice = local_lattice * (0.16 + inner_pane * 0.07);
+    let fill = 0.08 + inner_pane * 0.03 + heat_pulse * 0.10;
+    let line = edge * (0.88 - inner_pane * 0.08);
+    let address = info_grid * (0.18 + inner_pane * 0.06);
+    let lattice = local_lattice * (0.14 + inner_pane * 0.06);
     let pane_energy = fill + line + address + lattice;
     let aura = smoothstep(0.0, 0.7, line + address);
-    let color = emissive_tint * pane_energy + tint * aura * 0.28;
-    let alpha = clamp(fill * 0.82 + line * 0.72 + address * 0.52 + lattice * 0.44, 0.0, 0.92)
+    // Saturate the tint rather than brightening — preserves hue through grading.
+    let sat_tint = tint * (1.2 + heat_pulse * 0.6);
+    let tint_luma = dot(sat_tint, vec3<f32>(0.299, 0.587, 0.114));
+    let hyper_sat = mix(vec3<f32>(tint_luma), sat_tint, 1.8);
+    let color = hyper_sat * pane_energy + tint * aura * 0.22;
+    let alpha = clamp(fill * 0.78 + line * 0.68 + address * 0.46 + lattice * 0.38, 0.0, 0.90)
         * scene.opacity;
     return vec4<f32>(color, alpha);
 }
@@ -751,6 +755,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let tex_color = textureSample(quad_texture, quad_sampler, in.uv);
     let treated = apply_entity_local_spatial_effect(in.uv, tex_color);
-    let emissive = treated.rgb * 1.8;
-    return vec4<f32>(emissive, treated.a * scene.opacity);
+    // Emissive base: entities always push and influence effects.
+    let luma = dot(treated.rgb, vec3<f32>(0.299, 0.587, 0.114));
+    let saturated = mix(vec3<f32>(luma), treated.rgb, 2.0) * 1.6;
+    return vec4<f32>(saturated, treated.a * scene.opacity);
 }

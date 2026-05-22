@@ -892,7 +892,7 @@ fn build_scene_from_source_refs(
         active_sources,
         &hls_indices,
         Vec3::new(
-            -1.92,
+            -1.42,
             0.78,
             ZPlane::OnScrim.z_position() + 0.02 + on_ring_forward,
         ),
@@ -909,7 +909,7 @@ fn build_scene_from_source_refs(
         active_sources,
         &ir_indices,
         Vec3::new(
-            -1.94,
+            -1.44,
             1.58,
             ZPlane::MidScrim.z_position() + 0.86 + mid_ring_forward,
         ),
@@ -953,7 +953,7 @@ fn build_scene_from_source_refs(
         active_sources,
         &right_cube,
         Vec3::new(
-            1.84,
+            1.34,
             0.74,
             ZPlane::OnScrim.z_position() - 0.04 + on_ring_forward,
         ),
@@ -972,7 +972,7 @@ fn build_scene_from_source_refs(
         active_sources,
         &mid_band.iter().take(10).copied().collect::<Vec<_>>(),
         Vec3::new(
-            1.76,
+            1.26,
             -0.84,
             ZPlane::MidScrim.z_position() + 0.48 + mid_ring_forward,
         ),

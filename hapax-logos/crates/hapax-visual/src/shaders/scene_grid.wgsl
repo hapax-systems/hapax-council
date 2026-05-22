@@ -251,10 +251,13 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let hit_clip = grid.projection * grid.view * vec4<f32>(hit, 1.0);
         let sphere_depth = hit_clip.z / hit_clip.w;
 
-        // View-space normal mapping — projects Reverie frame onto the sphere
-        // so the full frame content is visible from the current camera angle.
-        let view_normal = (grid.view * vec4<f32>(sn, 0.0)).xyz;
-        let sphere_uv = view_normal.xy * 0.48 + 0.5;
+        // World-space equirectangular mapping — consistent regardless of camera.
+        let theta = atan2(sn.x, sn.z);
+        let phi = acos(clamp(sn.y, -1.0, 1.0));
+        let sphere_uv = vec2<f32>(
+            (theta + AOA_PI) / (2.0 * AOA_PI),
+            phi / AOA_PI,
+        );
         let reverie = textureSample(reverie_texture, reverie_sampler, sphere_uv);
 
         let view_dir = normalize(cam_pos - hit);
@@ -354,8 +357,9 @@ fn fs_main(in: VertexOutput) -> FragOutput {
     let shadow = soft_shadow_at(wp, grid.light_position.xyz);
     let room_light = point_light_at(wp, in.normal) * shadow;
 
-    color = color * 1.4 * glow * dist_fade;
-    color = color * (0.66 + 0.34 * shadow) + light_color * room_light * 0.36;
+    let grid_luma = dot(color, vec3<f32>(0.299, 0.587, 0.114));
+    color = mix(vec3<f32>(grid_luma), color, 1.8) * 1.2 * glow * dist_fade;
+    color = color * (0.66 + 0.34 * shadow) + light_color * room_light * 0.32;
     var alpha = major * 0.50 * dist_fade * (0.82 + 0.18 * shadow + 0.12 * room_light);
     if abs(in.normal.y) > 0.5 {
         alpha = alpha * 1.16;
