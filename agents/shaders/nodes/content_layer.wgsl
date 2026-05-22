@@ -187,6 +187,14 @@ fn main_1() {
     let trace_boost = dwelling_trace_boost(max_salience);
     base *= trace_boost;
 
+    // Entity luminance preservation: blend output luma toward source luma
+    // so entity contrast structure survives downstream effects.
+    let out_luma = dot(base, vec3<f32>(0.299, 0.587, 0.114));
+    let src_luma = dot(base_sample.rgb, vec3<f32>(0.299, 0.587, 0.114));
+    let luma_preserve = mix(out_luma, src_luma, 0.35);
+    let luma_ratio = select(luma_preserve / max(out_luma, 0.001), 1.0, out_luma < 0.001);
+    base = base * clamp(luma_ratio, 0.7, 1.4);
+
     fragColor = vec4<f32>(base, base_sample.a);
     return;
 }
