@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use hapax_visual::content_sources::ContentSourceManager;
 use hapax_visual::dynamic_pipeline::{DynamicPipeline, PoolMetrics};
+use hapax_visual::output::ShmOutput;
 use hapax_visual::scene_renderer::SceneRenderer;
 use hapax_visual::state::StateReader;
 
@@ -155,6 +156,8 @@ pub struct Renderer {
     scene_renderer: Option<SceneRenderer>,
     /// Separate JPEG compressor for 3D proof output.
     proof_jpeg: Option<turbojpeg::Compressor>,
+    /// Direct SHM/V4L2 output for the scene (bypasses Reverie).
+    scene_shm: ShmOutput,
 }
 
 impl Renderer {
@@ -178,7 +181,7 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: OFFSCREEN_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let offscreen_view = offscreen_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -206,6 +209,7 @@ impl Renderer {
             None
         };
 
+        let scene_shm = ShmOutput::new(&device, width, height);
         let proof_jpeg = if scene_renderer.is_some() {
             turbojpeg::Compressor::new().ok().map(|mut c| {
                 c.set_quality(80).ok();
@@ -232,6 +236,7 @@ impl Renderer {
             frame_count: 0,
             scene_renderer,
             proof_jpeg,
+            scene_shm,
         }
     }
 
@@ -271,6 +276,13 @@ impl Renderer {
 
         let opacities = self.content_source_mgr.slot_opacities();
 
+        // Sphere texture: YouTube JPEG from compositor SHM.
+        if self.frame_count % 3 == 0 {
+            if let Some(scene) = self.scene_renderer.as_mut() {
+                scene.upload_yt_jpeg_if_fresh(&self.device, &self.queue);
+            }
+        }
+
         // HOMAGE Phase 6 - Ward↔Shader bidirectional coupling
         crate::homage_feedback::emit_shader_feedback(
             self.state_reader.smoothed.audio_energy as f64,
@@ -279,10 +291,6 @@ impl Renderer {
         );
 
         // 3D scene render → inject into DynamicPipeline as @live
-        // Phase 3: the 3D scene output becomes the shader vocabulary's
-        // input texture. Shaders process the 3D scene exactly as they
-        // process the noise-generated fallback, but now with real
-        // perspective-rendered content sources.
         if let Some(mut scene) = self.scene_renderer.take() {
             scene.render(
                 &self.device,
@@ -291,14 +299,12 @@ impl Renderer {
                 Some(&self.content_source_mgr),
             );
 
-            // Inject 3D scene output as @live for the shader chain
             self.pipeline.set_live_texture_override(
                 &self.device,
                 &self.queue,
                 scene.output_texture(),
             );
 
-            // Write 3D proof frame to shm every 30 frames (~1 Hz)
             if self.frame_count.is_multiple_of(30) {
                 self.write_proof_frame(&scene);
                 log::info!(
@@ -310,7 +316,8 @@ impl Renderer {
             self.scene_renderer = Some(scene);
         }
 
-        // Run shader vocabulary pipeline (now with 3D scene as @live if active)
+        // Run shader vocabulary pipeline
+        self.pipeline.suppress_internal_shm = false;
         self.pipeline.render(
             &self.device,
             &self.queue,

@@ -253,7 +253,7 @@ class TestLoadZoneDefaults:
         assert album_bindings[0].source_cls.__name__ == "AlbumOverlayCairoSource"
         sierpinski_bindings = CairoSourceRegistry.get_for_zone("sierpinski_slot")
         assert len(sierpinski_bindings) == 1
-        assert sierpinski_bindings[0].source_cls.__name__ == "SierpinskiCairoSource"
+        assert sierpinski_bindings[0].source_cls.__name__ == "AoaCairoSource"
         # HSEA Phase 1 placeholder zones should NOT have registrations
         assert CairoSourceRegistry.get_for_zone("hud_top_left") == []
         assert CairoSourceRegistry.get_for_zone("condition_transition_banner") == []

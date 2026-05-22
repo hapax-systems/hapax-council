@@ -250,15 +250,15 @@ def test_runner_get_output_surface_is_thread_safe():
 # ---------------------------------------------------------------------------
 
 
-def test_sierpinski_renderer_facade_renders_via_runner():
-    """Phase 3b: SierpinskiRenderer is a thin facade over CairoSourceRunner.
+def test_aoa_renderer_facade_renders_via_runner():
+    """Phase 3b: AoaRenderer is a thin facade over CairoSourceRunner.
 
     The public API (start/stop/draw/set_active_slot/set_audio_energy) must
     still work and the runner should produce a non-empty output surface.
     """
-    from agents.studio_compositor.sierpinski_renderer import SierpinskiRenderer
+    from agents.studio_compositor.aoa_renderer import AoaRenderer
 
-    renderer = SierpinskiRenderer()
+    renderer = AoaRenderer()
     # set_*() should not crash on a fresh renderer.
     renderer.set_active_slot(1)
     renderer.set_audio_energy(0.5)
@@ -278,13 +278,13 @@ def test_sierpinski_renderer_facade_renders_via_runner():
     assert out.get_height() == OUTPUT_HEIGHT
 
 
-def test_sierpinski_renderer_draw_blits_cached_surface():
-    """SierpinskiRenderer.draw() must blit the runner's cached surface
+def test_aoa_renderer_draw_blits_cached_surface():
+    """AoaRenderer.draw() must blit the runner's cached surface
     onto the caller's Cairo context (the GStreamer streaming-thread path).
     """
-    from agents.studio_compositor.sierpinski_renderer import SierpinskiRenderer
+    from agents.studio_compositor.aoa_renderer import AoaRenderer
 
-    renderer = SierpinskiRenderer()
+    renderer = AoaRenderer()
     renderer._runner.tick_once()  # noqa: SLF001 — populate cache
 
     target = cairo.ImageSurface(cairo.FORMAT_ARGB32, 320, 180)
@@ -297,9 +297,9 @@ def test_sierpinski_cairo_source_render_into_small_canvas():
     """Direct render into a small ImageSurface — sanity-check the source
     is decoupled from the facade and works standalone.
     """
-    from agents.studio_compositor.sierpinski_renderer import SierpinskiCairoSource
+    from agents.studio_compositor.aoa_renderer import AoaCairoSource
 
-    source = SierpinskiCairoSource()
+    source = AoaCairoSource()
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 256, 144)
     cr = cairo.Context(surface)
     source.render(cr, 256, 144, t=0.0, state={})
@@ -318,12 +318,12 @@ def test_sierpinski_audio_energy_smoothed_clamped_instant():
     single-frame bounded passthrough: the line doesn't whip on percussive
     ±1.0 transients (clamped at 0.85) but the visual response to audio is
     single-frame tight. Raw energy is still preserved for the waveform draw."""
-    from agents.studio_compositor.sierpinski_renderer import (
+    from agents.studio_compositor.aoa_renderer import (
         SIERPINSKI_AUDIO_BURST_CLAMP,
-        SierpinskiCairoSource,
+        AoaCairoSource,
     )
 
-    source = SierpinskiCairoSource()
+    source = AoaCairoSource()
     assert source._audio_energy == 0.0
     assert source._audio_energy_smoothed == 0.0
 

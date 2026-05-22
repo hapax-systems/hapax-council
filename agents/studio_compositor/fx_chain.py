@@ -1329,14 +1329,14 @@ def _ensure_base_cairo_sources(compositor: Any) -> None:
     """Create renderer state expected by the base cairooverlay draw path."""
     from .overlay import sierpinski_base_overlay_enabled
 
-    if getattr(compositor, "_sierpinski_loader", None) is None:
-        from .sierpinski_loader import SierpinskiLoader
+    if getattr(compositor, "_aoa_loader", None) is None:
+        from .aoa_loader import AoaLoader
 
-        compositor._sierpinski_loader = SierpinskiLoader()
-        compositor._sierpinski_loader.start()
+        compositor._aoa_loader = AoaLoader()
+        compositor._aoa_loader.start()
 
     if not sierpinski_base_overlay_enabled():
-        for attr in ("_sierpinski_renderer",):
+        for attr in ("_aoa_renderer",):
             source = getattr(compositor, attr, None)
             if source is not None and hasattr(source, "stop"):
                 try:
@@ -1352,18 +1352,18 @@ def _ensure_base_cairo_sources(compositor: Any) -> None:
         )
         return
 
-    if getattr(compositor, "_sierpinski_renderer", None) is None:
-        from .sierpinski_renderer import SierpinskiRenderer
+    if getattr(compositor, "_aoa_renderer", None) is None:
+        from .aoa_renderer import AoaRenderer
 
-        compositor._sierpinski_renderer = SierpinskiRenderer(
+        compositor._aoa_renderer = AoaRenderer(
             budget_tracker=getattr(compositor, "_budget_tracker", None)
         )
-        compositor._sierpinski_renderer.start()
+        compositor._aoa_renderer.start()
     if getattr(compositor, "_geal_source", None) is None:
         from .geal_source import GealCairoSource
 
         compositor._geal_source = GealCairoSource(
-            _sierpinski_geom_provider=compositor._sierpinski_renderer._source,
+            _aoa_geom_provider=compositor._aoa_renderer._source,
         )
     _publish_fx_runtime_feature("sierpinski_base_overlay", True)
 
@@ -1638,13 +1638,13 @@ def build_inline_fx_chain(
     # instantiated by the SourceRegistry from default.json — Phase 9 Task 29
     # removed their legacy facade construction sites.
     #
-    # SierpinskiLoader + SierpinskiRenderer remain: Sierpinski is a full-
+    # AoaLoader + AoaRenderer remain: Sierpinski is a full-
     # canvas main-layer render (not a PiP) driven by overlay.py::on_draw,
     # with the renderer holding set_active_slot / set_audio_energy state.
     # Migrating Sierpinski to the source registry's fx_chain_input surface
     # is a separate refactor tracked as a follow-up ticket.
     _ensure_base_cairo_sources(compositor)
-    log.info("SierpinskiLoader + SierpinskiRenderer created (render thread at 10fps)")
+    log.info("AoaLoader + AoaRenderer created (render thread at 10fps)")
     log.info("GealCairoSource constructed (gated behind HAPAX_GEAL_ENABLED=1)")
     _publish_fx_runtime_feature("shader_fx", True)
     _publish_fx_runtime_feature("flash_overlay", _visual_pumping_enabled())

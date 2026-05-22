@@ -364,7 +364,7 @@ def write_uniforms(
             dim_data = stimmung.get(dim_key, {})
             if isinstance(dim_data, dict):
                 worst_infra = max(worst_infra, dim_data.get("value", 0.0))
-        uniforms["signal.color_warmth"] = worst_infra
+        uniforms["signal.color_warmth"] = min(worst_infra * 0.35, 0.25)
 
     # U8 Phase 1 — apply per-mode palette tint to colorgrade.hue_rotate
     # BEFORE homage damping so an active homage package's hue rotation

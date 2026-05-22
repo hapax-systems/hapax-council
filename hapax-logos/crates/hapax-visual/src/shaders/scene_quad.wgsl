@@ -25,6 +25,15 @@ var quad_texture: texture_2d<f32>;
 @group(1) @binding(1)
 var quad_sampler: sampler;
 
+struct HeatmapEntry {
+    heat: f32,
+    hue: f32,
+    sat: f32,
+    _pad: f32,
+};
+@group(2) @binding(0)
+var<storage, read> heatmap: array<HeatmapEntry>;
+
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -645,22 +654,23 @@ fn aoa_vertex(vi: u32) -> VertexOutput {
 }
 
 fn aoa_face_tint(face: f32, inner_pane: f32, local_pos: vec3<f32>, pane_idx: f32) -> vec3<f32> {
-    var tint = vec3<f32>(1.0, 0.28, 0.74);
+    // Four maximally distinct hues for structural differentiation.
+    var tint = vec3<f32>(0.82, 0.18, 0.52);   // Face 0: muted rose (Composition)
     if face > 0.5 && face < 1.5 {
-        tint = vec3<f32>(0.30, 0.84, 1.0);
+        tint = vec3<f32>(0.12, 0.88, 0.96);  // Face 1: electric cyan (Modulation)
     } else if face > 1.5 && face < 2.5 {
-        tint = vec3<f32>(0.74, 0.42, 1.0);
+        tint = vec3<f32>(0.64, 0.28, 0.96);  // Face 2: bright violet (Surface)
     } else if face > 2.5 {
-        tint = vec3<f32>(1.0, 0.58, 0.20);
+        tint = vec3<f32>(0.96, 0.68, 0.10);  // Face 3: vivid amber (Programme)
     }
     let pane_u = u32(pane_idx + 0.5);
     let primary = aoa_neon_palette(aoa_primary_child_index(pane_u));
     let secondary = aoa_neon_palette(aoa_secondary_child_index(pane_u));
-    let lineage_mix = clamp(inner_pane * 0.12, 0.0, 0.32);
-    tint = mix(mix(tint, primary, clamp(inner_pane * 0.22, 0.0, 0.46)), secondary, lineage_mix);
+    let lineage_mix = clamp(inner_pane * 0.18, 0.0, 0.42);
+    tint = mix(mix(tint, primary, clamp(inner_pane * 0.28, 0.0, 0.52)), secondary, lineage_mix);
     let depth_signal = clamp((local_pos.z + 0.62) / 0.96, 0.0, 1.0);
     let height_signal = clamp((local_pos.y + 0.44) / 1.04, 0.0, 1.0);
-    return tint * (0.72 + depth_signal * 0.20 + height_signal * 0.18) * (1.0 - inner_pane * 0.045);
+    return tint * (0.82 + depth_signal * 0.22 + height_signal * 0.18) * (1.0 - inner_pane * 0.03);
 }
 
 fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
@@ -724,15 +734,41 @@ fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
     let local_lattice = aa_line_mask(abs(bary.x - bary.y), 0.018, 0.042)
         * aa_line_mask(bary.z, 0.018, 0.042);
     let tint = aoa_face_tint(in.pane_info.x, inner_pane, in.local_pos, in.pane_info.z);
-    let fill = 0.052 + inner_pane * 0.014;
-    let line = edge * (0.76 - inner_pane * 0.11);
-    let address = info_grid * (0.12 + inner_pane * 0.04);
-    let lattice = local_lattice * (0.11 + inner_pane * 0.055);
+
+    // Per-pane heatmap — live impingement/recruitment activity.
+    let pane_ord = u32(in.pane_info.z + 0.5);
+    let pane_hash = fract(sin(f32(pane_ord) * 127.1 + 311.7) * 43758.5453);
+    var heat_pulse = 0.3 + pane_hash * 0.4;
+    var heat_hue = 0.0;
+    if pane_ord < arrayLength(&heatmap) {
+        let entry = heatmap[pane_ord];
+        heat_pulse = max(entry.heat, 0.05 + pane_hash * 0.15);
+        heat_hue = entry.hue;
+    }
+
+    let fill = 0.22 + inner_pane * 0.05 + heat_pulse * 0.20;
+    let line = edge * (0.88 - inner_pane * 0.08);
+    let address = info_grid * (0.18 + inner_pane * 0.06);
+    let lattice = local_lattice * (0.14 + inner_pane * 0.06);
     let pane_energy = fill + line + address + lattice;
-    let aura = smoothstep(0.0, 0.9, line + address);
-    let color = tint * pane_energy + vec3<f32>(0.72, 0.38, 1.0) * aura * 0.12;
-    let alpha = clamp(fill * 0.70 + line * 0.62 + address * 0.42 + lattice * 0.36, 0.0, 0.88)
-        * scene.opacity;
+    let aura = smoothstep(0.0, 0.7, line + address);
+    // Modulate tint by heatmap hue + saturate for effect survival.
+    let h6 = heat_hue * 6.0;
+    let heat_rgb = vec3<f32>(
+        clamp(abs(h6 - 3.0) - 1.0, 0.0, 1.0),
+        clamp(2.0 - abs(h6 - 2.0), 0.0, 1.0),
+        clamp(2.0 - abs(h6 - 4.0), 0.0, 1.0),
+    );
+    let heat_blend = clamp(heat_pulse * 0.6 + 0.08, 0.08, 0.50);
+    let heat_tint = mix(tint, heat_rgb, heat_blend);
+    let sat_tint = heat_tint * (1.3 + heat_pulse * 0.8);
+    let tint_luma = dot(sat_tint, vec3<f32>(0.299, 0.587, 0.114));
+    let hyper_sat = mix(vec3<f32>(tint_luma), sat_tint, 1.8);
+    let emissive_floor = tint * 0.12;
+    let color = max(hyper_sat * pane_energy + tint * aura * 0.22, emissive_floor);
+    let depth_transparency = 1.0 - inner_pane * 0.55;
+    let alpha = clamp(fill * 0.92 + line * 0.72 + address * 0.50 + lattice * 0.42, 0.0, 0.92)
+        * scene.opacity * depth_transparency;
     return vec4<f32>(color, alpha);
 }
 
@@ -744,5 +780,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let tex_color = textureSample(quad_texture, quad_sampler, in.uv);
     let treated = apply_entity_local_spatial_effect(in.uv, tex_color);
-    return vec4<f32>(treated.rgb, treated.a * scene.opacity);
+    // Emissive base: entities always push and influence effects.
+    let luma = dot(treated.rgb, vec3<f32>(0.299, 0.587, 0.114));
+    let saturated = mix(vec3<f32>(luma), treated.rgb, 1.3) * 1.15;
+    return vec4<f32>(saturated, treated.a * scene.opacity);
 }

@@ -71,7 +71,7 @@ def test_album_overlay_renders_at_natural_400x520() -> None:
 
 
 def test_sierpinski_renders_at_natural_640x640() -> None:
-    surf = _render_at("SierpinskiCairoSource", 640, 640)
+    surf = _render_at("AoaCairoSource", 640, 640)
     assert surf.get_width() == 640
     assert surf.get_height() == 640
     assert _any_nonzero_pixels(surf)
@@ -128,9 +128,9 @@ def test_cairo_source_runner_has_per_source_freshness_gauge() -> None:
         ("agents/studio_compositor/album_overlay.py", "OVERLAY_X"),
         ("agents/studio_compositor/album_overlay.py", "OVERLAY_Y"),
         ("agents/studio_compositor/album_overlay.py", "OVERLAY_SIZE"),
-        ("agents/studio_compositor/sierpinski_renderer.py", "OVERLAY_X"),
-        ("agents/studio_compositor/sierpinski_renderer.py", "OVERLAY_Y"),
-        ("agents/studio_compositor/sierpinski_renderer.py", "OVERLAY_SIZE"),
+        ("agents/studio_compositor/aoa_renderer.py", "OVERLAY_X"),
+        ("agents/studio_compositor/aoa_renderer.py", "OVERLAY_Y"),
+        ("agents/studio_compositor/aoa_renderer.py", "OVERLAY_SIZE"),
     ],
 )
 def test_no_hardcoded_overlay_offsets(module_path: str, pattern_name: str) -> None:

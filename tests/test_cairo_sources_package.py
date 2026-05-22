@@ -5,7 +5,7 @@ dispatch table so new cairo sources can be declared in default.json without
 editing a hardcoded dict. This package owns that registry.
 
 The three migrated classes (TokenPoleCairoSource, AlbumOverlayCairoSource,
-SierpinskiCairoSource) were built by the compositor unification epic's
+AoaCairoSource) were built by the compositor unification epic's
 Phase 3b migration and live in their legacy modules. This package imports
 and registers them so SourceRegistry.construct_backend can look them up.
 """
@@ -27,7 +27,7 @@ class TestCairoSourcesRegistry:
         names = list_classes()
         assert "TokenPoleCairoSource" in names
         assert "AlbumOverlayCairoSource" in names
-        assert "SierpinskiCairoSource" in names
+        assert "AoaCairoSource" in names
         assert "PolyendInstrumentReveal" in names
 
     def test_lookup_returns_a_cairo_source_subclass(self):

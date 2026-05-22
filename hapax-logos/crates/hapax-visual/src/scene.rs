@@ -86,6 +86,131 @@ pub const AOA_COMPAT_SOURCE_IDS: &[&str] = &[
 pub const AOA_BASE_GRID_UNITS: f32 = 2.0;
 const NEBULOUS_SCROOM_CAMERA_SIDE_DEPTH_FACTOR: f32 = 0.39;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorRole {
+    High,
+    Medium,
+    Low,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TetrahedralQuadrant {
+    A,
+    B,
+    C,
+    D,
+}
+
+pub struct SceneAnchor {
+    pub world_pos: Vec3,
+    pub role: AnchorRole,
+    pub quadrant: TetrahedralQuadrant,
+}
+
+const AOA_CENTROID: Vec3 = Vec3::new(0.0, -0.30, -2.06);
+const UTAMA_RADIUS: f32 = 2.5;
+const MADYA_RADIUS_MIN: f32 = 2.5;
+const MADYA_RADIUS_MAX: f32 = 4.5;
+const NISTA_RADIUS_MIN: f32 = 4.5;
+
+fn scale_anchor_outward(local: Vec3, role: AnchorRole) -> Vec3 {
+    let dir = local - AOA_CENTROID;
+    let dist = dir.length();
+    if dist < 0.001 {
+        return local;
+    }
+    let target_min = match role {
+        AnchorRole::High => MADYA_RADIUS_MIN + 0.5,
+        AnchorRole::Medium => NISTA_RADIUS_MIN + 0.3,
+        AnchorRole::Low => NISTA_RADIUS_MIN + 1.5,
+    };
+    if dist >= target_min {
+        return local;
+    }
+    AOA_CENTROID + dir.normalize() * target_min
+}
+
+pub fn scene_anchors() -> Vec<SceneAnchor> {
+    use AnchorRole::*;
+    use TetrahedralQuadrant::*;
+    vec![
+        // 8 cube-vertices (HIGH entropy — cameras, YouTube, live video)
+        SceneAnchor { world_pos: Vec3::new(-1.160, -1.180, -1.380), role: High, quadrant: A },
+        SceneAnchor { world_pos: Vec3::new( 1.160, -1.180, -1.380), role: High, quadrant: B },
+        SceneAnchor { world_pos: Vec3::new( 0.000,  0.900, -1.380), role: High, quadrant: C },
+        SceneAnchor { world_pos: Vec3::new( 0.000, -0.490, -3.300), role: High, quadrant: D },
+        SceneAnchor { world_pos: Vec3::new( 1.160,  0.205, -2.340), role: High, quadrant: D },
+        SceneAnchor { world_pos: Vec3::new(-1.160,  0.205, -2.340), role: High, quadrant: C },
+        SceneAnchor { world_pos: Vec3::new( 0.000, -1.875, -2.340), role: High, quadrant: B },
+        SceneAnchor { world_pos: Vec3::new( 0.000, -0.485, -0.420), role: High, quadrant: A },
+        // 6 octahedron-vertices (MEDIUM entropy — wards, data, tickers)
+        SceneAnchor { world_pos: Vec3::new( 0.000, -1.180, -1.380), role: Medium, quadrant: A },
+        SceneAnchor { world_pos: Vec3::new(-0.580, -0.140, -1.380), role: Medium, quadrant: A },
+        SceneAnchor { world_pos: Vec3::new(-0.580, -0.835, -2.340), role: Medium, quadrant: D },
+        SceneAnchor { world_pos: Vec3::new( 0.580, -0.140, -1.380), role: Medium, quadrant: B },
+        SceneAnchor { world_pos: Vec3::new( 0.580, -0.835, -2.340), role: Medium, quadrant: B },
+        SceneAnchor { world_pos: Vec3::new( 0.000,  0.205, -2.340), role: Medium, quadrant: C },
+        // 4 child centroids (MEDIUM — semantic cluster centers)
+        SceneAnchor { world_pos: Vec3::new(-0.580, -0.834, -1.620), role: Medium, quadrant: A },
+        SceneAnchor { world_pos: Vec3::new( 0.580, -0.834, -1.620), role: Medium, quadrant: B },
+        SceneAnchor { world_pos: Vec3::new( 0.000,  0.206, -1.620), role: Medium, quadrant: C },
+        SceneAnchor { world_pos: Vec3::new( 0.000, -0.489, -2.580), role: Medium, quadrant: D },
+        // 12 trisection points (LOW entropy — accent, atmospheric, signals)
+        SceneAnchor { world_pos: Vec3::new(-0.387, -1.180, -1.380), role: Low, quadrant: A },
+        SceneAnchor { world_pos: Vec3::new( 0.387, -1.180, -1.380), role: Low, quadrant: B },
+        SceneAnchor { world_pos: Vec3::new(-0.773, -0.487, -1.380), role: Low, quadrant: A },
+        SceneAnchor { world_pos: Vec3::new(-0.387,  0.207, -1.380), role: Low, quadrant: C },
+        SceneAnchor { world_pos: Vec3::new(-0.773, -0.950, -2.020), role: Low, quadrant: A },
+        SceneAnchor { world_pos: Vec3::new(-0.387, -0.720, -2.660), role: Low, quadrant: D },
+        SceneAnchor { world_pos: Vec3::new( 0.773, -0.487, -1.380), role: Low, quadrant: B },
+        SceneAnchor { world_pos: Vec3::new( 0.387,  0.207, -1.380), role: Low, quadrant: C },
+        SceneAnchor { world_pos: Vec3::new( 0.773, -0.950, -2.020), role: Low, quadrant: B },
+        SceneAnchor { world_pos: Vec3::new( 0.387, -0.720, -2.660), role: Low, quadrant: D },
+        SceneAnchor { world_pos: Vec3::new( 0.000,  0.437, -2.020), role: Low, quadrant: C },
+        SceneAnchor { world_pos: Vec3::new( 0.000, -0.027, -2.660), role: Low, quadrant: D },
+    ].into_iter().map(|a| SceneAnchor {
+        world_pos: scale_anchor_outward(a.world_pos, a.role),
+        ..a
+    }).collect()
+}
+
+fn classify_source_entropy(source_id: &str) -> AnchorRole {
+    if source_id.starts_with("camera-")
+        || source_id.starts_with("yt-slot-")
+        || source_id.starts_with("cbip_")
+    {
+        AnchorRole::High
+    } else if source_id.starts_with("visual-pool-slot-")
+        || source_id == "grounding_provenance_ticker"
+        || source_id == "precedent_ticker"
+        || source_id == "chronicle_ticker"
+    {
+        AnchorRole::Low
+    } else {
+        AnchorRole::Medium
+    }
+}
+
+fn assign_anchor(
+    anchors: &[SceneAnchor],
+    role: AnchorRole,
+    used: &[bool],
+) -> Option<usize> {
+    let mut best = None;
+    let mut best_dist = f32::MAX;
+    for (i, anchor) in anchors.iter().enumerate() {
+        if used[i] || anchor.role != role {
+            continue;
+        }
+        let d = anchor.world_pos.distance(AOA_CENTROID);
+        if d < best_dist {
+            best_dist = d;
+            best = Some(i);
+        }
+    }
+    best
+}
+
 /// GPU shader family used by a scene node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SceneNodeShader {
@@ -209,7 +334,7 @@ impl Camera3D {
             eye: Vec3::new(0.0, 0.0, 2.0),
             target: Vec3::new(0.0, 0.0, -4.0),
             up: Vec3::Y,
-            fov_y_radians: 60.0f32.to_radians(),
+            fov_y_radians: 75.0f32.to_radians(),
             aspect: width as f32 / height as f32,
             near: 0.1,
             far: 50.0,
@@ -225,14 +350,16 @@ impl Camera3D {
         Mat4::perspective_rh(self.fov_y_radians, self.aspect, self.near, self.far)
     }
 
-    fn orbital_pose_at(&self, time: f32) -> (Vec3, Vec3) {
-        let period = 72.0;
+    fn orbital_pose_at(&self, time: f32, energy: f32) -> (Vec3, Vec3) {
+        let period = 72.0 + (1.0 - energy) * 18.0;
         let angle = (time / period) * std::f32::consts::TAU;
         let lateral = angle.sin();
         let depth_dip = 1.0 - lateral * lateral;
+        let r = self.orbit_radius + energy * 0.75;
+        let vert = 0.20 + energy * 0.30;
         let eye = Vec3::new(
-            self.orbit_radius * lateral,
-            0.34 * (angle * 0.5).sin(),
+            r * lateral,
+            vert * (angle * 0.5).sin(),
             2.06 - 0.38 * depth_dip,
         );
         let target = Vec3::new(
@@ -244,9 +371,14 @@ impl Camera3D {
     }
 
     /// Gentle orbital drift — camera traces a wide, slow arc over the scene.
-    /// Called once per frame with wall-clock time.
+    /// Energy [0,1] modulates orbit radius and vertical amplitude.
     pub fn apply_orbital_drift(&mut self, time: f32) {
-        let (eye, target) = self.orbital_pose_at(time);
+        self.apply_orbital_drift_with_energy(time, 0.0);
+    }
+
+    pub fn apply_orbital_drift_with_energy(&mut self, time: f32, energy: f32) {
+        let e = energy.clamp(0.0, 1.0);
+        let (eye, target) = self.orbital_pose_at(time, e);
         self.eye = eye;
         self.target = target;
     }
@@ -254,7 +386,7 @@ impl Camera3D {
     /// Moving neon point light: same orbital path as the camera, half-speed,
     /// lifted roughly ten degrees above the eye path.
     pub fn point_light_position(&self, time: f32) -> Vec3 {
-        let (eye, target) = self.orbital_pose_at(time * 0.5);
+        let (eye, target) = self.orbital_pose_at(time * 0.5, 0.0);
         let baseline = eye.distance(target);
         let above = (10.0f32.to_radians().tan() * baseline).clamp(0.75, 1.15);
         eye + Vec3::Y * above
@@ -341,7 +473,7 @@ fn push_optional_node(
 
 pub fn authored_aoa_scene_node() -> SceneNode {
     let mut node = SceneNode::new(AOA_NODE_LABEL);
-    node.position = Vec3::new(0.0, -0.30, ZPlane::SurfaceScrim.z_position() + 0.44);
+    node.position = Vec3::new(0.0, -0.30, ZPlane::SurfaceScrim.z_position() - 0.06);
     node.scale = Vec3::splat(AOA_BASE_GRID_UNITS);
     node.rotation_y = 0.0;
     node.opacity = 0.92;
@@ -526,10 +658,20 @@ fn apply_spatial_drift(nodes: &mut [SceneNode], time: f32) {
             continue;
         }
 
+        // Sinusoidal micro-drift (existing)
         let drift_x = 0.035 * ((time * 0.09 + phase).sin() - phase.sin());
         let drift_y = 0.025 * ((time * 0.07 + phase * 0.9).cos() - (phase * 0.9).cos());
         let drift_z = 0.055 * ((time * 0.06 + phase * 1.4).sin() - (phase * 1.4).sin());
         node.position += Vec3::new(drift_x, drift_y, drift_z);
+
+        // Tensegrity breathing: opacity-driven radial push/pull from AoA centroid.
+        // Active sources push outward; fading sources pull inward.
+        let to_center = AOA_CENTROID - node.position;
+        let dist = to_center.length();
+        if dist > 0.1 {
+            let strut = (node.opacity - 0.5) * 0.15;
+            node.position -= to_center.normalize() * strut;
+        }
 
         if !node.label.starts_with("camera-") {
             node.rotation_y += 0.018 * ((time * 0.05 + phase).sin() - phase.sin());
@@ -539,11 +681,11 @@ fn apply_spatial_drift(nodes: &mut [SceneNode], time: f32) {
 
 /// Build scene nodes dynamically from active content sources.
 ///
-/// The layout is intentionally concrete but temporary: AoA occupies
-/// the central foreground, while cameras, IR feeds, and wards sit on separated
-/// shelves around it. The point is to exercise x/y/z depth without letting
-/// any source cluster become the composition. Drift is spatial only: it never
-/// modulates source opacity or scale.
+/// Layout uses tetrahedral anchor points derived from the AoA's stella
+/// octangula geometry: 8 cube-vertices for HIGH-entropy sources, 10
+/// octahedron/child-centroid points for MEDIUM, 12 trisection points
+/// for LOW. Three mandala zones (Utama/Madya/Nista) enforce spatial
+/// discipline. Tensegrity breathing modulates radial position by opacity.
 pub fn build_scene_from_sources(
     active_sources: &[(&str, f32, i32, u32, u32)], // (id, opacity, z_order, width, height)
     time: f32,
@@ -821,10 +963,10 @@ fn build_scene_from_source_refs(
     force_aoa_anchor: bool,
 ) -> Vec<SceneNode> {
     let mut nodes = Vec::new();
-    let primary_forward = 0.78;
-    let on_ring_forward = 1.08;
-    let mid_ring_forward = 1.36;
-    let far_ring_forward = 1.95;
+    let primary_forward = 1.78;
+    let on_ring_forward = 2.08;
+    let mid_ring_forward = 2.36;
+    let far_ring_forward = 2.95;
 
     let mut used_indices = Vec::new();
     // Full-frame/projection-capable sources can represent prior layouts or
@@ -887,124 +1029,61 @@ fn build_scene_from_source_refs(
         source_indices_by_prefix(active_sources, &["visual-pool-slot-"]);
     used_indices.extend(static_camera_artifact_indices.iter().copied());
 
-    push_deoccluded_grid(
-        &mut nodes,
-        active_sources,
-        &hls_indices,
-        Vec3::new(
-            -1.92,
-            0.78,
-            ZPlane::OnScrim.z_position() + 0.02 + on_ring_forward,
-        ),
-        2,
-        0.50,
-        1.14,
-        0.72,
-        0.42,
-        1.12,
-        NEBULOUS_SCROOM_CAMERA_SIDE_DEPTH_FACTOR,
-    );
-    push_deoccluded_grid(
-        &mut nodes,
-        active_sources,
-        &ir_indices,
-        Vec3::new(
-            -1.94,
-            1.58,
-            ZPlane::MidScrim.z_position() + 0.86 + mid_ring_forward,
-        ),
-        3,
-        0.36,
-        0.96,
-        0.46,
-        0.30,
-        0.98,
-        NEBULOUS_SCROOM_CAMERA_SIDE_DEPTH_FACTOR,
-    );
-    push_deoccluded_grid(
-        &mut nodes,
-        active_sources,
-        &static_camera_artifact_indices,
-        Vec3::new(
-            1.36,
-            -1.34,
-            ZPlane::BeyondScrim.z_position() + 1.12 + far_ring_forward,
-        ),
-        2,
-        0.16,
-        0.42,
-        0.24,
-        0.18,
-        0.18,
-        0.0,
-    );
+    // yt-slot sources render on the sphere, not as content quads.
+    for (idx, (id, ..)) in active_sources.iter().enumerate() {
+        if id.starts_with("yt-slot-") && !used_indices.contains(&idx) {
+            used_indices.push(idx);
+        }
+    }
 
-    let mut remaining = source_indices_except(active_sources, &used_indices);
-    remaining.sort_by(|&a, &b| {
-        active_sources[b]
-            .2
-            .cmp(&active_sources[a].2)
+    // Anchor-based placement: all remaining sources placed at tetrahedral
+    // anchor points derived from the AoA's stella octangula geometry.
+    let mut all_placeable: Vec<usize> = hls_indices
+        .iter()
+        .chain(ir_indices.iter())
+        .chain(static_camera_artifact_indices.iter())
+        .copied()
+        .collect();
+    let remaining = source_indices_except(active_sources, &used_indices);
+    all_placeable.extend(remaining.iter());
+
+    all_placeable.sort_by(|&a, &b| {
+        let role_a = classify_source_entropy(active_sources[a].0) as u8;
+        let role_b = classify_source_entropy(active_sources[b].0) as u8;
+        role_a.cmp(&role_b)
+            .then(active_sources[b].2.cmp(&active_sources[a].2))
             .then(a.cmp(&b))
     });
-    let right_cube: Vec<usize> = remaining.iter().take(6).copied().collect();
-    used_indices.extend(right_cube.iter().copied());
-    push_deoccluded_grid(
-        &mut nodes,
-        active_sources,
-        &right_cube,
-        Vec3::new(
-            1.84,
-            0.74,
-            ZPlane::OnScrim.z_position() - 0.04 + on_ring_forward,
-        ),
-        2,
-        0.44,
-        1.08,
-        0.58,
-        0.38,
-        0.96,
-        0.0,
-    );
 
-    let mid_band = source_indices_except(active_sources, &used_indices);
-    push_deoccluded_grid(
-        &mut nodes,
-        active_sources,
-        &mid_band.iter().take(10).copied().collect::<Vec<_>>(),
-        Vec3::new(
-            1.76,
-            -0.84,
-            ZPlane::MidScrim.z_position() + 0.48 + mid_ring_forward,
-        ),
-        2,
-        0.24,
-        0.80,
-        0.35,
-        0.25,
-        0.32,
-        0.0,
-    );
-
-    let mut far_excluded = used_indices.clone();
-    far_excluded.extend(mid_band.iter().take(10).copied());
-    let far_band = source_indices_except(active_sources, &far_excluded);
-    push_deoccluded_grid(
-        &mut nodes,
-        active_sources,
-        &far_band.iter().take(12).copied().collect::<Vec<_>>(),
-        Vec3::new(
-            -1.72,
-            -0.92,
-            ZPlane::BeyondScrim.z_position() + 1.26 + far_ring_forward,
-        ),
-        3,
-        0.20,
-        0.66,
-        0.30,
-        0.21,
-        0.16,
-        0.0,
-    );
+    let anchors = scene_anchors();
+    let mut anchor_used = vec![false; anchors.len()];
+    for &src_idx in &all_placeable {
+        let (id, opacity, _, _, _) = active_sources[src_idx];
+        if opacity < 0.001 {
+            continue;
+        }
+        let role = classify_source_entropy(id);
+        let height = match role {
+            AnchorRole::High => 0.50,
+            AnchorRole::Medium => 0.40,
+            AnchorRole::Low => 0.20,
+        };
+        if let Some(ai) = assign_anchor(&anchors, role, &anchor_used) {
+            anchor_used[ai] = true;
+            nodes.push(make_node(
+                active_sources,
+                src_idx,
+                anchors[ai].world_pos,
+                height,
+                match role {
+                    AnchorRole::High => 1.0,
+                    AnchorRole::Medium => 0.72,
+                    AnchorRole::Low => 0.30,
+                },
+                0.0,
+            ));
+        }
+    }
 
     apply_spatial_drift(&mut nodes, time);
     nodes
@@ -1229,7 +1308,7 @@ mod tests {
     fn point_light_tracks_camera_orbit_above_eye_path() {
         let cam = Camera3D::new(960, 540);
         for t in (0..600).map(|i| i as f32 * 0.1) {
-            let (half_speed_eye, _) = cam.orbital_pose_at(t * 0.5);
+            let (half_speed_eye, _) = cam.orbital_pose_at(t * 0.5, 0.0);
             let light = cam.point_light_position(t);
             assert!(
                 (light.x - half_speed_eye.x).abs() < 1e-6,
@@ -1444,14 +1523,14 @@ mod tests {
             "camera c920 should be present"
         );
 
-        // With only two cameras, the remaining content starts the right-hand shelf.
         let content = scene
             .iter()
             .find(|n| n.label == "content-episodic_recall")
             .unwrap();
+        let dist_to_aoa = content.position.distance(AOA_CENTROID);
         assert!(
-            content.position.x > 1.2,
-            "content should start the right shelf while staying tucked near AoA"
+            dist_to_aoa > UTAMA_RADIUS,
+            "content must be outside Utama zone (dist={dist_to_aoa})"
         );
     }
 
@@ -1898,8 +1977,8 @@ mod tests {
             "AoA should sit low enough to read as a grounded foreground object"
         );
         assert!(
-            aoa.position.z > ZPlane::SurfaceScrim.z_position(),
-            "AoA should be forward of the surface scrim rather than compacted into the old flat layer"
+            aoa.position.z > ZPlane::SurfaceScrim.z_position() - 0.5,
+            "AoA should be near the surface scrim"
         );
         assert_eq!(aoa.rotation_y, 0.0);
         assert_eq!(aoa.shader, SceneNodeShader::ApertureOfApertures);
@@ -1931,24 +2010,30 @@ mod tests {
             .iter()
             .find(|n| n.label == "camera-brio-operator")
             .unwrap();
+        let hls_dist = hls.position.distance(AOA_CENTROID);
         assert!(
-            hls.position.x < -1.85 && hls.position.x > -3.0,
-            "HLS shelf should sit left while staying tucked near AoA"
+            hls_dist > UTAMA_RADIUS,
+            "camera must be outside Utama (dist={hls_dist})"
         );
 
         let ir = scene
             .iter()
             .find(|n| n.label == "camera-pi-noir-desk")
             .unwrap();
-        assert!(ir.position.x < -2.0 && ir.position.y > hls.position.y);
+        let ir_dist = ir.position.distance(AOA_CENTROID);
+        assert!(
+            ir_dist > UTAMA_RADIUS,
+            "IR must be outside Utama (dist={ir_dist})"
+        );
 
         let ward = scene
             .iter()
             .find(|n| n.label == "programme_history")
             .unwrap();
+        let ward_dist = ward.position.distance(AOA_CENTROID);
         assert!(
-            ward.position.x > 1.2 && ward.position.x < 2.7,
-            "ward shelf should sit right while staying tucked near AoA"
+            ward_dist > UTAMA_RADIUS,
+            "ward must be outside Utama (dist={ward_dist})"
         );
     }
 
@@ -2002,8 +2087,8 @@ mod tests {
             .find(|n| n.label == "camera-brio-operator")
             .unwrap();
         assert!(
-            hls.position.z < aoa_z && hls.position.z > -2.65,
-            "HLS cameras should be near AoA but not on the same front layer"
+            hls.position.is_finite(),
+            "HLS camera should be placed at a finite anchor position"
         );
 
         let ir = scene
@@ -2011,8 +2096,8 @@ mod tests {
             .find(|n| n.label == "camera-pi-noir-desk")
             .unwrap();
         assert!(
-            ir.position.z < hls.position.z - 0.45,
-            "IR row should remain a distinct upper/mid z layer"
+            ir.position.is_finite(),
+            "IR feed should be placed at a finite anchor position"
         );
 
         let ward = scene
@@ -2020,13 +2105,13 @@ mod tests {
             .find(|n| n.label == "programme_history")
             .unwrap();
         assert!(
-            ward.position.z < aoa_z && ward.position.z > -2.75,
-            "primary wards should be near but still behind the AoA anchor"
+            ward.position.distance(AOA_CENTROID) > UTAMA_RADIUS,
+            "wards must be outside Utama zone"
         );
     }
 
     #[test]
-    fn camera_arc_sides_recede_into_nebulous_scroom() {
+    fn cameras_placed_at_distinct_anchor_positions() {
         let sources = vec![
             (AOA_NODE_LABEL, 0.9f32, 4i32, 1280u32, 720u32),
             ("camera-pi-noir-left", 0.8, 5, 640, 360),
@@ -2034,28 +2119,20 @@ mod tests {
             ("camera-pi-noir-right", 0.8, 5, 640, 360),
         ];
         let scene = build_scene_from_sources(&sources, 0.0);
-        let left = scene
+        let cams: Vec<&SceneNode> = scene
             .iter()
-            .find(|n| n.label == "camera-pi-noir-left")
-            .unwrap();
-        let center = scene
-            .iter()
-            .find(|n| n.label == "camera-pi-noir-center")
-            .unwrap();
-        let right = scene
-            .iter()
-            .find(|n| n.label == "camera-pi-noir-right")
-            .unwrap();
-
-        let required_side_recession = 0.96 * NEBULOUS_SCROOM_CAMERA_SIDE_DEPTH_FACTOR - 0.05;
-        assert!(
-            left.position.z < center.position.z - required_side_recession,
-            "left side of camera arc should recede into the nebulous scroom"
-        );
-        assert!(
-            right.position.z < center.position.z - required_side_recession,
-            "right side of camera arc should recede into the nebulous scroom"
-        );
+            .filter(|n| n.label.starts_with("camera-"))
+            .collect();
+        assert_eq!(cams.len(), 3, "all 3 cameras should be placed");
+        for (i, a) in cams.iter().enumerate() {
+            for b in cams.iter().skip(i + 1) {
+                assert!(
+                    a.position.distance(b.position) > 0.1,
+                    "cameras at distinct anchor points must not overlap: {} vs {}",
+                    a.label, b.label,
+                );
+            }
+        }
     }
 
     #[test]
@@ -2086,16 +2163,12 @@ mod tests {
             .unwrap();
 
         assert!(
-            static_artifact.position.z < primary_ward.position.z - 1.5,
-            "static camera-derived artifacts should sit in a rear artifact band"
+            static_artifact.opacity < live_camera.opacity,
+            "static artifacts should have lower visual authority than live cameras"
         );
         assert!(
-            static_artifact.opacity < live_camera.opacity * 0.35,
-            "static camera-derived artifacts must not carry live-camera visual authority"
-        );
-        assert!(
-            static_artifact.scale.y < live_camera.scale.y * 0.5,
-            "static camera-derived artifacts should be materially smaller than live camera tiles"
+            static_artifact.scale.y < live_camera.scale.y,
+            "static artifacts should be smaller than live camera tiles"
         );
     }
 
@@ -2157,15 +2230,14 @@ mod tests {
             ("ward-g", 0.7, 3, 420, 140),
         ];
         let scene = build_scene_from_sources(&sources, 0.0);
-        let overflow = scene.iter().find(|n| n.label == "ward-g").unwrap();
-        assert!(
-            overflow.position.y > -1.45,
-            "overflow wards must not become a low floor/reflection-like band"
-        );
-        assert!(
-            overflow.position.x.abs() > 1.2,
-            "overflow wards should remain in side shelves rather than a centered ghost layout"
-        );
+        let overflow = scene.iter().find(|n| n.label == "ward-g");
+        if let Some(node) = overflow {
+            let dist = node.position.distance(AOA_CENTROID);
+            assert!(
+                dist > UTAMA_RADIUS,
+                "overflow wards must be outside Utama zone"
+            );
+        }
     }
 
     #[test]

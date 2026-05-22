@@ -33,7 +33,7 @@ import cairo
 log = logging.getLogger(__name__)
 
 # Guarded against CI environments that lack the Pango/PangoCairo typelibs.
-# Same pattern as `sierpinski_renderer._HAS_GDK`. `_build_layout` short-
+# Same pattern as `aoa_renderer._HAS_GDK`. `_build_layout` short-
 # circuits via `_HAS_PANGO` so the CairoSource render path becomes a
 # no-op rather than raising; callers that do need real text rendering
 # (running compositor on the operator workstation) always have the

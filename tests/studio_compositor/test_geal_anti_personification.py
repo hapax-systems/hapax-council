@@ -39,7 +39,7 @@ def test_non_geal_file_is_unaffected() -> None:
     # Same text, different path — broader codebase shouldn't flag "eye".
     findings = lint_text(
         "# halo position near the eye",
-        path="agents/studio_compositor/sierpinski_renderer.py",
+        path="agents/studio_compositor/aoa_renderer.py",
     )
     assert not any(f.rule_id.startswith("geal_geometry::") for f in findings), (
         "geal_geometry must not flag non-GEAL files"

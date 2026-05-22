@@ -168,7 +168,7 @@ _FALLBACK_LAYOUT = Layout(
             kind="cairo",
             backend="cairo",
             params={
-                "class_name": "SierpinskiCairoSource",
+                "class_name": "AoaCairoSource",
                 "natural_w": 840,
                 "natural_h": 840,
             },
@@ -1380,7 +1380,7 @@ class StudioCompositor:
             )
         visual_assets.extend(visual_asset_from_camera_role(cam.role) for cam in self.config.cameras)
 
-        loader = getattr(self, "_sierpinski_loader", None)
+        loader = getattr(self, "_aoa_loader", None)
         for slot in getattr(loader, "video_slots", ()):
             try:
                 asset = slot.current_asset()
@@ -2145,14 +2145,14 @@ class StudioCompositor:
                 log.exception("director_segment_runner stop failed")
                 StudioCompositor._record_stop_error("director_segment_runner", exc)
             self._director_segment_runner = None
-        loader = getattr(self, "_sierpinski_loader", None)
+        loader = getattr(self, "_aoa_loader", None)
         if loader is not None:
             try:
                 loader.stop()
             except Exception as exc:
-                log.exception("sierpinski_loader stop failed")
-                StudioCompositor._record_stop_error("sierpinski_loader", exc)
-            self._sierpinski_loader = None
+                log.exception("aoa_loader stop failed")
+                StudioCompositor._record_stop_error("aoa_loader", exc)
+            self._aoa_loader = None
         if self._command_server is not None:
             try:
                 self._command_server.stop()

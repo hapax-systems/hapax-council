@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import math
 
-from agents.studio_compositor.sierpinski_renderer import (
+from agents.studio_compositor.aoa_renderer import (
     AUDIO_LINE_WIDTH_BASE_PX,
     AUDIO_LINE_WIDTH_SCALE_PX,
     SIERPINSKI_AUDIO_ATTACK_ALPHA,
     SIERPINSKI_AUDIO_BURST_CLAMP,
-    SierpinskiCairoSource,
+    AoaCairoSource,
 )
 
 
@@ -42,7 +42,7 @@ def _pearson_r(xs: list[float], ys: list[float]) -> float:
 
 
 def _simulate_energy_sequence(
-    renderer: SierpinskiCairoSource, energies: list[float]
+    renderer: AoaCairoSource, energies: list[float]
 ) -> list[float]:
     """Feed an energy sequence and collect the smoothed line-width values."""
     widths: list[float] = []
@@ -58,7 +58,7 @@ class TestAudioVisualTemporalCorrelation:
 
     def test_speech_burst_correlation_above_threshold(self) -> None:
         """Simulate a TTS speech burst and verify r > 0.3."""
-        renderer = SierpinskiCairoSource()
+        renderer = AoaCairoSource()
         energies = [
             0.0,
             0.0,
@@ -89,7 +89,7 @@ class TestAudioVisualTemporalCorrelation:
     def test_passthrough_yields_near_perfect_correlation(self) -> None:
         """With α=1.0 (passthrough), correlation should be ~1.0."""
         assert SIERPINSKI_AUDIO_ATTACK_ALPHA == 1.0, "precondition: passthrough alpha"
-        renderer = SierpinskiCairoSource()
+        renderer = AoaCairoSource()
         energies = [0.0, 0.1, 0.2, 0.4, 0.6, 0.8, 0.6, 0.4, 0.2, 0.0]
         widths = _simulate_energy_sequence(renderer, energies)
         clamped = [min(e, SIERPINSKI_AUDIO_BURST_CLAMP) for e in energies]
@@ -98,7 +98,7 @@ class TestAudioVisualTemporalCorrelation:
 
     def test_zero_latency_response(self) -> None:
         """Energy change at frame N must appear in line-width at frame N (zero lag)."""
-        renderer = SierpinskiCairoSource()
+        renderer = AoaCairoSource()
         renderer.set_audio_energy(0.0)
         assert renderer._audio_energy_smoothed == 0.0
         renderer.set_audio_energy(0.7)
@@ -109,14 +109,14 @@ class TestAudioVisualTemporalCorrelation:
 
     def test_silence_produces_baseline_width(self) -> None:
         """Zero energy should produce exactly the base line width."""
-        renderer = SierpinskiCairoSource()
+        renderer = AoaCairoSource()
         renderer.set_audio_energy(0.0)
         lw = AUDIO_LINE_WIDTH_BASE_PX + renderer._audio_energy_smoothed * AUDIO_LINE_WIDTH_SCALE_PX
         assert lw == AUDIO_LINE_WIDTH_BASE_PX
 
     def test_burst_clamp_prevents_overcorrelation(self) -> None:
         """Energy above BURST_CLAMP should be clamped, preventing visual whip."""
-        renderer = SierpinskiCairoSource()
+        renderer = AoaCairoSource()
         renderer.set_audio_energy(1.0)
         assert renderer._audio_energy_smoothed <= SIERPINSKI_AUDIO_BURST_CLAMP
 
@@ -129,7 +129,7 @@ class TestCommonFateGrouping:
     """
 
     def test_raw_and_smoothed_track_same_source(self) -> None:
-        renderer = SierpinskiCairoSource()
+        renderer = AoaCairoSource()
         energies = [0.0, 0.3, 0.6, 0.9, 0.6, 0.3, 0.0]
         raw_values: list[float] = []
         smoothed_values: list[float] = []
@@ -149,7 +149,7 @@ class TestAudioVisualMapping:
 
     def test_sierpinski_reads_mixer_energy(self) -> None:
         """Sierpinski renderer exposes set_audio_energy driven by mixer_energy."""
-        renderer = SierpinskiCairoSource()
+        renderer = AoaCairoSource()
         assert hasattr(renderer, "set_audio_energy")
         assert hasattr(renderer, "_audio_energy")
         assert hasattr(renderer, "_audio_energy_smoothed")

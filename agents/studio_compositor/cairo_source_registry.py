@@ -36,7 +36,7 @@ queue placard, 1.5 condition transition banner).
 Multiple sources can register for the same zone; the registry returns
 them ordered by ``priority`` (highest first). Ties are broken by
 registration order. This lets Phase 2 item 10b wire the current
-CairoSources (album overlay, sierpinski, overlay zones, token pole)
+CairoSources (album overlay, aoa, overlay zones, token pole)
 into their current zones while HSEA Phase 1 adds higher-priority
 sources that override them.
 

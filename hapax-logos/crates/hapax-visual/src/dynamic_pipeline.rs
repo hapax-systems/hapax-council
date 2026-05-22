@@ -718,6 +718,7 @@ pub struct DynamicPipeline {
     /// the 30fps contract; set HAPAX_IMAGINATION_OUTPUT_HALF_RATE=1 only for
     /// legacy low-bandwidth compatibility.
     output_half_rate: bool,
+    pub suppress_internal_shm: bool,
     drift_engine: Option<SlotDriftEngine>,
     slotdrift_coverage: Option<serde_json::Value>,
     /// Phase 3 3D: true when an external texture was injected as @live
@@ -996,6 +997,7 @@ impl DynamicPipeline {
             height,
             frame_count: 0,
             output_half_rate,
+            suppress_internal_shm: false,
             drift_engine: Some(SlotDriftEngine::new(
                 "/dev/shm/hapax-imagination/pipeline/plan.json",
                 42,
@@ -2107,8 +2109,8 @@ impl DynamicPipeline {
         // Copy the main target's final texture to the consumer-boundary output.
         // Phase 5b1: SHM/v4l2 consumers always read the main target —
         // additional targets aren't routed through this path.
-        let write_consumer_output =
-            should_write_consumer_output(self.frame_count, self.output_half_rate);
+        let write_consumer_output = !self.suppress_internal_shm
+            && should_write_consumer_output(self.frame_count, self.output_half_rate);
         if write_consumer_output {
             if let Some(final_tex) = self.intermediate(MAIN_FINAL_TEXTURE) {
                 self.shm_output
@@ -2133,9 +2135,26 @@ impl DynamicPipeline {
     /// route the appropriate render target to the appropriate sink
     /// (v4l2, NDI, winit window, etc.). Returns None if the target
     /// doesn't exist in the current plan or hasn't rendered yet.
+    pub fn write_external_frame(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        source: &wgpu::Texture,
+    ) {
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("external_frame") });
+        self.shm_output.copy_to_staging(&mut encoder, source);
+        queue.submit(std::iter::once(encoder.finish()));
+        self.shm_output.write_frame(device);
+    }
+
     pub fn get_target_output_view(&self, target: &str) -> Option<&wgpu::TextureView> {
         let key = format!("{}:final", target);
         self.intermediate(&key).map(|t| &t.view)
+    }
+
+    pub fn get_temporal_texture_view(&self, node_id: &str) -> Option<&wgpu::TextureView> {
+        self.temporal_textures.get(node_id).map(|t| &t.view)
     }
 
     /// Return the list of target names currently present in the plan.

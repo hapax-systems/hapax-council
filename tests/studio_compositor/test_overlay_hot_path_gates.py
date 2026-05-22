@@ -51,8 +51,8 @@ def test_on_draw_skips_sierpinski_and_geal_when_base_overlay_disabled(monkeypatc
     compositor = SimpleNamespace(
         config=SimpleNamespace(overlay_enabled=True),
         _overlay_canvas_size=(640, 360),
-        _sierpinski_renderer=renderer,
-        _sierpinski_loader=SimpleNamespace(_active_slot=2),
+        _aoa_renderer=renderer,
+        _aoa_loader=SimpleNamespace(_active_slot=2),
         _geal_source=geal,
         _cached_audio={"mixer_energy": 0.75},
     )
@@ -74,8 +74,8 @@ def test_on_draw_runs_sierpinski_and_geal_when_base_overlay_enabled(monkeypatch)
     compositor = SimpleNamespace(
         config=SimpleNamespace(overlay_enabled=True),
         _overlay_canvas_size=(640, 360),
-        _sierpinski_renderer=renderer,
-        _sierpinski_loader=SimpleNamespace(_active_slot=2),
+        _aoa_renderer=renderer,
+        _aoa_loader=SimpleNamespace(_active_slot=2),
         _geal_source=geal,
         _cached_audio={"mixer_energy": 0.75, "tts_active": True},
     )
@@ -112,8 +112,8 @@ def test_on_draw_paints_face_obscure_after_base_renderers(monkeypatch) -> None:
     compositor = SimpleNamespace(
         config=SimpleNamespace(overlay_enabled=True),
         _overlay_canvas_size=(640, 360),
-        _sierpinski_renderer=renderer,
-        _sierpinski_loader=SimpleNamespace(_active_slot=2),
+        _aoa_renderer=renderer,
+        _aoa_loader=SimpleNamespace(_active_slot=2),
         _geal_source=geal,
         _cached_audio={"mixer_energy": 0.75, "tts_active": True},
         _overlay_zone_manager=zone_manager,

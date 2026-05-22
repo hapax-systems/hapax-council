@@ -26,15 +26,15 @@ gap #32 (tightness property test) collapsed into this static pin.
 
 from __future__ import annotations
 
+from agents.studio_compositor.aoa_renderer import (
+    SIERPINSKI_AUDIO_ATTACK_ALPHA,
+    SIERPINSKI_AUDIO_BURST_CLAMP,
+    SIERPINSKI_AUDIO_RELEASE_ALPHA,
+)
 from agents.studio_compositor.m8_oscilloscope_source import (
     AMPLITUDE_BURST_CLAMP,
     AMPLITUDE_IIR_ALPHA,
     LINE_WIDTH_AMPLITUDE_SCALE,
-)
-from agents.studio_compositor.sierpinski_renderer import (
-    SIERPINSKI_AUDIO_ATTACK_ALPHA,
-    SIERPINSKI_AUDIO_BURST_CLAMP,
-    SIERPINSKI_AUDIO_RELEASE_ALPHA,
 )
 
 

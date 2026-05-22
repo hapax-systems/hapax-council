@@ -39,12 +39,12 @@ from typing import Any
 
 import cairo
 
-from agents.studio_compositor.cairo_source import CairoSource
-from agents.studio_compositor.sierpinski_renderer import (
+from agents.studio_compositor.aoa_renderer import (
     VIDEO_ATTENTION_PATH,
+    AoaCairoSource,
     GeometryCache,
-    SierpinskiCairoSource,
 )
+from agents.studio_compositor.cairo_source import CairoSource
 from shared.geal_curves import Envelope, SecondOrderLP
 from shared.geal_grounding_classifier import Apex as ClassifierApex
 from shared.geal_grounding_classifier import classify_source
@@ -191,7 +191,7 @@ class GealCairoSource(CairoSource):
 
     source_id: str = "geal"
     _palette_bridge: GealPaletteBridge = field(default_factory=GealPaletteBridge.load_default)
-    _sierpinski_geom_provider: SierpinskiCairoSource = field(default_factory=SierpinskiCairoSource)
+    _aoa_geom_provider: AoaCairoSource = field(default_factory=AoaCairoSource)
     _active_wavefronts: list[_Wavefront] = field(default_factory=list)
     _active_latches: list[_LatchFade] = field(default_factory=list)
     # One SecondOrderLP per halo slot for V2 radius smoothing.
@@ -352,7 +352,7 @@ class GealCairoSource(CairoSource):
         self._update_depth_transition(stance, t)
 
         # Resolve geometry once per tick (cheap: cached by canvas size).
-        geom = self._sierpinski_geom_provider.geometry_cache(
+        geom = self._aoa_geom_provider.geometry_cache(
             target_depth=self.depth_target_for_stance(stance),
             canvas_w=canvas_w,
             canvas_h=canvas_h,

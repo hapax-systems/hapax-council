@@ -28,8 +28,8 @@ The contract:
 
 This module is consumed by:
 
-- ``agents/studio_compositor/sierpinski_renderer.py`` —
-  :class:`SierpinskiCairoSource.render_content` skips all non-active slot
+- ``agents/studio_compositor/aoa_renderer.py`` —
+  :class:`AoaCairoSource.render_content` skips all non-active slot
   draws when ``enabled=False``; ``active_slot`` continues to own opacity.
 - ``agents/studio_compositor/audio_control.py`` — :class:`SlotAudioControl`
   mutes all slots when ``enabled=False`` (no active audio).

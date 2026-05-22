@@ -17,8 +17,11 @@ use crate::scene::{
 };
 
 const SCENE_QUAD_WGSL: &str = include_str!("shaders/scene_quad.wgsl");
-// GRID_SHADER_VERSION: 1778811160
+// GRID_SHADER_VERSION: 1778811162
 const SCENE_GRID_WGSL: &str = include_str!("shaders/scene_grid.wgsl");
+const SCENE_DOF_WGSL: &str = include_str!("shaders/scene_dof.wgsl");
+const ENTITY_RESTORE_WGSL: &str = include_str!("shaders/entity_restore.wgsl");
+const FULLSCREEN_BLIT_WGSL: &str = include_str!("shaders/fullscreen_blit.wgsl");
 const MAX_GRID_SHADOW_OCCLUDERS: usize = 16;
 const DEFAULT_SCENE_SAMPLE_COUNT: u32 = 4;
 
@@ -62,8 +65,22 @@ struct GridUniformData {
     light_color: [f32; 4],
     time: f32,
     occluder_count: u32,
-    _pad: [f32; 2],
+    sphere_warmth: f32,
+    _pad1: f32,
     occluders: [GridOccluderData; MAX_GRID_SHADOW_OCCLUDERS],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct DofUniformData {
+    focus_depth: f32,
+    blur_scale: f32,
+    direction_x: f32,
+    direction_y: f32,
+    texel_size_x: f32,
+    texel_size_y: f32,
+    _pad0: f32,
+    _pad1: f32,
 }
 
 /// Maximum number of scene nodes we can render per frame.
@@ -311,6 +328,38 @@ fn vec4(v: Vec3, w: f32) -> [f32; 4] {
     [v.x, v.y, v.z, w]
 }
 
+fn upload_heatmap(queue: &wgpu::Queue, buffer: &wgpu::Buffer) {
+    const PANE_COUNT: usize = 340;
+    let path = "/dev/shm/hapax-imagination/aoa-heatmap.bin";
+    let raw = match std::fs::read(path) {
+        Ok(data) if data.len() >= PANE_COUNT * 12 => data,
+        _ => return,
+    };
+    let mut gpu_data = vec![0u8; PANE_COUNT * 16];
+    for i in 0..PANE_COUNT {
+        let src_off = i * 12;
+        let dst_off = i * 16;
+        gpu_data[dst_off..dst_off + 12].copy_from_slice(&raw[src_off..src_off + 12]);
+    }
+    queue.write_buffer(buffer, 0, &gpu_data);
+}
+
+fn read_sphere_warmth() -> f32 {
+    static LAST: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let frame = LAST.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if frame % 30 != 0 {
+        return f32::from_bits(LAST.load(std::sync::atomic::Ordering::Relaxed));
+    }
+    let warmth = std::fs::read_to_string("/dev/shm/hapax-compositor/color-resonance.json")
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("warmth")?.as_f64())
+        .map(|w| w as f32)
+        .unwrap_or(0.5);
+    LAST.store(warmth.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    warmth
+}
+
 fn synthwave_light_color(time: f32) -> [f32; 4] {
     let palette = [
         Vec3::new(1.00, 0.08, 0.60),
@@ -414,6 +463,28 @@ pub struct SceneRenderer {
     grid_pipeline: wgpu::RenderPipeline,
     grid_uniform_buffer: wgpu::Buffer,
     grid_uniform_bind_group: wgpu::BindGroup,
+    // Reverie sphere texture
+    grid_texture_bgl: wgpu::BindGroupLayout,
+    reverie_bind_group: wgpu::BindGroup,
+    reverie_sampler: wgpu::Sampler,
+    // AoA heatmap
+    heatmap_buffer: wgpu::Buffer,
+    heatmap_bind_group: wgpu::BindGroup,
+    // Post-Reverie entity restoration
+    entity_restore_pipeline: wgpu::RenderPipeline,
+    entity_restore_bgl: wgpu::BindGroupLayout,
+    entity_restore_sampler: wgpu::Sampler,
+    // Simple fullscreen blit
+    blit_pipeline: wgpu::RenderPipeline,
+    blit_bgl: wgpu::BindGroupLayout,
+    // Depth-of-field post-process
+    dof_pipeline: wgpu::RenderPipeline,
+    dof_bgl: wgpu::BindGroupLayout,
+    dof_uniform_buffer: wgpu::Buffer,
+    dof_sampler: wgpu::Sampler,
+    dof_intermediate_texture: wgpu::Texture,
+    dof_intermediate_view: wgpu::TextureView,
+    dof_focus_depth: f32,
 }
 
 impl SceneRenderer {
@@ -502,10 +573,40 @@ impl SceneRenderer {
             source: wgpu::ShaderSource::Wgsl(SCENE_QUAD_WGSL.into()),
         });
 
+        // AoA heatmap storage buffer (340 panes × vec4)
+        const HEATMAP_PANE_COUNT: usize = 340;
+        let heatmap_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("aoa_heatmap"),
+            size: (HEATMAP_PANE_COUNT * 16) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let heatmap_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("aoa_heatmap_bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let heatmap_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("aoa_heatmap_bg"),
+            layout: &heatmap_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: heatmap_buffer.as_entire_binding(),
+            }],
+        });
+
         // Pipeline layout
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene pipeline layout"),
-            bind_group_layouts: &[&uniform_bind_group_layout, &texture_bind_group_layout],
+            bind_group_layouts: &[&uniform_bind_group_layout, &texture_bind_group_layout, &heatmap_bgl],
             push_constant_ranges: &[],
         });
 
@@ -679,9 +780,55 @@ impl SceneRenderer {
             }],
         });
 
+        let grid_texture_bgl =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("grid texture bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        let reverie_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let reverie_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("grid reverie fallback bg"),
+            layout: &grid_texture_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&placeholder_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&reverie_sampler),
+                },
+            ],
+        });
+
         let grid_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("grid pipeline layout"),
-            bind_group_layouts: &[&grid_uniform_bgl],
+            bind_group_layouts: &[&grid_uniform_bgl, &grid_texture_bgl],
             push_constant_ranges: &[],
         });
 
@@ -711,7 +858,7 @@ impl SceneRenderer {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_compare: wgpu::CompareFunction::Always,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -723,8 +870,230 @@ impl SceneRenderer {
             cache: None,
         });
 
+        // Entity restoration pipeline (post-Reverie)
+        let entity_restore_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("entity_restore"),
+            source: wgpu::ShaderSource::Wgsl(ENTITY_RESTORE_WGSL.into()),
+        });
+        let entity_restore_bgl =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("entity_restore_bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let entity_restore_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("entity_restore_layout"),
+                bind_group_layouts: &[&entity_restore_bgl],
+                push_constant_ranges: &[],
+            });
+        let entity_restore_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let entity_restore_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("entity_restore_pipeline"),
+                layout: Some(&entity_restore_layout),
+                vertex: wgpu::VertexState {
+                    module: &entity_restore_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &entity_restore_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+
+        // Fullscreen blit pipeline (scene → offscreen format conversion)
+        let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("fullscreen_blit"),
+            source: wgpu::ShaderSource::Wgsl(FULLSCREEN_BLIT_WGSL.into()),
+        });
+        let blit_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("blit_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let blit_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("blit_layout"),
+            bind_group_layouts: &[&blit_bgl],
+            push_constant_ranges: &[],
+        });
+        let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("blit_pipeline"),
+            layout: Some(&blit_layout),
+            vertex: wgpu::VertexState {
+                module: &blit_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &blit_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        // ── Depth-of-field post-process (deferred — NVIDIA 595.71 SPIR-V crash) ──
+        // Use blit shader as stub to avoid compiling the DoF shader at all.
+        let dof_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("dof_stub"),
+            source: wgpu::ShaderSource::Wgsl(FULLSCREEN_BLIT_WGSL.into()),
+        });
+        let dof_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("dof_uniforms"),
+            size: std::mem::size_of::<DofUniformData>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let dof_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let dof_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("dof_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let dof_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("dof_layout"),
+            bind_group_layouts: &[&dof_bgl],
+            push_constant_ranges: &[],
+        });
+        let dof_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("dof_pipeline"),
+            layout: Some(&dof_layout),
+            vertex: wgpu::VertexState {
+                module: &dof_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &dof_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: output_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let dof_intermediate_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("dof_intermediate"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: output_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let dof_intermediate_view = dof_intermediate_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         log::info!(
-            "SceneRenderer initialized: {}x{}, fov={:.0}°, scene_msaa={}x",
+            "SceneRenderer initialized: {}x{}, fov={:.0}°, scene_msaa={}x, dof=enabled",
             width,
             height,
             camera.fov_y_radians.to_degrees(),
@@ -755,7 +1124,163 @@ impl SceneRenderer {
             grid_pipeline,
             grid_uniform_buffer,
             grid_uniform_bind_group,
+            grid_texture_bgl,
+            reverie_bind_group,
+            reverie_sampler,
+            heatmap_buffer,
+            heatmap_bind_group,
+            entity_restore_pipeline,
+            entity_restore_bgl,
+            entity_restore_sampler,
+            blit_pipeline,
+            blit_bgl,
+            dof_pipeline,
+            dof_bgl,
+            dof_uniform_buffer,
+            dof_sampler,
+            dof_intermediate_texture,
+            dof_intermediate_view,
+            dof_focus_depth: 0.5,
         }
+    }
+
+    pub fn restore_entities(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        reverie_output: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+    ) {
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("entity_restore_bg"),
+            layout: &self.entity_restore_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(reverie_output),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.output_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.entity_restore_sampler),
+                },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("entity_restore_encoder"),
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("entity_restore_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.entity_restore_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..6, 0..1);
+        }
+        queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    pub fn blit_scene_to_target(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &wgpu::TextureView,
+    ) {
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scene_blit_bg"),
+            layout: &self.blit_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.output_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.entity_restore_sampler),
+                },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("scene_blit"),
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scene_blit_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.blit_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..6, 0..1);
+        }
+        queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    pub fn set_reverie_texture(&mut self, device: &wgpu::Device, view: &wgpu::TextureView) {
+        self.reverie_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("grid reverie bg"),
+            layout: &self.grid_texture_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.reverie_sampler),
+                },
+            ],
+        });
+    }
+
+    pub fn upload_yt_jpeg_if_fresh(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        const YT_FRAME_PATH: &str = "/dev/shm/hapax-compositor/yt-frame-0.jpg";
+        let Ok(jpeg_data) = std::fs::read(YT_FRAME_PATH) else { return };
+        let Ok(img) = turbojpeg::decompress(&jpeg_data, turbojpeg::PixelFormat::RGBA) else {
+            return;
+        };
+        let w = img.width as u32;
+        let h = img.height as u32;
+        let rgba = &img.pixels;
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("yt-sphere"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &rgba,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        self.set_reverie_texture(device, &view);
     }
 
     /// Render the 3D scene. Builds the scene graph dynamically from
@@ -834,17 +1359,26 @@ impl SceneRenderer {
                     light_color: synthwave_light_color(time),
                     time,
                     occluder_count,
-                    _pad: [0.0; 2],
+                    sphere_warmth: read_sphere_warmth(),
+                    _pad1: 0.0,
                     occluders,
                 };
                 queue.write_buffer(&self.grid_uniform_buffer, 0, bytemuck::bytes_of(&grid_data));
                 pass.set_pipeline(&self.grid_pipeline);
                 pass.set_bind_group(0, &self.grid_uniform_bind_group, &[]);
-                pass.draw(0..48, 0..1); // Outer room grids + visible light marker + volumetric rays
+                pass.set_bind_group(1, &self.reverie_bind_group, &[]);
+                pass.draw(0..48, 0..1); // Room grids + light + volumetric rays
+                pass.draw(48..54, 0..1); // AoA insphere — BEFORE content quads so panes occlude it
+            }
+
+            // ── Upload AoA heatmap ──────────────────────────────────
+            if self.frame_count % 3 == 0 {
+                upload_heatmap(queue, &self.heatmap_buffer);
             }
 
             // ── Draw content quads ───────────────────────────────────
             pass.set_pipeline(&self.render_pipeline);
+            pass.set_bind_group(2, &self.heatmap_bind_group, &[]);
 
             // Sort nodes back-to-front in camera space for proper alpha blending.
             let sorted_indices = sorted_scene_indices_back_to_front(&scene, view);
@@ -943,11 +1477,100 @@ impl SceneRenderer {
                 pass.set_bind_group(1, tex_bg, &[]);
                 pass.draw(0..*vertex_count, 0..1);
             }
+
+            // Insphere now drawn with room grids (before content quads) for
+            // correct AoA pane occlusion — panes draw on top of the sphere.
         }
 
         queue.submit(std::iter::once(encoder.finish()));
 
+        // DoF post-process disabled pending NVIDIA SPIR-V driver investigation.
+        // self.apply_dof(device, queue);
+
         &self.output_view
+    }
+
+    fn apply_dof(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let blur_scale = 6.0f32;
+
+        let tx = 1.0 / self.width as f32;
+        let ty = 1.0 / self.height as f32;
+
+        // Pass 1: horizontal blur from output_view → dof_intermediate
+        let h_data = DofUniformData {
+            focus_depth: self.dof_focus_depth,
+            blur_scale,
+            direction_x: 1.0,
+            direction_y: 0.0,
+            texel_size_x: tx,
+            texel_size_y: ty,
+            _pad0: 0.0,
+            _pad1: 0.0,
+        };
+        queue.write_buffer(&self.dof_uniform_buffer, 0, bytemuck::bytes_of(&h_data));
+        let h_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("dof_h_bg"),
+            layout: &self.dof_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.output_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.dof_sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: self.dof_uniform_buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("dof_h") });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("dof_h_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.dof_intermediate_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.dof_pipeline);
+            pass.set_bind_group(0, &h_bg, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        queue.submit(std::iter::once(encoder.finish()));
+
+        // Pass 2: vertical blur from dof_intermediate → output_view
+        let v_data = DofUniformData {
+            focus_depth: self.dof_focus_depth,
+            blur_scale,
+            direction_x: 0.0,
+            direction_y: 1.0,
+            texel_size_x: tx,
+            texel_size_y: ty,
+            _pad0: 0.0,
+            _pad1: 0.0,
+        };
+        queue.write_buffer(&self.dof_uniform_buffer, 0, bytemuck::bytes_of(&v_data));
+        let v_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("dof_v_bg"),
+            layout: &self.dof_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.dof_intermediate_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.dof_sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: self.dof_uniform_buffer.as_entire_binding() },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("dof_v") });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("dof_v_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.output_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.dof_pipeline);
+            pass.set_bind_group(0, &v_bg, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        queue.submit(std::iter::once(encoder.finish()));
     }
 
     fn publish_entity_local_effect_state(&self, active_effects: &[serde_json::Value]) {
