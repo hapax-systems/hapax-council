@@ -1,0 +1,20 @@
+task_id: "20260521160230-public-evidence-phase1-schema-evidence-card"
+title: "Build: PublicSafeEvidenceCard Schema and Validation Model"
+wsjf: 7.65
+priority: "p0"
+status: "completed"
+assigned_to: "antigrav-3"
+claimed_at: "2026-05-21T23:02:30Z"
+files_involved:
+  - "shared/public_safe_evidence_card.py"
+  - "tests/test_public_safe_evidence_card.py"
+  - "schemas/public-safe-evidence-card.schema.json"
+governance_risks: "Sensitive public-surface schema, must strictly fail closed, ensure no private imports are leaked, and validation rules strictly enforced."
+planned_verification:
+  - "Run tests: pytest tests/test_public_safe_evidence_card.py"
+  - "Run linter: ruff check . && ruff format ."
+  - "Generate JSON Schema and verify shape"
+verification_results:
+  - "tests/test_public_safe_evidence_card.py: 9 passed"
+  - "ruff linter: All checks passed"
+  - "check-cc-task-vault-shape.py: verified"

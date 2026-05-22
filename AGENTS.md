@@ -1,23 +1,20 @@
-# Hapax Council Codex Instructions
+# Hapax Antigrav CLI Lane -- antigrav-3
 
-Read `~/projects/CLAUDE.md` and this repo's `CLAUDE.md` as the governing system contract. `AGENTS.md` exists to make Codex load the same rules Claude Code already uses, not to fork policy.
+You are **antigrav-3** in the Hapax relay protocol, running via Antigravity CLI.
 
-Core invariants:
+## Your task
 
-- Single operator only. Do not add auth, user roles, collaboration flows, or multi-user abstractions.
-- Obsidian is the canonical work-state surface. CC/Codex work items live in `~/Documents/Personal/20-projects/hapax-cc-tasks/`; use `cc-claim` and the active claim files when the task gate is enabled.
-- Use `uv`, not `pip`. Secrets come from `pass` and `hapax-secrets`; do not copy credential values into code or docs.
-- Prefer `scripts/hapax-codex --session cx-<color> --slot <alpha|beta|delta|epsilon>` to launch Codex so hooks, MCP, Obsidian context, and no-ask execution are all active. Without `--cd`, non-primary Codex sessions use Codex-native worktrees named `~/projects/hapax-council--cx-<color>`.
-- Use `scripts/hapax-codex-send --session cx-<color> --require-ack -- "message"` for load-bearing parent-to-child instructions. The reliable control plane is tmux (`hapax-codex-cx-<color>`); direct `foot` delivery is a legacy fallback and must not be treated as task receipt unless an ACK is observed.
-- Use `scripts/hapax-operator-message --type advisory|query|escalation --subject ...` for child/session-to-operator messages that should appear in the SBCL/CLOG Operator Inbox. Do not use it for work assignment; dispatch still goes through `scripts/hapax-methodology-dispatch`.
-- Screen visibility is required for `cx-red` and protected `cx-violet`. Other worker lanes may run headless in tmux if the Obsidian session dashboard (`hapax-cc-tasks/_dashboard/codex-session-health.md`), relay YAML, active claim file, and PR state stay current.
-- Respect relay path claims in `~/.cache/hapax/relay/*.yaml` before touching shared areas.
-- Respect protected live-session declarations in `~/.cache/hapax/relay/session-protection.md`; a protected `cx-*` lane must not be killed, replaced, relaunched, or reclaimed unless the operator explicitly overrides it.
-- Idle Codex sessions must stay on the coordination timer from `HAPAX_IDLE_UPDATE_SECONDS` (default 270): when blocked, waiting, or otherwise not actively producing, check parent/user/relay updates on that cadence and leave a concise relay/status update if the wait continues.
-- Existing Claude hook scripts are also the Codex guardrails through `hooks/scripts/codex-hook-adapter.sh`.
-- **Task gate is MANDATORY for all Codex sessions.** The `cc-task-gate.sh` hook runs on every file-mutating tool call. You MUST `cc-claim <task_id>` before writing code. Bulk-claiming multiple tasks is blocked — close the current task before claiming another.
-- **One task at a time.** `cc-claim` refuses to claim a new task while the current claim is active (non-terminal). Use `cc-close` first, or `cc-claim --force` with justification.
-- **Worktree limit: 20 visible session worktrees.** Creating worktrees beyond this is blocked. Codex lanes share this cap with Claude Code sessions.
-- A `codex-claim-audit.timer` runs every 4 hours and auto-releases phantom claims (claimed > 6h with no PR). Do not disable this timer.
+**20260521160230-public-evidence-phase1-schema-evidence-card**: Build PublicSafeEvidenceCard Schema
 
-For multi-session work, Codex lane identities use `cx-<color>` and worktree slots remain `alpha`, `beta`, `delta`, `epsilon` as coordination lanes. Greek slot names are not Codex worktree names; do not default Codex work into legacy Claude-era `hapax-council--delta/epsilon/main-red` paths.
+Read the full task: ~/Documents/Personal/20-projects/hapax-cc-tasks/active/20260521160230-public-evidence-phase1-schema-evidence-card.md
+
+## Rules
+
+1. Read ~/projects/CLAUDE.md and ~/projects/hapax-council/CLAUDE.md for conventions
+2. Work ONLY in this worktree
+3. Branch, commit with Co-Authored-By trailer, push, create PR
+4. Run tests: uv run pytest tests/ -q
+5. Run lint: uv run ruff check . && uv run ruff format .
+6. Single operator, no auth/roles/multi-user
+7. Be terse. Do the work.
+8. Co-Author trailer: Co-Authored-By: Antigravity <noreply@google.com>

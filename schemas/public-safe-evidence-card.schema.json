@@ -1,0 +1,156 @@
+{
+  "$defs": {
+    "ClaimCeiling": {
+      "enum": [
+        "no_claim",
+        "internal_only",
+        "publication_witness",
+        "peer_reviewed"
+      ],
+      "title": "ClaimCeiling",
+      "type": "string"
+    },
+    "PrivacyClass": {
+      "enum": [
+        "public",
+        "internal",
+        "operator_only",
+        "consent_gated"
+      ],
+      "title": "PrivacyClass",
+      "type": "string"
+    },
+    "RedactionPolicy": {
+      "enum": [
+        "none",
+        "names",
+        "values",
+        "full"
+      ],
+      "title": "RedactionPolicy",
+      "type": "string"
+    },
+    "SourceQuality": {
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ],
+      "title": "SourceQuality",
+      "type": "string"
+    }
+  },
+  "description": "Public-safe representation of an evidence card.",
+  "properties": {
+    "evidence_id": {
+      "minLength": 1,
+      "title": "Evidence Id",
+      "type": "string"
+    },
+    "source_card_id": {
+      "minLength": 1,
+      "title": "Source Card Id",
+      "type": "string"
+    },
+    "public_claim": {
+      "minLength": 1,
+      "title": "Public Claim",
+      "type": "string"
+    },
+    "evidence_refs": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Evidence Refs",
+      "type": "array"
+    },
+    "source_quality": {
+      "$ref": "#/$defs/SourceQuality"
+    },
+    "license_provenance": {
+      "minLength": 1,
+      "title": "License Provenance",
+      "type": "string"
+    },
+    "redaction_policy": {
+      "$ref": "#/$defs/RedactionPolicy",
+      "default": "none"
+    },
+    "redacted_fields": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Redacted Fields",
+      "type": "array"
+    },
+    "public_allowlist_approved": {
+      "default": false,
+      "title": "Public Allowlist Approved",
+      "type": "boolean"
+    },
+    "privacy_class": {
+      "$ref": "#/$defs/PrivacyClass",
+      "default": "public"
+    },
+    "freshness_deadline": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Freshness Deadline"
+    },
+    "limitations": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Limitations",
+      "type": "array"
+    },
+    "what_this_does_not_prove": {
+      "items": {
+        "type": "string"
+      },
+      "title": "What This Does Not Prove",
+      "type": "array"
+    },
+    "claim_ceiling": {
+      "$ref": "#/$defs/ClaimCeiling",
+      "default": "no_claim"
+    },
+    "methodology_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Methodology Ref"
+    },
+    "metadata": {
+      "additionalProperties": true,
+      "title": "Metadata",
+      "type": "object"
+    }
+  },
+  "required": [
+    "evidence_id",
+    "source_card_id",
+    "public_claim",
+    "evidence_refs",
+    "source_quality",
+    "license_provenance",
+    "what_this_does_not_prove"
+  ],
+  "title": "PublicSafeEvidenceCard",
+  "type": "object"
+}
