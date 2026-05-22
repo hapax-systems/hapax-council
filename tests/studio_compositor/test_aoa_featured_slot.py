@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from agents.studio_compositor import aoa_renderer as sr
 
 
@@ -151,9 +153,6 @@ def test_featured_constants_are_in_legible_band() -> None:
 
 
 # ── Defensive featured-slot reader — non-dict JSON root ─────────────────
-
-
-import pytest
 
 
 @pytest.mark.parametrize(
