@@ -276,26 +276,24 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let hit_clip = grid.projection * grid.view * vec4<f32>(hit, 1.0);
         let sphere_depth = hit_clip.z / hit_clip.w;
 
-        // Sample Reverie's feedback accumulator — the living visual memory
-        // of the full 8-pass shader chain (RD patterns, drift, breath, feedback).
-        let theta = atan2(sn.x, sn.z);
-        let phi = acos(clamp(sn.y, -1.0, 1.0));
-        let sphere_uv = vec2<f32>(
-            (theta + AOA_PI) / (2.0 * AOA_PI),
-            phi / AOA_PI,
-        );
-        let reverie = textureSample(reverie_texture, reverie_sampler, sphere_uv);
-
+        // Full composited Reverie output on the sphere — the DMN's expression.
+        // Stereographic projection: center of frame → front of sphere,
+        // edges wrap around to back. Full coverage, coherent mapping.
         let view_dir = normalize(cam_pos - hit);
+        let d = 1.0 + max(dot(sn, view_dir), 0.0);
+        let stereo_uv = vec2<f32>(
+            sn.x / d * 0.45 + 0.5,
+            sn.y / d * -0.45 + 0.5,
+        );
+        let reverie = textureSample(reverie_texture, reverie_sampler, stereo_uv);
+
         let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 2.2);
-        let rim = light_color * fresnel * 0.34;
+        let rim = light_color * fresnel * 0.28;
         let shadow = soft_shadow_at(hit, grid.light_position.xyz);
         let ndotl = max(dot(sn, normalize(grid.light_position.xyz - hit)), 0.0);
 
-        // Reverie accumulator + scene lighting + rim.
-        let rev_luma = dot(reverie.rgb, vec3<f32>(0.299, 0.587, 0.114));
-        var sphere_color = reverie.rgb * (0.8 + ndotl * 0.3 * shadow) + rim;
-        let sphere_alpha = clamp(0.30 + fresnel * 0.22 + rev_luma * 0.28, 0.26, 0.80);
+        var sphere_color = reverie.rgb * (0.85 + ndotl * 0.2 * shadow) + rim;
+        let sphere_alpha = clamp(0.34 + fresnel * 0.20 + dot(reverie.rgb, vec3<f32>(0.33)) * 0.26, 0.30, 0.82);
         return FragOutput(vec4<f32>(sphere_color, sphere_alpha), 0.999);
     }
 
