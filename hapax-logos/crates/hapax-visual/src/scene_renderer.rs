@@ -345,10 +345,12 @@ fn upload_heatmap(queue: &wgpu::Queue, buffer: &wgpu::Buffer) {
 }
 
 fn read_sphere_warmth() -> f32 {
-    static LAST: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let frame = LAST.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    static FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    static CACHED: std::sync::atomic::AtomicU32 =
+        std::sync::atomic::AtomicU32::new(0x3F000000);
+    let frame = FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if frame % 30 != 0 {
-        return f32::from_bits(LAST.load(std::sync::atomic::Ordering::Relaxed));
+        return f32::from_bits(CACHED.load(std::sync::atomic::Ordering::Relaxed));
     }
     let warmth = std::fs::read_to_string("/dev/shm/hapax-compositor/color-resonance.json")
         .ok()
@@ -356,7 +358,7 @@ fn read_sphere_warmth() -> f32 {
         .and_then(|v| v.get("warmth")?.as_f64())
         .map(|w| w as f32)
         .unwrap_or(0.5);
-    LAST.store(warmth.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    CACHED.store(warmth.to_bits(), std::sync::atomic::Ordering::Relaxed);
     warmth
 }
 
@@ -485,6 +487,10 @@ pub struct SceneRenderer {
     dof_intermediate_texture: wgpu::Texture,
     dof_intermediate_view: wgpu::TextureView,
     dof_focus_depth: f32,
+    // Persistent YouTube sphere texture (avoid per-frame allocation)
+    yt_sphere_texture: Option<wgpu::Texture>,
+    yt_sphere_w: u32,
+    yt_sphere_h: u32,
 }
 
 impl SceneRenderer {
@@ -1093,7 +1099,7 @@ impl SceneRenderer {
         let dof_intermediate_view = dof_intermediate_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         log::info!(
-            "SceneRenderer initialized: {}x{}, fov={:.0}°, scene_msaa={}x, dof=enabled",
+            "SceneRenderer initialized: {}x{}, fov={:.0}°, scene_msaa={}x, dof=disabled",
             width,
             height,
             camera.fov_y_radians.to_degrees(),
@@ -1141,6 +1147,9 @@ impl SceneRenderer {
             dof_intermediate_texture,
             dof_intermediate_view,
             dof_focus_depth: 0.5,
+            yt_sphere_texture: None,
+            yt_sphere_w: 0,
+            yt_sphere_h: 0,
         }
     }
 
@@ -1262,25 +1271,34 @@ impl SceneRenderer {
         };
         let w = img.width as u32;
         let h = img.height as u32;
-        let rgba = &img.pixels;
-        let tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("yt-sphere"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            &rgba,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        );
-        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-        self.set_reverie_texture(device, &view);
+        if self.yt_sphere_texture.is_none()
+            || self.yt_sphere_w != w
+            || self.yt_sphere_h != h
+        {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("yt-sphere"),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            self.set_reverie_texture(device, &view);
+            self.yt_sphere_texture = Some(tex);
+            self.yt_sphere_w = w;
+            self.yt_sphere_h = h;
+        }
+        if let Some(ref tex) = self.yt_sphere_texture {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &img.pixels,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            );
+        }
     }
 
     /// Render the 3D scene. Builds the scene graph dynamically from

@@ -1068,7 +1068,11 @@ fn build_scene_from_source_refs(
             AnchorRole::Medium => 0.40,
             AnchorRole::Low => 0.20,
         };
-        if let Some(ai) = assign_anchor(&anchors, role, &anchor_used) {
+        let ai = assign_anchor(&anchors, role, &anchor_used)
+            .or_else(|| assign_anchor(&anchors, AnchorRole::Low, &anchor_used))
+            .or_else(|| assign_anchor(&anchors, AnchorRole::Medium, &anchor_used))
+            .or_else(|| assign_anchor(&anchors, AnchorRole::High, &anchor_used));
+        if let Some(ai) = ai {
             anchor_used[ai] = true;
             nodes.push(make_node(
                 active_sources,
@@ -2230,14 +2234,15 @@ mod tests {
             ("ward-g", 0.7, 3, 420, 140),
         ];
         let scene = build_scene_from_sources(&sources, 0.0);
-        let overflow = scene.iter().find(|n| n.label == "ward-g");
-        if let Some(node) = overflow {
-            let dist = node.position.distance(AOA_CENTROID);
-            assert!(
-                dist > UTAMA_RADIUS,
-                "overflow wards must be outside Utama zone"
-            );
-        }
+        let overflow = scene
+            .iter()
+            .find(|n| n.label == "ward-g")
+            .expect("ward-g must be placed (10 MEDIUM anchors available for 7 wards)");
+        let dist = overflow.position.distance(AOA_CENTROID);
+        assert!(
+            dist > UTAMA_RADIUS,
+            "overflow wards must be outside Utama zone (dist={dist})"
+        );
     }
 
     #[test]
@@ -2258,6 +2263,69 @@ mod tests {
                 start.label
             );
             assert_eq!(after.scale, start.scale, "scale drift on {}", start.label);
+        }
+    }
+
+    #[test]
+    fn scene_anchors_returns_30_points_with_correct_role_counts() {
+        let anchors = scene_anchors();
+        assert_eq!(anchors.len(), 30);
+        let high = anchors.iter().filter(|a| a.role == AnchorRole::High).count();
+        let med = anchors.iter().filter(|a| a.role == AnchorRole::Medium).count();
+        let low = anchors.iter().filter(|a| a.role == AnchorRole::Low).count();
+        assert_eq!(high, 8, "8 HIGH cube-vertex anchors");
+        assert_eq!(med, 10, "10 MEDIUM octahedron+child anchors");
+        assert_eq!(low, 12, "12 LOW trisection anchors");
+        for (i, a) in anchors.iter().enumerate() {
+            let dist = a.world_pos.distance(AOA_CENTROID);
+            assert!(
+                dist > UTAMA_RADIUS,
+                "anchor {i} at dist {dist} must be outside Utama ({UTAMA_RADIUS})"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_source_entropy_routes_correctly() {
+        assert_eq!(classify_source_entropy("camera-brio-operator") as u8, AnchorRole::High as u8);
+        assert_eq!(classify_source_entropy("camera-pi-noir-desk") as u8, AnchorRole::High as u8);
+        assert_eq!(classify_source_entropy("yt-slot-0") as u8, AnchorRole::High as u8);
+        assert_eq!(classify_source_entropy("cbip_dual_ir") as u8, AnchorRole::High as u8);
+        assert_eq!(classify_source_entropy("visual-pool-slot-0") as u8, AnchorRole::Low as u8);
+        assert_eq!(classify_source_entropy("grounding_provenance_ticker") as u8, AnchorRole::Low as u8);
+        assert_eq!(classify_source_entropy("precedent_ticker") as u8, AnchorRole::Low as u8);
+        assert_eq!(classify_source_entropy("chronicle_ticker") as u8, AnchorRole::Low as u8);
+        assert_eq!(classify_source_entropy("programme_history") as u8, AnchorRole::Medium as u8);
+        assert_eq!(classify_source_entropy("unknown_source") as u8, AnchorRole::Medium as u8);
+    }
+
+    #[test]
+    fn anchor_exhaustion_drops_excess_sources_gracefully() {
+        let mut sources: Vec<(&str, f32, i32, u32, u32)> = Vec::new();
+        for i in 0..12 {
+            sources.push((
+                Box::leak(format!("camera-overflow-{i}").into_boxed_str()),
+                0.8, 5, 640, 360,
+            ));
+        }
+        let scene = build_scene_from_sources(&sources, 0.0);
+        let cam_count = scene.iter().filter(|n| n.label.starts_with("camera-")).count();
+        assert!(cam_count >= 8, "at least 8 cameras placed at HIGH anchors");
+        assert!(cam_count <= 12, "excess cameras fall back to other role anchors");
+    }
+
+    #[test]
+    fn orbital_drift_with_max_energy_stays_bounded() {
+        let mut cam = Camera3D::new(960, 540);
+        for t in (0..600).map(|i| i as f32 * 0.1) {
+            cam.apply_orbital_drift_with_energy(t, 1.0);
+            assert!(cam.eye.x.abs() < 2.1, "x out of bounds at t={t}");
+            assert!(cam.eye.y.abs() < 0.55, "y out of bounds at t={t}");
+            assert!(
+                (1.60..=2.15).contains(&cam.eye.z),
+                "z out of bounds at t={t}: {}",
+                cam.eye.z
+            );
         }
     }
 }
