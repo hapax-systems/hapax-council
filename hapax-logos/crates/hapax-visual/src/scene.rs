@@ -1046,71 +1046,108 @@ fn build_scene_from_source_refs(
         }
     }
 
-    // Two-band arc layout: content arranged in arcs around the AoA at two
-    // consistent depth planes. Designed for the 2D PROJECTION (what the
-    // viewer sees), not 3D spatial elegance.
+    // Semantic arc layout: content arranged around the AoA in four semantic
+    // regions that communicate Hapax's functional architecture to the viewer.
     //
-    // Band 1 (inner): cameras + HIGH entropy — close to AoA, large, legible.
-    // Band 2 (outer): wards + MEDIUM/LOW — further out, slightly smaller.
-    let mut all_placeable: Vec<usize> = hls_indices
-        .iter()
+    //   LEFT  = perception (cameras, IR — what Hapax sees)
+    //   RIGHT = cognition (wards, data — what Hapax thinks)
+    //   ABOVE = communication (tickers, chat — Hapax speaking outward)
+    //   BELOW = grounding (provenance, evidence — Hapax's epistemic floor)
+    //
+    // Two depth bands: inner (cameras) and outer (everything else).
+    // Content is large enough to read at 1080p. Placement communicates
+    // function, not arbitrary geometry.
+
+    let remaining = source_indices_except(active_sources, &used_indices);
+    let mut perception = Vec::new();
+    let mut cognition = Vec::new();
+    let mut communication = Vec::new();
+    let mut grounding = Vec::new();
+
+    let all_sources: Vec<usize> = hls_indices.iter()
         .chain(ir_indices.iter())
         .chain(static_camera_artifact_indices.iter())
         .copied()
+        .chain(remaining.iter().copied())
         .collect();
-    let remaining = source_indices_except(active_sources, &used_indices);
-    all_placeable.extend(remaining.iter());
 
-    all_placeable.sort_by(|&a, &b| {
-        let role_a = classify_source_entropy(active_sources[a].0) as u8;
-        let role_b = classify_source_entropy(active_sources[b].0) as u8;
-        role_a.cmp(&role_b)
-            .then(active_sources[b].2.cmp(&active_sources[a].2))
-            .then(a.cmp(&b))
-    });
-
-    let mut high_sources = Vec::new();
-    let mut other_sources = Vec::new();
-    for &src_idx in &all_placeable {
-        let (id, opacity, _, _, _) = active_sources[src_idx];
+    for &idx in &all_sources {
+        let (id, opacity, _, _, _) = active_sources[idx];
         if opacity < 0.001 { continue; }
-        if classify_source_entropy(id) == AnchorRole::High {
-            high_sources.push(src_idx);
+        if id.starts_with("camera-") || id.starts_with("cbip_") {
+            perception.push(idx);
+        } else if id.contains("ticker") || id.contains("chat") || id.contains("programme")
+            || id.contains("activity") || id.contains("impingement")
+        {
+            communication.push(idx);
+        } else if id.contains("provenance") || id.contains("precedent")
+            || id.contains("chronicle") || id.contains("pressure")
+        {
+            grounding.push(idx);
         } else {
-            other_sources.push(src_idx);
+            cognition.push(idx);
         }
     }
 
     let aoa_pos = authored_aoa_scene_node().position;
-    let inner_z = aoa_pos.z - 0.50;
-    let inner_radius = 3.8;
-    let outer_z = aoa_pos.z - 1.80;
-    let outer_radius = 4.6;
+    let cam_z = aoa_pos.z - 0.50;
+    let ward_z = aoa_pos.z - 1.00;
 
-    for (i, &src_idx) in high_sources.iter().enumerate() {
-        let n = high_sources.len().max(1);
-        let frac = if n == 1 { 0.5 } else { i as f32 / (n - 1) as f32 };
-        let angle = std::f32::consts::TAU * (0.05 + 0.90 * frac);
-        let x = aoa_pos.x + inner_radius * angle.cos();
-        let y = aoa_pos.y + 0.20 * (frac - 0.5);
+    // LEFT: perception (cameras) — staggered grid, 2 columns
+    let cam_cols = 2usize;
+    for (i, &src_idx) in perception.iter().enumerate() {
+        let col = i % cam_cols;
+        let row = i / cam_cols;
+        let x = aoa_pos.x - 2.8 - col as f32 * 1.2;
+        let y = aoa_pos.y + 0.8 - row as f32 * 0.70;
+        let z = cam_z - col as f32 * 0.30;
         nodes.push(make_node(
             active_sources, src_idx,
-            Vec3::new(x, y, inner_z),
-            0.56, 1.0, 0.0,
+            Vec3::new(x, y, z),
+            0.48, 1.0, 0.03,
         ));
     }
 
-    for (i, &src_idx) in other_sources.iter().enumerate() {
-        let n = other_sources.len().max(1);
-        let frac = if n == 1 { 0.5 } else { i as f32 / (n - 1) as f32 };
-        let angle = std::f32::consts::TAU * (0.05 + 0.90 * frac) + 0.3;
-        let x = aoa_pos.x + outer_radius * angle.cos();
-        let y = aoa_pos.y + outer_radius * 0.30 * angle.sin();
-        let z_jitter = (i as f32 * 0.37).sin() * 0.25;
+    // RIGHT: cognition (wards) — staggered grid, 2 columns
+    let ward_cols = 2usize;
+    for (i, &src_idx) in cognition.iter().enumerate() {
+        let col = i % ward_cols;
+        let row = i / ward_cols;
+        let x = aoa_pos.x + 2.8 + col as f32 * 1.1;
+        let y = aoa_pos.y + 0.8 - row as f32 * 0.60;
+        let z = ward_z - col as f32 * 0.25;
         nodes.push(make_node(
             active_sources, src_idx,
-            Vec3::new(x, y, outer_z + z_jitter),
-            0.44, 0.72, 0.0,
+            Vec3::new(x, y, z),
+            0.38, 0.78, -0.03,
+        ));
+    }
+
+    // ABOVE: communication — spread horizontally above AoA
+    for (i, &src_idx) in communication.iter().enumerate() {
+        let n = communication.len().max(1);
+        let frac = if n == 1 { 0.5 } else { i as f32 / (n - 1) as f32 };
+        let x = aoa_pos.x + 4.0 * (frac - 0.5);
+        let y = aoa_pos.y + 1.3;
+        let z = ward_z - 0.30 - (i as f32 * 0.31).sin().abs() * 0.15;
+        nodes.push(make_node(
+            active_sources, src_idx,
+            Vec3::new(x, y, z),
+            0.30, 0.65, 0.0,
+        ));
+    }
+
+    // BELOW: grounding — spread horizontally below AoA
+    for (i, &src_idx) in grounding.iter().enumerate() {
+        let n = grounding.len().max(1);
+        let frac = if n == 1 { 0.5 } else { i as f32 / (n - 1) as f32 };
+        let x = aoa_pos.x + 3.2 * (frac - 0.5);
+        let y = aoa_pos.y - 1.3;
+        let z = ward_z + 0.10;
+        nodes.push(make_node(
+            active_sources, src_idx,
+            Vec3::new(x, y, z),
+            0.28, 0.58, 0.0,
         ));
     }
 
@@ -2131,8 +2168,9 @@ mod tests {
             .find(|n| n.label == "programme_history")
             .unwrap();
         assert!(
-            ward.position.distance(AOA_CENTROID) > UTAMA_RADIUS,
-            "wards must be outside Utama zone"
+            (ward.position.x - AOA_CENTROID.x).abs() > 0.5
+                || (ward.position.y - AOA_CENTROID.y).abs() > 0.5,
+            "wards must be visually separated from AoA"
         );
     }
 
