@@ -1017,11 +1017,14 @@ def _apply_receipt_to_route_payload(
         reason_codes=receipt.resource.reason_codes,
         removable_reasons={"fresh_resource_evidence_absent"},
     )
+    quota_stale_after = (
+        receipt.stale_after if subscription_quota_unobservable else receipt.quota.stale_after
+    )
     _apply_surface(
         freshness,
         "quota",
         checked_at=observed_at,
-        stale_after=receipt.quota.stale_after,
+        stale_after=quota_stale_after,
         evidence_refs=[*receipt.quota.evidence_refs, receipt_ref],
         reason_codes=quota_reason_codes
         if receipt.quota.status is not EvidenceStatus.OBSERVED
