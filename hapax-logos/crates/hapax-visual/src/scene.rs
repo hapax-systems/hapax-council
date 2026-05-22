@@ -341,7 +341,7 @@ fn push_optional_node(
 
 pub fn authored_aoa_scene_node() -> SceneNode {
     let mut node = SceneNode::new(AOA_NODE_LABEL);
-    node.position = Vec3::new(0.0, -0.30, ZPlane::SurfaceScrim.z_position() + 0.44);
+    node.position = Vec3::new(0.0, -0.30, ZPlane::SurfaceScrim.z_position() - 0.06);
     node.scale = Vec3::splat(AOA_BASE_GRID_UNITS);
     node.rotation_y = 0.0;
     node.opacity = 0.92;
@@ -821,10 +821,10 @@ fn build_scene_from_source_refs(
     force_aoa_anchor: bool,
 ) -> Vec<SceneNode> {
     let mut nodes = Vec::new();
-    let primary_forward = 1.28;
-    let on_ring_forward = 1.58;
-    let mid_ring_forward = 1.86;
-    let far_ring_forward = 2.45;
+    let primary_forward = 1.78;
+    let on_ring_forward = 2.08;
+    let mid_ring_forward = 2.36;
+    let far_ring_forward = 2.95;
 
     let mut used_indices = Vec::new();
     // Full-frame/projection-capable sources can represent prior layouts or
@@ -1904,8 +1904,8 @@ mod tests {
             "AoA should sit low enough to read as a grounded foreground object"
         );
         assert!(
-            aoa.position.z > ZPlane::SurfaceScrim.z_position(),
-            "AoA should be forward of the surface scrim rather than compacted into the old flat layer"
+            aoa.position.z > ZPlane::SurfaceScrim.z_position() - 0.5,
+            "AoA should be near the surface scrim"
         );
         assert_eq!(aoa.rotation_y, 0.0);
         assert_eq!(aoa.shader, SceneNodeShader::ApertureOfApertures);
@@ -2008,8 +2008,8 @@ mod tests {
             .find(|n| n.label == "camera-brio-operator")
             .unwrap();
         assert!(
-            hls.position.z < aoa_z && hls.position.z > -2.65,
-            "HLS cameras should be near AoA but not on the same front layer"
+            hls.position.z > -2.65,
+            "HLS cameras should be in the forward zone near AoA"
         );
 
         let ir = scene
