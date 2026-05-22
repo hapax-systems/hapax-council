@@ -42,8 +42,11 @@ class EvalReceiptWriter:
             import resource
 
             max_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-            # max_rss is in kilobytes on Linux
-            self.peak_memory_mb = max_rss / 1024.0
+            import sys
+            if sys.platform == "darwin":
+                self.peak_memory_mb = max_rss / (1024.0 * 1024.0)
+            else:
+                self.peak_memory_mb = max_rss / 1024.0
         except (ImportError, OSError):
             self.peak_memory_mb = 0.0
 
@@ -77,9 +80,7 @@ class EvalReceiptWriter:
             try:
                 normalized_score = float(result)
             except ValueError:
-                normalized_score = getattr(result, "normalized_score", None) or getattr(
-                    result, "score", None
-                )
+                raise ReceiptWriteError(f"Could not parse normalized_score from string: {result}")
         elif isinstance(result, dict):
             normalized_score = result.get("normalized_score") or result.get("score")
         else:
@@ -158,7 +159,11 @@ class EvalReceiptWriter:
                     import resource
 
                     max_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-                    self.peak_memory_mb = max_rss / 1024.0
+                    import sys
+                    if sys.platform == "darwin":
+                        self.peak_memory_mb = max_rss / (1024.0 * 1024.0)
+                    else:
+                        self.peak_memory_mb = max_rss / 1024.0
                 except (ImportError, OSError):
                     self.peak_memory_mb = 0.0
             res_obs["peak_memory_mb"] = self.peak_memory_mb
@@ -186,7 +191,9 @@ class EvalReceiptWriter:
             output_path = os.path.join(self.ledger_dir, "receipts", f"{run_id}.json")
 
         try:
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            dirname = os.path.dirname(output_path)
+            if dirname:
+                os.makedirs(dirname, exist_ok=True)
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write(receipt.model_dump_json(indent=2))
         except OSError as e:

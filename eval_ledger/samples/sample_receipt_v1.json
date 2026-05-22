@@ -22,8 +22,8 @@
   "contamination_status": "clean",
   "freshness_status": "fresh",
   "resource_observations": {
-    "wall_time_seconds": 0.10040636800113134,
-    "peak_memory_mb": 52.83984375
+    "wall_time_seconds": 0.10027805001300294,
+    "peak_memory_mb": 264.91015625
   },
   "claim_ceilings": [
     "Sample model passes baseline constraints"

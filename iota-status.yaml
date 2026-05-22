@@ -1,7 +1,7 @@
 task_id: "20260521160210-eval-receipt-v1-p1-writer"
-status: "done"
+status: "fixing_pr"
 branch: "iota/eval-receipt-v1-p1-writer"
 pr: "3710"
 test_pass_count: 4
-last_action: "Completed implementation, all tests pass, PR created, and cc-task closed"
-timestamp: "2026-05-22T03:44:30Z"
+last_action: "Fixed CodeRabbit comments, regenerated sample, pushed"
+timestamp: "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
