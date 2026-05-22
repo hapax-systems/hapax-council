@@ -75,3 +75,28 @@ def read_trace_with_provenance(
         was_fresh=data is not None,
         data_keys=frozenset(data.keys()) if data else None,
     )
+
+
+def read_and_log_trace(
+    path: Path,
+    stale_s: float,
+    *,
+    reader_node: str,
+    fields_extracted: list[str],
+    prior_state: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """read_trace() wrapper returning transformation context for Chronicle emission.
+
+    Returns (data, context) where context contains the metadata needed
+    to call emit_transformation() after the caller computes posterior_state.
+    Returns (None, None) if the trace is stale or missing.
+    """
+    data = read_trace(path, stale_s)
+    if data is None:
+        return None, None
+    return data, {
+        "source_node": path.parent.name,
+        "reader_node": reader_node,
+        "fields_extracted": fields_extracted,
+        "prior_state": prior_state,
+    }
