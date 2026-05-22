@@ -251,14 +251,11 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let hit_clip = grid.projection * grid.view * vec4<f32>(hit, 1.0);
         let sphere_depth = hit_clip.z / hit_clip.w;
 
-        // Equirectangular UV from ray-sphere hit normal.
-        let theta = atan2(sn.x, sn.z);
-        let phi = acos(clamp(sn.y, -1.0, 1.0));
-        let eq_uv = vec2<f32>(
-            (theta + AOA_PI) / (2.0 * AOA_PI),
-            phi / AOA_PI,
-        );
-        let reverie = textureSample(reverie_texture, reverie_sampler, eq_uv);
+        // View-space normal mapping — projects Reverie frame onto the sphere
+        // so the full frame content is visible from the current camera angle.
+        let view_normal = (grid.view * vec4<f32>(sn, 0.0)).xyz;
+        let sphere_uv = view_normal.xy * 0.48 + 0.5;
+        let reverie = textureSample(reverie_texture, reverie_sampler, sphere_uv);
 
         let view_dir = normalize(cam_pos - hit);
         let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 2.4);

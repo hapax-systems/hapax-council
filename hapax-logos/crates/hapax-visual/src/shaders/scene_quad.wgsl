@@ -724,14 +724,22 @@ fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
     let local_lattice = aa_line_mask(abs(bary.x - bary.y), 0.018, 0.042)
         * aa_line_mask(bary.z, 0.018, 0.042);
     let tint = aoa_face_tint(in.pane_info.x, inner_pane, in.local_pos, in.pane_info.z);
-    let fill = 0.052 + inner_pane * 0.014;
-    let line = edge * (0.76 - inner_pane * 0.11);
-    let address = info_grid * (0.12 + inner_pane * 0.04);
-    let lattice = local_lattice * (0.11 + inner_pane * 0.055);
+
+    // Per-pane heatmap glow driven by pane ordinal + time.
+    let pane_ord = u32(in.pane_info.z + 0.5);
+    let pane_hash = fract(sin(f32(pane_ord) * 127.1 + 311.7) * 43758.5453);
+    let pane_phase = pane_hash * 6.28 + scene.opacity * 0.0; // stable per-pane phase
+    let heat_pulse = 0.3 + 0.7 * clamp(sin(pane_phase + f32(pane_ord) * 0.37) * 0.5 + 0.5, 0.0, 1.0);
+    let heat_color = tint * (0.6 + heat_pulse * 0.8);
+
+    let fill = 0.10 + inner_pane * 0.03 + heat_pulse * 0.08;
+    let line = edge * (0.82 - inner_pane * 0.08);
+    let address = info_grid * (0.16 + inner_pane * 0.06);
+    let lattice = local_lattice * (0.14 + inner_pane * 0.06);
     let pane_energy = fill + line + address + lattice;
-    let aura = smoothstep(0.0, 0.9, line + address);
-    let color = tint * pane_energy + vec3<f32>(0.72, 0.38, 1.0) * aura * 0.12;
-    let alpha = clamp(fill * 0.70 + line * 0.62 + address * 0.42 + lattice * 0.36, 0.0, 0.88)
+    let aura = smoothstep(0.0, 0.8, line + address);
+    let color = heat_color * pane_energy + tint * aura * 0.18;
+    let alpha = clamp(fill * 0.78 + line * 0.68 + address * 0.48 + lattice * 0.40, 0.0, 0.90)
         * scene.opacity;
     return vec4<f32>(color, alpha);
 }
