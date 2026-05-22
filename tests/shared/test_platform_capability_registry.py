@@ -12,12 +12,21 @@ from types import ModuleType
 import pytest
 from pydantic import ValidationError
 
+from shared.platform_capability_receipts import (
+    CliEvidence,
+    EvidenceStatus,
+    PlatformCapabilityReceipt,
+    ProviderDocsEvidence,
+    SurfaceEvidence,
+    WrapperEvidence,
+)
 from shared.platform_capability_registry import (
     REQUIRED_ROUTE_IDS,
     AuthorityCeiling,
     PlatformCapabilityRegistry,
     PlatformCapabilityRoute,
     RouteState,
+    _apply_receipt_to_route_payload,
     build_supply_vector,
     check_registry_freshness,
     load_platform_capability_registry,
@@ -305,3 +314,65 @@ def test_stale_capability_score_field_fails_closed() -> None:
     assert any(
         "capability_scores.source_editing stale" in error for error in result.routes[0].errors
     )
+
+
+def _make_receipt(*, observed_at: datetime, stale_after: str = "24h") -> PlatformCapabilityReceipt:
+    return PlatformCapabilityReceipt(
+        receipt_id="test-receipt",
+        platform="claude",
+        routes=["claude.headless.full"],
+        observed_at=observed_at,
+        stale_after=stale_after,
+        cli=CliEvidence(binary="claude", available=True, version="2.1.0"),
+        wrapper=WrapperEvidence(path="/dev/null", exists=True, executable=True, sha256="abc123"),
+        capability=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="24h",
+            evidence_refs=["test:cap"],
+        ),
+        resource=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="24h",
+            evidence_refs=["test:res"],
+        ),
+        quota=SurfaceEvidence(
+            status=EvidenceStatus.UNOBSERVABLE,
+            source="test",
+            observed_at=observed_at,
+            stale_after="15m",
+            evidence_refs=["test:quota"],
+            reason_codes=["account_live_quota_receipt_absent"],
+        ),
+        provider_docs=ProviderDocsEvidence(
+            refs=["test:docs"],
+            fetched_at=observed_at,
+            stale_after="168h",
+        ),
+    )
+
+
+def test_subscription_quota_nonblocking_uses_receipt_stale_after() -> None:
+    """Regression: unobservable subscription quota must not go stale at 15m."""
+    payload = _payload()
+    route = _route_payload(payload, "claude.headless.full")
+    assert route["capacity_pool"] == "subscription_quota"
+    _mark_fresh(route)
+
+    receipt_time = datetime(2026, 5, 9, 20, 0, tzinfo=UTC)
+    receipt = _make_receipt(observed_at=receipt_time, stale_after="24h")
+    _apply_receipt_to_route_payload(route, receipt)
+
+    assert route["freshness"]["quota_stale_after"] == "24h"
+    assert route["route_state"] == "active"
+    assert "account_live_quota_receipt_absent" not in route.get("blocked_reasons", [])
+
+    check_at = datetime(2026, 5, 9, 21, 0, tzinfo=UTC)
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    result = check_registry_freshness(registry, route_ids=["claude.headless.full"], now=check_at)
+
+    quota_errors = [e for e in result.routes[0].errors if "quota" in e]
+    assert not quota_errors, f"quota should not be stale after 1h: {quota_errors}"
