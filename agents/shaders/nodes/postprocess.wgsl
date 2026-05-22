@@ -77,6 +77,11 @@ fn main_1() {
     ) * luma;
     c = vec4<f32>(c.xyz + inject * mono_risk * 0.28, c.w);
 
+    // Brightness floor — prevent total darkness during heavy effects.
+    let final_luma = dot(c.xyz, vec3<f32>(0.299, 0.587, 0.114));
+    let brightness_lift = smoothstep(0.04, 0.0, final_luma) * 0.06;
+    c = vec4<f32>(c.xyz + vec3<f32>(brightness_lift), c.w);
+
     fragColor = c;
     return;
 }

@@ -292,10 +292,13 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let shadow = soft_shadow_at(hit, grid.light_position.xyz);
         let ndotl = max(dot(sn, normalize(grid.light_position.xyz - hit)), 0.0);
 
-        // Boost Reverie content to be legible on the sphere.
-        let rev_sat = reverie.rgb * 1.5;
-        var sphere_color = rev_sat * (0.80 + ndotl * 0.25 * shadow) + rim;
-        let sphere_alpha = clamp(0.38 + fresnel * 0.18, 0.35, 0.78);
+        let w = clamp(grid.sphere_warmth, 0.0, 1.0);
+        let floor_cool = vec3<f32>(0.10, 0.16, 0.32);
+        let floor_warm = vec3<f32>(0.32, 0.18, 0.08);
+        let emissive_floor = mix(floor_cool, floor_warm, w);
+        let rev_content = max(reverie.rgb * 2.5, emissive_floor);
+        var sphere_color = rev_content * (0.85 + ndotl * 0.2 * shadow) + rim;
+        let sphere_alpha = clamp(0.78 + fresnel * 0.14, 0.76, 0.92);
         return FragOutput(vec4<f32>(sphere_color, sphere_alpha), 0.999);
     }
 
