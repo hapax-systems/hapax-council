@@ -154,15 +154,17 @@ def get_imported_modules(file_path: Path, module_name: str) -> set[str]:
 
 
 def count_consumers(
-    target_module_name: str, all_source_files: list[Path], target_file_path: Path
+    target_module_name: str,
+    all_source_files: list[Path],
+    target_file_path: Path,
+    imports_by_file: dict[Path, set[str]],
 ) -> int:
     """Count how many other source files import the target module."""
     count = 0
     for file_path in all_source_files:
         if file_path == target_file_path:
             continue
-        file_module_name = get_module_name(file_path)
-        imported = get_imported_modules(file_path, file_module_name)
+        imported = imports_by_file.get(file_path, set())
         for imp in imported:
             if imp == target_module_name or imp.startswith(target_module_name + "."):
                 count += 1
@@ -220,6 +222,12 @@ def main(argv: list[str] | None = None) -> int:
     # 3. Gather all potential consumer files in the project
     all_source_files = get_all_project_modules()
 
+    # Precompute imports by file
+    imports_by_file = {
+        file_path: get_imported_modules(file_path, get_module_name(file_path))
+        for file_path in all_source_files
+    }
+
     # 4. Perform check
     failed_modules = []
     for module_path in modules_to_check:
@@ -232,7 +240,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             continue
 
-        consumer_count = count_consumers(module_name, all_source_files, module_path)
+        consumer_count = count_consumers(
+            module_name, all_source_files, module_path, imports_by_file
+        )
         print(f"Checking module: {module_path} ({module_name}) -> Consumers: {consumer_count}")
 
         if consumer_count == 0:

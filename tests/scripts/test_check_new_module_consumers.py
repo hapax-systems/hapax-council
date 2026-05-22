@@ -91,3 +91,28 @@ from agents import health_monitor
 
     # from agents import health_monitor -> agents.health_monitor
     assert "agents.health_monitor" in imported
+
+
+def test_count_consumers() -> None:
+    gate = load_gate_module()
+
+    all_source_files = [
+        Path("shared/working_mode.py"),
+        Path("agents/health_monitor/registry.py"),
+        Path("agents/other.py"),
+    ]
+    target_file = Path("shared/working_mode.py")
+
+    imports_by_file = {
+        Path("shared/working_mode.py"): set(),
+        Path("agents/health_monitor/registry.py"): {"shared.working_mode"},
+        Path("agents/other.py"): {"shared.working_mode", "something_else"},
+    }
+
+    count = gate.count_consumers(
+        "shared.working_mode",
+        all_source_files,
+        target_file,
+        imports_by_file,
+    )
+    assert count == 2
