@@ -25,6 +25,15 @@ var quad_texture: texture_2d<f32>;
 @group(1) @binding(1)
 var quad_sampler: sampler;
 
+struct HeatmapEntry {
+    heat: f32,
+    hue: f32,
+    sat: f32,
+    _pad: f32,
+};
+@group(2) @binding(0)
+var<storage, read> heatmap: array<HeatmapEntry>;
+
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -726,10 +735,16 @@ fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
         * aa_line_mask(bary.z, 0.018, 0.042);
     let tint = aoa_face_tint(in.pane_info.x, inner_pane, in.local_pos, in.pane_info.z);
 
-    // Per-pane heatmap — saturated color, not washed-out brightness.
+    // Per-pane heatmap — live impingement/recruitment activity.
     let pane_ord = u32(in.pane_info.z + 0.5);
     let pane_hash = fract(sin(f32(pane_ord) * 127.1 + 311.7) * 43758.5453);
-    let heat_pulse = 0.4 + 0.6 * clamp(sin(pane_hash * 6.28 + f32(pane_ord) * 0.37) * 0.5 + 0.5, 0.0, 1.0);
+    var heat_pulse = 0.3 + pane_hash * 0.4;
+    var heat_hue = 0.0;
+    if pane_ord < arrayLength(&heatmap) {
+        let entry = heatmap[pane_ord];
+        heat_pulse = max(entry.heat, 0.05 + pane_hash * 0.15);
+        heat_hue = entry.hue;
+    }
 
     let fill = 0.08 + inner_pane * 0.03 + heat_pulse * 0.10;
     let line = edge * (0.88 - inner_pane * 0.08);
@@ -737,8 +752,15 @@ fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
     let lattice = local_lattice * (0.14 + inner_pane * 0.06);
     let pane_energy = fill + line + address + lattice;
     let aura = smoothstep(0.0, 0.7, line + address);
-    // Saturate the tint rather than brightening — preserves hue through grading.
-    let sat_tint = tint * (1.2 + heat_pulse * 0.6);
+    // Modulate tint by heatmap hue + saturate for effect survival.
+    let h6 = heat_hue * 6.0;
+    let heat_rgb = vec3<f32>(
+        clamp(abs(h6 - 3.0) - 1.0, 0.0, 1.0),
+        clamp(2.0 - abs(h6 - 2.0), 0.0, 1.0),
+        clamp(2.0 - abs(h6 - 4.0), 0.0, 1.0),
+    );
+    let heat_tint = mix(tint, heat_rgb, clamp(heat_pulse * 0.4, 0.0, 0.35));
+    let sat_tint = heat_tint * (1.2 + heat_pulse * 0.6);
     let tint_luma = dot(sat_tint, vec3<f32>(0.299, 0.587, 0.114));
     let hyper_sat = mix(vec3<f32>(tint_luma), sat_tint, 1.8);
     let color = hyper_sat * pane_energy + tint * aura * 0.22;

@@ -312,6 +312,22 @@ fn vec4(v: Vec3, w: f32) -> [f32; 4] {
     [v.x, v.y, v.z, w]
 }
 
+fn upload_heatmap(queue: &wgpu::Queue, buffer: &wgpu::Buffer) {
+    const PANE_COUNT: usize = 340;
+    let path = "/dev/shm/hapax-imagination/aoa-heatmap.bin";
+    let raw = match std::fs::read(path) {
+        Ok(data) if data.len() >= PANE_COUNT * 12 => data,
+        _ => return,
+    };
+    let mut gpu_data = vec![0u8; PANE_COUNT * 16];
+    for i in 0..PANE_COUNT {
+        let src_off = i * 12;
+        let dst_off = i * 16;
+        gpu_data[dst_off..dst_off + 12].copy_from_slice(&raw[src_off..src_off + 12]);
+    }
+    queue.write_buffer(buffer, 0, &gpu_data);
+}
+
 fn read_sphere_warmth() -> f32 {
     static LAST: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let frame = LAST.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -435,6 +451,9 @@ pub struct SceneRenderer {
     grid_texture_bgl: wgpu::BindGroupLayout,
     reverie_bind_group: wgpu::BindGroup,
     reverie_sampler: wgpu::Sampler,
+    // AoA heatmap
+    heatmap_buffer: wgpu::Buffer,
+    heatmap_bind_group: wgpu::BindGroup,
 }
 
 impl SceneRenderer {
@@ -523,10 +542,40 @@ impl SceneRenderer {
             source: wgpu::ShaderSource::Wgsl(SCENE_QUAD_WGSL.into()),
         });
 
+        // AoA heatmap storage buffer (340 panes × vec4)
+        const HEATMAP_PANE_COUNT: usize = 340;
+        let heatmap_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("aoa_heatmap"),
+            size: (HEATMAP_PANE_COUNT * 16) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let heatmap_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("aoa_heatmap_bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let heatmap_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("aoa_heatmap_bg"),
+            layout: &heatmap_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: heatmap_buffer.as_entire_binding(),
+            }],
+        });
+
         // Pipeline layout
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene pipeline layout"),
-            bind_group_layouts: &[&uniform_bind_group_layout, &texture_bind_group_layout],
+            bind_group_layouts: &[&uniform_bind_group_layout, &texture_bind_group_layout, &heatmap_bgl],
             push_constant_ranges: &[],
         });
 
@@ -825,6 +874,8 @@ impl SceneRenderer {
             grid_texture_bgl,
             reverie_bind_group,
             reverie_sampler,
+            heatmap_buffer,
+            heatmap_bind_group,
         }
     }
 
@@ -932,8 +983,14 @@ impl SceneRenderer {
                 pass.draw(0..48, 0..1); // Room grids + light + volumetric rays
             }
 
+            // ── Upload AoA heatmap ──────────────────────────────────
+            if self.frame_count % 3 == 0 {
+                upload_heatmap(queue, &self.heatmap_buffer);
+            }
+
             // ── Draw content quads ───────────────────────────────────
             pass.set_pipeline(&self.render_pipeline);
+            pass.set_bind_group(2, &self.heatmap_bind_group, &[]);
 
             // Sort nodes back-to-front in camera space for proper alpha blending.
             let sorted_indices = sorted_scene_indices_back_to_front(&scene, view);

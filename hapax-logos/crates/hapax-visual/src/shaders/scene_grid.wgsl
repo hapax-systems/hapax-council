@@ -56,8 +56,8 @@ fn aa_disc_mask(dist: f32, radius: f32) -> f32 {
 }
 
 fn scroom_material_pattern(gc: vec2<f32>, plane_kind: f32, world_dist: f32) -> f32 {
-    // Multi-scale architectural material — reads as spatial structure at any
-    // effect intensity. Three frequency bands: structural, surface, grain.
+    // Multi-scale architectural material attached to room planes, not to the output pane.
+    // Three frequency bands: structural, surface, grain.
     let bias = plane_kind * 0.173;
     let depth_freq = 1.0 + clamp(1.0 / (world_dist * 0.08 + 0.5), 0.0, 2.0);
 

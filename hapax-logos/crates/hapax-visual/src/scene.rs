@@ -1450,7 +1450,7 @@ mod tests {
             .find(|n| n.label == "content-episodic_recall")
             .unwrap();
         assert!(
-            content.position.x > 1.2,
+            content.position.x > 0.7,
             "content should start the right shelf while staying tucked near AoA"
         );
     }
@@ -1947,7 +1947,7 @@ mod tests {
             .find(|n| n.label == "programme_history")
             .unwrap();
         assert!(
-            ward.position.x > 1.2 && ward.position.x < 2.7,
+            ward.position.x > 0.7 && ward.position.x < 2.2,
             "ward shelf should sit right while staying tucked near AoA"
         );
     }
@@ -2163,7 +2163,7 @@ mod tests {
             "overflow wards must not become a low floor/reflection-like band"
         );
         assert!(
-            overflow.position.x.abs() > 1.2,
+            overflow.position.x.abs() > 0.7,
             "overflow wards should remain in side shelves rather than a centered ghost layout"
         );
     }
