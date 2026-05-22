@@ -1,0 +1,15 @@
+[Unit]
+Description=Refresh platform capability receipts — local probes for route freshness
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-platform-capability-receipts --all
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-platform-capability-receipts
+MemoryMax=256M
+TimeoutStartSec=120
