@@ -1,0 +1,16 @@
+{
+  "card_id": "card-cannot-prove-001",
+  "target": "shared.capability_evidence_card",
+  "claim": "Cannot-prove fixture: cannot_prove field is set",
+  "evidence_refs": ["tests/test_capability_evidence_card_schema.py"],
+  "producer": "fixture-generator",
+  "consumer_permissions": ["test_consumer", "alpha", "beta"],
+  "freshness_deadline": "2030-01-01T00:00:00Z",
+  "privacy_class": "internal",
+  "lifecycle_status": "accepted",
+  "limitations": [],
+  "cannot_prove": "Capability X cannot be demonstrated without runtime Y",
+  "blocking_card_ids": [],
+  "supersedes": null,
+  "metadata": {}
+}
