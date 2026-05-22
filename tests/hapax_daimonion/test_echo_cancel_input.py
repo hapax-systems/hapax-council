@@ -76,8 +76,11 @@ class TestResolveSource:
         chosen = resolve_source([], pw_cli=lambda: "anything", fallback="bare_fallback")
         assert chosen == "bare_fallback"
 
-    def test_default_priority_lists_aec_first(self) -> None:
-        assert DEFAULT_SOURCE_PRIORITY[0] == _AEC_SOURCE_NAME
+    def test_default_priority_lists_rode_then_aec(self) -> None:
+        from agents.hapax_daimonion.audio_input import _RODE_WIRELESS_PATTERN
+
+        assert DEFAULT_SOURCE_PRIORITY[0] == _RODE_WIRELESS_PATTERN
+        assert DEFAULT_SOURCE_PRIORITY[1] == _AEC_SOURCE_NAME
         assert _RAW_YETI_PATTERN in DEFAULT_SOURCE_PRIORITY
 
 
@@ -112,13 +115,19 @@ class TestDaimonionConfigAudioSource:
 class TestEchoCancelConf:
     def test_conf_file_exists(self) -> None:
         path = (
-            Path(__file__).resolve().parents[2] / "config" / "pipewire" / "hapax-echo-cancel.conf"
+            Path(__file__).resolve().parents[2]
+            / "config"
+            / "pipewire"
+            / "hapax-echo-cancel.conf.disabled"
         )
         assert path.exists(), f"missing conf file at {path}"
 
     def test_conf_declares_virtual_source(self) -> None:
         path = (
-            Path(__file__).resolve().parents[2] / "config" / "pipewire" / "hapax-echo-cancel.conf"
+            Path(__file__).resolve().parents[2]
+            / "config"
+            / "pipewire"
+            / "hapax-echo-cancel.conf.disabled"
         )
         text = path.read_text()
         # The capture node name daimonion looks for.
@@ -128,7 +137,10 @@ class TestEchoCancelConf:
 
     def test_conf_targets_yeti_source(self) -> None:
         path = (
-            Path(__file__).resolve().parents[2] / "config" / "pipewire" / "hapax-echo-cancel.conf"
+            Path(__file__).resolve().parents[2]
+            / "config"
+            / "pipewire"
+            / "hapax-echo-cancel.conf.disabled"
         )
         text = path.read_text()
         # The mic the AEC reads from. Substring match — the device-id

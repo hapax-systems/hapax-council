@@ -26,8 +26,18 @@ class _ListSpanExporter(SpanExporter):
 
 def _make_tracer(name: str = "test"):
     """Create a fresh provider+exporter+tracer triple (no global mutation)."""
+    import os
+    from unittest.mock import patch
+
     exporter = _ListSpanExporter()
-    provider = TracerProvider()
+
+    # Ensure OTEL_SDK_DISABLED is not true, otherwise TracerProvider returns NoOpTracer
+    env = os.environ.copy()
+    env.pop("OTEL_SDK_DISABLED", None)
+
+    with patch.dict(os.environ, env, clear=True):
+        provider = TracerProvider()
+
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     tracer = provider.get_tracer(name)
     return exporter, provider, tracer

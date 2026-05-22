@@ -153,7 +153,7 @@ class TestResidentSTTInterface(unittest.TestCase):
         from agents.hapax_daimonion.resident_stt import ResidentSTT
 
         stt = ResidentSTT(model="tiny")
-        result = asyncio.get_event_loop().run_until_complete(stt.transcribe(b"\x00" * 1000))
+        result = asyncio.run(stt.transcribe(b"\x00" * 1000))
         assert result == ""
 
 

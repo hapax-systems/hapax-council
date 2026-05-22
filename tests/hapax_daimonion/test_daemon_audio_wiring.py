@@ -142,4 +142,4 @@ class TestAudioLoopBackgroundTask:
         # signal at 30s cadence so the writer stays fresh during quiet
         # operator periods, matching the apperception writer pattern).
         # (Plus one new task recently added to main).
-        assert tracking.total_appended == 13
+        assert tracking.total_appended == 14

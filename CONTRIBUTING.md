@@ -10,3 +10,13 @@ Useful public entry points:
 - [`NOTICE.md`](NOTICE.md) for project posture and license.
 - [`CITATION.cff`](CITATION.cff) for citation metadata.
 - [Refusal Brief](https://hapax.weblog.lol/refusal-brief) for the refusal-as-data stance.
+
+## CI Checks
+
+### New Module Consumer Check
+
+When adding a new module file, the `new-module-consumer-check` CI gate ensures that it has at least one import reference outside the `tests/` directory.
+
+To satisfy the gate:
+- Ensure your new module is imported and used by real project code (not just tests).
+- Alternatively, if the module is intended as a library entry-point, mark it as exempt by adding its relative path (e.g., `agents/my_new_module.py`) to the allowlist at `scripts/ci_orphan_module_exempt.txt`.

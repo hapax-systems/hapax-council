@@ -27,7 +27,7 @@ class TestHotkeyChime:
         daemon._cpal_runner = None
 
         # Toggle when not active should open and play chime
-        asyncio.get_event_loop().run_until_complete(daemon._handle_hotkey("toggle"))
+        asyncio.run(daemon._handle_hotkey("toggle"))
         mock_player.play.assert_called_with("activation")
 
     @patch("agents.hapax_daimonion.session_events.screen_flash")
@@ -46,5 +46,5 @@ class TestHotkeyChime:
         daemon._start_pipeline = AsyncMock()
         daemon._cpal_runner = None  # Same shim as test_toggle above.
 
-        asyncio.get_event_loop().run_until_complete(daemon._handle_hotkey("open"))
+        asyncio.run(daemon._handle_hotkey("open"))
         mock_player.play.assert_called_with("activation")

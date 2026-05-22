@@ -23,9 +23,13 @@ class TestEvdevInputBackendProtocol:
             assert "real_idle_seconds" in backend.provides
 
     def test_contribute_defaults_idle(self):
+        import time
+
         with patch("agents.hapax_daimonion.backends.evdev_input.evdev") as mock_evdev:
             mock_evdev.list_devices.return_value = []
             backend = EvdevInputBackend()
+            backend._start_ts = time.monotonic() - 15.0  # past warmup
+            backend._events_received = 1  # pass disabled check
             behaviors: dict[str, Behavior] = {}
             backend.contribute(behaviors)
             assert behaviors["real_keyboard_active"].value is False

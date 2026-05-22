@@ -1,0 +1,25 @@
+name: new-module-consumer-check
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+
+jobs:
+  check-consumers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check new modules for consumers
+        run: |
+          set -euo pipefail
+          python3 scripts/ci_new_module_consumer_check.py

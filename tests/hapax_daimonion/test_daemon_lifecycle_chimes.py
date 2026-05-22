@@ -23,7 +23,7 @@ class TestDeactivationChime:
 
         import asyncio
 
-        asyncio.get_event_loop().run_until_complete(daemon._close_session(reason="test"))
+        asyncio.run(daemon._close_session(reason="test"))
         mock_player.play.assert_called_with("deactivation")
 
     @patch("agents.hapax_daimonion.session_events.screen_flash")
@@ -43,6 +43,6 @@ class TestDeactivationChime:
 
         import asyncio
 
-        asyncio.get_event_loop().run_until_complete(daemon._close_session(reason="test"))
+        asyncio.run(daemon._close_session(reason="test"))
         mock_player.play.assert_not_called()
         mock_flash.assert_called_with("deactivation")

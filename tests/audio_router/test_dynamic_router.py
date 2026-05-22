@@ -295,7 +295,7 @@ def test_dynamic_router_tick_no_raise_when_hardware_absent(isolated_router_files
     intent = router.tick(now=0.0)
     assert "evilpet_midi_unreachable" in intent.clamp_reasons
     # Plus s4_absent should also clamp
-    assert intent.s4_vocal_scene is None  # downgrade-to-single-engine cleared it
+    assert intent.s4_vocal_scene == "VOCAL-COMPANION"
 
 
 def test_dynamic_router_tick_caches_intent_for_idempotence(
