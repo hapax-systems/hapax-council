@@ -655,13 +655,13 @@ fn aoa_vertex(vi: u32) -> VertexOutput {
 
 fn aoa_face_tint(face: f32, inner_pane: f32, local_pos: vec3<f32>, pane_idx: f32) -> vec3<f32> {
     // Four maximally distinct hues for structural differentiation.
-    var tint = vec3<f32>(1.0, 0.12, 0.58);   // Face 0: hot pink (Composition)
+    var tint = vec3<f32>(0.82, 0.18, 0.52);   // Face 0: muted rose (Composition)
     if face > 0.5 && face < 1.5 {
-        tint = vec3<f32>(0.08, 0.92, 1.0);   // Face 1: electric cyan (Modulation)
+        tint = vec3<f32>(0.12, 0.88, 0.96);  // Face 1: electric cyan (Modulation)
     } else if face > 1.5 && face < 2.5 {
-        tint = vec3<f32>(0.58, 0.18, 1.0);   // Face 2: deep violet (Surface)
+        tint = vec3<f32>(0.64, 0.28, 0.96);  // Face 2: bright violet (Surface)
     } else if face > 2.5 {
-        tint = vec3<f32>(1.0, 0.72, 0.04);   // Face 3: vivid amber (Programme)
+        tint = vec3<f32>(0.96, 0.68, 0.10);  // Face 3: vivid amber (Programme)
     }
     let pane_u = u32(pane_idx + 0.5);
     let primary = aoa_neon_palette(aoa_primary_child_index(pane_u));
@@ -746,7 +746,7 @@ fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
         heat_hue = entry.hue;
     }
 
-    let fill = 0.08 + inner_pane * 0.03 + heat_pulse * 0.10;
+    let fill = 0.22 + inner_pane * 0.05 + heat_pulse * 0.20;
     let line = edge * (0.88 - inner_pane * 0.08);
     let address = info_grid * (0.18 + inner_pane * 0.06);
     let lattice = local_lattice * (0.14 + inner_pane * 0.06);
@@ -766,7 +766,7 @@ fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
     let hyper_sat = mix(vec3<f32>(tint_luma), sat_tint, 1.8);
     let emissive_floor = tint * 0.12;
     let color = max(hyper_sat * pane_energy + tint * aura * 0.22, emissive_floor);
-    let alpha = clamp(fill * 0.78 + line * 0.68 + address * 0.46 + lattice * 0.38, 0.0, 0.90)
+    let alpha = clamp(fill * 0.92 + line * 0.72 + address * 0.50 + lattice * 0.42, 0.0, 0.92)
         * scene.opacity;
     return vec4<f32>(color, alpha);
 }
@@ -781,6 +781,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let treated = apply_entity_local_spatial_effect(in.uv, tex_color);
     // Emissive base: entities always push and influence effects.
     let luma = dot(treated.rgb, vec3<f32>(0.299, 0.587, 0.114));
-    let saturated = mix(vec3<f32>(luma), treated.rgb, 2.0) * 1.6;
+    let saturated = mix(vec3<f32>(luma), treated.rgb, 1.3) * 1.15;
     return vec4<f32>(saturated, treated.a * scene.opacity);
 }

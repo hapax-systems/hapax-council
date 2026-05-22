@@ -288,7 +288,14 @@ fn fs_main(in: VertexOutput) -> FragOutput {
 
         let view_dir = normalize(cam_pos - hit);
         let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 2.0);
-        let rim = light_color * fresnel * 0.30;
+        let rim_hue = fract(hit.x * 0.035 + hit.z * 0.025 + grid.time * 0.01);
+        let rh6 = rim_hue * 6.0;
+        let rim_tint = vec3<f32>(
+            clamp(abs(rh6 - 3.0) - 1.0, 0.0, 1.0),
+            clamp(2.0 - abs(rh6 - 2.0), 0.0, 1.0),
+            clamp(2.0 - abs(rh6 - 4.0), 0.0, 1.0),
+        ) * vec3<f32>(0.5, 0.7, 1.0) + vec3<f32>(0.3, 0.3, 0.4);
+        let rim = rim_tint * fresnel * 0.28;
         let shadow = soft_shadow_at(hit, grid.light_position.xyz);
         let ndotl = max(dot(sn, normalize(grid.light_position.xyz - hit)), 0.0);
 
@@ -342,7 +349,7 @@ fn fs_main(in: VertexOutput) -> FragOutput {
 
     // Distance attenuation
     let dist = length(wp - vec3(0.0, 0.0, 2.0));
-    let dist_fade = max(smoothstep(22.0, 1.5, dist), 0.30);
+    let dist_fade = max(smoothstep(14.0, 1.5, dist), 0.12);
 
     if major < 0.003 {
         let cell = floor(gc * 2.15);
@@ -383,7 +390,7 @@ fn fs_main(in: VertexOutput) -> FragOutput {
     }
 
     // Synthwave neon: cycle cyan → magenta → blue
-    let hue = fract(gc.x * 0.035 + gc.y * 0.025 + t * 0.01);
+    let hue = fract(gc.x * 0.035 + gc.y * 0.025 + t * 0.01 + 0.55);
     let h6 = hue * 6.0;
     var color = vec3<f32>(
         clamp(abs(h6 - 3.0) - 1.0, 0.0, 1.0),
