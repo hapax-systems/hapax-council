@@ -62,6 +62,7 @@ type TemporalSpanKind = Literal[
     "future_sensor_span",
     "semantic_interpretation_span",
     "grounding_decision_span",
+    "transformation_span",
 ]
 type TemporalSourceKind = Literal[
     "camera_jpeg",
@@ -75,6 +76,7 @@ type TemporalSourceKind = Literal[
     "stimmung_context",
     "director_context",
     "research_condition",
+    "semantic_trace",
 ]
 type ProducerKind = Literal[
     "studio_compositor",
@@ -84,6 +86,7 @@ type ProducerKind = Literal[
     "archive_replay",
     "research_registry",
     "temporal_span_fixture",
+    "semantic_trace_layer",
 ]
 type ClockDomain = Literal[
     "monotonic_ns",
