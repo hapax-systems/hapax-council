@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use hapax_visual::content_sources::ContentSourceManager;
 use hapax_visual::dynamic_pipeline::{DynamicPipeline, PoolMetrics};
+use hapax_visual::output::ShmOutput;
 use hapax_visual::scene_renderer::SceneRenderer;
 use hapax_visual::state::StateReader;
 
@@ -155,6 +156,8 @@ pub struct Renderer {
     scene_renderer: Option<SceneRenderer>,
     /// Separate JPEG compressor for 3D proof output.
     proof_jpeg: Option<turbojpeg::Compressor>,
+    /// Direct SHM/V4L2 output for the scene (bypasses Reverie).
+    scene_shm: ShmOutput,
 }
 
 impl Renderer {
@@ -206,6 +209,7 @@ impl Renderer {
             None
         };
 
+        let scene_shm = ShmOutput::new(&device, width, height);
         let proof_jpeg = if scene_renderer.is_some() {
             turbojpeg::Compressor::new().ok().map(|mut c| {
                 c.set_quality(80).ok();
@@ -232,6 +236,7 @@ impl Renderer {
             frame_count: 0,
             scene_renderer,
             proof_jpeg,
+            scene_shm,
         }
     }
 
@@ -278,8 +283,7 @@ impl Renderer {
             true, // is_fresh
         );
 
-        // 1. Reverie runs first — produces sphere texture data.
-        //    Suppress its SHM write — scene will write its own.
+        // Reverie runs for sphere texture data only (suppressed SHM output).
         self.pipeline.suppress_internal_shm = true;
         self.pipeline.render(
             &self.device,
@@ -293,7 +297,7 @@ impl Renderer {
             Some(&self.content_source_mgr),
         );
 
-        // 2. Pass Reverie's output to the sphere for this frame.
+        // Pass Reverie output to sphere.
         if let (Some(scene), Some(view)) = (
             self.scene_renderer.as_mut(),
             self.pipeline.get_target_output_view("main"),
@@ -301,7 +305,7 @@ impl Renderer {
             scene.set_reverie_texture(&self.device, view);
         }
 
-        // 3. Scene renders with entity colors intact — sphere shows Reverie.
+        // Scene renders directly — drift effects inhere in objects.
         if let Some(mut scene) = self.scene_renderer.take() {
             scene.render(
                 &self.device,
@@ -310,12 +314,13 @@ impl Renderer {
                 Some(&self.content_source_mgr),
             );
 
-            // 4. Write SCENE output to SHM/V4L2 (overrides Reverie's SHM write).
-            self.pipeline.write_external_frame(
-                &self.device,
-                &self.queue,
-                scene.output_texture(),
+            // Scene output → SHM/V4L2 directly. No Reverie involvement.
+            let mut encoder = self.device.create_command_encoder(
+                &wgpu::CommandEncoderDescriptor { label: Some("scene_shm") },
             );
+            self.scene_shm.copy_to_staging(&mut encoder, scene.output_texture());
+            self.queue.submit(std::iter::once(encoder.finish()));
+            self.scene_shm.write_frame(&self.device);
 
             if self.frame_count.is_multiple_of(30) {
                 self.write_proof_frame(&scene);
