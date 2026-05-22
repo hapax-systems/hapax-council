@@ -278,44 +278,8 @@ impl Renderer {
             true, // is_fresh
         );
 
-        // Pass the full composited Reverie output to the sphere — it IS the
-        // DMN's expression, not something to be re-abstracted.
-        if let (Some(scene), Some(view)) = (
-            self.scene_renderer.as_mut(),
-            self.pipeline.get_target_output_view("main"),
-        ) {
-            scene.set_reverie_texture(&self.device, view);
-        }
-
-        // 3D scene render → inject into DynamicPipeline as @live
-        if let Some(mut scene) = self.scene_renderer.take() {
-            scene.render(
-                &self.device,
-                &self.queue,
-                time,
-                Some(&self.content_source_mgr),
-            );
-
-            // Inject 3D scene output as @live for the shader chain
-            self.pipeline.set_live_texture_override(
-                &self.device,
-                &self.queue,
-                scene.output_texture(),
-            );
-
-            // Write 3D proof frame to shm every 30 frames (~1 Hz)
-            if self.frame_count.is_multiple_of(30) {
-                self.write_proof_frame(&scene);
-                log::info!(
-                    "3D scene: {} active sources, {} total loaded",
-                    self.content_source_mgr.active_source_info().len(),
-                    self.content_source_mgr.source_count()
-                );
-            }
-            self.scene_renderer = Some(scene);
-        }
-
-        // Run shader vocabulary pipeline (now with 3D scene as @live if active)
+        // Reverie runs independently — its output feeds the sphere, NOT the
+        // final frame. Effects are inherent in objects, not overlaid globally.
         self.pipeline.render(
             &self.device,
             &self.queue,
@@ -328,19 +292,49 @@ impl Renderer {
             Some(&self.content_source_mgr),
         );
 
-        // Post-Reverie entity restoration: blend scene entity colors
-        // back onto the Reverie output so AoA pane heatmap colors and
-        // entity identity survive the effect chain.
-        if let (Some(scene), Some(reverie_view)) = (
-            self.scene_renderer.as_ref(),
+        // Pass Reverie's output to the sphere texture.
+        if let (Some(scene), Some(view)) = (
+            self.scene_renderer.as_mut(),
             self.pipeline.get_target_output_view("main"),
         ) {
-            scene.restore_entities(
+            scene.set_reverie_texture(&self.device, view);
+        }
+
+        // 3D scene renders DIRECTLY to the final output — no Reverie processing.
+        // Entities keep their own colors. Effects are inherent in each entity's
+        // shader, not a global filter over everything.
+        if let Some(mut scene) = self.scene_renderer.take() {
+            scene.render(
                 &self.device,
                 &self.queue,
-                reverie_view,
-                &self.offscreen_view,
+                time,
+                Some(&self.content_source_mgr),
             );
+
+            // Scene output IS the final frame — blit to offscreen.
+            let mut encoder = self.device.create_command_encoder(
+                &wgpu::CommandEncoderDescriptor { label: Some("scene_to_offscreen") },
+            );
+            encoder.copy_texture_to_texture(
+                scene.output_texture().as_image_copy(),
+                self.offscreen_texture.as_image_copy(),
+                wgpu::Extent3d {
+                    width: self.width,
+                    height: self.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            self.queue.submit(std::iter::once(encoder.finish()));
+
+            if self.frame_count.is_multiple_of(30) {
+                self.write_proof_frame(&scene);
+                log::info!(
+                    "3D scene: {} active sources, {} total loaded",
+                    self.content_source_mgr.active_source_info().len(),
+                    self.content_source_mgr.source_count()
+                );
+            }
+            self.scene_renderer = Some(scene);
         }
 
         self.frame_count = self.frame_count.wrapping_add(1);
