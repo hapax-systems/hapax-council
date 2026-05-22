@@ -2138,6 +2138,10 @@ impl DynamicPipeline {
         self.intermediate(&key).map(|t| &t.view)
     }
 
+    pub fn get_temporal_texture_view(&self, node_id: &str) -> Option<&wgpu::TextureView> {
+        self.temporal_textures.get(node_id).map(|t| &t.view)
+    }
+
     /// Return the list of target names currently present in the plan.
     ///
     /// Walks the slot map for `*:final` keys, which are the canonical

@@ -278,12 +278,17 @@ impl Renderer {
             true, // is_fresh
         );
 
-        // Pass previous frame's Reverie output to the sphere (1-frame latency).
-        if let (Some(scene), Some(view)) = (
-            self.scene_renderer.as_mut(),
-            self.pipeline.get_target_output_view("main"),
-        ) {
-            scene.set_reverie_texture(&self.device, view);
+        // Pass Reverie's feedback accumulator to the sphere — this IS Reverie's
+        // living visual memory (RD patterns, drift traces, breath, feedback decay).
+        // Falls back to main:final if no feedback accumulator exists yet.
+        if let Some(scene) = self.scene_renderer.as_mut() {
+            let reverie_view = self
+                .pipeline
+                .get_temporal_texture_view("fb")
+                .or_else(|| self.pipeline.get_target_output_view("main"));
+            if let Some(view) = reverie_view {
+                scene.set_reverie_texture(&self.device, view);
+            }
         }
 
         // 3D scene render → inject into DynamicPipeline as @live
