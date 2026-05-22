@@ -55,6 +55,7 @@ EVIDENCE_CLASSES: tuple[str, ...] = (
     "derived_state",
     "operator_command",
     "diagnostic",
+    "normative_force",
 )
 
 

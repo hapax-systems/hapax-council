@@ -60,6 +60,8 @@ type TemporalSpanKind = Literal[
     "replay_span",
     "validity_span",
     "future_sensor_span",
+    "semantic_interpretation_span",
+    "grounding_decision_span",
 ]
 type TemporalSourceKind = Literal[
     "camera_jpeg",

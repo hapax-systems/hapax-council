@@ -78,6 +78,18 @@ def deserialize_tags(raw: str | None) -> list[str] | None:
     return json.loads(raw)
 
 
+class StructuredAcknowledgment(BaseModel):
+    """Machine-readable interpretation receipt for relay dispatches."""
+
+    message_id: str
+    interpreted_as: Literal["alert", "escalation", "action_request", "advisory", "unknown"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    extracted_intent: dict = Field(default_factory=dict)
+    reasoning: str = ""
+    received_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    recipient_id: str = ""
+
+
 class TransitionError(ValueError):
     pass
 
@@ -104,6 +116,8 @@ class Envelope(BaseModel):
     expires_at: datetime | None = None
     stale_after: datetime | None = None
     tags: list[str] | None = None
+    require_interpretation_ack: bool = False
+    interpretation_acks: list[StructuredAcknowledgment] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_envelope(self) -> Envelope:

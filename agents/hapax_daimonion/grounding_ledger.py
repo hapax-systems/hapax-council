@@ -25,6 +25,8 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+_CHECKPOINT_PATH = Path("/dev/shm/hapax-daimonion/grounding_checkpoints.jsonl")
+
 
 class DUState(enum.Enum):
     """Discourse Unit grounding states (simplified Traum automaton)."""
@@ -124,40 +126,61 @@ class GroundingLedger:
             return "advance"  # already resolved
 
         # State transitions — explicit signals checked first
+        strategy: str
         if acceptance == "REJECT":
             if du.state == DUState.CONTESTED:
                 du.state = DUState.ABANDONED
-                return "move_on"
-            du.state = DUState.CONTESTED
-            return "present_reasoning"
-
-        if acceptance == "CLARIFY":
-            # CLARIFY always triggers repair — operator explicitly asked for help
+                strategy = "move_on"
+            else:
+                du.state = DUState.CONTESTED
+                strategy = "present_reasoning"
+        elif acceptance == "CLARIFY":
             if du.state == DUState.REPAIR_2:
                 du.state = DUState.ABANDONED
-                return "move_on"
-            if du.state == DUState.REPAIR_1:
+                strategy = "move_on"
+            elif du.state == DUState.REPAIR_1:
                 du.state = DUState.REPAIR_2
                 du.repair_count += 1
-                return "elaborate"
-            du.state = DUState.REPAIR_1
-            du.repair_count += 1
-            return "rephrase"
-
-        # ACCEPT: always grounds
-        if acceptance == "ACCEPT":
+                strategy = "elaborate"
+            else:
+                du.state = DUState.REPAIR_1
+                du.repair_count += 1
+                strategy = "rephrase"
+        elif acceptance == "ACCEPT":
             du.state = DUState.GROUNDED
-            return "advance"
-
-        # IGNORE: grounding depends on concern overlap only
-        if acceptance == "IGNORE":
+            strategy = "advance"
+        elif acceptance == "IGNORE":
             if concern_overlap < 0.3:
                 du.state = DUState.GROUNDED
-                return "advance"
-            du.state = DUState.UNGROUNDED
-            return "ungrounded_caution"
+                strategy = "advance"
+            else:
+                du.state = DUState.UNGROUNDED
+                strategy = "ungrounded_caution"
+        else:
+            strategy = "neutral"
 
-        return "neutral"
+        self._persist_checkpoint(du, strategy)
+        return strategy
+
+    def _persist_checkpoint(self, du: DiscourseUnit, strategy: str) -> None:
+        """Append a grounding checkpoint to JSONL for durable span persistence."""
+        checkpoint = {
+            "timestamp": _time.time(),
+            "du_turn": du.turn,
+            "state": du.state.value,
+            "repair_count": du.repair_count,
+            "concern_weight": du.concern_weight,
+            "ewma_acceptance": round(self._ewma_acceptance, 4),
+            "consecutive_negative": self._consecutive_negative,
+            "effort_level": self._effort_level,
+            "strategy": strategy,
+        }
+        try:
+            _CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with _CHECKPOINT_PATH.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(checkpoint) + "\n")
+        except OSError:
+            log.debug("grounding checkpoint write failed", exc_info=True)
 
     def compute_gqi(self) -> float:
         """Grounding Quality Index: composite of acceptance and engagement signals.

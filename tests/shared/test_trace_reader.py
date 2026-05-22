@@ -13,7 +13,7 @@ import os
 import time
 from pathlib import Path
 
-from shared.trace_reader import read_trace, trace_age
+from shared.trace_reader import TraceProvenance, read_trace, read_trace_with_provenance, trace_age
 
 # ── trace_age ──────────────────────────────────────────────────────
 
@@ -91,3 +91,47 @@ class TestReadTrace:
         old_ts = time.time() - 5
         os.utime(path, (old_ts, old_ts))
         assert read_trace(path, stale_s=0.0) is None
+
+
+# ── read_trace_with_provenance ────────────────────────────────────
+
+
+class TestReadTraceWithProvenance:
+    def test_fresh_read_returns_data_and_provenance(self, tmp_path: Path) -> None:
+        path = tmp_path / "fresh.json"
+        path.write_text(json.dumps({"health": 0.95}))
+        data, prov = read_trace_with_provenance(path, stale_s=10.0, reader_id="stimmung")
+        assert data == {"health": 0.95}
+        assert isinstance(prov, TraceProvenance)
+        assert prov.reader_id == "stimmung"
+        assert prov.was_fresh is True
+        assert prov.data_keys == frozenset({"health"})
+        assert prov.age_s is not None
+        assert prov.age_s < 5.0
+
+    def test_stale_read_returns_none_with_provenance(self, tmp_path: Path) -> None:
+        path = tmp_path / "stale.json"
+        path.write_text(json.dumps({"k": "v"}))
+        old_ts = time.time() - 1000
+        os.utime(path, (old_ts, old_ts))
+        data, prov = read_trace_with_provenance(path, stale_s=10.0, reader_id="dmn")
+        assert data is None
+        assert prov.was_fresh is False
+        assert prov.data_keys is None
+        assert prov.age_s is not None
+        assert prov.age_s > 999
+
+    def test_missing_file_returns_none_with_provenance(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.json"
+        data, prov = read_trace_with_provenance(path, stale_s=10.0, reader_id="reverie")
+        assert data is None
+        assert prov.was_fresh is False
+        assert prov.age_s is None
+        assert prov.data_keys is None
+
+    def test_provenance_source_path_matches(self, tmp_path: Path) -> None:
+        path = tmp_path / "test.json"
+        path.write_text(json.dumps({"x": 1}))
+        _, prov = read_trace_with_provenance(path, stale_s=60.0, reader_id="test")
+        assert prov.source_path == str(path)
+        assert prov.stale_threshold_s == 60.0

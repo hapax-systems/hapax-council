@@ -915,6 +915,39 @@ class ConversationPipeline:
             },
         )
 
+        _bd = self._salience_router.last_breakdown if self._salience_router is not None else None
+        from shared.chronicle import ChronicleEvent, current_otel_ids
+        from shared.chronicle import record as chronicle_record
+
+        _trace_id, _span_id = current_otel_ids()
+        chronicle_record(
+            ChronicleEvent(
+                ts=time.time(),
+                trace_id=_trace_id,
+                span_id=_span_id,
+                parent_span_id=None,
+                source="hapax_daimonion",
+                event_type="semantics.interpretation",
+                evidence_class="route",
+                public_scope="diagnostic",
+                payload={
+                    "transcript": transcript[:500],
+                    "turn": self.turn_count,
+                    "tier": routing.tier.name,
+                    "model": routing.model or "",
+                    "routing_reason": routing.reason,
+                    "concern_overlap": _bd.concern_overlap if _bd else None,
+                    "novelty": _bd.novelty if _bd else None,
+                    "dialog_feature_score": _bd.dialog_feature_score if _bd else None,
+                    "raw_activation": _bd.raw_activation if _bd else None,
+                    "final_activation": _bd.final_activation if _bd else None,
+                    "override_reason": _bd.override if _bd else "",
+                    "activity_mode": self._activity_mode,
+                    "consent_phase": self._consent_phase,
+                },
+            )
+        )
+
         # Record activation breakdown for diagnostics
         if self._salience_diagnostics is not None:
             self._salience_diagnostics.record(transcript)

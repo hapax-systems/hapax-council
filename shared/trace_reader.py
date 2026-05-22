@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -40,3 +41,38 @@ def read_trace(path: Path, stale_s: float) -> dict[str, Any] | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+
+
+@dataclass(frozen=True, slots=True)
+class TraceProvenance:
+    """Metadata about a trace read for causal chain logging."""
+
+    source_path: str
+    reader_id: str
+    timestamp: float
+    age_s: float | None
+    stale_threshold_s: float
+    was_fresh: bool
+    data_keys: frozenset[str] | None
+
+
+def read_trace_with_provenance(
+    path: Path, stale_s: float, *, reader_id: str
+) -> tuple[dict[str, Any] | None, TraceProvenance]:
+    """Read a JSON trace with staleness check, returning provenance metadata.
+
+    Always returns the provenance record regardless of whether the data
+    was fresh. Callers use provenance to build causal chain logs.
+    """
+    age = trace_age(path)
+    was_fresh = age is not None and age <= stale_s
+    data = read_trace(path, stale_s)
+    return data, TraceProvenance(
+        source_path=str(path),
+        reader_id=reader_id,
+        timestamp=time.time(),
+        age_s=age,
+        stale_threshold_s=stale_s,
+        was_fresh=was_fresh,
+        data_keys=frozenset(data.keys()) if data else None,
+    )
