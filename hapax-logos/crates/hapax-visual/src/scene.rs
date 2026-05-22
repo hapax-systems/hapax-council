@@ -1108,46 +1108,26 @@ fn build_scene_from_source_refs(
         ));
     }
 
-    // RIGHT: cognition (wards) — staggered grid, 2 columns
-    let ward_cols = 2usize;
-    for (i, &src_idx) in cognition.iter().enumerate() {
-        let col = i % ward_cols;
-        let row = i / ward_cols;
+    // RIGHT: cognition + grounding + communication — all non-perception
+    // sources in a single right-side column at the same depth as cameras.
+    // This keeps all content at consistent perspective scale and avoids
+    // floor-grid overlay artifacts.
+    let mut right_sources: Vec<&usize> = Vec::new();
+    right_sources.extend(communication.iter());
+    right_sources.extend(cognition.iter());
+    right_sources.extend(grounding.iter());
+
+    let right_cols = 2usize;
+    for (i, &src_idx) in right_sources.iter().enumerate() {
+        let col = i % right_cols;
+        let row = i / right_cols;
         let x = aoa_pos.x + 2.8 + col as f32 * 1.1;
-        let y = aoa_pos.y + 0.8 - row as f32 * 0.60;
-        let z = ward_z - col as f32 * 0.25;
+        let y = aoa_pos.y + 0.8 - row as f32 * 0.55;
+        let z = cam_z - col as f32 * 0.25;
         nodes.push(make_node(
-            active_sources, src_idx,
+            active_sources, *src_idx,
             Vec3::new(x, y, z),
-            0.38, 0.78, -0.03,
-        ));
-    }
-
-    // ABOVE: communication — spread horizontally above AoA
-    for (i, &src_idx) in communication.iter().enumerate() {
-        let n = communication.len().max(1);
-        let frac = if n == 1 { 0.5 } else { i as f32 / (n - 1) as f32 };
-        let x = aoa_pos.x + 4.0 * (frac - 0.5);
-        let y = aoa_pos.y + 1.3;
-        let z = ward_z - 0.30 - (i as f32 * 0.31).sin().abs() * 0.15;
-        nodes.push(make_node(
-            active_sources, src_idx,
-            Vec3::new(x, y, z),
-            0.30, 0.65, 0.0,
-        ));
-    }
-
-    // BELOW: grounding — horizontal row below AoA, IN FRONT of AoA (closer to camera)
-    for (i, &src_idx) in grounding.iter().enumerate() {
-        let n = grounding.len().max(1);
-        let frac = if n == 1 { 0.5 } else { i as f32 / (n - 1) as f32 };
-        let x = aoa_pos.x + 3.2 * (frac - 0.5);
-        let y = aoa_pos.y - 0.80;
-        let z = aoa_pos.z + 0.80;
-        nodes.push(make_node(
-            active_sources, src_idx,
-            Vec3::new(x, y, z),
-            0.28, 0.58, 0.0,
+            0.36, 0.75, -0.03,
         ));
     }
 
