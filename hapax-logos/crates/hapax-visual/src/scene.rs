@@ -939,6 +939,12 @@ fn build_scene_from_source_refs(
         0.0,
     );
 
+    // yt-slot sources render on the sphere, not as content quads.
+    for (idx, (id, ..)) in active_sources.iter().enumerate() {
+        if id.starts_with("yt-slot-") && !used_indices.contains(&idx) {
+            used_indices.push(idx);
+        }
+    }
     let mut remaining = source_indices_except(active_sources, &used_indices);
     remaining.sort_by(|&a, &b| {
         active_sources[b]

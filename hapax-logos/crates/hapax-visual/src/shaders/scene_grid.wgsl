@@ -357,11 +357,11 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let weave = 0.5 + 0.5 * sin(gc.x * 2.1 + gc.y * 1.7);
         let shadow = soft_shadow_at(wp, grid.light_position.xyz);
         let room_light = point_light_at(wp, in.normal) * shadow;
-        var base_alpha = 0.200;
+        var base_alpha = 0.32;
         if abs(in.normal.z) > 0.5 {
-            base_alpha = 0.320;
+            base_alpha = 0.48;
         } else if is_floor_or_ceiling {
-            base_alpha = 0.280;
+            base_alpha = 0.42;
         }
         let texture_signal = clamp(0.52 + 0.38 * material + 0.14 * weave + 0.24 * dot_alpha, 0.42, 1.0);
         var plane_color = vec3<f32>(0.18, 0.20, 0.30)
