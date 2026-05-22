@@ -300,12 +300,13 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let ndotl = max(dot(sn, normalize(grid.light_position.xyz - hit)), 0.0);
 
         let w = clamp(grid.sphere_warmth, 0.0, 1.0);
-        let floor_cool = vec3<f32>(0.10, 0.16, 0.32);
-        let floor_warm = vec3<f32>(0.32, 0.18, 0.08);
+        let floor_cool = vec3<f32>(0.06, 0.10, 0.22);
+        let floor_warm = vec3<f32>(0.22, 0.12, 0.06);
         let emissive_floor = mix(floor_cool, floor_warm, w);
-        let rev_content = max(reverie.rgb * 2.5, emissive_floor);
-        var sphere_color = rev_content * (0.85 + ndotl * 0.2 * shadow) + rim;
-        let sphere_alpha = clamp(0.78 + fresnel * 0.14, 0.76, 0.92);
+        let rev_content = reverie.rgb * 3.0 + emissive_floor;
+        let shading = 0.55 + ndotl * 0.45 * shadow;
+        var sphere_color = rev_content * shading + rim;
+        let sphere_alpha = clamp(0.80 + fresnel * 0.12, 0.78, 0.92);
         return FragOutput(vec4<f32>(sphere_color, sphere_alpha), 0.999);
     }
 
