@@ -1,0 +1,34 @@
+{
+  "schema_version": "EvalReceiptV1",
+  "run_id": "sample-run-001",
+  "authority_case": "CASE-SAMPLE-001",
+  "task_ref": "task-sample-001",
+  "model_id_hash": "sha256:131e239d22e0f4ace5c77ed6b77e731af606e0654f39fb6e0d5f608347e93318",
+  "route_hash": "sha256:6e1336526374bfa1f85231b2d7bb4a943c3cf90fbaf77f5c35ebcaa89af682f9",
+  "config_hash": "sha256:3aaf19da0f4b1a83eb25cacbec519e886621157166551520bfc100a1a63609ef",
+  "prompt_hash": "sha256:6758c3cc811bd434565c93a3c13d29f019dd423c898658ce56efc127b886fe1f",
+  "scorer_hash": "sha256:e0e846a18baeb4c3f1e273216d443fadbafebd039aea021536baf2c3d8fdee00",
+  "dataset_hash": "sha256:4e51d40fa7c1dd4c853cc8a4514559ecea17dcc8e431a0350b909d19ce72f594",
+  "raw_artifact_refs": [
+    "eval_ledger/samples/mock_model.bin",
+    "eval_ledger/samples/mock_route.json",
+    "eval_ledger/samples/mock_config.yaml",
+    "eval_ledger/samples/mock_prompt.txt",
+    "eval_ledger/samples/mock_scorer.py",
+    "eval_ledger/samples/mock_dataset.jsonl"
+  ],
+  "replayable": true,
+  "normalized_score": 0.95,
+  "contamination_status": "clean",
+  "freshness_status": "fresh",
+  "resource_observations": {
+    "wall_time_seconds": 0.10040636800113134,
+    "peak_memory_mb": 52.83984375
+  },
+  "claim_ceilings": [
+    "Sample model passes baseline constraints"
+  ],
+  "what_this_does_not_prove": [
+    "Generalisation to unseen environments"
+  ]
+}
