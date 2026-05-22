@@ -276,28 +276,47 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let hit_clip = grid.projection * grid.view * vec4<f32>(hit, 1.0);
         let sphere_depth = hit_clip.z / hit_clip.w;
 
-        // World-space equirectangular mapping — consistent regardless of camera.
-        let theta = atan2(sn.x, sn.z);
-        let phi = acos(clamp(sn.y, -1.0, 1.0));
-        let sphere_uv = vec2<f32>(
-            (theta + AOA_PI) / (2.0 * AOA_PI),
-            phi / AOA_PI,
+        // Procedural Reverie directly on sphere surface via 3D noise.
+        let w = clamp(grid.sphere_warmth, 0.0, 1.0);
+        let t = grid.time;
+        let drift = vec3<f32>(t * 0.031, t * 0.017, t * -0.023);
+
+        // Multi-octave 3D noise at surface normal — seamless, no projection.
+        let p = sn * 3.2 + drift;
+        let n1 = stipple_hash(p.xy + p.zz * 127.1) * 2.0 - 1.0;
+        let n2 = stipple_hash(p.yz * 1.7 + p.xx * 89.3 + vec2<f32>(41.0, 73.0)) * 2.0 - 1.0;
+        let n3 = stipple_hash(p.xz * 2.3 + p.yy * 61.7 + vec2<f32>(17.0, 97.0)) * 2.0 - 1.0;
+        let fbm = n1 * 0.5 + n2 * 0.25 + n3 * 0.125;
+
+        // Reaction-diffusion-like pattern from two competing frequencies.
+        let rd_a = smoothstep(-0.15, 0.15, sin(sn.x * 8.0 + t * 0.4 + fbm * 4.0)
+            * cos(sn.y * 7.0 - t * 0.3 + fbm * 3.0));
+        let rd_b = smoothstep(-0.2, 0.2, sin(sn.z * 9.0 + t * 0.25 + fbm * 5.0)
+            * cos(sn.x * 6.0 + t * 0.35));
+        let rd = rd_a * 0.6 + rd_b * 0.4;
+
+        // Color palette: warm ↔ cool modulated by warmth + RD pattern.
+        let hue = fract(fbm * 0.3 + rd * 0.2 + w * 0.4 + t * 0.008);
+        let h6 = hue * 6.0;
+        var base_color = vec3<f32>(
+            clamp(abs(h6 - 3.0) - 1.0, 0.0, 1.0),
+            clamp(2.0 - abs(h6 - 2.0), 0.0, 1.0),
+            clamp(2.0 - abs(h6 - 4.0), 0.0, 1.0),
         );
-        let reverie = textureSample(reverie_texture, reverie_sampler, sphere_uv);
+        base_color = base_color * (0.4 + rd * 0.5) + light_color * (0.1 + fbm * 0.15);
+
+        // Breath: slow pulsation per-region.
+        let breath = 0.85 + 0.15 * sin(t * 0.8 + sn.y * 4.0 + fbm * 2.0);
+        base_color *= breath;
 
         let view_dir = normalize(cam_pos - hit);
-        let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 2.4);
-        let rim = light_color * fresnel * 0.32;
-        // Use max(rgb, emissive floor) so the sphere always has a visible surface.
-        let rev_luma = max(max(reverie.r, reverie.g), reverie.b);
-        let w = clamp(grid.sphere_warmth, 0.0, 1.0);
-        let emissive_floor = mix(
-            vec3<f32>(0.06, 0.10, 0.22),
-            vec3<f32>(0.22, 0.12, 0.06),
-            w,
-        );
-        var sphere_color = max(reverie.rgb, emissive_floor) + rim;
-        let sphere_alpha = clamp(0.28 + fresnel * 0.22 + rev_luma * 0.30, 0.24, 0.82);
+        let fresnel = pow(1.0 - max(dot(sn, view_dir), 0.0), 2.2);
+        let rim = light_color * fresnel * 0.38;
+        let shadow = soft_shadow_at(hit, grid.light_position.xyz);
+        let ndotl = max(dot(sn, normalize(grid.light_position.xyz - hit)), 0.0);
+
+        var sphere_color = base_color * (0.7 + ndotl * 0.3 * shadow) + rim;
+        let sphere_alpha = clamp(0.32 + fresnel * 0.24 + rd * 0.18, 0.28, 0.78);
         return FragOutput(vec4<f32>(sphere_color, sphere_alpha), 0.999);
     }
 
