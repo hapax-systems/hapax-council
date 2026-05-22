@@ -152,6 +152,14 @@ speaker_is_operator_signals:
     positive_only: false  # bidirectional — bool flips both ways
     estimation_reference: "Operator-elicited 2026-04-25 (Phase 6c-i scope direction); calibration window pending live recalibration after wire-in"
     calibration_window_s: null
+  voice_biometric_match:
+    claim_name: speaker_is_operator
+    source_category: expert_elicitation_shelf
+    p_true_given_h1: 0.90
+    p_true_given_h0: 0.05
+    positive_only: false
+    estimation_reference: "Shelf estimate 2026-05-21; pyannote cosine similarity accept >= 0.60, reject < 0.35. Pending live calibration."
+    calibration_window_s: null
 
 # Phase 6d-i.A — system_degraded (beta, #1357)
 # Meta-claim posterior over Hapax's own operational state. Wired-in

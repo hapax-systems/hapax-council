@@ -41,6 +41,7 @@ CLAIM_NAME: Final[str] = "speaker_is_operator"
 # string when ticking the engine; subsequent phases (voice biometric,
 # IR overlap) add new signal names alongside.
 SESSION_SPEAKER_SIGNAL: Final[str] = "session_speaker_says_operator"
+VOICE_BIOMETRIC_SIGNAL: Final[str] = "voice_biometric_match"
 
 # Calibration: session.speaker is a self-reported field set by the
 # session manager. When the operator is speaking it is ~95% accurate
@@ -77,6 +78,19 @@ DEFAULT_TEMPORAL_PROFILE: Final[TemporalProfile] = TemporalProfile(
 # Beta(1,1) uniform — single_user axiom + voice biometric structural
 # commitments will narrow this once additional signals come online
 # (Phase 6c-i.B / 6c-iii). Reference: prior_provenance.yaml.
+VOICE_BIOMETRIC_LR: Final[LRDerivation] = LRDerivation(
+    signal_name=VOICE_BIOMETRIC_SIGNAL,
+    claim_name=CLAIM_NAME,
+    source_category="expert_elicitation_shelf",
+    p_true_given_h1=0.90,
+    p_true_given_h0=0.05,
+    positive_only=False,
+    estimation_reference=(
+        "Shelf estimate 2026-05-21; pyannote embedding cosine similarity "
+        "accept >= 0.60, reject < 0.35. Pending live calibration."
+    ),
+)
+
 DEFAULT_PRIOR: Final[float] = 0.5
 
 
@@ -106,17 +120,28 @@ class SpeakerIsOperatorEngine:
             name=CLAIM_NAME,
             prior=prior,
             temporal_profile=temporal_profile or DEFAULT_TEMPORAL_PROFILE,
-            signal_weights={SESSION_SPEAKER_SIGNAL: lr or DEFAULT_LR},
+            signal_weights={
+                SESSION_SPEAKER_SIGNAL: lr or DEFAULT_LR,
+                VOICE_BIOMETRIC_SIGNAL: VOICE_BIOMETRIC_LR,
+            },
         )
 
-    def tick(self, *, session_speaker_says_operator: bool | None) -> None:
-        """Process one observation of the session.speaker signal.
+    def tick(
+        self,
+        *,
+        session_speaker_says_operator: bool | None,
+        voice_biometric_match: bool | None = None,
+    ) -> None:
+        """Process observation signals for speaker identity.
 
-        ``None`` is the no-observation case (session not active or speaker
-        attribute missing); the engine decays toward the prior.
+        ``None`` signals are no-observation (engine decays toward prior).
+        ``voice_biometric_match`` is True when pyannote cosine similarity
+        exceeds accept threshold (0.60), False when below reject (0.35),
+        and None when uncertain or no audio available.
         """
         observations: dict[str, bool | None] = {
-            SESSION_SPEAKER_SIGNAL: session_speaker_says_operator
+            SESSION_SPEAKER_SIGNAL: session_speaker_says_operator,
+            VOICE_BIOMETRIC_SIGNAL: voice_biometric_match,
         }
         self._engine.tick(observations)
 
@@ -145,5 +170,7 @@ __all__ = [
     "DEFAULT_PRIOR",
     "DEFAULT_TEMPORAL_PROFILE",
     "SESSION_SPEAKER_SIGNAL",
+    "VOICE_BIOMETRIC_LR",
+    "VOICE_BIOMETRIC_SIGNAL",
     "SpeakerIsOperatorEngine",
 ]

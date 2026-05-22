@@ -242,7 +242,19 @@ def _tick_consent(daemon: VoiceDaemon, state) -> None:
             or getattr(daemon.session, "speaker", "operator") == "operator"
         )
         _speaker_engine = _get_or_create_speaker_engine(daemon)
-        _speaker_engine.tick(session_speaker_says_operator=raw_signal)
+        _voice_bio: bool | None = None
+        _speaker_id = getattr(daemon, "_speaker_identifier", None)
+        if _speaker_id is not None and state.audio_bytes is not None:
+            try:
+                _result = _speaker_id.identify_audio(state.audio_bytes)
+                if _result is not None:
+                    _voice_bio = _result.label == "operator"
+            except Exception:
+                pass
+        _speaker_engine.tick(
+            session_speaker_says_operator=raw_signal,
+            voice_biometric_match=_voice_bio,
+        )
         # Asymmetric semantics: ``state != "RETRACTED"`` means single_user
         # axiom default-to-operator stays in effect during cold-start
         # (UNCERTAIN) and during transient silences (ASSERTED holds across
