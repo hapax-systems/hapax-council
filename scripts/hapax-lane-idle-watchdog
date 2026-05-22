@@ -412,6 +412,36 @@ find_claimed_task() {
     return 1
 }
 
+REFUSE_CACHE_TTL_S="${HAPAX_REFUSE_CACHE_TTL_S:-3600}"
+
+is_dispatch_refused_cached() {
+    local lane="$1" task_id="$2"
+    local cache_file="$STATE_DIR/${lane}.${task_id}.refused"
+    [ ! -f "$cache_file" ] && return 1
+    local cached_at
+    cached_at=$(head -1 "$cache_file" 2>/dev/null || echo 0)
+    local elapsed=$((now - cached_at))
+    if [ "$elapsed" -ge "$REFUSE_CACHE_TTL_S" ]; then
+        rm -f "$cache_file" 2>/dev/null || true
+        return 1
+    fi
+    local task_file="$TASK_ROOT/${task_id}.md"
+    if [ -f "$task_file" ]; then
+        local task_mtime
+        task_mtime=$(stat -c %Y "$task_file" 2>/dev/null || echo 0)
+        if [ "$task_mtime" -gt "$cached_at" ]; then
+            rm -f "$cache_file" 2>/dev/null || true
+            return 1
+        fi
+    fi
+    return 0
+}
+
+cache_dispatch_refusal() {
+    local lane="$1" task_id="$2" reason="$3"
+    printf '%s\n%s\n' "$now" "$reason" > "$STATE_DIR/${lane}.${task_id}.refused"
+}
+
 methodology_dispatch_prompt() {
     local task_id="$1"
     local lane="$2"
@@ -441,6 +471,9 @@ methodology_dispatch_prompt() {
     rc=$?
     dispatch_error="$(tr '\n' ' ' <"$err_file" 2>/dev/null | head -c 240 || true)"
     rm -f "$err_file" 2>/dev/null || true
+    if echo "$dispatch_error" | grep -qE 'BLOCKED.*(refuse|not_mutable|unsupported|prohibited)'; then
+        cache_dispatch_refusal "$lane" "$task_id" "$dispatch_error"
+    fi
     log "METHODOLOGY DISPATCH FAILED for $task_id -> $lane ($platform): ${dispatch_error:-rc=$rc}"
     return "$rc"
 }
@@ -481,6 +514,9 @@ for session in "${!IDLE_LANES[@]}"; do
         dispatch_ok=false
         while IFS= read -r next_task; do
             [ -z "$next_task" ] && continue
+            if is_dispatch_refused_cached "$lane" "$next_task"; then
+                continue
+            fi
             log "VALIDATING methodology dispatch $next_task for $lane ($platform)"
             if dispatch_msg="$(methodology_dispatch_prompt "$next_task" "$lane" "$platform")"; then
                 dispatch_target="$next_task"
