@@ -151,7 +151,7 @@ fn main_1() {
     // Preserve entity color identity: blend graded result back toward
     // original so entity hue always shows through the color grade.
     let original = textureSample(tex, tex_sampler, v_texcoord_1).xyz;
-    let entity_preserve = 0.60;
+    let entity_preserve = 0.90;
     graded = mix(graded, original, vec3(entity_preserve * surface_presence));
     fragColor = vec4<f32>(graded.x, graded.y, graded.z, _e117.w);
     return;
