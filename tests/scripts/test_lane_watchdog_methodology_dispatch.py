@@ -93,6 +93,9 @@ def test_idle_watchdog_uses_methodology_dispatch_for_offered_queue() -> None:
     assert "CC_CLAIM" not in text
     assert "Claimed task" not in text
     assert "No offered tasks in queue" in text
+    assert "is_dispatch_refused_cached" in text
+    assert "cache_dispatch_refusal" in text
+    assert "REFUSE_CACHE_TTL_S" in text
 
 
 def test_rate_limit_watchdog_holds_for_methodology_launch() -> None:
@@ -210,6 +213,95 @@ def test_rate_limit_watchdog_sends_hold_not_assignment_when_lane_has_no_task(
     assert "hapax-methodology-dispatch --launch" in sent
     assert "Task:" not in sent
     assert "cc-claim" not in sent
+
+
+def test_idle_watchdog_skips_cached_refusal_and_dispatches_next(tmp_path: Path) -> None:
+    env = _base_env(
+        tmp_path,
+        session="hapax-codex-cx-red",
+        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+    )
+    task_dir = (
+        Path(env["HOME"]) / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+    )
+    task_dir.mkdir(parents=True)
+    (task_dir / "refused-task.md").write_text(
+        "---\nstatus: offered\nassigned_to: unassigned\nwsjf: 99\n---\n# Refused\n",
+        encoding="utf-8",
+    )
+    (task_dir / "fallback-task.md").write_text(
+        "---\nstatus: offered\nassigned_to: unassigned\nwsjf: 5\n---\n# Fallback\n",
+        encoding="utf-8",
+    )
+
+    state_dir = Path(env["HAPAX_IDLE_STATE_DIR"])
+    import time
+
+    cache_file = state_dir / "cx-red.refused-task.refused"
+    cache_file.write_text(f"{int(time.time())}\nBLOCKED: route_not_mutable_for_runtime\n")
+
+    dispatcher = Path(env["HOME"]) / ".local" / "bin" / "hapax-methodology-dispatch"
+    dispatcher.parent.mkdir(parents=True)
+    dispatch_calls = tmp_path / "dispatch-calls.txt"
+    _write_executable(
+        dispatcher,
+        f"""
+        #!/usr/bin/env bash
+        printf '%s\n' "$*" >> {dispatch_calls}
+        printf '%s\n' "SDLC GOVERNED DISPATCH."
+        printf '%s\n' "Task: fallback-task"
+        """,
+    )
+
+    result = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    calls = dispatch_calls.read_text(encoding="utf-8")
+    assert "fallback-task" in calls
+    assert "refused-task" not in calls
+
+
+def test_idle_watchdog_invalidates_refusal_cache_on_task_modification(tmp_path: Path) -> None:
+    env = _base_env(
+        tmp_path,
+        session="hapax-codex-cx-red",
+        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+    )
+    task_dir = (
+        Path(env["HOME"]) / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+    )
+    task_dir.mkdir(parents=True)
+    task_file = task_dir / "modified-task.md"
+    task_file.write_text(
+        "---\nstatus: offered\nassigned_to: unassigned\nwsjf: 20\n---\n# Modified\n",
+        encoding="utf-8",
+    )
+
+    state_dir = Path(env["HAPAX_IDLE_STATE_DIR"])
+    cache_file = state_dir / "cx-red.modified-task.refused"
+    cache_file.write_text("1000000000\nBLOCKED: route_not_mutable\n")
+
+    import time
+
+    os.utime(task_file, (time.time(), time.time()))
+
+    dispatcher = Path(env["HOME"]) / ".local" / "bin" / "hapax-methodology-dispatch"
+    dispatcher.parent.mkdir(parents=True)
+    dispatch_calls = tmp_path / "dispatch-calls.txt"
+    _write_executable(
+        dispatcher,
+        f"""
+        #!/usr/bin/env bash
+        printf '%s\n' "$*" >> {dispatch_calls}
+        printf '%s\n' "SDLC GOVERNED DISPATCH."
+        """,
+    )
+
+    result = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    calls = dispatch_calls.read_text(encoding="utf-8")
+    assert "modified-task" in calls
 
 
 def test_rate_limit_watchdog_does_not_restart_dead_lane_for_terminal_task(
