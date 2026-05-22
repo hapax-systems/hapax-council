@@ -11,6 +11,7 @@ import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +27,23 @@ from shared.impingement import Impingement, render_impingement_text
 from shared.visual_mode_bias import get_visual_mode_bias
 
 log = logging.getLogger("affordance_pipeline")
+
+
+class LearningAuthority(StrEnum):
+    """Declares whether a record_outcome call is world-facing or internal.
+
+    INTERNAL: selection, exploration, reverie visual recruitment, internal
+    pipeline bookkeeping. Positive learning is permitted unconditionally.
+
+    WORLD_FACING: narration, voice output, livestream control, publication.
+    Positive learning REQUIRES passage through record_capability_outcome()
+    with a valid CapabilityOutcomeEnvelope. Direct record_outcome(success=True)
+    calls with WORLD_FACING authority are refused.
+    """
+
+    INTERNAL = "internal"
+    WORLD_FACING = "world_facing"
+
 
 if TYPE_CHECKING:
     from shared.affordance_outcome_adapter import AffordanceOutcomeDecision
@@ -977,14 +995,29 @@ class AffordancePipeline:
         state.record_failure()
 
     def record_outcome(
-        self, capability_name: str, success: bool, context: dict[str, Any] | None = None
-    ) -> None:
-        """Record a low-level internal/exploration outcome.
+        self,
+        capability_name: str,
+        success: bool,
+        context: dict[str, Any] | None = None,
+        *,
+        authority: LearningAuthority = LearningAuthority.INTERNAL,
+        _via_capability_gate: bool = False,
+    ) -> bool:
+        """Record a low-level outcome. Returns True if learning was applied.
 
-        Runtime world outcomes should prefer record_capability_outcome(), which
-        gates CapabilityOutcomeEnvelope through witness and learning policy
-        before collapsing to this boolean primitive.
+        World-facing positive learning (authority=WORLD_FACING, success=True)
+        is refused unless the call originated from record_capability_outcome()
+        (indicated by _via_capability_gate=True). Failure learning is always
+        permitted regardless of authority — failing fast is safe.
         """
+        if success and authority is LearningAuthority.WORLD_FACING and not _via_capability_gate:
+            log.warning(
+                "record_outcome: REFUSED world-facing positive learning for %s "
+                "(use record_capability_outcome with a CapabilityOutcomeEnvelope)",
+                capability_name,
+            )
+            return False
+
         if success:
             self.record_success(capability_name)
         else:
@@ -1002,21 +1035,32 @@ class AffordancePipeline:
             for _key, value in context.items():
                 self.update_context_association(str(value), capability_name, delta=delta)
         self._record_camera_salience_outcome(capability_name, success, context)
+        return True
 
     def record_capability_outcome(
         self,
         outcome: CapabilityOutcomeEnvelope,
         context: dict[str, Any] | None = None,
     ) -> AffordanceOutcomeDecision:
-        """Gate a CapabilityOutcomeEnvelope before mutating learning state."""
+        """Gate a CapabilityOutcomeEnvelope before mutating learning state.
 
+        This is the only path that permits positive learning for world-facing
+        outcomes. The envelope's witness policy, freshness, and fixture case
+        are validated by the adapter before any Thompson/Hebbian update.
+        """
         from shared.affordance_outcome_adapter import decide_affordance_outcome_update
 
         decision = decide_affordance_outcome_update(outcome)
         if decision.should_update:
             if decision.success is None:
                 raise ValueError("affordance outcome decision requested update without success")
-            self.record_outcome(decision.capability_name, decision.success, context=context)
+            self.record_outcome(
+                decision.capability_name,
+                decision.success,
+                context=context,
+                authority=LearningAuthority.WORLD_FACING,
+                _via_capability_gate=True,
+            )
         return decision
 
     def _record_camera_salience_outcome(
