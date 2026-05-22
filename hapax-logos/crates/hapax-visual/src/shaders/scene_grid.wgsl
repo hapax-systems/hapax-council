@@ -55,22 +55,47 @@ fn aa_disc_mask(dist: f32, radius: f32) -> f32 {
     return 1.0 - smoothstep(radius - feather, radius + feather, dist);
 }
 
-fn scroom_material_pattern(gc: vec2<f32>, plane_kind: f32) -> f32 {
-    // Persistent low-frequency nebulous scroom material. This is attached
-    // to room planes, not to the output pane, so it reads as spatial
-    // structure rather than as a fourth-wall overlay.
+fn scroom_material_pattern(gc: vec2<f32>, plane_kind: f32, world_dist: f32) -> f32 {
+    // Multi-scale architectural material — reads as spatial structure at any
+    // effect intensity. Three frequency bands: structural, surface, grain.
     let bias = plane_kind * 0.173;
-    let p = gc * 0.34 + vec2<f32>(bias, -bias * 0.71);
-    let diag_a = abs(fract(p.x + p.y * 0.50) - 0.5);
-    let diag_b = abs(fract(p.x - p.y * 0.50 + 0.21) - 0.5);
-    let cross = abs(fract(p.y * 0.62 + bias) - 0.5);
-    let tri = max(
+    let depth_freq = 1.0 + clamp(1.0 / (world_dist * 0.08 + 0.5), 0.0, 2.0);
+
+    // Plane-aligned anisotropy: floor=horizontal, wall=vertical, ceiling=radial
+    var aniso: vec2<f32>;
+    if plane_kind < 0.5 {
+        aniso = vec2<f32>(1.0, 0.4);
+    } else if plane_kind < 1.5 {
+        aniso = vec2<f32>(0.4, 1.0);
+    } else {
+        aniso = vec2<f32>(0.8, 0.8);
+    }
+
+    // Band 1: structural (low freq) — original cross-hatch
+    let p = gc * 0.34 * depth_freq + vec2<f32>(bias, -bias * 0.71);
+    let sp = p * aniso;
+    let diag_a = abs(fract(sp.x + sp.y * 0.50) - 0.5);
+    let diag_b = abs(fract(sp.x - sp.y * 0.50 + 0.21) - 0.5);
+    let cross = abs(fract(sp.y * 0.62 + bias) - 0.5);
+    let structural = max(
         max(smoothstep(0.040, 0.010, diag_a), smoothstep(0.040, 0.010, diag_b)),
         smoothstep(0.048, 0.014, cross) * 0.58,
     );
-    let cell = floor(p);
+
+    // Band 2: surface roughness (mid freq) — Worley-like cellularization
+    let cell = floor(p * 2.8);
     let facet = 0.5 + 0.5 * sin((cell.x * 1.37 + cell.y * 1.91) + plane_kind * 2.3);
-    return clamp(0.22 + tri * 0.58 + facet * 0.10, 0.0, 1.0);
+    let cell_edge = min(
+        abs(fract(p.x * 2.8) - 0.5),
+        abs(fract(p.y * 2.8) - 0.5)
+    );
+    let surface = facet * 0.6 + smoothstep(0.08, 0.02, cell_edge) * 0.3;
+
+    // Band 3: grain (high freq) — prevents flat reads under compression
+    let grain_p = gc * 4.2 * depth_freq;
+    let grain = fract(sin(dot(floor(grain_p), vec2<f32>(127.1, 311.7))) * 43758.5453);
+
+    return clamp(0.18 + structural * 0.48 + surface * 0.22 + grain * 0.12, 0.0, 1.0);
 }
 
 fn soft_shadow_at(world_pos: vec3<f32>, light_pos: vec3<f32>) -> f32 {
@@ -319,7 +344,7 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         );
         let density_gate = step(0.62, stipple_hash(cell));
         let dot_alpha = density_gate * aa_disc_mask(length(local - center), 0.175);
-        let material = scroom_material_pattern(gc, in.plane_kind);
+        let material = scroom_material_pattern(gc, in.plane_kind, dist);
         let weave = 0.5 + 0.5 * sin(gc.x * 2.1 + gc.y * 1.7);
         let shadow = soft_shadow_at(wp, grid.light_position.xyz);
         let room_light = point_light_at(wp, in.normal) * shadow;
