@@ -1,0 +1,161 @@
+{
+  "$defs": {
+    "ClaimCeiling": {
+      "description": "Graduated claim authority tier representing the maximum claim strength.",
+      "enum": [
+        "no_claim",
+        "internal_only",
+        "publication_witness",
+        "peer_reviewed"
+      ],
+      "title": "ClaimCeiling",
+      "type": "string"
+    },
+    "PrivacyClass": {
+      "description": "Privacy clearance level of a card.",
+      "enum": [
+        "public",
+        "internal",
+        "redacted",
+        "operator_only",
+        "consent_gated"
+      ],
+      "title": "PrivacyClass",
+      "type": "string"
+    },
+    "RedactionPolicy": {
+      "description": "Redaction policies applied before public publication.",
+      "enum": [
+        "none",
+        "names",
+        "values",
+        "full"
+      ],
+      "title": "RedactionPolicy",
+      "type": "string"
+    },
+    "SourceQuality": {
+      "description": "Tier-based quality rating of underlying sources/grounding.",
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ],
+      "title": "SourceQuality",
+      "type": "string"
+    }
+  },
+  "description": "Canonical model card record for a novel Hapax concept.\n\nProvides a public explanation layer that makes novel concepts and public\nclaims legible without overclaiming, leaking private material, or hiding\nlimitations.",
+  "properties": {
+    "concept_id": {
+      "description": "Unique stable persistent identifier for the concept.",
+      "minLength": 1,
+      "title": "Concept Id",
+      "type": "string"
+    },
+    "concept_name": {
+      "description": "Human-readable name of the concept.",
+      "minLength": 1,
+      "title": "Concept Name",
+      "type": "string"
+    },
+    "description": {
+      "description": "Detailed description of the concept's meaning and purpose.",
+      "minLength": 1,
+      "title": "Description",
+      "type": "string"
+    },
+    "formation_provenance": {
+      "description": "Provenance chain of the concept's formation (e.g. research -> spec -> implementation).",
+      "items": {
+        "type": "string"
+      },
+      "title": "Formation Provenance",
+      "type": "array"
+    },
+    "claim_scope": {
+      "description": "The scope of what this concept claims to cover.",
+      "minLength": 1,
+      "title": "Claim Scope",
+      "type": "string"
+    },
+    "claim_ceiling": {
+      "$ref": "#/$defs/ClaimCeiling",
+      "description": "The maximum claim strength or authority tier."
+    },
+    "evidence_refs": {
+      "description": "References to supporting evidence cards or documents.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Evidence Refs",
+      "type": "array"
+    },
+    "limitations": {
+      "description": "Known limitations or boundaries of the concept.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Limitations",
+      "type": "array"
+    },
+    "what_this_does_not_prove": {
+      "description": "Explicit statement of what the existence of this concept does NOT establish.",
+      "minLength": 1,
+      "title": "What This Does Not Prove",
+      "type": "string"
+    },
+    "related_terms": {
+      "description": "Related terms or concepts for cross-reference.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Related Terms",
+      "type": "array"
+    },
+    "privacy_class": {
+      "$ref": "#/$defs/PrivacyClass",
+      "default": "internal",
+      "description": "Privacy clearance level of this concept card."
+    },
+    "redaction_policy": {
+      "$ref": "#/$defs/RedactionPolicy",
+      "default": "none",
+      "description": "Redaction policy applied to the card before public publication."
+    },
+    "public_allowlist_approved": {
+      "default": false,
+      "description": "Whether the concept card has been explicitly approved for the public allowlist.",
+      "title": "Public Allowlist Approved",
+      "type": "boolean"
+    },
+    "source_quality": {
+      "$ref": "#/$defs/SourceQuality",
+      "default": "medium",
+      "description": "Overall quality rating of the underlying grounding/sources."
+    },
+    "license_provenance": {
+      "description": "License and source provenance information.",
+      "minLength": 1,
+      "title": "License Provenance",
+      "type": "string"
+    },
+    "freshness_timestamp": {
+      "description": "Timestamp indicating when this concept card was last verified or updated.",
+      "format": "date-time",
+      "title": "Freshness Timestamp",
+      "type": "string"
+    }
+  },
+  "required": [
+    "concept_id",
+    "concept_name",
+    "description",
+    "claim_scope",
+    "claim_ceiling",
+    "what_this_does_not_prove",
+    "license_provenance"
+  ],
+  "title": "HapaxConceptCard",
+  "type": "object"
+}
