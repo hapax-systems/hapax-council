@@ -1020,6 +1020,7 @@ from logos.api.routes.predictions import router as predictions_router
 from logos.api.routes.profile import router as profile_router
 from logos.api.routes.query import router as query_router
 from logos.api.routes.scout import router as scout_router
+from logos.api.routes.semantic_trace import router as semantic_trace_router
 from logos.api.routes.sprint import router as sprint_router
 from logos.api.routes.stimmung import router as stimmung_router
 from logos.api.routes.stream import router as stream_router
@@ -1067,6 +1068,7 @@ app.include_router(awareness_router)
 app.include_router(watch_router)
 app.include_router(vault_router)
 app.include_router(chronicle_router)
+app.include_router(semantic_trace_router)
 app.include_router(predictions_router)
 app.include_router(x402_router)
 app.include_router(payment_rails_router)
