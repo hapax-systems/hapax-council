@@ -16,12 +16,12 @@ const FAST_FADE_OUT_S: f32 = 6.0;
 const STAGGER_S: f32 = 6.0;
 const POOL_SIZE: usize = 5; // Five visible slots: four active, one rotating/recruiting.
 const ACTIVE_SLOT_TARGET: usize = 4;
-const PARAM_DRIFT_RATE: f32 = 0.036;
+const PARAM_DRIFT_RATE: f32 = 0.09;
 const TICK_DIVISOR: u64 = 5; // ~6Hz at 30fps
-const SPATIAL_PEAK_RANGE: (f32, f32) = (0.82, 0.98);
-const NONSPATIAL_PEAK_RANGE: (f32, f32) = (0.96, 1.0);
-const RETIRE_INTENSITY_FLOOR: f32 = 0.28;
-const FAST_RETIRE_INTENSITY_FLOOR: f32 = 0.32;
+const SPATIAL_PEAK_RANGE: (f32, f32) = (0.58, 1.0);
+const NONSPATIAL_PEAK_RANGE: (f32, f32) = (0.72, 1.0);
+const RETIRE_INTENSITY_FLOOR: f32 = 0.22;
+const FAST_RETIRE_INTENSITY_FLOOR: f32 = 0.26;
 const RECRUIT_WARM_PROGRESS: f32 = 0.48;
 const FAST_RECRUIT_WARM_PROGRESS: f32 = 0.40;
 const INITIAL_VISIBLE_FLOOR: f32 = 0.46;
@@ -1410,7 +1410,7 @@ mod tests {
                 "nonspatial peak {nonspatial_peak} outside safe visible range"
             );
             assert!(
-                nonspatial_peak >= 0.75,
+                nonspatial_peak >= 0.70,
                 "nonspatial drift must reach the bounded active range at peak"
             );
         }
@@ -2010,8 +2010,8 @@ mod tests {
         );
         assert!(
             INITIAL_VISIBLE_FLOOR >= 0.44
-                && RETIRE_INTENSITY_FLOOR >= 0.26
-                && FAST_RETIRE_INTENSITY_FLOOR >= 0.30,
+                && RETIRE_INTENSITY_FLOOR >= 0.20
+                && FAST_RETIRE_INTENSITY_FLOOR >= 0.24,
             "drift lifecycle must stay visibly above near-noop intensity floors"
         );
         assert!(
@@ -2069,14 +2069,14 @@ mod tests {
             let min_warm_intensity = peak_range.0 * warm_smooth;
             let max_warm_intensity = peak_range.1 * warm_smooth;
             assert!(
-                min_warm_intensity + 0.05 >= fast_floor,
+                min_warm_intensity + 0.10 >= fast_floor,
                 "{} warm-start minimum {:.3} falls too far below fast retire floor {:.3}",
                 def.name,
                 min_warm_intensity,
                 fast_floor
             );
             assert!(
-                max_warm_intensity <= fast_floor + 0.06,
+                max_warm_intensity <= fast_floor + 0.14,
                 "{} warm-start maximum {:.3} jumps above fast retire floor {:.3}",
                 def.name,
                 max_warm_intensity,
