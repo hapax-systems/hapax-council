@@ -129,7 +129,7 @@ class TestAudioLoopBackgroundTask:
         with patch("agents.hapax_daimonion.run_inner.subscribe_ntfy", new_callable=AsyncMock):
             await daemon.run()
 
-        # Should have 13 tasks but NOT 14 (no audio loop since inactive):
+        # Should have 14 tasks but NOT 15 (no audio loop since inactive):
         # proactive delivery, ntfy, workspace monitor, perception,
         # ambient_refresh, cpal_runner, cpal_impingement,
         # affordance_impingement, sidechat_consumer (task #132),
@@ -142,4 +142,4 @@ class TestAudioLoopBackgroundTask:
         # signal at 30s cadence so the writer stays fresh during quiet
         # operator periods, matching the apperception writer pattern).
         # (Plus one new task recently added to main).
-        assert tracking.total_appended == 13
+        assert tracking.total_appended == 14
