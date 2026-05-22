@@ -62,6 +62,21 @@ fn main_1() {
     // Master opacity gate — black when nothing is recruited
     c = vec4<f32>(c.xyz * global.u_master_opacity, c.w);
 
+    // Anti-monotonicity: ensure chromatic variance and local contrast.
+    // If the output is converging toward monochrome, inject subtle
+    // complementary hue variation based on screen position.
+    let luma = dot(c.xyz, vec3<f32>(0.299, 0.587, 0.114));
+    let chroma = length(c.xyz - vec3<f32>(luma));
+    let mono_risk = smoothstep(0.06, 0.01, chroma);
+    let pos_hue = fract(v_texcoord_1.x * 0.31 + v_texcoord_1.y * 0.17);
+    let h6 = pos_hue * 6.0;
+    let inject = vec3<f32>(
+        clamp(abs(h6 - 3.0) - 1.0, 0.0, 1.0),
+        clamp(2.0 - abs(h6 - 2.0), 0.0, 1.0),
+        clamp(2.0 - abs(h6 - 4.0), 0.0, 1.0),
+    ) * luma;
+    c = vec4<f32>(c.xyz + inject * mono_risk * 0.12, c.w);
+
     fragColor = c;
     return;
 }
