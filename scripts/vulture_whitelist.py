@@ -3904,3 +3904,9 @@ extract_from_directory_resumable
 from shared.eval_receipt import EvalReceiptV1
 
 EvalReceiptV1._replayable_requires_artifacts_and_hashes
+
+# SCM provenance API: foundation layer for transformation logging.
+# Callers adopt incrementally per REQ-20260521-scm-transformation-logging.
+from shared.trace_reader import read_trace_with_provenance
+
+read_trace_with_provenance
