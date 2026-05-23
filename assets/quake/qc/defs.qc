@@ -67,6 +67,7 @@ float SOUNDFLAG_FORCELOOP = 1;
 .float solid;
 .vector avelocity;
 .float effects;
+.float fixangle;
 
 // Shared entity references
 entity aoa_entity;

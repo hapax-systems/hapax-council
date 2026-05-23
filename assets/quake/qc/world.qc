@@ -57,7 +57,15 @@ void() StartFrame =
 {
     coupling_tick();
 };
-void() PlayerPreThink = {};
+void() PlayerPreThink =
+{
+    if (camera_entity)
+    {
+        setorigin(self, camera_entity.origin);
+        self.angles = camera_entity.angles;
+        self.fixangle = 1;
+    }
+};
 void() PlayerPostThink = {};
 void() ClientKill = {};
 void() ClientConnect = {};
