@@ -575,10 +575,23 @@ void main(void)
 	vec3 warm_tint = vec3(0.85, 0.65, 0.45);
 	color = mix(color, color * warm_tint / max(dot(warm_tint, vec3(0.333)), 0.01), warmth);
 
-	// 20. Contrast boost
+	// 20. Luma key — shadow depth enhancement
+	float lk = dot(color, vec3(0.299, 0.587, 0.114));
+	color *= smoothstep(0.02, 0.08, lk) * 0.15 + 0.85;
+
+	// 21. Procedural noise texture (value noise, 2 octaves)
+	vec2 pn_uv = uv * 8.0 + vec2(ClientTime * 0.02);
+	float pn1 = fract(sin(dot(floor(pn_uv), vec2(127.1, 311.7))) * 43758.5453);
+	float pn2 = fract(sin(dot(floor(pn_uv * 2.0), vec2(269.5, 183.3))) * 28461.632);
+	color += vec3((pn1 * 0.7 + pn2 * 0.3) * 0.025 - 0.0125);
+
+	// 22. Tile frequency modulation (spatial rhythm)
+	color += vec3(sin(uv.x * 80.0) * sin(uv.y * 60.0) * 0.004);
+
+	// 23. Contrast boost
 	color = (color - 0.5) * 1.10 + 0.5;
 
-	// 21. Clamp
+	// 24. Clamp
 	color = max(color, vec3(0.0));
 
 	dp_FragColor.rgb = color;
