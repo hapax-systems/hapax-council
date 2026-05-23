@@ -341,22 +341,36 @@ fn remap_speed(t: f32, num_segments: usize) -> f32 {
     (segment + eased) / n
 }
 
-const GARDEN_STATIONS: [Vec3; 6] = [
-    Vec3::new( 0.0,  0.0,   0.5),
-    Vec3::new(-3.2, -0.1,  -1.2),
-    Vec3::new(-0.9, -0.5,  -3.0),
-    Vec3::new( 3.0, -0.2,  -2.5),
-    Vec3::new( 0.3,  1.2,  -2.8),
-    Vec3::new( 0.0,  0.0,   0.5),
+// Helical camera path — spiral ascending through the tower.
+// 8 control points, 2 revolutions, radius 4, height -1.5 to 11.5.
+// The camera walks the spiral ramp, looking inward at the AoA axis.
+const TOWER_RADIUS: f32 = 4.0;
+const TOWER_Y_BASE: f32 = -1.5;
+const TOWER_Y_TOP: f32 = 11.5;
+const TOWER_REVOLUTIONS: f32 = 2.0;
+
+const SPIRAL_STATIONS: [Vec3; 9] = [
+    Vec3::new( 4.0, -1.50,  0.0),   // S0: base, theta=0
+    Vec3::new( 0.0, -0.19,  4.0),   // S1: theta=pi/2
+    Vec3::new(-4.0,  1.12,  0.0),   // S2: theta=pi
+    Vec3::new( 0.0,  2.44, -4.0),   // S3: theta=3pi/2
+    Vec3::new( 4.0,  3.75,  0.0),   // S4: theta=2pi (1 full rev)
+    Vec3::new( 0.0,  5.06,  4.0),   // S5: theta=5pi/2
+    Vec3::new(-4.0,  6.38,  0.0),   // S6: theta=3pi
+    Vec3::new( 0.0,  7.69, -4.0),   // S7: theta=7pi/2
+    Vec3::new( 4.0,  9.00,  0.0),   // S8: theta=4pi (2 full revs) == wrap
 ];
 
-const GARDEN_TARGETS: [Vec3; 6] = [
-    Vec3::new( 0.0, -0.3,  -2.06),
-    Vec3::new(-4.5, -0.3,  -1.8),
-    Vec3::new( 0.0, -0.3,  -2.06),
-    Vec3::new( 4.5,  0.0,  -2.2),
-    Vec3::new( 0.0,  0.5,  -2.0),
-    Vec3::new( 0.0, -0.3,  -2.06),
+const SPIRAL_TARGETS: [Vec3; 9] = [
+    Vec3::new( 0.0, -1.50,  0.0),
+    Vec3::new( 0.0, -0.19,  0.0),
+    Vec3::new( 0.0,  1.12,  0.0),
+    Vec3::new( 0.0,  2.44,  0.0),
+    Vec3::new( 0.0,  3.75,  0.0),
+    Vec3::new( 0.0,  5.06,  0.0),
+    Vec3::new( 0.0,  6.38,  0.0),
+    Vec3::new( 0.0,  7.69,  0.0),
+    Vec3::new( 0.0,  9.00,  0.0),
 ];
 
 /// Perspective camera for the 3D scene.
@@ -398,25 +412,27 @@ impl Camera3D {
     pub fn spline_pose_at(&self, time: f32, energy: f32) -> (Vec3, Vec3) {
         let period = 72.0 + (1.0 - energy) * 18.0;
         let t = (time % period) / period;
-        let t_remapped = remap_speed(t, 5);
+        let n = 8usize; // 8 segments between 9 control points
+        let t_remapped = remap_speed(t, n);
 
-        let n = 5usize;
         let segment_f = t_remapped * n as f32;
         let seg = (segment_f as usize).min(n - 1);
         let local_t = (segment_f - seg as f32).clamp(0.0, 1.0);
 
-        let i0 = (seg + n - 1) % n;
+        // Catmull-Rom needs p[seg-1], p[seg], p[seg+1], p[seg+2].
+        // Wrap with mod n for seamless loop.
+        let i0 = if seg == 0 { n - 1 } else { seg - 1 };
         let i1 = seg;
-        let i2 = (seg + 1) % n;
-        let i3 = (seg + 2) % n;
+        let i2 = (seg + 1).min(n);
+        let i3 = (seg + 2).min(n);
 
         let eye = catmull_rom(
-            GARDEN_STATIONS[i0], GARDEN_STATIONS[i1],
-            GARDEN_STATIONS[i2], GARDEN_STATIONS[i3], local_t,
+            SPIRAL_STATIONS[i0], SPIRAL_STATIONS[i1],
+            SPIRAL_STATIONS[i2], SPIRAL_STATIONS[i3], local_t,
         );
         let target = catmull_rom(
-            GARDEN_TARGETS[i0], GARDEN_TARGETS[i1],
-            GARDEN_TARGETS[i2], GARDEN_TARGETS[i3], local_t,
+            SPIRAL_TARGETS[i0], SPIRAL_TARGETS[i1],
+            SPIRAL_TARGETS[i2], SPIRAL_TARGETS[i3], local_t,
         );
         (eye, target)
     }
@@ -698,12 +714,15 @@ fn push_deoccluded_grid(
 
 fn apply_miegakure(nodes: &mut [SceneNode], camera_eye: Vec3) {
     for node in nodes.iter_mut() {
-        if matches!(node.label.as_str(), AOA_NODE_LABEL | "grounding_provenance_ticker") {
+        if node.label.starts_with("aoa-pane-")
+            || node.label == AOA_NODE_LABEL
+            || node.shader == SceneNodeShader::ApertureOfApertures
+        {
             continue;
         }
         let dist = node.position.distance(camera_eye);
-        let reveal = 1.0 - smoothstep_f32(3.0, 8.0, dist);
-        node.opacity *= reveal.clamp(0.05, 1.0);
+        let reveal = 1.0 - smoothstep_f32(6.0, 16.0, dist);
+        node.opacity *= reveal.clamp(0.12, 1.0);
     }
 }
 
@@ -775,8 +794,9 @@ pub fn build_scene_from_source_records_for_stream_posture(
     time: f32,
     stream_posture: AoaPaneStreamPosture,
 ) -> BuiltScene {
-    let mut camera = Camera3D::new(1920, 1080);
-    camera.apply_orbital_drift(time);
+    // Use canonical frontal camera for AoA pane LOD evaluation.
+    // The spiral path position varies too much for stable pane binding.
+    let camera = Camera3D::new(1920, 1080);
     build_scene_from_source_records_for_stream_posture_with_camera(
         active_sources,
         time,
@@ -1425,17 +1445,13 @@ mod tests {
     }
 
     #[test]
-    fn garden_path_stays_bounded() {
+    fn spiral_path_stays_bounded() {
         let mut cam = Camera3D::new(960, 540);
         for t in (0..900).map(|i| i as f32 * 0.1) {
             cam.apply_orbital_drift(t);
-            assert!(cam.eye.x.abs() < 4.0, "x out of bounds at t={t}: {}", cam.eye.x);
-            assert!(cam.eye.y.abs() < 1.8, "y out of bounds at t={t}: {}", cam.eye.y);
-            assert!(
-                (-3.5..=1.0).contains(&cam.eye.z),
-                "z out of bounds at t={t}: {}",
-                cam.eye.z
-            );
+            assert!(cam.eye.x.abs() < 5.5, "x out of bounds at t={t}: {}", cam.eye.x);
+            assert!(cam.eye.y > -3.0 && cam.eye.y < 12.0, "y out of bounds at t={t}: {}", cam.eye.y);
+            assert!(cam.eye.z.abs() < 5.5, "z out of bounds at t={t}: {}", cam.eye.z);
             assert!(cam.eye.is_finite(), "eye NaN at t={t}");
             assert!(cam.target.is_finite(), "target NaN at t={t}");
         }
@@ -2441,17 +2457,15 @@ mod tests {
     }
 
     #[test]
-    fn orbital_drift_with_max_energy_stays_bounded() {
+    fn spiral_with_max_energy_stays_bounded() {
         let mut cam = Camera3D::new(960, 540);
-        for t in (0..600).map(|i| i as f32 * 0.1) {
+        for t in (0..900).map(|i| i as f32 * 0.1) {
             cam.apply_orbital_drift_with_energy(t, 1.0);
-            assert!(cam.eye.x.abs() < 4.5, "x out of bounds at t={t}: {}", cam.eye.x);
-            assert!(cam.eye.y.abs() < 2.0, "y out of bounds at t={t}: {}", cam.eye.y);
-            assert!(
-                (-4.0..=1.5).contains(&cam.eye.z),
-                "z out of bounds at t={t}: {}",
-                cam.eye.z
-            );
+            assert!(cam.eye.is_finite(), "eye NaN at t={t}");
+            assert!(cam.target.is_finite(), "target NaN at t={t}");
+            assert!(cam.eye.x.abs() < 6.0, "x out of bounds at t={t}: {}", cam.eye.x);
+            assert!(cam.eye.y > -4.0 && cam.eye.y < 13.0, "y out of bounds at t={t}: {}", cam.eye.y);
+            assert!(cam.eye.z.abs() < 6.0, "z out of bounds at t={t}: {}", cam.eye.z);
         }
     }
 }
