@@ -1,0 +1,10 @@
+[Unit]
+Description=Vault coherence agent — density field knowledge zone + wikilink assertions
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=15min
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

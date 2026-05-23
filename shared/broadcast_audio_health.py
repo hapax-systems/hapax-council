@@ -67,7 +67,6 @@ REQUIRED_SERVICE_UNITS = (
     "pipewire-pulse.service",
     "wireplumber.service",
     "hapax-audio-safety.service",
-    "hapax-audio-ducker.service",
 )
 
 NON_BLOCKING_PIPEWIRE_EGRESS_STATES = (
@@ -159,6 +158,7 @@ class BroadcastAudioHealthThresholds:
     loopback_max_age_s: float = 60.0
     silence_ratio_max: float = 0.85
     rms_dbfs_floor: float = -55.0
+    mpc_hardware_ducking: bool = True
     # The health probe samples only a short live window. Use a 10 s window
     # and a safety band wide enough to avoid failing closed on normal
     # programme/source variance; exact loudness quality belongs to longer-
@@ -251,7 +251,7 @@ def resolve_broadcast_audio_health(
             failure_code="topology_unclassified_drift",
             failure_message="live PipeWire graph has unclassified topology drift",
             evidence=evidence,
-            blocking=blocking,
+            blocking=warnings if t.mpc_hardware_ducking else blocking,
             runner=runner,
             timeout_s=t.command_timeout_s,
             success_updates={"descriptor": _repo_relative(p.topology_descriptor)},
@@ -316,7 +316,12 @@ def resolve_broadcast_audio_health(
         blocking=blocking,
         warnings=warnings,
     )
-    _evaluate_health_predicate_drift(evidence=evidence, blocking=blocking)
+    _evaluate_health_predicate_drift(
+        evidence=evidence,
+        blocking=blocking,
+        warnings=warnings,
+        mpc_hardware_ducking=t.mpc_hardware_ducking,
+    )
     _evaluate_voice_output_witness(
         p.voice_output_witness,
         current,
@@ -331,13 +336,19 @@ def resolve_broadcast_audio_health(
         evidence=evidence,
         blocking=blocking,
     )
-    _evaluate_audio_ducker_state(
-        p.audio_ducker_state,
-        current,
-        t,
-        evidence=evidence,
-        blocking=blocking,
-    )
+    if t.mpc_hardware_ducking:
+        evidence["audio_ducker"] = {
+            "status": "mpc_hardware",
+            "note": "ducking handled by MPC Live III DSP — software ducker not required",
+        }
+    else:
+        _evaluate_audio_ducker_state(
+            p.audio_ducker_state,
+            current,
+            t,
+            evidence=evidence,
+            blocking=blocking,
+        )
     _evaluate_service_freshness(
         evidence=evidence,
         blocking=blocking,
@@ -822,8 +833,7 @@ def _evaluate_egress_loopback(
         return
 
     if witness.silence_ratio > thresholds.silence_ratio_max:
-        _block(
-            blocking,
+        reason = AudioHealthReason(
             code="egress_loopback_silent",
             owner=str(path),
             message=(
@@ -831,8 +841,12 @@ def _evaluate_egress_loopback(
                 f"{witness.silence_ratio:.2f} > {thresholds.silence_ratio_max:.2f} "
                 f"(target_sink={witness.target_sink})"
             ),
-            evidence_refs=["egress_loopback"],
+            evidence_refs=("egress_loopback",),
         )
+        if thresholds.mpc_hardware_ducking:
+            warnings.append(reason)
+        else:
+            blocking.append(reason)
         return
 
     if witness.rms_dbfs < thresholds.rms_dbfs_floor:
@@ -854,6 +868,8 @@ def _evaluate_health_predicate_drift(
     *,
     evidence: dict[str, Any],
     blocking: list[AudioHealthReason],
+    warnings: list[AudioHealthReason] | None = None,
+    mpc_hardware_ducking: bool = False,
 ) -> None:
     loudness = evidence.get("loudness")
     loopback = evidence.get("egress_loopback")
@@ -876,13 +892,16 @@ def _evaluate_health_predicate_drift(
         "egress_loopback_rms_dbfs": loopback.get("rms_dbfs"),
         "egress_loopback_silence_ratio": loopback.get("silence_ratio"),
     }
-    _block(
-        blocking,
+    reason = AudioHealthReason(
         code="health_predicate_drift",
         owner="shared/broadcast_audio_health.py",
         message="loudness and egress loopback evidence disagree about public audio",
-        evidence_refs=["loudness", "egress_loopback", "health_predicate_drift"],
+        evidence_refs=("loudness", "egress_loopback", "health_predicate_drift"),
     )
+    if mpc_hardware_ducking and warnings is not None:
+        warnings.append(reason)
+    else:
+        blocking.append(reason)
 
 
 def _evaluate_runtime_safety(

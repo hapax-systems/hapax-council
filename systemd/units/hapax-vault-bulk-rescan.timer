@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily vault bulk rescan — catch files missed by inotify while rag-ingest was down
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

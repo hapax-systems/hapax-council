@@ -456,7 +456,7 @@ echo "Chain 10: L-12 Completeness (every active USB return channel reaches broad
 # broadcast — the invariant violation is a silent failure mode.
 
 L12_COMPLETENESS_OK=true
-L12_SOURCE="alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
+L12_SOURCE="alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.pro-input-0"
 
 # Check MPC wet-return capture inputs. This is the signal-bearing upstream
 # leg for the hardware-first baseline: MPC Out 1/2 and 3/4 land on L-12

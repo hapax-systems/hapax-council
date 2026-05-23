@@ -1,0 +1,17 @@
+[Unit]
+Description=Vault bulk rescan — re-ingest changed obsidian files into Qdrant
+After=network.target hapax-secrets.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/bash -c 'set -euo pipefail; find /home/hapax/documents/rag-sources/obsidian/ -name "*.md" > /home/hapax/.cache/hapax/obsidian-source-list.txt && test -s /home/hapax/.cache/hapax/obsidian-source-list.txt'
+ExecStart=/home/hapax/projects/hapax-council/.venv-ingest/bin/python -m agents.ingest --bulk-only --skip-retries --source-file-list /home/hapax/.cache/hapax/obsidian-source-list.txt
+WorkingDirectory=/home/hapax/projects/hapax-council
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Environment=GNUPGHOME=/home/hapax/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
+Environment=CUDA_VISIBLE_DEVICES=
+TimeoutStartSec=7200
