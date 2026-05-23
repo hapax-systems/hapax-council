@@ -7,7 +7,7 @@ PartOf=hapax-visual-stack.target
 [Service]
 Type=simple
 ExecStartPre=/bin/bash -c 'mkdir -p %h/.darkplaces/id1 %h/.darkplaces/screwm/maps && cp %h/projects/hapax-council/assets/quake/maps/screwm.bsp %h/.darkplaces/screwm/maps/ 2>/dev/null; cp %h/projects/hapax-council/assets/quake/maps/screwm.lit %h/.darkplaces/screwm/maps/ 2>/dev/null; test -f %h/projects/hapax-council/assets/quake/qc/progs.dat && cp %h/projects/hapax-council/assets/quake/qc/progs.dat %h/.darkplaces/screwm/ || true'
-ExecStart=/usr/bin/darkplaces-sdl -game screwm -window -width 1280 -height 720 +map screwm +crosshair 0 +r_drawviewmodel 0 +cl_bob 0 +sbar_alpha 0 +sv_cheats 1 +gl_texturemode GL_NEAREST +r_fog 1 +cl_maxfps 30 +showfps 0 +scr_showturtle 0
+ExecStart=/usr/bin/obs-glcapture /usr/bin/darkplaces-sdl -game screwm -window -width 1280 -height 720 +map screwm +crosshair 0 +r_drawviewmodel 0 +cl_bob 0 +sbar_alpha 0 +sv_cheats 1 +gl_texturemode GL_NEAREST +r_fog 1 +cl_maxfps 30 +showfps 0 +scr_showturtle 0
 Restart=always
 RestartSec=3
 MemoryMax=2G
