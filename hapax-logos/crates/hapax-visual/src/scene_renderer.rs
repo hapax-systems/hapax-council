@@ -362,6 +362,24 @@ fn read_sphere_warmth() -> f32 {
     warmth
 }
 
+fn read_stimmung_energy() -> f32 {
+    static FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    static CACHED: std::sync::atomic::AtomicU32 =
+        std::sync::atomic::AtomicU32::new(0x00000000);
+    let frame = FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if frame % 30 != 0 {
+        return f32::from_bits(CACHED.load(std::sync::atomic::Ordering::Relaxed));
+    }
+    let energy = std::fs::read_to_string("/dev/shm/hapax-compositor/current.json")
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("intensity")?.as_f64())
+        .map(|e| (e as f32).clamp(0.0, 1.0))
+        .unwrap_or(0.0);
+    CACHED.store(energy.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    energy
+}
+
 fn synthwave_light_color(time: f32) -> [f32; 4] {
     let palette = [
         Vec3::new(1.00, 0.08, 0.60),
@@ -1312,8 +1330,8 @@ impl SceneRenderer {
     ) -> &wgpu::TextureView {
         self.frame_count = self.frame_count.wrapping_add(1);
 
-        // Update camera before scene construction so AoA pane LOD gates match the drawn frame.
-        self.camera.apply_orbital_drift(time);
+        let energy = read_stimmung_energy();
+        self.camera.apply_orbital_drift_with_energy(time, energy);
 
         // Build scene from live content sources
         let scene = if let Some(mgr) = content_source_mgr {

@@ -395,7 +395,7 @@ impl Camera3D {
         Mat4::perspective_rh(self.fov_y_radians, self.aspect, self.near, self.far)
     }
 
-    fn spline_pose_at(&self, time: f32, energy: f32) -> (Vec3, Vec3) {
+    pub fn spline_pose_at(&self, time: f32, energy: f32) -> (Vec3, Vec3) {
         let period = 72.0 + (1.0 - energy) * 18.0;
         let t = (time % period) / period;
         let t_remapped = remap_speed(t, 5);
@@ -694,6 +694,22 @@ fn push_deoccluded_grid(
             rotation_y,
         ));
     }
+}
+
+fn apply_miegakure(nodes: &mut [SceneNode], camera_eye: Vec3) {
+    for node in nodes.iter_mut() {
+        if matches!(node.label.as_str(), AOA_NODE_LABEL | "grounding_provenance_ticker") {
+            continue;
+        }
+        let dist = node.position.distance(camera_eye);
+        let reveal = 1.0 - smoothstep_f32(3.0, 8.0, dist);
+        node.opacity *= reveal.clamp(0.05, 1.0);
+    }
+}
+
+fn smoothstep_f32(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn apply_spatial_drift(nodes: &mut [SceneNode], time: f32) {
@@ -1205,6 +1221,11 @@ fn build_scene_from_source_refs(
     }
 
     apply_spatial_drift(&mut nodes, time);
+
+    let cam = Camera3D::new(1920, 1080);
+    let (eye, _) = cam.spline_pose_at(time, 0.0);
+    apply_miegakure(&mut nodes, eye);
+
     nodes
 }
 
@@ -2356,7 +2377,7 @@ mod tests {
     }
 
     #[test]
-    fn node_drift_never_modulates_opacity_or_scale() {
+    fn node_drift_never_modulates_scale() {
         let sources = vec![
             ("camera-brio-operator", 0.8f32, 5i32, 1280u32, 720u32),
             ("camera-c920-overhead", 0.8, 5, 1280, 720),
@@ -2367,11 +2388,6 @@ mod tests {
 
         for start in at_start {
             let after = later.iter().find(|n| n.label == start.label).unwrap();
-            assert_eq!(
-                after.opacity, start.opacity,
-                "opacity drift on {}",
-                start.label
-            );
             assert_eq!(after.scale, start.scale, "scale drift on {}", start.label);
         }
     }
