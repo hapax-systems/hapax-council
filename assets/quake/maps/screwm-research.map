@@ -3,6 +3,7 @@
 {
 "classname" "worldspawn"
 "message" "The Screwm [Research]"
+"wad" "screwm.wad"
 "fog" "0.02 0.04 0.08 0.12"
 {
 ( -297 -297 -80 ) ( -297 297 -80 ) ( -297 -297 -64 ) ground1_6 0 0 0 1 1

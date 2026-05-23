@@ -6,7 +6,6 @@ Input file: /home/hapax/projects/hapax-council/assets/quake/maps/screwm-rnd.map
 Output file: /home/hapax/projects/hapax-council/assets/quake/maps/screwm-rnd.bsp
 
 INFO: using built-in palette.
-WARNING: No wad or _wad key exists in the worldmodel
      32 entities
       5 unique textures
      13 texinfos
@@ -18,10 +17,6 @@ INFO: world extents calculated to 1064 units
 
             0 texture frames added
 WARNING: unable to find texture skip
-WARNING: unable to find texture ground1_6
-WARNING: unable to find texture sky4
-WARNING: unable to find texture city4_2
-WARNING: unable to find texture metal5_2
 Processing hull 0...
      1 SKY brushes
     38 SOLID brushes
@@ -99,11 +94,11 @@ count   lump name    byte size
     846 marksurfaces       1692
    1280 edges              5120
    2558 surfedges         10232
-      5 textures             24
+      5 textures          21944
         lightdata             0
         visdata               0
-        entdata            2704
+        entdata            2723
 
-0.036s seconds elapsed
+0.035s seconds elapsed
 
 

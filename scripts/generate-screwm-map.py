@@ -285,6 +285,7 @@ def generate_map(preset):
     lines.append("{")
     lines.append('"classname" "worldspawn"')
     lines.append(f'"message" "{preset["message"]}"')
+    lines.append('"wad" "screwm.wad"')
     lines.append(f'"fog" "{preset["fog"]}"')
     for brush in worldspawn_brushes:
         lines.append(brush)
