@@ -175,13 +175,13 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
     var n: vec3<f32>;
 
     if quad_idx == 0u {
-        world = vec3<f32>(lp.x * 15.0, -2.0, lp.y * 8.0 - 4.0);
+        world = vec3<f32>(lp.x * 12.0, -2.0, lp.y * 12.0);
         n = vec3<f32>(0.0, 1.0, 0.0);
     } else if quad_idx == 1u {
-        world = vec3<f32>(lp.x * 15.0, lp.y * 2.5 + 0.25, -9.0);
+        world = vec3<f32>(lp.x * 12.0, lp.y * 7.5 + 5.5, -8.0);
         n = vec3<f32>(0.0, 0.0, 1.0);
     } else if quad_idx == 2u {
-        world = vec3<f32>(lp.x * 15.0, 2.5, lp.y * 8.0 - 4.0);
+        world = vec3<f32>(lp.x * 12.0, 13.0, lp.y * 12.0);
         n = vec3<f32>(0.0, -1.0, 0.0);
     } else if quad_idx == 3u {
         // Visible point-light marker. This is intentionally authored geometry,
