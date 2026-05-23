@@ -276,6 +276,10 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - GPU selection requires validation: `CUDA_VISIBLE_DEVICES` does not pin OpenGL
 - Current `:0` GL preflight reports RTX 5090; `DRI_PRIME=1` and NVIDIA offload
   envs did not switch it on this host during containment testing.
+- Mesa/Zink GLX device-selection probes also reported RTX 5090; the 5060 Ti is
+  visible as `PCI:5:0:0` but has no display devices attached, so the next
+  validation path is likely a dedicated console/root display server bound to
+  that BusID.
 - `hapax-darkplaces-v4l2.service` headless feed option
 - Launch validation requires `HAPAX_DARKPLACES_SMOKE_ACK=1` and an attended
   run of `scripts/darkplaces-attended-smoke.sh`; the default expected GPU index

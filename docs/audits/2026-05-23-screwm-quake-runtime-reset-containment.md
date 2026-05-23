@@ -58,6 +58,21 @@ Post-containment `glxinfo -B` evidence on `:0` also reports the RTX 5090 as the
 default OpenGL renderer. `DRI_PRIME=1` and the usual NVIDIA PRIME offload
 environment did not change the reported renderer on this host, so a DarkPlaces
 launch on the current display path is not yet validated for the intended GPU.
+Mesa/Zink experiments (`MESA_LOADER_DRIVER_OVERRIDE=zink`,
+`MESA_VK_DEVICE_SELECT=10de:2d04`) also reported the RTX 5090 through GLX.
+
+`nvidia-xconfig --query-gpu-info` reports:
+
+```text
+GPU #0: NVIDIA GeForce RTX 5090, PCI BusID PCI:1:0:0, display devices present
+GPU #1: NVIDIA GeForce RTX 5060 Ti, PCI BusID PCI:5:0:0, no display devices
+```
+
+That makes a separate renderer display/server bound to `PCI:5:0:0` the likely
+next validation path. Starting Xorg from this non-console session was refused
+with `Only console users are allowed to run the X server`, so that validation
+needs an attended console/root seat plan rather than another background unit
+toggle.
 
 ## Containment Decision
 
@@ -106,6 +121,9 @@ Before re-enabling DarkPlaces runtime:
 - Leave `HAPAX_DARKPLACES_EXPECTED_GPU_INDEX=1` unless the validation owner
   intentionally changes the target GPU; the harness resolves this to the
   current GPU 1 name and checks DarkPlaces' reported `GL_RENDERER`.
+- Treat env-only GPU selection as disproven on the current `:0` path until new
+  evidence says otherwise; validate a dedicated display/server path for
+  `PCI:5:0:0` or update the GPU allocation spec.
 - Keep `hapax-imagination` as the stream writer until `/dev/video52` is proven
   stable under DarkPlaces output.
 - Do not enable DarkPlaces units at boot until the reset cause is understood.
