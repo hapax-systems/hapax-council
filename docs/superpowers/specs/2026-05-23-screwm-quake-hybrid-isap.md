@@ -259,7 +259,8 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - `scripts/darkplaces-capture.sh`
 - `scripts/darkplaces-v4l2-xvfb.sh` for OBS-free headless capture
 - `scripts/darkplaces-attended-smoke.sh` for bounded topology/evidence capture
-  before runtime reactivation
+  before runtime reactivation, including `GL_RENDERER` assertion against the
+  expected GPU
 - Activation requires module reload
 
 ### D7: Compositor Source Integration [IN PROGRESS]
@@ -273,7 +274,8 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - GPU selection requires validation: `CUDA_VISIBLE_DEVICES` does not pin OpenGL
 - `hapax-darkplaces-v4l2.service` headless feed option
 - Launch validation requires `HAPAX_DARKPLACES_SMOKE_ACK=1` and an attended
-  run of `scripts/darkplaces-attended-smoke.sh`
+  run of `scripts/darkplaces-attended-smoke.sh`; the default expected GPU index
+  is 1 until a new GPU allocation spec supersedes it.
 - Restart=always
 
 ### D9: QuakeHomage Package

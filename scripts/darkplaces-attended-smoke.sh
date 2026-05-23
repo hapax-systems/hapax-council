@@ -12,6 +12,9 @@ WIDTH="${DARKPLACES_WIDTH:-1280}"
 HEIGHT="${DARKPLACES_HEIGHT:-720}"
 FPS="${DARKPLACES_FPS:-30}"
 OUT_ROOT="${DARKPLACES_SMOKE_OUT_ROOT:-$HOME/hapax-state/hardware-validation}"
+EXPECTED_GPU_INDEX="${HAPAX_DARKPLACES_EXPECTED_GPU_INDEX:-1}"
+EXPECTED_GL_RENDERER="${HAPAX_DARKPLACES_EXPECTED_GL_RENDERER:-}"
+SKIP_GL_RENDERER_ASSERT="${HAPAX_DARKPLACES_SKIP_GL_RENDERER_ASSERT:-0}"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_DIR="${OUT_ROOT}/darkplaces-screwm-${TS}-$$"
 START_WALL="$(date -Is)"
@@ -27,6 +30,13 @@ Modes:
 
 Launch modes require:
   HAPAX_DARKPLACES_SMOKE_ACK=1
+
+Renderer assertion:
+  By default launch modes expect OpenGL to report the NVIDIA GPU at
+  HAPAX_DARKPLACES_EXPECTED_GPU_INDEX, default 1. Override with
+  HAPAX_DARKPLACES_EXPECTED_GL_RENDERER. Set
+  HAPAX_DARKPLACES_SKIP_GL_RENDERER_ASSERT=1 only when intentionally running a
+  non-GPU capture experiment.
 
 The harness writes evidence under:
   ~/hapax-state/hardware-validation/darkplaces-screwm-<timestamp>-<pid>/
@@ -100,8 +110,30 @@ capture_shell() {
 
 kernel_filter='data fabric|sync flood|NVRM|Xid|pcie|AER|MCE|hardware error|fatal|GPU has fallen off'
 
+resolve_expected_gl_renderer() {
+    if [ "$SKIP_GL_RENDERER_ASSERT" = "1" ]; then
+        return
+    fi
+    if [ -n "$EXPECTED_GL_RENDERER" ]; then
+        printf '%s\n' "$EXPECTED_GL_RENDERER"
+        return
+    fi
+    if ! command -v nvidia-smi >/dev/null 2>&1; then
+        return
+    fi
+    nvidia-smi -i "$EXPECTED_GPU_INDEX" --query-gpu=name --format=csv,noheader,nounits 2>/dev/null |
+        sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+EXPECTED_GL_RENDERER_RESOLVED="$(resolve_expected_gl_renderer || true)"
+
 collect_static_evidence() {
     log "collecting static GPU and kernel evidence into $OUT_DIR"
+    {
+        printf 'expected_gpu_index=%s\n' "$EXPECTED_GPU_INDEX"
+        printf 'expected_gl_renderer=%s\n' "$EXPECTED_GL_RENDERER_RESOLVED"
+        printf 'skip_gl_renderer_assert=%s\n' "$SKIP_GL_RENDERER_ASSERT"
+    } >"$OUT_DIR/expected-renderer.txt"
     capture uname.txt uname -a
     capture systemd-darkplaces.txt systemctl --user status \
         hapax-darkplaces hapax-darkplaces-bridge hapax-darkplaces-v4l2 --no-pager --lines=20
@@ -138,6 +170,40 @@ EOF
     fi
 }
 
+validate_darkplaces_renderer() {
+    local launch_log="$1"
+    local observed
+    if [ -z "$EXPECTED_GL_RENDERER_RESOLVED" ]; then
+        log "GL renderer assertion skipped: no expected renderer resolved"
+        return 0
+    fi
+    observed="$(
+        awk '
+            /GL_RENDERER/ {
+                line=$0
+                sub(/^.*GL_RENDERER[[:space:]:=]+/, "", line)
+                print line
+                found=1
+                exit
+            }
+            END {
+                if (!found) {
+                    exit 1
+                }
+            }
+        ' "$launch_log" 2>/dev/null || true
+    )"
+    if [ -z "$observed" ]; then
+        log "GL renderer assertion failed: DarkPlaces did not report GL_RENDERER"
+        return 3
+    fi
+    if [[ "$observed" != *"$EXPECTED_GL_RENDERER_RESOLVED"* ]]; then
+        log "GL renderer assertion failed: observed '$observed', expected '$EXPECTED_GL_RENDERER_RESOLVED'"
+        return 3
+    fi
+    log "GL renderer assertion passed: $observed"
+}
+
 start_monitors() {
     journalctl -b -k --since "$START_WALL" -f --no-pager >"$OUT_DIR/kernel-follow.log" 2>&1 &
     kernel_pid="$!"
@@ -160,12 +226,18 @@ trap 'stop_monitors; exit 130' INT TERM
 
 run_launch_smoke() {
     local command_desc="$1"
+    local launch_log="$OUT_DIR/darkplaces-launch.log"
     shift
     require_launch_ack
     log "launching ${command_desc} for ${DURATION_S}s"
+    {
+        printf '$'
+        printf ' %q' "$@"
+        printf '\n\n'
+    } >"$launch_log"
     start_monitors
     set +e
-    HAPAX_DARKPLACES_RUNTIME_ACK=1 timeout "$DURATION_S" "$@"
+    HAPAX_DARKPLACES_RUNTIME_ACK=1 timeout "$DURATION_S" "$@" >>"$launch_log" 2>&1
     local rc="$?"
     set -e
     stop_monitors
@@ -174,6 +246,9 @@ run_launch_smoke() {
         rc=0
     else
         log "${command_desc} exited rc=${rc}"
+    fi
+    if [ "$rc" -eq 0 ]; then
+        validate_darkplaces_renderer "$launch_log" || rc="$?"
     fi
     return "$rc"
 }
