@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Generate a Quake .map file for the Screwm tower interior.
+"""Generate Quake .map files for the Screwm tower interior.
 
 Sealed rectangular room with interior decoration. Uses only axis-aligned
 box brushes to guarantee qbsp seals the map (no vis leaks).
 
-Quake coordinate system: 1 meter = 32 units. Z is up in DarkPlaces.
-Tower: radius 7.8m, height 15m.
+Supports two working modes per hapax design language §2:
+  --mode rnd       Gruvbox Hard Dark (warm brown, amber lights)
+  --mode research  Solarized Dark (cool blue-grey, white lights)
+
+Default generates both BSPs: screwm-rnd.bsp and screwm-research.bsp.
 """
 
+import argparse
 import math
 import subprocess
 import sys
@@ -26,10 +30,40 @@ CEIL_Z = int(TOWER_CEIL_M * UNITS_PER_METER)
 AOA_Z = int(AOA_HEIGHT_M * UNITS_PER_METER)
 EXT = TR + WALL_THICK + 32
 
-WALL_TEX = "city4_2"
-FLOOR_TEX = "ground1_6"
-CEIL_TEX = "sky4"
-RAMP_TEX = "metal5_2"
+MODE_PRESETS = {
+    "rnd": {
+        "wall_tex": "city4_2",
+        "floor_tex": "ground1_6",
+        "ceil_tex": "sky4",
+        "ramp_tex": "metal5_2",
+        "fog": "0.02 0.11 0.08 0.06",
+        "lights": [
+            (1.0, 0.71, 0.39),
+            (0.90, 0.65, 0.30),
+            (0.78, 0.39, 0.60),
+            (0.70, 0.85, 0.35),
+            (1.0, 0.50, 0.25),
+        ],
+        "aoa_light": (1.0, 0.78, 0.50),
+        "message": "The Screwm [R&D]",
+    },
+    "research": {
+        "wall_tex": "city4_2",
+        "floor_tex": "ground1_6",
+        "ceil_tex": "sky4",
+        "ramp_tex": "metal5_2",
+        "fog": "0.02 0.04 0.08 0.12",
+        "lights": [
+            (0.40, 0.65, 0.80),
+            (0.30, 0.55, 0.75),
+            (0.50, 0.40, 0.70),
+            (0.35, 0.70, 0.55),
+            (0.60, 0.45, 0.45),
+        ],
+        "aoa_light": (0.50, 0.65, 0.80),
+        "message": "The Screwm [Research]",
+    },
+}
 
 
 def fmt_plane(p1, p2, p3, tex):
@@ -41,7 +75,7 @@ def fmt_plane(p1, p2, p3, tex):
     )
 
 
-def box_brush(x1, y1, z1, x2, y2, z2, tex=WALL_TEX):
+def box_brush(x1, y1, z1, x2, y2, z2, tex):
     mn = [min(x1, x2), min(y1, y2), min(z1, z2)]
     mx = [max(x1, x2), max(y1, y2), max(z1, z2)]
     if mx[0] - mn[0] < 1 or mx[1] - mn[1] < 1 or mx[2] - mn[2] < 1:
@@ -57,50 +91,46 @@ def box_brush(x1, y1, z1, x2, y2, z2, tex=WALL_TEX):
     return "{\n" + "\n".join(planes) + "\n}"
 
 
-def sealed_room():
-    """6 axis-aligned slabs forming a sealed room. Guarantees vis works."""
+def sealed_room(preset):
     brushes = []
-    brushes.append(box_brush(-EXT, -EXT, FLOOR_Z - WALL_THICK, EXT, EXT, FLOOR_Z, FLOOR_TEX))
-    brushes.append(box_brush(-EXT, -EXT, CEIL_Z, EXT, EXT, CEIL_Z + WALL_THICK, CEIL_TEX))
-    brushes.append(box_brush(-EXT, -EXT, FLOOR_Z, -EXT + WALL_THICK, EXT, CEIL_Z, WALL_TEX))
-    brushes.append(box_brush(EXT - WALL_THICK, -EXT, FLOOR_Z, EXT, EXT, CEIL_Z, WALL_TEX))
-    brushes.append(box_brush(-EXT, -EXT, FLOOR_Z, EXT, -EXT + WALL_THICK, CEIL_Z, WALL_TEX))
-    brushes.append(box_brush(-EXT, EXT - WALL_THICK, FLOOR_Z, EXT, EXT, CEIL_Z, WALL_TEX))
+    wt = preset["wall_tex"]
+    ft = preset["floor_tex"]
+    ct = preset["ceil_tex"]
+    brushes.append(box_brush(-EXT, -EXT, FLOOR_Z - WALL_THICK, EXT, EXT, FLOOR_Z, ft))
+    brushes.append(box_brush(-EXT, -EXT, CEIL_Z, EXT, EXT, CEIL_Z + WALL_THICK, ct))
+    brushes.append(box_brush(-EXT, -EXT, FLOOR_Z, -EXT + WALL_THICK, EXT, CEIL_Z, wt))
+    brushes.append(box_brush(EXT - WALL_THICK, -EXT, FLOOR_Z, EXT, EXT, CEIL_Z, wt))
+    brushes.append(box_brush(-EXT, -EXT, FLOOR_Z, EXT, -EXT + WALL_THICK, CEIL_Z, wt))
+    brushes.append(box_brush(-EXT, EXT - WALL_THICK, FLOOR_Z, EXT, EXT, CEIL_Z, wt))
     return [b for b in brushes if b]
 
 
-def ramp_shelves():
+def ramp_shelves(preset):
     brushes = []
     ramp_w = 96
     ramp_d = 48
+    rt = preset["ramp_tex"]
     for i in range(4):
         angle = i * (math.pi / 2) + math.pi / 8
         frac = (i + 1) / 5
         z = FLOOR_Z + int((CEIL_Z - FLOOR_Z) * frac)
         cx = int((TR * 0.7) * math.cos(angle))
         cy = int((TR * 0.7) * math.sin(angle))
-        b = box_brush(cx - ramp_w, cy - ramp_d, z, cx + ramp_w, cy + ramp_d, z + 8, RAMP_TEX)
+        b = box_brush(cx - ramp_w, cy - ramp_d, z, cx + ramp_w, cy + ramp_d, z + 8, rt)
         if b:
             brushes.append(b)
     return brushes
 
 
-def lights():
+def lights(preset):
     entities = []
-    colors = [
-        (1.0, 0.71, 0.39),
-        (0.39, 0.78, 1.0),
-        (0.78, 0.39, 1.0),
-        (0.39, 1.0, 0.59),
-        (1.0, 0.39, 0.39),
-    ]
     for i in range(5):
         frac = i / 4
         z = min(FLOOR_Z + int((CEIL_Z - FLOOR_Z) * frac) + 32, CEIL_Z - 16)
         angle = i * (2 * math.pi / 5)
         x = int(TR * 0.3 * math.cos(angle))
         y = int(TR * 0.3 * math.sin(angle))
-        r, g, b = colors[i]
+        r, g, b = preset["lights"][i]
         entities.append(
             "{\n"
             f'"classname" "light"\n'
@@ -109,28 +139,29 @@ def lights():
             f'"_color" "{r} {g} {b}"\n'
             "}"
         )
+    ar, ag, ab = preset["aoa_light"]
     entities.append(
         "{\n"
         '"classname" "light"\n'
         f'"origin" "0 0 {AOA_Z}"\n'
         '"light" "200"\n'
-        '"_color" "1.0 0.78 0.59"\n'
+        f'"_color" "{ar} {ag} {ab}"\n'
         "}"
     )
     return entities
 
 
-def generate_map():
+def generate_map(preset):
     lines = []
-    lines.append("// Screwm Tower — sealed room with interior decoration")
+    lines.append(f"// Screwm Tower — {preset['message']}")
     lines.append("")
 
-    worldspawn_brushes = sealed_room() + ramp_shelves()
+    worldspawn_brushes = sealed_room(preset) + ramp_shelves(preset)
 
     lines.append("{")
     lines.append('"classname" "worldspawn"')
-    lines.append('"message" "The Screwm"')
-    lines.append('"fog" "0.02 0.08 0.06 0.10"')
+    lines.append(f'"message" "{preset["message"]}"')
+    lines.append(f'"fog" "{preset["fog"]}"')
     for brush in worldspawn_brushes:
         lines.append(brush)
     lines.append("}")
@@ -141,7 +172,7 @@ def generate_map():
     )
     lines.append("")
 
-    for light in lights():
+    for light in lights(preset):
         lines.append(light)
         lines.append("")
 
@@ -156,30 +187,46 @@ def compile_map(map_path: Path, output_dir: Path):
         ["vis", str(output_dir / f"{bsp_name}.bsp")],
     ]
     for cmd in cmds:
-        print(f"Running: {' '.join(cmd)}")
+        print(f"  {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(output_dir))
         if result.returncode != 0:
-            print(f"  WARNING: {cmd[0]} returned {result.returncode}")
-            if result.stderr:
-                print(f"  {result.stderr[:300]}")
+            print(f"    WARNING: {cmd[0]} returned {result.returncode}")
         else:
-            print(f"  OK")
+            print(f"    OK")
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Generate Screwm tower BSP maps")
+    parser.add_argument("--mode", choices=["rnd", "research", "both"], default="both")
+    parser.add_argument("--compile", action="store_true")
+    args = parser.parse_args()
+
     output_dir = Path(__file__).parent.parent / "assets" / "quake" / "maps"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    map_content = generate_map()
-    map_path = output_dir / "screwm.map"
-    map_path.write_text(map_content)
-    print(f"Generated {map_path} ({len(map_content)} bytes)")
+    modes = ["rnd", "research"] if args.mode == "both" else [args.mode]
 
-    if "--compile" in sys.argv:
-        compile_map(map_path, output_dir)
-        bsp_path = output_dir / "screwm.bsp"
-        if bsp_path.exists():
-            print(f"BSP: {bsp_path} ({bsp_path.stat().st_size} bytes)")
+    for mode in modes:
+        preset = MODE_PRESETS[mode]
+        map_content = generate_map(preset)
+        map_name = f"screwm-{mode}"
+        map_path = output_dir / f"{map_name}.map"
+        map_path.write_text(map_content)
+        print(f"Generated {map_path} ({len(map_content)} bytes)")
+
+        if args.compile:
+            compile_map(map_path, output_dir)
+            bsp_path = output_dir / f"{map_name}.bsp"
+            if bsp_path.exists():
+                print(f"  BSP: {bsp_path} ({bsp_path.stat().st_size} bytes)")
+
+    # Also generate the default screwm.map (rnd mode) for backward compat
+    if args.mode == "both":
+        default_content = generate_map(MODE_PRESETS["rnd"])
+        default_path = output_dir / "screwm.map"
+        default_path.write_text(default_content)
+        if args.compile:
+            compile_map(default_path, output_dir)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,8 @@ float coupling_next_poll;
 float coupling_poll_interval;
 float coupling_energy;
 float coupling_voice_active;
+string coupling_current_mode;
+float coupling_mode_check_next;
 
 void() coupling_init =
 {
@@ -12,11 +14,13 @@ void() coupling_init =
     coupling_energy = 0.5;
     coupling_voice_active = 0;
     coupling_next_poll = time + 0.5;
+    coupling_current_mode = "rnd";
+    coupling_mode_check_next = time + 5.0;
 };
 
 void() coupling_read_stimmung =
 {
-    float fh = fopen("/dev/shm/hapax-compositor/stimmung-energy.txt", FILE_READ);
+    float fh = fopen("data/stimmung-energy.txt", FILE_READ);
     if (fh < 0)
         return;
     string line = fgets(fh);
@@ -31,7 +35,7 @@ void() coupling_read_stimmung =
 
 void() coupling_read_voice =
 {
-    float fh = fopen("/dev/shm/hapax-compositor/voice-active.txt", FILE_READ);
+    float fh = fopen("data/voice-active.txt", FILE_READ);
     if (fh < 0)
         return;
     string line = fgets(fh);
@@ -61,6 +65,30 @@ void() coupling_apply_stimmung =
     localcmd(strcat("fog ", ftos(fog_density), " 0.08 0.06 0.10\n"));
 };
 
+void() coupling_check_working_mode =
+{
+    if (time < coupling_mode_check_next)
+        return;
+    coupling_mode_check_next = time + 5.0;
+
+    // Path resolved at runtime via cvar set by systemd unit Environment
+    float fh = fopen("data/working-mode.txt", FILE_READ);
+    if (fh < 0)
+        return;
+    string line = fgets(fh);
+    fclose(fh);
+    if (!line)
+        return;
+
+    if (line == coupling_current_mode)
+        return;
+
+    coupling_current_mode = line;
+    string map_name = strcat("screwm-", line);
+    dprint(strcat("Working mode changed to: ", line, "\n"));
+    localcmd(strcat("map ", map_name, "\n"));
+};
+
 void() coupling_tick =
 {
     if (time < coupling_next_poll)
@@ -70,4 +98,5 @@ void() coupling_tick =
     coupling_read_stimmung();
     coupling_read_voice();
     coupling_apply_stimmung();
+    coupling_check_working_mode();
 };
