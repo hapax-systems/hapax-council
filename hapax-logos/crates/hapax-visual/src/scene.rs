@@ -1129,74 +1129,78 @@ fn build_scene_from_source_refs(
         }
     }
 
-    // Semantic layout using the FULL scroom volume.
-    // Room: x ±15, y [-2.0, 2.5], z [-9.0, 2.0]. Camera at (0, 0, 2).
-    // AoA at (0, -0.30, -2.06). Use the space.
+    // Garden clump layout: content clusters positioned at the 5 camera
+    // path stations. The spline path passes within 1-2 units of each clump.
+    // Content is sized LARGE — perspective does the work when the camera
+    // walks past. Odd-numbered groups (3, 5, 7) per Japanese garden rules.
+    //
+    // S1 (-3.2, -0.1, -1.2) → perception grove (cameras)
+    // S2 (-0.9, -0.5, -3.0) → behind-AoA atmospheric
+    // S3 ( 3.0, -0.2, -2.5) → cognition copse (wards)
+    // S4 ( 0.3,  1.2, -2.8) → communication canopy (tickers)
+    // S0/grounding: front approach (0, -0.8, -0.5)
+
     let aoa_pos = authored_aoa_scene_node().position;
 
-    // LEFT WALL: perception (cameras) — spread along left wall, y range [-1.5, 1.5]
+    // PERCEPTION GROVE (Station 1): cameras in an asymmetric clump left of AoA
+    let grove_center = Vec3::new(-3.8, -0.1, -1.5);
     for (i, &src_idx) in perception.iter().enumerate() {
-        let n = perception.len().max(1);
-        let cols = 2usize;
-        let col = i % cols;
-        let row = i / cols;
-        let rows = (n + cols - 1) / cols;
-        let y_span = 2.4f32;
-        let y_start = aoa_pos.y + y_span * 0.5;
-        let y = y_start - row as f32 * (y_span / rows.max(1) as f32);
-        let x = -4.5 - col as f32 * 1.4;
-        let z = aoa_pos.z + 0.5 - col as f32 * 0.8;
+        let phase = i as f32 * 2.39;
+        let r = 0.8 + (i as f32 * 0.31).sin().abs() * 0.6;
+        let x = grove_center.x + r * phase.cos();
+        let y = grove_center.y + 1.6 * ((i as f32 / perception.len().max(1) as f32) - 0.5);
+        let z = grove_center.z + r * phase.sin() * 0.4;
+        let facing = (aoa_pos - Vec3::new(x, y, z)).normalize();
         nodes.push(make_node(
             active_sources, src_idx,
             Vec3::new(x, y, z),
-            0.52, 1.0, 0.05,
+            1.1, 1.0, facing.x.atan2(facing.z),
         ));
     }
 
-    // RIGHT WALL: cognition (wards) — spread along right wall
+    // COGNITION COPSE (Station 3): wards in clump right of AoA
+    let copse_center = Vec3::new(3.5, -0.2, -3.0);
     for (i, &src_idx) in cognition.iter().enumerate() {
-        let n = cognition.len().max(1);
-        let cols = 3usize;
-        let col = i % cols;
-        let row = i / cols;
-        let rows = (n + cols - 1) / cols;
-        let y_span = 2.4f32;
-        let y_start = aoa_pos.y + y_span * 0.5;
-        let y = y_start - row as f32 * (y_span / rows.max(1) as f32);
-        let x = 4.0 + col as f32 * 1.2;
-        let z = aoa_pos.z - 0.5 - col as f32 * 0.6;
+        let phase = i as f32 * 2.39 + 0.7;
+        let r = 0.7 + (i as f32 * 0.43).sin().abs() * 0.5;
+        let x = copse_center.x + r * phase.cos();
+        let y = copse_center.y + 1.4 * ((i as f32 / cognition.len().max(1) as f32) - 0.5);
+        let z = copse_center.z + r * phase.sin() * 0.4;
+        let facing = (aoa_pos - Vec3::new(x, y, z)).normalize();
         nodes.push(make_node(
             active_sources, src_idx,
             Vec3::new(x, y, z),
-            0.38, 0.75, -0.04,
+            0.9, 0.80, facing.x.atan2(facing.z),
         ));
     }
 
-    // TOP: communication — horizontal band near ceiling, behind AoA
+    // COMMUNICATION CANOPY (Station 4): tickers/chat above and behind AoA
+    let canopy_center = Vec3::new(0.3, 1.5, -3.2);
     for (i, &src_idx) in communication.iter().enumerate() {
-        let n = communication.len().max(1);
-        let frac = if n == 1 { 0.5 } else { i as f32 / (n - 1) as f32 };
-        let x = 8.0 * (frac - 0.5);
-        let y = 1.6 + (i % 2) as f32 * 0.35;
-        let z = aoa_pos.z - 2.0 - (i as f32 * 0.41).sin().abs() * 0.5;
+        let phase = i as f32 * 1.88 + 0.3;
+        let r = 1.0 + (i as f32 * 0.29).sin().abs() * 0.8;
+        let x = canopy_center.x + r * phase.cos();
+        let y = canopy_center.y + (i % 2) as f32 * 0.5;
+        let z = canopy_center.z + r * phase.sin() * 0.3;
         nodes.push(make_node(
             active_sources, src_idx,
             Vec3::new(x, y, z),
-            0.32, 0.60, 0.0,
+            0.7, 0.65, 0.0,
         ));
     }
 
-    // FRONT-BOTTOM: grounding — between camera and AoA, above floor
+    // GROUNDING PARTERRE (front approach): evidence near the garden entrance
+    let parterre_center = Vec3::new(0.0, -0.8, -0.3);
     for (i, &src_idx) in grounding.iter().enumerate() {
-        let n = grounding.len().max(1);
-        let frac = if n == 1 { 0.5 } else { i as f32 / (n - 1) as f32 };
-        let x = 5.0 * (frac - 0.5);
-        let y = -1.2;
-        let z = aoa_pos.z + 1.5;
+        let phase = i as f32 * 2.09;
+        let r = 0.6 + (i as f32 * 0.37).sin().abs() * 0.4;
+        let x = parterre_center.x + r * phase.cos();
+        let y = parterre_center.y;
+        let z = parterre_center.z + r * phase.sin() * 0.3;
         nodes.push(make_node(
             active_sources, src_idx,
             Vec3::new(x, y, z),
-            0.30, 0.55, 0.0,
+            0.6, 0.55, 0.0,
         ));
     }
 
