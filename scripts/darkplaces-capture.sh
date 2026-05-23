@@ -1,41 +1,51 @@
 #!/usr/bin/env bash
-# Capture DarkPlaces window output to v4l2loopback device.
-# Uses wf-recorder on Wayland or ffmpeg x11grab on X11.
+# Launch DarkPlaces with obs-glcapture for frame capture.
+# On KDE/KWin Wayland, wlr-screencopy is unavailable.
+# obs-glcapture hooks OpenGL render calls for zero-copy capture.
+#
+# The captured frames are available to OBS via the linux-vkcapture plugin,
+# or to any application that reads the OBS game capture shared memory.
 set -euo pipefail
 
-DEVICE="${DARKPLACES_V4L2_DEVICE:-/dev/video70}"
+DEVICE="${DARKPLACES_V4L2_DEVICE:-/dev/video52}"
 WIDTH="${DARKPLACES_WIDTH:-1280}"
 HEIGHT="${DARKPLACES_HEIGHT:-720}"
-FPS="${DARKPLACES_FPS:-30}"
+GAME_DIR="$HOME/.darkplaces"
 
-if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
-    # Wayland: use wf-recorder to capture a specific window
-    # First find the DarkPlaces window
-    WINDOW_ID=$(swaymsg -t get_tree 2>/dev/null | jq -r '.. | select(.name? // "" | test("DarkPlaces|darkplaces"; "i")) | .id' | head -1 || true)
+# Ensure map is current
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+MAP_SRC="$REPO_DIR/assets/quake/maps/screwm.bsp"
+MAP_DST="$GAME_DIR/screwm/maps/screwm.bsp"
 
-    if command -v wf-recorder &>/dev/null; then
-        echo "Using wf-recorder for Wayland capture → $DEVICE"
-        exec wf-recorder \
-            --muxer=v4l2 \
-            --file="$DEVICE" \
-            --pixel-format yuv420p \
-            -r "$FPS" \
-            --geometry "0,0 ${WIDTH}x${HEIGHT}" \
-            -c rawvideo
-    else
-        echo "wf-recorder not found. Falling back to ffmpeg pipewire capture."
-        exec ffmpeg -hide_banner -loglevel warning \
-            -f pipewire -framerate "$FPS" -video_size "${WIDTH}x${HEIGHT}" \
-            -i "default" \
-            -f v4l2 -pix_fmt yuv420p \
-            "$DEVICE"
-    fi
-else
-    # X11: use ffmpeg x11grab
-    echo "Using ffmpeg x11grab → $DEVICE"
-    exec ffmpeg -hide_banner -loglevel warning \
-        -f x11grab -framerate "$FPS" -video_size "${WIDTH}x${HEIGHT}" \
-        -i "${DISPLAY}+0,0" \
-        -f v4l2 -pix_fmt yuv420p \
-        "$DEVICE"
+if [ -f "$MAP_SRC" ] && [ "$MAP_SRC" -nt "$MAP_DST" ] 2>/dev/null; then
+    mkdir -p "$GAME_DIR/screwm/maps"
+    cp "$MAP_SRC" "$MAP_DST"
+    cp "${MAP_SRC%.bsp}.lit" "$GAME_DIR/screwm/maps/" 2>/dev/null || true
 fi
+
+mkdir -p "$GAME_DIR/id1"
+
+if [ -f "$REPO_DIR/assets/quake/qc/progs.dat" ]; then
+    cp "$REPO_DIR/assets/quake/qc/progs.dat" "$GAME_DIR/screwm/"
+fi
+
+# Launch DarkPlaces wrapped with obs-glcapture for zero-copy GL frame capture.
+# OBS reads via linux-vkcapture source plugin. The compositor reads from
+# OBS's v4l2sink output, or from a dedicated capture pipeline.
+exec obs-glcapture darkplaces-sdl \
+    -game screwm \
+    -window \
+    -width "$WIDTH" \
+    -height "$HEIGHT" \
+    +map screwm \
+    +crosshair 0 \
+    +r_drawviewmodel 0 \
+    +cl_bob 0 \
+    +sbar_alpha 0 \
+    +sv_cheats 1 \
+    +gl_texturemode GL_NEAREST \
+    +r_fog 1 \
+    +cl_maxfps 30 \
+    +showfps 0 \
+    +scr_showturtle 0 \
+    "$@"
