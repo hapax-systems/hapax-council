@@ -210,23 +210,28 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
         );
         n = vec3<f32>(nx_w, 0.0, nz_w);
     } else if quad_idx >= 9u && quad_idx <= 12u {
-        // Spiral ramp segments — wide ramp hugging the wall, center void open.
-        // Each segment covers 180° of arc and rises one level (3 units) — gentle slope.
+        // Spiral ramp — flat planks attached to each wall panel, stepping up.
+        // Each plank matches a wall panel's angle, offset 2 panels per level.
         let seg = quad_idx - 9u;
-        let ramp_inner = 2.5;
-        let ramp_outer = tower_r - 0.3;
-        let y_base = array<f32, 4>(-2.0, 1.0, 4.0, 7.0);
-        let y_rise = 3.0;
-        let angle_start = f32(seg) * AOA_PI;
+        let ramp_inner = 2.0;
+        let ramp_outer = tower_r - 0.2;
+        let ramp_depth = 1.5;
 
-        // lp.x [-1,1] maps along the arc (angle), lp.y [-1,1] maps radially
-        let frac_angle = (lp.x + 1.0) * 0.5;
-        let frac_radius = (lp.y + 1.0) * 0.5;
-        let angle = angle_start + frac_angle * AOA_PI;
-        let r = mix(ramp_inner, ramp_outer, frac_radius);
-        let y_ramp = y_base[seg] + frac_angle * y_rise;
+        // Each segment is 2 wall panels wide (90°), rising gently
+        let panel_base = seg * 2u;
+        let angle_mid = f32(panel_base) * AOA_PI * 0.25 + AOA_PI * 0.25;
+        let tx = -sin(angle_mid);
+        let tz = cos(angle_mid);
+        let cx = cos(angle_mid) * (ramp_inner + ramp_outer) * 0.5;
+        let cz = sin(angle_mid) * (ramp_inner + ramp_outer) * 0.5;
+        let half_w = (ramp_outer - ramp_inner) * 0.5;
 
-        world = vec3<f32>(r * cos(angle), y_ramp, r * sin(angle));
+        let y_step = -2.0 + f32(seg) * 3.0 + (lp.x + 1.0) * 0.5 * 1.5;
+        world = vec3<f32>(
+            cx + tx * lp.x * ramp_depth + cos(angle_mid) * lp.y * half_w,
+            y_step,
+            cz + tz * lp.x * ramp_depth + sin(angle_mid) * lp.y * half_w
+        );
         n = vec3<f32>(0.0, 1.0, 0.0);
     } else if quad_idx == 13u {
         world = grid.light_position.xyz + vec3<f32>(lp.x * 0.28, lp.y * 0.28, 0.0);
