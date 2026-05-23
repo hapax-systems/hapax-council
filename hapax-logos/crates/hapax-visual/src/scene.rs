@@ -324,6 +324,41 @@ impl SceneNode {
 
 // ─── Camera ───────────────────────────────────────────────────────
 
+fn catmull_rom(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32) -> Vec3 {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    0.5 * ((2.0 * p1)
+        + (-p0 + p2) * t
+        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+        + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
+}
+
+fn remap_speed(t: f32, num_segments: usize) -> f32 {
+    let n = num_segments as f32;
+    let segment = (t * n).floor().min(n - 1.0);
+    let local = t * n - segment;
+    let eased = local * local * (3.0 - 2.0 * local);
+    (segment + eased) / n
+}
+
+const GARDEN_STATIONS: [Vec3; 6] = [
+    Vec3::new( 0.0,  0.0,   0.5),
+    Vec3::new(-3.2, -0.1,  -1.2),
+    Vec3::new(-0.9, -0.5,  -3.0),
+    Vec3::new( 3.0, -0.2,  -2.5),
+    Vec3::new( 0.3,  1.2,  -2.8),
+    Vec3::new( 0.0,  0.0,   0.5),
+];
+
+const GARDEN_TARGETS: [Vec3; 6] = [
+    Vec3::new( 0.0, -0.3,  -2.06),
+    Vec3::new(-4.5, -0.3,  -1.8),
+    Vec3::new( 0.0, -0.3,  -2.06),
+    Vec3::new( 4.5,  0.0,  -2.2),
+    Vec3::new( 0.0,  0.5,  -2.0),
+    Vec3::new( 0.0, -0.3,  -2.06),
+];
+
 /// Perspective camera for the 3D scene.
 #[derive(Debug, Clone)]
 pub struct Camera3D {
@@ -360,35 +395,40 @@ impl Camera3D {
         Mat4::perspective_rh(self.fov_y_radians, self.aspect, self.near, self.far)
     }
 
-    fn orbital_pose_at(&self, time: f32, energy: f32) -> (Vec3, Vec3) {
+    fn spline_pose_at(&self, time: f32, energy: f32) -> (Vec3, Vec3) {
         let period = 72.0 + (1.0 - energy) * 18.0;
-        let angle = (time / period) * std::f32::consts::TAU;
-        let lateral = angle.sin();
-        let depth_dip = 1.0 - lateral * lateral;
-        let r = self.orbit_radius + energy * 0.75;
-        let vert = 0.20 + energy * 0.30;
-        let eye = Vec3::new(
-            r * lateral,
-            vert * (angle * 0.5).sin(),
-            2.06 - 0.38 * depth_dip,
+        let t = (time % period) / period;
+        let t_remapped = remap_speed(t, 5);
+
+        let n = 5usize;
+        let segment_f = t_remapped * n as f32;
+        let seg = (segment_f as usize).min(n - 1);
+        let local_t = (segment_f - seg as f32).clamp(0.0, 1.0);
+
+        let i0 = (seg + n - 1) % n;
+        let i1 = seg;
+        let i2 = (seg + 1) % n;
+        let i3 = (seg + 2) % n;
+
+        let eye = catmull_rom(
+            GARDEN_STATIONS[i0], GARDEN_STATIONS[i1],
+            GARDEN_STATIONS[i2], GARDEN_STATIONS[i3], local_t,
         );
-        let target = Vec3::new(
-            0.20 * lateral,
-            0.10 * (angle * 0.5).sin(),
-            -4.0 - 0.24 * depth_dip,
+        let target = catmull_rom(
+            GARDEN_TARGETS[i0], GARDEN_TARGETS[i1],
+            GARDEN_TARGETS[i2], GARDEN_TARGETS[i3], local_t,
         );
         (eye, target)
     }
 
-    /// Gentle orbital drift — camera traces a wide, slow arc over the scene.
-    /// Energy [0,1] modulates orbit radius and vertical amplitude.
+    /// Garden stroll — camera walks a spline path through content clusters.
     pub fn apply_orbital_drift(&mut self, time: f32) {
         self.apply_orbital_drift_with_energy(time, 0.0);
     }
 
     pub fn apply_orbital_drift_with_energy(&mut self, time: f32, energy: f32) {
         let e = energy.clamp(0.0, 1.0);
-        let (eye, target) = self.orbital_pose_at(time, e);
+        let (eye, target) = self.spline_pose_at(time, e);
         self.eye = eye;
         self.target = target;
     }
@@ -396,7 +436,7 @@ impl Camera3D {
     /// Moving neon point light: same orbital path as the camera, half-speed,
     /// lifted roughly ten degrees above the eye path.
     pub fn point_light_position(&self, time: f32) -> Vec3 {
-        let (eye, target) = self.orbital_pose_at(time * 0.5, 0.0);
+        let (eye, target) = self.spline_pose_at(time * 0.5, 0.0);
         let baseline = eye.distance(target);
         let above = (10.0f32.to_radians().tan() * baseline).clamp(0.75, 1.15);
         eye + Vec3::Y * above
@@ -1360,30 +1400,27 @@ mod tests {
     }
 
     #[test]
-    fn orbital_drift_stays_bounded() {
+    fn garden_path_stays_bounded() {
         let mut cam = Camera3D::new(960, 540);
-        for t in (0..600).map(|i| i as f32 * 0.1) {
+        for t in (0..900).map(|i| i as f32 * 0.1) {
             cam.apply_orbital_drift(t);
-            assert!(cam.eye.x.abs() < 1.35, "x out of bounds at t={t}");
-            assert!(cam.eye.y.abs() < 0.40, "y out of bounds at t={t}");
+            assert!(cam.eye.x.abs() < 4.0, "x out of bounds at t={t}: {}", cam.eye.x);
+            assert!(cam.eye.y.abs() < 1.8, "y out of bounds at t={t}: {}", cam.eye.y);
             assert!(
-                (1.65..=2.10).contains(&cam.eye.z),
+                (-3.5..=1.0).contains(&cam.eye.z),
                 "z out of bounds at t={t}: {}",
                 cam.eye.z
             );
-            assert!(
-                (-4.26..=-3.98).contains(&cam.target.z),
-                "target z out of bounds at t={t}: {}",
-                cam.target.z
-            );
+            assert!(cam.eye.is_finite(), "eye NaN at t={t}");
+            assert!(cam.target.is_finite(), "target NaN at t={t}");
         }
     }
 
     #[test]
-    fn point_light_tracks_camera_orbit_above_eye_path() {
+    fn point_light_tracks_camera_path_above_eye() {
         let cam = Camera3D::new(960, 540);
         for t in (0..600).map(|i| i as f32 * 0.1) {
-            let (half_speed_eye, _) = cam.orbital_pose_at(t * 0.5, 0.0);
+            let (half_speed_eye, _) = cam.spline_pose_at(t * 0.5, 0.0);
             let light = cam.point_light_position(t);
             assert!(
                 (light.x - half_speed_eye.x).abs() < 1e-6,
@@ -2388,10 +2425,10 @@ mod tests {
         let mut cam = Camera3D::new(960, 540);
         for t in (0..600).map(|i| i as f32 * 0.1) {
             cam.apply_orbital_drift_with_energy(t, 1.0);
-            assert!(cam.eye.x.abs() < 2.1, "x out of bounds at t={t}");
-            assert!(cam.eye.y.abs() < 0.55, "y out of bounds at t={t}");
+            assert!(cam.eye.x.abs() < 4.5, "x out of bounds at t={t}: {}", cam.eye.x);
+            assert!(cam.eye.y.abs() < 2.0, "y out of bounds at t={t}: {}", cam.eye.y);
             assert!(
-                (1.60..=2.15).contains(&cam.eye.z),
+                (-4.0..=1.5).contains(&cam.eye.z),
                 "z out of bounds at t={t}: {}",
                 cam.eye.z
             );
