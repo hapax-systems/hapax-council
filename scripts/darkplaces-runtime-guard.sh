@@ -10,17 +10,26 @@ fi
 _darkplaces_guard_finish() {
     local code="$1"
     if [ "$_darkplaces_guard_sourced" -eq 1 ]; then
+        # This function is only safe for nonzero guard exits when sourced.
+        # A successful sourced guard must return from the file at top level,
+        # not from this helper, or the rest of the guard continues executing.
         return "$code"
     fi
     exit "$code"
 }
 
 if [ "${HAPAX_DARKPLACES_RUNTIME_ACK:-}" = "1" ]; then
-    _darkplaces_guard_finish 0
+    if [ "$_darkplaces_guard_sourced" -eq 1 ]; then
+        return 0
+    fi
+    exit 0
 fi
 
 if [ -e "$HOME/.config/hapax/enable-darkplaces-runtime" ]; then
-    _darkplaces_guard_finish 0
+    if [ "$_darkplaces_guard_sourced" -eq 1 ]; then
+        return 0
+    fi
+    exit 0
 fi
 
 cat >&2 <<'EOF'

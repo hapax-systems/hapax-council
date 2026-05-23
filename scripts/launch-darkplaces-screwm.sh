@@ -3,6 +3,7 @@
 # Outputs to a window; frame capture handled separately.
 set -euo pipefail
 
+# shellcheck source=scripts/darkplaces-runtime-guard.sh
 source "$(cd "$(dirname "$0")" && pwd)/darkplaces-runtime-guard.sh"
 
 MAP="screwm"
@@ -10,6 +11,7 @@ WIDTH="${SCREWM_WIDTH:-1280}"
 HEIGHT="${SCREWM_HEIGHT:-720}"
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+"$REPO_DIR/scripts/darkplaces-gl-preflight.sh"
 "$REPO_DIR/scripts/install-darkplaces-screwm-assets.sh"
 
 exec darkplaces-sdl \

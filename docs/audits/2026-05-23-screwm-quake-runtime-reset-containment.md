@@ -80,6 +80,12 @@ Applied containment:
   fail closed before launch if `glxinfo` already reports the wrong display GL
   renderer, and after launch unless DarkPlaces' own `GL_RENDERER` matches the
   expected GPU name.
+- Added `scripts/darkplaces-gl-preflight.sh` to the direct launch scripts and
+  DarkPlaces systemd units, so the opt-in runtime gate is not the only barrier:
+  a start attempt also refuses when the current GL path targets the wrong GPU.
+- Repaired the runtime guard's sourced success path so
+  `HAPAX_DARKPLACES_RUNTIME_ACK=1` actually reaches the GL preflight instead
+  of falling through to the containment refusal text.
 - Left the production stream on the known-good `hapax-imagination` -> `/dev/video42`
   path.
 - Re-enabled `hapax-imagination.service` for boot continuity after confirming it

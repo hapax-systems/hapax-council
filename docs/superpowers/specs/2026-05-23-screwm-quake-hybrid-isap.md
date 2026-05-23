@@ -258,6 +258,8 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - `/etc/modprobe.d/v4l2loopback-hapax.conf` updated (video52=DarkPlaces in the unified 14-device config)
 - `scripts/darkplaces-capture.sh`
 - `scripts/darkplaces-v4l2-xvfb.sh` for OBS-free headless capture
+- `scripts/darkplaces-gl-preflight.sh` as a direct launch and systemd
+  fail-closed GPU guard
 - `scripts/darkplaces-attended-smoke.sh` for bounded topology/evidence capture
   before runtime reactivation, including `glxinfo` preflight and DarkPlaces
   `GL_RENDERER` assertion against the expected GPU

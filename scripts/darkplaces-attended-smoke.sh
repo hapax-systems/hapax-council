@@ -127,10 +127,6 @@ resolve_expected_gl_renderer() {
 
 EXPECTED_GL_RENDERER_RESOLVED="$(resolve_expected_gl_renderer || true)"
 
-extract_glxinfo_renderer() {
-    awk -F': ' '/OpenGL renderer string/ { print $2; found=1; exit } END { if (!found) exit 1 }'
-}
-
 collect_static_evidence() {
     log "collecting static GPU and kernel evidence into $OUT_DIR"
     {
@@ -184,25 +180,18 @@ EOF
 }
 
 validate_gl_preflight() {
-    local observed
-    if [ -z "$EXPECTED_GL_RENDERER_RESOLVED" ]; then
-        log "GL preflight skipped: no expected renderer resolved"
+    local preflight_log="$OUT_DIR/gl-preflight.log"
+    local rc
+    set +e
+    "$REPO_DIR/scripts/darkplaces-gl-preflight.sh" >"$preflight_log" 2>&1
+    rc="$?"
+    set -e
+    if [ "$rc" -eq 0 ]; then
+        log "$(tail -1 "$preflight_log")"
         return 0
     fi
-    if ! command -v glxinfo >/dev/null 2>&1; then
-        log "GL preflight failed: glxinfo unavailable"
-        return 4
-    fi
-    observed="$(glxinfo -B 2>/dev/null | extract_glxinfo_renderer || true)"
-    if [ -z "$observed" ]; then
-        log "GL preflight failed: glxinfo did not report OpenGL renderer"
-        return 4
-    fi
-    if [[ "$observed" != *"$EXPECTED_GL_RENDERER_RESOLVED"* ]]; then
-        log "GL preflight failed: display OpenGL renderer '$observed' does not match expected '$EXPECTED_GL_RENDERER_RESOLVED'"
-        return 4
-    fi
-    log "GL preflight passed: $observed"
+    log "$(tail -1 "$preflight_log")"
+    return "$rc"
 }
 
 validate_darkplaces_renderer() {
@@ -262,9 +251,14 @@ trap 'stop_monitors; exit 130' INT TERM
 run_launch_smoke() {
     local command_desc="$1"
     local launch_log="$OUT_DIR/darkplaces-launch.log"
+    local preflight_rc
     shift
     require_launch_ack
-    validate_gl_preflight
+    preflight_rc=0
+    validate_gl_preflight || preflight_rc="$?"
+    if [ "$preflight_rc" -ne 0 ]; then
+        return "$preflight_rc"
+    fi
     log "launching ${command_desc} for ${DURATION_S}s"
     {
         printf '$'

@@ -3,6 +3,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=scripts/darkplaces-runtime-guard.sh
 source "$REPO_DIR/scripts/darkplaces-runtime-guard.sh"
 
 DEVICE="${HAPAX_DARKPLACES_V4L2_DEVICE:-${DARKPLACES_V4L2_DEVICE:-/dev/video52}}"
@@ -17,6 +18,7 @@ if [ ! -e "$DEVICE" ]; then
     exit 1
 fi
 
+"$REPO_DIR/scripts/darkplaces-gl-preflight.sh"
 "$REPO_DIR/scripts/install-darkplaces-screwm-assets.sh"
 
 xvfb_pid=""

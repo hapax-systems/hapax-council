@@ -9,6 +9,7 @@ ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 
 [Service]
 Type=simple
+ExecStartPre=%h/projects/hapax-council/scripts/darkplaces-gl-preflight.sh
 ExecStartPre=%h/projects/hapax-council/scripts/install-darkplaces-screwm-assets.sh
 ExecStart=%h/projects/hapax-council/scripts/darkplaces-capture.sh
 Restart=always

@@ -9,6 +9,7 @@
 # use darkplaces-v4l2-xvfb.sh for the direct headless renderer feed.
 set -euo pipefail
 
+# shellcheck source=scripts/darkplaces-runtime-guard.sh
 source "$(cd "$(dirname "$0")" && pwd)/darkplaces-runtime-guard.sh"
 
 DEVICE="${HAPAX_DARKPLACES_V4L2_DEVICE:-${DARKPLACES_V4L2_DEVICE:-/dev/video52}}"
@@ -16,6 +17,7 @@ WIDTH="${DARKPLACES_WIDTH:-1280}"
 HEIGHT="${DARKPLACES_HEIGHT:-720}"
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+"$REPO_DIR/scripts/darkplaces-gl-preflight.sh"
 "$REPO_DIR/scripts/install-darkplaces-screwm-assets.sh"
 
 printf 'darkplaces-capture: OBS capture mode; dedicated renderer loopback is %s\n' "$DEVICE" >&2
