@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from shared.aperture_state import read_aperture_state_block
+
 from .operator import SYSTEM_CONTEXT, _load_operator, get_constraints, get_patterns
 from .shm_readers import read_apperception_block, read_stimmung_block, read_temporal_block
 
@@ -114,6 +116,11 @@ def get_system_prompt_fragment(agent_name: str) -> str:
     apperception_block = read_apperception_block()
     if apperception_block:
         lines.append(apperception_block)
+        lines.append("")
+
+    aperture_block = read_aperture_state_block()
+    if aperture_block:
+        lines.append(aperture_block)
         lines.append("")
 
     return "\n".join(lines)
