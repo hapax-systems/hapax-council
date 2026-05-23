@@ -1,0 +1,41 @@
+---- light / ericw-tools 2.0.0-alpha10-87-g97795db8 ----
+LoadBSPFile: '/home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.bsp'
+BSP is version Quake BSP bsp29
+INFO: using built-in palette.
+load: WARNING: filesystem error: cannot get file size: Is a directory [/home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/]
+ConvertTextures: WARNING: invalid size data for 
+ConvertTextures: WARNING: Texture  duplicated
+ConvertTextures: WARNING: Texture  duplicated
+ConvertTextures: WARNING: Texture  duplicated
+ConvertTextures: WARNING: Texture  duplicated
+Loading extended texinfo flags from /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.texinfo.json...
+Loading extended content flags from /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.content.json...
+9 entities read, 6 are lights.
+.lit colored light output requested on command line.
+
+--- Options Summary ---
+    "extra" was set to "2" (from command line)
+
+DecompressAllVis: invalid visofs for leaf 0
+Embree_TraceInit: Embree version: 4.4.1
+Embree_TraceInit: 
+	0 sky faces
+	64 solid faces
+	0 filtered faces
+	0 shadow-casting skip faces
+SetupLights: 6 initial lights
+SetupLights: 6 after surface lights
+SetupLights: 6 after jittering
+Final count: 6 lights, 0 suns in use.
+0 surface light points in use.
+map uses color: true
+lightmap size (total): 14512
+Lighting Completed.
+
+Writing /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.lit
+0 switchable light styles (32 max)
+Writing /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.bsp as Quake BSP bsp29
+0.003s seconds elapsed
+0 empty lightmaps
+
+

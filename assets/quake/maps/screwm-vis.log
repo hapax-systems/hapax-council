@@ -1,0 +1,13 @@
+---- vis / ericw-tools 2.0.0-alpha10-87-g97795db8 ----
+
+--- Options Summary ---
+
+LoadBSPFile: '/home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.bsp'
+BSP is version Quake BSP bsp29
+INFO: using built-in palette.
+Loading extended texinfo flags from /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.texinfo.json...
+************ ERROR ************
+LoadPrtFile: unknown header/empty portal file /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.prt
+
+
+

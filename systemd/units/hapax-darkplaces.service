@@ -1,0 +1,25 @@
+[Unit]
+Description=Hapax DarkPlaces — Screwm tower Quake renderer
+After=hapax-secrets.service
+Requires=hapax-secrets.service
+PartOf=hapax-visual-stack.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/bash -c 'mkdir -p %h/.darkplaces/id1 %h/.darkplaces/screwm/maps && cp %h/projects/hapax-council/assets/quake/maps/screwm.bsp %h/.darkplaces/screwm/maps/ 2>/dev/null; cp %h/projects/hapax-council/assets/quake/maps/screwm.lit %h/.darkplaces/screwm/maps/ 2>/dev/null; test -f %h/projects/hapax-council/assets/quake/qc/progs.dat && cp %h/projects/hapax-council/assets/quake/qc/progs.dat %h/.darkplaces/screwm/ || true'
+ExecStart=/usr/bin/darkplaces-sdl -game screwm -window -width 1280 -height 720 +map screwm +crosshair 0 +r_drawviewmodel 0 +cl_bob 0 +sbar_alpha 0 +sv_cheats 1 +gl_texturemode GL_NEAREST +r_fog 1 +cl_maxfps 30 +showfps 0 +scr_showturtle 0
+Restart=always
+RestartSec=3
+WatchdogSec=60
+MemoryMax=2G
+Environment=XDG_RUNTIME_DIR=%t
+Environment=__NV_DISABLE_EXPLICIT_SYNC=1
+# Pin to GPU 1 (5060 Ti) to avoid VRAM contention with TabbyAPI on GPU 0
+Environment=CUDA_VISIBLE_DEVICES=1
+Environment=__GLX_VENDOR_LIBRARY_NAME=nvidia
+# DarkPlaces VRAM usage is modest (~200-500MB) for a single BSP map.
+# 5060 Ti has 16GB — well within budget alongside daimonion STT (~5GB)
+# and imagination (~0.8GB).
+
+[Install]
+WantedBy=default.target
