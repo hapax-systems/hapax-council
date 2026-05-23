@@ -1,9 +1,9 @@
-// Screwm Tower — sealed room with interior decoration
+// Screwm Tower — The Screwm [R&D]
 
 {
 "classname" "worldspawn"
-"message" "The Screwm"
-"fog" "0.02 0.08 0.06 0.10"
+"message" "The Screwm [R&D]"
+"fog" "0.02 0.11 0.08 0.06"
 {
 ( -297 -297 -80 ) ( -297 297 -80 ) ( -297 -297 -64 ) ground1_6 0 0 0 1 1
 ( 297 -297 -80 ) ( 297 -297 -64 ) ( 297 297 -80 ) ground1_6 0 0 0 1 1
@@ -103,33 +103,33 @@
 "classname" "light"
 "origin" "23 71 88"
 "light" "300"
-"_color" "0.39 0.78 1.0"
+"_color" "0.9 0.65 0.3"
 }
 
 {
 "classname" "light"
 "origin" "-60 43 208"
 "light" "300"
-"_color" "0.78 0.39 1.0"
+"_color" "0.78 0.39 0.6"
 }
 
 {
 "classname" "light"
 "origin" "-60 -43 328"
 "light" "300"
-"_color" "0.39 1.0 0.59"
+"_color" "0.7 0.85 0.35"
 }
 
 {
 "classname" "light"
 "origin" "23 -71 400"
 "light" "300"
-"_color" "1.0 0.39 0.39"
+"_color" "1.0 0.5 0.25"
 }
 
 {
 "classname" "light"
 "origin" "0 0 176"
 "light" "200"
-"_color" "1.0 0.78 0.59"
+"_color" "1.0 0.78 0.5"
 }

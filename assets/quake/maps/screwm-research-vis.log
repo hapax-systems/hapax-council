@@ -1,0 +1,22 @@
+---- vis / ericw-tools 2.0.0-alpha10-87-g97795db8 ----
+
+--- Options Summary ---
+
+LoadBSPFile: '/home/hapax/projects/hapax-council/assets/quake/maps/screwm-research.bsp'
+BSP is version Quake BSP bsp29
+INFO: using built-in palette.
+Loading extended texinfo flags from /home/hapax/projects/hapax-council/assets/quake/maps/screwm-research.texinfo.json...
+    22 leafs
+    22 clusters
+    55 portals
+Calculating Base Vis:
+Calculating Full Vis:
+Expanding clusters...
+average leafs visible: 19
+c_noclip: 0
+c_chains: 1721
+visdatasize:66  compressed from 66
+Writing /home/hapax/projects/hapax-council/assets/quake/maps/screwm-research.bsp as Quake BSP bsp29
+0.00s elapsed
+
+

@@ -99,7 +99,7 @@ count   lump name    byte size
       5 textures             24
         lightdata             0
         visdata               0
-        entdata             653
+        entdata             656
 
 0.008s seconds elapsed
 

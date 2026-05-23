@@ -1,5 +1,5 @@
 ---- light / ericw-tools 2.0.0-alpha10-87-g97795db8 ----
-LoadBSPFile: '/home/hapax/projects/hapax-council/assets/quake/maps/screwm.bsp'
+LoadBSPFile: '/home/hapax/projects/hapax-council/assets/quake/maps/screwm-research.bsp'
 BSP is version Quake BSP bsp29
 INFO: using built-in palette.
 load: WARNING: filesystem error: cannot get file size: Is a directory [/home/hapax/projects/hapax-council/assets/quake/maps/]
@@ -8,8 +8,8 @@ ConvertTextures: WARNING: Texture  duplicated
 ConvertTextures: WARNING: Texture  duplicated
 ConvertTextures: WARNING: Texture  duplicated
 ConvertTextures: WARNING: Texture  duplicated
-Loading extended texinfo flags from /home/hapax/projects/hapax-council/assets/quake/maps/screwm.texinfo.json...
-Loading extended content flags from /home/hapax/projects/hapax-council/assets/quake/maps/screwm.content.json...
+Loading extended texinfo flags from /home/hapax/projects/hapax-council/assets/quake/maps/screwm-research.texinfo.json...
+Loading extended content flags from /home/hapax/projects/hapax-council/assets/quake/maps/screwm-research.content.json...
 8 entities read, 6 are lights.
 .lit colored light output requested on command line.
 
@@ -32,10 +32,10 @@ map uses color: true
 lightmap size (total): 32864
 Lighting Completed.
 
-Writing /home/hapax/projects/hapax-council/assets/quake/maps/screwm.lit
+Writing /home/hapax/projects/hapax-council/assets/quake/maps/screwm-research.lit
 0 switchable light styles (32 max)
-Writing /home/hapax/projects/hapax-council/assets/quake/maps/screwm.bsp as Quake BSP bsp29
-0.004s seconds elapsed
+Writing /home/hapax/projects/hapax-council/assets/quake/maps/screwm-research.bsp as Quake BSP bsp29
+0.005s seconds elapsed
 0 empty lightmaps
 
 
