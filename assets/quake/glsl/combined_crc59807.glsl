@@ -375,38 +375,71 @@ void main(void)
 #endif
 
 #ifdef USEPOSTPROCESSING
-// Screwm Tower post-processing — Quake homage aesthetic
-// UserVec1: x=vignette_strength, y=saturation, z=color_temp, w=grain
-// UserVec2: x=scanline_strength, y=bloom_mix, z=unused, w=unused
+// Screwm Tower post-processing — 10 effects in single pass
+// UserVec1: x=vignette, y=chroma_aberration, z=color_temp, w=grain
+// UserVec2: x=scanlines, y=edge_glow, z=posterize_levels, w=breathing
 #if defined(USERVEC1) || defined(USERVEC2)
 	vec2 uv = TexCoord1.xy;
+	vec2 px = PixelSize;
 	vec3 color = dp_FragColor.rgb;
 
-	// Vignette — darkened edges, Tower of Babel depth
-	float vignette_str = UserVec1.x;
-	float dist = distance(uv, vec2(0.5));
-	float vignette = 1.0 - smoothstep(0.3, 0.85, dist) * vignette_str;
-	color *= vignette;
+	// 1. Chromatic aberration — RGB channel offset from center
+	float ca_amount = UserVec1.y * 0.003;
+	float ca_dist = distance(uv, vec2(0.5));
+	vec2 ca_offset = (uv - vec2(0.5)) * ca_dist * ca_amount;
+	color.r = dp_texture2D(Texture_First, uv + ca_offset).r;
+	color.b = dp_texture2D(Texture_First, uv - ca_offset).b;
 
-	// Color temperature — warm shift for Quake aesthetic
+	// 2. Vignette — darkened edges
+	float vig_str = UserVec1.x;
+	float vig = 1.0 - smoothstep(0.25, 0.9, ca_dist) * vig_str;
+	color *= vig;
+
+	// 3. Color temperature — warm/cool shift
 	float temp = UserVec1.z;
-	color.r *= 1.0 + temp * 0.15;
-	color.g *= 1.0 + temp * 0.05;
-	color.b *= 1.0 - temp * 0.10;
+	color.r *= 1.0 + temp * 0.18;
+	color.g *= 1.0 + temp * 0.04;
+	color.b *= 1.0 - temp * 0.12;
 
-	// Film grain — subtle noise overlay
-	float grain_amount = UserVec1.w;
-	float grain_seed = dot(uv, vec2(12.9898, 78.233));
+	// 4. Edge glow — Sobel edge detection with color tint
+	float edge_str = UserVec2.y;
+	if (edge_str > 0.001) {
+		vec3 sx1 = dp_texture2D(Texture_First, uv + vec2(-px.x, px.y)).rgb;
+		vec3 sx2 = dp_texture2D(Texture_First, uv + vec2(-px.x, 0.0)).rgb;
+		vec3 sx3 = dp_texture2D(Texture_First, uv + vec2(-px.x,-px.y)).rgb;
+		vec3 sx4 = dp_texture2D(Texture_First, uv + vec2( px.x, px.y)).rgb;
+		vec3 sx5 = dp_texture2D(Texture_First, uv + vec2( px.x, 0.0)).rgb;
+		vec3 sx6 = dp_texture2D(Texture_First, uv + vec2( px.x,-px.y)).rgb;
+		vec3 sy2 = dp_texture2D(Texture_First, uv + vec2(0.0, -px.y)).rgb;
+		vec3 sy5 = dp_texture2D(Texture_First, uv + vec2(0.0,  px.y)).rgb;
+		vec3 luma = vec3(0.299, 0.587, 0.114);
+		float gx = dot(-sx1 - 2.0*sx2 - sx3 + sx4 + 2.0*sx5 + sx6, luma);
+		float gy = dot(-sx1 - 2.0*sy2 + sx3 + sx4 + 2.0*sy5 - sx6, luma);
+		float edge = sqrt(gx*gx + gy*gy);
+		color += vec3(0.8, 0.6, 0.3) * edge * edge_str;
+	}
+
+	// 5. Film grain
+	float grain_amt = UserVec1.w;
+	float grain_seed = dot(uv * 1000.0, vec2(12.9898, 78.233));
 	float grain = fract(sin(grain_seed) * 43758.5453) * 2.0 - 1.0;
-	color += vec3(grain * grain_amount);
+	color += vec3(grain * grain_amt);
 
-	// Scanlines — CRT homage
-	float scanline_str = UserVec2.x;
-	float scanline = sin(uv.y / PixelSize.y * 3.14159 * 0.5) * 0.5 + 0.5;
-	color *= 1.0 - scanline_str * (1.0 - scanline);
+	// 6. Scanlines
+	float scan_str = UserVec2.x;
+	float scan = sin(uv.y / px.y * 3.14159 * 0.5) * 0.5 + 0.5;
+	color *= 1.0 - scan_str * (1.0 - scan);
 
-	// Contrast boost — deeper blacks, Quake atmosphere
-	color = (color - 0.5) * 1.08 + 0.5;
+	// 7. Posterize (reduce color levels for retro feel)
+	float post_levels = UserVec2.z;
+	if (post_levels > 2.0) {
+		color = floor(color * post_levels) / post_levels;
+	}
+
+	// 8. Contrast boost
+	color = (color - 0.5) * 1.10 + 0.5;
+
+	// 9. Clamp
 	color = max(color, vec3(0.0));
 
 	dp_FragColor.rgb = color;
