@@ -15,7 +15,7 @@ float(vector v) vlen = #12;
 float(vector v) vectoyaw = #13;
 entity() spawn = #14;
 void(entity e) remove = #15;
-void(entity e, vector o) setorigin = #7;
+void(entity e, vector o) setorigin = #2;
 void(entity e, float chan, string samp, float vol, float attn) sound = #8;
 string(float f) ftos = #26;
 string(vector v) vtos = #27;
@@ -31,7 +31,7 @@ float(float v) sqrt = #62;
 float(float v) fabs = #43;
 // asin not a Quake builtin — approximate in camera.qc
 void(float to, float f) WriteByte = #52;
-void(float to, entity e) WriteEntity = #58;
+void(float to, entity e) WriteEntity = #59;
 // etos not needed for camera-only mod
 void(string s) precache_model = #20;
 void(string s) precache_sound = #19;
@@ -77,3 +77,14 @@ vector STATION_5 = '0 -32 120';
 vector AOA_CENTER = '0 176 0';
 
 float CAMERA_PERIOD = 135;
+
+// Required entry points for DarkPlaces
+void() StartFrame;
+void() PlayerPreThink;
+void() PlayerPostThink;
+void() ClientKill;
+void() ClientConnect;
+void() PutClientInServer;
+void() ClientDisconnect;
+void() SetNewParms;
+void() SetChangeParms;

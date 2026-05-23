@@ -53,6 +53,21 @@ void() spawn_ambient_sounds =
     setorigin(snd, '0 368 0');
 };
 
+void() StartFrame = {};
+void() PlayerPreThink = {};
+void() PlayerPostThink = {};
+void() ClientKill = {};
+void() ClientConnect = {};
+void() PutClientInServer =
+{
+    setorigin(self, '0 -32 120');
+    self.movetype = MOVETYPE_NONE;
+    self.solid = SOLID_NOT;
+};
+void() ClientDisconnect = {};
+void() SetNewParms = {};
+void() SetChangeParms = {};
+
 void() worldspawn =
 {
     // Precache models
