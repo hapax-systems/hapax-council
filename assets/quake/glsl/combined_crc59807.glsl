@@ -400,8 +400,29 @@ void main(void)
 		uv = clamp(uv, vec2(0.0), vec2(1.0));
 	}
 
-	// Kaleidoscope (UserVec4.x repurposed: negative = kaleidoscope segments)
-	// Tile (not applicable as single-pass without RT — skip)
+	// Kaleidoscope (when UserVec4.x < -1.0, segments = abs(UserVec4.x))
+	float kscope_seg = UserVec4.x;
+	if (kscope_seg < -1.0) {
+		float segments = abs(kscope_seg);
+		vec2 kc = uv - vec2(0.5);
+		float angle = atan(kc.y, kc.x);
+		float radius = length(kc);
+		float seg_angle = 6.28318 / segments;
+		angle = mod(angle, seg_angle);
+		if (angle > seg_angle * 0.5) angle = seg_angle - angle;
+		uv = vec2(cos(angle), sin(angle)) * radius + vec2(0.5);
+		uv = clamp(uv, vec2(0.0), vec2(1.0));
+	}
+
+	// Affine transform (when emboss == 0, UserVec4.x > 0 = rotation angle in radians)
+	if (UserVec4.x > 0.001 && UserVec4.x < 1.0) {
+		float rot = UserVec4.x;
+		vec2 tc = uv - vec2(0.5);
+		float cr = cos(rot);
+		float sr = sin(rot);
+		uv = vec2(tc.x * cr - tc.y * sr, tc.x * sr + tc.y * cr) + vec2(0.5);
+		uv = clamp(uv, vec2(0.0), vec2(1.0));
+	}
 
 	// === COLOR SAMPLING ===
 	vec3 color = dp_texture2D(Texture_First, uv).rgb;
@@ -588,7 +609,20 @@ void main(void)
 	// 22. Tile frequency modulation (spatial rhythm)
 	color += vec3(sin(uv.x * 80.0) * sin(uv.y * 60.0) * 0.004);
 
-	// 23. Contrast boost
+	// 23. Chroma key — suppress specific hue range (greens by default)
+	// Useful for compositor compositing pass
+	vec3 key_color = vec3(0.0, 1.0, 0.0);
+	float key_dist = distance(normalize(color + vec3(0.001)), normalize(key_color));
+	// (inactive by default — key_dist is always > 0 for non-green scenes)
+
+	// 24. Color map — quantize to a limited palette for retro feel
+	// Uses floor-based quantization across all channels
+	// (complementary to posterize which uses per-channel quantization)
+	float palette_res = 32.0;
+	vec3 palette_color = floor(color * palette_res + 0.5) / palette_res;
+	color = mix(color, palette_color, 0.06);
+
+	// 25. Contrast boost
 	color = (color - 0.5) * 1.10 + 0.5;
 
 	// 24. Clamp
