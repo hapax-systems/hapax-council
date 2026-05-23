@@ -174,28 +174,53 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
     var world: vec3<f32>;
     var n: vec3<f32>;
 
+    // --- TOWER ARCHITECTURE ---
+    // Quads 0: ground floor
+    // Quads 1-8: octagonal wall panels (8 panels, 45° each)
+    // Quads 9-12: level platforms at y=1, 4, 7, 10
+    // Quad 13: light marker
+    // Quads 14-17: volumetric beams
+    // Quad 18: AoA insphere (ray-marched)
+
+    let tower_r = 6.0;
+    let tower_y_min = -2.0;
+    let tower_y_max = 13.0;
+    let tower_h = tower_y_max - tower_y_min;
+    let tower_mid_y = (tower_y_min + tower_y_max) * 0.5;
+
     if quad_idx == 0u {
-        world = vec3<f32>(lp.x * 12.0, -2.0, lp.y * 12.0);
+        // Ground floor — circular-ish (square inscribed in tower)
+        world = vec3<f32>(lp.x * tower_r, tower_y_min, lp.y * tower_r);
         n = vec3<f32>(0.0, 1.0, 0.0);
-    } else if quad_idx == 1u {
-        // Cylindrical tower wall — ray-marched in fragment shader.
-        // View-aligned billboard, smaller extent to reduce backward-ray artifacts.
-        let cyl_center = vec3<f32>(0.0, 5.5, 0.0);
-        let vr = normalize(vec3<f32>(grid.view[0][0], grid.view[1][0], grid.view[2][0]));
-        let vu = normalize(vec3<f32>(grid.view[0][1], grid.view[1][1], grid.view[2][1]));
-        world = cyl_center + vr * lp.x * 8.0 + vu * lp.y * 10.0;
-        n = -normalize(vec3<f32>(grid.view[0][2], grid.view[1][2], grid.view[2][2]));
-    } else if quad_idx == 2u {
-        world = vec3<f32>(lp.x * 12.0, 13.0, lp.y * 12.0);
-        n = vec3<f32>(0.0, -1.0, 0.0);
-    } else if quad_idx == 3u {
-        // Visible point-light marker. This is intentionally authored geometry,
-        // not a hardware raytracing dependency.
+    } else if quad_idx >= 1u && quad_idx <= 8u {
+        // Octagonal wall panels — 8 panels facing inward
+        let panel = quad_idx - 1u;
+        let angle = f32(panel) * AOA_PI * 0.25; // 45° per panel
+        let half_w = tower_r * sin(AOA_PI * 0.125); // half-width of panel
+        let cx = tower_r * cos(angle + AOA_PI * 0.125);
+        let cz = tower_r * sin(angle + AOA_PI * 0.125);
+        let nx_w = -cos(angle + AOA_PI * 0.125);
+        let nz_w = -sin(angle + AOA_PI * 0.125);
+        let tx = -sin(angle + AOA_PI * 0.125);
+        let tz = cos(angle + AOA_PI * 0.125);
+        world = vec3<f32>(
+            cx + tx * lp.x * half_w,
+            tower_y_min + (lp.y + 1.0) * 0.5 * tower_h,
+            cz + tz * lp.x * half_w
+        );
+        n = vec3<f32>(nx_w, 0.0, nz_w);
+    } else if quad_idx >= 9u && quad_idx <= 12u {
+        // Level platforms — horizontal discs at y=1, 4, 7, 10
+        let level = quad_idx - 9u;
+        let level_ys = array<f32, 4>(1.0, 4.0, 7.0, 10.0);
+        let platform_r = tower_r * 0.92;
+        world = vec3<f32>(lp.x * platform_r, level_ys[level], lp.y * platform_r);
+        n = vec3<f32>(0.0, 1.0, 0.0);
+    } else if quad_idx == 13u {
         world = grid.light_position.xyz + vec3<f32>(lp.x * 0.28, lp.y * 0.28, 0.0);
         n = vec3<f32>(0.0, 0.0, 1.0);
-    } else if quad_idx == 8u {
-        // AoA insphere — ray-marched in fragment shader.
-        // Billboard oversized to contain the sphere from any angle.
+    } else if quad_idx == 18u {
+        // AoA insphere
         let sphere_center = vec3<f32>(0.0, 5.5, 0.0);
         let extent = 0.56;
         let vr = normalize(vec3<f32>(grid.view[0][0], grid.view[1][0], grid.view[2][0]));
@@ -203,18 +228,17 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
         world = sphere_center + vr * lp.x * extent + vu * lp.y * extent;
         n = -normalize(vec3<f32>(grid.view[0][2], grid.view[1][2], grid.view[2][2]));
     } else {
-        // Soft volumetric beam billboards from the moving light into the room.
+        // Volumetric beams (quad_idx 14-17)
         let start = grid.light_position.xyz;
         var end: vec3<f32>;
-        // Beam endpoints at dual tetrahedron vertices (stella octangula)
-        if quad_idx == 4u {
-            end = vec3<f32>(1.160, 0.205, -2.340);
-        } else if quad_idx == 5u {
-            end = vec3<f32>(-1.160, 0.205, -2.340);
-        } else if quad_idx == 6u {
-            end = vec3<f32>(0.0, -1.875, -2.340);
+        if quad_idx == 14u {
+            end = vec3<f32>(3.0, -1.0, 3.0);
+        } else if quad_idx == 15u {
+            end = vec3<f32>(-3.0, -1.0, -3.0);
+        } else if quad_idx == 16u {
+            end = vec3<f32>(3.0, -1.0, -3.0);
         } else {
-            end = vec3<f32>(0.0, -0.490, -3.300);
+            end = vec3<f32>(-3.0, -1.0, 3.0);
         }
         let along = normalize(end - start);
         var side = cross(along, vec3<f32>(0.0, 1.0, 0.0));
@@ -251,7 +275,7 @@ fn fs_main(in: VertexOutput) -> FragOutput {
     let light_color = grid.light_color.rgb;
     let raster_depth = in.position.z;
 
-    if in.plane_kind > 7.5 {
+    if in.plane_kind > 17.5 {
         // AoA insphere — ray-sphere intersection for perspective-correct 3D shading.
         let sphere_center = vec3<f32>(0.0, 5.5, 0.0);
         let sphere_radius = 0.4777;
@@ -316,105 +340,18 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         return FragOutput(vec4<f32>(sphere_color, sphere_alpha), 0.999);
     }
 
-    // Cylindrical tower wall — ray-cylinder intersection from inside.
-    if in.plane_kind > 0.5 && in.plane_kind < 1.5 {
-        let cyl_radius = 6.0;
-        let cyl_y_min = -2.0;
-        let cyl_y_max = 13.0;
-
-        let vt = grid.view[3].xyz;
-        let cam_pos = -vec3<f32>(
-            grid.view[0][0] * vt.x + grid.view[1][0] * vt.y + grid.view[2][0] * vt.z,
-            grid.view[0][1] * vt.x + grid.view[1][1] * vt.y + grid.view[2][1] * vt.z,
-            grid.view[0][2] * vt.x + grid.view[1][2] * vt.y + grid.view[2][2] * vt.z,
-        );
-        let ray_dir = normalize(wp - cam_pos);
-
-        // Discard backward rays (billboard fragments behind camera)
-        let cam_fwd = -normalize(vec3<f32>(grid.view[0][2], grid.view[1][2], grid.view[2][2]));
-        if dot(ray_dir, cam_fwd) < -0.1 { discard; }
-
-        let o_xz = vec2<f32>(cam_pos.x, cam_pos.z);
-        let d_xz = vec2<f32>(ray_dir.x, ray_dir.z);
-        let a_cyl = dot(d_xz, d_xz);
-        let b_cyl = dot(o_xz, d_xz);
-        let c_cyl = dot(o_xz, o_xz) - cyl_radius * cyl_radius;
-        let disc_cyl = b_cyl * b_cyl - a_cyl * c_cyl;
-        if disc_cyl < 0.0 { discard; }
-        let t_cyl = (-b_cyl + sqrt(disc_cyl)) / a_cyl;
-        if t_cyl < 0.1 { discard; }
-        let hit = cam_pos + ray_dir * t_cyl;
-        if hit.y < cyl_y_min || hit.y > cyl_y_max { discard; }
-
-        let theta = atan2(hit.z, hit.x);
-        let cyl_gc = vec2<f32>(
-            (theta + AOA_PI) / (2.0 * AOA_PI) * (2.0 * AOA_PI * cyl_radius),
-            hit.y
-        );
-        let cyl_normal = normalize(vec3<f32>(-hit.x, 0.0, -hit.z));
-
-        let sp_cyl = 2.32;
-        let la_c = abs(fract(cyl_gc.x / sp_cyl + 0.5) - 0.5) * sp_cyl;
-        let lb_c = abs(fract((cyl_gc.x * 0.5 + cyl_gc.y * 0.866) / sp_cyl + 0.5) - 0.5) * sp_cyl;
-        let lc_c = abs(fract((cyl_gc.x * 0.5 - cyl_gc.y * 0.866) / sp_cyl + 0.5) - 0.5) * sp_cyl;
-        let cyl_major = max(max(
-            grid_line_mask(la_c, 0.006, 0.090),
-            grid_line_mask(lb_c, 0.006, 0.090)),
-            grid_line_mask(lc_c, 0.006, 0.090)
-        );
-
-        var cornice = 0.0;
-        let level_ys = array<f32, 4>(1.0, 4.0, 7.0, 10.0);
-        for (var li = 0u; li < 4u; li = li + 1u) {
-            let ld = abs(hit.y - level_ys[li]);
-            cornice = max(cornice, grid_line_mask(ld, 0.030, 0.150));
-        }
-
-        let cyl_dist = length(hit - cam_pos);
-        let cyl_fade = max(smoothstep(18.0, 2.0, cyl_dist), 0.15);
-        let cyl_atmo = 1.0 / (1.0 + 0.02 * cyl_dist);
-
-        let cyl_hue = fract(theta * 0.16 + hit.y * 0.04 + t * 0.008);
-        let ch6 = cyl_hue * 6.0;
-        var cyl_color = vec3<f32>(
-            clamp(abs(ch6 - 3.0) - 1.0, 0.0, 1.0),
-            clamp(2.0 - abs(ch6 - 2.0), 0.0, 1.0),
-            clamp(2.0 - abs(ch6 - 4.0), 0.0, 1.0)
-        ) * vec3<f32>(0.5, 0.7, 1.0) + vec3<f32>(0.0, 0.05, 0.15);
-
-        let height_frac = (hit.y - cyl_y_min) / (cyl_y_max - cyl_y_min);
-        let level_tint = mix(vec3<f32>(0.20, 0.12, 0.06), vec3<f32>(0.06, 0.12, 0.20), height_frac);
-
-        let cyl_material = scroom_material_pattern(cyl_gc, 1.0, cyl_dist);
-        let cyl_shadow = soft_shadow_at(hit, grid.light_position.xyz);
-        let cyl_light = point_light_at(hit, cyl_normal) * cyl_shadow;
-
-        if cyl_major < 0.003 && cornice < 0.003 {
-            var wall_color = level_tint + light_color * (0.06 + cyl_light * 0.20)
-                + vec3<f32>(0.05, 0.06, 0.08) * cyl_material;
-            wall_color = wall_color * (0.70 + 0.30 * cyl_shadow) * cyl_atmo;
-            let wall_alpha = 0.25 * cyl_fade * cyl_material;
-            return FragOutput(vec4<f32>(wall_color, wall_alpha), raster_depth);
-        }
-
-        let cornice_color = vec3<f32>(0.4, 0.8, 1.0) * 1.4;
-        cyl_color = mix(cyl_color, cornice_color, cornice * 0.7);
-        cyl_color = cyl_color * cyl_fade * 0.8 * cyl_atmo;
-        cyl_color = cyl_color * (0.66 + 0.34 * cyl_shadow) + light_color * cyl_light * 0.20;
-        let cyl_alpha = max(cyl_major, cornice) * 0.50 * cyl_fade;
-        return FragOutput(vec4<f32>(cyl_color, cyl_alpha), raster_depth);
+    // Light marker (quad 13)
+    if in.plane_kind > 12.5 && in.plane_kind < 13.5 {
+        let d = length(in.local_pos);
+        let core = smoothstep(0.34, 0.02, d);
+        let halo = smoothstep(1.0, 0.08, d);
+        let alpha = clamp(core * 0.58 + halo * 0.22, 0.0, 0.72);
+        let color = light_color * (0.85 + core * 1.4);
+        return FragOutput(vec4<f32>(color, alpha), 0.999);
     }
 
-    if in.plane_kind > 2.5 {
-        if in.plane_kind < 3.5 {
-            let d = length(in.local_pos);
-            let core = smoothstep(0.34, 0.02, d);
-            let halo = smoothstep(1.0, 0.08, d);
-            let alpha = clamp(core * 0.58 + halo * 0.22, 0.0, 0.72);
-            let color = light_color * (0.85 + core * 1.4);
-            return FragOutput(vec4<f32>(color, alpha), 0.999);
-        }
-
+    // Volumetric beams (quads 14-17)
+    if in.plane_kind > 13.5 && in.plane_kind < 17.5 {
         let across = abs(in.local_pos.x);
         let progress = (in.local_pos.y + 1.0) * 0.5;
         let center = smoothstep(1.0, 0.0, across);

@@ -349,29 +349,28 @@ fn remap_speed(t: f32, num_segments: usize) -> f32 {
     (segment + eased) / n
 }
 
-// Helical camera path — single slow revolution through the tower.
-// 5 control points, 1 revolution, radius 4, height 0 to 10.
-// Gentle ascent — the camera walks the ramp, not flies it.
+// Gentle pendulum camera — orbits slowly at one height, then rises/falls.
+// No spiral. Smooth sinusoidal height modulation with slow horizontal orbit.
 const TOWER_RADIUS: f32 = 4.0;
-const TOWER_Y_BASE: f32 = 0.0;
+const TOWER_Y_BASE: f32 = -1.0;
 const TOWER_Y_TOP: f32 = 10.0;
 const TOWER_REVOLUTIONS: f32 = 1.0;
 
 const SPIRAL_STATIONS: [Vec3; 6] = [
-    Vec3::new( 4.0,  0.0,  0.0),   // S0: base, theta=0
-    Vec3::new( 0.0,  2.0,  4.0),   // S1: theta=pi/2
-    Vec3::new(-4.0,  4.0,  0.0),   // S2: theta=pi
-    Vec3::new( 0.0,  6.0, -4.0),   // S3: theta=3pi/2
-    Vec3::new( 4.0,  8.0,  0.0),   // S4: theta=2pi (1 full rev)
-    Vec3::new( 4.0,  0.0,  0.0),   // S5: == S0, seamless loop
+    Vec3::new( 4.0,  1.0,  0.0),   // S0: base level, theta=0
+    Vec3::new( 0.0,  3.0,  4.0),   // S1: rising, theta=pi/2
+    Vec3::new(-4.0,  5.5,  0.0),   // S2: mid-tower (AoA height), theta=pi
+    Vec3::new( 0.0,  8.0, -4.0),   // S3: near top, theta=3pi/2
+    Vec3::new( 4.0,  5.5,  0.0),   // S4: descending back to mid, theta=2pi
+    Vec3::new( 4.0,  1.0,  0.0),   // S5: == S0
 ];
 
 const SPIRAL_TARGETS: [Vec3; 6] = [
     Vec3::new( 0.0,  3.0,  0.0),
-    Vec3::new( 0.0,  4.0,  0.0),
+    Vec3::new( 0.0,  4.5,  0.0),
     Vec3::new( 0.0,  5.5,  0.0),
-    Vec3::new( 0.0,  6.0,  0.0),
     Vec3::new( 0.0,  5.5,  0.0),
+    Vec3::new( 0.0,  4.5,  0.0),
     Vec3::new( 0.0,  3.0,  0.0),
 ];
 
@@ -1175,7 +1174,7 @@ fn build_scene_from_source_refs(
         let z = wall_r * theta.sin();
 
         // Face inward toward the tower axis
-        let rot_y = theta.cos().atan2(-theta.sin());
+        let rot_y = theta + std::f32::consts::PI;
 
         nodes.push(make_node(
             active_sources, idx,

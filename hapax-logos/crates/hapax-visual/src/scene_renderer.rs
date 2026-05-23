@@ -1403,8 +1403,8 @@ impl SceneRenderer {
                 pass.set_pipeline(&self.grid_pipeline);
                 pass.set_bind_group(0, &self.grid_uniform_bind_group, &[]);
                 pass.set_bind_group(1, &self.reverie_bind_group, &[]);
-                pass.draw(0..48, 0..1); // Room grids + light + volumetric rays
-                pass.draw(48..54, 0..1); // AoA insphere — BEFORE content quads so panes occlude it
+                pass.draw(0..108, 0..1); // Tower architecture (floor + 8 walls + 4 platforms + light + 4 beams)
+                pass.draw(108..114, 0..1); // AoA insphere
             }
 
             // ── Upload AoA heatmap ──────────────────────────────────
