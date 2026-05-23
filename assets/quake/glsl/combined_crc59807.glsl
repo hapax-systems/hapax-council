@@ -383,7 +383,28 @@ void main(void)
 #if defined(USERVEC1) || defined(USERVEC2)
 	vec2 uv = TexCoord1.xy;
 	vec2 px = PixelSize;
-	vec3 color = dp_FragColor.rgb;
+
+	// === UV DISTORTION PHASE (before color sampling) ===
+
+	// Mirror (toggle via sign of fisheye: negative = mirror X)
+	if (UserVec3.x < -0.001) {
+		uv.x = 1.0 - uv.x;
+	}
+
+	// Fisheye lens distortion (positive values)
+	float fisheye_val = abs(UserVec3.x);
+	if (fisheye_val > 0.001) {
+		vec2 fc = uv - vec2(0.5);
+		float r2 = dot(fc, fc);
+		uv = fc * (1.0 + fisheye_val * r2) + vec2(0.5);
+		uv = clamp(uv, vec2(0.0), vec2(1.0));
+	}
+
+	// Kaleidoscope (UserVec4.x repurposed: negative = kaleidoscope segments)
+	// Tile (not applicable as single-pass without RT — skip)
+
+	// === COLOR SAMPLING ===
+	vec3 color = dp_texture2D(Texture_First, uv).rgb;
 
 	// 1. Chromatic aberration — RGB channel offset from center
 	float ca_amount = UserVec1.y * 0.003;
@@ -456,14 +477,7 @@ void main(void)
 	else bayer = fract(float(dx * 3 + dy * 7) * 0.0625);
 	color += vec3((bayer - 0.5) * dither_str);
 
-	// 10. Fisheye lens distortion
-	float fisheye = UserVec3.x;
-	if (abs(fisheye) > 0.001) {
-		vec2 fc = uv - vec2(0.5);
-		float r2 = dot(fc, fc);
-		vec2 distorted = fc * (1.0 + fisheye * r2) + vec2(0.5);
-		color = dp_texture2D(Texture_First, clamp(distorted, vec2(0.0), vec2(1.0))).rgb;
-	}
+	// 10. (Fisheye moved to UV distortion phase above)
 
 	// 11. Animated noise overlay
 	float noise_str = UserVec3.y;
@@ -528,10 +542,26 @@ void main(void)
 		color = mix(color, thermal, thermal_mix);
 	}
 
-	// 18. Contrast boost
+	// 18. VHS glitch (time-driven horizontal displacement + chroma shift)
+	float vhs_time = fract(ClientTime * 0.3);
+	float vhs_band = smoothstep(0.0, 0.02, abs(uv.y - vhs_time)) *
+	                 smoothstep(0.0, 0.02, abs(uv.y - fract(vhs_time + 0.4)));
+	float vhs_glitch = (1.0 - vhs_band) * 0.008;
+	if (vhs_glitch > 0.001) {
+		color.r = dp_texture2D(Texture_First, uv + vec2(vhs_glitch, 0.0)).r;
+		color.g = dp_texture2D(Texture_First, uv - vec2(vhs_glitch * 0.5, 0.0)).g;
+	}
+
+	// 19. Palette warmth — shift toward Quake brown/amber
+	float warmth = 0.08;
+	float lum = dot(color, vec3(0.299, 0.587, 0.114));
+	vec3 warm_tint = vec3(0.85, 0.65, 0.45);
+	color = mix(color, color * warm_tint / max(dot(warm_tint, vec3(0.333)), 0.01), warmth);
+
+	// 20. Contrast boost
 	color = (color - 0.5) * 1.10 + 0.5;
 
-	// 19. Clamp
+	// 21. Clamp
 	color = max(color, vec3(0.0));
 
 	dp_FragColor.rgb = color;
