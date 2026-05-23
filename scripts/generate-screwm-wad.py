@@ -12,19 +12,18 @@ import subprocess
 from pathlib import Path
 
 TEXTURES = {
-    "city4_2": {"color": (140, 110, 80), "noise": 25},
-    "ground1_6": {"color": (90, 85, 75), "noise": 20},
-    "sky4": {"color": (40, 35, 45), "noise": 10},
-    "metal5_2": {"color": (120, 115, 110), "noise": 15},
+    "city4_2": {"color": (100, 80, 55), "noise": 12, "pattern": "stone_blocks"},
+    "ground1_6": {"color": (60, 55, 50), "noise": 8, "pattern": "worn_stone"},
+    "sky4": {"color": (25, 22, 30), "noise": 5, "pattern": "dark_ceiling"},
+    "metal5_2": {"color": (85, 80, 75), "noise": 10, "pattern": "brushed_metal"},
 }
 
 TEX_SIZE = 64
 
 
-def generate_pixel_data(color, noise, width, height, seed=0):
-    """Generate noisy stone/metal texture with visible surface detail."""
+def generate_pixel_data(color, noise, width, height, seed=0, pattern="stone_blocks"):
+    """Generate Quake-style texture with visible material character."""
     import random
-    import math
 
     random.seed(seed)
     pixels = bytearray()
@@ -32,30 +31,47 @@ def generate_pixel_data(color, noise, width, height, seed=0):
 
     for i in range(256):
         t = i / 255.0
-        r = max(0, min(255, int(color[0] * (0.4 + t * 0.6))))
-        g = max(0, min(255, int(color[1] * (0.4 + t * 0.6))))
-        b = max(0, min(255, int(color[2] * (0.4 + t * 0.6))))
+        r = max(0, min(255, int(color[0] * (0.3 + t * 0.7))))
+        g = max(0, min(255, int(color[1] * (0.3 + t * 0.7))))
+        b = max(0, min(255, int(color[2] * (0.3 + t * 0.7))))
         palette.extend([r, g, b])
 
     for y in range(height):
         for x in range(width):
-            # Multi-octave value noise for organic stone texture
-            v = 0.5
-            freq = 1.0
-            amp = 0.5
-            for _ in range(4):
-                sx = x * freq / width * 4
-                sy = y * freq / height * 4
-                cell_val = math.sin(sx * 12.9898 + sy * 78.233) * 43758.5453
-                cell_val = cell_val - math.floor(cell_val)
-                v += (cell_val - 0.5) * amp
-                freq *= 2.0
-                amp *= 0.5
+            base = 140
 
-            # Add random grain
-            v += random.uniform(-noise / 255.0, noise / 255.0)
+            if pattern == "stone_blocks":
+                # Quake-style stone blocks: rows offset every other row
+                row = y // 16
+                col_offset = 16 if row % 2 else 0
+                mortar_h = y % 16 < 1
+                mortar_v = (x + col_offset) % 32 < 1
+                if mortar_h or mortar_v:
+                    base = 70
+                else:
+                    # Per-block shade variation
+                    block_id = row * 4 + ((x + col_offset) // 32)
+                    random.seed(seed + block_id * 97)
+                    base = 120 + random.randint(-20, 20)
 
-            idx = max(10, min(245, int(v * 255)))
+            elif pattern == "worn_stone":
+                # Smooth worn stone with occasional cracks
+                base = 100 + random.randint(-8, 8)
+                if (x + y * 3) % 47 < 2:
+                    base -= 30
+
+            elif pattern == "dark_ceiling":
+                base = 60 + random.randint(-5, 5)
+
+            elif pattern == "brushed_metal":
+                # Horizontal grain
+                grain = (x * 7 + seed) % 11
+                base = 130 + grain - 5 + random.randint(-6, 6)
+
+            # Add surface noise
+            random.seed(seed + y * width + x)
+            base += random.randint(-noise, noise)
+            idx = max(10, min(245, base))
             pixels.append(idx)
 
     return bytes(pixels), bytes(palette)
@@ -150,7 +166,12 @@ def main():
     textures_data = {}
     for name, params in TEXTURES.items():
         pixels, palette = generate_pixel_data(
-            params["color"], params["noise"], TEX_SIZE, TEX_SIZE, seed=hash(name)
+            params["color"],
+            params["noise"],
+            TEX_SIZE,
+            TEX_SIZE,
+            seed=hash(name),
+            pattern=params.get("pattern", "stone_blocks"),
         )
         miptex = make_miptex(name, TEX_SIZE, TEX_SIZE, pixels, palette)
         textures_data[name] = (miptex, palette)
