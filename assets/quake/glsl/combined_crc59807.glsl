@@ -308,7 +308,7 @@ uniform mediump vec4 UserVec2;
 // uniform mediump vec4 UserVec3;
 // uniform mediump vec4 UserVec4;
 uniform mediump float ColorFringe;
-// uniform highp float ClientTime;
+uniform highp float ClientTime;
 uniform mediump vec2 PixelSize;
 
 #ifdef USEFXAA
@@ -436,10 +436,28 @@ void main(void)
 		color = floor(color * post_levels) / post_levels;
 	}
 
-	// 8. Contrast boost
+	// 8. Breathing — radial pulse synced to time
+	float breath_rate = 0.15;
+	float breath = 1.0 + sin(ClientTime * 2.0) * breath_rate * 0.5;
+	float breath_dist = distance(uv, vec2(0.5));
+	color *= mix(1.0, breath, smoothstep(0.0, 0.6, breath_dist));
+
+	// 9. Dither — ordered Bayer 4x4 for retro feel
+	float dither_str = 0.02;
+	int dx = int(mod(gl_FragCoord.x, 4.0));
+	int dy = int(mod(gl_FragCoord.y, 4.0));
+	float bayer = 0.0;
+	if (dx == 0 && dy == 0) bayer = 0.0;
+	else if (dx == 2 && dy == 0) bayer = 0.5;
+	else if (dx == 0 && dy == 2) bayer = 0.75;
+	else if (dx == 2 && dy == 2) bayer = 0.25;
+	else bayer = fract(float(dx * 3 + dy * 7) * 0.0625);
+	color += vec3((bayer - 0.5) * dither_str);
+
+	// 10. Contrast boost
 	color = (color - 0.5) * 1.10 + 0.5;
 
-	// 9. Clamp
+	// 11. Clamp
 	color = max(color, vec3(0.0));
 
 	dp_FragColor.rgb = color;
