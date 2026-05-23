@@ -1011,8 +1011,8 @@ impl SceneRenderer {
         // ── Depth-of-field post-process (deferred — NVIDIA 595.71 SPIR-V crash) ──
         // Use blit shader as stub to avoid compiling the DoF shader at all.
         let dof_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("scene_dof"),
-            source: wgpu::ShaderSource::Wgsl(SCENE_DOF_WGSL.into()),
+            label: Some("dof_stub"),
+            source: wgpu::ShaderSource::Wgsl(FULLSCREEN_BLIT_WGSL.into()),
         });
         let dof_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("dof_uniforms"),
@@ -1502,7 +1502,8 @@ impl SceneRenderer {
 
         queue.submit(std::iter::once(encoder.finish()));
 
-        self.apply_dof(device, queue);
+        // DoF crashes on both 3090 and 5090 with NVIDIA 595.71 — disabled.
+        // self.apply_dof(device, queue);
 
         &self.output_view
     }
