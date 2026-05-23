@@ -35,7 +35,16 @@ def init_gstreamer() -> tuple[Any, Any]:
     return _GLib, _Gst
 
 
-DARKPLACES_V4L2_DEVICE = "/dev/video10"
+DEFAULT_DARKPLACES_V4L2_DEVICE = "/dev/video52"
+OBS_VIRTUAL_CAMERA_DEVICE = "/dev/video10"
+
+
+def _darkplaces_v4l2_device() -> str:
+    return (
+        os.environ.get("HAPAX_DARKPLACES_V4L2_DEVICE", "").strip()
+        or os.environ.get("DARKPLACES_V4L2_DEVICE", "").strip()
+        or DEFAULT_DARKPLACES_V4L2_DEVICE
+    )
 
 
 def _pin_black_background(comp_element: Any) -> None:
@@ -53,11 +62,37 @@ def _add_darkplaces_background(
     """Add DarkPlaces v4l2loopback as the compositor background layer.
 
     Returns True if DarkPlaces source was successfully added, False otherwise.
-    Falls back to black background if /dev/video70 is not available.
+    Falls back to black background if the configured renderer feed is unavailable.
     """
-    if not os.path.exists(DARKPLACES_V4L2_DEVICE):
-        log.info("DarkPlaces device %s not found — using black background", DARKPLACES_V4L2_DEVICE)
+    device = _darkplaces_v4l2_device()
+    if device == OBS_VIRTUAL_CAMERA_DEVICE and not _env_truthy(
+        "HAPAX_DARKPLACES_ALLOW_OBS_VCAM_SOURCE"
+    ):
+        log.warning(
+            "Refusing to use %s as DarkPlaces background; it is OBS Virtual Camera output "
+            "and creates an OBS->compositor->OBS loop. Set HAPAX_DARKPLACES_V4L2_DEVICE "
+            "to the dedicated DarkPlaces loopback.",
+            device,
+        )
         return False
+    if not os.path.exists(device):
+        log.info("DarkPlaces device %s not found — using black background", device)
+        return False
+
+    added_elements: list[Any] = []
+    sink_pad: Any | None = None
+
+    def _cleanup_partial_setup() -> None:
+        if sink_pad is not None:
+            try:
+                comp_element.release_request_pad(sink_pad)
+            except Exception:
+                log.debug("DarkPlaces partial setup pad release skipped", exc_info=True)
+        for element in reversed(added_elements):
+            try:
+                pipeline.remove(element)
+            except Exception:
+                log.debug("DarkPlaces partial setup cleanup skipped for %s", element, exc_info=True)
 
     try:
         src = Gst.ElementFactory.make("v4l2src", "darkplaces-src")
@@ -65,7 +100,7 @@ def _add_darkplaces_background(
             log.warning("v4l2src factory unavailable for DarkPlaces background")
             return False
 
-        src.set_property("device", DARKPLACES_V4L2_DEVICE)
+        src.set_property("device", device)
         src.set_property("io-mode", 2)  # mmap
 
         caps = Gst.ElementFactory.make("capsfilter", "darkplaces-caps")
@@ -81,14 +116,17 @@ def _add_darkplaces_background(
 
         for el in (src, caps, convert, queue):
             pipeline.add(el)
+            added_elements.append(el)
 
-        src.link(caps)
-        caps.link(convert)
-        convert.link(queue)
+        if not src.link(caps) or not caps.link(convert) or not convert.link(queue):
+            log.warning("Failed to link DarkPlaces source preprocessing chain")
+            _cleanup_partial_setup()
+            return False
 
         sink_pad = comp_element.request_pad_simple("sink_%u")
         if sink_pad is None:
             log.warning("Could not request compositor sink pad for DarkPlaces")
+            _cleanup_partial_setup()
             return False
 
         sink_pad.set_property("xpos", 0)
@@ -100,13 +138,15 @@ def _add_darkplaces_background(
         src_pad = queue.get_static_pad("src")
         if src_pad.link(sink_pad) != Gst.PadLinkReturn.OK:
             log.warning("Failed to link DarkPlaces queue to compositor")
+            _cleanup_partial_setup()
             return False
 
-        log.info("DarkPlaces background source added from %s (zorder=0)", DARKPLACES_V4L2_DEVICE)
+        log.info("DarkPlaces background source added from %s (zorder=0)", device)
         return True
 
     except Exception:
         log.warning("DarkPlaces background source setup failed", exc_info=True)
+        _cleanup_partial_setup()
         return False
 
 

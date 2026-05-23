@@ -64,6 +64,9 @@ class _Element:
         self.requested_pads.append(pad)
         return pad
 
+    def request_pad_simple(self, template: str) -> _Pad:
+        return self.request_pad(template, None, None)
+
 
 class _NoBackgroundElement:
     def set_property(self, name: str, value: object) -> None:
@@ -93,6 +96,9 @@ class _Pipeline:
 
     def add(self, element: _Element) -> None:
         self.elements.append(element)
+
+    def remove(self, element: _Element) -> None:
+        self.elements.remove(element)
 
 
 class _PipelineFactory:
@@ -187,6 +193,7 @@ def _patch_build_pipeline_edges(monkeypatch: object) -> None:
         SimpleNamespace(V4l2OutputPipeline=_OutputBin),
     )
     monkeypatch.setenv("HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT", "1")
+    monkeypatch.setenv("HAPAX_DARKPLACES_V4L2_DEVICE", "/tmp/hapax-test-missing-darkplaces")
 
 
 def _fake_compositor_config(*, hls_enabled: bool = False) -> CompositorConfig:
@@ -250,6 +257,48 @@ def test_make_cudacompositor_fallback_still_requests_force_live() -> None:
     assert element is not None
     assert _ParseLaunchFailsGst.launched == "cudacompositor name=compositor force-live=true"
     assert element.props["force-live"] is True
+
+
+def test_darkplaces_device_defaults_to_dedicated_loopback(monkeypatch: object) -> None:
+    monkeypatch.delenv("HAPAX_DARKPLACES_V4L2_DEVICE", raising=False)
+
+    assert pipeline_module._darkplaces_v4l2_device() == "/dev/video52"
+
+
+def test_darkplaces_background_rejects_obs_virtual_camera(monkeypatch: object) -> None:
+    _reset_fake_gst()
+    monkeypatch.setenv("HAPAX_DARKPLACES_V4L2_DEVICE", "/dev/video10")
+    monkeypatch.setattr(pipeline_module.os.path, "exists", lambda _path: True)
+
+    pipe = _Pipeline("test")
+    comp = _Element("compositor", "cudacompositor")
+    added = pipeline_module._add_darkplaces_background(_FakeGst, pipe, comp, 1280, 720, 30)
+
+    assert added is False
+    assert pipe.elements == []
+
+
+def test_darkplaces_background_uses_env_device(monkeypatch: object) -> None:
+    _reset_fake_gst()
+    monkeypatch.setenv("HAPAX_DARKPLACES_V4L2_DEVICE", "/dev/video99")
+    monkeypatch.setattr(pipeline_module.os.path, "exists", lambda _path: True)
+
+    pipe = _Pipeline("test")
+    comp = _Element("compositor", "cudacompositor")
+    added = pipeline_module._add_darkplaces_background(_FakeGst, pipe, comp, 1280, 720, 30)
+
+    assert added is True
+    src = _element_named(pipe.elements, "darkplaces-src")
+    caps = _element_named(pipe.elements, "darkplaces-caps")
+    assert src.props["device"] == "/dev/video99"
+    assert caps.props["caps"] == "video/x-raw,width=1280,height=720,framerate=30/1"
+    assert comp.requested_pads[0].props == {
+        "xpos": 0,
+        "ypos": 0,
+        "width": 1280,
+        "height": 720,
+        "zorder": 0,
+    }
 
 
 def test_cuda_camera_branch_pins_cuda_memory_caps(monkeypatch: object) -> None:

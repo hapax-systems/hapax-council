@@ -10,6 +10,7 @@ float coupling_mode_check_next;
 
 void() coupling_init =
 {
+    CAMERA_PERIOD = 135.0;
     coupling_poll_interval = 1.0;
     coupling_energy = 0.5;
     coupling_voice_active = 0;
@@ -57,12 +58,12 @@ void() coupling_apply_stimmung =
     {
         float base_rot = 15.0;
         float voice_boost = coupling_voice_active * 30.0;
-        aoa_entity.avelocity_y = base_rot + voice_boost + coupling_energy * 10.0;
+        aoa_entity.screwm_spin_y = base_rot + voice_boost + coupling_energy * 10.0;
     }
 
     // Fog density: denser at low energy (contemplative), clearer at high
     float fog_density = 0.03 - coupling_energy * 0.02;
-    localcmd(strcat("fog ", ftos(fog_density), " 0.08 0.06 0.10\n"));
+    localcmd(strcat(strcat("fog ", ftos(fog_density)), " 0.08 0.06 0.10\n"));
 
     // Post-processing modulation from cognitive state
     // UserVec1: x=vignette, y=chroma, z=temp, w=grain
@@ -70,12 +71,23 @@ void() coupling_apply_stimmung =
     float ca = 0.4 + coupling_voice_active * 0.6;
     float temp_val = 0.10 + coupling_energy * 0.08;
     float grain_val = 0.02 + (1.0 - coupling_energy) * 0.02;
-    localcmd(strcat("r_glsl_postprocess_uservec1 \"",
-        ftos(vig), " ", ftos(ca), " ", ftos(temp_val), " ", ftos(grain_val), "\"\n"));
+    string uservec1_cmd;
+    uservec1_cmd = strcat("r_glsl_postprocess_uservec1 \"", ftos(vig));
+    uservec1_cmd = strcat(uservec1_cmd, " ");
+    uservec1_cmd = strcat(uservec1_cmd, ftos(ca));
+    uservec1_cmd = strcat(uservec1_cmd, " ");
+    uservec1_cmd = strcat(uservec1_cmd, ftos(temp_val));
+    uservec1_cmd = strcat(uservec1_cmd, " ");
+    uservec1_cmd = strcat(uservec1_cmd, ftos(grain_val));
+    uservec1_cmd = strcat(uservec1_cmd, "\"\n");
+    localcmd(uservec1_cmd);
 
     // UserVec2: x=scanlines, y=edge_glow, z=posterize, w=unused
     float edge = 0.15 + coupling_energy * 0.25;
-    localcmd(strcat("r_glsl_postprocess_uservec2 \"0.06 ", ftos(edge), " 0 0\"\n"));
+    string uservec2_cmd;
+    uservec2_cmd = strcat("r_glsl_postprocess_uservec2 \"0.06 ", ftos(edge));
+    uservec2_cmd = strcat(uservec2_cmd, " 0 0\"\n");
+    localcmd(uservec2_cmd);
 };
 
 void() coupling_check_working_mode =
@@ -97,9 +109,16 @@ void() coupling_check_working_mode =
         return;
 
     coupling_current_mode = line;
-    string map_name = strcat("screwm-", line);
-    dprint(strcat("Working mode changed to: ", line, "\n"));
-    localcmd(strcat("map ", map_name, "\n"));
+    if (line == "rnd" || line == "research")
+    {
+        string map_name = strcat("screwm-", line);
+        dprint(strcat(strcat("Working mode changed to: ", line), "\n"));
+        localcmd(strcat(strcat("map ", map_name), "\n"));
+    }
+    else
+    {
+        dprint(strcat(strcat("Ignoring unsupported Screwm working mode: ", line), "\n"));
+    }
 };
 
 void() coupling_tick =

@@ -8,7 +8,7 @@ WAD2 format:
 """
 
 import struct
-import subprocess
+import zlib
 from pathlib import Path
 
 TEXTURES = {
@@ -41,32 +41,28 @@ def generate_pixel_data(color, noise, width, height, seed=0, pattern="stone_bloc
             base = 140
 
             if pattern == "stone_blocks":
-                # Quake-style stone blocks: rows offset every other row
                 row = y // 16
                 col_offset = 16 if row % 2 else 0
-                mortar_h = y % 16 < 1
-                mortar_v = (x + col_offset) % 32 < 1
+                mortar_h = y % 16 < 2
+                mortar_v = (x + col_offset) % 32 < 2
                 if mortar_h or mortar_v:
-                    base = 70
+                    base = 40
                 else:
-                    # Per-block shade variation
                     block_id = row * 4 + ((x + col_offset) // 32)
                     random.seed(seed + block_id * 97)
-                    base = 120 + random.randint(-20, 20)
+                    base = 160 + random.randint(-40, 40)
 
             elif pattern == "worn_stone":
-                # Smooth worn stone with occasional cracks
-                base = 100 + random.randint(-8, 8)
+                base = 80 + random.randint(-15, 15)
                 if (x + y * 3) % 47 < 2:
-                    base -= 30
+                    base -= 50
 
             elif pattern == "dark_ceiling":
-                base = 60 + random.randint(-5, 5)
+                base = 35 + random.randint(-8, 8)
 
             elif pattern == "brushed_metal":
-                # Horizontal grain
                 grain = (x * 7 + seed) % 11
-                base = 130 + grain - 5 + random.randint(-6, 6)
+                base = 170 + grain - 5 + random.randint(-10, 10)
 
             # Add surface noise
             random.seed(seed + y * width + x)
@@ -120,6 +116,11 @@ def make_miptex(name, width, height, pixels, palette):
     return header + mip0 + mip1 + mip2 + mip3
 
 
+def texture_seed(name):
+    """Return a deterministic texture seed across Python processes."""
+    return zlib.crc32(name.encode("ascii")) & 0xFFFFFFFF
+
+
 def write_wad(textures_data, output_path):
     """Write WAD2 file."""
     entries = []
@@ -170,7 +171,7 @@ def main():
             params["noise"],
             TEX_SIZE,
             TEX_SIZE,
-            seed=hash(name),
+            seed=texture_seed(name),
             pattern=params.get("pattern", "stone_blocks"),
         )
         miptex = make_miptex(name, TEX_SIZE, TEX_SIZE, pixels, palette)

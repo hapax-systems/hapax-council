@@ -1,0 +1,21 @@
+[Unit]
+Description=Hapax DarkPlaces headless v4l2 renderer feed
+After=graphical-session.target
+PartOf=hapax-visual-stack.target
+# Runtime containment, 2026-05-23: opt-in only until the renderer feed is
+# validated without reproducing the AMD data-fabric reset.
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+
+[Service]
+Type=simple
+ExecStart=%h/projects/hapax-council/scripts/darkplaces-v4l2-xvfb.sh
+Restart=always
+RestartSec=3
+MemoryMax=2G
+Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52
+Environment=DARKPLACES_WIDTH=1280
+Environment=DARKPLACES_HEIGHT=720
+Environment=DARKPLACES_FPS=30
+
+[Install]
+WantedBy=default.target

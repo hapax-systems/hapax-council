@@ -68,6 +68,7 @@ float SOUNDFLAG_FORCELOOP = 1;
 .vector avelocity;
 .float effects;
 .float fixangle;
+.float screwm_spin_y;
 
 // Shared entity references
 entity aoa_entity;
@@ -84,7 +85,7 @@ vector STATION_5 = '0 -32 120';
 
 vector AOA_CENTER = '0 176 0';
 
-float CAMERA_PERIOD = 135;
+float CAMERA_PERIOD;
 
 // Required entry points for DarkPlaces
 void() StartFrame;

@@ -1,37 +1,28 @@
 #!/usr/bin/env bash
-# Launch DarkPlaces with obs-glcapture for frame capture.
+# Launch DarkPlaces with obs-glcapture for OBS game capture.
 # On KDE/KWin Wayland, wlr-screencopy is unavailable.
 # obs-glcapture hooks OpenGL render calls for zero-copy capture.
 #
 # The captured frames are available to OBS via the linux-vkcapture plugin,
 # or to any application that reads the OBS game capture shared memory.
+# This script does not write the dedicated DarkPlaces v4l2loopback device;
+# use darkplaces-v4l2-xvfb.sh for the direct headless renderer feed.
 set -euo pipefail
 
-DEVICE="${DARKPLACES_V4L2_DEVICE:-/dev/video52}"
+source "$(cd "$(dirname "$0")" && pwd)/darkplaces-runtime-guard.sh"
+
+DEVICE="${HAPAX_DARKPLACES_V4L2_DEVICE:-${DARKPLACES_V4L2_DEVICE:-/dev/video52}}"
 WIDTH="${DARKPLACES_WIDTH:-1280}"
 HEIGHT="${DARKPLACES_HEIGHT:-720}"
-GAME_DIR="$HOME/.darkplaces"
 
-# Ensure map is current
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-MAP_SRC="$REPO_DIR/assets/quake/maps/screwm.bsp"
-MAP_DST="$GAME_DIR/screwm/maps/screwm.bsp"
+"$REPO_DIR/scripts/install-darkplaces-screwm-assets.sh"
 
-if [ -f "$MAP_SRC" ] && [ "$MAP_SRC" -nt "$MAP_DST" ] 2>/dev/null; then
-    mkdir -p "$GAME_DIR/screwm/maps"
-    cp "$MAP_SRC" "$MAP_DST"
-    cp "${MAP_SRC%.bsp}.lit" "$GAME_DIR/screwm/maps/" 2>/dev/null || true
-fi
-
-mkdir -p "$GAME_DIR/id1"
-
-if [ -f "$REPO_DIR/assets/quake/qc/progs.dat" ]; then
-    cp "$REPO_DIR/assets/quake/qc/progs.dat" "$GAME_DIR/screwm/"
-fi
+printf 'darkplaces-capture: OBS capture mode; dedicated renderer loopback is %s\n' "$DEVICE" >&2
 
 # Launch DarkPlaces wrapped with obs-glcapture for zero-copy GL frame capture.
 # OBS reads via linux-vkcapture source plugin. The compositor reads from
-# OBS's v4l2sink output, or from a dedicated capture pipeline.
+# the dedicated DarkPlaces loopback when darkplaces-v4l2-xvfb.sh is used.
 exec obs-glcapture darkplaces-sdl \
     -game screwm \
     -window \

@@ -4,10 +4,10 @@
 
 void() aoa_think =
 {
-    self.angles_y = self.angles_y + frametime * 15;
+    self.angles_y = self.angles_y + frametime * self.screwm_spin_y;
     if (self.angles_y >= 360)
         self.angles_y = self.angles_y - 360;
-    self.nextthink = time + 0.033;
+    self.nextthink = time + 0.0139;
 };
 
 void() spawn_aoa =
@@ -19,7 +19,7 @@ void() spawn_aoa =
     setorigin(aoa_entity, AOA_CENTER);
     aoa_entity.think = aoa_think;
     aoa_entity.nextthink = time + 0.1;
-    aoa_entity.avelocity = '0 15 0';
+    aoa_entity.screwm_spin_y = 15;
     setmodel(aoa_entity, "progs/aoa.mdl");
 };
 

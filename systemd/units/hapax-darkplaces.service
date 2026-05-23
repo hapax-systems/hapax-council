@@ -1,21 +1,26 @@
 [Unit]
 Description=Hapax DarkPlaces — Screwm tower Quake renderer
-After=hapax-secrets.service
-Requires=hapax-secrets.service
+After=graphical-session.target
 PartOf=hapax-visual-stack.target
+# Runtime containment, 2026-05-23: the host hard-reset after GL renderer
+# activation with AMD "data fabric sync flood" evidence. Keep DarkPlaces
+# opt-in until the renderer feed is validated in a controlled session.
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 
 [Service]
 Type=simple
-ExecStartPre=/bin/bash -c 'mkdir -p %h/.darkplaces/id1 %h/.darkplaces/screwm/maps && cp %h/projects/hapax-council/assets/quake/maps/screwm.bsp %h/.darkplaces/screwm/maps/ 2>/dev/null; cp %h/projects/hapax-council/assets/quake/maps/screwm.lit %h/.darkplaces/screwm/maps/ 2>/dev/null; test -f %h/projects/hapax-council/assets/quake/qc/progs.dat && cp %h/projects/hapax-council/assets/quake/qc/progs.dat %h/.darkplaces/screwm/ || true'
-ExecStart=/usr/bin/obs-glcapture /usr/bin/darkplaces-sdl -game screwm -window -width 1920 -height 1080 +map screwm +crosshair 0 +r_drawviewmodel 0 +cl_bob 0 +sbar_alpha 0 +sv_cheats 1 +gl_texturemode GL_NEAREST +r_fog 1 +cl_maxfps 60 +showfps 0 +scr_showturtle 0
+ExecStartPre=%h/projects/hapax-council/scripts/install-darkplaces-screwm-assets.sh
+ExecStart=%h/projects/hapax-council/scripts/darkplaces-capture.sh
 Restart=always
 RestartSec=3
 MemoryMax=2G
+Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52
 Environment=XDG_RUNTIME_DIR=%t
 Environment=WAYLAND_DISPLAY=wayland-1
 Environment=DISPLAY=:0
 Environment=__NV_DISABLE_EXPLICIT_SYNC=1
-# Pin to GPU 1 (5060 Ti) to avoid VRAM contention with TabbyAPI on GPU 0
+# This only constrains CUDA-visible helper libraries. It does not reliably pin
+# DarkPlaces' OpenGL renderer; validate GL GPU selection before runtime enable.
 Environment=CUDA_VISIBLE_DEVICES=1
 Environment=__GLX_VENDOR_LIBRARY_NAME=nvidia
 # DarkPlaces VRAM usage is modest (~200-500MB) for a single BSP map.

@@ -84,7 +84,7 @@ void() camera_think =
     ang_z = 0;
     self.angles = ang;
 
-    self.nextthink = time + 0.033; // ~30fps
+    self.nextthink = time + 0.0139;
 };
 
 void() spawn_camera =

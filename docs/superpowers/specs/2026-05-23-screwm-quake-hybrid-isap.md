@@ -81,12 +81,12 @@ DarkPlaces dpextensions provide `fopen`/`fclose`/`fgets` for reading external fi
 │  ├─ QuakeC camera (pendulum path, stimmung-driven)       │
 │  ├─ QuakeC cognitive coupling (/dev/shm reader)          │
 │  ├─ GLSL post-processing (39 ported shader nodes)        │
-│  └─ Output: window → v4l2loopback /dev/video70           │
+│  └─ Output: window → v4l2loopback /dev/video52           │
 └────────────────────────┬────────────────────────────────┘
                          │
 ┌────────────────────────┴────────────────────────────────┐
 │ GStreamer Compositor (preserved, enhanced)               │
-│  ├─ DarkPlaces /dev/video70 as PRIMARY background        │
+│  ├─ DarkPlaces /dev/video52 as PRIMARY background        │
 │  ├─ 35 Cairo wards (BitchX/Enlightenment/Quake homage)  │
 │  ├─ 11 temporal shader effects (feedback, echo, diff,    │
 │  │   stutter, slitscan — require frame history)          │
@@ -254,20 +254,23 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - `scripts/generate-aoa-mdl.py`
 - `assets/quake/models/aoa.mdl`
 
-### D6: v4l2loopback Capture [COMPLETE]
-- `/etc/modprobe.d/v4l2loopback-hapax.conf` updated (devices=9, video70=DarkPlaces)
+### D6: v4l2loopback Capture [IN PROGRESS]
+- `/etc/modprobe.d/v4l2loopback-hapax.conf` updated (video52=DarkPlaces in the unified 14-device config)
 - `scripts/darkplaces-capture.sh`
+- `scripts/darkplaces-v4l2-xvfb.sh` for OBS-free headless capture
 - Activation requires module reload
 
-### D7: Compositor Source Integration
-- Interpipe producer for /dev/video70 source
+### D7: Compositor Source Integration [IN PROGRESS]
+- Interpipe producer for /dev/video52 source
 - Layout JSON update: DarkPlaces as background layer
 - Fallback path if DarkPlaces unavailable
 
-### D8: hapax-darkplaces Systemd Unit [COMPLETE]
+### D8: hapax-darkplaces Systemd Unit [IN PROGRESS]
 - `systemd/units/hapax-darkplaces.service`
-- GPU: 5060 Ti (CUDA_VISIBLE_DEVICES=1)
-- WatchdogSec=60, Restart=always
+- Runtime opt-in gated after 2026-05-23 AMD data-fabric reset evidence
+- GPU selection requires validation: `CUDA_VISIBLE_DEVICES` does not pin OpenGL
+- `hapax-darkplaces-v4l2.service` headless feed option
+- Restart=always
 
 ### D9: QuakeHomage Package
 - `agents/studio_compositor/homage/quake.py`
@@ -302,7 +305,7 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - source: `agents/studio_compositor/` (compositor integration, QuakeHomage)
 - source: `shared/homage_package.py` (registry update)
 - source: `systemd/units/` (hapax-darkplaces.service)
-- runtime: v4l2loopback device /dev/video70
+- runtime: v4l2loopback device /dev/video52
 - runtime: GPU VRAM ~200-500MB on 5060 Ti
 - retirement: hapax-imagination.service (Phase 6)
 
@@ -331,7 +334,7 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 ## 14. Evidence Gates
 
 - [ ] DarkPlaces renders tower BSP with textures at 1280×720
-- [ ] v4l2loopback /dev/video70 captures DarkPlaces output
+- [ ] v4l2loopback /dev/video52 captures DarkPlaces output
 - [ ] Compositor accepts DarkPlaces as background source with wards overlay
 - [ ] QuakeC pendulum camera traverses tower smoothly (120-150s period)
 - [ ] AoA Sierpinski tetrahedron visible and rotating at tower center
