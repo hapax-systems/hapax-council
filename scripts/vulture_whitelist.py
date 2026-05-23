@@ -3912,7 +3912,7 @@ write_aperture_snapshot
 
 # FastAPI route handlers: registered via @router.get/post decorators, not direct calls.
 from logos.api.routes.claims import get_triaged_claims
-from logos.api.routes.grounding import get_progress, get_claims, get_timeline
+from logos.api.routes.grounding import get_claims, get_progress, get_timeline
 
 get_triaged_claims
 get_progress
