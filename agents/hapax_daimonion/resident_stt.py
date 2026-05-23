@@ -112,7 +112,7 @@ class ResidentSTT:
                 language="en",  # skip language detection (saves ~50ms)
                 beam_size=5,
                 vad_filter=False,  # we already did VAD
-                without_timestamps=True,
+                word_timestamps=True,
                 # Whisper treats initial_prompt as "preceding transcript" and
                 # conditions on its style/vocabulary. Realistic example sentences
                 # with "Hapax" bias the decoder toward the word — keyword lists
@@ -126,7 +126,15 @@ class ResidentSTT:
                 ),
             )
 
-            text = " ".join(seg.text for seg in segments).strip()
+            all_words: list[dict] = []
+            text_parts: list[str] = []
+            for seg in segments:
+                text_parts.append(seg.text)
+                if seg.words:
+                    for w in seg.words:
+                        all_words.append({"word": w.word, "start": w.start, "end": w.end})
+
+            text = " ".join(text_parts).strip()
             if text:
                 _level = log.debug if speculative else log.info
                 _level(
@@ -135,8 +143,23 @@ class ResidentSTT:
                     len(audio) / sample_rate,
                     info.language,
                 )
+
+                if not speculative:
+                    self._extract_prosody(audio, sample_rate, all_words)
+
             return text
 
         except Exception:
             log.exception("STT transcription failed")
             return ""
+
+    @staticmethod
+    def _extract_prosody(audio: np.ndarray, sample_rate: int, word_timestamps: list[dict]) -> None:
+        """Extract and publish prosodic features (best-effort, never blocks)."""
+        try:
+            from shared.prosody import extract_prosody, write_prosody
+
+            features = extract_prosody(audio, sample_rate, word_timestamps)
+            write_prosody(features)
+        except Exception:
+            log.debug("Prosody extraction failed (non-fatal)", exc_info=True)
