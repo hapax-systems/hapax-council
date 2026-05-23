@@ -20,8 +20,7 @@ void() spawn_aoa =
     aoa_entity.think = aoa_think;
     aoa_entity.nextthink = time + 0.1;
     aoa_entity.avelocity = '0 15 0';
-    // Model set via setmodel if MDL available
-    // setmodel(aoa_entity, "progs/aoa.mdl");
+    setmodel(aoa_entity, "progs/aoa.mdl");
 };
 
 void() spawn_ambient_sounds =
@@ -70,8 +69,7 @@ void() SetChangeParms = {};
 
 void() worldspawn =
 {
-    // Precache models
-    // precache_model("progs/aoa.mdl");
+    precache_model("progs/aoa.mdl");
 
     // Precache sounds
     // precache_sound("ambient/perception_rumble.ogg");
