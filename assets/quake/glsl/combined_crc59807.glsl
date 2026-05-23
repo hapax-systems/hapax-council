@@ -305,8 +305,8 @@ uniform mediump vec4 ViewTintColor;
 //uncomment these if you want to use them:
 uniform mediump vec4 UserVec1;
 uniform mediump vec4 UserVec2;
-// uniform mediump vec4 UserVec3;
-// uniform mediump vec4 UserVec4;
+uniform mediump vec4 UserVec3;
+uniform mediump vec4 UserVec4;
 uniform mediump float ColorFringe;
 uniform highp float ClientTime;
 uniform mediump vec2 PixelSize;
@@ -375,9 +375,11 @@ void main(void)
 #endif
 
 #ifdef USEPOSTPROCESSING
-// Screwm Tower post-processing — 10 effects in single pass
+// Screwm Tower post-processing — 19 effects in single pass
 // UserVec1: x=vignette, y=chroma_aberration, z=color_temp, w=grain
-// UserVec2: x=scanlines, y=edge_glow, z=posterize_levels, w=breathing
+// UserVec2: x=scanlines, y=edge_glow, z=posterize_levels, w=unused
+// UserVec3: x=fisheye, y=noise_overlay, z=halftone_size, w=threshold
+// UserVec4: x=emboss, y=invert_mix, z=circular_mask_r, w=thermal_mix
 #if defined(USERVEC1) || defined(USERVEC2)
 	vec2 uv = TexCoord1.xy;
 	vec2 px = PixelSize;
@@ -454,10 +456,82 @@ void main(void)
 	else bayer = fract(float(dx * 3 + dy * 7) * 0.0625);
 	color += vec3((bayer - 0.5) * dither_str);
 
-	// 10. Contrast boost
+	// 10. Fisheye lens distortion
+	float fisheye = UserVec3.x;
+	if (abs(fisheye) > 0.001) {
+		vec2 fc = uv - vec2(0.5);
+		float r2 = dot(fc, fc);
+		vec2 distorted = fc * (1.0 + fisheye * r2) + vec2(0.5);
+		color = dp_texture2D(Texture_First, clamp(distorted, vec2(0.0), vec2(1.0))).rgb;
+	}
+
+	// 11. Animated noise overlay
+	float noise_str = UserVec3.y;
+	if (noise_str > 0.001) {
+		float n = fract(sin(dot(uv + fract(ClientTime * 0.1), vec2(12.9898, 78.233))) * 43758.5453);
+		float n2 = fract(sin(dot(uv * 1.7 + fract(ClientTime * 0.07), vec2(93.989, 67.345))) * 23456.789);
+		float noise_val = mix(n, n2, 0.5) * 2.0 - 1.0;
+		color += vec3(noise_val * noise_str);
+	}
+
+	// 12. Halftone dot pattern
+	float ht_size = UserVec3.z;
+	if (ht_size > 1.0) {
+		vec2 cell = floor(gl_FragCoord.xy / ht_size);
+		vec2 cell_center = (cell + vec2(0.5)) * ht_size;
+		float cell_dist = length(gl_FragCoord.xy - cell_center) / (ht_size * 0.5);
+		float lum = dot(color, vec3(0.299, 0.587, 0.114));
+		float dot_mask = step(cell_dist, lum);
+		color = mix(color * 0.3, color, dot_mask);
+	}
+
+	// 13. Threshold / monochrome
+	float thresh = UserVec3.w;
+	if (thresh > 0.001) {
+		float lum = dot(color, vec3(0.299, 0.587, 0.114));
+		vec3 mono = vec3(smoothstep(thresh - 0.05, thresh + 0.05, lum));
+		color = mix(color, mono, thresh);
+	}
+
+	// 14. Emboss
+	float emboss_str = UserVec4.x;
+	if (emboss_str > 0.001) {
+		vec3 em_tl = dp_texture2D(Texture_First, uv + vec2(-px.x, -px.y)).rgb;
+		vec3 em_br = dp_texture2D(Texture_First, uv + vec2(px.x, px.y)).rgb;
+		vec3 emboss = (em_br - em_tl) + vec3(0.5);
+		color = mix(color, emboss * color * 2.0, emboss_str);
+	}
+
+	// 15. Invert mix
+	float inv_mix = UserVec4.y;
+	if (inv_mix > 0.001) {
+		color = mix(color, vec3(1.0) - color, inv_mix);
+	}
+
+	// 16. Circular mask
+	float mask_r = UserVec4.z;
+	if (mask_r > 0.01 && mask_r < 1.0) {
+		float mask_dist = distance(uv, vec2(0.5));
+		float mask = smoothstep(mask_r, mask_r + 0.05, mask_dist);
+		color *= 1.0 - mask;
+	}
+
+	// 17. Thermal vision
+	float thermal_mix = UserVec4.w;
+	if (thermal_mix > 0.001) {
+		float lum = dot(color, vec3(0.299, 0.587, 0.114));
+		vec3 thermal;
+		if (lum < 0.25) thermal = mix(vec3(0.0, 0.0, 0.2), vec3(0.0, 0.0, 1.0), lum * 4.0);
+		else if (lum < 0.5) thermal = mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), (lum - 0.25) * 4.0);
+		else if (lum < 0.75) thermal = mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0), (lum - 0.5) * 4.0);
+		else thermal = mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), (lum - 0.75) * 4.0);
+		color = mix(color, thermal, thermal_mix);
+	}
+
+	// 18. Contrast boost
 	color = (color - 0.5) * 1.10 + 0.5;
 
-	// 11. Clamp
+	// 19. Clamp
 	color = max(color, vec3(0.0));
 
 	dp_FragColor.rgb = color;
