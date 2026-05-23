@@ -2,40 +2,19 @@
 
 --- Options Summary ---
 
-Input file: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map
-Output file: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.bsp
+Input file: /home/hapax/projects/hapax-council/assets/quake/maps/screwm.map
+Output file: /home/hapax/projects/hapax-council/assets/quake/maps/screwm.bsp
 
 INFO: using built-in palette.
-addArchive: WARNING: archive '/home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.wad' not found
-addArchive: WARNING: archive 'screwm.wad' not found
-WARNING: No valid WAD filenames in worldmodel
-      9 entities
-      5 unique textures
-     13 texinfos
-    104 unique planes
+WARNING: No wad or _wad key exists in the worldmodel
+     8 entities
+     5 unique textures
+    13 texinfos
+    72 unique planes
 
-INFO: world extents calculated to 1032 units
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 10]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 10]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 10]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 18]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 18]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 18]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 90]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 90]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 90]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 98]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 98]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 98]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 106]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 106]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 106]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 114]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 114]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 114]: no visible sides on brush
-    14 brushes
-    84 sides
-    24 side bevels
+INFO: world extents calculated to 1064 units
+    10 brushes
+    60 sides
 
             0 texture frames added
 WARNING: unable to find texture skip
@@ -44,80 +23,84 @@ WARNING: unable to find texture sky4
 WARNING: unable to find texture city4_2
 WARNING: unable to find texture metal5_2
 Processing hull 0...
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 10]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 18]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 90]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 98]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 106]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 114]: no visible sides on brush
-    8 SOLID brushes
-    8 brushes total
-    48 visible sides
-INFO: calculating BSP for 8 brushes with 48 sides
-     8 brushes
-    48 visible faces
-    25 nodes
-    25 expensive split nodes
-    26 leaves
-     8 SOLID leafs
-    18 EMPTY leafs
-    26 leafs total
-    8 max tree height
-    7 avg tree height
-    106 tree portals
-WARNING: Reached occupant "light" at (-80 328 -58), no filling performed.
-Leak file written to /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.pts
-            1 portals written to /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.leak.prt
-    106 tree portals
-    64 sides visible
-    32 makefaces
-    32 subdivided
-     8 SOLID leafs
-    18 EMPTY leafs
-    26 leafs total
-    8 max tree height
-    7 avg tree height
-     32 edges added by tjunctions
-     64 faces optimized through MWT
-    160 triangles computed from MWT
-    144 edges
-     64 faces
+     1 SKY brushes
+     9 SOLID brushes
+    10 brushes total
+    60 visible sides
+INFO: calculating BSP for 10 brushes with 60 sides
+    10 brushes
+    60 visible faces
+    52 nodes
+    52 expensive split nodes
+    53 leaves
+    17 SOLID leafs
+     1 SKY leafs
+    35 EMPTY leafs
+    53 leafs total
+    17 max tree height
+    11 avg tree height
+    256 tree portals
+    14 outside leaves
+    0 detail filled leafs
+    10 brushes
+    30 visible faces
+    30 non-visible faces
+    64 nodes
+    26 non-visible nodes
+    64 expensive split nodes
+    65 leaves
+    17 SOLID leafs
+     1 SKY leafs
+    47 EMPTY leafs
+    65 leafs total
+    13 max tree height
+     8 avg tree height
+    300 tree portals
+    26 outside leaves
+    0 detail filled leafs
+    300 tree portals
+    146 sides visible
+    90 makefaces
+    55 merged
+    42 subdivided
+    25 nodes pruned
+    22 player-occupiable leaves
+    22 clusters of leaves
+    55 vis portals
+    21 EMPTY leafs
+     1 SKY leafs
+    18 SOLID leafs
+    40 leafs total
+    13 max tree height
+     8 avg tree height
+     26 edges added by tjunctions
+     76 faces optimized through MWT
+    178 triangles computed from MWT
+      6 faces created via optimization of MWT triangles
+    171 edges
+     82 faces
 Processing hull 1...
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 10]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 18]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 90]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 98]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 106]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 114]: no visible sides on brush
-WARNING: Reached occupant "light" at (-80 208 58), no filling performed.
 Processing hull 2...
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 10]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 18]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 90]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 98]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 106]: no visible sides on brush
-WARNING: /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.map[line 114]: no visible sides on brush
-WARNING: Reached occupant "light" at (30 88 94), no filling performed.
-Writing /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.bsp as Quake BSP bsp29
-Wrote /home/hapax/projects/hapax-council/assets/quake/maps/../../../assets/quake/maps/screwm.bsp
+Writing /home/hapax/projects/hapax-council/assets/quake/maps/screwm.bsp as Quake BSP bsp29
+Wrote /home/hapax/projects/hapax-council/assets/quake/maps/screwm.bsp
 
 count   lump name    byte size 
       1 models               64
-     94 planes             1880
-     80 vertexes            960
-     25 nodes               600
-      3 texinfos            120
-     64 faces              1280
-    228 clipnodes          1824
-     19 leafs               532
-     64 marksurfaces        128
-    145 edges               580
-    288 surfedges          1152
+     82 planes             1640
+     99 vertexes           1188
+     39 nodes               936
+      7 texinfos            280
+     82 faces              1640
+     76 clipnodes           608
+     23 leafs               644
+    218 marksurfaces        436
+    172 edges               688
+    342 surfedges          1368
       5 textures             24
         lightdata             0
         visdata               0
-        entdata             748
+        entdata             653
 
-0.004s seconds elapsed
+0.008s seconds elapsed
 
 

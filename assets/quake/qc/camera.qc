@@ -69,16 +69,19 @@ void() camera_think =
     vector pos = spline_position(smooth);
     setorigin(self, pos);
 
-    // Look toward AoA center using makevectors approach
+    // Look toward AoA center
+    // Map uses Y-up. vectoyaw derives yaw from x,y horizontal plane.
+    // Pitch derived from vertical (y) vs horizontal distance (x,z).
     vector look_dir = AOA_CENTER - pos;
     vector ang;
     ang_y = vectoyaw(look_dir);
-    // Pitch: vertical angle toward target (positive = down in Quake)
-    float hdist = sqrt(look_dir_x * look_dir_x + look_dir_y * look_dir_y);
+    float hdist = sqrt(look_dir_x * look_dir_x + look_dir_z * look_dir_z);
     if (hdist > 0.01)
-        ang_x = 0 - (look_dir_z / hdist) * 45.0; // approximate pitch
+        ang_x = 0 - (look_dir_y / hdist) * 45.0;
+    else if (look_dir_y > 0)
+        ang_x = -89;
     else
-        ang_x = 0;
+        ang_x = 89;
     ang_z = 0;
     self.angles = ang;
 
