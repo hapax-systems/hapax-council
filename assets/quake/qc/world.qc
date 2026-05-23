@@ -25,31 +25,32 @@ void() spawn_aoa =
 
 void() spawn_ambient_sounds =
 {
-    // Perception level (y -64 to 32)
-    entity snd = spawn();
-    snd.classname = "ambient_perception";
-    setorigin(snd, '0 -16 0');
-    // sound(snd, 1, "ambient/perception_rumble.ogg", 0.6, 3);
+    entity snd;
 
-    // Cognition level (y 32 to 128)
+    snd = spawn();
+    snd.classname = "ambient_perception";
+    setorigin(snd, '0 0 -16');
+    sound(snd, 1, "ambient/perception.ogg", 0.5, 0);
+
     snd = spawn();
     snd.classname = "ambient_cognition";
-    setorigin(snd, '0 80 0');
+    setorigin(snd, '0 0 80');
+    sound(snd, 1, "ambient/cognition.ogg", 0.4, 0);
 
-    // Communication level (y 128 to 224)
     snd = spawn();
     snd.classname = "ambient_communication";
-    setorigin(snd, '0 176 0');
+    setorigin(snd, '0 0 176');
+    sound(snd, 1, "ambient/communication.ogg", 0.35, 0);
 
-    // Expression level (y 224 to 320)
     snd = spawn();
     snd.classname = "ambient_expression";
-    setorigin(snd, '0 272 0');
+    setorigin(snd, '0 0 272');
+    sound(snd, 1, "ambient/expression.ogg", 0.3, 0);
 
-    // Grounding level (y 320 to 416)
     snd = spawn();
     snd.classname = "ambient_grounding";
-    setorigin(snd, '0 368 0');
+    setorigin(snd, '0 0 368');
+    sound(snd, 1, "ambient/grounding.ogg", 0.45, 0);
 };
 
 void() StartFrame =
@@ -74,12 +75,11 @@ void() worldspawn =
 {
     precache_model("progs/aoa.mdl");
 
-    // Precache sounds
-    // precache_sound("ambient/perception_rumble.ogg");
-    // precache_sound("ambient/cognition_clicks.ogg");
-    // precache_sound("ambient/communication_static.ogg");
-    // precache_sound("ambient/expression_synth.ogg");
-    // precache_sound("ambient/grounding_drone.ogg");
+    precache_sound("ambient/perception.ogg");
+    precache_sound("ambient/cognition.ogg");
+    precache_sound("ambient/communication.ogg");
+    precache_sound("ambient/expression.ogg");
+    precache_sound("ambient/grounding.ogg");
 
     coupling_init();
     spawn_camera();
