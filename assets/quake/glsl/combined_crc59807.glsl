@@ -380,7 +380,7 @@ void main(void)
 // UserVec2: x=scanlines, y=edge_glow, z=posterize_levels, w=unused
 // UserVec3: x=fisheye, y=noise_overlay, z=halftone_size, w=threshold
 // UserVec4: x=emboss, y=invert_mix, z=circular_mask_r, w=thermal_mix
-#if defined(USERVEC1) || defined(USERVEC2)
+// Effects run unconditionally — UserVec uniforms always available
 	vec2 uv = TexCoord1.xy;
 	vec2 px = PixelSize;
 
@@ -632,7 +632,7 @@ void main(void)
 	color = max(color, vec3(0.0));
 
 	dp_FragColor.rgb = color;
-#endif
+// (removed #endif for USERVEC guard — effects now unconditional)
 #endif
 
 #ifdef USEBLOOM
