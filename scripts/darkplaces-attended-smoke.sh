@@ -127,6 +127,10 @@ resolve_expected_gl_renderer() {
 
 EXPECTED_GL_RENDERER_RESOLVED="$(resolve_expected_gl_renderer || true)"
 
+extract_glxinfo_renderer() {
+    awk -F': ' '/OpenGL renderer string/ { print $2; found=1; exit } END { if (!found) exit 1 }'
+}
+
 collect_static_evidence() {
     log "collecting static GPU and kernel evidence into $OUT_DIR"
     {
@@ -154,6 +158,15 @@ collect_static_evidence() {
     if command -v xrandr >/dev/null 2>&1; then
         capture xrandr-providers.txt xrandr --listproviders
     fi
+    if command -v glxinfo >/dev/null 2>&1; then
+        capture glxinfo-default.txt glxinfo -B
+        capture glxinfo-dri-prime-1.txt env DRI_PRIME=1 glxinfo -B
+        capture glxinfo-nvidia-offload.txt env __NV_PRIME_RENDER_OFFLOAD=1 \
+            __GLX_VENDOR_LIBRARY_NAME=nvidia glxinfo -B
+    fi
+    if command -v eglinfo >/dev/null 2>&1; then
+        capture eglinfo-brief.txt eglinfo -B
+    fi
     capture recent-kernel-gpu.txt bash -lc "journalctl -b -k --since '30 min ago' --no-pager | rg -i '$kernel_filter' -C 2 || true"
 }
 
@@ -168,6 +181,28 @@ contained after the 2026-05-23 AMD data-fabric sync-flood reset.
 EOF
         exit 78
     fi
+}
+
+validate_gl_preflight() {
+    local observed
+    if [ -z "$EXPECTED_GL_RENDERER_RESOLVED" ]; then
+        log "GL preflight skipped: no expected renderer resolved"
+        return 0
+    fi
+    if ! command -v glxinfo >/dev/null 2>&1; then
+        log "GL preflight failed: glxinfo unavailable"
+        return 4
+    fi
+    observed="$(glxinfo -B 2>/dev/null | extract_glxinfo_renderer || true)"
+    if [ -z "$observed" ]; then
+        log "GL preflight failed: glxinfo did not report OpenGL renderer"
+        return 4
+    fi
+    if [[ "$observed" != *"$EXPECTED_GL_RENDERER_RESOLVED"* ]]; then
+        log "GL preflight failed: display OpenGL renderer '$observed' does not match expected '$EXPECTED_GL_RENDERER_RESOLVED'"
+        return 4
+    fi
+    log "GL preflight passed: $observed"
 }
 
 validate_darkplaces_renderer() {
@@ -229,6 +264,7 @@ run_launch_smoke() {
     local launch_log="$OUT_DIR/darkplaces-launch.log"
     shift
     require_launch_ack
+    validate_gl_preflight
     log "launching ${command_desc} for ${DURATION_S}s"
     {
         printf '$'

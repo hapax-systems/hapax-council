@@ -259,8 +259,8 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - `scripts/darkplaces-capture.sh`
 - `scripts/darkplaces-v4l2-xvfb.sh` for OBS-free headless capture
 - `scripts/darkplaces-attended-smoke.sh` for bounded topology/evidence capture
-  before runtime reactivation, including `GL_RENDERER` assertion against the
-  expected GPU
+  before runtime reactivation, including `glxinfo` preflight and DarkPlaces
+  `GL_RENDERER` assertion against the expected GPU
 - Activation requires module reload
 
 ### D7: Compositor Source Integration [IN PROGRESS]
@@ -272,6 +272,8 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - `systemd/units/hapax-darkplaces.service`
 - Runtime opt-in gated after 2026-05-23 AMD data-fabric reset evidence
 - GPU selection requires validation: `CUDA_VISIBLE_DEVICES` does not pin OpenGL
+- Current `:0` GL preflight reports RTX 5090; `DRI_PRIME=1` and NVIDIA offload
+  envs did not switch it on this host during containment testing.
 - `hapax-darkplaces-v4l2.service` headless feed option
 - Launch validation requires `HAPAX_DARKPLACES_SMOKE_ACK=1` and an attended
   run of `scripts/darkplaces-attended-smoke.sh`; the default expected GPU index

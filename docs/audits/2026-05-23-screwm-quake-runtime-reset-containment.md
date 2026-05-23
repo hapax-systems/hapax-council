@@ -54,6 +54,11 @@ Therefore the intended CUDA pin did not constrain the OpenGL renderer. The
 renderer ran on the display/GL-selected 5090, not necessarily the planned
 5060 Ti partition.
 
+Post-containment `glxinfo -B` evidence on `:0` also reports the RTX 5090 as the
+default OpenGL renderer. `DRI_PRIME=1` and the usual NVIDIA PRIME offload
+environment did not change the reported renderer on this host, so a DarkPlaces
+launch on the current display path is not yet validated for the intended GPU.
+
 ## Containment Decision
 
 DarkPlaces runtime is opt-in only until a governed hardware-validation session
@@ -72,7 +77,9 @@ Applied containment:
 - Added `scripts/darkplaces-attended-smoke.sh` so the next validation pass has a
   bounded, evidence-producing read-only mode plus explicitly acknowledged
   window/v4l2 launch modes. Launch modes capture DarkPlaces stdout/stderr and
-  fail closed unless `GL_RENDERER` matches the expected GPU name.
+  fail closed before launch if `glxinfo` already reports the wrong display GL
+  renderer, and after launch unless DarkPlaces' own `GL_RENDERER` matches the
+  expected GPU name.
 - Left the production stream on the known-good `hapax-imagination` -> `/dev/video42`
   path.
 - Re-enabled `hapax-imagination.service` for boot continuity after confirming it
