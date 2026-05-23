@@ -211,18 +211,18 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
         n = vec3<f32>(nx_w, 0.0, nz_w);
     } else if quad_idx >= 9u && quad_idx <= 12u {
         // Spiral ramp segments — wide ramp hugging the wall, center void open.
-        // Each segment covers 90° of arc and rises one level (3 units).
+        // Each segment covers 180° of arc and rises one level (3 units) — gentle slope.
         let seg = quad_idx - 9u;
         let ramp_inner = 2.5;
         let ramp_outer = tower_r - 0.3;
         let y_base = array<f32, 4>(-2.0, 1.0, 4.0, 7.0);
         let y_rise = 3.0;
-        let angle_start = f32(seg) * AOA_PI * 0.5;
+        let angle_start = f32(seg) * AOA_PI;
 
         // lp.x [-1,1] maps along the arc (angle), lp.y [-1,1] maps radially
         let frac_angle = (lp.x + 1.0) * 0.5;
         let frac_radius = (lp.y + 1.0) * 0.5;
-        let angle = angle_start + frac_angle * AOA_PI * 0.5;
+        let angle = angle_start + frac_angle * AOA_PI;
         let r = mix(ramp_inner, ramp_outer, frac_radius);
         let y_ramp = y_base[seg] + frac_angle * y_rise;
 
