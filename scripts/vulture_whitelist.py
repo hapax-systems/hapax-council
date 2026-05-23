@@ -3909,3 +3909,12 @@ EvalReceiptV1._replayable_requires_artifacts_and_hashes
 from shared.aperture_state import write_aperture_snapshot
 
 write_aperture_snapshot
+
+# FastAPI route handlers: registered via @router.get/post decorators, not direct calls.
+from logos.api.routes.claims import get_triaged_claims
+from logos.api.routes.grounding import get_progress, get_claims, get_timeline
+
+get_triaged_claims
+get_progress
+get_claims
+get_timeline
