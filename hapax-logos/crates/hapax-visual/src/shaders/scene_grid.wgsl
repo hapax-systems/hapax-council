@@ -210,16 +210,16 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
         );
         n = vec3<f32>(nx_w, 0.0, nz_w);
     } else if quad_idx >= 9u && quad_idx <= 12u {
-        // Ramp shelves — flat horizontal platforms at the wall, stepping up.
-        // Each shelf spans 2 wall panels (90°) and sits at a level height.
+        // Ramp shelves — wide semicircular platforms at staggered heights.
+        // Each shelf covers 180° (half the octagon) for maximum visibility.
         let seg = quad_idx - 9u;
-        let shelf_y = array<f32, 4>(0.0, 3.0, 6.0, 9.0);
-        let shelf_angle = f32(seg) * AOA_PI * 0.5; // 0°, 90°, 180°, 270°
+        let shelf_y = array<f32, 4>(0.5, 3.5, 6.5, 9.5);
+        let shelf_angle = f32(seg) * AOA_PI * 0.5;
 
-        // Shelf is a rectangle: tangent direction × radial direction
-        let ramp_width = 3.5;  // along the wall (tangent)
-        let ramp_depth = 3.0;  // from wall toward center (radial)
-        let wall_dist = tower_r - 0.5;  // outer edge near wall
+        // Wide shelf spanning 3 wall panels worth of width
+        let ramp_width = 7.0;
+        let ramp_depth = 3.5;
+        let wall_dist = tower_r - 0.3;
 
         let tang_x = -sin(shelf_angle);
         let tang_z = cos(shelf_angle);
@@ -229,8 +229,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
         let center_x = norm_x * (wall_dist - ramp_depth * 0.5);
         let center_z = norm_z * (wall_dist - ramp_depth * 0.5);
 
-        // Slight tilt: rises 0.5 units along tangent direction
-        let tilt = lp.x * 0.25;
+        let tilt = lp.x * 0.35;
 
         world = vec3<f32>(
             center_x + tang_x * lp.x * ramp_width * 0.5 + norm_x * lp.y * ramp_depth * 0.5,
