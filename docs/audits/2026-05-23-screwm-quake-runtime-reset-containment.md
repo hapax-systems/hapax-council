@@ -69,8 +69,13 @@ Applied containment:
   - `hapax-darkplaces-v4l2.service`
 - Added `scripts/darkplaces-runtime-guard.sh` and sourced it from direct launch
   scripts, so terminal invocation also requires explicit acknowledgement.
+- Added `scripts/darkplaces-attended-smoke.sh` so the next validation pass has a
+  bounded, evidence-producing read-only mode plus explicitly acknowledged
+  window/v4l2 launch modes.
 - Left the production stream on the known-good `hapax-imagination` -> `/dev/video42`
   path.
+- Re-enabled `hapax-imagination.service` for boot continuity after confirming it
+  is the sole writer to `/dev/video42`; DarkPlaces units remain disabled.
 
 ## Next Validation Requirements
 
@@ -81,6 +86,9 @@ Before re-enabling DarkPlaces runtime:
   `CUDA_VISIBLE_DEVICES` affects DarkPlaces.
 - Run an attended, bounded renderer smoke test with `nvidia-smi pmon`,
   `journalctl -k -f`, and power/temperature capture.
+- Use `scripts/darkplaces-attended-smoke.sh --collect-only` before any launch;
+  only run `--window` or `--v4l2` with `HAPAX_DARKPLACES_SMOKE_ACK=1` in an
+  attended validation window.
 - Keep `hapax-imagination` as the stream writer until `/dev/video52` is proven
   stable under DarkPlaces output.
 - Do not enable DarkPlaces units at boot until the reset cause is understood.

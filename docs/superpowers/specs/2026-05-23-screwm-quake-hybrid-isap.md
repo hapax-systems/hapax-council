@@ -258,6 +258,8 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - `/etc/modprobe.d/v4l2loopback-hapax.conf` updated (video52=DarkPlaces in the unified 14-device config)
 - `scripts/darkplaces-capture.sh`
 - `scripts/darkplaces-v4l2-xvfb.sh` for OBS-free headless capture
+- `scripts/darkplaces-attended-smoke.sh` for bounded topology/evidence capture
+  before runtime reactivation
 - Activation requires module reload
 
 ### D7: Compositor Source Integration [IN PROGRESS]
@@ -270,6 +272,8 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - Runtime opt-in gated after 2026-05-23 AMD data-fabric reset evidence
 - GPU selection requires validation: `CUDA_VISIBLE_DEVICES` does not pin OpenGL
 - `hapax-darkplaces-v4l2.service` headless feed option
+- Launch validation requires `HAPAX_DARKPLACES_SMOKE_ACK=1` and an attended
+  run of `scripts/darkplaces-attended-smoke.sh`
 - Restart=always
 
 ### D9: QuakeHomage Package
