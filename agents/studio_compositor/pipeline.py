@@ -35,6 +35,9 @@ def init_gstreamer() -> tuple[Any, Any]:
     return _GLib, _Gst
 
 
+DARKPLACES_V4L2_DEVICE = "/dev/video70"
+
+
 def _pin_black_background(comp_element: Any) -> None:
     """Prefer black compositor fill instead of checkerboard/transparent defaults."""
     try:
@@ -42,6 +45,69 @@ def _pin_black_background(comp_element: Any) -> None:
         log.info("compositor background material pinned: %s", BASE_COMPOSITOR_MATERIAL)
     except Exception:
         log.debug("compositor background property not supported", exc_info=True)
+
+
+def _add_darkplaces_background(
+    Gst: Any, pipeline: Any, comp_element: Any, width: int, height: int, fps: int
+) -> bool:
+    """Add DarkPlaces v4l2loopback as the compositor background layer.
+
+    Returns True if DarkPlaces source was successfully added, False otherwise.
+    Falls back to black background if /dev/video70 is not available.
+    """
+    if not os.path.exists(DARKPLACES_V4L2_DEVICE):
+        log.info("DarkPlaces device %s not found — using black background", DARKPLACES_V4L2_DEVICE)
+        return False
+
+    try:
+        src = Gst.ElementFactory.make("v4l2src", "darkplaces-src")
+        if src is None:
+            log.warning("v4l2src factory unavailable for DarkPlaces background")
+            return False
+
+        src.set_property("device", DARKPLACES_V4L2_DEVICE)
+        src.set_property("io-mode", 2)  # mmap
+
+        caps = Gst.ElementFactory.make("capsfilter", "darkplaces-caps")
+        caps.set_property(
+            "caps",
+            Gst.Caps.from_string(f"video/x-raw,width={width},height={height},framerate={fps}/1"),
+        )
+
+        convert = Gst.ElementFactory.make("videoconvert", "darkplaces-convert")
+        queue = Gst.ElementFactory.make("queue", "darkplaces-queue")
+        queue.set_property("leaky", 2)
+        queue.set_property("max-size-buffers", 2)
+
+        for el in (src, caps, convert, queue):
+            pipeline.add(el)
+
+        src.link(caps)
+        caps.link(convert)
+        convert.link(queue)
+
+        sink_pad = comp_element.request_pad_simple("sink_%u")
+        if sink_pad is None:
+            log.warning("Could not request compositor sink pad for DarkPlaces")
+            return False
+
+        sink_pad.set_property("xpos", 0)
+        sink_pad.set_property("ypos", 0)
+        sink_pad.set_property("width", width)
+        sink_pad.set_property("height", height)
+        sink_pad.set_property("zorder", 0)
+
+        src_pad = queue.get_static_pad("src")
+        if src_pad.link(sink_pad) != Gst.PadLinkReturn.OK:
+            log.warning("Failed to link DarkPlaces queue to compositor")
+            return False
+
+        log.info("DarkPlaces background source added from %s (zorder=0)", DARKPLACES_V4L2_DEVICE)
+        return True
+
+    except Exception:
+        log.warning("DarkPlaces background source setup failed", exc_info=True)
+        return False
 
 
 def _make_cudacompositor(Gst: Any) -> Any | None:
@@ -270,6 +336,16 @@ def build_pipeline(compositor: Any) -> Any:
     _add_render_stage_probe(Gst, comp_element, "src", "compositor_src")
 
     fps = compositor.config.framerate
+
+    # --- DarkPlaces Screwm background layer ---
+    _add_darkplaces_background(
+        Gst,
+        pipeline,
+        comp_element,
+        compositor.config.output_width,
+        compositor.config.output_height,
+        fps,
+    )
 
     # --- ALPHA PHASE 2: per-camera producer pipelines ---
     # Build all producer + fallback sub-pipelines before the composite camera
