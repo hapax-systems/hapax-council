@@ -6,17 +6,17 @@ LoadBSPFile: '/home/hapax/projects/hapax-council/assets/quake/maps/screwm-rnd.bs
 BSP is version Quake BSP bsp29
 INFO: using built-in palette.
 Loading extended texinfo flags from /home/hapax/projects/hapax-council/assets/quake/maps/screwm-rnd.texinfo.json...
-    22 leafs
-    22 clusters
-    55 portals
+    93 leafs
+    93 clusters
+   277 portals
 Calculating Base Vis:
 Calculating Full Vis:
 Expanding clusters...
-average leafs visible: 19
+average leafs visible: 77
 c_noclip: 0
-c_chains: 1721
-visdatasize:66  compressed from 66
+c_chains: 70967
+visdatasize:1066  compressed from 1116
 Writing /home/hapax/projects/hapax-council/assets/quake/maps/screwm-rnd.bsp as Quake BSP bsp29
-0.00s elapsed
+0.01s elapsed
 
 

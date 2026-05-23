@@ -10,7 +10,7 @@ ConvertTextures: WARNING: Texture  duplicated
 ConvertTextures: WARNING: Texture  duplicated
 Loading extended texinfo flags from /home/hapax/projects/hapax-council/assets/quake/maps/screwm-rnd.texinfo.json...
 Loading extended content flags from /home/hapax/projects/hapax-council/assets/quake/maps/screwm-rnd.content.json...
-8 entities read, 6 are lights.
+32 entities read, 30 are lights.
 .lit colored light output requested on command line.
 
 --- Options Summary ---
@@ -20,22 +20,46 @@ DecompressAllVis: invalid visofs for leaf 0
 Embree_TraceInit: Embree version: 4.4.1
 Embree_TraceInit: 
 	0 sky faces
-	82 solid faces
+	599 solid faces
 	0 filtered faces
 	0 shadow-casting skip faces
-SetupLights: 6 initial lights
-SetupLights: 6 after surface lights
-SetupLights: 6 after jittering
-Final count: 6 lights, 0 suns in use.
+SetupLights: 30 initial lights
+SetupLights: 30 after surface lights
+SetupLights: 30 after jittering
+WARNING: couldn't nudge light out of solid at 185 76 56
+WARNING: couldn't nudge light out of solid at 185 76 176
+WARNING: couldn't nudge light out of solid at 185 76 296
+WARNING: couldn't nudge light out of solid at 76 185 56
+WARNING: couldn't nudge light out of solid at 76 185 176
+WARNING: couldn't nudge light out of solid at 76 185 296
+WARNING: couldn't nudge light out of solid at -76 185 56
+WARNING: couldn't nudge light out of solid at -76 185 176
+WARNING: couldn't nudge light out of solid at -76 185 296
+WARNING: couldn't nudge light out of solid at -185 76 56
+WARNING: couldn't nudge light out of solid at -185 76 176
+WARNING: couldn't nudge light out of solid at -185 76 296
+WARNING: couldn't nudge light out of solid at -185 -76 56
+WARNING: couldn't nudge light out of solid at -185 -76 176
+WARNING: couldn't nudge light out of solid at -185 -76 296
+WARNING: couldn't nudge light out of solid at -76 -185 56
+WARNING: couldn't nudge light out of solid at -76 -185 176
+WARNING: couldn't nudge light out of solid at -76 -185 296
+WARNING: couldn't nudge light out of solid at 76 -185 56
+WARNING: couldn't nudge light out of solid at 76 -185 176
+WARNING: couldn't nudge light out of solid at 76 -185 296
+WARNING: couldn't nudge light out of solid at 185 -76 56
+WARNING: couldn't nudge light out of solid at 185 -76 176
+WARNING: couldn't nudge light out of solid at 185 -76 296
+Final count: 30 lights, 0 suns in use.
 0 surface light points in use.
 map uses color: true
-lightmap size (total): 32864
+lightmap size (total): 78576
 Lighting Completed.
 
 Writing /home/hapax/projects/hapax-council/assets/quake/maps/screwm-rnd.lit
 0 switchable light styles (32 max)
 Writing /home/hapax/projects/hapax-council/assets/quake/maps/screwm-rnd.bsp as Quake BSP bsp29
-0.004s seconds elapsed
+0.024s seconds elapsed
 0 empty lightmaps
 
 

@@ -105,6 +105,103 @@ def sealed_room(preset):
     return [b for b in brushes if b]
 
 
+def pillar_columns(preset):
+    """8 pillars along walls at 45° intervals — Tower of Babel columns."""
+    brushes = []
+    wt = preset["wall_tex"]
+    pillar_size = 24
+    for i in range(8):
+        angle = i * (math.pi / 4) + math.pi / 8
+        px = int((TR - 32) * math.cos(angle))
+        py = int((TR - 32) * math.sin(angle))
+        b = box_brush(
+            px - pillar_size,
+            py - pillar_size,
+            FLOOR_Z,
+            px + pillar_size,
+            py + pillar_size,
+            CEIL_Z,
+            wt,
+        )
+        if b:
+            brushes.append(b)
+    return brushes
+
+
+def level_ledges(preset):
+    """Stepped ledges at each level boundary — architectural strata."""
+    brushes = []
+    rt = preset["ramp_tex"]
+    ledge_depth = 32
+    ledge_height = 12
+
+    for level in range(5):
+        frac = level / 4
+        z = FLOOR_Z + int((CEIL_Z - FLOOR_Z) * frac)
+        # Ledge on each wall (4 walls = 4 ledges per level)
+        for wall in range(4):
+            if wall == 0:
+                b = box_brush(
+                    -EXT + WALL_THICK,
+                    -EXT + WALL_THICK,
+                    z,
+                    EXT - WALL_THICK,
+                    -EXT + WALL_THICK + ledge_depth,
+                    z + ledge_height,
+                    rt,
+                )
+            elif wall == 1:
+                b = box_brush(
+                    EXT - WALL_THICK - ledge_depth,
+                    -EXT + WALL_THICK,
+                    z,
+                    EXT - WALL_THICK,
+                    EXT - WALL_THICK,
+                    z + ledge_height,
+                    rt,
+                )
+            elif wall == 2:
+                b = box_brush(
+                    -EXT + WALL_THICK,
+                    EXT - WALL_THICK - ledge_depth,
+                    z,
+                    EXT - WALL_THICK,
+                    EXT - WALL_THICK,
+                    z + ledge_height,
+                    rt,
+                )
+            else:
+                b = box_brush(
+                    -EXT + WALL_THICK,
+                    -EXT + WALL_THICK,
+                    z,
+                    -EXT + WALL_THICK + ledge_depth,
+                    EXT - WALL_THICK,
+                    z + ledge_height,
+                    rt,
+                )
+            if b:
+                brushes.append(b)
+    return brushes
+
+
+def central_pedestal(preset):
+    """Low pedestal at tower center for AoA to float above."""
+    rt = preset["ramp_tex"]
+    pedestal_size = 48
+    pedestal_height = 16
+    b = box_brush(
+        -pedestal_size,
+        -pedestal_size,
+        FLOOR_Z,
+        pedestal_size,
+        pedestal_size,
+        FLOOR_Z + pedestal_height,
+        rt,
+    )
+    return [b] if b else []
+
+
 def ramp_shelves(preset):
     brushes = []
     ramp_w = 96
@@ -124,6 +221,7 @@ def ramp_shelves(preset):
 
 def lights(preset):
     entities = []
+    # Central lights at each level (near AoA axis)
     for i in range(5):
         frac = i / 4
         z = min(FLOOR_Z + int((CEIL_Z - FLOOR_Z) * frac) + 32, CEIL_Z - 16)
@@ -139,12 +237,33 @@ def lights(preset):
             f'"_color" "{r} {g} {b}"\n'
             "}"
         )
+
+    # Wall-mounted lights at each pillar (8 pillars × 3 vertical positions)
+    for pillar in range(8):
+        angle = pillar * (math.pi / 4) + math.pi / 8
+        px = int((TR - 48) * math.cos(angle))
+        py = int((TR - 48) * math.sin(angle))
+        for level in range(3):
+            frac = (level + 1) / 4
+            z = FLOOR_Z + int((CEIL_Z - FLOOR_Z) * frac)
+            light_idx = min(level + 1, 4)
+            r, g, b = preset["lights"][light_idx]
+            entities.append(
+                "{\n"
+                f'"classname" "light"\n'
+                f'"origin" "{px} {py} {z}"\n'
+                f'"light" "150"\n'
+                f'"_color" "{r} {g} {b}"\n'
+                "}"
+            )
+
+    # AoA center light (brighter, warm)
     ar, ag, ab = preset["aoa_light"]
     entities.append(
         "{\n"
         '"classname" "light"\n'
         f'"origin" "0 0 {AOA_Z}"\n'
-        '"light" "200"\n'
+        '"light" "350"\n'
         f'"_color" "{ar} {ag} {ab}"\n'
         "}"
     )
@@ -156,7 +275,13 @@ def generate_map(preset):
     lines.append(f"// Screwm Tower — {preset['message']}")
     lines.append("")
 
-    worldspawn_brushes = sealed_room(preset) + ramp_shelves(preset)
+    worldspawn_brushes = (
+        sealed_room(preset)
+        + pillar_columns(preset)
+        + level_ledges(preset)
+        + central_pedestal(preset)
+        + ramp_shelves(preset)
+    )
 
     lines.append("{")
     lines.append('"classname" "worldspawn"')
