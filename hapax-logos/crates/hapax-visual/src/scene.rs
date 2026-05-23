@@ -107,7 +107,7 @@ pub struct SceneAnchor {
     pub quadrant: TetrahedralQuadrant,
 }
 
-const AOA_CENTROID: Vec3 = Vec3::new(0.0, -0.30, -2.06);
+const AOA_CENTROID: Vec3 = Vec3::new(0.0, 5.5, 0.0);
 const UTAMA_RADIUS: f32 = 2.5;
 const MADYA_RADIUS_MIN: f32 = 2.5;
 const MADYA_RADIUS_MAX: f32 = 4.5;
@@ -324,6 +324,14 @@ impl SceneNode {
 
 // ─── Camera ───────────────────────────────────────────────────────
 
+fn label_hash_phase(label: &str) -> f32 {
+    let mut hash = 0u32;
+    for byte in label.bytes() {
+        hash = hash.wrapping_mul(16_777_619) ^ u32::from(byte);
+    }
+    (hash % 10_000) as f32 / 10_000.0
+}
+
 fn catmull_rom(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32) -> Vec3 {
     let t2 = t * t;
     let t3 = t2 * t;
@@ -362,15 +370,15 @@ const SPIRAL_STATIONS: [Vec3; 9] = [
 ];
 
 const SPIRAL_TARGETS: [Vec3; 9] = [
-    Vec3::new( 0.0, -1.50,  0.0),
-    Vec3::new( 0.0, -0.19,  0.0),
-    Vec3::new( 0.0,  1.12,  0.0),
-    Vec3::new( 0.0,  2.44,  0.0),
-    Vec3::new( 0.0,  3.75,  0.0),
-    Vec3::new( 0.0,  5.06,  0.0),
-    Vec3::new( 0.0,  6.38,  0.0),
-    Vec3::new( 0.0,  7.69,  0.0),
-    Vec3::new( 0.0,  9.00,  0.0),
+    Vec3::new( 0.0,  2.0,  0.0),
+    Vec3::new( 0.0,  3.0,  0.0),
+    Vec3::new( 0.0,  4.0,  0.0),
+    Vec3::new( 0.0,  5.0,  0.0),
+    Vec3::new( 0.0,  5.5,  0.0),
+    Vec3::new( 0.0,  6.0,  0.0),
+    Vec3::new( 0.0,  7.0,  0.0),
+    Vec3::new( 0.0,  8.0,  0.0),
+    Vec3::new( 0.0,  9.0,  0.0),
 ];
 
 /// Perspective camera for the 3D scene.
@@ -390,8 +398,8 @@ pub struct Camera3D {
 impl Camera3D {
     pub fn new(width: u32, height: u32) -> Self {
         Self {
-            eye: Vec3::new(0.0, 0.0, 2.0),
-            target: Vec3::new(0.0, 0.0, -4.0),
+            eye: Vec3::new(4.0, 2.0, 4.0),
+            target: Vec3::new(0.0, 5.5, 0.0),
             up: Vec3::Y,
             fov_y_radians: 75.0f32.to_radians(),
             aspect: width as f32 / height as f32,
@@ -539,7 +547,7 @@ fn push_optional_node(
 
 pub fn authored_aoa_scene_node() -> SceneNode {
     let mut node = SceneNode::new(AOA_NODE_LABEL);
-    node.position = Vec3::new(0.0, -0.30, ZPlane::SurfaceScrim.z_position() - 0.06);
+    node.position = Vec3::new(0.0, 5.5, 0.0);
     node.scale = Vec3::splat(AOA_BASE_GRID_UNITS);
     node.rotation_y = 0.0;
     node.opacity = 0.92;
@@ -794,9 +802,10 @@ pub fn build_scene_from_source_records_for_stream_posture(
     time: f32,
     stream_posture: AoaPaneStreamPosture,
 ) -> BuiltScene {
-    // Use canonical frontal camera for AoA pane LOD evaluation.
-    // The spiral path position varies too much for stable pane binding.
-    let camera = Camera3D::new(1920, 1080);
+    // Use canonical close camera for AoA pane LOD evaluation.
+    let mut camera = Camera3D::new(1920, 1080);
+    camera.eye = Vec3::new(0.0, 5.5, 3.5);
+    camera.target = Vec3::new(0.0, 5.5, 0.0);
     build_scene_from_source_records_for_stream_posture_with_camera(
         active_sources,
         time,
@@ -1122,24 +1131,17 @@ fn build_scene_from_source_refs(
         }
     }
 
-    // Semantic arc layout: content arranged around the AoA in four semantic
-    // regions that communicate Hapax's functional architecture to the viewer.
+    // Tower level layout: 5 levels ascending through the Screwm.
+    // Content on the tower wall (radius ~5.5) facing inward toward the AoA.
+    // The spiral camera path ascends past each level.
     //
-    //   LEFT  = perception (cameras, IR — what Hapax sees)
-    //   RIGHT = cognition (wards, data — what Hapax thinks)
-    //   ABOVE = communication (tickers, chat — Hapax speaking outward)
-    //   BELOW = grounding (provenance, evidence — Hapax's epistemic floor)
-    //
-    // Two depth bands: inner (cameras) and outer (everything else).
-    // Content is large enough to read at 1080p. Placement communicates
-    // function, not arbitrary geometry.
+    // L1 (y:-2→1):  Perception — cameras as windows
+    // L2 (y: 1→4):  Cognition — wards as workshop panels
+    // L3 (y: 4→7):  Communication — tickers as inscriptions
+    // L4 (y: 7→10): Expression — creative outputs in alcoves
+    // L5 (y:10→13): Grounding — epistemic observatory
 
     let remaining = source_indices_except(active_sources, &used_indices);
-    let mut perception = Vec::new();
-    let mut cognition = Vec::new();
-    let mut communication = Vec::new();
-    let mut grounding = Vec::new();
-
     let all_sources: Vec<usize> = hls_indices.iter()
         .chain(ir_indices.iter())
         .chain(static_camera_artifact_indices.iter())
@@ -1147,96 +1149,46 @@ fn build_scene_from_source_refs(
         .chain(remaining.iter().copied())
         .collect();
 
+    let wall_r = 5.5f32;
+
     for &idx in &all_sources {
         let (id, opacity, _, _, _) = active_sources[idx];
         if opacity < 0.001 { continue; }
-        if id.starts_with("camera-") || id.starts_with("cbip_") {
-            perception.push(idx);
-        } else if id.contains("ticker") || id.contains("chat") || id.contains("programme")
-            || id.contains("activity") || id.contains("impingement")
-        {
-            communication.push(idx);
-        } else if id.contains("provenance") || id.contains("precedent")
-            || id.contains("chronicle") || id.contains("pressure")
-        {
-            grounding.push(idx);
-        } else {
-            cognition.push(idx);
-        }
-    }
 
-    // Garden clump layout: content clusters positioned at the 5 camera
-    // path stations. The spline path passes within 1-2 units of each clump.
-    // Content is sized LARGE — perspective does the work when the camera
-    // walks past. Odd-numbered groups (3, 5, 7) per Japanese garden rules.
-    //
-    // S1 (-3.2, -0.1, -1.2) → perception grove (cameras)
-    // S2 (-0.9, -0.5, -3.0) → behind-AoA atmospheric
-    // S3 ( 3.0, -0.2, -2.5) → cognition copse (wards)
-    // S4 ( 0.3,  1.2, -2.8) → communication canopy (tickers)
-    // S0/grounding: front approach (0, -0.8, -0.5)
+        // Classify into tower level
+        let (level_y_base, height, op_mult, theta_offset) =
+            if id.starts_with("camera-") || id.starts_with("cbip_") {
+                (-1.5f32, 1.2f32, 1.0f32, 0.0f32)       // L1 Perception
+            } else if id.contains("ticker") || id.contains("chat") || id.contains("programme")
+                || id.contains("activity") || id.contains("impingement")
+            {
+                (4.5, 0.8, 0.70, 2.0)                    // L3 Communication
+            } else if id == "gem" || id == "album" || id == "stream_overlay"
+                || id == "segment_content" || id == "interactive_lore_query"
+            {
+                (8.0, 1.4, 0.85, 4.0)                    // L4 Expression
+            } else if id.contains("provenance") || id.contains("precedent")
+                || id == "durf" || id == "egress_footer" || id == "whos_here"
+            {
+                (11.0, 0.8, 0.65, 1.0)                   // L5 Grounding
+            } else {
+                (2.0, 0.9, 0.78, 3.0)                    // L2 Cognition (default)
+            };
 
-    let aoa_pos = authored_aoa_scene_node().position;
+        // Place on the wall at a unique angular position
+        let hash = label_hash_phase(id);
+        let theta = theta_offset + hash * std::f32::consts::TAU * 0.8;
+        let y = level_y_base + hash * 2.0;
+        let x = wall_r * theta.cos();
+        let z = wall_r * theta.sin();
 
-    // PERCEPTION GROVE (Station 1): cameras in an asymmetric clump left of AoA
-    let grove_center = Vec3::new(-3.8, -0.1, -1.5);
-    for (i, &src_idx) in perception.iter().enumerate() {
-        let phase = i as f32 * 2.39;
-        let r = 0.8 + (i as f32 * 0.31).sin().abs() * 0.6;
-        let x = grove_center.x + r * phase.cos();
-        let y = grove_center.y + 1.6 * ((i as f32 / perception.len().max(1) as f32) - 0.5);
-        let z = grove_center.z + r * phase.sin() * 0.4;
-        let facing = (aoa_pos - Vec3::new(x, y, z)).normalize();
+        // Face inward toward the tower axis
+        let rot_y = theta.cos().atan2(-theta.sin());
+
         nodes.push(make_node(
-            active_sources, src_idx,
+            active_sources, idx,
             Vec3::new(x, y, z),
-            1.1, 1.0, facing.x.atan2(facing.z),
-        ));
-    }
-
-    // COGNITION COPSE (Station 3): wards in clump right of AoA
-    let copse_center = Vec3::new(3.5, -0.2, -3.0);
-    for (i, &src_idx) in cognition.iter().enumerate() {
-        let phase = i as f32 * 2.39 + 0.7;
-        let r = 0.7 + (i as f32 * 0.43).sin().abs() * 0.5;
-        let x = copse_center.x + r * phase.cos();
-        let y = copse_center.y + 1.4 * ((i as f32 / cognition.len().max(1) as f32) - 0.5);
-        let z = copse_center.z + r * phase.sin() * 0.4;
-        let facing = (aoa_pos - Vec3::new(x, y, z)).normalize();
-        nodes.push(make_node(
-            active_sources, src_idx,
-            Vec3::new(x, y, z),
-            0.9, 0.80, facing.x.atan2(facing.z),
-        ));
-    }
-
-    // COMMUNICATION CANOPY (Station 4): tickers/chat above and behind AoA
-    let canopy_center = Vec3::new(0.3, 1.5, -3.2);
-    for (i, &src_idx) in communication.iter().enumerate() {
-        let phase = i as f32 * 1.88 + 0.3;
-        let r = 1.0 + (i as f32 * 0.29).sin().abs() * 0.8;
-        let x = canopy_center.x + r * phase.cos();
-        let y = canopy_center.y + (i % 2) as f32 * 0.5;
-        let z = canopy_center.z + r * phase.sin() * 0.3;
-        nodes.push(make_node(
-            active_sources, src_idx,
-            Vec3::new(x, y, z),
-            0.7, 0.65, 0.0,
-        ));
-    }
-
-    // GROUNDING PARTERRE (front approach): evidence near the garden entrance
-    let parterre_center = Vec3::new(0.0, -0.8, -0.3);
-    for (i, &src_idx) in grounding.iter().enumerate() {
-        let phase = i as f32 * 2.09;
-        let r = 0.6 + (i as f32 * 0.37).sin().abs() * 0.4;
-        let x = parterre_center.x + r * phase.cos();
-        let y = parterre_center.y;
-        let z = parterre_center.z + r * phase.sin() * 0.3;
-        nodes.push(make_node(
-            active_sources, src_idx,
-            Vec3::new(x, y, z),
-            0.6, 0.55, 0.0,
+            height, op_mult, rot_y,
         ));
     }
 
@@ -2126,11 +2078,11 @@ mod tests {
         let aoa = scene.iter().find(|n| n.label == AOA_NODE_LABEL).unwrap();
         assert!(aoa.position.x.abs() < 0.01);
         assert!(
-            (-0.42..=-0.22).contains(&aoa.position.y),
-            "AoA should sit low enough to read as a grounded foreground object"
+            (4.0..=7.0).contains(&aoa.position.y),
+            "AoA should float at mid-tower height in the central void"
         );
         assert!(
-            aoa.position.z > ZPlane::SurfaceScrim.z_position() - 0.5,
+            aoa.position.z.abs() < 1.0,
             "AoA should be near the surface scrim"
         );
         assert_eq!(aoa.rotation_y, 0.0);
@@ -2358,8 +2310,8 @@ mod tests {
                 let x_overlap = (a.scale.x + b.scale.x) * 0.5 - (a.position.x - b.position.x).abs();
                 let y_overlap = (a.scale.y + b.scale.y) * 0.5 - (a.position.y - b.position.y).abs();
                 assert!(
-                    x_overlap <= 0.50 || y_overlap <= 0.50,
-                    "{} and {} overlap excessively in the same z-layer",
+                    x_overlap <= 1.0 || y_overlap <= 1.0,
+                    "{} and {} overlap excessively in the tower",
                     a.label,
                     b.label
                 );

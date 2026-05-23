@@ -191,7 +191,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
     } else if quad_idx == 8u {
         // AoA insphere — ray-marched in fragment shader.
         // Billboard oversized to contain the sphere from any angle.
-        let sphere_center = vec3<f32>(0.0, -0.4875, -1.36);
+        let sphere_center = vec3<f32>(0.0, 5.5, 0.0);
         let extent = 0.56;
         let vr = normalize(vec3<f32>(grid.view[0][0], grid.view[1][0], grid.view[2][0]));
         let vu = normalize(vec3<f32>(grid.view[0][1], grid.view[1][1], grid.view[2][1]));
@@ -248,7 +248,7 @@ fn fs_main(in: VertexOutput) -> FragOutput {
 
     if in.plane_kind > 7.5 {
         // AoA insphere — ray-sphere intersection for perspective-correct 3D shading.
-        let sphere_center = vec3<f32>(0.0, -0.4875, -1.36);
+        let sphere_center = vec3<f32>(0.0, 5.5, 0.0);
         let sphere_radius = 0.4777;
 
         let vt = grid.view[3].xyz;
