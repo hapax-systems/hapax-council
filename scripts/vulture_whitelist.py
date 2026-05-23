@@ -3904,3 +3904,8 @@ extract_from_directory_resumable
 from shared.eval_receipt import EvalReceiptV1
 
 EvalReceiptV1._replayable_requires_artifacts_and_hashes
+
+# Aperture state snapshot: called by health monitor timer, not static import.
+from shared.aperture_state import write_aperture_snapshot
+
+write_aperture_snapshot
