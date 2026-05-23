@@ -210,11 +210,23 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
         );
         n = vec3<f32>(nx_w, 0.0, nz_w);
     } else if quad_idx >= 9u && quad_idx <= 12u {
-        // Level platforms — horizontal discs at y=1, 4, 7, 10
-        let level = quad_idx - 9u;
-        let level_ys = array<f32, 4>(1.0, 4.0, 7.0, 10.0);
-        let platform_r = tower_r * 0.92;
-        world = vec3<f32>(lp.x * platform_r, level_ys[level], lp.y * platform_r);
+        // Spiral ramp segments — wide ramp hugging the wall, center void open.
+        // Each segment covers 90° of arc and rises one level (3 units).
+        let seg = quad_idx - 9u;
+        let ramp_inner = 2.5;
+        let ramp_outer = tower_r - 0.3;
+        let y_base = array<f32, 4>(-2.0, 1.0, 4.0, 7.0);
+        let y_rise = 3.0;
+        let angle_start = f32(seg) * AOA_PI * 0.5;
+
+        // lp.x [-1,1] maps along the arc (angle), lp.y [-1,1] maps radially
+        let frac_angle = (lp.x + 1.0) * 0.5;
+        let frac_radius = (lp.y + 1.0) * 0.5;
+        let angle = angle_start + frac_angle * AOA_PI * 0.5;
+        let r = mix(ramp_inner, ramp_outer, frac_radius);
+        let y_ramp = y_base[seg] + frac_angle * y_rise;
+
+        world = vec3<f32>(r * cos(angle), y_ramp, r * sin(angle));
         n = vec3<f32>(0.0, 1.0, 0.0);
     } else if quad_idx == 13u {
         world = grid.light_position.xyz + vec3<f32>(lp.x * 0.28, lp.y * 0.28, 0.0);
