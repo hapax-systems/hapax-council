@@ -1,6 +1,5 @@
 // Screwm QuakeC — pendulum camera with Catmull-Rom interpolation
 
-entity camera_entity;
 float camera_phase;
 
 vector catmull_rom(vector p0, vector p1, vector p2, vector p3, float t)

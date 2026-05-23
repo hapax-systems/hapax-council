@@ -1,6 +1,6 @@
 // Screwm QuakeC — world initialization, AoA entity, ambient sound
 
-entity aoa_entity;
+// aoa_entity declared in defs.qc
 
 void() aoa_think =
 {
@@ -52,7 +52,10 @@ void() spawn_ambient_sounds =
     setorigin(snd, '0 368 0');
 };
 
-void() StartFrame = {};
+void() StartFrame =
+{
+    coupling_tick();
+};
 void() PlayerPreThink = {};
 void() PlayerPostThink = {};
 void() ClientKill = {};
@@ -78,6 +81,7 @@ void() worldspawn =
     // precache_sound("ambient/expression_synth.ogg");
     // precache_sound("ambient/grounding_drone.ogg");
 
+    coupling_init();
     spawn_camera();
     spawn_aoa();
     spawn_ambient_sounds();

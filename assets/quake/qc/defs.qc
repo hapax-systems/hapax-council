@@ -35,6 +35,9 @@ void(float to, entity e) WriteEntity = #59;
 // etos not needed for camera-only mod
 void(string s) precache_model = #20;
 void(string s) precache_sound = #19;
+void(string s) localcmd = #46;
+string(string a, string b) strcat = #115;
+// strcat with 2 args is sufficient for coupling
 
 // File I/O (DarkPlaces extension)
 float(string filename, float mode) fopen = #110;
@@ -64,6 +67,10 @@ float SOUNDFLAG_FORCELOOP = 1;
 .float solid;
 .vector avelocity;
 .float effects;
+
+// Shared entity references
+entity aoa_entity;
+entity camera_entity;
 
 // Spline control points (Quake units, 32u = 1m)
 // Matches scene.rs SPIRAL_STATIONS
