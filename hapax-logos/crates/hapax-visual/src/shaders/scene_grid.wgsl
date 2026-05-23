@@ -179,11 +179,11 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
         n = vec3<f32>(0.0, 1.0, 0.0);
     } else if quad_idx == 1u {
         // Cylindrical tower wall — ray-marched in fragment shader.
-        // View-aligned billboard large enough to contain the cylinder projection.
+        // View-aligned billboard, smaller extent to reduce backward-ray artifacts.
         let cyl_center = vec3<f32>(0.0, 5.5, 0.0);
         let vr = normalize(vec3<f32>(grid.view[0][0], grid.view[1][0], grid.view[2][0]));
         let vu = normalize(vec3<f32>(grid.view[0][1], grid.view[1][1], grid.view[2][1]));
-        world = cyl_center + vr * lp.x * 14.0 + vu * lp.y * 14.0;
+        world = cyl_center + vr * lp.x * 8.0 + vu * lp.y * 10.0;
         n = -normalize(vec3<f32>(grid.view[0][2], grid.view[1][2], grid.view[2][2]));
     } else if quad_idx == 2u {
         world = vec3<f32>(lp.x * 12.0, 13.0, lp.y * 12.0);
@@ -330,6 +330,10 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         );
         let ray_dir = normalize(wp - cam_pos);
 
+        // Discard backward rays (billboard fragments behind camera)
+        let cam_fwd = -normalize(vec3<f32>(grid.view[0][2], grid.view[1][2], grid.view[2][2]));
+        if dot(ray_dir, cam_fwd) < -0.1 { discard; }
+
         let o_xz = vec2<f32>(cam_pos.x, cam_pos.z);
         let d_xz = vec2<f32>(ray_dir.x, ray_dir.z);
         let a_cyl = dot(d_xz, d_xz);
@@ -338,7 +342,7 @@ fn fs_main(in: VertexOutput) -> FragOutput {
         let disc_cyl = b_cyl * b_cyl - a_cyl * c_cyl;
         if disc_cyl < 0.0 { discard; }
         let t_cyl = (-b_cyl + sqrt(disc_cyl)) / a_cyl;
-        if t_cyl < 0.0 { discard; }
+        if t_cyl < 0.1 { discard; }
         let hit = cam_pos + ray_dir * t_cyl;
         if hit.y < cyl_y_min || hit.y > cyl_y_max { discard; }
 

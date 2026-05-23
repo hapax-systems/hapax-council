@@ -349,36 +349,30 @@ fn remap_speed(t: f32, num_segments: usize) -> f32 {
     (segment + eased) / n
 }
 
-// Helical camera path — spiral ascending through the tower.
-// 8 control points, 2 revolutions, radius 4, height -1.5 to 11.5.
-// The camera walks the spiral ramp, looking inward at the AoA axis.
+// Helical camera path — single slow revolution through the tower.
+// 5 control points, 1 revolution, radius 4, height 0 to 10.
+// Gentle ascent — the camera walks the ramp, not flies it.
 const TOWER_RADIUS: f32 = 4.0;
-const TOWER_Y_BASE: f32 = -1.5;
-const TOWER_Y_TOP: f32 = 11.5;
-const TOWER_REVOLUTIONS: f32 = 2.0;
+const TOWER_Y_BASE: f32 = 0.0;
+const TOWER_Y_TOP: f32 = 10.0;
+const TOWER_REVOLUTIONS: f32 = 1.0;
 
-const SPIRAL_STATIONS: [Vec3; 9] = [
-    Vec3::new( 4.0, -1.50,  0.0),   // S0: base, theta=0
-    Vec3::new( 0.0, -0.19,  4.0),   // S1: theta=pi/2
-    Vec3::new(-4.0,  1.12,  0.0),   // S2: theta=pi
-    Vec3::new( 0.0,  2.44, -4.0),   // S3: theta=3pi/2
-    Vec3::new( 4.0,  3.75,  0.0),   // S4: theta=2pi (1 full rev)
-    Vec3::new( 0.0,  5.06,  4.0),   // S5: theta=5pi/2
-    Vec3::new(-4.0,  6.38,  0.0),   // S6: theta=3pi
-    Vec3::new( 0.0,  7.69, -4.0),   // S7: theta=7pi/2
-    Vec3::new( 4.0,  9.00,  0.0),   // S8: theta=4pi (2 full revs) == wrap
+const SPIRAL_STATIONS: [Vec3; 6] = [
+    Vec3::new( 4.0,  0.0,  0.0),   // S0: base, theta=0
+    Vec3::new( 0.0,  2.0,  4.0),   // S1: theta=pi/2
+    Vec3::new(-4.0,  4.0,  0.0),   // S2: theta=pi
+    Vec3::new( 0.0,  6.0, -4.0),   // S3: theta=3pi/2
+    Vec3::new( 4.0,  8.0,  0.0),   // S4: theta=2pi (1 full rev)
+    Vec3::new( 4.0,  0.0,  0.0),   // S5: == S0, seamless loop
 ];
 
-const SPIRAL_TARGETS: [Vec3; 9] = [
-    Vec3::new( 0.0,  2.0,  0.0),
+const SPIRAL_TARGETS: [Vec3; 6] = [
     Vec3::new( 0.0,  3.0,  0.0),
     Vec3::new( 0.0,  4.0,  0.0),
-    Vec3::new( 0.0,  5.0,  0.0),
     Vec3::new( 0.0,  5.5,  0.0),
     Vec3::new( 0.0,  6.0,  0.0),
-    Vec3::new( 0.0,  7.0,  0.0),
-    Vec3::new( 0.0,  8.0,  0.0),
-    Vec3::new( 0.0,  9.0,  0.0),
+    Vec3::new( 0.0,  5.5,  0.0),
+    Vec3::new( 0.0,  3.0,  0.0),
 ];
 
 /// Perspective camera for the 3D scene.
@@ -418,21 +412,19 @@ impl Camera3D {
     }
 
     pub fn spline_pose_at(&self, time: f32, energy: f32) -> (Vec3, Vec3) {
-        let period = 72.0 + (1.0 - energy) * 18.0;
+        let period = 120.0 + (1.0 - energy) * 30.0;
         let t = (time % period) / period;
-        let n = 8usize; // 8 segments between 9 control points
+        let n = 5usize;
         let t_remapped = remap_speed(t, n);
 
         let segment_f = t_remapped * n as f32;
         let seg = (segment_f as usize).min(n - 1);
         let local_t = (segment_f - seg as f32).clamp(0.0, 1.0);
 
-        // Catmull-Rom needs p[seg-1], p[seg], p[seg+1], p[seg+2].
-        // Wrap with mod n for seamless loop.
-        let i0 = if seg == 0 { n - 1 } else { seg - 1 };
+        let i0 = (seg + n - 1) % n;
         let i1 = seg;
-        let i2 = (seg + 1).min(n);
-        let i3 = (seg + 2).min(n);
+        let i2 = (seg + 1) % n;
+        let i3 = (seg + 2) % n;
 
         let eye = catmull_rom(
             SPIRAL_STATIONS[i0], SPIRAL_STATIONS[i1],
