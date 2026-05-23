@@ -1140,7 +1140,7 @@ fn build_scene_from_source_refs(
         .chain(remaining.iter().copied())
         .collect();
 
-    let wall_r = 5.5f32;
+    let wall_r = 7.2f32;
 
     for &idx in &all_sources {
         let (id, opacity, _, _, _) = active_sources[idx];

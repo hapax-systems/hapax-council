@@ -182,7 +182,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
     // Quads 14-17: volumetric beams
     // Quad 18: AoA insphere (ray-marched)
 
-    let tower_r = 6.0;
+    let tower_r = 7.8;
     let tower_y_min = -2.0;
     let tower_y_max = 13.0;
     let tower_h = tower_y_max - tower_y_min;
@@ -217,8 +217,8 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
         let shelf_angle = f32(seg) * AOA_PI * 0.5;
 
         // Wide shelf spanning 3 wall panels worth of width
-        let ramp_width = 7.0;
-        let ramp_depth = 3.5;
+        let ramp_width = 9.0;
+        let ramp_depth = 4.5;
         let wall_dist = tower_r - 0.3;
 
         let tang_x = -sin(shelf_angle);
