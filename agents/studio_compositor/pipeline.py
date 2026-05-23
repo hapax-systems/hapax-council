@@ -35,7 +35,7 @@ def init_gstreamer() -> tuple[Any, Any]:
     return _GLib, _Gst
 
 
-DARKPLACES_V4L2_DEVICE = "/dev/video52"
+DARKPLACES_V4L2_DEVICE = "/dev/video10"
 
 
 def _pin_black_background(comp_element: Any) -> None:
