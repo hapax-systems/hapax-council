@@ -57,9 +57,7 @@ def _cached_frame_surface() -> cairo.ImageSurface:
     return cast("cairo.ImageSurface", object())
 
 
-def test_video_attention_default_is_zero(
-    renderer: AoaCairoSource, attention_path: Path
-) -> None:
+def test_video_attention_default_is_zero(renderer: AoaCairoSource, attention_path: Path) -> None:
     """No frames loaded → 0.0."""
     renderer._publish_video_attention()
     assert attention_path.exists()
@@ -99,9 +97,7 @@ def test_video_attention_featured_slot_maxes_out(
     assert value == pytest.approx(1.0, abs=0.01)
 
 
-def test_video_attention_decays_after_2s(
-    renderer: AoaCairoSource, attention_path: Path
-) -> None:
+def test_video_attention_decays_after_2s(renderer: AoaCairoSource, attention_path: Path) -> None:
     """Stale frame (mtime age > 2s) → freshness < 1.0 (exponential decay)."""
     fake_surface = _cached_frame_surface()
     renderer._frame_surfaces[0] = fake_surface

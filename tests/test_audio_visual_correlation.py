@@ -41,9 +41,7 @@ def _pearson_r(xs: list[float], ys: list[float]) -> float:
     return cov / (sx * sy)
 
 
-def _simulate_energy_sequence(
-    renderer: AoaCairoSource, energies: list[float]
-) -> list[float]:
+def _simulate_energy_sequence(renderer: AoaCairoSource, energies: list[float]) -> list[float]:
     """Feed an energy sequence and collect the smoothed line-width values."""
     widths: list[float] = []
     for e in energies:
