@@ -14,7 +14,6 @@ Default generates both BSPs: screwm-rnd.bsp and screwm-research.bsp.
 import argparse
 import math
 import subprocess
-import sys
 from pathlib import Path
 
 UNITS_PER_METER = 32
@@ -317,7 +316,7 @@ def compile_map(map_path: Path, output_dir: Path):
         if result.returncode != 0:
             print(f"    WARNING: {cmd[0]} returned {result.returncode}")
         else:
-            print(f"    OK")
+            print("    OK")
 
 
 def main():
