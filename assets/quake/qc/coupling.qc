@@ -63,6 +63,19 @@ void() coupling_apply_stimmung =
     // Fog density: denser at low energy (contemplative), clearer at high
     float fog_density = 0.03 - coupling_energy * 0.02;
     localcmd(strcat("fog ", ftos(fog_density), " 0.08 0.06 0.10\n"));
+
+    // Post-processing modulation from cognitive state
+    // UserVec1: x=vignette, y=chroma, z=temp, w=grain
+    float vig = 0.4 + (1.0 - coupling_energy) * 0.25;
+    float ca = 0.4 + coupling_voice_active * 0.6;
+    float temp_val = 0.10 + coupling_energy * 0.08;
+    float grain_val = 0.02 + (1.0 - coupling_energy) * 0.02;
+    localcmd(strcat("r_glsl_postprocess_uservec1 \"",
+        ftos(vig), " ", ftos(ca), " ", ftos(temp_val), " ", ftos(grain_val), "\"\n"));
+
+    // UserVec2: x=scanlines, y=edge_glow, z=posterize, w=unused
+    float edge = 0.15 + coupling_energy * 0.25;
+    localcmd(strcat("r_glsl_postprocess_uservec2 \"0.06 ", ftos(edge), " 0 0\"\n"));
 };
 
 void() coupling_check_working_mode =

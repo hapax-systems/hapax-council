@@ -427,19 +427,24 @@ void main(void)
 	// === COLOR SAMPLING ===
 	vec3 color = dp_texture2D(Texture_First, uv).rgb;
 
-	// 1. Chromatic aberration — RGB channel offset from center
-	float ca_amount = UserVec1.y * 0.003;
-	float ca_dist = distance(uv, vec2(0.5));
-	vec2 ca_offset = (uv - vec2(0.5)) * ca_dist * ca_amount;
-	color.r = dp_texture2D(Texture_First, uv + ca_offset).r;
-	color.b = dp_texture2D(Texture_First, uv - ca_offset).b;
+	// All effects operate on the WORLD, not the camera.
+	// Lens-origin effects reframed as spatial phenomena.
 
-	// 2. Vignette — darkened edges
-	float vig_str = UserVec1.x;
-	float vig = 1.0 - smoothstep(0.25, 0.9, ca_dist) * vig_str;
-	color *= vig;
+	// 1. Atmospheric darkening — fog absorption at tower periphery
+	// (was: vignette. Now: spatial property of the tower interior)
+	float atmo_str = UserVec1.x;
+	float center_dist = distance(uv, vec2(0.5));
+	float atmo_fade = 1.0 - smoothstep(0.2, 0.95, center_dist) * atmo_str;
+	color *= atmo_fade;
 
-	// 3. Color temperature — warm/cool shift
+	// 2. Prismatic fog refraction — light splitting through dense atmosphere
+	// (was: chromatic aberration. Now: fog refracts light at the edges)
+	float refract_amount = UserVec1.y * 0.003;
+	vec2 refract_offset = (uv - vec2(0.5)) * center_dist * refract_amount;
+	color.r = dp_texture2D(Texture_First, uv + refract_offset).r;
+	color.b = dp_texture2D(Texture_First, uv - refract_offset).b;
+
+	// 3. Color temperature — world lighting warmth
 	float temp = UserVec1.z;
 	color.r *= 1.0 + temp * 0.18;
 	color.g *= 1.0 + temp * 0.04;
@@ -463,16 +468,18 @@ void main(void)
 		color += vec3(0.8, 0.6, 0.3) * edge * edge_str;
 	}
 
-	// 5. Film grain
-	float grain_amt = UserVec1.w;
-	float grain_seed = dot(uv * 1000.0, vec2(12.9898, 78.233));
-	float grain = fract(sin(grain_seed) * 43758.5453) * 2.0 - 1.0;
-	color += vec3(grain * grain_amt);
+	// Atmospheric dust — particulate matter suspended in tower air
+	// (was: film grain. Now: spatial dust catching light)
+	float dust_density = UserVec1.w;
+	float dust_seed = dot(uv * 1000.0 + fract(ClientTime * 0.05), vec2(12.9898, 78.233));
+	float dust = fract(sin(dust_seed) * 43758.5453) * 2.0 - 1.0;
+	color += vec3(dust * dust_density);
 
-	// 6. Scanlines
-	float scan_str = UserVec2.x;
-	float scan = sin(uv.y / px.y * 3.14159 * 0.5) * 0.5 + 0.5;
-	color *= 1.0 - scan_str * (1.0 - scan);
+	// Stone texture lines — architectural surface detail on walls
+	// (was: scanlines. Now: horizontal mortar lines in the stonework)
+	float mortar_str = UserVec2.x;
+	float mortar = sin(uv.y / px.y * 3.14159 * 0.5) * 0.5 + 0.5;
+	color *= 1.0 - mortar_str * (1.0 - mortar) * 0.6;
 
 	// 7. Posterize (reduce color levels for retro feel)
 	float post_levels = UserVec2.z;
@@ -486,17 +493,13 @@ void main(void)
 	float breath_dist = distance(uv, vec2(0.5));
 	color *= mix(1.0, breath, smoothstep(0.0, 0.6, breath_dist));
 
-	// 9. Dither — ordered Bayer 4x4 for retro feel
-	float dither_str = 0.02;
-	int dx = int(mod(gl_FragCoord.x, 4.0));
-	int dy = int(mod(gl_FragCoord.y, 4.0));
-	float bayer = 0.0;
-	if (dx == 0 && dy == 0) bayer = 0.0;
-	else if (dx == 2 && dy == 0) bayer = 0.5;
-	else if (dx == 0 && dy == 2) bayer = 0.75;
-	else if (dx == 2 && dy == 2) bayer = 0.25;
-	else bayer = fract(float(dx * 3 + dy * 7) * 0.0625);
-	color += vec3((bayer - 0.5) * dither_str);
+	// Surface granularity — stone texture micro-detail
+	// (was: Bayer dither. Now: material surface granularity)
+	float granularity = 0.015;
+	int gx = int(mod(gl_FragCoord.x, 4.0));
+	int gy = int(mod(gl_FragCoord.y, 4.0));
+	float surface_grain = fract(float(gx * 3 + gy * 7) * 0.0625);
+	color += vec3((surface_grain - 0.5) * granularity);
 
 	// 10. (Fisheye moved to UV distortion phase above)
 
