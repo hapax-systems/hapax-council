@@ -542,7 +542,24 @@ void main(void)
 		color = mix(color, thermal, thermal_mix);
 	}
 
-	// 18. VHS glitch (time-driven horizontal displacement + chroma shift)
+	// 18. Strobe (brief brightness flash synced to time)
+	float strobe_period = 8.0;
+	float strobe_phase = fract(ClientTime / strobe_period);
+	float strobe = smoothstep(0.0, 0.01, strobe_phase) * smoothstep(0.03, 0.01, strobe_phase);
+	color += vec3(strobe * 0.15);
+
+	// 19. Palette cycling (hue rotation over time — subtle)
+	float hue_shift = sin(ClientTime * 0.05) * 0.03;
+	float cs = cos(hue_shift);
+	float sn = sin(hue_shift);
+	mat3 hue_mat = mat3(
+		0.299+0.701*cs+0.168*sn, 0.587-0.587*cs+0.330*sn, 0.114-0.114*cs-0.497*sn,
+		0.299-0.299*cs-0.328*sn, 0.587+0.413*cs+0.035*sn, 0.114-0.114*cs+0.292*sn,
+		0.299-0.300*cs+1.250*sn, 0.587-0.588*cs-1.050*sn, 0.114+0.886*cs-0.203*sn
+	);
+	color = hue_mat * color;
+
+	// 20. VHS glitch (time-driven horizontal displacement + chroma shift)
 	float vhs_time = fract(ClientTime * 0.3);
 	float vhs_band = smoothstep(0.0, 0.02, abs(uv.y - vhs_time)) *
 	                 smoothstep(0.0, 0.02, abs(uv.y - fract(vhs_time + 0.4)));
