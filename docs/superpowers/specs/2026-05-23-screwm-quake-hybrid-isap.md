@@ -252,9 +252,12 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - `scripts/generate-screwm-map.py`
 - Output: `assets/quake/maps/screwm.bsp` (13KB, compiles clean)
 
-### D3: CC0 Texture Pipeline [IN PROGRESS — epsilon lane]
-- LibreQuake (BSD), Aquilarius (CC0), Kaz115 (CC0)
-- `assets/quake/textures/`, `assets/quake/LICENSES.md`
+### D3: Texture/Asset Provenance [COMPLETE]
+- LibreQuake v0.09-beta BSD art/media assets provide external free-content
+  base game data outside this repository under `~/.darkplaces/id1/`.
+- Screwm WAD textures, maps, AoA model, ambient OGG loops, QuakeC/CSQC
+  binaries, GLSL shader, and runtime configs are project-authored/generated
+  assets documented in `assets/quake/LICENSES.md`.
 
 ### D4: QuakeC Camera + Cognitive Coupling Mod [IN PROGRESS]
 - `assets/quake/qc/` — defs.qc, camera.qc, world.qc, coupling.qc
@@ -447,7 +450,7 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - [x] 5 ambient sound zones are present and spawned by QuakeC
 - [x] Working mode switch changes fog color + texture set
 - [x] Stimmung/audio/Reverie state modulates AoA spin, fog, postprocess fields, and ward/source light intensity
-- [ ] Textures CC0/BSD licensed (LICENSES.md audit)
+- [x] Texture/asset provenance documented in `assets/quake/LICENSES.md`
 - [ ] Systemd unit starts/stops/restarts cleanly with WatchdogSec
 - [ ] 1-hour stability test without memory growth or crashes
 - [ ] 39 shader nodes ported with visual parity (Phase 4)

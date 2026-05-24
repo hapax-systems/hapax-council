@@ -123,3 +123,24 @@ def test_screwm_quake_contract_matches_current_camera_aoa_and_sound_foundation()
     assert "[x] 5 ambient sound zones" in spec
     assert "material, inversion, aperture, and" in spec
     assert "Positive UserVec4.x is material emboss only" in spec
+
+
+def test_screwm_quake_asset_provenance_gate_is_documented() -> None:
+    spec = (
+        REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-05-23-screwm-quake-hybrid-isap.md"
+    ).read_text(encoding="utf-8")
+    licenses = (REPO_ROOT / "assets" / "quake" / "LICENSES.md").read_text(encoding="utf-8")
+
+    assert "### D3: Texture/Asset Provenance [COMPLETE]" in spec
+    assert "[x] Texture/asset provenance documented in `assets/quake/LICENSES.md`" in spec
+    assert "Audit date: 2026-05-24" in licenses
+    assert "LibreQuake v0.09-beta" in licenses
+    assert "BSD for LibreQuake art/media assets" in licenses
+    assert "not vendored under `assets/quake/`" in licenses
+    assert "assets/quake/maps/screwm.wad" in licenses
+    assert "scripts/generate-screwm-wad.py" in licenses
+    assert "assets/quake/sound/ambient/*.ogg" in licenses
+    assert "assets/quake/models/aoa.mdl" in licenses
+    assert "assets/quake/qc/progs.dat" in licenses
+    assert "assets/quake/csqc/csprogs.dat" in licenses
+    assert "Original Quake/Bethesda/id Software" in licenses
