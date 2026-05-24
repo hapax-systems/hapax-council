@@ -301,6 +301,36 @@ def test_darkplaces_background_uses_env_device(monkeypatch: object) -> None:
     }
 
 
+def test_darkplaces_background_uploads_to_cuda_when_compositor_is_cuda(
+    monkeypatch: object,
+) -> None:
+    _reset_fake_gst()
+    monkeypatch.setenv("HAPAX_DARKPLACES_V4L2_DEVICE", "/dev/video99")
+    monkeypatch.setattr(pipeline_module.os.path, "exists", lambda _path: True)
+
+    pipe = _Pipeline("test")
+    comp = _Element("compositor", "cudacompositor")
+    added = pipeline_module._add_darkplaces_background(
+        _FakeGst,
+        pipe,
+        comp,
+        1280,
+        720,
+        30,
+        use_cuda=True,
+    )
+
+    assert added is True
+    assert _element_named(pipe.elements, "darkplaces-upload").factory == "cudaupload"
+    assert _element_named(pipe.elements, "darkplaces-cudaconvert").factory == "cudaconvert"
+    assert _element_named(pipe.elements, "darkplaces-raw-nv12-caps").props["caps"] == (
+        "video/x-raw,format=NV12,width=1280,height=720,framerate=30/1"
+    )
+    assert _element_named(pipe.elements, "darkplaces-cuda-caps").props["caps"] == (
+        "video/x-raw(memory:CUDAMemory),format=NV12,width=1280,height=720,framerate=30/1"
+    )
+
+
 def test_cuda_camera_branch_pins_cuda_memory_caps(monkeypatch: object) -> None:
     _reset_fake_gst()
     monkeypatch.setattr(cameras, "add_camera_snapshot_branch", lambda *_args: None)

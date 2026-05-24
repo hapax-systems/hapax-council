@@ -8,7 +8,7 @@ import time
 from typing import Any
 
 from .cameras import add_camera_branch
-from .cuda_caps import cuda_output_caps_string
+from .cuda_caps import cuda_input_caps_string, cuda_output_caps_string
 from .layout import compute_safe_tile_layout
 from .layout_safety import (
     BASE_COMPOSITOR_BACKGROUND_PROPERTY_VALUE,
@@ -57,7 +57,14 @@ def _pin_black_background(comp_element: Any) -> None:
 
 
 def _add_darkplaces_background(
-    Gst: Any, pipeline: Any, comp_element: Any, width: int, height: int, fps: int
+    Gst: Any,
+    pipeline: Any,
+    comp_element: Any,
+    width: int,
+    height: int,
+    fps: int,
+    *,
+    use_cuda: bool = False,
 ) -> bool:
     """Add DarkPlaces v4l2loopback as the compositor background layer.
 
@@ -103,8 +110,8 @@ def _add_darkplaces_background(
         src.set_property("device", device)
         src.set_property("io-mode", 2)  # mmap
 
-        caps = Gst.ElementFactory.make("capsfilter", "darkplaces-caps")
-        caps.set_property(
+        input_caps = Gst.ElementFactory.make("capsfilter", "darkplaces-caps")
+        input_caps.set_property(
             "caps",
             Gst.Caps.from_string(f"video/x-raw,width={width},height={height},framerate={fps}/1"),
         )
@@ -114,14 +121,42 @@ def _add_darkplaces_background(
         queue.set_property("leaky", 2)
         queue.set_property("max-size-buffers", 2)
 
-        for el in (src, caps, convert, queue):
+        branch_elements = [src, input_caps, convert]
+        if use_cuda:
+            raw_caps = Gst.ElementFactory.make("capsfilter", "darkplaces-raw-nv12-caps")
+            raw_caps.set_property(
+                "caps",
+                Gst.Caps.from_string(
+                    f"video/x-raw,format=NV12,width={width},height={height},framerate={fps}/1"
+                ),
+            )
+            upload = Gst.ElementFactory.make("cudaupload", "darkplaces-upload")
+            cuda_convert = Gst.ElementFactory.make("cudaconvert", "darkplaces-cudaconvert")
+            cuda_caps = Gst.ElementFactory.make("capsfilter", "darkplaces-cuda-caps")
+            cuda_caps.set_property(
+                "caps",
+                Gst.Caps.from_string(cuda_input_caps_string(width, height, fps)),
+            )
+            branch_elements.extend([raw_caps, upload, cuda_convert, cuda_caps])
+        branch_elements.append(queue)
+
+        if any(el is None for el in branch_elements):
+            log.warning("Failed to create DarkPlaces source preprocessing element")
+            return False
+
+        for el in branch_elements:
             pipeline.add(el)
             added_elements.append(el)
 
-        if not src.link(caps) or not caps.link(convert) or not convert.link(queue):
-            log.warning("Failed to link DarkPlaces source preprocessing chain")
-            _cleanup_partial_setup()
-            return False
+        for prev, nxt in zip(branch_elements[:-1], branch_elements[1:], strict=True):
+            if not prev.link(nxt):
+                log.warning(
+                    "Failed to link DarkPlaces source preprocessing chain: %s -> %s",
+                    prev.get_name(),
+                    nxt.get_name(),
+                )
+                _cleanup_partial_setup()
+                return False
 
         sink_pad = comp_element.request_pad_simple("sink_%u")
         if sink_pad is None:
@@ -385,6 +420,7 @@ def build_pipeline(compositor: Any) -> Any:
         compositor.config.output_width,
         compositor.config.output_height,
         fps,
+        use_cuda=compositor._use_cuda,
     )
 
     # --- ALPHA PHASE 2: per-camera producer pipelines ---
