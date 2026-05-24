@@ -59,3 +59,14 @@ def test_screwm_quake_reads_reverie_effect_signals_in_engine() -> None:
     assert "coupling_read_reverie" in coupling
     assert "data/reverie-salience.txt" in coupling
     assert "coupling_reverie_temporal * 0.012" in coupling
+
+
+def test_screwm_quake_embodies_live_ward_activity_in_engine_lights() -> None:
+    exporter = (REPO_ROOT / "scripts" / "darkplaces-state-export.py").read_text(encoding="utf-8")
+    wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
+
+    assert "build_ward_activity_lines" in exporter
+    assert "ward-active-" in exporter
+    assert 'screwm_read_norm("data/ward-active-01.txt")' in wards
+    assert "screwm_active_36" in wards
+    assert "screwm_add_ward_light('0 -118 28', 36, screwm_green, screwm_active_36)" in wards

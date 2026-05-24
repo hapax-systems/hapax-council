@@ -90,6 +90,10 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert "RANT:" in (game_dir / "ward-21.txt").read_text(encoding="utf-8")
     assert (game_dir / "ward-28.txt").read_text(encoding="utf-8").strip() == "BEAT 2/4 050%"
     assert "Escalate the argument" in (game_dir / "ward-34.txt").read_text(encoding="utf-8")
+    assert (game_dir / "ward-active-01.txt").read_text(encoding="utf-8").strip() == "0.0000"
+    assert (game_dir / "ward-active-13.txt").read_text(encoding="utf-8").strip() == "1.0000"
+    assert (game_dir / "ward-active-21.txt").read_text(encoding="utf-8").strip() == "1.0000"
+    assert (game_dir / "ward-active-34.txt").read_text(encoding="utf-8").strip() == "1.0000"
     assert (game_dir / "active-wards-line.txt").read_text(
         encoding="utf-8"
     ).strip() == "36 IN-SCROOM WARDS"

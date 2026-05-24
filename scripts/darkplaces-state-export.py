@@ -106,6 +106,19 @@ def _screwm_ward_count(active_wards: dict[str, Any]) -> int:
     return max(IN_WORLD_WARD_COUNT, _active_ward_count(active_wards))
 
 
+def build_ward_activity_lines(active_wards: dict[str, Any]) -> dict[str, str]:
+    ward_ids = active_wards.get("ward_ids")
+    active_set = (
+        {ward_id for ward_id in ward_ids if isinstance(ward_id, str)}
+        if isinstance(ward_ids, list)
+        else set()
+    )
+    return {
+        f"ward-active-{ordinal}.txt": "1.0000" if ward_id in active_set else "0.0000"
+        for ordinal, ward_id in WARD_EXPORTS.items()
+    }
+
+
 def build_ward_lines(shm_dir: Path) -> dict[str, str]:
     active_segment = _read_json(shm_dir / "active-segment.json")
     active_wards = _read_json(shm_dir / "active_wards.json")
@@ -193,11 +206,13 @@ def export_state(
     for ordinal, ward_id in WARD_EXPORTS.items():
         line = ward_lines.get(ordinal, ward_id.upper())
         _write_atomic(game_dir / f"ward-{ordinal}.txt", line)
+    active_wards = _read_json(shm_dir / "active_wards.json")
+    for filename, line in build_ward_activity_lines(active_wards).items():
+        _write_atomic(game_dir / filename, line)
     for filename, line in build_reverie_lines(uniforms_file).items():
         _write_atomic(game_dir / filename, line)
 
     active_segment = _read_json(shm_dir / "active-segment.json")
-    active_wards = _read_json(shm_dir / "active_wards.json")
     _write_atomic(
         game_dir / "programme-line.txt",
         _one_line(active_segment.get("topic", "programme waiting"), limit=64),

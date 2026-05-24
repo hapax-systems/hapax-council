@@ -48,11 +48,14 @@ def test_csqc_dynamic_lights_cover_all_physical_ward_panes() -> None:
     body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
 
     assert body.count("screwm_add_ward_light('") == 36
+    assert body.count('screwm_read_norm("data/ward-active-') == 36
+    assert "active * 74" in body
     assert 'cvar("screwm_csqc_lightfield") < 0' in body
 
     for idx in range(1, 37):
         x, y, z = map_module["ward_anchor_position"](idx)
         assert f"screwm_add_ward_light('{x} {y} {z}'" in body
+        assert f"screwm_active_{idx:02d}" in body
 
 
 def test_darkplaces_review_camera_is_locked_by_default() -> None:
