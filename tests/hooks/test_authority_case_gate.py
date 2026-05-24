@@ -1,8 +1,8 @@
 """Tests for AuthorityCase validation in cc-task-gate.sh (SDLC Reform Slice 2).
 
 Extends cc-task-gate tests to cover the new section 10 logic:
-  - Tasks with case_id require stage >= S6 + implementation_authorized: true
-  - Tasks without case_id (pre-methodology) are allowed
+  - Source/runtime tasks with case_id require stage >= S6 + implementation_authorized: true
+  - Tasks without authority_case/case_id are blocked for mutation/release
   - Emergency bypass via HAPAX_METHODOLOGY_EMERGENCY=1 logged to ledger
   - Docs mutations require docs_mutation_authorized or source_mutation_authorized
   - Missing/false implementation_authorized → reject
@@ -33,6 +33,7 @@ def _make_case_vault(
     impl_authorized: str = "",
     src_authorized: str = "",
     docs_authorized: str = "",
+    runtime_authorized: str = "",
     release_authorized: str = "",
     public_current: str = "",
 ) -> Path:
@@ -49,6 +50,10 @@ def _make_case_vault(
     ]
     if case_id:
         lines.append(f"case_id: {case_id}")
+        lines.append(f"parent_spec: {tmp_path / 'parent-spec.md'}")
+        lines.append("route_metadata_schema: 1")
+        lines.append("mutation_scope_refs:")
+        lines.append(f"  - {REPO_ROOT}/")
     if stage:
         lines.append(f"stage: {stage}")
     if impl_authorized:
@@ -57,6 +62,8 @@ def _make_case_vault(
         lines.append(f"source_mutation_authorized: {src_authorized}")
     if docs_authorized:
         lines.append(f"docs_mutation_authorized: {docs_authorized}")
+    if runtime_authorized:
+        lines.append(f"runtime_mutation_authorized: {runtime_authorized}")
     if release_authorized:
         lines.append(f"release_authorized: {release_authorized}")
     if public_current:
@@ -116,7 +123,7 @@ def _run(
 EDIT_INPUT = {
     "tool_name": "Edit",
     "tool_input": {
-        "file_path": "/home/hapax/projects/hapax-council/agents/foo.py",
+        "file_path": str(REPO_ROOT / "agents" / "foo.py"),
         "old_string": "a",
         "new_string": "b",
     },
@@ -125,7 +132,7 @@ EDIT_INPUT = {
 DOCS_EDIT_INPUT = {
     "tool_name": "Edit",
     "tool_input": {
-        "file_path": "/home/hapax/projects/hapax-council/docs/bar.md",
+        "file_path": str(REPO_ROOT / "docs" / "bar.md"),
         "old_string": "a",
         "new_string": "b",
     },
@@ -141,13 +148,19 @@ PR_CREATE_INPUT = {
     "tool_input": {"command": "gh pr create --title 'test'"},
 }
 
+MCP_PR_CREATE_INPUT = {
+    "tool_name": "mcp__github__create_pull_request",
+    "tool_input": {"owner": "hapax-systems", "repo": "hapax-council"},
+}
 
-class TestPreMethodologyTasksAllowed:
-    def test_task_without_case_id_allowed(self, tmp_path: Path) -> None:
+
+class TestMissingAuthorityTasksBlocked:
+    def test_task_without_authority_case_blocked(self, tmp_path: Path) -> None:
         home = _make_case_vault(tmp_path, status="in_progress")
         _write_claim(home, "alpha", "test-case-001")
         result = _run(HOOK, EDIT_INPUT, home=home)
-        assert result.returncode == 0
+        assert result.returncode == 2
+        assert "no authority_case" in result.stderr
 
 
 class TestAuthorityCaseStageGate:
@@ -158,6 +171,7 @@ class TestAuthorityCaseStageGate:
             stage="S6_implementation",
             impl_authorized="true",
             src_authorized="true",
+            runtime_authorized="false",
         )
         _write_claim(home, "alpha", "test-case-001")
         result = _run(HOOK, EDIT_INPUT, home=home)
@@ -186,6 +200,19 @@ class TestAuthorityCaseStageGate:
         result = _run(HOOK, EDIT_INPUT, home=home)
         assert result.returncode == 2
 
+    def test_missing_stage_blocks_source_mutation(self, tmp_path: Path) -> None:
+        home = _make_case_vault(
+            tmp_path,
+            case_id="CASE-001",
+            impl_authorized="true",
+            src_authorized="true",
+            runtime_authorized="false",
+        )
+        _write_claim(home, "alpha", "test-case-001")
+        result = _run(HOOK, EDIT_INPUT, home=home)
+        assert result.returncode == 2
+        assert "stage" in result.stderr.lower()
+
     def test_impl_not_authorized_blocked(self, tmp_path: Path) -> None:
         home = _make_case_vault(
             tmp_path,
@@ -204,6 +231,7 @@ class TestAuthorityCaseStageGate:
             case_id="CASE-001",
             stage="S7_verification",
             impl_authorized="true",
+            src_authorized="true",
         )
         _write_claim(home, "alpha", "test-case-001")
         result = _run(HOOK, EDIT_INPUT, home=home)
@@ -233,6 +261,21 @@ class TestDocsGate:
             impl_authorized="true",
             src_authorized="true",
             docs_authorized="false",
+            runtime_authorized="false",
+        )
+        _write_claim(home, "alpha", "test-case-001")
+        result = _run(HOOK, DOCS_EDIT_INPUT, home=home)
+        assert result.returncode == 0
+
+    def test_docs_edit_allowed_before_s6_with_docs_auth(self, tmp_path: Path) -> None:
+        home = _make_case_vault(
+            tmp_path,
+            case_id="CASE-001",
+            stage="S4_evidence",
+            impl_authorized="false",
+            src_authorized="false",
+            docs_authorized="true",
+            runtime_authorized="false",
         )
         _write_claim(home, "alpha", "test-case-001")
         result = _run(HOOK, DOCS_EDIT_INPUT, home=home)
@@ -271,6 +314,7 @@ class TestAuthorizationPacketValidator:
             impl_authorized="true",
             src_authorized="true",
             docs_authorized="false",
+            runtime_authorized="false",
             release_authorized="false",
             public_current="false",
         )
@@ -286,6 +330,7 @@ class TestAuthorizationPacketValidator:
             impl_authorized="false",
             src_authorized="false",
             docs_authorized="false",
+            runtime_authorized="false",
             release_authorized="false",
             public_current="false",
         )
@@ -314,6 +359,7 @@ class TestAuthorizationPacketValidator:
             impl_authorized="true",
             src_authorized="true",
             docs_authorized="false",
+            runtime_authorized="false",
             release_authorized="true",
             public_current="false",
         )
@@ -322,11 +368,29 @@ class TestAuthorizationPacketValidator:
         assert result.returncode == 2
         assert "shadow" in result.stderr.lower()
 
-    def test_pre_methodology_push_allowed(self, tmp_path: Path) -> None:
+    def test_missing_authority_push_blocked(self, tmp_path: Path) -> None:
         home = _make_case_vault(tmp_path, status="in_progress")
         _write_claim(home, "alpha", "test-case-001")
         result = _run(VALIDATOR, PUSH_INPUT, home=home)
-        assert result.returncode == 0
+        assert result.returncode == 2
+        assert "lacks governed task authority" in result.stderr
+
+    def test_nullish_authority_push_blocked(self, tmp_path: Path) -> None:
+        home = _make_case_vault(
+            tmp_path,
+            case_id="null",
+            stage="S6_implementation",
+            impl_authorized="true",
+            src_authorized="true",
+            docs_authorized="false",
+            runtime_authorized="false",
+            release_authorized="false",
+            public_current="false",
+        )
+        _write_claim(home, "alpha", "test-case-001")
+        result = _run(VALIDATOR, PUSH_INPUT, home=home)
+        assert result.returncode == 2
+        assert "lacks governed task authority" in result.stderr
 
     def test_pr_create_gated(self, tmp_path: Path) -> None:
         home = _make_case_vault(
@@ -336,9 +400,16 @@ class TestAuthorizationPacketValidator:
             impl_authorized="false",
             src_authorized="false",
             docs_authorized="false",
+            runtime_authorized="false",
             release_authorized="false",
             public_current="false",
         )
         _write_claim(home, "alpha", "test-case-001")
         result = _run(VALIDATOR, PR_CREATE_INPUT, home=home)
         assert result.returncode == 2
+
+    def test_mcp_pr_create_requires_claim(self, tmp_path: Path) -> None:
+        home = _make_case_vault(tmp_path, status="in_progress")
+        result = _run(VALIDATOR, MCP_PR_CREATE_INPUT, home=home)
+        assert result.returncode == 2
+        assert "no claimed task" in result.stderr.lower()

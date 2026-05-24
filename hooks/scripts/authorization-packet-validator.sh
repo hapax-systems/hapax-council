@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # authorization-packet-validator.sh — PreToolUse hook (Bash commands)
 #
-# Blocks git push / gh pr create / gh pr merge unless the active
+# Blocks git push / gh pr create / gh pr merge / gh api merge paths unless the active
 # AuthorityCase has a valid authorization packet with required no-go
-# fields. Tasks without case_id (pre-methodology) are allowed.
+# fields. `authority_case` is canonical; `case_id` is a legacy alias.
 #
 # Required no-go fields on every authorization packet:
 #   implementation_authorized, source_mutation_authorized,
@@ -24,16 +24,27 @@ fi
 
 INPUT="$(cat)"
 TOOL="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)" || exit 0
-[ "$TOOL" = "Bash" ] || exit 0
+release_tool=false
+case "$TOOL" in
+  Bash|exec_command_pty|exec_command|shell|shell_command|unified_exec) ;;
+  mcp__github__create_pull_request|mcp__github__merge_pull_request|mcp__github__push_files)
+    release_tool=true
+    ;;
+  *) exit 0 ;;
+esac
 
-CMD="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)" || exit 0
-[ -n "$CMD" ] || exit 0
+CMD="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // .tool_input.cmd // .tool_input.shell_command // empty' 2>/dev/null)" || exit 0
+if [[ "$release_tool" != "true" ]]; then
+  [ -n "$CMD" ] || exit 0
+fi
 
-# Only gate push/PR commands
-is_release=false
-echo "$CMD" | grep -qE '^\s*git\s+push(\s|$)' && is_release=true
-echo "$CMD" | grep -qE '^\s*gh\s+pr\s+(create|merge)(\s|$)' && is_release=true
-echo "$CMD" | grep -qE '^\s*gh\s+api.*pulls.*/merge' && is_release=true
+# Only gate release/publication paths. Match anywhere in chained commands.
+is_release="$release_tool"
+if [[ -n "$CMD" ]]; then
+  echo "$CMD" | grep -qE '(^|[;&|()[:space:]])git[[:space:]]+push([[:space:]]|$)' && is_release=true
+  echo "$CMD" | grep -qE '(^|[;&|()[:space:]])gh[[:space:]]+pr[[:space:]]+(create|merge)([[:space:]]|$)' && is_release=true
+  echo "$CMD" | grep -qE '(^|[;&|()[:space:]])gh[[:space:]]+api.*pulls.*/merge' && is_release=true
+fi
 [ "$is_release" = true ] || exit 0
 
 # Emergency bypass (early, before role resolution)
@@ -70,11 +81,14 @@ fi
 # Read claim file
 claim_file="$HOME/.cache/hapax/cc-active-task-$role"
 if [[ ! -f "$claim_file" ]]; then
-  exit 0
+  echo "authorization-packet-validator: BLOCKED — no claimed task for release/PR command." >&2
+  echo "  Release actions require a governed task claim with authority_case." >&2
+  exit 2
 fi
 task_id="$(head -n1 "$claim_file" | tr -d '[:space:]')"
 if [[ -z "$task_id" ]]; then
-  exit 0
+  echo "authorization-packet-validator: BLOCKED — claim file is empty for release/PR command." >&2
+  exit 2
 fi
 
 # Locate task note
@@ -90,7 +104,8 @@ if [[ -z "$note_path" && -f "$vault_root/active/$task_id.md" ]]; then
   note_path="$vault_root/active/$task_id.md"
 fi
 if [[ -z "$note_path" ]]; then
-  exit 0
+  echo "authorization-packet-validator: BLOCKED — claimed task '$task_id' not found for release/PR command." >&2
+  exit 2
 fi
 
 # Parse frontmatter
@@ -121,9 +136,14 @@ for line in front.splitlines():
         key, _, val = line.partition(":")
         fields[key.strip()] = val.strip().strip('"').strip("'")
 
-case_id = fields.get("case_id", "")
-if not case_id:
-    print("no_case")
+authority_case = (fields.get("authority_case") or fields.get("case_id", "")).strip()
+if authority_case.lower() in {"", "null", "none", "~", "[]"}:
+    print("no_authority_case")
+    sys.exit(0)
+
+parent_spec = fields.get("parent_spec", "")
+if parent_spec.lower() in {"", "null", "none", "~", "[]"}:
+    print("missing_parent_spec")
     sys.exit(0)
 
 required_nogo = [
@@ -164,9 +184,15 @@ print("valid")
 PYEOF
 )"
 
-# Pre-methodology tasks: allow
-if [[ "$validation" == "no_case" || "$validation" == "no_frontmatter" ]]; then
-  exit 0
+if [[ "$validation" == "no_authority_case" || "$validation" == "no_frontmatter" || "$validation" == "missing_parent_spec" ]]; then
+  cat >&2 <<EOF
+authorization-packet-validator: BLOCKED — release/PR command lacks governed task authority.
+
+  Validation: $validation
+  Task: $task_id
+  Note: $note_path
+EOF
+  exit 2
 fi
 
 # Emergency bypass

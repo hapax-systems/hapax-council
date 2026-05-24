@@ -36,6 +36,35 @@ fi
 input="$(cat)"
 tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || echo "")"
 
+bash_cmd=""
+mutation_surface_hint="source"
+
+bash_is_mutating() {
+  local cmd="$1"
+  # Match known write/runtime/release families. Read-only shell remains
+  # available without a claim so blocked lanes can inspect and report state.
+  printf '%s' "$cmd" | grep -Eiq \
+    '(^|[;&|()[:space:]])((git[[:space:]]+(commit|push|apply|reset|checkout|switch|branch|merge|rebase|tag))|(gh[[:space:]]+(api|pr[[:space:]]+(create|merge|edit|close|reopen)|repo|release))|(python[0-9.]*[[:space:]]*<<)|(python[0-9.]*[[:space:]].*(-c|--command).*([.]write_text|[.]write_bytes|open\(|shutil[.]|os[.](remove|unlink|rename|replace)|Path\())|(sed[[:space:]].*-i)|(perl[[:space:]].*-p?i)|(tee([[:space:]]|$))|(cat[[:space:]].*>[[:space:]])|(cp|install|touch|truncate|chmod|chown|mkdir|rm|mv)([[:space:]]|$)|(uv[[:space:]]+pip[[:space:]]+install)|(pip3?[[:space:]]+install)|(pacman|paru|apt|dnf|npm|pnpm|yarn)([[:space:]]|$)|(systemctl|journalctl[[:space:]].*--vacuum|ssh|scp|rsync|docker[[:space:]]+(compose[[:space:]])?(up|down|restart|rm|run|exec)|kill|pkill)([[:space:]]|$))'
+}
+
+bash_is_runtime_mutation() {
+  local cmd="$1"
+  printf '%s' "$cmd" | grep -Eiq \
+    '(^|[;&|()[:space:]])((systemctl)|(ssh|scp|rsync)([[:space:]]|$)|(uv[[:space:]]+pip[[:space:]]+install)|(pip3?[[:space:]]+install)|(pacman|paru|apt|dnf)([[:space:]]|$)|(docker[[:space:]]+(compose[[:space:]])?(up|down|restart|rm|run|exec))|(kill|pkill)([[:space:]]|$))'
+}
+
+bash_source_mutation_requires_scope() {
+  local cmd="$1"
+  printf '%s' "$cmd" | grep -Eiq \
+    '(^|[;&|()[:space:]])((git[[:space:]]+(apply|reset|checkout|switch|merge|rebase))|(python[0-9.]*[[:space:]]*<<)|(python[0-9.]*[[:space:]].*(-c|--command).*([.]write_text|[.]write_bytes|open\(|shutil[.]|os[.](remove|unlink|rename|replace)|Path\())|(sed[[:space:]].*-i)|(perl[[:space:]].*-p?i)|(tee([[:space:]]|$))|(cat[[:space:]].*>[[:space:]])|(cp|install|touch|truncate|chmod|chown|mkdir|rm|mv)([[:space:]]|$))'
+}
+
+github_tool_is_mutating() {
+  local name="$1"
+  printf '%s' "$name" | grep -Eiq \
+    '(create|update|delete|merge|push|commit|file|branch|tag|release|pull_request|issue_comment)'
+}
+
 # --- 2. Only gate file-mutating tools ---
 # Covers Claude Code (Edit/Write/Bash) AND Codex (apply_patch/exec_command_pty)
 # tool names. The codex-hook-adapter normalizes before calling this script, but
@@ -45,10 +74,17 @@ case "$tool_name" in
     ;;
   Bash|exec_command_pty|exec_command|shell|shell_command|unified_exec)
     bash_cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // .tool_input.cmd // .tool_input.shell_command // empty' 2>/dev/null || echo "")"
-    case "$bash_cmd" in
-      *"git commit"*|*"git push"*|*" > "*|*" >> "*|*"rm "*|*"mv "*) ;;
-      *) exit 0 ;;
-    esac
+    if ! bash_is_mutating "$bash_cmd"; then
+      exit 0
+    fi
+    if bash_is_runtime_mutation "$bash_cmd"; then
+      mutation_surface_hint="runtime"
+    fi
+    ;;
+  mcp__github__*)
+    if ! github_tool_is_mutating "$tool_name"; then
+      exit 0
+    fi
     ;;
   *)
     exit 0
@@ -196,10 +232,11 @@ if ! command -v python3 &>/dev/null; then
   exit 2
 fi
 
-# Use a tiny inline python to extract status + assigned_to + blocked_reason
-# + AuthorityCase fields (case_id, stage, implementation_authorized,
-# source_mutation_authorized, docs_mutation_authorized).
-# Output format: "status\tassigned_to\tblocked_reason\tcase_id\tstage\timpl_auth\tsrc_auth\tdocs_auth"
+# Use a tiny inline python to extract status + assignment + AuthorityCase
+# fields. `authority_case` is canonical; `case_id` is accepted only as a
+# backwards-compatible alias.
+# Output format:
+# status assigned blocked authority parent_spec route_schema stage impl src docs runtime scope_refs
 parse_output="$(python3 - "$note_path" <<'PYEOF'
 import sys
 from pathlib import Path
@@ -215,31 +252,77 @@ if end < 0:
     sys.exit(0)
 front = text[4:end]
 fields = {}
-for line in front.splitlines():
-    line = line.strip()
-    if ":" in line:
-        key, _, val = line.partition(":")
-        fields[key.strip()] = val.strip().strip('"').strip("'")
+lines = front.splitlines()
+idx = 0
+def normalize_value(key, val):
+    val = val.strip().strip('"').strip("'")
+    if key == "mutation_scope_refs" and val.startswith("[") and val.endswith("]"):
+        inner = val[1:-1].strip()
+        if not inner:
+            return ""
+        items = [
+            part.strip().strip('"').strip("'")
+            for part in inner.split(",")
+            if part.strip()
+        ]
+        return "\x1f".join(items)
+    return val
+while idx < len(lines):
+    raw = lines[idx]
+    line = raw.strip()
+    idx += 1
+    if not line or line.startswith("#") or ":" not in line:
+        continue
+    key, _, val = line.partition(":")
+    key = key.strip()
+    val = normalize_value(key, val)
+    if val:
+        fields[key] = val
+        continue
+    items = []
+    while idx < len(lines):
+        child = lines[idx].strip()
+        if child.startswith("- "):
+            items.append(child[2:].strip().strip('"').strip("'"))
+            idx += 1
+            continue
+        if not child:
+            idx += 1
+            continue
+        break
+    fields[key] = "\x1f".join(items)
 status = fields.get("status", "")
 assigned = fields.get("assigned_to", "")
 blocked_reason = fields.get("blocked_reason", "")
-case_id = fields.get("case_id", "")
+authority_case = fields.get("authority_case") or fields.get("case_id", "")
+parent_spec = fields.get("parent_spec", "")
+route_schema = fields.get("route_metadata_schema", "")
 stage = fields.get("stage", "")
 impl_auth = fields.get("implementation_authorized", "")
 src_auth = fields.get("source_mutation_authorized", "")
 docs_auth = fields.get("docs_mutation_authorized", "")
-print(f"{status}\t{assigned}\t{blocked_reason}\t{case_id}\t{stage}\t{impl_auth}\t{src_auth}\t{docs_auth}")
+runtime_auth = fields.get("runtime_mutation_authorized", "")
+scope_refs = fields.get("mutation_scope_refs", "")
+print(
+    f"{status}\t{assigned}\t{blocked_reason}\t{authority_case}\t{parent_spec}\t"
+    f"{route_schema}\t{stage}\t{impl_auth}\t{src_auth}\t{docs_auth}\t"
+    f"{runtime_auth}\t{scope_refs}"
+)
 PYEOF
 )"
 
 status="$(printf '%s' "$parse_output" | cut -f1)"
 assigned="$(printf '%s' "$parse_output" | cut -f2)"
 blocked_reason="$(printf '%s' "$parse_output" | cut -f3)"
-case_id="$(printf '%s' "$parse_output" | cut -f4)"
-case_stage="$(printf '%s' "$parse_output" | cut -f5)"
-impl_authorized="$(printf '%s' "$parse_output" | cut -f6)"
-src_authorized="$(printf '%s' "$parse_output" | cut -f7)"
-docs_authorized="$(printf '%s' "$parse_output" | cut -f8)"
+authority_case="$(printf '%s' "$parse_output" | cut -f4)"
+parent_spec="$(printf '%s' "$parse_output" | cut -f5)"
+route_schema="$(printf '%s' "$parse_output" | cut -f6)"
+case_stage="$(printf '%s' "$parse_output" | cut -f7)"
+impl_authorized="$(printf '%s' "$parse_output" | cut -f8)"
+src_authorized="$(printf '%s' "$parse_output" | cut -f9)"
+docs_authorized="$(printf '%s' "$parse_output" | cut -f10)"
+runtime_authorized="$(printf '%s' "$parse_output" | cut -f11)"
+mutation_scope_refs="$(printf '%s' "$parse_output" | cut -f12-)"
 
 # --- 8. Check assigned_to ---
 if [[ "$assigned" != "$role" ]]; then
@@ -254,52 +337,15 @@ EOF
 fi
 
 # --- 9. Check status ---
+_transition_claimed=false
 case "$status" in
   in_progress)
     # Status OK — fall through to AuthorityCase validation (section 10).
     ;;
   claimed)
-    # Auto-transition claimed → in_progress on first mutation.
-    # The hook itself does the transition (atomic via tmp+rename inside
-    # python) so the session doesn't need a separate cc-start helper.
-    python3 - "$note_path" <<'PYEOF'
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
-
-path = Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
-now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-new_text = text.replace(
-    "status: claimed", "status: in_progress", 1
-).replace(
-    "updated_at: ", f"updated_at: {now}\n# was: ", 1
-).replace(
-    "## Session log\n",
-    f"## Session log\n- {now} hook transitioned claimed → in_progress on first mutation\n",
-    1,
-)
-# Use replace-line for updated_at instead of the hacky # was: dance.
-import re
-text2 = re.sub(
-    r"^updated_at:.*$",
-    f"updated_at: {now}",
-    text,
-    count=1,
-    flags=re.MULTILINE,
-)
-text3 = text2.replace(
-    "status: claimed", "status: in_progress", 1
-).replace(
-    "## Session log\n",
-    f"## Session log\n- {now} hook transitioned claimed → in_progress on first mutation\n",
-    1,
-)
-tmp = path.with_suffix(path.suffix + ".tmp")
-tmp.write_text(text3, encoding="utf-8")
-tmp.replace(path)
-PYEOF
-    exit 0
+    # Defer claimed → in_progress until after AuthorityCase/scope validation.
+    # A denied first mutation must not leave the task note marked active.
+    _transition_claimed=true
     ;;
   blocked)
     cat >&2 <<EOF
@@ -349,11 +395,60 @@ EOF
 esac
 
 # --- 10. AuthorityCase validation (SDLC Reform Slice 2) ---
-# If the task has a case_id, it's under the AuthorityCase methodology.
-# Validate that the case stage and authorization fields allow mutation.
-# Tasks without case_id predate the methodology — allowed (migration compat).
-if [[ -z "$case_id" ]]; then
-  exit 0
+# `authority_case` is canonical for current cc-tasks. Missing authority on a
+# mutating tool is a hard block; migration compatibility belongs in explicit
+# read-only/intake paths, not source/runtime mutation.
+is_nullish() {
+  local value
+  value="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | xargs)"
+  case "$value" in
+    ""|null|none|"~"|"[]") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if is_nullish "$authority_case"; then
+  cat >&2 <<EOF
+cc-task-gate: BLOCKED — mutating task '$task_id' has no authority_case.
+
+  Task: $note_path
+  Current field may be missing or legacy-only. Modern mutating work requires
+  authority_case plus a non-null parent_spec before any source/runtime change.
+EOF
+  exit 2
+fi
+
+if is_nullish "$parent_spec"; then
+  cat >&2 <<EOF
+cc-task-gate: BLOCKED — mutating task '$task_id' has no non-null parent_spec.
+
+  AuthorityCase: $authority_case
+  Task: $note_path
+
+  Create or attach the parent request/spec first. Read-only diagnosis and
+  governed bootstrap note creation remain allowed; source/runtime mutation does not.
+EOF
+  exit 2
+fi
+
+if is_nullish "$route_schema"; then
+  cat >&2 <<EOF
+cc-task-gate: BLOCKED — mutating task '$task_id' lacks route_metadata_schema.
+
+  AuthorityCase: $authority_case
+  Task: $note_path
+EOF
+  exit 2
+fi
+
+# Direct docs/report mutations are allowed to happen before implementation
+# when the task explicitly authorizes docs mutation. Source/runtime mutation
+# still requires S6 + implementation authorization below.
+_is_docs_edit=false
+if [[ -n "$edit_path" ]]; then
+  case "$edit_path" in
+    */docs/*|*/CLAUDE.md|*/README.md|*.md) _is_docs_edit=true ;;
+  esac
 fi
 
 # Emergency bypass with audit logging
@@ -361,7 +456,7 @@ if [[ "${HAPAX_METHODOLOGY_EMERGENCY:-0}" == "1" ]]; then
   _emergency_ledger="$HOME/.cache/hapax/methodology-emergency-ledger.jsonl"
   mkdir -p "$(dirname "$_emergency_ledger")"
   printf '{"ts":"%s","role":"%s","task":"%s","case":"%s","tool":"%s"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task_id" "$case_id" "$tool_name" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task_id" "$authority_case" "$tool_name" \
     >> "$_emergency_ledger"
   echo "cc-task-gate: EMERGENCY BYPASS — logged to $_emergency_ledger" >&2
   exit 0
@@ -372,9 +467,9 @@ _stage_num=""
 if [[ "$case_stage" =~ ^S([0-9]+) ]]; then
   _stage_num="${BASH_REMATCH[1]}"
 fi
-if [[ -n "$_stage_num" && "$_stage_num" -lt 6 ]]; then
+if [[ "$_is_docs_edit" != "true" && ( -z "$_stage_num" || "$_stage_num" -lt 6 ) ]]; then
   cat >&2 <<EOF
-cc-task-gate: BLOCKED — AuthorityCase '$case_id' is at stage '$case_stage' (< S6).
+cc-task-gate: BLOCKED — AuthorityCase '$authority_case' has invalid or insufficient stage '$case_stage' (< S6).
 
   Implementation requires stage >= S6 with implementation_authorized: true.
   Task: $note_path
@@ -385,9 +480,9 @@ EOF
 fi
 
 # implementation_authorized must be true
-if [[ "$impl_authorized" != "true" ]]; then
+if [[ "$_is_docs_edit" != "true" && "$impl_authorized" != "true" ]]; then
   cat >&2 <<EOF
-cc-task-gate: BLOCKED — AuthorityCase '$case_id' does not have implementation_authorized: true.
+cc-task-gate: BLOCKED — AuthorityCase '$authority_case' does not have implementation_authorized: true.
 
   Current value: implementation_authorized: $impl_authorized
   Task: $note_path
@@ -398,20 +493,11 @@ EOF
   exit 2
 fi
 
-# Determine if this is a docs-only mutation
-_is_docs_edit=false
-if [[ -n "$edit_path" ]]; then
-  case "$edit_path" in
-    */docs/*|*/CLAUDE.md|*/README.md|*/.md) _is_docs_edit=true ;;
-  esac
-fi
-
-# For docs mutations, check docs_mutation_authorized
 if [[ "$_is_docs_edit" == "true" && "$docs_authorized" != "true" ]]; then
   # Source mutation auth subsumes docs if source is authorized
   if [[ "$src_authorized" != "true" ]]; then
     cat >&2 <<EOF
-cc-task-gate: BLOCKED — AuthorityCase '$case_id' does not authorize docs mutation.
+cc-task-gate: BLOCKED — AuthorityCase '$authority_case' does not authorize docs mutation.
 
   docs_mutation_authorized: $docs_authorized
   source_mutation_authorized: $src_authorized
@@ -422,6 +508,144 @@ cc-task-gate: BLOCKED — AuthorityCase '$case_id' does not authorize docs mutat
 EOF
     exit 2
   fi
+fi
+
+if [[ "$mutation_surface_hint" == "runtime" && "$runtime_authorized" != "true" ]]; then
+  cat >&2 <<EOF
+cc-task-gate: BLOCKED — AuthorityCase '$authority_case' does not authorize runtime mutation.
+
+  runtime_mutation_authorized: $runtime_authorized
+  Command: ${bash_cmd:0:160}
+  Task: $note_path
+
+  Read-only runtime inspection remains allowed; restart/install/remote/process
+  mutation requires an explicit runtime task.
+EOF
+  exit 2
+fi
+
+if [[ "$_is_docs_edit" != "true" && "$mutation_surface_hint" != "runtime" && "$src_authorized" != "true" ]]; then
+  cat >&2 <<EOF
+cc-task-gate: BLOCKED — AuthorityCase '$authority_case' does not authorize source mutation.
+
+  source_mutation_authorized: $src_authorized
+  File: ${edit_path:-"(shell/mcp mutation)"}
+  Task: $note_path
+EOF
+  exit 2
+fi
+
+if [[ -z "$edit_path" && -n "$bash_cmd" && "$mutation_surface_hint" != "runtime" ]] \
+  && bash_source_mutation_requires_scope "$bash_cmd"; then
+  cat >&2 <<EOF
+cc-task-gate: BLOCKED — cannot verify mutation_scope_refs for shell source mutation.
+
+  Command: ${bash_cmd:0:160}
+  Task: $note_path
+EOF
+  exit 2
+fi
+
+if [[ -n "$edit_path" ]]; then
+  scope_check="$(python3 - "$edit_path" "$mutation_scope_refs" <<'PYEOF'
+import os
+import sys
+from pathlib import Path
+
+target_raw, scope_blob = sys.argv[1], sys.argv[2]
+if not scope_blob.strip():
+    print("missing")
+    sys.exit(0)
+
+target = Path(target_raw)
+if not target.is_absolute():
+    target = Path.cwd() / target
+try:
+    target_resolved = target.resolve(strict=False)
+except Exception:
+    target_resolved = target.absolute()
+
+allowed = False
+for raw in scope_blob.split("\x1f"):
+    item = raw.strip()
+    if not item or item.startswith(("cc-task:", "request:")):
+        continue
+    scope = Path(os.path.expanduser(item))
+    if not scope.is_absolute():
+        scope = Path.cwd() / scope
+    try:
+        scope_resolved = scope.resolve(strict=False)
+    except Exception:
+        scope_resolved = scope.absolute()
+    if str(scope_resolved).endswith(os.sep):
+        if str(target_resolved).startswith(str(scope_resolved)):
+            allowed = True
+            break
+    if target_resolved == scope_resolved:
+        allowed = True
+        break
+    if scope.exists() and scope.is_dir():
+        try:
+            target_resolved.relative_to(scope_resolved)
+            allowed = True
+            break
+        except ValueError:
+            pass
+
+print("allowed" if allowed else "denied")
+PYEOF
+)"
+  case "$scope_check" in
+    allowed) ;;
+    missing)
+      cat >&2 <<EOF
+cc-task-gate: BLOCKED — task '$task_id' has no mutation_scope_refs for direct file mutation.
+
+  File: $edit_path
+  Task: $note_path
+EOF
+      exit 2
+      ;;
+    *)
+      cat >&2 <<EOF
+cc-task-gate: BLOCKED — file is outside this task's declared mutation_scope_refs.
+
+  File: $edit_path
+  Task: $note_path
+EOF
+      exit 2
+      ;;
+  esac
+fi
+
+if [[ "$_transition_claimed" == "true" ]]; then
+  python3 - "$note_path" <<'PYEOF'
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+text2 = re.sub(
+    r"^updated_at:.*$",
+    f"updated_at: {now}",
+    text,
+    count=1,
+    flags=re.MULTILINE,
+)
+text3 = text2.replace(
+    "status: claimed", "status: in_progress", 1
+).replace(
+    "## Session log\n",
+    f"## Session log\n- {now} hook transitioned claimed → in_progress on first mutation\n",
+    1,
+)
+tmp = path.with_suffix(path.suffix + ".tmp")
+tmp.write_text(text3, encoding="utf-8")
+tmp.replace(path)
+PYEOF
 fi
 
 exit 0

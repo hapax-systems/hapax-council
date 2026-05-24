@@ -637,18 +637,14 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
       DISPATCHABLE_COUNT="$(jq -r '.dispatch.dispatchable_count // 0' "$PLANNING_FEED" 2>/dev/null || echo 0)"
       PLANNING_COUNT="$(jq -r '.dispatch.planning_attention_count // 0' "$PLANNING_FEED" 2>/dev/null || echo 0)"
       if [ "$HAS_ACTIVE_CLAIM" != "true" ]; then
+        echo ""
         if [ "$DISPATCHABLE_COUNT" -gt 0 ]; then
-          echo ""
-          echo "ELIGIBLE WORK (${DISPATCHABLE_COUNT} dispatchable, ranking wsjf_v0):"
-          jq -r '
-            .dispatch.dispatchable_tasks[:5]
-            | to_entries[]
-            | "  \(.key + 1). \(.value.task_id) (WSJF \(.value.wsjf), \(.value.authority_case))"
-          ' "$PLANNING_FEED" 2>/dev/null || true
+          echo "DISPATCHABLE WORK: ${DISPATCHABLE_COUNT} item(s) exist, but this lane must wait for governed dispatch."
         else
-          echo ""
-          echo "ELIGIBLE WORK: no dispatchable tasks — all work claimed, blocked, or awaiting authority"
+          echo "DISPATCHABLE WORK: none currently dispatchable — wait for governed dispatch or report idle."
         fi
+        echo "  Do not self-claim from WSJF/top-offered lists."
+        echo "  Required path: scripts/hapax-methodology-dispatch --task <id> --lane ${ROLE} --platform <platform> --mode <mode>"
       fi
       if [ "$PLANNING_COUNT" -gt 0 ]; then
         echo ""
@@ -705,36 +701,7 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
         echo "  Claimed: $CLAIMED_ID (note missing in vault — re-claim or check moved-to-closed)"
       fi
     else
-      echo "  Claimed: (none — see top-offered below; cc-claim <task_id> to start)"
-    fi
-    # Top 5 offered tasks by WSJF descending. Pure-grep approach so we
-    # don't add a python dep to the SessionStart preamble.
-    if [ -d "$CC_TASKS_VAULT/active" ]; then
-      OFFERED_LINES=$(
-        for note in "$CC_TASKS_VAULT/active/"*.md; do
-          [ -f "$note" ] || continue
-          grep -q '^status: offered$' "$note" 2>/dev/null || continue
-          # Filter on `kind:` discriminator: build sessions skip
-          # operator_action / recovery_triage / watcher / research_packet /
-          # verification work. Tasks without `kind:` are implicitly
-          # `build` (default) and still appear, preserving prior behavior
-          # for unmigrated notes.
-          KIND=$(grep '^kind:' "$note" | head -1 | sed 's/^kind: *//' | tr -d '[:space:]')
-          if [ -n "$KIND" ] && [ "$KIND" != "build" ]; then
-            continue
-          fi
-          WSJF=$(grep '^wsjf:' "$note" | head -1 | sed 's/^wsjf: *//' | tr -d '[:space:]')
-          ID=$(grep '^task_id:' "$note" | head -1 | sed 's/^task_id: *//' | tr -d '[:space:]')
-          TITLE=$(grep '^title:' "$note" | head -1 | sed 's/^title: *//; s/^"//; s/"$//')
-          # Clamp WSJF to 0 if missing/empty for sort stability.
-          [ -z "$WSJF" ] && WSJF=0.0
-          printf '%s\t%s\t%s\n' "$WSJF" "$ID" "$TITLE"
-        done | sort -t'	' -k1,1 -nr | head -5
-      )
-      if [ -n "$OFFERED_LINES" ]; then
-        echo "  Top offered (by WSJF):"
-        echo "$OFFERED_LINES" | awk -F'\t' '{printf "    [%.1f] %s — %s\n", $1, $2, $3}'
-      fi
+      echo "  Claimed: (none — await governed dispatch; do not self-claim by WSJF)"
     fi
     echo "  Dashboard: open Obsidian → 20-projects/hapax-cc-tasks/_dashboard/cc-active"
   fi

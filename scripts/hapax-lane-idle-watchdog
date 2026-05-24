@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# hapax-lane-idle-watchdog — pane-content idle detection + auto-redispatch.
+# hapax-lane-idle-watchdog — pane-content idle detection + governed reminders.
 #
 # Problem: lanes finish tasks and sit at their prompt producing nothing.
 # Existing monitoring (systemd, tmux has-session, process alive) all say
 # "fine" because the process IS running — it's just not working.
 #
 # Solution: capture each lane's pane, detect platform-specific idle state,
-# track how long each lane has been idle, and auto-redispatch from the
-# WSJF queue once the threshold is exceeded.
+# track how long each lane has been idle, and remind already-claimed lanes.
+# New work assignment is intentionally outside this watchdog; it must flow
+# through hapax-methodology-dispatch --launch.
 #
 # Platforms:
 #   Claude:  idle = "❯" prompt visible + no active tool indicators
@@ -15,7 +16,7 @@
 #   Gemini:  idle = input box visible (▄/▀ bars) with no streaming output
 #
 # Runs as systemd oneshot (hapax-lane-idle-watchdog.timer, every 2 min).
-# Dispatches ALL idle lanes per tick. Cooldown: 120s per lane between kicks.
+# Nudges ALL idle lanes per tick. Cooldown: 120s per lane between kicks.
 set -euo pipefail
 
 # ─── Configuration ───────────────────────────────────────────────────────────
@@ -28,7 +29,6 @@ NTFY_TOPIC="${HAPAX_NTFY_TOPIC:-hapax}"
 NTFY_URL="${HAPAX_NTFY_URL:-http://localhost:8092}"
 CLAUDE_SEND="${HOME}/projects/hapax-council/scripts/hapax-claude-send"
 CODEX_SEND="${HOME}/projects/hapax-council/scripts/hapax-codex-send"
-METHODOLOGY_DISPATCH="${HAPAX_METHODOLOGY_DISPATCH:-$HOME/.local/bin/hapax-methodology-dispatch}"
 
 # Skip alpha (integrator, always has operator) and RTE
 SKIP_LANES="${HAPAX_IDLE_SKIP_LANES:-alpha}"
@@ -174,7 +174,7 @@ if [ -x "$CLAUDE_LAUNCHER" ]; then
                 log "LAUNCHING missing lane: $role"
                 echo "$now" > "$cooldown_file"
                 launch_err="$STATE_DIR/${session}.launch.err"
-                if "$CLAUDE_LAUNCHER" --role "$role" --terminal tmux >"$launch_err" 2>&1; then
+                if "$CLAUDE_LAUNCHER" --role "$role" --terminal tmux --readonly >"$launch_err" 2>&1; then
                     launched_lanes=$((launched_lanes + 1))
                     curl -sf -d "Lane idle watchdog: launched $role (session missing)" \
                         -H "Title: Lane auto-launched" \
@@ -210,8 +210,7 @@ if [ -x "$CLAUDE_LAUNCHER" ]; then
                     else
                         log "REVIVING dead Claude in $session (pane_cmd=$pane_cmd)"
                         echo "$now" > "$cooldown_file"
-                        tmux send-keys -t "$session" "claude --resume" Enter 2>/dev/null || \
-                            tmux send-keys -t "$session" "claude" Enter 2>/dev/null || true
+                        tmux send-keys -t "$session" "$CLAUDE_LAUNCHER --role $role --readonly" Enter 2>/dev/null || true
                         revived_lanes=$((revived_lanes + 1))
                         curl -sf -d "Lane idle watchdog: revived $role (Claude had exited, pane was $pane_cmd)" \
                             -H "Title: Lane revived" \
@@ -244,21 +243,8 @@ if [ -x "$CODEX_LAUNCHER" ]; then
 
         if ! tmux has-session -t "$session" 2>/dev/null; then
             if [ -d "$worktree" ]; then
-                log "LAUNCHING missing Codex lane: $color"
+                log "SKIPPING missing Codex lane $color: governed task binding required for auto-launch"
                 echo "$now" > "$cooldown_file"
-                launch_err="$STATE_DIR/${session}.launch.err"
-                if "$CODEX_LAUNCHER" --session "$color" --cd "$worktree" --terminal tmux >"$launch_err" 2>&1; then
-                    launched_lanes=$((launched_lanes + 1))
-                    curl -sf -d "Lane idle watchdog: launched Codex $color (session missing)" \
-                        -H "Title: Codex lane auto-launched" \
-                        -H "Priority: default" \
-                        -H "Tags: rocket" \
-                        "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
-                else
-                    launch_reason="$(tr '\n' ' ' <"$launch_err" 2>/dev/null | head -c 240 || true)"
-                    log "FAILED to launch Codex lane $color: ${launch_reason:-unknown launcher failure}"
-                fi
-                rm -f "$launch_err" 2>/dev/null || true
             else
                 log "WARN: Codex worktree missing for $color at $worktree"
             fi
@@ -277,16 +263,8 @@ if [ -x "$CODEX_LAUNCHER" ]; then
                     if [ "$codex_tui" = true ]; then
                         : # Codex runs as node child — TUI visible, not dead
                     else
-                        log "REVIVING dead Codex in $session (pane_cmd=$pane_cmd)"
+                        log "SKIPPING dead Codex revive in $session (pane_cmd=$pane_cmd): governed task binding required"
                         echo "$now" > "$cooldown_file"
-                        tmux send-keys -t "$session" "cd $worktree && codex --resume" Enter 2>/dev/null || \
-                            tmux send-keys -t "$session" "cd $worktree && codex" Enter 2>/dev/null || true
-                        revived_lanes=$((revived_lanes + 1))
-                        curl -sf -d "Lane idle watchdog: revived Codex $color (pane was $pane_cmd)" \
-                            -H "Title: Codex lane revived" \
-                            -H "Priority: default" \
-                            -H "Tags: recycle" \
-                            "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
                     fi
                     ;;
             esac
@@ -360,39 +338,7 @@ if [ "$idle_count" -eq 0 ]; then
     exit 0
 fi
 
-# ─── Dispatch ALL idle lanes past cooldown ──────────────────────────────────
-
-pick_next_offered() {
-    local skip_lane="$1"
-    if [ ! -d "$TASK_ROOT" ]; then
-        return 0
-    fi
-    # Find offered+unassigned tasks, sort by WSJF descending, return top task_id
-    python3 -c "
-import os, re, sys
-from pathlib import Path
-task_root = Path('$TASK_ROOT')
-offered = []
-for f in task_root.glob('*.md'):
-    text = f.read_text()
-    status_m = re.search(r'^status:\s*(\S+)', text, re.M)
-    assigned_m = re.search(r'^assigned_to:\s*(.+)', text, re.M)
-    wsjf_m = re.search(r'^wsjf:\s*(\S+)', text, re.M)
-    if not status_m or status_m.group(1) != 'offered':
-        continue
-    assigned = (assigned_m.group(1).strip() if assigned_m else 'unassigned')
-    if assigned != 'unassigned':
-        continue
-    wsjf = float(wsjf_m.group(1)) if wsjf_m else 0
-    # Extract task_id (filename minus trailing descriptor)
-    task_id_m = re.match(r'^([a-zA-Z0-9_-]+?)(?:-[A-Z].*)?$', f.stem)
-    task_id = task_id_m.group(1) if task_id_m else f.stem
-    offered.append((wsjf, task_id, f.stem))
-offered.sort(reverse=True)
-for o in offered:
-    print(o[2])
-" 2>/dev/null
-}
+# ─── Nudge ALL idle lanes past cooldown ──────────────────────────────────────
 
 find_claimed_task() {
     local assignee="$1"
@@ -410,72 +356,6 @@ find_claimed_task() {
         fi
     fi
     return 1
-}
-
-REFUSE_CACHE_TTL_S="${HAPAX_REFUSE_CACHE_TTL_S:-3600}"
-
-is_dispatch_refused_cached() {
-    local lane="$1" task_id="$2"
-    local cache_file="$STATE_DIR/${lane}.${task_id}.refused"
-    [ ! -f "$cache_file" ] && return 1
-    local cached_at
-    cached_at=$(head -1 "$cache_file" 2>/dev/null || echo 0)
-    local elapsed=$((now - cached_at))
-    if [ "$elapsed" -ge "$REFUSE_CACHE_TTL_S" ]; then
-        rm -f "$cache_file" 2>/dev/null || true
-        return 1
-    fi
-    local task_file="$TASK_ROOT/${task_id}.md"
-    if [ -f "$task_file" ]; then
-        local task_mtime
-        task_mtime=$(stat -c %Y "$task_file" 2>/dev/null || echo 0)
-        if [ "$task_mtime" -gt "$cached_at" ]; then
-            rm -f "$cache_file" 2>/dev/null || true
-            return 1
-        fi
-    fi
-    return 0
-}
-
-cache_dispatch_refusal() {
-    local lane="$1" task_id="$2" reason="$3"
-    printf '%s\n%s\n' "$now" "$reason" > "$STATE_DIR/${lane}.${task_id}.refused"
-}
-
-methodology_dispatch_prompt() {
-    local task_id="$1"
-    local lane="$2"
-    local platform="$3"
-    local err_file="$STATE_DIR/${lane}.${task_id}.methodology-dispatch.err"
-    local output
-    local rc
-
-    if [ ! -x "$METHODOLOGY_DISPATCH" ]; then
-        log "METHODOLOGY DISPATCH UNAVAILABLE for $task_id -> $lane: $METHODOLOGY_DISPATCH"
-        return 127
-    fi
-
-    if output="$("$METHODOLOGY_DISPATCH" \
-        --task "$task_id" \
-        --lane "$lane" \
-        --platform "$platform" \
-        --mode headless \
-        --profile full \
-        --print-prompt \
-        2>"$err_file")"; then
-        rm -f "$err_file" 2>/dev/null || true
-        printf '%s\n' "$output"
-        return 0
-    fi
-
-    rc=$?
-    dispatch_error="$(tr '\n' ' ' <"$err_file" 2>/dev/null | head -c 240 || true)"
-    rm -f "$err_file" 2>/dev/null || true
-    if echo "$dispatch_error" | grep -qE 'BLOCKED.*(refuse|not_mutable|unsupported|prohibited)'; then
-        cache_dispatch_refusal "$lane" "$task_id" "$dispatch_error"
-    fi
-    log "METHODOLOGY DISPATCH FAILED for $task_id -> $lane ($platform): ${dispatch_error:-rc=$rc}"
-    return "$rc"
 }
 
 dispatched=0
@@ -508,39 +388,14 @@ for session in "${!IDLE_LANES[@]}"; do
         dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with an active task: $claimed. Resume work immediately. Ship a PR and cc-close --pr N after merge."
         dispatch_target="$claimed"
     else
-        # Pick candidate offered tasks, then let hapax-methodology-dispatch
-        # decide whether this lane may receive the work packet.
-        offered_list=$(pick_next_offered "$lane")
-        dispatch_ok=false
-        while IFS= read -r next_task; do
-            [ -z "$next_task" ] && continue
-            if is_dispatch_refused_cached "$lane" "$next_task"; then
-                continue
-            fi
-            log "VALIDATING methodology dispatch $next_task for $lane ($platform)"
-            if dispatch_msg="$(methodology_dispatch_prompt "$next_task" "$lane" "$platform")"; then
-                dispatch_target="$next_task"
-                dispatch_ok=true
-                break
-            else
-                log "DISPATCH VALIDATION FAILED for $next_task -> $lane (trying next)"
-            fi
-        done <<< "$offered_list"
-        if [ "$dispatch_ok" = false ]; then
-            if [ -n "$offered_list" ]; then
-                log "ALL METHODOLOGY DISPATCHES FAILED for $lane — no dispatchable tasks"
-                dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. All offered tasks failed methodology dispatch checks. Waiting for intake pipeline to produce dispatchable work."
-                dispatch_target="all-dispatches-failed"
-            else
-                log "NO OFFERED TASKS for $lane — queue empty"
-                dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. No offered tasks in queue. Waiting for intake pipeline to produce work."
-                dispatch_target="queue-empty"
-            fi
-        fi
+        log "IDLE without claim for $lane — awaiting governed dispatch"
+        dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with no active claimed task. Await governed dispatch; do not self-select queue work. Required path: scripts/hapax-methodology-dispatch --task <id> --lane ${lane} --platform ${platform} --mode <mode>."
+        dispatch_target="await-governed-dispatch"
     fi
 
-    # Context-full Claude lanes need /clear before dispatch
-    if [ "${CTX_FULL[$session]:-}" = "1" ] && [ "$platform" = "claude" ]; then
+    # Context-full Claude lanes may need /clear before reminding an already
+    # claimed lane. Unclaimed lanes are not prepared for new work here.
+    if [ -n "$claimed" ] && [ "${CTX_FULL[$session]:-}" = "1" ] && [ "$platform" = "claude" ]; then
         log "CLEARING context-full $session before dispatch"
         tmux send-keys -t "$session" "/clear" Enter 2>/dev/null
         sleep 5
