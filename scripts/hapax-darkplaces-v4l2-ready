@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# hapax-darkplaces-v4l2-ready - wait for the DarkPlaces loopback producer.
+#
+# v4l2loopback can briefly advertise only OUTPUT/write-side capabilities while
+# ffmpeg is starting. The compositor must not open /dev/video52 until the writer
+# has produced enough state for readers to see Video Capture and the expected
+# frame format.
+
+set -euo pipefail
+
+DEVICE="${HAPAX_DARKPLACES_V4L2_DEVICE:-/dev/video52}"
+WIDTH="${DARKPLACES_WIDTH:-1280}"
+HEIGHT="${DARKPLACES_HEIGHT:-720}"
+PIXEL_FORMAT="${HAPAX_DARKPLACES_V4L2_PIXEL_FORMAT:-YUYV}"
+TIMEOUT_SECONDS="${HAPAX_DARKPLACES_V4L2_READY_TIMEOUT_SECONDS:-90}"
+POLL_INTERVAL_SECONDS="${HAPAX_DARKPLACES_V4L2_READY_POLL_SECONDS:-1}"
+V4L2_CTL="${HAPAX_V4L2_CTL:-v4l2-ctl}"
+TIMEOUT_BIN="${HAPAX_TIMEOUT_BIN:-timeout}"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --device|--width|--height|--pixelformat|--timeout-seconds|--poll-interval)
+            [[ $# -ge 2 && "${2:-}" != --* ]] || {
+                echo "hapax-darkplaces-v4l2-ready: $1 requires a value" >&2
+                exit 2
+            }
+            case "$1" in
+                --device) DEVICE="$2" ;;
+                --width) WIDTH="$2" ;;
+                --height) HEIGHT="$2" ;;
+                --pixelformat) PIXEL_FORMAT="$2" ;;
+                --timeout-seconds) TIMEOUT_SECONDS="$2" ;;
+                --poll-interval) POLL_INTERVAL_SECONDS="$2" ;;
+            esac
+            shift 2
+            ;;
+        *) echo "hapax-darkplaces-v4l2-ready: unknown arg: $1" >&2; exit 2 ;;
+    esac
+done
+
+fail() {
+    echo "hapax-darkplaces-v4l2-ready: FAIL: $*" >&2
+    exit 1
+}
+
+[[ "$WIDTH" =~ ^[0-9]+$ ]] || fail "invalid width: $WIDTH"
+[[ "$HEIGHT" =~ ^[0-9]+$ ]] || fail "invalid height: $HEIGHT"
+[[ "$TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || fail "invalid timeout: $TIMEOUT_SECONDS"
+[[ "$POLL_INTERVAL_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "invalid poll interval: $POLL_INTERVAL_SECONDS"
+[[ "$PIXEL_FORMAT" =~ ^[A-Z0-9_]+$ ]] || fail "invalid pixel format: $PIXEL_FORMAT"
+
+deadline=$((SECONDS + TIMEOUT_SECONDS))
+last_error="not checked"
+
+probe_ready() {
+    if [[ ! -e "$DEVICE" ]]; then
+        last_error="device missing: $DEVICE"
+        return 1
+    fi
+
+    info="$("$TIMEOUT_BIN" 2s "$V4L2_CTL" -d "$DEVICE" --info 2>&1)" || {
+        last_error="v4l2 info failed: $info"
+        return 1
+    }
+    if ! grep -q "Video Capture" <<<"$info"; then
+        last_error="device does not advertise Video Capture yet: $info"
+        return 1
+    fi
+
+    format="$("$TIMEOUT_BIN" 2s "$V4L2_CTL" -d "$DEVICE" --get-fmt-video 2>&1)" || {
+        last_error="v4l2 format failed: $format"
+        return 1
+    }
+    if ! grep -Eq "Width/Height[[:space:]]*:[[:space:]]*${WIDTH}/${HEIGHT}" <<<"$format"; then
+        last_error="expected ${WIDTH}x${HEIGHT}; got: $format"
+        return 1
+    fi
+    if ! grep -Eq "Pixel Format[[:space:]]*:[[:space:]]*'${PIXEL_FORMAT}'" <<<"$format"; then
+        last_error="expected ${PIXEL_FORMAT}; got: $format"
+        return 1
+    fi
+
+    return 0
+}
+
+while true; do
+    if probe_ready; then
+        echo "hapax-darkplaces-v4l2-ready: OK ${DEVICE} ${WIDTH}x${HEIGHT} ${PIXEL_FORMAT}"
+        exit 0
+    fi
+
+    if (( SECONDS >= deadline )); then
+        fail "device not ready after ${TIMEOUT_SECONDS}s; last_error=${last_error}"
+    fi
+    sleep "$POLL_INTERVAL_SECONDS"
+done

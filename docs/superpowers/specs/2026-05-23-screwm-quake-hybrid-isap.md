@@ -29,7 +29,7 @@ Nothing is given up. Everything is gained.
 2. QuakeC drives camera, lighting, fog, and entity behavior based on live cognitive state (/dev/shm signals).
 3. 39 reverie shader nodes (EXCELLENT+GOOD tiers) migrate to DarkPlaces GLSL post-processing.
 4. 11 temporal shader nodes (DIFFICULT tier: feedback, echo, diff, stutter, slitscan, pixsort) remain in GStreamer glfeedback chain as post-compositor effects.
-5. All legacy wards receive in-engine spatial anchors/panes; dynamic Cairo/GStreamer ward rendering remains a temporary bridge only where DarkPlaces runtime texture limits block live content today.
+5. All legacy wards receive in-engine spatial anchors/panes and CSQC-projected identity/drift overlays; dynamic Cairo/GStreamer ward rendering remains a temporary bridge only where DarkPlaces runtime texture limits block live content today.
 6. Working mode propagation: dual BSP compilation (screwm-rnd.bsp / screwm-research.bsp) + runtime fog/brightness adjustment.
 7. QuakeHomage registered as third HomagePackage.
 8. hapax-imagination retires after Phase 4 shader port is verified.
@@ -222,12 +222,12 @@ Signature artefacts: Quake console messages (`Playing demo ...`, `Connection acc
 | Minimalism (§1.2) | Quake's dark environments + fog = black negative space canvas |
 | Proportional system (§1.3) | BSP grid-aligned (32-unit base = 1m). All geometry on grid. |
 | Color is meaning (§1.4) | Per-level texture+light colors encode semantic categories |
-| Density (§1.5) | Wards rendered small and close via compositor overlay |
+| Density (§1.5) | Ward identities rendered small and close via CSQC projection; full live contents bridge through compositor only while texture-upload limits remain |
 | Single typeface (§1.6) | JetBrains Mono for wards; Px437 for QuakeHomage artefacts |
 
 ### 9.2 HOMAGE Framework Integration
 
-QuakeHomage is a third HomagePackage alongside BitchX and Enlightenment-Moksha. The choreographer, transition FSM, and shader coupling mechanisms are unchanged — wards still render via Cairo, still use HomageTransitionalSource mixin, still emit coupling payloads to `uniforms.custom[4]`.
+QuakeHomage is a third HomagePackage alongside BitchX and Enlightenment-Moksha. The choreographer, transition FSM, and shader coupling mechanisms are unchanged for compositor-owned live ward contents, while CSQC now carries the in-engine ward identity/drift layer and the compositor path remains the bridge for richer dynamic ward surfaces until runtime texture upload is solved.
 
 The difference: when QuakeHomage is active, ward transitions use Quake-speed hard cuts (6 frames) instead of BitchX zero-chrome or Enlightenment soft envelopes (20 frames).
 
@@ -320,6 +320,17 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - Runtime evidence still pending: full production compositor launch with
   DarkPlaces as background and wards overlaid.
 
+### D7a: CSQC Ward Identity/Drift Layer [IN PROGRESS]
+- `assets/quake/csqc/csprogs.dat` loads as a DarkPlaces CSQC module.
+- CSQC preserves the server-rendered world, then projects all 35 legacy ward
+  identities onto the in-engine anchor panes using `cs_project` plus
+  `drawstring`/`drawline`.
+- CSQC reads `data/working-mode.txt`, `data/stimmung-energy.txt`, and
+  `data/voice-active.txt` from the game directory to modulate engine-side
+  ward alpha, drift links, and dynamic lights.
+- This closes the "static pane only" gap for ward identity and drift, but does
+  not yet provide arbitrary runtime texture upload for full live ward contents.
+
 ### D8: hapax-darkplaces Systemd Unit [IN PROGRESS]
 - `systemd/units/hapax-darkplaces.service`
 - Runtime opt-in gated after 2026-05-23 AMD data-fabric reset evidence
@@ -411,6 +422,7 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - [x] DarkPlaces renders tower BSP with textures at 1280×720
 - [x] v4l2loopback /dev/video52 captures DarkPlaces output
 - [x] Layout/registry/pipeline contracts declare DarkPlaces as the v4l2 background source
+- [x] CSQC renders all 35 ward identities/drift links inside DarkPlaces
 - [ ] Compositor accepts DarkPlaces as background source with wards overlay
 - [ ] QuakeC pendulum camera traverses tower smoothly (120-150s period)
 - [ ] AoA Sierpinski tetrahedron visible and rotating at tower center

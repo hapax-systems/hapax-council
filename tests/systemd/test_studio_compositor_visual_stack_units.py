@@ -115,6 +115,8 @@ def test_screwm_quake_primary_profile_bypasses_legacy_visual_chrome() -> None:
     lines = _active_unit_lines(SCREWM_QUAKE_DROPIN)
 
     assert "hapax-obs-video50-yuyv-compat-bridge.service" in parser.get("Unit", "Wants")
+    assert parser.get("Unit", "Requires") == "hapax-darkplaces-v4l2.service"
+    assert parser.get("Unit", "After") == "hapax-darkplaces-v4l2.service"
     assert parser.get("Service", "ExecStart").endswith(
         ".venv/bin/python -m agents.studio_compositor --no-record --no-hls"
     )
@@ -143,6 +145,12 @@ def test_screwm_quake_primary_profile_bypasses_legacy_visual_chrome() -> None:
         "Environment=HAPAX_LORE_PROGRAMME_STATE_ENABLED=0",
     ):
         assert expected in lines
+    assert any(
+        "hapax-darkplaces-v4l2-ready" in line
+        and "--device /dev/video52" in line
+        and "--pixelformat YUYV" in line
+        for line in lines
+    )
     assert any("homage-active.json" in line and "quake" in line for line in lines)
 
 

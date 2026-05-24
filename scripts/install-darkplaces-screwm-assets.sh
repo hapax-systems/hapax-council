@@ -23,6 +23,10 @@ if [ -f "$REPO_DIR/assets/quake/qc/progs.dat" ]; then
     install -m 0644 "$REPO_DIR/assets/quake/qc/progs.dat" "$GAME_DIR/progs.dat"
 fi
 
+if [ -f "$REPO_DIR/assets/quake/csqc/csprogs.dat" ]; then
+    install -m 0644 "$REPO_DIR/assets/quake/csqc/csprogs.dat" "$GAME_DIR/csprogs.dat"
+fi
+
 if [ -f "$REPO_DIR/assets/quake/models/aoa.mdl" ]; then
     install -m 0644 "$REPO_DIR/assets/quake/models/aoa.mdl" "$GAME_DIR/progs/aoa.mdl"
 fi

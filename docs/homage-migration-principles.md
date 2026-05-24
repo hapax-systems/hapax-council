@@ -55,6 +55,8 @@ naive texture-based live wards, not a reason to declare wards out of scope.
 The required direction is:
 - Sourceize static in-engine ward anchors/panes for all legacy wards so the
   spatial Screwm composition is present inside DarkPlaces.
+- Use CSQC for engine-native ward identity, drift links, pulse lights, and
+  state-responsive screen-space projection tied to those spatial anchors.
 - Keep GStreamer/Cairo wards only as a temporary dynamic-content bridge while
   Quake-native dynamic strategies are evaluated.
 - Treat any remaining compositor-owned ward as an explicit parity gap with
