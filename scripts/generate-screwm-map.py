@@ -707,6 +707,27 @@ def lights(preset):
         f'"_color" "{ar} {ag} {ab}"\n'
         "}"
     )
+
+    # Review fill lights live inside the scroom corridor. They keep the fixed
+    # POV critiqueable without turning the scene into a flat/fullbright level.
+    review_fill = int(level_light * 0.72)
+    for idx, (x, y, z, scale) in enumerate(
+        [
+            (0, -144, 176, 1.00),
+            (-148, -118, 214, 0.72),
+            (148, -118, 214, 0.72),
+        ],
+        start=1,
+    ):
+        entities.append(
+            f"// review-fill-light {idx}\n"
+            "{\n"
+            '"classname" "light"\n'
+            f'"origin" "{x} {y} {z}"\n'
+            f'"light" "{int(review_fill * scale)}"\n'
+            f'"_color" "{ar} {ag} {ab}"\n'
+            "}"
+        )
     return entities
 
 

@@ -19,6 +19,7 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert content.count("// ward-anchor ") == 36
     assert content.count("// ward-glow ") == 36
     assert content.count("// ward-light ") == 36
+    assert content.count("// review-fill-light ") == 3
     assert content.count("// ward-rail row") == 6
     assert content.count("// ward-spine col") == 7
     assert content.count("// ward-drift ") >= 25
@@ -35,6 +36,7 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "ward-glow 01: token_pole drift_c" in content
     assert "ward-glow 02: album drift_r" in content
     assert "ward-glow 03: stream_overlay drift_g" in content
+    assert '"origin" "0 -144 176"' in content
 
 
 def test_screwm_drift_graph_physically_touches_every_ward_anchor() -> None:

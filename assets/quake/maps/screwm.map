@@ -2659,6 +2659,30 @@
 "_color" "1.0 0.78 0.5"
 }
 
+// review-fill-light 1
+{
+"classname" "light"
+"origin" "0 -144 176"
+"light" "180"
+"_color" "1.0 0.78 0.5"
+}
+
+// review-fill-light 2
+{
+"classname" "light"
+"origin" "-148 -118 214"
+"light" "129"
+"_color" "1.0 0.78 0.5"
+}
+
+// review-fill-light 3
+{
+"classname" "light"
+"origin" "148 -118 214"
+"light" "129"
+"_color" "1.0 0.78 0.5"
+}
+
 // ward-light 01: token_pole
 {
 "classname" "light"
