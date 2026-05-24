@@ -181,20 +181,23 @@ def test_screwm_v4l2_bridge_profile_matches_runtime_format_contract() -> None:
         assert expected in lines
 
 
-def test_obs_yuyv_bridge_is_guarded_and_conflicts_with_old_video50_writer() -> None:
+def test_obs_yuyv_bridge_is_guarded_and_routes_darkplaces_to_obs() -> None:
     parser = _load_unit(OBS_YUYV_BRIDGE)
 
     assert parser.get("Unit", "ConditionPathExists") == "/usr/bin/ffmpeg"
     unit_lines = _active_unit_lines(OBS_YUYV_BRIDGE)
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in unit_lines
-    assert "ConditionPathExists=/dev/video42" in unit_lines
+    assert "ConditionPathExists=/dev/video52" in unit_lines
     assert "ConditionPathExists=/dev/video50" in unit_lines
     assert parser.get("Unit", "Conflicts") == "studio-fx-output.service"
-    assert parser.get("Unit", "PartOf") == (
-        "studio-compositor.service hapax-v4l2-bridge.service hapax-visual-stack.target"
-    )
+    assert parser.get("Unit", "After") == "hapax-darkplaces-v4l2.service"
+    assert parser.get("Unit", "Wants") == "hapax-darkplaces-v4l2.service"
+    assert parser.get("Unit", "PartOf") == "hapax-darkplaces-v4l2.service hapax-visual-stack.target"
+    assert "width=1280,height=720,pixelformat=YUYV" in "\n".join(unit_lines)
     exec_start = parser.get("Service", "ExecStart")
-    assert "-i /dev/video42" in exec_start
+    assert "-input_format yuyv422" in exec_start
+    assert "-video_size 1280x720" in exec_start
+    assert "-i /dev/video52" in exec_start
     assert "-pix_fmt yuyv422 /dev/video50" in exec_start
     assert parser.get("Install", "WantedBy") == "hapax-visual-stack.target"
 

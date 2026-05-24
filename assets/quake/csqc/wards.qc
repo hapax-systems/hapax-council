@@ -108,6 +108,9 @@ vector screwm_review_camera_angles;
 vector screwm_review_camera_fov;
 float screwm_review_camera_period;
 float screwm_review_camera_two_pi;
+float screwm_review_camera_manual_until;
+vector screwm_native_last_angles;
+float screwm_native_angles_ready;
 
 string(string path, string fallback) screwm_read_line =
 {
@@ -132,6 +135,13 @@ float(float value, float low, float high) screwm_clamp =
         return low;
     if (value > high)
         return high;
+    return value;
+};
+
+float(float value) screwm_abs =
+{
+    if (value < 0)
+        return 0 - value;
     return value;
 };
 
@@ -258,18 +268,87 @@ void() screwm_apply_review_camera =
 {
     float phase;
     float lift_phase;
+    float manual;
+    float pan_x;
+    float pan_y;
+    float target_z;
+    float yaw;
+    float dist;
+    float height;
+    float native_delta;
+    float native_move;
+    float native_hold;
+    float native_speed;
+    vector angle_delta;
 
     if (cvar("screwm_csqc_review_camera") < 0)
         return;
 
-    if (cvar("screwm_csqc_review_path") >= 0)
+    if (!screwm_native_angles_ready)
+    {
+        screwm_native_last_angles = input_angles;
+        screwm_native_angles_ready = TRUE;
+    }
+
+    angle_delta = input_angles - screwm_native_last_angles;
+    native_delta = screwm_abs(angle_delta_x) + screwm_abs(angle_delta_y);
+    native_move = screwm_abs(input_movevalues_x) + screwm_abs(input_movevalues_y) + screwm_abs(input_movevalues_z);
+    if (cvar("screwm_csqc_native_controller") > 0 && (native_delta > 0.01 || native_move > 1 || input_buttons > 0))
+    {
+        native_hold = cvar("screwm_csqc_native_hold_s");
+        if (native_hold <= 0)
+            native_hold = 20;
+        screwm_review_camera_manual_until = time + native_hold;
+    }
+
+    manual = screwm_read_norm("data/camera-manual.txt");
+    if (cvar("screwm_csqc_native_controller") > 0 && screwm_review_camera_manual_until > time)
+    {
+        screwm_review_camera_angles_x = screwm_clamp(screwm_review_camera_angles_x + angle_delta_x, -72, 72);
+        screwm_review_camera_angles_y = screwm_review_camera_angles_y + angle_delta_y;
+        screwm_review_camera_angles_z = 0;
+
+        native_speed = cvar("screwm_csqc_native_speed");
+        if (native_speed <= 0)
+            native_speed = 1.0;
+        makevectors(screwm_review_camera_angles);
+        screwm_review_camera_origin = screwm_review_camera_origin + v_forward * input_movevalues_x * frametime * native_speed;
+        screwm_review_camera_origin = screwm_review_camera_origin + v_right * input_movevalues_y * frametime * native_speed;
+        screwm_review_camera_origin_z = screwm_review_camera_origin_z + input_movevalues_z * frametime * native_speed;
+        screwm_review_camera_origin_x = screwm_clamp(screwm_review_camera_origin_x, -360, 360);
+        screwm_review_camera_origin_y = screwm_clamp(screwm_review_camera_origin_y, -720, 40);
+        screwm_review_camera_origin_z = screwm_clamp(screwm_review_camera_origin_z, 24, 340);
+    }
+    else if (cvar("screwm_csqc_manual_camera") > 0 && manual > 0)
+    {
+        pan_x = screwm_read_norm("data/camera-pan-x.txt");
+        pan_y = screwm_read_norm("data/camera-pan-y.txt");
+        target_z = screwm_read_norm("data/camera-target-z.txt");
+        yaw = screwm_read_norm("data/camera-yaw.txt");
+        dist = screwm_read_norm("data/camera-distance.txt");
+        height = screwm_read_norm("data/camera-height.txt");
+
+        screwm_review_camera_origin_x = (pan_x - 0.5) * 420;
+        screwm_review_camera_origin_y = -410 - dist * 230;
+        screwm_review_camera_origin_z = 42 + height * 315;
+        screwm_review_camera_angles_x = (0.48 - target_z) * 34;
+        screwm_review_camera_angles_y = 90 + (yaw - 0.5) * 96 + (pan_y - 0.5) * 22;
+        screwm_review_camera_angles_z = 0;
+        screwm_review_camera_fov_x = 62 + screwm_read_norm("data/camera-fov.txt") * 42;
+        screwm_review_camera_fov_y = 38 + screwm_read_norm("data/camera-fov.txt") * 28;
+    }
+    else if (cvar("screwm_csqc_review_path") > 0)
     {
         phase = time * screwm_review_camera_two_pi / screwm_review_camera_period;
         lift_phase = phase * 0.5 + 1.5708;
-        screwm_review_camera_origin_x = sin(phase) * 104;
-        screwm_review_camera_origin_y = -580;
-        screwm_review_camera_origin_z = 154 + sin(lift_phase) * 36;
+        screwm_review_camera_origin_x = -244 + sin(phase) * 36;
+        screwm_review_camera_origin_y = -500 + cos(phase) * 10;
+        screwm_review_camera_origin_z = 204 + sin(lift_phase) * 12;
+        screwm_review_camera_angles = vectoangles('0 -360 150' - screwm_review_camera_origin);
+        screwm_review_camera_angles_z = 0;
+        screwm_review_camera_fov = '96 60 0';
     }
+    screwm_native_last_angles = input_angles;
 
     setproperty(VF_ORIGIN, screwm_review_camera_origin);
     setproperty(VF_ANGLES, screwm_review_camera_angles);
@@ -638,8 +717,9 @@ void(float apilevel, string enginename, float engineversion) CSQC_Init =
     screwm_voice = 0;
     screwm_mode = "rnd";
     screwm_next_poll = 0;
-    screwm_review_camera_origin = '0 -580 154';
-    screwm_review_camera_angles = '0 90 0';
+    screwm_review_camera_origin = '-244 -500 204';
+    screwm_review_camera_angles = vectoangles('0 -360 150' - screwm_review_camera_origin);
+    screwm_review_camera_angles_z = 0;
     screwm_review_camera_fov = '96 60 0';
     screwm_review_camera_period = 96.0;
     screwm_review_camera_two_pi = 6.283185;

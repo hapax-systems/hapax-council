@@ -187,7 +187,7 @@ def ward_panel_index(x, y, label, code):
         return max(72, accent - 96)
 
     # Diagonal scan-strata give every pane motion-read even as a baked texture.
-    base = 34 + ((x * 3 + y * 5 + label * 11) % 28)
+    base = 18 + ((x * 3 + y * 5 + label * 11) % 18)
     if (x + y + label * 3) % 17 == 0:
         base = max(118, accent - 74)
 
@@ -204,15 +204,15 @@ def ward_panel_index(x, y, label, code):
             col = glyph_x // scale
             row = glyph_y // scale
             if digit_is_lit(char, col, row):
-                return 236
+                return 245
             if (glyph_x % scale in (0, scale - 1)) or (glyph_y % scale in (0, scale - 1)):
-                return max(base, accent - 96)
+                return 10
 
     short_code = code[:7].upper()
     code_scale = 2
     code_width = len(short_code) * 3 * code_scale + max(0, len(short_code) - 1) * code_scale
     if text_pixel_lit(x, y, short_code, (TEX_SIZE - code_width) // 2, 43, code_scale):
-        return accent
+        return 245
 
     return base
 

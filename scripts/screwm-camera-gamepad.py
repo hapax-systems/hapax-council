@@ -103,6 +103,8 @@ class CameraState:
     fov: float = 0.78
     axes: dict[int, float] = field(default_factory=dict)
     buttons: dict[int, int] = field(default_factory=dict)
+    event_count: int = 0
+    last_event: str = "none"
 
     def reset(self) -> None:
         self.manual = False
@@ -116,6 +118,8 @@ class CameraState:
 
     def update_button(self, number: int, value: int) -> None:
         self.buttons[number] = value
+        self.event_count += 1
+        self.last_event = f"button:{number}:{value}"
         if value <= 0:
             return
         if number == 0:  # A
@@ -134,6 +138,8 @@ class CameraState:
             self.axes[number] = trigger_value(value)
         else:
             self.axes[number] = normalize_axis(value)
+        self.event_count += 1
+        self.last_event = f"axis:{number}:{self.axes[number]:.3f}"
         if activate and abs(self.axes[number]) > 0.01:
             self.manual = True
 
@@ -147,13 +153,13 @@ class CameraState:
         lt = self.axes.get(2, 0.0)
         rt = self.axes.get(5, 0.0)
 
-        self.pan_x = clamp01(self.pan_x + left_x * dt * 0.28)
-        self.target_z = clamp01(self.target_z - left_y * dt * 0.28)
-        self.yaw = clamp01(self.yaw + right_x * dt * 0.22)
-        self.height = clamp01(self.height - right_y * dt * 0.22)
-        self.pan_y = clamp01(self.pan_y + dpad_y * dt * 0.20)
-        self.fov = clamp01(self.fov + dpad_x * dt * 0.24)
-        self.distance = clamp01(self.distance + (rt - lt) * dt * 0.24)
+        self.pan_x = clamp01(self.pan_x + left_x * dt * 0.70)
+        self.target_z = clamp01(self.target_z - left_y * dt * 0.54)
+        self.yaw = clamp01(self.yaw + right_x * dt * 0.58)
+        self.height = clamp01(self.height - right_y * dt * 0.46)
+        self.pan_y = clamp01(self.pan_y + dpad_y * dt * 0.36)
+        self.fov = clamp01(self.fov + dpad_x * dt * 0.34)
+        self.distance = clamp01(self.distance + (rt - lt) * dt * 0.50)
 
         if self.buttons.get(4):  # LB narrows
             self.fov = clamp01(self.fov - dt * 0.26)
@@ -161,7 +167,7 @@ class CameraState:
             self.fov = clamp01(self.fov + dt * 0.26)
 
     def write(self, game_dir: Path) -> None:
-        values = {
+        values: dict[str, float | str] = {
             "camera-manual.txt": 1.0 if self.manual else 0.0,
             "camera-pan-x.txt": self.pan_x,
             "camera-pan-y.txt": self.pan_y,
@@ -170,9 +176,14 @@ class CameraState:
             "camera-distance.txt": self.distance,
             "camera-height.txt": self.height,
             "camera-fov.txt": self.fov,
+            "camera-debug.txt": (
+                f"manual={int(self.manual)} events={self.event_count} "
+                f"last={self.last_event}"
+            ),
         }
         for filename, value in values.items():
-            _write_atomic(game_dir / filename, f"{value:.4f}")
+            text = value if isinstance(value, str) else f"{value:.4f}"
+            _write_atomic(game_dir / filename, text)
 
 
 def run_bridge(device: Path, game_dir: Path, *, once: bool = False) -> int:

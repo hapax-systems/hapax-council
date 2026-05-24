@@ -1,11 +1,11 @@
 [Unit]
-Description=OBS-compatible YUYV bridge from Studio Compositor /dev/video42 to /dev/video50
-After=studio-compositor.service hapax-v4l2-bridge.service
-Wants=studio-compositor.service hapax-v4l2-bridge.service
-PartOf=studio-compositor.service hapax-v4l2-bridge.service hapax-visual-stack.target
+Description=OBS-compatible YUYV bridge from DarkPlaces /dev/video52 to /dev/video50
+After=hapax-darkplaces-v4l2.service
+Wants=hapax-darkplaces-v4l2.service
+PartOf=hapax-darkplaces-v4l2.service hapax-visual-stack.target
 Conflicts=studio-fx-output.service
 ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
-ConditionPathExists=/dev/video42
+ConditionPathExists=/dev/video52
 ConditionPathExists=/dev/video50
 ConditionPathExists=/usr/bin/ffmpeg
 
@@ -14,7 +14,8 @@ Type=simple
 Restart=always
 RestartSec=2s
 ExecStartPre=-/usr/bin/v4l2-ctl -d /dev/video50 -c keep_format=0
-ExecStart=/usr/bin/ffmpeg -hide_banner -loglevel warning -nostdin -f v4l2 -input_format bgra -video_size 640x480 -framerate 30 -i /dev/video42 -vf format=yuyv422 -f v4l2 -pix_fmt yuyv422 /dev/video50
+ExecStartPre=-/usr/bin/v4l2-ctl -d /dev/video50 --set-fmt-video=width=1280,height=720,pixelformat=YUYV
+ExecStart=/usr/bin/ffmpeg -hide_banner -loglevel warning -nostdin -f v4l2 -input_format yuyv422 -video_size 1280x720 -framerate 30 -i /dev/video52 -vf format=yuyv422 -f v4l2 -pix_fmt yuyv422 /dev/video50
 
 [Install]
 WantedBy=hapax-visual-stack.target

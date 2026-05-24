@@ -36,9 +36,9 @@ def test_csqc_text_overlay_is_not_the_default_ward_surface() -> None:
     autoexec = AUTOEXEC.read_text(encoding="utf-8")
     body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
 
-    assert "screwm_csqc_overlay 0" in autoexec
-    assert "screwm_csqc_lightfield 1" in autoexec
-    assert "screwm_review_fill_light 1" in autoexec
+    assert "set screwm_csqc_overlay 0" in autoexec
+    assert "set screwm_csqc_lightfield 1" in autoexec
+    assert "set screwm_review_fill_light 1" in autoexec
     assert "Ward identity belongs to the scroom geometry" in autoexec
     assert 'cvar("screwm_review_fill_light") > 0' in body
     assert "adddynamiclight('0 -332 184'" in body
@@ -120,13 +120,22 @@ def test_darkplaces_review_camera_is_locked_by_default() -> None:
     autoexec = AUTOEXEC.read_text(encoding="utf-8")
     camera = (REPO_ROOT / "assets" / "quake" / "qc" / "camera.qc").read_text(encoding="utf-8")
 
-    assert "screwm_camera_orbit 0" in autoexec
+    assert "set screwm_camera_orbit 0" in autoexec
     assert "cl_bob 0" in autoexec
     assert "cl_rollangle 0" in autoexec
     assert "fov 76" in autoexec
-    assert "screwm_camera_file_control 1" in autoexec
-    assert "screwm_csqc_review_camera 1" in autoexec
-    assert "screwm_csqc_review_path 1" in autoexec
+    assert "set screwm_camera_file_control 1" in autoexec
+    assert "set screwm_csqc_review_camera 1" in autoexec
+    assert "set screwm_csqc_review_path 0" in autoexec
+    assert "set screwm_csqc_manual_camera 0" in autoexec
+    assert "set screwm_csqc_native_controller 0" in autoexec
+    assert "joy_enable 1" in autoexec
+    assert "joy_index 1" in autoexec
+    assert "joy_axisforward 1" in autoexec
+    assert "joy_x360_axisforward 1" in autoexec
+    assert "joyadvancedupdate" in autoexec
+    assert "bind JOY5 +movedown" in autoexec
+    assert "bind JOY6 +moveup" in autoexec
     assert 'cvar("screwm_camera_orbit") > 0' in camera
     assert "CAMERA_REVIEW_POS" in camera
 
@@ -138,18 +147,29 @@ def test_csqc_review_camera_overrides_render_view_for_obs_feedback() -> None:
     assert "const float VF_ORIGIN = 11;" in defs
     assert "const float VF_ANGLES = 15;" in defs
     assert "const float VF_CL_VIEWANGLES = 33;" in defs
+    assert "void(vector ang) makevectors = #1;" in defs
+    assert "vector(vector v) vectoangles = #51;" in defs
     assert "void() screwm_apply_review_camera" in body
     assert 'cvar("screwm_csqc_review_camera") < 0' in body
-    assert 'cvar("screwm_csqc_review_path") >= 0' in body
+    assert 'cvar("screwm_csqc_native_controller") > 0' in body
+    assert "screwm_review_camera_manual_until = time + native_hold;" in body
+    assert "makevectors(screwm_review_camera_angles);" in body
+    assert "v_forward * input_movevalues_x * frametime * native_speed" in body
+    assert 'cvar("screwm_csqc_manual_camera") > 0 && manual > 0' in body
+    assert 'screwm_read_norm("data/camera-yaw.txt")' in body
+    assert "screwm_review_camera_origin_x = (pan_x - 0.5) * 420;" in body
+    assert "screwm_review_camera_angles_y = 90 + (yaw - 0.5) * 96" in body
+    assert 'cvar("screwm_csqc_review_path") > 0' in body
     assert "phase = time * screwm_review_camera_two_pi / screwm_review_camera_period;" in body
-    assert "screwm_review_camera_origin_x = sin(phase) * 104;" in body
-    assert "screwm_review_camera_origin_z = 154 + sin(lift_phase) * 36;" in body
+    assert "screwm_review_camera_origin_x = -244 + sin(phase) * 36;" in body
+    assert "screwm_review_camera_origin_y = -500 + cos(phase) * 10;" in body
+    assert "screwm_review_camera_angles = vectoangles('0 -360 150' - screwm_review_camera_origin);" in body
     assert "setproperty(VF_ORIGIN, screwm_review_camera_origin);" in body
     assert "setproperty(VF_ANGLES, screwm_review_camera_angles);" in body
     assert "setproperty(VF_CL_VIEWANGLES, screwm_review_camera_angles);" in body
     assert "setproperty(VF_FOV, screwm_review_camera_fov);" in body
-    assert "screwm_review_camera_origin = '0 -580 154';" in body
-    assert "screwm_review_camera_angles = '0 90 0';" in body
+    assert "screwm_review_camera_origin = '-244 -500 204';" in body
+    assert "screwm_review_camera_angles = vectoangles('0 -360 150' - screwm_review_camera_origin);" in body
     assert "screwm_review_camera_fov = '96 60 0';" in body
     assert "screwm_review_camera_period = 96.0;" in body
 

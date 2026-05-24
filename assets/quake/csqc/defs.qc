@@ -127,6 +127,8 @@ float(float v) sin = #60;
 float(float v) cos = #61;
 string(string a, string b) strcat = #115;
 
+void(vector ang) makevectors = #1;
+vector(vector v) vectoangles = #51;
 float(string filename, float mode) fopen = #110;
 void(float fhandle) fclose = #111;
 string(float fhandle) fgets = #112;

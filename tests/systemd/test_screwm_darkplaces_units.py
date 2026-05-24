@@ -29,6 +29,22 @@ def test_darkplaces_v4l2_service_remains_runtime_guarded_and_uses_visible_xvfb_r
     assert ('Environment="HAPAX_DARKPLACES_EXPECTED_GL_RENDERER=NVIDIA GeForce RTX 5090"') in body
     assert "Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52" in body
     assert "Environment=HAPAX_DARKPLACES_WATCHDOG_INTERVAL_SECONDS=10" in body
+    assert "Environment=HAPAX_DARKPLACES_JOY_INDEX=1" in body
+
+
+def test_darkplaces_launchers_use_native_xbox_joystick_input() -> None:
+    for launcher in ("darkplaces-v4l2-xvfb.sh", "darkplaces-v4l2-xorg.sh"):
+        body = (SCRIPTS_DIR / launcher).read_text(encoding="utf-8")
+        assert 'JOY_INDEX="${HAPAX_DARKPLACES_JOY_INDEX:-1}"' in body
+        assert "+joy_enable 1" in body
+        assert '+joy_index "$JOY_INDEX"' in body
+        assert "+joy_axisforward 1" in body
+        assert "+joy_axisside 0" in body
+        assert "+joy_axisyaw 3" in body
+        assert "+joy_axispitch 4" in body
+        assert "+joy_sensitivityforward -1" in body
+        assert "+joy_deadzoneforward 0.12" in body
+        assert "+cl_forwardspeed 360" in body
 
 
 def test_darkplaces_xorg_launcher_disables_headless_screen_blanking() -> None:
@@ -148,6 +164,7 @@ def test_screwm_camera_gamepad_service_is_opt_in_and_headless() -> None:
     assert "ConditionPathExists=%h/.config/hapax/enable-screwm-camera-gamepad" in body
     assert "--require-file scripts/screwm-camera-gamepad.py" in body
     assert "scripts/screwm-camera-gamepad.py" in body
+    assert "--device /dev/input/js2" in body
     assert "WantedBy=hapax-darkplaces-v4l2.service" in body
 
 

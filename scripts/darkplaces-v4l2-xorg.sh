@@ -13,6 +13,7 @@ FPS="${DARKPLACES_FPS:-30}"
 DISPLAY_NUM="${HAPAX_DARKPLACES_DISPLAY:-:82}"
 XORG_BUS_ID="${HAPAX_DARKPLACES_XORG_BUS_ID:-PCI:5:0:0}"
 PORT="${DARKPLACES_PORT:-26001}"
+JOY_INDEX="${HAPAX_DARKPLACES_JOY_INDEX:-1}"
 STATE_ROOT="${HAPAX_DARKPLACES_XORG_STATE_ROOT:-${XDG_RUNTIME_DIR:-/tmp}/hapax-darkplaces-xorg}"
 PROBE_ONLY=0
 
@@ -240,7 +241,26 @@ DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 darkplaces-sdl \
     +cl_showdate 0 \
     +cl_showspeed 0 \
     +cl_shownet 0 \
-    +scr_showturtle 0 &
+    +scr_showturtle 0 \
+    +joy_enable 1 \
+    +joy_index "$JOY_INDEX" \
+    +joy_axisforward 1 \
+    +joy_axisside 0 \
+    +joy_axisyaw 3 \
+    +joy_axispitch 4 \
+    +joy_axisup -1 \
+    +joy_sensitivityforward -1 \
+    +joy_sensitivityside 1 \
+    +joy_sensitivityyaw 1.15 \
+    +joy_sensitivitypitch 0.90 \
+    +joy_deadzoneforward 0.12 \
+    +joy_deadzoneside 0.12 \
+    +joy_deadzoneyaw 0.14 \
+    +joy_deadzonepitch 0.14 \
+    +cl_forwardspeed 360 \
+    +cl_backspeed 360 \
+    +cl_sidespeed 360 \
+    +cl_upspeed 240 &
 darkplaces_pid="$!"
 
 sleep 3

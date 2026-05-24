@@ -68,6 +68,12 @@ void(entity view) screwm_free_view_body =
 
 void() PlayerPreThink =
 {
+    if (cvar("screwm_csqc_review_camera") > 0)
+    {
+        screwm_free_view_body(self);
+        return;
+    }
+
     if (camera_entity)
     {
         screwm_free_view_body(self);
