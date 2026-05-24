@@ -462,25 +462,14 @@ class ConversationPipeline:
             log.debug("Echo rejected: %s", transcript[:40])
             return
 
+        _ctx_start = time.monotonic()
         try:
-            from agents.hapax_daimonion.phenomenal_context import render as render_phenomenal
-        except ImportError:
-            render_phenomenal = None
-
-        phenomenal = ""
-        if render_phenomenal is not None:
-            try:
-                _ph_start = time.monotonic()
-                phenomenal = await asyncio.get_running_loop().run_in_executor(
-                    None, render_phenomenal, "FAST"
-                )
-                log.info("Phenomenal render: %.0fms", (time.monotonic() - _ph_start) * 1000)
-            except Exception:
-                pass
+            await asyncio.get_running_loop().run_in_executor(None, self._update_system_context)
+        except Exception:
+            log.debug("System context update failed, using cached", exc_info=True)
+        log.info("Context update: %.0fms", (time.monotonic() - _ctx_start) * 1000)
 
         system_block = self.system_prompt
-        if phenomenal:
-            system_block = f"{system_block}\n\n## Current State\n{phenomenal}"
 
         history = []
         for entry in self._conversation_thread[-10:]:
