@@ -100,9 +100,13 @@ const float MASK_ENGINE = 1;
 const float MASK_ENGINEVIEWMODELS = 2;
 const float MASK_NORMAL = 4;
 
+const float VF_FOV = 8;
+const float VF_ORIGIN = 11;
+const float VF_ANGLES = 15;
 const float VF_DRAWWORLD = 19;
 const float VF_DRAWENGINESBAR = 20;
 const float VF_DRAWCROSSHAIR = 21;
+const float VF_CL_VIEWANGLES = 33;
 
 const float DRAWFLAG_NORMAL = 0;
 const float DRAWFLAG_ADDITIVE = 1;

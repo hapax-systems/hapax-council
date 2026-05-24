@@ -30,7 +30,7 @@ CEIL_Z = int(TOWER_CEIL_M * UNITS_PER_METER)
 AOA_Z = int(AOA_HEIGHT_M * UNITS_PER_METER)
 EXT = TR + WALL_THICK + 32
 REVIEW_ALCOVE_Y_MIN = -(TR + WALL_THICK + 355)
-REVIEW_WARD_Y = -160
+REVIEW_WARD_Y = -360
 REVIEW_DRIFT_Y = REVIEW_WARD_Y - 18
 LEVEL_BANDS = [
     ("perception", FLOOR_Z, FLOOR_Z + 96),
@@ -496,7 +496,7 @@ def ward_review_panes(_preset):
 def ward_review_drift_paths(_preset):
     """Visible drift rails bound to the front-facing ward review plane."""
     brushes = []
-    t = 3
+    t = 1
 
     for link_idx, (src, dst, tex) in enumerate(DRIFT_LINKS, start=1):
         x1, _y1, z1 = ward_review_position(src)
@@ -913,6 +913,30 @@ def ward_lights(preset):
     return entities
 
 
+def ward_review_lights(preset):
+    """Baked lights for the front-facing ward review plane.
+
+    The review plane is the default OBS feedback surface. It needs its own
+    in-world lightfield instead of depending on the deeper/sloped ward anchors.
+    """
+    entities = []
+    base = int(preset.get("wall_light", 100) * 1.35)
+
+    for idx, anchor in enumerate(WARD_ANCHORS, start=1):
+        x, y, z = ward_review_position(idx)
+        r, g, b = DOMAIN_LIGHT_COLOR[ward_domain(idx)]
+        entities.append(
+            f"// ward-review-light {idx:02d}: {anchor}\n"
+            "{\n"
+            '"classname" "light"\n'
+            f'"origin" "{x} {y - 42} {z}"\n'
+            f'"light" "{base}"\n'
+            f'"_color" "{r} {g} {b}"\n'
+            "}"
+        )
+    return entities
+
+
 def source_lights(preset):
     """Baked source constellation lights; live camera state can modulate later."""
     entities = []
@@ -971,7 +995,9 @@ def generate_map(preset):
     )
     lines.append("")
 
-    for light in lights(preset) + ward_lights(preset) + source_lights(preset):
+    for light in (
+        lights(preset) + ward_review_lights(preset) + ward_lights(preset) + source_lights(preset)
+    ):
         lines.append(light)
         lines.append("")
 

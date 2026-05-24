@@ -22,6 +22,7 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert content.count("// ward-glow ") == 36
     assert content.count("// ward-light ") == 36
     assert content.count("// review-fill-light ") == 4
+    assert content.count("// ward-review-light ") == 36
     assert content.count("// ward-review-pane ") == 36
     assert content.count("// ward-review-frame ") == 36
     assert content.count("// ward-review-drift ") >= 25
@@ -42,9 +43,9 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "// section: ward-review-drift-paths" in content
     assert "// ward-review-pane 01: token_pole" in content
     assert "// ward-review-frame 36: cbip_dual_ir_displacement" in content
-    assert module["ward_review_position"](1) == (-222, -160, 280)
-    assert module["ward_review_position"](36) == (0, -160, 28)
-    assert module["ward_review_drift_midpoint"](1, 9) == (-185, -178, 253)
+    assert module["ward_review_position"](1) == (-222, -360, 280)
+    assert module["ward_review_position"](36) == (0, -360, 28)
+    assert module["ward_review_drift_midpoint"](1, 9) == (-185, -378, 253)
     assert "ward-glow 01: token_pole drift_c" in content
     assert "ward-glow 02: album drift_r" in content
     assert "ward-glow 03: stream_overlay drift_g" in content
@@ -84,8 +85,9 @@ def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
     assert "ledge_depth = 18" in source
     assert "ledge_height = 6" in source
     assert "REVIEW_ALCOVE_Y_MIN" in source
-    assert "REVIEW_WARD_Y = -160" in source
+    assert "REVIEW_WARD_Y = -360" in source
     assert "REVIEW_DRIFT_Y = REVIEW_WARD_Y - 18" in source
+    assert "t = 1" in source
     assert "WARD_FRAME_PAD = 6" in source
     assert "WARD_FRAME_T = 4" in source
     assert "inner = 78" in source

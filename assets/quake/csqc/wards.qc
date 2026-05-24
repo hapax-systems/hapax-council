@@ -103,6 +103,11 @@ vector screwm_amber = '1.00 0.62 0.23';
 vector screwm_rose = '1.00 0.35 0.55';
 vector screwm_green = '0.55 0.85 0.42';
 vector screwm_dim = '0.10 0.13 0.14';
+vector screwm_review_camera_origin;
+vector screwm_review_camera_angles;
+vector screwm_review_camera_fov;
+float screwm_review_camera_period;
+float screwm_review_camera_two_pi;
 
 string(string path, string fallback) screwm_read_line =
 {
@@ -249,6 +254,29 @@ void() screwm_poll_state =
     screwm_source_fresh_06 = screwm_read_norm("data/source-fresh-06.txt");
 };
 
+void() screwm_apply_review_camera =
+{
+    float phase;
+    float lift_phase;
+
+    if (cvar("screwm_csqc_review_camera") < 0)
+        return;
+
+    if (cvar("screwm_csqc_review_path") >= 0)
+    {
+        phase = time * screwm_review_camera_two_pi / screwm_review_camera_period;
+        lift_phase = phase * 0.5 + 1.5708;
+        screwm_review_camera_origin_x = sin(phase) * 104;
+        screwm_review_camera_origin_y = -580;
+        screwm_review_camera_origin_z = 154 + sin(lift_phase) * 36;
+    }
+
+    setproperty(VF_ORIGIN, screwm_review_camera_origin);
+    setproperty(VF_ANGLES, screwm_review_camera_angles);
+    setproperty(VF_CL_VIEWANGLES, screwm_review_camera_angles);
+    setproperty(VF_FOV, screwm_review_camera_fov);
+};
+
 float(vector screen) screwm_on_screen =
 {
     if (screen_x < -80)
@@ -369,9 +397,9 @@ void() screwm_add_homage_lights =
 
     field = 48 + screwm_homage_transition * 80 + screwm_homage_signature * 56;
     field = field + screwm_energy * 24;
-    adddynamiclight('0 -172 172', screwm_clamp(field, 36, 140), screwm_cyan);
-    adddynamiclight('-148 -160 226', screwm_clamp(field * 0.55, 24, 88), screwm_amber);
-    adddynamiclight('148 -160 118', screwm_clamp(field * 0.55, 24, 88), screwm_green);
+    adddynamiclight('0 -372 172', screwm_clamp(field, 36, 140), screwm_cyan);
+    adddynamiclight('-148 -360 226', screwm_clamp(field * 0.55, 24, 88), screwm_amber);
+    adddynamiclight('148 -360 118', screwm_clamp(field * 0.55, 24, 88), screwm_green);
 };
 
 void() screwm_draw_ward_links =
@@ -382,112 +410,112 @@ void() screwm_draw_ward_links =
     vector c04;
     vector c05;
 
-    c01 = '0 -160 280';
-    c02 = '0 -160 226';
-    c03 = '0 -160 172';
-    c04 = '0 -160 118';
-    c05 = '0 -160 64';
+    c01 = '0 -360 280';
+    c02 = '0 -360 226';
+    c03 = '0 -360 172';
+    c04 = '0 -360 118';
+    c05 = '0 -360 64';
 
-    screwm_draw_link('-222 -160 280', '-148 -160 226', 0.0, screwm_cyan);
-    screwm_draw_link('-148 -160 280', '-74 -160 226', 0.6, screwm_amber);
-    screwm_draw_link('-74 -160 280', c02, 1.2, screwm_rose);
-    screwm_draw_link(c01, '74 -160 226', 1.8, screwm_green);
-    screwm_draw_link('74 -160 280', '148 -160 226', 2.4, screwm_cyan);
-    screwm_draw_link('148 -160 280', '222 -160 226', 3.0, screwm_amber);
+    screwm_draw_link('-222 -360 280', '-148 -360 226', 0.0, screwm_cyan);
+    screwm_draw_link('-148 -360 280', '-74 -360 226', 0.6, screwm_amber);
+    screwm_draw_link('-74 -360 280', c02, 1.2, screwm_rose);
+    screwm_draw_link(c01, '74 -360 226', 1.8, screwm_green);
+    screwm_draw_link('74 -360 280', '148 -360 226', 2.4, screwm_cyan);
+    screwm_draw_link('148 -360 280', '222 -360 226', 3.0, screwm_amber);
 
-    screwm_draw_link('-222 -160 172', '-148 -160 118', 3.6, screwm_green);
-    screwm_draw_link('-74 -160 172', c04, 4.2, screwm_cyan);
-    screwm_draw_link(c03, '74 -160 118', 4.8, screwm_rose);
-    screwm_draw_link('148 -160 172', '222 -160 118', 5.4, screwm_amber);
+    screwm_draw_link('-222 -360 172', '-148 -360 118', 3.6, screwm_green);
+    screwm_draw_link('-74 -360 172', c04, 4.2, screwm_cyan);
+    screwm_draw_link(c03, '74 -360 118', 4.8, screwm_rose);
+    screwm_draw_link('148 -360 172', '222 -360 118', 5.4, screwm_amber);
 
     screwm_draw_link(c01, c03, 6.0, screwm_cyan);
     screwm_draw_link(c03, c05, 6.6, screwm_green);
-    screwm_draw_link('-222 -160 64', '222 -160 64', 7.2, screwm_rose);
-    screwm_draw_link('0 -160 118', '0 -160 28', 7.8, screwm_rose);
-    screwm_draw_link('0 -160 64', '0 -160 28', 8.4, screwm_cyan);
+    screwm_draw_link('-222 -360 64', '222 -360 64', 7.2, screwm_rose);
+    screwm_draw_link('0 -360 118', '0 -360 28', 7.8, screwm_rose);
+    screwm_draw_link('0 -360 64', '0 -360 28', 8.4, screwm_cyan);
 };
 
 void() screwm_draw_wards =
 {
     screwm_draw_ward_links();
 
-    screwm_draw_ward_label('-222 -160 280', "01", "TOKEN", 1, screwm_cyan);
-    screwm_draw_ward_label('-148 -160 280', "02", "ALBUM", 2, screwm_rose);
-    screwm_draw_ward_label('-74 -160 280', "03", "STREAM", 3, screwm_green);
-    screwm_draw_ward_label('0 -160 280', "04", "SIERP", 4, screwm_green);
-    screwm_draw_ward_label('74 -160 280', "05", "REVERIE", 5, screwm_green);
-    screwm_draw_ward_label('148 -160 280', "06", "ACT", 6, screwm_cyan);
-    screwm_draw_ward_label('222 -160 280', "07", "STANCE", 7, screwm_amber);
+    screwm_draw_ward_label('-222 -360 280', "01", "TOKEN", 1, screwm_cyan);
+    screwm_draw_ward_label('-148 -360 280', "02", "ALBUM", 2, screwm_rose);
+    screwm_draw_ward_label('-74 -360 280', "03", "STREAM", 3, screwm_green);
+    screwm_draw_ward_label('0 -360 280', "04", "SIERP", 4, screwm_green);
+    screwm_draw_ward_label('74 -360 280', "05", "REVERIE", 5, screwm_green);
+    screwm_draw_ward_label('148 -360 280', "06", "ACT", 6, screwm_cyan);
+    screwm_draw_ward_label('222 -360 280', "07", "STANCE", 7, screwm_amber);
 
-    screwm_draw_ward_label('-222 -160 226', "08", "GEM", 8, screwm_green);
-    screwm_draw_ward_label('-148 -160 226', "09", "GROUND", 9, screwm_amber);
-    screwm_draw_ward_label('-74 -160 226', "10", "IMPINGE", 10, screwm_green);
-    screwm_draw_ward_label('0 -160 226', "11", "RECRUIT", 11, screwm_cyan);
-    screwm_draw_ward_label('74 -160 226', "12", "THINK", 12, screwm_amber);
-    screwm_draw_ward_label('148 -160 226', "13", "PRESS", 13, screwm_amber);
-    screwm_draw_ward_label('222 -160 226', "14", "VARIETY", 14, screwm_cyan);
+    screwm_draw_ward_label('-222 -360 226', "08", "GEM", 8, screwm_green);
+    screwm_draw_ward_label('-148 -360 226', "09", "GROUND", 9, screwm_amber);
+    screwm_draw_ward_label('-74 -360 226', "10", "IMPINGE", 10, screwm_green);
+    screwm_draw_ward_label('0 -360 226', "11", "RECRUIT", 11, screwm_cyan);
+    screwm_draw_ward_label('74 -360 226', "12", "THINK", 12, screwm_amber);
+    screwm_draw_ward_label('148 -360 226', "13", "PRESS", 13, screwm_amber);
+    screwm_draw_ward_label('222 -360 226', "14", "VARIETY", 14, screwm_cyan);
 
-    screwm_draw_ward_label('-222 -160 172', "15", "HERE", 15, screwm_amber);
-    screwm_draw_ward_label('-148 -160 172', "16", "DURF", 16, screwm_green);
-    screwm_draw_ward_label('-74 -160 172', "17", "CODE", 17, screwm_cyan);
-    screwm_draw_ward_label('0 -160 172', "18", "M8", 18, screwm_rose);
-    screwm_draw_ward_label('74 -160 172', "19", "DECK", 19, screwm_rose);
-    screwm_draw_ward_label('148 -160 172', "20", "EGRESS", 20, screwm_amber);
-    screwm_draw_ward_label('222 -160 172', "21", "BANNER", 21, screwm_amber);
+    screwm_draw_ward_label('-222 -360 172', "15", "HERE", 15, screwm_amber);
+    screwm_draw_ward_label('-148 -360 172', "16", "DURF", 16, screwm_green);
+    screwm_draw_ward_label('-74 -360 172', "17", "CODE", 17, screwm_cyan);
+    screwm_draw_ward_label('0 -360 172', "18", "M8", 18, screwm_rose);
+    screwm_draw_ward_label('74 -360 172', "19", "DECK", 19, screwm_rose);
+    screwm_draw_ward_label('148 -360 172', "20", "EGRESS", 20, screwm_amber);
+    screwm_draw_ward_label('222 -360 172', "21", "BANNER", 21, screwm_amber);
 
-    screwm_draw_ward_label('-222 -160 118', "22", "PRECED", 22, screwm_amber);
-    screwm_draw_ward_label('-148 -160 118', "23", "HISTORY", 23, screwm_cyan);
-    screwm_draw_ward_label('-74 -160 118', "24", "INSTR", 24, screwm_cyan);
-    screwm_draw_ward_label('0 -160 118', "25", "CBIP", 25, screwm_green);
-    screwm_draw_ward_label('74 -160 118', "26", "CHAT", 26, screwm_green);
-    screwm_draw_ward_label('148 -160 118', "27", "CHRON", 27, screwm_amber);
-    screwm_draw_ward_label('222 -160 118', "28", "STATE", 28, screwm_amber);
+    screwm_draw_ward_label('-222 -360 118', "22", "PRECED", 22, screwm_amber);
+    screwm_draw_ward_label('-148 -360 118', "23", "HISTORY", 23, screwm_cyan);
+    screwm_draw_ward_label('-74 -360 118', "24", "INSTR", 24, screwm_cyan);
+    screwm_draw_ward_label('0 -360 118', "25", "CBIP", 25, screwm_green);
+    screwm_draw_ward_label('74 -360 118', "26", "CHAT", 26, screwm_green);
+    screwm_draw_ward_label('148 -360 118', "27", "CHRON", 27, screwm_amber);
+    screwm_draw_ward_label('222 -360 118', "28", "STATE", 28, screwm_amber);
 
-    screwm_draw_ward_label('-222 -160 64', "29", "POLYEND", 29, screwm_rose);
-    screwm_draw_ward_label('-148 -160 64', "30", "QUERY", 30, screwm_cyan);
-    screwm_draw_ward_label('-74 -160 64', "31", "POSTER", 31, screwm_cyan);
-    screwm_draw_ward_label('0 -160 64', "32", "TUFTE", 32, screwm_cyan);
-    screwm_draw_ward_label('74 -160 64', "33", "ASCII", 33, screwm_cyan);
-    screwm_draw_ward_label('148 -160 64', "34", "SEGMENT", 34, screwm_green);
-    screwm_draw_ward_label('222 -160 64', "35", "SCOPE", 35, screwm_rose);
-    screwm_draw_ward_label('0 -160 28', "36", "IRDUAL", 36, screwm_green);
+    screwm_draw_ward_label('-222 -360 64', "29", "POLYEND", 29, screwm_rose);
+    screwm_draw_ward_label('-148 -360 64', "30", "QUERY", 30, screwm_cyan);
+    screwm_draw_ward_label('-74 -360 64', "31", "POSTER", 31, screwm_cyan);
+    screwm_draw_ward_label('0 -360 64', "32", "TUFTE", 32, screwm_cyan);
+    screwm_draw_ward_label('74 -360 64', "33", "ASCII", 33, screwm_cyan);
+    screwm_draw_ward_label('148 -360 64', "34", "SEGMENT", 34, screwm_green);
+    screwm_draw_ward_label('222 -360 64', "35", "SCOPE", 35, screwm_rose);
+    screwm_draw_ward_label('0 -360 28', "36", "IRDUAL", 36, screwm_green);
 
-    screwm_draw_ward_detail('-222 -160 280', screwm_w01, 1, screwm_cyan);
-    screwm_draw_ward_detail('-148 -160 280', screwm_w02, 2, screwm_rose);
-    screwm_draw_ward_detail('-74 -160 280', screwm_w03, 3, screwm_green);
-    screwm_draw_ward_detail('0 -160 280', screwm_w04, 4, screwm_green);
-    screwm_draw_ward_detail('74 -160 280', screwm_w05, 5, screwm_green);
-    screwm_draw_ward_detail('148 -160 280', screwm_w06, 6, screwm_cyan);
-    screwm_draw_ward_detail('222 -160 280', screwm_w07, 7, screwm_amber);
-    screwm_draw_ward_detail('-222 -160 226', screwm_w08, 8, screwm_green);
-    screwm_draw_ward_detail('-148 -160 226', screwm_w09, 9, screwm_amber);
-    screwm_draw_ward_detail('-74 -160 226', screwm_w10, 10, screwm_green);
-    screwm_draw_ward_detail('0 -160 226', screwm_w11, 11, screwm_cyan);
-    screwm_draw_ward_detail('74 -160 226', screwm_w12, 12, screwm_amber);
-    screwm_draw_ward_detail('148 -160 226', screwm_w13, 13, screwm_amber);
-    screwm_draw_ward_detail('222 -160 226', screwm_w14, 14, screwm_cyan);
-    screwm_draw_ward_detail('-222 -160 172', screwm_w15, 15, screwm_amber);
-    screwm_draw_ward_detail('-148 -160 172', screwm_w16, 16, screwm_green);
-    screwm_draw_ward_detail('-74 -160 172', screwm_w17, 17, screwm_cyan);
-    screwm_draw_ward_detail('0 -160 172', screwm_w18, 18, screwm_rose);
-    screwm_draw_ward_detail('74 -160 172', screwm_w19, 19, screwm_rose);
-    screwm_draw_ward_detail('148 -160 172', screwm_w20, 20, screwm_amber);
-    screwm_draw_ward_detail('222 -160 172', screwm_w21, 21, screwm_amber);
-    screwm_draw_ward_detail('-222 -160 118', screwm_w22, 22, screwm_amber);
-    screwm_draw_ward_detail('-148 -160 118', screwm_w23, 23, screwm_cyan);
-    screwm_draw_ward_detail('-74 -160 118', screwm_w24, 24, screwm_cyan);
-    screwm_draw_ward_detail('0 -160 118', screwm_w25, 25, screwm_green);
-    screwm_draw_ward_detail('74 -160 118', screwm_w26, 26, screwm_green);
-    screwm_draw_ward_detail('148 -160 118', screwm_w27, 27, screwm_amber);
-    screwm_draw_ward_detail('222 -160 118', screwm_w28, 28, screwm_amber);
-    screwm_draw_ward_detail('-222 -160 64', screwm_w29, 29, screwm_rose);
-    screwm_draw_ward_detail('-148 -160 64', screwm_w30, 30, screwm_cyan);
-    screwm_draw_ward_detail('-74 -160 64', screwm_w31, 31, screwm_cyan);
-    screwm_draw_ward_detail('0 -160 64', screwm_w32, 32, screwm_cyan);
-    screwm_draw_ward_detail('74 -160 64', screwm_w33, 33, screwm_cyan);
-    screwm_draw_ward_detail('148 -160 64', screwm_w34, 34, screwm_green);
-    screwm_draw_ward_detail('222 -160 64', screwm_w35, 35, screwm_rose);
-    screwm_draw_ward_detail('0 -160 28', screwm_w36, 36, screwm_green);
+    screwm_draw_ward_detail('-222 -360 280', screwm_w01, 1, screwm_cyan);
+    screwm_draw_ward_detail('-148 -360 280', screwm_w02, 2, screwm_rose);
+    screwm_draw_ward_detail('-74 -360 280', screwm_w03, 3, screwm_green);
+    screwm_draw_ward_detail('0 -360 280', screwm_w04, 4, screwm_green);
+    screwm_draw_ward_detail('74 -360 280', screwm_w05, 5, screwm_green);
+    screwm_draw_ward_detail('148 -360 280', screwm_w06, 6, screwm_cyan);
+    screwm_draw_ward_detail('222 -360 280', screwm_w07, 7, screwm_amber);
+    screwm_draw_ward_detail('-222 -360 226', screwm_w08, 8, screwm_green);
+    screwm_draw_ward_detail('-148 -360 226', screwm_w09, 9, screwm_amber);
+    screwm_draw_ward_detail('-74 -360 226', screwm_w10, 10, screwm_green);
+    screwm_draw_ward_detail('0 -360 226', screwm_w11, 11, screwm_cyan);
+    screwm_draw_ward_detail('74 -360 226', screwm_w12, 12, screwm_amber);
+    screwm_draw_ward_detail('148 -360 226', screwm_w13, 13, screwm_amber);
+    screwm_draw_ward_detail('222 -360 226', screwm_w14, 14, screwm_cyan);
+    screwm_draw_ward_detail('-222 -360 172', screwm_w15, 15, screwm_amber);
+    screwm_draw_ward_detail('-148 -360 172', screwm_w16, 16, screwm_green);
+    screwm_draw_ward_detail('-74 -360 172', screwm_w17, 17, screwm_cyan);
+    screwm_draw_ward_detail('0 -360 172', screwm_w18, 18, screwm_rose);
+    screwm_draw_ward_detail('74 -360 172', screwm_w19, 19, screwm_rose);
+    screwm_draw_ward_detail('148 -360 172', screwm_w20, 20, screwm_amber);
+    screwm_draw_ward_detail('222 -360 172', screwm_w21, 21, screwm_amber);
+    screwm_draw_ward_detail('-222 -360 118', screwm_w22, 22, screwm_amber);
+    screwm_draw_ward_detail('-148 -360 118', screwm_w23, 23, screwm_cyan);
+    screwm_draw_ward_detail('-74 -360 118', screwm_w24, 24, screwm_cyan);
+    screwm_draw_ward_detail('0 -360 118', screwm_w25, 25, screwm_green);
+    screwm_draw_ward_detail('74 -360 118', screwm_w26, 26, screwm_green);
+    screwm_draw_ward_detail('148 -360 118', screwm_w27, 27, screwm_amber);
+    screwm_draw_ward_detail('222 -360 118', screwm_w28, 28, screwm_amber);
+    screwm_draw_ward_detail('-222 -360 64', screwm_w29, 29, screwm_rose);
+    screwm_draw_ward_detail('-148 -360 64', screwm_w30, 30, screwm_cyan);
+    screwm_draw_ward_detail('-74 -360 64', screwm_w31, 31, screwm_cyan);
+    screwm_draw_ward_detail('0 -360 64', screwm_w32, 32, screwm_cyan);
+    screwm_draw_ward_detail('74 -360 64', screwm_w33, 33, screwm_cyan);
+    screwm_draw_ward_detail('148 -360 64', screwm_w34, 34, screwm_green);
+    screwm_draw_ward_detail('222 -360 64', screwm_w35, 35, screwm_rose);
+    screwm_draw_ward_detail('0 -360 28', screwm_w36, 36, screwm_green);
 };
 
 void() screwm_draw_header =
@@ -520,81 +548,81 @@ void() screwm_add_dynamic_lights =
 
     adddynamiclight('0 40 176', pulse + voice_radius, '1.0 0.58 0.18');
     if (cvar("screwm_review_fill_light") > 0)
-        adddynamiclight('0 -132 184', 220 + screwm_energy * 80, '0.74 0.58 0.38');
-    adddynamiclight('-222 -160 280', 70 + screwm_energy * 40, screwm_cyan);
-    adddynamiclight('222 -160 226', 70 + screwm_voice * 80, screwm_rose);
-    adddynamiclight('-222 -160 118', 58 + screwm_energy * 34, screwm_green);
-    adddynamiclight('222 -160 64', 58 + screwm_voice * 70, screwm_amber);
+        adddynamiclight('0 -332 184', 220 + screwm_energy * 80, '0.74 0.58 0.38');
+    adddynamiclight('-222 -360 280', 70 + screwm_energy * 40, screwm_cyan);
+    adddynamiclight('222 -360 226', 70 + screwm_voice * 80, screwm_rose);
+    adddynamiclight('-222 -360 118', 58 + screwm_energy * 34, screwm_green);
+    adddynamiclight('222 -360 64', 58 + screwm_voice * 70, screwm_amber);
     screwm_add_homage_lights();
 
-    screwm_add_ward_light('-222 -160 280', 1, screwm_cyan, screwm_active_01);
-    screwm_add_ward_light('-148 -160 280', 2, screwm_rose, screwm_active_02);
-    screwm_add_ward_light('-74 -160 280', 3, screwm_green, screwm_active_03);
-    screwm_add_ward_light('0 -160 280', 4, screwm_green, screwm_active_04);
-    screwm_add_ward_light('74 -160 280', 5, screwm_green, screwm_active_05);
-    screwm_add_ward_light('148 -160 280', 6, screwm_cyan, screwm_active_06);
-    screwm_add_ward_light('222 -160 280', 7, screwm_amber, screwm_active_07);
+    screwm_add_ward_light('-222 -360 280', 1, screwm_cyan, screwm_active_01);
+    screwm_add_ward_light('-148 -360 280', 2, screwm_rose, screwm_active_02);
+    screwm_add_ward_light('-74 -360 280', 3, screwm_green, screwm_active_03);
+    screwm_add_ward_light('0 -360 280', 4, screwm_green, screwm_active_04);
+    screwm_add_ward_light('74 -360 280', 5, screwm_green, screwm_active_05);
+    screwm_add_ward_light('148 -360 280', 6, screwm_cyan, screwm_active_06);
+    screwm_add_ward_light('222 -360 280', 7, screwm_amber, screwm_active_07);
 
-    screwm_add_ward_light('-222 -160 226', 8, screwm_green, screwm_active_08);
-    screwm_add_ward_light('-148 -160 226', 9, screwm_amber, screwm_active_09);
-    screwm_add_ward_light('-74 -160 226', 10, screwm_green, screwm_active_10);
-    screwm_add_ward_light('0 -160 226', 11, screwm_cyan, screwm_active_11);
-    screwm_add_ward_light('74 -160 226', 12, screwm_amber, screwm_active_12);
-    screwm_add_ward_light('148 -160 226', 13, screwm_amber, screwm_active_13);
-    screwm_add_ward_light('222 -160 226', 14, screwm_cyan, screwm_active_14);
+    screwm_add_ward_light('-222 -360 226', 8, screwm_green, screwm_active_08);
+    screwm_add_ward_light('-148 -360 226', 9, screwm_amber, screwm_active_09);
+    screwm_add_ward_light('-74 -360 226', 10, screwm_green, screwm_active_10);
+    screwm_add_ward_light('0 -360 226', 11, screwm_cyan, screwm_active_11);
+    screwm_add_ward_light('74 -360 226', 12, screwm_amber, screwm_active_12);
+    screwm_add_ward_light('148 -360 226', 13, screwm_amber, screwm_active_13);
+    screwm_add_ward_light('222 -360 226', 14, screwm_cyan, screwm_active_14);
 
-    screwm_add_ward_light('-222 -160 172', 15, screwm_amber, screwm_active_15);
-    screwm_add_ward_light('-148 -160 172', 16, screwm_green, screwm_active_16);
-    screwm_add_ward_light('-74 -160 172', 17, screwm_cyan, screwm_active_17);
-    screwm_add_ward_light('0 -160 172', 18, screwm_rose, screwm_active_18);
-    screwm_add_ward_light('74 -160 172', 19, screwm_rose, screwm_active_19);
-    screwm_add_ward_light('148 -160 172', 20, screwm_amber, screwm_active_20);
-    screwm_add_ward_light('222 -160 172', 21, screwm_amber, screwm_active_21);
+    screwm_add_ward_light('-222 -360 172', 15, screwm_amber, screwm_active_15);
+    screwm_add_ward_light('-148 -360 172', 16, screwm_green, screwm_active_16);
+    screwm_add_ward_light('-74 -360 172', 17, screwm_cyan, screwm_active_17);
+    screwm_add_ward_light('0 -360 172', 18, screwm_rose, screwm_active_18);
+    screwm_add_ward_light('74 -360 172', 19, screwm_rose, screwm_active_19);
+    screwm_add_ward_light('148 -360 172', 20, screwm_amber, screwm_active_20);
+    screwm_add_ward_light('222 -360 172', 21, screwm_amber, screwm_active_21);
 
-    screwm_add_ward_light('-222 -160 118', 22, screwm_amber, screwm_active_22);
-    screwm_add_ward_light('-148 -160 118', 23, screwm_cyan, screwm_active_23);
-    screwm_add_ward_light('-74 -160 118', 24, screwm_cyan, screwm_active_24);
-    screwm_add_ward_light('0 -160 118', 25, screwm_green, screwm_active_25);
-    screwm_add_ward_light('74 -160 118', 26, screwm_green, screwm_active_26);
-    screwm_add_ward_light('148 -160 118', 27, screwm_amber, screwm_active_27);
-    screwm_add_ward_light('222 -160 118', 28, screwm_amber, screwm_active_28);
+    screwm_add_ward_light('-222 -360 118', 22, screwm_amber, screwm_active_22);
+    screwm_add_ward_light('-148 -360 118', 23, screwm_cyan, screwm_active_23);
+    screwm_add_ward_light('-74 -360 118', 24, screwm_cyan, screwm_active_24);
+    screwm_add_ward_light('0 -360 118', 25, screwm_green, screwm_active_25);
+    screwm_add_ward_light('74 -360 118', 26, screwm_green, screwm_active_26);
+    screwm_add_ward_light('148 -360 118', 27, screwm_amber, screwm_active_27);
+    screwm_add_ward_light('222 -360 118', 28, screwm_amber, screwm_active_28);
 
-    screwm_add_ward_light('-222 -160 64', 29, screwm_rose, screwm_active_29);
-    screwm_add_ward_light('-148 -160 64', 30, screwm_cyan, screwm_active_30);
-    screwm_add_ward_light('-74 -160 64', 31, screwm_cyan, screwm_active_31);
-    screwm_add_ward_light('0 -160 64', 32, screwm_cyan, screwm_active_32);
-    screwm_add_ward_light('74 -160 64', 33, screwm_cyan, screwm_active_33);
-    screwm_add_ward_light('148 -160 64', 34, screwm_green, screwm_active_34);
-    screwm_add_ward_light('222 -160 64', 35, screwm_rose, screwm_active_35);
-    screwm_add_ward_light('0 -160 28', 36, screwm_green, screwm_active_36);
+    screwm_add_ward_light('-222 -360 64', 29, screwm_rose, screwm_active_29);
+    screwm_add_ward_light('-148 -360 64', 30, screwm_cyan, screwm_active_30);
+    screwm_add_ward_light('-74 -360 64', 31, screwm_cyan, screwm_active_31);
+    screwm_add_ward_light('0 -360 64', 32, screwm_cyan, screwm_active_32);
+    screwm_add_ward_light('74 -360 64', 33, screwm_cyan, screwm_active_33);
+    screwm_add_ward_light('148 -360 64', 34, screwm_green, screwm_active_34);
+    screwm_add_ward_light('222 -360 64', 35, screwm_rose, screwm_active_35);
+    screwm_add_ward_light('0 -360 28', 36, screwm_green, screwm_active_36);
 
-    screwm_add_drift_light('-185 -178 253', 1, screwm_cyan, screwm_active_01, screwm_active_09);
-    screwm_add_drift_light('-111 -178 253', 2, screwm_amber, screwm_active_02, screwm_active_10);
-    screwm_add_drift_light('-37 -178 253', 3, screwm_rose, screwm_active_03, screwm_active_11);
-    screwm_add_drift_light('37 -178 253', 4, screwm_green, screwm_active_04, screwm_active_12);
-    screwm_add_drift_light('111 -178 253', 5, screwm_cyan, screwm_active_05, screwm_active_13);
-    screwm_add_drift_light('185 -178 253', 6, screwm_amber, screwm_active_06, screwm_active_14);
-    screwm_add_drift_light('0 -178 226', 7, screwm_amber, screwm_active_07, screwm_active_15);
-    screwm_add_drift_light('-185 -178 199', 8, screwm_green, screwm_active_08, screwm_active_16);
-    screwm_add_drift_light('-185 -178 145', 9, screwm_green, screwm_active_15, screwm_active_23);
-    screwm_add_drift_light('-111 -178 145', 10, screwm_cyan, screwm_active_16, screwm_active_24);
-    screwm_add_drift_light('-37 -178 145', 11, screwm_cyan, screwm_active_17, screwm_active_25);
-    screwm_add_drift_light('37 -178 145', 12, screwm_rose, screwm_active_18, screwm_active_26);
-    screwm_add_drift_light('111 -178 145', 13, screwm_rose, screwm_active_19, screwm_active_27);
-    screwm_add_drift_light('185 -178 145', 14, screwm_amber, screwm_active_20, screwm_active_28);
-    screwm_add_drift_light('222 -178 145', 15, screwm_amber, screwm_active_21, screwm_active_28);
-    screwm_add_drift_light('-185 -178 91', 16, screwm_amber, screwm_active_22, screwm_active_30);
-    screwm_add_drift_light('-74 -178 91', 17, screwm_cyan, screwm_active_24, screwm_active_31);
-    screwm_add_drift_light('148 -178 91', 18, screwm_amber, screwm_active_27, screwm_active_34);
-    screwm_add_drift_light('0 -178 226', 19, screwm_cyan, screwm_active_04, screwm_active_18);
-    screwm_add_drift_light('0 -178 118', 20, screwm_green, screwm_active_18, screwm_active_32);
-    screwm_add_drift_light('0 -178 64', 21, screwm_rose, screwm_active_29, screwm_active_35);
-    screwm_add_drift_light('-37 -178 64', 22, screwm_cyan, screwm_active_30, screwm_active_33);
-    screwm_add_drift_light('37 -178 64', 23, screwm_cyan, screwm_active_31, screwm_active_34);
-    screwm_add_drift_light('37 -178 46', 24, screwm_cyan, screwm_active_33, screwm_active_36);
-    screwm_add_drift_light('74 -178 46', 25, screwm_green, screwm_active_34, screwm_active_36);
-    screwm_add_drift_light('0 -178 73', 26, screwm_rose, screwm_active_25, screwm_active_36);
-    screwm_add_drift_light('0 -178 46', 27, screwm_cyan, screwm_active_32, screwm_active_36);
+    screwm_add_drift_light('-185 -378 253', 1, screwm_cyan, screwm_active_01, screwm_active_09);
+    screwm_add_drift_light('-111 -378 253', 2, screwm_amber, screwm_active_02, screwm_active_10);
+    screwm_add_drift_light('-37 -378 253', 3, screwm_rose, screwm_active_03, screwm_active_11);
+    screwm_add_drift_light('37 -378 253', 4, screwm_green, screwm_active_04, screwm_active_12);
+    screwm_add_drift_light('111 -378 253', 5, screwm_cyan, screwm_active_05, screwm_active_13);
+    screwm_add_drift_light('185 -378 253', 6, screwm_amber, screwm_active_06, screwm_active_14);
+    screwm_add_drift_light('0 -378 226', 7, screwm_amber, screwm_active_07, screwm_active_15);
+    screwm_add_drift_light('-185 -378 199', 8, screwm_green, screwm_active_08, screwm_active_16);
+    screwm_add_drift_light('-185 -378 145', 9, screwm_green, screwm_active_15, screwm_active_23);
+    screwm_add_drift_light('-111 -378 145', 10, screwm_cyan, screwm_active_16, screwm_active_24);
+    screwm_add_drift_light('-37 -378 145', 11, screwm_cyan, screwm_active_17, screwm_active_25);
+    screwm_add_drift_light('37 -378 145', 12, screwm_rose, screwm_active_18, screwm_active_26);
+    screwm_add_drift_light('111 -378 145', 13, screwm_rose, screwm_active_19, screwm_active_27);
+    screwm_add_drift_light('185 -378 145', 14, screwm_amber, screwm_active_20, screwm_active_28);
+    screwm_add_drift_light('222 -378 145', 15, screwm_amber, screwm_active_21, screwm_active_28);
+    screwm_add_drift_light('-185 -378 91', 16, screwm_amber, screwm_active_22, screwm_active_30);
+    screwm_add_drift_light('-74 -378 91', 17, screwm_cyan, screwm_active_24, screwm_active_31);
+    screwm_add_drift_light('148 -378 91', 18, screwm_amber, screwm_active_27, screwm_active_34);
+    screwm_add_drift_light('0 -378 226', 19, screwm_cyan, screwm_active_04, screwm_active_18);
+    screwm_add_drift_light('0 -378 118', 20, screwm_green, screwm_active_18, screwm_active_32);
+    screwm_add_drift_light('0 -378 64', 21, screwm_rose, screwm_active_29, screwm_active_35);
+    screwm_add_drift_light('-37 -378 64', 22, screwm_cyan, screwm_active_30, screwm_active_33);
+    screwm_add_drift_light('37 -378 64', 23, screwm_cyan, screwm_active_31, screwm_active_34);
+    screwm_add_drift_light('37 -378 46', 24, screwm_cyan, screwm_active_33, screwm_active_36);
+    screwm_add_drift_light('74 -378 46', 25, screwm_green, screwm_active_34, screwm_active_36);
+    screwm_add_drift_light('0 -378 73', 26, screwm_rose, screwm_active_25, screwm_active_36);
+    screwm_add_drift_light('0 -378 46', 27, screwm_cyan, screwm_active_32, screwm_active_36);
 
     screwm_add_source_light('-244 112 286', 1, screwm_amber, screwm_source_priority_01, screwm_source_fresh_01);
     screwm_add_source_light('-244 112 174', 2, screwm_green, screwm_source_priority_02, screwm_source_fresh_02);
@@ -610,6 +638,11 @@ void(float apilevel, string enginename, float engineversion) CSQC_Init =
     screwm_voice = 0;
     screwm_mode = "rnd";
     screwm_next_poll = 0;
+    screwm_review_camera_origin = '0 -580 154';
+    screwm_review_camera_angles = '0 90 0';
+    screwm_review_camera_fov = '96 60 0';
+    screwm_review_camera_period = 96.0;
+    screwm_review_camera_two_pi = 6.283185;
 };
 
 void() CSQC_Shutdown =
@@ -633,6 +666,7 @@ void(float vid_width, float vid_height, float notmenu) CSQC_UpdateView =
     screwm_poll_state();
 
     clearscene();
+    screwm_apply_review_camera();
     setproperty(VF_DRAWWORLD, TRUE);
     setproperty(VF_DRAWENGINESBAR, FALSE);
     setproperty(VF_DRAWCROSSHAIR, FALSE);

@@ -110,7 +110,7 @@ def test_screwm_quake_embodies_live_ward_activity_in_engine_lights() -> None:
     assert 'endswith("_overlay")' in exporter
     assert 'screwm_read_norm("data/ward-active-01.txt")' in wards
     assert "screwm_active_36" in wards
-    assert "screwm_add_ward_light('0 -160 28', 36, screwm_green, screwm_active_36)" in wards
+    assert "screwm_add_ward_light('0 -360 28', 36, screwm_green, screwm_active_36)" in wards
 
 
 def test_screwm_quake_carries_audio_reactivity_into_scroom_effects() -> None:
