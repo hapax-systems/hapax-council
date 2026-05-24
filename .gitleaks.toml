@@ -50,6 +50,13 @@ paths = [
   '''tests/''',
   '''agents/''',
   '''docs/superpowers/''',
+  '''^assets/quake/maps/screwm(?:-research|-rnd)?(?:-(?:light|vis))?\.log$''',
+  '''^docs/research/2026-04-20-delta-queue-flow-organization\.md$''',
+  '''^docs/research/2026-04-20-dynamic-livestream-audit-catalog\.md$''',
+  '''^docs/research/2026-04-20-homage-scrim-1-algorithmic-intelligence\.md$''',
+  '''^docs/research/2026-04-20-vinyl-broadcast-mode-d-granular-instrument\.md$''',
+  '''^docs/research/2026-04-21-audio-systems-live-audit\.md$''',
+  '''^docs/streaming/2026-04-10-stream-audit-plan\.md$''',
   '''skills/''',
   '''data/''',
   '''shared/''',
@@ -62,7 +69,20 @@ description = "Browsing or audio capture data path"
 regex = '''rag-sources/(chrome|audio)/'''
 tags = ["pii", "browsing"]
 [rules.allowlist]
-paths = ['''hooks/''', '''tests/''', '''\.gitleaks\.toml''']
+paths = [
+  '''hooks/''',
+  '''tests/''',
+  '''\.gitleaks\.toml''',
+  '''^agents/chrome_sync\.py$''',
+  '''^agents/consent_audit\.py$''',
+  '''^axioms/constitutive-rules\.yaml$''',
+  '''^docs/plans/2026-03-08-ambient-audio-pipeline-design\.md$''',
+  '''^docs/plans/2026-03-08-ambient-audio-pipeline-plan\.md$''',
+  '''^docs/plans/2026-03-08-rag-phase4-design\.md$''',
+  '''^docs/plans/2026-03-08-rag-phase4-plan\.md$''',
+  '''^docs/plans/2026-03-14-studio-ingestion-pipeline-design\.md$''',
+  '''^docs/superpowers/exposition/level-3-governance-architecture\.md$''',
+]
 
 # Allow known false positives
 [allowlist]

@@ -244,6 +244,9 @@ echo ""
 mkdir -p "$(dirname "$MODE_FILE")"
 echo "$MODE" > "$MODE_FILE"
 
+# Propagate to /dev/shm for DarkPlaces QuakeC coupling
+echo "$MODE" > /dev/shm/hapax-compositor/working-mode.txt 2>/dev/null || true
+
 write_langfuse_env "$MODE"
 write_relay_mode "$MODE"
 write_inflection "$MODE"

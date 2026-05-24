@@ -16,6 +16,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from shared.aperture_state import read_aperture_state_block
+
 log = logging.getLogger(__name__)
 
 _DEFAULT_STIMMUNG = Path("/dev/shm/hapax-stimmung/state.json")
@@ -36,6 +38,7 @@ class EnrichmentContext:
     dmn_observations: list[str] = field(default_factory=list)
     imagination_fragments: list[dict] = field(default_factory=list)
     perception_snapshot: dict = field(default_factory=dict)
+    aperture_snapshot: str = ""
 
 
 class ContextAssembler:
@@ -121,6 +124,7 @@ class ContextAssembler:
             dmn_observations=self._read_dmn_buffer(),
             imagination_fragments=self._read_imagination(),
             perception_snapshot=self._safe_call(self._perception_fn, {}),
+            aperture_snapshot=read_aperture_state_block(),
         )
 
     def assemble(self) -> EnrichmentContext:
@@ -140,6 +144,7 @@ class ContextAssembler:
             dmn_observations=self._read_dmn_buffer(),
             imagination_fragments=self._read_imagination(),
             perception_snapshot=self._safe_call(self._perception_fn, {}),
+            aperture_snapshot=read_aperture_state_block(),
         )
         self._cache = ctx
         self._cache_time = now

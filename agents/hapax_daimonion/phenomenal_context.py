@@ -55,6 +55,8 @@ from agents.hapax_daimonion.phenomenal_parsing import (
     parse_temporal_snapshot,
     read_json,
 )
+from shared.aperture_state import read_aperture_state_block
+from shared.prosody import read_prosody_block
 
 log = logging.getLogger(__name__)
 
@@ -111,6 +113,14 @@ def render(tier: str = "CAPABLE") -> str:
 
     # ── Layer 2a: Audio activity + segment binding ───────────────
     if s := render_audio_context(stimmung_data, perception_data, audio_data, segment_data):
+        lines.append(s)
+
+    # ── Layer 2b: Aperture awareness (self-grounding) ───────────
+    if s := read_aperture_state_block():
+        lines.append(s)
+
+    # ── Layer 2c: Speech prosody (how the operator is speaking) ─
+    if s := read_prosody_block():
         lines.append(s)
 
     # ── Layer 3: Temporal impression + horizon ───────────────────

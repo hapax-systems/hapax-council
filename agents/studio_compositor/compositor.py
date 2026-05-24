@@ -186,6 +186,19 @@ _FALLBACK_LAYOUT = Layout(
             },
         ),
         SourceSchema(
+            id="darkplaces",
+            kind="video",
+            backend="v4l2",
+            params={
+                "device": "/dev/video52",
+                "natural_w": 1280,
+                "natural_h": 720,
+                "fps": 30,
+                "role": "darkplaces_background",
+            },
+            tags=["darkplaces", "background", "substrate", "screwm"],
+        ),
+        SourceSchema(
             id="activity_header",
             kind="cairo",
             backend="cairo",

@@ -112,6 +112,7 @@ audio = [
     "python-rtmidi>=1.5.0",
     "obsws-python>=1.7.0",
     "hsemotion-onnx>=0.3",
+    "praat-parselmouth>=0.4.5",
     "essentia>=2.1b6.dev1091,<=2.1b6.dev1389",
     # laion-clap: install separately — pins numpy<2.0.0 which conflicts with qdrant-client on 3.14
     #   uv pip install 'laion-clap>=1.1.6' --no-deps

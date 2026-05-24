@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 import os
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from .cameras import add_camera_branch
-from .cuda_caps import cuda_output_caps_string
+from .cuda_caps import cuda_input_caps_string, cuda_output_caps_string
 from .layout import compute_safe_tile_layout
 from .layout_safety import (
     BASE_COMPOSITOR_BACKGROUND_PROPERTY_VALUE,
@@ -35,6 +36,107 @@ def init_gstreamer() -> tuple[Any, Any]:
     return _GLib, _Gst
 
 
+DEFAULT_DARKPLACES_V4L2_DEVICE = "/dev/video52"
+OBS_VIRTUAL_CAMERA_DEVICE = "/dev/video10"
+DARKPLACES_LAYOUT_SOURCE_ID = "darkplaces"
+
+
+@dataclass(frozen=True)
+class _DarkPlacesBackgroundConfig:
+    device: str
+    width: int
+    height: int
+    fps: int
+
+
+def _darkplaces_v4l2_device() -> str:
+    return (
+        os.environ.get("HAPAX_DARKPLACES_V4L2_DEVICE", "").strip()
+        or os.environ.get("DARKPLACES_V4L2_DEVICE", "").strip()
+        or DEFAULT_DARKPLACES_V4L2_DEVICE
+    )
+
+
+def _positive_int_param(raw: object, *, fallback: int, label: str) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        if raw not in (None, ""):
+            log.warning("Invalid DarkPlaces layout param %s=%r; using %s", label, raw, fallback)
+        return fallback
+    if value <= 0:
+        log.warning("Invalid DarkPlaces layout param %s=%r; using %s", label, raw, fallback)
+        return fallback
+    return value
+
+
+def _darkplaces_background_config(
+    compositor: Any,
+    *,
+    default_width: int,
+    default_height: int,
+    default_fps: int,
+) -> _DarkPlacesBackgroundConfig:
+    """Resolve DarkPlaces background device/caps from layout JSON, then env fallback."""
+
+    device = _darkplaces_v4l2_device()
+    width = default_width
+    height = default_height
+    fps = default_fps
+
+    layout_state = getattr(compositor, "layout_state", None)
+    layout = None
+    if layout_state is not None:
+        try:
+            layout = layout_state.get()
+        except Exception:
+            log.debug("DarkPlaces layout-source lookup failed", exc_info=True)
+    if layout is None:
+        return _DarkPlacesBackgroundConfig(device=device, width=width, height=height, fps=fps)
+
+    for source in getattr(layout, "sources", []):
+        params = getattr(source, "params", {}) or {}
+        tags = set(getattr(source, "tags", []) or [])
+        source_id = getattr(source, "id", "")
+        role = str(params.get("role", ""))
+        is_darkplaces_source = (
+            source_id == DARKPLACES_LAYOUT_SOURCE_ID
+            or role == "darkplaces_background"
+            or {"darkplaces", "background"}.issubset(tags)
+        )
+        if not is_darkplaces_source:
+            continue
+        layout_device = str(params.get("device") or "").strip()
+        if layout_device:
+            device = layout_device
+        width = _positive_int_param(
+            params.get("natural_w", params.get("width")),
+            fallback=width,
+            label="natural_w",
+        )
+        height = _positive_int_param(
+            params.get("natural_h", params.get("height")),
+            fallback=height,
+            label="natural_h",
+        )
+        fps = _positive_int_param(
+            params.get("fps", params.get("framerate")),
+            fallback=fps,
+            label="fps",
+        )
+        log.info(
+            "DarkPlaces background source resolved from layout: id=%s device=%s %dx%d@%d",
+            source_id,
+            device,
+            width,
+            height,
+            fps,
+        )
+        break
+
+    return _DarkPlacesBackgroundConfig(device=device, width=width, height=height, fps=fps)
+
+
 def _pin_black_background(comp_element: Any) -> None:
     """Prefer black compositor fill instead of checkerboard/transparent defaults."""
     try:
@@ -42,6 +144,136 @@ def _pin_black_background(comp_element: Any) -> None:
         log.info("compositor background material pinned: %s", BASE_COMPOSITOR_MATERIAL)
     except Exception:
         log.debug("compositor background property not supported", exc_info=True)
+
+
+def _add_darkplaces_background(
+    Gst: Any,
+    pipeline: Any,
+    comp_element: Any,
+    width: int,
+    height: int,
+    fps: int,
+    *,
+    device: str | None = None,
+    use_cuda: bool = False,
+) -> bool:
+    """Add DarkPlaces v4l2loopback as the compositor background layer.
+
+    Returns True if DarkPlaces source was successfully added, False otherwise.
+    Falls back to black background if the configured renderer feed is unavailable.
+    """
+    device = (device or _darkplaces_v4l2_device()).strip()
+    if device == OBS_VIRTUAL_CAMERA_DEVICE and not _env_truthy(
+        "HAPAX_DARKPLACES_ALLOW_OBS_VCAM_SOURCE"
+    ):
+        log.warning(
+            "Refusing to use %s as DarkPlaces background; it is OBS Virtual Camera output "
+            "and creates an OBS->compositor->OBS loop. Set HAPAX_DARKPLACES_V4L2_DEVICE "
+            "to the dedicated DarkPlaces loopback.",
+            device,
+        )
+        return False
+    if not os.path.exists(device):
+        log.info("DarkPlaces device %s not found — using black background", device)
+        return False
+
+    added_elements: list[Any] = []
+    sink_pad: Any | None = None
+
+    def _cleanup_partial_setup() -> None:
+        if sink_pad is not None:
+            try:
+                comp_element.release_request_pad(sink_pad)
+            except Exception:
+                log.debug("DarkPlaces partial setup pad release skipped", exc_info=True)
+        for element in reversed(added_elements):
+            try:
+                pipeline.remove(element)
+            except Exception:
+                log.debug("DarkPlaces partial setup cleanup skipped for %s", element, exc_info=True)
+
+    try:
+        src = Gst.ElementFactory.make("v4l2src", "darkplaces-src")
+        if src is None:
+            log.warning("v4l2src factory unavailable for DarkPlaces background")
+            return False
+
+        src.set_property("device", device)
+        src.set_property("io-mode", 2)  # mmap
+
+        input_caps = Gst.ElementFactory.make("capsfilter", "darkplaces-caps")
+        input_caps.set_property(
+            "caps",
+            Gst.Caps.from_string(f"video/x-raw,width={width},height={height},framerate={fps}/1"),
+        )
+
+        convert = Gst.ElementFactory.make("videoconvert", "darkplaces-convert")
+        queue = Gst.ElementFactory.make("queue", "darkplaces-queue")
+        queue.set_property("leaky", 2)
+        queue.set_property("max-size-buffers", 2)
+
+        branch_elements = [src, input_caps, convert]
+        if use_cuda:
+            raw_caps = Gst.ElementFactory.make("capsfilter", "darkplaces-raw-nv12-caps")
+            raw_caps.set_property(
+                "caps",
+                Gst.Caps.from_string(
+                    f"video/x-raw,format=NV12,width={width},height={height},framerate={fps}/1"
+                ),
+            )
+            upload = Gst.ElementFactory.make("cudaupload", "darkplaces-upload")
+            cuda_convert = Gst.ElementFactory.make("cudaconvert", "darkplaces-cudaconvert")
+            cuda_caps = Gst.ElementFactory.make("capsfilter", "darkplaces-cuda-caps")
+            cuda_caps.set_property(
+                "caps",
+                Gst.Caps.from_string(cuda_input_caps_string(width, height, fps)),
+            )
+            branch_elements.extend([raw_caps, upload, cuda_convert, cuda_caps])
+        branch_elements.append(queue)
+
+        if any(el is None for el in branch_elements):
+            log.warning("Failed to create DarkPlaces source preprocessing element")
+            return False
+
+        for el in branch_elements:
+            pipeline.add(el)
+            added_elements.append(el)
+
+        for prev, nxt in zip(branch_elements[:-1], branch_elements[1:], strict=True):
+            if not prev.link(nxt):
+                log.warning(
+                    "Failed to link DarkPlaces source preprocessing chain: %s -> %s",
+                    prev.get_name(),
+                    nxt.get_name(),
+                )
+                _cleanup_partial_setup()
+                return False
+
+        sink_pad = comp_element.request_pad_simple("sink_%u")
+        if sink_pad is None:
+            log.warning("Could not request compositor sink pad for DarkPlaces")
+            _cleanup_partial_setup()
+            return False
+
+        sink_pad.set_property("xpos", 0)
+        sink_pad.set_property("ypos", 0)
+        sink_pad.set_property("width", width)
+        sink_pad.set_property("height", height)
+        sink_pad.set_property("zorder", 0)
+
+        src_pad = queue.get_static_pad("src")
+        if src_pad.link(sink_pad) != Gst.PadLinkReturn.OK:
+            log.warning("Failed to link DarkPlaces queue to compositor")
+            _cleanup_partial_setup()
+            return False
+
+        log.info("DarkPlaces background source added from %s (zorder=0)", device)
+        return True
+
+    except Exception:
+        log.warning("DarkPlaces background source setup failed", exc_info=True)
+        _cleanup_partial_setup()
+        return False
 
 
 def _make_cudacompositor(Gst: Any) -> Any | None:
@@ -270,6 +502,24 @@ def build_pipeline(compositor: Any) -> Any:
     _add_render_stage_probe(Gst, comp_element, "src", "compositor_src")
 
     fps = compositor.config.framerate
+
+    # --- DarkPlaces Screwm background layer ---
+    darkplaces_config = _darkplaces_background_config(
+        compositor,
+        default_width=compositor.config.output_width,
+        default_height=compositor.config.output_height,
+        default_fps=fps,
+    )
+    _add_darkplaces_background(
+        Gst,
+        pipeline,
+        comp_element,
+        darkplaces_config.width,
+        darkplaces_config.height,
+        darkplaces_config.fps,
+        device=darkplaces_config.device,
+        use_cuda=compositor._use_cuda,
+    )
 
     # --- ALPHA PHASE 2: per-camera producer pipelines ---
     # Build all producer + fallback sub-pipelines before the composite camera

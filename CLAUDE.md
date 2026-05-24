@@ -4,7 +4,7 @@ Single-operator externalized executive function. No auth/roles/multi-user. Share
 
 ## Architecture
 
-Filesystem-as-bus: agents read/write markdown+YAML on disk; inotify reactive engine cascades work. Three tiers: T1 interactive (Tauri, waybar, VS Code), T2 LLM agents (pydantic-ai via LiteLLM :4000; local Command-R 35B EXL3 on TabbyAPI :5000 `gpu_split=[13,13]`; cloud Claude/Gemini), T3 deterministic (sync/health/maintenance). Docker Compose 20 containers + systemd user units. New units → `systemd/units/` only. Key chain: hapax-secrets → logos-api(:8051) → tabbyapi(:5000) → hapax-daimonion → studio-compositor. Qdrant `operator-patterns` is dead schema — don't add writers.
+Filesystem-as-bus: agents read/write markdown+YAML on disk; inotify reactive engine cascades work. Three tiers: T1 interactive (Tauri, waybar, VS Code), T2 LLM agents (pydantic-ai via LiteLLM :4000; local Command-R 35B EXL3 on TabbyAPI :5000 `gpu_split=[30]` on RTX 5090; cloud Claude/Gemini), T3 deterministic (sync/health/maintenance). Docker Compose 13 containers + systemd user units. New units → `systemd/units/` only. Key chain: hapax-secrets → logos-api(:8051) → tabbyapi(:5000) → hapax-daimonion → studio-compositor. Qdrant `operator-patterns` is dead schema — don't add writers.
 
 ## Design Language
 
@@ -66,7 +66,7 @@ Non-formal referents: "The Operator"/"Oudepode"/"OTO" (sticky per utterance via 
 
 ## IR Perception
 
-5 Pi fleet: Pi-1(.78) ir-desk, Pi-2(.52) ir-room, Pi-4(.53) sentinel, Pi-5(.72) rag-edge, Pi-6(.74) sync+ir-overhead. YOLOv8n ONNX, 3s cadence. Fusion: any() for person, desk-prefer for gaze, overhead-prefer for hands.
+3 Pi fleet: Pi-1(.78) ir-desk, Pi-2(.52) ir-room, Pi-6(.74) sync+ir-overhead. YOLOv8n ONNX, 3s cadence. Fusion: any() for person, desk-prefer for gaze, overhead-prefer for hands.
 
 ## Hooks
 

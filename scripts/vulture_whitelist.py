@@ -3904,3 +3904,23 @@ extract_from_directory_resumable
 from shared.eval_receipt import EvalReceiptV1
 
 EvalReceiptV1._replayable_requires_artifacts_and_hashes
+
+# Aperture state snapshot: called by health monitor timer, not static import.
+from shared.aperture_state import write_aperture_snapshot
+
+write_aperture_snapshot
+
+# Prosody extraction: called from ResidentSTT._extract_prosody via deferred import.
+from shared.prosody import extract_prosody, write_prosody
+
+extract_prosody
+write_prosody
+
+# FastAPI route handlers: registered via @router.get/post decorators, not direct calls.
+from logos.api.routes.claims import get_triaged_claims
+from logos.api.routes.grounding import get_claims, get_progress, get_timeline
+
+get_triaged_claims
+get_progress
+get_claims
+get_timeline

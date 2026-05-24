@@ -10,6 +10,7 @@ from pathlib import Path
 
 from shared.broadcast_audio_health import (
     BroadcastAudioHealthPaths,
+    BroadcastAudioHealthThresholds,
     CommandResult,
     ServiceStatus,
     read_broadcast_audio_health_state,
@@ -18,6 +19,7 @@ from shared.broadcast_audio_health import (
 )
 
 NOW = 1_800_000_000.0
+SOFTWARE_DUCKER_THRESHOLDS = BroadcastAudioHealthThresholds(mpc_hardware_ducking=False)
 
 
 def _write_json(path: Path, payload: dict, *, now: float = NOW, age_s: float = 0.0) -> None:
@@ -195,8 +197,11 @@ def test_safe_state_contains_contract_shape(tmp_path: Path) -> None:
     assert health.evidence["egress_binding"]["bound"] is True
     assert health.evidence["egress_binding"]["expected_source"] == "hapax-obs-broadcast-remap"
     assert health.evidence["egress_binding"]["state"] == "obs_bound_unverified"
-    assert health.evidence["audio_ducker"]["actual_music_duck_gain"] == 1.0
-    assert "hapax-audio-ducker.service" in health.evidence["service_freshness"]["required_units"]
+    assert health.evidence["audio_ducker"]["status"] == "mpc_hardware"
+    assert "MPC Live III" in health.evidence["audio_ducker"]["note"]
+    assert (
+        "hapax-audio-ducker.service" not in health.evidence["service_freshness"]["required_units"]
+    )
     assert health.owners["loudness_constants"] == "shared/audio_loudness.py"
     assert health.owners["egress_binding"] == "shared/obs_egress_predicate.py + pw-link -l"
 
@@ -664,9 +669,11 @@ def test_runtime_safety_source_missing_blocks(tmp_path: Path) -> None:
 def test_audio_ducker_state_missing_blocks(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_json(paths.egress_loopback_witness, _live_loopback_witness())
 
     health = resolve_broadcast_audio_health(
         paths=paths,
+        thresholds=SOFTWARE_DUCKER_THRESHOLDS,
         now=NOW,
         command_runner=_runner(),
         service_status_probe=_service_probe(),
@@ -679,6 +686,7 @@ def test_audio_ducker_state_missing_blocks(tmp_path: Path) -> None:
 def test_audio_ducker_fail_open_blocks(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_json(paths.egress_loopback_witness, _live_loopback_witness())
     _write_json(
         paths.audio_ducker_state,
         _audio_ducker_state(
@@ -690,6 +698,7 @@ def test_audio_ducker_fail_open_blocks(tmp_path: Path) -> None:
 
     health = resolve_broadcast_audio_health(
         paths=paths,
+        thresholds=SOFTWARE_DUCKER_THRESHOLDS,
         now=NOW,
         command_runner=_runner(),
         service_status_probe=_service_probe(),
@@ -733,6 +742,7 @@ def test_audio_ducker_idle_retired_readback_is_non_blocking(tmp_path: Path) -> N
 
     health = resolve_broadcast_audio_health(
         paths=paths,
+        thresholds=SOFTWARE_DUCKER_THRESHOLDS,
         now=NOW,
         command_runner=_runner(),
         service_status_probe=_service_probe(),
@@ -786,6 +796,7 @@ def test_audio_ducker_idle_retired_readback_does_not_mask_real_blockers(
 
     health = resolve_broadcast_audio_health(
         paths=paths,
+        thresholds=SOFTWARE_DUCKER_THRESHOLDS,
         now=NOW,
         command_runner=_runner(),
         service_status_probe=_service_probe(),
@@ -803,6 +814,7 @@ def test_audio_ducker_idle_retired_readback_does_not_mask_real_blockers(
 def test_audio_ducker_readback_mismatch_blocks(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_json(paths.egress_loopback_witness, _live_loopback_witness())
     _write_json(
         paths.audio_ducker_state,
         _audio_ducker_state(
@@ -813,6 +825,7 @@ def test_audio_ducker_readback_mismatch_blocks(tmp_path: Path) -> None:
 
     health = resolve_broadcast_audio_health(
         paths=paths,
+        thresholds=SOFTWARE_DUCKER_THRESHOLDS,
         now=NOW,
         command_runner=_runner(),
         service_status_probe=_service_probe(),

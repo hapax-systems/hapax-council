@@ -1,0 +1,16 @@
+[Unit]
+Description=Vault coherence agent — compute knowledge density + wikilink assertions
+After=network.target hapax-secrets.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/hapax/.local/bin/uv run --extra logos-api --directory /home/hapax/projects/hapax-council python -m agents.vault_coherence
+WorkingDirectory=/home/hapax/projects/hapax-council
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Environment=GNUPGHOME=/home/hapax/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
+Environment=CUDA_VISIBLE_DEVICES=
+TimeoutStartSec=300

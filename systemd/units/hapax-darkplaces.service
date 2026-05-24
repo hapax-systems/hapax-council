@@ -1,0 +1,34 @@
+[Unit]
+Description=Hapax DarkPlaces — Screwm tower Quake renderer
+After=graphical-session.target
+PartOf=hapax-visual-stack.target
+# Runtime containment, 2026-05-23: the host hard-reset after GL renderer
+# activation with AMD "data fabric sync flood" evidence. Keep DarkPlaces
+# opt-in until the renderer feed is validated in a controlled session.
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/darkplaces-capture.sh --require-file assets/quake/maps/screwm-rnd.bsp
+ExecStartPre=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/worktree/scripts/darkplaces-gl-preflight.sh"'
+ExecStartPre=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/worktree/scripts/install-darkplaces-screwm-assets.sh"'
+ExecStart=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/worktree/scripts/darkplaces-capture.sh"'
+Restart=always
+RestartSec=3
+MemoryMax=2G
+Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52
+Environment=XDG_RUNTIME_DIR=%t
+Environment=WAYLAND_DISPLAY=wayland-1
+Environment=DISPLAY=:0
+Environment=__NV_DISABLE_EXPLICIT_SYNC=1
+# This only constrains CUDA-visible helper libraries. It does not reliably pin
+# DarkPlaces' OpenGL renderer; validate GL GPU selection before runtime enable.
+Environment=CUDA_VISIBLE_DEVICES=1
+Environment=__GLX_VENDOR_LIBRARY_NAME=nvidia
+# DarkPlaces VRAM usage is modest (~200-500MB) for a single BSP map.
+# 5060 Ti has 16GB — well within budget alongside daimonion STT (~5GB)
+# and imagination (~0.8GB).
+
+[Install]
+WantedBy=default.target

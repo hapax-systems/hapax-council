@@ -176,9 +176,11 @@ class TestServiceDropInInstall:
 
 
 class TestPhase3DropInsPresent:
-    """LRR Phase 3 item 1 regression pins: the two new drop-ins shipped
-    in this PR for partition reconciliation α → γ must exist in the
-    repo and contain the expected environment variables.
+    """GPU residency regression pins for shipped service drop-ins.
+
+    The 2026-05-23 dual-rig migration moved podium to RTX 5090 + RTX 5060 Ti:
+    TabbyAPI/Command-R stays on the 5090, while daimonion STT stays on the
+    5060 Ti. The drop-ins must exist in the repo and preserve that split.
     """
 
     TABBYAPI_DROPIN = REPO_ROOT / "systemd" / "units" / "tabbyapi.service.d" / "gpu-pin.conf"
@@ -211,7 +213,7 @@ class TestPhase3DropInsPresent:
             "belongs on hapax-daimonion.service.d/ instead."
         )
 
-    def test_tabbyapi_dropin_declares_option_gamma(self) -> None:
+    def test_tabbyapi_dropin_pins_to_podium_5090(self) -> None:
         body = self.TABBYAPI_DROPIN.read_text(encoding="utf-8")
         assert "[Service]" in body
         assert "CUDA_DEVICE_ORDER=PCI_BUS_ID" in body, (
@@ -219,19 +221,21 @@ class TestPhase3DropInsPresent:
             "CUDA_VISIBLE_DEVICES line, or the device-index-to-card mapping "
             "inverts (see Phase 3 spec §1.1)"
         )
-        assert "CUDA_VISIBLE_DEVICES=0,1" in body, (
-            "tabbyapi drop-in must expose both GPUs under Option γ"
+        assert "CUDA_VISIBLE_DEVICES=0" in body, (
+            "tabbyapi drop-in must pin to podium GPU 0 (RTX 5090) after the "
+            "dual-rig migration; Command-R no longer splits across the 5060 Ti"
         )
 
-    def test_hapax_daimonion_dropin_pinned_to_gpu_0(self) -> None:
+    def test_hapax_daimonion_dropin_pinned_to_podium_5060_ti(self) -> None:
         body = self.HAPAX_DAIMONION_DROPIN.read_text(encoding="utf-8")
         assert "[Service]" in body
         assert "CUDA_DEVICE_ORDER=PCI_BUS_ID" in body, (
             "hapax-daimonion drop-in must pin CUDA_DEVICE_ORDER=PCI_BUS_ID for the "
             "same reason as tabbyapi (see Phase 3 spec §1.1)"
         )
-        assert "CUDA_VISIBLE_DEVICES=0" in body, (
-            "hapax-daimonion drop-in must pin to GPU 0 (5060 Ti) under Option γ"
+        assert "CUDA_VISIBLE_DEVICES=1" in body, (
+            "hapax-daimonion drop-in must pin STT to podium GPU 1 (RTX 5060 Ti) "
+            "after the 5090+5060 Ti rebalance"
         )
 
     def test_tabbyapi_service_timeout_180(self) -> None:

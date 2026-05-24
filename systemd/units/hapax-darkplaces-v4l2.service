@@ -1,0 +1,25 @@
+[Unit]
+Description=Hapax DarkPlaces headless v4l2 renderer feed
+After=graphical-session.target
+PartOf=hapax-visual-stack.target
+# Runtime containment, 2026-05-23: opt-in only until the renderer feed is
+# validated without reproducing the AMD data-fabric reset.
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/darkplaces-v4l2-xorg.sh --require-file assets/quake/maps/screwm-rnd.bsp
+ExecStart=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/worktree/scripts/darkplaces-v4l2-xorg.sh"'
+Restart=always
+RestartSec=3
+MemoryMax=2G
+Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52
+Environment=HAPAX_DARKPLACES_XORG_BUS_ID=PCI:5:0:0
+Environment=HAPAX_DARKPLACES_DISPLAY=:82
+Environment=DARKPLACES_WIDTH=1280
+Environment=DARKPLACES_HEIGHT=720
+Environment=DARKPLACES_FPS=30
+
+[Install]
+WantedBy=default.target

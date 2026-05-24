@@ -83,6 +83,29 @@
       "ward_id": null
     },
     {
+      "id": "darkplaces",
+      "kind": "video",
+      "backend": "v4l2",
+      "params": {
+        "device": "/dev/video52",
+        "natural_w": 1280,
+        "natural_h": 720,
+        "fps": 30,
+        "role": "darkplaces_background"
+      },
+      "update_cadence": "always",
+      "rate_hz": null,
+      "tags": [
+        "darkplaces",
+        "background",
+        "substrate",
+        "screwm"
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
+    },
+    {
       "id": "activity_header",
       "kind": "cairo",
       "backend": "cairo",
