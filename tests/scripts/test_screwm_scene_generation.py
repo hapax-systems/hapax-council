@@ -22,7 +22,7 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert content.count("// ward-light ") == 36
     assert content.count("// ward-rail row") == 6
     assert content.count("// ward-spine col") == 7
-    assert content.count("// ward-drift ") >= 13
+    assert content.count("// ward-drift ") >= 25
     assert "w01" in content
     assert "w35" in content
     assert "drift_c" in content
@@ -36,6 +36,17 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "ward-glow 01: token_pole drift_c" in content
     assert "ward-glow 02: album drift_r" in content
     assert "ward-glow 03: stream_overlay drift_g" in content
+
+
+def test_screwm_drift_graph_physically_touches_every_ward_anchor() -> None:
+    module = _load_script("scripts/generate-screwm-map.py")
+    content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
+
+    covered = {ward for link in module["DRIFT_LINKS"] for ward in link[:2]}
+
+    assert covered == set(range(1, 37))
+    assert len(module["DRIFT_LINKS"]) >= 27
+    assert "// section: ward-drift-paths" in content
 
 
 def test_screwm_map_keeps_foundational_tower_geometry_in_regenerated_bsp() -> None:
