@@ -25,18 +25,6 @@ DEFAULT_MODE_FILE = Path.home() / ".cache" / "hapax" / "working-mode"
 DEFAULT_REVERIE_UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/uniforms.json")
 DEFAULT_IMAGINATION_SOURCES_DIR = Path("/dev/shm/hapax-imagination/sources")
 
-WARD_EXPORTS: dict[str, str] = {
-    "01": "token_pole",
-    "02": "album",
-    "07": "stance_indicator",
-    "09": "grounding_provenance_ticker",
-    "12": "thinking_indicator",
-    "13": "pressure_gauge",
-    "21": "programme_banner",
-    "28": "programme_state",
-    "34": "segment_content",
-}
-
 WARD_ACTIVITY_EXPORTS: tuple[tuple[str, str], ...] = (
     ("01", "token_pole"),
     ("02", "album"),
@@ -76,6 +64,7 @@ WARD_ACTIVITY_EXPORTS: tuple[tuple[str, str], ...] = (
     ("36", "cbip_dual_ir_displacement"),
 )
 
+WARD_EXPORTS: dict[str, str] = dict(WARD_ACTIVITY_EXPORTS)
 IN_WORLD_WARD_COUNT = 36
 
 SOURCE_EXPORTS: tuple[tuple[str, str], ...] = (
@@ -214,6 +203,10 @@ def build_ward_lines(shm_dir: Path) -> dict[str, str]:
 
     speech = "VOICE ON" if voice.get("operator_speech_active") else "VOICE QUIET"
     active_count = _screwm_ward_count(active_wards)
+    ward_ids = active_wards.get("ward_ids")
+    active_line = "ACTIVE WAIT"
+    if isinstance(ward_ids, list) and ward_ids:
+        active_line = _one_line(" ".join(str(item).upper() for item in ward_ids[:3]), limit=44)
     token_line = _one_line(
         f"{int(token.get('total_tokens', 0)) // 1000}K TOK / {int(token.get('active_viewers', 0))} VIEW",
         limit=34,
@@ -222,13 +215,40 @@ def build_ward_lines(shm_dir: Path) -> dict[str, str]:
     return {
         "01": token_line,
         "02": album_line,
+        "03": _one_line(f"STREAM {active_count:02d} WARDS", limit=34),
+        "04": f"AOA RMS {rms} ON {onset}",
+        "05": _one_line(f"REVERIE {progress} {role}", limit=34),
+        "06": _one_line(f"ACT {active_line}", limit=44),
         "07": role or "NOMINAL",
+        "08": _one_line(f"GEM {rms} {onset}", limit=34),
         "09": source_line or "SOURCE WAIT",
+        "10": _one_line(f"IMPINGE {progress} {active_count:02d}", limit=34),
+        "11": _one_line(f"RECRUIT {role}", limit=34),
         "12": f"{speech} / {active_count:02d} WARDS",
         "13": f"BEAT {progress} RMS {rms} ON {onset}",
+        "14": _one_line(f"VARIETY {active_count:02d} ACTIVE", limit=34),
+        "15": _one_line(f"HERE {int(token.get('active_viewers', 0))} VIEW", limit=34),
+        "16": _one_line(f"DURF {role}", limit=34),
+        "17": _one_line(f"CODE {topic}", limit=44),
+        "18": _one_line(f"M8 RMS {rms}", limit=34),
+        "19": _one_line(f"DECK ONSET {onset}", limit=34),
+        "20": _one_line(f"EGRESS {progress}", limit=34),
         "21": _one_line(f"{role}: {topic}", limit=48),
+        "22": _one_line(f"PRECED {source_line or role}", limit=44),
+        "23": _one_line(f"HIST {role} {progress}", limit=34),
+        "24": _one_line(f"INSTR RMS {rms} ON {onset}", limit=34),
+        "25": _one_line(f"CBIP {rms}/{onset}", limit=34),
+        "26": _one_line(f"CHAT {speech}", limit=34),
+        "27": _one_line(f"CHRON {int(beat_index) + 1}/{int(total_beats or 0)}", limit=34),
         "28": _one_line(f"BEAT {int(beat_index) + 1}/{int(total_beats or 0)} {progress}", limit=32),
+        "29": _one_line(f"POLY {album_line}", limit=34),
+        "30": _one_line(f"QUERY {topic}", limit=44),
+        "31": _one_line(f"POSTER {source_line or topic}", limit=44),
+        "32": _one_line(f"TUFTE {active_count:02d} WARDS", limit=34),
+        "33": _one_line(f"ASCII {progress}", limit=34),
         "34": beat or "SEGMENT WAIT",
+        "35": _one_line(f"SCOPE RMS {rms} ON {onset}", limit=34),
+        "36": _one_line(f"IRDUAL {rms}/{onset}", limit=34),
     }
 
 

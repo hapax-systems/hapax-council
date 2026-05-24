@@ -25,11 +25,11 @@ def test_csqc_sources_define_all_legacy_ward_labels() -> None:
     assert "adddynamiclight" in body
     assert 'cvar("screwm_csqc_overlay") > 0' in body
     assert body.count("screwm_draw_ward_label(") == 36
-    assert "screwm_draw_ward_detail(" in body
+    assert body.count("screwm_draw_ward_detail(") == 36
     for ordinal in range(1, 37):
         assert f'"{ordinal:02d}"' in body
-    for ordinal in ("01", "02", "07", "09", "12", "13", "21", "28", "34"):
-        assert f"data/ward-{ordinal}.txt" in body
+        assert f"data/ward-{ordinal:02d}.txt" in body
+        assert f"screwm_w{ordinal:02d}" in body
 
 
 def test_csqc_text_overlay_is_not_the_default_ward_surface() -> None:

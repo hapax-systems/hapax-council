@@ -93,11 +93,18 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "ward-02.txt").read_text(
         encoding="utf-8"
     ).strip() == "Radiohead / Pablo Honey"
+    assert (game_dir / "ward-03.txt").read_text(encoding="utf-8").strip() == "STREAM 36 WARDS"
+    assert (game_dir / "ward-04.txt").read_text(encoding="utf-8").strip() == "AOA RMS 012% ON 034%"
+    assert (game_dir / "ward-06.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "ACT PROGRAMME_BANNER SEGMENT_CONTENT PRESSU>"
     assert (game_dir / "ward-12.txt").read_text(encoding="utf-8").strip() == "VOICE ON / 36 WARDS"
     assert "BEAT 050%" in (game_dir / "ward-13.txt").read_text(encoding="utf-8")
     assert "RANT:" in (game_dir / "ward-21.txt").read_text(encoding="utf-8")
     assert (game_dir / "ward-28.txt").read_text(encoding="utf-8").strip() == "BEAT 2/4 050%"
     assert "Escalate the argument" in (game_dir / "ward-34.txt").read_text(encoding="utf-8")
+    assert (game_dir / "ward-36.txt").read_text(encoding="utf-8").strip() == "IRDUAL 012%/034%"
+    assert len(list(game_dir.glob("ward-[0-9][0-9].txt"))) == 36
     assert (game_dir / "ward-active-01.txt").read_text(encoding="utf-8").strip() == "0.0000"
     assert (game_dir / "ward-active-13.txt").read_text(encoding="utf-8").strip() == "1.0000"
     assert (game_dir / "ward-active-21.txt").read_text(encoding="utf-8").strip() == "1.0000"
@@ -120,6 +127,9 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
 
 def test_darkplaces_state_export_normalizes_all_in_scroom_ward_activity() -> None:
     exporter = _load_exporter()
+
+    assert len(exporter.WARD_EXPORTS) == 36
+    assert dict(exporter.WARD_ACTIVITY_EXPORTS) == exporter.WARD_EXPORTS
 
     lines = exporter.build_ward_activity_lines(
         {
