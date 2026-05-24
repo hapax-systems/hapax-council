@@ -9,9 +9,11 @@ ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 
 [Service]
 Type=simple
-ExecStartPre=%h/projects/hapax-council/scripts/darkplaces-gl-preflight.sh
-ExecStartPre=%h/projects/hapax-council/scripts/install-darkplaces-screwm-assets.sh
-ExecStart=%h/projects/hapax-council/scripts/darkplaces-capture.sh
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/darkplaces-capture.sh --require-file assets/quake/maps/screwm-rnd.bsp
+ExecStartPre=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/worktree/scripts/darkplaces-gl-preflight.sh"'
+ExecStartPre=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/worktree/scripts/install-darkplaces-screwm-assets.sh"'
+ExecStart=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/worktree/scripts/darkplaces-capture.sh"'
 Restart=always
 RestartSec=3
 MemoryMax=2G

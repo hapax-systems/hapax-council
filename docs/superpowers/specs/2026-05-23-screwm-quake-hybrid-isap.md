@@ -296,6 +296,9 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   DarkPlaces.
 - `hapax-darkplaces-v4l2.service` now uses the dedicated Xorg feed option so
   systemd validation does not preflight the wrong `:0` display.
+- DarkPlaces units run scripts from the source-activation worktree, with
+  `hapax-compositor-runtime-source-check` gating required scripts/assets before
+  startup, so production cannot silently launch stale lane-local migration code.
 - Launch validation requires `HAPAX_DARKPLACES_SMOKE_ACK=1` and an attended
   run of `scripts/darkplaces-attended-smoke.sh`; the default expected GPU index
   is 1 until a new GPU allocation spec supersedes it.

@@ -6,7 +6,7 @@
 # The captured frames are available to OBS via the linux-vkcapture plugin,
 # or to any application that reads the OBS game capture shared memory.
 # This script does not write the dedicated DarkPlaces v4l2loopback device;
-# use darkplaces-v4l2-xvfb.sh for the direct headless renderer feed.
+# use darkplaces-v4l2-xorg.sh for the direct headless renderer feed.
 set -euo pipefail
 
 # shellcheck source=scripts/darkplaces-runtime-guard.sh
@@ -24,7 +24,7 @@ printf 'darkplaces-capture: OBS capture mode; dedicated renderer loopback is %s\
 
 # Launch DarkPlaces wrapped with obs-glcapture for zero-copy GL frame capture.
 # OBS reads via linux-vkcapture source plugin. The compositor reads from
-# the dedicated DarkPlaces loopback when darkplaces-v4l2-xvfb.sh is used.
+# the dedicated DarkPlaces loopback when darkplaces-v4l2-xorg.sh is used.
 exec obs-glcapture darkplaces-sdl \
     -game screwm \
     -window \

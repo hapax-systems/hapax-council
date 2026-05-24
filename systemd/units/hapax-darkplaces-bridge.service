@@ -6,7 +6,9 @@ ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 
 [Service]
 Type=simple
-ExecStart=%h/projects/hapax-council/scripts/darkplaces-state-bridge.sh
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/darkplaces-state-bridge.sh
+ExecStart=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/worktree/scripts/darkplaces-state-bridge.sh"'
 Restart=always
 RestartSec=2
 
