@@ -40,8 +40,8 @@ def test_darkplaces_launchers_use_native_xbox_joystick_input() -> None:
         assert '+joy_index "$JOY_INDEX"' in body
         assert "+joy_axisforward 1" in body
         assert "+joy_axisside 0" in body
-        assert "+joy_axisyaw 2" in body
-        assert "+joy_axispitch 3" in body
+        assert "+joy_axisyaw 3" in body
+        assert "+joy_axispitch 4" in body
         assert "+joy_sensitivityforward -1" in body
         assert "+joy_deadzoneforward 0.12" in body
         assert "+cl_forwardspeed 360" in body

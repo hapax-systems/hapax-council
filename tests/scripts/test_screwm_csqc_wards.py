@@ -133,8 +133,8 @@ def test_darkplaces_review_camera_is_locked_by_default() -> None:
     assert "joy_enable 1" in autoexec
     assert "joy_index 1" in autoexec
     assert "joy_axisforward 1" in autoexec
-    assert "joy_axisyaw 2" in autoexec
-    assert "joy_axispitch 3" in autoexec
+    assert "joy_axisyaw 3" in autoexec
+    assert "joy_axispitch 4" in autoexec
     assert "joy_x360_axisforward 1" in autoexec
     assert "joy_x360_axisyaw 2" in autoexec
     assert "joy_x360_axispitch 3" in autoexec
