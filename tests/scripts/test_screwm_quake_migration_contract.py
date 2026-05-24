@@ -39,6 +39,9 @@ def test_screwm_shader_effects_are_unconditional_scroom_fields() -> None:
     assert "mask_strength = min(mask_r, 0.25) * 0.35" in postprocess_block
     assert "vhs_strength = clamp(UserVec3.y * 8.0, 0.0, 1.0)" in postprocess_block
     assert "vhs_band) * 0.008" not in postprocess_block
+    assert "float strobe_period" not in postprocess_block
+    assert "color += vec3(strobe" not in postprocess_block
+    assert "Breathing" not in postprocess_block
 
 
 def test_screwm_spec_marks_compositor_wards_as_temporary_gap() -> None:
@@ -98,6 +101,18 @@ def test_screwm_quake_carries_audio_reactivity_into_scroom_effects() -> None:
     assert "coupling_audio_onset * 0.010" in coupling
     assert 'screwm_read_norm("data/audio-rms.txt")' in wards
     assert "screwm_audio_rms * 90" in wards
+
+
+def test_screwm_quake_review_baseline_has_no_clocked_light_pulses() -> None:
+    wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
+
+    assert "state lighting" in wards
+    assert "pulse lighting" not in wards
+    assert "radius = radius + 4 * sin(time" not in wards
+    assert "radius = radius + 5 * sin(time" not in wards
+    assert "radius = radius + 6 * sin(time" not in wards
+    assert "pulse = pulse + 18 * sin(time" not in wards
+    assert "adddynamiclight('0 40 176', pulse + voice_radius" in wards
 
 
 def test_screwm_quake_contract_matches_current_camera_aoa_and_sound_foundation() -> None:

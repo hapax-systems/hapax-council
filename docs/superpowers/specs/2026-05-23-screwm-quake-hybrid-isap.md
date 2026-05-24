@@ -406,6 +406,9 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - Aperture pressure is non-destructive edge attenuation, and horizontal signal
   shear is bounded by live signal noise so the fixed noclip review POV remains
   readable while the effect vocabulary remains embodied in the scroom.
+- The review baseline has no clocked global brightness pulses: shader strobe
+  and breathing are disabled, and CSQC ward/source/drift dynamic-light radii
+  are driven by live state scalars rather than periodic `sin(time)` terms.
 
 ### D13: hapax-imagination Retirement (Phase 6)
 - Remove from default.target

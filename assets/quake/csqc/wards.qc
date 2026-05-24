@@ -1,4 +1,4 @@
-// Screwm CSQC - in-engine ward identity, drift links, and pulse lighting.
+// Screwm CSQC - in-engine ward identity, drift links, and state lighting.
 
 float screwm_width;
 float screwm_height;
@@ -321,9 +321,6 @@ void(vector org, float idx, vector color, float active) screwm_add_ward_light =
 
     radius = 22 + screwm_energy * 18 + screwm_voice * 32 + active * 74;
     radius = radius + screwm_audio_rms * 12 + screwm_audio_onset * 20;
-    radius = radius + 4 * sin(time * 1.15 + idx * 0.47);
-    if (active > 0)
-        radius = radius + 10 * sin(time * 3.4 + idx * 0.29);
     adddynamiclight(org, screwm_clamp(radius, 14, 78), color);
 };
 
@@ -333,7 +330,6 @@ void(vector org, float idx, vector color, float priority, float fresh) screwm_ad
 
     radius = 16 + priority * 36 + fresh * 84;
     radius = radius + screwm_audio_rms * 8 + screwm_audio_onset * 14;
-    radius = radius + 5 * sin(time * (0.9 + fresh * 1.2) + idx * 0.61);
     adddynamiclight(org, screwm_clamp(radius, 12, 118), color);
 };
 
@@ -345,7 +341,6 @@ void(vector org, float idx, vector color, float active_src, float active_dst) sc
     activity = screwm_clamp(active_src + active_dst, 0, 1);
     radius = 18 + screwm_energy * 20 + activity * 58;
     radius = radius + screwm_audio_rms * 18 + screwm_audio_onset * 34;
-    radius = radius + 6 * sin(time * (1.0 + activity * 1.8) + idx * 0.37);
     adddynamiclight(org, screwm_clamp(radius, 12, 94), color);
 };
 
@@ -491,7 +486,6 @@ void() screwm_add_dynamic_lights =
         return;
 
     pulse = 170 + screwm_energy * 80 + screwm_audio_rms * 90;
-    pulse = pulse + 18 * sin(time * (1.1 + screwm_audio_onset * 1.8));
     voice_radius = 20 + screwm_voice * 90 + screwm_audio_onset * 40;
 
     adddynamiclight('0 40 176', pulse + voice_radius, '1.0 0.58 0.18');

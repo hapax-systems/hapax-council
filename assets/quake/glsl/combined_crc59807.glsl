@@ -481,12 +481,6 @@ void main(void)
 		color = floor(color * post_levels) / post_levels;
 	}
 
-	// Breathing — radial pulse synced to time
-	float breath_rate = 0.15;
-	float breath = 1.0 + sin(ClientTime * 2.0) * breath_rate * 0.5;
-	float breath_dist = distance(uv, vec2(0.5));
-	color *= mix(1.0, breath, smoothstep(0.0, 0.6, breath_dist));
-
 	// Surface granularity — stone texture micro-detail
 	// (was: Bayer dither. Now: material surface granularity)
 	float granularity = 0.006;
@@ -562,12 +556,6 @@ void main(void)
 		else thermal = mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), (lum - 0.75) * 4.0);
 		color = mix(color, thermal, thermal_mix);
 	}
-
-	// Strobe — brief brightness flash synced to time
-	float strobe_period = 8.0;
-	float strobe_phase = fract(ClientTime / strobe_period);
-	float strobe = smoothstep(0.0, 0.01, strobe_phase) * smoothstep(0.03, 0.01, strobe_phase);
-	color += vec3(strobe * 0.15);
 
 	// Palette cycling — subtle hue rotation over time
 	float hue_shift = sin(ClientTime * 0.05) * 0.03;
