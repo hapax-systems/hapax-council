@@ -29,6 +29,8 @@ FLOOR_Z = int(TOWER_FLOOR_M * UNITS_PER_METER)
 CEIL_Z = int(TOWER_CEIL_M * UNITS_PER_METER)
 AOA_Z = int(AOA_HEIGHT_M * UNITS_PER_METER)
 EXT = TR + WALL_THICK + 32
+REVIEW_ALCOVE_Y_MIN = -(TR + WALL_THICK + 355)
+REVIEW_WARD_Y = -160
 LEVEL_BANDS = [
     ("perception", FLOOR_Z, FLOOR_Z + 96),
     ("cognition", FLOOR_Z + 96, FLOOR_Z + 192),
@@ -300,11 +302,19 @@ def sealed_room(preset):
     ft = preset.get("shell_tex", preset["floor_tex"])
     ct = preset.get("shell_tex", preset["ceil_tex"])
     wt = preset.get("shell_tex", preset["wall_tex"])
-    brushes.append(box_brush(-EXT, -EXT, FLOOR_Z - WALL_THICK, EXT, EXT, FLOOR_Z, ft))
-    brushes.append(box_brush(-EXT, -EXT, CEIL_Z, EXT, EXT, CEIL_Z + WALL_THICK, ct))
-    brushes.append(box_brush(-EXT, -EXT, FLOOR_Z, -EXT + WALL_THICK, EXT, CEIL_Z, wt))
-    brushes.append(box_brush(EXT - WALL_THICK, -EXT, FLOOR_Z, EXT, EXT, CEIL_Z, wt))
-    brushes.append(box_brush(-EXT, -EXT, FLOOR_Z, EXT, -EXT + WALL_THICK, CEIL_Z, wt))
+    brushes.append(
+        box_brush(-EXT, REVIEW_ALCOVE_Y_MIN, FLOOR_Z - WALL_THICK, EXT, EXT, FLOOR_Z, ft)
+    )
+    brushes.append(box_brush(-EXT, REVIEW_ALCOVE_Y_MIN, CEIL_Z, EXT, EXT, CEIL_Z + WALL_THICK, ct))
+    brushes.append(
+        box_brush(-EXT, REVIEW_ALCOVE_Y_MIN, FLOOR_Z, -EXT + WALL_THICK, EXT, CEIL_Z, wt)
+    )
+    brushes.append(box_brush(EXT - WALL_THICK, REVIEW_ALCOVE_Y_MIN, FLOOR_Z, EXT, EXT, CEIL_Z, wt))
+    brushes.append(
+        box_brush(
+            -EXT, REVIEW_ALCOVE_Y_MIN, FLOOR_Z, EXT, REVIEW_ALCOVE_Y_MIN + WALL_THICK, CEIL_Z, wt
+        )
+    )
     brushes.append(box_brush(-EXT, EXT - WALL_THICK, FLOOR_Z, EXT, EXT, CEIL_Z, wt))
     return [b for b in brushes if b]
 
@@ -348,17 +358,17 @@ def level_ledges(preset):
             if wall == 0:
                 b = box_brush(
                     -EXT + WALL_THICK,
-                    -EXT + WALL_THICK,
+                    REVIEW_ALCOVE_Y_MIN + WALL_THICK,
                     z,
                     EXT - WALL_THICK,
-                    -EXT + WALL_THICK + ledge_depth,
+                    REVIEW_ALCOVE_Y_MIN + WALL_THICK + ledge_depth,
                     z + ledge_height,
                     level_tex,
                 )
             elif wall == 1:
                 b = box_brush(
                     EXT - WALL_THICK - ledge_depth,
-                    -EXT + WALL_THICK,
+                    REVIEW_ALCOVE_Y_MIN + WALL_THICK,
                     z,
                     EXT - WALL_THICK,
                     EXT - WALL_THICK,
@@ -378,7 +388,7 @@ def level_ledges(preset):
             else:
                 b = box_brush(
                     -EXT + WALL_THICK,
-                    -EXT + WALL_THICK,
+                    REVIEW_ALCOVE_Y_MIN + WALL_THICK,
                     z,
                     -EXT + WALL_THICK + ledge_depth,
                     EXT - WALL_THICK,
@@ -425,6 +435,48 @@ def central_lattice(preset):
                 )
                 if b:
                     brushes.append(b)
+
+    return brushes
+
+
+def ward_review_panes(_preset):
+    """Front-facing in-world ward review plane inside the scroom.
+
+    The deeper ward lattice remains present, but the default OBS POV needs a
+    legible canonical face. These panes are physical BSP surfaces in the
+    review alcove, not HUD or compositor overlays.
+    """
+    brushes = []
+
+    for idx, anchor in enumerate(WARD_ANCHORS, start=1):
+        x, _y, z = ward_anchor_position(idx)
+        tex = f"w{idx:02d}"
+        domain = ward_domain(idx)
+        glow_tex = DOMAIN_GLOW_TEX[domain]
+
+        pane = box_brush(
+            x - WARD_PANE_W // 2,
+            REVIEW_WARD_Y - 2,
+            z - WARD_PANE_H // 2,
+            x + WARD_PANE_W // 2,
+            REVIEW_WARD_Y + 2,
+            z + WARD_PANE_H // 2,
+            tex,
+        )
+        if pane:
+            brushes.append(f"// ward-review-pane {idx:02d}: {anchor}\n{pane}")
+
+        frame = box_brush(
+            x - WARD_PANE_W // 2 - WARD_FRAME_PAD,
+            REVIEW_WARD_Y - 8,
+            z - WARD_PANE_H // 2 - WARD_FRAME_PAD,
+            x + WARD_PANE_W // 2 + WARD_FRAME_PAD,
+            REVIEW_WARD_Y - 4,
+            z + WARD_PANE_H // 2 + WARD_FRAME_PAD,
+            glow_tex,
+        )
+        if frame:
+            brushes.append(f"// ward-review-frame {idx:02d}: {anchor} {glow_tex}\n{frame}")
 
     return brushes
 
@@ -763,6 +815,7 @@ def lights(preset):
     review_fill = int(level_light * 0.72)
     for idx, (x, y, z, scale) in enumerate(
         [
+            (0, -330, 154, 1.20),
             (0, -144, 176, 1.00),
             (-148, -118, 214, 0.72),
             (148, -118, 214, 0.72),
@@ -841,6 +894,7 @@ def generate_map(preset):
         + sectioned_brushes("central-aoa-lattice", central_lattice(preset))
         + sectioned_brushes("tower-ramp-shelves", ramp_shelves(preset))
         + sectioned_brushes("central-aoa-pedestal", central_pedestal(preset))
+        + sectioned_brushes("ward-review-plane", ward_review_panes(preset))
         + sectioned_brushes("source-camera-constellation", source_constellation_panes(preset))
         + sectioned_brushes("ward-scrim-panes", ward_scrim_panes(preset))
         + sectioned_brushes("ward-drift-paths", ward_drift_paths(preset))
