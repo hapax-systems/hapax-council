@@ -388,11 +388,14 @@ def ward_drift_paths(_preset):
     world even when diagnostic CSQC lines are disabled.
     """
     brushes = []
-    t = 3
+    t = 5
+    camera_forward_y = -10
 
     for link_idx, (src, dst, tex) in enumerate(DRIFT_LINKS, start=1):
         x1, y1, z1 = ward_anchor_position(src)
         x2, y2, z2 = ward_anchor_position(dst)
+        y1 = y1 + camera_forward_y
+        y2 = y2 + camera_forward_y
         parts = []
         if x1 != x2:
             parts.append(box_brush(min(x1, x2), y1 - t, z1 - t, max(x1, x2), y1 + t, z1 + t, tex))
