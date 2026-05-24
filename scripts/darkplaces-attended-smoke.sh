@@ -26,7 +26,7 @@ Usage: scripts/darkplaces-attended-smoke.sh [--collect-only|--window|--v4l2] [--
 Modes:
   --collect-only   Read-only topology and recent-kernel evidence collection.
   --window         Launch the visible DarkPlaces Screwm renderer, then stop it.
-  --v4l2           Launch Xvfb -> DarkPlaces -> /dev/video52, then stop it.
+  --v4l2           Launch dedicated Xorg -> DarkPlaces -> /dev/video52, then stop it.
 
 Launch modes require:
   HAPAX_DARKPLACES_SMOKE_ACK=1
@@ -255,9 +255,11 @@ run_launch_smoke() {
     shift
     require_launch_ack
     preflight_rc=0
-    validate_gl_preflight || preflight_rc="$?"
-    if [ "$preflight_rc" -ne 0 ]; then
-        return "$preflight_rc"
+    if [ "${DARKPLACES_SMOKE_PRELAUNCH_GL_PREFLIGHT:-1}" = "1" ]; then
+        validate_gl_preflight || preflight_rc="$?"
+        if [ "$preflight_rc" -ne 0 ]; then
+            return "$preflight_rc"
+        fi
     fi
     log "launching ${command_desc} for ${DURATION_S}s"
     {
@@ -294,18 +296,22 @@ case "$MODE" in
             env SCREWM_WIDTH="$WIDTH" SCREWM_HEIGHT="$HEIGHT" "$REPO_DIR/scripts/launch-darkplaces-screwm.sh"
         ;;
     v4l2)
+        DARKPLACES_SMOKE_PRELAUNCH_GL_PREFLIGHT=0
         run_launch_smoke "headless DarkPlaces v4l2 renderer feed" \
             env HAPAX_DARKPLACES_V4L2_DEVICE="${HAPAX_DARKPLACES_V4L2_DEVICE:-/dev/video52}" \
                 DARKPLACES_WIDTH="$WIDTH" DARKPLACES_HEIGHT="$HEIGHT" DARKPLACES_FPS="$FPS" \
-                "$REPO_DIR/scripts/darkplaces-v4l2-xvfb.sh"
+                "$REPO_DIR/scripts/darkplaces-v4l2-xorg.sh"
         ;;
 esac
 
 capture post-kernel-gpu.txt bash -lc "journalctl -b -k --since '$START_WALL' --no-pager | rg -i '$kernel_filter' -C 2 || true"
 capture post-nvidia-pmon.txt nvidia-smi pmon -c 1
 
-if rg -i 'data fabric|sync flood|NVRM: Xid|GPU has fallen off|hardware error|fatal' \
-    "$OUT_DIR/post-kernel-gpu.txt" "$OUT_DIR/kernel-follow.log" >/dev/null 2>&1; then
+if {
+    tail -n +2 "$OUT_DIR/post-kernel-gpu.txt" 2>/dev/null || true
+    cat "$OUT_DIR/kernel-follow.log" 2>/dev/null || true
+} | rg -i 'data fabric|sync flood|NVRM: Xid|GPU has fallen off|hardware error|fatal' \
+    >/dev/null 2>&1; then
     log "hardware-risk evidence found; inspect $OUT_DIR"
     exit 2
 fi

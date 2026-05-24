@@ -254,16 +254,28 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - `scripts/generate-aoa-mdl.py`
 - `assets/quake/models/aoa.mdl`
 
-### D6: v4l2loopback Capture [IN PROGRESS]
+### D6: v4l2loopback Capture [COMPLETE - BOUNDED SMOKE PASSED]
 - `/etc/modprobe.d/v4l2loopback-hapax.conf` updated (video52=DarkPlaces in the unified 14-device config)
 - `scripts/darkplaces-capture.sh`
-- `scripts/darkplaces-v4l2-xvfb.sh` for OBS-free headless capture
+- `scripts/darkplaces-v4l2-xorg.sh` for OBS-free headless capture on a
+  dedicated NVIDIA Xorg server
+- `scripts/darkplaces-v4l2-xvfb.sh` retained as a software-display fallback
+  only; it is not the production GPU-pinned path
 - `scripts/darkplaces-gl-preflight.sh` as a direct launch and systemd
   fail-closed GPU guard
 - `scripts/darkplaces-attended-smoke.sh` for bounded topology/evidence capture
   before runtime reactivation, including `glxinfo` preflight and DarkPlaces
   `GL_RENDERER` assertion against the expected GPU
-- Activation requires module reload
+- Dedicated Xorg probe validated on 2026-05-23: `DISPLAY=:82 glxinfo -B`
+  reported `NVIDIA GeForce RTX 5060 Ti/PCIe/SSE2` using `BusID PCI:5:0:0`
+- Bounded v4l2 smoke passed on 2026-05-24:
+  `scripts/darkplaces-attended-smoke.sh --v4l2 --duration-s 10` completed in
+  `/home/hapax/hapax-state/hardware-validation/darkplaces-screwm-20260524T013220Z-1591390`
+  with `GL_RENDERER: NVIDIA GeForce RTX 5060 Ti/PCIe/SSE2`.
+- `/dev/video52` readback captured a nonblank 1280x720 Screwm frame:
+  `/home/hapax/hapax-state/hardware-validation/darkplaces-screwm-20260524T013220Z-1591390/screwm-video52-frame.png`.
+- Runtime activation remains opt-in; persistent module config changes require
+  module reload or reboot to be guaranteed across boot.
 
 ### D7: Compositor Source Integration [IN PROGRESS]
 - Interpipe producer for /dev/video52 source
@@ -277,10 +289,13 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - Current `:0` GL preflight reports RTX 5090; `DRI_PRIME=1` and NVIDIA offload
   envs did not switch it on this host during containment testing.
 - Mesa/Zink GLX device-selection probes also reported RTX 5090; the 5060 Ti is
-  visible as `PCI:5:0:0` but has no display devices attached, so the next
-  validation path is likely a dedicated console/root display server bound to
-  that BusID.
-- `hapax-darkplaces-v4l2.service` headless feed option
+  visible as `PCI:5:0:0` but has no display devices attached.
+- `scripts/darkplaces-v4l2-xorg.sh --probe-only` starts a bounded dedicated
+  root Xorg server on `PCI:5:0:0`, runs the GL preflight against `DISPLAY=:82`,
+  then tears it down. This validated the 5060 Ti GL route without launching
+  DarkPlaces.
+- `hapax-darkplaces-v4l2.service` now uses the dedicated Xorg feed option so
+  systemd validation does not preflight the wrong `:0` display.
 - Launch validation requires `HAPAX_DARKPLACES_SMOKE_ACK=1` and an attended
   run of `scripts/darkplaces-attended-smoke.sh`; the default expected GPU index
   is 1 until a new GPU allocation spec supersedes it.
@@ -347,8 +362,8 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 
 ## 14. Evidence Gates
 
-- [ ] DarkPlaces renders tower BSP with textures at 1280×720
-- [ ] v4l2loopback /dev/video52 captures DarkPlaces output
+- [x] DarkPlaces renders tower BSP with textures at 1280×720
+- [x] v4l2loopback /dev/video52 captures DarkPlaces output
 - [ ] Compositor accepts DarkPlaces as background source with wards overlay
 - [ ] QuakeC pendulum camera traverses tower smoothly (120-150s period)
 - [ ] AoA Sierpinski tetrahedron visible and rotating at tower center
