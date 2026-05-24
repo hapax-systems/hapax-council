@@ -54,8 +54,14 @@ class TTSManager:
         self._chatterbox_model = None
         self._kokoro_pipeline = None
         self._backend = "chatterbox"
+        self._remote_host = os.environ.get("HAPAX_TTS_REMOTE_HOST")
+        self._remote_port = int(os.environ.get("HAPAX_TTS_REMOTE_PORT", "9851"))
 
     def preload(self) -> None:
+        if self._remote_host:
+            self._backend = "remote"
+            log.info("TTS remote mode: %s:%d", self._remote_host, self._remote_port)
+            return
         try:
             self._get_chatterbox()
             self._backend = "chatterbox"
@@ -99,6 +105,12 @@ class TTSManager:
             )
         lexicon = _speech_lexicon_apply(redaction.text)
 
+        if self._backend == "remote":
+            try:
+                return self._synthesize_remote(lexicon.text, use_case)
+            except Exception:
+                log.warning("Remote TTS failed, falling back to Kokoro", exc_info=True)
+                return self._synthesize_kokoro(lexicon.text, speed=speed)
         if self._backend == "chatterbox":
             try:
                 return self._synthesize_chatterbox(lexicon.text, interview_mode=interview_mode)
@@ -124,6 +136,38 @@ class TTSManager:
             log.warning("Chatterbox produced no audio for: %r", text[:50])
             return b""
         return pcm.tobytes()
+
+    def _synthesize_remote(self, text: str, use_case: str = "conversation") -> bytes:
+        import json
+        import socket
+
+        request = json.dumps({"text": text, "use_case": use_case}) + "\n"
+        sock = socket.create_connection((self._remote_host, self._remote_port), timeout=60)
+        try:
+            sock.sendall(request.encode())
+            buf = b""
+            while b"\n" not in buf:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    raise RuntimeError("Remote TTS connection closed before header")
+                buf += chunk
+            header_line, remainder = buf.split(b"\n", 1)
+            header = json.loads(header_line)
+            if header.get("status") != "ok":
+                raise RuntimeError(f"Remote TTS error: {header.get('error', 'unknown')}")
+            pcm_len = header["pcm_len"]
+            pcm = remainder
+            while len(pcm) < pcm_len:
+                chunk = sock.recv(min(65536, pcm_len - len(pcm)))
+                if not chunk:
+                    break
+                pcm += chunk
+            log.info(
+                "Remote TTS: %d bytes from %s:%d", len(pcm), self._remote_host, self._remote_port
+            )
+            return pcm
+        finally:
+            sock.close()
 
     def _synthesize_kokoro(self, text: str, *, speed: float = 1.0) -> bytes:
         pipeline = self._get_kokoro()

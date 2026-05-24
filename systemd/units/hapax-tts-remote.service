@@ -1,0 +1,17 @@
+[Unit]
+Description=Hapax TTS Remote — Chatterbox network server
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.hapax_daimonion.tts_serve_remote
+Environment="CUDA_DEVICE_ORDER=PCI_BUS_ID"
+Environment="CUDA_VISIBLE_DEVICES=1"
+Environment="HAPAX_CHATTERBOX_DEVICE=cuda:0"
+Environment="HAPAX_TTS_PORT=9851"
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
