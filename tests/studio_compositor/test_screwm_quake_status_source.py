@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import cairo
 
 from agents.studio_compositor.cairo_sources import get_cairo_source_class
@@ -10,6 +12,15 @@ from agents.studio_compositor.screwm_quake_status_source import (
 
 def test_screwm_quake_status_source_is_registered() -> None:
     assert get_cairo_source_class("ScrewmQuakeStatusCairoSource") is ScrewmQuakeStatusCairoSource
+
+
+def test_screwm_quake_status_source_names_migration_not_quake_level() -> None:
+    import agents.studio_compositor.screwm_quake_status_source as source_module
+
+    assert source_module.__file__ is not None
+    text = Path(source_module.__file__).read_text(encoding="utf-8")
+    assert "SCREWM / MIGRATION" in text
+    assert "SCREWM / QUAKE" not in text
 
 
 def test_screwm_quake_status_source_renders_opaque_review_anchor() -> None:

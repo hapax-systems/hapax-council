@@ -1,6 +1,6 @@
 {
   "name": "screwm-quake",
-  "description": "Quake-primary Screwm migration layout: DarkPlaces owns the spatial substrate; sparse Quake-homage wards stay on the broadcast edge for review.",
+  "description": "Screwm migration review layout: DarkPlaces is the spatial substrate; sparse broadcast-edge wards are a temporary dynamic-content bridge.",
   "sources": [
     {
       "id": "darkplaces",

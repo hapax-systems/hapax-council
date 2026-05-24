@@ -19,7 +19,7 @@ void() spawn_aoa =
     setorigin(aoa_entity, AOA_CENTER);
     aoa_entity.think = aoa_think;
     aoa_entity.nextthink = time + 0.1;
-    aoa_entity.screwm_spin_y = 15;
+    aoa_entity.screwm_spin_y = 3;
     setmodel(aoa_entity, "progs/aoa.mdl");
 };
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a Quake WAD2 file with procedural stone/metal textures.
+"""Generate a Quake WAD2 file with procedural Screwm migration textures.
 
 WAD2 format:
   Header: magic "WAD2", num_entries, dir_offset
@@ -12,11 +12,14 @@ import struct
 import zlib
 from pathlib import Path
 
+WARD_COUNT = 35
+
 TEXTURES = {
     "city4_2": {"color": (100, 80, 55), "noise": 12, "pattern": "stone_blocks"},
     "ground1_6": {"color": (60, 55, 50), "noise": 8, "pattern": "worn_stone"},
     "sky4": {"color": (25, 22, 30), "noise": 5, "pattern": "dark_ceiling"},
     "metal5_2": {"color": (85, 80, 75), "noise": 10, "pattern": "brushed_metal"},
+    "scroom": {"color": (44, 38, 34), "noise": 4, "pattern": "scroom"},
     # R&D / Gruvbox tower bands, bottom to top.
     "r_percep": {"color": (108, 74, 45), "noise": 12, "pattern": "stone_blocks"},
     "r_cognit": {"color": (78, 86, 74), "noise": 10, "pattern": "carved_stone"},
@@ -33,8 +36,74 @@ TEXTURES = {
 
 TEX_SIZE = 64
 
+for ward_idx in range(1, WARD_COUNT + 1):
+    TEXTURES[f"w{ward_idx:02d}"] = {
+        "color": (120, 105, 70),
+        "noise": 0,
+        "pattern": "ward_panel",
+        "label": ward_idx,
+    }
 
-def generate_pixel_data(color, noise, width, height, seed=0, pattern="stone_blocks"):
+
+DIGITS = {
+    "0": ("111", "101", "101", "101", "111"),
+    "1": ("010", "110", "010", "010", "111"),
+    "2": ("111", "001", "111", "100", "111"),
+    "3": ("111", "001", "111", "001", "111"),
+    "4": ("101", "101", "111", "001", "001"),
+    "5": ("111", "100", "111", "001", "111"),
+    "6": ("111", "100", "111", "101", "111"),
+    "7": ("111", "001", "010", "010", "010"),
+    "8": ("111", "101", "111", "101", "111"),
+    "9": ("111", "101", "111", "001", "111"),
+}
+
+
+def digit_is_lit(char, col, row):
+    """Return true when the tiny ward-panel font lights a cell."""
+    glyph = DIGITS.get(char)
+    if not glyph:
+        return False
+    return glyph[row][col] == "1"
+
+
+def ward_panel_index(x, y, label):
+    """High-contrast in-engine ward anchor texture with a two-digit ordinal."""
+    if x < 2 or y < 2 or x >= TEX_SIZE - 2 or y >= TEX_SIZE - 2:
+        return 232
+    if x < 5 or y < 5 or x >= TEX_SIZE - 5 or y >= TEX_SIZE - 5:
+        return 90
+    if y in (14, 15, 48, 49):
+        return 176
+    if x in (14, 15, 48, 49):
+        return 62
+
+    # Diagonal scan-strata give every pane motion-read even as a baked texture.
+    base = 34 + ((x * 3 + y * 5 + label * 11) % 28)
+    if (x + y + label * 3) % 17 == 0:
+        base = 118
+
+    text = f"{label:02d}"
+    scale = 5
+    start_x = 17
+    start_y = 20
+    digit_w = 3 * scale
+    gap = 4
+    for digit_idx, char in enumerate(text):
+        glyph_x = x - start_x - digit_idx * (digit_w + gap)
+        glyph_y = y - start_y
+        if 0 <= glyph_x < digit_w and 0 <= glyph_y < 5 * scale:
+            col = glyph_x // scale
+            row = glyph_y // scale
+            if digit_is_lit(char, col, row):
+                return 236
+            if (glyph_x % scale in (0, scale - 1)) or (glyph_y % scale in (0, scale - 1)):
+                return max(base, 76)
+
+    return base
+
+
+def generate_pixel_data(color, noise, width, height, seed=0, pattern="stone_blocks", label=0):
     """Generate Quake-style texture with visible material character."""
     import random
 
@@ -105,6 +174,21 @@ def generate_pixel_data(color, noise, width, height, seed=0, pattern="stone_bloc
                     base -= 24
                 if (x * 5 + y + seed) % 79 < 4:
                     base += 34
+
+            elif pattern == "scroom":
+                base = 34 + random.randint(-5, 7)
+                diag_a = abs(((x + y // 2) % 32) - 16)
+                diag_b = abs(((x - y // 2) % 32) - 16)
+                if diag_a < 2 or diag_b < 2:
+                    base += 34
+                if x % 16 == 0 or y % 16 == 0:
+                    base += 22
+                if (x * 7 + y * 11 + seed) % 101 < 3:
+                    base += 54
+
+            elif pattern == "ward_panel":
+                pixels.append(ward_panel_index(x, y, int(label)))
+                continue
 
             # Add surface noise
             random.seed(seed + y * width + x)
@@ -223,6 +307,7 @@ def main():
             TEX_SIZE,
             seed=texture_seed(name),
             pattern=params.get("pattern", "stone_blocks"),
+            label=params.get("label", 0),
         )
         miptex = make_miptex(name, TEX_SIZE, TEX_SIZE, pixels, palette)
         textures_data[name] = (miptex, palette)

@@ -17,18 +17,21 @@ designed WITH this constraint, not despite it.
 - If a shape survives 8-bit quantization and still reads as itself, it belongs
   in the engine. If it doesn't, find a different representation.
 
-## 2. The Engine's Aesthetic IS the Homage
+## 2. The Engine Is a Substrate, Not the Subject
 
-Do not fight DarkPlaces to make it render like wgpu. Quake's rendering
-limitations — nearest-neighbor textures, vertex lighting, fog-as-atmosphere,
-8-bit geometry — are the aesthetic. They are what makes the Quake homage
-authentic rather than a skin.
+DarkPlaces constraints are real, but they do not replace the existing Screwm
+commitments. The migration target is the last non-Quake Screwm composition:
+AoA/Sierpinski as central aperture, wards as lived information surfaces,
+Reverie drift/effects as the atmosphere, and working-mode palettes as semantic
+state. Quake is the new environment in which those commitments must be
+expressed; it is not a mandate to make a Quake level in spirit.
 
 - **GL_NEAREST** texture filtering: pixels visible, not interpolated
 - **Vertex lighting**: hard shadows, no soft ambient occlusion
 - **Fog**: uniform color overlay, not volumetric — use this for depth cue
 - **No PBR**: materials are flat-lit with a single diffuse texture
-- These constraints produce the visual language. Embrace them.
+- These constraints shape implementation details. They do not authorize losing
+  Screwm's prior composition, theory, density, ward inventory, or drift.
 
 ## 3. Split by Temporal vs Spatial
 
@@ -43,14 +46,19 @@ Never cross the boundary in the wrong direction.
 | Informational | GStreamer Cairo | Wards, text, data visualization, HUD |
 | Color | Either | Colorgrade possible in both; prefer DarkPlaces for scene-level, GStreamer for output-level |
 
-## 4. Content Cannot Be In-Engine
+## 4. Dynamic Content Is the Hardest In-Engine Migration Surface
 
 DarkPlaces cannot reload textures at runtime without engine restart. This is
-a confirmed, researched constraint (not an assumption). All dynamic content
-(wards, video, live data) MUST render in the GStreamer compositor overlay.
+a confirmed, researched constraint (not an assumption). It is a blocker to
+naive texture-based live wards, not a reason to declare wards out of scope.
 
-Ward rendering stays in Cairo/Pango. The HomagePackage controls ward aesthetics
-(palette, typography, grammar) regardless of which engine renders the 3D world.
+The required direction is:
+- Sourceize static in-engine ward anchors/panes for all legacy wards so the
+  spatial Screwm composition is present inside DarkPlaces.
+- Keep GStreamer/Cairo wards only as a temporary dynamic-content bridge while
+  Quake-native dynamic strategies are evaluated.
+- Treat any remaining compositor-owned ward as an explicit parity gap with
+  evidence, not as the target architecture.
 
 ## 5. Mode Propagation Is Map-Level
 
@@ -87,12 +95,14 @@ Each tower level has a distinct sonic identity. Sound emitters are entities
 with spatial attenuation. The sound design encodes the cognitive hierarchy
 the same way lighting and textures do — it is semantic, not ambient.
 
-## 9. The Camera IS the Viewer
+## 9. The Camera Is Reviewable Before It Is Expressive
 
-The QuakeC pendulum camera path is the viewer's experience of the tower.
-Camera dynamics (speed, look direction, path shape) are first-class
-expressive parameters, not technical settings. Stimmung energy modulating
-camera period is cognitive coupling, not animation.
+The camera is the viewer's experience of Screwm, so it cannot lurch while the
+operator is judging migration parity through OBS. Default runtime must use a
+stable review pose that makes AoA, in-engine ward anchors, and drift/effects
+legible. Recurrent motion is allowed only after a fixed review baseline is
+visually accepted; then it must be slow, cyclic, and never read as accidental
+forward jumps.
 
 ## 10. Verify Visually, Not Computationally
 

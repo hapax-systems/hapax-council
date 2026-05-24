@@ -1,10 +1,10 @@
-"""Quake-primary Screwm review status ward.
+"""Screwm migration review status ward.
 
 The migration route needs one always-legible in-frame marker so OBS review
-can distinguish "DarkPlaces is live, camera is locked, wards are post-FX"
+can distinguish "DarkPlaces is live, camera is locked, migration bridge active"
 from a stale capture or legacy layout. This source is intentionally direct
 Cairo instead of a transitional homage source: it is operational chrome for
-the Quake review profile, not another autonomous homage layer.
+the current review profile, not another autonomous homage layer.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from agents.studio_compositor.cairo_source import CairoSource
 
 
 class ScrewmQuakeStatusCairoSource(CairoSource):
-    """Static high-contrast ward for the Screwm Quake migration profile."""
+    """Static high-contrast ward for the Screwm migration profile."""
 
     def render(
         self,
@@ -31,7 +31,7 @@ class ScrewmQuakeStatusCairoSource(CairoSource):
 
         cr.save()
         try:
-            # Flat, sharp-edged Quake/debug-panel grammar. No pulse, no fade,
+            # Flat, sharp-edged review-panel grammar. No pulse, no fade,
             # no rounded card: the point is a stable review anchor.
             cr.set_source_rgba(0.0, 0.0, 0.0, 0.82)
             cr.rectangle(0, 0, canvas_w, canvas_h)
@@ -54,16 +54,16 @@ class ScrewmQuakeStatusCairoSource(CairoSource):
             cr.set_font_size(19.0)
             cr.set_source_rgba(1.0, 0.70, 0.28, 1.0)
             cr.move_to(18.0, 31.0)
-            cr.show_text("SCREWM / QUAKE")
+            cr.show_text("SCREWM / MIGRATION")
 
             cr.set_font_size(14.0)
             cr.set_source_rgba(0.80, 1.0, 0.96, 0.95)
             cr.move_to(18.0, 58.0)
-            cr.show_text("DARKPLACES LIVE  |  CAMERA LOCKED")
+            cr.show_text("DARKPLACES SUBSTRATE  |  CAMERA LOCKED")
 
             cr.set_source_rgba(0.92, 0.86, 0.72, 0.92)
             cr.move_to(18.0, 82.0)
-            cr.show_text("WARDS POST-FX  |  /dev/video52 -> /dev/video42")
+            cr.show_text("WARD BRIDGE ACTIVE  |  /dev/video52 -> /dev/video42")
         finally:
             cr.restore()
 

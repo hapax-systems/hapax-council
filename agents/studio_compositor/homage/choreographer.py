@@ -20,6 +20,7 @@ machinery already in place extends unchanged.
 
 from __future__ import annotations
 
+import colorsys
 import json
 import logging
 import os
@@ -92,6 +93,15 @@ _CONSENT_SAFE_FLAG_FILE: Path = Path("/dev/shm/hapax-compositor/consent-safe-act
 # announces.
 _ARTEFACT_INTENSITY_ACTIVE: float = 1.0
 _ARTEFACT_INTENSITY_IDLE: float = 0.0
+
+
+def _package_accent_hue_deg(package: HomagePackage) -> float:
+    """Return the package's accent-cyan hue for shader/substrate coupling."""
+    r, g, b, _a = package.palette.accent_cyan
+    hue, saturation, value = colorsys.rgb_to_hsv(r, g, b)
+    if saturation < 0.05 or value < 0.05:
+        return 0.0
+    return hue * 360.0
 
 
 def _feature_flag_active() -> bool:
@@ -744,9 +754,8 @@ class Choreographer:
         Bands:
         - active_transition_energy: 1.0 while any plan entry is live;
           decays linearly to 0 over 0.5s after completion.
-        - palette_accent_hue_deg: fixed per package (BitchX cyan ≈ 180°;
-          consent-safe variant → 0° since every accent collapses to
-          muted grey).
+        - palette_accent_hue_deg: hue derived from the package's accent_cyan
+          role; consent-safe greyscale packages collapse to 0°.
         - signature_artefact_intensity: 1.0 on the reconcile tick that
           just rolled into a new rotation cycle and successfully chose
           an artefact from the package's corpus. 0 otherwise.
@@ -754,8 +763,7 @@ class Choreographer:
           the package's steady cadence.
         """
         energy = 1.0 if planned else 0.0
-        # mIRC 11 cyan maps to ~180°; consent-safe + other packages 0°.
-        hue = 180.0 if package.name == "bitchx" else 0.0
+        hue = _package_accent_hue_deg(package)
         cadence = package.signature_conventions.rotation_cadence_s_steady
         if cadence > 0:
             self._rotation_phase = (now % cadence) / cadence
@@ -1050,7 +1058,7 @@ class Choreographer:
                 return
         try:
             self._substrate_package_file.parent.mkdir(parents=True, exist_ok=True)
-            hue = 180.0 if package.name == "bitchx" else 0.0
+            hue = _package_accent_hue_deg(package)
             payload = {
                 "package": package.name,
                 "palette_accent_hue_deg": hue,

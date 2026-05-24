@@ -56,9 +56,9 @@ void() coupling_apply_stimmung =
     // AoA rotation speed: faster with voice activity
     if (aoa_entity)
     {
-        float base_rot = 15.0;
-        float voice_boost = coupling_voice_active * 30.0;
-        aoa_entity.screwm_spin_y = base_rot + voice_boost + coupling_energy * 10.0;
+        float base_rot = 3.0;
+        float voice_boost = coupling_voice_active * 8.0;
+        aoa_entity.screwm_spin_y = base_rot + voice_boost + coupling_energy * 4.0;
     }
 
     // Fog density: denser at low energy (contemplative), clearer at high

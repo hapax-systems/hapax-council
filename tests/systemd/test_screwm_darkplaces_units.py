@@ -39,6 +39,23 @@ def test_darkplaces_xorg_launcher_disables_headless_screen_blanking() -> None:
         'Option "DPMS" "false"',
         "-s 0 \\",
         "-dpms \\",
+        "+viewsize 120",
+        "+scr_viewsize 120",
+        "+scr_centertime 0",
+        "+scr_sbaralpha 0",
+        "+sbar_alpha_bg 0",
+        "+sbar_alpha_fg 0",
+        "+sbar_hudselector 0",
+        "+sbar_x 10000",
+        "+sbar_y 10000",
+        "+scr_infobar_height 0",
+        "+scr_infobartime_off 0",
+        "+scr_showbrand 0",
+        "+cl_showfps 0",
+        "+cl_showtime 0",
+        "+cl_showdate 0",
+        "+cl_showspeed 0",
+        "+cl_shownet 0",
     ):
         assert expected in body
 
@@ -49,6 +66,26 @@ def test_darkplaces_xvfb_launcher_disables_headless_screen_blanking() -> None:
     assert (
         'Xvfb "$DISPLAY_NUM" -screen 0 "${WIDTH}x${HEIGHT}x24" -nolisten tcp -s 0 -dpms &' in body
     )
+    for expected in (
+        "+viewsize 120",
+        "+scr_viewsize 120",
+        "+scr_centertime 0",
+        "+scr_sbaralpha 0",
+        "+sbar_alpha_bg 0",
+        "+sbar_alpha_fg 0",
+        "+sbar_hudselector 0",
+        "+sbar_x 10000",
+        "+sbar_y 10000",
+        "+scr_infobar_height 0",
+        "+scr_infobartime_off 0",
+        "+scr_showbrand 0",
+        "+cl_showfps 0",
+        "+cl_showtime 0",
+        "+cl_showdate 0",
+        "+cl_showspeed 0",
+        "+cl_shownet 0",
+    ):
+        assert expected in body
 
 
 def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
@@ -58,14 +95,17 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     world = (REPO_ROOT / "assets" / "quake" / "qc" / "world.qc").read_text(encoding="utf-8")
 
     assert "vector AOA_CENTER = '0 0 176';" in defs
-    assert "vector CAMERA_REVIEW_POS = '248 -176 248';" in defs
-    assert "vector CAMERA_REVIEW_TARGET = '0 0 160';" in defs
+    assert "vector CAMERA_REVIEW_POS = '0 -260 184';" in defs
+    assert "vector CAMERA_REVIEW_TARGET = '0 40 176';" in defs
     assert "vector(vector v) vectoangles = #51;" in defs
     assert "ang = vectoangles(target - pos);" in camera
     assert 'if (cvar("screwm_camera_orbit") > 0)' in camera
     assert "pos = CAMERA_REVIEW_POS;" in camera
     assert "CAMERA_ORBIT_PERIOD = 360.0;" in coupling
     assert "CAMERA_PERIOD = 120 + (1.0 - coupling_energy) * 30.0;" not in coupling
+    assert "float base_rot = 3.0;" in coupling
+    assert "coupling_voice_active * 8.0" in coupling
+    assert "coupling_energy * 4.0" in coupling
     assert "setorigin(self, CAMERA_REVIEW_POS);" in world
 
 

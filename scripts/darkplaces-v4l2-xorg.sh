@@ -186,13 +186,29 @@ DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 darkplaces-sdl \
     +port "$PORT" \
     +crosshair 0 \
     +r_drawviewmodel 0 \
+    +viewsize 120 \
+    +scr_viewsize 120 \
     +cl_bob 0 \
-    +sbar_alpha 0 \
+    +scr_centertime 0 \
+    +scr_sbaralpha 0 \
+    +sbar_alpha_bg 0 \
+    +sbar_alpha_fg 0 \
+    +sbar_hudselector 0 \
+    +sbar_x 10000 \
+    +sbar_y 10000 \
+    +scr_infobar_height 0 \
+    +scr_infobartime_off 0 \
+    +scr_showbrand 0 \
     +sv_cheats 1 \
     +gl_texturemode GL_NEAREST \
     +r_fog 1 \
     +cl_maxfps "$FPS" \
     +showfps 0 \
+    +cl_showfps 0 \
+    +cl_showtime 0 \
+    +cl_showdate 0 \
+    +cl_showspeed 0 \
+    +cl_shownet 0 \
     +scr_showturtle 0 &
 darkplaces_pid="$!"
 

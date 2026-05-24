@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Generate Quake .map files for the Screwm tower interior.
+"""Generate Quake .map files for the Screwm migration scene.
 
-Sealed rectangular room with interior decoration. Uses only axis-aligned
-box brushes to guarantee qbsp seals the map (no vis leaks).
+Sealed BSP substrate with Screwm/AoA composition anchors. Uses only
+axis-aligned box brushes to guarantee qbsp seals the map (no vis leaks).
 
 Supports two working modes per hapax design language §2:
   --mode rnd       Gruvbox Hard Dark (warm brown, amber lights)
@@ -22,6 +22,7 @@ TOWER_FLOOR_M = -2.0
 TOWER_CEIL_M = 13.0
 WALL_THICK = 16
 AOA_HEIGHT_M = 5.5
+WARD_PANEL_COUNT = 35
 
 TR = int(TOWER_RADIUS_M * UNITS_PER_METER)
 FLOOR_Z = int(TOWER_FLOOR_M * UNITS_PER_METER)
@@ -36,11 +37,50 @@ LEVEL_BANDS = [
     ("grounding", FLOOR_Z + 384, CEIL_Z),
 ]
 
+WARD_ANCHORS = [
+    "token_pole",
+    "album",
+    "stream_overlay",
+    "sierpinski",
+    "reverie",
+    "activity_header",
+    "stance_indicator",
+    "gem",
+    "grounding_provenance_ticker",
+    "impingement_cascade",
+    "recruitment_candidate_panel",
+    "thinking_indicator",
+    "pressure_gauge",
+    "activity_variety_log",
+    "whos_here",
+    "durf",
+    "coding_session_reveal",
+    "m8-display",
+    "steamdeck-display",
+    "egress_footer",
+    "programme_banner",
+    "precedent_ticker",
+    "programme_history",
+    "research_instrument_dashboard",
+    "cbip_signal_density",
+    "chat_ambient",
+    "chronicle_ticker",
+    "programme_state",
+    "polyend_instrument_reveal",
+    "interactive_lore_query",
+    "constructivist_research_poster",
+    "tufte_density",
+    "ascii_schematic",
+    "segment_content",
+    "m8_oscilloscope",
+]
+
 MODE_PRESETS = {
     "rnd": {
         "wall_tex": "city4_2",
         "floor_tex": "ground1_6",
         "ceil_tex": "sky4",
+        "shell_tex": "scroom",
         "ramp_tex": "metal5_2",
         "level_wall_tex": ["r_percep", "r_cognit", "r_comm", "r_express", "r_ground"],
         "level_ledge_tex": ["r_percep", "r_cognit", "r_comm", "r_express", "r_ground"],
@@ -63,6 +103,7 @@ MODE_PRESETS = {
         "wall_tex": "city4_2",
         "floor_tex": "ground1_6",
         "ceil_tex": "sky4",
+        "shell_tex": "scroom",
         "ramp_tex": "metal5_2",
         "level_wall_tex": ["s_percep", "s_cognit", "s_comm", "s_express", "s_ground"],
         "level_ledge_tex": ["s_percep", "s_cognit", "s_comm", "s_express", "s_ground"],
@@ -119,15 +160,15 @@ def box_brush(x1, y1, z1, x2, y2, z2, tex):
 
 def sealed_room(preset):
     brushes = []
-    ft = preset["floor_tex"]
-    ct = preset["ceil_tex"]
+    ft = preset.get("shell_tex", preset["floor_tex"])
+    ct = preset.get("shell_tex", preset["ceil_tex"])
+    wt = preset.get("shell_tex", preset["wall_tex"])
     brushes.append(box_brush(-EXT, -EXT, FLOOR_Z - WALL_THICK, EXT, EXT, FLOOR_Z, ft))
     brushes.append(box_brush(-EXT, -EXT, CEIL_Z, EXT, EXT, CEIL_Z + WALL_THICK, ct))
-    for _level, z1, z2, tex in level_texture_bands(preset):
-        brushes.append(box_brush(-EXT, -EXT, z1, -EXT + WALL_THICK, EXT, z2, tex))
-        brushes.append(box_brush(EXT - WALL_THICK, -EXT, z1, EXT, EXT, z2, tex))
-        brushes.append(box_brush(-EXT, -EXT, z1, EXT, -EXT + WALL_THICK, z2, tex))
-        brushes.append(box_brush(-EXT, EXT - WALL_THICK, z1, EXT, EXT, z2, tex))
+    brushes.append(box_brush(-EXT, -EXT, FLOOR_Z, -EXT + WALL_THICK, EXT, CEIL_Z, wt))
+    brushes.append(box_brush(EXT - WALL_THICK, -EXT, FLOOR_Z, EXT, EXT, CEIL_Z, wt))
+    brushes.append(box_brush(-EXT, -EXT, FLOOR_Z, EXT, -EXT + WALL_THICK, CEIL_Z, wt))
+    brushes.append(box_brush(-EXT, EXT - WALL_THICK, FLOOR_Z, EXT, EXT, CEIL_Z, wt))
     return [b for b in brushes if b]
 
 
@@ -213,7 +254,7 @@ def level_ledges(preset):
 
 
 def central_lattice(preset):
-    """Level rings and vertical rods in the tower core so traversal never reads as empty."""
+    """Level rings and vertical rods in the scene core so the AoA has a structural field."""
     brushes = []
     outer = 104
     inner = 56
@@ -247,6 +288,43 @@ def central_lattice(preset):
                 )
                 if b:
                     brushes.append(b)
+
+    return brushes
+
+
+def ward_scrim_panes(_preset):
+    """Baked in-engine ward anchors.
+
+    These are not final dynamic ward contents. They reserve and visibly mark
+    the 35 historical ward positions inside the DarkPlaces render path so the
+    migration target is Screwm parity, not an empty Quake room.
+    """
+    brushes = []
+    columns = 7
+    pane_w = 42
+    pane_h = 30
+    x_spacing = 58
+    z_spacing = 54
+    y = 112
+    top_z = FLOOR_Z + 344
+
+    for idx, anchor in enumerate(WARD_ANCHORS, start=1):
+        col = (idx - 1) % columns
+        row = (idx - 1) // columns
+        x = int((col - (columns - 1) * 0.5) * x_spacing)
+        z = int(top_z - row * z_spacing)
+        tex = f"w{idx:02d}"
+        brush = box_brush(
+            x - pane_w // 2,
+            y - 2,
+            z - pane_h // 2,
+            x + pane_w // 2,
+            y + 2,
+            z + pane_h // 2,
+            tex,
+        )
+        if brush:
+            brushes.append(f"// ward-anchor {idx:02d}: {anchor}\n{brush}")
 
     return brushes
 
@@ -344,14 +422,7 @@ def generate_map(preset):
     lines.append(f"// Screwm Tower — {preset['message']}")
     lines.append("")
 
-    worldspawn_brushes = (
-        sealed_room(preset)
-        + pillar_columns(preset)
-        + level_ledges(preset)
-        + central_lattice(preset)
-        + central_pedestal(preset)
-        + ramp_shelves(preset)
-    )
+    worldspawn_brushes = sealed_room(preset) + ward_scrim_panes(preset)
 
     lines.append("{")
     lines.append('"classname" "worldspawn"')
@@ -396,6 +467,11 @@ def main():
     parser.add_argument("--mode", choices=["rnd", "research", "both"], default="both")
     parser.add_argument("--compile", action="store_true")
     args = parser.parse_args()
+
+    if len(WARD_ANCHORS) != WARD_PANEL_COUNT:
+        raise SystemExit(
+            f"WARD_ANCHORS has {len(WARD_ANCHORS)} entries; expected {WARD_PANEL_COUNT}"
+        )
 
     output_dir = Path(__file__).parent.parent / "assets" / "quake" / "maps"
     output_dir.mkdir(parents=True, exist_ok=True)

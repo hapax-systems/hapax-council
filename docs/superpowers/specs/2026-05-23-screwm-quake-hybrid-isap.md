@@ -19,11 +19,17 @@ Nothing is given up. Everything is gained.
 
 ## 2. Goals
 
+> **2026-05-24 migration-target correction:** DarkPlaces is the rendering
+> substrate, not the aesthetic subject. The target is to recreate the last
+> non-Quake Screwm, including all wards, drift, and effects, inside the new
+> environment as far as DarkPlaces can bear it. Temporary compositor bridges
+> are parity gaps to close, not the desired endpoint.
+
 1. DarkPlaces renders the Screwm tower as a Quake BSP map with CC0 textures, colored lighting, fog, and spatial audio.
 2. QuakeC drives camera, lighting, fog, and entity behavior based on live cognitive state (/dev/shm signals).
 3. 39 reverie shader nodes (EXCELLENT+GOOD tiers) migrate to DarkPlaces GLSL post-processing.
 4. 11 temporal shader nodes (DIFFICULT tier: feedback, echo, diff, stutter, slitscan, pixsort) remain in GStreamer glfeedback chain as post-compositor effects.
-5. Wards remain in GStreamer compositor overlay (DarkPlaces cannot reload textures at runtime — research-confirmed blocker).
+5. All legacy wards receive in-engine spatial anchors/panes; dynamic Cairo/GStreamer ward rendering remains a temporary bridge only where DarkPlaces runtime texture limits block live content today.
 6. Working mode propagation: dual BSP compilation (screwm-rnd.bsp / screwm-research.bsp) + runtime fog/brightness adjustment.
 7. QuakeHomage registered as third HomagePackage.
 8. hapax-imagination retires after Phase 4 shader port is verified.
