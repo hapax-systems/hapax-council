@@ -495,7 +495,7 @@ void main(void)
 
 	// Surface granularity — stone texture micro-detail
 	// (was: Bayer dither. Now: material surface granularity)
-	float granularity = 0.015;
+	float granularity = 0.006;
 	int gx = int(mod(gl_FragCoord.x, 4.0));
 	int gy = int(mod(gl_FragCoord.y, 4.0));
 	float surface_grain = fract(float(gx * 3 + gy * 7) * 0.0625);
@@ -594,7 +594,7 @@ void main(void)
 	}
 
 	// 19. Palette warmth — shift toward Quake brown/amber
-	float warmth = 0.08;
+	float warmth = 0.04;
 	float lum = dot(color, vec3(0.299, 0.587, 0.114));
 	vec3 warm_tint = vec3(0.85, 0.65, 0.45);
 	color = mix(color, color * warm_tint / max(dot(warm_tint, vec3(0.333)), 0.01), warmth);
@@ -607,10 +607,10 @@ void main(void)
 	vec2 pn_uv = uv * 8.0 + vec2(ClientTime * 0.02);
 	float pn1 = fract(sin(dot(floor(pn_uv), vec2(127.1, 311.7))) * 43758.5453);
 	float pn2 = fract(sin(dot(floor(pn_uv * 2.0), vec2(269.5, 183.3))) * 28461.632);
-	color += vec3((pn1 * 0.7 + pn2 * 0.3) * 0.025 - 0.0125);
+	color += vec3((pn1 * 0.7 + pn2 * 0.3) * 0.008 - 0.004);
 
 	// 22. Tile frequency modulation (spatial rhythm)
-	color += vec3(sin(uv.x * 80.0) * sin(uv.y * 60.0) * 0.004);
+	color += vec3(sin(uv.x * 80.0) * sin(uv.y * 60.0) * 0.002);
 
 	// 23. Chroma key — suppress specific hue range (greens by default)
 	// Useful for compositor compositing pass
@@ -626,7 +626,7 @@ void main(void)
 	color = mix(color, palette_color, 0.06);
 
 	// 25. Contrast boost
-	color = (color - 0.5) * 1.10 + 0.5;
+	color = (color - 0.5) * 1.04 + 0.5;
 
 	// 24. Clamp
 	color = max(color, vec3(0.0));

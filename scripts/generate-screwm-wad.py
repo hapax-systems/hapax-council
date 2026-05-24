@@ -7,6 +7,7 @@ WAD2 format:
   Texture data: MIPTEX header + 4 mipmap levels + palette
 """
 
+import argparse
 import struct
 import zlib
 from pathlib import Path
@@ -16,6 +17,18 @@ TEXTURES = {
     "ground1_6": {"color": (60, 55, 50), "noise": 8, "pattern": "worn_stone"},
     "sky4": {"color": (25, 22, 30), "noise": 5, "pattern": "dark_ceiling"},
     "metal5_2": {"color": (85, 80, 75), "noise": 10, "pattern": "brushed_metal"},
+    # R&D / Gruvbox tower bands, bottom to top.
+    "r_percep": {"color": (108, 74, 45), "noise": 12, "pattern": "stone_blocks"},
+    "r_cognit": {"color": (78, 86, 74), "noise": 10, "pattern": "carved_stone"},
+    "r_comm": {"color": (58, 88, 78), "noise": 11, "pattern": "metal_grate"},
+    "r_express": {"color": (84, 54, 72), "noise": 12, "pattern": "dark_ornate"},
+    "r_ground": {"color": (128, 104, 58), "noise": 9, "pattern": "polished_stone"},
+    # Research / Solarized tower bands, bottom to top.
+    "s_percep": {"color": (48, 68, 78), "noise": 10, "pattern": "stone_blocks"},
+    "s_cognit": {"color": (70, 86, 92), "noise": 9, "pattern": "carved_stone"},
+    "s_comm": {"color": (52, 88, 88), "noise": 10, "pattern": "metal_grate"},
+    "s_express": {"color": (62, 58, 88), "noise": 10, "pattern": "dark_ornate"},
+    "s_ground": {"color": (92, 86, 72), "noise": 8, "pattern": "polished_stone"},
 }
 
 TEX_SIZE = 64
@@ -63,6 +76,35 @@ def generate_pixel_data(color, noise, width, height, seed=0, pattern="stone_bloc
             elif pattern == "brushed_metal":
                 grain = (x * 7 + seed) % 11
                 base = 170 + grain - 5 + random.randint(-10, 10)
+
+            elif pattern == "carved_stone":
+                base = 118 + random.randint(-18, 18)
+                if x % 24 < 2 or y % 24 < 2:
+                    base -= 44
+                if (x * 3 + y * 5 + seed) % 61 < 3:
+                    base += 24
+
+            elif pattern == "metal_grate":
+                base = 105 + random.randint(-18, 18)
+                if x % 16 < 2 or y % 16 < 2:
+                    base = 172 + random.randint(-14, 14)
+                if (x + y) % 32 < 3:
+                    base -= 34
+
+            elif pattern == "dark_ornate":
+                base = 82 + random.randint(-15, 15)
+                arch = abs((x % 32) - 16) + abs((y % 32) - 16)
+                if arch < 8:
+                    base += 38
+                if x % 32 < 2 or y % 32 < 2:
+                    base -= 32
+
+            elif pattern == "polished_stone":
+                base = 126 + random.randint(-14, 14)
+                if y % 12 < 2:
+                    base -= 24
+                if (x * 5 + y + seed) % 79 < 4:
+                    base += 34
 
             # Add surface noise
             random.seed(seed + y * width + x)
@@ -164,6 +206,14 @@ def write_wad(textures_data, output_path):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Generate Screwm Quake WAD2 textures")
+    parser.add_argument(
+        "--no-deploy",
+        action="store_true",
+        help="only write assets/quake/maps/screwm.wad; do not copy into ~/.darkplaces",
+    )
+    args = parser.parse_args()
+
     textures_data = {}
     for name, params in TEXTURES.items():
         pixels, palette = generate_pixel_data(
@@ -183,6 +233,9 @@ def main():
     wad_path = output_dir / "screwm.wad"
     write_wad(textures_data, wad_path)
     print(f"WAD: {wad_path} ({wad_path.stat().st_size} bytes)")
+
+    if args.no_deploy:
+        return
 
     dp_wad = Path.home() / ".darkplaces" / "screwm" / "screwm.wad"
     import shutil

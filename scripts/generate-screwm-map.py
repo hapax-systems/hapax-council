@@ -28,6 +28,13 @@ FLOOR_Z = int(TOWER_FLOOR_M * UNITS_PER_METER)
 CEIL_Z = int(TOWER_CEIL_M * UNITS_PER_METER)
 AOA_Z = int(AOA_HEIGHT_M * UNITS_PER_METER)
 EXT = TR + WALL_THICK + 32
+LEVEL_BANDS = [
+    ("perception", FLOOR_Z, FLOOR_Z + 96),
+    ("cognition", FLOOR_Z + 96, FLOOR_Z + 192),
+    ("communication", FLOOR_Z + 192, FLOOR_Z + 288),
+    ("expression", FLOOR_Z + 288, FLOOR_Z + 384),
+    ("grounding", FLOOR_Z + 384, CEIL_Z),
+]
 
 MODE_PRESETS = {
     "rnd": {
@@ -35,7 +42,13 @@ MODE_PRESETS = {
         "floor_tex": "ground1_6",
         "ceil_tex": "sky4",
         "ramp_tex": "metal5_2",
-        "fog": "0.02 0.11 0.08 0.06",
+        "level_wall_tex": ["r_percep", "r_cognit", "r_comm", "r_express", "r_ground"],
+        "level_ledge_tex": ["r_percep", "r_cognit", "r_comm", "r_express", "r_ground"],
+        "pedestal_tex": "r_ground",
+        "fog": "0.015 0.10 0.075 0.055",
+        "level_light": 250,
+        "wall_light": 105,
+        "aoa_light_value": 290,
         "lights": [
             (1.0, 0.71, 0.39),
             (0.90, 0.65, 0.30),
@@ -51,7 +64,13 @@ MODE_PRESETS = {
         "floor_tex": "ground1_6",
         "ceil_tex": "sky4",
         "ramp_tex": "metal5_2",
-        "fog": "0.02 0.04 0.08 0.12",
+        "level_wall_tex": ["s_percep", "s_cognit", "s_comm", "s_express", "s_ground"],
+        "level_ledge_tex": ["s_percep", "s_cognit", "s_comm", "s_express", "s_ground"],
+        "pedestal_tex": "s_ground",
+        "fog": "0.014 0.035 0.07 0.10",
+        "level_light": 220,
+        "wall_light": 90,
+        "aoa_light_value": 250,
         "lights": [
             (0.40, 0.65, 0.80),
             (0.30, 0.55, 0.75),
@@ -63,6 +82,14 @@ MODE_PRESETS = {
         "message": "The Screwm [Research]",
     },
 }
+
+
+def level_texture_bands(preset, key="level_wall_tex"):
+    textures = preset.get(key) or [preset["wall_tex"]] * len(LEVEL_BANDS)
+    return [
+        (name, z1, z2, textures[min(idx, len(textures) - 1)])
+        for idx, (name, z1, z2) in enumerate(LEVEL_BANDS)
+    ]
 
 
 def fmt_plane(p1, p2, p3, tex):
@@ -92,38 +119,38 @@ def box_brush(x1, y1, z1, x2, y2, z2, tex):
 
 def sealed_room(preset):
     brushes = []
-    wt = preset["wall_tex"]
     ft = preset["floor_tex"]
     ct = preset["ceil_tex"]
     brushes.append(box_brush(-EXT, -EXT, FLOOR_Z - WALL_THICK, EXT, EXT, FLOOR_Z, ft))
     brushes.append(box_brush(-EXT, -EXT, CEIL_Z, EXT, EXT, CEIL_Z + WALL_THICK, ct))
-    brushes.append(box_brush(-EXT, -EXT, FLOOR_Z, -EXT + WALL_THICK, EXT, CEIL_Z, wt))
-    brushes.append(box_brush(EXT - WALL_THICK, -EXT, FLOOR_Z, EXT, EXT, CEIL_Z, wt))
-    brushes.append(box_brush(-EXT, -EXT, FLOOR_Z, EXT, -EXT + WALL_THICK, CEIL_Z, wt))
-    brushes.append(box_brush(-EXT, EXT - WALL_THICK, FLOOR_Z, EXT, EXT, CEIL_Z, wt))
+    for _level, z1, z2, tex in level_texture_bands(preset):
+        brushes.append(box_brush(-EXT, -EXT, z1, -EXT + WALL_THICK, EXT, z2, tex))
+        brushes.append(box_brush(EXT - WALL_THICK, -EXT, z1, EXT, EXT, z2, tex))
+        brushes.append(box_brush(-EXT, -EXT, z1, EXT, -EXT + WALL_THICK, z2, tex))
+        brushes.append(box_brush(-EXT, EXT - WALL_THICK, z1, EXT, EXT, z2, tex))
     return [b for b in brushes if b]
 
 
 def pillar_columns(preset):
     """8 pillars along walls at 45° intervals — Tower of Babel columns."""
     brushes = []
-    wt = preset["wall_tex"]
     pillar_size = 24
     for i in range(8):
         angle = i * (math.pi / 4) + math.pi / 8
         px = int((TR - 32) * math.cos(angle))
         py = int((TR - 32) * math.sin(angle))
-        b = box_brush(
-            px - pillar_size,
-            py - pillar_size,
-            FLOOR_Z,
-            px + pillar_size,
-            py + pillar_size,
-            CEIL_Z,
-            wt,
-        )
-        if b:
-            brushes.append(b)
+        for _level, z1, z2, tex in level_texture_bands(preset):
+            b = box_brush(
+                px - pillar_size,
+                py - pillar_size,
+                z1,
+                px + pillar_size,
+                py + pillar_size,
+                z2,
+                tex,
+            )
+            if b:
+                brushes.append(b)
     return brushes
 
 
@@ -137,6 +164,7 @@ def level_ledges(preset):
     for level in range(5):
         frac = level / 4
         z = FLOOR_Z + int((CEIL_Z - FLOOR_Z) * frac)
+        level_tex = preset.get("level_ledge_tex", [rt] * 5)[level]
         # Ledge on each wall (4 walls = 4 ledges per level)
         for wall in range(4):
             if wall == 0:
@@ -147,7 +175,7 @@ def level_ledges(preset):
                     EXT - WALL_THICK,
                     -EXT + WALL_THICK + ledge_depth,
                     z + ledge_height,
-                    rt,
+                    level_tex,
                 )
             elif wall == 1:
                 b = box_brush(
@@ -157,7 +185,7 @@ def level_ledges(preset):
                     EXT - WALL_THICK,
                     EXT - WALL_THICK,
                     z + ledge_height,
-                    rt,
+                    level_tex,
                 )
             elif wall == 2:
                 b = box_brush(
@@ -167,7 +195,7 @@ def level_ledges(preset):
                     EXT - WALL_THICK,
                     EXT - WALL_THICK,
                     z + ledge_height,
-                    rt,
+                    level_tex,
                 )
             else:
                 b = box_brush(
@@ -177,16 +205,55 @@ def level_ledges(preset):
                     -EXT + WALL_THICK + ledge_depth,
                     EXT - WALL_THICK,
                     z + ledge_height,
-                    rt,
+                    level_tex,
                 )
             if b:
                 brushes.append(b)
     return brushes
 
 
+def central_lattice(preset):
+    """Level rings and vertical rods in the tower core so traversal never reads as empty."""
+    brushes = []
+    outer = 104
+    inner = 56
+    rod_half = 6
+    ring_height = 10
+
+    for _level, z1, z2, tex in level_texture_bands(preset, "level_ledge_tex"):
+        mid_z = z1 + int((z2 - z1) * 0.55)
+        # Four ring segments around the central AoA sightline.
+        segments = [
+            (-outer, -outer, inner, -inner),
+            (-outer, inner, inner, outer),
+            (-outer, -inner, -inner, inner),
+            (inner, -inner, outer, inner),
+        ]
+        for x1, y1, x2, y2 in segments:
+            b = box_brush(x1, y1, mid_z, x2, y2, mid_z + ring_height, tex)
+            if b:
+                brushes.append(b)
+
+        for x in (-outer, outer):
+            for y in (-outer, outer):
+                b = box_brush(
+                    x - rod_half,
+                    y - rod_half,
+                    z1,
+                    x + rod_half,
+                    y + rod_half,
+                    z2,
+                    tex,
+                )
+                if b:
+                    brushes.append(b)
+
+    return brushes
+
+
 def central_pedestal(preset):
     """Low pedestal at tower center for AoA to float above."""
-    rt = preset["ramp_tex"]
+    rt = preset.get("pedestal_tex", preset["ramp_tex"])
     pedestal_size = 48
     pedestal_height = 16
     b = box_brush(
@@ -205,13 +272,13 @@ def ramp_shelves(preset):
     brushes = []
     ramp_w = 96
     ramp_d = 48
-    rt = preset["ramp_tex"]
     for i in range(4):
         angle = i * (math.pi / 2) + math.pi / 8
         frac = (i + 1) / 5
         z = FLOOR_Z + int((CEIL_Z - FLOOR_Z) * frac)
         cx = int((TR * 0.7) * math.cos(angle))
         cy = int((TR * 0.7) * math.sin(angle))
+        rt = preset.get("level_ledge_tex", [preset["ramp_tex"]] * 5)[i + 1]
         b = box_brush(cx - ramp_w, cy - ramp_d, z, cx + ramp_w, cy + ramp_d, z + 8, rt)
         if b:
             brushes.append(b)
@@ -220,6 +287,9 @@ def ramp_shelves(preset):
 
 def lights(preset):
     entities = []
+    level_light = int(preset.get("level_light", 300))
+    wall_light = int(preset.get("wall_light", 150))
+    aoa_light_value = int(preset.get("aoa_light_value", 350))
     # Central lights at each level (near AoA axis)
     for i in range(5):
         frac = i / 4
@@ -232,7 +302,7 @@ def lights(preset):
             "{\n"
             f'"classname" "light"\n'
             f'"origin" "{x} {y} {z}"\n'
-            f'"light" "300"\n'
+            f'"light" "{level_light}"\n'
             f'"_color" "{r} {g} {b}"\n'
             "}"
         )
@@ -251,7 +321,7 @@ def lights(preset):
                 "{\n"
                 f'"classname" "light"\n'
                 f'"origin" "{px} {py} {z}"\n'
-                f'"light" "150"\n'
+                f'"light" "{wall_light}"\n'
                 f'"_color" "{r} {g} {b}"\n'
                 "}"
             )
@@ -262,7 +332,7 @@ def lights(preset):
         "{\n"
         '"classname" "light"\n'
         f'"origin" "0 0 {AOA_Z}"\n'
-        '"light" "350"\n'
+        f'"light" "{aoa_light_value}"\n'
         f'"_color" "{ar} {ag} {ab}"\n'
         "}"
     )
@@ -278,6 +348,7 @@ def generate_map(preset):
         sealed_room(preset)
         + pillar_columns(preset)
         + level_ledges(preset)
+        + central_lattice(preset)
         + central_pedestal(preset)
         + ramp_shelves(preset)
     )
