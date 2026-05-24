@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+import agents.studio_compositor.tts_client as tts_client_module
 from agents.studio_compositor.tts_client import DaimonionTtsClient, synthesis_timeout_s
 
 
@@ -256,3 +257,51 @@ def test_client_uses_duration_aware_timeout(
     client = DaimonionTtsClient(socket_path=tmp_path / "tts.sock", timeout_s=90.0)
     assert client.synthesize(text) == b""
     assert observed_timeouts == [synthesis_timeout_s(text, minimum_s=90.0)]
+
+
+def test_timeout_backoff_suppresses_repeated_socket_attempts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monotonic_values = iter([100.0, 100.0, 101.0, 281.0, 281.0])
+    opened_sockets = 0
+
+    class _TimeoutSocket:
+        def __enter__(self) -> _TimeoutSocket:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def settimeout(self, _value: float) -> None:
+            return None
+
+        def connect(self, _path: str) -> None:
+            return None
+
+        def sendall(self, _data: bytes) -> None:
+            return None
+
+        def recv(self, _size: int) -> bytes:
+            raise TimeoutError
+
+    def socket_factory(*_args: object, **_kwargs: object) -> _TimeoutSocket:
+        nonlocal opened_sockets
+        opened_sockets += 1
+        return _TimeoutSocket()
+
+    monkeypatch.setattr(socket, "socket", socket_factory)
+    monkeypatch.setattr(tts_client_module.time, "monotonic", lambda: next(monotonic_values))
+
+    client = DaimonionTtsClient(
+        socket_path=tmp_path / "tts.sock",
+        timeout_s=1.0,
+        timeout_backoff_s=180.0,
+    )
+    assert client.synthesize("first timeout") == b""
+    assert opened_sockets == 1
+
+    assert client.synthesize("suppressed during backoff") == b""
+    assert opened_sockets == 1
+
+    assert client.synthesize("after backoff expires") == b""
+    assert opened_sockets == 2
