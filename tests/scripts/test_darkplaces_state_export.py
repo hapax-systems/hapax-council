@@ -101,6 +101,8 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "reverie-trace.txt").read_text(encoding="utf-8").strip() == "0.2200"
     assert (game_dir / "reverie-temporal.txt").read_text(encoding="utf-8").strip() == "0.1800"
     assert (game_dir / "reverie-spectral.txt").read_text(encoding="utf-8").strip() == "0.1400"
+    assert (game_dir / "audio-rms.txt").read_text(encoding="utf-8").strip() == "0.1200"
+    assert (game_dir / "audio-onset.txt").read_text(encoding="utf-8").strip() == "0.3400"
 
 
 def test_darkplaces_state_bridge_delegates_to_exporter() -> None:

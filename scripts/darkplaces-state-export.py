@@ -190,6 +190,15 @@ def build_reverie_lines(uniforms_file: Path) -> dict[str, str]:
     }
 
 
+def build_audio_lines(shm_dir: Path) -> dict[str, str]:
+    reactivity = _read_json(shm_dir / "unified-reactivity.json")
+    blended = reactivity.get("blended") if isinstance(reactivity.get("blended"), dict) else {}
+    return {
+        "audio-rms.txt": f"{_float01(blended, 'rms'):.4f}",
+        "audio-onset.txt": f"{_float01(blended, 'onset'):.4f}",
+    }
+
+
 def export_state(
     game_dir: Path,
     shm_dir: Path,
@@ -210,6 +219,8 @@ def export_state(
     for filename, line in build_ward_activity_lines(active_wards).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_reverie_lines(uniforms_file).items():
+        _write_atomic(game_dir / filename, line)
+    for filename, line in build_audio_lines(shm_dir).items():
         _write_atomic(game_dir / filename, line)
 
     active_segment = _read_json(shm_dir / "active-segment.json")

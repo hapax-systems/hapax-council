@@ -5,6 +5,8 @@ float screwm_height;
 float screwm_next_poll;
 float screwm_energy;
 float screwm_voice;
+float screwm_audio_rms;
+float screwm_audio_onset;
 string screwm_mode;
 string screwm_w01;
 string screwm_w02;
@@ -107,6 +109,8 @@ void() screwm_poll_state =
 
     line = screwm_read_line("data/voice-active.txt", "0");
     screwm_voice = screwm_clamp(stof(line), 0, 1);
+    screwm_audio_rms = screwm_read_norm("data/audio-rms.txt");
+    screwm_audio_onset = screwm_read_norm("data/audio-onset.txt");
 
     screwm_w01 = screwm_read_line("data/ward-01.txt", "");
     screwm_w02 = screwm_read_line("data/ward-02.txt", "");
@@ -237,6 +241,7 @@ void(vector org, float idx, vector color, float active) screwm_add_ward_light =
     float radius;
 
     radius = 22 + screwm_energy * 18 + screwm_voice * 32 + active * 74;
+    radius = radius + screwm_audio_rms * 12 + screwm_audio_onset * 20;
     radius = radius + 4 * sin(time * 1.15 + idx * 0.47);
     if (active > 0)
         radius = radius + 10 * sin(time * 3.4 + idx * 0.29);
@@ -357,8 +362,9 @@ void() screwm_add_dynamic_lights =
     if (cvar("screwm_csqc_lightfield") < 0)
         return;
 
-    pulse = 170 + screwm_energy * 80 + 18 * sin(time * 1.1);
-    voice_radius = 20 + screwm_voice * 90;
+    pulse = 170 + screwm_energy * 80 + screwm_audio_rms * 90;
+    pulse = pulse + 18 * sin(time * (1.1 + screwm_audio_onset * 1.8));
+    voice_radius = 20 + screwm_voice * 90 + screwm_audio_onset * 40;
 
     adddynamiclight('0 40 176', pulse + voice_radius, '1.0 0.58 0.18');
     adddynamiclight('-222 62 280', 70 + screwm_energy * 40, screwm_cyan);

@@ -9,6 +9,8 @@ float coupling_reverie_salience;
 float coupling_reverie_trace;
 float coupling_reverie_temporal;
 float coupling_reverie_spectral;
+float coupling_audio_rms;
+float coupling_audio_onset;
 string coupling_current_mode;
 float coupling_mode_check_next;
 
@@ -25,6 +27,8 @@ void() coupling_init =
     coupling_reverie_trace = 0;
     coupling_reverie_temporal = 0;
     coupling_reverie_spectral = 0;
+    coupling_audio_rms = 0;
+    coupling_audio_onset = 0;
     coupling_next_poll = time + 0.5;
     coupling_current_mode = "rnd";
     coupling_mode_check_next = time + 5.0;
@@ -89,6 +93,12 @@ void() coupling_read_reverie =
     coupling_reverie_spectral = coupling_read_float("data/reverie-spectral.txt", 0);
 };
 
+void() coupling_read_audio =
+{
+    coupling_audio_rms = coupling_read_float("data/audio-rms.txt", 0);
+    coupling_audio_onset = coupling_read_float("data/audio-onset.txt", 0);
+};
+
 void() coupling_apply_stimmung =
 {
     // AoA rotation speed: faster with voice activity
@@ -96,11 +106,12 @@ void() coupling_apply_stimmung =
     {
         float base_rot = 3.0;
         float voice_boost = coupling_voice_active * 8.0;
-        aoa_entity.screwm_spin_y = base_rot + voice_boost + coupling_energy * 4.0;
+        float audio_boost = coupling_audio_rms * 5.0 + coupling_audio_onset * 6.0;
+        aoa_entity.screwm_spin_y = base_rot + voice_boost + audio_boost + coupling_energy * 4.0;
     }
 
     // Fog density: denser at low energy (contemplative), clearer at high
-    float fog_density = 0.03 - coupling_energy * 0.02;
+    float fog_density = 0.03 - coupling_energy * 0.02 + coupling_audio_rms * 0.008;
     localcmd(strcat(strcat("fog ", ftos(fog_density)), " 0.08 0.06 0.10\n"));
 
     // Post-processing modulation from cognitive state. These are spatial
@@ -110,6 +121,7 @@ void() coupling_apply_stimmung =
     float ca = 0.4 + coupling_voice_active * 0.6 + coupling_reverie_spectral * 0.35;
     float temp_val = 0.10 + coupling_energy * 0.08 + coupling_reverie_salience * 0.04;
     float grain_val = 0.02 + (1.0 - coupling_energy) * 0.02 + coupling_reverie_temporal * 0.01;
+    grain_val = grain_val + coupling_audio_rms * 0.012;
     string uservec1_cmd;
     uservec1_cmd = strcat("r_glsl_postprocess_uservec1 \"", ftos(vig));
     uservec1_cmd = strcat(uservec1_cmd, " ");
@@ -123,6 +135,7 @@ void() coupling_apply_stimmung =
 
     // UserVec2: x=mortar_lines, y=edge_glow, z=posterize, w=unused
     float edge = 0.15 + coupling_energy * 0.25 + coupling_reverie_salience * 0.12;
+    edge = edge + coupling_audio_onset * 0.10;
     string uservec2_cmd;
     uservec2_cmd = strcat("r_glsl_postprocess_uservec2 \"0.06 ", ftos(edge));
     uservec2_cmd = strcat(uservec2_cmd, " 0 0\"\n");
@@ -132,8 +145,9 @@ void() coupling_apply_stimmung =
     // Keep warp/halftone/threshold disabled in the review baseline; let the
     // live state breathe through subtle signal noise instead.
     float warp_val = coupling_reverie_trace * 0.018 + coupling_reverie_temporal * 0.012;
+    warp_val = warp_val + coupling_audio_onset * 0.010;
     float noise_val = 0.004 + (1.0 - coupling_energy) * 0.006 + coupling_voice_active * 0.004;
-    noise_val = noise_val + coupling_reverie_temporal * 0.012;
+    noise_val = noise_val + coupling_reverie_temporal * 0.012 + coupling_audio_rms * 0.010;
     string uservec3_cmd;
     uservec3_cmd = strcat("r_glsl_postprocess_uservec3 \"", ftos(warp_val));
     uservec3_cmd = strcat(uservec3_cmd, " ");
@@ -182,6 +196,7 @@ void() coupling_tick =
     coupling_read_stimmung();
     coupling_read_voice();
     coupling_read_reverie();
+    coupling_read_audio();
     coupling_apply_stimmung();
     coupling_check_working_mode();
 };
