@@ -15,6 +15,9 @@ def test_darkplaces_v4l2_service_remains_runtime_guarded_and_uses_visible_xvfb_r
     body = _read("hapax-darkplaces-v4l2.service")
 
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in body
+    assert "Type=notify" in body
+    assert "NotifyAccess=all" in body
+    assert "WatchdogSec=30s" in body
     assert (
         "ExecStart=/usr/bin/bash -lc 'exec "
         '"$HOME/.cache/hapax/source-activation/worktree/scripts/darkplaces-v4l2-xvfb.sh"'
@@ -25,11 +28,16 @@ def test_darkplaces_v4l2_service_remains_runtime_guarded_and_uses_visible_xvfb_r
     assert "Environment=HAPAX_DARKPLACES_EXPECTED_GPU_INDEX=0" in body
     assert ('Environment="HAPAX_DARKPLACES_EXPECTED_GL_RENDERER=NVIDIA GeForce RTX 5090"') in body
     assert "Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52" in body
+    assert "Environment=HAPAX_DARKPLACES_WATCHDOG_INTERVAL_SECONDS=10" in body
 
 
 def test_darkplaces_xorg_launcher_disables_headless_screen_blanking() -> None:
     body = (SCRIPTS_DIR / "darkplaces-v4l2-xorg.sh").read_text(encoding="utf-8")
 
+    assert "need_cmd systemd-notify" in body
+    assert "notify_systemd --ready" in body
+    assert "WATCHDOG=1" in body
+    assert "HAPAX_DARKPLACES_WATCHDOG_INTERVAL_SECONDS" in body
     for expected in (
         'Option "BlankTime" "0"',
         'Option "StandbyTime" "0"',
@@ -63,6 +71,10 @@ def test_darkplaces_xorg_launcher_disables_headless_screen_blanking() -> None:
 def test_darkplaces_xvfb_launcher_disables_headless_screen_blanking() -> None:
     body = (SCRIPTS_DIR / "darkplaces-v4l2-xvfb.sh").read_text(encoding="utf-8")
 
+    assert "need_cmd systemd-notify" in body
+    assert "notify_systemd --ready" in body
+    assert "WATCHDOG=1" in body
+    assert "HAPAX_DARKPLACES_WATCHDOG_INTERVAL_SECONDS" in body
     assert (
         'Xvfb "$DISPLAY_NUM" -screen 0 "${WIDTH}x${HEIGHT}x24" -nolisten tcp -s 0 -dpms &' in body
     )

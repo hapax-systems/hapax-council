@@ -63,6 +63,9 @@ need_cmd glxinfo
 need_cmd darkplaces-sdl
 need_cmd ffmpeg
 need_cmd v4l2-ctl
+if [ -n "${NOTIFY_SOCKET:-}" ]; then
+    need_cmd systemd-notify
+fi
 
 if [ "$PROBE_ONLY" -ne 1 ] && [ ! -e "$DEVICE" ]; then
     echo "darkplaces-v4l2-xorg: v4l2loopback device not found: $DEVICE" >&2
@@ -123,9 +126,37 @@ EOF
 xorg_pid=""
 darkplaces_pid=""
 ffmpeg_pid=""
+watchdog_pid=""
+
+notify_systemd() {
+    if [ -n "${NOTIFY_SOCKET:-}" ] && command -v systemd-notify >/dev/null 2>&1; then
+        systemd-notify "$@" >/dev/null 2>&1 || true
+    fi
+}
+
+start_systemd_watchdog() {
+    if [ -z "${NOTIFY_SOCKET:-}" ] || ! command -v systemd-notify >/dev/null 2>&1; then
+        return
+    fi
+    (
+        while true; do
+            sleep "${HAPAX_DARKPLACES_WATCHDOG_INTERVAL_SECONDS:-10}"
+            if [ -n "$darkplaces_pid" ] && kill -0 "$darkplaces_pid" 2>/dev/null &&
+                [ -n "$ffmpeg_pid" ] && kill -0 "$ffmpeg_pid" 2>/dev/null; then
+                systemd-notify \
+                    "WATCHDOG=1" \
+                    "STATUS=DarkPlaces v4l2 feed alive: ${DISPLAY_NUM}.0 -> ${DEVICE}" \
+                    >/dev/null 2>&1 || true
+            else
+                break
+            fi
+        done
+    ) &
+    watchdog_pid="$!"
+}
 
 cleanup() {
-    for pid in "$ffmpeg_pid" "$darkplaces_pid"; do
+    for pid in "$watchdog_pid" "$ffmpeg_pid" "$darkplaces_pid"; do
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null || true
         fi
@@ -226,5 +257,8 @@ ffmpeg -hide_banner -loglevel warning -nostdin \
     -f v4l2 \
     "$DEVICE" &
 ffmpeg_pid="$!"
+
+notify_systemd --ready --status="DarkPlaces v4l2 feed running: ${DISPLAY_NUM}.0 -> ${DEVICE}"
+start_systemd_watchdog
 
 wait -n "$darkplaces_pid" "$ffmpeg_pid"
