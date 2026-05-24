@@ -302,6 +302,38 @@ def test_darkplaces_background_uses_env_device(monkeypatch: object) -> None:
     }
 
 
+def test_darkplaces_background_scales_source_to_output_canvas(monkeypatch: object) -> None:
+    _reset_fake_gst()
+    monkeypatch.setenv("HAPAX_DARKPLACES_V4L2_DEVICE", "/dev/video99")
+    monkeypatch.setattr(pipeline_module.os.path, "exists", lambda _path: True)
+
+    pipe = _Pipeline("test")
+    comp = _Element("compositor", "cudacompositor")
+    added = pipeline_module._add_darkplaces_background(
+        _FakeGst,
+        pipe,
+        comp,
+        1280,
+        720,
+        30,
+        target_width=1920,
+        target_height=1080,
+    )
+
+    assert added is True
+    input_caps = _element_named(pipe.elements, "darkplaces-caps")
+    scaled_caps = _element_named(pipe.elements, "darkplaces-scaled-caps")
+    assert input_caps.props["caps"] == "video/x-raw,width=1280,height=720,framerate=30/1"
+    assert scaled_caps.props["caps"] == "video/x-raw,width=1920,height=1080,framerate=30/1"
+    assert comp.requested_pads[0].props == {
+        "xpos": 0,
+        "ypos": 0,
+        "width": 1920,
+        "height": 1080,
+        "zorder": 0,
+    }
+
+
 def test_darkplaces_background_config_uses_layout_source(monkeypatch: object) -> None:
     monkeypatch.setenv("HAPAX_DARKPLACES_V4L2_DEVICE", "/tmp/env-should-not-win")
     layout = Layout(
