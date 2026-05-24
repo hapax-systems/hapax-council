@@ -269,3 +269,74 @@ def test_bridge_execs_python_appsink_writer(tmp_path: Path) -> None:
     assert "--socket" in args
     assert str(socket_path) in args
     assert "--wait-seconds" in args
+
+
+def test_bridge_passes_configured_raw_and_v4l2_formats(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    args_file = tmp_path / "python-args.txt"
+    guard_args_file = tmp_path / "guard-args.txt"
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$2" = "show" ] && [ "$3" = "studio-compositor.service" ]; then\n'
+        "  echo 'HAPAX_V4L2_BRIDGE_ENABLED=1 HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT=0'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 1\n"
+    )
+    systemctl.chmod(0o755)
+    python = bin_dir / "python"
+    python.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {args_file}\nexit 0\n")
+    python.chmod(0o755)
+    guard = bin_dir / "format-guard"
+    guard.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {guard_args_file}\nexit 0\n")
+    guard.chmod(0o755)
+
+    socket_path = tmp_path / "bridge.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    listener.listen(1)
+    try:
+        env = os.environ.copy()
+        env.update(
+            {
+                "HAPAX_V4L2_BRIDGE_ENABLED": "1",
+                "HAPAX_V4L2_BRIDGE_WIDTH": "640",
+                "HAPAX_V4L2_BRIDGE_HEIGHT": "480",
+                "HAPAX_V4L2_BRIDGE_RAW_FORMAT": "BGRx",
+                "HAPAX_V4L2_BRIDGE_PIXEL_FORMAT": "BGR4",
+                "HAPAX_V4L2_VIDEO42_PIXEL_FORMAT": "BGR4",
+                "HAPAX_V4L2_FORMAT_GUARD_SCRIPT": str(guard),
+                "PATH": f"{bin_dir}:{env['PATH']}",
+            }
+        )
+        result = subprocess.run(
+            [
+                str(SCRIPT),
+                "--device",
+                str(tmp_path / "video42"),
+                "--socket",
+                str(socket_path),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+    finally:
+        listener.close()
+
+    assert result.returncode == 0
+    guard_args = guard_args_file.read_text(encoding="utf-8").splitlines()
+    assert "--width" in guard_args
+    assert "640" in guard_args
+    assert "--height" in guard_args
+    assert "480" in guard_args
+    assert "--pixelformat" in guard_args
+    assert "BGR4" in guard_args
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    assert "--raw-format" in args
+    assert "BGRx" in args
+    assert "--v4l2-pixelformat" in args
+    assert "BGR4" in args

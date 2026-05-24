@@ -1,6 +1,6 @@
 """SHM-to-v4l2 sidecar using appsink + ``os.write``.
 
-The compositor can write final NV12 frames to ``shmsink``. This module reads
+The compositor can write final raw frames to ``shmsink``. This module reads
 that socket with ``shmsrc`` and writes frames to ``/dev/video42`` directly.
 It deliberately avoids GStreamer's ``v4l2sink`` because runtime canaries found
 that the sink can fail inside the v4l2 buffer pool while the same loopback
@@ -30,6 +30,7 @@ DEFAULT_SOCKET = "/dev/shm/hapax-compositor/v4l2-bridge.sock"
 DEFAULT_WIDTH = 1280
 DEFAULT_HEIGHT = 720
 DEFAULT_FPS = 30
+DEFAULT_RAW_FORMAT = "NV12"
 DEFAULT_WAIT_SECONDS = 60
 DEFAULT_METRICS_PATH = "/dev/shm/hapax-compositor/v4l2-bridge.prom"
 _FD_REOPEN_DELAY_S = 0.1
@@ -44,11 +45,13 @@ class BridgeConfig:
     fps: int
     wait_seconds: int
     metrics_path: Path
+    raw_format: str = DEFAULT_RAW_FORMAT
+    v4l2_pixelformat: str = DEFAULT_RAW_FORMAT
 
     @property
     def caps(self) -> str:
         return (
-            "video/x-raw,format=NV12,"
+            f"video/x-raw,format={self.raw_format},"
             f"width={self.width},height={self.height},framerate={self.fps}/1"
         )
 
@@ -120,6 +123,7 @@ class ShmToV4l2Bridge:
                 width=self._config.width,
                 height=self._config.height,
                 fps=self._config.fps,
+                pixelformat=self._config.v4l2_pixelformat,
             ):
                 return False
             try:
@@ -341,6 +345,13 @@ def _parse_args(argv: list[str]) -> BridgeConfig:
     parser.add_argument(
         "--fps", type=int, default=int(os.environ.get("HAPAX_V4L2_BRIDGE_FPS", DEFAULT_FPS))
     )
+    raw_format = os.environ.get("HAPAX_V4L2_BRIDGE_RAW_FORMAT", DEFAULT_RAW_FORMAT)
+    v4l2_pixelformat = os.environ.get(
+        "HAPAX_V4L2_BRIDGE_PIXEL_FORMAT",
+        os.environ.get("HAPAX_V4L2_VIDEO42_PIXEL_FORMAT", raw_format),
+    )
+    parser.add_argument("--raw-format", default=raw_format)
+    parser.add_argument("--v4l2-pixelformat", default=v4l2_pixelformat)
     parser.add_argument(
         "--wait-seconds",
         type=int,
@@ -359,6 +370,8 @@ def _parse_args(argv: list[str]) -> BridgeConfig:
         fps=args.fps,
         wait_seconds=args.wait_seconds,
         metrics_path=Path(args.metrics_path),
+        raw_format=args.raw_format,
+        v4l2_pixelformat=args.v4l2_pixelformat,
     )
 
 

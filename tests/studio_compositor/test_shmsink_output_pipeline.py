@@ -131,15 +131,21 @@ class TestShmsinkPipelineConstruction:
 
         rate = elements.get("shm_out_videorate")
         rate_caps = elements.get("shm_out_rate_caps")
+        scale = elements.get("shm_out_scale")
         convert = elements.get("shm_out_convert")
         assert rate is not None
         assert rate_caps is not None
+        assert scale is not None
         assert convert is not None
         rate.set_property.assert_any_call("skip-to-first", True)
         rate.set_property.assert_any_call("max-closing-segment-duplication-duration", 0)
-        gst.Caps.from_string.assert_any_call("video/x-raw,width=1280,height=720,framerate=30/1")
+        gst.Caps.from_string.assert_any_call("video/x-raw,framerate=30/1")
+        gst.Caps.from_string.assert_any_call(
+            "video/x-raw,format=NV12,width=1280,height=720,framerate=30/1"
+        )
         rate.link.assert_called_with(rate_caps)
-        rate_caps.link.assert_called_with(convert)
+        rate_caps.link.assert_called_with(scale)
+        scale.link.assert_called_with(convert)
 
     def test_default_socket_path(self) -> None:
         assert DEFAULT_SOCKET == "/dev/shm/hapax-compositor/v4l2-bridge.sock"
@@ -161,6 +167,50 @@ class TestShmsinkPipelineConstruction:
         frame_bytes = 1280 * 720 * 3 // 2
         expected_shm = frame_bytes * 8
         shmsink.set_property.assert_any_call("shm-size", expected_shm)
+
+    def test_shm_size_and_caps_can_target_bgrx_canary_format(self) -> None:
+        gst = self._make_gst_mock()
+        elements = {}
+
+        def make_element(factory: str, name: str) -> MagicMock:
+            el = MagicMock()
+            elements[factory] = el
+            return el
+
+        gst.ElementFactory.make.side_effect = make_element
+        pipe = ShmsinkOutputPipeline(
+            gst=gst,
+            width=640,
+            height=480,
+            fps=30,
+            raw_format="BGRx",
+        )
+        pipe.build()
+
+        gst.Caps.from_string.assert_any_call(
+            "video/x-raw,format=BGRx,width=640,height=480,framerate=30/1"
+        )
+        frame_bytes = 640 * 480 * 4
+        elements["shmsink"].set_property.assert_any_call("shm-size", frame_bytes * 8)
+
+    def test_bridge_env_overrides_output_size_and_raw_format(self) -> None:
+        gst = self._make_gst_mock()
+
+        with patch.dict(
+            "os.environ",
+            {
+                "HAPAX_V4L2_BRIDGE_WIDTH": "640",
+                "HAPAX_V4L2_BRIDGE_HEIGHT": "480",
+                "HAPAX_V4L2_BRIDGE_RAW_FORMAT": "BGRx",
+            },
+            clear=True,
+        ):
+            pipe = ShmsinkOutputPipeline(gst=gst, width=1920, height=1080, fps=30)
+            pipe.build()
+
+        gst.Caps.from_string.assert_any_call(
+            "video/x-raw,format=BGRx,width=640,height=480,framerate=30/1"
+        )
 
     def test_start_sets_playing(self) -> None:
         gst = self._make_gst_mock()
@@ -223,6 +273,48 @@ class TestShmsinkPipelineConstruction:
 
         # 2x2 NV12 = 4 Y bytes + 2 interleaved UV bytes.
         pipe._write_proof_snapshot_jpeg(bytes([82, 82, 82, 82, 128, 128]))
+
+        assert target.exists()
+        assert target.read_bytes().startswith(b"\xff\xd8")
+
+    def test_bridge_writes_final_egress_proof_jpeg_from_bgrx(self, tmp_path: Path) -> None:
+        pytest.importorskip("cv2")
+        pytest.importorskip("numpy")
+
+        target = tmp_path / "fx-snapshot-bgrx.jpg"
+        pipe = ShmsinkOutputPipeline(
+            gst=self._make_gst_mock(),
+            width=2,
+            height=2,
+            fps=30,
+            raw_format="BGRx",
+            proof_snapshot_path=target,
+            proof_snapshot_interval_s=1.0,
+        )
+
+        # 2x2 BGRx = 16 bytes.
+        pipe._write_proof_snapshot_jpeg(
+            bytes(
+                [
+                    0,
+                    0,
+                    255,
+                    0,
+                    0,
+                    255,
+                    0,
+                    0,
+                    255,
+                    0,
+                    0,
+                    0,
+                    255,
+                    255,
+                    255,
+                    0,
+                ]
+            )
+        )
 
         assert target.exists()
         assert target.read_bytes().startswith(b"\xff\xd8")
