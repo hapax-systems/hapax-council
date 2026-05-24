@@ -38,7 +38,10 @@ def test_csqc_text_overlay_is_not_the_default_ward_surface() -> None:
 
     assert "screwm_csqc_overlay 0" in autoexec
     assert "screwm_csqc_lightfield 1" in autoexec
+    assert "screwm_review_fill_light 1" in autoexec
     assert "Ward identity belongs to the scroom geometry" in autoexec
+    assert 'cvar("screwm_review_fill_light") > 0' in body
+    assert "adddynamiclight('0 -132 184'" in body
     assert "screwm_add_ward_light('-222 62 280'" in body
     assert "screwm_add_ward_light('148 -82 64'" in body
 

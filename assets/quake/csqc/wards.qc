@@ -495,6 +495,8 @@ void() screwm_add_dynamic_lights =
     voice_radius = 20 + screwm_voice * 90 + screwm_audio_onset * 40;
 
     adddynamiclight('0 40 176', pulse + voice_radius, '1.0 0.58 0.18');
+    if (cvar("screwm_review_fill_light") > 0)
+        adddynamiclight('0 -132 184', 142 + screwm_energy * 34, '0.74 0.58 0.38');
     adddynamiclight('-222 62 280', 70 + screwm_energy * 40, screwm_cyan);
     adddynamiclight('222 26 226', 70 + screwm_voice * 80, screwm_rose);
     adddynamiclight('-222 -46 118', 58 + screwm_energy * 34, screwm_green);
