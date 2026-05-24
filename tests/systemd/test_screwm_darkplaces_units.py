@@ -115,6 +115,7 @@ def test_darkplaces_state_bridge_follows_v4l2_renderer_unit() -> None:
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in body
     assert "PartOf=hapax-darkplaces.service hapax-darkplaces-v4l2.service" in body
     assert "After=hapax-darkplaces.service hapax-darkplaces-v4l2.service" in body
+    assert "--require-file scripts/darkplaces-state-export.py" in body
     assert "WantedBy=hapax-darkplaces.service hapax-darkplaces-v4l2.service" in body
 
 

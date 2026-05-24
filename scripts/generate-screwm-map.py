@@ -293,25 +293,30 @@ def central_lattice(preset):
 
 
 def ward_scrim_panes(_preset):
-    """Baked in-engine ward anchors.
+    """Baked in-engine ward anchors held in the scroom volume.
 
-    These are not final dynamic ward contents. They reserve and visibly mark
-    the 35 historical ward positions inside the DarkPlaces render path so the
-    migration target is Screwm parity, not an empty Quake room.
+    These are not HUD labels or fourth-wall overlays. They are physical ward
+    panes and rails inside the DarkPlaces world: a 5x7 field with depth,
+    moving from rear/high to near/low, so the camera looks into Screwm rather
+    than at a flat wall.
     """
     brushes = []
     columns = 7
-    pane_w = 42
-    pane_h = 30
-    x_spacing = 58
+    pane_w = 52
+    pane_h = 38
+    x_spacing = 62
     z_spacing = 54
-    y = 112
+    y_top = 118
+    y_step = -36
     top_z = FLOOR_Z + 344
+    row_min_x = -224
+    row_max_x = 224
 
     for idx, anchor in enumerate(WARD_ANCHORS, start=1):
         col = (idx - 1) % columns
         row = (idx - 1) // columns
         x = int((col - (columns - 1) * 0.5) * x_spacing)
+        y = y_top + row * y_step
         z = int(top_z - row * z_spacing)
         tex = f"w{idx:02d}"
         brush = box_brush(
@@ -324,7 +329,22 @@ def ward_scrim_panes(_preset):
             tex,
         )
         if brush:
-            brushes.append(f"// ward-anchor {idx:02d}: {anchor}\n{brush}")
+            brushes.append(f"// ward-anchor {idx:02d}: {anchor} pos={x},{y},{z}\n{brush}")
+
+    for row in range(5):
+        y = y_top + row * y_step
+        z = int(top_z - row * z_spacing)
+        rail = box_brush(row_min_x, y + 6, z - 4, row_max_x, y + 10, z + 4, "scroom")
+        if rail:
+            brushes.append(f"// ward-rail row {row + 1}: scroom carrier\n{rail}")
+
+    for col in range(columns):
+        x = int((col - (columns - 1) * 0.5) * x_spacing)
+        z_low = int(top_z - 4 * z_spacing) - pane_h // 2
+        z_high = top_z + pane_h // 2
+        spine = box_brush(x - 3, y_top + 4 * y_step + 8, z_low, x + 3, y_top + 10, z_high, "scroom")
+        if spine:
+            brushes.append(f"// ward-spine col {col + 1}: scroom carrier\n{spine}")
 
     return brushes
 

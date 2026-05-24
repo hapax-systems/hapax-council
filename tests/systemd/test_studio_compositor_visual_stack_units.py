@@ -154,41 +154,15 @@ def test_screwm_quake_primary_profile_bypasses_legacy_visual_chrome() -> None:
     assert any("homage-active.json" in line and "quake" in line for line in lines)
 
 
-def test_screwm_quake_layout_is_sparse_quake_ward_overlay() -> None:
+def test_screwm_quake_layout_keeps_ward_surface_inside_darkplaces() -> None:
     from shared.compositor_model import Layout
 
     layout = Layout.model_validate_json(SCREWM_QUAKE_LAYOUT.read_text(encoding="utf-8"))
 
     assert layout.name == "screwm-quake"
-    assert {source.id for source in layout.sources} == {
-        "darkplaces",
-        "quake_status",
-        "grounding_provenance_ticker",
-        "stance_indicator",
-        "thinking_indicator",
-        "pressure_gauge",
-        "programme_banner",
-        "programme_state",
-        "segment_content",
-    }
-    assert all(
-        assignment.render_stage == "post_fx" and assignment.non_destructive
-        for assignment in layout.assignments
-    )
-    assert all(
-        assignment.source
-        not in {
-            "sierpinski",
-            "gem",
-            "stream_overlay",
-            "album",
-            "reverie",
-            "durf",
-            "coding_session_reveal",
-        }
-        for assignment in layout.assignments
-    )
-    assert "darkplaces" not in {assignment.source for assignment in layout.assignments}
+    assert {source.id for source in layout.sources} == {"darkplaces"}
+    assert layout.assignments == []
+    assert {surface.geometry.kind for surface in layout.surfaces} == {"video_out"}
 
 
 def test_screwm_v4l2_bridge_profile_matches_runtime_format_contract() -> None:

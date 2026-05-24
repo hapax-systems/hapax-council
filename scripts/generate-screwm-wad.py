@@ -13,6 +13,43 @@ import zlib
 from pathlib import Path
 
 WARD_COUNT = 35
+WARD_CODES = [
+    "TOKEN",
+    "ALBUM",
+    "STREAM",
+    "SIERP",
+    "REV",
+    "ACT",
+    "STANCE",
+    "GEM",
+    "GROUND",
+    "IMP",
+    "RECR",
+    "THINK",
+    "PRESS",
+    "VAR",
+    "HERE",
+    "DURF",
+    "CODE",
+    "M8",
+    "DECK",
+    "EGRESS",
+    "BANNER",
+    "PRECED",
+    "HIST",
+    "INSTR",
+    "CBIP",
+    "CHAT",
+    "CHRON",
+    "STATE",
+    "POLY",
+    "QUERY",
+    "POSTER",
+    "TUFTE",
+    "ASCII",
+    "SEG",
+    "SCOPE",
+]
 
 TEXTURES = {
     "city4_2": {"color": (100, 80, 55), "noise": 12, "pattern": "stone_blocks"},
@@ -42,10 +79,11 @@ for ward_idx in range(1, WARD_COUNT + 1):
         "noise": 0,
         "pattern": "ward_panel",
         "label": ward_idx,
+        "code": WARD_CODES[ward_idx - 1],
     }
 
 
-DIGITS = {
+TINY_FONT = {
     "0": ("111", "101", "101", "101", "111"),
     "1": ("010", "110", "010", "010", "111"),
     "2": ("111", "001", "111", "100", "111"),
@@ -56,26 +94,68 @@ DIGITS = {
     "7": ("111", "001", "010", "010", "010"),
     "8": ("111", "101", "111", "101", "111"),
     "9": ("111", "101", "111", "001", "111"),
+    "A": ("111", "101", "111", "101", "101"),
+    "B": ("110", "101", "110", "101", "110"),
+    "C": ("111", "100", "100", "100", "111"),
+    "D": ("110", "101", "101", "101", "110"),
+    "E": ("111", "100", "110", "100", "111"),
+    "F": ("111", "100", "110", "100", "100"),
+    "G": ("111", "100", "101", "101", "111"),
+    "H": ("101", "101", "111", "101", "101"),
+    "I": ("111", "010", "010", "010", "111"),
+    "J": ("001", "001", "001", "101", "111"),
+    "K": ("101", "101", "110", "101", "101"),
+    "L": ("100", "100", "100", "100", "111"),
+    "M": ("101", "111", "111", "101", "101"),
+    "N": ("101", "111", "111", "111", "101"),
+    "O": ("111", "101", "101", "101", "111"),
+    "P": ("111", "101", "111", "100", "100"),
+    "Q": ("111", "101", "101", "111", "001"),
+    "R": ("111", "101", "111", "110", "101"),
+    "S": ("111", "100", "111", "001", "111"),
+    "T": ("111", "010", "010", "010", "010"),
+    "U": ("101", "101", "101", "101", "111"),
+    "V": ("101", "101", "101", "101", "010"),
+    "W": ("101", "101", "111", "111", "101"),
+    "X": ("101", "101", "010", "101", "101"),
+    "Y": ("101", "101", "010", "010", "010"),
+    "Z": ("111", "001", "010", "100", "111"),
 }
 
 
 def digit_is_lit(char, col, row):
     """Return true when the tiny ward-panel font lights a cell."""
-    glyph = DIGITS.get(char)
+    glyph = TINY_FONT.get(char)
     if not glyph:
         return False
     return glyph[row][col] == "1"
 
 
-def ward_panel_index(x, y, label):
-    """High-contrast in-engine ward anchor texture with a two-digit ordinal."""
+def text_pixel_lit(x, y, text, start_x, start_y, scale):
+    """Return true when a small all-caps ward label covers this pixel."""
+    glyph_w = 3 * scale
+    glyph_h = 5 * scale
+    gap = scale
+
+    for char_idx, char in enumerate(text):
+        glyph_x = x - start_x - char_idx * (glyph_w + gap)
+        glyph_y = y - start_y
+        if 0 <= glyph_x < glyph_w and 0 <= glyph_y < glyph_h:
+            col = glyph_x // scale
+            row = glyph_y // scale
+            return digit_is_lit(char, col, row)
+    return False
+
+
+def ward_panel_index(x, y, label, code):
+    """High-contrast in-engine ward anchor texture with identity baked in."""
     if x < 2 or y < 2 or x >= TEX_SIZE - 2 or y >= TEX_SIZE - 2:
         return 232
     if x < 5 or y < 5 or x >= TEX_SIZE - 5 or y >= TEX_SIZE - 5:
         return 90
-    if y in (14, 15, 48, 49):
+    if y in (12, 13, 48, 49):
         return 176
-    if x in (14, 15, 48, 49):
+    if x in (12, 13, 50, 51):
         return 62
 
     # Diagonal scan-strata give every pane motion-read even as a baked texture.
@@ -100,10 +180,16 @@ def ward_panel_index(x, y, label):
             if (glyph_x % scale in (0, scale - 1)) or (glyph_y % scale in (0, scale - 1)):
                 return max(base, 76)
 
+    short_code = code[:7].upper()
+    code_scale = 2
+    code_width = len(short_code) * 3 * code_scale + max(0, len(short_code) - 1) * code_scale
+    if text_pixel_lit(x, y, short_code, (TEX_SIZE - code_width) // 2, 43, code_scale):
+        return 212
+
     return base
 
 
-def generate_pixel_data(color, noise, width, height, seed=0, pattern="stone_blocks", label=0):
+def generate_pixel_data(color, noise, width, height, seed=0, pattern="stone_blocks", label=0, code=""):
     """Generate Quake-style texture with visible material character."""
     import random
 
@@ -187,7 +273,7 @@ def generate_pixel_data(color, noise, width, height, seed=0, pattern="stone_bloc
                     base += 54
 
             elif pattern == "ward_panel":
-                pixels.append(ward_panel_index(x, y, int(label)))
+                pixels.append(ward_panel_index(x, y, int(label), str(code)))
                 continue
 
             # Add surface noise
@@ -308,6 +394,7 @@ def main():
             seed=texture_seed(name),
             pattern=params.get("pattern", "stone_blocks"),
             label=params.get("label", 0),
+            code=params.get("code", ""),
         )
         miptex = make_miptex(name, TEX_SIZE, TEX_SIZE, pixels, palette)
         textures_data[name] = (miptex, palette)
