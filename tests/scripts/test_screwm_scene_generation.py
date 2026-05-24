@@ -38,6 +38,44 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "ward-glow 03: stream_overlay drift_g" in content
 
 
+def test_screwm_map_keeps_foundational_tower_geometry_in_regenerated_bsp() -> None:
+    module = _load_script("scripts/generate-screwm-map.py")
+    content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
+
+    assert "// section: tower-pillar-columns" in content
+    assert "// section: tower-level-ledges" in content
+    assert "// section: central-aoa-lattice" in content
+    assert "// section: tower-ramp-shelves" in content
+    assert "// section: central-aoa-pedestal" in content
+    assert content.count("r_percep") > 1
+    assert content.count("r_ground") > 1
+
+
+def test_screwm_map_embeds_camera_source_constellation() -> None:
+    module = _load_script("scripts/generate-screwm-map.py")
+    content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
+
+    roles = [source["role"] for source in module["SOURCE_ANCHORS"]]
+    assert roles == [
+        "brio-operator",
+        "brio-room",
+        "brio-synths",
+        "c920-desk",
+        "c920-room",
+        "c920-overhead",
+    ]
+    assert content.count("// source-anchor ") == 6
+    assert content.count("// source-glow ") == 6
+    assert content.count("// source-tether ") == 6
+    assert content.count("// source-light ") == 6
+    assert "// section: source-camera-constellation" in content
+    assert "// source-anchor 01: brio-operator class=brio domain=presence" in content
+    assert "// source-anchor 03: brio-synths class=brio domain=music" in content
+    assert "// source-anchor 06: c920-overhead class=c920 domain=perception" in content
+    assert "cam_bop" in content
+    assert "cam_cov" in content
+
+
 def test_screwm_map_inventory_matches_default_non_darkplaces_sources() -> None:
     module = _load_script("scripts/generate-screwm-map.py")
     default_layout = json.loads(
@@ -75,6 +113,18 @@ def test_screwm_wad_defines_all_ward_panel_textures() -> None:
     assert textures["drift_r"]["drift"] == 186
 
 
+def test_screwm_wad_defines_camera_source_anchor_textures() -> None:
+    module = _load_script("scripts/generate-screwm-wad.py")
+    textures = module["TEXTURES"]
+
+    source_names = [name for name, _code, _accent in module["CAMERA_SOURCE_TEXTURES"]]
+    assert source_names == ["cam_bop", "cam_brm", "cam_bsy", "cam_cdk", "cam_crm", "cam_cov"]
+    assert all(textures[name]["pattern"] == "source_portal" for name in source_names)
+    assert textures["cam_bop"]["code"] == "BRIOOP"
+    assert textures["cam_bsy"]["accent"] == 186
+    assert textures["cam_cov"]["code"] == "C920OVH"
+
+
 def test_ward_panel_texture_has_legible_number_contrast() -> None:
     module = _load_script("scripts/generate-screwm-wad.py")
     pixels, _palette = module["generate_pixel_data"](
@@ -92,3 +142,20 @@ def test_ward_panel_texture_has_legible_number_contrast() -> None:
     assert pixels.count(max(pixels)) > 120
     accent = module["WARD_ACCENT_INDICES"][(17 - 1) % len(module["WARD_ACCENT_INDICES"])]
     assert pixels.count(accent) > 10
+
+
+def test_source_portal_texture_has_legible_camera_code() -> None:
+    module = _load_script("scripts/generate-screwm-wad.py")
+    pixels, _palette = module["generate_pixel_data"](
+        (74, 88, 84),
+        0,
+        module["TEX_SIZE"],
+        module["TEX_SIZE"],
+        pattern="source_portal",
+        code="C920OVH",
+        accent=214,
+    )
+
+    assert max(pixels) >= 232
+    assert min(pixels) <= 34
+    assert pixels.count(214) > 25

@@ -54,6 +54,7 @@ entity msg_entity;
 
 // Constants
 float MOVETYPE_NONE = 0;
+float MOVETYPE_NOCLIP = 8;
 float SOLID_NOT = 0;
 float SOUNDFLAG_FORCELOOP = 1;
 
@@ -64,6 +65,7 @@ float SOUNDFLAG_FORCELOOP = 1;
 .string model;
 .vector origin;
 .vector angles;
+.vector velocity;
 .float movetype;
 .float solid;
 .vector avelocity;

@@ -57,10 +57,20 @@ void() StartFrame =
 {
     coupling_tick();
 };
+
+void(entity view) screwm_free_view_body =
+{
+    view.movetype = MOVETYPE_NOCLIP;
+    view.solid = SOLID_NOT;
+    view.velocity = '0 0 0';
+    view.avelocity = '0 0 0';
+};
+
 void() PlayerPreThink =
 {
     if (camera_entity)
     {
+        screwm_free_view_body(self);
         setorigin(self, camera_entity.origin);
         self.angles = camera_entity.angles;
         self.fixangle = 1;
@@ -71,9 +81,8 @@ void() ClientKill = {};
 void() ClientConnect = {};
 void() PutClientInServer =
 {
+    screwm_free_view_body(self);
     setorigin(self, CAMERA_REVIEW_POS);
-    self.movetype = MOVETYPE_NONE;
-    self.solid = SOLID_NOT;
 };
 void() ClientDisconnect = {};
 void() SetNewParms = {};

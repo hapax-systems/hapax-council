@@ -73,6 +73,20 @@ def test_darkplaces_review_camera_is_locked_by_default() -> None:
     assert "CAMERA_REVIEW_POS" in camera
 
 
+def test_darkplaces_review_camera_is_noclip_not_player_physics() -> None:
+    defs = (REPO_ROOT / "assets" / "quake" / "qc" / "defs.qc").read_text(encoding="utf-8")
+    world = (REPO_ROOT / "assets" / "quake" / "qc" / "world.qc").read_text(encoding="utf-8")
+
+    assert "MOVETYPE_NOCLIP = 8" in defs
+    assert ".vector velocity;" in defs
+    assert "void(entity view) screwm_free_view_body" in world
+    assert "view.movetype = MOVETYPE_NOCLIP;" in world
+    assert "view.solid = SOLID_NOT;" in world
+    assert "view.velocity = '0 0 0';" in world
+    assert "screwm_free_view_body(self);" in world
+    assert "self.movetype = MOVETYPE_NONE;" not in world
+
+
 def test_csqc_compiles_in_temporary_directory(tmp_path: Path) -> None:
     if not shutil.which("fteqcc"):
         pytest.skip("fteqcc is not installed")

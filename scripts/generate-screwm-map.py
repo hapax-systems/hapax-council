@@ -148,6 +148,53 @@ SPECIAL_WARD_POSITIONS = {
     36: (0, WARD_Y_TOP + 5 * WARD_Y_STEP, FLOOR_Z + 92),
 }
 
+SOURCE_PANE_W = 58
+SOURCE_PANE_H = 44
+SOURCE_ANCHORS = [
+    {
+        "role": "brio-operator",
+        "texture": "cam_bop",
+        "camera_class": "brio",
+        "domain": "presence",
+        "pos": (-244, 112, FLOOR_Z + 350),
+    },
+    {
+        "role": "brio-room",
+        "texture": "cam_brm",
+        "camera_class": "brio",
+        "domain": "perception",
+        "pos": (-244, 112, FLOOR_Z + 238),
+    },
+    {
+        "role": "brio-synths",
+        "texture": "cam_bsy",
+        "camera_class": "brio",
+        "domain": "music",
+        "pos": (-244, 112, FLOOR_Z + 126),
+    },
+    {
+        "role": "c920-desk",
+        "texture": "cam_cdk",
+        "camera_class": "c920",
+        "domain": "cognition",
+        "pos": (244, 112, FLOOR_Z + 350),
+    },
+    {
+        "role": "c920-room",
+        "texture": "cam_crm",
+        "camera_class": "c920",
+        "domain": "perception",
+        "pos": (244, 112, FLOOR_Z + 238),
+    },
+    {
+        "role": "c920-overhead",
+        "texture": "cam_cov",
+        "camera_class": "c920",
+        "domain": "perception",
+        "pos": (244, 112, FLOOR_Z + 126),
+    },
+]
+
 MODE_PRESETS = {
     "rnd": {
         "wall_tex": "city4_2",
@@ -450,6 +497,68 @@ def ward_scrim_panes(_preset):
     return brushes
 
 
+def source_constellation_panes(_preset):
+    """Physical source/camera anchors inside the scroom.
+
+    These are not live video textures. They are the in-engine constellation
+    points for the six camera feeds that existed in the last non-Quake Screwm.
+    Live video remains blocked by DarkPlaces runtime texture limitations, but
+    the scroom now has stable places for those sources to inhabit.
+    """
+    brushes = []
+    tether_t = 5
+
+    for idx, source in enumerate(SOURCE_ANCHORS, start=1):
+        role = source["role"]
+        tex = source["texture"]
+        domain = source["domain"]
+        glow_tex = DOMAIN_GLOW_TEX[domain]
+        x, y, z = source["pos"]
+        pane = box_brush(
+            x - SOURCE_PANE_W // 2,
+            y - 2,
+            z - SOURCE_PANE_H // 2,
+            x + SOURCE_PANE_W // 2,
+            y + 2,
+            z + SOURCE_PANE_H // 2,
+            tex,
+        )
+        if pane:
+            brushes.append(
+                f"// source-anchor {idx:02d}: {role} "
+                f"class={source['camera_class']} domain={domain} pos={x},{y},{z}\n{pane}"
+            )
+
+        glow = box_brush(
+            x - SOURCE_PANE_W // 2,
+            y - 7,
+            z - SOURCE_PANE_H // 2 - 7,
+            x + SOURCE_PANE_W // 2,
+            y - 3,
+            z - SOURCE_PANE_H // 2 - 2,
+            glow_tex,
+        )
+        if glow:
+            brushes.append(f"// source-glow {idx:02d}: {role} {glow_tex}\n{glow}")
+
+        # Short material tether toward the ward field: source state belongs in
+        # the same world volume rather than on the compositor's fourth wall.
+        tether_end_x = int(x * 0.62)
+        tether = box_brush(
+            min(x, tether_end_x),
+            y + 8 - tether_t,
+            z - tether_t,
+            max(x, tether_end_x),
+            y + 8 + tether_t,
+            z + tether_t,
+            glow_tex,
+        )
+        if tether:
+            brushes.append(f"// source-tether {idx:02d}: {role} {glow_tex}\n{tether}")
+
+    return brushes
+
+
 DRIFT_LINKS = [
     (1, 9, "drift_c"),
     (2, 10, "drift_a"),
@@ -613,12 +722,46 @@ def ward_lights(preset):
     return entities
 
 
+def source_lights(preset):
+    """Baked source constellation lights; live camera state can modulate later."""
+    entities = []
+    base = int(preset.get("wall_light", 100) * 0.50)
+
+    for idx, source in enumerate(SOURCE_ANCHORS, start=1):
+        x, y, z = source["pos"]
+        r, g, b = DOMAIN_LIGHT_COLOR[source["domain"]]
+        entities.append(
+            f"// source-light {idx:02d}: {source['role']}\n"
+            "{\n"
+            '"classname" "light"\n'
+            f'"origin" "{x} {y - 18} {z}"\n'
+            f'"light" "{base}"\n'
+            f'"_color" "{r} {g} {b}"\n'
+            "}"
+        )
+    return entities
+
+
+def sectioned_brushes(section, brushes):
+    return [f"// section: {section}", *brushes]
+
+
 def generate_map(preset):
     lines = []
     lines.append(f"// Screwm Tower — {preset['message']}")
     lines.append("")
 
-    worldspawn_brushes = sealed_room(preset) + ward_scrim_panes(preset) + ward_drift_paths(preset)
+    worldspawn_brushes = (
+        sectioned_brushes("sealed-scroom-shell", sealed_room(preset))
+        + sectioned_brushes("tower-pillar-columns", pillar_columns(preset))
+        + sectioned_brushes("tower-level-ledges", level_ledges(preset))
+        + sectioned_brushes("central-aoa-lattice", central_lattice(preset))
+        + sectioned_brushes("tower-ramp-shelves", ramp_shelves(preset))
+        + sectioned_brushes("central-aoa-pedestal", central_pedestal(preset))
+        + sectioned_brushes("source-camera-constellation", source_constellation_panes(preset))
+        + sectioned_brushes("ward-scrim-panes", ward_scrim_panes(preset))
+        + sectioned_brushes("ward-drift-paths", ward_drift_paths(preset))
+    )
 
     lines.append("{")
     lines.append('"classname" "worldspawn"')
@@ -635,7 +778,7 @@ def generate_map(preset):
     )
     lines.append("")
 
-    for light in lights(preset) + ward_lights(preset):
+    for light in lights(preset) + ward_lights(preset) + source_lights(preset):
         lines.append(light)
         lines.append("")
 

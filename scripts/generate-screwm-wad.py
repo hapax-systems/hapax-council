@@ -54,6 +54,15 @@ WARD_CODES = [
 
 WARD_ACCENT_INDICES = [214, 198, 186, 202, 176]
 
+CAMERA_SOURCE_TEXTURES = [
+    ("cam_bop", "BRIOOP", 198),
+    ("cam_brm", "BRIORM", 202),
+    ("cam_bsy", "BRIOSYN", 186),
+    ("cam_cdk", "C920DSK", 214),
+    ("cam_crm", "C920RM", 202),
+    ("cam_cov", "C920OVH", 214),
+]
+
 TEXTURES = {
     "city4_2": {"color": (100, 80, 55), "noise": 12, "pattern": "stone_blocks"},
     "ground1_6": {"color": (60, 55, 50), "noise": 8, "pattern": "worn_stone"},
@@ -88,6 +97,15 @@ for ward_idx in range(1, WARD_COUNT + 1):
         "pattern": "ward_panel",
         "label": ward_idx,
         "code": WARD_CODES[ward_idx - 1],
+    }
+
+for tex_name, code, accent in CAMERA_SOURCE_TEXTURES:
+    TEXTURES[tex_name] = {
+        "color": (74, 88, 84),
+        "noise": 0,
+        "pattern": "source_portal",
+        "code": code,
+        "accent": accent,
     }
 
 
@@ -199,8 +217,50 @@ def ward_panel_index(x, y, label, code):
     return base
 
 
+def source_portal_index(x, y, code, accent):
+    """Camera/source anchor texture: terminal plaque, scanlines, and role code."""
+    if x < 2 or y < 2 or x >= TEX_SIZE - 2 or y >= TEX_SIZE - 2:
+        return 245
+    if x < 5 or y < 5 or x >= TEX_SIZE - 5 or y >= TEX_SIZE - 5:
+        return accent
+    if x in (15, 16, 47, 48) or y in (15, 16, 47, 48):
+        return max(84, accent - 94)
+    if y % 8 in (0, 1):
+        return max(66, accent - 118)
+    if (x + y) % 19 == 0:
+        return max(100, accent - 72)
+
+    if text_pixel_lit(x, y, "CAM", 20, 10, 2):
+        return 232
+
+    short_code = code[:7].upper()
+    scale = 2
+    text_width = len(short_code) * 3 * scale + max(0, len(short_code) - 1) * scale
+    if text_pixel_lit(x, y, short_code, (TEX_SIZE - text_width) // 2, 42, scale):
+        return 232
+
+    # Reticle around the source point keeps these as in-world portals, not labels.
+    dx = abs(x - 32)
+    dy = abs(y - 32)
+    if (dx < 12 and dy in (10, 11)) or (dy < 12 and dx in (10, 11)):
+        return accent
+    if dx <= 1 or dy <= 1:
+        return max(74, accent - 108)
+
+    return 32 + ((x * 5 + y * 7 + len(code) * 11) % 24)
+
+
 def generate_pixel_data(
-    color, noise, width, height, seed=0, pattern="stone_blocks", label=0, code="", drift=0
+    color,
+    noise,
+    width,
+    height,
+    seed=0,
+    pattern="stone_blocks",
+    label=0,
+    code="",
+    drift=0,
+    accent=0,
 ):
     """Generate Quake-style texture with visible material character."""
     import random
@@ -298,6 +358,10 @@ def generate_pixel_data(
 
             elif pattern == "ward_panel":
                 pixels.append(ward_panel_index(x, y, int(label), str(code)))
+                continue
+
+            elif pattern == "source_portal":
+                pixels.append(source_portal_index(x, y, str(code), int(accent) if accent else 214))
                 continue
 
             # Add surface noise
@@ -420,6 +484,7 @@ def main():
             label=params.get("label", 0),
             code=params.get("code", ""),
             drift=params.get("drift", 0),
+            accent=params.get("accent", 0),
         )
         miptex = make_miptex(name, TEX_SIZE, TEX_SIZE, pixels, palette)
         textures_data[name] = (miptex, palette)
