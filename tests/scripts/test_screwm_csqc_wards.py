@@ -60,6 +60,32 @@ def test_csqc_dynamic_lights_cover_all_physical_ward_panes() -> None:
         assert f"screwm_active_{idx:02d}" in body
 
 
+def test_csqc_dynamic_lights_cover_physical_drift_graph() -> None:
+    map_module = _load_script("scripts/generate-screwm-map.py")
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+    color_vars = {
+        "drift_c": "screwm_cyan",
+        "drift_a": "screwm_amber",
+        "drift_r": "screwm_rose",
+        "drift_g": "screwm_green",
+    }
+
+    assert body.count("screwm_add_drift_light('") == len(map_module["DRIFT_LINKS"])
+    assert "activity * 58" in body
+    assert "screwm_audio_onset * 34" in body
+
+    for idx, (src, dst, texture) in enumerate(map_module["DRIFT_LINKS"], start=1):
+        x1, y1, z1 = map_module["ward_anchor_position"](src)
+        x2, y2, z2 = map_module["ward_anchor_position"](dst)
+        x = (x1 + x2) // 2
+        y = ((y1 - 10) + (y2 - 10)) // 2
+        z = (z1 + z2) // 2
+        assert (
+            f"screwm_add_drift_light('{x} {y} {z}', {idx}, {color_vars[texture]}, "
+            f"screwm_active_{src:02d}, screwm_active_{dst:02d});"
+        ) in body
+
+
 def test_csqc_source_anchors_carry_live_camera_scalars() -> None:
     map_module = _load_script("scripts/generate-screwm-map.py")
     body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
