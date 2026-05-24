@@ -43,8 +43,8 @@ def test_csqc_text_overlay_is_not_the_default_ward_surface() -> None:
     assert 'cvar("screwm_review_fill_light") > 0' in body
     assert "adddynamiclight('0 -132 184'" in body
     assert "220 + screwm_energy * 80" in body
-    assert "screwm_add_ward_light('-222 62 280'" in body
-    assert "screwm_add_ward_light('148 -82 64'" in body
+    assert "screwm_add_ward_light('-222 -160 280'" in body
+    assert "screwm_add_ward_light('148 -160 64'" in body
 
 
 def test_csqc_dynamic_lights_cover_all_physical_ward_panes() -> None:
@@ -61,7 +61,7 @@ def test_csqc_dynamic_lights_cover_all_physical_ward_panes() -> None:
     assert 'cvar("screwm_csqc_lightfield") < 0' in body
 
     for idx in range(1, 37):
-        x, y, z = map_module["ward_anchor_position"](idx)
+        x, y, z = map_module["ward_review_position"](idx)
         assert f"screwm_add_ward_light('{x} {y} {z}'" in body
         assert f"screwm_active_{idx:02d}" in body
 
@@ -116,7 +116,7 @@ def test_csqc_homage_package_lives_in_scroom_lightfield() -> None:
     assert 'screwm_read_norm("data/homage-signature-intensity.txt")' in body
     assert "void() screwm_add_homage_lights" in body
     assert "if (screwm_homage_quake <= 0)" in body
-    assert "adddynamiclight('0 -20 172'" in body
+    assert "adddynamiclight('0 -172 172'" in body
     assert "screwm_add_homage_lights();" in body
 
 

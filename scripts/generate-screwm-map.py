@@ -293,6 +293,11 @@ def ward_anchor_position(idx):
     return x, y, z
 
 
+def ward_review_position(idx):
+    x, _y, z = ward_anchor_position(idx)
+    return x, REVIEW_WARD_Y, z
+
+
 def ward_domain(idx):
     return WARD_DOMAINS[WARD_ANCHORS[idx - 1]]
 
@@ -449,7 +454,7 @@ def ward_review_panes(_preset):
     brushes = []
 
     for idx, anchor in enumerate(WARD_ANCHORS, start=1):
-        x, _y, z = ward_anchor_position(idx)
+        x, _y, z = ward_review_position(idx)
         tex = f"w{idx:02d}"
         domain = ward_domain(idx)
         glow_tex = DOMAIN_GLOW_TEX[domain]

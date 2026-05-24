@@ -40,6 +40,8 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "// section: ward-review-plane" in content
     assert "// ward-review-pane 01: token_pole" in content
     assert "// ward-review-frame 36: cbip_dual_ir_displacement" in content
+    assert module["ward_review_position"](1) == (-222, -160, 280)
+    assert module["ward_review_position"](36) == (0, -160, 28)
     assert "ward-glow 01: token_pole drift_c" in content
     assert "ward-glow 02: album drift_r" in content
     assert "ward-glow 03: stream_overlay drift_g" in content
