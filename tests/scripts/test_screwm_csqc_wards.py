@@ -125,7 +125,8 @@ def test_darkplaces_review_camera_is_locked_by_default() -> None:
     assert "cl_rollangle 0" in autoexec
     assert "fov 76" in autoexec
     assert "set screwm_camera_file_control 1" in autoexec
-    assert "set screwm_csqc_review_camera 1" in autoexec
+    assert "set screwm_player_noclip_control 1" in autoexec
+    assert "set screwm_csqc_review_camera 0" in autoexec
     assert "set screwm_csqc_review_path 0" in autoexec
     assert "set screwm_csqc_manual_camera 0" in autoexec
     assert "set screwm_csqc_native_controller 0" in autoexec
@@ -150,7 +151,7 @@ def test_csqc_review_camera_overrides_render_view_for_obs_feedback() -> None:
     assert "void(vector ang) makevectors = #1;" in defs
     assert "vector(vector v) vectoangles = #51;" in defs
     assert "void() screwm_apply_review_camera" in body
-    assert 'cvar("screwm_csqc_review_camera") < 0' in body
+    assert 'cvar("screwm_csqc_review_camera") <= 0' in body
     assert 'cvar("screwm_csqc_native_controller") > 0' in body
     assert "screwm_review_camera_manual_until = time + native_hold;" in body
     assert "makevectors(screwm_review_camera_angles);" in body

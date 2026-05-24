@@ -68,6 +68,12 @@ void(entity view) screwm_free_view_body =
 
 void() PlayerPreThink =
 {
+    if (cvar("screwm_player_noclip_control") > 0)
+    {
+        screwm_free_view_body(self);
+        return;
+    }
+
     if (cvar("screwm_csqc_review_camera") > 0)
     {
         screwm_free_view_body(self);
@@ -89,6 +95,8 @@ void() PutClientInServer =
 {
     screwm_free_view_body(self);
     setorigin(self, CAMERA_REVIEW_POS);
+    self.angles = vectoangles(CAMERA_REVIEW_TARGET - CAMERA_REVIEW_POS);
+    self.fixangle = 1;
 };
 void() ClientDisconnect = {};
 void() SetNewParms = {};

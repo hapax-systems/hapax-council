@@ -281,7 +281,7 @@ void() screwm_apply_review_camera =
     float native_speed;
     vector angle_delta;
 
-    if (cvar("screwm_csqc_review_camera") < 0)
+    if (cvar("screwm_csqc_review_camera") <= 0)
         return;
 
     if (!screwm_native_angles_ready)

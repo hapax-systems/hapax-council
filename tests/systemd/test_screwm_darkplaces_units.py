@@ -126,8 +126,8 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     world = (REPO_ROOT / "assets" / "quake" / "qc" / "world.qc").read_text(encoding="utf-8")
 
     assert "vector AOA_CENTER = '0 0 176';" in defs
-    assert "vector CAMERA_REVIEW_POS = '0 -576 154';" in defs
-    assert "vector CAMERA_REVIEW_TARGET = '0 -160 154';" in defs
+    assert "vector CAMERA_REVIEW_POS = '-244 -500 204';" in defs
+    assert "vector CAMERA_REVIEW_TARGET = '0 -360 150';" in defs
     assert "vector(vector v) vectoangles = #51;" in defs
     assert "ang = vectoangles(target - pos);" in camera
     assert 'if (cvar("screwm_camera_orbit") > 0)' in camera
@@ -142,7 +142,9 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     assert "coupling_energy * 4.0" in coupling
     assert "UserVec2: mortar_lines, edge_glow, posterize, sharpen" in autoexec
     assert 'r_glsl_postprocess_uservec2 "0.05 0.18 0 0.03"' in autoexec
+    assert 'cvar("screwm_player_noclip_control") > 0' in world
     assert "setorigin(self, CAMERA_REVIEW_POS);" in world
+    assert "self.angles = vectoangles(CAMERA_REVIEW_TARGET - CAMERA_REVIEW_POS);" in world
 
 
 def test_darkplaces_state_bridge_follows_v4l2_renderer_unit() -> None:
