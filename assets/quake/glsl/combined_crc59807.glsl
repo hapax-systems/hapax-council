@@ -540,12 +540,15 @@ void main(void)
 		color = mix(color, vec3(1.0) - color, inv_mix);
 	}
 
-	// Circular mask
+	// Aperture pressure — a soft scroom-edge attenuation, not a hard camera
+	// blackout. Earlier builds used mask_r as a literal radius and multiplied
+	// most of the frame to black, which made the fixed review POV look broken.
 	float mask_r = UserVec4.z;
 	if (mask_r > 0.01 && mask_r < 1.0) {
 		float mask_dist = distance(uv, vec2(0.5));
-		float mask = smoothstep(mask_r, mask_r + 0.05, mask_dist);
-		color *= 1.0 - mask;
+		float mask = smoothstep(0.35, 0.92, mask_dist);
+		float mask_strength = min(mask_r, 0.25) * 0.35;
+		color *= 1.0 - mask * mask_strength;
 	}
 
 	// Thermal field
@@ -577,11 +580,13 @@ void main(void)
 	);
 	color = hue_mat * color;
 
-	// VHS glitch — time-driven horizontal displacement + chroma shift
+	// Signal shear — live-state-driven horizontal displacement + chroma shift.
+	// Keep it subtle so stable camera review does not read as frame jerking.
 	float vhs_time = fract(ClientTime * 0.3);
 	float vhs_band = smoothstep(0.0, 0.02, abs(uv.y - vhs_time)) *
 	                 smoothstep(0.0, 0.02, abs(uv.y - fract(vhs_time + 0.4)));
-	float vhs_glitch = (1.0 - vhs_band) * 0.008;
+	float vhs_strength = clamp(UserVec3.y * 8.0, 0.0, 1.0);
+	float vhs_glitch = (1.0 - vhs_band) * 0.0015 * vhs_strength;
 	if (vhs_glitch > 0.001) {
 		color.r = dp_texture2D(Texture_First, uv + vec2(vhs_glitch, 0.0)).r;
 		color.g = dp_texture2D(Texture_First, uv - vec2(vhs_glitch * 0.5, 0.0)).g;

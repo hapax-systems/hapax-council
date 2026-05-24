@@ -34,6 +34,11 @@ def test_screwm_shader_effects_are_unconditional_scroom_fields() -> None:
     assert "spatial effects in one pass" in postprocess_block
     assert "UserVec4.x > 0.001 && UserVec4.x < 1.0" not in postprocess_block
     assert "reserved for material emboss" in postprocess_block
+    assert "color *= 1.0 - mask;" not in postprocess_block
+    assert "smoothstep(0.35, 0.92, mask_dist)" in postprocess_block
+    assert "mask_strength = min(mask_r, 0.25) * 0.35" in postprocess_block
+    assert "vhs_strength = clamp(UserVec3.y * 8.0, 0.0, 1.0)" in postprocess_block
+    assert "vhs_band) * 0.008" not in postprocess_block
 
 
 def test_screwm_spec_marks_compositor_wards_as_temporary_gap() -> None:
