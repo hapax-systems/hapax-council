@@ -37,6 +37,17 @@ def test_csqc_text_overlay_is_not_the_default_ward_surface() -> None:
     assert "adddynamiclight('124 -26 64'" in body
 
 
+def test_darkplaces_review_camera_is_locked_by_default() -> None:
+    autoexec = AUTOEXEC.read_text(encoding="utf-8")
+    camera = (REPO_ROOT / "assets" / "quake" / "qc" / "camera.qc").read_text(encoding="utf-8")
+
+    assert "screwm_camera_orbit 0" in autoexec
+    assert "cl_bob 0" in autoexec
+    assert "cl_rollangle 0" in autoexec
+    assert 'cvar("screwm_camera_orbit") > 0' in camera
+    assert "CAMERA_REVIEW_POS" in camera
+
+
 def test_csqc_compiles_in_temporary_directory(tmp_path: Path) -> None:
     if not shutil.which("fteqcc"):
         pytest.skip("fteqcc is not installed")

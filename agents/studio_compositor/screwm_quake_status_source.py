@@ -63,7 +63,7 @@ class ScrewmQuakeStatusCairoSource(CairoSource):
 
             cr.set_source_rgba(0.92, 0.86, 0.72, 0.92)
             cr.move_to(18.0, 82.0)
-            cr.show_text("WARD BRIDGE ACTIVE  |  /dev/video52 -> /dev/video42")
+            cr.show_text("IN-SCROOM WARDS ACTIVE  |  /dev/video52 -> /dev/video42")
         finally:
             cr.restore()
 

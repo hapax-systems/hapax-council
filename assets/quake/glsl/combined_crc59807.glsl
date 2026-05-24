@@ -375,11 +375,11 @@ void main(void)
 #endif
 
 #ifdef USEPOSTPROCESSING
-// Screwm Tower post-processing — 19 effects in single pass
-// UserVec1: x=vignette, y=chroma_aberration, z=color_temp, w=grain
-// UserVec2: x=scanlines, y=edge_glow, z=posterize_levels, w=unused
-// UserVec3: x=fisheye, y=noise_overlay, z=halftone_size, w=threshold
-// UserVec4: x=emboss, y=invert_mix, z=circular_mask_r, w=thermal_mix
+// Screwm scroom post-processing — spatial effects in one pass.
+// UserVec1: x=atmo_darken, y=prismatic_fog, z=world_warmth, w=dust
+// UserVec2: x=mortar_lines, y=edge_glow, z=posterize_levels, w=unused
+// UserVec3: x=spatial_warp, y=signal_noise, z=halftone_size, w=threshold
+// UserVec4: x=surface_emboss/kaleidoscope, y=invert_mix, z=circular_mask_r, w=thermal_mix
 // Effects run unconditionally — UserVec uniforms always available
 	vec2 uv = TexCoord1.xy;
 	vec2 px = PixelSize;
@@ -481,13 +481,13 @@ void main(void)
 	float mortar = sin(uv.y / px.y * 3.14159 * 0.5) * 0.5 + 0.5;
 	color *= 1.0 - mortar_str * (1.0 - mortar) * 0.6;
 
-	// 7. Posterize (reduce color levels for retro feel)
+	// Posterize — reduce world color levels for harder material bands
 	float post_levels = UserVec2.z;
 	if (post_levels > 2.0) {
 		color = floor(color * post_levels) / post_levels;
 	}
 
-	// 8. Breathing — radial pulse synced to time
+	// Breathing — radial pulse synced to time
 	float breath_rate = 0.15;
 	float breath = 1.0 + sin(ClientTime * 2.0) * breath_rate * 0.5;
 	float breath_dist = distance(uv, vec2(0.5));
@@ -501,9 +501,9 @@ void main(void)
 	float surface_grain = fract(float(gx * 3 + gy * 7) * 0.0625);
 	color += vec3((surface_grain - 0.5) * granularity);
 
-	// 10. (Fisheye moved to UV distortion phase above)
+	// Spatial warp is applied in the UV distortion phase above.
 
-	// 11. Animated noise overlay
+	// Animated signal noise
 	float noise_str = UserVec3.y;
 	if (noise_str > 0.001) {
 		float n = fract(sin(dot(uv + fract(ClientTime * 0.1), vec2(12.9898, 78.233))) * 43758.5453);
@@ -512,7 +512,7 @@ void main(void)
 		color += vec3(noise_val * noise_str);
 	}
 
-	// 12. Halftone dot pattern
+	// Halftone dot pattern
 	float ht_size = UserVec3.z;
 	if (ht_size > 1.0) {
 		vec2 cell = floor(gl_FragCoord.xy / ht_size);
@@ -523,7 +523,7 @@ void main(void)
 		color = mix(color * 0.3, color, dot_mask);
 	}
 
-	// 13. Threshold / monochrome
+	// Threshold / monochrome
 	float thresh = UserVec3.w;
 	if (thresh > 0.001) {
 		float lum = dot(color, vec3(0.299, 0.587, 0.114));
@@ -531,7 +531,7 @@ void main(void)
 		color = mix(color, mono, thresh);
 	}
 
-	// 14. Emboss
+	// Surface emboss
 	float emboss_str = UserVec4.x;
 	if (emboss_str > 0.001) {
 		vec3 em_tl = dp_texture2D(Texture_First, uv + vec2(-px.x, -px.y)).rgb;
@@ -540,13 +540,13 @@ void main(void)
 		color = mix(color, emboss * color * 2.0, emboss_str);
 	}
 
-	// 15. Invert mix
+	// Invert mix
 	float inv_mix = UserVec4.y;
 	if (inv_mix > 0.001) {
 		color = mix(color, vec3(1.0) - color, inv_mix);
 	}
 
-	// 16. Circular mask
+	// Circular mask
 	float mask_r = UserVec4.z;
 	if (mask_r > 0.01 && mask_r < 1.0) {
 		float mask_dist = distance(uv, vec2(0.5));
@@ -554,7 +554,7 @@ void main(void)
 		color *= 1.0 - mask;
 	}
 
-	// 17. Thermal vision
+	// Thermal field
 	float thermal_mix = UserVec4.w;
 	if (thermal_mix > 0.001) {
 		float lum = dot(color, vec3(0.299, 0.587, 0.114));
@@ -566,13 +566,13 @@ void main(void)
 		color = mix(color, thermal, thermal_mix);
 	}
 
-	// 18. Strobe (brief brightness flash synced to time)
+	// Strobe — brief brightness flash synced to time
 	float strobe_period = 8.0;
 	float strobe_phase = fract(ClientTime / strobe_period);
 	float strobe = smoothstep(0.0, 0.01, strobe_phase) * smoothstep(0.03, 0.01, strobe_phase);
 	color += vec3(strobe * 0.15);
 
-	// 19. Palette cycling (hue rotation over time — subtle)
+	// Palette cycling — subtle hue rotation over time
 	float hue_shift = sin(ClientTime * 0.05) * 0.03;
 	float cs = cos(hue_shift);
 	float sn = sin(hue_shift);
@@ -583,7 +583,7 @@ void main(void)
 	);
 	color = hue_mat * color;
 
-	// 20. VHS glitch (time-driven horizontal displacement + chroma shift)
+	// VHS glitch — time-driven horizontal displacement + chroma shift
 	float vhs_time = fract(ClientTime * 0.3);
 	float vhs_band = smoothstep(0.0, 0.02, abs(uv.y - vhs_time)) *
 	                 smoothstep(0.0, 0.02, abs(uv.y - fract(vhs_time + 0.4)));
@@ -593,42 +593,42 @@ void main(void)
 		color.g = dp_texture2D(Texture_First, uv - vec2(vhs_glitch * 0.5, 0.0)).g;
 	}
 
-	// 19. Palette warmth — shift toward Quake brown/amber
+	// Palette warmth — shift toward Quake brown/amber
 	float warmth = 0.04;
 	float lum = dot(color, vec3(0.299, 0.587, 0.114));
 	vec3 warm_tint = vec3(0.85, 0.65, 0.45);
 	color = mix(color, color * warm_tint / max(dot(warm_tint, vec3(0.333)), 0.01), warmth);
 
-	// 20. Luma key — shadow depth enhancement
+	// Luma key — shadow depth enhancement
 	float lk = dot(color, vec3(0.299, 0.587, 0.114));
 	color *= smoothstep(0.02, 0.08, lk) * 0.15 + 0.85;
 
-	// 21. Procedural noise texture (value noise, 2 octaves)
+	// Procedural noise texture — value noise, 2 octaves
 	vec2 pn_uv = uv * 8.0 + vec2(ClientTime * 0.02);
 	float pn1 = fract(sin(dot(floor(pn_uv), vec2(127.1, 311.7))) * 43758.5453);
 	float pn2 = fract(sin(dot(floor(pn_uv * 2.0), vec2(269.5, 183.3))) * 28461.632);
 	color += vec3((pn1 * 0.7 + pn2 * 0.3) * 0.008 - 0.004);
 
-	// 22. Tile frequency modulation (spatial rhythm)
+	// Tile frequency modulation — spatial rhythm
 	color += vec3(sin(uv.x * 80.0) * sin(uv.y * 60.0) * 0.002);
 
-	// 23. Chroma key — suppress specific hue range (greens by default)
+	// Chroma key — suppress specific hue range (greens by default)
 	// Useful for compositor compositing pass
 	vec3 key_color = vec3(0.0, 1.0, 0.0);
 	float key_dist = distance(normalize(color + vec3(0.001)), normalize(key_color));
 	// (inactive by default — key_dist is always > 0 for non-green scenes)
 
-	// 24. Color map — quantize to a limited palette for retro feel
+	// Color map — quantize to a limited palette for retro feel
 	// Uses floor-based quantization across all channels
 	// (complementary to posterize which uses per-channel quantization)
 	float palette_res = 32.0;
 	vec3 palette_color = floor(color * palette_res + 0.5) / palette_res;
 	color = mix(color, palette_color, 0.06);
 
-	// 25. Contrast boost
+	// Contrast boost
 	color = (color - 0.5) * 1.04 + 0.5;
 
-	// 24. Clamp
+	// Clamp
 	color = max(color, vec3(0.0));
 
 	dp_FragColor.rgb = color;

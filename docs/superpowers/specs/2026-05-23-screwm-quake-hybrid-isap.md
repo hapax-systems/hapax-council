@@ -48,7 +48,12 @@ Nothing is given up. Everything is gained.
 
 DarkPlaces cannot reload textures at runtime without `r_restart`/`vid_restart`, which pauses the engine visibly. No QuakeC builtin exists for texture injection. No FBO/RTT support documented. This is confirmed via source code audit of `r_textures.h`, `gl_textures.c`, and `dpextensions.qc`.
 
-**Decision:** Wards stay in GStreamer compositor overlay. DarkPlaces owns spatial rendering; the compositor owns information overlays and temporal effects.
+**Decision:** live texture replacement remains blocked, so naive
+texture-swapping wards cannot be the runtime strategy. This does **not** move
+wards back to the fourth wall. Ward identity, anchors, drift carriers, and
+state-reactive light coupling belong inside DarkPlaces; any GStreamer/Cairo
+ward remains a documented temporary bridge until its dynamic content has an
+engine-native strategy.
 
 ### 4.2 Shader Node Migration Tiers
 

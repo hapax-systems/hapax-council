@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_screwm_quake_layout_routes_only_darkplaces_video() -> None:
+    layout_path = REPO_ROOT / "config" / "compositor-layouts" / "screwm-quake.json"
+    layout = json.loads(layout_path.read_text(encoding="utf-8"))
+
+    assert layout["name"] == "screwm-quake"
+    assert layout["assignments"] == []
+    assert [source["id"] for source in layout["sources"]] == ["darkplaces"]
+    assert layout["sources"][0]["kind"] == "video"
+    assert layout["sources"][0]["backend"] == "v4l2"
+    assert layout["sources"][0]["params"]["device"] == "/dev/video52"
+    assert layout["sources"][0]["params"]["role"] == "darkplaces_background"
+    assert "Cairo" not in json.dumps(layout)
+
+
+def test_screwm_shader_effects_are_unconditional_scroom_fields() -> None:
+    shader_path = REPO_ROOT / "assets" / "quake" / "glsl" / "combined_crc59807.glsl"
+    shader = shader_path.read_text(encoding="utf-8")
+    start = shader.index("Screwm scroom post-processing")
+    end = shader.index("#ifdef USEBLOOM", start)
+    postprocess_block = shader[start:end]
+
+    assert "#if defined(USERVEC" not in postprocess_block
+    assert "Screwm scroom post-processing" in postprocess_block
+    assert "Effects run unconditionally" in postprocess_block
+    assert "All effects operate on the WORLD" in postprocess_block
+    assert "spatial effects in one pass" in postprocess_block
+
+
+def test_screwm_spec_marks_compositor_wards_as_temporary_gap() -> None:
+    spec_path = (
+        REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-05-23-screwm-quake-hybrid-isap.md"
+    )
+    spec = spec_path.read_text(encoding="utf-8")
+
+    assert "DarkPlaces is the rendering" in spec
+    assert "projected CSQC text/line overlays are diagnostic only" in spec
+    assert (
+        "temporary bridge only where DarkPlaces runtime texture limits block live content" in spec
+    )
+    assert "Wards stay in GStreamer compositor overlay" not in spec

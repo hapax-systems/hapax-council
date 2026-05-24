@@ -65,8 +65,9 @@ void() coupling_apply_stimmung =
     float fog_density = 0.03 - coupling_energy * 0.02;
     localcmd(strcat(strcat("fog ", ftos(fog_density)), " 0.08 0.06 0.10\n"));
 
-    // Post-processing modulation from cognitive state
-    // UserVec1: x=vignette, y=chroma, z=temp, w=grain
+    // Post-processing modulation from cognitive state. These are spatial
+    // scroom fields, not fourth-wall camera filters.
+    // UserVec1: x=atmo_darken, y=prismatic_fog, z=world_warmth, w=dust
     float vig = 0.4 + (1.0 - coupling_energy) * 0.25;
     float ca = 0.4 + coupling_voice_active * 0.6;
     float temp_val = 0.10 + coupling_energy * 0.08;
@@ -82,12 +83,21 @@ void() coupling_apply_stimmung =
     uservec1_cmd = strcat(uservec1_cmd, "\"\n");
     localcmd(uservec1_cmd);
 
-    // UserVec2: x=scanlines, y=edge_glow, z=posterize, w=unused
+    // UserVec2: x=mortar_lines, y=edge_glow, z=posterize, w=unused
     float edge = 0.15 + coupling_energy * 0.25;
     string uservec2_cmd;
     uservec2_cmd = strcat("r_glsl_postprocess_uservec2 \"0.06 ", ftos(edge));
     uservec2_cmd = strcat(uservec2_cmd, " 0 0\"\n");
     localcmd(uservec2_cmd);
+
+    // UserVec3: x=spatial_warp, y=signal_noise, z=halftone, w=threshold.
+    // Keep warp/halftone/threshold disabled in the review baseline; let the
+    // live state breathe through subtle signal noise instead.
+    float noise_val = 0.004 + (1.0 - coupling_energy) * 0.006 + coupling_voice_active * 0.004;
+    string uservec3_cmd;
+    uservec3_cmd = strcat("r_glsl_postprocess_uservec3 \"0 ", ftos(noise_val));
+    uservec3_cmd = strcat(uservec3_cmd, " 0 0\"\n");
+    localcmd(uservec3_cmd);
 };
 
 void() coupling_check_working_mode =
