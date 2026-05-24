@@ -69,6 +69,11 @@ TEXTURES = {
     "s_comm": {"color": (52, 88, 88), "noise": 10, "pattern": "metal_grate"},
     "s_express": {"color": (62, 58, 88), "noise": 10, "pattern": "dark_ornate"},
     "s_ground": {"color": (92, 86, 72), "noise": 8, "pattern": "polished_stone"},
+    # In-scroom drift carriers. These are physical materials, not overlay strokes.
+    "drift_c": {"color": (80, 180, 170), "noise": 0, "pattern": "drift_line", "drift": 214},
+    "drift_a": {"color": (210, 150, 74), "noise": 0, "pattern": "drift_line", "drift": 198},
+    "drift_r": {"color": (205, 82, 120), "noise": 0, "pattern": "drift_line", "drift": 186},
+    "drift_g": {"color": (120, 180, 86), "noise": 0, "pattern": "drift_line", "drift": 202},
 }
 
 TEX_SIZE = 64
@@ -189,7 +194,9 @@ def ward_panel_index(x, y, label, code):
     return base
 
 
-def generate_pixel_data(color, noise, width, height, seed=0, pattern="stone_blocks", label=0, code=""):
+def generate_pixel_data(
+    color, noise, width, height, seed=0, pattern="stone_blocks", label=0, code="", drift=0
+):
     """Generate Quake-style texture with visible material character."""
     import random
 
@@ -271,6 +278,18 @@ def generate_pixel_data(color, noise, width, height, seed=0, pattern="stone_bloc
                     base += 22
                 if (x * 7 + y * 11 + seed) % 101 < 3:
                     base += 54
+
+            elif pattern == "drift_line":
+                drift_idx = int(drift) if drift else 206
+                edge = min(x, y, width - 1 - x, height - 1 - y)
+                if edge < 2:
+                    base = 245
+                elif x in (31, 32) or y in (31, 32):
+                    base = drift_idx
+                elif (x * 5 + y * 3 + seed) % 23 < 5:
+                    base = max(120, drift_idx - 34)
+                else:
+                    base = max(76, drift_idx - 70)
 
             elif pattern == "ward_panel":
                 pixels.append(ward_panel_index(x, y, int(label), str(code)))
@@ -395,6 +414,7 @@ def main():
             pattern=params.get("pattern", "stone_blocks"),
             label=params.get("label", 0),
             code=params.get("code", ""),
+            drift=params.get("drift", 0),
         )
         miptex = make_miptex(name, TEX_SIZE, TEX_SIZE, pixels, palette)
         textures_data[name] = (miptex, palette)

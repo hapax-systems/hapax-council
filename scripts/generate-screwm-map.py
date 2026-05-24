@@ -75,6 +75,15 @@ WARD_ANCHORS = [
     "m8_oscilloscope",
 ]
 
+WARD_COLUMNS = 7
+WARD_PANE_W = 52
+WARD_PANE_H = 38
+WARD_X_SPACING = 62
+WARD_Z_SPACING = 54
+WARD_Y_TOP = 118
+WARD_Y_STEP = -36
+WARD_TOP_Z = FLOOR_Z + 344
+
 MODE_PRESETS = {
     "rnd": {
         "wall_tex": "city4_2",
@@ -156,6 +165,15 @@ def box_brush(x1, y1, z1, x2, y2, z2, tex):
         fmt_plane((mn[0], mn[1], mx[2]), (mn[0], mx[1], mx[2]), (mx[0], mn[1], mx[2]), tex),
     ]
     return "{\n" + "\n".join(planes) + "\n}"
+
+
+def ward_anchor_position(idx):
+    col = (idx - 1) % WARD_COLUMNS
+    row = (idx - 1) // WARD_COLUMNS
+    x = int((col - (WARD_COLUMNS - 1) * 0.5) * WARD_X_SPACING)
+    y = WARD_Y_TOP + row * WARD_Y_STEP
+    z = int(WARD_TOP_Z - row * WARD_Z_SPACING)
+    return x, y, z
 
 
 def sealed_room(preset):
@@ -301,50 +319,92 @@ def ward_scrim_panes(_preset):
     than at a flat wall.
     """
     brushes = []
-    columns = 7
-    pane_w = 52
-    pane_h = 38
-    x_spacing = 62
-    z_spacing = 54
-    y_top = 118
-    y_step = -36
-    top_z = FLOOR_Z + 344
     row_min_x = -224
     row_max_x = 224
 
     for idx, anchor in enumerate(WARD_ANCHORS, start=1):
-        col = (idx - 1) % columns
-        row = (idx - 1) // columns
-        x = int((col - (columns - 1) * 0.5) * x_spacing)
-        y = y_top + row * y_step
-        z = int(top_z - row * z_spacing)
+        x, y, z = ward_anchor_position(idx)
         tex = f"w{idx:02d}"
         brush = box_brush(
-            x - pane_w // 2,
+            x - WARD_PANE_W // 2,
             y - 2,
-            z - pane_h // 2,
-            x + pane_w // 2,
+            z - WARD_PANE_H // 2,
+            x + WARD_PANE_W // 2,
             y + 2,
-            z + pane_h // 2,
+            z + WARD_PANE_H // 2,
             tex,
         )
         if brush:
             brushes.append(f"// ward-anchor {idx:02d}: {anchor} pos={x},{y},{z}\n{brush}")
 
     for row in range(5):
-        y = y_top + row * y_step
-        z = int(top_z - row * z_spacing)
+        y = WARD_Y_TOP + row * WARD_Y_STEP
+        z = int(WARD_TOP_Z - row * WARD_Z_SPACING)
         rail = box_brush(row_min_x, y + 6, z - 4, row_max_x, y + 10, z + 4, "scroom")
         if rail:
             brushes.append(f"// ward-rail row {row + 1}: scroom carrier\n{rail}")
 
-    for col in range(columns):
-        x = int((col - (columns - 1) * 0.5) * x_spacing)
-        z_low = int(top_z - 4 * z_spacing) - pane_h // 2
-        z_high = top_z + pane_h // 2
-        spine = box_brush(x - 3, y_top + 4 * y_step + 8, z_low, x + 3, y_top + 10, z_high, "scroom")
+    for col in range(WARD_COLUMNS):
+        x = int((col - (WARD_COLUMNS - 1) * 0.5) * WARD_X_SPACING)
+        z_low = int(WARD_TOP_Z - 4 * WARD_Z_SPACING) - WARD_PANE_H // 2
+        z_high = WARD_TOP_Z + WARD_PANE_H // 2
+        spine = box_brush(
+            x - 3,
+            WARD_Y_TOP + 4 * WARD_Y_STEP + 8,
+            z_low,
+            x + 3,
+            WARD_Y_TOP + 10,
+            z_high,
+            "scroom",
+        )
         if spine:
             brushes.append(f"// ward-spine col {col + 1}: scroom carrier\n{spine}")
+
+    return brushes
+
+
+DRIFT_LINKS = [
+    (1, 9, "drift_c"),
+    (2, 10, "drift_a"),
+    (3, 11, "drift_r"),
+    (4, 12, "drift_g"),
+    (5, 13, "drift_c"),
+    (6, 14, "drift_a"),
+    (15, 23, "drift_g"),
+    (17, 25, "drift_c"),
+    (18, 26, "drift_r"),
+    (20, 28, "drift_a"),
+    (4, 18, "drift_c"),
+    (18, 32, "drift_g"),
+    (29, 35, "drift_r"),
+]
+
+
+def ward_drift_paths(_preset):
+    """Physical drift graph embedded in the scroom.
+
+    Axis-aligned BSP brushes approximate the old overlay drift links as
+    material rails through the ward field. This keeps drift inside the rendered
+    world even when diagnostic CSQC lines are disabled.
+    """
+    brushes = []
+    t = 3
+
+    for link_idx, (src, dst, tex) in enumerate(DRIFT_LINKS, start=1):
+        x1, y1, z1 = ward_anchor_position(src)
+        x2, y2, z2 = ward_anchor_position(dst)
+        parts = []
+        if x1 != x2:
+            parts.append(box_brush(min(x1, x2), y1 - t, z1 - t, max(x1, x2), y1 + t, z1 + t, tex))
+        if y1 != y2:
+            parts.append(box_brush(x2 - t, min(y1, y2), z1 - t, x2 + t, max(y1, y2), z1 + t, tex))
+        if z1 != z2:
+            parts.append(box_brush(x2 - t, y2 - t, min(z1, z2), x2 + t, y2 + t, max(z1, z2), tex))
+        for part_idx, part in enumerate(parts, start=1):
+            if part:
+                brushes.append(
+                    f"// ward-drift {link_idx:02d}.{part_idx}: {src:02d}->{dst:02d} {tex}\n{part}"
+                )
 
     return brushes
 
@@ -442,7 +502,7 @@ def generate_map(preset):
     lines.append(f"// Screwm Tower — {preset['message']}")
     lines.append("")
 
-    worldspawn_brushes = sealed_room(preset) + ward_scrim_panes(preset)
+    worldspawn_brushes = sealed_room(preset) + ward_scrim_panes(preset) + ward_drift_paths(preset)
 
     lines.append("{")
     lines.append('"classname" "worldspawn"')
