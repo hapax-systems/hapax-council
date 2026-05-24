@@ -174,6 +174,7 @@ class CpalRunner:
         echo_canceller: object | None = None,
         daemon: object | None = None,
         music_policy: object | None = None,
+        audio_perception: object | None = None,
     ) -> None:
         # Streams
         self._perception = PerceptionStream(buffer=buffer)
@@ -240,6 +241,7 @@ class CpalRunner:
         self._echo_canceller = echo_canceller
         self._pipeline = conversation_pipeline  # T3 delegate
         self._daemon = daemon
+        self._audio_perception = audio_perception
 
         # GEAL Phase 2 Task 2.1 — TTS envelope publisher. Taps the TTS
         # PCM stream so GEAL can drive V1 Chladni ignition / V2 halo
@@ -492,88 +494,17 @@ class CpalRunner:
         else:
             self._accumulated_silence_s += dt
 
-        # 2b. Session timeout check — close session if silence exceeds timeout
-        if self._daemon is not None:
-            d = self._daemon
-            if (
-                d.session.is_active
-                and d.session.is_timed_out
-                and not self._processing_utterance
-                and not self._production.is_producing
-            ):
-                from functools import partial
-
-                from agents.hapax_daimonion.persona import session_end_message
-                from agents.hapax_daimonion.pw_audio_output import play_pcm
-                from agents.hapax_daimonion.session_events import close_session
-
-                msg = session_end_message(d.notifications.pending_count)
-                log.info("CPAL session timeout: %s", msg)
-                if d._conversation_pipeline and d._conversation_pipeline._audio_output:
-                    try:
-                        decision = self._resolve_direct_pcm_decision(
-                            source="cpal_session_timeout_goodbye",
-                            text=msg,
-                        )
-                        if decision is None:
-                            await close_session(d, reason="silence_timeout")
-                            return
-                        loop = asyncio.get_running_loop()
-                        pcm = await loop.run_in_executor(
-                            None, d.tts.synthesize, msg, "notification"
-                        )
-                        if pcm:
-                            playback_result = await loop.run_in_executor(
-                                None,
-                                partial(
-                                    play_pcm,
-                                    pcm,
-                                    24000,
-                                    1,
-                                    decision.target,
-                                    decision.media_role,
-                                ),
-                            )
-                            witness = record_playback_result(
-                                text=msg,
-                                playback_result=playback_result,
-                                destination=decision.destination.value,
-                                target=decision.target,
-                                media_role=decision.media_role,
-                            )
-                            if decision.destination.value == "livestream":
-                                scope = (
-                                    "public_broadcast" if playback_result.completed else "failed"
-                                )
-                                record = PublicSpeechEventRecord(
-                                    speech_event_id=f"se-{time.time_ns()}",
-                                    impulse_id=None,
-                                    triad_ids=[],
-                                    utterance_hash=compute_utterance_hash(msg),
-                                    route_decision=witness.last_destination_decision or {},
-                                    tts_result=witness.last_tts_synthesis,
-                                    playback_result=witness.last_playback,
-                                    audio_safety_refs=[],
-                                    egress_refs=[],
-                                    wcs_snapshot_refs=[],
-                                    chronicle_refs=[],
-                                    temporal_span_refs=[],
-                                    scope=scope,
-                                    created_at=witness.updated_at,
-                                )
-                                append_public_speech_event(record)
-                    except Exception:
-                        log.debug("Goodbye TTS failed", exc_info=True)
-                await close_session(d, reason="silence_timeout")
+        # 2b. Session timeout DISABLED — voice is always-on, pipeline never stops.
 
         # 3. Gain drivers beyond just speech (C: I5, I6)
         self._apply_gain_drivers(signals, dt)
 
-        # 4. Check for utterances — dispatch T3 via pipeline
-        # Discard utterances during own speech (echo from speakers)
+        # 4. Check for utterances — route through AudioPerceptionBackend
+        # as impingement, or fall back to direct processing if no backend.
         if self._production.is_producing or self._buffer.is_speaking:
-            _ = self._perception.get_utterance()  # drain without processing
-            self._queued_utterance = None
+            fresh = self._perception.get_utterance()
+            if fresh is not None:
+                self._queued_utterance = fresh
         else:
             utterance = self._queued_utterance or self._perception.get_utterance()
             self._queued_utterance = None
@@ -581,7 +512,17 @@ class CpalRunner:
                 log.info("CPAL: utterance arrived during processing — queued for next tick")
                 self._queued_utterance = utterance
             elif utterance is not None:
-                asyncio.create_task(self._process_utterance(utterance))
+                if self._audio_perception is not None:
+                    asyncio.create_task(
+                        self._audio_perception.process_utterance(
+                            audio_bytes=utterance,
+                            vad_confidence=0.95,
+                            duration_s=len(utterance) / (16000 * 2),
+                            energy_db=-12.0,
+                        )
+                    )
+                else:
+                    asyncio.create_task(self._process_utterance(utterance))
 
         # 4b. Mark session activity during production/processing
         if self._daemon is not None and self._daemon.session.is_active:
@@ -1003,6 +944,12 @@ class CpalRunner:
             self._buffer.set_speaking(False)
         return True
 
+    def _kill_inflight_playback(self) -> None:
+        if self._audio_output is not None and hasattr(self._audio_output, "kill"):
+            self._audio_output.kill()
+            log.info("CPAL: killed in-flight playback for preemption")
+        self._buffer.set_speaking(False)
+
     async def process_impingement(self, impingement: object) -> None:
         """Process an impingement through the CPAL control loop.
 
@@ -1011,6 +958,41 @@ class CpalRunner:
         the pipeline's spontaneous speech path.
         """
         self._impingement_since_last_tick = True
+
+        # OPERATOR SPEECH — dominant impingement, recruits conversation.
+        # Handled before the adapter because operator speech should NOT be
+        # subject to surfacing thresholds — it IS the threshold.
+        source = getattr(impingement, "source", "")
+        if source == "audio.operator_speech" and self._pipeline is not None:
+            content = getattr(impingement, "content", {})
+            transcript = content.get("transcript", "")
+            if transcript:
+                if self._daemon is not None and hasattr(self._daemon, "arbiter"):
+                    from agents.hapax_daimonion.arbiter import ResourceClaim
+
+                    claim = ResourceClaim(
+                        resource="audio_output",
+                        chain="conversation",
+                        priority=100,
+                        command=f"operator_speech: {transcript[:40]}",
+                    )
+                    self._daemon.arbiter.claim(claim)
+                    self._kill_inflight_playback()
+
+                log.info(
+                    "CPAL: operator speech impingement (strength=%.2f): %.40s",
+                    getattr(impingement, "strength", 0),
+                    transcript,
+                )
+                if hasattr(self._pipeline, "process_utterance_from_transcript"):
+                    try:
+                        await self._pipeline.process_utterance_from_transcript(transcript)
+                    except Exception:
+                        log.warning("process_utterance_from_transcript failed", exc_info=True)
+                else:
+                    log.warning("Pipeline lacks process_utterance_from_transcript — falling back")
+            return
+
         effect = self._impingement_adapter.adapt(impingement)
 
         if effect.gain_update is not None:
@@ -1312,6 +1294,32 @@ class CpalRunner:
             )
 
             # T3 via pipeline spontaneous speech (if available)
+            # Check arbiter — defer if higher-priority claim on audio_output
+            if self._daemon is not None and hasattr(self._daemon, "arbiter"):
+                from agents.hapax_daimonion.arbiter import ResourceClaim
+
+                current_winner = self._daemon.arbiter.resolve("audio_output")
+                if current_winner is not None and current_winner.priority > 15:
+                    log.info("CPAL: exploration deferred — higher-priority claim on audio_output")
+                    record_drop(
+                        reason="audio_output_preempted",
+                        source=source,
+                        destination=destination.value,
+                        target=destination_target,
+                        media_role=destination_role,
+                        text=effect.narrative,
+                        terminal_state="inhibited",
+                    )
+                    return
+
+                claim = ResourceClaim(
+                    resource="audio_output",
+                    chain="exploration_speech",
+                    priority=15,
+                    command=f"exploration: {effect.narrative[:40]}",
+                )
+                self._daemon.arbiter.claim(claim)
+
             if self._pipeline is not None and hasattr(
                 self._pipeline, "generate_spontaneous_speech"
             ):
@@ -1354,7 +1362,7 @@ class CpalRunner:
                     # TTS + playback + holdover. The pipeline's _speak_sentence
                     # only gates per-sentence; between sentences the gate drops
                     # and the buffer captures inter-sentence audio as "operator."
-                    self._buffer.set_speaking(True)
+                    # Speaking gate managed per-sentence by _speak_sentence
                     try:
                         await self._pipeline.generate_spontaneous_speech(
                             impingement,
@@ -1398,7 +1406,7 @@ class CpalRunner:
                     finally:
                         # Hold the speaking gate past playback end to cover
                         # room echo tail, same as autonomous narrative path.
-                        await asyncio.sleep(3.0)
+                        # No outer holdover — _speak_sentence handles per-sentence gate
                         self._buffer.set_speaking(False)
                         self._last_speech_end = time.monotonic()
                         self._recent_speech_events.append(

@@ -302,6 +302,15 @@ async def run_inner(daemon: VoiceDaemon) -> None:
     # synthesis without loading torch. ALPHA-FINDING-1 root cause fix.
     await daemon.tts_server.start()
 
+    # AudioPerceptionBackend — emits operator speech as impingements
+    from agents.hapax_daimonion.audio_perception import AudioPerceptionBackend
+
+    daemon._audio_perception = AudioPerceptionBackend(
+        stt=daemon._resident_stt,
+        speaker_id=getattr(daemon, "_speaker_id", None),
+    )
+    daemon._audio_perception.start()
+
     # CPAL runner — sole conversation coordinator
     from agents.hapax_daimonion.cpal.runner import CpalRunner
 
@@ -314,6 +323,7 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         tts_manager=daemon.tts,
         echo_canceller=getattr(daemon, "_echo_canceller", None),
         daemon=daemon,
+        audio_perception=daemon._audio_perception,
     )
 
     # Engagement classifier — demoted from session-gate to gain modulator.

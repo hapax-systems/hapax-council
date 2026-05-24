@@ -139,7 +139,7 @@ class ConversationPipeline:
         system_prompt: str,
         tools: list[dict] | None = None,
         tool_handlers: dict[str, object] | None = None,
-        llm_model: str = "claude-sonnet",
+        llm_model: str = "local-fast",
         event_log=None,
         conversation_buffer=None,  # ConversationBuffer
         timeout_s: float = _SILENCE_TIMEOUT_S,
@@ -375,7 +375,7 @@ class ConversationPipeline:
             messages = [
                 {
                     "role": "system",
-                    "content": f"{spontaneous_envelope}\n\n{self._system_context}",
+                    "content": f"{spontaneous_envelope}\n\n{self.system_prompt}",
                 },
                 {"role": "user", "content": prompt},
             ]
@@ -398,11 +398,18 @@ class ConversationPipeline:
                 else nullcontext(None)
             )
             with metrics_ctx:
-                response = await litellm.acompletion(
-                    model=grounded_model,
-                    messages=messages,
-                    max_tokens=80,
-                    temperature=0.7,
+                log.info("spontaneous_speech: LLM call start (model=openai/%s)", grounded_model)
+                response = await asyncio.wait_for(
+                    litellm.acompletion(
+                        model=f"openai/{grounded_model}",
+                        messages=messages,
+                        max_tokens=80,
+                        temperature=0.7,
+                        api_key=__import__("os").environ.get("LITELLM_API_KEY", ""),
+                        api_base=_voice_litellm_base,
+                        timeout=10,
+                    ),
+                    timeout=15,
                 )
 
             text = response.choices[0].message.content.strip()
@@ -439,7 +446,44 @@ class ConversationPipeline:
                 text=text_for_witness,
                 terminal_state="failed",
             )
-            log.debug("Spontaneous speech generation failed (non-fatal)", exc_info=True)
+            log.warning("Spontaneous speech generation failed", exc_info=True)
+
+    async def process_utterance_from_transcript(self, transcript: str) -> None:
+        """Process a pre-transcribed operator utterance via impingement path."""
+        if not self._running:
+            await self.start()
+
+        self._update_system_context()
+
+        import litellm
+
+        from agents.hapax_daimonion.config import LITELLM_BASE as _base
+        from shared.config import MODELS
+
+        grounded_model = MODELS["local-fast"]
+        self._conversation_thread.append({"role": "user", "content": transcript})
+
+        try:
+            response = await asyncio.wait_for(
+                litellm.acompletion(
+                    model=f"openai/{grounded_model}",
+                    messages=self.messages + [{"role": "user", "content": transcript}],
+                    max_tokens=200,
+                    temperature=0.7,
+                    api_key=__import__("os").environ.get("LITELLM_API_KEY", ""),
+                    api_base=_base,
+                    timeout=10,
+                ),
+                timeout=15,
+            )
+
+            text = response.choices[0].message.content.strip()
+            if text:
+                log.info("Conversation response: %s", text[:80])
+                self._conversation_thread.append({"role": "assistant", "content": text})
+                await self._speak_sentence(text)
+        except Exception:
+            log.warning("process_utterance_from_transcript failed", exc_info=True)
 
     async def start(self) -> None:
         """Start the conversation pipeline."""
