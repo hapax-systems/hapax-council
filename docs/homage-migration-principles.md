@@ -43,7 +43,7 @@ Never cross the boundary in the wrong direction.
 |--------|-------|---------|
 | Spatial | DarkPlaces | Tower geometry, AoA entity, lights, fog, camera path |
 | Temporal | GStreamer glfeedback | Feedback loops, echo, diff, stutter, slitscan |
-| Informational | GStreamer Cairo | Wards, text, data visualization, HUD |
+| Informational | DarkPlaces first, GStreamer only as legacy bridge | Ward panes, in-world state lights, text/data surfaces while live texture strategies mature |
 | Color | Either | Colorgrade possible in both; prefer DarkPlaces for scene-level, GStreamer for output-level |
 
 ## 4. Dynamic Content Is the Hardest In-Engine Migration Surface
@@ -55,10 +55,11 @@ naive texture-based live wards, not a reason to declare wards out of scope.
 The required direction is:
 - Sourceize static in-engine ward anchors/panes for all legacy wards so the
   spatial Screwm composition is present inside DarkPlaces.
-- Use CSQC for engine-native ward identity, drift links, pulse lights, and
-  state-responsive screen-space projection tied to those spatial anchors.
-- Keep GStreamer/Cairo wards only as a temporary dynamic-content bridge while
-  Quake-native dynamic strategies are evaluated.
+- Use CSQC for engine-native pulse lights and state coupling tied to those
+  spatial anchors; any projected text/line overlay must be opt-in diagnostic,
+  not the default migration surface.
+- Keep GStreamer/Cairo wards only as a legacy or temporary dynamic-content
+  bridge while Quake-native dynamic strategies are evaluated.
 - Treat any remaining compositor-owned ward as an explicit parity gap with
   evidence, not as the target architecture.
 

@@ -4,10 +4,11 @@ Tower of Babel interior rendered by DarkPlaces Quake engine. The visual
 grammar draws from Quake I (1996): brown-olive-grey palette, angular
 geometry, hard-cut transitions, console message typography.
 
-The Quake homage is fundamentally spatial — the 3D tower IS the visual
+The Quake homage is fundamentally spatial — the 3D scroom IS the visual
 surface — whereas BitchX and Enlightenment-Moksha are typographic. Ward
-rendering still uses Cairo/Pango; the QuakeHomage controls their
-palette, container shape, transition speed, and artefact vocabulary.
+identity/drift should live in DarkPlaces geometry/materials first; Cairo/Pango
+surfaces are legacy bridge surfaces until a given ward has an engine-native
+dynamic strategy.
 
 Spec: ``docs/superpowers/specs/2026-05-23-screwm-quake-hybrid-isap.md``.
 """
@@ -175,7 +176,8 @@ QUAKE_PACKAGE = HomagePackage(
         "Quake-grammar homage: Tower of Babel interior, brown-olive-grey "
         "palette, angular containers, hard 6-frame transitions, teleport-flash "
         "entry, console-message artefacts. DarkPlaces renders the 3D spatial "
-        "environment; wards render in Quake aesthetic via Cairo."
+        "environment; ward identity and drift live in the scroom geometry, with "
+        "Cairo kept only as a legacy dynamic bridge where still required."
     ),
     palette=_QUAKE_PALETTE,
     typography=_QUAKE_TYPOGRAPHY,

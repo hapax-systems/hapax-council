@@ -34,6 +34,8 @@ WARD_EXPORTS: dict[str, str] = {
     "34": "segment_content",
 }
 
+IN_WORLD_WARD_COUNT = 35
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
@@ -90,6 +92,11 @@ def _active_ward_count(active_wards: dict[str, Any]) -> int:
     return 0
 
 
+def _screwm_ward_count(active_wards: dict[str, Any]) -> int:
+    """DarkPlaces hosts all legacy Screwm wards even without Cairo assignments."""
+    return max(IN_WORLD_WARD_COUNT, _active_ward_count(active_wards))
+
+
 def build_ward_lines(shm_dir: Path) -> dict[str, str]:
     active_segment = _read_json(shm_dir / "active-segment.json")
     active_wards = _read_json(shm_dir / "active_wards.json")
@@ -119,7 +126,7 @@ def build_ward_lines(shm_dir: Path) -> dict[str, str]:
     onset = _percent(blended.get("onset", 0))
 
     speech = "VOICE ON" if voice.get("operator_speech_active") else "VOICE QUIET"
-    active_count = _active_ward_count(active_wards)
+    active_count = _screwm_ward_count(active_wards)
     token_line = _one_line(
         f"{int(token.get('total_tokens', 0)) // 1000}K TOK / {int(token.get('active_viewers', 0))} VIEW",
         limit=34,
@@ -158,7 +165,7 @@ def export_state(game_dir: Path, shm_dir: Path, mode_file: Path) -> None:
     )
     _write_atomic(
         game_dir / "active-wards-line.txt",
-        f"{_active_ward_count(active_wards):02d} ACTIVE WARDS",
+        f"{_screwm_ward_count(active_wards):02d} IN-SCROOM WARDS",
     )
 
 

@@ -75,11 +75,14 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "ward-02.txt").read_text(
         encoding="utf-8"
     ).strip() == "Radiohead / Pablo Honey"
-    assert (game_dir / "ward-12.txt").read_text(encoding="utf-8").strip() == "VOICE ON / 03 WARDS"
+    assert (game_dir / "ward-12.txt").read_text(encoding="utf-8").strip() == "VOICE ON / 35 WARDS"
     assert "BEAT 050%" in (game_dir / "ward-13.txt").read_text(encoding="utf-8")
     assert "RANT:" in (game_dir / "ward-21.txt").read_text(encoding="utf-8")
     assert (game_dir / "ward-28.txt").read_text(encoding="utf-8").strip() == "BEAT 2/4 050%"
     assert "Escalate the argument" in (game_dir / "ward-34.txt").read_text(encoding="utf-8")
+    assert (game_dir / "active-wards-line.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "35 IN-SCROOM WARDS"
 
 
 def test_darkplaces_state_bridge_delegates_to_exporter() -> None:

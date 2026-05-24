@@ -29,7 +29,7 @@ Nothing is given up. Everything is gained.
 2. QuakeC drives camera, lighting, fog, and entity behavior based on live cognitive state (/dev/shm signals).
 3. 39 reverie shader nodes (EXCELLENT+GOOD tiers) migrate to DarkPlaces GLSL post-processing.
 4. 11 temporal shader nodes (DIFFICULT tier: feedback, echo, diff, stutter, slitscan, pixsort) remain in GStreamer glfeedback chain as post-compositor effects.
-5. All legacy wards receive in-engine spatial anchors/panes and CSQC-projected identity/drift overlays; dynamic Cairo/GStreamer ward rendering remains a temporary bridge only where DarkPlaces runtime texture limits block live content today.
+5. All legacy wards receive in-engine spatial anchors/panes, baked identity materials, physical drift carriers, and CSQC-driven in-world pulse/state coupling; projected CSQC text/line overlays are diagnostic only, and dynamic Cairo/GStreamer ward rendering remains a temporary bridge only where DarkPlaces runtime texture limits block live content today.
 6. Working mode propagation: dual BSP compilation (screwm-rnd.bsp / screwm-research.bsp) + runtime fog/brightness adjustment.
 7. QuakeHomage registered as third HomagePackage.
 8. hapax-imagination retires after Phase 4 shader port is verified.
@@ -93,7 +93,7 @@ DarkPlaces dpextensions provide `fopen`/`fclose`/`fgets` for reading external fi
 ┌────────────────────────┴────────────────────────────────┐
 │ GStreamer Compositor (preserved, enhanced)               │
 │  ├─ DarkPlaces /dev/video52 as PRIMARY background        │
-│  ├─ 35 Cairo wards (BitchX/Enlightenment/Quake homage)  │
+│  ├─ Legacy Cairo wards only where not yet engine-native  │
 │  ├─ 11 temporal shader effects (feedback, echo, diff,    │
 │  │   stutter, slitscan — require frame history)          │
 │  ├─ Camera feeds (cudacompositor, unchanged)              │
@@ -110,8 +110,9 @@ DarkPlaces dpextensions provide `fopen`/`fclose`/`fgets` for reading external fi
 - Spatial audio
 - Post-processing shader nodes that don't require frame history
 
-**GStreamer compositor owns (temporal + informational):**
-- 35 Cairo/Pango ward overlays
+**GStreamer compositor owns (temporal + bridge surfaces):**
+- Legacy Cairo/Pango ward bridges only where DarkPlaces cannot yet host the
+  dynamic content natively
 - Temporal effects (feedback loops, frame differencing)
 - Camera feed compositing
 - Output routing (v4l2sink, HLS, OBS)
@@ -316,20 +317,21 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - CUDA compositor ingress uploads the DarkPlaces v4l2 feed into
   CUDAMemory/NV12 before connecting to `cudacompositor`.
 - Fallback path if DarkPlaces unavailable: leave the compositor background
-  pinned black and keep wards/cameras running.
-- Runtime evidence still pending: full production compositor launch with
-  DarkPlaces as background and wards overlaid.
+  pinned black and publish a degraded runtime state; do not silently reintroduce
+  fourth-wall ward overlays as the migration target.
+- Runtime evidence collected: production compositor launches with DarkPlaces as
+  the primary source and no external ward layout assignments; ward identity is
+  carried by the in-scroom BSP/WAD field.
 
-### D7a: CSQC Ward Identity/Drift Layer [IN PROGRESS]
+### D7a: CSQC Ward State Coupling [IN PROGRESS]
 - `assets/quake/csqc/csprogs.dat` loads as a DarkPlaces CSQC module.
-- CSQC preserves the server-rendered world, then projects all 35 legacy ward
-  identities onto the in-engine anchor panes using `cs_project` plus
-  `drawstring`/`drawline`.
+- CSQC preserves the server-rendered world and keeps projected ward
+  `drawstring`/`drawline` output behind opt-in `screwm_csqc_overlay 1`.
 - CSQC reads `data/working-mode.txt`, `data/stimmung-energy.txt`, and
-  `data/voice-active.txt` from the game directory to modulate engine-side
-  ward alpha, drift links, and dynamic lights.
-- This closes the "static pane only" gap for ward identity and drift, but does
-  not yet provide arbitrary runtime texture upload for full live ward contents.
+  `data/voice-active.txt` plus selected `data/ward-XX.txt` exports from the game
+  directory to modulate engine-side dynamic lights.
+- Ward identity and the first drift graph are in BSP/WAD geometry/materials;
+  CSQC is now the live coupling layer, not the default ward text surface.
 
 ### D8: hapax-darkplaces Systemd Unit [IN PROGRESS]
 - `systemd/units/hapax-darkplaces.service`
@@ -400,7 +402,7 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 | Phase | Scope | Duration | Evidence Gate |
 |---|---|---|---|
 | 0: Foundation | DarkPlaces installed, BSP compiles, systemd unit | **DONE** | BSP loads in engine |
-| 1: Tower Live | Textures, lights, fog, v4l2 capture, compositor integration | 2-4h | OBS shows DarkPlaces + wards composite |
+| 1: Tower Live | Textures, lights, fog, v4l2 capture, compositor integration | 2-4h | OBS shows DarkPlaces carrying wards in-scroom |
 | 2: Camera + AoA | QuakeC pendulum camera, AoA MDL, sound emitters | 4-8h | Smooth camera traversal, AoA visible, sound per level |
 | 3: Mode Coupling | Dual BSPs, fog/brightness mode switch, stimmung coupling | 1-2d | Working mode change shifts tower aesthetic |
 | 4: Shader Port P1 | 39 EXCELLENT+GOOD nodes as GLSL post-processing | 1-2w | Visual parity with reverie for ported nodes |
@@ -422,8 +424,9 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - [x] DarkPlaces renders tower BSP with textures at 1280×720
 - [x] v4l2loopback /dev/video52 captures DarkPlaces output
 - [x] Layout/registry/pipeline contracts declare DarkPlaces as the v4l2 background source
-- [x] CSQC renders all 35 ward identities/drift links inside DarkPlaces
-- [ ] Compositor accepts DarkPlaces as background source with wards overlay
+- [x] All 35 ward identities have in-scroom BSP/WAD anchors
+- [x] In-world BSP drift carriers connect the ward field
+- [x] Compositor accepts DarkPlaces as primary background without external ward overlays
 - [ ] QuakeC pendulum camera traverses tower smoothly (120-150s period)
 - [ ] AoA Sierpinski tetrahedron visible and rotating at tower center
 - [ ] 5 ambient sound zones audible with distinct sonic character
