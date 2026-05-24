@@ -158,7 +158,7 @@ QuakeC reads /dev/shm state files via dpextensions `fopen`/`fgets` (verified cap
 
 | Signal | Source File | DarkPlaces Effect |
 |---|---|---|
-| Stimmung energy | `stimmung.json` | Camera speed (120-150s period), light intensity multiplier, fog density |
+| Stimmung energy | `stimmung.json` | Light intensity multiplier, fog density, bounded postprocess pressure |
 | Working mode | `~/.cache/hapax/working-mode` | Map swap (rnd↔research), fog color, r_brightness |
 | Voice activity | `voice-state.json` | AoA rotation speed, light pulse frequency |
 | Content density | `active_wards.json` | Sound volume scaling, fog clarity |
@@ -171,7 +171,10 @@ in-scroom ward/source field. This is intentional: the operator needs a fixed
 OBS-reviewable posture while the migration is still being judged. Optional
 motion remains available through `screwm_camera_orbit 1`, and headless manual
 control is gated by `hapax-screwm-camera-gamepad.service` plus
-`data/camera-manual.txt`; both are off by default.
+`data/camera-manual.txt`; both are off by default. The gamepad bridge fails
+closed unless an Xbox/Microsoft/XInput joystick is visible or the operator
+explicitly supplies `--device`/`--allow-any-joystick`, preventing keyboard
+joystick interfaces from unexpectedly taking over the POV.
 
 The view body is QuakeC-owned, `MOVETYPE_NOCLIP`, and `SOLID_NOT`, so the POV
 can move through the space freely when manual control is enabled and cannot be

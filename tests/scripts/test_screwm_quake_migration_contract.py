@@ -109,6 +109,10 @@ def test_screwm_quake_contract_matches_current_camera_aoa_and_sound_foundation()
     coupling = (REPO_ROOT / "assets" / "quake" / "qc" / "coupling.qc").read_text(encoding="utf-8")
 
     assert "stable noclip camera" in spec
+    assert "Camera speed (120-150s period)" not in spec
+    assert "bounded postprocess pressure" in spec
+    assert "The gamepad bridge fails" in spec
+    assert "`--device`/`--allow-any-joystick`" in spec
     assert "MOVETYPE_NOCLIP" in defs
     assert "screwm_free_view_body(self);" in world
     assert "spawn_aoa();" in world
