@@ -1,7 +1,7 @@
 [Unit]
 Description=Hapax DarkPlaces state bridge — copies live state into game directory
-PartOf=hapax-darkplaces.service
-After=hapax-darkplaces.service
+PartOf=hapax-darkplaces.service hapax-darkplaces-v4l2.service
+After=hapax-darkplaces.service hapax-darkplaces-v4l2.service
 ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 
 [Service]
@@ -13,4 +13,4 @@ Restart=always
 RestartSec=2
 
 [Install]
-WantedBy=hapax-darkplaces.service
+WantedBy=hapax-darkplaces.service hapax-darkplaces-v4l2.service
