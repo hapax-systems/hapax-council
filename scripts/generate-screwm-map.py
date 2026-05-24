@@ -76,13 +76,14 @@ WARD_ANCHORS = [
 ]
 
 WARD_COLUMNS = 7
-WARD_PANE_W = 52
-WARD_PANE_H = 38
-WARD_X_SPACING = 62
+WARD_PANE_W = 68
+WARD_PANE_H = 50
+WARD_X_SPACING = 74
 WARD_Z_SPACING = 54
-WARD_Y_TOP = 118
+WARD_Y_TOP = 62
 WARD_Y_STEP = -36
 WARD_TOP_Z = FLOOR_Z + 344
+WARD_GLOW_TEX = ["drift_c", "drift_a", "drift_r", "drift_g"]
 
 MODE_PRESETS = {
     "rnd": {
@@ -325,6 +326,7 @@ def ward_scrim_panes(_preset):
     for idx, anchor in enumerate(WARD_ANCHORS, start=1):
         x, y, z = ward_anchor_position(idx)
         tex = f"w{idx:02d}"
+        glow_tex = WARD_GLOW_TEX[(idx - 1) % len(WARD_GLOW_TEX)]
         brush = box_brush(
             x - WARD_PANE_W // 2,
             y - 2,
@@ -336,6 +338,17 @@ def ward_scrim_panes(_preset):
         )
         if brush:
             brushes.append(f"// ward-anchor {idx:02d}: {anchor} pos={x},{y},{z}\n{brush}")
+        glow = box_brush(
+            x - WARD_PANE_W // 2,
+            y - 7,
+            z - WARD_PANE_H // 2 - 7,
+            x + WARD_PANE_W // 2,
+            y - 3,
+            z - WARD_PANE_H // 2 - 2,
+            glow_tex,
+        )
+        if glow:
+            brushes.append(f"// ward-glow {idx:02d}: {anchor} {glow_tex}\n{glow}")
 
     for row in range(5):
         y = WARD_Y_TOP + row * WARD_Y_STEP
@@ -500,6 +513,36 @@ def lights(preset):
     return entities
 
 
+def ward_lights(preset):
+    """Small baked lights at every in-scroom ward pane.
+
+    Dynamic CSQC lights continue to carry live state; these baked lights make
+    the full ward inventory reviewable in OBS even when live state is quiet.
+    """
+    entities = []
+    colors = [
+        (0.42, 0.95, 0.88),
+        (1.00, 0.64, 0.30),
+        (1.00, 0.36, 0.58),
+        (0.58, 0.88, 0.34),
+    ]
+    base = int(preset.get("wall_light", 100) * 0.42)
+
+    for idx, anchor in enumerate(WARD_ANCHORS, start=1):
+        x, y, z = ward_anchor_position(idx)
+        r, g, b = colors[(idx - 1) % len(colors)]
+        entities.append(
+            f"// ward-light {idx:02d}: {anchor}\n"
+            "{\n"
+            '"classname" "light"\n'
+            f'"origin" "{x} {y - 18} {z}"\n'
+            f'"light" "{base}"\n'
+            f'"_color" "{r} {g} {b}"\n'
+            "}"
+        )
+    return entities
+
+
 def generate_map(preset):
     lines = []
     lines.append(f"// Screwm Tower — {preset['message']}")
@@ -522,7 +565,7 @@ def generate_map(preset):
     )
     lines.append("")
 
-    for light in lights(preset):
+    for light in lights(preset) + ward_lights(preset):
         lines.append(light)
         lines.append("")
 

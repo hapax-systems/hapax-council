@@ -17,6 +17,8 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
 
     assert len(module["WARD_ANCHORS"]) == 35
     assert content.count("// ward-anchor ") == 35
+    assert content.count("// ward-glow ") == 35
+    assert content.count("// ward-light ") == 35
     assert content.count("// ward-rail row") == 5
     assert content.count("// ward-spine col") == 7
     assert content.count("// ward-drift ") >= 13
@@ -26,8 +28,8 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "drift_r" in content
     assert "// ward-anchor 05: reverie" in content
     assert "// ward-anchor 34: segment_content" in content
-    assert "pos=-186,118,280" in content
-    assert "pos=186,-26,64" in content
+    assert "pos=-222,62,280" in content
+    assert "pos=222,-82,64" in content
 
 
 def test_screwm_wad_defines_all_ward_panel_textures() -> None:
@@ -38,6 +40,7 @@ def test_screwm_wad_defines_all_ward_panel_textures() -> None:
     assert len(ward_textures) == 35
     assert textures["w01"]["pattern"] == "ward_panel"
     assert textures["w01"]["code"] == "TOKEN"
+    assert len(module["WARD_ACCENT_INDICES"]) >= 4
     assert textures["w35"]["label"] == 35
     assert textures["w35"]["code"] == "SCOPE"
     assert textures["drift_c"]["pattern"] == "drift_line"
@@ -59,4 +62,5 @@ def test_ward_panel_texture_has_legible_number_contrast() -> None:
     assert max(pixels) >= 232
     assert min(pixels) <= 34
     assert pixels.count(max(pixels)) > 120
-    assert pixels.count(212) > 10
+    accent = module["WARD_ACCENT_INDICES"][(17 - 1) % len(module["WARD_ACCENT_INDICES"])]
+    assert pixels.count(accent) > 10

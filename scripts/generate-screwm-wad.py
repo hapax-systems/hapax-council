@@ -51,6 +51,8 @@ WARD_CODES = [
     "SCOPE",
 ]
 
+WARD_ACCENT_INDICES = [214, 198, 186, 202, 176]
+
 TEXTURES = {
     "city4_2": {"color": (100, 80, 55), "noise": 12, "pattern": "stone_blocks"},
     "ground1_6": {"color": (60, 55, 50), "noise": 8, "pattern": "worn_stone"},
@@ -154,19 +156,21 @@ def text_pixel_lit(x, y, text, start_x, start_y, scale):
 
 def ward_panel_index(x, y, label, code):
     """High-contrast in-engine ward anchor texture with identity baked in."""
+    accent = WARD_ACCENT_INDICES[(int(label) - 1) % len(WARD_ACCENT_INDICES)]
+
     if x < 2 or y < 2 or x >= TEX_SIZE - 2 or y >= TEX_SIZE - 2:
-        return 232
+        return 245
     if x < 5 or y < 5 or x >= TEX_SIZE - 5 or y >= TEX_SIZE - 5:
-        return 90
+        return accent
     if y in (12, 13, 48, 49):
-        return 176
+        return accent
     if x in (12, 13, 50, 51):
-        return 62
+        return max(72, accent - 96)
 
     # Diagonal scan-strata give every pane motion-read even as a baked texture.
     base = 34 + ((x * 3 + y * 5 + label * 11) % 28)
     if (x + y + label * 3) % 17 == 0:
-        base = 118
+        base = max(118, accent - 74)
 
     text = f"{label:02d}"
     scale = 5
@@ -183,13 +187,13 @@ def ward_panel_index(x, y, label, code):
             if digit_is_lit(char, col, row):
                 return 236
             if (glyph_x % scale in (0, scale - 1)) or (glyph_y % scale in (0, scale - 1)):
-                return max(base, 76)
+                return max(base, accent - 96)
 
     short_code = code[:7].upper()
     code_scale = 2
     code_width = len(short_code) * 3 * code_scale + max(0, len(short_code) - 1) * code_scale
     if text_pixel_lit(x, y, short_code, (TEX_SIZE - code_width) // 2, 43, code_scale):
-        return 212
+        return accent
 
     return base
 
