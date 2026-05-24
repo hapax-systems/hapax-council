@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import time
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ _DEFAULT_TIMEOUT_S = 90.0
 _KOKORO_SAFE_CHARS_PER_SECOND = 5.0
 _SYNTHESIS_TIMEOUT_OVERHEAD_MIN_S = 10.0
 _SYNTHESIS_TIMEOUT_OVERHEAD_RATIO = 0.15
+_DEFAULT_TIMEOUT_BACKOFF_S = 180.0
 
 
 def synthesis_timeout_s(text: str, *, minimum_s: float = _DEFAULT_TIMEOUT_S) -> float:
@@ -60,9 +62,12 @@ class DaimonionTtsClient:
         self,
         socket_path: Path,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
+        timeout_backoff_s: float = _DEFAULT_TIMEOUT_BACKOFF_S,
     ) -> None:
         self.socket_path = socket_path
         self.timeout_s = timeout_s
+        self.timeout_backoff_s = timeout_backoff_s
+        self._timeout_backoff_until = 0.0
 
     def synthesize(self, text: str, use_case: str = "conversation") -> bytes:
         """Send ``text`` to the daimonion and return raw PCM int16 bytes.
@@ -74,6 +79,13 @@ class DaimonionTtsClient:
         in-process TTSManager path when it raised.
         """
         if not text or not text.strip():
+            return b""
+        now = time.monotonic()
+        if now < self._timeout_backoff_until:
+            log.warning(
+                "tts client: suppressing request during timeout backoff for %.1fs",
+                self._timeout_backoff_until - now,
+            )
             return b""
 
         request_timeout_s = synthesis_timeout_s(text, minimum_s=self.timeout_s)
@@ -136,6 +148,7 @@ class DaimonionTtsClient:
             return b""
         except TimeoutError:
             log.warning("tts client: synthesize timed out after %.1fs", request_timeout_s)
+            self._timeout_backoff_until = time.monotonic() + self.timeout_backoff_s
             try:
                 from agents.studio_compositor.metrics import record_tts_client_timeout
 
