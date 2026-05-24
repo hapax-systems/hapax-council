@@ -1095,6 +1095,99 @@ printf '%s\\n' "$HAPAX_CLAUDE_MODEL" "$@" > {launcher_env}
     assert receipt["route_policy_action"] == "refuse"
 
 
+def test_launches_claude_headless_with_task_binding(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "claude-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-claude-headless"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$HAPAX_METHODOLOGY_DISPATCH_TASK" "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "beta",
+        "--platform",
+        "claude",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_CLAUDE_HEADLESS": str(fake_launcher)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert args[0] == "governed-build"
+    assert args[1:4] == ["--task", "governed-build", "beta"]
+    assert "SDLC GOVERNED DISPATCH." in "\n".join(args[4:])
+
+
+def test_launches_claude_interactive_visible_lane_with_task_binding(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "claude-visible-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-claude"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "beta",
+        "--platform",
+        "claude",
+        "--mode",
+        "interactive",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_CLAUDE_LAUNCHER": str(fake_launcher)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert args == [
+        "--role",
+        "beta",
+        "--terminal",
+        "tmux",
+        "--task",
+        "governed-build",
+    ]
+
+
 def test_vibe_jr_route_refuses_authoritative_dispatch(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
@@ -1280,6 +1373,7 @@ def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     assert "Default to maximum appropriate quality-preserving utilization" in result.stdout
     assert "codex/headless/full" in result.stdout
     assert "codex/headless/spark" in result.stdout
+    assert "claude/interactive/full" in result.stdout
     assert "claude/headless/sonnet" in result.stdout
     assert "gemini/headless/flash" in result.stdout
     assert "gemini/headless/worker" in result.stdout

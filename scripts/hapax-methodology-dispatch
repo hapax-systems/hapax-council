@@ -103,6 +103,15 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         True,
         "Use only when Sonnet is quality-equivalent for the bounded task or Opus capacity is blocked.",
     ),
+    ("claude", "interactive", "full"): PlatformPath(
+        "claude",
+        "interactive",
+        "full",
+        "scripts/hapax-claude --role <lane> --terminal tmux --task <task>",
+        "Claude Code visible tmux lane with governed task binding",
+        True,
+        "Visible Claude lanes require an explicit task binding or an existing lane claim.",
+    ),
     ("codex", "headless", "full"): PlatformPath(
         "codex",
         "headless",
@@ -661,7 +670,7 @@ def slugify(value: str) -> str:
     return slug or "item"
 
 
-def launch_claude_headless(lane: str, prompt: str, route: PlatformPath) -> int:
+def launch_claude_headless(task_id: str, lane: str, prompt: str, route: PlatformPath) -> int:
     launcher = Path(
         os.environ.get(
             "HAPAX_METHODOLOGY_CLAUDE_HEADLESS",
@@ -671,7 +680,30 @@ def launch_claude_headless(lane: str, prompt: str, route: PlatformPath) -> int:
     env = os.environ.copy()
     if route.profile in {"opus", "sonnet"}:
         env["HAPAX_CLAUDE_MODEL"] = route.profile
-    return subprocess.call([str(launcher), lane, prompt], env=env)
+    env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
+    return subprocess.call([str(launcher), "--task", task_id, lane, prompt], env=env)
+
+
+def launch_claude_interactive(task_id: str, lane: str, validation: Validation) -> int:
+    launcher = Path(
+        os.environ.get(
+            "HAPAX_METHODOLOGY_CLAUDE_LAUNCHER",
+            str(Path(__file__).resolve().parent / "hapax-claude"),
+        )
+    )
+    if not launcher.is_file():
+        print(f"Claude launcher not found: {launcher}", file=sys.stderr)
+        return 8
+
+    status = ""
+    if validation.task is not None:
+        status = strip_scalar(str(validation.task.fields.get("status", "")))
+    args = [str(launcher), "--role", lane, "--terminal", "tmux", "--task", task_id]
+    if status in {"claimed", "in_progress"}:
+        env = os.environ.copy()
+        env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
+        return subprocess.call(args, env=env)
+    return subprocess.call(args)
 
 
 def write_codex_bootstrap(task_id: str, lane: str, prompt: str) -> Path:
@@ -1205,7 +1237,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.launch:
         if args.platform == "claude" and args.mode == "headless":
-            rc = launch_claude_headless(args.lane, prompt or "", route)
+            rc = launch_claude_headless(args.task, args.lane, prompt or "", route)
+        elif args.platform == "claude" and args.mode == "interactive":
+            rc = launch_claude_interactive(args.task, args.lane, validation)
         elif args.platform == "codex" and args.mode == "headless":
             rc = launch_codex_headless(args.task, args.lane, prompt or "", validation, route)
         elif args.platform == "vibe" and args.mode == "headless":

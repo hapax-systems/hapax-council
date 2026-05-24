@@ -102,7 +102,8 @@ class TestCCTaskBlockSurfaces:
     def test_no_claim_message(self, home: Path) -> None:
         """When no claim file exists, says (none)."""
         result = _run(home)
-        assert "Claimed: (none" in result.stdout
+        assert "Claimed: (none — await governed dispatch" in result.stdout
+        assert "do not self-claim by WSJF" in result.stdout
 
 
 class TestClaimedTaskSurfaces:
@@ -132,43 +133,14 @@ class TestClaimedTaskSurfaces:
         assert "Active alpha task" in result.stdout
 
 
-class TestTopOfferedSorting:
-    def test_top_offered_sorted_by_wsjf_descending(self, home: Path) -> None:
+class TestNoSelfSelectionPrompt:
+    def test_top_offered_queue_not_printed(self, home: Path) -> None:
         vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
-        _make_vault_task(vault, task_id="aaa-001", status="offered", title="Low", wsjf=1.0)
         _make_vault_task(vault, task_id="bbb-002", status="offered", title="High", wsjf=15.5)
-        _make_vault_task(vault, task_id="ccc-003", status="offered", title="Mid", wsjf=7.5)
         result = _run(home)
-        # The "High" entry should appear above "Low" + "Mid".
-        out = result.stdout
-        high_pos = out.find("bbb-002")
-        mid_pos = out.find("ccc-003")
-        low_pos = out.find("aaa-001")
-        assert -1 < high_pos < mid_pos < low_pos, (
-            f"expected wsjf-desc order; got positions high={high_pos} mid={mid_pos} low={low_pos}"
-        )
-
-    def test_top_offered_capped_at_5(self, home: Path) -> None:
-        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
-        for i in range(8):
-            _make_vault_task(
-                vault,
-                task_id=f"qqq-{i:03d}",
-                status="offered",
-                title=f"task-{i}",
-                wsjf=float(i),
-            )
-        result = _run(home)
-        # Only top 5 by wsjf should appear; tasks 7,6,5,4,3 (wsjf 7..3); not 2,1,0.
-        assert "qqq-007" in result.stdout
-        assert "qqq-003" in result.stdout
-        assert "qqq-002" not in result.stdout
-        assert "qqq-001" not in result.stdout
-
-    def test_no_offered_tasks_omits_section(self, home: Path) -> None:
-        result = _run(home)
-        # Should not see "Top offered" line if no offered tasks exist.
         assert "Top offered" not in result.stdout
+        assert "bbb-002" not in result.stdout
+        assert "await governed dispatch" in result.stdout
 
 
 class TestPlanningFeedDispatchBlock:
@@ -220,8 +192,9 @@ class TestPlanningFeedDispatchBlock:
     def test_ready_feed_surfaces_dispatch_and_planning_attention(self, home: Path) -> None:
         self._write_feed(home)
         result = _run(home)
-        assert "ELIGIBLE WORK (1 dispatchable, ranking wsjf_v0)" in result.stdout
-        assert "eligible-001 (WSJF 11.5, CASE-TEST-001)" in result.stdout
+        assert "DISPATCHABLE WORK: 1 item(s) exist" in result.stdout
+        assert "must wait for governed dispatch" in result.stdout
+        assert "eligible-001" not in result.stdout
         assert "PLANNING ATTENTION (1 items)" in result.stdout
         assert "REQ-NEEDS-CASE" in result.stdout
 
@@ -236,7 +209,7 @@ class TestPlanningFeedDispatchBlock:
         cache = home / ".cache" / "hapax"
         (cache / "cc-active-task-cx-red").write_text("already-claimed\n", encoding="utf-8")
         result = _run(home)
-        assert "ELIGIBLE WORK" not in result.stdout
+        assert "DISPATCHABLE WORK" not in result.stdout
         assert "PLANNING ATTENTION (1 items)" in result.stdout
 
     def test_stale_feed_escalates_to_unavailable(self, home: Path) -> None:
@@ -244,7 +217,7 @@ class TestPlanningFeedDispatchBlock:
         result = _run(home)
         assert "PLANNING FEED: unavailable" in result.stdout
         assert "timer investigation needed" in result.stdout
-        assert "ELIGIBLE WORK" not in result.stdout
+        assert "DISPATCHABLE WORK" not in result.stdout
 
 
 class TestVaultAbsent:

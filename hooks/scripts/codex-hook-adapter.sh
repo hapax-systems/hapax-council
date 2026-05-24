@@ -102,6 +102,13 @@ tool_kind() {
       printf 'mutation\n'
       return 0
       ;;
+    mcp__github__*)
+      if printf '%s' "$TOOL_NAME" | grep -Eiq \
+        '(create|update|delete|merge|push|commit|file|branch|tag|release|pull_request|issue_comment)'; then
+        printf 'mutation\n'
+        return 0
+      fi
+      ;;
   esac
   if printf '%s' "$INPUT" | jq -e '
     .tool_input as $ti |
@@ -157,6 +164,8 @@ run_pre_shell() {
   local hooks=(
     host-power-command-guard.sh
     cc-task-gate.sh
+    authorization-packet-validator.sh
+    pr-admission-gate.sh
     session-name-enforcement.sh
     axiom-commit-scan.sh
     pip-guard.sh
@@ -178,6 +187,7 @@ run_pre_mutation_event() {
   local event_json="$1"
   local hooks=(
     cc-task-gate.sh
+    authorization-packet-validator.sh
     axiom-scan.sh
     pipewire-graph-edit-gate.sh
     work-resolution-gate.sh

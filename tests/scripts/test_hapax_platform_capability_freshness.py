@@ -65,7 +65,7 @@ def test_json_reports_blocked_seed_registry_nonzero() -> None:
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     assert payload["ok"] is False
-    assert payload["route_count"] == 12
+    assert payload["route_count"] == len(load_platform_capability_registry().routes)
     assert payload["routes"][0]["route_id"] == "codex.headless.full"
     errors = "\n".join(payload["routes"][0]["errors"])
     assert "quota blocked: account_live_quota_receipt_absent" in errors

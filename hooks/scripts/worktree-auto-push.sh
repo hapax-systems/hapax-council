@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # worktree-auto-push.sh — git post-commit hook for worktree directories.
-# Auto-pushes commits to remote on non-main branches in worktree contexts.
-# Prevents subagent work loss when worktrees are cleaned up.
+# Historically auto-pushed commits to remote on non-main branches in worktree
+# contexts. That is now opt-in only: background push is a release-adjacent
+# mutation and must not bypass task/release gates by default.
 #
 # Install: ln -sf ~/projects/hapax-council/hooks/scripts/worktree-auto-push.sh \
 #          ~/projects/hapax-council/.git/hooks/post-commit
@@ -20,6 +21,11 @@ gitdir=$(git rev-parse --git-dir 2>/dev/null || true)
 commondir=$(git rev-parse --git-common-dir 2>/dev/null || true)
 [ -n "$gitdir" ] && [ -n "$commondir" ] || exit 0
 [ "$gitdir" != "$commondir" ] || exit 0
+
+if [ "${HAPAX_WORKTREE_AUTO_PUSH:-0}" != "1" ]; then
+  echo "worktree-auto-push: disabled by default for $branch; use governed git push" >&2
+  exit 0
+fi
 
 # Push in background — warn on failure, never block
 (

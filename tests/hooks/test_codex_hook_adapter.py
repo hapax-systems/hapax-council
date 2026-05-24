@@ -79,6 +79,7 @@ def test_shell_command_normalizes_to_bash_and_blocks_direct_pip(tmp_path: Path) 
             "tool_input": {"cmd": "pip install requests"},
         },
         home=tmp_path,
+        extra_env={"HAPAX_CC_TASK_GATE_OFF": "1"},
     )
     assert result["decision"] == "block"
     assert "pip" in result["reason"].lower()
@@ -112,7 +113,10 @@ def test_shell_command_runs_canonical_worktree_protect(tmp_path: Path) -> None:
         },
         home=tmp_path,
         cwd=REPO_ROOT,
-        extra_env={"HAPAX_CANONICAL_PATH_OVERRIDE": str(canonical)},
+        extra_env={
+            "HAPAX_CANONICAL_PATH_OVERRIDE": str(canonical),
+            "HAPAX_CC_TASK_GATE_OFF": "1",
+        },
     )
 
     assert result["decision"] == "block"
@@ -133,6 +137,57 @@ def test_task_gate_blocks_destructive_shell_without_claim(tmp_path: Path) -> Non
     )
 
     assert result["decision"] == "block"
+    assert "no claimed task" in result["reason"].lower()
+
+
+def test_authorization_validator_blocks_release_shell_without_claim_when_task_gate_disabled(
+    tmp_path: Path,
+) -> None:
+    result = _run_adapter(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "exec_command",
+            "tool_input": {"cmd": "git push -u origin HEAD"},
+        },
+        home=tmp_path,
+        extra_env={"HAPAX_CC_TASK_GATE_OFF": "1"},
+    )
+
+    assert result["decision"] == "block"
+    assert "authorization-packet-validator.sh" in result["reason"]
+    assert "no claimed task" in result["reason"].lower()
+
+
+def test_mcp_github_mutation_runs_task_gate(tmp_path: Path) -> None:
+    result = _run_adapter(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "mcp__github__create_pull_request",
+            "tool_input": {"owner": "hapax-systems", "repo": "hapax-council"},
+        },
+        home=tmp_path,
+    )
+
+    assert result["decision"] == "block"
+    assert "cc-task-gate.sh" in result["reason"]
+    assert "no claimed task" in result["reason"].lower()
+
+
+def test_mcp_github_issue_comment_runs_task_gate(tmp_path: Path) -> None:
+    result = _run_adapter(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "mcp__github__create_issue_comment",
+            "tool_input": {"owner": "hapax-systems", "repo": "hapax-council"},
+        },
+        home=tmp_path,
+    )
+
+    assert result["decision"] == "block"
+    assert "cc-task-gate.sh" in result["reason"]
     assert "no claimed task" in result["reason"].lower()
 
 

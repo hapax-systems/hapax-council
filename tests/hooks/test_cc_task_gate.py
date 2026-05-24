@@ -35,6 +35,9 @@ def _make_vault(
     assigned: str,
     task_id: str = "test-001",
     blocked_reason: str = "",
+    authority: bool = True,
+    source_authorized: bool = True,
+    runtime_authorized: bool = False,
 ) -> tuple[Path, Path]:
     """Build a fixture vault under tmp_path/Documents/Personal/20-projects/hapax-cc-tasks/.
     Returns (vault_root, note_path)."""
@@ -44,6 +47,20 @@ def _make_vault(
     note_dir.mkdir(parents=True, exist_ok=True)
     note = note_dir / f"{task_id}-test-task.md"
     blocked_line = f'\nblocked_reason: "{blocked_reason}"' if blocked_reason else ""
+    authority_block = ""
+    if authority:
+        authority_block = f"""
+parent_spec: {tmp_path / "parent-spec.md"}
+authority_case: CASE-TEST-001
+stage: S6_IMPLEMENTATION
+implementation_authorized: true
+source_mutation_authorized: {str(source_authorized).lower()}
+docs_mutation_authorized: true
+runtime_mutation_authorized: {str(runtime_authorized).lower()}
+route_metadata_schema: 1
+mutation_scope_refs:
+  - /tmp/x
+"""
     note.write_text(
         f"""---
 type: cc-task
@@ -54,6 +71,7 @@ assigned_to: {assigned}
 priority: normal{blocked_line}
 created_at: 2026-04-20T00:00:00Z
 updated_at: 2026-04-20T00:00:00Z
+{authority_block.rstrip()}
 ---
 
 # Fixture task
@@ -125,6 +143,16 @@ class TestNonMutatingToolsPassThrough:
         )
         assert result.returncode == 0
 
+    def test_readonly_bash_with_stderr_redirection_passes(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "git status --short 2>/dev/null"},
+            },
+            home=tmp_path,
+        )
+        assert result.returncode == 0
+
 
 class TestBypassEnvVar:
     def test_gate_off_allows_everything(self, tmp_path: Path) -> None:
@@ -153,6 +181,23 @@ class TestNoClaimFile:
         )
         assert result.returncode == 2
 
+    def test_python_heredoc_write_family_without_claim_rejects(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "python3 <<'PY'\nopen('/tmp/x','w').write('x')\nPY"},
+            },
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+
+    def test_sed_i_without_claim_rejects(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "sed -i 's/a/b/' file.txt"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+
 
 class TestStatusGating:
     def test_in_progress_allows(self, tmp_path: Path) -> None:
@@ -160,6 +205,108 @@ class TestStatusGating:
         _write_claim(tmp_path, "alpha", "test-001")
         result = _run_hook(
             {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr}"
+
+    def test_missing_authority_case_rejects_mutation(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="alpha", authority=False)
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+        assert "no authority_case" in result.stderr
+
+    def test_source_authorization_false_rejects_edit(self, tmp_path: Path) -> None:
+        _make_vault(
+            tmp_path,
+            status="in_progress",
+            assigned="alpha",
+            source_authorized=False,
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+        assert "does not authorize source mutation" in result.stderr
+
+    def test_runtime_command_requires_runtime_authorization(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "systemctl --user restart x"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+        assert "does not authorize runtime mutation" in result.stderr
+
+    def test_shell_source_mutation_without_path_is_blocked(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "sed -i 's/a/b/' /tmp/y"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+        assert "cannot verify mutation_scope_refs" in result.stderr
+
+    def test_git_commit_not_treated_as_unscoped_source_edit(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "git commit -m test"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr}"
+
+    def test_mcp_github_mutation_requires_claim(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {
+                "tool_name": "mcp__github__create_or_update_file",
+                "tool_input": {"path": "README.md"},
+            },
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+
+    def test_root_markdown_docs_edit_uses_docs_authorization(self, tmp_path: Path) -> None:
+        _, note = _make_vault(
+            tmp_path,
+            status="in_progress",
+            assigned="alpha",
+            source_authorized=False,
+        )
+        note.write_text(
+            note.read_text().replace(
+                "mutation_scope_refs:\n  - /tmp/x",
+                "mutation_scope_refs: [CONTRIBUTING.md]",
+            )
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "CONTRIBUTING.md"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr}"
+
+    def test_inline_relative_mutation_scope_allows_matching_file(self, tmp_path: Path) -> None:
+        _, note = _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        note.write_text(
+            note.read_text().replace(
+                "mutation_scope_refs:\n  - /tmp/x",
+                "mutation_scope_refs: [hooks/scripts/example.sh]",
+            )
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": "hooks/scripts/example.sh"},
+            },
             home=tmp_path,
         )
         assert result.returncode == 0, f"stderr={result.stderr}"
@@ -272,6 +419,23 @@ class TestAutoTransitionClaimed:
         assert "status: claimed" not in text
         # Session log got a transition entry.
         assert "hook transitioned claimed → in_progress" in text
+
+    def test_claimed_failed_authority_check_does_not_transition(self, tmp_path: Path) -> None:
+        _, note = _make_vault(
+            tmp_path,
+            status="claimed",
+            assigned="alpha",
+            authority=False,
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+        text = note.read_text()
+        assert "status: claimed" in text
+        assert "status: in_progress" not in text
 
 
 class TestVaultMissing:
