@@ -88,6 +88,16 @@ EndSection
 Section "ServerFlags"
     Option "AutoAddGPU" "false"
     Option "AutoBindGPU" "false"
+    Option "BlankTime" "0"
+    Option "StandbyTime" "0"
+    Option "SuspendTime" "0"
+    Option "OffTime" "0"
+    Option "NoPM" "true"
+EndSection
+
+Section "Monitor"
+    Identifier "darkplaces-monitor"
+    Option "DPMS" "false"
 EndSection
 
 Section "Device"
@@ -101,6 +111,7 @@ EndSection
 Section "Screen"
     Identifier "darkplaces-screen"
     Device "darkplaces-gpu"
+    Monitor "darkplaces-monitor"
     DefaultDepth 24
     SubSection "Display"
         Depth 24
@@ -134,6 +145,8 @@ sudo -n /usr/lib/Xorg "$DISPLAY_NUM" \
     -logfile "$XORG_LOG" \
     -noreset \
     -nolisten tcp \
+    -s 0 \
+    -dpms \
     +extension GLX \
     >"$WORK_DIR/xorg.stdout" 2>"$WORK_DIR/xorg.stderr" &
 xorg_pid="$!"

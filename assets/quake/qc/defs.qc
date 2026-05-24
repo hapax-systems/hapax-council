@@ -28,6 +28,7 @@ float(float v) floor = #37;
 float(float v) sin = #60;
 float(float v) cos = #61;
 float(float v) sqrt = #62;
+vector(vector v) vectoangles = #51;
 float(float v) fabs = #43;
 // asin not a Quake builtin — approximate in camera.qc
 void(float to, float f) WriteByte = #52;
@@ -74,18 +75,14 @@ float SOUNDFLAG_FORCELOOP = 1;
 entity aoa_entity;
 entity camera_entity;
 
-// Spline control points (Quake units, 32u = 1m)
-// Matches scene.rs SPIRAL_STATIONS
-vector STATION_0 = '0 -32 120';
-vector STATION_1 = '80 64 80';
-vector STATION_2 = '-60 160 100';
-vector STATION_3 = '40 256 -80';
-vector STATION_4 = '-40 352 60';
-vector STATION_5 = '0 -32 120';
-
-vector AOA_CENTER = '0 176 0';
+vector AOA_CENTER = '0 0 176';
+vector CAMERA_REVIEW_POS = '248 -176 248';
+vector CAMERA_REVIEW_TARGET = '0 0 160';
 
 float CAMERA_PERIOD;
+float CAMERA_ORBIT_PERIOD;
+float CAMERA_ORBIT_RADIUS;
+float CAMERA_ORBIT_TWO_PI;
 
 // Required entry points for DarkPlaces
 void() StartFrame;

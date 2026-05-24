@@ -1,5 +1,5 @@
 [Unit]
-Description=Hapax DarkPlaces headless v4l2 renderer feed
+Description=Hapax DarkPlaces visible v4l2 renderer feed
 After=graphical-session.target
 PartOf=hapax-visual-stack.target
 # Runtime containment, 2026-05-23: opt-in only until the renderer feed is
@@ -9,16 +9,18 @@ ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 [Service]
 Type=simple
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
-ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/darkplaces-v4l2-xorg.sh --require-file assets/quake/maps/screwm-rnd.bsp
-ExecStart=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/worktree/scripts/darkplaces-v4l2-xorg.sh"'
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/darkplaces-v4l2-xvfb.sh --require-file assets/quake/maps/screwm-rnd.bsp
+ExecStart=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/worktree/scripts/darkplaces-v4l2-xvfb.sh"'
 Restart=always
 RestartSec=3
 MemoryMax=2G
 Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52
-Environment=HAPAX_DARKPLACES_XORG_BUS_ID=PCI:5:0:0
 Environment=HAPAX_DARKPLACES_DISPLAY=:82
-Environment=HAPAX_DARKPLACES_EXPECTED_GPU_INDEX=1
-Environment="HAPAX_DARKPLACES_EXPECTED_GL_RENDERER=NVIDIA GeForce RTX 5060 Ti"
+# Dedicated NVIDIA Xorg currently opens a 5060 Ti GL context but x11grab reads
+# a black framebuffer. Use the Xvfb route that produces observable frames until
+# the GPU-pinned capture path has a fresh nonblack witness.
+Environment=HAPAX_DARKPLACES_EXPECTED_GPU_INDEX=0
+Environment="HAPAX_DARKPLACES_EXPECTED_GL_RENDERER=NVIDIA GeForce RTX 5090"
 Environment=DARKPLACES_WIDTH=1280
 Environment=DARKPLACES_HEIGHT=720
 Environment=DARKPLACES_FPS=30

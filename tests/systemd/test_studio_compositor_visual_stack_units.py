@@ -20,6 +20,11 @@ REVERIE = UNITS_DIR / "hapax-reverie.service"
 PARAMETRIC_HEARTBEAT = UNITS_DIR / "hapax-parametric-modulation-heartbeat.service"
 LAYOUT_MODE_DROPIN = UNITS_DIR / "studio-compositor.service.d" / "layout-mode-persist.conf"
 MALLOC_ARENA_DROPIN = UNITS_DIR / "studio-compositor.service.d" / "malloc-arena.conf"
+SCREWM_QUAKE_DROPIN = UNITS_DIR / "studio-compositor.service.d" / "zzzz-screwm-quake-primary.conf"
+SCREWM_V4L2_BRIDGE_DROPIN = (
+    UNITS_DIR / "hapax-v4l2-bridge.service.d" / "zzzz-screwm-quake-primary.conf"
+)
+OBS_YUYV_BRIDGE = UNITS_DIR / "hapax-obs-video50-yuyv-compat-bridge.service"
 SOURCE_ROOT = "%h/.cache/hapax/source-activation/worktree"
 
 
@@ -102,6 +107,68 @@ def test_studio_compositor_starts_bridge_sidecar() -> None:
     assert "hapax-video42-format-guard.service" in requires
     assert "hapax-video42-format-guard.service" in after
     assert "hapax-hls-no-cache.service" in after
+
+
+def test_screwm_quake_primary_profile_bypasses_legacy_visual_chrome() -> None:
+    parser = _load_unit(SCREWM_QUAKE_DROPIN)
+    lines = _active_unit_lines(SCREWM_QUAKE_DROPIN)
+
+    assert "hapax-obs-video50-yuyv-compat-bridge.service" in parser.get("Unit", "Wants")
+    assert parser.get("Service", "ExecStart").endswith(
+        ".venv/bin/python -m agents.studio_compositor --no-record --no-hls"
+    )
+    for expected in (
+        "Environment=HAPAX_3D_COMPOSITOR=0",
+        "Environment=HAPAX_V4L2_BRIDGE_ENABLED=1",
+        "Environment=HAPAX_DARKPLACES_BACKGROUND_ONLY=1",
+        "Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52",
+        "Environment=HAPAX_COMPOSITOR_DISABLE_INLINE_FX=1",
+        "Environment=HAPAX_SIERPINSKI_BASE_OVERLAY_ENABLED=0",
+        "Environment=HAPAX_SIERPINSKI_LAYOUT_SOURCE_ENABLED=0",
+        "Environment=HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED=0",
+        "Environment=HAPAX_PRE_FX_LAYOUT_BACKGROUND_COMPOSITE_ENABLED=0",
+        "Environment=HAPAX_OVERLAY_ZONE_MANAGER_DRAW_ENABLED=0",
+        "Environment=HAPAX_GEM_SUBSTRATE_ENABLED=0",
+        "Environment=HAPAX_GEAL_ENABLED=0",
+        "Environment=HAPAX_DIRECTOR_SEGMENT_RUNNER_DISABLED=1",
+        "Environment=HAPAX_LORE_CHRONICLE_TICKER_ENABLED=0",
+        "Environment=HAPAX_LORE_PROGRAMME_STATE_ENABLED=0",
+    ):
+        assert expected in lines
+
+
+def test_screwm_v4l2_bridge_profile_matches_runtime_format_contract() -> None:
+    lines = _active_unit_lines(SCREWM_V4L2_BRIDGE_DROPIN)
+
+    for expected in (
+        "TimeoutStartSec=120s",
+        "Environment=HAPAX_V4L2_BRIDGE_ENABLED=1",
+        "Environment=HAPAX_V4L2_BRIDGE_WIDTH=640",
+        "Environment=HAPAX_V4L2_BRIDGE_HEIGHT=480",
+        "Environment=HAPAX_V4L2_BRIDGE_RAW_FORMAT=BGRx",
+        "Environment=HAPAX_V4L2_BRIDGE_PIXEL_FORMAT=BGR4",
+        "Environment=HAPAX_V4L2_BRIDGE_WAIT_SECONDS=90",
+        "Environment=HAPAX_V4L2_VIDEO42_PIXEL_FORMAT=BGR4",
+    ):
+        assert expected in lines
+
+
+def test_obs_yuyv_bridge_is_guarded_and_conflicts_with_old_video50_writer() -> None:
+    parser = _load_unit(OBS_YUYV_BRIDGE)
+
+    assert parser.get("Unit", "ConditionPathExists") == "/usr/bin/ffmpeg"
+    unit_lines = _active_unit_lines(OBS_YUYV_BRIDGE)
+    assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in unit_lines
+    assert "ConditionPathExists=/dev/video42" in unit_lines
+    assert "ConditionPathExists=/dev/video50" in unit_lines
+    assert parser.get("Unit", "Conflicts") == "studio-fx-output.service"
+    assert parser.get("Unit", "PartOf") == (
+        "studio-compositor.service hapax-v4l2-bridge.service hapax-visual-stack.target"
+    )
+    exec_start = parser.get("Service", "ExecStart")
+    assert "-i /dev/video42" in exec_start
+    assert "-pix_fmt yuyv422 /dev/video50" in exec_start
+    assert parser.get("Install", "WantedBy") == "hapax-visual-stack.target"
 
 
 def test_video42_format_guard_runs_from_activation_worktree() -> None:

@@ -71,7 +71,7 @@ void() ClientKill = {};
 void() ClientConnect = {};
 void() PutClientInServer =
 {
-    setorigin(self, '0 -32 120');
+    setorigin(self, CAMERA_REVIEW_POS);
     self.movetype = MOVETYPE_NONE;
     self.solid = SOLID_NOT;
 };

@@ -10,7 +10,10 @@ float coupling_mode_check_next;
 
 void() coupling_init =
 {
-    CAMERA_PERIOD = 135.0;
+    CAMERA_PERIOD = 0;
+    CAMERA_ORBIT_PERIOD = 360.0;
+    CAMERA_ORBIT_RADIUS = 220.0;
+    CAMERA_ORBIT_TWO_PI = 6.283185;
     coupling_poll_interval = 1.0;
     coupling_energy = 0.5;
     coupling_voice_active = 0;
@@ -50,9 +53,6 @@ void() coupling_read_voice =
 
 void() coupling_apply_stimmung =
 {
-    // Camera period: 120s at high energy, 150s at low energy
-    CAMERA_PERIOD = 120 + (1.0 - coupling_energy) * 30.0;
-
     // AoA rotation speed: faster with voice activity
     if (aoa_entity)
     {
