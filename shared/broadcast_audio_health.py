@@ -833,7 +833,8 @@ def _evaluate_egress_loopback(
         return
 
     if witness.silence_ratio > thresholds.silence_ratio_max:
-        reason = AudioHealthReason(
+        _block(
+            blocking,
             code="egress_loopback_silent",
             owner=str(path),
             message=(
@@ -843,10 +844,6 @@ def _evaluate_egress_loopback(
             ),
             evidence_refs=("egress_loopback",),
         )
-        if thresholds.mpc_hardware_ducking:
-            warnings.append(reason)
-        else:
-            blocking.append(reason)
         return
 
     if witness.rms_dbfs < thresholds.rms_dbfs_floor:
@@ -898,10 +895,7 @@ def _evaluate_health_predicate_drift(
         message="loudness and egress loopback evidence disagree about public audio",
         evidence_refs=("loudness", "egress_loopback", "health_predicate_drift"),
     )
-    if mpc_hardware_ducking and warnings is not None:
-        warnings.append(reason)
-    else:
-        blocking.append(reason)
+    blocking.append(reason)
 
 
 def _evaluate_runtime_safety(
