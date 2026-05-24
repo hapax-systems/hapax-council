@@ -17,8 +17,9 @@ Graph::
 
     interpipesrc(listen-to="compositor_v4l2_out")
       → queue(leaky=downstream, max-size-buffers=5)
+      → videoscale
       → videoconvert
-      → capsfilter(video/x-raw,format=NV12,width×height,fps)
+      → capsfilter(video/x-raw,format=FORMAT,width×height,fps)
       → shmsink(socket-path=..., shm-size=..., wait-for-connection=False)
 """
 
@@ -37,8 +38,13 @@ INTERPIPE_CHANNEL = "compositor_v4l2_out"
 DEFAULT_SOCKET = "/dev/shm/hapax-compositor/v4l2-bridge.sock"
 BRIDGE_ENABLED_ENV = "HAPAX_V4L2_BRIDGE_ENABLED"
 V4L2_OUTPUT_DISABLED_ENV = "HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT"
+BRIDGE_WIDTH_ENV = "HAPAX_V4L2_BRIDGE_WIDTH"
+BRIDGE_HEIGHT_ENV = "HAPAX_V4L2_BRIDGE_HEIGHT"
+BRIDGE_FPS_ENV = "HAPAX_V4L2_BRIDGE_FPS"
+BRIDGE_RAW_FORMAT_ENV = "HAPAX_V4L2_BRIDGE_RAW_FORMAT"
 SNAPSHOT_DIR = Path("/dev/shm/hapax-compositor")
 _DEFAULT_PROOF_SNAPSHOT_INTERVAL_S = 1.0
+_DEFAULT_RAW_FORMAT = "NV12"
 
 
 def _set_optional_property(element: Any, name: str, value: Any) -> None:
@@ -56,6 +62,61 @@ def is_v4l2_output_disabled() -> bool:
     return os.environ.get(V4L2_OUTPUT_DISABLED_ENV, "") == "1"
 
 
+def _env_positive_int(name: str, fallback: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return fallback
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("invalid %s=%r; using %s", name, raw, fallback)
+        return fallback
+    if value <= 0:
+        log.warning("non-positive %s=%r; using %s", name, raw, fallback)
+        return fallback
+    return value
+
+
+def _frame_size_bytes(raw_format: str, width: int, height: int) -> int:
+    fmt = raw_format.upper()
+    pixels = width * height
+    if fmt in {"NV12", "I420", "YV12"}:
+        return pixels * 3 // 2
+    if fmt in {"BGRX", "BGRA", "RGBX", "RGBA", "XBGR", "ABGR", "XRGB", "ARGB"}:
+        return pixels * 4
+    if fmt in {"BGR", "RGB"}:
+        return pixels * 3
+    raise ValueError(f"unsupported shmsink raw format: {raw_format}")
+
+
+def _raw_frame_to_bgr(data: bytes, raw_format: str, width: int, height: int) -> Any:
+    import cv2
+    import numpy as np
+
+    fmt = raw_format.upper()
+    expected = _frame_size_bytes(raw_format, width, height)
+    if len(data) < expected:
+        raise ValueError(
+            f"{raw_format} frame too small for proof snapshot: got {len(data)}, expected {expected}"
+        )
+    payload = data[:expected]
+    if fmt == "NV12":
+        nv12 = np.frombuffer(payload, dtype=np.uint8).reshape((height * 3 // 2, width))
+        return cv2.cvtColor(nv12, cv2.COLOR_YUV2BGR_NV12)
+    if fmt in {"BGRX", "BGRA"}:
+        bgra = np.frombuffer(payload, dtype=np.uint8).reshape((height, width, 4))
+        return bgra[:, :, :3]
+    if fmt in {"RGBX", "RGBA"}:
+        rgba = np.frombuffer(payload, dtype=np.uint8).reshape((height, width, 4))
+        return cv2.cvtColor(rgba[:, :, :3], cv2.COLOR_RGB2BGR)
+    if fmt == "BGR":
+        return np.frombuffer(payload, dtype=np.uint8).reshape((height, width, 3))
+    if fmt == "RGB":
+        rgb = np.frombuffer(payload, dtype=np.uint8).reshape((height, width, 3))
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    raise ValueError(f"unsupported proof snapshot raw format: {raw_format}")
+
+
 class ShmsinkOutputPipeline:
     def __init__(
         self,
@@ -64,15 +125,17 @@ class ShmsinkOutputPipeline:
         width: int,
         height: int,
         fps: int,
+        raw_format: str | None = None,
         socket_path: str | None = None,
         on_frame: Any | None = None,
         proof_snapshot_path: str | os.PathLike[str] | None = None,
         proof_snapshot_interval_s: float | None = None,
     ) -> None:
         self._Gst = gst
-        self._width = width
-        self._height = height
-        self._fps = fps
+        self._width = _env_positive_int(BRIDGE_WIDTH_ENV, width)
+        self._height = _env_positive_int(BRIDGE_HEIGHT_ENV, height)
+        self._fps = _env_positive_int(BRIDGE_FPS_ENV, fps)
+        self._raw_format = raw_format or os.environ.get(BRIDGE_RAW_FORMAT_ENV, _DEFAULT_RAW_FORMAT)
         self._socket_path = socket_path or os.environ.get(
             "HAPAX_V4L2_BRIDGE_SOCKET", DEFAULT_SOCKET
         )
@@ -140,10 +203,13 @@ class ShmsinkOutputPipeline:
                 raise RuntimeError("capsfilter factory failed")
             rate_caps.set_property(
                 "caps",
-                Gst.Caps.from_string(
-                    f"video/x-raw,width={self._width},height={self._height},framerate={self._fps}/1"
-                ),
+                Gst.Caps.from_string(f"video/x-raw,framerate={self._fps}/1"),
             )
+
+            scale = Gst.ElementFactory.make("videoscale", "shm_out_scale")
+            if scale is None:
+                raise RuntimeError("videoscale factory failed")
+            scale.set_property("add-borders", True)
 
             convert = Gst.ElementFactory.make("videoconvert", "shm_out_convert")
             convert.set_property("dither", 0)
@@ -152,13 +218,13 @@ class ShmsinkOutputPipeline:
             caps.set_property(
                 "caps",
                 Gst.Caps.from_string(
-                    f"video/x-raw,format=NV12,"
+                    f"video/x-raw,format={self._raw_format},"
                     f"width={self._width},height={self._height},"
                     f"framerate={self._fps}/1"
                 ),
             )
 
-            frame_bytes = self._width * self._height * 3 // 2
+            frame_bytes = _frame_size_bytes(self._raw_format, self._width, self._height)
             shm_size = frame_bytes * 8
 
             sink = Gst.ElementFactory.make("shmsink", "shm_output")
@@ -169,12 +235,13 @@ class ShmsinkOutputPipeline:
             sink.set_property("wait-for-connection", False)
             sink.set_property("sync", False)
 
-            for el in (src, queue, rate, rate_caps, convert, caps, sink):
+            for el in (src, queue, rate, rate_caps, scale, convert, caps, sink):
                 pipeline.add(el)
             src.link(queue)
             queue.link(rate)
             rate.link(rate_caps)
-            rate_caps.link(convert)
+            rate_caps.link(scale)
+            scale.link(convert)
             convert.link(caps)
             caps.link(sink)
 
@@ -221,20 +288,11 @@ class ShmsinkOutputPipeline:
         thread.start()
 
     def _write_proof_snapshot_jpeg(self, data: bytes) -> None:
-        """Write final-egress proof JPEG from the exact NV12 frame sent to shmsink."""
+        """Write final-egress proof JPEG from the exact frame sent to shmsink."""
         try:
             import cv2
-            import numpy as np
 
-            expected = self._width * self._height * 3 // 2
-            if len(data) < expected:
-                raise ValueError(
-                    f"NV12 frame too small for proof snapshot: got {len(data)}, expected {expected}"
-                )
-            nv12 = np.frombuffer(data[:expected], dtype=np.uint8).reshape(
-                (self._height * 3 // 2, self._width)
-            )
-            bgr = cv2.cvtColor(nv12, cv2.COLOR_YUV2BGR_NV12)
+            bgr = _raw_frame_to_bgr(data, self._raw_format, self._width, self._height)
             ok, encoded = cv2.imencode(
                 ".jpg",
                 bgr,

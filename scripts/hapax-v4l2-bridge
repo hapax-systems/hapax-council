@@ -20,6 +20,8 @@ SOCKET="${HAPAX_V4L2_BRIDGE_SOCKET:-/dev/shm/hapax-compositor/v4l2-bridge.sock}"
 WIDTH="${HAPAX_V4L2_BRIDGE_WIDTH:-1280}"
 HEIGHT="${HAPAX_V4L2_BRIDGE_HEIGHT:-720}"
 FPS="${HAPAX_V4L2_BRIDGE_FPS:-30}"
+RAW_FORMAT="${HAPAX_V4L2_BRIDGE_RAW_FORMAT:-NV12}"
+PIXEL_FORMAT="${HAPAX_V4L2_BRIDGE_PIXEL_FORMAT:-${HAPAX_V4L2_VIDEO42_PIXEL_FORMAT:-$RAW_FORMAT}}"
 CHECK_ONLY=false
 ALLOW_MISSING_SOCKET=false
 WAIT_SECONDS="${HAPAX_V4L2_BRIDGE_WAIT_SECONDS:-60}"
@@ -32,6 +34,8 @@ while [[ $# -gt 0 ]]; do
         --width)   WIDTH="$2"; shift 2 ;;
         --height)  HEIGHT="$2"; shift 2 ;;
         --fps)     FPS="$2"; shift 2 ;;
+        --raw-format) RAW_FORMAT="$2"; shift 2 ;;
+        --v4l2-pixelformat|--pixelformat) PIXEL_FORMAT="$2"; shift 2 ;;
         --check)   CHECK_ONLY=true; shift ;;
         --allow-missing-socket) ALLOW_MISSING_SOCKET=true; shift ;;
         *)         echo "error: unknown argument: $1" >&2; exit 2 ;;
@@ -154,7 +158,8 @@ fi
 echo "hapax-v4l2-bridge: starting"
 echo "  device: $DEVICE"
 echo "  socket: $SOCKET"
-echo "  format: ${WIDTH}x${HEIGHT}@${FPS}fps NV12"
+echo "  shmsrc format: ${WIDTH}x${HEIGHT}@${FPS}fps ${RAW_FORMAT}"
+echo "  v4l2 pixelformat: ${PIXEL_FORMAT}"
 
 # Wait for the compositor to create and listen on the exact socket. A stale
 # socket file can survive a crash; shmsink then creates .0/.1 siblings and the
@@ -182,7 +187,7 @@ if [[ -x "$FORMAT_GUARD" ]]; then
         --device "$DEVICE" \
         --width "$WIDTH" \
         --height "$HEIGHT" \
-        --pixelformat NV12 \
+        --pixelformat "$PIXEL_FORMAT" \
         --fps "$FPS"
 else
     echo "error: v4l2 format guard missing or not executable: $FORMAT_GUARD" >&2
@@ -199,4 +204,6 @@ exec python -m agents.studio_compositor.v4l2_shm_bridge \
     --width "$WIDTH" \
     --height "$HEIGHT" \
     --fps "$FPS" \
+    --raw-format "$RAW_FORMAT" \
+    --v4l2-pixelformat "$PIXEL_FORMAT" \
     --wait-seconds "$WAIT_SECONDS"

@@ -36,6 +36,23 @@ def test_bridge_config_declares_nv12_caps(tmp_path: Path) -> None:
     assert config.caps == "video/x-raw,format=NV12,width=1280,height=720,framerate=30/1"
 
 
+def test_bridge_config_declares_bgrx_caps_for_bgr4_v4l2(tmp_path: Path) -> None:
+    config = BridgeConfig(
+        device=str(tmp_path / "video42"),
+        socket_path=str(tmp_path / "bridge.sock"),
+        width=640,
+        height=480,
+        fps=30,
+        wait_seconds=1,
+        metrics_path=tmp_path / "bridge.prom",
+        raw_format="BGRx",
+        v4l2_pixelformat="BGR4",
+    )
+
+    assert config.caps == "video/x-raw,format=BGRx,width=640,height=480,framerate=30/1"
+    assert config.v4l2_pixelformat == "BGR4"
+
+
 def test_write_frame_uses_existing_fd_without_copy(tmp_path: Path) -> None:
     bridge = _bridge(tmp_path)
     bridge._fd = 999
@@ -76,5 +93,49 @@ def test_open_fd_enforces_format_before_open(tmp_path: Path) -> None:
                 assert bridge._open_fd()
                 bridge._close_fd()
 
-    guard.assert_called_once()
+    guard.assert_called_once_with(
+        device=str(tmp_path / "video42"),
+        width=1280,
+        height=720,
+        fps=30,
+        pixelformat="NV12",
+    )
+    open_fd.assert_called_once_with(str(tmp_path / "video42"), os.O_WRONLY | os.O_NONBLOCK)
+
+
+def test_open_fd_enforces_configured_bgr4_pixelformat(tmp_path: Path) -> None:
+    gst = MagicMock()
+    glib = MagicMock()
+    bridge = ShmToV4l2Bridge(
+        BridgeConfig(
+            device=str(tmp_path / "video42"),
+            socket_path=str(tmp_path / "bridge.sock"),
+            width=640,
+            height=480,
+            fps=30,
+            wait_seconds=1,
+            metrics_path=tmp_path / "bridge.prom",
+            raw_format="BGRx",
+            v4l2_pixelformat="BGR4",
+        ),
+        gst,
+        glib,
+    )
+
+    with patch(
+        "agents.studio_compositor.v4l2_shm_bridge._enforce_v4l2_output_format",
+        return_value=True,
+    ) as guard:
+        with patch("os.open", return_value=123) as open_fd:
+            with patch("os.close"):
+                assert bridge._open_fd()
+                bridge._close_fd()
+
+    guard.assert_called_once_with(
+        device=str(tmp_path / "video42"),
+        width=640,
+        height=480,
+        fps=30,
+        pixelformat="BGR4",
+    )
     open_fd.assert_called_once_with(str(tmp_path / "video42"), os.O_WRONLY | os.O_NONBLOCK)
