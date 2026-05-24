@@ -86,8 +86,9 @@ def test_gamepad_state_writes_headless_camera_files(tmp_path: Path) -> None:
     state.write(tmp_path)
 
     assert (tmp_path / "camera-manual.txt").read_text(encoding="utf-8").strip() == "1.0000"
-    assert (tmp_path / "camera-pan-x.txt").read_text(encoding="utf-8").strip() != "0.5000"
-    assert (tmp_path / "camera-yaw.txt").read_text(encoding="utf-8").strip() != "0.5000"
+    assert (tmp_path / "camera-origin-x.txt").read_text(encoding="utf-8").strip() != "-244.0000"
+    assert (tmp_path / "camera-yaw.txt").read_text(encoding="utf-8").strip() != "29.8500"
+    assert (tmp_path / "camera-pitch.txt").exists()
     assert "axis:3" in (tmp_path / "camera-debug.txt").read_text(encoding="utf-8")
 
     state.update_button(1, 1)
@@ -104,5 +105,5 @@ def test_gamepad_camera_motion_is_visible_enough_for_live_pov() -> None:
     state.update_axis(3, 32767)
     state.tick(1.0)
 
-    assert state.pan_x >= 0.95
-    assert state.yaw >= 0.95
+    assert abs(state.origin_x + 244) + abs(state.origin_y + 500) > 400
+    assert state.yaw > 130

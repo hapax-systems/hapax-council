@@ -24,6 +24,22 @@ float(string path, float fallback) camera_read_norm =
     return val;
 };
 
+float(string path, float fallback) camera_read_float =
+{
+    float fh;
+    string line;
+
+    fh = fopen(path, FILE_READ);
+    if (fh < 0)
+        return fallback;
+    line = fgets(fh);
+    fclose(fh);
+    if (!line)
+        return fallback;
+
+    return stof(line);
+};
+
 vector camera_look_angles(vector pos, vector target)
 {
     vector ang;
@@ -42,53 +58,31 @@ vector camera_orbit_position(float phase)
     return pos;
 };
 
-vector() camera_file_target =
-{
-    vector target;
-    float pan_x;
-    float pan_y;
-    float target_z_norm;
-
-    pan_x = camera_read_norm("data/camera-pan-x.txt", 0.5);
-    pan_y = camera_read_norm("data/camera-pan-y.txt", 0.5);
-    target_z_norm = camera_read_norm("data/camera-target-z.txt", 0.475);
-
-    target = CAMERA_REVIEW_TARGET;
-    target_x = target_x + (pan_x - 0.5) * 160;
-    target_y = target_y + (pan_y - 0.5) * 120;
-    target_z = 40 + target_z_norm * 240;
-    return target;
-};
-
-vector(vector target) camera_file_position =
+vector() camera_file_position =
 {
     vector pos;
-    float yaw_norm;
-    float dist_norm;
-    float height_norm;
-    float yaw;
-    float dist;
 
-    yaw_norm = camera_read_norm("data/camera-yaw.txt", 0.5);
-    dist_norm = camera_read_norm("data/camera-distance.txt", 0.54);
-    height_norm = camera_read_norm("data/camera-height.txt", 0.384);
-
-    yaw = (yaw_norm - 0.5) * 2.2;
-    dist = 150 + dist_norm * 190;
-
-    pos_x = target_x + sin(yaw) * dist;
-    pos_y = target_y - cos(yaw) * dist;
-    pos_z = 58 + height_norm * 250;
+    pos_x = camera_read_float("data/camera-origin-x.txt", CAMERA_REVIEW_POS_x);
+    pos_y = camera_read_float("data/camera-origin-y.txt", CAMERA_REVIEW_POS_y);
+    pos_z = camera_read_float("data/camera-origin-z.txt", CAMERA_REVIEW_POS_z);
     return pos;
+};
+
+vector() camera_file_angles =
+{
+    vector angles;
+
+    angles_x = camera_read_float("data/camera-pitch.txt", 11.5);
+    angles_y = camera_read_float("data/camera-yaw.txt", 29.85);
+    angles_z = 0;
+    return angles;
 };
 
 void() camera_apply_file_fov =
 {
-    float fov_norm;
     float fov_value;
 
-    fov_norm = camera_read_norm("data/camera-fov.txt", 0.78);
-    fov_value = 55 + fov_norm * 45;
+    fov_value = camera_read_float("data/camera-fov.txt", 76);
     localcmd(strcat(strcat("fov ", ftos(fov_value)), "\n"));
 };
 
@@ -96,15 +90,19 @@ void() camera_think =
 {
     vector pos;
     vector target;
+    vector freecam_angles;
+    float use_angles;
 
     target = CAMERA_REVIEW_TARGET;
+    use_angles = 0;
     if (
         cvar("screwm_camera_file_control") > 0
         && camera_read_norm("data/camera-manual.txt", 0) > 0
     )
     {
-        target = camera_file_target();
-        pos = camera_file_position(target);
+        pos = camera_file_position();
+        freecam_angles = camera_file_angles();
+        use_angles = 1;
         camera_apply_file_fov();
         camera_phase = 0;
     }
@@ -122,7 +120,10 @@ void() camera_think =
     }
 
     setorigin(self, pos);
-    self.angles = camera_look_angles(pos, target);
+    if (use_angles)
+        self.angles = freecam_angles;
+    else
+        self.angles = camera_look_angles(pos, target);
     self.nextthink = time + 0.0333;
 };
 

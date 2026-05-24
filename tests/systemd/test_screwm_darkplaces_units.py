@@ -133,6 +133,9 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     assert 'if (cvar("screwm_camera_orbit") > 0)' in camera
     assert 'cvar("screwm_camera_file_control") > 0' in camera
     assert 'camera_read_norm("data/camera-manual.txt", 0) > 0' in camera
+    assert 'camera_read_float("data/camera-origin-x.txt"' in camera
+    assert 'camera_read_float("data/camera-pitch.txt"' in camera
+    assert 'camera_read_float("data/camera-yaw.txt"' in camera
     assert "camera_apply_file_fov();" in camera
     assert "pos = CAMERA_REVIEW_POS;" in camera
     assert "CAMERA_ORBIT_PERIOD = 360.0;" in coupling

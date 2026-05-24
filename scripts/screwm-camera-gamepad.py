@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Headless Xbox/gamepad camera bridge for Screwm DarkPlaces.
+"""Headless Xbox/gamepad freecam bridge for Screwm DarkPlaces.
 
-Reads Linux joystick events from /dev/input/js* and writes normalized camera
-control scalars into the DarkPlaces game data directory. QuakeC reads these
-files in headless mode, so OBS preview control does not depend on keyboard
-focus in a visible DarkPlaces window.
+Reads Linux joystick events from /dev/input/js* and writes a noclip freecam
+pose into the DarkPlaces game data directory. CSQC reads these files in
+headless mode, so OBS preview control does not depend on keyboard focus in a
+visible DarkPlaces window.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import select
 import signal
@@ -27,10 +28,19 @@ EVENT = struct.Struct("IhBB")
 
 DEFAULT_GAME_DIR = Path.home() / ".darkplaces" / "screwm" / "data"
 PREFERRED_DEVICE_WORDS = ("xbox", "microsoft", "xinput")
+DEFAULT_ORIGIN = (-244.0, -500.0, 204.0)
+DEFAULT_YAW = 29.85
+DEFAULT_PITCH = 11.5
+DEFAULT_FOV = 76.0
+MANUAL_HOLD_SECONDS = 6.0
 
 
 def clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
+
+
+def clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
 
 
 def normalize_axis(value: int, *, deadzone: float = 0.12) -> float:
@@ -94,46 +104,58 @@ def choose_device(
 @dataclass
 class CameraState:
     manual: bool = False
-    pan_x: float = 0.5
-    pan_y: float = 0.5
-    target_z: float = 0.475
-    yaw: float = 0.5
-    distance: float = 0.54
-    height: float = 0.384
-    fov: float = 0.78
+    origin_x: float = DEFAULT_ORIGIN[0]
+    origin_y: float = DEFAULT_ORIGIN[1]
+    origin_z: float = DEFAULT_ORIGIN[2]
+    yaw: float = DEFAULT_YAW
+    pitch: float = DEFAULT_PITCH
+    fov: float = DEFAULT_FOV
     axes: dict[int, float] = field(default_factory=dict)
     buttons: dict[int, int] = field(default_factory=dict)
     event_count: int = 0
     last_event: str = "none"
+    manual_until: float = 0.0
 
     def reset(self) -> None:
         self.manual = False
-        self.pan_x = 0.5
-        self.pan_y = 0.5
-        self.target_z = 0.475
-        self.yaw = 0.5
-        self.distance = 0.54
-        self.height = 0.384
-        self.fov = 0.78
+        self.origin_x, self.origin_y, self.origin_z = DEFAULT_ORIGIN
+        self.yaw = DEFAULT_YAW
+        self.pitch = DEFAULT_PITCH
+        self.fov = DEFAULT_FOV
+        self.manual_until = 0.0
 
-    def update_button(self, number: int, value: int) -> None:
+    def activate_manual(self, now: float | None = None) -> None:
+        self.manual = True
+        if now is not None:
+            self.manual_until = now + MANUAL_HOLD_SECONDS
+
+    def update_button(self, number: int, value: int, *, now: float | None = None) -> None:
         self.buttons[number] = value
         self.event_count += 1
         self.last_event = f"button:{number}:{value}"
         if value <= 0:
             return
         if number == 0:  # A
-            self.manual = True
+            self.activate_manual(now)
         elif number == 1:  # B
             self.reset()
-        elif number == 2:  # X
+        elif number == 2:  # X recenters but keeps manual takeover active.
             was_manual = self.manual
             self.reset()
             self.manual = was_manual
+            if was_manual:
+                self.activate_manual(now)
         elif number == 7:  # Start/Menu
-            self.manual = True
+            self.activate_manual(now)
 
-    def update_axis(self, number: int, value: int, *, activate: bool = True) -> None:
+    def update_axis(
+        self,
+        number: int,
+        value: int,
+        *,
+        activate: bool = True,
+        now: float | None = None,
+    ) -> None:
         if number in (2, 5):
             self.axes[number] = trigger_value(value)
         else:
@@ -141,9 +163,9 @@ class CameraState:
         self.event_count += 1
         self.last_event = f"axis:{number}:{self.axes[number]:.3f}"
         if activate and abs(self.axes[number]) > 0.01:
-            self.manual = True
+            self.activate_manual(now)
 
-    def tick(self, dt: float) -> None:
+    def tick(self, dt: float, *, now: float | None = None) -> None:
         left_x = self.axes.get(0, 0.0)
         left_y = self.axes.get(1, 0.0)
         right_x = self.axes.get(3, 0.0)
@@ -153,32 +175,63 @@ class CameraState:
         lt = self.axes.get(2, 0.0)
         rt = self.axes.get(5, 0.0)
 
-        self.pan_x = clamp01(self.pan_x + left_x * dt * 0.70)
-        self.target_z = clamp01(self.target_z - left_y * dt * 0.54)
-        self.yaw = clamp01(self.yaw + right_x * dt * 0.58)
-        self.height = clamp01(self.height - right_y * dt * 0.46)
-        self.pan_y = clamp01(self.pan_y + dpad_y * dt * 0.36)
-        self.fov = clamp01(self.fov + dpad_x * dt * 0.34)
-        self.distance = clamp01(self.distance + (rt - lt) * dt * 0.50)
+        if now is not None and self.manual and self.manual_until and now > self.manual_until:
+            self.manual = False
 
-        if self.buttons.get(4):  # LB narrows
-            self.fov = clamp01(self.fov - dt * 0.26)
-        if self.buttons.get(5):  # RB widens
-            self.fov = clamp01(self.fov + dt * 0.26)
+        if not self.manual:
+            return
+
+        self.yaw = (self.yaw + right_x * dt * 105.0) % 360.0
+        self.pitch = clamp(self.pitch + right_y * dt * 82.0, -78.0, 78.0)
+
+        yaw_rad = math.radians(self.yaw)
+        forward = -left_y
+        side = left_x
+        lift = rt - lt
+        speed = 420.0
+        if self.buttons.get(4):  # LB slows for inspection.
+            speed = 150.0
+        if self.buttons.get(5):  # RB speeds traversal.
+            speed = 760.0
+
+        self.origin_x += (math.cos(yaw_rad) * forward - math.sin(yaw_rad) * side) * speed * dt
+        self.origin_y += (math.sin(yaw_rad) * forward + math.cos(yaw_rad) * side) * speed * dt
+        self.origin_z += lift * speed * dt * 0.75
+
+        # These are broad safety rails around the generated scroom volume, not
+        # collision physics. The camera remains a noclip observation point.
+        self.origin_x = clamp(self.origin_x, -1200.0, 1200.0)
+        self.origin_y = clamp(self.origin_y, -1200.0, 420.0)
+        self.origin_z = clamp(self.origin_z, -160.0, 720.0)
+
+        self.fov = clamp(self.fov + dpad_x * dt * 34.0 - dpad_y * dt * 20.0, 48.0, 112.0)
+
+        if (
+            abs(left_x)
+            + abs(left_y)
+            + abs(right_x)
+            + abs(right_y)
+            + abs(lift)
+            + abs(dpad_x)
+            + abs(dpad_y)
+            > 0.01
+        ):
+            self.activate_manual(now)
 
     def write(self, game_dir: Path) -> None:
         values: dict[str, float | str] = {
             "camera-manual.txt": 1.0 if self.manual else 0.0,
-            "camera-pan-x.txt": self.pan_x,
-            "camera-pan-y.txt": self.pan_y,
-            "camera-target-z.txt": self.target_z,
+            "camera-origin-x.txt": self.origin_x,
+            "camera-origin-y.txt": self.origin_y,
+            "camera-origin-z.txt": self.origin_z,
             "camera-yaw.txt": self.yaw,
-            "camera-distance.txt": self.distance,
-            "camera-height.txt": self.height,
+            "camera-pitch.txt": self.pitch,
             "camera-fov.txt": self.fov,
             "camera-debug.txt": (
                 f"manual={int(self.manual)} events={self.event_count} "
-                f"last={self.last_event}"
+                f"last={self.last_event} origin="
+                f"{self.origin_x:.1f},{self.origin_y:.1f},{self.origin_z:.1f} "
+                f"angles={self.pitch:.1f},{self.yaw:.1f}"
             ),
         }
         for filename, value in values.items():
@@ -217,11 +270,11 @@ def run_bridge(device: Path, game_dir: Path, *, once: bool = False) -> int:
                     is_init = bool(event_type & JS_EVENT_INIT)
                     event_type &= ~JS_EVENT_INIT
                     if event_type == JS_EVENT_AXIS:
-                        state.update_axis(number, value, activate=not is_init)
+                        state.update_axis(number, value, activate=not is_init, now=now)
                     elif event_type == JS_EVENT_BUTTON:
                         if not is_init:
-                            state.update_button(number, value)
-            state.tick(dt)
+                            state.update_button(number, value, now=now)
+            state.tick(dt, now=now)
             state.write(game_dir)
             if once:
                 return 0

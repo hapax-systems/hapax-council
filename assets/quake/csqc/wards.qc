@@ -153,6 +153,14 @@ float(string path) screwm_read_norm =
     return screwm_clamp(stof(line), 0, 1);
 };
 
+float(string path, float fallback) screwm_read_float =
+{
+    string line;
+
+    line = screwm_read_line(path, ftos(fallback));
+    return stof(line);
+};
+
 void() screwm_poll_state =
 {
     string line;
@@ -269,12 +277,7 @@ void() screwm_apply_review_camera =
     float phase;
     float lift_phase;
     float manual;
-    float pan_x;
-    float pan_y;
-    float target_z;
-    float yaw;
-    float dist;
-    float height;
+    float fov;
     float native_delta;
     float native_move;
     float native_hold;
@@ -321,21 +324,15 @@ void() screwm_apply_review_camera =
     }
     else if (cvar("screwm_csqc_manual_camera") > 0 && manual > 0)
     {
-        pan_x = screwm_read_norm("data/camera-pan-x.txt");
-        pan_y = screwm_read_norm("data/camera-pan-y.txt");
-        target_z = screwm_read_norm("data/camera-target-z.txt");
-        yaw = screwm_read_norm("data/camera-yaw.txt");
-        dist = screwm_read_norm("data/camera-distance.txt");
-        height = screwm_read_norm("data/camera-height.txt");
-
-        screwm_review_camera_origin_x = (pan_x - 0.5) * 420;
-        screwm_review_camera_origin_y = -410 - dist * 230;
-        screwm_review_camera_origin_z = 42 + height * 315;
-        screwm_review_camera_angles_x = (0.48 - target_z) * 34;
-        screwm_review_camera_angles_y = 90 + (yaw - 0.5) * 96 + (pan_y - 0.5) * 22;
+        screwm_review_camera_origin_x = screwm_read_float("data/camera-origin-x.txt", screwm_review_camera_origin_x);
+        screwm_review_camera_origin_y = screwm_read_float("data/camera-origin-y.txt", screwm_review_camera_origin_y);
+        screwm_review_camera_origin_z = screwm_read_float("data/camera-origin-z.txt", screwm_review_camera_origin_z);
+        screwm_review_camera_angles_x = screwm_read_float("data/camera-pitch.txt", screwm_review_camera_angles_x);
+        screwm_review_camera_angles_y = screwm_read_float("data/camera-yaw.txt", screwm_review_camera_angles_y);
         screwm_review_camera_angles_z = 0;
-        screwm_review_camera_fov_x = 62 + screwm_read_norm("data/camera-fov.txt") * 42;
-        screwm_review_camera_fov_y = 38 + screwm_read_norm("data/camera-fov.txt") * 28;
+        fov = screwm_read_float("data/camera-fov.txt", 76);
+        screwm_review_camera_fov_x = fov;
+        screwm_review_camera_fov_y = fov * 0.625;
     }
     else if (cvar("screwm_csqc_review_path") > 0)
     {

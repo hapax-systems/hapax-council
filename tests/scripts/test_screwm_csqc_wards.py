@@ -126,9 +126,9 @@ def test_darkplaces_review_camera_is_locked_by_default() -> None:
     assert "fov 76" in autoexec
     assert "set screwm_camera_file_control 1" in autoexec
     assert "set screwm_player_noclip_control 1" in autoexec
-    assert "set screwm_csqc_review_camera 0" in autoexec
-    assert "set screwm_csqc_review_path 0" in autoexec
-    assert "set screwm_csqc_manual_camera 0" in autoexec
+    assert "set screwm_csqc_review_camera 1" in autoexec
+    assert "set screwm_csqc_review_path 1" in autoexec
+    assert "set screwm_csqc_manual_camera 1" in autoexec
     assert "set screwm_csqc_native_controller 0" in autoexec
     assert "joy_enable 1" in autoexec
     assert "joy_index 1" in autoexec
@@ -161,20 +161,27 @@ def test_csqc_review_camera_overrides_render_view_for_obs_feedback() -> None:
     assert "makevectors(screwm_review_camera_angles);" in body
     assert "v_forward * input_movevalues_x * frametime * native_speed" in body
     assert 'cvar("screwm_csqc_manual_camera") > 0 && manual > 0' in body
-    assert 'screwm_read_norm("data/camera-yaw.txt")' in body
-    assert "screwm_review_camera_origin_x = (pan_x - 0.5) * 420;" in body
-    assert "screwm_review_camera_angles_y = 90 + (yaw - 0.5) * 96" in body
+    assert 'screwm_read_float("data/camera-origin-x.txt"' in body
+    assert 'screwm_read_float("data/camera-pitch.txt"' in body
+    assert 'screwm_read_float("data/camera-yaw.txt"' in body
+    assert "screwm_review_camera_fov_y = fov * 0.625;" in body
     assert 'cvar("screwm_csqc_review_path") > 0' in body
     assert "phase = time * screwm_review_camera_two_pi / screwm_review_camera_period;" in body
     assert "screwm_review_camera_origin_x = -244 + sin(phase) * 36;" in body
     assert "screwm_review_camera_origin_y = -500 + cos(phase) * 10;" in body
-    assert "screwm_review_camera_angles = vectoangles('0 -360 150' - screwm_review_camera_origin);" in body
+    assert (
+        "screwm_review_camera_angles = vectoangles('0 -360 150' - screwm_review_camera_origin);"
+        in body
+    )
     assert "setproperty(VF_ORIGIN, screwm_review_camera_origin);" in body
     assert "setproperty(VF_ANGLES, screwm_review_camera_angles);" in body
     assert "setproperty(VF_CL_VIEWANGLES, screwm_review_camera_angles);" in body
     assert "setproperty(VF_FOV, screwm_review_camera_fov);" in body
     assert "screwm_review_camera_origin = '-244 -500 204';" in body
-    assert "screwm_review_camera_angles = vectoangles('0 -360 150' - screwm_review_camera_origin);" in body
+    assert (
+        "screwm_review_camera_angles = vectoangles('0 -360 150' - screwm_review_camera_origin);"
+        in body
+    )
     assert "screwm_review_camera_fov = '96 60 0';" in body
     assert "screwm_review_camera_period = 96.0;" in body
 
