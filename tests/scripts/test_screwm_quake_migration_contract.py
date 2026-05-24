@@ -127,6 +127,7 @@ def test_screwm_quake_contract_matches_current_camera_aoa_and_sound_foundation()
     assert "[x] 5 ambient sound zones" in spec
     assert "material, inversion, aperture, and" in spec
     assert "Positive UserVec4.x is material emboss only" in spec
+    assert "Aperture pressure is non-destructive edge attenuation" in spec
 
 
 def test_screwm_quake_asset_provenance_gate_is_documented() -> None:
@@ -148,3 +149,21 @@ def test_screwm_quake_asset_provenance_gate_is_documented() -> None:
     assert "assets/quake/qc/progs.dat" in licenses
     assert "assets/quake/csqc/csprogs.dat" in licenses
     assert "Original Quake/Bethesda/id Software" in licenses
+
+
+def test_screwm_quake_systemd_watchdog_gate_is_documented() -> None:
+    spec = (
+        REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-05-23-screwm-quake-hybrid-isap.md"
+    ).read_text(encoding="utf-8")
+    unit = (REPO_ROOT / "systemd" / "units" / "hapax-darkplaces-v4l2.service").read_text(
+        encoding="utf-8"
+    )
+
+    assert "### D8: hapax-darkplaces Systemd Unit [COMPLETE]" in spec
+    assert "`hapax-darkplaces-v4l2.service` now uses the display-safe Xvfb feed route" in spec
+    assert "`Type=notify`/`NotifyAccess=all` with `WatchdogSec=30s`" in spec
+    assert "`NRestarts=0`" in spec
+    assert "[x] Systemd unit starts/restarts cleanly with WatchdogSec" in spec
+    assert "ExecStart=/usr/bin/bash -lc 'exec " in unit
+    assert "scripts/darkplaces-v4l2-xvfb.sh" in unit
+    assert "WatchdogSec=30s" in unit

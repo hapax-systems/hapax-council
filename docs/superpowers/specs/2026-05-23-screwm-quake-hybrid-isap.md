@@ -339,15 +339,16 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - CSQC preserves the server-rendered world and keeps projected ward
   `drawstring`/`drawline` output behind opt-in `screwm_csqc_overlay 1`.
 - CSQC reads `data/working-mode.txt`, `data/stimmung-energy.txt`, and
-  `data/voice-active.txt` plus selected `data/ward-XX.txt` exports from the game
-  directory to modulate engine-side dynamic lights.
+  `data/voice-active.txt` plus all 36 `data/ward-XX.txt` and
+  `data/ward-active-XX.txt` exports from the game directory to modulate
+  engine-side dynamic lights.
 - Ward identity and the first drift graph are in BSP/WAD geometry/materials;
   CSQC is now the live coupling layer, not the default ward text surface.
 - CSQC also carries live six-camera/source state into in-world dynamic lights
   using separate semantic priority and fresh-frame evidence scalars.
 
-### D8: hapax-darkplaces Systemd Unit [IN PROGRESS]
-- `systemd/units/hapax-darkplaces.service`
+### D8: hapax-darkplaces Systemd Unit [COMPLETE]
+- `systemd/units/hapax-darkplaces-v4l2.service`
 - Runtime opt-in gated after 2026-05-23 AMD data-fabric reset evidence
 - GPU selection requires validation: `CUDA_VISIBLE_DEVICES` does not pin OpenGL
 - Current `:0` GL preflight reports RTX 5090; `DRI_PRIME=1` and NVIDIA offload
@@ -358,19 +359,22 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   root Xorg server on `PCI:5:0:0`, runs the GL preflight against `DISPLAY=:82`,
   then tears it down. This validated the 5060 Ti GL route without launching
   DarkPlaces.
-- `hapax-darkplaces-v4l2.service` now uses the dedicated Xorg feed option so
-  systemd validation does not preflight the wrong `:0` display.
-- Runtime enablement is still blocked for the always-on service because the
-  dedicated Xorg option can disturb the desktop display stack. The service is
-  source-activation ready, but production activation needs either a display-safe
-  capture route or evidence that the dedicated Xorg route no longer triggers
-  desktop hotplug/blanking.
+- `hapax-darkplaces-v4l2.service` now uses the display-safe Xvfb feed route for
+  the active always-on service because the dedicated Xorg option can disturb the
+  desktop display stack and currently produced black x11grab readback in live
+  testing.
 - DarkPlaces units run scripts from the source-activation worktree, with
   `hapax-compositor-runtime-source-check` gating required scripts/assets before
   startup, so production cannot silently launch stale lane-local migration code.
-- Launch validation requires `HAPAX_DARKPLACES_SMOKE_ACK=1` and an attended
-  run of `scripts/darkplaces-attended-smoke.sh`; the default expected GPU index
-  is 1 until a new GPU allocation spec supersedes it.
+- The unit is `Type=notify`/`NotifyAccess=all` with `WatchdogSec=30s`. Both
+  `scripts/darkplaces-v4l2-xvfb.sh` and `scripts/darkplaces-v4l2-xorg.sh` emit
+  `READY=1` only after DarkPlaces and the ffmpeg v4l2 writer are alive, and emit
+  `WATCHDOG=1` only while both remain alive.
+- Runtime evidence on 2026-05-24 after repeated deploy/restart cycles:
+  `hapax-darkplaces-v4l2`, `hapax-darkplaces-bridge`,
+  `hapax-v4l2-bridge`, and `studio-compositor` active; renderer unit
+  `Type=notify`, `WatchdogUSec=30s`, `NRestarts=0`, and fresh
+  `WatchdogTimestamp`. The controller service remained opt-in/inactive.
 - Restart=always
 
 ### D9: QuakeHomage Package
@@ -396,6 +400,9 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   salience/trace/temporal/spectral plus material, inversion, aperture, and
   thermal pressure. Positive UserVec4.x is material emboss only; implicit UV
   rotation is not part of the stable review baseline.
+- Aperture pressure is non-destructive edge attenuation, and horizontal signal
+  shear is bounded by live signal noise so the fixed noclip review POV remains
+  readable while the effect vocabulary remains embodied in the scroom.
 
 ### D13: hapax-imagination Retirement (Phase 6)
 - Remove from default.target
@@ -451,7 +458,7 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - [x] Working mode switch changes fog color + texture set
 - [x] Stimmung/audio/Reverie state modulates AoA spin, fog, postprocess fields, and ward/source light intensity
 - [x] Texture/asset provenance documented in `assets/quake/LICENSES.md`
-- [ ] Systemd unit starts/stops/restarts cleanly with WatchdogSec
+- [x] Systemd unit starts/restarts cleanly with WatchdogSec
 - [ ] 1-hour stability test without memory growth or crashes
 - [ ] 39 shader nodes ported with visual parity (Phase 4)
 - [ ] hapax-imagination disabled without regression (Phase 6)
