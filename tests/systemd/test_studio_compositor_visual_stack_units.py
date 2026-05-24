@@ -21,6 +21,7 @@ PARAMETRIC_HEARTBEAT = UNITS_DIR / "hapax-parametric-modulation-heartbeat.servic
 LAYOUT_MODE_DROPIN = UNITS_DIR / "studio-compositor.service.d" / "layout-mode-persist.conf"
 MALLOC_ARENA_DROPIN = UNITS_DIR / "studio-compositor.service.d" / "malloc-arena.conf"
 SCREWM_QUAKE_DROPIN = UNITS_DIR / "studio-compositor.service.d" / "zzzz-screwm-quake-primary.conf"
+SCREWM_QUAKE_LAYOUT = REPO_ROOT / "config" / "compositor-layouts" / "screwm-quake.json"
 SCREWM_V4L2_BRIDGE_DROPIN = (
     UNITS_DIR / "hapax-v4l2-bridge.service.d" / "zzzz-screwm-quake-primary.conf"
 )
@@ -122,7 +123,14 @@ def test_screwm_quake_primary_profile_bypasses_legacy_visual_chrome() -> None:
         "Environment=HAPAX_V4L2_BRIDGE_ENABLED=1",
         "Environment=HAPAX_DARKPLACES_BACKGROUND_ONLY=1",
         "Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52",
-        "Environment=HAPAX_COMPOSITOR_DISABLE_INLINE_FX=1",
+        (
+            "Environment=HAPAX_COMPOSITOR_LAYOUT_PATH="
+            "%h/.cache/hapax/source-activation/worktree/config/compositor-layouts/"
+            "screwm-quake.json"
+        ),
+        "Environment=HAPAX_COMPOSITOR_DISABLE_INLINE_FX=0",
+        "Environment=HAPAX_COMPOSITOR_DISABLE_SHADER_FX=1",
+        "Environment=HAPAX_COMPOSITOR_DISABLE_POST_FX_OVERLAY=0",
         "Environment=HAPAX_SIERPINSKI_BASE_OVERLAY_ENABLED=0",
         "Environment=HAPAX_SIERPINSKI_LAYOUT_SOURCE_ENABLED=0",
         "Environment=HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED=0",
@@ -135,6 +143,44 @@ def test_screwm_quake_primary_profile_bypasses_legacy_visual_chrome() -> None:
         "Environment=HAPAX_LORE_PROGRAMME_STATE_ENABLED=0",
     ):
         assert expected in lines
+    assert any("homage-active.json" in line and "quake" in line for line in lines)
+
+
+def test_screwm_quake_layout_is_sparse_quake_ward_overlay() -> None:
+    from shared.compositor_model import Layout
+
+    layout = Layout.model_validate_json(SCREWM_QUAKE_LAYOUT.read_text(encoding="utf-8"))
+
+    assert layout.name == "screwm-quake"
+    assert {source.id for source in layout.sources} == {
+        "darkplaces",
+        "quake_status",
+        "grounding_provenance_ticker",
+        "stance_indicator",
+        "thinking_indicator",
+        "pressure_gauge",
+        "programme_banner",
+        "programme_state",
+        "segment_content",
+    }
+    assert all(
+        assignment.render_stage == "post_fx" and assignment.non_destructive
+        for assignment in layout.assignments
+    )
+    assert all(
+        assignment.source
+        not in {
+            "sierpinski",
+            "gem",
+            "stream_overlay",
+            "album",
+            "reverie",
+            "durf",
+            "coding_session_reveal",
+        }
+        for assignment in layout.assignments
+    )
+    assert "darkplaces" not in {assignment.source for assignment in layout.assignments}
 
 
 def test_screwm_v4l2_bridge_profile_matches_runtime_format_contract() -> None:

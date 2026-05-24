@@ -1,0 +1,254 @@
+{
+  "name": "screwm-quake",
+  "description": "Quake-primary Screwm migration layout: DarkPlaces owns the spatial substrate; sparse Quake-homage wards stay on the broadcast edge for review.",
+  "sources": [
+    {
+      "id": "darkplaces",
+      "kind": "video",
+      "backend": "v4l2",
+      "params": {
+        "device": "/dev/video52",
+        "natural_w": 1280,
+        "natural_h": 720,
+        "fps": 30,
+        "role": "darkplaces_background"
+      },
+      "update_cadence": "always",
+      "tags": ["darkplaces", "background", "substrate", "screwm"]
+    },
+    {
+      "id": "quake_status",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "ScrewmQuakeStatusCairoSource",
+        "natural_w": 560,
+        "natural_h": 96
+      },
+      "update_cadence": "rate",
+      "rate_hz": 1.0,
+      "tags": ["quake", "ward", "status", "review"]
+    },
+    {
+      "id": "grounding_provenance_ticker",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "GroundingProvenanceTickerCairoSource",
+        "natural_w": 480,
+        "natural_h": 40
+      },
+      "update_cadence": "rate",
+      "rate_hz": 2.0,
+      "tags": ["quake", "ward", "grounding"]
+    },
+    {
+      "id": "stance_indicator",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "StanceIndicatorCairoSource",
+        "natural_w": 100,
+        "natural_h": 40
+      },
+      "update_cadence": "rate",
+      "rate_hz": 2.0,
+      "tags": ["quake", "ward", "stance"]
+    },
+    {
+      "id": "thinking_indicator",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "ThinkingIndicatorCairoSource",
+        "natural_w": 170,
+        "natural_h": 44
+      },
+      "update_cadence": "rate",
+      "rate_hz": 2.0,
+      "tags": ["quake", "ward", "thinking"]
+    },
+    {
+      "id": "pressure_gauge",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "PressureGaugeCairoSource",
+        "natural_w": 300,
+        "natural_h": 52
+      },
+      "update_cadence": "rate",
+      "rate_hz": 2.0,
+      "tags": ["quake", "ward", "pressure"]
+    },
+    {
+      "id": "programme_banner",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "ProgrammeBannerWard",
+        "natural_w": 540,
+        "natural_h": 280
+      },
+      "update_cadence": "rate",
+      "rate_hz": 1.0,
+      "tags": ["quake", "ward", "programme", "lower-third"],
+      "ward_id": "programme-banner"
+    },
+    {
+      "id": "programme_state",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "ProgrammeStateCairoSource",
+        "natural_w": 360,
+        "natural_h": 120
+      },
+      "update_cadence": "rate",
+      "rate_hz": 1.0,
+      "tags": ["quake", "ward", "programme"],
+      "ward_id": "programme-state"
+    },
+    {
+      "id": "segment_content",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "SegmentContentWard",
+        "natural_w": 540,
+        "natural_h": 200
+      },
+      "update_cadence": "rate",
+      "rate_hz": 1.0,
+      "tags": ["quake", "ward", "segment", "content"],
+      "ward_id": "segment-content"
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "quake-status-top-left",
+      "geometry": {"kind": "rect", "x": 36, "y": 30, "w": 560, "h": 96},
+      "z_order": 30
+    },
+    {
+      "id": "quake-grounding-top",
+      "geometry": {"kind": "rect", "x": 640, "y": 30, "w": 640, "h": 44},
+      "z_order": 31
+    },
+    {
+      "id": "quake-stance-top-right",
+      "geometry": {"kind": "rect", "x": 1750, "y": 34, "w": 120, "h": 48},
+      "z_order": 32
+    },
+    {
+      "id": "quake-thinking-right",
+      "geometry": {"kind": "rect", "x": 1696, "y": 100, "w": 174, "h": 48},
+      "z_order": 33
+    },
+    {
+      "id": "quake-segment-left",
+      "geometry": {"kind": "rect", "x": 44, "y": 720, "w": 560, "h": 200},
+      "z_order": 34
+    },
+    {
+      "id": "quake-programme-state-right",
+      "geometry": {"kind": "rect", "x": 1450, "y": 808, "w": 420, "h": 140},
+      "z_order": 35
+    },
+    {
+      "id": "quake-pressure-bottom-left",
+      "geometry": {"kind": "rect", "x": 44, "y": 988, "w": 300, "h": 52},
+      "z_order": 36
+    },
+    {
+      "id": "quake-programme-bottom",
+      "geometry": {"kind": "rect", "x": 520, "y": 948, "w": 880, "h": 104},
+      "z_order": 37
+    },
+    {
+      "id": "video_out_v4l2_loopback",
+      "geometry": {
+        "kind": "video_out",
+        "target": "/dev/video42",
+        "render_target": "main"
+      },
+      "z_order": 100
+    },
+    {
+      "id": "video_out_rtmp_mediamtx",
+      "geometry": {
+        "kind": "video_out",
+        "target": "rtmp://127.0.0.1:1935/studio",
+        "render_target": "main"
+      },
+      "z_order": 101
+    },
+    {
+      "id": "video_out_hls_playlist",
+      "geometry": {
+        "kind": "video_out",
+        "target": "hls://local",
+        "render_target": "main"
+      },
+      "z_order": 102
+    }
+  ],
+  "assignments": [
+    {
+      "source": "quake_status",
+      "surface": "quake-status-top-left",
+      "opacity": 0.96,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "grounding_provenance_ticker",
+      "surface": "quake-grounding-top",
+      "opacity": 0.78,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "stance_indicator",
+      "surface": "quake-stance-top-right",
+      "opacity": 0.86,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "thinking_indicator",
+      "surface": "quake-thinking-right",
+      "opacity": 0.78,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "segment_content",
+      "surface": "quake-segment-left",
+      "opacity": 0.72,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "programme_state",
+      "surface": "quake-programme-state-right",
+      "opacity": 0.76,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "pressure_gauge",
+      "surface": "quake-pressure-bottom-left",
+      "opacity": 0.80,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "programme_banner",
+      "surface": "quake-programme-bottom",
+      "opacity": 0.74,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    }
+  ]
+}
