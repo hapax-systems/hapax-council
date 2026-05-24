@@ -31,6 +31,7 @@ AOA_Z = int(AOA_HEIGHT_M * UNITS_PER_METER)
 EXT = TR + WALL_THICK + 32
 REVIEW_ALCOVE_Y_MIN = -(TR + WALL_THICK + 355)
 REVIEW_WARD_Y = -160
+REVIEW_DRIFT_Y = REVIEW_WARD_Y - 18
 LEVEL_BANDS = [
     ("perception", FLOOR_Z, FLOOR_Z + 96),
     ("cognition", FLOOR_Z + 96, FLOOR_Z + 192),
@@ -298,6 +299,12 @@ def ward_review_position(idx):
     return x, REVIEW_WARD_Y, z
 
 
+def ward_review_drift_midpoint(src, dst):
+    x1, _y1, z1 = ward_review_position(src)
+    x2, _y2, z2 = ward_review_position(dst)
+    return (x1 + x2) // 2, REVIEW_DRIFT_Y, (z1 + z2) // 2
+
+
 def ward_domain(idx):
     return WARD_DOMAINS[WARD_ANCHORS[idx - 1]]
 
@@ -482,6 +489,49 @@ def ward_review_panes(_preset):
         )
         if frame:
             brushes.append(f"// ward-review-frame {idx:02d}: {anchor} {glow_tex}\n{frame}")
+
+    return brushes
+
+
+def ward_review_drift_paths(_preset):
+    """Visible drift rails bound to the front-facing ward review plane."""
+    brushes = []
+    t = 3
+
+    for link_idx, (src, dst, tex) in enumerate(DRIFT_LINKS, start=1):
+        x1, _y1, z1 = ward_review_position(src)
+        x2, _y2, z2 = ward_review_position(dst)
+        parts = []
+        if x1 != x2:
+            parts.append(
+                box_brush(
+                    min(x1, x2),
+                    REVIEW_DRIFT_Y - t,
+                    z1 - t,
+                    max(x1, x2),
+                    REVIEW_DRIFT_Y + t,
+                    z1 + t,
+                    tex,
+                )
+            )
+        if z1 != z2:
+            parts.append(
+                box_brush(
+                    x2 - t,
+                    REVIEW_DRIFT_Y - t,
+                    min(z1, z2),
+                    x2 + t,
+                    REVIEW_DRIFT_Y + t,
+                    max(z1, z2),
+                    tex,
+                )
+            )
+        for part_idx, part in enumerate(parts, start=1):
+            if part:
+                brushes.append(
+                    f"// ward-review-drift {link_idx:02d}.{part_idx}: "
+                    f"{src:02d}->{dst:02d} {tex}\n{part}"
+                )
 
     return brushes
 
@@ -900,6 +950,7 @@ def generate_map(preset):
         + sectioned_brushes("tower-ramp-shelves", ramp_shelves(preset))
         + sectioned_brushes("central-aoa-pedestal", central_pedestal(preset))
         + sectioned_brushes("ward-review-plane", ward_review_panes(preset))
+        + sectioned_brushes("ward-review-drift-paths", ward_review_drift_paths(preset))
         + sectioned_brushes("source-camera-constellation", source_constellation_panes(preset))
         + sectioned_brushes("ward-scrim-panes", ward_scrim_panes(preset))
         + sectioned_brushes("ward-drift-paths", ward_drift_paths(preset))

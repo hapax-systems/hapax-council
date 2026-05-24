@@ -82,11 +82,7 @@ def test_csqc_dynamic_lights_cover_physical_drift_graph() -> None:
     assert "screwm_homage_transition * 26" in body
 
     for idx, (src, dst, texture) in enumerate(map_module["DRIFT_LINKS"], start=1):
-        x1, y1, z1 = map_module["ward_anchor_position"](src)
-        x2, y2, z2 = map_module["ward_anchor_position"](dst)
-        x = (x1 + x2) // 2
-        y = ((y1 - 10) + (y2 - 10)) // 2
-        z = (z1 + z2) // 2
+        x, y, z = map_module["ward_review_drift_midpoint"](src, dst)
         assert (
             f"screwm_add_drift_light('{x} {y} {z}', {idx}, {color_vars[texture]}, "
             f"screwm_active_{src:02d}, screwm_active_{dst:02d});"
