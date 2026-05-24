@@ -102,6 +102,7 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "ward-active-13.txt").read_text(encoding="utf-8").strip() == "1.0000"
     assert (game_dir / "ward-active-21.txt").read_text(encoding="utf-8").strip() == "1.0000"
     assert (game_dir / "ward-active-34.txt").read_text(encoding="utf-8").strip() == "1.0000"
+    assert len(list(game_dir.glob("ward-active-*.txt"))) == 36
     assert (game_dir / "active-wards-line.txt").read_text(
         encoding="utf-8"
     ).strip() == "36 IN-SCROOM WARDS"
@@ -115,6 +116,34 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "reverie-thermal.txt").read_text(encoding="utf-8").strip() == "0.2300"
     assert (game_dir / "audio-rms.txt").read_text(encoding="utf-8").strip() == "0.1200"
     assert (game_dir / "audio-onset.txt").read_text(encoding="utf-8").strip() == "0.3400"
+
+
+def test_darkplaces_state_export_normalizes_all_in_scroom_ward_activity() -> None:
+    exporter = _load_exporter()
+
+    lines = exporter.build_ward_activity_lines(
+        {
+            "ward_ids": [
+                "album_overlay",
+                "sierpinski",
+                "activity_header",
+                "coding-session-reveal",
+                "programme-banner",
+                "m8-display",
+                "cbip-dual-ir-displacement",
+            ]
+        }
+    )
+
+    assert len(lines) == 36
+    assert lines["ward-active-02.txt"] == "1.0000"
+    assert lines["ward-active-04.txt"] == "1.0000"
+    assert lines["ward-active-06.txt"] == "1.0000"
+    assert lines["ward-active-17.txt"] == "1.0000"
+    assert lines["ward-active-18.txt"] == "1.0000"
+    assert lines["ward-active-21.txt"] == "1.0000"
+    assert lines["ward-active-36.txt"] == "1.0000"
+    assert lines["ward-active-01.txt"] == "0.0000"
 
 
 def test_darkplaces_state_export_writes_camera_source_scalars(tmp_path: Path) -> None:

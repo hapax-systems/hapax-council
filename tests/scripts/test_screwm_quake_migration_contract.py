@@ -74,7 +74,10 @@ def test_screwm_quake_embodies_live_ward_activity_in_engine_lights() -> None:
     wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
 
     assert "build_ward_activity_lines" in exporter
+    assert "WARD_ACTIVITY_EXPORTS" in exporter
+    assert '"36", "cbip_dual_ir_displacement"' in exporter
     assert "ward-active-" in exporter
+    assert 'endswith("_overlay")' in exporter
     assert 'screwm_read_norm("data/ward-active-01.txt")' in wards
     assert "screwm_active_36" in wards
     assert "screwm_add_ward_light('0 -118 28', 36, screwm_green, screwm_active_36)" in wards

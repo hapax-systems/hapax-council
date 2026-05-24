@@ -37,6 +37,45 @@ WARD_EXPORTS: dict[str, str] = {
     "34": "segment_content",
 }
 
+WARD_ACTIVITY_EXPORTS: tuple[tuple[str, str], ...] = (
+    ("01", "token_pole"),
+    ("02", "album"),
+    ("03", "stream_overlay"),
+    ("04", "sierpinski"),
+    ("05", "reverie"),
+    ("06", "activity_header"),
+    ("07", "stance_indicator"),
+    ("08", "gem"),
+    ("09", "grounding_provenance_ticker"),
+    ("10", "impingement_cascade"),
+    ("11", "recruitment_candidate_panel"),
+    ("12", "thinking_indicator"),
+    ("13", "pressure_gauge"),
+    ("14", "activity_variety_log"),
+    ("15", "whos_here"),
+    ("16", "durf"),
+    ("17", "coding_session_reveal"),
+    ("18", "m8-display"),
+    ("19", "steamdeck-display"),
+    ("20", "egress_footer"),
+    ("21", "programme_banner"),
+    ("22", "precedent_ticker"),
+    ("23", "programme_history"),
+    ("24", "research_instrument_dashboard"),
+    ("25", "cbip_signal_density"),
+    ("26", "chat_ambient"),
+    ("27", "chronicle_ticker"),
+    ("28", "programme_state"),
+    ("29", "polyend_instrument_reveal"),
+    ("30", "interactive_lore_query"),
+    ("31", "constructivist_research_poster"),
+    ("32", "tufte_density"),
+    ("33", "ascii_schematic"),
+    ("34", "segment_content"),
+    ("35", "m8_oscilloscope"),
+    ("36", "cbip_dual_ir_displacement"),
+)
+
 IN_WORLD_WARD_COUNT = 36
 
 SOURCE_EXPORTS: tuple[tuple[str, str], ...] = (
@@ -112,6 +151,14 @@ def _active_ward_count(active_wards: dict[str, Any]) -> int:
     return 0
 
 
+def _ward_activity_aliases(ward_id: str) -> set[str]:
+    normalized = ward_id.strip().lower().replace("-", "_")
+    aliases = {normalized}
+    if normalized.endswith("_overlay"):
+        aliases.add(normalized[: -len("_overlay")])
+    return aliases
+
+
 def _screwm_ward_count(active_wards: dict[str, Any]) -> int:
     """DarkPlaces hosts all legacy Screwm wards even without Cairo assignments."""
     return max(IN_WORLD_WARD_COUNT, _active_ward_count(active_wards))
@@ -120,13 +167,20 @@ def _screwm_ward_count(active_wards: dict[str, Any]) -> int:
 def build_ward_activity_lines(active_wards: dict[str, Any]) -> dict[str, str]:
     ward_ids = active_wards.get("ward_ids")
     active_set = (
-        {ward_id for ward_id in ward_ids if isinstance(ward_id, str)}
+        {
+            alias
+            for ward_id in ward_ids
+            if isinstance(ward_id, str)
+            for alias in _ward_activity_aliases(ward_id)
+        }
         if isinstance(ward_ids, list)
         else set()
     )
     return {
-        f"ward-active-{ordinal}.txt": "1.0000" if ward_id in active_set else "0.0000"
-        for ordinal, ward_id in WARD_EXPORTS.items()
+        f"ward-active-{ordinal}.txt": (
+            "1.0000" if _ward_activity_aliases(ward_id) & active_set else "0.0000"
+        )
+        for ordinal, ward_id in WARD_ACTIVITY_EXPORTS
     }
 
 
