@@ -151,6 +151,14 @@ void(vector org, string text, float idx, vector color) screwm_draw_ward_detail =
     drawstring(p + '-31 10 0', text, '4 4 0', color, screwm_clamp(alpha, 0.18, 0.56), DRAWFLAG_ADDITIVE);
 };
 
+void(vector org, float idx, vector color) screwm_add_ward_light =
+{
+    float radius;
+
+    radius = 22 + screwm_energy * 18 + screwm_voice * 32 + 4 * sin(time * 1.15 + idx * 0.47);
+    adddynamiclight(org, screwm_clamp(radius, 14, 78), color);
+};
+
 void() screwm_draw_ward_links =
 {
     vector c01;
@@ -257,6 +265,11 @@ void() screwm_add_dynamic_lights =
     float pulse;
     float voice_radius;
 
+    if (cvar("screwm_csqc_disable") > 0)
+        return;
+    if (cvar("screwm_csqc_lightfield") < 0)
+        return;
+
     pulse = 170 + screwm_energy * 80 + 18 * sin(time * 1.1);
     voice_radius = 20 + screwm_voice * 90;
 
@@ -266,15 +279,45 @@ void() screwm_add_dynamic_lights =
     adddynamiclight('-222 -46 118', 58 + screwm_energy * 34, screwm_green);
     adddynamiclight('222 -82 64', 58 + screwm_voice * 70, screwm_amber);
 
-    adddynamiclight('-222 62 280', 44 + screwm_energy * 28, screwm_cyan);
-    adddynamiclight('-148 62 280', 44 + screwm_energy * 22, screwm_amber);
-    adddynamiclight('222 62 280', 42 + screwm_voice * 44, screwm_amber);
-    adddynamiclight('-148 26 226', 44 + screwm_energy * 28, screwm_cyan);
-    adddynamiclight('74 26 226', 42 + screwm_voice * 46, screwm_cyan);
-    adddynamiclight('148 26 226', 44 + screwm_energy * 30, screwm_green);
-    adddynamiclight('222 -10 172', 44 + screwm_energy * 24, screwm_cyan);
-    adddynamiclight('222 -46 118', 42 + screwm_energy * 26, screwm_amber);
-    adddynamiclight('148 -82 64', 42 + screwm_voice * 42, screwm_rose);
+    screwm_add_ward_light('-222 62 280', 1, screwm_cyan);
+    screwm_add_ward_light('-148 62 280', 2, screwm_amber);
+    screwm_add_ward_light('-74 62 280', 3, screwm_cyan);
+    screwm_add_ward_light('0 62 280', 4, screwm_rose);
+    screwm_add_ward_light('74 62 280', 5, screwm_green);
+    screwm_add_ward_light('148 62 280', 6, screwm_cyan);
+    screwm_add_ward_light('222 62 280', 7, screwm_amber);
+
+    screwm_add_ward_light('-222 26 226', 8, screwm_green);
+    screwm_add_ward_light('-148 26 226', 9, screwm_cyan);
+    screwm_add_ward_light('-74 26 226', 10, screwm_rose);
+    screwm_add_ward_light('0 26 226', 11, screwm_amber);
+    screwm_add_ward_light('74 26 226', 12, screwm_cyan);
+    screwm_add_ward_light('148 26 226', 13, screwm_green);
+    screwm_add_ward_light('222 26 226', 14, screwm_rose);
+
+    screwm_add_ward_light('-222 -10 172', 15, screwm_cyan);
+    screwm_add_ward_light('-148 -10 172', 16, screwm_amber);
+    screwm_add_ward_light('-74 -10 172', 17, screwm_green);
+    screwm_add_ward_light('0 -10 172', 18, screwm_cyan);
+    screwm_add_ward_light('74 -10 172', 19, screwm_rose);
+    screwm_add_ward_light('148 -10 172', 20, screwm_amber);
+    screwm_add_ward_light('222 -10 172', 21, screwm_cyan);
+
+    screwm_add_ward_light('-222 -46 118', 22, screwm_green);
+    screwm_add_ward_light('-148 -46 118', 23, screwm_cyan);
+    screwm_add_ward_light('-74 -46 118', 24, screwm_amber);
+    screwm_add_ward_light('0 -46 118', 25, screwm_rose);
+    screwm_add_ward_light('74 -46 118', 26, screwm_cyan);
+    screwm_add_ward_light('148 -46 118', 27, screwm_green);
+    screwm_add_ward_light('222 -46 118', 28, screwm_amber);
+
+    screwm_add_ward_light('-222 -82 64', 29, screwm_cyan);
+    screwm_add_ward_light('-148 -82 64', 30, screwm_rose);
+    screwm_add_ward_light('-74 -82 64', 31, screwm_green);
+    screwm_add_ward_light('0 -82 64', 32, screwm_cyan);
+    screwm_add_ward_light('74 -82 64', 33, screwm_amber);
+    screwm_add_ward_light('148 -82 64', 34, screwm_rose);
+    screwm_add_ward_light('222 -82 64', 35, screwm_green);
 };
 
 void(float apilevel, string enginename, float engineversion) CSQC_Init =

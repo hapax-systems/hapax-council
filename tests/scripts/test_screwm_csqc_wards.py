@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import runpy
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,6 +11,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CSQC_DIR = REPO_ROOT / "assets" / "quake" / "csqc"
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install-darkplaces-screwm-assets.sh"
 AUTOEXEC = REPO_ROOT / "assets" / "quake" / "config" / "autoexec.cfg"
+
+
+def _load_script(path: str) -> dict:
+    return runpy.run_path(str(REPO_ROOT / path), run_name="__test__")
 
 
 def test_csqc_sources_define_all_legacy_ward_labels() -> None:
@@ -32,9 +37,22 @@ def test_csqc_text_overlay_is_not_the_default_ward_surface() -> None:
     body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
 
     assert "screwm_csqc_overlay 0" in autoexec
+    assert "screwm_csqc_lightfield 1" in autoexec
     assert "Ward identity belongs to the scroom geometry" in autoexec
-    assert "adddynamiclight('-222 62 280'" in body
-    assert "adddynamiclight('148 -82 64'" in body
+    assert "screwm_add_ward_light('-222 62 280'" in body
+    assert "screwm_add_ward_light('148 -82 64'" in body
+
+
+def test_csqc_dynamic_lights_cover_all_physical_ward_panes() -> None:
+    map_module = _load_script("scripts/generate-screwm-map.py")
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    assert body.count("screwm_add_ward_light('") == 35
+    assert 'cvar("screwm_csqc_lightfield") < 0' in body
+
+    for idx in range(1, 36):
+        x, y, z = map_module["ward_anchor_position"](idx)
+        assert f"screwm_add_ward_light('{x} {y} {z}'" in body
 
 
 def test_darkplaces_review_camera_is_locked_by_default() -> None:
