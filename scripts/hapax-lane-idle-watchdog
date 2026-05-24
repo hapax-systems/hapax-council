@@ -413,10 +413,7 @@ for session in "${!IDLE_LANES[@]}"; do
             ;;
         codex)
             if [ -x "$CODEX_SEND" ]; then
-                "$CODEX_SEND" --session "$lane" -- "$dispatch_msg" 2>/dev/null && send_success=true
-            fi
-            if [ "$send_success" = false ]; then
-                tmux send-keys -t "$session" "$dispatch_msg" Enter 2>/dev/null && send_success=true
+                "$CODEX_SEND" --session "$lane" --require-ack -- "$dispatch_msg" 2>/dev/null && send_success=true
             fi
             ;;
         gemini)

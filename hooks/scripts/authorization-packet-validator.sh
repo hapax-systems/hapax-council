@@ -25,10 +25,20 @@ fi
 INPUT="$(cat)"
 TOOL="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)" || exit 0
 release_tool=false
+release_kind="none"
 case "$TOOL" in
   Bash|exec_command_pty|exec_command|shell|shell_command|unified_exec) ;;
-  mcp__github__create_pull_request|mcp__github__merge_pull_request|mcp__github__push_files)
+  mcp__github__create_pull_request)
     release_tool=true
+    release_kind="pr_create"
+    ;;
+  mcp__github__merge_pull_request)
+    release_tool=true
+    release_kind="merge"
+    ;;
+  mcp__github__push_files)
+    release_tool=true
+    release_kind="push_files"
     ;;
   *) exit 0 ;;
 esac
@@ -38,12 +48,118 @@ if [[ "$release_tool" != "true" ]]; then
   [ -n "$CMD" ] || exit 0
 fi
 
-# Only gate release/publication paths. Match anywhere in chained commands.
+# Only gate release/publication paths. Shell command parsing must tolerate
+# common global-option forms such as `git -C repo push` and
+# `gh --repo owner/repo pr create`.
 is_release="$release_tool"
-if [[ -n "$CMD" ]]; then
-  echo "$CMD" | grep -qE '(^|[;&|()[:space:]])git[[:space:]]+push([[:space:]]|$)' && is_release=true
-  echo "$CMD" | grep -qE '(^|[;&|()[:space:]])gh[[:space:]]+pr[[:space:]]+(create|merge)([[:space:]]|$)' && is_release=true
-  echo "$CMD" | grep -qE '(^|[;&|()[:space:]])gh[[:space:]]+api.*pulls.*/merge' && is_release=true
+if [[ -n "$CMD" && "$is_release" != "true" ]]; then
+  if ! command -v python3 &>/dev/null; then
+    # Keep fail-closed behavior for obvious protected commands even if the
+    # robust shell tokenizer is unavailable; the validation step below will
+    # then block because python3 is required to read the authorization packet.
+    if printf '%s' "$CMD" | grep -qE '(^|[;&|()[:space:]])git([[:space:]]+[^;&|()[:space:]]+)*[[:space:]]+push([[:space:]]|[;&|()]|$)'; then
+      release_kind="push"
+    elif printf '%s' "$CMD" | grep -qE '(^|[;&|()[:space:]])gh([[:space:]]+[^;&|()[:space:]]+)*[[:space:]]+pr[[:space:]]+create([[:space:]]|[;&|()]|$)'; then
+      release_kind="pr_create"
+    elif printf '%s' "$CMD" | grep -qE '(^|[;&|()[:space:]])gh([[:space:]]+[^;&|()[:space:]]+)*[[:space:]]+pr[[:space:]]+merge([[:space:]]|[;&|()]|$)|(^|[;&|()[:space:]])gh([[:space:]]+[^;&|()[:space:]]+)*[[:space:]]+api.*pulls.*/merge'; then
+      release_kind="merge"
+    fi
+  else
+    release_kind="$(python3 - "$CMD" <<'PYEOF' 2>/dev/null || printf 'none\n'
+import shlex
+import sys
+
+cmd = sys.argv[1]
+try:
+    lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|()")
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+except (TypeError, ValueError):
+    tokens = (
+        cmd.replace("&&", " && ")
+        .replace("||", " || ")
+        .replace(";", " ; ")
+        .replace("|", " | ")
+        .replace("(", " ( ")
+        .replace(")", " ) ")
+        .split()
+    )
+
+separators = {"&&", "||", ";", ";;", ";&", ";;&", "|", "(", ")"}
+
+
+def _base(token: str) -> str:
+    return token.rsplit("/", 1)[-1]
+
+
+def _git_kind(index: int) -> str:
+    j = index + 1
+    while j < len(tokens):
+        tok = tokens[j]
+        if tok in separators:
+            return "none"
+        if tok in {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}:
+            j += 2
+            continue
+        if tok.startswith(("--git-dir=", "--work-tree=", "--namespace=")):
+            j += 1
+            continue
+        if tok.startswith("-"):
+            j += 1
+            continue
+        return "push" if tok == "push" else "none"
+    return "none"
+
+
+def _gh_kind(index: int) -> str:
+    j = index + 1
+    while j < len(tokens):
+        tok = tokens[j]
+        if tok in separators:
+            return "none"
+        if tok in {"-R", "--repo", "--hostname", "--config-dir"}:
+            j += 2
+            continue
+        if tok.startswith(("--repo=", "--hostname=", "--config-dir=")):
+            j += 1
+            continue
+        if tok.startswith("-"):
+            j += 1
+            continue
+        if tok == "pr" and j + 1 < len(tokens):
+            if tokens[j + 1] == "create":
+                return "pr_create"
+            if tokens[j + 1] == "merge":
+                return "merge"
+        if tok == "api":
+            rest = " ".join(tokens[j + 1 :])
+            return "merge" if "pulls/" in rest and "/merge" in rest else "none"
+        if tok == "release":
+            return "release"
+        return "none"
+    return "none"
+
+
+seen_kind = "none"
+for i, token in enumerate(tokens):
+    binary = _base(token)
+    if binary == "git":
+        kind = _git_kind(i)
+    elif binary == "gh":
+        kind = _gh_kind(i)
+    else:
+        continue
+    if kind in {"merge", "release"}:
+        print(kind)
+        break
+    if kind != "none" and seen_kind == "none":
+        seen_kind = kind
+else:
+    print(seen_kind)
+PYEOF
+)"
+  fi
+  [[ "$release_kind" != "none" ]] && is_release=true
 fi
 [ "$is_release" = true ] || exit 0
 
@@ -115,11 +231,12 @@ if ! command -v python3 &>/dev/null; then
   exit 2
 fi
 
-validation="$(python3 - "$note_path" <<'PYEOF'
+validation="$(python3 - "$note_path" "$release_kind" <<'PYEOF'
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
+release_kind = sys.argv[2]
 text = path.read_text(encoding="utf-8")
 if not text.startswith("---"):
     print("no_frontmatter")
@@ -168,7 +285,8 @@ if impl != "true":
     sys.exit(0)
 
 # Shadow denial check: if implementation is authorized,
-# release_authorized should be explicitly false unless stage >= S7
+# release_authorized should be explicitly false unless stage >= S7. Actual
+# merge/release commands are checked after this with release_not_authorized.
 stage_num = -1
 if stage.startswith("S"):
     try:
@@ -178,6 +296,10 @@ if stage.startswith("S"):
 
 if stage_num < 7 and release != "false":
     print(f"shadow_denial_violation:release_authorized={release}")
+    sys.exit(0)
+
+if release_kind in {"merge", "release"} and release != "true":
+    print(f"release_not_authorized:{release_kind}:{release}")
     sys.exit(0)
 
 print("valid")
@@ -246,6 +368,21 @@ authorization-packet-validator: BLOCKED — shadow denial violation.
   Detail: $detail (must be false at stage < S7)
   Note: $note_path
 
+  To bypass for emergencies: HAPAX_METHODOLOGY_EMERGENCY=1
+EOF
+    exit 2
+    ;;
+  release_not_authorized:*)
+    detail="${validation#release_not_authorized:}"
+    cat >&2 <<EOF
+authorization-packet-validator: BLOCKED — release/merge command requires release_authorized: true.
+
+  Task: $task_id
+  Detail: $detail
+  Note: $note_path
+
+  PR creation and branch push require implementation authority; merge/release
+  require explicit release authorization.
   To bypass for emergencies: HAPAX_METHODOLOGY_EMERGENCY=1
 EOF
     exit 2

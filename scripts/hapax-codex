@@ -657,6 +657,26 @@ if [ "${#CODEX_EXTRA[@]}" -gt 0 ] && is_codex_subcommand "${CODEX_EXTRA[0]}"; th
   explicit_codex_command=1
 fi
 
+if [ "${#CODEX_EXTRA[@]}" -gt 0 ]; then
+  case "${CODEX_EXTRA[0]}" in
+    apply|a)
+      if [ "${HAPAX_METHODOLOGY_EMERGENCY:-0}" != "1" ]; then
+        cat >&2 <<EOF
+hapax-codex: refusing mutation-capable 'codex apply' without governed emergency escape.
+  Required: HAPAX_METHODOLOGY_EMERGENCY=1
+  Prefer normal task-gated source edits inside an active Codex session.
+EOF
+        exit 13
+      fi
+      _ledger="$HOME/.cache/hapax/methodology-emergency-ledger.jsonl"
+      mkdir -p "$(dirname "$_ledger")" 2>/dev/null || true
+      printf '{"ts":"%s","session":"%s","hook":"hapax-codex","cmd":"codex %s","reason":"codex_apply_emergency"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SESSION" "${CODEX_EXTRA[0]}" \
+        >>"$_ledger" 2>/dev/null || true
+      ;;
+  esac
+fi
+
 if [ -n "$BOOTSTRAP_FILE" ]; then
   if [ ! -f "$BOOTSTRAP_FILE" ]; then
     echo "hapax-codex: bootstrap file not found: $BOOTSTRAP_FILE" >&2

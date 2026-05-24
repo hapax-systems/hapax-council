@@ -64,6 +64,15 @@ def _base_env(tmp_path: Path, *, session: str, pane: str) -> dict[str, str]:
     bin_dir.mkdir()
     state_dir.mkdir()
     _write_fake_tmux(bin_dir)
+    codex_send = home / "projects" / "hapax-council" / "scripts" / "hapax-codex-send"
+    codex_send.parent.mkdir(parents=True)
+    _write_executable(
+        codex_send,
+        """
+        #!/usr/bin/env bash
+        printf '%s\n' "$*" >> "${CODEX_SENT:?}"
+        """,
+    )
 
     env = os.environ.copy()
     env.update(
@@ -73,6 +82,7 @@ def _base_env(tmp_path: Path, *, session: str, pane: str) -> dict[str, str]:
             "TMUX_SESSION": session,
             "TMUX_PANE": pane,
             "TMUX_SENT": str(tmp_path / "sent.txt"),
+            "CODEX_SENT": str(tmp_path / "codex-sent.txt"),
             "HAPAX_IDLE_THRESHOLD_S": "0",
             "HAPAX_IDLE_COOLDOWN_S": "0",
             "HAPAX_IDLE_STATE_DIR": str(state_dir),
@@ -90,6 +100,7 @@ def test_idle_watchdog_does_not_assign_offered_queue_work() -> None:
     assert "--print-prompt" not in text
     assert "Await governed dispatch" in text
     assert "hapax-methodology-dispatch --launch" in text
+    assert 'CODEX_SEND" --session "$lane" --require-ack' in text
     assert "do not self-select queue work" in text
     assert "claude --resume" not in text
     assert "codex --resume" not in text
@@ -129,10 +140,12 @@ def test_idle_watchdog_sends_await_dispatch_when_no_claim(tmp_path: Path) -> Non
     result = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
 
     assert result.returncode == 0, result.stderr
-    sent = Path(env["TMUX_SENT"]).read_text(encoding="utf-8")
+    sent = Path(env["CODEX_SENT"]).read_text(encoding="utf-8")
     assert "Await governed dispatch" in sent
     assert "scripts/hapax-methodology-dispatch --task <id>" in sent
+    assert "--require-ack" in sent
     assert "cc-claim" not in sent
+    assert not Path(env["TMUX_SENT"]).exists()
 
 
 def test_idle_watchdog_does_not_dispatch_offered_task_from_idle_lane(tmp_path: Path) -> None:
@@ -162,12 +175,14 @@ def test_idle_watchdog_does_not_dispatch_offered_task_from_idle_lane(tmp_path: P
     result = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
 
     assert result.returncode == 0, result.stderr
-    sent = Path(env["TMUX_SENT"]).read_text(encoding="utf-8")
+    sent = Path(env["CODEX_SENT"]).read_text(encoding="utf-8")
     assert "SDLC GOVERNED DISPATCH." not in sent
     assert "Task: dispatchable-task" not in sent
     assert not dispatch_calls.exists()
     assert "Await governed dispatch" in sent
+    assert "--require-ack" in sent
     assert "cc-claim" not in sent
+    assert not Path(env["TMUX_SENT"]).exists()
 
 
 def test_idle_watchdog_preserves_active_task_resume_prompt(tmp_path: Path) -> None:
@@ -188,9 +203,37 @@ def test_idle_watchdog_preserves_active_task_resume_prompt(tmp_path: Path) -> No
     result = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
 
     assert result.returncode == 0, result.stderr
-    sent = Path(env["TMUX_SENT"]).read_text(encoding="utf-8")
+    sent = Path(env["CODEX_SENT"]).read_text(encoding="utf-8")
     assert "active task: owned-task" in sent
+    assert "--require-ack" in sent
     assert "Do not claim work from the pool" not in sent
+    assert not Path(env["TMUX_SENT"]).exists()
+
+
+def test_idle_watchdog_does_not_raw_tmux_fallback_when_codex_ack_fails(
+    tmp_path: Path,
+) -> None:
+    env = _base_env(
+        tmp_path,
+        session="hapax-codex-cx-red",
+        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+    )
+    codex_send = Path(env["HOME"]) / "projects" / "hapax-council" / "scripts" / "hapax-codex-send"
+    _write_executable(
+        codex_send,
+        """
+        #!/usr/bin/env bash
+        printf '%s\n' "$*" >> "${CODEX_SENT:?}"
+        exit 1
+        """,
+    )
+
+    result = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert "--require-ack" in Path(env["CODEX_SENT"]).read_text(encoding="utf-8")
+    assert "FAILED to dispatch hapax-codex-cx-red" in result.stdout
+    assert not Path(env["TMUX_SENT"]).exists()
 
 
 def test_rate_limit_watchdog_sends_hold_not_assignment_when_lane_has_no_task(

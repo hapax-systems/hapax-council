@@ -77,7 +77,11 @@ def _parse_patch(patch: str) -> list[tuple[str, str, str]]:
                 events.append(("delete", path, ""))
             continue
         if line.startswith("*** Move to: "):
-            current_path = line.removeprefix("*** Move to: ").strip()
+            source_path = current_path
+            destination_path = line.removeprefix("*** Move to: ").strip()
+            if source_path:
+                events.append(("delete", source_path, ""))
+            current_path = destination_path
             operation = "update"
             continue
         if line.startswith("+++ "):
