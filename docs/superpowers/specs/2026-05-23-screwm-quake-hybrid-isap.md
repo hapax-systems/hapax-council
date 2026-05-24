@@ -89,7 +89,7 @@ DarkPlaces dpextensions provide `fopen`/`fclose`/`fgets` for reading external fi
 │  ├─ 6 colored lights (per-level semantic colors)         │
 │  ├─ Fog (density + color, mode-aware)                    │
 │  ├─ 5 ambient sound zones (entity-based, 128 channels)  │
-│  ├─ QuakeC camera (pendulum path, stimmung-driven)       │
+│  ├─ QuakeC camera (stable review + optional manual/orbit)│
 │  ├─ QuakeC cognitive coupling (/dev/shm reader)          │
 │  ├─ GLSL post-processing (39 ported shader nodes)        │
 │  └─ Output: window → v4l2loopback /dev/video52           │
@@ -166,18 +166,16 @@ QuakeC reads /dev/shm state files via dpextensions `fopen`/`fgets` (verified cap
 
 ### 7.1 Camera Path
 
-QuakeC implements Catmull-Rom spline interpolation between 6 control points:
+The production/review default is a stable noclip camera aimed into the
+in-scroom ward/source field. This is intentional: the operator needs a fixed
+OBS-reviewable posture while the migration is still being judged. Optional
+motion remains available through `screwm_camera_orbit 1`, and headless manual
+control is gated by `hapax-screwm-camera-gamepad.service` plus
+`data/camera-manual.txt`; both are off by default.
 
-```
-S0: (0, -32, 120)   → looking center, perception level
-S1: (80, 64, 80)    → offset right, cognition
-S2: (-60, 160, 100)  → offset left, communication
-S3: (40, 256, -80)   → offset right rear, expression
-S4: (-40, 352, 60)   → offset left, grounding
-S5: (0, -32, 120)   → return to S0 (pendulum)
-```
-
-Period: `120.0 + (1.0 - energy) * 30.0` seconds (stimmung-driven, matching current scene.rs).
+The view body is QuakeC-owned, `MOVETYPE_NOCLIP`, and `SOLID_NOT`, so the POV
+can move through the space freely when manual control is enabled and cannot be
+shoved by BSP/player collision.
 
 ## 8. QuakeHomage Package
 
@@ -258,13 +256,18 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - LibreQuake (BSD), Aquilarius (CC0), Kaz115 (CC0)
 - `assets/quake/textures/`, `assets/quake/LICENSES.md`
 
-### D4: QuakeC Camera + Cognitive Coupling Mod [IN PROGRESS — beta lane]
+### D4: QuakeC Camera + Cognitive Coupling Mod [IN PROGRESS]
 - `assets/quake/qc/` — defs.qc, camera.qc, world.qc, coupling.qc
 - Compiled progs.dat
+- Stable noclip review POV is default; optional controller/manual camera is gated.
+- Live coupling currently drives AoA spin, fog, postprocess vectors, source/ward
+  lights, audio reactivity, and working-mode map changes. Camera motion remains
+  opt-in during review.
 
-### D5: AoA Sierpinski Tetrahedron MDL [IN PROGRESS — delta lane]
+### D5: AoA Sierpinski Tetrahedron MDL [COMPLETE]
 - `scripts/generate-aoa-mdl.py`
 - `assets/quake/models/aoa.mdl`
+- Spawned and rotated by QuakeC at `AOA_CENTER`.
 
 ### D6: v4l2loopback Capture [COMPLETE - BOUNDED SMOKE PASSED]
 - `/etc/modprobe.d/v4l2loopback-hapax.conf` updated (video52=DarkPlaces in the unified 14-device config)
@@ -337,6 +340,8 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   directory to modulate engine-side dynamic lights.
 - Ward identity and the first drift graph are in BSP/WAD geometry/materials;
   CSQC is now the live coupling layer, not the default ward text surface.
+- CSQC also carries live six-camera/source state into in-world dynamic lights
+  using separate semantic priority and fresh-frame evidence scalars.
 
 ### D8: hapax-darkplaces Systemd Unit [IN PROGRESS]
 - `systemd/units/hapax-darkplaces.service`
@@ -378,6 +383,7 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - OGG files per tower level in `assets/quake/sound/ambient/`
 - Entity-based emitters in BSP map
 - QuakeC sound triggers
+- Five ambient zones are precached and spawned by `world.qc`.
 
 ### D12: GLSL Post-Processing Port (Phase 4)
 - 39 shader nodes as DarkPlaces GLSL post-processing passes
@@ -408,7 +414,7 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 |---|---|---|---|
 | 0: Foundation | DarkPlaces installed, BSP compiles, systemd unit | **DONE** | BSP loads in engine |
 | 1: Tower Live | Textures, lights, fog, v4l2 capture, compositor integration | 2-4h | OBS shows DarkPlaces carrying wards in-scroom |
-| 2: Camera + AoA | QuakeC pendulum camera, AoA MDL, sound emitters | 4-8h | Smooth camera traversal, AoA visible, sound per level |
+| 2: Camera + AoA | Stable noclip review camera, optional manual/orbit camera, AoA MDL, sound emitters | 4-8h | Stable review POV, optional free movement, AoA visible, sound per level |
 | 3: Mode Coupling | Dual BSPs, fog/brightness mode switch, stimmung coupling | 1-2d | Working mode change shifts tower aesthetic |
 | 4: Shader Port P1 | 39 EXCELLENT+GOOD nodes as GLSL post-processing | 1-2w | Visual parity with reverie for ported nodes |
 | 5: Shader Port P2 | 11 MODERATE nodes, accumulator plugin investigation | 2-4w | Extended visual vocabulary in DarkPlaces |
@@ -432,11 +438,11 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - [x] All 36 non-DarkPlaces Screwm visual sources have in-scroom BSP/WAD anchors
 - [x] In-world BSP drift carriers connect the ward field
 - [x] Compositor accepts DarkPlaces as primary background without external ward overlays
-- [ ] QuakeC pendulum camera traverses tower smoothly (120-150s period)
-- [ ] AoA Sierpinski tetrahedron visible and rotating at tower center
-- [ ] 5 ambient sound zones audible with distinct sonic character
-- [ ] Working mode switch changes fog color + texture set
-- [ ] Stimmung energy modulates camera speed + light intensity
+- [x] Stable QuakeC review POV is noclip/free-camera, with optional manual/orbit movement gated off by default
+- [x] AoA Sierpinski tetrahedron visible and rotating at tower center
+- [x] 5 ambient sound zones are present and spawned by QuakeC
+- [x] Working mode switch changes fog color + texture set
+- [x] Stimmung/audio/Reverie state modulates AoA spin, fog, postprocess fields, and ward/source light intensity
 - [ ] Textures CC0/BSD licensed (LICENSES.md audit)
 - [ ] Systemd unit starts/stops/restarts cleanly with WatchdogSec
 - [ ] 1-hour stability test without memory growth or crashes

@@ -83,3 +83,30 @@ def test_screwm_quake_carries_audio_reactivity_into_scroom_effects() -> None:
     assert "coupling_audio_onset * 0.010" in coupling
     assert 'screwm_read_norm("data/audio-rms.txt")' in wards
     assert "screwm_audio_rms * 90" in wards
+
+
+def test_screwm_quake_contract_matches_current_camera_aoa_and_sound_foundation() -> None:
+    spec = (
+        REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-05-23-screwm-quake-hybrid-isap.md"
+    ).read_text(encoding="utf-8")
+    defs = (REPO_ROOT / "assets" / "quake" / "qc" / "defs.qc").read_text(encoding="utf-8")
+    world = (REPO_ROOT / "assets" / "quake" / "qc" / "world.qc").read_text(encoding="utf-8")
+    coupling = (REPO_ROOT / "assets" / "quake" / "qc" / "coupling.qc").read_text(encoding="utf-8")
+
+    assert "stable noclip camera" in spec
+    assert "MOVETYPE_NOCLIP" in defs
+    assert "screwm_free_view_body(self);" in world
+    assert "spawn_aoa();" in world
+    assert "self.angles_y = self.angles_y + frametime * self.screwm_spin_y" in world
+    for sound in (
+        "ambient/perception.ogg",
+        "ambient/cognition.ogg",
+        "ambient/communication.ogg",
+        "ambient/expression.ogg",
+        "ambient/grounding.ogg",
+    ):
+        assert sound in world
+    assert 'localcmd(strcat(strcat("map ", map_name), "\\n"));' in coupling
+    assert "[x] Stable QuakeC review POV is noclip/free-camera" in spec
+    assert "[x] AoA Sierpinski tetrahedron visible and rotating" in spec
+    assert "[x] 5 ambient sound zones" in spec
