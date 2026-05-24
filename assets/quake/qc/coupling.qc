@@ -145,12 +145,17 @@ void() coupling_apply_stimmung =
     uservec1_cmd = strcat(uservec1_cmd, "\"\n");
     localcmd(uservec1_cmd);
 
-    // UserVec2: x=mortar_lines, y=edge_glow, z=posterize, w=unused
+    // UserVec2: x=mortar_lines, y=edge_glow, z=posterize, w=sharpen
     float edge = 0.15 + coupling_energy * 0.25 + coupling_reverie_salience * 0.12;
     edge = edge + coupling_audio_onset * 0.10;
+    float sharpen_val = coupling_reverie_salience * 0.10 + coupling_audio_onset * 0.06;
+    if (sharpen_val > 0.12)
+        sharpen_val = 0.12;
     string uservec2_cmd;
     uservec2_cmd = strcat("r_glsl_postprocess_uservec2 \"0.06 ", ftos(edge));
-    uservec2_cmd = strcat(uservec2_cmd, " 0 0\"\n");
+    uservec2_cmd = strcat(uservec2_cmd, " 0 ");
+    uservec2_cmd = strcat(uservec2_cmd, ftos(sharpen_val));
+    uservec2_cmd = strcat(uservec2_cmd, "\"\n");
     localcmd(uservec2_cmd);
 
     // UserVec3: x=spatial_warp, y=signal_noise, z=halftone, w=threshold.

@@ -57,6 +57,10 @@ def test_screwm_shader_effects_are_unconditional_scroom_fields() -> None:
     assert "smoothstep(0.35, 0.92, mask_dist)" in postprocess_block
     assert "mask_strength = min(mask_r, 0.25) * 0.35" in postprocess_block
     assert "vhs_strength = clamp(UserVec3.y * 8.0, 0.0, 1.0)" in postprocess_block
+    assert "UserVec2: x=mortar_lines, y=edge_glow, z=posterize_levels, w=sharpen" in (
+        postprocess_block
+    )
+    assert "vec3 sh_blur = (sh_l + sh_r + sh_u + sh_d) * 0.25" in postprocess_block
     assert "vhs_band) * 0.008" not in postprocess_block
     assert "float strobe_period" not in postprocess_block
     assert "color += vec3(strobe" not in postprocess_block
@@ -165,6 +169,7 @@ def test_screwm_quake_contract_matches_current_camera_aoa_and_sound_foundation()
     assert "[x] 5 ambient sound zones" in spec
     assert "material, inversion, aperture, and" in spec
     assert "Positive UserVec4.x is material emboss only" in spec
+    assert "UserVec2.w now carries a bounded sharpen pass" in spec
     assert "Aperture pressure is non-destructive edge attenuation" in spec
 
 

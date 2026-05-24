@@ -410,6 +410,9 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   salience/trace/temporal/spectral plus material, inversion, aperture, and
   thermal pressure. Positive UserVec4.x is material emboss only; implicit UV
   rotation is not part of the stable review baseline.
+- UserVec2.w now carries a bounded sharpen pass, driven by live salience and
+  audio onset, so in-scroom ward panels regain material edge definition after
+  fog and bloom without adding camera-like motion.
 - Aperture pressure is non-destructive edge attenuation, and horizontal signal
   shear is bounded by live signal noise so the fixed noclip review POV remains
   readable while the effect vocabulary remains embodied in the scroom.

@@ -377,7 +377,7 @@ void main(void)
 #ifdef USEPOSTPROCESSING
 // Screwm scroom post-processing — spatial effects in one pass.
 // UserVec1: x=atmo_darken, y=prismatic_fog, z=world_warmth, w=dust
-// UserVec2: x=mortar_lines, y=edge_glow, z=posterize_levels, w=unused
+// UserVec2: x=mortar_lines, y=edge_glow, z=posterize_levels, w=sharpen
 // UserVec3: x=spatial_warp, y=signal_noise, z=halftone_size, w=threshold
 // UserVec4: x=surface_emboss/kaleidoscope, y=invert_mix, z=circular_mask_r, w=thermal_mix
 // Effects run unconditionally — UserVec uniforms always available
@@ -479,6 +479,17 @@ void main(void)
 	float post_levels = UserVec2.z;
 	if (post_levels > 2.0) {
 		color = floor(color * post_levels) / post_levels;
+	}
+
+	// Sharpen — recover ward/panel material edges after fog and bloom.
+	float sharpen_str = UserVec2.w;
+	if (sharpen_str > 0.001) {
+		vec3 sh_l = dp_texture2D(Texture_First, uv + vec2(-px.x, 0.0)).rgb;
+		vec3 sh_r = dp_texture2D(Texture_First, uv + vec2(px.x, 0.0)).rgb;
+		vec3 sh_u = dp_texture2D(Texture_First, uv + vec2(0.0, px.y)).rgb;
+		vec3 sh_d = dp_texture2D(Texture_First, uv + vec2(0.0, -px.y)).rgb;
+		vec3 sh_blur = (sh_l + sh_r + sh_u + sh_d) * 0.25;
+		color += (color - sh_blur) * sharpen_str;
 	}
 
 	// Surface granularity — stone texture micro-detail

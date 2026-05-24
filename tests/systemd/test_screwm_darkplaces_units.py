@@ -104,6 +104,9 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     defs = (REPO_ROOT / "assets" / "quake" / "qc" / "defs.qc").read_text(encoding="utf-8")
     camera = (REPO_ROOT / "assets" / "quake" / "qc" / "camera.qc").read_text(encoding="utf-8")
     coupling = (REPO_ROOT / "assets" / "quake" / "qc" / "coupling.qc").read_text(encoding="utf-8")
+    autoexec = (REPO_ROOT / "assets" / "quake" / "config" / "autoexec.cfg").read_text(
+        encoding="utf-8"
+    )
     world = (REPO_ROOT / "assets" / "quake" / "qc" / "world.qc").read_text(encoding="utf-8")
 
     assert "vector AOA_CENTER = '0 0 176';" in defs
@@ -121,6 +124,8 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     assert "float base_rot = 3.0;" in coupling
     assert "coupling_voice_active * 8.0" in coupling
     assert "coupling_energy * 4.0" in coupling
+    assert "UserVec2: mortar_lines, edge_glow, posterize, sharpen" in autoexec
+    assert 'r_glsl_postprocess_uservec2 "0.05 0.18 0 0.03"' in autoexec
     assert "setorigin(self, CAMERA_REVIEW_POS);" in world
 
 
