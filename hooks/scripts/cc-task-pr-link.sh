@@ -43,16 +43,75 @@ if [[ -z "$input" ]]; then
 fi
 
 tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || echo "")"
-[[ "$tool_name" == "Bash" ]] || exit 0
 
-# --- 3. Match `gh pr create` invocation ---
-bash_cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || echo "")"
-if [[ -z "$bash_cmd" ]]; then
-  exit 0
-fi
-case "$bash_cmd" in
-  *"gh pr create"*) ;;
-  *) exit 0 ;;
+shell_is_gh_pr_create() {
+  local cmd="$1"
+  python3 - "$cmd" <<'PYEOF' 2>/dev/null
+import shlex
+import sys
+
+cmd = sys.argv[1]
+try:
+    lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|()")
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+except (TypeError, ValueError):
+    tokens = (
+        cmd.replace("&&", " && ")
+        .replace("||", " || ")
+        .replace(";", " ; ")
+        .replace("|", " | ")
+        .replace("(", " ( ")
+        .replace(")", " ) ")
+        .split()
+    )
+
+separators = {"&&", "||", ";", ";;", ";&", ";;&", "|", "(", ")"}
+
+
+def base(token: str) -> str:
+    return token.rsplit("/", 1)[-1]
+
+
+def gh_pr_create_at(index: int) -> bool:
+    j = index + 1
+    while j < len(tokens):
+        tok = tokens[j]
+        if tok in separators:
+            return False
+        if tok in {"-R", "--repo", "--hostname", "--config-dir"}:
+            j += 2
+            continue
+        if tok.startswith(("--repo=", "--hostname=", "--config-dir=")):
+            j += 1
+            continue
+        if tok.startswith("-"):
+            j += 1
+            continue
+        return tok == "pr" and j + 1 < len(tokens) and tokens[j + 1] == "create"
+    return False
+
+
+for i, token in enumerate(tokens):
+    if base(token) == "gh" and gh_pr_create_at(i):
+        sys.exit(0)
+sys.exit(1)
+PYEOF
+}
+
+# --- 3. Match PR creation invocation ---
+bash_cmd=""
+case "$tool_name" in
+  Bash)
+    bash_cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || echo "")"
+    [[ -n "$bash_cmd" ]] || exit 0
+    shell_is_gh_pr_create "$bash_cmd" || exit 0
+    ;;
+  mcp__github__create_pull_request)
+    ;;
+  *)
+    exit 0
+    ;;
 esac
 
 # --- 4. Pull tool output (PostToolUse provides .tool_response in JSON,
@@ -83,26 +142,49 @@ fi
 
 # --- 6. Determine session role ---
 role=""
-for candidate in "${CLAUDE_ROLE:-}" "${HAPAX_AGENT_SLOT:-}" "${HAPAX_WORKTREE_ROLE:-}" "${HAPAX_AGENT_ROLE:-}" "${CODEX_ROLE:-}"; do
+claim_exists_for_role() {
+  local candidate="${1:-}"
+  [[ -n "$candidate" && -f "$HOME/.cache/hapax/cc-active-task-$candidate" ]]
+}
+
+# Codex lanes have their own cc-active-task-cx-* claim files. Prefer an active
+# Codex lane claim over inherited Claude slot variables from the parent shell.
+for candidate in \
+  "${HAPAX_AGENT_NAME:-}" \
+  "${CODEX_THREAD_NAME:-}" \
+  "${CODEX_SESSION_NAME:-}" \
+  "${CODEX_SESSION:-}" \
+  "${CODEX_ROLE:-}" \
+  "${HAPAX_AGENT_ROLE:-}" \
+  "${CLAUDE_ROLE:-}"; do
   case "$candidate" in
-    alpha|beta|gamma|delta|epsilon)
-      role="$candidate"
-      break
+    cx-*)
+      if claim_exists_for_role "$candidate"; then
+        role="$candidate"
+        break
+      fi
       ;;
   esac
 done
-if [[ -n "$role" && ! -f "$HOME/.cache/hapax/cc-active-task-$role" ]]; then
-  claim_candidates=()
-  for r in alpha beta gamma delta epsilon; do
-    f="$HOME/.cache/hapax/cc-active-task-$r"
-    if [[ -f "$f" ]]; then
-      claim_candidates+=("$r")
-    fi
+
+if [[ -z "$role" ]]; then
+  for candidate in \
+    "${HAPAX_AGENT_SLOT:-}" \
+    "${HAPAX_WORKTREE_ROLE:-}" \
+    "${HAPAX_AGENT_ROLE:-}" \
+    "${CODEX_ROLE:-}" \
+    "${CLAUDE_ROLE:-}"; do
+    case "$candidate" in
+      alpha|beta|gamma|delta|epsilon)
+        if claim_exists_for_role "$candidate"; then
+          role="$candidate"
+          break
+        fi
+        ;;
+    esac
   done
-  if [[ ${#claim_candidates[@]} -eq 1 ]]; then
-    role="${claim_candidates[0]}"
-  fi
 fi
+
 if [[ -z "$role" ]]; then
   # Same fallback as cc-task-gate: if exactly one relay yaml exists, use it.
   relay_dir="$HOME/.cache/hapax/relay"

@@ -413,3 +413,106 @@ class TestAuthorizationPacketValidator:
         result = _run(VALIDATOR, MCP_PR_CREATE_INPUT, home=home)
         assert result.returncode == 2
         assert "no claimed task" in result.stderr.lower()
+
+    def test_release_detection_handles_common_global_option_forms(self, tmp_path: Path) -> None:
+        home = _make_case_vault(
+            tmp_path,
+            case_id="CASE-001",
+            stage="S6_implementation",
+            impl_authorized="true",
+            src_authorized="true",
+            docs_authorized="false",
+            runtime_authorized="false",
+            release_authorized="false",
+            public_current="false",
+        )
+        _write_claim(home, "alpha", "test-case-001")
+
+        commands = [
+            "git -C /tmp/repo push origin HEAD",
+            "git -c protocol.version=2 push origin HEAD",
+            "git --git-dir=/tmp/repo/.git --work-tree=/tmp/repo push origin HEAD",
+            "gh --repo ryanklee/hapax-council pr create --title test",
+            "gh -R ryanklee/hapax-council pr create --title test",
+        ]
+        for command in commands:
+            result = _run(
+                VALIDATOR,
+                {"tool_name": "Bash", "tool_input": {"command": command}},
+                home=home,
+            )
+            assert result.returncode == 0, f"{command}: {result.stderr}"
+
+    def test_pr_create_allowed_without_release_authorization(self, tmp_path: Path) -> None:
+        home = _make_case_vault(
+            tmp_path,
+            case_id="CASE-001",
+            stage="S6_implementation",
+            impl_authorized="true",
+            src_authorized="true",
+            docs_authorized="false",
+            runtime_authorized="false",
+            release_authorized="false",
+            public_current="false",
+        )
+        _write_claim(home, "alpha", "test-case-001")
+        result = _run(
+            VALIDATOR,
+            {
+                "tool_name": "Bash",
+                "tool_input": {
+                    "command": "gh --repo ryanklee/hapax-council pr create --title test"
+                },
+            },
+            home=home,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_merge_command_requires_release_authorization(self, tmp_path: Path) -> None:
+        home = _make_case_vault(
+            tmp_path,
+            case_id="CASE-001",
+            stage="S6_implementation",
+            impl_authorized="true",
+            src_authorized="true",
+            docs_authorized="false",
+            runtime_authorized="false",
+            release_authorized="false",
+            public_current="false",
+        )
+        _write_claim(home, "alpha", "test-case-001")
+        for command in [
+            "gh -R ryanklee/hapax-council api repos/ryanklee/hapax-council/pulls/1/merge -X PUT",
+            "gh pr create --title test && gh pr merge --auto",
+        ]:
+            result = _run(
+                VALIDATOR,
+                {"tool_name": "Bash", "tool_input": {"command": command}},
+                home=home,
+            )
+            assert result.returncode == 2
+            assert "release_authorized" in result.stderr
+
+    def test_mcp_merge_requires_release_authorization(self, tmp_path: Path) -> None:
+        home = _make_case_vault(
+            tmp_path,
+            case_id="CASE-001",
+            stage="S6_implementation",
+            impl_authorized="true",
+            src_authorized="true",
+            docs_authorized="false",
+            runtime_authorized="false",
+            release_authorized="false",
+            public_current="false",
+        )
+        _write_claim(home, "alpha", "test-case-001")
+        result = _run(
+            VALIDATOR,
+            {
+                "tool_name": "mcp__github__merge_pull_request",
+                "tool_input": {"owner": "ryanklee", "repo": "hapax-council"},
+            },
+            home=home,
+        )
+        assert result.returncode == 2
+        assert "release_authorized" in result.stderr

@@ -222,6 +222,7 @@ run_post_shell() {
 run_post_mutation_event() {
   local event_json="$1"
   local hooks=(
+    cc-task-pr-link.sh
     llm-metadata-gate.sh
     axiom-audit.sh
     conductor-post.sh

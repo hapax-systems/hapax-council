@@ -97,6 +97,35 @@ def _run_hook(
     )
 
 
+def _run_payload(
+    payload: dict,
+    *,
+    home: Path,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env.pop("CLAUDE_ROLE", None)
+    env.pop("CODEX_ROLE", None)
+    env.pop("CODEX_THREAD_NAME", None)
+    env.pop("CODEX_SESSION", None)
+    env.pop("CODEX_SESSION_NAME", None)
+    env.pop("HAPAX_AGENT_NAME", None)
+    env.pop("HAPAX_AGENT_ROLE", None)
+    env.pop("HAPAX_AGENT_SLOT", None)
+    env.pop("HAPAX_WORKTREE_ROLE", None)
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [str(HOOK)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+
 class TestHappyPath:
     def test_links_pr_when_active_claim_exists(self, tmp_path: Path) -> None:
         _vault, note = _make_vault(tmp_path, task_id="test-001", pr=None)
@@ -123,6 +152,24 @@ class TestHappyPath:
         assert result.returncode == 0
         text = note.read_text(encoding="utf-8")
         assert "branch: " in text
+
+    def test_mcp_github_pr_create_links_pr(self, tmp_path: Path) -> None:
+        _vault, note = _make_vault(tmp_path, task_id="mcp-task", pr=None)
+        _write_claim(tmp_path, "beta", "mcp-task")
+
+        result = _run_payload(
+            {
+                "tool_name": "mcp__github__create_pull_request",
+                "tool_response": {"output": "https://github.com/ryanklee/hapax-council/pull/5151"},
+            },
+            home=tmp_path,
+            extra_env={"CLAUDE_ROLE": "beta"},
+        )
+
+        assert result.returncode == 0, result.stderr
+        text = note.read_text(encoding="utf-8")
+        assert "pr: 5151" in text
+        assert "status: pr_open" in text
 
 
 class TestIdempotency:
@@ -263,6 +310,33 @@ class TestKillswitch:
 
 
 class TestRoleResolution:
+    def test_codex_claim_precedes_inherited_claude_role(self, tmp_path: Path) -> None:
+        _vault, codex_note = _make_vault(tmp_path, task_id="codex-task", pr=None)
+        _vault, alpha_note = _make_vault(tmp_path, task_id="alpha-task", pr=None)
+        _write_claim(tmp_path, "cx-red", "codex-task")
+        _write_claim(tmp_path, "alpha", "alpha-task")
+
+        result = _run_payload(
+            {
+                "tool_name": "Bash",
+                "tool_input": {
+                    "command": "gh --repo ryanklee/hapax-council pr create --title test"
+                },
+                "tool_response": {"output": "https://github.com/ryanklee/hapax-council/pull/6060"},
+            },
+            home=tmp_path,
+            extra_env={
+                "CLAUDE_ROLE": "alpha",
+                "HAPAX_AGENT_ROLE": "cx-red",
+                "CODEX_THREAD_NAME": "cx-red",
+                "CODEX_ROLE": "cx-red",
+            },
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "pr: 6060" in codex_note.read_text(encoding="utf-8")
+        assert "pr: 6060" not in alpha_note.read_text(encoding="utf-8")
+
     def test_relay_yaml_fallback_when_role_unset(self, tmp_path: Path) -> None:
         _vault, note = _make_vault(tmp_path, task_id="test-001", pr=None)
         # Write a single relay yaml so the hook can infer role=beta.

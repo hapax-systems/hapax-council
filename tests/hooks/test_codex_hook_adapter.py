@@ -9,6 +9,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 ADAPTER = REPO_ROOT / "hooks" / "scripts" / "codex-hook-adapter.sh"
+PATCH_EVENTS = REPO_ROOT / "hooks" / "scripts" / "codex_patch_events.py"
 
 
 def _make_repo_on_main(path: Path) -> Path:
@@ -289,6 +290,72 @@ def test_apply_patch_runs_pipewire_graph_edit_gate(tmp_path: Path) -> None:
     assert result["decision"] == "block"
     assert "pipewire-graph-edit-gate.sh" in result["reason"]
     assert "requires applier lock" in result["reason"]
+
+
+def test_codex_patch_move_emits_source_and_destination_events() -> None:
+    patch = """*** Begin Patch
+*** Update File: hooks/scripts/old-name.sh
+*** Move to: hooks/scripts/new-name.sh
+@@
++echo moved
+*** End Patch
+"""
+    result = subprocess.run(
+        [str(PATCH_EVENTS)],
+        input=json.dumps({"tool_name": "apply_patch", "tool_input": {"patch": patch}}),
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    assert [event["tool_input"]["operation"] for event in events] == ["delete", "update"]
+    assert [event["tool_input"]["path"] for event in events] == [
+        "hooks/scripts/old-name.sh",
+        "hooks/scripts/new-name.sh",
+    ]
+
+
+def test_mcp_github_pr_create_post_links_codex_claim(tmp_path: Path) -> None:
+    active = tmp_path / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+    active.mkdir(parents=True)
+    note = active / "mcp-pr-task.md"
+    note.write_text(
+        """---
+type: cc-task
+task_id: mcp-pr-task
+status: in_progress
+assigned_to: cx-red
+branch: null
+pr: null
+updated_at: 2026-05-24T00:00:00Z
+---
+
+# MCP PR task
+
+## Session log
+""",
+        encoding="utf-8",
+    )
+    cache = tmp_path / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-cx-red").write_text("mcp-pr-task\n", encoding="utf-8")
+
+    result = _run_adapter(
+        {
+            "hook_event_name": "PostToolUse",
+            "session_id": "s1",
+            "tool_name": "mcp__github__create_pull_request",
+            "tool_response": {"output": "https://github.com/ryanklee/hapax-council/pull/5150"},
+        },
+        home=tmp_path,
+    )
+
+    assert result.get("continue") is True
+    text = note.read_text(encoding="utf-8")
+    assert "pr: 5150" in text
+    assert "status: pr_open" in text
 
 
 def test_session_start_returns_codex_additional_context(tmp_path: Path) -> None:

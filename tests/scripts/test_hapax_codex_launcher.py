@@ -47,6 +47,8 @@ printf 'TAVILY_API_KEY=%s\\n' "${{TAVILY_API_KEY:-}}" >> {env_file}
     env.pop("CODEX_SESSION", None)
     env.pop("HAPAX_AGENT_NAME", None)
     env.pop("HAPAX_AGENT_ROLE", None)
+    env.pop("HAPAX_PARENT_AGENT_INTERFACE", None)
+    env.pop("HAPAX_PARENT_AGENT_NAME", None)
     return env, args_file, env_file
 
 
@@ -195,6 +197,63 @@ def test_launcher_scrubs_mcp_tokens_from_codex_session_env(tmp_path: Path) -> No
     assert "github-parent-token" not in launched_env
     assert "codex-github-parent-token" not in launched_env
     assert "tavily-parent-token" not in launched_env
+
+
+def test_codex_apply_requires_methodology_emergency(tmp_path: Path) -> None:
+    env, args_file, _env_file = _env_with_fake_codex(tmp_path)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-red",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "apply",
+            "patch.diff",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 13
+    assert "codex apply" in result.stderr
+    assert not args_file.exists()
+
+
+def test_codex_apply_allows_governed_emergency_escape(tmp_path: Path) -> None:
+    env, args_file, _env_file = _env_with_fake_codex(tmp_path)
+    env["HAPAX_METHODOLOGY_EMERGENCY"] = "1"
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-red",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "apply",
+            "patch.diff",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "apply patch.diff" in args_file.read_text()
+    ledger = Path(env["HOME"]) / ".cache" / "hapax" / "methodology-emergency-ledger.jsonl"
+    assert ledger.exists()
+    assert "codex_apply_emergency" in ledger.read_text(encoding="utf-8")
 
 
 def test_task_launch_generates_bootstrap_prompt_without_claim_when_disabled(tmp_path: Path) -> None:
