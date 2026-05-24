@@ -53,7 +53,7 @@ class TTSManager:
         self._voice_id = voice_id
         self._chatterbox_model = None
         self._kokoro_pipeline = None
-        self._backend = "chatterbox"
+        self._backend = os.environ.get("HAPAX_TTS_BACKEND", "chatterbox")
         self._remote_host = os.environ.get("HAPAX_TTS_REMOTE_HOST")
         self._remote_port = int(os.environ.get("HAPAX_TTS_REMOTE_PORT", "9851"))
 
@@ -61,6 +61,10 @@ class TTSManager:
         if self._remote_host:
             self._backend = "remote"
             log.info("TTS remote mode: %s:%d", self._remote_host, self._remote_port)
+            return
+        if self._backend == "kokoro":
+            self._get_kokoro()
+            log.info("Kokoro TTS ready (voice=%s, GPU primary)", self._voice_id)
             return
         try:
             self._get_chatterbox()
@@ -83,7 +87,7 @@ class TTSManager:
         if self._kokoro_pipeline is None:
             from kokoro import KPipeline
 
-            self._kokoro_pipeline = KPipeline(lang_code="a", device="cpu")
+            self._kokoro_pipeline = KPipeline(lang_code="a")
         return self._kokoro_pipeline
 
     def synthesize(

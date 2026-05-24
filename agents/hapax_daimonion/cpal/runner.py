@@ -242,6 +242,7 @@ class CpalRunner:
         self._pipeline = conversation_pipeline  # T3 delegate
         self._daemon = daemon
         self._audio_perception = audio_perception
+        self._last_operator_speech: float = 0.0
 
         # GEAL Phase 2 Task 2.1 — TTS envelope publisher. Taps the TTS
         # PCM stream so GEAL can drive V1 Chladni ignition / V2 halo
@@ -977,6 +978,11 @@ class CpalRunner:
                     self._daemon.arbiter.claim(claim)
                     self._kill_inflight_playback()
 
+                self._last_operator_speech = time.monotonic()
+                try:
+                    Path("/dev/shm/hapax-daimonion/conversation-active").write_text(str(time.time()))
+                except OSError:
+                    pass
                 log.info(
                     "CPAL: operator speech impingement (strength=%.2f): %.40s",
                     getattr(impingement, "strength", 0),
@@ -1007,7 +1013,10 @@ class CpalRunner:
         # synthesize and play it directly via daemon.tts + play_pcm only after
         # the resolved destination decision accepts the route.
         source = getattr(impingement, "source", "")
-        if source == "autonomous_narrative" and self._daemon is not None:
+        if source == "autonomous_narrative":
+            return  # Autonomous narrative disabled — conversation-first architecture
+
+        if False and source == "autonomous_narrative_DISABLED" and self._daemon is not None:
             # The dedicated prepared_playback_loop owns TTS only for explicit
             # legacy verbatim playback. Live-prior prepared scripts are source
             # context for composition and must not suppress autonomous narration.
@@ -1235,6 +1244,7 @@ class CpalRunner:
             return
 
         if effect.should_surface:
+            return  # Exploration surfacing disabled — conversation-first architecture
             # Refractory inhibition for exploration surfacing.
             # Same mechanism as autonomous narration's 120s refractory
             # (run_loops_aux._NARRATION_REFRACTORY_S). After successful
@@ -1295,6 +1305,16 @@ class CpalRunner:
             # Check arbiter — defer if higher-priority claim on audio_output
             if self._daemon is not None and hasattr(self._daemon, "arbiter"):
                 from agents.hapax_daimonion.arbiter import ResourceClaim
+
+                # Suppress exploration during active conversation window
+                _CONVERSATION_WINDOW_S = 120.0
+                since_operator = time.monotonic() - self._last_operator_speech
+                if self._last_operator_speech > 0 and since_operator < _CONVERSATION_WINDOW_S:
+                    log.debug(
+                        "CPAL: exploration suppressed — conversation window active (%.0fs ago)",
+                        since_operator,
+                    )
+                    return
 
                 self._daemon.arbiter.drain_winners()
                 current_winner = self._daemon.arbiter.resolve("audio_output")
@@ -1379,6 +1399,8 @@ class CpalRunner:
         destination_role, destination_value, source, effect,
     ) -> None:
         if self._pipeline is None or not hasattr(self._pipeline, "generate_spontaneous_speech"):
+            return
+        if self._last_operator_speech > 0 and (time.monotonic() - self._last_operator_speech) < 120.0:
             return
         async with self._speech_lock:
             try:

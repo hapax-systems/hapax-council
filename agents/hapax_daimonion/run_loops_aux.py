@@ -885,6 +885,10 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
     period (120s) so cadence emerges from the pipeline's base_level decay
     + inhibition mechanism rather than a hardcoded interval.
     """
+
+    # Autonomous narration disabled — conversation-first architecture
+    return
+
     try:
         if _inhibit_narration_drive_if_missing_evidence(daemon, imp, candidate):
             return

@@ -412,7 +412,12 @@ class ConversationPipeline:
                     timeout=15,
                 )
 
-            text = response.choices[0].message.content.strip()
+            _llm_elapsed = __import__("time").monotonic() - _llm_start
+            log.info("LLM call took %.1fs", _llm_elapsed)
+            if "choices" not in response:
+                log.warning("TabbyAPI response missing choices: %s", str(response)[:200])
+                return
+            text = response["choices"][0]["message"]["content"].strip()
             if text and "[silence]" not in text.lower():
                 log.info("Spontaneous speech: %s", text[:80])
                 await self._speak_sentence(
@@ -453,7 +458,7 @@ class ConversationPipeline:
         if not self._running:
             await self.start()
 
-        self._update_system_context()
+        # _update_system_context skipped — use base system_prompt directly for speed
 
         import litellm
 
@@ -464,24 +469,35 @@ class ConversationPipeline:
         self._conversation_thread.append({"role": "user", "content": transcript})
 
         try:
-            response = await asyncio.wait_for(
-                litellm.acompletion(
-                    model=f"openai/{grounded_model}",
-                    messages=self.messages + [{"role": "user", "content": transcript}],
-                    max_tokens=200,
-                    temperature=0.7,
-                    api_key=__import__("os").environ.get("LITELLM_API_KEY", ""),
-                    api_base=_base,
-                    timeout=10,
-                ),
-                timeout=15,
-            )
+            import httpx
 
-            text = response.choices[0].message.content.strip()
+            _tabby_url = "http://localhost:5000/v1/chat/completions"
+            _llm_start = __import__("time").monotonic()
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    _tabby_url,
+                    json={
+                        "model": "command-r",
+                        "messages": [
+                            {"role": "system", "content": self.system_prompt},
+                            {"role": "user", "content": transcript},
+                        ],
+                        "max_tokens": 80,
+                        "temperature": 0.7,
+                    },
+                )
+                response = resp.json()
+
+            _llm_elapsed = __import__("time").monotonic() - _llm_start
+            log.info("LLM call took %.1fs", _llm_elapsed)
+            if "choices" not in response:
+                log.warning("TabbyAPI response missing choices: %s", str(response)[:200])
+                return
+            text = response["choices"][0]["message"]["content"].strip()
             if text:
                 log.info("Conversation response: %s", text[:80])
                 self._conversation_thread.append({"role": "assistant", "content": text})
-                await self._speak_sentence(text)
+                asyncio.create_task(self._speak_sentence(text))
         except Exception:
             log.warning("process_utterance_from_transcript failed", exc_info=True)
 
