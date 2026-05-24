@@ -12,7 +12,7 @@ import struct
 import zlib
 from pathlib import Path
 
-WARD_COUNT = 35
+WARD_COUNT = 36
 WARD_CODES = [
     "TOKEN",
     "ALBUM",
@@ -49,6 +49,7 @@ WARD_CODES = [
     "ASCII",
     "SEG",
     "SCOPE",
+    "IRDUAL",
 ]
 
 WARD_ACCENT_INDICES = [214, 198, 186, 202, 176]

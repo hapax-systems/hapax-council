@@ -429,7 +429,7 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - [x] DarkPlaces renders tower BSP with textures at 1280×720
 - [x] v4l2loopback /dev/video52 captures DarkPlaces output
 - [x] Layout/registry/pipeline contracts declare DarkPlaces as the v4l2 background source
-- [x] All 35 ward identities have in-scroom BSP/WAD anchors
+- [x] All 36 non-DarkPlaces Screwm visual sources have in-scroom BSP/WAD anchors
 - [x] In-world BSP drift carriers connect the ward field
 - [x] Compositor accepts DarkPlaces as primary background without external ward overlays
 - [ ] QuakeC pendulum camera traverses tower smoothly (120-150s period)

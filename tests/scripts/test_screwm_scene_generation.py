@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import runpy
 from pathlib import Path
 
@@ -15,11 +16,11 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     module = _load_script("scripts/generate-screwm-map.py")
     content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
 
-    assert len(module["WARD_ANCHORS"]) == 35
-    assert content.count("// ward-anchor ") == 35
-    assert content.count("// ward-glow ") == 35
-    assert content.count("// ward-light ") == 35
-    assert content.count("// ward-rail row") == 5
+    assert len(module["WARD_ANCHORS"]) == 36
+    assert content.count("// ward-anchor ") == 36
+    assert content.count("// ward-glow ") == 36
+    assert content.count("// ward-light ") == 36
+    assert content.count("// ward-rail row") == 6
     assert content.count("// ward-spine col") == 7
     assert content.count("// ward-drift ") >= 13
     assert "w01" in content
@@ -28,8 +29,20 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "drift_r" in content
     assert "// ward-anchor 05: reverie" in content
     assert "// ward-anchor 34: segment_content" in content
+    assert "// ward-anchor 36: cbip_dual_ir_displacement" in content
     assert "pos=-222,62,280" in content
     assert "pos=222,-82,64" in content
+    assert "pos=0,-118,28" in content
+
+
+def test_screwm_map_inventory_matches_default_non_darkplaces_sources() -> None:
+    module = _load_script("scripts/generate-screwm-map.py")
+    default_layout = json.loads(
+        (REPO_ROOT / "config" / "compositor-layouts" / "default.json").read_text(encoding="utf-8")
+    )
+    default_sources = {source["id"] for source in default_layout["sources"]} - {"darkplaces"}
+
+    assert set(module["WARD_ANCHORS"]) == default_sources
 
 
 def test_screwm_wad_defines_all_ward_panel_textures() -> None:
@@ -37,12 +50,14 @@ def test_screwm_wad_defines_all_ward_panel_textures() -> None:
     textures = module["TEXTURES"]
 
     ward_textures = [name for name in textures if name.startswith("w") and name[1:].isdigit()]
-    assert len(ward_textures) == 35
+    assert len(ward_textures) == 36
     assert textures["w01"]["pattern"] == "ward_panel"
     assert textures["w01"]["code"] == "TOKEN"
     assert len(module["WARD_ACCENT_INDICES"]) >= 4
     assert textures["w35"]["label"] == 35
     assert textures["w35"]["code"] == "SCOPE"
+    assert textures["w36"]["label"] == 36
+    assert textures["w36"]["code"] == "IRDUAL"
     assert textures["drift_c"]["pattern"] == "drift_line"
     assert textures["drift_r"]["drift"] == 186
 

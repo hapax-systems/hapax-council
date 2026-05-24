@@ -188,6 +188,8 @@ void() screwm_draw_ward_links =
     screwm_draw_link(c01, c03, 6.0, screwm_cyan);
     screwm_draw_link(c03, c05, 6.6, screwm_green);
     screwm_draw_link('-222 -82 64', '222 -82 64', 7.2, screwm_rose);
+    screwm_draw_link('0 -46 118', '0 -118 28', 7.8, screwm_rose);
+    screwm_draw_link('0 -82 64', '0 -118 28', 8.4, screwm_cyan);
 };
 
 void() screwm_draw_wards =
@@ -233,6 +235,7 @@ void() screwm_draw_wards =
     screwm_draw_ward_label('74 -82 64', "33", "ASCII", 33, screwm_amber);
     screwm_draw_ward_label('148 -82 64', "34", "SEGMENT", 34, screwm_rose);
     screwm_draw_ward_label('222 -82 64', "35", "SCOPE", 35, screwm_green);
+    screwm_draw_ward_label('0 -118 28', "36", "IRDUAL", 36, screwm_rose);
 
     screwm_draw_ward_detail('-222 62 280', screwm_w01, 1, screwm_cyan);
     screwm_draw_ward_detail('-148 62 280', screwm_w02, 2, screwm_amber);
@@ -253,7 +256,7 @@ void() screwm_draw_header =
 
     alpha = 0.44 + screwm_energy * 0.18;
     mode_line = strcat("SCREWM FIELD / DARKPLACES SUBSTRATE / ", screwm_mode);
-    energy_line = strcat("WARD ANCHORS 35 / DRIFT ", ftos(screwm_energy));
+    energy_line = strcat("WARD ANCHORS 36 / DRIFT ", ftos(screwm_energy));
 
     drawfill('18 18 0', '420 34 0', '0.02 0.03 0.03', 0.22, DRAWFLAG_NORMAL);
     drawstring('26 24 0', mode_line, '7 7 0', screwm_cyan, alpha, DRAWFLAG_ADDITIVE);
@@ -318,6 +321,7 @@ void() screwm_add_dynamic_lights =
     screwm_add_ward_light('74 -82 64', 33, screwm_amber);
     screwm_add_ward_light('148 -82 64', 34, screwm_rose);
     screwm_add_ward_light('222 -82 64', 35, screwm_green);
+    screwm_add_ward_light('0 -118 28', 36, screwm_rose);
 };
 
 void(float apilevel, string enginename, float engineversion) CSQC_Init =

@@ -24,9 +24,9 @@ def test_csqc_sources_define_all_legacy_ward_labels() -> None:
     assert "cs_project" in body
     assert "adddynamiclight" in body
     assert 'cvar("screwm_csqc_overlay") > 0' in body
-    assert body.count("screwm_draw_ward_label(") == 35
+    assert body.count("screwm_draw_ward_label(") == 36
     assert "screwm_draw_ward_detail(" in body
-    for ordinal in range(1, 36):
+    for ordinal in range(1, 37):
         assert f'"{ordinal:02d}"' in body
     for ordinal in ("01", "02", "07", "09", "12", "13", "21", "28", "34"):
         assert f"data/ward-{ordinal}.txt" in body
@@ -47,10 +47,10 @@ def test_csqc_dynamic_lights_cover_all_physical_ward_panes() -> None:
     map_module = _load_script("scripts/generate-screwm-map.py")
     body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
 
-    assert body.count("screwm_add_ward_light('") == 35
+    assert body.count("screwm_add_ward_light('") == 36
     assert 'cvar("screwm_csqc_lightfield") < 0' in body
 
-    for idx in range(1, 36):
+    for idx in range(1, 37):
         x, y, z = map_module["ward_anchor_position"](idx)
         assert f"screwm_add_ward_light('{x} {y} {z}'" in body
 

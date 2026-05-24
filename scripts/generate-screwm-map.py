@@ -22,7 +22,7 @@ TOWER_FLOOR_M = -2.0
 TOWER_CEIL_M = 13.0
 WALL_THICK = 16
 AOA_HEIGHT_M = 5.5
-WARD_PANEL_COUNT = 35
+WARD_PANEL_COUNT = 36
 
 TR = int(TOWER_RADIUS_M * UNITS_PER_METER)
 FLOOR_Z = int(TOWER_FLOOR_M * UNITS_PER_METER)
@@ -73,6 +73,7 @@ WARD_ANCHORS = [
     "ascii_schematic",
     "segment_content",
     "m8_oscilloscope",
+    "cbip_dual_ir_displacement",
 ]
 
 WARD_COLUMNS = 7
@@ -84,6 +85,9 @@ WARD_Y_TOP = 62
 WARD_Y_STEP = -36
 WARD_TOP_Z = FLOOR_Z + 344
 WARD_GLOW_TEX = ["drift_c", "drift_a", "drift_r", "drift_g"]
+SPECIAL_WARD_POSITIONS = {
+    36: (0, WARD_Y_TOP + 5 * WARD_Y_STEP, FLOOR_Z + 92),
+}
 
 MODE_PRESETS = {
     "rnd": {
@@ -169,6 +173,8 @@ def box_brush(x1, y1, z1, x2, y2, z2, tex):
 
 
 def ward_anchor_position(idx):
+    if idx in SPECIAL_WARD_POSITIONS:
+        return SPECIAL_WARD_POSITIONS[idx]
     col = (idx - 1) % WARD_COLUMNS
     row = (idx - 1) // WARD_COLUMNS
     x = int((col - (WARD_COLUMNS - 1) * 0.5) * WARD_X_SPACING)
@@ -315,9 +321,9 @@ def ward_scrim_panes(_preset):
     """Baked in-engine ward anchors held in the scroom volume.
 
     These are not HUD labels or fourth-wall overlays. They are physical ward
-    panes and rails inside the DarkPlaces world: a 5x7 field with depth,
-    moving from rear/high to near/low, so the camera looks into Screwm rather
-    than at a flat wall.
+    panes and rails inside the DarkPlaces world: a 5x7 field plus the CBIP
+    dual-IR displacement ward carried below it, moving from rear/high to
+    near/low, so the camera looks into Screwm rather than at a flat wall.
     """
     brushes = []
     row_min_x = -224
@@ -350,20 +356,22 @@ def ward_scrim_panes(_preset):
         if glow:
             brushes.append(f"// ward-glow {idx:02d}: {anchor} {glow_tex}\n{glow}")
 
-    for row in range(5):
-        y = WARD_Y_TOP + row * WARD_Y_STEP
-        z = int(WARD_TOP_Z - row * WARD_Z_SPACING)
+    ward_rows = math.ceil(WARD_PANEL_COUNT / WARD_COLUMNS)
+    for row in range(ward_rows):
+        row_anchor_idx = min(row * WARD_COLUMNS + 1, WARD_PANEL_COUNT)
+        _, y, z = ward_anchor_position(row_anchor_idx)
         rail = box_brush(row_min_x, y + 6, z - 4, row_max_x, y + 10, z + 4, "scroom")
         if rail:
             brushes.append(f"// ward-rail row {row + 1}: scroom carrier\n{rail}")
 
     for col in range(WARD_COLUMNS):
         x = int((col - (WARD_COLUMNS - 1) * 0.5) * WARD_X_SPACING)
-        z_low = int(WARD_TOP_Z - 4 * WARD_Z_SPACING) - WARD_PANE_H // 2
+        _, lowest_y, lowest_z = ward_anchor_position(WARD_PANEL_COUNT)
+        z_low = lowest_z - WARD_PANE_H // 2
         z_high = WARD_TOP_Z + WARD_PANE_H // 2
         spine = box_brush(
             x - 3,
-            WARD_Y_TOP + 4 * WARD_Y_STEP + 8,
+            lowest_y + 8,
             z_low,
             x + 3,
             WARD_Y_TOP + 10,
@@ -390,6 +398,8 @@ DRIFT_LINKS = [
     (4, 18, "drift_c"),
     (18, 32, "drift_g"),
     (29, 35, "drift_r"),
+    (25, 36, "drift_r"),
+    (32, 36, "drift_c"),
 ]
 
 

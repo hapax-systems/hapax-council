@@ -34,7 +34,7 @@ WARD_EXPORTS: dict[str, str] = {
     "34": "segment_content",
 }
 
-IN_WORLD_WARD_COUNT = 35
+IN_WORLD_WARD_COUNT = 36
 
 
 def _read_json(path: Path) -> dict[str, Any]:
