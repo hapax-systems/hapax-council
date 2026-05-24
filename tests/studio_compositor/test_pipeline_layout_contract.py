@@ -12,6 +12,7 @@ from agents.studio_compositor.cuda_caps import (
 )
 from agents.studio_compositor.models import CameraSpec, CompositorConfig, HlsConfig, TileRect
 from agents.studio_compositor.pipeline import _make_cudacompositor, _pin_black_background
+from shared.compositor_model import Layout, SourceSchema
 
 
 class _Pad:
@@ -299,6 +300,62 @@ def test_darkplaces_background_uses_env_device(monkeypatch: object) -> None:
         "height": 720,
         "zorder": 0,
     }
+
+
+def test_darkplaces_background_config_uses_layout_source(monkeypatch: object) -> None:
+    monkeypatch.setenv("HAPAX_DARKPLACES_V4L2_DEVICE", "/tmp/env-should-not-win")
+    layout = Layout(
+        name="test",
+        sources=[
+            SourceSchema(
+                id="darkplaces",
+                kind="video",
+                backend="v4l2",
+                params={
+                    "device": "/tmp/layout-video99",
+                    "natural_w": 640,
+                    "natural_h": 360,
+                    "fps": 24,
+                    "role": "darkplaces_background",
+                },
+                tags=["darkplaces", "background"],
+            )
+        ],
+        surfaces=[],
+        assignments=[],
+    )
+    compositor = SimpleNamespace(layout_state=SimpleNamespace(get=lambda: layout))
+
+    config = pipeline_module._darkplaces_background_config(
+        compositor,
+        default_width=1280,
+        default_height=720,
+        default_fps=30,
+    )
+
+    assert config.device == "/tmp/layout-video99"
+    assert config.width == 640
+    assert config.height == 360
+    assert config.fps == 24
+
+
+def test_darkplaces_background_config_falls_back_when_layout_absent(
+    monkeypatch: object,
+) -> None:
+    monkeypatch.setenv("HAPAX_DARKPLACES_V4L2_DEVICE", "/tmp/env-video52")
+    compositor = SimpleNamespace(layout_state=None)
+
+    config = pipeline_module._darkplaces_background_config(
+        compositor,
+        default_width=1280,
+        default_height=720,
+        default_fps=30,
+    )
+
+    assert config.device == "/tmp/env-video52"
+    assert config.width == 1280
+    assert config.height == 720
+    assert config.fps == 30
 
 
 def test_darkplaces_background_uploads_to_cuda_when_compositor_is_cuda(

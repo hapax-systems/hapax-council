@@ -69,6 +69,24 @@ class SourceBackend(Protocol):
         ...
 
 
+class V4L2SourceHandle:
+    """Passive handle for layout-declared v4l2 sources.
+
+    DarkPlaces enters the compositor through a GStreamer v4l2src branch, not
+    through Cairo blitting. Registering a passive handle keeps the layout source
+    visible to registry/ward tooling without making pip_draw_from_layout attempt
+    to paint it.
+    """
+
+    def __init__(self, *, device: str, width: int | None = None, height: int | None = None) -> None:
+        self.device = device
+        self.width = width
+        self.height = height
+
+    def get_current_surface(self) -> cairo.ImageSurface | None:
+        return None
+
+
 class SourceRegistry:
     """Maps ``source_id -> backend handle``. Single lookup entry point."""
 
@@ -169,6 +187,10 @@ class SourceRegistry:
         :class:`~agents.studio_compositor.shm_rgba_reader.ShmRgbaReader`
         pointing at ``params.shm_path``.
 
+        ``v4l2`` backends are passive layout handles for sources consumed by
+        the GStreamer graph directly. They register in the same source catalog
+        but return no Cairo surface.
+
         When ``budget_tracker`` is provided, cairo backends record their
         per-frame render time into the tracker so the compositor's cost
         snapshot publisher has live samples. Phase 10 wire-up for the
@@ -258,5 +280,16 @@ class SourceRegistry:
                 Path(shm_path),
                 is_substrate=is_substrate,
                 max_age_s=max_age_s,
+            )
+        if source.backend == "v4l2":
+            device = source.params.get("device")
+            if not device:
+                raise UnknownBackendError(f"v4l2 source {source.id}: missing params.device")
+            width = source.params.get("natural_w", source.params.get("width"))
+            height = source.params.get("natural_h", source.params.get("height"))
+            return V4L2SourceHandle(
+                device=str(device),
+                width=int(width) if width is not None else None,
+                height=int(height) if height is not None else None,
             )
         raise UnknownBackendError(f"unknown backend: {source.backend}")

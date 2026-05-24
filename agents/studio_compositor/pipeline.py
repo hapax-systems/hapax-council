@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from .cameras import add_camera_branch
@@ -37,6 +38,15 @@ def init_gstreamer() -> tuple[Any, Any]:
 
 DEFAULT_DARKPLACES_V4L2_DEVICE = "/dev/video52"
 OBS_VIRTUAL_CAMERA_DEVICE = "/dev/video10"
+DARKPLACES_LAYOUT_SOURCE_ID = "darkplaces"
+
+
+@dataclass(frozen=True)
+class _DarkPlacesBackgroundConfig:
+    device: str
+    width: int
+    height: int
+    fps: int
 
 
 def _darkplaces_v4l2_device() -> str:
@@ -45,6 +55,86 @@ def _darkplaces_v4l2_device() -> str:
         or os.environ.get("DARKPLACES_V4L2_DEVICE", "").strip()
         or DEFAULT_DARKPLACES_V4L2_DEVICE
     )
+
+
+def _positive_int_param(raw: object, *, fallback: int, label: str) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        if raw not in (None, ""):
+            log.warning("Invalid DarkPlaces layout param %s=%r; using %s", label, raw, fallback)
+        return fallback
+    if value <= 0:
+        log.warning("Invalid DarkPlaces layout param %s=%r; using %s", label, raw, fallback)
+        return fallback
+    return value
+
+
+def _darkplaces_background_config(
+    compositor: Any,
+    *,
+    default_width: int,
+    default_height: int,
+    default_fps: int,
+) -> _DarkPlacesBackgroundConfig:
+    """Resolve DarkPlaces background device/caps from layout JSON, then env fallback."""
+
+    device = _darkplaces_v4l2_device()
+    width = default_width
+    height = default_height
+    fps = default_fps
+
+    layout_state = getattr(compositor, "layout_state", None)
+    layout = None
+    if layout_state is not None:
+        try:
+            layout = layout_state.get()
+        except Exception:
+            log.debug("DarkPlaces layout-source lookup failed", exc_info=True)
+    if layout is None:
+        return _DarkPlacesBackgroundConfig(device=device, width=width, height=height, fps=fps)
+
+    for source in getattr(layout, "sources", []):
+        params = getattr(source, "params", {}) or {}
+        tags = set(getattr(source, "tags", []) or [])
+        source_id = getattr(source, "id", "")
+        role = str(params.get("role", ""))
+        is_darkplaces_source = (
+            source_id == DARKPLACES_LAYOUT_SOURCE_ID
+            or role == "darkplaces_background"
+            or {"darkplaces", "background"}.issubset(tags)
+        )
+        if not is_darkplaces_source:
+            continue
+        layout_device = str(params.get("device") or "").strip()
+        if layout_device:
+            device = layout_device
+        width = _positive_int_param(
+            params.get("natural_w", params.get("width")),
+            fallback=width,
+            label="natural_w",
+        )
+        height = _positive_int_param(
+            params.get("natural_h", params.get("height")),
+            fallback=height,
+            label="natural_h",
+        )
+        fps = _positive_int_param(
+            params.get("fps", params.get("framerate")),
+            fallback=fps,
+            label="fps",
+        )
+        log.info(
+            "DarkPlaces background source resolved from layout: id=%s device=%s %dx%d@%d",
+            source_id,
+            device,
+            width,
+            height,
+            fps,
+        )
+        break
+
+    return _DarkPlacesBackgroundConfig(device=device, width=width, height=height, fps=fps)
 
 
 def _pin_black_background(comp_element: Any) -> None:
@@ -64,6 +154,7 @@ def _add_darkplaces_background(
     height: int,
     fps: int,
     *,
+    device: str | None = None,
     use_cuda: bool = False,
 ) -> bool:
     """Add DarkPlaces v4l2loopback as the compositor background layer.
@@ -71,7 +162,7 @@ def _add_darkplaces_background(
     Returns True if DarkPlaces source was successfully added, False otherwise.
     Falls back to black background if the configured renderer feed is unavailable.
     """
-    device = _darkplaces_v4l2_device()
+    device = (device or _darkplaces_v4l2_device()).strip()
     if device == OBS_VIRTUAL_CAMERA_DEVICE and not _env_truthy(
         "HAPAX_DARKPLACES_ALLOW_OBS_VCAM_SOURCE"
     ):
@@ -413,13 +504,20 @@ def build_pipeline(compositor: Any) -> Any:
     fps = compositor.config.framerate
 
     # --- DarkPlaces Screwm background layer ---
+    darkplaces_config = _darkplaces_background_config(
+        compositor,
+        default_width=compositor.config.output_width,
+        default_height=compositor.config.output_height,
+        default_fps=fps,
+    )
     _add_darkplaces_background(
         Gst,
         pipeline,
         comp_element,
-        compositor.config.output_width,
-        compositor.config.output_height,
-        fps,
+        darkplaces_config.width,
+        darkplaces_config.height,
+        darkplaces_config.fps,
+        device=darkplaces_config.device,
         use_cuda=compositor._use_cuda,
     )
 

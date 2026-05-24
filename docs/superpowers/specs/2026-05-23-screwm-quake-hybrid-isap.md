@@ -278,9 +278,21 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   module reload or reboot to be guaranteed across boot.
 
 ### D7: Compositor Source Integration [IN PROGRESS]
-- Interpipe producer for /dev/video52 source
-- Layout JSON update: DarkPlaces as background layer
-- Fallback path if DarkPlaces unavailable
+- `/dev/video52` is declared in `config/compositor-layouts/default.json` as
+  the `darkplaces` v4l2 source with `role=darkplaces_background`.
+- `_FALLBACK_LAYOUT` mirrors the on-disk DarkPlaces source so rescue startup
+  does not fall back to the pre-migration source catalog.
+- `SourceRegistry` now accepts passive `v4l2` layout handles; DarkPlaces
+  remains consumed by the GStreamer graph, not Cairo blitting.
+- `pipeline.py` resolves DarkPlaces device/caps from layout state first, then
+  environment/default fallback, and refuses OBS Virtual Camera unless explicitly
+  overridden to avoid OBS/compositor loops.
+- CUDA compositor ingress uploads the DarkPlaces v4l2 feed into
+  CUDAMemory/NV12 before connecting to `cudacompositor`.
+- Fallback path if DarkPlaces unavailable: leave the compositor background
+  pinned black and keep wards/cameras running.
+- Runtime evidence still pending: full production compositor launch with
+  DarkPlaces as background and wards overlaid.
 
 ### D8: hapax-darkplaces Systemd Unit [IN PROGRESS]
 - `systemd/units/hapax-darkplaces.service`
@@ -367,6 +379,7 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 
 - [x] DarkPlaces renders tower BSP with textures at 1280×720
 - [x] v4l2loopback /dev/video52 captures DarkPlaces output
+- [x] Layout/registry/pipeline contracts declare DarkPlaces as the v4l2 background source
 - [ ] Compositor accepts DarkPlaces as background source with wards overlay
 - [ ] QuakeC pendulum camera traverses tower smoothly (120-150s period)
 - [ ] AoA Sierpinski tetrahedron visible and rotating at tower center

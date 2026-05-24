@@ -33,6 +33,7 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "stream_overlay",
         "sierpinski",
         "reverie",
+        "darkplaces",
         "activity_header",
         "stance_indicator",
         "grounding_provenance_ticker",
@@ -168,6 +169,7 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         "stream_overlay": "cairo",
         "sierpinski": "cairo",
         "reverie": "shm_rgba",
+        "darkplaces": "v4l2",
         "activity_header": "cairo",
         "stance_indicator": "cairo",
         "grounding_provenance_ticker": "cairo",
@@ -229,6 +231,22 @@ def test_default_json_reverie_points_at_producer_shm_path() -> None:
 
     reverie = next(s for s in layout.sources if s.id == "reverie")
     assert reverie.params.get("shm_path") == "/dev/shm/hapax-sources/reverie.rgba"
+
+
+def test_default_json_darkplaces_points_at_dedicated_loopback() -> None:
+    """DarkPlaces enters the compositor through its own loopback, never OBS Virtual Camera."""
+    raw = json.loads(DEFAULT_JSON.read_text())
+    layout = Layout.model_validate(raw)
+
+    darkplaces = next(s for s in layout.sources if s.id == "darkplaces")
+    assert darkplaces.kind == "video"
+    assert darkplaces.backend == "v4l2"
+    assert darkplaces.params.get("device") == "/dev/video52"
+    assert darkplaces.params.get("natural_w") == 1280
+    assert darkplaces.params.get("natural_h") == 720
+    assert darkplaces.params.get("fps") == 30
+    assert darkplaces.params.get("role") == "darkplaces_background"
+    assert {"darkplaces", "background", "substrate", "screwm"}.issubset(darkplaces.tags)
 
 
 def test_default_json_operator_quadrant_defaults() -> None:
@@ -347,6 +365,7 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "stream_overlay",
         "sierpinski",
         "reverie",
+        "darkplaces",
         "activity_header",
         "stance_indicator",
         "grounding_provenance_ticker",

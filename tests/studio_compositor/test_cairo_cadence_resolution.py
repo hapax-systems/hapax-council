@@ -19,7 +19,11 @@ from __future__ import annotations
 import pytest
 
 from agents.studio_compositor.budget import BudgetTracker
-from agents.studio_compositor.source_registry import SourceRegistry
+from agents.studio_compositor.source_registry import (
+    SourceRegistry,
+    UnknownBackendError,
+    V4L2SourceHandle,
+)
 from shared.compositor_model import SourceSchema
 
 
@@ -42,6 +46,37 @@ def _cairo_source(**params):
         update_cadence=params.pop("update_cadence", "always"),
         rate_hz=params.pop("rate_hz", None),
     )
+
+
+def _v4l2_source(**params):
+    return SourceSchema(
+        id=params.pop("id", "darkplaces"),
+        kind="video",
+        backend="v4l2",
+        params=params.pop(
+            "source_params",
+            {"device": "/dev/video52", "natural_w": 1280, "natural_h": 720},
+        ),
+    )
+
+
+def test_v4l2_source_constructs_passive_handle(registry):
+    source = _v4l2_source()
+
+    handle = registry.construct_backend(source)
+
+    assert isinstance(handle, V4L2SourceHandle)
+    assert handle.device == "/dev/video52"
+    assert handle.width == 1280
+    assert handle.height == 720
+    assert handle.get_current_surface() is None
+
+
+def test_v4l2_source_requires_device(registry):
+    source = _v4l2_source(source_params={"natural_w": 1280, "natural_h": 720})
+
+    with pytest.raises(UnknownBackendError, match="missing params.device"):
+        registry.construct_backend(source)
 
 
 def test_rate_hz_from_layout_honored(registry, budget):
