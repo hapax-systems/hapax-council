@@ -39,7 +39,7 @@ if not LITELLM_KEY:
         stacklevel=1,
     )
 QDRANT_URL: str = os.environ.get("QDRANT_URL", "http://localhost:6333")
-OLLAMA_URL: str = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_URL: str = os.environ.get("OLLAMA_HOST", "http://192.168.68.50:11434")
 LOGOS_API_URL: str = os.environ.get("COCKPIT_BASE_URL", "http://localhost:8051/api")
 
 # ── Canonical paths ─────────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ MODELS: dict[str, str] = {
     "mistral-large": "mistral-large",
 }
 
-EMBEDDING_MODEL: str = "nomic-embed-cpu"
+EMBEDDING_MODEL: str = "nomic-embed-text"
 EXPECTED_EMBED_DIMENSIONS: int = 768
 
 # CLAP (audio-text) embedding dimensions
@@ -437,7 +437,7 @@ def _get_ollama_client():
     """Return a singleton Ollama client (avoids per-call HTTP client creation)."""
     import ollama
 
-    return ollama.Client(timeout=120)
+    return ollama.Client(host=OLLAMA_URL, timeout=120)
 
 
 def embed(text: str, model: str | None = None, prefix: str = "search_query") -> list[float]:

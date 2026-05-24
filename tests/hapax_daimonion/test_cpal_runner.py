@@ -186,45 +186,18 @@ class TestCpalRunnerLifecycle:
         assert runner._recent_speech_events[0].kind is SpeechEventKind.RESPONSE
 
     @pytest.mark.asyncio
-    async def test_session_timeout_goodbye_uses_destination_gate(self):
+    async def test_session_timeout_disabled(self):
+        """Session timeout is disabled — pipeline never stops."""
         runner = self._make_runner()
         daemon = MagicMock()
         daemon.session.is_active = True
         daemon.session.is_timed_out = True
-        daemon.notifications.pending_count = 0
-        daemon._conversation_pipeline._audio_output = MagicMock()
-        daemon.tts.synthesize.return_value = b"\x00\x01"
         runner._daemon = daemon
-        decision = SimpleNamespace(
-            allowed=True,
-            destination=DestinationChannel.PRIVATE,
-            reason_code="private_assistant_monitor_bound",
-            safety_gate={"context_default": "private_or_drop"},
-            target="hapax-private",
-            media_role="Assistant",
-        )
-        playback = SimpleNamespace(
-            status="completed",
-            completed=True,
-            returncode=0,
-            duration_s=0.1,
-            timeout_s=5.0,
-            error=None,
-        )
 
-        with (
-            patch(
-                "agents.hapax_daimonion.cpal.runner.resolve_playback_decision",
-                return_value=decision,
-            ),
-            patch("agents.hapax_daimonion.cpal.runner.record_destination_decision"),
-            patch("agents.hapax_daimonion.pw_audio_output.play_pcm", return_value=playback) as play,
-            patch("agents.hapax_daimonion.cpal.runner.record_playback_result"),
-            patch("agents.hapax_daimonion.session_events.close_session", new=AsyncMock()),
-        ):
+        with patch("agents.hapax_daimonion.session_events.close_session", new=AsyncMock()) as close:
             await runner._tick(0.1)
 
-        play.assert_called_once_with(b"\x00\x01", 24000, 1, "hapax-private", "Assistant")
+        close.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_process_impingement(self):

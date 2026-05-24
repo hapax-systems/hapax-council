@@ -499,30 +499,27 @@ class CpalRunner:
         # 3. Gain drivers beyond just speech (C: I5, I6)
         self._apply_gain_drivers(signals, dt)
 
-        # 4. Check for utterances — route through AudioPerceptionBackend
-        # as impingement, or fall back to direct processing if no backend.
-        if self._production.is_producing or self._buffer.is_speaking:
-            fresh = self._perception.get_utterance()
-            if fresh is not None:
-                self._queued_utterance = fresh
-        else:
-            utterance = self._queued_utterance or self._perception.get_utterance()
-            self._queued_utterance = None
-            if utterance is not None and self._processing_utterance:
-                log.info("CPAL: utterance arrived during processing — queued for next tick")
-                self._queued_utterance = utterance
-            elif utterance is not None:
-                if self._audio_perception is not None:
-                    asyncio.create_task(
-                        self._audio_perception.process_utterance(
-                            audio_bytes=utterance,
-                            vad_confidence=0.95,
-                            duration_s=len(utterance) / (16000 * 2),
-                            energy_db=-12.0,
-                        )
+        # 4. Check for utterances — ALWAYS route to AudioPerceptionBackend.
+        # Operator speech enters the impingement field regardless of speaking
+        # state — the ResourceArbiter handles priority, not the speaking gate.
+        utterance = self._queued_utterance or self._perception.get_utterance()
+        self._queued_utterance = None
+        if utterance is not None:
+            if self._audio_perception is not None:
+                asyncio.create_task(
+                    self._audio_perception.process_utterance(
+                        audio_bytes=utterance,
+                        vad_confidence=0.95,
+                        duration_s=len(utterance) / (16000 * 2),
+                        energy_db=-12.0,
                     )
+                )
+            elif not (self._production.is_producing or self._buffer.is_speaking):
+                if self._processing_utterance:
+                    self._queued_utterance = utterance
                 else:
                     asyncio.create_task(self._process_utterance(utterance))
+
 
         # 4b. Mark session activity during production/processing
         if self._daemon is not None and self._daemon.session.is_active:
@@ -975,6 +972,7 @@ class CpalRunner:
                         chain="conversation",
                         priority=100,
                         command=f"operator_speech: {transcript[:40]}",
+                        max_hold_s=30.0,
                     )
                     self._daemon.arbiter.claim(claim)
                     self._kill_inflight_playback()
@@ -1298,6 +1296,7 @@ class CpalRunner:
             if self._daemon is not None and hasattr(self._daemon, "arbiter"):
                 from agents.hapax_daimonion.arbiter import ResourceClaim
 
+                self._daemon.arbiter.drain_winners()
                 current_winner = self._daemon.arbiter.resolve("audio_output")
                 if current_winner is not None and current_winner.priority > 15:
                     log.info("CPAL: exploration deferred — higher-priority claim on audio_output")
@@ -1317,6 +1316,7 @@ class CpalRunner:
                     chain="exploration_speech",
                     priority=15,
                     command=f"exploration: {effect.narrative[:40]}",
+                    max_hold_s=60.0,
                 )
                 self._daemon.arbiter.claim(claim)
 
@@ -1357,66 +1357,13 @@ class CpalRunner:
                         terminal_state="failed",
                     )
                     return
-                async with self._speech_lock:
-                    # Set speaking gate for the ENTIRE duration — LLM +
-                    # TTS + playback + holdover. The pipeline's _speak_sentence
-                    # only gates per-sentence; between sentences the gate drops
-                    # and the buffer captures inter-sentence audio as "operator."
-                    # Speaking gate managed per-sentence by _speak_sentence
-                    try:
-                        await self._pipeline.generate_spontaneous_speech(
-                            impingement,
-                            register_hint=register_hint,
-                            destination_target=destination_target,
-                            destination_role=destination_role,
-                            destination=destination.value,
-                        )
-                    except TypeError:
-                        # Older pipelines without one of the new kwargs — fall
-                        # back through progressively so the impingement is
-                        # never dropped when the signature shifts.
-                        log.debug(
-                            "generate_spontaneous_speech rejected kwarg; "
-                            "retrying with narrower signature",
-                            exc_info=True,
-                        )
-                        try:
-                            await self._pipeline.generate_spontaneous_speech(
-                                impingement,
-                                register_hint=register_hint,
-                                destination_target=destination_target,
-                            )
-                        except TypeError:
-                            try:
-                                await self._pipeline.generate_spontaneous_speech(
-                                    impingement,
-                                    register_hint=register_hint,
-                                )
-                            except TypeError:
-                                try:
-                                    await self._pipeline.generate_spontaneous_speech(impingement)
-                                except Exception:
-                                    log.debug("Spontaneous speech failed", exc_info=True)
-                            except Exception:
-                                log.debug("Spontaneous speech failed", exc_info=True)
-                        except Exception:
-                            log.debug("Spontaneous speech failed", exc_info=True)
-                    except Exception:
-                        log.debug("Spontaneous speech failed", exc_info=True)
-                    finally:
-                        # Hold the speaking gate past playback end to cover
-                        # room echo tail, same as autonomous narrative path.
-                        # No outer holdover — _speak_sentence handles per-sentence gate
-                        self._buffer.set_speaking(False)
-                        self._last_speech_end = time.monotonic()
-                        self._recent_speech_events.append(
-                            SpeechEvent(
-                                kind=SpeechEventKind.EXPLORATION,
-                                timestamp=self._last_speech_end,
-                                source_path="exploration_surfacing",
-                                text_preview=effect.narrative[:40],
-                            )
-                        )
+                # Fire exploration as background task — do NOT hold the
+                # impingement consumer loop. Operator speech impingements
+                # must be processable while exploration TTS runs.
+                asyncio.create_task(self._exploration_speech_task(
+                    impingement, register_hint, destination_target,
+                    destination_role, destination.value, source, effect,
+                ))
             else:
                 record_drop(
                     reason="pipeline_unavailable",
@@ -1426,3 +1373,33 @@ class CpalRunner:
                     media_role=destination_role,
                     text=effect.narrative,
                 )
+
+    async def _exploration_speech_task(
+        self, impingement, register_hint, destination_target,
+        destination_role, destination_value, source, effect,
+    ) -> None:
+        if self._pipeline is None or not hasattr(self._pipeline, "generate_spontaneous_speech"):
+            return
+        async with self._speech_lock:
+            try:
+                await self._pipeline.generate_spontaneous_speech(
+                    impingement,
+                    register_hint=register_hint,
+                    destination_target=destination_target,
+                    destination_role=destination_role,
+                    destination=destination_value,
+                )
+            except Exception:
+                log.debug("Exploration speech failed", exc_info=True)
+            finally:
+                self._buffer.set_speaking(False)
+                self._last_speech_end = time.monotonic()
+                self._recent_speech_events.append(
+                    SpeechEvent(
+                        kind=SpeechEventKind.EXPLORATION,
+                        timestamp=self._last_speech_end,
+                        source_path="exploration_surfacing",
+                        text_preview=effect.narrative[:40],
+                    )
+                )
+

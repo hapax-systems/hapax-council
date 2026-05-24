@@ -104,9 +104,9 @@ class DaimonionConfig(BaseModel):
 
     # Backends
     backend: str = "local"  # "local" or "gemini"
-    llm_model: str = "gemini-flash"
+    llm_model: str = "local-fast"
     gemini_model: str = "gemini-2.5-flash-preview-native-audio"
-    local_stt_model: str = "distil-large-v3"
+    local_stt_model: str = "nemo-parakeet-tdt-0.6b-v3"
     tts_voice: str = "af_heart"
     # Consent
     consent_debounce_s: float = 5.0  # sustained presence before triggering

@@ -116,7 +116,7 @@ class AudioInputStream:
         source_name: str | list[str] | None = None,
         sample_rate: int = 16000,
         frame_ms: int = 30,
-        queue_maxsize: int = 300,
+        queue_maxsize: int = 1000,
     ) -> None:
         # Accept the post-2026-04-18 audio-pathways list[str] priority form
         # AND the legacy single-string form. A list lands here whenever the

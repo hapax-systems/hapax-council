@@ -54,9 +54,9 @@ class ModelTier(IntEnum):
 TIER_ROUTES: dict[ModelTier, str] = {
     ModelTier.CANNED: "",  # no LLM call
     ModelTier.LOCAL: "local-fast",
-    ModelTier.FAST: "gemini-flash",
-    ModelTier.STRONG: "claude-sonnet",
-    ModelTier.CAPABLE: "claude-opus",
+    ModelTier.FAST: "local-fast",
+    ModelTier.STRONG: "local-fast",
+    ModelTier.CAPABLE: "local-fast",
 }
 
 

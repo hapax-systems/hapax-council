@@ -33,7 +33,8 @@ dependencies = [
     "litellm>=1.83.10",
     "kokoro>=0.9",
     "chatterbox-tts",
-    "torchvision>=0.21",
+    "torch>=2.12.0",
+    "torchvision>=0.27",
     "mistralai>=2.1.0",
     "python-toon>=0.1.3",
     "llmlingua>=0.2.2",
@@ -222,8 +223,20 @@ override-dependencies = [
     # moviepy 2.2.1 still declares pillow<12, but the patched Pillow floor is
     # required for the high-severity Dependabot alerts covered by this task.
     "pillow>=12.2.0",
+    # chatterbox-tts 0.1.7 pins torch==2.6.0 which has no sm_120 (Blackwell).
+    "torch>=2.12.0",
+    "torchaudio>=2.11.0",
+    "torchvision>=0.27.0",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
 
 [tool.uv.sources]
 hapax-agentgov = { path = "packages/agentgov", editable = true }
 chatterbox-tts = { git = "https://github.com/resemble-ai/chatterbox.git" }
+torch = { index = "pytorch-cu130" }
+torchaudio = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }

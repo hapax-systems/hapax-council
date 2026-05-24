@@ -1,38 +1,42 @@
-"""Resident STT — faster-whisper model loaded once, kept in VRAM.
+"""Resident STT — Parakeet TDT via ONNX, loaded once, kept in memory.
 
-No per-session model loading. The WhisperModel stays resident for
-the daemon's entire lifetime and is reused across all utterances.
-Transcription runs in a thread pool executor to avoid blocking
-the async event loop.
+Non-autoregressive transducer architecture: cannot hallucinate on silence,
+cannot invent plausible-but-wrong phrases. Replaces Whisper which had
+structural hallucination issues (autoregressive decoder).
+
+Transcription runs in a thread pool executor to avoid blocking the async
+event loop.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import tempfile
+import wave
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
 log = logging.getLogger(__name__)
 
-# Dedicated executor for STT (separate from default to avoid starvation)
 _stt_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
+
+_DEFAULT_MODEL = "nemo-parakeet-tdt-0.6b-v3"
 
 
 class ResidentSTT:
-    """Whisper model loaded once, transcribes on demand.
+    """Parakeet TDT model loaded once, transcribes on demand.
 
     Usage:
-        stt = ResidentSTT(model="distil-large-v3")
-        stt.load()  # call once at startup
-
+        stt = ResidentSTT(model="nemo-parakeet-tdt-0.6b-v3")
+        stt.load()
         transcript = await stt.transcribe(pcm_bytes)
     """
 
     def __init__(
         self,
-        model: str = "distil-large-v3",
+        model: str = _DEFAULT_MODEL,
         device: str = "cuda",
         compute_type: str = "float16",
     ) -> None:
@@ -46,24 +50,15 @@ class ResidentSTT:
         return self._model is not None
 
     def load(self) -> None:
-        """Load the Whisper model into VRAM. Call once at daemon startup."""
+        """Load the Parakeet model. Call once at daemon startup."""
         try:
-            from faster_whisper import WhisperModel
+            import onnx_asr
 
-            log.info(
-                "Loading Whisper model %s on %s (%s)...",
-                self._model_name,
-                self._device,
-                self._compute_type,
-            )
-            self._model = WhisperModel(
-                self._model_name,
-                device=self._device,
-                compute_type=self._compute_type,
-            )
-            log.info("Whisper model loaded: %s", self._model_name)
+            log.info("Loading Parakeet model %s on %s...", self._model_name, self._device)
+            self._model = onnx_asr.load_model(self._model_name)
+            log.info("Parakeet model loaded: %s", self._model_name)
         except Exception:
-            log.exception("Failed to load Whisper model — STT unavailable")
+            log.exception("Failed to load Parakeet model - STT unavailable")
 
     async def transcribe(
         self,
@@ -72,17 +67,6 @@ class ResidentSTT:
         language: str = "en",
         _speculative: bool = False,
     ) -> str:
-        """Transcribe PCM audio bytes. Runs in thread pool.
-
-        Args:
-            audio_bytes: Raw PCM int16 mono bytes
-            sample_rate: Sample rate (default 16000)
-            language: Language code (default "en")
-            _speculative: If True, log at DEBUG not INFO (speculative partials)
-
-        Returns:
-            Transcribed text, or empty string on failure.
-        """
         if self._model is None:
             return ""
 
@@ -103,49 +87,30 @@ class ResidentSTT:
         language: str,
         speculative: bool = False,
     ) -> str:
-        """Synchronous transcription (runs in executor thread)."""
         try:
-            audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            audio = np.frombuffer(audio_bytes, dtype=np.int16)
 
-            segments, info = self._model.transcribe(
-                audio,
-                language="en",  # skip language detection (saves ~50ms)
-                beam_size=5,
-                vad_filter=False,  # we already did VAD
-                word_timestamps=True,
-                # Whisper treats initial_prompt as "preceding transcript" and
-                # conditions on its style/vocabulary. Realistic example sentences
-                # with "Hapax" bias the decoder toward the word — keyword lists
-                # don't work well. Covers both pronunciations (HAY-paks, HA-packs).
-                initial_prompt=(
-                    "Hey Hapax, what's going on? "
-                    "Hapax, can you check that for me? "
-                    "Thanks Hapax. "
-                    "Hey Hapax, what do you think about this? "
-                    "Hapax, tell me about the studio session."
-                ),
-            )
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as f:
+                with wave.open(f.name, "wb") as w:
+                    w.setnchannels(1)
+                    w.setsampwidth(2)
+                    w.setframerate(sample_rate)
+                    w.writeframes(audio.tobytes())
 
-            all_words: list[dict] = []
-            text_parts: list[str] = []
-            for seg in segments:
-                text_parts.append(seg.text)
-                if seg.words:
-                    for w in seg.words:
-                        all_words.append({"word": w.word, "start": w.start, "end": w.end})
+                text = self._model.recognize(f.name)
 
-            text = " ".join(text_parts).strip()
+            if isinstance(text, str):
+                text = text.strip()
+            else:
+                text = str(text).strip()
+
             if text:
                 _level = log.debug if speculative else log.info
                 _level(
-                    'STT: "%s" (%.1fs audio, lang=%s)',
+                    "STT: \"%s\" (%.1fs audio)",
                     text,
                     len(audio) / sample_rate,
-                    info.language,
                 )
-
-                if not speculative:
-                    self._extract_prosody(audio, sample_rate, all_words)
 
             return text
 
@@ -154,8 +119,9 @@ class ResidentSTT:
             return ""
 
     @staticmethod
-    def _extract_prosody(audio: np.ndarray, sample_rate: int, word_timestamps: list[dict]) -> None:
-        """Extract and publish prosodic features (best-effort, never blocks)."""
+    def _extract_prosody(
+        audio: np.ndarray, sample_rate: int, word_timestamps: list[dict]
+    ) -> None:
         try:
             from shared.prosody import extract_prosody, write_prosody
 

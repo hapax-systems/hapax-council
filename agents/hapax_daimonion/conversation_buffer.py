@@ -167,13 +167,9 @@ class ConversationBuffer:
             return
         self._pre_roll.append(frame)
 
-        # During TTS playback: pre-roll only (barge-in handled by CPAL runner)
-        if self._speaking:
-            return
-        # During cooldown (normal TTS end): pre-roll only
-        if self.in_cooldown:
-            return
-        # After TTS: accumulate speech
+        # No speaking gate — XVF3800 hardware AEC handles echo rejection
+        # at the device level. Software speaking gate removed because it
+        # blocks operator speech detection during continuous TTS playback.
         if self._speech_active:
             self._speech_frames.append(frame)
             if len(self._speech_frames) >= self._max_frames:
@@ -183,24 +179,11 @@ class ConversationBuffer:
         if not self._active:
             return
 
-        # During TTS: completely ignore VAD. The AEC can't attenuate TTS
-        # echo from studio monitors — echo sustains above any VAD threshold
-        # for the full duration of playback, making interrupt detection
-        # impossible to distinguish from echo. Operator speaks AFTER TTS
-        # finishes + cooldown (natural turn-taking).
-        if self._speaking:
-            return
+        # VAD always runs — operator speech must always be detected.
+        # AEC filters TTS echo; speaker ID rejects non-operator audio.
 
-        # During short post-TTS cooldown: track VAD state so speech detection
-        # begins immediately when cooldown ends, but don't emit utterances.
-        if self.in_cooldown:
-            if probability >= SPEECH_START_PROB:
-                self._consecutive_speech += 1
-                self._consecutive_silence = 0
-            else:
-                self._consecutive_speech = 0
-                self._consecutive_silence += 1
-            return
+        # No cooldown gate — VAD always runs, always emits.
+        # AEC + speaker ID handle echo rejection at the impingement layer.
 
         if probability >= SPEECH_START_PROB:
             self._consecutive_speech += 1

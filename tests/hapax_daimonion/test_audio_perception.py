@@ -42,7 +42,7 @@ class TestAudioPerceptionBackend:
         assert len(imps) == 1
         imp = imps[0]
         assert imp["source"] == "audio.operator_speech"
-        assert imp["type"] == "PATTERN_MATCH"
+        assert imp["type"] == "pattern_match"
         assert imp["strength"] >= 0.85
         assert imp["content"]["transcript"] == "hello hapax"
         assert imp["content"]["speaker"] == "operator"

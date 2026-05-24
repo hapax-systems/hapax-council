@@ -171,11 +171,10 @@ def set_perception_tier(daemon: VoiceDaemon, tier_name: str) -> None:
 
 
 async def close_session(daemon: VoiceDaemon, reason: str) -> None:
-    """Close the active session and stop the pipeline."""
+    """Close the active session. Pipeline stays alive — speech is never dropped."""
     from agents.hapax_daimonion.session_memory import persist_session_digest
 
     persist_session_digest(daemon)
-    await daemon._stop_pipeline()
     acknowledge(daemon, "deactivation")
     if daemon.session.is_active:
         duration = time.monotonic() - daemon.session._opened_at

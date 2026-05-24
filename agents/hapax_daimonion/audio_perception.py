@@ -10,6 +10,8 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from shared.impingement import ImpingementType
+
 log = logging.getLogger(__name__)
 
 IMPINGEMENT_BUS = Path("/dev/shm/hapax-dmn/impingements.jsonl")
@@ -17,9 +19,10 @@ OPERATOR_SPEAKER_THRESHOLD = 0.60
 
 
 class AudioPerceptionBackend:
-    def __init__(self, stt: Any = None, speaker_id: Any = None) -> None:
+    def __init__(self, stt: Any = None, speaker_id: Any = None, presence_provider=None) -> None:
         self._stt = stt
         self._speaker_id = speaker_id
+        self._presence_provider = presence_provider
         self._pending_impingements: deque[dict] = deque(maxlen=32)
         self._active = False
 
@@ -65,7 +68,9 @@ class AudioPerceptionBackend:
             "id": str(uuid.uuid4()),
             "timestamp": time.time(),
             "source": "audio.operator_speech" if is_operator else "audio.scene",
-            "type": "PATTERN_MATCH" if is_operator else "STATISTICAL_DEVIATION",
+            "type": ImpingementType.PATTERN_MATCH.value
+            if is_operator
+            else ImpingementType.STATISTICAL_DEVIATION.value,
             "strength": round(min(1.0, strength), 4),
             "content": {
                 "transcript": transcript,
@@ -115,6 +120,11 @@ class AudioPerceptionBackend:
         if not transcript or not transcript.strip():
             return
 
+        # Speaker ID via pyannote is broken (torchaudio 2.11 API change).
+        # Fall back to presence posterior from Bayesian fusion engine —
+        # if operator is confirmed present (cameras + VAD + keyboard), treat
+        # speech as operator. Guests trigger consent system which lowers
+        # presence posterior, correctly reducing impingement strength.
         speaker = "unknown"
         speaker_confidence = 0.0
         if self._speaker_id is not None:
@@ -122,6 +132,15 @@ class AudioPerceptionBackend:
                 speaker, speaker_confidence = self._speaker_id.identify(audio_bytes)
             except Exception:
                 log.debug("Speaker ID failed", exc_info=True)
+        if speaker == "unknown" and self._presence_provider is not None:
+            try:
+                posterior = self._presence_provider()
+                log.info("Presence posterior for speaker ID: %.2f", posterior)
+                if posterior >= 0.7:
+                    speaker = "operator"
+                    speaker_confidence = posterior
+            except Exception:
+                log.warning("Presence provider failed", exc_info=True)
 
         self._emit_speech_impingement(
             transcript=transcript,

@@ -305,9 +305,14 @@ async def run_inner(daemon: VoiceDaemon) -> None:
     # AudioPerceptionBackend — emits operator speech as impingements
     from agents.hapax_daimonion.audio_perception import AudioPerceptionBackend
 
+    def _presence_posterior():
+        score = daemon.presence.score
+        return {"definitely_present": 0.95, "likely_present": 0.80, "uncertain": 0.40, "likely_absent": 0.1}.get(score, 0.0)
+
     daemon._audio_perception = AudioPerceptionBackend(
         stt=daemon._resident_stt,
         speaker_id=getattr(daemon, "_speaker_id", None),
+        presence_provider=_presence_posterior,
     )
     daemon._audio_perception.start()
 
@@ -446,7 +451,18 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         )
         while daemon._running:
             try:
-                for imp in consumer.read_new():
+                new_imps = list(consumer.read_new())
+                # Priority pass: operator speech impingements first
+                operator_imps = [i for i in new_imps if getattr(i, "source", "") == "audio.operator_speech"]
+                other_imps = [i for i in new_imps if getattr(i, "source", "") != "audio.operator_speech"]
+                for imp in operator_imps:
+                    await daemon._cpal_runner.process_impingement(imp)
+                for imp in other_imps:
+                    # Skip if operator speech was just processed (it preempted)
+                    if operator_imps:
+                        source = getattr(imp, "source", "")
+                        if source in ("exploration", "endogenous.narrative_drive"):
+                            continue
                     await daemon._cpal_runner.process_impingement(imp)
             except Exception:
                 log.debug("CPAL impingement consumer error", exc_info=True)

@@ -173,7 +173,8 @@ async def proactive_delivery_loop(daemon: VoiceDaemon) -> None:
             spoken = format_notification(notification.title, notification.message)
             log.info("Delivering notification: %s", spoken)
             try:
-                audio = daemon.tts.synthesize(spoken, use_case="notification")
+                loop = asyncio.get_running_loop()
+                audio = await loop.run_in_executor(None, daemon.tts.synthesize, spoken, "notification")
                 log.info("TTS produced %d bytes for notification", len(audio))
             except Exception:
                 log.exception("TTS failed for notification")
@@ -1354,7 +1355,9 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                         # inhibition (120s) rather than hardcoded gates.
                         if c.capability_name == "narration.autonomous_first_system":
                             if c.combined >= 0.3:
-                                _dispatch_autonomous_narration(daemon, imp, c)
+                                await asyncio.to_thread(
+                                    _dispatch_autonomous_narration, daemon, imp, c
+                                )
                             continue
 
                         # --- Studio control dispatch ---
@@ -1494,7 +1497,9 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                 if results:
                                     daemon._discovery_handler.propose(results)
 
-                    _dispatch_narration_drive_fallback_if_needed(daemon, imp, candidates)
+                    await asyncio.to_thread(
+                        _dispatch_narration_drive_fallback_if_needed, daemon, imp, candidates
+                    )
 
                     # Cross-modal coordination: distribute fragment to recruited
                     # non-speech capabilities. CPAL owns the auditory modality, so
