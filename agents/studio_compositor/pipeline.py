@@ -316,6 +316,11 @@ def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _darkplaces_background_only_mode() -> bool:
+    """Opt-in canary mode: DarkPlaces is the base substrate, cameras stay out of frame."""
+    return _env_truthy("HAPAX_DARKPLACES_BACKGROUND_ONLY")
+
+
 def _set_optional_property(element: Any, name: str, value: Any, *, context: str) -> None:
     try:
         element.set_property(name, value)
@@ -554,12 +559,21 @@ def build_pipeline(compositor: Any) -> Any:
             compositor._camera_status[role] = status
     # --- END ALPHA PHASE 2 ---
 
-    for cam in compositor.config.cameras:
-        tile = layout.get(cam.role)
-        if tile is None:
-            log.warning("No tile for camera %s, skipping", cam.role)
-            continue
-        add_camera_branch(compositor, pipeline, comp_element, cam, tile, fps)
+    if _darkplaces_background_only_mode():
+        log.info(
+            "HAPAX_DARKPLACES_BACKGROUND_ONLY=1 — skipping %d camera compositor branches "
+            "so DarkPlaces remains the visible substrate",
+            len(compositor.config.cameras),
+        )
+        _publish_runtime_feature("darkplaces_background_only", True)
+    else:
+        _publish_runtime_feature("darkplaces_background_only", False)
+        for cam in compositor.config.cameras:
+            tile = layout.get(cam.role)
+            if tile is None:
+                log.warning("No tile for camera %s, skipping", cam.role)
+                continue
+            add_camera_branch(compositor, pipeline, comp_element, cam, tile, fps)
 
     # Output chain: compositor -> [cudadownload] -> BGRA -> pre_fx_tee
     convert_bgra = Gst.ElementFactory.make("videoconvert", "convert-bgra")
