@@ -81,12 +81,14 @@ def discover_joysticks(
     return devices
 
 
-def choose_device(devices: list[JoystickDevice]) -> JoystickDevice | None:
+def choose_device(
+    devices: list[JoystickDevice], *, allow_any: bool = False
+) -> JoystickDevice | None:
     for device in devices:
         lowered = device.name.lower()
         if any(word in lowered for word in PREFERRED_DEVICE_WORDS):
             return device
-    return devices[0] if devices else None
+    return devices[0] if allow_any and devices else None
 
 
 @dataclass
@@ -223,22 +225,32 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", type=Path, default=None)
     parser.add_argument("--game-dir", type=Path, default=DEFAULT_GAME_DIR)
+    parser.add_argument(
+        "--allow-any-joystick",
+        action="store_true",
+        help="fall back to the first joystick when no Xbox/Microsoft/XInput device is present",
+    )
     parser.add_argument("--list", action="store_true", help="list joystick devices and exit")
     parser.add_argument("--once", action="store_true", help="write one state sample and exit")
     args = parser.parse_args()
 
     devices = discover_joysticks()
     if args.list:
+        chosen = choose_device(devices, allow_any=args.allow_any_joystick)
         for device in devices:
-            marker = "*" if choose_device(devices) == device else " "
+            marker = "*" if chosen == device else " "
             print(f"{marker} {device.path}: {device.name}")
         return 0
 
     device = args.device
     if device is None:
-        chosen = choose_device(devices)
+        chosen = choose_device(devices, allow_any=args.allow_any_joystick)
         if chosen is None:
-            print("screwm-camera-gamepad: no /dev/input/js* device found", file=sys.stderr)
+            print(
+                "screwm-camera-gamepad: no Xbox/Microsoft/XInput joystick found; "
+                "pass --device or --allow-any-joystick to override",
+                file=sys.stderr,
+            )
             return 69
         device = chosen.path
         print(f"screwm-camera-gamepad: using {chosen.path} ({chosen.name})", file=sys.stderr)

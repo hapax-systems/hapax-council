@@ -50,6 +50,27 @@ def test_gamepad_device_discovery_prefers_xbox_controller(tmp_path: Path) -> Non
     assert gamepad.choose_device(devices).path == dev_root / "js2"
 
 
+def test_gamepad_device_discovery_does_not_fall_back_to_keyboard_joystick(
+    tmp_path: Path,
+) -> None:
+    gamepad = _load_gamepad()
+    sys_class = tmp_path / "sys" / "class" / "input"
+    dev_root = tmp_path / "dev" / "input"
+    dev_root.mkdir(parents=True)
+
+    (sys_class / "js0" / "device").mkdir(parents=True)
+    (sys_class / "js0" / "device" / "name").write_text(
+        "Keychron Keychron K2 HE",
+        encoding="utf-8",
+    )
+    (dev_root / "js0").touch()
+
+    devices = gamepad.discover_joysticks(sys_class=sys_class, dev_root=dev_root)
+
+    assert gamepad.choose_device(devices) is None
+    assert gamepad.choose_device(devices, allow_any=True).path == dev_root / "js0"
+
+
 def test_gamepad_state_writes_headless_camera_files(tmp_path: Path) -> None:
     gamepad = _load_gamepad()
     state = gamepad.CameraState()
