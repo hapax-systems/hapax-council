@@ -12,14 +12,52 @@ HEIGHT="${DARKPLACES_HEIGHT:-720}"
 FPS="${DARKPLACES_FPS:-30}"
 DISPLAY_NUM="${HAPAX_DARKPLACES_DISPLAY:-:82}"
 PORT="${DARKPLACES_PORT:-26001}"
+PROBE_ONLY=0
 
-if [ ! -e "$DEVICE" ]; then
+usage() {
+    cat <<'EOF'
+Usage: scripts/darkplaces-v4l2-xvfb.sh [--probe-only]
+
+Starts an Xvfb display, validates the DarkPlaces GL renderer on that display,
+then launches DarkPlaces and x11grab -> v4l2. This fallback avoids root Xorg
+and desktop DRM hotplug churn. It is not the GPU-pinned production route.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --probe-only)
+            PROBE_ONLY=1
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "darkplaces-v4l2-xvfb: unknown argument: $1" >&2
+            usage >&2
+            exit 64
+            ;;
+    esac
+    shift
+done
+
+need_cmd() {
+    if ! command -v "$1" >/dev/null 2>&1; then
+        echo "darkplaces-v4l2-xvfb: missing required command: $1" >&2
+        exit 69
+    fi
+}
+
+need_cmd Xvfb
+need_cmd darkplaces-sdl
+need_cmd ffmpeg
+need_cmd v4l2-ctl
+
+if [ "$PROBE_ONLY" -ne 1 ] && [ ! -e "$DEVICE" ]; then
     echo "DarkPlaces v4l2loopback device not found: $DEVICE" >&2
     exit 1
 fi
-
-"$REPO_DIR/scripts/darkplaces-gl-preflight.sh"
-"$REPO_DIR/scripts/install-darkplaces-screwm-assets.sh"
 
 xvfb_pid=""
 darkplaces_pid=""
@@ -37,6 +75,19 @@ trap cleanup EXIT INT TERM
 Xvfb "$DISPLAY_NUM" -screen 0 "${WIDTH}x${HEIGHT}x24" -nolisten tcp &
 xvfb_pid="$!"
 sleep 1
+
+if [ -z "${HAPAX_DARKPLACES_EXPECTED_GL_RENDERER:-}" ] &&
+    [ -z "${HAPAX_DARKPLACES_EXPECTED_GPU_INDEX:-}" ]; then
+    export HAPAX_DARKPLACES_EXPECTED_GPU_INDEX=0
+fi
+DISPLAY="$DISPLAY_NUM" "$REPO_DIR/scripts/darkplaces-gl-preflight.sh"
+
+if [ "$PROBE_ONLY" -eq 1 ]; then
+    echo "darkplaces-v4l2-xvfb: probe-only complete" >&2
+    exit 0
+fi
+
+"$REPO_DIR/scripts/install-darkplaces-screwm-assets.sh"
 
 DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 darkplaces-sdl \
     -game screwm \
