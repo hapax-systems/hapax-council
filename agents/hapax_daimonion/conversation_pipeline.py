@@ -492,12 +492,16 @@ class ConversationPipeline:
         messages.extend(history)
         messages.append({"role": "user", "content": transcript})
 
+        from shared.context_compression import compress_history
+
+        messages = compress_history(messages, keep_recent=4, rate=0.33)
+
         self._conversation_thread.append({"role": "user", "content": transcript})
 
         try:
             import httpx
 
-            if not hasattr(self, '_httpx_client') or self._httpx_client is None:
+            if not hasattr(self, "_httpx_client") or self._httpx_client is None:
                 self._httpx_client = httpx.AsyncClient(timeout=15.0)
             _llm_start = time.monotonic()
             resp = await self._httpx_client.post(

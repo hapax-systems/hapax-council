@@ -298,6 +298,13 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         daemon._resident_stt.load()
     daemon.tts.preload()
 
+    try:
+        from shared.context_compression import compressor_available
+
+        compressor_available()
+    except Exception:
+        pass
+
     # TTS is now warm — expose it over UDS so the compositor can delegate
     # synthesis without loading torch. ALPHA-FINDING-1 root cause fix.
     await daemon.tts_server.start()
@@ -307,7 +314,12 @@ async def run_inner(daemon: VoiceDaemon) -> None:
 
     def _presence_posterior():
         score = daemon.presence.score
-        return {"definitely_present": 0.95, "likely_present": 0.80, "uncertain": 0.40, "likely_absent": 0.1}.get(score, 0.0)
+        return {
+            "definitely_present": 0.95,
+            "likely_present": 0.80,
+            "uncertain": 0.40,
+            "likely_absent": 0.1,
+        }.get(score, 0.0)
 
     daemon._audio_perception = AudioPerceptionBackend(
         stt=daemon._resident_stt,
@@ -453,8 +465,12 @@ async def run_inner(daemon: VoiceDaemon) -> None:
             try:
                 new_imps = list(consumer.read_new())
                 # Priority pass: operator speech impingements first
-                operator_imps = [i for i in new_imps if getattr(i, "source", "") == "audio.operator_speech"]
-                other_imps = [i for i in new_imps if getattr(i, "source", "") != "audio.operator_speech"]
+                operator_imps = [
+                    i for i in new_imps if getattr(i, "source", "") == "audio.operator_speech"
+                ]
+                other_imps = [
+                    i for i in new_imps if getattr(i, "source", "") != "audio.operator_speech"
+                ]
                 for imp in operator_imps:
                     await daemon._cpal_runner.process_impingement(imp)
                 for imp in other_imps:
