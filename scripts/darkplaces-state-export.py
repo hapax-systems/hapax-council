@@ -193,11 +193,36 @@ def build_reverie_lines(uniforms_file: Path) -> dict[str, str]:
         _float01(uniforms, "signal.ward_fx_chromatic_boost"),
         _float01(uniforms, "slot0_1_chromatic_aberration.intensity"),
     )
+    material = max(
+        _float01(uniforms, "slot1_3_emboss.strength"),
+        _float01(uniforms, "slot3_2_grain_bump.strength"),
+        _float01(uniforms, "post.sediment_strength"),
+        salience * 0.25,
+    )
+    inversion = max(
+        _float01(uniforms, "slot3_1_invert.strength"),
+        _float01(uniforms, "slot2_3_glitch_block.intensity") * 0.5,
+        _float01(uniforms, "slot3_0_strobe.active") * 0.35,
+    )
+    aperture = max(
+        _float01(uniforms, "post.vignette_strength"),
+        _float01(uniforms, "slot0_0_vignette.strength"),
+    )
+    thermal = max(
+        _float01(uniforms, "signal.color_warmth"),
+        _float01(uniforms, "slot4_1_colorgrade.sepia"),
+        _float01(uniforms, "content.intensity") * 0.20,
+        spectral * 0.40,
+    )
     return {
         "reverie-salience.txt": f"{salience:.4f}",
         "reverie-trace.txt": f"{trace:.4f}",
         "reverie-temporal.txt": f"{temporal:.4f}",
         "reverie-spectral.txt": f"{spectral:.4f}",
+        "reverie-material.txt": f"{material:.4f}",
+        "reverie-inversion.txt": f"{inversion:.4f}",
+        "reverie-aperture.txt": f"{aperture:.4f}",
+        "reverie-thermal.txt": f"{thermal:.4f}",
     }
 
 

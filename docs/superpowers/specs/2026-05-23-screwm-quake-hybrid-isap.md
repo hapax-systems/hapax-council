@@ -389,6 +389,10 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - 39 shader nodes as DarkPlaces GLSL post-processing passes
 - Performance validation on 5060 Ti
 - Visual fidelity comparison vs wgpu originals
+- Live Reverie scalars now drive DarkPlaces UserVec1-4 scroom fields:
+  salience/trace/temporal/spectral plus material, inversion, aperture, and
+  thermal pressure. Positive UserVec4.x is material emboss only; implicit UV
+  rotation is not part of the stable review baseline.
 
 ### D13: hapax-imagination Retirement (Phase 6)
 - Remove from default.target

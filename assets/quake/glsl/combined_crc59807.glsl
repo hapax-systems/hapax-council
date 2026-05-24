@@ -414,15 +414,9 @@ void main(void)
 		uv = clamp(uv, vec2(0.0), vec2(1.0));
 	}
 
-	// Affine transform (when emboss == 0, UserVec4.x > 0 = rotation angle in radians)
-	if (UserVec4.x > 0.001 && UserVec4.x < 1.0) {
-		float rot = UserVec4.x;
-		vec2 tc = uv - vec2(0.5);
-		float cr = cos(rot);
-		float sr = sin(rot);
-		uv = vec2(tc.x * cr - tc.y * sr, tc.x * sr + tc.y * cr) + vec2(0.5);
-		uv = clamp(uv, vec2(0.0), vec2(1.0));
-	}
+	// UserVec4.x positive values are reserved for material emboss. Earlier
+	// builds also rotated UVs here, which made review captures feel like camera
+	// lurch even when the noclip camera was fixed.
 
 	// === COLOR SAMPLING ===
 	vec3 color = dp_texture2D(Texture_First, uv).rgb;

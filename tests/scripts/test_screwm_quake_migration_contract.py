@@ -33,6 +33,8 @@ def test_screwm_shader_effects_are_unconditional_scroom_fields() -> None:
     assert "Effects run unconditionally" in postprocess_block
     assert "All effects operate on the WORLD" in postprocess_block
     assert "spatial effects in one pass" in postprocess_block
+    assert "UserVec4.x > 0.001 && UserVec4.x < 1.0" not in postprocess_block
+    assert "reserved for material emboss" in postprocess_block
 
 
 def test_screwm_spec_marks_compositor_wards_as_temporary_gap() -> None:
@@ -56,8 +58,14 @@ def test_screwm_quake_reads_reverie_effect_signals_in_engine() -> None:
     assert "DEFAULT_REVERIE_UNIFORMS_FILE" in exporter
     assert "reverie-salience.txt" in exporter
     assert "reverie-temporal.txt" in exporter
+    assert "reverie-material.txt" in exporter
+    assert "reverie-inversion.txt" in exporter
+    assert "reverie-aperture.txt" in exporter
+    assert "reverie-thermal.txt" in exporter
     assert "coupling_read_reverie" in coupling
     assert "data/reverie-salience.txt" in coupling
+    assert "data/reverie-material.txt" in coupling
+    assert "r_glsl_postprocess_uservec4" in coupling
     assert "coupling_reverie_temporal * 0.012" in coupling
 
 
@@ -110,3 +118,5 @@ def test_screwm_quake_contract_matches_current_camera_aoa_and_sound_foundation()
     assert "[x] Stable QuakeC review POV is noclip/free-camera" in spec
     assert "[x] AoA Sierpinski tetrahedron visible and rotating" in spec
     assert "[x] 5 ambient sound zones" in spec
+    assert "material, inversion, aperture, and" in spec
+    assert "Positive UserVec4.x is material emboss only" in spec

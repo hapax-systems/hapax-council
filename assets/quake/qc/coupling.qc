@@ -9,6 +9,10 @@ float coupling_reverie_salience;
 float coupling_reverie_trace;
 float coupling_reverie_temporal;
 float coupling_reverie_spectral;
+float coupling_reverie_material;
+float coupling_reverie_inversion;
+float coupling_reverie_aperture;
+float coupling_reverie_thermal;
 float coupling_audio_rms;
 float coupling_audio_onset;
 string coupling_current_mode;
@@ -27,6 +31,10 @@ void() coupling_init =
     coupling_reverie_trace = 0;
     coupling_reverie_temporal = 0;
     coupling_reverie_spectral = 0;
+    coupling_reverie_material = 0;
+    coupling_reverie_inversion = 0;
+    coupling_reverie_aperture = 0;
+    coupling_reverie_thermal = 0;
     coupling_audio_rms = 0;
     coupling_audio_onset = 0;
     coupling_next_poll = time + 0.5;
@@ -91,6 +99,10 @@ void() coupling_read_reverie =
     coupling_reverie_trace = coupling_read_float("data/reverie-trace.txt", 0);
     coupling_reverie_temporal = coupling_read_float("data/reverie-temporal.txt", 0);
     coupling_reverie_spectral = coupling_read_float("data/reverie-spectral.txt", 0);
+    coupling_reverie_material = coupling_read_float("data/reverie-material.txt", 0);
+    coupling_reverie_inversion = coupling_read_float("data/reverie-inversion.txt", 0);
+    coupling_reverie_aperture = coupling_read_float("data/reverie-aperture.txt", 0);
+    coupling_reverie_thermal = coupling_read_float("data/reverie-thermal.txt", 0);
 };
 
 void() coupling_read_audio =
@@ -154,6 +166,34 @@ void() coupling_apply_stimmung =
     uservec3_cmd = strcat(uservec3_cmd, ftos(noise_val));
     uservec3_cmd = strcat(uservec3_cmd, " 0 0\"\n");
     localcmd(uservec3_cmd);
+
+    // UserVec4: x=material emboss, y=inversion pressure, z=aperture mask,
+    // w=thermal field. Keep all values bounded so the stable review POV stays
+    // readable while the old Reverie effect vocabulary remains embodied.
+    float emboss_val = coupling_reverie_material * 0.08 + coupling_audio_rms * 0.010;
+    float invert_val = coupling_reverie_inversion * 0.04 + coupling_reverie_temporal * 0.010;
+    float aperture_val = coupling_reverie_aperture * 0.12;
+    float thermal_val = coupling_reverie_thermal * 0.12 + coupling_audio_onset * 0.020;
+
+    if (emboss_val > 0.10)
+        emboss_val = 0.10;
+    if (invert_val > 0.06)
+        invert_val = 0.06;
+    if (aperture_val > 0.10)
+        aperture_val = 0.10;
+    if (thermal_val > 0.16)
+        thermal_val = 0.16;
+
+    string uservec4_cmd;
+    uservec4_cmd = strcat("r_glsl_postprocess_uservec4 \"", ftos(emboss_val));
+    uservec4_cmd = strcat(uservec4_cmd, " ");
+    uservec4_cmd = strcat(uservec4_cmd, ftos(invert_val));
+    uservec4_cmd = strcat(uservec4_cmd, " ");
+    uservec4_cmd = strcat(uservec4_cmd, ftos(aperture_val));
+    uservec4_cmd = strcat(uservec4_cmd, " ");
+    uservec4_cmd = strcat(uservec4_cmd, ftos(thermal_val));
+    uservec4_cmd = strcat(uservec4_cmd, "\"\n");
+    localcmd(uservec4_cmd);
 };
 
 void() coupling_check_working_mode =

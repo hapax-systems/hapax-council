@@ -40,8 +40,15 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         {
             "content.salience": 0.31,
             "fb.trace_strength": 0.22,
+            "content.intensity": 0.42,
             "signal.ward_fx_temporal_boost": 0.18,
             "signal.ward_fx_spectral_boost": 0.14,
+            "post.vignette_strength": 0.19,
+            "signal.color_warmth": 0.16,
+            "slot1_3_emboss.strength": 0.12,
+            "slot3_1_invert.strength": 0.21,
+            "slot3_2_grain_bump.strength": 0.37,
+            "slot4_1_colorgrade.sepia": 0.23,
         },
     )
 
@@ -102,6 +109,10 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "reverie-trace.txt").read_text(encoding="utf-8").strip() == "0.2200"
     assert (game_dir / "reverie-temporal.txt").read_text(encoding="utf-8").strip() == "0.1800"
     assert (game_dir / "reverie-spectral.txt").read_text(encoding="utf-8").strip() == "0.1400"
+    assert (game_dir / "reverie-material.txt").read_text(encoding="utf-8").strip() == "0.3700"
+    assert (game_dir / "reverie-inversion.txt").read_text(encoding="utf-8").strip() == "0.2100"
+    assert (game_dir / "reverie-aperture.txt").read_text(encoding="utf-8").strip() == "0.1900"
+    assert (game_dir / "reverie-thermal.txt").read_text(encoding="utf-8").strip() == "0.2300"
     assert (game_dir / "audio-rms.txt").read_text(encoding="utf-8").strip() == "0.1200"
     assert (game_dir / "audio-onset.txt").read_text(encoding="utf-8").strip() == "0.3400"
 
