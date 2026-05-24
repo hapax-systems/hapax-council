@@ -155,6 +155,8 @@ def _add_darkplaces_background(
     fps: int,
     *,
     device: str | None = None,
+    target_width: int | None = None,
+    target_height: int | None = None,
     use_cuda: bool = False,
 ) -> bool:
     """Add DarkPlaces v4l2loopback as the compositor background layer.
@@ -163,6 +165,8 @@ def _add_darkplaces_background(
     Falls back to black background if the configured renderer feed is unavailable.
     """
     device = (device or _darkplaces_v4l2_device()).strip()
+    target_width = target_width or width
+    target_height = target_height or height
     if device == OBS_VIRTUAL_CAMERA_DEVICE and not _env_truthy(
         "HAPAX_DARKPLACES_ALLOW_OBS_VCAM_SOURCE"
     ):
@@ -208,17 +212,26 @@ def _add_darkplaces_background(
         )
 
         convert = Gst.ElementFactory.make("videoconvert", "darkplaces-convert")
+        scale = Gst.ElementFactory.make("videoscale", "darkplaces-scale")
+        scaled_caps = Gst.ElementFactory.make("capsfilter", "darkplaces-scaled-caps")
+        scaled_caps.set_property(
+            "caps",
+            Gst.Caps.from_string(
+                f"video/x-raw,width={target_width},height={target_height},framerate={fps}/1"
+            ),
+        )
         queue = Gst.ElementFactory.make("queue", "darkplaces-queue")
         queue.set_property("leaky", 2)
         queue.set_property("max-size-buffers", 2)
 
-        branch_elements = [src, input_caps, convert]
+        branch_elements = [src, input_caps, convert, scale, scaled_caps]
         if use_cuda:
             raw_caps = Gst.ElementFactory.make("capsfilter", "darkplaces-raw-nv12-caps")
             raw_caps.set_property(
                 "caps",
                 Gst.Caps.from_string(
-                    f"video/x-raw,format=NV12,width={width},height={height},framerate={fps}/1"
+                    f"video/x-raw,format=NV12,width={target_width},height={target_height},"
+                    f"framerate={fps}/1"
                 ),
             )
             upload = Gst.ElementFactory.make("cudaupload", "darkplaces-upload")
@@ -226,7 +239,7 @@ def _add_darkplaces_background(
             cuda_caps = Gst.ElementFactory.make("capsfilter", "darkplaces-cuda-caps")
             cuda_caps.set_property(
                 "caps",
-                Gst.Caps.from_string(cuda_input_caps_string(width, height, fps)),
+                Gst.Caps.from_string(cuda_input_caps_string(target_width, target_height, fps)),
             )
             branch_elements.extend([raw_caps, upload, cuda_convert, cuda_caps])
         branch_elements.append(queue)
@@ -257,8 +270,8 @@ def _add_darkplaces_background(
 
         sink_pad.set_property("xpos", 0)
         sink_pad.set_property("ypos", 0)
-        sink_pad.set_property("width", width)
-        sink_pad.set_property("height", height)
+        sink_pad.set_property("width", target_width)
+        sink_pad.set_property("height", target_height)
         sink_pad.set_property("zorder", 0)
 
         src_pad = queue.get_static_pad("src")
@@ -518,6 +531,8 @@ def build_pipeline(compositor: Any) -> Any:
         darkplaces_config.height,
         darkplaces_config.fps,
         device=darkplaces_config.device,
+        target_width=compositor.config.output_width,
+        target_height=compositor.config.output_height,
         use_cuda=compositor._use_cuda,
     )
 
