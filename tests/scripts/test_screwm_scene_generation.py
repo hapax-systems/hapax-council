@@ -27,12 +27,15 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "w35" in content
     assert "drift_c" in content
     assert "drift_r" in content
-    assert "// ward-anchor 05: reverie" in content
+    assert "// ward-anchor 05: reverie domain=perception" in content
     assert "// ward-anchor 34: segment_content" in content
-    assert "// ward-anchor 36: cbip_dual_ir_displacement" in content
+    assert "// ward-anchor 36: cbip_dual_ir_displacement domain=perception" in content
     assert "pos=-222,62,280" in content
     assert "pos=222,-82,64" in content
     assert "pos=0,-118,28" in content
+    assert "ward-glow 01: token_pole drift_c" in content
+    assert "ward-glow 02: album drift_r" in content
+    assert "ward-glow 03: stream_overlay drift_g" in content
 
 
 def test_screwm_map_inventory_matches_default_non_darkplaces_sources() -> None:
@@ -43,6 +46,16 @@ def test_screwm_map_inventory_matches_default_non_darkplaces_sources() -> None:
     default_sources = {source["id"] for source in default_layout["sources"]} - {"darkplaces"}
 
     assert set(module["WARD_ANCHORS"]) == default_sources
+    assert set(module["WARD_DOMAINS"]) == default_sources
+    assert set(module["WARD_DOMAINS"].values()) == {
+        "communication",
+        "presence",
+        "token",
+        "music",
+        "cognition",
+        "director",
+        "perception",
+    }
 
 
 def test_screwm_wad_defines_all_ward_panel_textures() -> None:

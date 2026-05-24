@@ -76,6 +76,65 @@ WARD_ANCHORS = [
     "cbip_dual_ir_displacement",
 ]
 
+WARD_DOMAINS = {
+    "token_pole": "token",
+    "album": "music",
+    "stream_overlay": "communication",
+    "sierpinski": "perception",
+    "reverie": "perception",
+    "activity_header": "cognition",
+    "stance_indicator": "presence",
+    "gem": "perception",
+    "grounding_provenance_ticker": "director",
+    "impingement_cascade": "communication",
+    "recruitment_candidate_panel": "cognition",
+    "thinking_indicator": "presence",
+    "pressure_gauge": "presence",
+    "activity_variety_log": "cognition",
+    "whos_here": "presence",
+    "durf": "perception",
+    "coding_session_reveal": "cognition",
+    "m8-display": "music",
+    "steamdeck-display": "music",
+    "egress_footer": "director",
+    "programme_banner": "director",
+    "precedent_ticker": "director",
+    "programme_history": "cognition",
+    "research_instrument_dashboard": "cognition",
+    "cbip_signal_density": "perception",
+    "chat_ambient": "communication",
+    "chronicle_ticker": "director",
+    "programme_state": "director",
+    "polyend_instrument_reveal": "music",
+    "interactive_lore_query": "cognition",
+    "constructivist_research_poster": "cognition",
+    "tufte_density": "cognition",
+    "ascii_schematic": "cognition",
+    "segment_content": "communication",
+    "m8_oscilloscope": "music",
+    "cbip_dual_ir_displacement": "perception",
+}
+
+DOMAIN_GLOW_TEX = {
+    "communication": "drift_g",
+    "presence": "drift_a",
+    "token": "drift_c",
+    "music": "drift_r",
+    "cognition": "drift_c",
+    "director": "drift_a",
+    "perception": "drift_g",
+}
+
+DOMAIN_LIGHT_COLOR = {
+    "communication": (0.55, 0.95, 0.42),
+    "presence": (1.00, 0.70, 0.28),
+    "token": (0.45, 0.95, 0.88),
+    "music": (1.00, 0.35, 0.65),
+    "cognition": (0.40, 0.88, 1.00),
+    "director": (1.00, 0.62, 0.23),
+    "perception": (0.58, 0.88, 0.34),
+}
+
 WARD_COLUMNS = 7
 WARD_PANE_W = 68
 WARD_PANE_H = 50
@@ -181,6 +240,10 @@ def ward_anchor_position(idx):
     y = WARD_Y_TOP + row * WARD_Y_STEP
     z = int(WARD_TOP_Z - row * WARD_Z_SPACING)
     return x, y, z
+
+
+def ward_domain(idx):
+    return WARD_DOMAINS[WARD_ANCHORS[idx - 1]]
 
 
 def sealed_room(preset):
@@ -332,7 +395,8 @@ def ward_scrim_panes(_preset):
     for idx, anchor in enumerate(WARD_ANCHORS, start=1):
         x, y, z = ward_anchor_position(idx)
         tex = f"w{idx:02d}"
-        glow_tex = WARD_GLOW_TEX[(idx - 1) % len(WARD_GLOW_TEX)]
+        domain = ward_domain(idx)
+        glow_tex = DOMAIN_GLOW_TEX[domain]
         brush = box_brush(
             x - WARD_PANE_W // 2,
             y - 2,
@@ -343,7 +407,9 @@ def ward_scrim_panes(_preset):
             tex,
         )
         if brush:
-            brushes.append(f"// ward-anchor {idx:02d}: {anchor} pos={x},{y},{z}\n{brush}")
+            brushes.append(
+                f"// ward-anchor {idx:02d}: {anchor} domain={domain} pos={x},{y},{z}\n{brush}"
+            )
         glow = box_brush(
             x - WARD_PANE_W // 2,
             y - 7,
@@ -530,17 +596,11 @@ def ward_lights(preset):
     the full ward inventory reviewable in OBS even when live state is quiet.
     """
     entities = []
-    colors = [
-        (0.42, 0.95, 0.88),
-        (1.00, 0.64, 0.30),
-        (1.00, 0.36, 0.58),
-        (0.58, 0.88, 0.34),
-    ]
     base = int(preset.get("wall_light", 100) * 0.42)
 
     for idx, anchor in enumerate(WARD_ANCHORS, start=1):
         x, y, z = ward_anchor_position(idx)
-        r, g, b = colors[(idx - 1) % len(colors)]
+        r, g, b = DOMAIN_LIGHT_COLOR[ward_domain(idx)]
         entities.append(
             f"// ward-light {idx:02d}: {anchor}\n"
             "{\n"
