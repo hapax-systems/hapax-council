@@ -349,6 +349,10 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   CSQC is now the live coupling layer, not the default ward text surface.
 - CSQC also carries live six-camera/source state into in-world dynamic lights
   using separate semantic priority and fresh-frame evidence scalars.
+- HOMAGE activation is exported from `homage-active.json` /
+  `homage-substrate-package.json` into DarkPlaces-readable scalars; QuakeHomage
+  now enters the in-scroom ward/source lightfield instead of remaining only a
+  compositor-side package marker.
 
 ### D8: hapax-darkplaces Systemd Unit [COMPLETE]
 - `systemd/units/hapax-darkplaces-v4l2.service`
@@ -380,9 +384,12 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   `WatchdogTimestamp`. The controller service remained opt-in/inactive.
 - Restart=always
 
-### D9: QuakeHomage Package
+### D9: QuakeHomage Package [COMPLETE]
 - `agents/studio_compositor/homage/quake.py`
 - Palette, typography, grammar, transitions, artefacts
+- Registered by `agents/studio_compositor.homage` at import time.
+- Runtime package activation is bridged into the DarkPlaces game directory as
+  `data/homage-*.txt`, where CSQC folds it into ward/drift/source lighting.
 
 ### D10: Dual BSP Mode Compilation
 - `scripts/generate-screwm-map.py --mode rnd` / `--mode research`

@@ -56,6 +56,8 @@ def test_csqc_dynamic_lights_cover_all_physical_ward_panes() -> None:
     assert "active * 74" in body
     assert 'screwm_read_norm("data/audio-rms.txt")' in body
     assert "screwm_audio_onset * 20" in body
+    assert 'screwm_read_norm("data/homage-quake-active.txt")' in body
+    assert "homage_boost = screwm_homage_quake" in body
     assert 'cvar("screwm_csqc_lightfield") < 0' in body
 
     for idx in range(1, 37):
@@ -77,6 +79,7 @@ def test_csqc_dynamic_lights_cover_physical_drift_graph() -> None:
     assert body.count("screwm_add_drift_light('") == len(map_module["DRIFT_LINKS"])
     assert "activity * 58" in body
     assert "screwm_audio_onset * 34" in body
+    assert "screwm_homage_transition * 26" in body
 
     for idx, (src, dst, texture) in enumerate(map_module["DRIFT_LINKS"], start=1):
         x1, y1, z1 = map_module["ward_anchor_position"](src)
@@ -104,6 +107,17 @@ def test_csqc_source_anchors_carry_live_camera_scalars() -> None:
         assert f"screwm_add_source_light('{x} {y} {z}'" in body
         assert f"screwm_source_priority_{idx:02d}" in body
         assert f"screwm_source_fresh_{idx:02d}" in body
+
+
+def test_csqc_homage_package_lives_in_scroom_lightfield() -> None:
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    assert 'screwm_read_norm("data/homage-transition-energy.txt")' in body
+    assert 'screwm_read_norm("data/homage-signature-intensity.txt")' in body
+    assert "void() screwm_add_homage_lights" in body
+    assert "if (screwm_homage_quake <= 0)" in body
+    assert "adddynamiclight('0 -20 172'" in body
+    assert "screwm_add_homage_lights();" in body
 
 
 def test_darkplaces_review_camera_is_locked_by_default() -> None:

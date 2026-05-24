@@ -309,6 +309,34 @@ def build_audio_lines(shm_dir: Path) -> dict[str, str]:
     }
 
 
+def build_homage_lines(shm_dir: Path, uniforms_file: Path) -> dict[str, str]:
+    """Collapse the active HOMAGE package into QuakeC-readable scalars."""
+    active = _read_json(shm_dir / "homage-active.json")
+    substrate = _read_json(shm_dir / "homage-substrate-package.json")
+    uniforms = _read_json(uniforms_file)
+
+    package = active.get("package") or substrate.get("package") or "none"
+    package = _one_line(package, limit=32) or "none"
+    substrate_package = _one_line(substrate.get("package", package), limit=32) or "none"
+    quake_active = 1.0 if package == "quake" or substrate_package == "quake" else 0.0
+
+    try:
+        hue = float(substrate.get("palette_accent_hue_deg", 0.0))
+    except (TypeError, ValueError):
+        hue = 0.0
+    hue_norm = max(0.0, min(1.0, hue / 360.0))
+
+    return {
+        "homage-package.txt": package,
+        "homage-substrate-package.txt": substrate_package,
+        "homage-quake-active.txt": f"{quake_active:.4f}",
+        "homage-transition-energy.txt": f"{_float01(uniforms, 'signal.homage_custom_4_0'):.4f}",
+        "homage-accent-hue.txt": f"{hue_norm:.4f}",
+        "homage-signature-intensity.txt": f"{_float01(uniforms, 'signal.homage_custom_4_2'):.4f}",
+        "homage-rotation-phase.txt": f"{_float01(uniforms, 'signal.homage_custom_4_3'):.4f}",
+    }
+
+
 def _source_frame_freshness(source_dir: Path, now: float | None = None) -> float:
     frame_path = source_dir / "frame.rgba"
     manifest = _read_json(source_dir / "manifest.json")
@@ -372,6 +400,8 @@ def export_state(
     for filename, line in build_reverie_lines(uniforms_file).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_audio_lines(shm_dir).items():
+        _write_atomic(game_dir / filename, line)
+    for filename, line in build_homage_lines(shm_dir, uniforms_file).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_source_lines(shm_dir, imagination_sources_dir).items():
         _write_atomic(game_dir / filename, line)

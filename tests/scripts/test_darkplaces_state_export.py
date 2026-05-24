@@ -49,6 +49,9 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
             "slot3_1_invert.strength": 0.21,
             "slot3_2_grain_bump.strength": 0.37,
             "slot4_1_colorgrade.sepia": 0.23,
+            "signal.homage_custom_4_0": 0.44,
+            "signal.homage_custom_4_2": 0.55,
+            "signal.homage_custom_4_3": 0.66,
         },
     )
 
@@ -84,6 +87,11 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     _write_json(
         shm_dir / "unified-reactivity.json",
         {"blended": {"rms": 0.12, "onset": 0.34}},
+    )
+    _write_json(shm_dir / "homage-active.json", {"package": "quake"})
+    _write_json(
+        shm_dir / "homage-substrate-package.json",
+        {"package": "quake", "palette_accent_hue_deg": 180.0, "custom_slot_index": 4},
     )
 
     exporter.export_state(game_dir, shm_dir, mode_file, uniforms_file)
@@ -123,6 +131,19 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "reverie-thermal.txt").read_text(encoding="utf-8").strip() == "0.2300"
     assert (game_dir / "audio-rms.txt").read_text(encoding="utf-8").strip() == "0.1200"
     assert (game_dir / "audio-onset.txt").read_text(encoding="utf-8").strip() == "0.3400"
+    assert (game_dir / "homage-package.txt").read_text(encoding="utf-8").strip() == "quake"
+    assert (game_dir / "homage-substrate-package.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "quake"
+    assert (game_dir / "homage-quake-active.txt").read_text(encoding="utf-8").strip() == "1.0000"
+    assert (game_dir / "homage-transition-energy.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.4400"
+    assert (game_dir / "homage-accent-hue.txt").read_text(encoding="utf-8").strip() == "0.5000"
+    assert (game_dir / "homage-signature-intensity.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.5500"
+    assert (game_dir / "homage-rotation-phase.txt").read_text(encoding="utf-8").strip() == "0.6600"
 
 
 def test_darkplaces_state_export_normalizes_all_in_scroom_ward_activity() -> None:
@@ -191,6 +212,36 @@ def test_darkplaces_state_export_writes_camera_source_scalars(tmp_path: Path) ->
     assert lines["source-fresh-01.txt"] == "1.0000"
     assert lines["source-fresh-05.txt"] == "0.0000"
     assert lines["source-fresh-06.txt"] == "0.0000"
+
+
+def test_darkplaces_state_export_builds_homage_scalars(tmp_path: Path) -> None:
+    exporter = _load_exporter()
+    shm_dir = tmp_path / "shm"
+    shm_dir.mkdir()
+    uniforms_file = tmp_path / "uniforms.json"
+    _write_json(shm_dir / "homage-active.json", {"package": "bitchx"})
+    _write_json(
+        shm_dir / "homage-substrate-package.json",
+        {"package": "quake", "palette_accent_hue_deg": 270.0, "custom_slot_index": 4},
+    )
+    _write_json(
+        uniforms_file,
+        {
+            "signal.homage_custom_4_0": 0.12,
+            "signal.homage_custom_4_2": 0.34,
+            "signal.homage_custom_4_3": 0.56,
+        },
+    )
+
+    lines = exporter.build_homage_lines(shm_dir, uniforms_file)
+
+    assert lines["homage-package.txt"] == "bitchx"
+    assert lines["homage-substrate-package.txt"] == "quake"
+    assert lines["homage-quake-active.txt"] == "1.0000"
+    assert lines["homage-transition-energy.txt"] == "0.1200"
+    assert lines["homage-accent-hue.txt"] == "0.7500"
+    assert lines["homage-signature-intensity.txt"] == "0.3400"
+    assert lines["homage-rotation-phase.txt"] == "0.5600"
 
 
 def test_darkplaces_state_bridge_delegates_to_exporter() -> None:

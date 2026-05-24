@@ -7,6 +7,11 @@ float screwm_energy;
 float screwm_voice;
 float screwm_audio_rms;
 float screwm_audio_onset;
+float screwm_homage_quake;
+float screwm_homage_transition;
+float screwm_homage_hue;
+float screwm_homage_signature;
+float screwm_homage_rotation;
 string screwm_mode;
 string screwm_w01;
 string screwm_w02;
@@ -150,6 +155,11 @@ void() screwm_poll_state =
     screwm_voice = screwm_clamp(stof(line), 0, 1);
     screwm_audio_rms = screwm_read_norm("data/audio-rms.txt");
     screwm_audio_onset = screwm_read_norm("data/audio-onset.txt");
+    screwm_homage_quake = screwm_read_norm("data/homage-quake-active.txt");
+    screwm_homage_transition = screwm_read_norm("data/homage-transition-energy.txt");
+    screwm_homage_hue = screwm_read_norm("data/homage-accent-hue.txt");
+    screwm_homage_signature = screwm_read_norm("data/homage-signature-intensity.txt");
+    screwm_homage_rotation = screwm_read_norm("data/homage-rotation-phase.txt");
 
     screwm_w01 = screwm_read_line("data/ward-01.txt", "");
     screwm_w02 = screwm_read_line("data/ward-02.txt", "");
@@ -318,9 +328,12 @@ void(vector org, string text, float idx, vector color) screwm_draw_ward_detail =
 void(vector org, float idx, vector color, float active) screwm_add_ward_light =
 {
     float radius;
+    float homage_boost;
 
     radius = 22 + screwm_energy * 18 + screwm_voice * 32 + active * 74;
     radius = radius + screwm_audio_rms * 12 + screwm_audio_onset * 20;
+    homage_boost = screwm_homage_quake * (7 + screwm_homage_transition * 28 + screwm_homage_signature * 22);
+    radius = radius + homage_boost;
     adddynamiclight(org, screwm_clamp(radius, 14, 78), color);
 };
 
@@ -337,11 +350,28 @@ void(vector org, float idx, vector color, float active_src, float active_dst) sc
 {
     float activity;
     float radius;
+    float homage_boost;
 
     activity = screwm_clamp(active_src + active_dst, 0, 1);
     radius = 18 + screwm_energy * 20 + activity * 58;
     radius = radius + screwm_audio_rms * 18 + screwm_audio_onset * 34;
+    homage_boost = screwm_homage_quake * (10 + screwm_homage_transition * 26);
+    radius = radius + homage_boost;
     adddynamiclight(org, screwm_clamp(radius, 12, 94), color);
+};
+
+void() screwm_add_homage_lights =
+{
+    float field;
+
+    if (screwm_homage_quake <= 0)
+        return;
+
+    field = 48 + screwm_homage_transition * 80 + screwm_homage_signature * 56;
+    field = field + screwm_energy * 24;
+    adddynamiclight('0 -20 172', screwm_clamp(field, 36, 140), screwm_cyan);
+    adddynamiclight('-148 26 226', screwm_clamp(field * 0.55, 24, 88), screwm_amber);
+    adddynamiclight('148 -46 118', screwm_clamp(field * 0.55, 24, 88), screwm_green);
 };
 
 void() screwm_draw_ward_links =
@@ -495,6 +525,7 @@ void() screwm_add_dynamic_lights =
     adddynamiclight('222 26 226', 70 + screwm_voice * 80, screwm_rose);
     adddynamiclight('-222 -46 118', 58 + screwm_energy * 34, screwm_green);
     adddynamiclight('222 -82 64', 58 + screwm_voice * 70, screwm_amber);
+    screwm_add_homage_lights();
 
     screwm_add_ward_light('-222 62 280', 1, screwm_cyan, screwm_active_01);
     screwm_add_ward_light('-148 62 280', 2, screwm_rose, screwm_active_02);

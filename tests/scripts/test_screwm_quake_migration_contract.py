@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from agents.studio_compositor.homage import QUAKE_PACKAGE, get_package, registered_package_names
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -18,6 +20,23 @@ def test_screwm_quake_layout_routes_only_darkplaces_video() -> None:
     assert layout["sources"][0]["params"]["device"] == "/dev/video52"
     assert layout["sources"][0]["params"]["role"] == "darkplaces_background"
     assert "Cairo" not in json.dumps(layout)
+
+
+def test_screwm_quake_homage_package_is_registered_and_exported_to_engine() -> None:
+    exporter = (REPO_ROOT / "scripts" / "darkplaces-state-export.py").read_text(encoding="utf-8")
+    wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
+    spec = (
+        REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-05-23-screwm-quake-hybrid-isap.md"
+    ).read_text(encoding="utf-8")
+
+    assert "quake" in registered_package_names()
+    assert get_package("quake") is QUAKE_PACKAGE
+    assert "homage-active.json" in exporter
+    assert "homage-substrate-package.json" in exporter
+    assert "homage-quake-active.txt" in exporter
+    assert "screwm_add_homage_lights" in wards
+    assert "ward/source lightfield" in spec
+    assert "### D9: QuakeHomage Package [COMPLETE]" in spec
 
 
 def test_screwm_shader_effects_are_unconditional_scroom_fields() -> None:
