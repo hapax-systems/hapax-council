@@ -199,9 +199,9 @@ def test_safe_state_contains_contract_shape(tmp_path: Path) -> None:
     assert health.evidence["egress_binding"]["state"] == "obs_bound_unverified"
     assert health.evidence["audio_ducker"]["status"] == "mpc_hardware"
     assert "MPC Live III" in health.evidence["audio_ducker"]["note"]
-    assert "hapax-audio-ducker.service" not in health.evidence["service_freshness"][
-        "required_units"
-    ]
+    assert (
+        "hapax-audio-ducker.service" not in health.evidence["service_freshness"]["required_units"]
+    )
     assert health.owners["loudness_constants"] == "shared/audio_loudness.py"
     assert health.owners["egress_binding"] == "shared/obs_egress_predicate.py + pw-link -l"
 
