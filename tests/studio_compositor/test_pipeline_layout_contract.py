@@ -197,9 +197,11 @@ def _patch_build_pipeline_edges(monkeypatch: object) -> None:
     monkeypatch.setenv("HAPAX_DARKPLACES_V4L2_DEVICE", "/tmp/hapax-test-missing-darkplaces")
 
 
-def _fake_compositor_config(*, hls_enabled: bool = False) -> CompositorConfig:
+def _fake_compositor_config(
+    *, hls_enabled: bool = False, cameras: list[CameraSpec] | None = None
+) -> CompositorConfig:
     return CompositorConfig(
-        cameras=[],
+        cameras=[] if cameras is None else cameras,
         output_width=1280,
         output_height=720,
         framerate=30,
@@ -207,11 +209,11 @@ def _fake_compositor_config(*, hls_enabled: bool = False) -> CompositorConfig:
     )
 
 
-def _fake_compositor() -> SimpleNamespace:
+def _fake_compositor(config: CompositorConfig | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         _Gst=_FakeGst,
         _GLib=object(),
-        config=_fake_compositor_config(),
+        config=config or _fake_compositor_config(),
         _element_to_role={},
         _camera_status={},
         _camera_status_lock=threading.RLock(),
@@ -490,6 +492,60 @@ def test_build_pipeline_force_cpu_skips_cuda_canary_path(monkeypatch: object) ->
     assert _FakeGst.launched is None
     assert "cuda-output-caps" not in names
     assert "download" not in names
+
+
+def test_build_pipeline_keeps_camera_branches_by_default(monkeypatch: object) -> None:
+    _reset_fake_gst()
+    _patch_build_pipeline_edges(monkeypatch)
+    monkeypatch.setenv("HAPAX_COMPOSITOR_FORCE_CPU", "1")
+    monkeypatch.delenv("HAPAX_DARKPLACES_BACKGROUND_ONLY", raising=False)
+    calls: list[object] = []
+    monkeypatch.setattr(pipeline_module, "add_camera_branch", lambda *args: calls.append(args))
+    monkeypatch.setattr(
+        pipeline_module,
+        "compute_safe_tile_layout",
+        lambda *_args, **_kwargs: {"operator": TileRect(x=0, y=0, w=640, h=360)},
+    )
+    config = _fake_compositor_config(
+        cameras=[CameraSpec(role="operator", device="/dev/null", width=1280, height=720)]
+    )
+
+    pipeline_module.build_pipeline(_fake_compositor(config))
+
+    assert len(calls) == 1
+
+
+def test_build_pipeline_darkplaces_background_only_skips_camera_branches(
+    monkeypatch: object,
+) -> None:
+    _reset_fake_gst()
+    _patch_build_pipeline_edges(monkeypatch)
+    monkeypatch.setenv("HAPAX_COMPOSITOR_FORCE_CPU", "1")
+    monkeypatch.setenv("HAPAX_DARKPLACES_BACKGROUND_ONLY", "1")
+    monkeypatch.setenv("HAPAX_DARKPLACES_V4L2_DEVICE", "/dev/video99")
+    monkeypatch.setattr(pipeline_module.os.path, "exists", lambda path: path == "/dev/video99")
+    calls: list[object] = []
+    features: dict[str, bool] = {}
+    monkeypatch.setattr(pipeline_module, "add_camera_branch", lambda *args: calls.append(args))
+    monkeypatch.setattr(
+        pipeline_module,
+        "compute_safe_tile_layout",
+        lambda *_args, **_kwargs: {"operator": TileRect(x=0, y=0, w=640, h=360)},
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "_publish_runtime_feature",
+        lambda feature, active: features.setdefault(feature, active),
+    )
+    config = _fake_compositor_config(
+        cameras=[CameraSpec(role="operator", device="/dev/null", width=1280, height=720)]
+    )
+
+    built = pipeline_module.build_pipeline(_fake_compositor(config))
+
+    assert calls == []
+    assert features["darkplaces_background_only"] is True
+    assert _element_named(built.elements, "darkplaces-src").props["device"] == "/dev/video99"
 
 
 def test_build_pipeline_isolates_v4l2_output_tee_branch_with_queue(
