@@ -113,7 +113,7 @@ def test_darkplaces_review_camera_is_locked_by_default() -> None:
     assert "screwm_camera_orbit 0" in autoexec
     assert "cl_bob 0" in autoexec
     assert "cl_rollangle 0" in autoexec
-    assert "fov 90" in autoexec
+    assert "fov 86" in autoexec
     assert "screwm_camera_file_control 1" in autoexec
     assert 'cvar("screwm_camera_orbit") > 0' in camera
     assert "CAMERA_REVIEW_POS" in camera

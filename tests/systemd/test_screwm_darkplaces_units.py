@@ -107,8 +107,8 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     world = (REPO_ROOT / "assets" / "quake" / "qc" / "world.qc").read_text(encoding="utf-8")
 
     assert "vector AOA_CENTER = '0 0 176';" in defs
-    assert "vector CAMERA_REVIEW_POS = '0 -232 232';" in defs
-    assert "vector CAMERA_REVIEW_TARGET = '0 -18 142';" in defs
+    assert "vector CAMERA_REVIEW_POS = '0 -264 172';" in defs
+    assert "vector CAMERA_REVIEW_TARGET = '0 -10 168';" in defs
     assert "vector(vector v) vectoangles = #51;" in defs
     assert "ang = vectoangles(target - pos);" in camera
     assert 'if (cvar("screwm_camera_orbit") > 0)' in camera

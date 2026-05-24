@@ -334,8 +334,8 @@ def level_ledges(preset):
     """Stepped ledges at each level boundary — architectural strata."""
     brushes = []
     rt = preset["ramp_tex"]
-    ledge_depth = 32
-    ledge_height = 12
+    ledge_depth = 18
+    ledge_height = 6
 
     for level in range(5):
         frac = level / 4
@@ -391,10 +391,10 @@ def level_ledges(preset):
 def central_lattice(preset):
     """Level rings and vertical rods in the scene core so the AoA has a structural field."""
     brushes = []
-    outer = 104
-    inner = 56
-    rod_half = 6
-    ring_height = 10
+    outer = 96
+    inner = 78
+    rod_half = 3
+    ring_height = 4
 
     for _level, z1, z2, tex in level_texture_bands(preset, "level_ledge_tex"):
         mid_z = z1 + int((z2 - z1) * 0.55)
@@ -641,8 +641,8 @@ def central_pedestal(preset):
 
 def ramp_shelves(preset):
     brushes = []
-    ramp_w = 96
-    ramp_d = 48
+    ramp_w = 52
+    ramp_d = 22
     for i in range(4):
         angle = i * (math.pi / 2) + math.pi / 8
         frac = (i + 1) / 5
@@ -738,7 +738,7 @@ def ward_lights(preset):
     the full ward inventory reviewable in OBS even when live state is quiet.
     """
     entities = []
-    base = int(preset.get("wall_light", 100) * 0.42)
+    base = int(preset.get("wall_light", 100) * 0.72)
 
     for idx, anchor in enumerate(WARD_ANCHORS, start=1):
         x, y, z = ward_anchor_position(idx)

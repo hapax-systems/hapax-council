@@ -63,6 +63,19 @@ def test_screwm_map_keeps_foundational_tower_geometry_in_regenerated_bsp() -> No
     assert content.count("r_ground") > 1
 
 
+def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
+    source = (REPO_ROOT / "scripts" / "generate-screwm-map.py").read_text(encoding="utf-8")
+
+    assert "ledge_depth = 18" in source
+    assert "ledge_height = 6" in source
+    assert "inner = 78" in source
+    assert "ring_height = 4" in source
+    assert "rod_half = 3" in source
+    assert "ramp_w = 52" in source
+    assert "ramp_d = 22" in source
+    assert 'base = int(preset.get("wall_light", 100) * 0.72)' in source
+
+
 def test_screwm_map_embeds_camera_source_constellation() -> None:
     module = _load_script("scripts/generate-screwm-map.py")
     content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
