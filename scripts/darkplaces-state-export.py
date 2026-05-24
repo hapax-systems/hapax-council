@@ -21,6 +21,7 @@ from typing import Any
 DEFAULT_GAME_DIR = Path.home() / ".darkplaces" / "screwm" / "data"
 DEFAULT_SHM_DIR = Path("/dev/shm/hapax-compositor")
 DEFAULT_MODE_FILE = Path.home() / ".cache" / "hapax" / "working-mode"
+DEFAULT_REVERIE_UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/uniforms.json")
 
 WARD_EXPORTS: dict[str, str] = {
     "01": "token_pole",
@@ -85,6 +86,14 @@ def _percent(value: object) -> str:
         return "000%"
 
 
+def _float01(payload: dict[str, Any], key: str) -> float:
+    try:
+        value = float(payload.get(key, 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(1.0, value))
+
+
 def _active_ward_count(active_wards: dict[str, Any]) -> int:
     ward_ids = active_wards.get("ward_ids")
     if isinstance(ward_ids, list):
@@ -145,7 +154,35 @@ def build_ward_lines(shm_dir: Path) -> dict[str, str]:
     }
 
 
-def export_state(game_dir: Path, shm_dir: Path, mode_file: Path) -> None:
+def build_reverie_lines(uniforms_file: Path) -> dict[str, str]:
+    """Collapse Reverie uniforms into QuakeC-readable scalar fields."""
+    uniforms = _read_json(uniforms_file)
+    salience = _float01(uniforms, "content.salience")
+    trace = _float01(uniforms, "fb.trace_strength")
+    temporal = max(
+        _float01(uniforms, "signal.ward_fx_temporal_boost"),
+        _float01(uniforms, "slot2_2_stutter.freeze_chance"),
+        _float01(uniforms, "slot2_3_glitch_block.intensity"),
+    )
+    spectral = max(
+        _float01(uniforms, "signal.ward_fx_spectral_boost"),
+        _float01(uniforms, "signal.ward_fx_chromatic_boost"),
+        _float01(uniforms, "slot0_1_chromatic_aberration.intensity"),
+    )
+    return {
+        "reverie-salience.txt": f"{salience:.4f}",
+        "reverie-trace.txt": f"{trace:.4f}",
+        "reverie-temporal.txt": f"{temporal:.4f}",
+        "reverie-spectral.txt": f"{spectral:.4f}",
+    }
+
+
+def export_state(
+    game_dir: Path,
+    shm_dir: Path,
+    mode_file: Path,
+    uniforms_file: Path = DEFAULT_REVERIE_UNIFORMS_FILE,
+) -> None:
     game_dir.mkdir(parents=True, exist_ok=True)
 
     _copy_text(mode_file, game_dir / "working-mode.txt")
@@ -156,6 +193,8 @@ def export_state(game_dir: Path, shm_dir: Path, mode_file: Path) -> None:
     for ordinal, ward_id in WARD_EXPORTS.items():
         line = ward_lines.get(ordinal, ward_id.upper())
         _write_atomic(game_dir / f"ward-{ordinal}.txt", line)
+    for filename, line in build_reverie_lines(uniforms_file).items():
+        _write_atomic(game_dir / filename, line)
 
     active_segment = _read_json(shm_dir / "active-segment.json")
     active_wards = _read_json(shm_dir / "active_wards.json")
@@ -174,6 +213,7 @@ def main() -> int:
     parser.add_argument("--game-dir", type=Path, default=DEFAULT_GAME_DIR)
     parser.add_argument("--shm-dir", type=Path, default=DEFAULT_SHM_DIR)
     parser.add_argument("--mode-file", type=Path, default=DEFAULT_MODE_FILE)
+    parser.add_argument("--uniforms-file", type=Path, default=DEFAULT_REVERIE_UNIFORMS_FILE)
     parser.add_argument("--copy-self-test", type=Path, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -181,7 +221,7 @@ def main() -> int:
         shutil.copy2(__file__, args.copy_self_test)
         return 0
 
-    export_state(args.game_dir, args.shm_dir, args.mode_file)
+    export_state(args.game_dir, args.shm_dir, args.mode_file, args.uniforms_file)
     return 0
 
 

@@ -95,11 +95,14 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     world = (REPO_ROOT / "assets" / "quake" / "qc" / "world.qc").read_text(encoding="utf-8")
 
     assert "vector AOA_CENTER = '0 0 176';" in defs
-    assert "vector CAMERA_REVIEW_POS = '0 -260 184';" in defs
-    assert "vector CAMERA_REVIEW_TARGET = '0 40 176';" in defs
+    assert "vector CAMERA_REVIEW_POS = '0 -276 154';" in defs
+    assert "vector CAMERA_REVIEW_TARGET = '0 -24 154';" in defs
     assert "vector(vector v) vectoangles = #51;" in defs
     assert "ang = vectoangles(target - pos);" in camera
     assert 'if (cvar("screwm_camera_orbit") > 0)' in camera
+    assert 'cvar("screwm_camera_file_control") > 0' in camera
+    assert 'camera_read_norm("data/camera-manual.txt", 0) > 0' in camera
+    assert "camera_apply_file_fov();" in camera
     assert "pos = CAMERA_REVIEW_POS;" in camera
     assert "CAMERA_ORBIT_PERIOD = 360.0;" in coupling
     assert "CAMERA_PERIOD = 120 + (1.0 - coupling_energy) * 30.0;" not in coupling
@@ -119,15 +122,30 @@ def test_darkplaces_state_bridge_follows_v4l2_renderer_unit() -> None:
     assert "WantedBy=hapax-darkplaces.service hapax-darkplaces-v4l2.service" in body
 
 
+def test_screwm_camera_gamepad_service_is_opt_in_and_headless() -> None:
+    body = _read("hapax-screwm-camera-gamepad.service")
+
+    assert "PartOf=hapax-darkplaces-v4l2.service" in body
+    assert "After=hapax-darkplaces-v4l2.service" in body
+    assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in body
+    assert "ConditionPathExists=%h/.config/hapax/enable-screwm-camera-gamepad" in body
+    assert "--require-file scripts/screwm-camera-gamepad.py" in body
+    assert "scripts/screwm-camera-gamepad.py" in body
+    assert "WantedBy=hapax-darkplaces-v4l2.service" in body
+
+
 def test_visual_stack_conditionally_wants_darkplaces_runtime_units() -> None:
     target = _read("hapax-visual-stack.target")
     v4l2 = _read("hapax-darkplaces-v4l2.service")
     bridge = _read("hapax-darkplaces-bridge.service")
+    gamepad = _read("hapax-screwm-camera-gamepad.service")
     obs_bridge = _read("hapax-obs-video50-yuyv-compat-bridge.service")
 
     assert "hapax-darkplaces-v4l2.service" in target
     assert "hapax-darkplaces-bridge.service" in target
+    assert "hapax-screwm-camera-gamepad.service" in target
     assert "hapax-obs-video50-yuyv-compat-bridge.service" in target
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in v4l2
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in bridge
+    assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in gamepad
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in obs_bridge

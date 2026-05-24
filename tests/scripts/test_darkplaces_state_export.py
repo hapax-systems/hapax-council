@@ -30,9 +30,19 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     shm_dir = tmp_path / "shm"
     shm_dir.mkdir()
     mode_file = tmp_path / "working-mode"
+    uniforms_file = tmp_path / "uniforms.json"
     mode_file.write_text("rnd\n", encoding="utf-8")
     (shm_dir / "stimmung-energy.txt").write_text("0.62\n", encoding="utf-8")
     (shm_dir / "voice-active.txt").write_text("1\n", encoding="utf-8")
+    _write_json(
+        uniforms_file,
+        {
+            "content.salience": 0.31,
+            "fb.trace_strength": 0.22,
+            "signal.ward_fx_temporal_boost": 0.18,
+            "signal.ward_fx_spectral_boost": 0.14,
+        },
+    )
 
     _write_json(
         shm_dir / "active-segment.json",
@@ -68,7 +78,7 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         {"blended": {"rms": 0.12, "onset": 0.34}},
     )
 
-    exporter.export_state(game_dir, shm_dir, mode_file)
+    exporter.export_state(game_dir, shm_dir, mode_file, uniforms_file)
 
     assert (game_dir / "working-mode.txt").read_text(encoding="utf-8").strip() == "rnd"
     assert (game_dir / "ward-01.txt").read_text(encoding="utf-8").strip() == "14056K TOK / 1 VIEW"
@@ -83,6 +93,10 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "active-wards-line.txt").read_text(
         encoding="utf-8"
     ).strip() == "36 IN-SCROOM WARDS"
+    assert (game_dir / "reverie-salience.txt").read_text(encoding="utf-8").strip() == "0.3100"
+    assert (game_dir / "reverie-trace.txt").read_text(encoding="utf-8").strip() == "0.2200"
+    assert (game_dir / "reverie-temporal.txt").read_text(encoding="utf-8").strip() == "0.1800"
+    assert (game_dir / "reverie-spectral.txt").read_text(encoding="utf-8").strip() == "0.1400"
 
 
 def test_darkplaces_state_bridge_delegates_to_exporter() -> None:
@@ -90,6 +104,7 @@ def test_darkplaces_state_bridge_delegates_to_exporter() -> None:
 
     assert "darkplaces-state-export.py" in body
     assert "--game-dir" in body
+    assert "--uniforms-file" in body
     assert "Keep the original minimal bridge alive" in body
 
 

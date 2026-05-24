@@ -47,3 +47,15 @@ def test_screwm_spec_marks_compositor_wards_as_temporary_gap() -> None:
         "temporary bridge only where DarkPlaces runtime texture limits block live content" in spec
     )
     assert "Wards stay in GStreamer compositor overlay" not in spec
+
+
+def test_screwm_quake_reads_reverie_effect_signals_in_engine() -> None:
+    exporter = (REPO_ROOT / "scripts" / "darkplaces-state-export.py").read_text(encoding="utf-8")
+    coupling = (REPO_ROOT / "assets" / "quake" / "qc" / "coupling.qc").read_text(encoding="utf-8")
+
+    assert "DEFAULT_REVERIE_UNIFORMS_FILE" in exporter
+    assert "reverie-salience.txt" in exporter
+    assert "reverie-temporal.txt" in exporter
+    assert "coupling_read_reverie" in coupling
+    assert "data/reverie-salience.txt" in coupling
+    assert "coupling_reverie_temporal * 0.012" in coupling
