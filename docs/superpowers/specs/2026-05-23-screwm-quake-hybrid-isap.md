@@ -274,6 +274,26 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   with `GL_RENDERER: NVIDIA GeForce RTX 5060 Ti/PCIe/SSE2`.
 - `/dev/video52` readback captured a nonblank 1280x720 Screwm frame:
   `/home/hapax/hapax-state/hardware-validation/darkplaces-screwm-20260524T013220Z-1591390/screwm-video52-frame.png`.
+- Follow-up bounded v4l2 smoke passed on 2026-05-24:
+  `scripts/darkplaces-attended-smoke.sh --v4l2 --duration-s 20` completed in
+  `/home/hapax/hapax-state/hardware-validation/darkplaces-screwm-20260524T023733Z-1312953`
+  with `GL_RENDERER: NVIDIA GeForce RTX 5060 Ti/PCIe/SSE2`.
+- That run captured a nonblank 1280x720 `/dev/video52` readback frame at
+  `/home/hapax/hapax-state/hardware-validation/darkplaces-screwm-20260524T023733Z-1312953/screwm-video52-readback.png`
+  and kernel logs showed no data-fabric sync-flood, Xid, AER, MCE, or GPU-fallen-off
+  evidence during the bounded window.
+- Desktop caveat: the dedicated Xorg path correlated with KDE/PowerDevil DRM/DDC
+  hotplug churn and apparent desktop blanking around 2026-05-23T21:37:54-21:38:00
+  CDT. Treat `scripts/darkplaces-v4l2-xorg.sh` as a validation harness, not the
+  production always-on route, until a follow-up run proves no desktop display
+  disturbance.
+- Display-safe fallback smoke passed on 2026-05-24:
+  `scripts/darkplaces-attended-smoke.sh --xvfb --duration-s 12` completed in
+  `/home/hapax/hapax-state/hardware-validation/darkplaces-screwm-20260524T024639Z-1801937`.
+  It captured a nonblank `/dev/video52` readback frame at
+  `/home/hapax/hapax-state/hardware-validation/darkplaces-screwm-20260524T024639Z-1801937/screwm-video52-xvfb-readback.png`
+  without desktop display churn or kernel GPU risk evidence. This route rendered
+  on RTX 5090, so it is a safe fallback witness, not final 5060 Ti allocation.
 - Runtime activation remains opt-in; persistent module config changes require
   module reload or reboot to be guaranteed across boot.
 
@@ -308,6 +328,11 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   DarkPlaces.
 - `hapax-darkplaces-v4l2.service` now uses the dedicated Xorg feed option so
   systemd validation does not preflight the wrong `:0` display.
+- Runtime enablement is still blocked for the always-on service because the
+  dedicated Xorg option can disturb the desktop display stack. The service is
+  source-activation ready, but production activation needs either a display-safe
+  capture route or evidence that the dedicated Xorg route no longer triggers
+  desktop hotplug/blanking.
 - DarkPlaces units run scripts from the source-activation worktree, with
   `hapax-compositor-runtime-source-check` gating required scripts/assets before
   startup, so production cannot silently launch stale lane-local migration code.

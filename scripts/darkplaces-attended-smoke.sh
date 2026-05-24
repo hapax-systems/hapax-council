@@ -21,12 +21,13 @@ START_WALL="$(date -Is)"
 
 usage() {
     cat <<'EOF'
-Usage: scripts/darkplaces-attended-smoke.sh [--collect-only|--window|--v4l2] [--duration-s N]
+Usage: scripts/darkplaces-attended-smoke.sh [--collect-only|--window|--v4l2|--xvfb] [--duration-s N]
 
 Modes:
   --collect-only   Read-only topology and recent-kernel evidence collection.
   --window         Launch the visible DarkPlaces Screwm renderer, then stop it.
   --v4l2           Launch dedicated Xorg -> DarkPlaces -> /dev/video52, then stop it.
+  --xvfb           Launch Xvfb -> DarkPlaces -> /dev/video52, then stop it.
 
 Launch modes require:
   HAPAX_DARKPLACES_SMOKE_ACK=1
@@ -53,6 +54,9 @@ while [ "$#" -gt 0 ]; do
             ;;
         --v4l2)
             MODE="v4l2"
+            ;;
+        --xvfb)
+            MODE="xvfb"
             ;;
         --duration-s)
             shift
@@ -81,6 +85,13 @@ case "$DURATION_S" in
         exit 64
         ;;
 esac
+
+if [ "$MODE" = "xvfb" ] &&
+    [ -z "${HAPAX_DARKPLACES_EXPECTED_GL_RENDERER:-}" ] &&
+    [ -z "${HAPAX_DARKPLACES_EXPECTED_GPU_INDEX:-}" ]; then
+    EXPECTED_GPU_INDEX=0
+    export HAPAX_DARKPLACES_EXPECTED_GPU_INDEX=0
+fi
 
 mkdir -p "$OUT_DIR"
 
@@ -301,6 +312,13 @@ case "$MODE" in
             env HAPAX_DARKPLACES_V4L2_DEVICE="${HAPAX_DARKPLACES_V4L2_DEVICE:-/dev/video52}" \
                 DARKPLACES_WIDTH="$WIDTH" DARKPLACES_HEIGHT="$HEIGHT" DARKPLACES_FPS="$FPS" \
                 "$REPO_DIR/scripts/darkplaces-v4l2-xorg.sh"
+        ;;
+    xvfb)
+        DARKPLACES_SMOKE_PRELAUNCH_GL_PREFLIGHT=0
+        run_launch_smoke "display-safe Xvfb DarkPlaces v4l2 renderer feed" \
+            env HAPAX_DARKPLACES_V4L2_DEVICE="${HAPAX_DARKPLACES_V4L2_DEVICE:-/dev/video52}" \
+                DARKPLACES_WIDTH="$WIDTH" DARKPLACES_HEIGHT="$HEIGHT" DARKPLACES_FPS="$FPS" \
+                "$REPO_DIR/scripts/darkplaces-v4l2-xvfb.sh"
         ;;
 esac
 
