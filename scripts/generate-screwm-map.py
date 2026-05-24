@@ -138,6 +138,8 @@ DOMAIN_LIGHT_COLOR = {
 WARD_COLUMNS = 7
 WARD_PANE_W = 68
 WARD_PANE_H = 50
+WARD_FRAME_PAD = 6
+WARD_FRAME_T = 4
 WARD_X_SPACING = 74
 WARD_Z_SPACING = 54
 WARD_Y_TOP = 62
@@ -457,6 +459,54 @@ def ward_scrim_panes(_preset):
             brushes.append(
                 f"// ward-anchor {idx:02d}: {anchor} domain={domain} pos={x},{y},{z}\n{brush}"
             )
+        depth_plate = box_brush(
+            x - WARD_PANE_W // 2 - WARD_FRAME_PAD,
+            y + 4,
+            z - WARD_PANE_H // 2 - WARD_FRAME_PAD,
+            x + WARD_PANE_W // 2 + WARD_FRAME_PAD,
+            y + 8,
+            z + WARD_PANE_H // 2 + WARD_FRAME_PAD,
+            "scroom",
+        )
+        if depth_plate:
+            brushes.append(f"// ward-depth-plate {idx:02d}: {anchor}\n{depth_plate}")
+
+        frame_top = box_brush(
+            x - WARD_PANE_W // 2 - WARD_FRAME_PAD,
+            y - 8,
+            z + WARD_PANE_H // 2 + 2,
+            x + WARD_PANE_W // 2 + WARD_FRAME_PAD,
+            y - 4,
+            z + WARD_PANE_H // 2 + 2 + WARD_FRAME_T,
+            glow_tex,
+        )
+        frame_left = box_brush(
+            x - WARD_PANE_W // 2 - WARD_FRAME_PAD,
+            y - 8,
+            z - WARD_PANE_H // 2 - WARD_FRAME_PAD,
+            x - WARD_PANE_W // 2 - WARD_FRAME_PAD + WARD_FRAME_T,
+            y - 4,
+            z + WARD_PANE_H // 2 + WARD_FRAME_PAD,
+            glow_tex,
+        )
+        frame_right = box_brush(
+            x + WARD_PANE_W // 2 + WARD_FRAME_PAD - WARD_FRAME_T,
+            y - 8,
+            z - WARD_PANE_H // 2 - WARD_FRAME_PAD,
+            x + WARD_PANE_W // 2 + WARD_FRAME_PAD,
+            y - 4,
+            z + WARD_PANE_H // 2 + WARD_FRAME_PAD,
+            glow_tex,
+        )
+        for frame_name, frame in (
+            ("top", frame_top),
+            ("left", frame_left),
+            ("right", frame_right),
+        ):
+            if frame:
+                brushes.append(
+                    f"// ward-frame {idx:02d}: {anchor} {frame_name} {glow_tex}\n{frame}"
+                )
         glow = box_brush(
             x - WARD_PANE_W // 2,
             y - 7,

@@ -17,6 +17,8 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
 
     assert len(module["WARD_ANCHORS"]) == 36
     assert content.count("// ward-anchor ") == 36
+    assert content.count("// ward-depth-plate ") == 36
+    assert content.count("// ward-frame ") == 108
     assert content.count("// ward-glow ") == 36
     assert content.count("// ward-light ") == 36
     assert content.count("// review-fill-light ") == 3
@@ -36,6 +38,9 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "ward-glow 01: token_pole drift_c" in content
     assert "ward-glow 02: album drift_r" in content
     assert "ward-glow 03: stream_overlay drift_g" in content
+    assert "ward-frame 01: token_pole top drift_c" in content
+    assert "ward-frame 04: sierpinski left drift_g" in content
+    assert "ward-depth-plate 36: cbip_dual_ir_displacement" in content
     assert '"origin" "0 -144 176"' in content
 
 
@@ -68,6 +73,8 @@ def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
 
     assert "ledge_depth = 18" in source
     assert "ledge_height = 6" in source
+    assert "WARD_FRAME_PAD = 6" in source
+    assert "WARD_FRAME_T = 4" in source
     assert "inner = 78" in source
     assert "ring_height = 4" in source
     assert "rod_half = 3" in source
