@@ -133,7 +133,11 @@ def test_darkplaces_review_camera_is_locked_by_default() -> None:
     assert "joy_enable 1" in autoexec
     assert "joy_index 1" in autoexec
     assert "joy_axisforward 1" in autoexec
+    assert "joy_axisyaw 2" in autoexec
+    assert "joy_axispitch 3" in autoexec
     assert "joy_x360_axisforward 1" in autoexec
+    assert "joy_x360_axisyaw 2" in autoexec
+    assert "joy_x360_axispitch 3" in autoexec
     assert "joyadvancedupdate" in autoexec
     assert "bind JOY5 +movedown" in autoexec
     assert "bind JOY6 +moveup" in autoexec
@@ -182,10 +186,12 @@ def test_darkplaces_review_camera_is_noclip_not_player_physics() -> None:
     assert "MOVETYPE_NOCLIP = 8" in defs
     assert ".vector velocity;" in defs
     assert "void(entity view) screwm_free_view_body" in world
+    assert "void(entity view) screwm_player_noclip_body" in world
     assert "view.movetype = MOVETYPE_NOCLIP;" in world
     assert "view.solid = SOLID_NOT;" in world
     assert "view.velocity = '0 0 0';" in world
     assert "screwm_free_view_body(self);" in world
+    assert "screwm_player_noclip_body(self);" in world
     assert "self.movetype = MOVETYPE_NONE;" not in world
 
 

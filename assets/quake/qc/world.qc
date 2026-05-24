@@ -66,11 +66,18 @@ void(entity view) screwm_free_view_body =
     view.avelocity = '0 0 0';
 };
 
+void(entity view) screwm_player_noclip_body =
+{
+    view.movetype = MOVETYPE_NOCLIP;
+    view.solid = SOLID_NOT;
+    view.avelocity = '0 0 0';
+};
+
 void() PlayerPreThink =
 {
     if (cvar("screwm_player_noclip_control") > 0)
     {
-        screwm_free_view_body(self);
+        screwm_player_noclip_body(self);
         return;
     }
 

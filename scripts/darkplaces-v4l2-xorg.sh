@@ -246,8 +246,8 @@ DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 darkplaces-sdl \
     +joy_index "$JOY_INDEX" \
     +joy_axisforward 1 \
     +joy_axisside 0 \
-    +joy_axisyaw 3 \
-    +joy_axispitch 4 \
+    +joy_axisyaw 2 \
+    +joy_axispitch 3 \
     +joy_axisup -1 \
     +joy_sensitivityforward -1 \
     +joy_sensitivityside 1 \
