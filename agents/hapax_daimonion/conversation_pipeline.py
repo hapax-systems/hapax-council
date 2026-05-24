@@ -458,38 +458,60 @@ class ConversationPipeline:
         if not self._running:
             await self.start()
 
-        # _update_system_context skipped — use base system_prompt directly for speed
+        if self._is_echo(transcript):
+            log.debug("Echo rejected: %s", transcript[:40])
+            return
 
-        import litellm
+        try:
+            from agents.hapax_daimonion.phenomenal_context import render as render_phenomenal
+        except ImportError:
+            render_phenomenal = None
 
-        from agents.hapax_daimonion.config import LITELLM_BASE as _base
-        from shared.config import MODELS
+        phenomenal = ""
+        if render_phenomenal is not None:
+            try:
+                _ph_start = time.monotonic()
+                phenomenal = await asyncio.get_running_loop().run_in_executor(
+                    None, render_phenomenal, "FAST"
+                )
+                log.info("Phenomenal render: %.0fms", (time.monotonic() - _ph_start) * 1000)
+            except Exception:
+                pass
 
-        grounded_model = MODELS["local-fast"]
+        system_block = self.system_prompt
+        if phenomenal:
+            system_block = f"{system_block}\n\n## Current State\n{phenomenal}"
+
+        history = []
+        for entry in self._conversation_thread[-10:]:
+            history.append(entry)
+        if history and history[-1].get("role") == "user":
+            history.pop()
+
+        messages = [{"role": "system", "content": system_block}]
+        messages.extend(history)
+        messages.append({"role": "user", "content": transcript})
+
         self._conversation_thread.append({"role": "user", "content": transcript})
 
         try:
             import httpx
 
-            _tabby_url = "http://localhost:5000/v1/chat/completions"
-            _llm_start = __import__("time").monotonic()
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(
-                    _tabby_url,
-                    json={
-                        "model": "command-r",
-                        "messages": [
-                            {"role": "system", "content": self.system_prompt},
-                            {"role": "user", "content": transcript},
-                        ],
-                        "max_tokens": 80,
-                        "temperature": 0.7,
-                    },
-                )
-                response = resp.json()
+            if not hasattr(self, '_httpx_client') or self._httpx_client is None:
+                self._httpx_client = httpx.AsyncClient(timeout=15.0)
+            _llm_start = time.monotonic()
+            resp = await self._httpx_client.post(
+                "http://localhost:5000/v1/chat/completions",
+                json={
+                    "model": "command-r",
+                    "messages": messages,
+                    "max_tokens": 120,
+                    "temperature": 0.7,
+                },
+            )
+            response = resp.json()
 
-            _llm_elapsed = __import__("time").monotonic() - _llm_start
-            log.info("LLM call took %.1fs", _llm_elapsed)
+            log.info("LLM call took %.1fs", time.monotonic() - _llm_start)
             if "choices" not in response:
                 log.warning("TabbyAPI response missing choices: %s", str(response)[:200])
                 return
@@ -497,6 +519,9 @@ class ConversationPipeline:
             if text:
                 log.info("Conversation response: %s", text[:80])
                 self._conversation_thread.append({"role": "assistant", "content": text})
+                self._recent_tts_texts.append(
+                    (time.monotonic(), text.lower().strip().rstrip(".,!?"))
+                )
                 asyncio.create_task(self._speak_sentence(text))
         except Exception:
             log.warning("process_utterance_from_transcript failed", exc_info=True)
