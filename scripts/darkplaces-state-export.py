@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ DEFAULT_GAME_DIR = Path.home() / ".darkplaces" / "screwm" / "data"
 DEFAULT_SHM_DIR = Path("/dev/shm/hapax-compositor")
 DEFAULT_MODE_FILE = Path.home() / ".cache" / "hapax" / "working-mode"
 DEFAULT_REVERIE_UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/uniforms.json")
+DEFAULT_IMAGINATION_SOURCES_DIR = Path("/dev/shm/hapax-imagination/sources")
 
 WARD_EXPORTS: dict[str, str] = {
     "01": "token_pole",
@@ -36,6 +38,15 @@ WARD_EXPORTS: dict[str, str] = {
 }
 
 IN_WORLD_WARD_COUNT = 36
+
+SOURCE_EXPORTS: tuple[tuple[str, str], ...] = (
+    ("01", "brio-operator"),
+    ("02", "brio-room"),
+    ("03", "brio-synths"),
+    ("04", "c920-desk"),
+    ("05", "c920-room"),
+    ("06", "c920-overhead"),
+)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -199,11 +210,52 @@ def build_audio_lines(shm_dir: Path) -> dict[str, str]:
     }
 
 
+def _source_frame_freshness(source_dir: Path, now: float | None = None) -> float:
+    frame_path = source_dir / "frame.rgba"
+    manifest = _read_json(source_dir / "manifest.json")
+    if not frame_path.exists():
+        return 0.0
+    try:
+        age = (time.time() if now is None else now) - frame_path.stat().st_mtime
+    except OSError:
+        return 0.0
+    ttl_ms = manifest.get("ttl_ms", 3000)
+    try:
+        ttl_s = max(1.0, float(ttl_ms) / 1000.0)
+    except (TypeError, ValueError):
+        ttl_s = 3.0
+    return 1.0 if age <= ttl_s * 3.0 else 0.0
+
+
+def build_source_lines(
+    shm_dir: Path,
+    imagination_sources_dir: Path = DEFAULT_IMAGINATION_SOURCES_DIR,
+    now: float | None = None,
+) -> dict[str, str]:
+    classifications = _read_json(shm_dir / "camera-classifications.json")
+    lines: dict[str, str] = {}
+
+    for ordinal, role in SOURCE_EXPORTS:
+        details = classifications.get(role)
+        details = details if isinstance(details, dict) else {}
+        try:
+            priority = float(details.get("ambient_priority", 0.0)) / 10.0
+        except (TypeError, ValueError):
+            priority = 0.0
+        source_dir = imagination_sources_dir / f"camera-{role}"
+        freshness = _source_frame_freshness(source_dir, now)
+        lines[f"source-priority-{ordinal}.txt"] = f"{max(0.0, min(1.0, priority)):.4f}"
+        lines[f"source-fresh-{ordinal}.txt"] = f"{freshness:.4f}"
+
+    return lines
+
+
 def export_state(
     game_dir: Path,
     shm_dir: Path,
     mode_file: Path,
     uniforms_file: Path = DEFAULT_REVERIE_UNIFORMS_FILE,
+    imagination_sources_dir: Path = DEFAULT_IMAGINATION_SOURCES_DIR,
 ) -> None:
     game_dir.mkdir(parents=True, exist_ok=True)
 
@@ -221,6 +273,8 @@ def export_state(
     for filename, line in build_reverie_lines(uniforms_file).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_audio_lines(shm_dir).items():
+        _write_atomic(game_dir / filename, line)
+    for filename, line in build_source_lines(shm_dir, imagination_sources_dir).items():
         _write_atomic(game_dir / filename, line)
 
     active_segment = _read_json(shm_dir / "active-segment.json")
@@ -240,6 +294,9 @@ def main() -> int:
     parser.add_argument("--shm-dir", type=Path, default=DEFAULT_SHM_DIR)
     parser.add_argument("--mode-file", type=Path, default=DEFAULT_MODE_FILE)
     parser.add_argument("--uniforms-file", type=Path, default=DEFAULT_REVERIE_UNIFORMS_FILE)
+    parser.add_argument(
+        "--imagination-sources-dir", type=Path, default=DEFAULT_IMAGINATION_SOURCES_DIR
+    )
     parser.add_argument("--copy-self-test", type=Path, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -247,7 +304,13 @@ def main() -> int:
         shutil.copy2(__file__, args.copy_self_test)
         return 0
 
-    export_state(args.game_dir, args.shm_dir, args.mode_file, args.uniforms_file)
+    export_state(
+        args.game_dir,
+        args.shm_dir,
+        args.mode_file,
+        args.uniforms_file,
+        args.imagination_sources_dir,
+    )
     return 0
 
 

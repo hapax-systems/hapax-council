@@ -53,6 +53,18 @@ float screwm_active_33;
 float screwm_active_34;
 float screwm_active_35;
 float screwm_active_36;
+float screwm_source_priority_01;
+float screwm_source_priority_02;
+float screwm_source_priority_03;
+float screwm_source_priority_04;
+float screwm_source_priority_05;
+float screwm_source_priority_06;
+float screwm_source_fresh_01;
+float screwm_source_fresh_02;
+float screwm_source_fresh_03;
+float screwm_source_fresh_04;
+float screwm_source_fresh_05;
+float screwm_source_fresh_06;
 
 vector screwm_cyan = '0.45 0.95 0.88';
 vector screwm_amber = '1.00 0.62 0.23';
@@ -158,6 +170,19 @@ void() screwm_poll_state =
     screwm_active_34 = screwm_read_norm("data/ward-active-34.txt");
     screwm_active_35 = screwm_read_norm("data/ward-active-35.txt");
     screwm_active_36 = screwm_read_norm("data/ward-active-36.txt");
+
+    screwm_source_priority_01 = screwm_read_norm("data/source-priority-01.txt");
+    screwm_source_priority_02 = screwm_read_norm("data/source-priority-02.txt");
+    screwm_source_priority_03 = screwm_read_norm("data/source-priority-03.txt");
+    screwm_source_priority_04 = screwm_read_norm("data/source-priority-04.txt");
+    screwm_source_priority_05 = screwm_read_norm("data/source-priority-05.txt");
+    screwm_source_priority_06 = screwm_read_norm("data/source-priority-06.txt");
+    screwm_source_fresh_01 = screwm_read_norm("data/source-fresh-01.txt");
+    screwm_source_fresh_02 = screwm_read_norm("data/source-fresh-02.txt");
+    screwm_source_fresh_03 = screwm_read_norm("data/source-fresh-03.txt");
+    screwm_source_fresh_04 = screwm_read_norm("data/source-fresh-04.txt");
+    screwm_source_fresh_05 = screwm_read_norm("data/source-fresh-05.txt");
+    screwm_source_fresh_06 = screwm_read_norm("data/source-fresh-06.txt");
 };
 
 float(vector screen) screwm_on_screen =
@@ -246,6 +271,16 @@ void(vector org, float idx, vector color, float active) screwm_add_ward_light =
     if (active > 0)
         radius = radius + 10 * sin(time * 3.4 + idx * 0.29);
     adddynamiclight(org, screwm_clamp(radius, 14, 78), color);
+};
+
+void(vector org, float idx, vector color, float priority, float fresh) screwm_add_source_light =
+{
+    float radius;
+
+    radius = 16 + priority * 36 + fresh * 84;
+    radius = radius + screwm_audio_rms * 8 + screwm_audio_onset * 14;
+    radius = radius + 5 * sin(time * (0.9 + fresh * 1.2) + idx * 0.61);
+    adddynamiclight(org, screwm_clamp(radius, 12, 118), color);
 };
 
 void() screwm_draw_ward_links =
@@ -412,6 +447,13 @@ void() screwm_add_dynamic_lights =
     screwm_add_ward_light('148 -82 64', 34, screwm_green, screwm_active_34);
     screwm_add_ward_light('222 -82 64', 35, screwm_rose, screwm_active_35);
     screwm_add_ward_light('0 -118 28', 36, screwm_green, screwm_active_36);
+
+    screwm_add_source_light('-244 112 286', 1, screwm_amber, screwm_source_priority_01, screwm_source_fresh_01);
+    screwm_add_source_light('-244 112 174', 2, screwm_green, screwm_source_priority_02, screwm_source_fresh_02);
+    screwm_add_source_light('-244 112 62', 3, screwm_rose, screwm_source_priority_03, screwm_source_fresh_03);
+    screwm_add_source_light('244 112 286', 4, screwm_cyan, screwm_source_priority_04, screwm_source_fresh_04);
+    screwm_add_source_light('244 112 174', 5, screwm_green, screwm_source_priority_05, screwm_source_fresh_05);
+    screwm_add_source_light('244 112 62', 6, screwm_green, screwm_source_priority_06, screwm_source_fresh_06);
 };
 
 void(float apilevel, string enginename, float engineversion) CSQC_Init =

@@ -60,6 +60,22 @@ def test_csqc_dynamic_lights_cover_all_physical_ward_panes() -> None:
         assert f"screwm_active_{idx:02d}" in body
 
 
+def test_csqc_source_anchors_carry_live_camera_scalars() -> None:
+    map_module = _load_script("scripts/generate-screwm-map.py")
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    assert body.count('screwm_read_norm("data/source-priority-') == 6
+    assert body.count('screwm_read_norm("data/source-fresh-') == 6
+    assert body.count("screwm_add_source_light('") == 6
+    assert "fresh * 84" in body
+
+    for idx, source in enumerate(map_module["SOURCE_ANCHORS"], start=1):
+        x, y, z = source["pos"]
+        assert f"screwm_add_source_light('{x} {y} {z}'" in body
+        assert f"screwm_source_priority_{idx:02d}" in body
+        assert f"screwm_source_fresh_{idx:02d}" in body
+
+
 def test_darkplaces_review_camera_is_locked_by_default() -> None:
     autoexec = AUTOEXEC.read_text(encoding="utf-8")
     camera = (REPO_ROOT / "assets" / "quake" / "qc" / "camera.qc").read_text(encoding="utf-8")

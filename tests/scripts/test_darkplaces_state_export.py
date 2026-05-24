@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import ModuleType
@@ -103,6 +104,43 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "reverie-spectral.txt").read_text(encoding="utf-8").strip() == "0.1400"
     assert (game_dir / "audio-rms.txt").read_text(encoding="utf-8").strip() == "0.1200"
     assert (game_dir / "audio-onset.txt").read_text(encoding="utf-8").strip() == "0.3400"
+
+
+def test_darkplaces_state_export_writes_camera_source_scalars(tmp_path: Path) -> None:
+    exporter = _load_exporter()
+    shm_dir = tmp_path / "shm"
+    sources_dir = tmp_path / "sources"
+    shm_dir.mkdir()
+
+    _write_json(
+        shm_dir / "camera-classifications.json",
+        {
+            "brio-operator": {"ambient_priority": 7},
+            "brio-room": {"ambient_priority": 3},
+            "brio-synths": {"ambient_priority": 4},
+            "c920-desk": {"ambient_priority": 5},
+            "c920-room": {"ambient_priority": 8},
+            "c920-overhead": {"ambient_priority": 6},
+        },
+    )
+    fresh_dir = sources_dir / "camera-brio-operator"
+    stale_dir = sources_dir / "camera-c920-room"
+    fresh_dir.mkdir(parents=True)
+    stale_dir.mkdir(parents=True)
+    _write_json(fresh_dir / "manifest.json", {"ttl_ms": 3000})
+    _write_json(stale_dir / "manifest.json", {"ttl_ms": 3000})
+    (fresh_dir / "frame.rgba").write_bytes(b"rgba")
+    (stale_dir / "frame.rgba").write_bytes(b"rgba")
+    os.utime(fresh_dir / "frame.rgba", (99.0, 99.0))
+    os.utime(stale_dir / "frame.rgba", (80.0, 80.0))
+
+    lines = exporter.build_source_lines(shm_dir, sources_dir, now=100.0)
+
+    assert lines["source-priority-01.txt"] == "0.7000"
+    assert lines["source-priority-05.txt"] == "0.8000"
+    assert lines["source-fresh-01.txt"] == "1.0000"
+    assert lines["source-fresh-05.txt"] == "0.0000"
+    assert lines["source-fresh-06.txt"] == "0.0000"
 
 
 def test_darkplaces_state_bridge_delegates_to_exporter() -> None:
