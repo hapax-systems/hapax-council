@@ -92,7 +92,9 @@ exit 0
         encoding="utf-8"
     )
     assert "self-claim highest" not in rule_text.lower()
-    run_scripts = sorted((Path(env["XDG_CACHE_HOME"]) / "hapax" / "antigrav-spawns").glob("*-run.sh"))
+    run_scripts = sorted(
+        (Path(env["XDG_CACHE_HOME"]) / "hapax" / "antigrav-spawns").glob("*-run.sh")
+    )
     assert run_scripts
     run_text = run_scripts[-1].read_text(encoding="utf-8")
     assert str(bin_dir / "agy") in run_text
