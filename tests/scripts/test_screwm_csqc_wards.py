@@ -237,6 +237,30 @@ def test_csqc_visual_chain_and_effect_drift_live_in_scroom_lightfield() -> None:
     assert "screwm_add_visual_chain_lights();" in body
 
 
+def test_csqc_imagination_fragment_intent_lives_in_scroom_lightfield() -> None:
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    assert 'screwm_read_norm("data/imagination-salience.txt")' in body
+    assert 'screwm_read_norm("data/imagination-continuation.txt")' in body
+    assert 'screwm_read_norm("data/imagination-material.txt")' in body
+    for ordinal in range(1, 10):
+        assert f'screwm_read_norm("data/imagination-dim-{ordinal:02d}.txt")' in body
+        assert f"screwm_imagination_dim_{ordinal:02d}" in body
+
+    assert "float(float target) screwm_imagination_material_weight" in body
+    assert (
+        "void(vector org, float idx, vector color, float signal) screwm_add_imagination_dim_light"
+        in body
+    )
+    assert "void() screwm_add_imagination_intent_lights" in body
+    assert "screwm_imagination_salience * 118" in body
+    assert "screwm_imagination_continuation * 34" in body
+    assert "screwm_imagination_material_weight(0.25)" in body
+    assert "screwm_add_imagination_dim_light('-132 -502 284', 1" in body
+    assert "screwm_add_imagination_dim_light('0 -502 238', 9" in body
+    assert "screwm_add_imagination_intent_lights();" in body
+
+
 def test_csqc_scene_quad_local_effects_live_on_scroom_lenses() -> None:
     body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
 

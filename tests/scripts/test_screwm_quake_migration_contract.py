@@ -230,6 +230,27 @@ def test_screwm_quake_embodies_visual_chain_effect_drift_state() -> None:
     assert "screwm_effect_drift_region_count * 34" in wards
 
 
+def test_screwm_quake_embodies_imagination_fragment_intent_state() -> None:
+    exporter = (REPO_ROOT / "scripts" / "darkplaces-state-export.py").read_text(encoding="utf-8")
+    wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
+    imagination = (REPO_ROOT / "agents" / "imagination.py").read_text(encoding="utf-8")
+    uniforms = (REPO_ROOT / "agents" / "reverie" / "_uniforms.py").read_text(encoding="utf-8")
+
+    assert 'CURRENT_PATH = SHM_DIR / "current.json"' in imagination
+    assert "CANONICAL_DIMENSIONS" in imagination
+    assert "MATERIAL_MAP" in uniforms
+    assert "DEFAULT_IMAGINATION_CURRENT_FILE" in exporter
+    assert "IMAGINATION_DIMENSION_EXPORTS" in exporter
+    assert "IMAGINATION_MATERIAL_VALUES" in exporter
+    assert "build_imagination_fragment_lines" in exporter
+    assert "IN_SCROOM_IMAGINATION_FRAGMENT" in exporter
+    assert 'screwm_read_norm("data/imagination-salience.txt")' in wards
+    assert 'screwm_read_norm("data/imagination-dim-01.txt")' in wards
+    assert "screwm_imagination_material_weight" in wards
+    assert "screwm_add_imagination_intent_lights" in wards
+    assert "screwm_imagination_salience * 118" in wards
+
+
 def test_screwm_quake_review_baseline_has_no_clocked_light_pulses() -> None:
     wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
 

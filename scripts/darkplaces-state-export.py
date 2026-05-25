@@ -24,6 +24,7 @@ DEFAULT_SHM_DIR = Path("/dev/shm/hapax-compositor")
 DEFAULT_MODE_FILE = Path.home() / ".cache" / "hapax" / "working-mode"
 DEFAULT_REVERIE_UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/uniforms.json")
 DEFAULT_IMAGINATION_SOURCES_DIR = Path("/dev/shm/hapax-imagination/sources")
+DEFAULT_IMAGINATION_CURRENT_FILE = Path("/dev/shm/hapax-imagination/current.json")
 DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE = Path(
     "/dev/shm/hapax-visual/entity-local-effect-state.json"
 )
@@ -157,6 +158,26 @@ EFFECT_DRIFT_NODE_FAMILY: dict[str, str] = {
     "edge_detect": "edge",
     "threshold": "edge",
     "rutt_etra": "edge",
+}
+
+IMAGINATION_DIMENSION_EXPORTS: tuple[tuple[str, str], ...] = (
+    ("01", "intensity"),
+    ("02", "tension"),
+    ("03", "depth"),
+    ("04", "coherence"),
+    ("05", "degradation"),
+    ("06", "diffusion"),
+    ("07", "spectral_color"),
+    ("08", "temporal_distortion"),
+    ("09", "pitch_displacement"),
+)
+
+IMAGINATION_MATERIAL_VALUES: dict[str, float] = {
+    "water": 0.00,
+    "fire": 0.25,
+    "earth": 0.50,
+    "air": 0.75,
+    "void": 1.00,
 }
 
 VISUAL_ZONE_EXPORTS: tuple[tuple[str, str], ...] = (
@@ -934,12 +955,38 @@ def build_visual_chain_lines(
     return lines
 
 
+def build_imagination_fragment_lines(
+    imagination_current_file: Path = DEFAULT_IMAGINATION_CURRENT_FILE,
+) -> dict[str, str]:
+    """Export the current imagination fragment as in-scroom intent pressure."""
+    fragment = _read_json(imagination_current_file)
+    dimensions = fragment.get("dimensions")
+    dimensions = dimensions if isinstance(dimensions, dict) else {}
+    material = str(fragment.get("material") or "water").strip().lower()
+    continuation = 1.0 if bool(fragment.get("continuation")) else 0.0
+
+    lines = {
+        f"imagination-dim-{ordinal}.txt": f"{_clamp01(_dict_float(dimensions, key)):.4f}"
+        for ordinal, key in IMAGINATION_DIMENSION_EXPORTS
+    }
+    lines.update(
+        {
+            "imagination-salience.txt": f"{_float01(fragment, 'salience'):.4f}",
+            "imagination-continuation.txt": f"{continuation:.4f}",
+            "imagination-material.txt": f"{IMAGINATION_MATERIAL_VALUES.get(material, 0.0):.4f}",
+            "imagination-route.txt": "IN_SCROOM_IMAGINATION_FRAGMENT",
+        }
+    )
+    return lines
+
+
 def export_state(
     game_dir: Path,
     shm_dir: Path,
     mode_file: Path,
     uniforms_file: Path = DEFAULT_REVERIE_UNIFORMS_FILE,
     imagination_sources_dir: Path = DEFAULT_IMAGINATION_SOURCES_DIR,
+    imagination_current_file: Path = DEFAULT_IMAGINATION_CURRENT_FILE,
     entity_local_effect_state_file: Path = DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE,
     stimmung_state_file: Path = DEFAULT_STIMMUNG_STATE_FILE,
     visual_chain_state_file: Path = DEFAULT_VISUAL_CHAIN_STATE_FILE,
@@ -980,6 +1027,8 @@ def export_state(
         visual_chain_state_file, effect_drift_state_file
     ).items():
         _write_atomic(game_dir / filename, line)
+    for filename, line in build_imagination_fragment_lines(imagination_current_file).items():
+        _write_atomic(game_dir / filename, line)
 
     active_segment = _read_json(shm_dir / "active-segment.json")
     _write_atomic(
@@ -1000,6 +1049,11 @@ def main() -> int:
     parser.add_argument("--uniforms-file", type=Path, default=DEFAULT_REVERIE_UNIFORMS_FILE)
     parser.add_argument(
         "--imagination-sources-dir", type=Path, default=DEFAULT_IMAGINATION_SOURCES_DIR
+    )
+    parser.add_argument(
+        "--imagination-current-file",
+        type=Path,
+        default=DEFAULT_IMAGINATION_CURRENT_FILE,
     )
     parser.add_argument(
         "--entity-local-effect-state-file",
@@ -1030,6 +1084,7 @@ def main() -> int:
         args.mode_file,
         args.uniforms_file,
         args.imagination_sources_dir,
+        args.imagination_current_file,
         args.entity_local_effect_state_file,
         args.stimmung_state_file,
         args.visual_chain_state_file,

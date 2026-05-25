@@ -32,6 +32,7 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     shm_dir.mkdir()
     mode_file = tmp_path / "working-mode"
     uniforms_file = tmp_path / "uniforms.json"
+    imagination_current_file = tmp_path / "imagination-current.json"
     effect_state_file = tmp_path / "entity-local-effect-state.json"
     stimmung_state_file = tmp_path / "stimmung-state.json"
     visual_chain_state_file = tmp_path / "visual-chain-state.json"
@@ -56,6 +57,28 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
             "signal.homage_custom_4_0": 0.44,
             "signal.homage_custom_4_2": 0.55,
             "signal.homage_custom_4_3": 0.66,
+        },
+    )
+    _write_json(
+        imagination_current_file,
+        {
+            "id": "abc123",
+            "timestamp": 100.0,
+            "salience": 0.7,
+            "continuation": True,
+            "material": "fire",
+            "narrative": "The scroom intends itself as a warm field.",
+            "dimensions": {
+                "intensity": 0.8,
+                "tension": 0.5,
+                "depth": 0.9,
+                "coherence": 0.6,
+                "degradation": 0.1,
+                "diffusion": 0.3,
+                "spectral_color": 0.4,
+                "temporal_distortion": 0.2,
+                "pitch_displacement": 0.7,
+            },
         },
     )
     _write_json(
@@ -224,6 +247,7 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         shm_dir,
         mode_file,
         uniforms_file,
+        imagination_current_file=imagination_current_file,
         entity_local_effect_state_file=effect_state_file,
         stimmung_state_file=stimmung_state_file,
         visual_chain_state_file=visual_chain_state_file,
@@ -346,6 +370,18 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         encoding="utf-8"
     ).strip() == "IN_SCROOM_EFFECT_DRIFT_STATE"
     assert len(list(game_dir.glob("visual-chain-[0-9][0-9].txt"))) == 9
+    assert (game_dir / "imagination-salience.txt").read_text(encoding="utf-8").strip() == "0.7000"
+    assert (game_dir / "imagination-continuation.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "1.0000"
+    assert (game_dir / "imagination-material.txt").read_text(encoding="utf-8").strip() == "0.2500"
+    assert (game_dir / "imagination-dim-01.txt").read_text(encoding="utf-8").strip() == "0.8000"
+    assert (game_dir / "imagination-dim-03.txt").read_text(encoding="utf-8").strip() == "0.9000"
+    assert (game_dir / "imagination-dim-09.txt").read_text(encoding="utf-8").strip() == "0.7000"
+    assert (game_dir / "imagination-route.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "IN_SCROOM_IMAGINATION_FRAGMENT"
+    assert len(list(game_dir.glob("imagination-dim-[0-9][0-9].txt"))) == 9
 
 
 def test_darkplaces_state_export_builds_entity_local_effect_scalars(tmp_path: Path) -> None:
@@ -555,6 +591,46 @@ def test_darkplaces_state_export_builds_visual_chain_and_effect_drift_scalars(
     assert lines["effect-drift-temporal.txt"] == "0.2000"
     assert lines["effect-drift-edge.txt"] == "0.0000"
     assert lines["effect-drift-route.txt"] == "IN_SCROOM_EFFECT_DRIFT_STATE"
+
+
+def test_darkplaces_state_export_builds_imagination_intent_scalars(
+    tmp_path: Path,
+) -> None:
+    exporter = _load_exporter()
+    imagination_current_file = tmp_path / "current.json"
+    _write_json(
+        imagination_current_file,
+        {
+            "id": "abc123",
+            "timestamp": 100.0,
+            "salience": 0.7,
+            "continuation": True,
+            "material": "earth",
+            "narrative": "The scroom intends itself as embodied structure.",
+            "dimensions": {
+                "intensity": 0.8,
+                "tension": 0.5,
+                "depth": 0.9,
+                "coherence": 0.6,
+                "degradation": 0.1,
+                "diffusion": 0.3,
+                "spectral_color": 0.4,
+                "temporal_distortion": 0.2,
+                "pitch_displacement": 0.7,
+            },
+        },
+    )
+
+    lines = exporter.build_imagination_fragment_lines(imagination_current_file)
+
+    assert len([key for key in lines if key.startswith("imagination-dim-")]) == 9
+    assert lines["imagination-salience.txt"] == "0.7000"
+    assert lines["imagination-continuation.txt"] == "1.0000"
+    assert lines["imagination-material.txt"] == "0.5000"
+    assert lines["imagination-dim-01.txt"] == "0.8000"
+    assert lines["imagination-dim-03.txt"] == "0.9000"
+    assert lines["imagination-dim-09.txt"] == "0.7000"
+    assert lines["imagination-route.txt"] == "IN_SCROOM_IMAGINATION_FRAGMENT"
 
 
 def test_darkplaces_state_export_normalizes_all_in_scroom_ward_activity() -> None:

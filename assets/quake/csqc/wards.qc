@@ -58,6 +58,18 @@ float screwm_effect_drift_atmospheric;
 float screwm_effect_drift_temporal;
 float screwm_effect_drift_texture;
 float screwm_effect_drift_edge;
+float screwm_imagination_salience;
+float screwm_imagination_continuation;
+float screwm_imagination_material;
+float screwm_imagination_dim_01;
+float screwm_imagination_dim_02;
+float screwm_imagination_dim_03;
+float screwm_imagination_dim_04;
+float screwm_imagination_dim_05;
+float screwm_imagination_dim_06;
+float screwm_imagination_dim_07;
+float screwm_imagination_dim_08;
+float screwm_imagination_dim_09;
 string screwm_mode;
 string screwm_w01;
 string screwm_w02;
@@ -332,6 +344,18 @@ void() screwm_poll_state =
     screwm_effect_drift_temporal = screwm_read_norm("data/effect-drift-temporal.txt");
     screwm_effect_drift_texture = screwm_read_norm("data/effect-drift-texture.txt");
     screwm_effect_drift_edge = screwm_read_norm("data/effect-drift-edge.txt");
+    screwm_imagination_salience = screwm_read_norm("data/imagination-salience.txt");
+    screwm_imagination_continuation = screwm_read_norm("data/imagination-continuation.txt");
+    screwm_imagination_material = screwm_read_norm("data/imagination-material.txt");
+    screwm_imagination_dim_01 = screwm_read_norm("data/imagination-dim-01.txt");
+    screwm_imagination_dim_02 = screwm_read_norm("data/imagination-dim-02.txt");
+    screwm_imagination_dim_03 = screwm_read_norm("data/imagination-dim-03.txt");
+    screwm_imagination_dim_04 = screwm_read_norm("data/imagination-dim-04.txt");
+    screwm_imagination_dim_05 = screwm_read_norm("data/imagination-dim-05.txt");
+    screwm_imagination_dim_06 = screwm_read_norm("data/imagination-dim-06.txt");
+    screwm_imagination_dim_07 = screwm_read_norm("data/imagination-dim-07.txt");
+    screwm_imagination_dim_08 = screwm_read_norm("data/imagination-dim-08.txt");
+    screwm_imagination_dim_09 = screwm_read_norm("data/imagination-dim-09.txt");
 
     screwm_w01 = screwm_read_line("data/ward-01.txt", "");
     screwm_w02 = screwm_read_line("data/ward-02.txt", "");
@@ -803,6 +827,43 @@ void() screwm_add_visual_chain_lights =
     adddynamiclight('0 -512 42', screwm_clamp(14 + screwm_chain_aperture * 84 + screwm_effect_drift_edge * 52, 10, 132), screwm_green);
 };
 
+float(float target) screwm_imagination_material_weight =
+{
+    return screwm_clamp(1 - screwm_abs(screwm_imagination_material - target) * 4, 0, 1);
+};
+
+void(vector org, float idx, vector color, float signal) screwm_add_imagination_dim_light =
+{
+    float radius;
+
+    radius = 12 + signal * 90 + screwm_imagination_salience * 42;
+    radius = radius + screwm_imagination_continuation * 18 + screwm_audio_onset * 12;
+    adddynamiclight(org, screwm_clamp(radius, 8, 144), color);
+};
+
+void() screwm_add_imagination_intent_lights =
+{
+    float core;
+
+    core = 24 + screwm_imagination_salience * 118 + screwm_imagination_continuation * 34;
+    adddynamiclight('0 -497 178', screwm_clamp(core, 18, 170), screwm_amber);
+    adddynamiclight('-54 -496 216', screwm_clamp(18 + screwm_imagination_material_weight(0.00) * 112, 10, 138), screwm_cyan);
+    adddynamiclight('54 -496 216', screwm_clamp(18 + screwm_imagination_material_weight(0.25) * 112, 10, 138), screwm_rose);
+    adddynamiclight('-54 -496 140', screwm_clamp(18 + screwm_imagination_material_weight(0.50) * 112, 10, 138), screwm_green);
+    adddynamiclight('54 -496 140', screwm_clamp(18 + screwm_imagination_material_weight(0.75) * 112, 10, 138), screwm_cyan);
+    adddynamiclight('0 -496 104', screwm_clamp(12 + screwm_imagination_material_weight(1.00) * 96, 8, 118), screwm_dim);
+
+    screwm_add_imagination_dim_light('-132 -502 284', 1, screwm_amber, screwm_imagination_dim_01);
+    screwm_add_imagination_dim_light('0 -502 304', 2, screwm_rose, screwm_imagination_dim_02);
+    screwm_add_imagination_dim_light('132 -502 284', 3, screwm_cyan, screwm_imagination_dim_03);
+    screwm_add_imagination_dim_light('-150 -502 206', 4, screwm_green, screwm_imagination_dim_04);
+    screwm_add_imagination_dim_light('150 -502 206', 5, screwm_rose, screwm_imagination_dim_05);
+    screwm_add_imagination_dim_light('-132 -502 122', 6, screwm_cyan, screwm_imagination_dim_06);
+    screwm_add_imagination_dim_light('0 -502 92', 7, screwm_amber, screwm_imagination_dim_07);
+    screwm_add_imagination_dim_light('132 -502 122', 8, screwm_green, screwm_imagination_dim_08);
+    screwm_add_imagination_dim_light('0 -502 238', 9, screwm_rose, screwm_imagination_dim_09);
+};
+
 void() screwm_add_local_effect_lights =
 {
     screwm_add_local_effect_light('-250 -546 28', 1, screwm_cyan, screwm_effect_01);
@@ -973,6 +1034,7 @@ void() screwm_add_dynamic_lights =
     screwm_add_material_field_lights();
     screwm_add_visual_layer_lights();
     screwm_add_visual_chain_lights();
+    screwm_add_imagination_intent_lights();
     screwm_add_local_effect_lights();
 
     screwm_add_ward_light('-222 -360 280', 1, screwm_cyan, screwm_active_01, screwm_presence_01);
