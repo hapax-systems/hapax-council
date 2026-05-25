@@ -17,45 +17,43 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
 
     assert len(module["WARD_ANCHORS"]) == 36
     assert content.count("// ward-anchor ") == 0
-    assert content.count("// ward-depth-plate ") == sum(
-        module["WARD_DEPTH_STYLES"][module["ward_depth_plane"](idx)]["layers"]
-        for idx in range(1, 37)
-    )
+    assert content.count("// ward-depth-plate ") == 0
     assert content.count("// ward-frame ") == 0
     assert content.count("// ward-glow ") == 0
     assert content.count("// ward-light ") == 36
-    assert content.count("// review-fill-light ") == 4
-    assert content.count("// ward-review-light ") == 36
-    assert content.count("// ward-review-pane ") == 36
-    assert content.count("// ward-review-frame ") == 144
-    assert content.count("// ward-review-drift ") >= 25
-    assert content.count("// legacy-sierpinski-edge ") == len(module["legacy_sierpinski_edges"]())
-    assert content.count("// legacy-sierpinski-slot ") == 4
-    assert content.count("// legacy-sierpinski-slot-frame ") == 16
-    assert content.count("// legacy-sierpinski-light ") == 4
+    assert content.count("// review-fill-light ") == 5
+    assert content.count("// ward-garden-light ") == 36
+    assert content.count("// ward-garden-pane ") == 36
+    assert content.count("// ward-garden-pane-frame ") == 144
+    assert content.count("// ward-garden-drift-stone ") >= 25
+    assert content.count("// ward-review-pane ") == 0
+    assert content.count("// ward-review-frame ") == 0
+    assert "legacy-sierpinski" not in content
     assert content.count("// aoa-payload-pane ") == 10
     assert content.count("// aoa-payload-pane-frame ") == 40
-    assert content.count("// aoa-payload-tether ") == 10
+    assert content.count("// aoa-payload-tether ") == 0
     assert content.count("// aoa-payload-light ") == 10
     assert content.count("// scroom-scene-hls ") == 3
     assert content.count("// scroom-scene-ir ") == 4
     assert content.count("// scroom-scene-ward-shelf ") == 3
     assert content.count("// scroom-scene-mid-band ") == 2
     assert content.count("// scroom-scene-far-band ") == 2
-    assert content.count("// scroom-scene-rail ") == len(module["SCROOM_SCENE_GRAPH_PANES"])
+    assert content.count("// scroom-scene-rail ") == 0
     assert content.count("// scroom-scene-light ") == len(module["SCROOM_SCENE_GRAPH_PANES"])
     assert content.count("// scroom-light-marker ") == 3
-    assert (
-        content.count("// scroom-volumetric-beam ") == len(module["scroom_material_field"]({})) - 12
-    )
-    assert content.count("// scroom-material-grid ") == (
-        len(module["SCROOM_GRID_X_LINES"]) + len(module["SCROOM_GRID_Y_LINES"])
+    assert content.count("// scroom-volumetric-beam ") == 0
+    assert content.count("// scroom-material-grid ") == 0
+    assert content.count("// scroom-garden-path-stone ") == len(module["SCROOM_PATH_STONES"])
+    assert content.count("// scroom-garden-island ") == len(module["SCROOM_GARDEN_ISLANDS"])
+    assert content.count("// scroom-garden-lantern ") == len(module["SCROOM_GARDEN_LANTERNS"])
+    assert content.count("// scroom-garden-lantern-cap ") == len(
+        module["SCROOM_GARDEN_LANTERNS"]
     )
     assert content.count("// scroom-local-effect-lens ") == len(module["SCROOM_LOCAL_EFFECTS"])
     assert content.count("// scroom-local-effect-lens-frame ") == (
         len(module["SCROOM_LOCAL_EFFECTS"]) * 4
     )
-    assert content.count("// scroom-local-effect-tether ") == len(module["SCROOM_LOCAL_EFFECTS"])
+    assert content.count("// scroom-local-effect-tether ") == 0
     assert content.count("// scroom-local-effect-light ") == len(module["SCROOM_LOCAL_EFFECTS"])
     assert content.count("// ward-rail row") == 0
     assert content.count("// ward-spine col") == 0
@@ -64,18 +62,18 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "w35" in content
     assert "drift_c" in content
     assert "drift_r" in content
-    assert "// section: ward-review-plane" in content
-    assert "// section: ward-review-drift-paths" in content
-    assert "// section: legacy-sierpinski-scrim" in content
+    assert "// section: ward-garden-clumps" in content
+    assert "// section: ward-garden-drift-stones" in content
+    assert "// section: legacy-sierpinski-scrim" not in content
     assert "// section: aoa-payload-panes" in content
     assert "// section: scroom-scene-graph-bands" in content
     assert "// section: scroom-material-field" in content
     assert "// section: scroom-local-effect-lenses" in content
     assert "// section: ward-depth-echo-planes" in content
-    assert "slot_sierp" in content
-    assert "slot_album" in content
-    assert "slot_rev" in content
-    assert "slot_voice" in content
+    assert "slot_sierp" not in content
+    assert "slot_album" not in content
+    assert "slot_rev" not in content
+    assert "slot_voice" not in content
     assert "aoa_root" in content
     assert "aoa_gate" in content
     assert "// aoa-payload-pane 01: root-pane aoa_root" in content
@@ -84,16 +82,13 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "// scroom-scene-ward-shelf 08: programme-history w23" in content
     assert "// scroom-local-effect-lens 01: mirror fx_mirr" in content
     assert "// scroom-local-effect-lens 11: breathing fx_brea" in content
-    assert "// ward-review-pane 01: token_pole" in content
-    assert "// ward-depth-plate 01: token_pole hero-presence layer=1" in content
-    assert "// ward-depth-plate 02: album beyond-scrim layer=3" in content
-    assert "// ward-depth-plate 10: impingement_cascade near-surface layer=1" in content
-    assert "// ward-review-frame 36: cbip_dual_ir_displacement" in content
-    assert module["ward_review_position"](1) == (-222, -360, 280)
-    assert module["ward_review_position"](36) == (0, -360, 28)
-    assert module["ward_review_drift_midpoint"](1, 9) == (-185, -378, 253)
-    assert "ward-review-frame 01: token_pole top drift_c" in content
-    assert "ward-review-frame 04: sierpinski left drift_g" in content
+    assert "// ward-garden-pane 01: token_pole" in content
+    assert "// ward-garden-pane-frame 36: cbip_dual_ir_displacement" in content
+    assert module["ward_review_position"](1) == (0, -650, 155)
+    assert module["ward_review_position"](36) == (-345, -405, 125)
+    assert module["ward_review_drift_midpoint"](1, 9) == (0, -675, 130)
+    assert "ward-garden-pane-frame 01: token_pole top" in content
+    assert "ward-garden-pane-frame 04: sierpinski left" in content
     assert '"origin" "0 -455 176"' in content
 
 
@@ -128,21 +123,23 @@ def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
     assert "Wall bands are deferred" in source
     assert "The duplicate deep ward lattice is disabled" in source
     assert "REVIEW_ALCOVE_Y_MIN" in source
-    assert "REVIEW_WARD_Y = -360" in source
+    assert "WARD_GARDEN_LAYOUT" in source
     assert "AOA_Y = -455" in source
-    assert "REVIEW_DRIFT_Y = REVIEW_WARD_Y - 18" in source
-    assert "t = 1" in source
+    assert "REVIEW_DRIFT_Y = -500" in source
+    assert "t = 4" in source
     assert "WARD_FRAME_PAD = 5" in source
     assert "WARD_FRAME_T = 4" in source
     assert "WARD_DEPTH_PLANES" in source
-    assert "ward_depth_echo_panes" in source
+    assert "No-front garden clumps" in source
     assert "aoa_payload_panes" in source
     assert "scroom_scene_graph_bands" in source
     assert "scroom_material_field" in source
     assert "scroom_local_effect_lenses" in source
-    assert "scene_grid.wgsl" in source
+    assert "SCROOM_PATH_STONES" in source
+    assert "SCROOM_GARDEN_LANTERNS" in source
     assert "scene_quad.wgsl" in source
     assert "Low, non-obstructing AoA floor mark" in source
+    assert "No-front garden floor marks" in source
     assert 'base = int(preset.get("wall_light", 100) * 0.72)' in source
 
 
@@ -159,14 +156,16 @@ def test_screwm_map_embeds_camera_source_constellation() -> None:
         "c920-room",
         "c920-overhead",
     ]
-    assert content.count("// source-anchor ") == 6
-    assert content.count("// source-glow ") == 6
-    assert content.count("// source-tether ") == 6
+    assert content.count("// source-garden-anchor ") == 6
+    assert content.count("// source-garden-anchor-frame ") == 24
+    assert content.count("// source-anchor ") == 0
+    assert content.count("// source-glow ") == 0
+    assert content.count("// source-tether ") == 0
     assert content.count("// source-light ") == 6
     assert "// section: source-camera-constellation" in content
-    assert "// source-anchor 01: brio-operator class=brio domain=presence" in content
-    assert "// source-anchor 03: brio-synths class=brio domain=music" in content
-    assert "// source-anchor 06: c920-overhead class=c920 domain=perception" in content
+    assert "// source-garden-anchor 01: brio-operator cam_bop" in content
+    assert "// source-garden-anchor 03: brio-synths cam_bsy" in content
+    assert "// source-garden-anchor 06: c920-overhead cam_cov" in content
     assert "cam_bop" in content
     assert "cam_cov" in content
 

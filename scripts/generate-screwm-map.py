@@ -30,11 +30,10 @@ CEIL_Z = int(TOWER_CEIL_M * UNITS_PER_METER)
 AOA_X = 0
 AOA_Y = -455
 AOA_Z = int(AOA_HEIGHT_M * UNITS_PER_METER)
-EXT = TR + WALL_THICK + 32
+EXT = max(TR + WALL_THICK + 32, 512)
 REVIEW_ALCOVE_Y_MIN = -(TR + WALL_THICK + 430)
-REVIEW_WARD_Y = -360
-REVIEW_DRIFT_Y = REVIEW_WARD_Y - 18
-LEGACY_SCRIM_Y = REVIEW_WARD_Y - 36
+REVIEW_WARD_Y = -455
+REVIEW_DRIFT_Y = -500
 LEVEL_BANDS = [
     ("perception", FLOOR_Z, FLOOR_Z + 96),
     ("cognition", FLOOR_Z + 96, FLOOR_Z + 192),
@@ -169,8 +168,8 @@ DOMAIN_LIGHT_COLOR = {
 }
 
 WARD_COLUMNS = 7
-WARD_PANE_W = 58
-WARD_PANE_H = 42
+WARD_PANE_W = 30
+WARD_PANE_H = 22
 WARD_FRAME_PAD = 5
 WARD_FRAME_T = 4
 WARD_X_SPACING = 74
@@ -183,51 +182,60 @@ SPECIAL_WARD_POSITIONS = {
     36: (0, WARD_Y_TOP + 5 * WARD_Y_STEP, FLOOR_Z + 92),
 }
 
-SOURCE_PANE_W = 58
-SOURCE_PANE_H = 44
-LEGACY_SCRIM_LINE_T = 5
-LEGACY_SCRIM_LINE_STEP = 12
-LEGACY_TRIANGLE = (
-    (0, FLOOR_Z + 386),
-    (-252, FLOOR_Z + 122),
-    (252, FLOOR_Z + 122),
-)
-LEGACY_SLOT_PANES = [
-    {
-        "name": "sierpinski-content",
-        "texture": "slot_sierp",
-        "domain": "perception",
-        "pos": (0, LEGACY_SCRIM_Y + 4, FLOOR_Z + 306),
-        "size": (108, 58),
-        "frame": "drift_c",
-    },
-    {
-        "name": "album-deep-slot",
-        "texture": "slot_album",
-        "domain": "music",
-        "pos": (-120, LEGACY_SCRIM_Y + 4, FLOOR_Z + 166),
-        "size": (116, 62),
-        "frame": "drift_r",
-    },
-    {
-        "name": "reverie-deep-slot",
-        "texture": "slot_rev",
-        "domain": "perception",
-        "pos": (120, LEGACY_SCRIM_Y + 4, FLOOR_Z + 166),
-        "size": (116, 62),
-        "frame": "drift_g",
-    },
-    {
-        "name": "voice-center-void",
-        "texture": "slot_voice",
-        "domain": "communication",
-        "pos": (0, LEGACY_SCRIM_Y - 2, FLOOR_Z + 212),
-        "size": (92, 34),
-        "frame": "drift_a",
-    },
+GARDEN_CAMERA_STATIONS = [
+    ("entry", (0, -760, 205), (0, -455, 184)),
+    ("perception-left", (-310, -575, 194), (-355, -455, 194)),
+    ("aoa-near", (-90, -360, 168), (0, -455, 184)),
+    ("cognition-right", (300, -410, 188), (340, -360, 188)),
+    ("communication-canopy", (24, -370, 300), (0, -455, 226)),
 ]
-AOA_PAYLOAD_PANE_W = 42
-AOA_PAYLOAD_PANE_H = 30
+
+WARD_GARDEN_LAYOUT = {
+    # Quake-scale translation of the pre-Screwm Japanese-garden Scroom:
+    # perception grove left, cognition copse right, communication canopy high,
+    # grounding parterre on the entry path, and music/presence as side stones.
+    1: (0, -650, 155, "y"),
+    2: (-240, -665, 135, "y"),
+    3: (35, -330, 310, "y"),
+    4: (0, -455, 300, "y"),
+    5: (-180, -540, 170, "y"),
+    6: (230, -365, 225, "x"),
+    7: (-60, -620, 180, "y"),
+    8: (0, -455, 225, "y"),
+    9: (0, -700, 105, "y"),
+    10: (80, -335, 260, "y"),
+    11: (280, -360, 205, "x"),
+    12: (210, -500, 230, "x"),
+    13: (60, -620, 135, "y"),
+    14: (350, -345, 145, "x"),
+    15: (-110, -615, 215, "y"),
+    16: (-330, -500, 210, "x"),
+    17: (315, -305, 250, "x"),
+    18: (-285, -645, 195, "y"),
+    19: (-330, -610, 115, "x"),
+    20: (0, -735, 75, "y"),
+    21: (0, -350, 335, "y"),
+    22: (-165, -380, 315, "y"),
+    23: (245, -300, 290, "x"),
+    24: (355, -370, 235, "x"),
+    25: (-300, -360, 300, "x"),
+    26: (150, -315, 330, "y"),
+    27: (0, -325, 360, "y"),
+    28: (180, -430, 125, "x"),
+    29: (-245, -610, 260, "y"),
+    30: (325, -285, 175, "x"),
+    31: (370, -475, 165, "x"),
+    32: (245, -270, 110, "y"),
+    33: (130, -305, 100, "y"),
+    34: (75, -355, 280, "y"),
+    35: (-285, -565, 295, "x"),
+    36: (-345, -405, 125, "x"),
+}
+
+SOURCE_PANE_W = 34
+SOURCE_PANE_H = 22
+AOA_PAYLOAD_PANE_W = 22
+AOA_PAYLOAD_PANE_H = 16
 AOA_PAYLOAD_PANES = [
     ("root-pane", "aoa_root", "drift_c", -4, 108, 1.00),
     ("tri-texture", "aoa_tri", "drift_g", -72, 62, 0.92),
@@ -242,35 +250,48 @@ AOA_PAYLOAD_PANES = [
 ]
 
 SCROOM_SCENE_GRAPH_PANES = [
-    # Mirrors hapax-logos scene.rs: left HLS shelf.
-    ("hls", "brio-operator", "cam_bop", "drift_a", -300, -430, FLOOR_Z + 340, 76, 48),
-    ("hls", "brio-room", "cam_brm", "drift_g", -300, -420, FLOOR_Z + 254, 70, 44),
-    ("hls", "brio-synths", "cam_bsy", "drift_r", -300, -410, FLOOR_Z + 168, 70, 44),
-    # Mirrors hapax-logos scene.rs: upper IR/source arc.
-    ("ir", "c920-desk", "cam_cdk", "drift_c", -178, -424, FLOOR_Z + 392, 58, 38),
-    ("ir", "c920-room", "cam_crm", "drift_g", -94, -430, FLOOR_Z + 410, 58, 38),
-    ("ir", "c920-overhead", "cam_cov", "drift_c", -10, -424, FLOOR_Z + 392, 58, 38),
-    ("ir", "cbip-ir", "w36", "drift_g", 74, -416, FLOOR_Z + 372, 54, 36),
-    # Right ward shelf and mid/far Scroom bands from the old dynamic scene.
-    ("ward-shelf", "programme-history", "w23", "drift_a", 288, -426, FLOOR_Z + 324, 62, 42),
-    ("ward-shelf", "instrument-dashboard", "w24", "drift_c", 292, -416, FLOOR_Z + 246, 62, 42),
-    ("ward-shelf", "interactive-query", "w30", "drift_a", 284, -406, FLOOR_Z + 168, 62, 42),
-    ("mid-band", "chat-ambient", "w26", "drift_g", 176, -390, FLOOR_Z + 100, 52, 34),
-    ("mid-band", "impingement", "w10", "drift_a", 96, -386, FLOOR_Z + 76, 52, 34),
-    ("far-band", "variety-log", "w14", "drift_c", -114, -356, FLOOR_Z + 78, 48, 32),
-    ("far-band", "scope-wave", "w35", "drift_r", -186, -350, FLOOR_Z + 102, 48, 32),
+    # Mirrors the no-front garden Scroom: compact source/cognition islands
+    # around the stroll path, not a large framed wall.
+    ("hls", "brio-operator", "cam_bop", "drift_a", -320, -625, FLOOR_Z + 318, 34, 22),
+    ("hls", "brio-room", "cam_brm", "drift_g", -365, -532, FLOOR_Z + 226, 30, 20),
+    ("hls", "brio-synths", "cam_bsy", "drift_r", -284, -686, FLOOR_Z + 158, 30, 20),
+    ("ir", "c920-desk", "cam_cdk", "drift_c", 278, -358, FLOOR_Z + 316, 30, 20),
+    ("ir", "c920-room", "cam_crm", "drift_g", 358, -438, FLOOR_Z + 238, 30, 20),
+    ("ir", "c920-overhead", "cam_cov", "drift_c", 268, -292, FLOOR_Z + 172, 30, 20),
+    ("ir", "cbip-ir", "w36", "drift_g", -328, -430, FLOOR_Z + 194, 28, 18),
+    ("ward-shelf", "programme-history", "w23", "drift_a", 300, -312, FLOOR_Z + 316, 30, 20),
+    ("ward-shelf", "instrument-dashboard", "w24", "drift_c", 376, -388, FLOOR_Z + 246, 30, 20),
+    ("ward-shelf", "interactive-query", "w30", "drift_a", 342, -282, FLOOR_Z + 168, 30, 20),
+    ("mid-band", "chat-ambient", "w26", "drift_g", 118, -312, FLOOR_Z + 348, 28, 18),
+    ("mid-band", "impingement", "w10", "drift_a", 86, -354, FLOOR_Z + 252, 28, 18),
+    ("far-band", "variety-log", "w14", "drift_c", 356, -354, FLOOR_Z + 132, 24, 16),
+    ("far-band", "scope-wave", "w35", "drift_r", -286, -572, FLOOR_Z + 300, 24, 16),
 ]
-SCROOM_LIGHT_MARKER = (0, -520, FLOOR_Z + 390)
-SCROOM_MATERIAL_BEAMS = [
-    ("aoa-core", "drift_c", SCROOM_LIGHT_MARKER, (AOA_X, AOA_Y, AOA_Z)),
-    ("root-pane", "drift_g", SCROOM_LIGHT_MARKER, (AOA_X - 4, AOA_Y - 42, AOA_Z + 108)),
-    ("hls-shelf", "drift_a", SCROOM_LIGHT_MARKER, (-300, -460, FLOOR_Z + 340)),
-    ("source-arc", "drift_c", SCROOM_LIGHT_MARKER, (-94, -460, FLOOR_Z + 410)),
-    ("ward-shelf", "drift_r", SCROOM_LIGHT_MARKER, (288, -456, FLOOR_Z + 324)),
-    ("far-band", "drift_g", SCROOM_LIGHT_MARKER, (-186, -380, FLOOR_Z + 102)),
+SCROOM_LIGHT_MARKER = (0, -455, FLOOR_Z + 390)
+SCROOM_MATERIAL_BEAMS = []
+SCROOM_GRID_X_LINES = []
+SCROOM_GRID_Y_LINES = []
+SCROOM_PATH_STONES = [
+    ("entry", "drift_c", 0, -760, FLOOR_Z + 7, 92, 34),
+    ("perception-left", "drift_g", -305, -575, FLOOR_Z + 7, 86, 32),
+    ("aoa-near", "drift_a", -90, -360, FLOOR_Z + 7, 76, 30),
+    ("cognition-right", "drift_r", 300, -410, FLOOR_Z + 7, 86, 32),
+    ("communication-canopy", "drift_c", 24, -370, FLOOR_Z + 7, 76, 30),
 ]
-SCROOM_GRID_X_LINES = [-240, -120, 0, 120, 240]
-SCROOM_GRID_Y_LINES = [-590, -520, -450, -380]
+SCROOM_GARDEN_ISLANDS = [
+    ("entry-raked-bed", "scroom", 0, -760, FLOOR_Z + 2, 170, 86),
+    ("perception-raked-bed", "scroom", -305, -575, FLOOR_Z + 2, 156, 80),
+    ("aoa-raked-bed", "scroom", -90, -360, FLOOR_Z + 2, 144, 76),
+    ("cognition-raked-bed", "scroom", 300, -410, FLOOR_Z + 2, 156, 80),
+    ("canopy-raked-bed", "scroom", 24, -370, FLOOR_Z + 2, 140, 72),
+]
+SCROOM_GARDEN_LANTERNS = [
+    ("entry-lantern", "drift_c", 0, -735, FLOOR_Z + 18),
+    ("perception-lantern", "drift_g", -342, -520, FLOOR_Z + 18),
+    ("aoa-lantern", "drift_a", -86, -382, FLOOR_Z + 18),
+    ("cognition-lantern", "drift_r", 318, -352, FLOOR_Z + 18),
+    ("canopy-lantern", "drift_c", 42, -330, FLOOR_Z + 18),
+]
 SCROOM_LOCAL_EFFECTS = [
     # Mirrors scene_quad.wgsl entity-local source-plane spatial effects.
     ("mirror", "fx_mirr", "drift_c", -250, -522, FLOOR_Z + 92),
@@ -291,42 +312,48 @@ SOURCE_ANCHORS = [
         "texture": "cam_bop",
         "camera_class": "brio",
         "domain": "presence",
-        "pos": (-312, -88, FLOOR_Z + 350),
+        "pos": (-385, -600, FLOOR_Z + 330),
+        "facing": "x",
     },
     {
         "role": "brio-room",
         "texture": "cam_brm",
         "camera_class": "brio",
         "domain": "perception",
-        "pos": (-312, -88, FLOOR_Z + 238),
+        "pos": (-420, -505, FLOOR_Z + 238),
+        "facing": "x",
     },
     {
         "role": "brio-synths",
         "texture": "cam_bsy",
         "camera_class": "brio",
         "domain": "music",
-        "pos": (-312, -88, FLOOR_Z + 126),
+        "pos": (-380, -660, FLOOR_Z + 150),
+        "facing": "x",
     },
     {
         "role": "c920-desk",
         "texture": "cam_cdk",
         "camera_class": "c920",
         "domain": "cognition",
-        "pos": (312, -88, FLOOR_Z + 350),
+        "pos": (405, -370, FLOOR_Z + 314),
+        "facing": "x",
     },
     {
         "role": "c920-room",
         "texture": "cam_crm",
         "camera_class": "c920",
         "domain": "perception",
-        "pos": (312, -88, FLOOR_Z + 238),
+        "pos": (430, -455, FLOOR_Z + 226),
+        "facing": "x",
     },
     {
         "role": "c920-overhead",
         "texture": "cam_cov",
         "camera_class": "c920",
         "domain": "perception",
-        "pos": (312, -88, FLOOR_Z + 126),
+        "pos": (390, -300, FLOOR_Z + 132),
+        "facing": "x",
     },
 ]
 
@@ -477,6 +504,76 @@ def framed_y_pane(comment_prefix, idx, name, tex, frame_tex, x, y, z, w, h):
     return brushes
 
 
+def framed_x_pane(comment_prefix, idx, name, tex, frame_tex, x, y, z, w, h):
+    """Return an x-facing physical pane and four-bar frame."""
+    brushes = []
+    pane = box_brush(x - 2, y - w // 2, z - h // 2, x + 2, y + w // 2, z + h // 2, tex)
+    if pane:
+        brushes.append(f"// {comment_prefix} {idx:02d}: {name} {tex}\n{pane}")
+
+    frame_pad = 5
+    for frame_name, frame in (
+        (
+            "top",
+            box_brush(
+                x - 8,
+                y - w // 2 - frame_pad,
+                z + h // 2 + 2,
+                x - 4,
+                y + w // 2 + frame_pad,
+                z + h // 2 + frame_pad,
+                frame_tex,
+            ),
+        ),
+        (
+            "bottom",
+            box_brush(
+                x - 8,
+                y - w // 2 - frame_pad,
+                z - h // 2 - frame_pad,
+                x - 4,
+                y + w // 2 + frame_pad,
+                z - h // 2 - 2,
+                frame_tex,
+            ),
+        ),
+        (
+            "left",
+            box_brush(
+                x - 8,
+                y - w // 2 - frame_pad,
+                z - h // 2 - frame_pad,
+                x - 4,
+                y - w // 2 - 1,
+                z + h // 2 + frame_pad,
+                frame_tex,
+            ),
+        ),
+        (
+            "right",
+            box_brush(
+                x - 8,
+                y + w // 2 + 1,
+                z - h // 2 - frame_pad,
+                x - 4,
+                y + w // 2 + frame_pad,
+                z + h // 2 + frame_pad,
+                frame_tex,
+            ),
+        ),
+    ):
+        if frame:
+            brushes.append(f"// {comment_prefix}-frame {idx:02d}: {name} {frame_name}\n{frame}")
+
+    return brushes
+
+
+def framed_garden_pane(comment_prefix, idx, name, tex, frame_tex, x, y, z, w, h, facing):
+    if facing == "x":
+        return framed_x_pane(comment_prefix, idx, name, tex, frame_tex, x, y, z, w, h)
+    return framed_y_pane(comment_prefix, idx, name, tex, frame_tex, x, y, z, w, h)
+
+
 def axis_beam_segments(comment_prefix, idx, name, tex, start, end, thickness=3):
     """Return orthogonal thin beam segments approximating a volumetric ray."""
     sx, sy, sz = start
@@ -505,6 +602,9 @@ def axis_beam_segments(comment_prefix, idx, name, tex, start, end, thickness=3):
 
 
 def ward_anchor_position(idx):
+    if idx in WARD_GARDEN_LAYOUT:
+        x, y, z, _facing = WARD_GARDEN_LAYOUT[idx]
+        return x, y, z
     if idx in SPECIAL_WARD_POSITIONS:
         return SPECIAL_WARD_POSITIONS[idx]
     col = (idx - 1) % WARD_COLUMNS
@@ -516,14 +616,19 @@ def ward_anchor_position(idx):
 
 
 def ward_review_position(idx):
-    x, _y, z = ward_anchor_position(idx)
-    return x, REVIEW_WARD_Y, z
+    return ward_anchor_position(idx)
+
+
+def ward_garden_facing(idx):
+    if idx in WARD_GARDEN_LAYOUT:
+        return WARD_GARDEN_LAYOUT[idx][3]
+    return "y"
 
 
 def ward_review_drift_midpoint(src, dst):
-    x1, _y1, z1 = ward_review_position(src)
-    x2, _y2, z2 = ward_review_position(dst)
-    return (x1 + x2) // 2, REVIEW_DRIFT_Y, (z1 + z2) // 2
+    x1, y1, z1 = ward_review_position(src)
+    x2, y2, z2 = ward_review_position(dst)
+    return (x1 + x2) // 2, (y1 + y2) // 2, (z1 + z2) // 2
 
 
 def ward_domain(idx):
@@ -594,78 +699,35 @@ def central_lattice(preset):
 
 
 def ward_review_panes(_preset):
-    """Front-facing in-world ward review plane inside the scroom.
+    """No-front garden clumps for all in-scroom wards.
 
-    The deeper ward lattice remains present, but the default OBS POV needs a
-    legible canonical face. These panes are physical BSP surfaces in the
-    review alcove, not HUD or compositor overlays.
+    The default Scroom is not a frontal board. Wards live as physical panes in
+    semantic garden islands around the AoA and recurrent path; OBS feedback is
+    obtained by moving through the garden, not by flattening it onto a wall.
     """
     brushes = []
 
     for idx, anchor in enumerate(WARD_ANCHORS, start=1):
-        x, _y, z = ward_review_position(idx)
+        x, y, z = ward_review_position(idx)
         tex = f"w{idx:02d}"
         domain = ward_domain(idx)
         glow_tex = DOMAIN_GLOW_TEX[domain]
 
-        pane = box_brush(
-            x - WARD_PANE_W // 2,
-            REVIEW_WARD_Y - 2,
-            z - WARD_PANE_H // 2,
-            x + WARD_PANE_W // 2,
-            REVIEW_WARD_Y + 2,
-            z + WARD_PANE_H // 2,
-            tex,
+        brushes.extend(
+            framed_garden_pane(
+                "ward-garden-pane",
+                idx,
+                anchor,
+                tex,
+                glow_tex,
+                x,
+                y,
+                z,
+                WARD_PANE_W,
+                WARD_PANE_H,
+                ward_garden_facing(idx),
+            )
         )
-        if pane:
-            brushes.append(f"// ward-review-pane {idx:02d}: {anchor}\n{pane}")
-
-        frame_top = box_brush(
-            x - WARD_PANE_W // 2 - WARD_FRAME_PAD,
-            REVIEW_WARD_Y - 8,
-            z + WARD_PANE_H // 2 + 2,
-            x + WARD_PANE_W // 2 + WARD_FRAME_PAD,
-            REVIEW_WARD_Y - 4,
-            z + WARD_PANE_H // 2 + WARD_FRAME_PAD,
-            glow_tex,
-        )
-        frame_bottom = box_brush(
-            x - WARD_PANE_W // 2 - WARD_FRAME_PAD,
-            REVIEW_WARD_Y - 8,
-            z - WARD_PANE_H // 2 - WARD_FRAME_PAD,
-            x + WARD_PANE_W // 2 + WARD_FRAME_PAD,
-            REVIEW_WARD_Y - 4,
-            z - WARD_PANE_H // 2 - 2,
-            glow_tex,
-        )
-        frame_left = box_brush(
-            x - WARD_PANE_W // 2 - WARD_FRAME_PAD,
-            REVIEW_WARD_Y - 8,
-            z - WARD_PANE_H // 2 - WARD_FRAME_PAD,
-            x - WARD_PANE_W // 2 - 1,
-            REVIEW_WARD_Y - 4,
-            z + WARD_PANE_H // 2 + WARD_FRAME_PAD,
-            glow_tex,
-        )
-        frame_right = box_brush(
-            x + WARD_PANE_W // 2 + 1,
-            REVIEW_WARD_Y - 8,
-            z - WARD_PANE_H // 2 - WARD_FRAME_PAD,
-            x + WARD_PANE_W // 2 + WARD_FRAME_PAD,
-            REVIEW_WARD_Y - 4,
-            z + WARD_PANE_H // 2 + WARD_FRAME_PAD,
-            glow_tex,
-        )
-        for name, frame in (
-            ("top", frame_top),
-            ("bottom", frame_bottom),
-            ("left", frame_left),
-            ("right", frame_right),
-        ):
-            if frame:
-                brushes.append(
-                    f"// ward-review-frame {idx:02d}: {anchor} {name} {glow_tex}\n{frame}"
-                )
 
     return brushes
 
@@ -698,31 +760,6 @@ def aoa_payload_panes(_preset):
             )
         )
 
-        # Short orthogonal tether back to the AoA axis: visibly pane-local.
-        t = 3
-        if x == AOA_X:
-            tether = box_brush(
-                x - t,
-                y + 10 - t,
-                min(z, AOA_Z),
-                x + t,
-                y + 10 + t,
-                max(z, AOA_Z),
-                frame_tex,
-            )
-        else:
-            tether = box_brush(
-                min(x, AOA_X),
-                y + 10 - t,
-                z - t,
-                max(x, AOA_X),
-                y + 10 + t,
-                z + t,
-                frame_tex,
-            )
-        if tether:
-            brushes.append(f"// aoa-payload-tether {idx:02d}: {name} {frame_tex}\n{tether}")
-
     return brushes
 
 
@@ -752,31 +789,11 @@ def scroom_scene_graph_bands(_preset):
                 h,
             )
         )
-        # Bands are tied into the ward/source volume through short material
-        # rails so they read as inhabitants of the scroom.
-        t = 3
-        anchor_x = int(x * 0.42)
-        rail = box_brush(
-            min(x, anchor_x),
-            y + 12 - t,
-            z - t,
-            max(x, anchor_x),
-            y + 12 + t,
-            z + t,
-            frame_tex,
-        )
-        if rail:
-            brushes.append(f"// scroom-scene-rail {idx:02d}: {band} {name} {frame_tex}\n{rail}")
-
     return brushes
 
 
 def scroom_material_field(_preset):
-    """Physical scene-grid material, light marker, and volumetric beam grammar.
-
-    This ports the old `scene_grid.wgsl` floor/back-wall material and authored
-    light/beam language into Quake BSP so the scroom itself carries the field.
-    """
+    """No-front garden floor marks and borrowed-view light marker."""
     brushes = []
     mx, my, mz = SCROOM_LIGHT_MARKER
 
@@ -791,18 +808,23 @@ def scroom_material_field(_preset):
         if marker:
             brushes.append(f"// scroom-light-marker {idx:02d}\n{marker}")
 
-    for idx, (name, tex, start, end) in enumerate(SCROOM_MATERIAL_BEAMS, start=1):
-        brushes.extend(axis_beam_segments("scroom-volumetric-beam", idx, name, tex, start, end))
+    for idx, (name, tex, x, y, z, w, h) in enumerate(SCROOM_PATH_STONES, start=1):
+        stone = box_brush(x - w // 2, y - h // 2, z, x + w // 2, y + h // 2, z + 4, tex)
+        if stone:
+            brushes.append(f"// scroom-garden-path-stone {idx:02d}: {name} {tex}\n{stone}")
 
-    grid_z = FLOOR_Z + 7
-    for idx, x in enumerate(SCROOM_GRID_X_LINES, start=1):
-        grid = box_brush(x - 2, -612, grid_z, x + 2, -342, grid_z + 3, "scroom")
-        if grid:
-            brushes.append(f"// scroom-material-grid x{idx:02d}\n{grid}")
-    for idx, y in enumerate(SCROOM_GRID_Y_LINES, start=1):
-        grid = box_brush(-264, y - 2, grid_z, 264, y + 2, grid_z + 3, "scroom")
-        if grid:
-            brushes.append(f"// scroom-material-grid y{idx:02d}\n{grid}")
+    for idx, (name, tex, x, y, z, w, h) in enumerate(SCROOM_GARDEN_ISLANDS, start=1):
+        island = box_brush(x - w // 2, y - h // 2, z, x + w // 2, y + h // 2, z + 3, tex)
+        if island:
+            brushes.append(f"// scroom-garden-island {idx:02d}: {name} {tex}\n{island}")
+
+    for idx, (name, tex, x, y, z) in enumerate(SCROOM_GARDEN_LANTERNS, start=1):
+        post = box_brush(x - 4, y - 4, z, x + 4, y + 4, z + 54, tex)
+        cap = box_brush(x - 10, y - 10, z + 54, x + 10, y + 10, z + 62, tex)
+        if post:
+            brushes.append(f"// scroom-garden-lantern {idx:02d}: {name} post\n{post}")
+        if cap:
+            brushes.append(f"// scroom-garden-lantern-cap {idx:02d}: {name} cap\n{cap}")
 
     return brushes
 
@@ -816,246 +838,36 @@ def scroom_local_effect_lenses(_preset):
     the effect vocabulary even before runtime texture mutation exists.
     """
     brushes = []
-    rail_z = FLOOR_Z + 72
-    rail = box_brush(-286, -528, rail_z, 286, -518, rail_z + 8, "drift_c")
-    if rail:
-        brushes.append(f"// scroom-local-effect-rail scene_quad.wgsl entity-local\n{rail}")
 
     for idx, (name, tex, frame_tex, x, y, z) in enumerate(SCROOM_LOCAL_EFFECTS, start=1):
         brushes.extend(
             framed_y_pane("scroom-local-effect-lens", idx, name, tex, frame_tex, x, y, z, 36, 28)
         )
-        tether = box_brush(x - 2, y - 12, z + 16, x + 2, y + 54, z + 20, frame_tex)
-        if tether:
-            brushes.append(f"// scroom-local-effect-tether {idx:02d}: {name}\n{tether}")
 
     return brushes
 
 
 def ward_review_drift_paths(_preset):
-    """Visible drift rails bound to the front-facing ward review plane."""
+    """Small luminous stepping stones showing drift links through the garden."""
     brushes = []
-    t = 1
+    t = 4
 
     for link_idx, (src, dst, tex) in enumerate(DRIFT_LINKS, start=1):
-        x1, _y1, z1 = ward_review_position(src)
-        x2, _y2, z2 = ward_review_position(dst)
-        parts = []
-        if x1 != x2:
-            parts.append(
-                box_brush(
-                    min(x1, x2),
-                    REVIEW_DRIFT_Y - t,
-                    z1 - t,
-                    max(x1, x2),
-                    REVIEW_DRIFT_Y + t,
-                    z1 + t,
-                    tex,
-                )
+        x, y, z = ward_review_drift_midpoint(src, dst)
+        z = max(FLOOR_Z + 18, z)
+        stone = box_brush(x - t, y - t, z - t, x + t, y + t, z + t, tex)
+        if stone:
+            brushes.append(
+                f"// ward-garden-drift-stone {link_idx:02d}: "
+                f"{src:02d}->{dst:02d} {tex}\n{stone}"
             )
-        if z1 != z2:
-            parts.append(
-                box_brush(
-                    x2 - t,
-                    REVIEW_DRIFT_Y - t,
-                    min(z1, z2),
-                    x2 + t,
-                    REVIEW_DRIFT_Y + t,
-                    max(z1, z2),
-                    tex,
-                )
-            )
-        for part_idx, part in enumerate(parts, start=1):
-            if part:
-                brushes.append(
-                    f"// ward-review-drift {link_idx:02d}.{part_idx}: "
-                    f"{src:02d}->{dst:02d} {tex}\n{part}"
-                )
 
-    return brushes
-
-
-def midpoint_2d(a, b):
-    return (int((a[0] + b[0]) / 2), int((a[1] + b[1]) / 2))
-
-
-def legacy_sierpinski_edges():
-    """Return the old Screwm Sierpinski line grammar as in-world edges."""
-    edges = []
-    top, left, right = LEGACY_TRIANGLE
-    root = ((top, left, "drift_c"), (left, right, "drift_r"), (right, top, "drift_g"))
-    edges.extend(root)
-
-    def add_void_edges(triangle, depth):
-        if depth <= 0:
-            return
-        a, b, c = triangle
-        ab = midpoint_2d(a, b)
-        bc = midpoint_2d(b, c)
-        ac = midpoint_2d(a, c)
-        edges.extend(
-            (
-                (ab, bc, "drift_a"),
-                (bc, ac, "drift_c"),
-                (ac, ab, "drift_g"),
-            )
-        )
-        add_void_edges((a, ab, ac), depth - 1)
-        add_void_edges((ab, b, bc), depth - 1)
-        add_void_edges((ac, bc, c), depth - 1)
-
-    add_void_edges(LEGACY_TRIANGLE, 2)
-    return edges
-
-
-def voxel_line(start, end, tex):
-    """Rasterize a 2D line into small y-facing Quake brush pixels."""
-    brushes = []
-    dx = end[0] - start[0]
-    dz = end[1] - start[1]
-    steps = max(1, int(max(abs(dx), abs(dz)) / LEGACY_SCRIM_LINE_STEP))
-    seen = set()
-    t = LEGACY_SCRIM_LINE_T
-
-    for i in range(steps + 1):
-        x = int(round(start[0] + dx * i / steps))
-        z = int(round(start[1] + dz * i / steps))
-        key = (x // 2, z // 2)
-        if key in seen:
-            continue
-        seen.add(key)
-        brush = box_brush(
-            x - t,
-            LEGACY_SCRIM_Y - 10,
-            z - t,
-            x + t,
-            LEGACY_SCRIM_Y - 4,
-            z + t,
-            tex,
-        )
-        if brush:
-            brushes.append(brush)
-
-    return brushes
-
-
-def legacy_sierpinski_slot_panes():
-    """Large content slots from the last non-Quake Screwm, embodied in BSP."""
-    brushes = []
-
-    for slot in LEGACY_SLOT_PANES:
-        x, y, z = slot["pos"]
-        w, h = slot["size"]
-        tex = slot["texture"]
-        frame_tex = slot["frame"]
-        pane = box_brush(x - w // 2, y - 2, z - h // 2, x + w // 2, y + 2, z + h // 2, tex)
-        if pane:
-            brushes.append(f"// legacy-sierpinski-slot {slot['name']} {tex}\n{pane}")
-
-        frame_t = 5
-        for frame_name, frame in (
-            (
-                "top",
-                box_brush(
-                    x - w // 2 - frame_t,
-                    y - 8,
-                    z + h // 2 + 1,
-                    x + w // 2 + frame_t,
-                    y - 4,
-                    z + h // 2 + frame_t,
-                    frame_tex,
-                ),
-            ),
-            (
-                "bottom",
-                box_brush(
-                    x - w // 2 - frame_t,
-                    y - 8,
-                    z - h // 2 - frame_t,
-                    x + w // 2 + frame_t,
-                    y - 4,
-                    z - h // 2 - 1,
-                    frame_tex,
-                ),
-            ),
-            (
-                "left",
-                box_brush(
-                    x - w // 2 - frame_t,
-                    y - 8,
-                    z - h // 2 - frame_t,
-                    x - w // 2 - 1,
-                    y - 4,
-                    z + h // 2 + frame_t,
-                    frame_tex,
-                ),
-            ),
-            (
-                "right",
-                box_brush(
-                    x + w // 2 + 1,
-                    y - 8,
-                    z - h // 2 - frame_t,
-                    x + w // 2 + frame_t,
-                    y - 4,
-                    z + h // 2 + frame_t,
-                    frame_tex,
-                ),
-            ),
-        ):
-            if frame:
-                brushes.append(
-                    f"// legacy-sierpinski-slot-frame {slot['name']} {frame_name} {frame_tex}\n"
-                    f"{frame}"
-                )
-
-    return brushes
-
-
-def legacy_sierpinski_scrim(_preset):
-    """Physical Sierpinski/fishbowl anchor from the previous Screwm surface."""
-    brushes = []
-
-    for edge_idx, (start, end, tex) in enumerate(legacy_sierpinski_edges(), start=1):
-        brushes.append(f"// legacy-sierpinski-edge {edge_idx:02d} {tex}")
-        brushes.extend(voxel_line(start, end, tex))
-
-    brushes.extend(legacy_sierpinski_slot_panes())
     return brushes
 
 
 def ward_depth_echo_panes(_preset):
-    """Fishbowl depth plates behind wards, ported from the old scrim bands."""
-    brushes = []
-
-    for idx, anchor in enumerate(WARD_ANCHORS, start=1):
-        plane = ward_depth_plane(idx)
-        style = WARD_DEPTH_STYLES[plane]
-        layers = style["layers"]
-        if layers <= 0:
-            continue
-        x, y, z = ward_review_position(idx)
-        tex = DOMAIN_GLOW_TEX[ward_domain(idx)]
-        for layer in range(1, layers + 1):
-            pad = style["pad"] + layer * 4
-            lx = x + style["x_shift"] * layer
-            ly = y + style["y_step"] * layer
-            lz = z + style["z_shift"] * layer
-            plate = box_brush(
-                lx - WARD_PANE_W // 2 - pad,
-                ly + 4,
-                lz - WARD_PANE_H // 2 - pad,
-                lx + WARD_PANE_W // 2 + pad,
-                ly + 8,
-                lz + WARD_PANE_H // 2 + pad,
-                tex,
-            )
-            if plate:
-                brushes.append(
-                    f"// ward-depth-plate {idx:02d}: {anchor} {plane} layer={layer} {tex}\n{plate}"
-                )
-
-    return brushes
+    """Depth is carried by paths/lightfields in the garden baseline."""
+    return []
 
 
 def ward_scrim_panes(_preset):
@@ -1072,7 +884,6 @@ def source_constellation_panes(_preset):
     the scroom now has stable places for those sources to inhabit.
     """
     brushes = []
-    tether_t = 5
 
     for idx, source in enumerate(SOURCE_ANCHORS, start=1):
         role = source["role"]
@@ -1080,47 +891,21 @@ def source_constellation_panes(_preset):
         domain = source["domain"]
         glow_tex = DOMAIN_GLOW_TEX[domain]
         x, y, z = source["pos"]
-        pane = box_brush(
-            x - SOURCE_PANE_W // 2,
-            y - 2,
-            z - SOURCE_PANE_H // 2,
-            x + SOURCE_PANE_W // 2,
-            y + 2,
-            z + SOURCE_PANE_H // 2,
-            tex,
-        )
-        if pane:
-            brushes.append(
-                f"// source-anchor {idx:02d}: {role} "
-                f"class={source['camera_class']} domain={domain} pos={x},{y},{z}\n{pane}"
+        brushes.extend(
+            framed_garden_pane(
+                "source-garden-anchor",
+                idx,
+                role,
+                tex,
+                glow_tex,
+                x,
+                y,
+                z,
+                SOURCE_PANE_W,
+                SOURCE_PANE_H,
+                source.get("facing", "y"),
             )
-
-        glow = box_brush(
-            x - SOURCE_PANE_W // 2,
-            y - 7,
-            z - SOURCE_PANE_H // 2 - 7,
-            x + SOURCE_PANE_W // 2,
-            y - 3,
-            z - SOURCE_PANE_H // 2 - 2,
-            glow_tex,
         )
-        if glow:
-            brushes.append(f"// source-glow {idx:02d}: {role} {glow_tex}\n{glow}")
-
-        # Short material tether toward the ward field: source state belongs in
-        # the same world volume rather than on the compositor's fourth wall.
-        tether_end_x = int(x * 0.62)
-        tether = box_brush(
-            min(x, tether_end_x),
-            y + 8 - tether_t,
-            z - tether_t,
-            max(x, tether_end_x),
-            y + 8 + tether_t,
-            z + tether_t,
-            glow_tex,
-        )
-        if tether:
-            brushes.append(f"// source-tether {idx:02d}: {role} {glow_tex}\n{tether}")
 
     return brushes
 
@@ -1239,10 +1024,11 @@ def lights(preset):
     review_fill = int(level_light * 0.72)
     for idx, (x, y, z, scale) in enumerate(
         [
-            (0, -438, 168, 1.15),
-            (0, -330, 154, 1.00),
-            (-148, -126, 214, 0.72),
-            (148, -126, 214, 0.72),
+            (0, -760, 205, 0.70),
+            (-310, -575, 194, 0.80),
+            (0, -455, 196, 1.15),
+            (300, -410, 188, 0.86),
+            (24, -370, 300, 0.74),
         ],
         start=1,
     ):
@@ -1283,10 +1069,10 @@ def ward_lights(preset):
 
 
 def ward_review_lights(preset):
-    """Baked lights for the front-facing ward review plane.
+    """Baked lights for the no-front garden ward clumps.
 
-    The review plane is the default OBS feedback surface. It needs its own
-    in-world lightfield instead of depending on the deeper/sloped ward anchors.
+    The OBS feedback path should see the same in-world ward positions as the
+    dynamic CSQC lightfield, not a separate flat review wall.
     """
     entities = []
     base = int(preset.get("wall_light", 100) * 1.35)
@@ -1295,7 +1081,7 @@ def ward_review_lights(preset):
         x, y, z = ward_review_position(idx)
         r, g, b = DOMAIN_LIGHT_COLOR[ward_domain(idx)]
         entities.append(
-            f"// ward-review-light {idx:02d}: {anchor}\n"
+            f"// ward-garden-light {idx:02d}: {anchor}\n"
             "{\n"
             '"classname" "light"\n'
             f'"origin" "{x} {y - 42} {z}"\n'
@@ -1319,26 +1105,6 @@ def source_lights(preset):
             "{\n"
             '"classname" "light"\n'
             f'"origin" "{x} {y - 18} {z}"\n'
-            f'"light" "{base}"\n'
-            f'"_color" "{r} {g} {b}"\n'
-            "}"
-        )
-    return entities
-
-
-def legacy_sierpinski_lights(preset):
-    """Baked light support for the physical Sierpinski/fishbowl anchor."""
-    entities = []
-    base = int(preset.get("wall_light", 100) * 1.20)
-
-    for idx, slot in enumerate(LEGACY_SLOT_PANES, start=1):
-        x, y, z = slot["pos"]
-        r, g, b = DOMAIN_LIGHT_COLOR[slot["domain"]]
-        entities.append(
-            f"// legacy-sierpinski-light {idx:02d}: {slot['name']}\n"
-            "{\n"
-            '"classname" "light"\n'
-            f'"origin" "{x} {y - 36} {z}"\n'
             f'"light" "{base}"\n'
             f'"_color" "{r} {g} {b}"\n'
             "}"
@@ -1446,14 +1212,13 @@ def generate_map(preset):
         + sectioned_brushes("central-aoa-lattice", central_lattice(preset))
         + sectioned_brushes("tower-ramp-shelves", ramp_shelves(preset))
         + sectioned_brushes("central-aoa-pedestal", central_pedestal(preset))
-        + sectioned_brushes("legacy-sierpinski-scrim", legacy_sierpinski_scrim(preset))
         + sectioned_brushes("aoa-payload-panes", aoa_payload_panes(preset))
         + sectioned_brushes("scroom-scene-graph-bands", scroom_scene_graph_bands(preset))
         + sectioned_brushes("scroom-material-field", scroom_material_field(preset))
         + sectioned_brushes("scroom-local-effect-lenses", scroom_local_effect_lenses(preset))
         + sectioned_brushes("ward-depth-echo-planes", ward_depth_echo_panes(preset))
-        + sectioned_brushes("ward-review-plane", ward_review_panes(preset))
-        + sectioned_brushes("ward-review-drift-paths", ward_review_drift_paths(preset))
+        + sectioned_brushes("ward-garden-clumps", ward_review_panes(preset))
+        + sectioned_brushes("ward-garden-drift-stones", ward_review_drift_paths(preset))
         + sectioned_brushes("source-camera-constellation", source_constellation_panes(preset))
         + sectioned_brushes("ward-scrim-panes", ward_scrim_panes(preset))
         + sectioned_brushes("ward-drift-paths", ward_drift_paths(preset))
@@ -1476,7 +1241,6 @@ def generate_map(preset):
 
     for light in (
         lights(preset)
-        + legacy_sierpinski_lights(preset)
         + aoa_payload_lights(preset)
         + scroom_scene_graph_lights(preset)
         + scroom_local_effect_lights(preset)

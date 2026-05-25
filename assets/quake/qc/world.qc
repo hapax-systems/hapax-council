@@ -21,6 +21,7 @@ void() spawn_aoa =
     aoa_entity.nextthink = time + 0.1;
     aoa_entity.screwm_spin_y = 3;
     setmodel(aoa_entity, "progs/aoa.mdl");
+    aoa_entity.scale = AOA_MODEL_SCALE;
 };
 
 void() spawn_ambient_sounds =

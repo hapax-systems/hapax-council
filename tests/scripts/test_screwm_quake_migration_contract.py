@@ -126,7 +126,7 @@ def test_screwm_quake_embodies_live_ward_activity_in_engine_lights() -> None:
     assert "presence * 56" in wards
     assert "screwm_ward_property_fishbowl_pressure * 34" in wards
     assert (
-        "screwm_add_ward_light('0 -360 28', 36, screwm_green, screwm_active_36, screwm_presence_36)"
+        "screwm_add_ward_light('-345 -405 125', 36, screwm_green, screwm_active_36, screwm_presence_36)"
     ) in wards
 
 
@@ -143,15 +143,15 @@ def test_screwm_quake_carries_audio_reactivity_into_scroom_effects() -> None:
     assert "screwm_audio_rms * 90" in wards
 
 
-def test_screwm_quake_embodies_scene_grid_material_and_beam_language() -> None:
+def test_screwm_quake_embodies_no_front_garden_material_language() -> None:
     mapgen = (REPO_ROOT / "scripts" / "generate-screwm-map.py").read_text(encoding="utf-8")
     wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
 
-    assert "scene_grid.wgsl" in mapgen
+    assert "WARD_GARDEN_LAYOUT" in mapgen
     assert "SCROOM_LIGHT_MARKER" in mapgen
-    assert "SCROOM_MATERIAL_BEAMS" in mapgen
-    assert "scroom-volumetric-beam" in mapgen
-    assert "scroom-material-grid" in mapgen
+    assert "SCROOM_PATH_STONES" in mapgen
+    assert "No-front garden floor marks" in mapgen
+    assert "scroom-garden-path-stone" in mapgen
     assert 'screwm_read_norm("data/reverie-material.txt")' in wards
     assert "screwm_add_material_field_lights" in wards
     assert "adddynamiclight('0 -520 326'" in wards

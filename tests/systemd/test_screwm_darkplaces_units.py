@@ -130,8 +130,10 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     world = (REPO_ROOT / "assets" / "quake" / "qc" / "world.qc").read_text(encoding="utf-8")
 
     assert "vector AOA_CENTER = '0 -455 176';" in defs
-    assert "vector CAMERA_REVIEW_POS = '0 -650 190';" in defs
-    assert "vector CAMERA_REVIEW_TARGET = '0 -405 176';" in defs
+    assert "vector CAMERA_REVIEW_POS = '0 -760 205';" in defs
+    assert "vector CAMERA_REVIEW_TARGET = '0 -455 184';" in defs
+    assert ".float scale;" in defs
+    assert "float AOA_MODEL_SCALE = 0.62;" in defs
     assert "vector(vector v) vectoangles = #51;" in defs
     assert "ang = vectoangles(target - pos);" in camera
     assert 'if (cvar("screwm_camera_orbit") > 0)' in camera
@@ -151,6 +153,7 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     assert 'r_glsl_postprocess_uservec2 "0.05 0.18 0 0.03"' in autoexec
     assert 'cvar("screwm_player_noclip_control") > 0' in world
     assert "void(entity view) screwm_player_noclip_body" in world
+    assert "aoa_entity.scale = AOA_MODEL_SCALE;" in world
     assert "screwm_player_noclip_body(self);" in world
     assert "setorigin(self, CAMERA_REVIEW_POS);" in world
     assert "self.angles = vectoangles(CAMERA_REVIEW_TARGET - CAMERA_REVIEW_POS);" in world

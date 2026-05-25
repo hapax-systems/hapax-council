@@ -28,9 +28,9 @@ EVENT = struct.Struct("IhBB")
 
 DEFAULT_GAME_DIR = Path.home() / ".darkplaces" / "screwm" / "data"
 PREFERRED_DEVICE_WORDS = ("xbox", "microsoft", "xinput")
-DEFAULT_ORIGIN = (0.0, -650.0, 190.0)
+DEFAULT_ORIGIN = (0.0, -760.0, 205.0)
 DEFAULT_YAW = 90.0
-DEFAULT_PITCH = 3.2
+DEFAULT_PITCH = 4.0
 DEFAULT_FOV = 78.0
 MANUAL_HOLD_SECONDS = 6.0
 
