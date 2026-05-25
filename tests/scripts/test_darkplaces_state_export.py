@@ -144,6 +144,11 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         encoding="utf-8"
     ).strip() == "0.5500"
     assert (game_dir / "homage-rotation-phase.txt").read_text(encoding="utf-8").strip() == "0.6600"
+    assert (game_dir / "aoa-pane-signal-01.txt").read_text(encoding="utf-8").strip() == "0.6200"
+    assert (game_dir / "aoa-pane-signal-03.txt").read_text(encoding="utf-8").strip() == "0.0833"
+    assert (game_dir / "aoa-pane-signal-04.txt").read_text(encoding="utf-8").strip() == "1.0000"
+    assert (game_dir / "aoa-pane-signal-10.txt").read_text(encoding="utf-8").strip() == "1.0000"
+    assert len(list(game_dir.glob("aoa-pane-signal-*.txt"))) == 10
 
 
 def test_darkplaces_state_export_normalizes_all_in_scroom_ward_activity() -> None:
@@ -212,6 +217,83 @@ def test_darkplaces_state_export_writes_camera_source_scalars(tmp_path: Path) ->
     assert lines["source-fresh-01.txt"] == "1.0000"
     assert lines["source-fresh-05.txt"] == "0.0000"
     assert lines["source-fresh-06.txt"] == "0.0000"
+
+
+def test_darkplaces_state_export_builds_aoa_pane_binding_scalars(tmp_path: Path) -> None:
+    exporter = _load_exporter()
+    shm_dir = tmp_path / "shm"
+    sources_dir = tmp_path / "sources"
+    shm_dir.mkdir()
+    uniforms_file = tmp_path / "uniforms.json"
+
+    (shm_dir / "stimmung-energy.txt").write_text("0.62\n", encoding="utf-8")
+    (shm_dir / "voice-active.txt").write_text("0.10\n", encoding="utf-8")
+    (shm_dir / "consent-state.txt").write_text("allowed\n", encoding="utf-8")
+    _write_json(
+        uniforms_file,
+        {
+            "content.salience": 0.31,
+            "fb.trace_strength": 0.44,
+            "signal.homage_custom_4_0": 0.12,
+            "signal.homage_custom_4_2": 0.34,
+        },
+    )
+    _write_json(shm_dir / "unified-reactivity.json", {"blended": {"onset": 0.34}})
+    _write_json(
+        shm_dir / "active-segment.json",
+        {"beat_progress": 0.5},
+    )
+    _write_json(
+        shm_dir / "active_wards.json",
+        {
+            "ward_ids": [
+                "token_pole",
+                "album",
+                "stream_overlay",
+                "sierpinski",
+                "reverie",
+                "activity_header",
+                "stance_indicator",
+                "gem",
+                "grounding_provenance_ticker",
+                "impingement_cascade",
+                "recruitment_candidate_panel",
+                "thinking_indicator",
+                "pressure_gauge",
+                "activity_variety_log",
+                "whos_here",
+                "durf",
+                "coding_session_reveal",
+                "m8-display",
+            ]
+        },
+    )
+    _write_json(
+        shm_dir / "camera-classifications.json",
+        {
+            "brio-operator": {"ambient_priority": 7},
+            "c920-room": {"ambient_priority": 8},
+        },
+    )
+    fresh_dir = sources_dir / "camera-brio-operator"
+    fresh_dir.mkdir(parents=True)
+    _write_json(fresh_dir / "manifest.json", {"ttl_ms": 3000})
+    (fresh_dir / "frame.rgba").write_bytes(b"rgba")
+    os.utime(fresh_dir / "frame.rgba", (99.0, 99.0))
+
+    lines = exporter.build_aoa_pane_lines(shm_dir, uniforms_file, sources_dir, now=100.0)
+
+    assert len(lines) == 10
+    assert lines["aoa-pane-signal-01.txt"] == "0.6200"
+    assert lines["aoa-pane-signal-02.txt"] == "0.4400"
+    assert lines["aoa-pane-signal-03.txt"] == "0.5000"
+    assert lines["aoa-pane-signal-04.txt"] == "0.3400"
+    assert lines["aoa-pane-signal-05.txt"] == "0.8000"
+    assert lines["aoa-pane-signal-06.txt"] == "0.1667"
+    assert lines["aoa-pane-signal-07.txt"] == "1.0000"
+    assert lines["aoa-pane-signal-08.txt"] == "0.4000"
+    assert lines["aoa-pane-signal-09.txt"] == "0.5000"
+    assert lines["aoa-pane-signal-10.txt"] == "0.3400"
 
 
 def test_darkplaces_state_export_builds_homage_scalars(tmp_path: Path) -> None:

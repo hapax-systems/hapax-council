@@ -76,6 +76,19 @@ SOURCE_EXPORTS: tuple[tuple[str, str], ...] = (
     ("06", "c920-overhead"),
 )
 
+AOA_PANE_EXPORTS: tuple[tuple[str, str], ...] = (
+    ("01", "root"),
+    ("02", "tri_texture"),
+    ("03", "data_glyph"),
+    ("04", "signal_glyph"),
+    ("05", "edge_accent"),
+    ("06", "lod_gate"),
+    ("07", "privacy_gate"),
+    ("08", "source_posture"),
+    ("09", "composition"),
+    ("10", "payload_gate"),
+)
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
@@ -131,6 +144,25 @@ def _float01(payload: dict[str, Any], key: str) -> float:
     except (TypeError, ValueError):
         return 0.0
     return max(0.0, min(1.0, value))
+
+
+def _read_float_file(path: Path, default: float = 0.0) -> float:
+    try:
+        value = float(path.read_text(encoding="utf-8", errors="ignore").strip())
+    except (OSError, ValueError):
+        return default
+    return max(0.0, min(1.0, value))
+
+
+def _read_text_file(path: Path, default: str = "") -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore").strip()
+    except OSError:
+        return default
+
+
+def _mean(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
 
 
 def _active_ward_count(active_wards: dict[str, Any]) -> int:
@@ -377,6 +409,63 @@ def build_source_lines(
     return lines
 
 
+def build_aoa_pane_lines(
+    shm_dir: Path,
+    uniforms_file: Path,
+    imagination_sources_dir: Path = DEFAULT_IMAGINATION_SOURCES_DIR,
+    now: float | None = None,
+) -> dict[str, str]:
+    """Export current AoA pane-binding/gate pressure as in-world scalars."""
+    active_segment = _read_json(shm_dir / "active-segment.json")
+    active_wards = _read_json(shm_dir / "active_wards.json")
+    uniforms = _read_json(uniforms_file)
+    source_lines = build_source_lines(shm_dir, imagination_sources_dir, now)
+
+    source_priority = [
+        float(value) for key, value in source_lines.items() if key.startswith("source-priority-")
+    ]
+    source_freshness = [
+        float(value) for key, value in source_lines.items() if key.startswith("source-fresh-")
+    ]
+    audio = build_audio_lines(shm_dir)
+    homage = build_homage_lines(shm_dir, uniforms_file)
+
+    try:
+        beat_progress = float(active_segment.get("beat_progress", 0.0))
+    except (TypeError, ValueError):
+        beat_progress = 0.0
+    active_ratio = min(1.0, _active_ward_count(active_wards) / float(IN_WORLD_WARD_COUNT))
+    consent = _read_text_file(shm_dir / "consent-state.txt").lower()
+    privacy_gate = 1.0 if consent in {"allowed", "allow", "public", "ok"} else 0.0
+    voice = _read_float_file(shm_dir / "voice-active.txt")
+    stimmung = _read_float_file(shm_dir / "stimmung-energy.txt", 0.5)
+
+    signals = {
+        "root": max(stimmung, _float01(uniforms, "content.salience")),
+        "tri_texture": max(
+            _float01(uniforms, "content.salience"),
+            _float01(uniforms, "fb.trace_strength"),
+        ),
+        "data_glyph": active_ratio,
+        "signal_glyph": max(float(audio["audio-onset.txt"]), voice),
+        "edge_accent": max(source_priority, default=0.0),
+        "lod_gate": _mean(source_freshness),
+        "privacy_gate": privacy_gate,
+        "source_posture": max(_mean(source_freshness), max(source_priority, default=0.0) * 0.5),
+        "composition": max(0.0, min(1.0, beat_progress)),
+        "payload_gate": max(
+            float(homage["homage-quake-active.txt"]),
+            float(homage["homage-transition-energy.txt"]),
+            float(homage["homage-signature-intensity.txt"]),
+        ),
+    }
+
+    return {
+        f"aoa-pane-signal-{ordinal}.txt": f"{signals[name]:.4f}"
+        for ordinal, name in AOA_PANE_EXPORTS
+    }
+
+
 def export_state(
     game_dir: Path,
     shm_dir: Path,
@@ -404,6 +493,10 @@ def export_state(
     for filename, line in build_homage_lines(shm_dir, uniforms_file).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_source_lines(shm_dir, imagination_sources_dir).items():
+        _write_atomic(game_dir / filename, line)
+    for filename, line in build_aoa_pane_lines(
+        shm_dir, uniforms_file, imagination_sources_dir
+    ).items():
         _write_atomic(game_dir / filename, line)
 
     active_segment = _read_json(shm_dir / "active-segment.json")

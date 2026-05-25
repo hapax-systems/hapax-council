@@ -97,6 +97,16 @@ float screwm_source_fresh_03;
 float screwm_source_fresh_04;
 float screwm_source_fresh_05;
 float screwm_source_fresh_06;
+float screwm_aoa_pane_01;
+float screwm_aoa_pane_02;
+float screwm_aoa_pane_03;
+float screwm_aoa_pane_04;
+float screwm_aoa_pane_05;
+float screwm_aoa_pane_06;
+float screwm_aoa_pane_07;
+float screwm_aoa_pane_08;
+float screwm_aoa_pane_09;
+float screwm_aoa_pane_10;
 
 vector screwm_cyan = '0.45 0.95 0.88';
 vector screwm_amber = '1.00 0.62 0.23';
@@ -270,6 +280,17 @@ void() screwm_poll_state =
     screwm_source_fresh_04 = screwm_read_norm("data/source-fresh-04.txt");
     screwm_source_fresh_05 = screwm_read_norm("data/source-fresh-05.txt");
     screwm_source_fresh_06 = screwm_read_norm("data/source-fresh-06.txt");
+
+    screwm_aoa_pane_01 = screwm_read_norm("data/aoa-pane-signal-01.txt");
+    screwm_aoa_pane_02 = screwm_read_norm("data/aoa-pane-signal-02.txt");
+    screwm_aoa_pane_03 = screwm_read_norm("data/aoa-pane-signal-03.txt");
+    screwm_aoa_pane_04 = screwm_read_norm("data/aoa-pane-signal-04.txt");
+    screwm_aoa_pane_05 = screwm_read_norm("data/aoa-pane-signal-05.txt");
+    screwm_aoa_pane_06 = screwm_read_norm("data/aoa-pane-signal-06.txt");
+    screwm_aoa_pane_07 = screwm_read_norm("data/aoa-pane-signal-07.txt");
+    screwm_aoa_pane_08 = screwm_read_norm("data/aoa-pane-signal-08.txt");
+    screwm_aoa_pane_09 = screwm_read_norm("data/aoa-pane-signal-09.txt");
+    screwm_aoa_pane_10 = screwm_read_norm("data/aoa-pane-signal-10.txt");
 };
 
 void() screwm_apply_review_camera =
@@ -448,6 +469,24 @@ void(vector org, float idx, vector color, float priority, float fresh) screwm_ad
     radius = 16 + priority * 36 + fresh * 84;
     radius = radius + screwm_audio_rms * 8 + screwm_audio_onset * 14;
     adddynamiclight(org, screwm_clamp(radius, 12, 118), color);
+};
+
+void(vector org, float idx, vector color, float signal) screwm_add_aoa_pane_light =
+{
+    float radius;
+
+    radius = 16 + screwm_energy * 22 + signal * 92;
+    radius = radius + screwm_audio_onset * 18 + screwm_homage_quake * (8 + screwm_homage_transition * 20);
+    adddynamiclight(org, screwm_clamp(radius, 10, 120), color);
+};
+
+void(vector org, float idx, vector color, float signal, float fresh) screwm_add_scene_graph_light =
+{
+    float radius;
+
+    radius = 14 + screwm_energy * 18 + signal * 64 + fresh * 52;
+    radius = radius + screwm_audio_rms * 10 + screwm_homage_quake * (6 + screwm_homage_signature * 18);
+    adddynamiclight(org, screwm_clamp(radius, 10, 104), color);
 };
 
 void(vector org, float idx, vector color, float active_src, float active_dst) screwm_add_drift_light =
@@ -706,6 +745,32 @@ void() screwm_add_dynamic_lights =
     screwm_add_source_light('312 -88 286', 4, screwm_cyan, screwm_source_priority_04, screwm_source_fresh_04);
     screwm_add_source_light('312 -88 174', 5, screwm_green, screwm_source_priority_05, screwm_source_fresh_05);
     screwm_add_source_light('312 -88 62', 6, screwm_green, screwm_source_priority_06, screwm_source_fresh_06);
+
+    screwm_add_aoa_pane_light('-4 -497 284', 1, screwm_cyan, screwm_aoa_pane_01);
+    screwm_add_aoa_pane_light('-72 -497 238', 2, screwm_green, screwm_aoa_pane_02);
+    screwm_add_aoa_pane_light('72 -497 238', 3, screwm_amber, screwm_aoa_pane_03);
+    screwm_add_aoa_pane_light('-118 -497 170', 4, screwm_rose, screwm_aoa_pane_04);
+    screwm_add_aoa_pane_light('118 -497 170', 5, screwm_cyan, screwm_aoa_pane_05);
+    screwm_add_aoa_pane_light('-76 -497 102', 6, screwm_green, screwm_aoa_pane_06);
+    screwm_add_aoa_pane_light('76 -497 102', 7, screwm_amber, screwm_aoa_pane_07);
+    screwm_add_aoa_pane_light('-176 -497 216', 8, screwm_rose, screwm_aoa_pane_08);
+    screwm_add_aoa_pane_light('176 -497 216', 9, screwm_cyan, screwm_aoa_pane_09);
+    screwm_add_aoa_pane_light('0 -497 64', 10, screwm_green, screwm_aoa_pane_10);
+
+    screwm_add_scene_graph_light('-300 -460 276', 1, screwm_amber, screwm_source_priority_01, screwm_source_fresh_01);
+    screwm_add_scene_graph_light('-300 -450 190', 2, screwm_green, screwm_source_priority_02, screwm_source_fresh_02);
+    screwm_add_scene_graph_light('-300 -440 104', 3, screwm_rose, screwm_source_priority_03, screwm_source_fresh_03);
+    screwm_add_scene_graph_light('-178 -454 328', 4, screwm_cyan, screwm_source_priority_04, screwm_source_fresh_04);
+    screwm_add_scene_graph_light('-94 -460 346', 5, screwm_green, screwm_source_priority_05, screwm_source_fresh_05);
+    screwm_add_scene_graph_light('-10 -454 328', 6, screwm_cyan, screwm_source_priority_06, screwm_source_fresh_06);
+    screwm_add_scene_graph_light('74 -446 308', 7, screwm_green, screwm_active_36, screwm_source_fresh_06);
+    screwm_add_scene_graph_light('288 -456 260', 8, screwm_amber, screwm_active_23, screwm_active_23);
+    screwm_add_scene_graph_light('292 -446 182', 9, screwm_cyan, screwm_active_24, screwm_active_24);
+    screwm_add_scene_graph_light('284 -436 104', 10, screwm_amber, screwm_active_30, screwm_active_30);
+    screwm_add_scene_graph_light('176 -420 36', 11, screwm_green, screwm_active_26, screwm_active_26);
+    screwm_add_scene_graph_light('96 -416 12', 12, screwm_amber, screwm_active_10, screwm_active_10);
+    screwm_add_scene_graph_light('-114 -386 14', 13, screwm_cyan, screwm_active_14, screwm_active_14);
+    screwm_add_scene_graph_light('-186 -380 38', 14, screwm_rose, screwm_active_35, screwm_active_35);
 };
 
 void(float apilevel, string enginename, float engineversion) CSQC_Init =

@@ -105,6 +105,35 @@ def test_csqc_source_anchors_carry_live_camera_scalars() -> None:
         assert f"screwm_source_fresh_{idx:02d}" in body
 
 
+def test_csqc_aoa_panes_and_scroom_scene_graph_carry_live_lightfields() -> None:
+    map_module = _load_script("scripts/generate-screwm-map.py")
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    assert body.count('screwm_read_norm("data/aoa-pane-signal-') == 10
+    assert body.count("screwm_add_aoa_pane_light('") == len(map_module["AOA_PAYLOAD_PANES"])
+    assert "signal * 92" in body
+    assert "screwm_homage_transition * 20" in body
+
+    for idx, (_name, _tex, _frame_tex, dx, dz, _opacity) in enumerate(
+        map_module["AOA_PAYLOAD_PANES"], start=1
+    ):
+        x = map_module["AOA_X"] + dx
+        y = map_module["AOA_Y"] - 42
+        z = map_module["AOA_Z"] + dz
+        assert f"screwm_add_aoa_pane_light('{x} {y} {z}', {idx}" in body
+        assert f"screwm_aoa_pane_{idx:02d}" in body
+
+    assert body.count("screwm_add_scene_graph_light('") == len(
+        map_module["SCROOM_SCENE_GRAPH_PANES"]
+    )
+    assert "signal * 64 + fresh * 52" in body
+
+    for idx, (_band, _name, _tex, _frame_tex, x, y, z, _w, _h) in enumerate(
+        map_module["SCROOM_SCENE_GRAPH_PANES"], start=1
+    ):
+        assert f"screwm_add_scene_graph_light('{x} {y - 30} {z}', {idx}" in body
+
+
 def test_csqc_homage_package_lives_in_scroom_lightfield() -> None:
     body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
 
