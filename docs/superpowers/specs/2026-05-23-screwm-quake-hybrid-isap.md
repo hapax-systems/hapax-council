@@ -355,6 +355,26 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   `homage-substrate-package.json` into DarkPlaces-readable scalars; QuakeHomage
   now enters the in-scroom ward/source lightfield instead of remaining only a
   compositor-side package marker.
+- The old visual-layer and Stimmung surfaces are exported as
+  `IN_SCROOM_VISUAL_LAYER_STATE`: display state, stance, eight visual zones,
+  ambient speed/turbulence/warmth/brightness, transition progress, health,
+  resource, error, grounding, exploration, audience, operator energy,
+  coherence, and audio presence are embodied as scroom-local light pressure.
+- The visual-chain and effect-drift systems are exported as
+  `IN_SCROOM_EFFECT_DRIFT_STATE`: nine canonical visual-chain dimensions,
+  noise/drift/color/feedback/aperture pressure, active pass ratio, max delta,
+  parameter-region count, and tonal/atmospheric/temporal/texture/edge family
+  pressure all feed in-engine structures instead of remaining shader-side
+  abstractions.
+- The current imagination fragment is exported as
+  `IN_SCROOM_IMAGINATION_FRAGMENT`: canonical dimensions, salience,
+  continuation, and water/fire/earth/air/void material selection modulate the
+  AoA/tetrix intent region inside the scroom.
+- Live RGBA source manifests are exported as
+  `IN_SCROOM_CONTENT_SOURCE_MANIFESTS`: source freshness, opacity, layer, area,
+  and count become in-world source-plane pressure. This is the containment path
+  for legacy visual-pool and overlay-zone content while runtime texture
+  replacement remains blocked.
 
 ### D8: hapax-darkplaces Systemd Unit [COMPLETE]
 - `systemd/units/hapax-darkplaces-v4l2.service`
@@ -421,6 +441,11 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - The review baseline has no clocked global brightness pulses: shader strobe
   and breathing are disabled, and CSQC ward/source/drift dynamic-light radii
   are driven by live state scalars rather than periodic `sin(time)` terms.
+- Until all 39 Phase 4 shader nodes are ported with visual parity, the
+  visual-chain/effect-drift exporter is the intentional containment layer for
+  migrated shader intent. It does not satisfy the Phase 4 parity gate by
+  itself, but it prevents the legacy Scroom systems from living only in the
+  fourth-wall compositor while the GLSL node port proceeds.
 
 ### D13: hapax-imagination Retirement (Phase 6)
 - Remove from default.target
@@ -475,6 +500,7 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - [x] 5 ambient sound zones are present and spawned by QuakeC
 - [x] Working mode switch changes fog color + texture set
 - [x] Stimmung/audio/Reverie state modulates AoA spin, fog, postprocess fields, and ward/source light intensity
+- [x] Visual-layer, visual-chain/effect-drift, imagination-fragment, and content-source manifest intent is exported into DarkPlaces as in-scroom scalar fields
 - [x] Texture/asset provenance documented in `assets/quake/LICENSES.md`
 - [x] Systemd unit starts/restarts cleanly with WatchdogSec
 - [ ] 1-hour stability test without memory growth or crashes

@@ -268,6 +268,24 @@ def test_screwm_quake_embodies_content_source_manifests() -> None:
     assert "fresh * 78 + opacity * 46 + area * 42" in wards
 
 
+def test_screwm_quake_spec_contains_migrated_intention_routes() -> None:
+    spec = (
+        REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-05-23-screwm-quake-hybrid-isap.md"
+    ).read_text(encoding="utf-8")
+
+    assert "IN_SCROOM_VISUAL_LAYER_STATE" in spec
+    assert "IN_SCROOM_EFFECT_DRIFT_STATE" in spec
+    assert "IN_SCROOM_IMAGINATION_FRAGMENT" in spec
+    assert "IN_SCROOM_CONTENT_SOURCE_MANIFESTS" in spec
+    assert "visual-chain/effect-drift exporter is the intentional containment layer" in spec
+    assert "does not satisfy the Phase 4 parity gate by" in spec
+    assert "itself, but it prevents the legacy Scroom systems" in spec
+    assert (
+        "Visual-layer, visual-chain/effect-drift, imagination-fragment, and "
+        "content-source manifest intent is exported into DarkPlaces" in spec
+    )
+
+
 def test_screwm_quake_review_baseline_has_no_clocked_light_pulses() -> None:
     wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
 
