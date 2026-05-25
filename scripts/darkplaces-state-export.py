@@ -26,6 +26,9 @@ DEFAULT_REVERIE_UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/uniforms.json")
 DEFAULT_IMAGINATION_SOURCES_DIR = Path("/dev/shm/hapax-imagination/sources")
 DEFAULT_IMAGINATION_CURRENT_FILE = Path("/dev/shm/hapax-imagination/current.json")
 DEFAULT_SHADER_PLAN_FILE = Path("/dev/shm/hapax-imagination/pipeline/plan.json")
+DEFAULT_GEM_RECRUITMENT_FILE = Path("/dev/shm/hapax-gem/recruitment.json")
+DEFAULT_GEM_FRAMES_FILE = Path("/dev/shm/hapax-gem/gem-frames.json")
+DEFAULT_LEGACY_GEM_FRAMES_FILE = Path("/dev/shm/hapax-compositor/gem-frames.json")
 DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE = Path(
     "/dev/shm/hapax-visual/entity-local-effect-state.json"
 )
@@ -941,6 +944,75 @@ def build_shader_plan_lines(shader_plan_file: Path = DEFAULT_SHADER_PLAN_FILE) -
     }
 
 
+def _gem_frames(frames_file: Path, legacy_frames_file: Path) -> list[dict[str, Any]]:
+    payload = _read_json(frames_file)
+    frames = payload.get("frames")
+    if not isinstance(frames, list):
+        payload = _read_json(legacy_frames_file)
+        frames = payload.get("frames")
+    if not isinstance(frames, list):
+        return []
+    return [item for item in frames if isinstance(item, dict)]
+
+
+def _gem_written_ts(frames_file: Path, legacy_frames_file: Path) -> float:
+    payload = _read_json(frames_file)
+    if "written_ts" not in payload:
+        payload = _read_json(legacy_frames_file)
+    return _entry_float(payload, "written_ts", 0.0)
+
+
+def build_gem_mural_lines(
+    recruitment_file: Path = DEFAULT_GEM_RECRUITMENT_FILE,
+    frames_file: Path = DEFAULT_GEM_FRAMES_FILE,
+    legacy_frames_file: Path = DEFAULT_LEGACY_GEM_FRAMES_FILE,
+    now: float | None = None,
+) -> dict[str, str]:
+    """Export GEM recruitment/mural state as in-scroom expression pressure."""
+    now = time.time() if now is None else now
+    recruitment = _read_json(recruitment_file)
+    frames = _gem_frames(frames_file, legacy_frames_file)
+    score = _float01(recruitment, "score")
+    ttl = max(1.0, _entry_float(recruitment, "ttl_s", 30.0))
+    updated_at = _entry_float(recruitment, "updated_at", 0.0)
+    written_ts = _gem_written_ts(frames_file, legacy_frames_file)
+    recruitment_fresh = _clamp01(1.0 - max(0.0, now - updated_at) / ttl) if updated_at else 0.0
+    frame_fresh = (
+        _clamp01(1.0 - max(0.0, now - written_ts) / max(ttl * 4.0, 1.0)) if written_ts else 0.0
+    )
+
+    layer_count = 0
+    opacity_sum = 0.0
+    hold_pressure = 0.0
+    for frame in frames:
+        layers = frame.get("layers")
+        if isinstance(layers, list):
+            layer_count += sum(1 for item in layers if isinstance(item, dict))
+            for layer in layers:
+                if isinstance(layer, dict):
+                    opacity_sum += _float01(layer, "opacity")
+        hold_pressure = max(hold_pressure, _clamp01(_entry_float(frame, "hold_ms", 0.0) / 6000.0))
+
+    frame_count = len(frames)
+    max_layers = max(frame_count * 6, 1)
+    layer_density = _clamp01(layer_count / float(max_layers))
+    layer_opacity = _clamp01(opacity_sum / float(max(layer_count, 1)))
+    narrative = str(recruitment.get("narrative") or "")
+    narrative_pressure = _clamp01(len(_one_line(narrative, limit=240)) / 240.0)
+
+    return {
+        "gem-recruitment-score.txt": f"{score:.4f}",
+        "gem-recruitment-fresh.txt": f"{recruitment_fresh:.4f}",
+        "gem-frame-fresh.txt": f"{frame_fresh:.4f}",
+        "gem-frame-count.txt": f"{_clamp01(frame_count / 12.0):.4f}",
+        "gem-layer-density.txt": f"{layer_density:.4f}",
+        "gem-layer-opacity.txt": f"{layer_opacity:.4f}",
+        "gem-hold-pressure.txt": f"{hold_pressure:.4f}",
+        "gem-narrative-pressure.txt": f"{narrative_pressure:.4f}",
+        "gem-route.txt": "IN_SCROOM_GEM_RECRUITMENT_MURAL",
+    }
+
+
 def _signal_severity(visual_state: dict[str, Any], category: str) -> float:
     signals = visual_state.get("signals")
     if not isinstance(signals, dict):
@@ -1160,10 +1232,14 @@ def export_state(
     imagination_sources_dir: Path = DEFAULT_IMAGINATION_SOURCES_DIR,
     imagination_current_file: Path = DEFAULT_IMAGINATION_CURRENT_FILE,
     shader_plan_file: Path = DEFAULT_SHADER_PLAN_FILE,
+    gem_recruitment_file: Path = DEFAULT_GEM_RECRUITMENT_FILE,
+    gem_frames_file: Path = DEFAULT_GEM_FRAMES_FILE,
+    legacy_gem_frames_file: Path = DEFAULT_LEGACY_GEM_FRAMES_FILE,
     entity_local_effect_state_file: Path = DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE,
     stimmung_state_file: Path = DEFAULT_STIMMUNG_STATE_FILE,
     visual_chain_state_file: Path = DEFAULT_VISUAL_CHAIN_STATE_FILE,
     effect_drift_state_file: Path = DEFAULT_EFFECT_DRIFT_STATE_FILE,
+    now: float | None = None,
 ) -> None:
     game_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1197,6 +1273,10 @@ def export_state(
     for filename, line in build_entity_local_effect_lines(entity_local_effect_state_file).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_shader_plan_lines(shader_plan_file).items():
+        _write_atomic(game_dir / filename, line)
+    for filename, line in build_gem_mural_lines(
+        gem_recruitment_file, gem_frames_file, legacy_gem_frames_file, now
+    ).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_visual_layer_lines(shm_dir, stimmung_state_file).items():
         _write_atomic(game_dir / filename, line)
@@ -1233,6 +1313,13 @@ def main() -> int:
         default=DEFAULT_IMAGINATION_CURRENT_FILE,
     )
     parser.add_argument("--shader-plan-file", type=Path, default=DEFAULT_SHADER_PLAN_FILE)
+    parser.add_argument("--gem-recruitment-file", type=Path, default=DEFAULT_GEM_RECRUITMENT_FILE)
+    parser.add_argument("--gem-frames-file", type=Path, default=DEFAULT_GEM_FRAMES_FILE)
+    parser.add_argument(
+        "--legacy-gem-frames-file",
+        type=Path,
+        default=DEFAULT_LEGACY_GEM_FRAMES_FILE,
+    )
     parser.add_argument(
         "--entity-local-effect-state-file",
         type=Path,
@@ -1264,6 +1351,9 @@ def main() -> int:
         args.imagination_sources_dir,
         args.imagination_current_file,
         args.shader_plan_file,
+        args.gem_recruitment_file,
+        args.gem_frames_file,
+        args.legacy_gem_frames_file,
         args.entity_local_effect_state_file,
         args.stimmung_state_file,
         args.visual_chain_state_file,

@@ -34,6 +34,9 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     uniforms_file = tmp_path / "uniforms.json"
     imagination_current_file = tmp_path / "imagination-current.json"
     shader_plan_file = tmp_path / "shader-plan.json"
+    gem_recruitment_file = tmp_path / "gem-recruitment.json"
+    gem_frames_file = tmp_path / "gem-frames.json"
+    legacy_gem_frames_file = tmp_path / "legacy-gem-frames.json"
     effect_state_file = tmp_path / "entity-local-effect-state.json"
     stimmung_state_file = tmp_path / "stimmung-state.json"
     visual_chain_state_file = tmp_path / "visual-chain-state.json"
@@ -140,6 +143,44 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
             },
         },
     )
+    _write_json(
+        gem_recruitment_file,
+        {
+            "capability": "gem.composition",
+            "narrative": "Narrative: density-gradient glyph rooms recruit a mural.",
+            "score": 0.7,
+            "ttl_s": 40.0,
+            "updated_at": 100.0,
+            "frames_path": str(gem_frames_file),
+        },
+    )
+    _write_json(
+        gem_frames_file,
+        {
+            "frames": [
+                {
+                    "text": "density-gradient glyph rooms",
+                    "hold_ms": 2000,
+                    "layers": [
+                        {"text": "layer one", "opacity": 0.3},
+                        {"text": "layer two", "opacity": 0.9},
+                        {"text": "layer three", "opacity": 0.6},
+                    ],
+                },
+                {
+                    "text": "recursive mural",
+                    "hold_ms": 6000,
+                    "layers": [
+                        {"text": "layer four", "opacity": 1.0},
+                        {"text": "layer five", "opacity": 0.8},
+                        {"text": "layer six", "opacity": 0.4},
+                    ],
+                },
+            ],
+            "written_ts": 80.0,
+        },
+    )
+    _write_json(legacy_gem_frames_file, {"frames": []})
 
     _write_json(
         shm_dir / "active-segment.json",
@@ -291,10 +332,14 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         uniforms_file,
         imagination_current_file=imagination_current_file,
         shader_plan_file=shader_plan_file,
+        gem_recruitment_file=gem_recruitment_file,
+        gem_frames_file=gem_frames_file,
+        legacy_gem_frames_file=legacy_gem_frames_file,
         entity_local_effect_state_file=effect_state_file,
         stimmung_state_file=stimmung_state_file,
         visual_chain_state_file=visual_chain_state_file,
         effect_drift_state_file=effect_drift_state_file,
+        now=120.0,
     )
 
     assert (game_dir / "working-mode.txt").read_text(encoding="utf-8").strip() == "rnd"
@@ -385,6 +430,17 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "shader-plan-route.txt").read_text(
         encoding="utf-8"
     ).strip() == "IN_SCROOM_SHADER_PASS_PLAN"
+    assert (game_dir / "gem-recruitment-score.txt").read_text(encoding="utf-8").strip() == "0.7000"
+    assert (game_dir / "gem-recruitment-fresh.txt").read_text(encoding="utf-8").strip() == "0.5000"
+    assert (game_dir / "gem-frame-fresh.txt").read_text(encoding="utf-8").strip() == "0.7500"
+    assert (game_dir / "gem-frame-count.txt").read_text(encoding="utf-8").strip() == "0.1667"
+    assert (game_dir / "gem-layer-density.txt").read_text(encoding="utf-8").strip() == "0.5000"
+    assert (game_dir / "gem-layer-opacity.txt").read_text(encoding="utf-8").strip() == "0.6667"
+    assert (game_dir / "gem-hold-pressure.txt").read_text(encoding="utf-8").strip() == "1.0000"
+    assert (game_dir / "gem-narrative-pressure.txt").read_text(encoding="utf-8").strip() == "0.2333"
+    assert (game_dir / "gem-route.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "IN_SCROOM_GEM_RECRUITMENT_MURAL"
     assert (game_dir / "visual-zone-01.txt").read_text(encoding="utf-8").strip() == "0.2500"
     assert (game_dir / "visual-zone-02.txt").read_text(encoding="utf-8").strip() == "0.8500"
     assert (game_dir / "visual-zone-03.txt").read_text(encoding="utf-8").strip() == "1.0000"

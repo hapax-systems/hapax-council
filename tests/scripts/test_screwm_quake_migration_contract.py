@@ -277,6 +277,31 @@ def test_screwm_quake_embodies_content_source_manifests() -> None:
     assert "fresh * 78 + opacity * 46 + area * 42" in wards
 
 
+def test_screwm_quake_embodies_gem_recruitment_mural_state() -> None:
+    exporter = (REPO_ROOT / "scripts" / "darkplaces-state-export.py").read_text(encoding="utf-8")
+    wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
+    gem_source = (REPO_ROOT / "agents" / "studio_compositor" / "gem_source.py").read_text(
+        encoding="utf-8"
+    )
+    gem_canvas = (REPO_ROOT / "agents" / "studio_compositor" / "gem_canvas.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'DEFAULT_FRAMES_PATH = Path("/dev/shm/hapax-gem/gem-frames.json")' in gem_source
+    assert "build_graffiti_layers" in gem_source
+    assert 'COMPOSITION_PATH = Path("/dev/shm/hapax-compositor/gem-composition.json")' in gem_canvas
+    assert "GRID_COLS = 115" in gem_canvas
+    assert "DEFAULT_GEM_RECRUITMENT_FILE" in exporter
+    assert "DEFAULT_GEM_FRAMES_FILE" in exporter
+    assert "build_gem_mural_lines" in exporter
+    assert "IN_SCROOM_GEM_RECRUITMENT_MURAL" in exporter
+    assert 'screwm_read_norm("data/gem-recruitment-score.txt")' in wards
+    assert 'screwm_read_norm("data/gem-layer-density.txt")' in wards
+    assert "screwm_add_gem_mural_lights" in wards
+    assert "screwm_gem_recruitment_score * 92" in wards
+    assert "screwm_gem_layer_density * 96" in wards
+
+
 def test_screwm_quake_spec_contains_migrated_intention_routes() -> None:
     spec = (
         REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-05-23-screwm-quake-hybrid-isap.md"
@@ -286,12 +311,14 @@ def test_screwm_quake_spec_contains_migrated_intention_routes() -> None:
     assert "IN_SCROOM_EFFECT_DRIFT_STATE" in spec
     assert "IN_SCROOM_IMAGINATION_FRAGMENT" in spec
     assert "IN_SCROOM_CONTENT_SOURCE_MANIFESTS" in spec
+    assert "IN_SCROOM_GEM_RECRUITMENT_MURAL" in spec
     assert "visual-chain/effect-drift exporter is the intentional containment layer" in spec
     assert "does not satisfy the Phase 4 parity gate by" in spec
     assert "itself, but it prevents the legacy Scroom systems" in spec
     assert (
-        "Visual-layer, visual-chain/effect-drift, imagination-fragment, and "
-        "content-source manifest intent is exported into DarkPlaces" in spec
+        "Visual-layer, visual-chain/effect-drift, imagination-fragment, "
+        "content-source manifest, and GEM recruitment/mural intent is exported "
+        "into DarkPlaces" in spec
     )
 
 

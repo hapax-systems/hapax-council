@@ -245,6 +245,14 @@ float screwm_shader_plan_color;
 float screwm_shader_plan_motion;
 float screwm_shader_plan_feedback;
 float screwm_shader_plan_post;
+float screwm_gem_recruitment_score;
+float screwm_gem_recruitment_fresh;
+float screwm_gem_frame_fresh;
+float screwm_gem_frame_count;
+float screwm_gem_layer_density;
+float screwm_gem_layer_opacity;
+float screwm_gem_hold_pressure;
+float screwm_gem_narrative_pressure;
 
 vector screwm_cyan = '0.45 0.95 0.88';
 vector screwm_amber = '1.00 0.62 0.23';
@@ -569,6 +577,14 @@ void() screwm_poll_state =
     screwm_shader_plan_motion = screwm_read_norm("data/shader-plan-motion.txt");
     screwm_shader_plan_feedback = screwm_read_norm("data/shader-plan-feedback.txt");
     screwm_shader_plan_post = screwm_read_norm("data/shader-plan-post.txt");
+    screwm_gem_recruitment_score = screwm_read_norm("data/gem-recruitment-score.txt");
+    screwm_gem_recruitment_fresh = screwm_read_norm("data/gem-recruitment-fresh.txt");
+    screwm_gem_frame_fresh = screwm_read_norm("data/gem-frame-fresh.txt");
+    screwm_gem_frame_count = screwm_read_norm("data/gem-frame-count.txt");
+    screwm_gem_layer_density = screwm_read_norm("data/gem-layer-density.txt");
+    screwm_gem_layer_opacity = screwm_read_norm("data/gem-layer-opacity.txt");
+    screwm_gem_hold_pressure = screwm_read_norm("data/gem-hold-pressure.txt");
+    screwm_gem_narrative_pressure = screwm_read_norm("data/gem-narrative-pressure.txt");
 };
 
 void() screwm_apply_review_camera =
@@ -1002,6 +1018,26 @@ void() screwm_add_shader_plan_lights =
     adddynamiclight('0 -548 414', screwm_clamp(temporal_radius, 8, 156), screwm_rose);
 };
 
+void() screwm_add_gem_mural_lights =
+{
+    float recruitment_radius;
+    float frame_radius;
+    float density_radius;
+    float narrative_radius;
+
+    recruitment_radius = 14 + screwm_gem_recruitment_score * 92 + screwm_gem_recruitment_fresh * 64;
+    recruitment_radius = recruitment_radius + screwm_active_08 * 42 + screwm_active_11 * 28;
+    adddynamiclight('-222 -360 226', screwm_clamp(recruitment_radius, 10, 170), screwm_green);
+    adddynamiclight('0 -360 226', screwm_clamp(16 + screwm_gem_recruitment_score * 74 + screwm_gem_narrative_pressure * 48, 10, 156), screwm_cyan);
+
+    frame_radius = 12 + screwm_gem_frame_count * 86 + screwm_gem_frame_fresh * 54;
+    adddynamiclight('-250 -518 226', screwm_clamp(frame_radius, 8, 148), screwm_green);
+    density_radius = 12 + screwm_gem_layer_density * 96 + screwm_gem_layer_opacity * 58;
+    adddynamiclight('0 -518 226', screwm_clamp(density_radius, 8, 168), screwm_amber);
+    narrative_radius = 12 + screwm_gem_narrative_pressure * 102 + screwm_gem_hold_pressure * 52;
+    adddynamiclight('250 -518 226', screwm_clamp(narrative_radius, 8, 166), screwm_rose);
+};
+
 void() screwm_draw_ward_links =
 {
     vector c01;
@@ -1160,6 +1196,7 @@ void() screwm_add_dynamic_lights =
     screwm_add_imagination_intent_lights();
     screwm_add_local_effect_lights();
     screwm_add_shader_plan_lights();
+    screwm_add_gem_mural_lights();
     screwm_add_ward_property_field_lights();
 
     screwm_add_ward_light('-222 -360 280', 1, screwm_cyan, screwm_active_01, screwm_presence_01);

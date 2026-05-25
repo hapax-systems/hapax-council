@@ -375,6 +375,11 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   and count become in-world source-plane pressure. This is the containment path
   for legacy visual-pool and overlay-zone content while runtime texture
   replacement remains blocked.
+- The GEM recruitment/mural surface is exported as
+  `IN_SCROOM_GEM_RECRUITMENT_MURAL`: recruitment score/freshness, frame
+  freshness/count, layer density/opacity, hold pressure, and narrative pressure
+  modulate the in-scroom GEM/recruitment region instead of remaining only a
+  compositor CP437 band.
 
 ### D8: hapax-darkplaces Systemd Unit [COMPLETE]
 - `systemd/units/hapax-darkplaces-v4l2.service`
@@ -500,7 +505,7 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - [x] 5 ambient sound zones are present and spawned by QuakeC
 - [x] Working mode switch changes fog color + texture set
 - [x] Stimmung/audio/Reverie state modulates AoA spin, fog, postprocess fields, and ward/source light intensity
-- [x] Visual-layer, visual-chain/effect-drift, imagination-fragment, and content-source manifest intent is exported into DarkPlaces as in-scroom scalar fields
+- [x] Visual-layer, visual-chain/effect-drift, imagination-fragment, content-source manifest, and GEM recruitment/mural intent is exported into DarkPlaces as in-scroom scalar fields
 - [x] Texture/asset provenance documented in `assets/quake/LICENSES.md`
 - [x] Systemd unit starts/restarts cleanly with WatchdogSec
 - [ ] 1-hour stability test without memory growth or crashes

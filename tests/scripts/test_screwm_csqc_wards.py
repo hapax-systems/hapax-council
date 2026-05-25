@@ -314,6 +314,24 @@ def test_csqc_scene_quad_local_effects_live_on_scroom_lenses() -> None:
     assert "screwm_add_shader_plan_lights();" in body
 
 
+def test_csqc_gem_recruitment_mural_lives_in_scroom_lightfield() -> None:
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    assert 'screwm_read_norm("data/gem-recruitment-score.txt")' in body
+    assert 'screwm_read_norm("data/gem-recruitment-fresh.txt")' in body
+    assert 'screwm_read_norm("data/gem-frame-count.txt")' in body
+    assert 'screwm_read_norm("data/gem-layer-density.txt")' in body
+    assert 'screwm_read_norm("data/gem-layer-opacity.txt")' in body
+    assert 'screwm_read_norm("data/gem-narrative-pressure.txt")' in body
+    assert "void() screwm_add_gem_mural_lights" in body
+    assert "screwm_gem_recruitment_score * 92" in body
+    assert "screwm_gem_layer_density * 96" in body
+    assert "screwm_gem_narrative_pressure * 102" in body
+    assert "adddynamiclight('-222 -360 226'" in body
+    assert "adddynamiclight('250 -518 226'" in body
+    assert "screwm_add_gem_mural_lights();" in body
+
+
 def test_darkplaces_review_camera_is_locked_by_default() -> None:
     autoexec = AUTOEXEC.read_text(encoding="utf-8")
     camera = (REPO_ROOT / "assets" / "quake" / "qc" / "camera.qc").read_text(encoding="utf-8")
