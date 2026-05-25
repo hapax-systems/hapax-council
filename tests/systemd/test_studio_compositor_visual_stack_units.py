@@ -20,7 +20,6 @@ REVERIE = UNITS_DIR / "hapax-reverie.service"
 PARAMETRIC_HEARTBEAT = UNITS_DIR / "hapax-parametric-modulation-heartbeat.service"
 LAYOUT_MODE_DROPIN = UNITS_DIR / "studio-compositor.service.d" / "layout-mode-persist.conf"
 MALLOC_ARENA_DROPIN = UNITS_DIR / "studio-compositor.service.d" / "malloc-arena.conf"
-SCREWM_QUAKE_DROPIN = UNITS_DIR / "studio-compositor.service.d" / "zzzz-screwm-quake-primary.conf"
 SCREWM_QUAKE_LAYOUT = REPO_ROOT / "config" / "compositor-layouts" / "screwm-quake.json"
 SCREWM_V4L2_BRIDGE_DROPIN = (
     UNITS_DIR / "hapax-v4l2-bridge.service.d" / "zzzz-screwm-quake-primary.conf"
@@ -110,48 +109,16 @@ def test_studio_compositor_starts_bridge_sidecar() -> None:
     assert "hapax-hls-no-cache.service" in after
 
 
-def test_screwm_quake_primary_profile_bypasses_legacy_visual_chrome() -> None:
-    parser = _load_unit(SCREWM_QUAKE_DROPIN)
-    lines = _active_unit_lines(SCREWM_QUAKE_DROPIN)
+def test_screwm_quake_runtime_skips_legacy_studio_compositor() -> None:
+    lines = _active_unit_lines(STUDIO)
 
-    assert "hapax-obs-video50-yuyv-compat-bridge.service" in parser.get("Unit", "Wants")
-    assert parser.get("Unit", "Requires") == "hapax-darkplaces-v4l2.service"
-    assert parser.get("Unit", "After") == "hapax-darkplaces-v4l2.service"
-    assert parser.get("Service", "ExecStart").endswith(
-        ".venv/bin/python -m agents.studio_compositor --no-record --no-hls"
-    )
-    for expected in (
-        "Environment=HAPAX_3D_COMPOSITOR=0",
-        "Environment=HAPAX_V4L2_BRIDGE_ENABLED=1",
-        "Environment=HAPAX_DARKPLACES_BACKGROUND_ONLY=1",
-        "Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52",
-        (
-            "Environment=HAPAX_COMPOSITOR_LAYOUT_PATH="
-            "%h/.cache/hapax/source-activation/worktree/config/compositor-layouts/"
-            "screwm-quake.json"
-        ),
-        "Environment=HAPAX_COMPOSITOR_DISABLE_INLINE_FX=0",
-        "Environment=HAPAX_COMPOSITOR_DISABLE_SHADER_FX=1",
-        "Environment=HAPAX_COMPOSITOR_DISABLE_POST_FX_OVERLAY=0",
-        "Environment=HAPAX_SIERPINSKI_BASE_OVERLAY_ENABLED=0",
-        "Environment=HAPAX_SIERPINSKI_LAYOUT_SOURCE_ENABLED=0",
-        "Environment=HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED=0",
-        "Environment=HAPAX_PRE_FX_LAYOUT_BACKGROUND_COMPOSITE_ENABLED=0",
-        "Environment=HAPAX_OVERLAY_ZONE_MANAGER_DRAW_ENABLED=0",
-        "Environment=HAPAX_GEM_SUBSTRATE_ENABLED=0",
-        "Environment=HAPAX_GEAL_ENABLED=0",
-        "Environment=HAPAX_DIRECTOR_SEGMENT_RUNNER_DISABLED=1",
-        "Environment=HAPAX_LORE_CHRONICLE_TICKER_ENABLED=0",
-        "Environment=HAPAX_LORE_PROGRAMME_STATE_ENABLED=0",
-    ):
-        assert expected in lines
-    assert any(
-        "hapax-darkplaces-v4l2-ready" in line
-        and "--device /dev/video52" in line
-        and "--pixelformat YUYV" in line
-        for line in lines
-    )
-    assert any("homage-active.json" in line and "quake" in line for line in lines)
+    assert "ConditionPathExists=!%h/.config/hapax/enable-darkplaces-runtime" in lines
+    assert not (
+        UNITS_DIR / "studio-compositor.service.d" / "zzzz-screwm-quake-primary.conf"
+    ).exists()
+    assert "hapax-obs-video50-yuyv-compat-bridge.service" in (
+        REPO_ROOT / "systemd" / "units" / "hapax-visual-stack.target"
+    ).read_text(encoding="utf-8")
 
 
 def test_screwm_quake_layout_keeps_ward_surface_inside_darkplaces() -> None:
