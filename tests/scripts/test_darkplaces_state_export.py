@@ -93,6 +93,31 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         shm_dir / "active_wards.json",
         {"ward_ids": ["programme_banner", "segment_content", "pressure_gauge"]},
     )
+    _write_json(
+        shm_dir / "ward-properties.json",
+        {
+            "wards": {
+                "album": {
+                    "alpha": 0.4,
+                    "z_plane": "beyond-scrim",
+                    "z_index_float": 0.5,
+                    "drift_type": "none",
+                    "front_state": "integrated",
+                },
+                "pressure_gauge": {
+                    "alpha": 0.75,
+                    "z_plane": "surface-scrim",
+                    "z_index_float": 0.8,
+                    "glow_radius_px": 32,
+                    "scale": 1.07,
+                    "scale_bump_pct": 0.05,
+                    "drift_amplitude_px": 12,
+                    "drift_hz": 0.4,
+                    "front_state": "fronting",
+                },
+            }
+        },
+    )
     _write_json(shm_dir / "voice-state.json", {"operator_speech_active": True})
     _write_json(
         shm_dir / "album-state.json",
@@ -142,6 +167,19 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "ward-active-21.txt").read_text(encoding="utf-8").strip() == "1.0000"
     assert (game_dir / "ward-active-34.txt").read_text(encoding="utf-8").strip() == "1.0000"
     assert len(list(game_dir.glob("ward-active-*.txt"))) == 36
+    assert (game_dir / "ward-alpha-02.txt").read_text(encoding="utf-8").strip() == "0.4000"
+    assert (game_dir / "ward-depth-02.txt").read_text(encoding="utf-8").strip() == "0.2000"
+    assert (game_dir / "ward-presence-02.txt").read_text(encoding="utf-8").strip() == "0.0000"
+    assert (game_dir / "ward-glow-13.txt").read_text(encoding="utf-8").strip() == "0.5000"
+    assert (game_dir / "ward-scale-13.txt").read_text(encoding="utf-8").strip() == "0.4000"
+    assert (game_dir / "ward-front-13.txt").read_text(encoding="utf-8").strip() == "0.7000"
+    assert (game_dir / "ward-drift-13.txt").read_text(encoding="utf-8").strip() == "0.7000"
+    assert (game_dir / "ward-presence-13.txt").read_text(encoding="utf-8").strip() == "0.7700"
+    assert (game_dir / "ward-property-count.txt").read_text(encoding="utf-8").strip() == "2.0000"
+    assert (game_dir / "ward-property-route.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "IN_SCROOM_FISHBOWL_WARD_PROPERTIES"
+    assert len(list(game_dir.glob("ward-presence-*.txt"))) == 36
     assert (game_dir / "active-wards-line.txt").read_text(
         encoding="utf-8"
     ).strip() == "36 IN-SCROOM WARDS"
@@ -218,6 +256,54 @@ def test_darkplaces_state_export_builds_entity_local_effect_scalars(tmp_path: Pa
     assert lines["local-effect-11.txt"] == "0.0000"
     assert lines["local-effect-count.txt"] == "2.0000"
     assert lines["local-effect-route.txt"] == "ENTITY_LOCAL_SOURCE_PLANE"
+
+
+def test_darkplaces_state_export_builds_ward_property_fishbowl_scalars(
+    tmp_path: Path,
+) -> None:
+    exporter = _load_exporter()
+    shm_dir = tmp_path / "shm"
+    shm_dir.mkdir()
+    _write_json(
+        shm_dir / "ward-properties.json",
+        {
+            "wards": {
+                "album": {
+                    "alpha": 0.4,
+                    "z_plane": "beyond-scrim",
+                    "z_index_float": 0.5,
+                    "drift_type": "none",
+                },
+                "pressure_gauge": {
+                    "alpha": 0.75,
+                    "z_plane": "surface-scrim",
+                    "z_index_float": 0.8,
+                    "glow_radius_px": 32,
+                    "scale": 1.07,
+                    "scale_bump_pct": 0.05,
+                    "drift_amplitude_px": 12,
+                    "drift_hz": 0.4,
+                    "front_state": "fronting",
+                },
+            }
+        },
+    )
+
+    lines = exporter.build_ward_property_lines(shm_dir)
+
+    assert len([key for key in lines if key.startswith("ward-presence-")]) == 36
+    assert lines["ward-alpha-02.txt"] == "0.4000"
+    assert lines["ward-depth-02.txt"] == "0.2000"
+    assert lines["ward-drift-02.txt"] == "0.0000"
+    assert lines["ward-presence-02.txt"] == "0.0000"
+    assert lines["ward-depth-13.txt"] == "1.0000"
+    assert lines["ward-glow-13.txt"] == "0.5000"
+    assert lines["ward-scale-13.txt"] == "0.4000"
+    assert lines["ward-front-13.txt"] == "0.7000"
+    assert lines["ward-drift-13.txt"] == "0.7000"
+    assert lines["ward-presence-13.txt"] == "0.7700"
+    assert lines["ward-property-count.txt"] == "2.0000"
+    assert lines["ward-property-route.txt"] == "IN_SCROOM_FISHBOWL_WARD_PROPERTIES"
 
 
 def test_darkplaces_state_export_normalizes_all_in_scroom_ward_activity() -> None:

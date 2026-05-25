@@ -106,6 +106,37 @@ LOCAL_EFFECT_EXPORTS: tuple[tuple[str, str], ...] = (
     ("11", "breathing"),
 )
 
+WARD_PROPERTY_Z_BASE: dict[str, float] = {
+    "beyond-scrim": 0.2,
+    "mid-scrim": 0.5,
+    "on-scrim": 0.9,
+    "surface-scrim": 1.0,
+}
+
+WARD_PROPERTY_DEFAULT_PLANES: dict[str, str] = {
+    "stream_overlay": "surface-scrim",
+    "stance_indicator": "surface-scrim",
+    "thinking_indicator": "surface-scrim",
+    "whos_here": "surface-scrim",
+    "pressure_gauge": "surface-scrim",
+    "durf": "surface-scrim",
+    "precedent_ticker": "surface-scrim",
+    "programme_history": "surface-scrim",
+    "research_instrument_dashboard": "surface-scrim",
+    "interactive_lore_query": "surface-scrim",
+    "chat_ambient": "mid-scrim",
+    "impingement_cascade": "mid-scrim",
+    "sierpinski": "beyond-scrim",
+    "album": "beyond-scrim",
+}
+
+WARD_PROPERTY_FRONT_STATE: dict[str, float] = {
+    "integrated": 0.0,
+    "retiring": 0.35,
+    "fronting": 0.70,
+    "fronted": 1.0,
+}
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
@@ -163,6 +194,17 @@ def _float01(payload: dict[str, Any], key: str) -> float:
     return max(0.0, min(1.0, value))
 
 
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _entry_float(payload: dict[str, Any], key: str, default: float = 0.0) -> float:
+    try:
+        return float(payload.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def _read_float_file(path: Path, default: float = 0.0) -> float:
     try:
         value = float(path.read_text(encoding="utf-8", errors="ignore").strip())
@@ -197,6 +239,16 @@ def _ward_activity_aliases(ward_id: str) -> set[str]:
     return aliases
 
 
+def _ward_property_aliases(ward_id: str) -> tuple[str, ...]:
+    normalized = ward_id.strip()
+    underscored = normalized.replace("-", "_")
+    dashed = normalized.replace("_", "-")
+    aliases = [normalized, underscored, dashed]
+    if underscored.endswith("_overlay"):
+        aliases.append(underscored[: -len("_overlay")])
+    return tuple(dict.fromkeys(alias for alias in aliases if alias))
+
+
 def _screwm_ward_count(active_wards: dict[str, Any]) -> int:
     """DarkPlaces hosts all legacy Screwm wards even without Cairo assignments."""
     return max(IN_WORLD_WARD_COUNT, _active_ward_count(active_wards))
@@ -220,6 +272,95 @@ def build_ward_activity_lines(active_wards: dict[str, Any]) -> dict[str, str]:
         )
         for ordinal, ward_id in WARD_ACTIVITY_EXPORTS
     }
+
+
+def _live_ward_property_entries(properties: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    wards = properties.get("wards")
+    if not isinstance(wards, dict):
+        return {}
+    now = time.time()
+    entries: dict[str, dict[str, Any]] = {}
+    for ward_id, entry in wards.items():
+        if not isinstance(ward_id, str) or not isinstance(entry, dict):
+            continue
+        expires_at = entry.get("expires_at")
+        if isinstance(expires_at, (int, float)) and now > float(expires_at):
+            continue
+        entries[ward_id] = entry
+    return entries
+
+
+def _ward_property_entry(
+    entries: dict[str, dict[str, Any]],
+    ward_id: str,
+) -> dict[str, Any]:
+    for alias in _ward_property_aliases(ward_id):
+        if alias in entries:
+            return entries[alias]
+    fallback = entries.get("all")
+    return fallback if fallback is not None else {}
+
+
+def _ward_default_z_plane(ward_id: str) -> str:
+    for alias in _ward_property_aliases(ward_id):
+        if alias in WARD_PROPERTY_DEFAULT_PLANES:
+            return WARD_PROPERTY_DEFAULT_PLANES[alias]
+    return "on-scrim"
+
+
+def _ward_property_scalars(ward_id: str, entry: dict[str, Any]) -> dict[str, float]:
+    z_plane = str(entry.get("z_plane") or _ward_default_z_plane(ward_id))
+    z_base = WARD_PROPERTY_Z_BASE.get(z_plane, WARD_PROPERTY_Z_BASE["on-scrim"])
+    z_index_float = _clamp01(_entry_float(entry, "z_index_float", 0.5))
+    depth = _clamp01(z_base + (z_index_float - 0.5) * 0.2)
+    alpha = _clamp01(_entry_float(entry, "alpha", 1.0))
+    glow = _clamp01(
+        _entry_float(entry, "glow_radius_px", 0.0) / 64.0
+        + _entry_float(entry, "border_pulse_hz", 0.0) / 4.0
+    )
+    scale = _clamp01(
+        (_entry_float(entry, "scale", 1.0) - 1.0) / 0.35
+        + _entry_float(entry, "scale_bump_pct", 0.0) / 0.25
+    )
+    if str(entry.get("drift_type", "sine")).lower() == "none":
+        drift = 0.0
+    else:
+        drift = _clamp01(
+            _entry_float(entry, "drift_amplitude_px", 3.0) / 24.0
+            + _entry_float(entry, "drift_hz", 0.1) / 2.0
+        )
+    front = WARD_PROPERTY_FRONT_STATE.get(str(entry.get("front_state", "integrated")), 0.0)
+    presence = _clamp01(
+        max(0.0, alpha - 0.7) * 0.60
+        + max(0.0, depth - 0.9) * 0.30
+        + glow * 0.45
+        + scale * 0.25
+        + drift * 0.20
+        + front * 0.35
+    )
+    return {
+        "alpha": alpha,
+        "depth": depth,
+        "glow": glow,
+        "scale": scale,
+        "front": front,
+        "drift": drift,
+        "presence": presence,
+    }
+
+
+def build_ward_property_lines(shm_dir: Path) -> dict[str, str]:
+    """Export WardProperties fishbowl/depth axes into in-scroom scalars."""
+    entries = _live_ward_property_entries(_read_json(shm_dir / "ward-properties.json"))
+    lines: dict[str, str] = {}
+    for ordinal, ward_id in WARD_ACTIVITY_EXPORTS:
+        scalars = _ward_property_scalars(ward_id, _ward_property_entry(entries, ward_id))
+        for name, value in scalars.items():
+            lines[f"ward-{name}-{ordinal}.txt"] = f"{value:.4f}"
+    specific_count = sum(1 for key in entries if key != "all")
+    lines["ward-property-count.txt"] = f"{specific_count:.4f}"
+    lines["ward-property-route.txt"] = "IN_SCROOM_FISHBOWL_WARD_PROPERTIES"
+    return lines
 
 
 def build_ward_lines(shm_dir: Path) -> dict[str, str]:
@@ -527,6 +668,8 @@ def export_state(
         _write_atomic(game_dir / f"ward-{ordinal}.txt", line)
     active_wards = _read_json(shm_dir / "active_wards.json")
     for filename, line in build_ward_activity_lines(active_wards).items():
+        _write_atomic(game_dir / filename, line)
+    for filename, line in build_ward_property_lines(shm_dir).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_reverie_lines(uniforms_file).items():
         _write_atomic(game_dir / filename, line)

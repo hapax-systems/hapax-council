@@ -110,10 +110,20 @@ def test_screwm_quake_embodies_live_ward_activity_in_engine_lights() -> None:
     assert "WARD_ACTIVITY_EXPORTS" in exporter
     assert '"36", "cbip_dual_ir_displacement"' in exporter
     assert "ward-active-" in exporter
+    assert "build_ward_property_lines" in exporter
+    assert "WARD_PROPERTY_Z_BASE" in exporter
+    assert '"presence": presence' in exporter
+    assert 'f"ward-{name}-{ordinal}.txt"' in exporter
+    assert "IN_SCROOM_FISHBOWL_WARD_PROPERTIES" in exporter
     assert 'endswith("_overlay")' in exporter
     assert 'screwm_read_norm("data/ward-active-01.txt")' in wards
+    assert 'screwm_read_norm("data/ward-presence-01.txt")' in wards
     assert "screwm_active_36" in wards
-    assert "screwm_add_ward_light('0 -360 28', 36, screwm_green, screwm_active_36)" in wards
+    assert "screwm_presence_36" in wards
+    assert "presence * 56" in wards
+    assert (
+        "screwm_add_ward_light('0 -360 28', 36, screwm_green, screwm_active_36, screwm_presence_36)"
+    ) in wards
 
 
 def test_screwm_quake_carries_audio_reactivity_into_scroom_effects() -> None:

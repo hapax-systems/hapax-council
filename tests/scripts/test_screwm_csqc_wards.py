@@ -53,7 +53,9 @@ def test_csqc_dynamic_lights_cover_all_physical_ward_panes() -> None:
 
     assert body.count("screwm_add_ward_light('") == 36
     assert body.count('screwm_read_norm("data/ward-active-') == 36
+    assert body.count('screwm_read_norm("data/ward-presence-') == 36
     assert "active * 74" in body
+    assert "presence * 56" in body
     assert 'screwm_read_norm("data/audio-rms.txt")' in body
     assert "screwm_audio_onset * 20" in body
     assert 'screwm_read_norm("data/homage-quake-active.txt")' in body
@@ -64,6 +66,7 @@ def test_csqc_dynamic_lights_cover_all_physical_ward_panes() -> None:
         x, y, z = map_module["ward_review_position"](idx)
         assert f"screwm_add_ward_light('{x} {y} {z}'" in body
         assert f"screwm_active_{idx:02d}" in body
+        assert f"screwm_presence_{idx:02d}" in body
 
 
 def test_csqc_dynamic_lights_cover_physical_drift_graph() -> None:
