@@ -24,6 +24,9 @@ DEFAULT_SHM_DIR = Path("/dev/shm/hapax-compositor")
 DEFAULT_MODE_FILE = Path.home() / ".cache" / "hapax" / "working-mode"
 DEFAULT_REVERIE_UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/uniforms.json")
 DEFAULT_IMAGINATION_SOURCES_DIR = Path("/dev/shm/hapax-imagination/sources")
+DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE = Path(
+    "/dev/shm/hapax-visual/entity-local-effect-state.json"
+)
 
 WARD_ACTIVITY_EXPORTS: tuple[tuple[str, str], ...] = (
     ("01", "token_pole"),
@@ -87,6 +90,20 @@ AOA_PANE_EXPORTS: tuple[tuple[str, str], ...] = (
     ("08", "source_posture"),
     ("09", "composition"),
     ("10", "payload_gate"),
+)
+
+LOCAL_EFFECT_EXPORTS: tuple[tuple[str, str], ...] = (
+    ("01", "mirror"),
+    ("02", "kaleidoscope"),
+    ("03", "warp"),
+    ("04", "fisheye"),
+    ("05", "transform"),
+    ("06", "displacement_map"),
+    ("07", "droste"),
+    ("08", "tunnel"),
+    ("09", "tile"),
+    ("10", "drift"),
+    ("11", "breathing"),
 )
 
 
@@ -466,12 +483,37 @@ def build_aoa_pane_lines(
     }
 
 
+def build_entity_local_effect_lines(effect_state_file: Path) -> dict[str, str]:
+    """Export scene_quad.wgsl entity-local spatial effect activity."""
+    effect_state = _read_json(effect_state_file)
+    active_effects = effect_state.get("active_effects")
+    active_effects = active_effects if isinstance(active_effects, list) else []
+    mix_by_effect = {effect: 0.0 for _ordinal, effect in LOCAL_EFFECT_EXPORTS}
+
+    for item in active_effects:
+        if not isinstance(item, dict):
+            continue
+        effect = str(item.get("effect", "")).strip().lower()
+        if effect not in mix_by_effect:
+            continue
+        mix_by_effect[effect] = max(mix_by_effect[effect], _float01(item, "mix"))
+
+    lines = {
+        f"local-effect-{ordinal}.txt": f"{mix_by_effect[effect]:.4f}"
+        for ordinal, effect in LOCAL_EFFECT_EXPORTS
+    }
+    lines["local-effect-count.txt"] = f"{sum(1 for mix in mix_by_effect.values() if mix > 0):.4f}"
+    lines["local-effect-route.txt"] = "ENTITY_LOCAL_SOURCE_PLANE"
+    return lines
+
+
 def export_state(
     game_dir: Path,
     shm_dir: Path,
     mode_file: Path,
     uniforms_file: Path = DEFAULT_REVERIE_UNIFORMS_FILE,
     imagination_sources_dir: Path = DEFAULT_IMAGINATION_SOURCES_DIR,
+    entity_local_effect_state_file: Path = DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE,
 ) -> None:
     game_dir.mkdir(parents=True, exist_ok=True)
 
@@ -498,6 +540,8 @@ def export_state(
         shm_dir, uniforms_file, imagination_sources_dir
     ).items():
         _write_atomic(game_dir / filename, line)
+    for filename, line in build_entity_local_effect_lines(entity_local_effect_state_file).items():
+        _write_atomic(game_dir / filename, line)
 
     active_segment = _read_json(shm_dir / "active-segment.json")
     _write_atomic(
@@ -519,6 +563,11 @@ def main() -> int:
     parser.add_argument(
         "--imagination-sources-dir", type=Path, default=DEFAULT_IMAGINATION_SOURCES_DIR
     )
+    parser.add_argument(
+        "--entity-local-effect-state-file",
+        type=Path,
+        default=DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE,
+    )
     parser.add_argument("--copy-self-test", type=Path, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -532,6 +581,7 @@ def main() -> int:
         args.mode_file,
         args.uniforms_file,
         args.imagination_sources_dir,
+        args.entity_local_effect_state_file,
     )
     return 0
 

@@ -51,6 +51,12 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert content.count("// scroom-material-grid ") == (
         len(module["SCROOM_GRID_X_LINES"]) + len(module["SCROOM_GRID_Y_LINES"])
     )
+    assert content.count("// scroom-local-effect-lens ") == len(module["SCROOM_LOCAL_EFFECTS"])
+    assert content.count("// scroom-local-effect-lens-frame ") == (
+        len(module["SCROOM_LOCAL_EFFECTS"]) * 4
+    )
+    assert content.count("// scroom-local-effect-tether ") == len(module["SCROOM_LOCAL_EFFECTS"])
+    assert content.count("// scroom-local-effect-light ") == len(module["SCROOM_LOCAL_EFFECTS"])
     assert content.count("// ward-rail row") == 0
     assert content.count("// ward-spine col") == 0
     assert content.count("// ward-drift ") == 0
@@ -64,6 +70,7 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "// section: aoa-payload-panes" in content
     assert "// section: scroom-scene-graph-bands" in content
     assert "// section: scroom-material-field" in content
+    assert "// section: scroom-local-effect-lenses" in content
     assert "// section: ward-depth-echo-planes" in content
     assert "slot_sierp" in content
     assert "slot_album" in content
@@ -75,6 +82,8 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "// scroom-scene-hls 01: brio-operator cam_bop" in content
     assert "// scroom-scene-ir 07: cbip-ir w36" in content
     assert "// scroom-scene-ward-shelf 08: programme-history w23" in content
+    assert "// scroom-local-effect-lens 01: mirror fx_mirr" in content
+    assert "// scroom-local-effect-lens 11: breathing fx_brea" in content
     assert "// ward-review-pane 01: token_pole" in content
     assert "// ward-depth-plate 01: token_pole hero-presence layer=1" in content
     assert "// ward-depth-plate 02: album beyond-scrim layer=3" in content
@@ -130,7 +139,9 @@ def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
     assert "aoa_payload_panes" in source
     assert "scroom_scene_graph_bands" in source
     assert "scroom_material_field" in source
+    assert "scroom_local_effect_lenses" in source
     assert "scene_grid.wgsl" in source
+    assert "scene_quad.wgsl" in source
     assert "Low, non-obstructing AoA floor mark" in source
     assert 'base = int(preset.get("wall_light", 100) * 0.72)' in source
 
@@ -248,6 +259,30 @@ def test_screwm_wad_defines_current_aoa_payload_pane_textures() -> None:
     assert textures["aoa_root"]["code"] == "ROOT"
     assert textures["aoa_data"]["accent"] == 198
     assert textures["aoa_gate"]["code"] == "GATE"
+
+
+def test_screwm_wad_defines_scene_quad_effect_lens_textures() -> None:
+    module = _load_script("scripts/generate-screwm-wad.py")
+    textures = module["TEXTURES"]
+
+    effect_names = [name for name, _code, _accent, _effect in module["LOCAL_EFFECT_TEXTURES"]]
+    assert effect_names == [
+        "fx_mirr",
+        "fx_kale",
+        "fx_warp",
+        "fx_fish",
+        "fx_xfrm",
+        "fx_disp",
+        "fx_dros",
+        "fx_tunn",
+        "fx_tile",
+        "fx_drif",
+        "fx_brea",
+    ]
+    assert all(textures[name]["pattern"] == "effect_lens" for name in effect_names)
+    assert textures["fx_mirr"]["effect"] == "mirror"
+    assert textures["fx_kale"]["effect"] == "kaleidoscope"
+    assert textures["fx_brea"]["code"] == "BRETH"
 
 
 def test_ward_panel_texture_has_semantic_glyph_contrast() -> None:

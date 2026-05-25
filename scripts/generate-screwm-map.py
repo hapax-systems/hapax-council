@@ -271,6 +271,20 @@ SCROOM_MATERIAL_BEAMS = [
 ]
 SCROOM_GRID_X_LINES = [-240, -120, 0, 120, 240]
 SCROOM_GRID_Y_LINES = [-590, -520, -450, -380]
+SCROOM_LOCAL_EFFECTS = [
+    # Mirrors scene_quad.wgsl entity-local source-plane spatial effects.
+    ("mirror", "fx_mirr", "drift_c", -250, -522, FLOOR_Z + 92),
+    ("kaleidoscope", "fx_kale", "drift_r", -200, -522, FLOOR_Z + 92),
+    ("warp", "fx_warp", "drift_g", -150, -522, FLOOR_Z + 92),
+    ("fisheye", "fx_fish", "drift_c", -100, -522, FLOOR_Z + 92),
+    ("transform", "fx_xfrm", "drift_a", -50, -522, FLOOR_Z + 92),
+    ("displacement_map", "fx_disp", "drift_r", 0, -522, FLOOR_Z + 92),
+    ("droste", "fx_dros", "drift_c", 50, -522, FLOOR_Z + 92),
+    ("tunnel", "fx_tunn", "drift_g", 100, -522, FLOOR_Z + 92),
+    ("tile", "fx_tile", "drift_a", 150, -522, FLOOR_Z + 92),
+    ("drift", "fx_drif", "drift_g", 200, -522, FLOOR_Z + 92),
+    ("breathing", "fx_brea", "drift_a", 250, -522, FLOOR_Z + 92),
+]
 SOURCE_ANCHORS = [
     {
         "role": "brio-operator",
@@ -789,6 +803,31 @@ def scroom_material_field(_preset):
         grid = box_brush(-264, y - 2, grid_z, 264, y + 2, grid_z + 3, "scroom")
         if grid:
             brushes.append(f"// scroom-material-grid y{idx:02d}\n{grid}")
+
+    return brushes
+
+
+def scroom_local_effect_lenses(_preset):
+    """Physical entity-local effect rail from scene_quad.wgsl.
+
+    The old Scroom renderer explicitly restored these spatial effects as
+    source-plane-local operations, not output-plane overlays. In Quake we bind
+    them to small in-world lenses under the scene graph so the scroom contains
+    the effect vocabulary even before runtime texture mutation exists.
+    """
+    brushes = []
+    rail_z = FLOOR_Z + 72
+    rail = box_brush(-286, -528, rail_z, 286, -518, rail_z + 8, "drift_c")
+    if rail:
+        brushes.append(f"// scroom-local-effect-rail scene_quad.wgsl entity-local\n{rail}")
+
+    for idx, (name, tex, frame_tex, x, y, z) in enumerate(SCROOM_LOCAL_EFFECTS, start=1):
+        brushes.extend(
+            framed_y_pane("scroom-local-effect-lens", idx, name, tex, frame_tex, x, y, z, 36, 28)
+        )
+        tether = box_brush(x - 2, y - 12, z + 16, x + 2, y + 54, z + 20, frame_tex)
+        if tether:
+            brushes.append(f"// scroom-local-effect-tether {idx:02d}: {name}\n{tether}")
 
     return brushes
 
@@ -1365,6 +1404,32 @@ def scroom_scene_graph_lights(preset):
     return entities
 
 
+def scroom_local_effect_lights(preset):
+    """Baked support lights for entity-local effect lenses."""
+    entities = []
+    base = int(preset.get("wall_light", 100) * 0.62)
+    effect_domain = {
+        "drift_c": "token",
+        "drift_g": "perception",
+        "drift_a": "director",
+        "drift_r": "music",
+    }
+
+    for idx, (name, _tex, frame_tex, x, y, z) in enumerate(SCROOM_LOCAL_EFFECTS, start=1):
+        r, g, b = DOMAIN_LIGHT_COLOR[effect_domain[frame_tex]]
+        entities.append(
+            f"// scroom-local-effect-light {idx:02d}: {name}\n"
+            "{\n"
+            '"classname" "light"\n'
+            f'"origin" "{x} {y - 24} {z}"\n'
+            f'"light" "{base}"\n'
+            f'"_color" "{r} {g} {b}"\n'
+            "}"
+        )
+
+    return entities
+
+
 def sectioned_brushes(section, brushes):
     return [f"// section: {section}", *brushes]
 
@@ -1385,6 +1450,7 @@ def generate_map(preset):
         + sectioned_brushes("aoa-payload-panes", aoa_payload_panes(preset))
         + sectioned_brushes("scroom-scene-graph-bands", scroom_scene_graph_bands(preset))
         + sectioned_brushes("scroom-material-field", scroom_material_field(preset))
+        + sectioned_brushes("scroom-local-effect-lenses", scroom_local_effect_lenses(preset))
         + sectioned_brushes("ward-depth-echo-planes", ward_depth_echo_panes(preset))
         + sectioned_brushes("ward-review-plane", ward_review_panes(preset))
         + sectioned_brushes("ward-review-drift-paths", ward_review_drift_paths(preset))
@@ -1413,6 +1479,7 @@ def generate_map(preset):
         + legacy_sierpinski_lights(preset)
         + aoa_payload_lights(preset)
         + scroom_scene_graph_lights(preset)
+        + scroom_local_effect_lights(preset)
         + ward_review_lights(preset)
         + ward_lights(preset)
         + source_lights(preset)

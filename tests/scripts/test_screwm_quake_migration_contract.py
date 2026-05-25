@@ -143,6 +143,36 @@ def test_screwm_quake_embodies_scene_grid_material_and_beam_language() -> None:
     assert "adddynamiclight('0 -520 326'" in wards
 
 
+def test_screwm_quake_embodies_entity_local_spatial_effects() -> None:
+    exporter = (REPO_ROOT / "scripts" / "darkplaces-state-export.py").read_text(encoding="utf-8")
+    mapgen = (REPO_ROOT / "scripts" / "generate-screwm-map.py").read_text(encoding="utf-8")
+    wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
+    scene_quad = (
+        REPO_ROOT
+        / "hapax-logos"
+        / "crates"
+        / "hapax-visual"
+        / "src"
+        / "shaders"
+        / "scene_quad.wgsl"
+    ).read_text(encoding="utf-8")
+
+    assert "entity_local_mirror" in scene_quad
+    assert "entity_local_breathing" in scene_quad
+    assert "DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE" in exporter
+    assert "LOCAL_EFFECT_EXPORTS" in exporter
+    assert "build_entity_local_effect_lines" in exporter
+    assert "local-effect-{ordinal}.txt" in exporter
+    assert "ENTITY_LOCAL_SOURCE_PLANE" in exporter
+    assert "SCROOM_LOCAL_EFFECTS" in mapgen
+    assert "scene_quad.wgsl" in mapgen
+    assert "scroom-local-effect-lens" in mapgen
+    assert 'screwm_read_norm("data/local-effect-01.txt")' in wards
+    assert "screwm_add_local_effect_lights" in wards
+    assert "screwm_add_local_effect_light('-250 -546 28'" in wards
+    assert "screwm_add_local_effect_light('250 -546 28'" in wards
+
+
 def test_screwm_quake_review_baseline_has_no_clocked_light_pulses() -> None:
     wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
 

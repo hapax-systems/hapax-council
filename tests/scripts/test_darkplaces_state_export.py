@@ -32,6 +32,7 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     shm_dir.mkdir()
     mode_file = tmp_path / "working-mode"
     uniforms_file = tmp_path / "uniforms.json"
+    effect_state_file = tmp_path / "entity-local-effect-state.json"
     mode_file.write_text("rnd\n", encoding="utf-8")
     (shm_dir / "stimmung-energy.txt").write_text("0.62\n", encoding="utf-8")
     (shm_dir / "voice-active.txt").write_text("1\n", encoding="utf-8")
@@ -52,6 +53,23 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
             "signal.homage_custom_4_0": 0.44,
             "signal.homage_custom_4_2": 0.55,
             "signal.homage_custom_4_3": 0.66,
+        },
+    )
+    _write_json(
+        effect_state_file,
+        {
+            "schema": "entity-local-effect-state-v1",
+            "route": {
+                "route_authority": "entity_local_source_plane",
+                "fourth_wall_policy": "forbid_foreground_overlay",
+                "output_plane_route": False,
+            },
+            "active_effects": [
+                {"effect": "mirror", "mix": 0.42},
+                {"effect": "warp", "mix": 0.61},
+                {"effect": "mirror", "mix": 0.31},
+                {"effect": "slitscan", "mix": 1.0},
+            ],
         },
     )
 
@@ -94,7 +112,13 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         {"package": "quake", "palette_accent_hue_deg": 180.0, "custom_slot_index": 4},
     )
 
-    exporter.export_state(game_dir, shm_dir, mode_file, uniforms_file)
+    exporter.export_state(
+        game_dir,
+        shm_dir,
+        mode_file,
+        uniforms_file,
+        entity_local_effect_state_file=effect_state_file,
+    )
 
     assert (game_dir / "working-mode.txt").read_text(encoding="utf-8").strip() == "rnd"
     assert (game_dir / "ward-01.txt").read_text(encoding="utf-8").strip() == "14056K TOK / 1 VIEW"
@@ -149,6 +173,51 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "aoa-pane-signal-04.txt").read_text(encoding="utf-8").strip() == "1.0000"
     assert (game_dir / "aoa-pane-signal-10.txt").read_text(encoding="utf-8").strip() == "1.0000"
     assert len(list(game_dir.glob("aoa-pane-signal-*.txt"))) == 10
+    assert (game_dir / "local-effect-01.txt").read_text(encoding="utf-8").strip() == "0.4200"
+    assert (game_dir / "local-effect-03.txt").read_text(encoding="utf-8").strip() == "0.6100"
+    assert (game_dir / "local-effect-08.txt").read_text(encoding="utf-8").strip() == "0.0000"
+    assert (game_dir / "local-effect-count.txt").read_text(encoding="utf-8").strip() == "2.0000"
+    assert (game_dir / "local-effect-route.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "ENTITY_LOCAL_SOURCE_PLANE"
+    assert len(list(game_dir.glob("local-effect-[0-9][0-9].txt"))) == 11
+
+
+def test_darkplaces_state_export_builds_entity_local_effect_scalars(tmp_path: Path) -> None:
+    exporter = _load_exporter()
+    effect_state_file = tmp_path / "entity-local-effect-state.json"
+    _write_json(
+        effect_state_file,
+        {
+            "schema": "entity-local-effect-state-v1",
+            "active_effects": [
+                {"effect": "kaleidoscope", "mix": 0.25},
+                {"effect": "droste", "mix": 0.75},
+                {"effect": "droste", "mix": 0.55},
+                {"effect": "slitscan", "mix": 1.0},
+            ],
+        },
+    )
+
+    lines = exporter.build_entity_local_effect_lines(effect_state_file)
+
+    assert (
+        len(
+            [
+                key
+                for key in lines
+                if key.startswith("local-effect-")
+                and key.endswith(".txt")
+                and key[len("local-effect-") : len("local-effect-") + 2].isdigit()
+            ]
+        )
+        == 11
+    )
+    assert lines["local-effect-02.txt"] == "0.2500"
+    assert lines["local-effect-07.txt"] == "0.7500"
+    assert lines["local-effect-11.txt"] == "0.0000"
+    assert lines["local-effect-count.txt"] == "2.0000"
+    assert lines["local-effect-route.txt"] == "ENTITY_LOCAL_SOURCE_PLANE"
 
 
 def test_darkplaces_state_export_normalizes_all_in_scroom_ward_activity() -> None:

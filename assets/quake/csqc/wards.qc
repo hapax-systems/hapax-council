@@ -111,6 +111,17 @@ float screwm_aoa_pane_07;
 float screwm_aoa_pane_08;
 float screwm_aoa_pane_09;
 float screwm_aoa_pane_10;
+float screwm_effect_01;
+float screwm_effect_02;
+float screwm_effect_03;
+float screwm_effect_04;
+float screwm_effect_05;
+float screwm_effect_06;
+float screwm_effect_07;
+float screwm_effect_08;
+float screwm_effect_09;
+float screwm_effect_10;
+float screwm_effect_11;
 
 vector screwm_cyan = '0.45 0.95 0.88';
 vector screwm_amber = '1.00 0.62 0.23';
@@ -299,6 +310,18 @@ void() screwm_poll_state =
     screwm_aoa_pane_08 = screwm_read_norm("data/aoa-pane-signal-08.txt");
     screwm_aoa_pane_09 = screwm_read_norm("data/aoa-pane-signal-09.txt");
     screwm_aoa_pane_10 = screwm_read_norm("data/aoa-pane-signal-10.txt");
+
+    screwm_effect_01 = screwm_read_norm("data/local-effect-01.txt");
+    screwm_effect_02 = screwm_read_norm("data/local-effect-02.txt");
+    screwm_effect_03 = screwm_read_norm("data/local-effect-03.txt");
+    screwm_effect_04 = screwm_read_norm("data/local-effect-04.txt");
+    screwm_effect_05 = screwm_read_norm("data/local-effect-05.txt");
+    screwm_effect_06 = screwm_read_norm("data/local-effect-06.txt");
+    screwm_effect_07 = screwm_read_norm("data/local-effect-07.txt");
+    screwm_effect_08 = screwm_read_norm("data/local-effect-08.txt");
+    screwm_effect_09 = screwm_read_norm("data/local-effect-09.txt");
+    screwm_effect_10 = screwm_read_norm("data/local-effect-10.txt");
+    screwm_effect_11 = screwm_read_norm("data/local-effect-11.txt");
 };
 
 void() screwm_apply_review_camera =
@@ -497,6 +520,16 @@ void(vector org, float idx, vector color, float signal, float fresh) screwm_add_
     adddynamiclight(org, screwm_clamp(radius, 10, 104), color);
 };
 
+void(vector org, float idx, vector color, float signal) screwm_add_local_effect_light =
+{
+    float radius;
+
+    radius = 12 + screwm_energy * 16 + signal * 104;
+    radius = radius + screwm_reverie_temporal * 16 + screwm_reverie_material * 18;
+    radius = radius + screwm_audio_onset * 20 + screwm_homage_signature * 14;
+    adddynamiclight(org, screwm_clamp(radius, 8, 128), color);
+};
+
 void(vector org, float idx, vector color, float active_src, float active_dst) screwm_add_drift_light =
 {
     float activity;
@@ -542,6 +575,21 @@ void() screwm_add_material_field_lights =
     adddynamiclight('-150 -490 300', screwm_clamp(22 + material_field * 64, 12, 92), screwm_amber);
     adddynamiclight('144 -488 260', screwm_clamp(22 + thermal_field * 72, 12, 104), screwm_rose);
     adddynamiclight('-96 -448 104', screwm_clamp(18 + temporal_field * 58, 10, 84), screwm_green);
+};
+
+void() screwm_add_local_effect_lights =
+{
+    screwm_add_local_effect_light('-250 -546 28', 1, screwm_cyan, screwm_effect_01);
+    screwm_add_local_effect_light('-200 -546 28', 2, screwm_rose, screwm_effect_02);
+    screwm_add_local_effect_light('-150 -546 28', 3, screwm_green, screwm_effect_03);
+    screwm_add_local_effect_light('-100 -546 28', 4, screwm_cyan, screwm_effect_04);
+    screwm_add_local_effect_light('-50 -546 28', 5, screwm_amber, screwm_effect_05);
+    screwm_add_local_effect_light('0 -546 28', 6, screwm_rose, screwm_effect_06);
+    screwm_add_local_effect_light('50 -546 28', 7, screwm_cyan, screwm_effect_07);
+    screwm_add_local_effect_light('100 -546 28', 8, screwm_green, screwm_effect_08);
+    screwm_add_local_effect_light('150 -546 28', 9, screwm_amber, screwm_effect_09);
+    screwm_add_local_effect_light('200 -546 28', 10, screwm_green, screwm_effect_10);
+    screwm_add_local_effect_light('250 -546 28', 11, screwm_amber, screwm_effect_11);
 };
 
 void() screwm_draw_ward_links =
@@ -697,6 +745,7 @@ void() screwm_add_dynamic_lights =
     adddynamiclight('222 -360 64', 58 + screwm_voice * 70, screwm_amber);
     screwm_add_homage_lights();
     screwm_add_material_field_lights();
+    screwm_add_local_effect_lights();
 
     screwm_add_ward_light('-222 -360 280', 1, screwm_cyan, screwm_active_01);
     screwm_add_ward_light('-148 -360 280', 2, screwm_rose, screwm_active_02);

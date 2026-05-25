@@ -165,6 +165,27 @@ def test_csqc_reverie_material_fields_live_on_scroom_geometry() -> None:
     assert "screwm_add_material_field_lights();" in body
 
 
+def test_csqc_scene_quad_local_effects_live_on_scroom_lenses() -> None:
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    for ordinal in range(1, 12):
+        assert f'screwm_read_norm("data/local-effect-{ordinal:02d}.txt")' in body
+        assert f"screwm_effect_{ordinal:02d}" in body
+
+    assert (
+        "void(vector org, float idx, vector color, float signal) screwm_add_local_effect_light"
+        in body
+    )
+    assert "void() screwm_add_local_effect_lights" in body
+    assert "screwm_reverie_temporal * 16" in body
+    assert "screwm_reverie_material * 18" in body
+    assert "screwm_add_local_effect_light('-250 -546 28', 1, screwm_cyan, screwm_effect_01)" in body
+    assert (
+        "screwm_add_local_effect_light('250 -546 28', 11, screwm_amber, screwm_effect_11)" in body
+    )
+    assert "screwm_add_local_effect_lights();" in body
+
+
 def test_darkplaces_review_camera_is_locked_by_default() -> None:
     autoexec = AUTOEXEC.read_text(encoding="utf-8")
     camera = (REPO_ROOT / "assets" / "quake" / "qc" / "camera.qc").read_text(encoding="utf-8")

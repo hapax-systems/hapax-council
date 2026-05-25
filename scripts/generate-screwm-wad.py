@@ -122,6 +122,20 @@ AOA_PANE_TEXTURES = [
     ("aoa_gate", "GATE", 202),
 ]
 
+LOCAL_EFFECT_TEXTURES = [
+    ("fx_mirr", "MIRR", 214, "mirror"),
+    ("fx_kale", "KALEI", 186, "kaleidoscope"),
+    ("fx_warp", "WARP", 202, "warp"),
+    ("fx_fish", "FISH", 214, "fisheye"),
+    ("fx_xfrm", "XFRM", 198, "transform"),
+    ("fx_disp", "DISP", 186, "displacement"),
+    ("fx_dros", "DROST", 214, "droste"),
+    ("fx_tunn", "TUNNL", 202, "tunnel"),
+    ("fx_tile", "TILE", 198, "tile"),
+    ("fx_drif", "DRIFT", 202, "drift"),
+    ("fx_brea", "BRETH", 198, "breathing"),
+]
+
 TEXTURES = {
     "city4_2": {"color": (100, 80, 55), "noise": 12, "pattern": "stone_blocks"},
     "ground1_6": {"color": (60, 55, 50), "noise": 8, "pattern": "worn_stone"},
@@ -184,6 +198,16 @@ for tex_name, code, accent in AOA_PANE_TEXTURES:
         "pattern": "aoa_pane",
         "code": code,
         "accent": accent,
+    }
+
+for tex_name, code, accent, effect in LOCAL_EFFECT_TEXTURES:
+    TEXTURES[tex_name] = {
+        "color": (52, 60, 64),
+        "noise": 0,
+        "pattern": "effect_lens",
+        "code": code,
+        "accent": accent,
+        "effect": effect,
     }
 
 
@@ -654,6 +678,86 @@ def aoa_pane_index(x, y, code, accent):
     return 20 + ((x * 7 + y * 13 + len(code) * 11) % 24)
 
 
+def effect_lens_index(x, y, code, accent, effect):
+    """Entity-local spatial effect lens texture from scene_quad.wgsl."""
+    dark_accent = max(60, accent - 116)
+    mid_accent = max(92, accent - 74)
+
+    if x < 2 or y < 2 or x >= TEX_SIZE - 2 or y >= TEX_SIZE - 2:
+        return 245
+    if x < 5 or y < 5 or x >= TEX_SIZE - 5 or y >= TEX_SIZE - 5:
+        return accent
+    if x in (12, 13, 50, 51) or y in (12, 13, 50, 51):
+        return dark_accent
+
+    dx = x - 32
+    dy = y - 32
+    radius = dx * dx + dy * dy
+    if 540 <= radius <= 720:
+        return mid_accent
+
+    if effect == "mirror":
+        if x in (31, 32) and 12 <= y <= 52:
+            return accent
+        if abs((63 - x) - y) <= 1:
+            return mid_accent
+    elif effect == "kaleidoscope":
+        for edge in ((32, 8, 12, 52), (32, 8, 52, 52), (12, 52, 52, 52), (32, 8, 32, 52)):
+            if line_near(x, y, *edge, radius=1.1):
+                return accent
+    elif effect == "warp":
+        wave_y = 32 + int(8 * __import__("math").sin(x * 0.32))
+        if abs(y - wave_y) <= 1:
+            return accent
+        if y % 11 in (0, 1):
+            return dark_accent
+    elif effect == "fisheye":
+        if 140 <= radius <= 210:
+            return accent
+        if radius <= 52:
+            return 245
+    elif effect == "transform":
+        if line_near(x, y, 17, 45, 47, 17, 1.3) or line_near(x, y, 17, 17, 47, 45, 1.3):
+            return accent
+        if x in (19, 45) or y in (19, 45):
+            return mid_accent
+    elif effect == "displacement":
+        if (x * 7 + y * 13) % 17 < 4:
+            return accent
+        if (x + y) % 9 == 0:
+            return 245
+    elif effect == "droste":
+        if 120 <= radius <= 170 or 300 <= radius <= 360 or 560 <= radius <= 630:
+            return accent
+    elif effect == "tunnel":
+        angle_band = (abs(dx) + abs(dy)) % 12
+        if angle_band < 2 and radius > 72:
+            return accent
+        if radius <= 36:
+            return 245
+    elif effect == "tile":
+        if x % 16 in (0, 1) or y % 16 in (0, 1):
+            return accent
+        if (x // 16 + y // 16) % 2 == 0:
+            return mid_accent
+    elif effect == "drift":
+        if (x + y) % 13 < 2 or (x * 3 - y * 2) % 19 < 3:
+            return accent
+    elif effect == "breathing":
+        if 180 <= radius <= 240 or 420 <= radius <= 500:
+            return accent
+        if radius <= 72:
+            return mid_accent
+
+    short_code = code[:5].upper()
+    scale = 2
+    text_width = len(short_code) * 3 * scale + max(0, len(short_code) - 1) * scale
+    if text_pixel_lit(x, y, short_code, (TEX_SIZE - text_width) // 2, 42, scale):
+        return 245
+
+    return 20 + ((x * 11 + y * 7 + len(effect) * 13) % 24)
+
+
 def generate_pixel_data(
     color,
     noise,
@@ -666,6 +770,7 @@ def generate_pixel_data(
     ward_type="",
     drift=0,
     accent=0,
+    effect="",
 ):
     """Generate Quake-style texture with visible material character."""
     import random
@@ -775,6 +880,18 @@ def generate_pixel_data(
 
             elif pattern == "aoa_pane":
                 pixels.append(aoa_pane_index(x, y, str(code), int(accent) if accent else 214))
+                continue
+
+            elif pattern == "effect_lens":
+                pixels.append(
+                    effect_lens_index(
+                        x,
+                        y,
+                        str(code),
+                        int(accent) if accent else 214,
+                        str(effect),
+                    )
+                )
                 continue
 
             # Add surface noise
@@ -899,6 +1016,7 @@ def main():
             ward_type=params.get("ward_type", ""),
             drift=params.get("drift", 0),
             accent=params.get("accent", 0),
+            effect=params.get("effect", ""),
         )
         miptex = make_miptex(name, TEX_SIZE, TEX_SIZE, pixels, palette)
         textures_data[name] = (miptex, palette)
