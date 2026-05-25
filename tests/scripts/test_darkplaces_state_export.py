@@ -33,6 +33,7 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     mode_file = tmp_path / "working-mode"
     uniforms_file = tmp_path / "uniforms.json"
     effect_state_file = tmp_path / "entity-local-effect-state.json"
+    stimmung_state_file = tmp_path / "stimmung-state.json"
     mode_file.write_text("rnd\n", encoding="utf-8")
     (shm_dir / "stimmung-energy.txt").write_text("0.62\n", encoding="utf-8")
     (shm_dir / "voice-active.txt").write_text("1\n", encoding="utf-8")
@@ -136,6 +137,45 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         shm_dir / "homage-substrate-package.json",
         {"package": "quake", "palette_accent_hue_deg": 180.0, "custom_slot_index": 4},
     )
+    _write_json(
+        shm_dir / "visual-layer-state.json",
+        {
+            "display_state": "alert",
+            "zone_opacities": {
+                "work_tasks": 0.25,
+                "health_infra": 0.40,
+                "system_state": 0.10,
+            },
+            "signals": {
+                "health_infra": [{"severity": 0.85, "title": "System failed"}],
+                "system_state": [{"severity": 1.0, "title": "audience engagement: 100%"}],
+            },
+            "ambient_params": {
+                "speed": 0.25,
+                "turbulence": 0.4,
+                "color_warmth": 1.0,
+                "brightness": 0.25,
+                "audio_energy": 0.1,
+            },
+            "stimmung_stance": "cautious",
+            "transition": {"started_at": 0.0, "duration_s": 2.0, "style": "breathe"},
+        },
+    )
+    _write_json(
+        stimmung_state_file,
+        {
+            "health": {"value": 0.2},
+            "resource_pressure": {"value": 0.3},
+            "error_rate": {"value": 0.4},
+            "grounding_quality": {"value": 0.5},
+            "exploration_deficit": {"value": 0.6},
+            "audience_engagement": {"value": 0.7},
+            "operator_energy": {"value": 0.8},
+            "physiological_coherence": {"value": 0.9},
+            "audio_signal_presence": {"value": 1.0},
+            "overall_stance": "seeking",
+        },
+    )
 
     exporter.export_state(
         game_dir,
@@ -143,6 +183,7 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         mode_file,
         uniforms_file,
         entity_local_effect_state_file=effect_state_file,
+        stimmung_state_file=stimmung_state_file,
     )
 
     assert (game_dir / "working-mode.txt").read_text(encoding="utf-8").strip() == "rnd"
@@ -219,6 +260,26 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         encoding="utf-8"
     ).strip() == "ENTITY_LOCAL_SOURCE_PLANE"
     assert len(list(game_dir.glob("local-effect-[0-9][0-9].txt"))) == 11
+    assert (game_dir / "visual-zone-01.txt").read_text(encoding="utf-8").strip() == "0.2500"
+    assert (game_dir / "visual-zone-02.txt").read_text(encoding="utf-8").strip() == "0.8500"
+    assert (game_dir / "visual-zone-03.txt").read_text(encoding="utf-8").strip() == "1.0000"
+    assert (game_dir / "visual-display-state.txt").read_text(encoding="utf-8").strip() == "0.8500"
+    assert (game_dir / "visual-stance.txt").read_text(encoding="utf-8").strip() == "0.5500"
+    assert (game_dir / "visual-ambient-speed.txt").read_text(encoding="utf-8").strip() == "0.5000"
+    assert (game_dir / "visual-ambient-turbulence.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.4000"
+    assert (game_dir / "visual-transition-progress.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "1.0000"
+    assert (game_dir / "stimmung-health.txt").read_text(encoding="utf-8").strip() == "0.2000"
+    assert (game_dir / "stimmung-audio-presence.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "1.0000"
+    assert (game_dir / "visual-layer-route.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "IN_SCROOM_VISUAL_LAYER_STATE"
+    assert len(list(game_dir.glob("visual-zone-[0-9][0-9].txt"))) == 8
 
 
 def test_darkplaces_state_export_builds_entity_local_effect_scalars(tmp_path: Path) -> None:
@@ -304,6 +365,58 @@ def test_darkplaces_state_export_builds_ward_property_fishbowl_scalars(
     assert lines["ward-presence-13.txt"] == "0.7700"
     assert lines["ward-property-count.txt"] == "2.0000"
     assert lines["ward-property-route.txt"] == "IN_SCROOM_FISHBOWL_WARD_PROPERTIES"
+
+
+def test_darkplaces_state_export_builds_visual_layer_state_scalars(tmp_path: Path) -> None:
+    exporter = _load_exporter()
+    shm_dir = tmp_path / "shm"
+    shm_dir.mkdir()
+    stimmung_state_file = tmp_path / "stimmung-state.json"
+    _write_json(
+        shm_dir / "visual-layer-state.json",
+        {
+            "display_state": "alert",
+            "zone_opacities": {"work_tasks": 0.25, "health_infra": 0.4},
+            "signals": {
+                "health_infra": [{"severity": 0.85}],
+                "system_state": [{"severity": 1.0}],
+            },
+            "ambient_params": {
+                "speed": 0.25,
+                "turbulence": 0.4,
+                "color_warmth": 1.0,
+                "brightness": 0.25,
+                "audio_energy": 0.1,
+            },
+            "stimmung_stance": "cautious",
+        },
+    )
+    _write_json(
+        stimmung_state_file,
+        {
+            "health": {"value": 0.2},
+            "resource_pressure": {"value": 0.3},
+            "error_rate": {"value": 0.4},
+            "operator_energy": {"value": 0.8},
+            "overall_stance": "seeking",
+        },
+    )
+
+    lines = exporter.build_visual_layer_lines(shm_dir, stimmung_state_file)
+
+    assert len([key for key in lines if key.startswith("visual-zone-")]) == 8
+    assert lines["visual-zone-01.txt"] == "0.2500"
+    assert lines["visual-zone-02.txt"] == "0.8500"
+    assert lines["visual-zone-03.txt"] == "1.0000"
+    assert lines["visual-display-state.txt"] == "0.8500"
+    assert lines["visual-stance.txt"] == "0.5500"
+    assert lines["visual-ambient-speed.txt"] == "0.5000"
+    assert lines["visual-ambient-turbulence.txt"] == "0.4000"
+    assert lines["stimmung-health.txt"] == "0.2000"
+    assert lines["stimmung-resource.txt"] == "0.3000"
+    assert lines["stimmung-error.txt"] == "0.4000"
+    assert lines["stimmung-operator-energy.txt"] == "0.8000"
+    assert lines["visual-layer-route.txt"] == "IN_SCROOM_VISUAL_LAYER_STATE"
 
 
 def test_darkplaces_state_export_normalizes_all_in_scroom_ward_activity() -> None:

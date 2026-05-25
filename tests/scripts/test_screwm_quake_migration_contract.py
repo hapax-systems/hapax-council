@@ -183,6 +183,29 @@ def test_screwm_quake_embodies_entity_local_spatial_effects() -> None:
     assert "screwm_add_local_effect_light('250 -546 28'" in wards
 
 
+def test_screwm_quake_embodies_visual_layer_stimmung_state() -> None:
+    exporter = (REPO_ROOT / "scripts" / "darkplaces-state-export.py").read_text(encoding="utf-8")
+    wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
+    visual_state = (
+        REPO_ROOT / "hapax-logos" / "crates" / "hapax-visual" / "src" / "state.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "VISUAL_STATE_PATH" in visual_state
+    assert "STIMMUNG_PATH" in visual_state
+    assert "ambient_params" in visual_state
+    assert "zone_opacities" in visual_state
+    assert "build_visual_layer_lines" in exporter
+    assert "VISUAL_ZONE_EXPORTS" in exporter
+    assert "DEFAULT_STIMMUNG_STATE_FILE" in exporter
+    assert "IN_SCROOM_VISUAL_LAYER_STATE" in exporter
+    assert 'screwm_read_norm("data/visual-zone-01.txt")' in wards
+    assert 'screwm_read_norm("data/visual-stance.txt")' in wards
+    assert 'screwm_read_norm("data/stimmung-error.txt")' in wards
+    assert "screwm_add_visual_layer_lights" in wards
+    assert "screwm_add_visual_zone_light('-300 -548 340'" in wards
+    assert "screwm_visual_stance * 90" in wards
+
+
 def test_screwm_quake_review_baseline_has_no_clocked_light_pulses() -> None:
     wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
 

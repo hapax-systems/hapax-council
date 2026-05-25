@@ -27,6 +27,7 @@ DEFAULT_IMAGINATION_SOURCES_DIR = Path("/dev/shm/hapax-imagination/sources")
 DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE = Path(
     "/dev/shm/hapax-visual/entity-local-effect-state.json"
 )
+DEFAULT_STIMMUNG_STATE_FILE = Path("/dev/shm/hapax-stimmung/state.json")
 
 WARD_ACTIVITY_EXPORTS: tuple[tuple[str, str], ...] = (
     ("01", "token_pole"),
@@ -105,6 +106,34 @@ LOCAL_EFFECT_EXPORTS: tuple[tuple[str, str], ...] = (
     ("10", "drift"),
     ("11", "breathing"),
 )
+
+VISUAL_ZONE_EXPORTS: tuple[tuple[str, str], ...] = (
+    ("01", "work_tasks"),
+    ("02", "health_infra"),
+    ("03", "system_state"),
+    ("04", "voice_session"),
+    ("05", "ambient_sensor"),
+    ("06", "governance"),
+    ("07", "profile_state"),
+    ("08", "context_time"),
+)
+
+VISUAL_DISPLAY_STATE_VALUES: dict[str, float] = {
+    "idle": 0.15,
+    "ready": 0.25,
+    "receptive": 0.35,
+    "present": 0.40,
+    "alert": 0.85,
+    "critical": 1.0,
+}
+
+STIMMUNG_STANCE_VALUES: dict[str, float] = {
+    "nominal": 0.20,
+    "seeking": 0.55,
+    "cautious": 0.68,
+    "degraded": 0.86,
+    "critical": 1.0,
+}
 
 WARD_PROPERTY_Z_BASE: dict[str, float] = {
     "beyond-scrim": 0.2,
@@ -203,6 +232,13 @@ def _entry_float(payload: dict[str, Any], key: str, default: float = 0.0) -> flo
         return float(payload.get(key, default))
     except (TypeError, ValueError):
         return default
+
+
+def _nested_float(payload: dict[str, Any], key: str, default: float = 0.0) -> float:
+    value = payload.get(key)
+    if isinstance(value, dict):
+        return _clamp01(_entry_float(value, "value", default))
+    return default
 
 
 def _read_float_file(path: Path, default: float = 0.0) -> float:
@@ -648,6 +684,74 @@ def build_entity_local_effect_lines(effect_state_file: Path) -> dict[str, str]:
     return lines
 
 
+def _signal_severity(visual_state: dict[str, Any], category: str) -> float:
+    signals = visual_state.get("signals")
+    if not isinstance(signals, dict):
+        return 0.0
+    entries = signals.get(category)
+    if not isinstance(entries, list):
+        return 0.0
+    values = [_float01(item, "severity") for item in entries if isinstance(item, dict)]
+    return max(values, default=0.0)
+
+
+def _transition_progress(transition: dict[str, Any]) -> float:
+    started_at = _entry_float(transition, "started_at", 0.0)
+    duration = max(0.1, _entry_float(transition, "duration_s", 2.0))
+    if started_at <= 0:
+        return 1.0
+    return _clamp01((time.time() - started_at) / duration)
+
+
+def build_visual_layer_lines(
+    shm_dir: Path,
+    stimmung_state_file: Path = DEFAULT_STIMMUNG_STATE_FILE,
+) -> dict[str, str]:
+    """Export old Scroom visual-layer/stimmung state into in-world scalars."""
+    visual_state = _read_json(shm_dir / "visual-layer-state.json")
+    stimmung_state = _read_json(stimmung_state_file)
+    zone_opacities = visual_state.get("zone_opacities")
+    zone_opacities = zone_opacities if isinstance(zone_opacities, dict) else {}
+    ambient = visual_state.get("ambient_params")
+    ambient = ambient if isinstance(ambient, dict) else {}
+    transition = visual_state.get("transition")
+    transition = transition if isinstance(transition, dict) else {}
+
+    lines = {
+        f"visual-zone-{ordinal}.txt": f"{max(_float01(zone_opacities, zone), _signal_severity(visual_state, zone)):.4f}"
+        for ordinal, zone in VISUAL_ZONE_EXPORTS
+    }
+    display_state = str(
+        visual_state.get("display_state") or visual_state.get("readiness") or "idle"
+    )
+    stance = str(
+        stimmung_state.get("overall_stance") or visual_state.get("stimmung_stance") or "nominal"
+    )
+    lines.update(
+        {
+            "visual-display-state.txt": f"{VISUAL_DISPLAY_STATE_VALUES.get(display_state, 0.25):.4f}",
+            "visual-stance.txt": f"{STIMMUNG_STANCE_VALUES.get(stance, 0.20):.4f}",
+            "visual-ambient-speed.txt": f"{_clamp01(_entry_float(ambient, 'speed', 0.08) / 0.5):.4f}",
+            "visual-ambient-turbulence.txt": f"{_float01(ambient, 'turbulence'):.4f}",
+            "visual-ambient-warmth.txt": f"{_float01(ambient, 'color_warmth'):.4f}",
+            "visual-ambient-brightness.txt": f"{_float01(ambient, 'brightness'):.4f}",
+            "visual-audio-energy.txt": f"{_float01(ambient, 'audio_energy'):.4f}",
+            "visual-transition-progress.txt": f"{_transition_progress(transition):.4f}",
+            "stimmung-health.txt": f"{_nested_float(stimmung_state, 'health'):.4f}",
+            "stimmung-resource.txt": f"{_nested_float(stimmung_state, 'resource_pressure'):.4f}",
+            "stimmung-error.txt": f"{_nested_float(stimmung_state, 'error_rate'):.4f}",
+            "stimmung-grounding.txt": f"{_nested_float(stimmung_state, 'grounding_quality'):.4f}",
+            "stimmung-exploration.txt": f"{_nested_float(stimmung_state, 'exploration_deficit'):.4f}",
+            "stimmung-audience.txt": f"{_nested_float(stimmung_state, 'audience_engagement'):.4f}",
+            "stimmung-operator-energy.txt": f"{_nested_float(stimmung_state, 'operator_energy'):.4f}",
+            "stimmung-coherence.txt": f"{_nested_float(stimmung_state, 'physiological_coherence'):.4f}",
+            "stimmung-audio-presence.txt": f"{_nested_float(stimmung_state, 'audio_signal_presence'):.4f}",
+            "visual-layer-route.txt": "IN_SCROOM_VISUAL_LAYER_STATE",
+        }
+    )
+    return lines
+
+
 def export_state(
     game_dir: Path,
     shm_dir: Path,
@@ -655,6 +759,7 @@ def export_state(
     uniforms_file: Path = DEFAULT_REVERIE_UNIFORMS_FILE,
     imagination_sources_dir: Path = DEFAULT_IMAGINATION_SOURCES_DIR,
     entity_local_effect_state_file: Path = DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE,
+    stimmung_state_file: Path = DEFAULT_STIMMUNG_STATE_FILE,
 ) -> None:
     game_dir.mkdir(parents=True, exist_ok=True)
 
@@ -685,6 +790,8 @@ def export_state(
         _write_atomic(game_dir / filename, line)
     for filename, line in build_entity_local_effect_lines(entity_local_effect_state_file).items():
         _write_atomic(game_dir / filename, line)
+    for filename, line in build_visual_layer_lines(shm_dir, stimmung_state_file).items():
+        _write_atomic(game_dir / filename, line)
 
     active_segment = _read_json(shm_dir / "active-segment.json")
     _write_atomic(
@@ -711,6 +818,7 @@ def main() -> int:
         type=Path,
         default=DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE,
     )
+    parser.add_argument("--stimmung-state-file", type=Path, default=DEFAULT_STIMMUNG_STATE_FILE)
     parser.add_argument("--copy-self-test", type=Path, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -725,6 +833,7 @@ def main() -> int:
         args.uniforms_file,
         args.imagination_sources_dir,
         args.entity_local_effect_state_file,
+        args.stimmung_state_file,
     )
     return 0
 

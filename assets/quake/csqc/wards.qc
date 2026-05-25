@@ -16,6 +16,24 @@ float screwm_homage_transition;
 float screwm_homage_hue;
 float screwm_homage_signature;
 float screwm_homage_rotation;
+float screwm_visual_zone_01;
+float screwm_visual_zone_02;
+float screwm_visual_zone_03;
+float screwm_visual_zone_04;
+float screwm_visual_zone_05;
+float screwm_visual_zone_06;
+float screwm_visual_zone_07;
+float screwm_visual_zone_08;
+float screwm_visual_display;
+float screwm_visual_stance;
+float screwm_visual_turbulence;
+float screwm_visual_brightness;
+float screwm_visual_warmth;
+float screwm_stimmung_health;
+float screwm_stimmung_resource;
+float screwm_stimmung_error;
+float screwm_stimmung_audience;
+float screwm_stimmung_operator_energy;
 string screwm_mode;
 string screwm_w01;
 string screwm_w02;
@@ -248,6 +266,24 @@ void() screwm_poll_state =
     screwm_homage_hue = screwm_read_norm("data/homage-accent-hue.txt");
     screwm_homage_signature = screwm_read_norm("data/homage-signature-intensity.txt");
     screwm_homage_rotation = screwm_read_norm("data/homage-rotation-phase.txt");
+    screwm_visual_zone_01 = screwm_read_norm("data/visual-zone-01.txt");
+    screwm_visual_zone_02 = screwm_read_norm("data/visual-zone-02.txt");
+    screwm_visual_zone_03 = screwm_read_norm("data/visual-zone-03.txt");
+    screwm_visual_zone_04 = screwm_read_norm("data/visual-zone-04.txt");
+    screwm_visual_zone_05 = screwm_read_norm("data/visual-zone-05.txt");
+    screwm_visual_zone_06 = screwm_read_norm("data/visual-zone-06.txt");
+    screwm_visual_zone_07 = screwm_read_norm("data/visual-zone-07.txt");
+    screwm_visual_zone_08 = screwm_read_norm("data/visual-zone-08.txt");
+    screwm_visual_display = screwm_read_norm("data/visual-display-state.txt");
+    screwm_visual_stance = screwm_read_norm("data/visual-stance.txt");
+    screwm_visual_turbulence = screwm_read_norm("data/visual-ambient-turbulence.txt");
+    screwm_visual_brightness = screwm_read_norm("data/visual-ambient-brightness.txt");
+    screwm_visual_warmth = screwm_read_norm("data/visual-ambient-warmth.txt");
+    screwm_stimmung_health = screwm_read_norm("data/stimmung-health.txt");
+    screwm_stimmung_resource = screwm_read_norm("data/stimmung-resource.txt");
+    screwm_stimmung_error = screwm_read_norm("data/stimmung-error.txt");
+    screwm_stimmung_audience = screwm_read_norm("data/stimmung-audience.txt");
+    screwm_stimmung_operator_energy = screwm_read_norm("data/stimmung-operator-energy.txt");
 
     screwm_w01 = screwm_read_line("data/ward-01.txt", "");
     screwm_w02 = screwm_read_line("data/ward-02.txt", "");
@@ -651,6 +687,39 @@ void() screwm_add_material_field_lights =
     adddynamiclight('-96 -448 104', screwm_clamp(18 + temporal_field * 58, 10, 84), screwm_green);
 };
 
+void(vector org, float idx, vector color, float signal) screwm_add_visual_zone_light =
+{
+    float radius;
+
+    radius = 12 + signal * 84 + screwm_visual_display * 28;
+    radius = radius + screwm_visual_turbulence * 18 + screwm_audio_onset * 12;
+    adddynamiclight(org, screwm_clamp(radius, 8, 118), color);
+};
+
+void() screwm_add_visual_layer_lights =
+{
+    float stance_radius;
+    float fault_radius;
+
+    screwm_add_visual_zone_light('-300 -548 340', 1, screwm_amber, screwm_visual_zone_01);
+    screwm_add_visual_zone_light('-214 -548 340', 2, screwm_rose, screwm_visual_zone_02);
+    screwm_add_visual_zone_light('-128 -548 340', 3, screwm_cyan, screwm_visual_zone_03);
+    screwm_add_visual_zone_light('-42 -548 340', 4, screwm_green, screwm_visual_zone_04);
+    screwm_add_visual_zone_light('42 -548 340', 5, screwm_green, screwm_visual_zone_05);
+    screwm_add_visual_zone_light('128 -548 340', 6, screwm_amber, screwm_visual_zone_06);
+    screwm_add_visual_zone_light('214 -548 340', 7, screwm_cyan, screwm_visual_zone_07);
+    screwm_add_visual_zone_light('300 -548 340', 8, screwm_cyan, screwm_visual_zone_08);
+
+    stance_radius = 28 + screwm_visual_stance * 90 + screwm_stimmung_operator_energy * 22;
+    stance_radius = stance_radius + screwm_visual_brightness * 24;
+    adddynamiclight('0 -520 382', screwm_clamp(stance_radius, 18, 138), screwm_cyan);
+
+    fault_radius = 18 + screwm_stimmung_health * 44 + screwm_stimmung_resource * 50;
+    fault_radius = fault_radius + screwm_stimmung_error * 86 + screwm_visual_display * 30;
+    adddynamiclight('-306 -506 300', screwm_clamp(fault_radius, 12, 152), screwm_rose);
+    adddynamiclight('306 -506 300', screwm_clamp(22 + screwm_stimmung_audience * 94, 12, 130), screwm_green);
+};
+
 void() screwm_add_local_effect_lights =
 {
     screwm_add_local_effect_light('-250 -546 28', 1, screwm_cyan, screwm_effect_01);
@@ -819,6 +888,7 @@ void() screwm_add_dynamic_lights =
     adddynamiclight('222 -360 64', 58 + screwm_voice * 70, screwm_amber);
     screwm_add_homage_lights();
     screwm_add_material_field_lights();
+    screwm_add_visual_layer_lights();
     screwm_add_local_effect_lights();
 
     screwm_add_ward_light('-222 -360 280', 1, screwm_cyan, screwm_active_01, screwm_presence_01);

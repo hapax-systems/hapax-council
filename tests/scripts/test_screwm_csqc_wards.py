@@ -168,6 +168,32 @@ def test_csqc_reverie_material_fields_live_on_scroom_geometry() -> None:
     assert "screwm_add_material_field_lights();" in body
 
 
+def test_csqc_visual_layer_state_lives_in_scroom_lightfield() -> None:
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    for ordinal in range(1, 9):
+        assert f'screwm_read_norm("data/visual-zone-{ordinal:02d}.txt")' in body
+        assert f"screwm_visual_zone_{ordinal:02d}" in body
+
+    assert 'screwm_read_norm("data/visual-display-state.txt")' in body
+    assert 'screwm_read_norm("data/visual-stance.txt")' in body
+    assert 'screwm_read_norm("data/visual-ambient-turbulence.txt")' in body
+    assert 'screwm_read_norm("data/stimmung-health.txt")' in body
+    assert 'screwm_read_norm("data/stimmung-resource.txt")' in body
+    assert 'screwm_read_norm("data/stimmung-error.txt")' in body
+    assert (
+        "void(vector org, float idx, vector color, float signal) screwm_add_visual_zone_light"
+        in body
+    )
+    assert "void() screwm_add_visual_layer_lights" in body
+    assert "signal * 84 + screwm_visual_display * 28" in body
+    assert "screwm_visual_stance * 90" in body
+    assert "screwm_stimmung_error * 86" in body
+    assert "screwm_add_visual_zone_light('-300 -548 340', 1" in body
+    assert "screwm_add_visual_zone_light('300 -548 340', 8" in body
+    assert "screwm_add_visual_layer_lights();" in body
+
+
 def test_csqc_scene_quad_local_effects_live_on_scroom_lenses() -> None:
     body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
 
