@@ -25,6 +25,7 @@ DEFAULT_MODE_FILE = Path.home() / ".cache" / "hapax" / "working-mode"
 DEFAULT_REVERIE_UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/uniforms.json")
 DEFAULT_IMAGINATION_SOURCES_DIR = Path("/dev/shm/hapax-imagination/sources")
 DEFAULT_IMAGINATION_CURRENT_FILE = Path("/dev/shm/hapax-imagination/current.json")
+DEFAULT_SHADER_PLAN_FILE = Path("/dev/shm/hapax-imagination/pipeline/plan.json")
 DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE = Path(
     "/dev/shm/hapax-visual/entity-local-effect-state.json"
 )
@@ -239,6 +240,13 @@ WARD_PROPERTY_FRONT_STATE: dict[str, float] = {
     "retiring": 0.35,
     "fronting": 0.70,
     "fronted": 1.0,
+}
+
+SHADER_PLAN_GROUPS: dict[str, tuple[str, ...]] = {
+    "color": ("color", "colorgrade", "palette", "palette_remap", "thermal"),
+    "motion": ("drift", "warp", "transform", "fisheye", "displacement_map"),
+    "feedback": ("fb", "feedback", "echo", "trail"),
+    "post": ("post", "postprocess", "vignette", "bloom", "sharpen", "scanlines"),
 }
 
 
@@ -873,6 +881,66 @@ def build_entity_local_effect_lines(effect_state_file: Path) -> dict[str, str]:
     return lines
 
 
+def _shader_plan_passes(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    targets = plan.get("targets")
+    if not isinstance(targets, dict):
+        return []
+    passes: list[dict[str, Any]] = []
+    for target in targets.values():
+        if not isinstance(target, dict):
+            continue
+        target_passes = target.get("passes")
+        if not isinstance(target_passes, list):
+            continue
+        passes.extend(item for item in target_passes if isinstance(item, dict))
+    return passes
+
+
+def _shader_plan_pass_pressure(pass_row: dict[str, Any]) -> float:
+    uniforms = pass_row.get("uniforms")
+    uniforms = uniforms if isinstance(uniforms, dict) else {}
+    param_order = pass_row.get("param_order")
+    param_names = [str(item) for item in param_order] if isinstance(param_order, list) else []
+    values = (
+        [uniforms.get(name) for name in param_names] if param_names else list(uniforms.values())
+    )
+    pressure = 0.20
+    for value in values:
+        if isinstance(value, (int, float)):
+            pressure = max(pressure, _clamp01(abs(float(value)) / 2.0))
+    return pressure
+
+
+def build_shader_plan_lines(shader_plan_file: Path = DEFAULT_SHADER_PLAN_FILE) -> dict[str, str]:
+    """Export active imagination WGSL pass plan as in-scroom effect pressure."""
+    passes = _shader_plan_passes(_read_json(shader_plan_file))
+    pass_count = len(passes)
+    render_count = sum(1 for item in passes if str(item.get("type") or "") == "render")
+    temporal_count = sum(1 for item in passes if bool(item.get("temporal")))
+    group_pressure = {name: 0.0 for name in SHADER_PLAN_GROUPS}
+
+    for pass_row in passes:
+        node_id = str(pass_row.get("node_id") or "").strip().lower()
+        shader = str(pass_row.get("shader") or "").strip().lower().removesuffix(".wgsl")
+        pressure = _shader_plan_pass_pressure(pass_row)
+        for group, keys in SHADER_PLAN_GROUPS.items():
+            if node_id in keys or shader in keys:
+                group_pressure[group] = max(group_pressure[group], pressure)
+        if bool(pass_row.get("temporal")):
+            group_pressure["feedback"] = max(group_pressure["feedback"], pressure)
+
+    return {
+        "shader-plan-pass-count.txt": f"{_clamp01(pass_count / 8.0):.4f}",
+        "shader-plan-render-ratio.txt": f"{_clamp01(render_count / max(pass_count, 1)):.4f}",
+        "shader-plan-temporal-ratio.txt": f"{_clamp01(temporal_count / max(pass_count, 1)):.4f}",
+        "shader-plan-color.txt": f"{group_pressure['color']:.4f}",
+        "shader-plan-motion.txt": f"{group_pressure['motion']:.4f}",
+        "shader-plan-feedback.txt": f"{group_pressure['feedback']:.4f}",
+        "shader-plan-post.txt": f"{group_pressure['post']:.4f}",
+        "shader-plan-route.txt": "IN_SCROOM_SHADER_PASS_PLAN",
+    }
+
+
 def _signal_severity(visual_state: dict[str, Any], category: str) -> float:
     signals = visual_state.get("signals")
     if not isinstance(signals, dict):
@@ -1091,6 +1159,7 @@ def export_state(
     uniforms_file: Path = DEFAULT_REVERIE_UNIFORMS_FILE,
     imagination_sources_dir: Path = DEFAULT_IMAGINATION_SOURCES_DIR,
     imagination_current_file: Path = DEFAULT_IMAGINATION_CURRENT_FILE,
+    shader_plan_file: Path = DEFAULT_SHADER_PLAN_FILE,
     entity_local_effect_state_file: Path = DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE,
     stimmung_state_file: Path = DEFAULT_STIMMUNG_STATE_FILE,
     visual_chain_state_file: Path = DEFAULT_VISUAL_CHAIN_STATE_FILE,
@@ -1127,6 +1196,8 @@ def export_state(
         _write_atomic(game_dir / filename, line)
     for filename, line in build_entity_local_effect_lines(entity_local_effect_state_file).items():
         _write_atomic(game_dir / filename, line)
+    for filename, line in build_shader_plan_lines(shader_plan_file).items():
+        _write_atomic(game_dir / filename, line)
     for filename, line in build_visual_layer_lines(shm_dir, stimmung_state_file).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_visual_chain_lines(
@@ -1161,6 +1232,7 @@ def main() -> int:
         type=Path,
         default=DEFAULT_IMAGINATION_CURRENT_FILE,
     )
+    parser.add_argument("--shader-plan-file", type=Path, default=DEFAULT_SHADER_PLAN_FILE)
     parser.add_argument(
         "--entity-local-effect-state-file",
         type=Path,
@@ -1191,6 +1263,7 @@ def main() -> int:
         args.uniforms_file,
         args.imagination_sources_dir,
         args.imagination_current_file,
+        args.shader_plan_file,
         args.entity_local_effect_state_file,
         args.stimmung_state_file,
         args.visual_chain_state_file,

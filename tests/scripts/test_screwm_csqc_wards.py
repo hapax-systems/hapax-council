@@ -301,11 +301,17 @@ def test_csqc_scene_quad_local_effects_live_on_scroom_lenses() -> None:
     assert "void() screwm_add_local_effect_lights" in body
     assert "screwm_reverie_temporal * 16" in body
     assert "screwm_reverie_material * 18" in body
+    assert 'screwm_read_norm("data/shader-plan-pass-count.txt")' in body
+    assert "void() screwm_add_shader_plan_lights" in body
+    assert "screwm_shader_plan_pass_count * 78" in body
+    assert "screwm_shader_plan_feedback * 112" in body
+    assert "screwm_shader_plan_temporal_ratio * 126" in body
     assert "screwm_add_local_effect_light('-250 -546 28', 1, screwm_cyan, screwm_effect_01)" in body
     assert (
         "screwm_add_local_effect_light('250 -546 28', 11, screwm_amber, screwm_effect_11)" in body
     )
     assert "screwm_add_local_effect_lights();" in body
+    assert "screwm_add_shader_plan_lights();" in body
 
 
 def test_darkplaces_review_camera_is_locked_by_default() -> None:

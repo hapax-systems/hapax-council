@@ -238,6 +238,13 @@ float screwm_effect_08;
 float screwm_effect_09;
 float screwm_effect_10;
 float screwm_effect_11;
+float screwm_shader_plan_pass_count;
+float screwm_shader_plan_render_ratio;
+float screwm_shader_plan_temporal_ratio;
+float screwm_shader_plan_color;
+float screwm_shader_plan_motion;
+float screwm_shader_plan_feedback;
+float screwm_shader_plan_post;
 
 vector screwm_cyan = '0.45 0.95 0.88';
 vector screwm_amber = '1.00 0.62 0.23';
@@ -555,6 +562,13 @@ void() screwm_poll_state =
     screwm_effect_09 = screwm_read_norm("data/local-effect-09.txt");
     screwm_effect_10 = screwm_read_norm("data/local-effect-10.txt");
     screwm_effect_11 = screwm_read_norm("data/local-effect-11.txt");
+    screwm_shader_plan_pass_count = screwm_read_norm("data/shader-plan-pass-count.txt");
+    screwm_shader_plan_render_ratio = screwm_read_norm("data/shader-plan-render-ratio.txt");
+    screwm_shader_plan_temporal_ratio = screwm_read_norm("data/shader-plan-temporal-ratio.txt");
+    screwm_shader_plan_color = screwm_read_norm("data/shader-plan-color.txt");
+    screwm_shader_plan_motion = screwm_read_norm("data/shader-plan-motion.txt");
+    screwm_shader_plan_feedback = screwm_read_norm("data/shader-plan-feedback.txt");
+    screwm_shader_plan_post = screwm_read_norm("data/shader-plan-post.txt");
 };
 
 void() screwm_apply_review_camera =
@@ -969,6 +983,25 @@ void() screwm_add_local_effect_lights =
     screwm_add_local_effect_light('250 -546 28', 11, screwm_amber, screwm_effect_11);
 };
 
+void() screwm_add_shader_plan_lights =
+{
+    float plan_radius;
+    float temporal_radius;
+
+    plan_radius = 14 + screwm_shader_plan_pass_count * 78;
+    plan_radius = plan_radius + screwm_shader_plan_render_ratio * 28;
+    adddynamiclight('-300 -548 386', screwm_clamp(plan_radius, 10, 142), screwm_cyan);
+
+    adddynamiclight('-150 -548 386', screwm_clamp(12 + screwm_shader_plan_color * 112, 8, 140), screwm_amber);
+    adddynamiclight('0 -548 386', screwm_clamp(12 + screwm_shader_plan_motion * 112, 8, 140), screwm_green);
+    adddynamiclight('150 -548 386', screwm_clamp(12 + screwm_shader_plan_feedback * 112, 8, 140), screwm_rose);
+    adddynamiclight('300 -548 386', screwm_clamp(12 + screwm_shader_plan_post * 112, 8, 140), screwm_cyan);
+
+    temporal_radius = 12 + screwm_shader_plan_temporal_ratio * 126;
+    temporal_radius = temporal_radius + screwm_reverie_temporal * 24;
+    adddynamiclight('0 -548 414', screwm_clamp(temporal_radius, 8, 156), screwm_rose);
+};
+
 void() screwm_draw_ward_links =
 {
     vector c01;
@@ -1126,6 +1159,7 @@ void() screwm_add_dynamic_lights =
     screwm_add_visual_chain_lights();
     screwm_add_imagination_intent_lights();
     screwm_add_local_effect_lights();
+    screwm_add_shader_plan_lights();
     screwm_add_ward_property_field_lights();
 
     screwm_add_ward_light('-222 -360 280', 1, screwm_cyan, screwm_active_01, screwm_presence_01);

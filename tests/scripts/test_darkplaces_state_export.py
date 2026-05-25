@@ -33,6 +33,7 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     mode_file = tmp_path / "working-mode"
     uniforms_file = tmp_path / "uniforms.json"
     imagination_current_file = tmp_path / "imagination-current.json"
+    shader_plan_file = tmp_path / "shader-plan.json"
     effect_state_file = tmp_path / "entity-local-effect-state.json"
     stimmung_state_file = tmp_path / "stimmung-state.json"
     visual_chain_state_file = tmp_path / "visual-chain-state.json"
@@ -96,6 +97,47 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
                 {"effect": "mirror", "mix": 0.31},
                 {"effect": "slitscan", "mix": 1.0},
             ],
+        },
+    )
+    _write_json(
+        shader_plan_file,
+        {
+            "version": 2,
+            "targets": {
+                "main": {
+                    "passes": [
+                        {
+                            "node_id": "color",
+                            "shader": "colorgrade.wgsl",
+                            "type": "render",
+                            "uniforms": {"brightness": 1.05, "saturation": 1.1},
+                            "param_order": ["brightness", "saturation"],
+                        },
+                        {
+                            "node_id": "drift",
+                            "shader": "drift.wgsl",
+                            "type": "render",
+                            "uniforms": {"amplitude": 0.4, "speed": 0.2, "width": 1280.0},
+                            "param_order": ["amplitude", "speed"],
+                        },
+                        {
+                            "node_id": "fb",
+                            "shader": "feedback.wgsl",
+                            "type": "render",
+                            "temporal": True,
+                            "uniforms": {"decay": 0.8},
+                            "param_order": ["decay"],
+                        },
+                        {
+                            "node_id": "post",
+                            "shader": "postprocess.wgsl",
+                            "type": "render",
+                            "uniforms": {"vignette_strength": 0.3},
+                            "param_order": ["vignette_strength"],
+                        },
+                    ]
+                }
+            },
         },
     )
 
@@ -248,6 +290,7 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         mode_file,
         uniforms_file,
         imagination_current_file=imagination_current_file,
+        shader_plan_file=shader_plan_file,
         entity_local_effect_state_file=effect_state_file,
         stimmung_state_file=stimmung_state_file,
         visual_chain_state_file=visual_chain_state_file,
@@ -328,6 +371,20 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         encoding="utf-8"
     ).strip() == "ENTITY_LOCAL_SOURCE_PLANE"
     assert len(list(game_dir.glob("local-effect-[0-9][0-9].txt"))) == 11
+    assert (game_dir / "shader-plan-pass-count.txt").read_text(encoding="utf-8").strip() == "0.5000"
+    assert (game_dir / "shader-plan-render-ratio.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "1.0000"
+    assert (game_dir / "shader-plan-temporal-ratio.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.2500"
+    assert (game_dir / "shader-plan-color.txt").read_text(encoding="utf-8").strip() == "0.5500"
+    assert (game_dir / "shader-plan-motion.txt").read_text(encoding="utf-8").strip() == "0.2000"
+    assert (game_dir / "shader-plan-feedback.txt").read_text(encoding="utf-8").strip() == "0.4000"
+    assert (game_dir / "shader-plan-post.txt").read_text(encoding="utf-8").strip() == "0.2000"
+    assert (game_dir / "shader-plan-route.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "IN_SCROOM_SHADER_PASS_PLAN"
     assert (game_dir / "visual-zone-01.txt").read_text(encoding="utf-8").strip() == "0.2500"
     assert (game_dir / "visual-zone-02.txt").read_text(encoding="utf-8").strip() == "0.8500"
     assert (game_dir / "visual-zone-03.txt").read_text(encoding="utf-8").strip() == "1.0000"
