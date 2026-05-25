@@ -194,6 +194,49 @@ def test_csqc_visual_layer_state_lives_in_scroom_lightfield() -> None:
     assert "screwm_add_visual_layer_lights();" in body
 
 
+def test_csqc_visual_chain_and_effect_drift_live_in_scroom_lightfield() -> None:
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    for ordinal in range(1, 10):
+        assert f'screwm_read_norm("data/visual-chain-{ordinal:02d}.txt")' in body
+        assert f"screwm_chain_{ordinal:02d}" in body
+
+    for name in (
+        "noise",
+        "drift",
+        "color",
+        "feedback",
+        "aperture",
+        "param-pressure",
+    ):
+        assert f"data/visual-chain-{name}.txt" in body
+    for name in (
+        "pass-count",
+        "active-ratio",
+        "max-delta",
+        "region-count",
+        "tonal",
+        "atmospheric",
+        "temporal",
+        "texture",
+        "edge",
+    ):
+        assert f"data/effect-drift-{name}.txt" in body
+
+    assert (
+        "void(vector org, float idx, vector color, float signal) screwm_add_visual_chain_light"
+        in body
+    )
+    assert "void() screwm_add_visual_chain_lights" in body
+    assert "signal * 96 + screwm_chain_param_pressure * 24" in body
+    assert "screwm_effect_drift_active_ratio * 22" in body
+    assert "screwm_chain_drift * 104 + screwm_effect_drift_atmospheric * 56" in body
+    assert "screwm_effect_drift_region_count * 34" in body
+    assert "screwm_add_visual_chain_light('-300 -526 74', 1" in body
+    assert "screwm_add_visual_chain_light('300 -526 74', 9" in body
+    assert "screwm_add_visual_chain_lights();" in body
+
+
 def test_csqc_scene_quad_local_effects_live_on_scroom_lenses() -> None:
     body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
 

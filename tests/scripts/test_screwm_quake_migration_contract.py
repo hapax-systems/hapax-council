@@ -206,6 +206,30 @@ def test_screwm_quake_embodies_visual_layer_stimmung_state() -> None:
     assert "screwm_visual_stance * 90" in wards
 
 
+def test_screwm_quake_embodies_visual_chain_effect_drift_state() -> None:
+    exporter = (REPO_ROOT / "scripts" / "darkplaces-state-export.py").read_text(encoding="utf-8")
+    wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
+    visual_chain = (REPO_ROOT / "agents" / "visual_chain.py").read_text(encoding="utf-8")
+    effect_drift = (
+        REPO_ROOT / "hapax-logos" / "crates" / "hapax-visual" / "src" / "effect_drift.rs"
+    ).read_text(encoding="utf-8")
+
+    assert 'SHM_PATH = Path("/dev/shm/hapax-visual/visual-chain-state.json")' in visual_chain
+    assert "effect-drift-state.json" in exporter
+    assert "VISUAL_CHAIN_EXPORTS" in exporter
+    assert "DEFAULT_VISUAL_CHAIN_STATE_FILE" in exporter
+    assert "DEFAULT_EFFECT_DRIFT_STATE_FILE" in exporter
+    assert "build_visual_chain_lines" in exporter
+    assert "IN_SCROOM_EFFECT_DRIFT_STATE" in exporter
+    assert "PARAM_DRIFT_RATE" in effect_drift
+    assert "CHAIN_SEEDS" in effect_drift
+    assert "parameter_regions" in effect_drift
+    assert 'screwm_read_norm("data/visual-chain-01.txt")' in wards
+    assert 'screwm_read_norm("data/effect-drift-tonal.txt")' in wards
+    assert "screwm_add_visual_chain_lights" in wards
+    assert "screwm_effect_drift_region_count * 34" in wards
+
+
 def test_screwm_quake_review_baseline_has_no_clocked_light_pulses() -> None:
     wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
 

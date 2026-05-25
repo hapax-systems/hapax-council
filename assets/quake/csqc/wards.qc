@@ -34,6 +34,30 @@ float screwm_stimmung_resource;
 float screwm_stimmung_error;
 float screwm_stimmung_audience;
 float screwm_stimmung_operator_energy;
+float screwm_chain_01;
+float screwm_chain_02;
+float screwm_chain_03;
+float screwm_chain_04;
+float screwm_chain_05;
+float screwm_chain_06;
+float screwm_chain_07;
+float screwm_chain_08;
+float screwm_chain_09;
+float screwm_chain_noise;
+float screwm_chain_drift;
+float screwm_chain_color;
+float screwm_chain_feedback;
+float screwm_chain_aperture;
+float screwm_chain_param_pressure;
+float screwm_effect_drift_pass_count;
+float screwm_effect_drift_active_ratio;
+float screwm_effect_drift_max_delta;
+float screwm_effect_drift_region_count;
+float screwm_effect_drift_tonal;
+float screwm_effect_drift_atmospheric;
+float screwm_effect_drift_temporal;
+float screwm_effect_drift_texture;
+float screwm_effect_drift_edge;
 string screwm_mode;
 string screwm_w01;
 string screwm_w02;
@@ -284,6 +308,30 @@ void() screwm_poll_state =
     screwm_stimmung_error = screwm_read_norm("data/stimmung-error.txt");
     screwm_stimmung_audience = screwm_read_norm("data/stimmung-audience.txt");
     screwm_stimmung_operator_energy = screwm_read_norm("data/stimmung-operator-energy.txt");
+    screwm_chain_01 = screwm_read_norm("data/visual-chain-01.txt");
+    screwm_chain_02 = screwm_read_norm("data/visual-chain-02.txt");
+    screwm_chain_03 = screwm_read_norm("data/visual-chain-03.txt");
+    screwm_chain_04 = screwm_read_norm("data/visual-chain-04.txt");
+    screwm_chain_05 = screwm_read_norm("data/visual-chain-05.txt");
+    screwm_chain_06 = screwm_read_norm("data/visual-chain-06.txt");
+    screwm_chain_07 = screwm_read_norm("data/visual-chain-07.txt");
+    screwm_chain_08 = screwm_read_norm("data/visual-chain-08.txt");
+    screwm_chain_09 = screwm_read_norm("data/visual-chain-09.txt");
+    screwm_chain_noise = screwm_read_norm("data/visual-chain-noise.txt");
+    screwm_chain_drift = screwm_read_norm("data/visual-chain-drift.txt");
+    screwm_chain_color = screwm_read_norm("data/visual-chain-color.txt");
+    screwm_chain_feedback = screwm_read_norm("data/visual-chain-feedback.txt");
+    screwm_chain_aperture = screwm_read_norm("data/visual-chain-aperture.txt");
+    screwm_chain_param_pressure = screwm_read_norm("data/visual-chain-param-pressure.txt");
+    screwm_effect_drift_pass_count = screwm_read_norm("data/effect-drift-pass-count.txt");
+    screwm_effect_drift_active_ratio = screwm_read_norm("data/effect-drift-active-ratio.txt");
+    screwm_effect_drift_max_delta = screwm_read_norm("data/effect-drift-max-delta.txt");
+    screwm_effect_drift_region_count = screwm_read_norm("data/effect-drift-region-count.txt");
+    screwm_effect_drift_tonal = screwm_read_norm("data/effect-drift-tonal.txt");
+    screwm_effect_drift_atmospheric = screwm_read_norm("data/effect-drift-atmospheric.txt");
+    screwm_effect_drift_temporal = screwm_read_norm("data/effect-drift-temporal.txt");
+    screwm_effect_drift_texture = screwm_read_norm("data/effect-drift-texture.txt");
+    screwm_effect_drift_edge = screwm_read_norm("data/effect-drift-edge.txt");
 
     screwm_w01 = screwm_read_line("data/ward-01.txt", "");
     screwm_w02 = screwm_read_line("data/ward-02.txt", "");
@@ -720,6 +768,41 @@ void() screwm_add_visual_layer_lights =
     adddynamiclight('306 -506 300', screwm_clamp(22 + screwm_stimmung_audience * 94, 12, 130), screwm_green);
 };
 
+void(vector org, float idx, vector color, float signal) screwm_add_visual_chain_light =
+{
+    float radius;
+
+    radius = 10 + signal * 96 + screwm_chain_param_pressure * 24;
+    radius = radius + screwm_effect_drift_active_ratio * 22 + screwm_audio_rms * 10;
+    adddynamiclight(org, screwm_clamp(radius, 8, 136), color);
+};
+
+void() screwm_add_visual_chain_lights =
+{
+    float param_radius;
+    float drift_radius;
+
+    screwm_add_visual_chain_light('-300 -526 74', 1, screwm_amber, screwm_chain_01);
+    screwm_add_visual_chain_light('-225 -526 74', 2, screwm_rose, screwm_chain_02);
+    screwm_add_visual_chain_light('-150 -526 74', 3, screwm_cyan, screwm_chain_03);
+    screwm_add_visual_chain_light('-75 -526 74', 4, screwm_green, screwm_chain_04);
+    screwm_add_visual_chain_light('0 -526 74', 5, screwm_amber, screwm_chain_05);
+    screwm_add_visual_chain_light('75 -526 74', 6, screwm_rose, screwm_chain_06);
+    screwm_add_visual_chain_light('150 -526 74', 7, screwm_green, screwm_chain_07);
+    screwm_add_visual_chain_light('225 -526 74', 8, screwm_cyan, screwm_chain_08);
+    screwm_add_visual_chain_light('300 -526 74', 9, screwm_amber, screwm_chain_09);
+
+    param_radius = 18 + screwm_chain_param_pressure * 104 + screwm_effect_drift_max_delta * 56;
+    adddynamiclight('-314 -512 128', screwm_clamp(param_radius, 12, 152), screwm_cyan);
+    adddynamiclight('-156 -512 128', screwm_clamp(18 + screwm_chain_noise * 92 + screwm_effect_drift_texture * 42, 12, 138), screwm_green);
+    adddynamiclight('0 -512 128', screwm_clamp(18 + screwm_chain_color * 92 + screwm_effect_drift_tonal * 48, 12, 148), screwm_rose);
+    adddynamiclight('156 -512 128', screwm_clamp(18 + screwm_chain_feedback * 92 + screwm_effect_drift_temporal * 48, 12, 148), screwm_amber);
+    drift_radius = 18 + screwm_chain_drift * 104 + screwm_effect_drift_atmospheric * 56;
+    drift_radius = drift_radius + screwm_effect_drift_region_count * 34;
+    adddynamiclight('314 -512 128', screwm_clamp(drift_radius, 12, 156), screwm_cyan);
+    adddynamiclight('0 -512 42', screwm_clamp(14 + screwm_chain_aperture * 84 + screwm_effect_drift_edge * 52, 10, 132), screwm_green);
+};
+
 void() screwm_add_local_effect_lights =
 {
     screwm_add_local_effect_light('-250 -546 28', 1, screwm_cyan, screwm_effect_01);
@@ -889,6 +972,7 @@ void() screwm_add_dynamic_lights =
     screwm_add_homage_lights();
     screwm_add_material_field_lights();
     screwm_add_visual_layer_lights();
+    screwm_add_visual_chain_lights();
     screwm_add_local_effect_lights();
 
     screwm_add_ward_light('-222 -360 280', 1, screwm_cyan, screwm_active_01, screwm_presence_01);

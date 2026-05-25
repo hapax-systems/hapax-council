@@ -28,6 +28,8 @@ DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE = Path(
     "/dev/shm/hapax-visual/entity-local-effect-state.json"
 )
 DEFAULT_STIMMUNG_STATE_FILE = Path("/dev/shm/hapax-stimmung/state.json")
+DEFAULT_VISUAL_CHAIN_STATE_FILE = Path("/dev/shm/hapax-visual/visual-chain-state.json")
+DEFAULT_EFFECT_DRIFT_STATE_FILE = Path("/dev/shm/hapax-visual/effect-drift-state.json")
 
 WARD_ACTIVITY_EXPORTS: tuple[tuple[str, str], ...] = (
     ("01", "token_pole"),
@@ -106,6 +108,56 @@ LOCAL_EFFECT_EXPORTS: tuple[tuple[str, str], ...] = (
     ("10", "drift"),
     ("11", "breathing"),
 )
+
+VISUAL_CHAIN_EXPORTS: tuple[tuple[str, str], ...] = (
+    ("01", "visual_chain.intensity"),
+    ("02", "visual_chain.tension"),
+    ("03", "visual_chain.diffusion"),
+    ("04", "visual_chain.degradation"),
+    ("05", "visual_chain.depth"),
+    ("06", "visual_chain.pitch_displacement"),
+    ("07", "visual_chain.temporal_distortion"),
+    ("08", "visual_chain.spectral_color"),
+    ("09", "visual_chain.coherence"),
+)
+
+EFFECT_DRIFT_FAMILIES: tuple[str, ...] = (
+    "tonal",
+    "atmospheric",
+    "temporal",
+    "texture",
+    "edge",
+)
+
+EFFECT_DRIFT_NODE_FAMILY: dict[str, str] = {
+    "color": "tonal",
+    "colorgrade": "tonal",
+    "palette": "tonal",
+    "palette_remap": "tonal",
+    "thermal": "tonal",
+    "posterize": "tonal",
+    "drift": "atmospheric",
+    "mirror": "atmospheric",
+    "kaleidoscope": "atmospheric",
+    "fisheye": "atmospheric",
+    "transform": "atmospheric",
+    "tunnel": "atmospheric",
+    "fb": "temporal",
+    "feedback": "temporal",
+    "trail": "temporal",
+    "slitscan": "temporal",
+    "stutter": "temporal",
+    "post": "texture",
+    "vhs": "texture",
+    "scanlines": "texture",
+    "halftone": "texture",
+    "dither": "texture",
+    "emboss": "texture",
+    "grain_bump": "texture",
+    "edge_detect": "edge",
+    "threshold": "edge",
+    "rutt_etra": "edge",
+}
 
 VISUAL_ZONE_EXPORTS: tuple[tuple[str, str], ...] = (
     ("01", "work_tasks"),
@@ -239,6 +291,18 @@ def _nested_float(payload: dict[str, Any], key: str, default: float = 0.0) -> fl
     if isinstance(value, dict):
         return _clamp01(_entry_float(value, "value", default))
     return default
+
+
+def _dict_float(payload: dict[str, Any], key: str, default: float = 0.0) -> float:
+    try:
+        return float(payload.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _norm_abs_param(params: dict[str, Any], key: str, scale: float) -> float:
+    scale = max(scale, 0.0001)
+    return _clamp01(abs(_dict_float(params, key)) / scale)
 
 
 def _read_float_file(path: Path, default: float = 0.0) -> float:
@@ -752,6 +816,124 @@ def build_visual_layer_lines(
     return lines
 
 
+def _effect_drift_family(pass_row: dict[str, Any]) -> str:
+    family = str(pass_row.get("effect_family") or "").strip().lower()
+    if family in EFFECT_DRIFT_FAMILIES:
+        return family
+    node_id = str(pass_row.get("node_id") or "").strip().lower()
+    return EFFECT_DRIFT_NODE_FAMILY.get(node_id, "texture")
+
+
+def _effect_drift_pass_strength(pass_row: dict[str, Any]) -> float:
+    if pass_row.get("non_neutral") is False:
+        return 0.0
+    strength = _clamp01(abs(_entry_float(pass_row, "max_delta")) / 10.0)
+    params = pass_row.get("params")
+    if isinstance(params, list):
+        for item in params:
+            if isinstance(item, dict):
+                strength = max(strength, _clamp01(abs(_entry_float(item, "delta")) / 10.0))
+    if pass_row.get("non_neutral") is True:
+        strength = max(strength, 0.20)
+    return strength
+
+
+def _effect_drift_region_count(passes: list[Any]) -> int:
+    count = 0
+    for pass_row in passes:
+        if not isinstance(pass_row, dict):
+            continue
+        regions = pass_row.get("parameter_regions")
+        if isinstance(regions, list):
+            count += len(regions)
+    return count
+
+
+def build_visual_chain_lines(
+    visual_chain_state_file: Path = DEFAULT_VISUAL_CHAIN_STATE_FILE,
+    effect_drift_state_file: Path = DEFAULT_EFFECT_DRIFT_STATE_FILE,
+) -> dict[str, str]:
+    """Export visual-chain and effect-drift pressure as in-scroom scalars."""
+    chain_state = _read_json(visual_chain_state_file)
+    levels = chain_state.get("levels")
+    levels = levels if isinstance(levels, dict) else {}
+    params = chain_state.get("params")
+    params = params if isinstance(params, dict) else {}
+
+    lines = {
+        f"visual-chain-{ordinal}.txt": f"{_clamp01(_dict_float(levels, key)):.4f}"
+        for ordinal, key in VISUAL_CHAIN_EXPORTS
+    }
+
+    noise_pressure = max(
+        _norm_abs_param(params, "noise.amplitude", 1.0),
+        _norm_abs_param(params, "noise.frequency_x", 2.0),
+        _norm_abs_param(params, "noise.speed", 0.15),
+        _norm_abs_param(params, "noise.octaves", 3.0),
+    )
+    drift_pressure = max(
+        _norm_abs_param(params, "drift.amplitude", 0.8),
+        _norm_abs_param(params, "drift.speed", 0.5),
+    )
+    color_pressure = max(
+        _norm_abs_param(params, "color.hue_rotate", 70.0),
+        _norm_abs_param(params, "fb.hue_shift", 5.0),
+        _norm_abs_param(params, "color.saturation", 0.6),
+        _norm_abs_param(params, "color.brightness", 0.3),
+    )
+    feedback_pressure = _norm_abs_param(params, "fb.decay", 0.15)
+    aperture_pressure = max(
+        _norm_abs_param(params, "post.vignette_strength", 1.0),
+        _norm_abs_param(params, "post.sediment_strength", 0.08),
+    )
+    max_level = max(
+        (_clamp01(_dict_float(levels, key)) for _ord, key in VISUAL_CHAIN_EXPORTS), default=0.0
+    )
+
+    effect_state = _read_json(effect_drift_state_file)
+    passes = effect_state.get("passes")
+    passes = passes if isinstance(passes, list) else []
+    pass_count = max(0.0, _entry_float(effect_state, "pass_count", float(len(passes))))
+    non_neutral = max(
+        0.0,
+        _entry_float(
+            effect_state,
+            "non_neutral_pass_count",
+            float(sum(1 for item in passes if isinstance(item, dict) and item.get("non_neutral"))),
+        ),
+    )
+    family_strengths = {family: 0.0 for family in EFFECT_DRIFT_FAMILIES}
+    max_delta = 0.0
+    for pass_row in passes:
+        if not isinstance(pass_row, dict):
+            continue
+        max_delta = max(max_delta, abs(_entry_float(pass_row, "max_delta")))
+        family = _effect_drift_family(pass_row)
+        family_strengths[family] = max(
+            family_strengths.get(family, 0.0),
+            _effect_drift_pass_strength(pass_row),
+        )
+
+    lines.update(
+        {
+            "visual-chain-noise.txt": f"{noise_pressure:.4f}",
+            "visual-chain-drift.txt": f"{drift_pressure:.4f}",
+            "visual-chain-color.txt": f"{color_pressure:.4f}",
+            "visual-chain-feedback.txt": f"{feedback_pressure:.4f}",
+            "visual-chain-aperture.txt": f"{aperture_pressure:.4f}",
+            "visual-chain-param-pressure.txt": f"{max(noise_pressure, drift_pressure, color_pressure, feedback_pressure, aperture_pressure, max_level):.4f}",
+            "effect-drift-pass-count.txt": f"{_clamp01(pass_count / 5.0):.4f}",
+            "effect-drift-active-ratio.txt": f"{_clamp01(non_neutral / max(pass_count, 1.0)):.4f}",
+            "effect-drift-max-delta.txt": f"{_clamp01(max_delta / 10.0):.4f}",
+            "effect-drift-region-count.txt": f"{_clamp01(_effect_drift_region_count(passes) / 12.0):.4f}",
+            "effect-drift-route.txt": "IN_SCROOM_EFFECT_DRIFT_STATE",
+        }
+    )
+    for family, value in family_strengths.items():
+        lines[f"effect-drift-{family}.txt"] = f"{value:.4f}"
+    return lines
+
+
 def export_state(
     game_dir: Path,
     shm_dir: Path,
@@ -760,6 +942,8 @@ def export_state(
     imagination_sources_dir: Path = DEFAULT_IMAGINATION_SOURCES_DIR,
     entity_local_effect_state_file: Path = DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE,
     stimmung_state_file: Path = DEFAULT_STIMMUNG_STATE_FILE,
+    visual_chain_state_file: Path = DEFAULT_VISUAL_CHAIN_STATE_FILE,
+    effect_drift_state_file: Path = DEFAULT_EFFECT_DRIFT_STATE_FILE,
 ) -> None:
     game_dir.mkdir(parents=True, exist_ok=True)
 
@@ -792,6 +976,10 @@ def export_state(
         _write_atomic(game_dir / filename, line)
     for filename, line in build_visual_layer_lines(shm_dir, stimmung_state_file).items():
         _write_atomic(game_dir / filename, line)
+    for filename, line in build_visual_chain_lines(
+        visual_chain_state_file, effect_drift_state_file
+    ).items():
+        _write_atomic(game_dir / filename, line)
 
     active_segment = _read_json(shm_dir / "active-segment.json")
     _write_atomic(
@@ -819,6 +1007,16 @@ def main() -> int:
         default=DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE,
     )
     parser.add_argument("--stimmung-state-file", type=Path, default=DEFAULT_STIMMUNG_STATE_FILE)
+    parser.add_argument(
+        "--visual-chain-state-file",
+        type=Path,
+        default=DEFAULT_VISUAL_CHAIN_STATE_FILE,
+    )
+    parser.add_argument(
+        "--effect-drift-state-file",
+        type=Path,
+        default=DEFAULT_EFFECT_DRIFT_STATE_FILE,
+    )
     parser.add_argument("--copy-self-test", type=Path, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -834,6 +1032,8 @@ def main() -> int:
         args.imagination_sources_dir,
         args.entity_local_effect_state_file,
         args.stimmung_state_file,
+        args.visual_chain_state_file,
+        args.effect_drift_state_file,
     )
     return 0
 

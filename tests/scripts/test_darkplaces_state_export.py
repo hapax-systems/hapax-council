@@ -34,6 +34,8 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     uniforms_file = tmp_path / "uniforms.json"
     effect_state_file = tmp_path / "entity-local-effect-state.json"
     stimmung_state_file = tmp_path / "stimmung-state.json"
+    visual_chain_state_file = tmp_path / "visual-chain-state.json"
+    effect_drift_state_file = tmp_path / "effect-drift-state.json"
     mode_file.write_text("rnd\n", encoding="utf-8")
     (shm_dir / "stimmung-energy.txt").write_text("0.62\n", encoding="utf-8")
     (shm_dir / "voice-active.txt").write_text("1\n", encoding="utf-8")
@@ -176,6 +178,46 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
             "overall_stance": "seeking",
         },
     )
+    _write_json(
+        visual_chain_state_file,
+        {
+            "levels": {
+                "visual_chain.intensity": 0.8,
+                "visual_chain.diffusion": 0.5,
+                "visual_chain.depth": 0.25,
+                "visual_chain.pitch_displacement": 0.6,
+                "visual_chain.temporal_distortion": 0.4,
+                "visual_chain.spectral_color": 0.3,
+                "visual_chain.coherence": 0.2,
+            },
+            "params": {
+                "noise.amplitude": 0.5,
+                "drift.amplitude": 0.4,
+                "color.hue_rotate": 35.0,
+                "fb.decay": 0.075,
+                "post.vignette_strength": -0.25,
+            },
+            "timestamp": 100.0,
+        },
+    )
+    _write_json(
+        effect_drift_state_file,
+        {
+            "pass_count": 4,
+            "non_neutral_pass_count": 2,
+            "passes": [
+                {
+                    "node_id": "color",
+                    "non_neutral": True,
+                    "max_delta": 6.0,
+                    "parameter_regions": [{"param": "hue_rotate", "region": "high"}],
+                },
+                {"node_id": "drift", "non_neutral": False, "max_delta": 3.0},
+                {"node_id": "fb", "non_neutral": True, "max_delta": 2.0},
+                {"node_id": "post", "non_neutral": False, "max_delta": 0.5},
+            ],
+        },
+    )
 
     exporter.export_state(
         game_dir,
@@ -184,6 +226,8 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         uniforms_file,
         entity_local_effect_state_file=effect_state_file,
         stimmung_state_file=stimmung_state_file,
+        visual_chain_state_file=visual_chain_state_file,
+        effect_drift_state_file=effect_drift_state_file,
     )
 
     assert (game_dir / "working-mode.txt").read_text(encoding="utf-8").strip() == "rnd"
@@ -280,6 +324,28 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         encoding="utf-8"
     ).strip() == "IN_SCROOM_VISUAL_LAYER_STATE"
     assert len(list(game_dir.glob("visual-zone-[0-9][0-9].txt"))) == 8
+    assert (game_dir / "visual-chain-01.txt").read_text(encoding="utf-8").strip() == "0.8000"
+    assert (game_dir / "visual-chain-02.txt").read_text(encoding="utf-8").strip() == "0.0000"
+    assert (game_dir / "visual-chain-03.txt").read_text(encoding="utf-8").strip() == "0.5000"
+    assert (game_dir / "visual-chain-noise.txt").read_text(encoding="utf-8").strip() == "0.5000"
+    assert (game_dir / "visual-chain-drift.txt").read_text(encoding="utf-8").strip() == "0.5000"
+    assert (game_dir / "visual-chain-color.txt").read_text(encoding="utf-8").strip() == "0.5000"
+    assert (game_dir / "visual-chain-feedback.txt").read_text(encoding="utf-8").strip() == "0.5000"
+    assert (game_dir / "visual-chain-param-pressure.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.8000"
+    assert (game_dir / "effect-drift-pass-count.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.8000"
+    assert (game_dir / "effect-drift-active-ratio.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.5000"
+    assert (game_dir / "effect-drift-tonal.txt").read_text(encoding="utf-8").strip() == "0.6000"
+    assert (game_dir / "effect-drift-temporal.txt").read_text(encoding="utf-8").strip() == "0.2000"
+    assert (game_dir / "effect-drift-route.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "IN_SCROOM_EFFECT_DRIFT_STATE"
+    assert len(list(game_dir.glob("visual-chain-[0-9][0-9].txt"))) == 9
 
 
 def test_darkplaces_state_export_builds_entity_local_effect_scalars(tmp_path: Path) -> None:
@@ -417,6 +483,78 @@ def test_darkplaces_state_export_builds_visual_layer_state_scalars(tmp_path: Pat
     assert lines["stimmung-error.txt"] == "0.4000"
     assert lines["stimmung-operator-energy.txt"] == "0.8000"
     assert lines["visual-layer-route.txt"] == "IN_SCROOM_VISUAL_LAYER_STATE"
+
+
+def test_darkplaces_state_export_builds_visual_chain_and_effect_drift_scalars(
+    tmp_path: Path,
+) -> None:
+    exporter = _load_exporter()
+    visual_chain_state_file = tmp_path / "visual-chain-state.json"
+    effect_drift_state_file = tmp_path / "effect-drift-state.json"
+    _write_json(
+        visual_chain_state_file,
+        {
+            "levels": {
+                "visual_chain.intensity": 0.8,
+                "visual_chain.diffusion": 0.5,
+                "visual_chain.depth": 0.25,
+                "visual_chain.pitch_displacement": 0.6,
+                "visual_chain.temporal_distortion": 0.4,
+                "visual_chain.spectral_color": 0.3,
+                "visual_chain.coherence": 0.2,
+            },
+            "params": {
+                "noise.octaves": 1.5,
+                "drift.amplitude": 0.4,
+                "drift.speed": -0.10,
+                "color.hue_rotate": 35.0,
+                "fb.decay": 0.075,
+                "post.vignette_strength": -0.25,
+            },
+        },
+    )
+    _write_json(
+        effect_drift_state_file,
+        {
+            "pass_count": 4,
+            "non_neutral_pass_count": 2,
+            "passes": [
+                {
+                    "node_id": "color",
+                    "non_neutral": True,
+                    "max_delta": 6.0,
+                    "parameter_regions": [{"param": "hue_rotate", "region": "high"}],
+                },
+                {"node_id": "drift", "non_neutral": False, "max_delta": 3.0},
+                {"node_id": "fb", "non_neutral": True, "max_delta": 2.0},
+                {"node_id": "edge_detect", "non_neutral": False, "max_delta": 1.0},
+            ],
+        },
+    )
+
+    lines = exporter.build_visual_chain_lines(visual_chain_state_file, effect_drift_state_file)
+
+    assert (
+        len([key for key in lines if key.startswith("visual-chain-") and key[13:15].isdigit()]) == 9
+    )
+    assert lines["visual-chain-01.txt"] == "0.8000"
+    assert lines["visual-chain-02.txt"] == "0.0000"
+    assert lines["visual-chain-03.txt"] == "0.5000"
+    assert lines["visual-chain-noise.txt"] == "0.5000"
+    assert lines["visual-chain-drift.txt"] == "0.5000"
+    assert lines["visual-chain-color.txt"] == "0.5000"
+    assert lines["visual-chain-feedback.txt"] == "0.5000"
+    assert lines["visual-chain-aperture.txt"] == "0.2500"
+    assert lines["visual-chain-param-pressure.txt"] == "0.8000"
+    assert lines["effect-drift-pass-count.txt"] == "0.8000"
+    assert lines["effect-drift-active-ratio.txt"] == "0.5000"
+    assert lines["effect-drift-max-delta.txt"] == "0.6000"
+    assert lines["effect-drift-region-count.txt"] == "0.0833"
+    assert lines["effect-drift-tonal.txt"] == "0.6000"
+    assert lines["effect-drift-atmospheric.txt"] == "0.0000"
+    assert lines["effect-drift-temporal.txt"] == "0.2000"
+    assert lines["effect-drift-edge.txt"] == "0.0000"
+    assert lines["effect-drift-route.txt"] == "IN_SCROOM_EFFECT_DRIFT_STATE"
 
 
 def test_darkplaces_state_export_normalizes_all_in_scroom_ward_activity() -> None:
