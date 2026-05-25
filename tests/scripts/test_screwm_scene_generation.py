@@ -17,7 +17,10 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
 
     assert len(module["WARD_ANCHORS"]) == 36
     assert content.count("// ward-anchor ") == 0
-    assert content.count("// ward-depth-plate ") == 0
+    assert content.count("// ward-depth-plate ") == sum(
+        module["WARD_DEPTH_STYLES"][module["ward_depth_plane"](idx)]["layers"]
+        for idx in range(1, 37)
+    )
     assert content.count("// ward-frame ") == 0
     assert content.count("// ward-glow ") == 0
     assert content.count("// ward-light ") == 36
@@ -40,11 +43,15 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "// section: ward-review-plane" in content
     assert "// section: ward-review-drift-paths" in content
     assert "// section: legacy-sierpinski-scrim" in content
+    assert "// section: ward-depth-echo-planes" in content
     assert "slot_sierp" in content
     assert "slot_album" in content
     assert "slot_rev" in content
     assert "slot_voice" in content
     assert "// ward-review-pane 01: token_pole" in content
+    assert "// ward-depth-plate 01: token_pole hero-presence layer=1" in content
+    assert "// ward-depth-plate 02: album beyond-scrim layer=3" in content
+    assert "// ward-depth-plate 10: impingement_cascade near-surface layer=1" in content
     assert "// ward-review-frame 36: cbip_dual_ir_displacement" in content
     assert module["ward_review_position"](1) == (-222, -360, 280)
     assert module["ward_review_position"](36) == (0, -360, 28)
@@ -90,6 +97,8 @@ def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
     assert "t = 1" in source
     assert "WARD_FRAME_PAD = 5" in source
     assert "WARD_FRAME_T = 4" in source
+    assert "WARD_DEPTH_PLANES" in source
+    assert "ward_depth_echo_panes" in source
     assert "Low, non-obstructing AoA floor mark" in source
     assert 'base = int(preset.get("wall_light", 100) * 0.72)' in source
 

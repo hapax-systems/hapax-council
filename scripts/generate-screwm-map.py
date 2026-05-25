@@ -119,6 +119,33 @@ WARD_DOMAINS = {
     "cbip_dual_ir_displacement": "perception",
 }
 
+WARD_DEPTH_PLANES = {
+    "token_pole": "hero-presence",
+    "album": "beyond-scrim",
+    "stream_overlay": "surface-scrim",
+    "sierpinski": "beyond-scrim",
+    "reverie": "beyond-scrim",
+    "activity_header": "surface-scrim",
+    "stance_indicator": "surface-scrim",
+    "gem": "beyond-scrim",
+    "thinking_indicator": "surface-scrim",
+    "whos_here": "surface-scrim",
+    "durf": "beyond-scrim",
+    "egress_footer": "surface-scrim",
+    "programme_banner": "surface-scrim",
+    "precedent_ticker": "surface-scrim",
+    "chronicle_ticker": "surface-scrim",
+    "programme_state": "surface-scrim",
+    "segment_content": "surface-scrim",
+}
+
+WARD_DEPTH_STYLES = {
+    "surface-scrim": {"layers": 0, "pad": 0, "y_step": 0, "x_shift": 0, "z_shift": 0},
+    "near-surface": {"layers": 1, "pad": 7, "y_step": 12, "x_shift": 2, "z_shift": -2},
+    "hero-presence": {"layers": 2, "pad": 9, "y_step": 14, "x_shift": -3, "z_shift": 3},
+    "beyond-scrim": {"layers": 3, "pad": 11, "y_step": 16, "x_shift": 4, "z_shift": -4},
+}
+
 DOMAIN_GLOW_TEX = {
     "communication": "drift_g",
     "presence": "drift_a",
@@ -349,6 +376,10 @@ def ward_review_drift_midpoint(src, dst):
 
 def ward_domain(idx):
     return WARD_DOMAINS[WARD_ANCHORS[idx - 1]]
+
+
+def ward_depth_plane(idx):
+    return WARD_DEPTH_PLANES.get(WARD_ANCHORS[idx - 1], "near-surface")
 
 
 def sealed_room(preset):
@@ -669,6 +700,40 @@ def legacy_sierpinski_scrim(_preset):
     return brushes
 
 
+def ward_depth_echo_panes(_preset):
+    """Fishbowl depth plates behind wards, ported from the old scrim bands."""
+    brushes = []
+
+    for idx, anchor in enumerate(WARD_ANCHORS, start=1):
+        plane = ward_depth_plane(idx)
+        style = WARD_DEPTH_STYLES[plane]
+        layers = style["layers"]
+        if layers <= 0:
+            continue
+        x, y, z = ward_review_position(idx)
+        tex = DOMAIN_GLOW_TEX[ward_domain(idx)]
+        for layer in range(1, layers + 1):
+            pad = style["pad"] + layer * 4
+            lx = x + style["x_shift"] * layer
+            ly = y + style["y_step"] * layer
+            lz = z + style["z_shift"] * layer
+            plate = box_brush(
+                lx - WARD_PANE_W // 2 - pad,
+                ly + 4,
+                lz - WARD_PANE_H // 2 - pad,
+                lx + WARD_PANE_W // 2 + pad,
+                ly + 8,
+                lz + WARD_PANE_H // 2 + pad,
+                tex,
+            )
+            if plate:
+                brushes.append(
+                    f"// ward-depth-plate {idx:02d}: {anchor} {plane} layer={layer} {tex}\n{plate}"
+                )
+
+    return brushes
+
+
 def ward_scrim_panes(_preset):
     """The duplicate deep ward lattice is disabled in the open scroom baseline."""
     return []
@@ -974,6 +1039,7 @@ def generate_map(preset):
         + sectioned_brushes("tower-ramp-shelves", ramp_shelves(preset))
         + sectioned_brushes("central-aoa-pedestal", central_pedestal(preset))
         + sectioned_brushes("legacy-sierpinski-scrim", legacy_sierpinski_scrim(preset))
+        + sectioned_brushes("ward-depth-echo-planes", ward_depth_echo_panes(preset))
         + sectioned_brushes("ward-review-plane", ward_review_panes(preset))
         + sectioned_brushes("ward-review-drift-paths", ward_review_drift_paths(preset))
         + sectioned_brushes("source-camera-constellation", source_constellation_panes(preset))
