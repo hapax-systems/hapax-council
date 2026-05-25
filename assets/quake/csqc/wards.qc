@@ -271,6 +271,14 @@ float screwm_programme_source_pressure;
 float screwm_programme_asset_pressure;
 float screwm_programme_affordance_pressure;
 float screwm_programme_cue_hold;
+float screwm_live_token_pressure;
+float screwm_live_viewer_pressure;
+float screwm_live_token_burst;
+float screwm_live_album_confidence;
+float screwm_live_album_fresh;
+float screwm_live_album_playing;
+float screwm_live_album_risk;
+float screwm_live_voice_active;
 
 vector screwm_cyan = '0.45 0.95 0.88';
 vector screwm_amber = '1.00 0.62 0.23';
@@ -621,6 +629,14 @@ void() screwm_poll_state =
     screwm_programme_asset_pressure = screwm_read_norm("data/programme-asset-pressure.txt");
     screwm_programme_affordance_pressure = screwm_read_norm("data/programme-affordance-pressure.txt");
     screwm_programme_cue_hold = screwm_read_norm("data/programme-cue-hold.txt");
+    screwm_live_token_pressure = screwm_read_norm("data/live-token-pressure.txt");
+    screwm_live_viewer_pressure = screwm_read_norm("data/live-viewer-pressure.txt");
+    screwm_live_token_burst = screwm_read_norm("data/live-token-burst.txt");
+    screwm_live_album_confidence = screwm_read_norm("data/live-album-confidence.txt");
+    screwm_live_album_fresh = screwm_read_norm("data/live-album-fresh.txt");
+    screwm_live_album_playing = screwm_read_norm("data/live-album-playing.txt");
+    screwm_live_album_risk = screwm_read_norm("data/live-album-risk.txt");
+    screwm_live_voice_active = screwm_read_norm("data/live-voice-active.txt");
 };
 
 void() screwm_apply_review_camera =
@@ -1115,6 +1131,25 @@ void() screwm_add_programme_segment_lights =
     adddynamiclight('0 -536 330', screwm_clamp(grounding_radius, 8, 176), screwm_cyan);
 };
 
+void() screwm_add_live_context_lights =
+{
+    float token_radius;
+    float album_radius;
+    float voice_radius;
+
+    token_radius = 14 + screwm_live_token_pressure * 88 + screwm_live_token_burst * 54;
+    token_radius = token_radius + screwm_live_viewer_pressure * 38;
+    adddynamiclight('-222 -360 280', screwm_clamp(token_radius, 10, 172), screwm_cyan);
+
+    album_radius = 14 + screwm_live_album_confidence * 82 + screwm_live_album_fresh * 44;
+    album_radius = album_radius + screwm_live_album_playing * 54 + screwm_live_album_risk * 32;
+    adddynamiclight('-148 -360 280', screwm_clamp(album_radius, 10, 174), screwm_rose);
+
+    voice_radius = 12 + screwm_live_voice_active * 104 + screwm_voice * 48 + screwm_audio_onset * 36;
+    adddynamiclight('74 -360 226', screwm_clamp(voice_radius, 8, 172), screwm_amber);
+    adddynamiclight('-222 -360 172', screwm_clamp(10 + screwm_live_viewer_pressure * 82, 8, 120), screwm_amber);
+};
+
 void() screwm_draw_ward_links =
 {
     vector c01;
@@ -1276,6 +1311,7 @@ void() screwm_add_dynamic_lights =
     screwm_add_gem_mural_lights();
     screwm_add_impingement_recruitment_lights();
     screwm_add_programme_segment_lights();
+    screwm_add_live_context_lights();
     screwm_add_ward_property_field_lights();
 
     screwm_add_ward_light('-222 -360 280', 1, screwm_cyan, screwm_active_01, screwm_presence_01);

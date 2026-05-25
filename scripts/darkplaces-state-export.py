@@ -267,6 +267,16 @@ PROGRAMME_ROLE_VALUES: dict[str, float] = {
     "lecture": 0.92,
 }
 
+ALBUM_RISK_VALUES: dict[str, float] = {
+    "safe": 0.05,
+    "tier_1": 0.15,
+    "tier_2": 0.35,
+    "tier_3": 0.60,
+    "tier_4": 0.85,
+    "tier_4_risky": 0.92,
+    "unknown": 0.30,
+}
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
@@ -1144,6 +1154,34 @@ def build_programme_segment_lines(shm_dir: Path, now: float | None = None) -> di
     }
 
 
+def build_live_context_lines(shm_dir: Path, now: float | None = None) -> dict[str, str]:
+    """Export token, album, viewer, and voice context as scroom pressure."""
+    now = time.time() if now is None else now
+    token_ledger = _read_json(shm_dir / "token-ledger.json")
+    album_state = _read_json(shm_dir / "album-state.json")
+    voice_state = _read_json(shm_dir / "voice-state.json")
+
+    total_tokens = max(0.0, _entry_float(token_ledger, "total_tokens", 0.0))
+    active_viewers = max(0.0, _entry_float(token_ledger, "active_viewers", 0.0))
+    explosions = max(0.0, _entry_float(token_ledger, "explosions", 0.0))
+    album_ts = _entry_float(album_state, "timestamp", 0.0)
+    album_fresh = _clamp01(1.0 - max(0.0, now - album_ts) / 3600.0) if album_ts else 0.0
+    album_playing = 1.0 if bool(album_state.get("playing")) else 0.0
+    risk = str(album_state.get("content_risk") or "unknown").strip().lower()
+
+    return {
+        "live-token-pressure.txt": f"{_clamp01(total_tokens / 1_000_000.0):.4f}",
+        "live-viewer-pressure.txt": f"{_clamp01(active_viewers / 10.0):.4f}",
+        "live-token-burst.txt": f"{_clamp01(explosions / 200.0):.4f}",
+        "live-album-confidence.txt": f"{_float01(album_state, 'confidence'):.4f}",
+        "live-album-fresh.txt": f"{album_fresh:.4f}",
+        "live-album-playing.txt": f"{album_playing:.4f}",
+        "live-album-risk.txt": f"{ALBUM_RISK_VALUES.get(risk, 0.30):.4f}",
+        "live-voice-active.txt": f"{1.0 if bool(voice_state.get('operator_speech_active')) else 0.0:.4f}",
+        "live-context-route.txt": "IN_SCROOM_LIVE_CONTEXT_FIELD",
+    }
+
+
 def _signal_severity(visual_state: dict[str, Any], category: str) -> float:
     signals = visual_state.get("signals")
     if not isinstance(signals, dict):
@@ -1416,6 +1454,8 @@ def export_state(
     ).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_programme_segment_lines(shm_dir, now).items():
+        _write_atomic(game_dir / filename, line)
+    for filename, line in build_live_context_lines(shm_dir, now).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_visual_layer_lines(shm_dir, stimmung_state_file).items():
         _write_atomic(game_dir / filename, line)

@@ -272,7 +272,14 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     _write_json(shm_dir / "voice-state.json", {"operator_speech_active": True})
     _write_json(
         shm_dir / "album-state.json",
-        {"artist": "Radiohead", "title": "Pablo Honey"},
+        {
+            "artist": "Radiohead",
+            "title": "Pablo Honey",
+            "confidence": 0.6,
+            "playing": True,
+            "content_risk": "tier_4_risky",
+            "timestamp": 100.0,
+        },
     )
     _write_json(
         shm_dir / "token-ledger.json",
@@ -529,6 +536,17 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "programme-segment-route.txt").read_text(
         encoding="utf-8"
     ).strip() == "IN_SCROOM_PROGRAMME_SEGMENT_FIELD"
+    assert (game_dir / "live-token-pressure.txt").read_text(encoding="utf-8").strip() == "1.0000"
+    assert (game_dir / "live-viewer-pressure.txt").read_text(encoding="utf-8").strip() == "0.1000"
+    assert (game_dir / "live-token-burst.txt").read_text(encoding="utf-8").strip() == "0.0000"
+    assert (game_dir / "live-album-confidence.txt").read_text(encoding="utf-8").strip() == "0.6000"
+    assert (game_dir / "live-album-fresh.txt").read_text(encoding="utf-8").strip() == "0.9944"
+    assert (game_dir / "live-album-playing.txt").read_text(encoding="utf-8").strip() == "1.0000"
+    assert (game_dir / "live-album-risk.txt").read_text(encoding="utf-8").strip() == "0.9200"
+    assert (game_dir / "live-voice-active.txt").read_text(encoding="utf-8").strip() == "1.0000"
+    assert (game_dir / "live-context-route.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "IN_SCROOM_LIVE_CONTEXT_FIELD"
     assert (game_dir / "visual-zone-01.txt").read_text(encoding="utf-8").strip() == "0.2500"
     assert (game_dir / "visual-zone-02.txt").read_text(encoding="utf-8").strip() == "0.8500"
     assert (game_dir / "visual-zone-03.txt").read_text(encoding="utf-8").strip() == "1.0000"
