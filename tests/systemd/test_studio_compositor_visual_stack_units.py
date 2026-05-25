@@ -193,10 +193,11 @@ def test_obs_yuyv_bridge_is_guarded_and_routes_darkplaces_to_obs() -> None:
     assert parser.get("Unit", "After") == "hapax-darkplaces-v4l2.service"
     assert parser.get("Unit", "Wants") == "hapax-darkplaces-v4l2.service"
     assert parser.get("Unit", "PartOf") == "hapax-darkplaces-v4l2.service hapax-visual-stack.target"
-    assert "width=1280,height=720,pixelformat=YUYV" in "\n".join(unit_lines)
+    assert "width=1920,height=1080,pixelformat=YUYV" in "\n".join(unit_lines)
     exec_start = parser.get("Service", "ExecStart")
     assert "-input_format yuyv422" in exec_start
-    assert "-video_size 1280x720" in exec_start
+    assert "-video_size 1920x1080" in exec_start
+    assert "-framerate 60" in exec_start
     assert "-i /dev/video52" in exec_start
     assert "-pix_fmt yuyv422 /dev/video50" in exec_start
     assert parser.get("Install", "WantedBy") == "hapax-visual-stack.target"

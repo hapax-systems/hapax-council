@@ -105,7 +105,7 @@ def test_gamepad_camera_motion_is_visible_enough_for_live_pov() -> None:
     state.update_axis(3, 32767)
     state.tick(1.0)
 
-    assert abs(state.origin_x) + abs(state.origin_y + 575) > 400
+    assert abs(state.origin_x) + abs(state.origin_y + 650) > 400
     assert state.yaw > 300
 
 

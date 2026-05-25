@@ -52,6 +52,45 @@ WARD_CODES = [
     "IRDUAL",
 ]
 
+WARD_TEXTURE_TYPES = [
+    "token_path",
+    "album_cover",
+    "stream_status",
+    "sierpinski",
+    "reverie_field",
+    "activity_banner",
+    "stance_chip",
+    "gem_facets",
+    "provenance_ticker",
+    "impingement_cascade",
+    "recruitment_cells",
+    "thinking_dot",
+    "pressure_bar",
+    "variety_log",
+    "here_counter",
+    "durf_grid",
+    "code_diff",
+    "hardware_grid",
+    "hardware_grid",
+    "egress_footer",
+    "programme_banner",
+    "precedent_ticker",
+    "history_corridor",
+    "instrument_dashboard",
+    "cbip_density",
+    "chat_keywords",
+    "chronicle_ticker",
+    "programme_state",
+    "hardware_grid",
+    "query_card",
+    "poster_field",
+    "tufte_bars",
+    "ascii_schema",
+    "segment_page",
+    "scope_wave",
+    "ir_dual",
+]
+
 WARD_ACCENT_INDICES = [214, 198, 186, 202, 176]
 
 CAMERA_SOURCE_TEXTURES = [
@@ -104,6 +143,7 @@ for ward_idx in range(1, WARD_COUNT + 1):
         "pattern": "ward_panel",
         "label": ward_idx,
         "code": WARD_CODES[ward_idx - 1],
+        "ward_type": WARD_TEXTURE_TYPES[ward_idx - 1],
     }
 
 for tex_name, code, accent in CAMERA_SOURCE_TEXTURES:
@@ -189,7 +229,250 @@ def text_pixel_lit(x, y, text, start_x, start_y, scale):
     return False
 
 
-def ward_panel_index(x, y, label, code):
+def line_near(x, y, x1, y1, x2, y2, radius=1.35):
+    """Return true when a pixel is near a 2D segment."""
+    dx = x2 - x1
+    dy = y2 - y1
+    length_sq = dx * dx + dy * dy
+    if length_sq <= 0:
+        return (x - x1) * (x - x1) + (y - y1) * (y - y1) <= radius * radius
+    t = ((x - x1) * dx + (y - y1) * dy) / length_sq
+    t = max(0.0, min(1.0, t))
+    px = x1 + t * dx
+    py = y1 + t * dy
+    return (x - px) * (x - px) + (y - py) * (y - py) <= radius * radius
+
+
+def ward_symbol_index(x, y, label, ward_type, accent):
+    """Ward-specific glyph grammar from the pre-Quake Screwm inventory."""
+    dark_accent = max(58, accent - 118)
+    mid_accent = max(90, accent - 76)
+
+    if ward_type == "token_path":
+        if line_near(x, y, 24, 52, 32, 34, 1.8) or line_near(x, y, 32, 34, 40, 12, 1.8):
+            return accent
+        if abs(x - 32) <= 2 and 14 <= y <= 51:
+            return mid_accent
+        if (x - 40) * (x - 40) + (y - 12) * (y - 12) <= 18:
+            return 245
+        if (x - 24) * (x - 24) + (y - 52) * (y - 52) <= 22:
+            return dark_accent
+
+    elif ward_type == "album_cover":
+        if 13 <= x <= 50 and 12 <= y <= 48:
+            if x in (13, 14, 49, 50) or y in (12, 13, 47, 48):
+                return accent
+            if line_near(x, y, 16, 45, 47, 15, 1.2):
+                return 245
+            if (x + y + label) % 11 < 2:
+                return mid_accent
+
+    elif ward_type == "stream_status":
+        if y in (17, 18, 30, 31, 43, 44) and 8 <= x <= 56:
+            return accent
+        if x in (12, 18, 24) and 14 <= y <= 47:
+            return 245
+        if 30 <= x <= 54 and y in (22, 36, 50):
+            return mid_accent
+
+    elif ward_type == "sierpinski":
+        edges = [
+            (32, 9, 12, 51),
+            (12, 51, 52, 51),
+            (52, 51, 32, 9),
+            (22, 30, 42, 30),
+            (22, 30, 32, 51),
+            (42, 30, 32, 51),
+            (27, 40, 37, 40),
+        ]
+        if any(line_near(x, y, *edge, radius=1.25) for edge in edges):
+            return accent
+        if (x - 32) * (x - 32) + (y - 35) * (y - 35) <= 10:
+            return 245
+
+    elif ward_type == "reverie_field":
+        dx = x - 32
+        dy = y - 32
+        ring = dx * dx + dy * dy
+        if 260 <= ring <= 340 or 590 <= ring <= 710:
+            return accent
+        if (x * 7 + y * 13 + label * 17) % 31 < 4:
+            return mid_accent
+
+    elif ward_type == "activity_banner":
+        if 8 <= x <= 56 and y in (14, 15, 48, 49):
+            return accent
+        if 13 <= y <= 25 and 12 <= x <= 52:
+            return mid_accent
+        if x in (18, 27, 36, 45) and 30 <= y <= 45:
+            return 245
+
+    elif ward_type == "stance_chip":
+        if 12 <= x <= 52 and 18 <= y <= 44:
+            if x in (12, 13, 51, 52) or y in (18, 19, 43, 44):
+                return accent
+            if abs(x - 26) <= 1 or abs(y - 31) <= 1:
+                return 245
+
+    elif ward_type == "gem_facets":
+        facets = [(32, 8, 52, 32), (52, 32, 32, 56), (32, 56, 12, 32), (12, 32, 32, 8)]
+        if any(line_near(x, y, *edge, radius=1.2) for edge in facets):
+            return accent
+        if line_near(x, y, 12, 32, 52, 32, 1.0) or line_near(x, y, 32, 8, 32, 56, 1.0):
+            return 245
+
+    elif ward_type in {"provenance_ticker", "precedent_ticker", "chronicle_ticker"}:
+        if y in (19, 31, 43) and 8 <= x <= 56:
+            return accent
+        if (x + label * 5) % 15 < 8 and y in (23, 35, 47):
+            return 245
+
+    elif ward_type == "impingement_cascade":
+        for row in range(5):
+            y0 = 13 + row * 8
+            if y0 <= y <= y0 + 4 and 10 <= x <= 54:
+                fill = 10 + row * 8 + (label % 7)
+                return accent if x <= fill else dark_accent
+
+    elif ward_type == "recruitment_cells":
+        for col in range(3):
+            x0 = 10 + col * 15
+            if x0 <= x <= x0 + 11 and 17 <= y <= 45:
+                if x in (x0, x0 + 11) or y in (17, 45):
+                    return accent
+                if (x + y + col) % 6 < 2:
+                    return mid_accent
+
+    elif ward_type == "thinking_dot":
+        r = (x - 32) * (x - 32) + (y - 32) * (y - 32)
+        if 90 <= r <= 122 or 190 <= r <= 230:
+            return accent
+        if r <= 42:
+            return 245
+
+    elif ward_type == "pressure_bar":
+        if 12 <= x <= 52 and 28 <= y <= 36:
+            if x in (12, 52) or y in (28, 36):
+                return 245
+            return accent if x < 40 else mid_accent
+        if x % 5 == 0 and 24 <= y <= 40:
+            return dark_accent
+
+    elif ward_type == "variety_log":
+        for col in range(6):
+            x0 = 8 + col * 9
+            if x0 <= x <= x0 + 6 and 21 <= y <= 42:
+                return accent if (col + label) % 2 else mid_accent
+
+    elif ward_type == "here_counter":
+        if (x - 23) * (x - 23) + (y - 30) * (y - 30) <= 48:
+            return accent
+        if (x - 42) * (x - 42) + (y - 30) * (y - 30) <= 48:
+            return mid_accent
+        if 21 <= x <= 44 and 39 <= y <= 43:
+            return 245
+
+    elif ward_type == "durf_grid":
+        if 10 <= x <= 54 and 10 <= y <= 54 and (x % 8 in (0, 1) or y % 8 in (0, 1)):
+            return accent
+        if (x + y + label) % 13 == 0:
+            return 245
+
+    elif ward_type == "code_diff":
+        if 10 <= x <= 55 and y in (14, 22, 30, 38, 46):
+            return accent if y in (14, 30, 46) else mid_accent
+        if x in (12, 16) and 12 <= y <= 48:
+            return 245
+
+    elif ward_type == "hardware_grid":
+        if 11 <= x <= 53 and 13 <= y <= 47:
+            if x in (11, 53) or y in (13, 47):
+                return accent
+            if x % 7 == 0 or y % 7 == 0:
+                return dark_accent
+            if (x * y + label) % 37 < 3:
+                return 245
+
+    elif ward_type in {"egress_footer", "programme_banner", "segment_page"}:
+        if 9 <= x <= 55 and y in (18, 19, 44, 45):
+            return accent
+        if 13 <= x <= 51 and 24 <= y <= 38:
+            return mid_accent
+        if x in (17, 24, 31, 38, 45) and 24 <= y <= 38:
+            return 245
+
+    elif ward_type == "history_corridor":
+        if 12 <= x <= 52 and y in (14, 24, 34, 44, 54):
+            return accent
+        if x in (18, 31, 44) and 14 <= y <= 54:
+            return mid_accent
+
+    elif ward_type == "instrument_dashboard":
+        if x in (14, 32, 50) and 12 <= y <= 52:
+            return dark_accent
+        if y in (18, 32, 46) and 10 <= x <= 54:
+            return dark_accent
+        if line_near(x, y, 12, 48, 52, 18, 1.2):
+            return accent
+        if (x - 46) * (x - 46) + (y - 20) * (y - 20) <= 10:
+            return 245
+
+    elif ward_type in {"cbip_density", "ir_dual"}:
+        if ward_type == "ir_dual" and (abs(x - 24) <= 1 or abs(x - 40) <= 1):
+            return 245
+        if 10 <= x <= 54 and 12 <= y <= 52 and (x * 5 + y * 11 + label) % 17 < 5:
+            return accent
+        if (x + y) % 9 == 0:
+            return mid_accent
+
+    elif ward_type == "chat_keywords":
+        for cx, cy in ((22, 24), (42, 24), (30, 42)):
+            if (x - cx) * (x - cx) + (y - cy) * (y - cy) <= 38:
+                return accent
+
+    elif ward_type == "programme_state":
+        for row in range(3):
+            y0 = 16 + row * 12
+            if 12 <= x <= 52 and y0 <= y <= y0 + 7:
+                return accent if row == 1 else mid_accent
+
+    elif ward_type == "query_card":
+        if (x - 32) * (x - 32) + (y - 25) * (y - 25) <= 92 and x > 26:
+            return accent
+        if 30 <= x <= 34 and 39 <= y <= 44:
+            return 245
+
+    elif ward_type == "poster_field":
+        if line_near(x, y, 10, 50, 54, 14, 1.4):
+            return accent
+        if 12 <= x <= 52 and y in (18, 27, 36, 45):
+            return mid_accent
+
+    elif ward_type == "tufte_bars":
+        for col, height in enumerate((20, 34, 13, 42, 27)):
+            x0 = 14 + col * 8
+            if x0 <= x <= x0 + 4 and 52 - height <= y <= 52:
+                return accent if col % 2 else mid_accent
+
+    elif ward_type == "ascii_schema":
+        if x in (14, 32, 50) and 14 <= y <= 50:
+            return accent
+        if y in (14, 32, 50) and 14 <= x <= 50:
+            return accent
+        if (x, y) in ((23, 23), (41, 23), (23, 41), (41, 41)):
+            return 245
+
+    elif ward_type == "scope_wave":
+        wave_y = 32 + int(10 * __import__("math").sin((x + label) * 0.32))
+        if abs(y - wave_y) <= 1 and 8 <= x <= 56:
+            return accent
+        if y in (20, 32, 44) and 10 <= x <= 54:
+            return dark_accent
+
+    return None
+
+
+def ward_panel_index(x, y, label, code, ward_type):
     """High-contrast in-engine ward anchor texture with identity baked in."""
     accent = WARD_ACCENT_INDICES[(int(label) - 1) % len(WARD_ACCENT_INDICES)]
 
@@ -207,12 +490,16 @@ def ward_panel_index(x, y, label, code):
     if (x + y + label * 3) % 17 == 0:
         base = max(118, accent - 74)
 
+    symbol = ward_symbol_index(x, y, label, ward_type, accent)
+    if symbol is not None:
+        return symbol
+
     text = f"{label:02d}"
-    scale = 5
-    start_x = 17
-    start_y = 20
+    scale = 2
+    start_x = 7
+    start_y = 7
     digit_w = 3 * scale
-    gap = 4
+    gap = 2
     for digit_idx, char in enumerate(text):
         glyph_x = x - start_x - digit_idx * (digit_w + gap)
         glyph_y = y - start_y
@@ -307,6 +594,7 @@ def generate_pixel_data(
     pattern="stone_blocks",
     label=0,
     code="",
+    ward_type="",
     drift=0,
     accent=0,
 ):
@@ -405,7 +693,7 @@ def generate_pixel_data(
                     base = max(76, drift_idx - 70)
 
             elif pattern == "ward_panel":
-                pixels.append(ward_panel_index(x, y, int(label), str(code)))
+                pixels.append(ward_panel_index(x, y, int(label), str(code), str(ward_type)))
                 continue
 
             elif pattern == "source_portal":
@@ -535,6 +823,7 @@ def main():
             pattern=params.get("pattern", "stone_blocks"),
             label=params.get("label", 0),
             code=params.get("code", ""),
+            ward_type=params.get("ward_type", ""),
             drift=params.get("drift", 0),
             accent=params.get("accent", 0),
         )

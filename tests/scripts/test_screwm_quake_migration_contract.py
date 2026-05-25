@@ -18,6 +18,9 @@ def test_screwm_quake_layout_routes_only_darkplaces_video() -> None:
     assert layout["sources"][0]["kind"] == "video"
     assert layout["sources"][0]["backend"] == "v4l2"
     assert layout["sources"][0]["params"]["device"] == "/dev/video52"
+    assert layout["sources"][0]["params"]["natural_w"] == 1920
+    assert layout["sources"][0]["params"]["natural_h"] == 1080
+    assert layout["sources"][0]["params"]["fps"] == 60
     assert layout["sources"][0]["params"]["role"] == "darkplaces_background"
     assert "Cairo" not in json.dumps(layout)
 
@@ -135,7 +138,7 @@ def test_screwm_quake_review_baseline_has_no_clocked_light_pulses() -> None:
     assert "radius = radius + 5 * sin(time" not in wards
     assert "radius = radius + 6 * sin(time" not in wards
     assert "pulse = pulse + 18 * sin(time" not in wards
-    assert "adddynamiclight('0 40 176', pulse + voice_radius" in wards
+    assert "adddynamiclight('0 -455 176', pulse + voice_radius" in wards
 
 
 def test_screwm_quake_contract_matches_current_camera_aoa_and_sound_foundation() -> None:
@@ -165,7 +168,7 @@ def test_screwm_quake_contract_matches_current_camera_aoa_and_sound_foundation()
         assert sound in world
     assert 'localcmd(strcat(strcat("map ", map_name), "\\n"));' in coupling
     assert "[x] Stable QuakeC review POV is noclip/free-camera" in spec
-    assert "[x] AoA Sierpinski tetrahedron visible and rotating" in spec
+    assert "[x] AoA/tetrix anchor with attendant sphere visible and rotating" in spec
     assert "[x] 5 ambient sound zones" in spec
     assert "material, inversion, aperture, and" in spec
     assert "Positive UserVec4.x is material emboss only" in spec

@@ -31,6 +31,9 @@ def test_darkplaces_v4l2_service_remains_runtime_guarded_and_uses_visible_xvfb_r
     assert "Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52" in body
     assert "Environment=HAPAX_DARKPLACES_WATCHDOG_INTERVAL_SECONDS=10" in body
     assert "Environment=HAPAX_DARKPLACES_JOY_INDEX=1" in body
+    assert "Environment=DARKPLACES_WIDTH=1920" in body
+    assert "Environment=DARKPLACES_HEIGHT=1080" in body
+    assert "Environment=DARKPLACES_FPS=60" in body
 
 
 def test_darkplaces_launchers_use_native_xbox_joystick_input() -> None:
@@ -126,9 +129,9 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     )
     world = (REPO_ROOT / "assets" / "quake" / "qc" / "world.qc").read_text(encoding="utf-8")
 
-    assert "vector AOA_CENTER = '0 0 176';" in defs
-    assert "vector CAMERA_REVIEW_POS = '0 -575 188';" in defs
-    assert "vector CAMERA_REVIEW_TARGET = '0 -360 168';" in defs
+    assert "vector AOA_CENTER = '0 -455 176';" in defs
+    assert "vector CAMERA_REVIEW_POS = '0 -650 190';" in defs
+    assert "vector CAMERA_REVIEW_TARGET = '0 -405 176';" in defs
     assert "vector(vector v) vectoangles = #51;" in defs
     assert "ang = vectoangles(target - pos);" in camera
     assert 'if (cvar("screwm_camera_orbit") > 0)' in camera
@@ -172,7 +175,7 @@ def test_screwm_camera_gamepad_service_is_opt_in_and_headless() -> None:
     assert "ConditionPathExists=%h/.config/hapax/enable-screwm-camera-gamepad" in body
     assert "--require-file scripts/screwm-camera-gamepad.py" in body
     assert "scripts/screwm-camera-gamepad.py" in body
-    assert "--device /dev/input/js2" in body
+    assert "--device /dev/input/js" not in body
     assert "WantedBy=hapax-darkplaces-v4l2.service" in body
 
 

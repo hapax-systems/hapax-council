@@ -338,12 +338,12 @@ void() screwm_apply_review_camera =
     {
         phase = time * screwm_review_camera_two_pi / screwm_review_camera_period;
         lift_phase = phase * 0.5 + 1.5708;
-        screwm_review_camera_origin_x = sin(phase) * 72;
-        screwm_review_camera_origin_y = -575 + cos(phase) * 18;
-        screwm_review_camera_origin_z = 188 + sin(lift_phase) * 14;
-        screwm_review_camera_angles = vectoangles('0 -360 168' - screwm_review_camera_origin);
+        screwm_review_camera_origin_x = sin(phase) * 84;
+        screwm_review_camera_origin_y = -650 + cos(phase) * 20;
+        screwm_review_camera_origin_z = 190 + sin(lift_phase) * 12;
+        screwm_review_camera_angles = vectoangles('0 -405 176' - screwm_review_camera_origin);
         screwm_review_camera_angles_z = 0;
-        screwm_review_camera_fov = '82 51 0';
+        screwm_review_camera_fov = '78 49 0';
     }
     screwm_native_last_angles = input_angles;
 
@@ -622,7 +622,7 @@ void() screwm_add_dynamic_lights =
     pulse = 170 + screwm_energy * 80 + screwm_audio_rms * 90;
     voice_radius = 20 + screwm_voice * 90 + screwm_audio_onset * 40;
 
-    adddynamiclight('0 40 176', pulse + voice_radius, '1.0 0.58 0.18');
+    adddynamiclight('0 -455 176', pulse + voice_radius, '1.0 0.58 0.18');
     if (cvar("screwm_review_fill_light") > 0)
         adddynamiclight('0 -332 184', 220 + screwm_energy * 80, '0.74 0.58 0.38');
     adddynamiclight('-222 -360 280', 70 + screwm_energy * 40, screwm_cyan);
@@ -714,11 +714,11 @@ void(float apilevel, string enginename, float engineversion) CSQC_Init =
     screwm_voice = 0;
     screwm_mode = "rnd";
     screwm_next_poll = 0;
-    screwm_review_camera_origin = '0 -575 188';
-    screwm_review_camera_angles = vectoangles('0 -360 168' - screwm_review_camera_origin);
+    screwm_review_camera_origin = '0 -650 190';
+    screwm_review_camera_angles = vectoangles('0 -405 176' - screwm_review_camera_origin);
     screwm_review_camera_angles_z = 0;
-    screwm_review_camera_fov = '82 51 0';
-    screwm_review_camera_period = 96.0;
+    screwm_review_camera_fov = '78 49 0';
+    screwm_review_camera_period = 110.0;
     screwm_review_camera_two_pi = 6.283185;
 };
 

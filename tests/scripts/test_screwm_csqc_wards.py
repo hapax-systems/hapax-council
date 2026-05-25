@@ -123,7 +123,7 @@ def test_darkplaces_review_camera_is_locked_by_default() -> None:
     assert "set screwm_camera_orbit 0" in autoexec
     assert "cl_bob 0" in autoexec
     assert "cl_rollangle 0" in autoexec
-    assert "fov 76" in autoexec
+    assert "fov 78" in autoexec
     assert "set screwm_camera_file_control 1" in autoexec
     assert "set screwm_player_noclip_control 1" in autoexec
     assert "set screwm_csqc_review_camera 1" in autoexec
@@ -167,23 +167,23 @@ def test_csqc_review_camera_overrides_render_view_for_obs_feedback() -> None:
     assert "screwm_review_camera_fov_y = fov * 0.625;" in body
     assert 'cvar("screwm_csqc_review_path") > 0' in body
     assert "phase = time * screwm_review_camera_two_pi / screwm_review_camera_period;" in body
-    assert "screwm_review_camera_origin_x = sin(phase) * 72;" in body
-    assert "screwm_review_camera_origin_y = -575 + cos(phase) * 18;" in body
+    assert "screwm_review_camera_origin_x = sin(phase) * 84;" in body
+    assert "screwm_review_camera_origin_y = -650 + cos(phase) * 20;" in body
     assert (
-        "screwm_review_camera_angles = vectoangles('0 -360 168' - screwm_review_camera_origin);"
+        "screwm_review_camera_angles = vectoangles('0 -405 176' - screwm_review_camera_origin);"
         in body
     )
     assert "setproperty(VF_ORIGIN, screwm_review_camera_origin);" in body
     assert "setproperty(VF_ANGLES, screwm_review_camera_angles);" in body
     assert "setproperty(VF_CL_VIEWANGLES, screwm_review_camera_angles);" in body
     assert "setproperty(VF_FOV, screwm_review_camera_fov);" in body
-    assert "screwm_review_camera_origin = '0 -575 188';" in body
+    assert "screwm_review_camera_origin = '0 -650 190';" in body
     assert (
-        "screwm_review_camera_angles = vectoangles('0 -360 168' - screwm_review_camera_origin);"
+        "screwm_review_camera_angles = vectoangles('0 -405 176' - screwm_review_camera_origin);"
         in body
     )
-    assert "screwm_review_camera_fov = '82 51 0';" in body
-    assert "screwm_review_camera_period = 96.0;" in body
+    assert "screwm_review_camera_fov = '78 49 0';" in body
+    assert "screwm_review_camera_period = 110.0;" in body
 
 
 def test_darkplaces_review_camera_is_noclip_not_player_physics() -> None:

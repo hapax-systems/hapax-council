@@ -27,6 +27,8 @@ WARD_PANEL_COUNT = 36
 TR = int(TOWER_RADIUS_M * UNITS_PER_METER)
 FLOOR_Z = int(TOWER_FLOOR_M * UNITS_PER_METER)
 CEIL_Z = int(TOWER_CEIL_M * UNITS_PER_METER)
+AOA_X = 0
+AOA_Y = -455
 AOA_Z = int(AOA_HEIGHT_M * UNITS_PER_METER)
 EXT = TR + WALL_THICK + 32
 REVIEW_ALCOVE_Y_MIN = -(TR + WALL_THICK + 430)
@@ -415,7 +417,7 @@ def level_ledges(preset):
 
 
 def central_lattice(preset):
-    """Low, non-obstructing AoA floor mark in the scroom center."""
+    """Low, non-obstructing AoA floor mark under the authored foreground anchor."""
     brushes = []
     tex = preset.get("pedestal_tex", preset["ramp_tex"])
     mark_z = FLOOR_Z + 4
@@ -427,7 +429,17 @@ def central_lattice(preset):
     ):
         b = box_brush(x1, y1, mark_z, x2, y2, mark_z + 4, tex)
         if b:
-            brushes.append(b)
+            shifted = box_brush(
+                x1 + AOA_X,
+                y1 + AOA_Y,
+                mark_z,
+                x2 + AOA_X,
+                y2 + AOA_Y,
+                mark_z + 4,
+                tex,
+            )
+            if shifted:
+                brushes.append(shifted)
     return brushes
 
 
@@ -838,16 +850,16 @@ def ward_drift_paths(_preset):
 
 
 def central_pedestal(preset):
-    """Low pedestal at tower center for AoA to float above."""
+    """Low pedestal under the current authored AoA anchor."""
     rt = preset.get("pedestal_tex", preset["ramp_tex"])
     pedestal_size = 48
     pedestal_height = 16
     b = box_brush(
-        -pedestal_size,
-        -pedestal_size,
+        AOA_X - pedestal_size,
+        AOA_Y - pedestal_size,
         FLOOR_Z,
-        pedestal_size,
-        pedestal_size,
+        AOA_X + pedestal_size,
+        AOA_Y + pedestal_size,
         FLOOR_Z + pedestal_height,
         rt,
     )
@@ -904,7 +916,7 @@ def lights(preset):
     entities.append(
         "{\n"
         '"classname" "light"\n'
-        f'"origin" "0 0 {AOA_Z}"\n'
+        f'"origin" "{AOA_X} {AOA_Y} {AOA_Z}"\n'
         f'"light" "{aoa_light_value}"\n'
         f'"_color" "{ar} {ag} {ab}"\n'
         "}"
@@ -915,10 +927,10 @@ def lights(preset):
     review_fill = int(level_light * 0.72)
     for idx, (x, y, z, scale) in enumerate(
         [
-            (0, -330, 154, 1.20),
-            (0, -144, 176, 1.00),
-            (-148, -118, 214, 0.72),
-            (148, -118, 214, 0.72),
+            (0, -438, 168, 1.15),
+            (0, -330, 154, 1.00),
+            (-148, -126, 214, 0.72),
+            (148, -126, 214, 0.72),
         ],
         start=1,
     ):

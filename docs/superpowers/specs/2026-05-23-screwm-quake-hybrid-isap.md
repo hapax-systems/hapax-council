@@ -85,7 +85,7 @@ DarkPlaces dpextensions provide `fopen`/`fclose`/`fgets` for reading external fi
 ┌─────────────────────────────────────────────────────────┐
 │ DarkPlaces (GPU: 5060 Ti, ~200-500MB VRAM)              │
 │  ├─ Tower BSP (8 octagonal walls, ramps, floor, ceiling)│
-│  ├─ AoA MDL entity (Sierpinski tetrahedron, rotating)   │
+│  ├─ AoA MDL entity (current tetrix + sphere, rotating)  │
 │  ├─ 6 colored lights (per-level semantic colors)         │
 │  ├─ Fog (density + color, mode-aware)                    │
 │  ├─ 5 ambient sound zones (entity-based, 128 channels)  │
@@ -270,10 +270,12 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   lights, audio reactivity, and working-mode map changes. Camera motion remains
   opt-in during review.
 
-### D5: AoA Sierpinski Tetrahedron MDL [COMPLETE]
+### D5: AoA/Tetrix Anchor MDL [COMPLETE]
 - `scripts/generate-aoa-mdl.py`
 - `assets/quake/models/aoa.mdl`
 - Spawned and rotated by QuakeC at `AOA_CENTER`.
+- Geometry follows the authored `aoa-tetrix-v2` root with an attendant sphere
+  instead of the retired flat/legacy Sierpinski-only anchor.
 
 ### D6: v4l2loopback Capture [COMPLETE - BOUNDED SMOKE PASSED]
 - `/etc/modprobe.d/v4l2loopback-hapax.conf` updated (video52=DarkPlaces in the unified 14-device config)
@@ -462,14 +464,14 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 
 ## 14. Evidence Gates
 
-- [x] DarkPlaces renders tower BSP with textures at 1280×720
+- [x] DarkPlaces renders the Scroom/Screwm substrate with textures at 1920×1080/60
 - [x] v4l2loopback /dev/video52 captures DarkPlaces output
 - [x] Layout/registry/pipeline contracts declare DarkPlaces as the v4l2 background source
 - [x] All 36 non-DarkPlaces Screwm visual sources have in-scroom BSP/WAD anchors
 - [x] In-world BSP drift carriers connect the ward field
 - [x] Compositor accepts DarkPlaces as primary background without external ward overlays
 - [x] Stable QuakeC review POV is noclip/free-camera, with optional manual/orbit movement gated off by default
-- [x] AoA Sierpinski tetrahedron visible and rotating at tower center
+- [x] AoA/tetrix anchor with attendant sphere visible and rotating
 - [x] 5 ambient sound zones are present and spawned by QuakeC
 - [x] Working mode switch changes fog color + texture set
 - [x] Stimmung/audio/Reverie state modulates AoA spin, fog, postprocess fields, and ward/source light intensity

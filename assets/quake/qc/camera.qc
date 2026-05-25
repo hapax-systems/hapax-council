@@ -72,7 +72,7 @@ vector() camera_file_angles =
 {
     vector angles;
 
-    angles_x = camera_read_float("data/camera-pitch.txt", 5.5);
+    angles_x = camera_read_float("data/camera-pitch.txt", 3.2);
     angles_y = camera_read_float("data/camera-yaw.txt", 90);
     angles_z = 0;
     return angles;
@@ -82,7 +82,7 @@ void() camera_apply_file_fov =
 {
     float fov_value;
 
-    fov_value = camera_read_float("data/camera-fov.txt", 76);
+    fov_value = camera_read_float("data/camera-fov.txt", 78);
     localcmd(strcat(strcat("fov ", ftos(fov_value)), "\n"));
 };
 

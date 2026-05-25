@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Generate a Sierpinski tetrahedron as a Quake MDL file.
+"""Generate the current AoA/tetrix anchor as a Quake MDL file.
 
-Depth 2 = 16 tetrahedra, 64 vertices, 64 triangles. Depth 2 chosen over
-depth 3 because the Quake MDL format packs vertices as 8-bit integers —
-depth 3's 256 sub-tetrahedra are too small to survive quantization.
+The source authority is the authored 3D AoA in hapax-visual, not the older
+flat Sierpinski overlay. The model keeps a recursive tetrix core and adds the
+attendant sphere as physical ring geometry so the anchor reads as the newer
+contained AoA object inside DarkPlaces.
 
 Each sub-tetrahedron is generated with its own 4 vertices to avoid
 shared-vertex ambiguity in the MDL format's flat shading model.
@@ -13,8 +14,20 @@ import math
 import struct
 from pathlib import Path
 
-DEPTH = 2
-SCALE = 80
+AOA_GEOMETRY_REVISION = "aoa-tetrix-v2"
+DEPTH = 3
+SCALE = 92
+ATTENDANT_SPHERE_RADIUS = 1.10
+ATTENDANT_SPHERE_RING_WIDTH = 0.026
+ATTENDANT_SPHERE_SEGMENTS = 72
+
+# Mirrors hapax-logos/crates/hapax-visual/src/aoa_panes.rs::AOA_ROOT_MODEL_VERTICES.
+AOA_ROOT_MODEL_VERTICES = [
+    [-0.58, -0.44, 0.34],
+    [0.58, -0.44, 0.34],
+    [0.0, 0.60, 0.34],
+    [0.0, -0.095, -0.62],
+]
 
 # Quake's 162-entry anorms table (subset — full table from r_shared.c)
 ANORMS = [
@@ -193,29 +206,77 @@ def find_normal_index(nx: float, ny: float, nz: float) -> int:
     return best_idx
 
 
-def sierpinski_tetrahedron(depth: int):
-    # Regular tetrahedron vertices (unit sphere inscribed)
-    s = 1.0
-    v0 = [0, s, 0]
-    v1 = [s * 0.9428, -s * 0.3333, 0]
-    v2 = [-s * 0.4714, -s * 0.3333, s * 0.8165]
-    v3 = [-s * 0.4714, -s * 0.3333, -s * 0.8165]
+def midpoint(a, b):
+    return [(a[i] + b[i]) * 0.5 for i in range(3)]
+
+
+def tetrix_tetrahedra(depth: int, corners=None):
+    """Recursive AoA tetrix core using the current authored root vertices."""
+    if corners is None:
+        corners = [list(v) for v in AOA_ROOT_MODEL_VERTICES]
 
     if depth == 0:
+        v0, v1, v2, v3 = corners
         return [
-            ([list(v0), list(v1), list(v2), list(v3)], [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)])
+            (
+                [list(v0), list(v1), list(v2), list(v3)],
+                [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)],
+            )
         ]
 
     result = []
-    corners = [v0, v1, v2, v3]
-    for corner in corners:
-        sub = sierpinski_tetrahedron(depth - 1)
-        for verts, faces in sub:
-            scaled = []
-            for v in verts:
-                scaled.append([(v[i] + corner[i]) / 2.0 for i in range(3)])
-            result.append((scaled, faces))
+    for idx, corner in enumerate(corners):
+        child_corners = [midpoint(corner, other) for other in corners]
+        child_corners[idx] = list(corner)
+        result.extend(tetrix_tetrahedra(depth - 1, child_corners))
     return result
+
+
+def sphere_ring(axis: str, radius: float, width: float, segments: int):
+    """Return a broad ring strip for the AoA attendant sphere."""
+    verts = []
+    faces = []
+
+    for i in range(segments):
+        theta = 2.0 * math.pi * i / segments
+        c = math.cos(theta)
+        s = math.sin(theta)
+        if axis == "xy":
+            center = [radius * c, radius * s, 0.0]
+            outward = [c, s, 0.0]
+        elif axis == "xz":
+            center = [radius * c, 0.0, radius * s]
+            outward = [c, 0.0, s]
+        elif axis == "yz":
+            center = [0.0, radius * c, radius * s]
+            outward = [0.0, c, s]
+        else:
+            raise ValueError(f"unknown sphere ring axis: {axis}")
+        verts.append([center[j] + outward[j] * width for j in range(3)])
+        verts.append([center[j] - outward[j] * width for j in range(3)])
+
+    for i in range(segments):
+        a = i * 2
+        b = ((i + 1) % segments) * 2
+        faces.append((a, b, a + 1))
+        faces.append((a + 1, b, b + 1))
+
+    return verts, faces
+
+
+def compose_aoa_parts(depth: int):
+    """Tetrix core plus three great-circle sphere rings."""
+    parts = tetrix_tetrahedra(depth)
+    for axis in ("xy", "xz", "yz"):
+        parts.append(
+            sphere_ring(
+                axis,
+                ATTENDANT_SPHERE_RADIUS,
+                ATTENDANT_SPHERE_RING_WIDTH,
+                ATTENDANT_SPHERE_SEGMENTS,
+            )
+        )
+    return parts
 
 
 def flatten_mesh(parts):
@@ -328,9 +389,12 @@ def write_mdl(verts, faces, output_path: Path, scale: float):
 
 
 def main():
-    parts = sierpinski_tetrahedron(DEPTH)
+    parts = compose_aoa_parts(DEPTH)
     verts, faces = flatten_mesh(parts)
-    print(f"Sierpinski depth {DEPTH}: {len(verts)} vertices, {len(faces)} triangles")
+    print(
+        f"{AOA_GEOMETRY_REVISION} depth {DEPTH} + attendant sphere: "
+        f"{len(verts)} vertices, {len(faces)} triangles"
+    )
 
     output_dir = Path(__file__).parent.parent / "assets" / "quake" / "models"
     output_dir.mkdir(parents=True, exist_ok=True)

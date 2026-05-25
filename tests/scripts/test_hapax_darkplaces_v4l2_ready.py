@@ -41,7 +41,7 @@ def test_darkplaces_v4l2_ready_accepts_capture_device_with_expected_format(tmp_p
             printf 'Capabilities:\\n\\tVideo Capture\\n\\tStreaming\\n'
             ;;
           *--get-fmt-video*)
-            printf "Width/Height      : 1280/720\\nPixel Format      : 'YUYV'\\n"
+            printf "Width/Height      : 1920/1080\\nPixel Format      : 'YUYV'\\n"
             ;;
         esac
         exit 0
@@ -86,7 +86,7 @@ def test_darkplaces_v4l2_ready_waits_for_capture_capability(tmp_path: Path) -> N
             fi
             ;;
           *--get-fmt-video*)
-            printf "Width/Height      : 1280/720\\nPixel Format      : 'YUYV'\\n"
+            printf "Width/Height      : 1920/1080\\nPixel Format      : 'YUYV'\\n"
             ;;
         esac
         exit 0
@@ -148,4 +148,4 @@ def test_darkplaces_v4l2_ready_fails_on_wrong_format(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 1
-    assert "expected 1280x720" in result.stderr
+    assert "expected 1920x1080" in result.stderr

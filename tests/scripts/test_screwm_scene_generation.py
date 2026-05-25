@@ -58,7 +58,7 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert module["ward_review_drift_midpoint"](1, 9) == (-185, -378, 253)
     assert "ward-review-frame 01: token_pole top drift_c" in content
     assert "ward-review-frame 04: sierpinski left drift_g" in content
-    assert '"origin" "0 -144 176"' in content
+    assert '"origin" "0 -455 176"' in content
 
 
 def test_screwm_drift_graph_physically_touches_every_ward_anchor() -> None:
@@ -93,6 +93,7 @@ def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
     assert "The duplicate deep ward lattice is disabled" in source
     assert "REVIEW_ALCOVE_Y_MIN" in source
     assert "REVIEW_WARD_Y = -360" in source
+    assert "AOA_Y = -455" in source
     assert "REVIEW_DRIFT_Y = REVIEW_WARD_Y - 18" in source
     assert "t = 1" in source
     assert "WARD_FRAME_PAD = 5" in source
@@ -154,13 +155,19 @@ def test_screwm_wad_defines_all_ward_panel_textures() -> None:
 
     ward_textures = [name for name in textures if name.startswith("w") and name[1:].isdigit()]
     assert len(ward_textures) == 36
+    assert len(module["WARD_TEXTURE_TYPES"]) == 36
     assert textures["w01"]["pattern"] == "ward_panel"
     assert textures["w01"]["code"] == "TOKEN"
+    assert textures["w01"]["ward_type"] == "token_path"
+    assert textures["w04"]["ward_type"] == "sierpinski"
+    assert textures["w13"]["ward_type"] == "pressure_bar"
     assert len(module["WARD_ACCENT_INDICES"]) >= 4
     assert textures["w35"]["label"] == 35
     assert textures["w35"]["code"] == "SCOPE"
+    assert textures["w35"]["ward_type"] == "scope_wave"
     assert textures["w36"]["label"] == 36
     assert textures["w36"]["code"] == "IRDUAL"
+    assert textures["w36"]["ward_type"] == "ir_dual"
     assert textures["drift_c"]["pattern"] == "drift_line"
     assert textures["drift_r"]["drift"] == 186
 
@@ -189,7 +196,7 @@ def test_screwm_wad_defines_legacy_sierpinski_slot_textures() -> None:
     assert textures["slot_voice"]["code"] == "VOICE"
 
 
-def test_ward_panel_texture_has_legible_number_contrast() -> None:
+def test_ward_panel_texture_has_semantic_glyph_contrast() -> None:
     module = _load_script("scripts/generate-screwm-wad.py")
     pixels, _palette = module["generate_pixel_data"](
         (120, 105, 70),
@@ -197,15 +204,28 @@ def test_ward_panel_texture_has_legible_number_contrast() -> None:
         module["TEX_SIZE"],
         module["TEX_SIZE"],
         pattern="ward_panel",
-        label=17,
-        code="CODE",
+        label=13,
+        code="PRESS",
+        ward_type="pressure_bar",
     )
 
     assert max(pixels) >= 232
     assert min(pixels) <= 34
-    assert pixels.count(max(pixels)) > 120
-    accent = module["WARD_ACCENT_INDICES"][(17 - 1) % len(module["WARD_ACCENT_INDICES"])]
-    assert pixels.count(accent) > 10
+    accent = module["WARD_ACCENT_INDICES"][(13 - 1) % len(module["WARD_ACCENT_INDICES"])]
+    assert pixels.count(accent) > 180
+
+    scope_pixels, _palette = module["generate_pixel_data"](
+        (120, 105, 70),
+        0,
+        module["TEX_SIZE"],
+        module["TEX_SIZE"],
+        pattern="ward_panel",
+        label=35,
+        code="SCOPE",
+        ward_type="scope_wave",
+    )
+    scope_accent = module["WARD_ACCENT_INDICES"][(35 - 1) % len(module["WARD_ACCENT_INDICES"])]
+    assert scope_pixels.count(scope_accent) > 100
 
 
 def test_source_portal_texture_has_legible_camera_code() -> None:

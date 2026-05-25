@@ -77,9 +77,9 @@ float SOUNDFLAG_FORCELOOP = 1;
 entity aoa_entity;
 entity camera_entity;
 
-vector AOA_CENTER = '0 0 176';
-vector CAMERA_REVIEW_POS = '0 -575 188';
-vector CAMERA_REVIEW_TARGET = '0 -360 168';
+vector AOA_CENTER = '0 -455 176';
+vector CAMERA_REVIEW_POS = '0 -650 190';
+vector CAMERA_REVIEW_TARGET = '0 -405 176';
 
 float CAMERA_PERIOD;
 float CAMERA_ORBIT_PERIOD;

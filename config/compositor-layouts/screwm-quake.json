@@ -8,9 +8,9 @@
       "backend": "v4l2",
       "params": {
         "device": "/dev/video52",
-        "natural_w": 1280,
-        "natural_h": 720,
-        "fps": 30,
+        "natural_w": 1920,
+        "natural_h": 1080,
+        "fps": 60,
         "role": "darkplaces_background"
       },
       "update_cadence": "always",
