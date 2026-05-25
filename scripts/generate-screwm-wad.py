@@ -63,6 +63,13 @@ CAMERA_SOURCE_TEXTURES = [
     ("cam_cov", "C920OVH", 214),
 ]
 
+LEGACY_SLOT_TEXTURES = [
+    ("slot_sierp", "SIERP", 214),
+    ("slot_album", "ALBUM", 186),
+    ("slot_rev", "REVERIE", 202),
+    ("slot_voice", "VOICE", 198),
+]
+
 TEXTURES = {
     "city4_2": {"color": (100, 80, 55), "noise": 12, "pattern": "stone_blocks"},
     "ground1_6": {"color": (60, 55, 50), "noise": 8, "pattern": "worn_stone"},
@@ -104,6 +111,15 @@ for tex_name, code, accent in CAMERA_SOURCE_TEXTURES:
         "color": (74, 88, 84),
         "noise": 0,
         "pattern": "source_portal",
+        "code": code,
+        "accent": accent,
+    }
+
+for tex_name, code, accent in LEGACY_SLOT_TEXTURES:
+    TEXTURES[tex_name] = {
+        "color": (62, 76, 72),
+        "noise": 0,
+        "pattern": "legacy_slot",
         "code": code,
         "accent": accent,
     }
@@ -250,6 +266,38 @@ def source_portal_index(x, y, code, accent):
     return 32 + ((x * 5 + y * 7 + len(code) * 11) % 24)
 
 
+def legacy_slot_index(x, y, code, accent):
+    """Large Sierpinski-era content slot texture with baked identity."""
+    if x < 2 or y < 2 or x >= TEX_SIZE - 2 or y >= TEX_SIZE - 2:
+        return 245
+    if x < 5 or y < 5 or x >= TEX_SIZE - 5 or y >= TEX_SIZE - 5:
+        return accent
+    if y in (9, 10, 53, 54):
+        return max(72, accent - 96)
+    if x in (9, 10, 53, 54):
+        return max(86, accent - 82)
+    if y % 6 in (0, 1):
+        return max(48, accent - 128)
+    if (x * 3 + y * 7 + len(code) * 5) % 29 < 3:
+        return max(110, accent - 52)
+
+    short_code = code[:7].upper()
+    scale = 3 if len(short_code) <= 5 else 2
+    text_width = len(short_code) * 3 * scale + max(0, len(short_code) - 1) * scale
+    if text_pixel_lit(x, y, short_code, (TEX_SIZE - text_width) // 2, 24, scale):
+        return 245
+
+    # A quiet center trace keeps the slot from reading as a blank label tile.
+    dx = abs(x - 32)
+    dy = abs(y - 32)
+    if dx <= 1 or dy <= 1:
+        return max(82, accent - 108)
+    if dx + dy in (20, 21, 22):
+        return max(96, accent - 80)
+
+    return 22 + ((x * 11 + y * 5 + len(code) * 13) % 22)
+
+
 def generate_pixel_data(
     color,
     noise,
@@ -362,6 +410,10 @@ def generate_pixel_data(
 
             elif pattern == "source_portal":
                 pixels.append(source_portal_index(x, y, str(code), int(accent) if accent else 214))
+                continue
+
+            elif pattern == "legacy_slot":
+                pixels.append(legacy_slot_index(x, y, str(code), int(accent) if accent else 214))
                 continue
 
             # Add surface noise

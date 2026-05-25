@@ -32,6 +32,7 @@ EXT = TR + WALL_THICK + 32
 REVIEW_ALCOVE_Y_MIN = -(TR + WALL_THICK + 430)
 REVIEW_WARD_Y = -360
 REVIEW_DRIFT_Y = REVIEW_WARD_Y - 18
+LEGACY_SCRIM_Y = REVIEW_WARD_Y - 36
 LEVEL_BANDS = [
     ("perception", FLOOR_Z, FLOOR_Z + 96),
     ("cognition", FLOOR_Z + 96, FLOOR_Z + 192),
@@ -155,6 +156,47 @@ SPECIAL_WARD_POSITIONS = {
 
 SOURCE_PANE_W = 58
 SOURCE_PANE_H = 44
+LEGACY_SCRIM_LINE_T = 5
+LEGACY_SCRIM_LINE_STEP = 12
+LEGACY_TRIANGLE = (
+    (0, FLOOR_Z + 386),
+    (-252, FLOOR_Z + 122),
+    (252, FLOOR_Z + 122),
+)
+LEGACY_SLOT_PANES = [
+    {
+        "name": "sierpinski-content",
+        "texture": "slot_sierp",
+        "domain": "perception",
+        "pos": (0, LEGACY_SCRIM_Y + 4, FLOOR_Z + 306),
+        "size": (108, 58),
+        "frame": "drift_c",
+    },
+    {
+        "name": "album-deep-slot",
+        "texture": "slot_album",
+        "domain": "music",
+        "pos": (-120, LEGACY_SCRIM_Y + 4, FLOOR_Z + 166),
+        "size": (116, 62),
+        "frame": "drift_r",
+    },
+    {
+        "name": "reverie-deep-slot",
+        "texture": "slot_rev",
+        "domain": "perception",
+        "pos": (120, LEGACY_SCRIM_Y + 4, FLOOR_Z + 166),
+        "size": (116, 62),
+        "frame": "drift_g",
+    },
+    {
+        "name": "voice-center-void",
+        "texture": "slot_voice",
+        "domain": "communication",
+        "pos": (0, LEGACY_SCRIM_Y - 2, FLOOR_Z + 212),
+        "size": (92, 34),
+        "frame": "drift_a",
+    },
+]
 SOURCE_ANCHORS = [
     {
         "role": "brio-operator",
@@ -478,6 +520,155 @@ def ward_review_drift_paths(_preset):
     return brushes
 
 
+def midpoint_2d(a, b):
+    return (int((a[0] + b[0]) / 2), int((a[1] + b[1]) / 2))
+
+
+def legacy_sierpinski_edges():
+    """Return the old Screwm Sierpinski line grammar as in-world edges."""
+    edges = []
+    top, left, right = LEGACY_TRIANGLE
+    root = ((top, left, "drift_c"), (left, right, "drift_r"), (right, top, "drift_g"))
+    edges.extend(root)
+
+    def add_void_edges(triangle, depth):
+        if depth <= 0:
+            return
+        a, b, c = triangle
+        ab = midpoint_2d(a, b)
+        bc = midpoint_2d(b, c)
+        ac = midpoint_2d(a, c)
+        edges.extend(
+            (
+                (ab, bc, "drift_a"),
+                (bc, ac, "drift_c"),
+                (ac, ab, "drift_g"),
+            )
+        )
+        add_void_edges((a, ab, ac), depth - 1)
+        add_void_edges((ab, b, bc), depth - 1)
+        add_void_edges((ac, bc, c), depth - 1)
+
+    add_void_edges(LEGACY_TRIANGLE, 2)
+    return edges
+
+
+def voxel_line(start, end, tex):
+    """Rasterize a 2D line into small y-facing Quake brush pixels."""
+    brushes = []
+    dx = end[0] - start[0]
+    dz = end[1] - start[1]
+    steps = max(1, int(max(abs(dx), abs(dz)) / LEGACY_SCRIM_LINE_STEP))
+    seen = set()
+    t = LEGACY_SCRIM_LINE_T
+
+    for i in range(steps + 1):
+        x = int(round(start[0] + dx * i / steps))
+        z = int(round(start[1] + dz * i / steps))
+        key = (x // 2, z // 2)
+        if key in seen:
+            continue
+        seen.add(key)
+        brush = box_brush(
+            x - t,
+            LEGACY_SCRIM_Y - 10,
+            z - t,
+            x + t,
+            LEGACY_SCRIM_Y - 4,
+            z + t,
+            tex,
+        )
+        if brush:
+            brushes.append(brush)
+
+    return brushes
+
+
+def legacy_sierpinski_slot_panes():
+    """Large content slots from the last non-Quake Screwm, embodied in BSP."""
+    brushes = []
+
+    for slot in LEGACY_SLOT_PANES:
+        x, y, z = slot["pos"]
+        w, h = slot["size"]
+        tex = slot["texture"]
+        frame_tex = slot["frame"]
+        pane = box_brush(x - w // 2, y - 2, z - h // 2, x + w // 2, y + 2, z + h // 2, tex)
+        if pane:
+            brushes.append(f"// legacy-sierpinski-slot {slot['name']} {tex}\n{pane}")
+
+        frame_t = 5
+        for frame_name, frame in (
+            (
+                "top",
+                box_brush(
+                    x - w // 2 - frame_t,
+                    y - 8,
+                    z + h // 2 + 1,
+                    x + w // 2 + frame_t,
+                    y - 4,
+                    z + h // 2 + frame_t,
+                    frame_tex,
+                ),
+            ),
+            (
+                "bottom",
+                box_brush(
+                    x - w // 2 - frame_t,
+                    y - 8,
+                    z - h // 2 - frame_t,
+                    x + w // 2 + frame_t,
+                    y - 4,
+                    z - h // 2 - 1,
+                    frame_tex,
+                ),
+            ),
+            (
+                "left",
+                box_brush(
+                    x - w // 2 - frame_t,
+                    y - 8,
+                    z - h // 2 - frame_t,
+                    x - w // 2 - 1,
+                    y - 4,
+                    z + h // 2 + frame_t,
+                    frame_tex,
+                ),
+            ),
+            (
+                "right",
+                box_brush(
+                    x + w // 2 + 1,
+                    y - 8,
+                    z - h // 2 - frame_t,
+                    x + w // 2 + frame_t,
+                    y - 4,
+                    z + h // 2 + frame_t,
+                    frame_tex,
+                ),
+            ),
+        ):
+            if frame:
+                brushes.append(
+                    f"// legacy-sierpinski-slot-frame {slot['name']} {frame_name} {frame_tex}\n"
+                    f"{frame}"
+                )
+
+    return brushes
+
+
+def legacy_sierpinski_scrim(_preset):
+    """Physical Sierpinski/fishbowl anchor from the previous Screwm surface."""
+    brushes = []
+
+    for edge_idx, (start, end, tex) in enumerate(legacy_sierpinski_edges(), start=1):
+        brushes.append(f"// legacy-sierpinski-edge {edge_idx:02d} {tex}")
+        brushes.extend(voxel_line(start, end, tex))
+
+    brushes.extend(legacy_sierpinski_slot_panes())
+    return brushes
+
+
 def ward_scrim_panes(_preset):
     """The duplicate deep ward lattice is disabled in the open scroom baseline."""
     return []
@@ -746,6 +937,26 @@ def source_lights(preset):
     return entities
 
 
+def legacy_sierpinski_lights(preset):
+    """Baked light support for the physical Sierpinski/fishbowl anchor."""
+    entities = []
+    base = int(preset.get("wall_light", 100) * 1.20)
+
+    for idx, slot in enumerate(LEGACY_SLOT_PANES, start=1):
+        x, y, z = slot["pos"]
+        r, g, b = DOMAIN_LIGHT_COLOR[slot["domain"]]
+        entities.append(
+            f"// legacy-sierpinski-light {idx:02d}: {slot['name']}\n"
+            "{\n"
+            '"classname" "light"\n'
+            f'"origin" "{x} {y - 36} {z}"\n'
+            f'"light" "{base}"\n'
+            f'"_color" "{r} {g} {b}"\n'
+            "}"
+        )
+    return entities
+
+
 def sectioned_brushes(section, brushes):
     return [f"// section: {section}", *brushes]
 
@@ -762,6 +973,7 @@ def generate_map(preset):
         + sectioned_brushes("central-aoa-lattice", central_lattice(preset))
         + sectioned_brushes("tower-ramp-shelves", ramp_shelves(preset))
         + sectioned_brushes("central-aoa-pedestal", central_pedestal(preset))
+        + sectioned_brushes("legacy-sierpinski-scrim", legacy_sierpinski_scrim(preset))
         + sectioned_brushes("ward-review-plane", ward_review_panes(preset))
         + sectioned_brushes("ward-review-drift-paths", ward_review_drift_paths(preset))
         + sectioned_brushes("source-camera-constellation", source_constellation_panes(preset))
@@ -785,7 +997,11 @@ def generate_map(preset):
     lines.append("")
 
     for light in (
-        lights(preset) + ward_review_lights(preset) + ward_lights(preset) + source_lights(preset)
+        lights(preset)
+        + legacy_sierpinski_lights(preset)
+        + ward_review_lights(preset)
+        + ward_lights(preset)
+        + source_lights(preset)
     ):
         lines.append(light)
         lines.append("")

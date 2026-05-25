@@ -26,6 +26,10 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert content.count("// ward-review-pane ") == 36
     assert content.count("// ward-review-frame ") == 144
     assert content.count("// ward-review-drift ") >= 25
+    assert content.count("// legacy-sierpinski-edge ") == len(module["legacy_sierpinski_edges"]())
+    assert content.count("// legacy-sierpinski-slot ") == 4
+    assert content.count("// legacy-sierpinski-slot-frame ") == 16
+    assert content.count("// legacy-sierpinski-light ") == 4
     assert content.count("// ward-rail row") == 0
     assert content.count("// ward-spine col") == 0
     assert content.count("// ward-drift ") == 0
@@ -35,6 +39,11 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "drift_r" in content
     assert "// section: ward-review-plane" in content
     assert "// section: ward-review-drift-paths" in content
+    assert "// section: legacy-sierpinski-scrim" in content
+    assert "slot_sierp" in content
+    assert "slot_album" in content
+    assert "slot_rev" in content
+    assert "slot_voice" in content
     assert "// ward-review-pane 01: token_pole" in content
     assert "// ward-review-frame 36: cbip_dual_ir_displacement" in content
     assert module["ward_review_position"](1) == (-222, -360, 280)
@@ -159,6 +168,18 @@ def test_screwm_wad_defines_camera_source_anchor_textures() -> None:
     assert textures["cam_cov"]["code"] == "C920OVH"
 
 
+def test_screwm_wad_defines_legacy_sierpinski_slot_textures() -> None:
+    module = _load_script("scripts/generate-screwm-wad.py")
+    textures = module["TEXTURES"]
+
+    slot_names = [name for name, _code, _accent in module["LEGACY_SLOT_TEXTURES"]]
+    assert slot_names == ["slot_sierp", "slot_album", "slot_rev", "slot_voice"]
+    assert all(textures[name]["pattern"] == "legacy_slot" for name in slot_names)
+    assert textures["slot_sierp"]["code"] == "SIERP"
+    assert textures["slot_album"]["accent"] == 186
+    assert textures["slot_voice"]["code"] == "VOICE"
+
+
 def test_ward_panel_texture_has_legible_number_contrast() -> None:
     module = _load_script("scripts/generate-screwm-wad.py")
     pixels, _palette = module["generate_pixel_data"](
@@ -193,3 +214,20 @@ def test_source_portal_texture_has_legible_camera_code() -> None:
     assert max(pixels) >= 232
     assert min(pixels) <= 34
     assert pixels.count(214) > 25
+
+
+def test_legacy_sierpinski_slot_texture_has_legible_code() -> None:
+    module = _load_script("scripts/generate-screwm-wad.py")
+    pixels, _palette = module["generate_pixel_data"](
+        (62, 76, 72),
+        0,
+        module["TEX_SIZE"],
+        module["TEX_SIZE"],
+        pattern="legacy_slot",
+        code="REVERIE",
+        accent=202,
+    )
+
+    assert max(pixels) >= 232
+    assert min(pixels) <= 34
+    assert pixels.count(202) > 20
