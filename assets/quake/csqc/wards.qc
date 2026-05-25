@@ -279,6 +279,15 @@ float screwm_live_album_fresh;
 float screwm_live_album_playing;
 float screwm_live_album_risk;
 float screwm_live_voice_active;
+float screwm_governance_consent_allowed;
+float screwm_governance_persistence_allowed;
+float screwm_governance_health_reference;
+float screwm_governance_health_perception;
+float screwm_governance_health_error;
+float screwm_governance_health_fresh;
+float screwm_governance_follow_active;
+float screwm_governance_follow_confidence;
+float screwm_governance_follow_fresh;
 
 vector screwm_cyan = '0.45 0.95 0.88';
 vector screwm_amber = '1.00 0.62 0.23';
@@ -637,6 +646,15 @@ void() screwm_poll_state =
     screwm_live_album_playing = screwm_read_norm("data/live-album-playing.txt");
     screwm_live_album_risk = screwm_read_norm("data/live-album-risk.txt");
     screwm_live_voice_active = screwm_read_norm("data/live-voice-active.txt");
+    screwm_governance_consent_allowed = screwm_read_norm("data/governance-consent-allowed.txt");
+    screwm_governance_persistence_allowed = screwm_read_norm("data/governance-persistence-allowed.txt");
+    screwm_governance_health_reference = screwm_read_norm("data/governance-health-reference.txt");
+    screwm_governance_health_perception = screwm_read_norm("data/governance-health-perception.txt");
+    screwm_governance_health_error = screwm_read_norm("data/governance-health-error.txt");
+    screwm_governance_health_fresh = screwm_read_norm("data/governance-health-fresh.txt");
+    screwm_governance_follow_active = screwm_read_norm("data/governance-follow-active.txt");
+    screwm_governance_follow_confidence = screwm_read_norm("data/governance-follow-confidence.txt");
+    screwm_governance_follow_fresh = screwm_read_norm("data/governance-follow-fresh.txt");
 };
 
 void() screwm_apply_review_camera =
@@ -1150,6 +1168,25 @@ void() screwm_add_live_context_lights =
     adddynamiclight('-222 -360 172', screwm_clamp(10 + screwm_live_viewer_pressure * 82, 8, 120), screwm_amber);
 };
 
+void() screwm_add_governance_health_lights =
+{
+    float consent_radius;
+    float health_radius;
+    float follow_radius;
+
+    consent_radius = 14 + screwm_governance_consent_allowed * 82 + screwm_governance_persistence_allowed * 42;
+    adddynamiclight('-300 -548 460', screwm_clamp(consent_radius, 8, 156), screwm_green);
+
+    health_radius = 14 + screwm_governance_health_reference * 58 + screwm_governance_health_perception * 58;
+    health_radius = health_radius + screwm_governance_health_fresh * 34 - screwm_governance_health_error * 48;
+    adddynamiclight('0 -548 460', screwm_clamp(health_radius, 8, 170), screwm_cyan);
+    adddynamiclight('-74 -360 118', screwm_clamp(12 + screwm_governance_health_error * 112, 8, 156), screwm_rose);
+
+    follow_radius = 12 + screwm_governance_follow_active * 74 + screwm_governance_follow_confidence * 64;
+    follow_radius = follow_radius + screwm_governance_follow_fresh * 36;
+    adddynamiclight('300 -548 460', screwm_clamp(follow_radius, 8, 168), screwm_amber);
+};
+
 void() screwm_draw_ward_links =
 {
     vector c01;
@@ -1312,6 +1349,7 @@ void() screwm_add_dynamic_lights =
     screwm_add_impingement_recruitment_lights();
     screwm_add_programme_segment_lights();
     screwm_add_live_context_lights();
+    screwm_add_governance_health_lights();
     screwm_add_ward_property_field_lights();
 
     screwm_add_ward_light('-222 -360 280', 1, screwm_cyan, screwm_active_01, screwm_presence_01);

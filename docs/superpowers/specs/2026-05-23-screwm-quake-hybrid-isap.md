@@ -395,6 +395,11 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   token pressure, viewer pressure, token-burst pressure, album confidence,
   album freshness, album playing state, album risk, and voice activity modulate
   the token/album/voice ward anchors in the scroom.
+- Governance and runtime health is exported as
+  `IN_SCROOM_GOVERNANCE_HEALTH_FIELD`: consent allowed, persistence allowed,
+  compositor reference/perception/error health, health freshness, and
+  follow-mode active/confidence/freshness modulate in-scroom governance and
+  health anchors.
 
 ### D8: hapax-darkplaces Systemd Unit [COMPLETE]
 - `systemd/units/hapax-darkplaces-v4l2.service`
@@ -520,7 +525,7 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - [x] 5 ambient sound zones are present and spawned by QuakeC
 - [x] Working mode switch changes fog color + texture set
 - [x] Stimmung/audio/Reverie state modulates AoA spin, fog, postprocess fields, and ward/source light intensity
-- [x] Visual-layer, visual-chain/effect-drift, imagination-fragment, content-source manifest, GEM recruitment/mural, impingement/recruitment, programme/segment, and live-context intent is exported into DarkPlaces as in-scroom scalar fields
+- [x] Visual-layer, visual-chain/effect-drift, imagination-fragment, content-source manifest, GEM recruitment/mural, impingement/recruitment, programme/segment, live-context, and governance/health intent is exported into DarkPlaces as in-scroom scalar fields
 - [x] Texture/asset provenance documented in `assets/quake/LICENSES.md`
 - [x] Systemd unit starts/restarts cleanly with WatchdogSec
 - [ ] 1-hour stability test without memory growth or crashes

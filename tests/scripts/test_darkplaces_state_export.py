@@ -39,6 +39,7 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     legacy_gem_frames_file = tmp_path / "legacy-gem-frames.json"
     recent_impingements_file = tmp_path / "recent-impingements.json"
     recent_recruitment_file = tmp_path / "recent-recruitment.json"
+    daimonion_consent_file = tmp_path / "daimonion-consent.json"
     effect_state_file = tmp_path / "entity-local-effect-state.json"
     stimmung_state_file = tmp_path / "stimmung-state.json"
     visual_chain_state_file = tmp_path / "visual-chain-state.json"
@@ -219,6 +220,19 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
             "updated_at": 120.0,
         },
     )
+    (shm_dir / "consent-state.txt").write_text("allowed\n", encoding="utf-8")
+    _write_json(
+        daimonion_consent_file,
+        {"phase": "no_guest", "persistence_allowed": True, "timestamp": 118.0},
+    )
+    _write_json(
+        shm_dir / "health.json",
+        {"reference": 0.8, "perception": 0.6, "error": 0.1, "timestamp": 90.0},
+    )
+    _write_json(
+        shm_dir / "follow-mode-recommendation.json",
+        {"active": True, "confidence": 0.7, "ts": 116.0, "ttl_s": 8.0},
+    )
 
     _write_json(
         shm_dir / "active-segment.json",
@@ -386,6 +400,7 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         legacy_gem_frames_file=legacy_gem_frames_file,
         recent_impingements_file=recent_impingements_file,
         recent_recruitment_file=recent_recruitment_file,
+        daimonion_consent_file=daimonion_consent_file,
         entity_local_effect_state_file=effect_state_file,
         stimmung_state_file=stimmung_state_file,
         visual_chain_state_file=visual_chain_state_file,
@@ -547,6 +562,36 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "live-context-route.txt").read_text(
         encoding="utf-8"
     ).strip() == "IN_SCROOM_LIVE_CONTEXT_FIELD"
+    assert (game_dir / "governance-consent-allowed.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "1.0000"
+    assert (game_dir / "governance-persistence-allowed.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "1.0000"
+    assert (game_dir / "governance-health-reference.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.8000"
+    assert (game_dir / "governance-health-perception.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.6000"
+    assert (game_dir / "governance-health-error.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.1000"
+    assert (game_dir / "governance-health-fresh.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.9000"
+    assert (game_dir / "governance-follow-active.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "1.0000"
+    assert (game_dir / "governance-follow-confidence.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.7000"
+    assert (game_dir / "governance-follow-fresh.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.5000"
+    assert (game_dir / "governance-health-route.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "IN_SCROOM_GOVERNANCE_HEALTH_FIELD"
     assert (game_dir / "visual-zone-01.txt").read_text(encoding="utf-8").strip() == "0.2500"
     assert (game_dir / "visual-zone-02.txt").read_text(encoding="utf-8").strip() == "0.8500"
     assert (game_dir / "visual-zone-03.txt").read_text(encoding="utf-8").strip() == "1.0000"

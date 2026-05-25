@@ -31,6 +31,7 @@ DEFAULT_GEM_FRAMES_FILE = Path("/dev/shm/hapax-gem/gem-frames.json")
 DEFAULT_LEGACY_GEM_FRAMES_FILE = Path("/dev/shm/hapax-compositor/gem-frames.json")
 DEFAULT_RECENT_IMPINGEMENTS_FILE = Path("/dev/shm/hapax-compositor/recent-impingements.json")
 DEFAULT_RECENT_RECRUITMENT_FILE = Path("/dev/shm/hapax-compositor/recent-recruitment.json")
+DEFAULT_DAIMONION_CONSENT_FILE = Path("/dev/shm/hapax-daimonion/consent-state.json")
 DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE = Path(
     "/dev/shm/hapax-visual/entity-local-effect-state.json"
 )
@@ -1182,6 +1183,37 @@ def build_live_context_lines(shm_dir: Path, now: float | None = None) -> dict[st
     }
 
 
+def build_governance_health_lines(
+    shm_dir: Path,
+    daimonion_consent_file: Path = DEFAULT_DAIMONION_CONSENT_FILE,
+    now: float | None = None,
+) -> dict[str, str]:
+    """Export consent, compositor health, and follow-mode pressure."""
+    now = time.time() if now is None else now
+    consent_text = _read_text_file(shm_dir / "consent-state.txt").strip().lower()
+    consent_state = _read_json(daimonion_consent_file)
+    health = _read_json(shm_dir / "health.json")
+    follow = _read_json(shm_dir / "follow-mode-recommendation.json")
+    health_ts = _entry_float(health, "timestamp", 0.0)
+    follow_ts = _entry_float(follow, "ts", 0.0)
+    follow_ttl = max(1.0, _entry_float(follow, "ttl_s", 15.0))
+    consent_allowed = 1.0 if consent_text in {"allow", "allowed", "public", "ok"} else 0.0
+    persistence_allowed = 1.0 if bool(consent_state.get("persistence_allowed")) else 0.0
+
+    return {
+        "governance-consent-allowed.txt": f"{consent_allowed:.4f}",
+        "governance-persistence-allowed.txt": f"{persistence_allowed:.4f}",
+        "governance-health-reference.txt": f"{_float01(health, 'reference'):.4f}",
+        "governance-health-perception.txt": f"{_float01(health, 'perception'):.4f}",
+        "governance-health-error.txt": f"{_float01(health, 'error'):.4f}",
+        "governance-health-fresh.txt": f"{(_clamp01(1.0 - max(0.0, now - health_ts) / 300.0) if health_ts else 0.0):.4f}",
+        "governance-follow-active.txt": f"{1.0 if bool(follow.get('active')) else 0.0:.4f}",
+        "governance-follow-confidence.txt": f"{_float01(follow, 'confidence'):.4f}",
+        "governance-follow-fresh.txt": f"{(_clamp01(1.0 - max(0.0, now - follow_ts) / follow_ttl) if follow_ts else 0.0):.4f}",
+        "governance-health-route.txt": "IN_SCROOM_GOVERNANCE_HEALTH_FIELD",
+    }
+
+
 def _signal_severity(visual_state: dict[str, Any], category: str) -> float:
     signals = visual_state.get("signals")
     if not isinstance(signals, dict):
@@ -1406,6 +1438,7 @@ def export_state(
     legacy_gem_frames_file: Path = DEFAULT_LEGACY_GEM_FRAMES_FILE,
     recent_impingements_file: Path = DEFAULT_RECENT_IMPINGEMENTS_FILE,
     recent_recruitment_file: Path = DEFAULT_RECENT_RECRUITMENT_FILE,
+    daimonion_consent_file: Path = DEFAULT_DAIMONION_CONSENT_FILE,
     entity_local_effect_state_file: Path = DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE,
     stimmung_state_file: Path = DEFAULT_STIMMUNG_STATE_FILE,
     visual_chain_state_file: Path = DEFAULT_VISUAL_CHAIN_STATE_FILE,
@@ -1456,6 +1489,10 @@ def export_state(
     for filename, line in build_programme_segment_lines(shm_dir, now).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_live_context_lines(shm_dir, now).items():
+        _write_atomic(game_dir / filename, line)
+    for filename, line in build_governance_health_lines(
+        shm_dir, daimonion_consent_file, now
+    ).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_visual_layer_lines(shm_dir, stimmung_state_file).items():
         _write_atomic(game_dir / filename, line)
@@ -1510,6 +1547,11 @@ def main() -> int:
         default=DEFAULT_RECENT_RECRUITMENT_FILE,
     )
     parser.add_argument(
+        "--daimonion-consent-file",
+        type=Path,
+        default=DEFAULT_DAIMONION_CONSENT_FILE,
+    )
+    parser.add_argument(
         "--entity-local-effect-state-file",
         type=Path,
         default=DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE,
@@ -1545,6 +1587,7 @@ def main() -> int:
         args.legacy_gem_frames_file,
         args.recent_impingements_file,
         args.recent_recruitment_file,
+        args.daimonion_consent_file,
         args.entity_local_effect_state_file,
         args.stimmung_state_file,
         args.visual_chain_state_file,

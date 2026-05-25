@@ -383,6 +383,21 @@ def test_csqc_live_context_field_lives_in_scroom_lightfield() -> None:
     assert "screwm_add_live_context_lights();" in body
 
 
+def test_csqc_governance_health_field_lives_in_scroom_lightfield() -> None:
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    assert 'screwm_read_norm("data/governance-consent-allowed.txt")' in body
+    assert 'screwm_read_norm("data/governance-persistence-allowed.txt")' in body
+    assert 'screwm_read_norm("data/governance-health-error.txt")' in body
+    assert 'screwm_read_norm("data/governance-follow-confidence.txt")' in body
+    assert "void() screwm_add_governance_health_lights" in body
+    assert "screwm_governance_consent_allowed * 82" in body
+    assert "screwm_governance_health_error * 112" in body
+    assert "screwm_governance_follow_confidence * 64" in body
+    assert "adddynamiclight('-300 -548 460'" in body
+    assert "screwm_add_governance_health_lights();" in body
+
+
 def test_darkplaces_review_camera_is_locked_by_default() -> None:
     autoexec = AUTOEXEC.read_text(encoding="utf-8")
     camera = (REPO_ROOT / "assets" / "quake" / "qc" / "camera.qc").read_text(encoding="utf-8")
