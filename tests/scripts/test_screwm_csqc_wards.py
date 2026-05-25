@@ -61,6 +61,10 @@ def test_csqc_dynamic_lights_cover_all_physical_ward_panes() -> None:
     assert 'screwm_read_norm("data/homage-quake-active.txt")' in body
     assert "homage_boost = screwm_homage_quake" in body
     assert 'cvar("screwm_csqc_lightfield") < 0' in body
+    assert 'screwm_read_norm("data/ward-property-depth-pressure.txt")' in body
+    assert "screwm_add_ward_property_field_lights" in body
+    assert "screwm_ward_property_depth_pressure * 82" in body
+    assert "screwm_ward_property_drift_pressure * 106" in body
 
     for idx in range(1, 37):
         x, y, z = map_module["ward_review_position"](idx)

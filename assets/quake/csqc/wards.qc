@@ -179,6 +179,13 @@ float screwm_presence_33;
 float screwm_presence_34;
 float screwm_presence_35;
 float screwm_presence_36;
+float screwm_ward_property_active_ratio;
+float screwm_ward_property_depth_pressure;
+float screwm_ward_property_glow_pressure;
+float screwm_ward_property_front_pressure;
+float screwm_ward_property_drift_pressure;
+float screwm_ward_property_presence_pressure;
+float screwm_ward_property_fishbowl_pressure;
 float screwm_source_priority_01;
 float screwm_source_priority_02;
 float screwm_source_priority_03;
@@ -486,6 +493,13 @@ void() screwm_poll_state =
     screwm_presence_34 = screwm_read_norm("data/ward-presence-34.txt");
     screwm_presence_35 = screwm_read_norm("data/ward-presence-35.txt");
     screwm_presence_36 = screwm_read_norm("data/ward-presence-36.txt");
+    screwm_ward_property_active_ratio = screwm_read_norm("data/ward-property-active-ratio.txt");
+    screwm_ward_property_depth_pressure = screwm_read_norm("data/ward-property-depth-pressure.txt");
+    screwm_ward_property_glow_pressure = screwm_read_norm("data/ward-property-glow-pressure.txt");
+    screwm_ward_property_front_pressure = screwm_read_norm("data/ward-property-front-pressure.txt");
+    screwm_ward_property_drift_pressure = screwm_read_norm("data/ward-property-drift-pressure.txt");
+    screwm_ward_property_presence_pressure = screwm_read_norm("data/ward-property-presence-pressure.txt");
+    screwm_ward_property_fishbowl_pressure = screwm_read_norm("data/ward-property-fishbowl-pressure.txt");
 
     screwm_source_priority_01 = screwm_read_norm("data/source-priority-01.txt");
     screwm_source_priority_02 = screwm_read_norm("data/source-priority-02.txt");
@@ -711,6 +725,35 @@ void(vector org, float idx, vector color, float active, float presence) screwm_a
     homage_boost = screwm_homage_quake * (7 + screwm_homage_transition * 28 + screwm_homage_signature * 22);
     radius = radius + homage_boost;
     adddynamiclight(org, screwm_clamp(radius, 14, 78), color);
+};
+
+void() screwm_add_ward_property_field_lights =
+{
+    float depth_radius;
+    float glow_radius;
+    float front_radius;
+    float drift_radius;
+    float presence_radius;
+
+    depth_radius = 18 + screwm_ward_property_depth_pressure * 82;
+    depth_radius = depth_radius + screwm_ward_property_fishbowl_pressure * 34;
+    adddynamiclight('0 -404 290', screwm_clamp(depth_radius, 10, 142), screwm_cyan);
+
+    glow_radius = 14 + screwm_ward_property_glow_pressure * 104;
+    glow_radius = glow_radius + screwm_ward_property_active_ratio * 36;
+    adddynamiclight('-260 -404 248', screwm_clamp(glow_radius, 8, 138), screwm_amber);
+
+    front_radius = 14 + screwm_ward_property_front_pressure * 98;
+    front_radius = front_radius + screwm_ward_property_presence_pressure * 34;
+    adddynamiclight('260 -404 248', screwm_clamp(front_radius, 8, 138), screwm_green);
+
+    drift_radius = 12 + screwm_ward_property_drift_pressure * 106;
+    drift_radius = drift_radius + screwm_audio_rms * 16;
+    adddynamiclight('0 -404 116', screwm_clamp(drift_radius, 8, 142), screwm_rose);
+
+    presence_radius = 12 + screwm_ward_property_presence_pressure * 92;
+    presence_radius = presence_radius + screwm_ward_property_active_ratio * 76;
+    adddynamiclight('0 -430 356', screwm_clamp(presence_radius, 8, 150), screwm_amber);
 };
 
 void(vector org, float idx, vector color, float priority, float fresh) screwm_add_source_light =
@@ -1083,6 +1126,7 @@ void() screwm_add_dynamic_lights =
     screwm_add_visual_chain_lights();
     screwm_add_imagination_intent_lights();
     screwm_add_local_effect_lights();
+    screwm_add_ward_property_field_lights();
 
     screwm_add_ward_light('-222 -360 280', 1, screwm_cyan, screwm_active_01, screwm_presence_01);
     screwm_add_ward_light('-148 -360 280', 2, screwm_rose, screwm_active_02, screwm_presence_02);

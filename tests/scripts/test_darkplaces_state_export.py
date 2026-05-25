@@ -466,6 +466,13 @@ def test_darkplaces_state_export_builds_ward_property_fishbowl_scalars(
     assert lines["ward-drift-13.txt"] == "0.7000"
     assert lines["ward-presence-13.txt"] == "0.7700"
     assert lines["ward-property-count.txt"] == "2.0000"
+    assert lines["ward-property-active-ratio.txt"] == "0.0556"
+    assert lines["ward-property-depth-pressure.txt"] == "1.0000"
+    assert lines["ward-property-glow-pressure.txt"] == "0.5000"
+    assert lines["ward-property-front-pressure.txt"] == "0.7000"
+    assert lines["ward-property-drift-pressure.txt"] == "0.7000"
+    assert lines["ward-property-presence-pressure.txt"] == "0.7700"
+    assert lines["ward-property-fishbowl-pressure.txt"] == "1.0000"
     assert lines["ward-property-route.txt"] == "IN_SCROOM_FISHBOWL_WARD_PROPERTIES"
 
 

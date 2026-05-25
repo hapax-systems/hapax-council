@@ -476,12 +476,39 @@ def build_ward_property_lines(shm_dir: Path) -> dict[str, str]:
     """Export WardProperties fishbowl/depth axes into in-scroom scalars."""
     entries = _live_ward_property_entries(_read_json(shm_dir / "ward-properties.json"))
     lines: dict[str, str] = {}
+    live_scalars: list[dict[str, float]] = []
     for ordinal, ward_id in WARD_ACTIVITY_EXPORTS:
-        scalars = _ward_property_scalars(ward_id, _ward_property_entry(entries, ward_id))
+        entry = _ward_property_entry(entries, ward_id)
+        scalars = _ward_property_scalars(ward_id, entry)
+        if entry:
+            live_scalars.append(scalars)
         for name, value in scalars.items():
             lines[f"ward-{name}-{ordinal}.txt"] = f"{value:.4f}"
     specific_count = sum(1 for key in entries if key != "all")
+
+    def max_scalar(name: str) -> float:
+        return max((item[name] for item in live_scalars), default=0.0)
+
+    depth_pressure = max_scalar("depth")
+    glow_pressure = max_scalar("glow")
+    front_pressure = max_scalar("front")
+    drift_pressure = max_scalar("drift")
+    presence_pressure = max_scalar("presence")
+    fishbowl_pressure = max(
+        depth_pressure,
+        glow_pressure,
+        front_pressure,
+        drift_pressure,
+        presence_pressure,
+    )
     lines["ward-property-count.txt"] = f"{specific_count:.4f}"
+    lines["ward-property-active-ratio.txt"] = f"{_clamp01(specific_count / 36.0):.4f}"
+    lines["ward-property-depth-pressure.txt"] = f"{depth_pressure:.4f}"
+    lines["ward-property-glow-pressure.txt"] = f"{glow_pressure:.4f}"
+    lines["ward-property-front-pressure.txt"] = f"{front_pressure:.4f}"
+    lines["ward-property-drift-pressure.txt"] = f"{drift_pressure:.4f}"
+    lines["ward-property-presence-pressure.txt"] = f"{presence_pressure:.4f}"
+    lines["ward-property-fishbowl-pressure.txt"] = f"{fishbowl_pressure:.4f}"
     lines["ward-property-route.txt"] = "IN_SCROOM_FISHBOWL_WARD_PROPERTIES"
     return lines
 
