@@ -1,3 +1,5 @@
+import importlib.machinery
+import importlib.util
 import json
 import os
 import subprocess
@@ -5,6 +7,7 @@ import sys
 import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
+from types import ModuleType
 
 from shared.relay_mq import send_message
 from shared.relay_mq_envelope import Envelope
@@ -13,6 +16,17 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
 RECEIPT_SCRIPT = REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
+
+
+def _dispatcher_module() -> ModuleType:
+    loader = importlib.machinery.SourceFileLoader("hapax_methodology_dispatch", str(SCRIPT))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[loader.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _fresh_registry(tmp_path: Path) -> Path:
@@ -335,7 +349,40 @@ def test_governed_prompt_is_specific_and_not_work_pool_prompt(tmp_path: Path) ->
         kind: build
         authority_case: CASE-TEST-001
         parent_spec: {spec}
+        route_metadata_schema: 1
+        quality_floor: deterministic_ok
+        authority_level: authoritative
+        mutation_surface: source
+        mutation_scope_refs: []
+        risk_flags:
+          governance_sensitive: false
+          privacy_or_secret_sensitive: false
+          public_claim_sensitive: false
+          aesthetic_theory_sensitive: false
+          audio_or_live_egress_sensitive: false
+          provider_billing_sensitive: false
+        context_shape:
+          codebase_locality: module
+          vault_context_required: true
+          external_docs_required: false
+          currentness_required: false
+        verification_surface:
+          deterministic_tests: []
+          static_checks: []
+          runtime_observation: []
+          operator_only: false
+        route_constraints:
+          preferred_platforms: []
+          allowed_platforms: []
+          prohibited_platforms: []
+          required_mode: null
+          required_profile: null
+        review_requirement:
+          support_artifact_allowed: false
+          independent_review_required: false
+          authoritative_acceptor_profile: null
         """,
+        route_metadata_defaults=False,
     )
 
     result = _run(tmp_path, "--task", "governed-build", "--lane", "beta", "--print-prompt")
@@ -1378,6 +1425,78 @@ def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     assert "gemini/headless/flash" in result.stdout
     assert "gemini/headless/worker" in result.stdout
     assert "antigrav/interactive/full" in result.stdout
+
+
+def test_antigrav_lane_worktree_tracks_requested_lane(monkeypatch, tmp_path: Path) -> None:
+    dispatcher = _dispatcher_module()
+    monkeypatch.delenv("HAPAX_DISPATCH_WORKTREE", raising=False)
+    monkeypatch.setenv("HAPAX_DISPATCH_PROJECT_ROOT", str(tmp_path))
+
+    assert dispatcher.lane_worktree("antigrav", "antigrav") == (
+        tmp_path / "hapax-council--antigrav"
+    )
+    assert dispatcher.lane_worktree("antigrav-5", "antigrav") == (
+        tmp_path / "hapax-council--antigrav-5"
+    )
+    assert dispatcher.lane_worktree("antigravity", "antigrav") == (
+        tmp_path / "hapax-council--antigrav"
+    )
+
+
+def test_antigrav_launch_passes_governed_dispatch_inflection(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "antigrav-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-antigrav"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {launcher_args}\n",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "antigrav-5",
+        "--platform",
+        "antigrav",
+        "--mode",
+        "interactive",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_ANTIGRAV_LAUNCHER": str(fake_launcher),
+            "HAPAX_ANTIGRAV_SPAWN_DIR": str(tmp_path / "antigrav-spawns"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert args[:6] == [
+        "--session",
+        "antigrav-5",
+        "--task",
+        "governed-build",
+        "--terminal",
+        "tmux",
+    ]
+    inflection = Path(args[args.index("--inflection") + 1])
+    text = inflection.read_text(encoding="utf-8")
+    assert "SDLC GOVERNED DISPATCH." in text
+    assert "Task: governed-build" in text
+    assert "AuthorityCase: CASE-TEST-001" in text
+    assert "Do not choose unrelated queue work" in text
 
 
 def test_codex_launch_unsupported_mode_fails_closed(tmp_path: Path) -> None:

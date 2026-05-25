@@ -188,10 +188,10 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "antigrav",
         "interactive",
         "full",
-        "~/.local/bin/hapax-antigrav --session <lane> --task <task>",
-        "Anthropic Antigravity IDE lane",
+        "~/.local/bin/hapax-antigrav --session <lane> --task <task> --terminal tmux",
+        "Google Antigravity CLI lane",
         True,
-        "IDE-bound JR+ path; no headless lane contract exists.",
+        "agy CLI interactive path; requires governed dispatch bootstrap and task claim.",
     ),
 }
 
@@ -312,7 +312,8 @@ def lane_worktree(lane: str, platform: str) -> Path:
     if platform == "gemini":
         return root / f"hapax-council--{lane}"
     if platform == "antigrav":
-        return root / "hapax-council--antigrav"
+        normalized = "antigrav" if lane == "antigravity" else lane
+        return root / f"hapax-council--{normalized}"
     return root / "hapax-council"
 
 
@@ -938,7 +939,49 @@ def launch_gemini_headless(lane: str, prompt: str, route: PlatformPath) -> int:
     return subprocess.call(args, env=env)
 
 
-def launch_antigrav_interactive(task_id: str, lane: str, validation: Validation) -> int:
+def write_antigrav_inflection(task_id: str, lane: str, prompt: str) -> Path:
+    spawn_dir = Path(
+        os.environ.get(
+            "HAPAX_ANTIGRAV_SPAWN_DIR",
+            str(
+                Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+                / "hapax"
+                / "antigrav-spawns"
+            ),
+        )
+    )
+    spawn_dir.mkdir(parents=True, exist_ok=True)
+    path = (
+        spawn_dir
+        / f"{now_utc().replace(':', '').replace('-', '')}-{slugify(lane)}-{slugify(task_id)}-dispatch.md"
+    )
+    path.write_text(
+        "\n".join(
+            [
+                "# Hapax Antigrav Methodology Dispatch",
+                "",
+                prompt,
+                "",
+                "Antigrav launch contract:",
+                "",
+                "- This bootstrap was produced by `hapax-methodology-dispatch` after task authority validation.",
+                "- Treat the task note and parent spec named above as the only work authority.",
+                "- Do not choose unrelated queue work from inside Antigravity.",
+                "- Keep relay/status surfaces current while blocked, waiting, or idle.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def launch_antigrav_interactive(
+    task_id: str,
+    lane: str,
+    validation: Validation,
+    prompt: str,
+) -> int:
     launcher = Path(
         os.environ.get(
             "HAPAX_METHODOLOGY_ANTIGRAV_LAUNCHER",
@@ -952,7 +995,18 @@ def launch_antigrav_interactive(task_id: str, lane: str, validation: Validation)
     status = ""
     if validation.task is not None:
         status = strip_scalar(str(validation.task.fields.get("status", "")))
-    args = [str(launcher), "--session", lane, "--task", task_id]
+    inflection_path = write_antigrav_inflection(task_id, lane, prompt)
+    args = [
+        str(launcher),
+        "--session",
+        lane,
+        "--task",
+        task_id,
+        "--terminal",
+        "tmux",
+        "--inflection",
+        str(inflection_path),
+    ]
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
     return subprocess.call(args)
@@ -1247,7 +1301,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.platform == "gemini" and args.mode == "headless":
             rc = launch_gemini_headless(args.lane, prompt or "", route)
         elif args.platform == "antigrav" and args.mode == "interactive":
-            rc = launch_antigrav_interactive(args.task, args.lane, validation)
+            rc = launch_antigrav_interactive(args.task, args.lane, validation, prompt or "")
         else:
             print(
                 "launch currently unsupported for "
