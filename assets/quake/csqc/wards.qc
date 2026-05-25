@@ -191,6 +191,25 @@ float screwm_source_fresh_03;
 float screwm_source_fresh_04;
 float screwm_source_fresh_05;
 float screwm_source_fresh_06;
+float screwm_content_source_count;
+float screwm_content_fresh_01;
+float screwm_content_fresh_02;
+float screwm_content_fresh_03;
+float screwm_content_fresh_04;
+float screwm_content_fresh_05;
+float screwm_content_fresh_06;
+float screwm_content_opacity_01;
+float screwm_content_opacity_02;
+float screwm_content_opacity_03;
+float screwm_content_opacity_04;
+float screwm_content_opacity_05;
+float screwm_content_opacity_06;
+float screwm_content_area_01;
+float screwm_content_area_02;
+float screwm_content_area_03;
+float screwm_content_area_04;
+float screwm_content_area_05;
+float screwm_content_area_06;
 float screwm_aoa_pane_01;
 float screwm_aoa_pane_02;
 float screwm_aoa_pane_03;
@@ -480,6 +499,25 @@ void() screwm_poll_state =
     screwm_source_fresh_04 = screwm_read_norm("data/source-fresh-04.txt");
     screwm_source_fresh_05 = screwm_read_norm("data/source-fresh-05.txt");
     screwm_source_fresh_06 = screwm_read_norm("data/source-fresh-06.txt");
+    screwm_content_source_count = screwm_read_norm("data/content-source-count.txt");
+    screwm_content_fresh_01 = screwm_read_norm("data/content-source-fresh-01.txt");
+    screwm_content_fresh_02 = screwm_read_norm("data/content-source-fresh-02.txt");
+    screwm_content_fresh_03 = screwm_read_norm("data/content-source-fresh-03.txt");
+    screwm_content_fresh_04 = screwm_read_norm("data/content-source-fresh-04.txt");
+    screwm_content_fresh_05 = screwm_read_norm("data/content-source-fresh-05.txt");
+    screwm_content_fresh_06 = screwm_read_norm("data/content-source-fresh-06.txt");
+    screwm_content_opacity_01 = screwm_read_norm("data/content-source-opacity-01.txt");
+    screwm_content_opacity_02 = screwm_read_norm("data/content-source-opacity-02.txt");
+    screwm_content_opacity_03 = screwm_read_norm("data/content-source-opacity-03.txt");
+    screwm_content_opacity_04 = screwm_read_norm("data/content-source-opacity-04.txt");
+    screwm_content_opacity_05 = screwm_read_norm("data/content-source-opacity-05.txt");
+    screwm_content_opacity_06 = screwm_read_norm("data/content-source-opacity-06.txt");
+    screwm_content_area_01 = screwm_read_norm("data/content-source-area-01.txt");
+    screwm_content_area_02 = screwm_read_norm("data/content-source-area-02.txt");
+    screwm_content_area_03 = screwm_read_norm("data/content-source-area-03.txt");
+    screwm_content_area_04 = screwm_read_norm("data/content-source-area-04.txt");
+    screwm_content_area_05 = screwm_read_norm("data/content-source-area-05.txt");
+    screwm_content_area_06 = screwm_read_norm("data/content-source-area-06.txt");
 
     screwm_aoa_pane_01 = screwm_read_norm("data/aoa-pane-signal-01.txt");
     screwm_aoa_pane_02 = screwm_read_norm("data/aoa-pane-signal-02.txt");
@@ -700,6 +738,15 @@ void(vector org, float idx, vector color, float signal, float fresh) screwm_add_
     radius = 14 + screwm_energy * 18 + signal * 64 + fresh * 52;
     radius = radius + screwm_audio_rms * 10 + screwm_homage_quake * (6 + screwm_homage_signature * 18);
     adddynamiclight(org, screwm_clamp(radius, 10, 104), color);
+};
+
+void(vector org, float idx, vector color, float fresh, float opacity, float area) screwm_add_content_source_light =
+{
+    float radius;
+
+    radius = 10 + fresh * 78 + opacity * 46 + area * 42;
+    radius = radius + screwm_content_source_count * 16 + screwm_audio_rms * 8;
+    adddynamiclight(org, screwm_clamp(radius, 8, 142), color);
 };
 
 void(vector org, float idx, vector color, float signal) screwm_add_local_effect_light =
@@ -1112,6 +1159,12 @@ void() screwm_add_dynamic_lights =
     screwm_add_source_light('312 -88 286', 4, screwm_cyan, screwm_source_priority_04, screwm_source_fresh_04);
     screwm_add_source_light('312 -88 174', 5, screwm_green, screwm_source_priority_05, screwm_source_fresh_05);
     screwm_add_source_light('312 -88 62', 6, screwm_green, screwm_source_priority_06, screwm_source_fresh_06);
+    screwm_add_content_source_light('-322 -486 318', 1, screwm_cyan, screwm_content_fresh_01, screwm_content_opacity_01, screwm_content_area_01);
+    screwm_add_content_source_light('-322 -486 238', 2, screwm_green, screwm_content_fresh_02, screwm_content_opacity_02, screwm_content_area_02);
+    screwm_add_content_source_light('-322 -486 158', 3, screwm_rose, screwm_content_fresh_03, screwm_content_opacity_03, screwm_content_area_03);
+    screwm_add_content_source_light('322 -486 318', 4, screwm_amber, screwm_content_fresh_04, screwm_content_opacity_04, screwm_content_area_04);
+    screwm_add_content_source_light('322 -486 238', 5, screwm_cyan, screwm_content_fresh_05, screwm_content_opacity_05, screwm_content_area_05);
+    screwm_add_content_source_light('322 -486 158', 6, screwm_green, screwm_content_fresh_06, screwm_content_opacity_06, screwm_content_area_06);
 
     screwm_add_aoa_pane_light('-4 -497 284', 1, screwm_cyan, screwm_aoa_pane_01);
     screwm_add_aoa_pane_light('-72 -497 238', 2, screwm_green, screwm_aoa_pane_02);

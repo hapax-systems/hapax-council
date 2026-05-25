@@ -251,6 +251,23 @@ def test_screwm_quake_embodies_imagination_fragment_intent_state() -> None:
     assert "screwm_imagination_salience * 118" in wards
 
 
+def test_screwm_quake_embodies_content_source_manifests() -> None:
+    exporter = (REPO_ROOT / "scripts" / "darkplaces-state-export.py").read_text(encoding="utf-8")
+    wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
+    content_sources = (
+        REPO_ROOT / "hapax-logos" / "crates" / "hapax-visual" / "src" / "content_sources.rs"
+    ).read_text(encoding="utf-8")
+
+    assert 'const SOURCES_DIR: &str = "/dev/shm/hapax-imagination/sources";' in content_sources
+    assert "CONTENT_SOURCE_EXPORTS" in exporter
+    assert "build_content_source_lines" in exporter
+    assert "IN_SCROOM_CONTENT_SOURCE_MANIFESTS" in exporter
+    assert 'screwm_read_norm("data/content-source-count.txt")' in wards
+    assert 'screwm_read_norm("data/content-source-fresh-01.txt")' in wards
+    assert "screwm_add_content_source_light" in wards
+    assert "fresh * 78 + opacity * 46 + area * 42" in wards
+
+
 def test_screwm_quake_review_baseline_has_no_clocked_light_pulses() -> None:
     wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
 

@@ -108,6 +108,28 @@ def test_csqc_source_anchors_carry_live_camera_scalars() -> None:
         assert f"screwm_source_fresh_{idx:02d}" in body
 
 
+def test_csqc_content_source_manifests_live_on_source_planes() -> None:
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    assert 'screwm_read_norm("data/content-source-count.txt")' in body
+    for ordinal in range(1, 7):
+        assert f'screwm_read_norm("data/content-source-fresh-{ordinal:02d}.txt")' in body
+        assert f'screwm_read_norm("data/content-source-opacity-{ordinal:02d}.txt")' in body
+        assert f'screwm_read_norm("data/content-source-area-{ordinal:02d}.txt")' in body
+        assert f"screwm_content_fresh_{ordinal:02d}" in body
+        assert f"screwm_content_opacity_{ordinal:02d}" in body
+        assert f"screwm_content_area_{ordinal:02d}" in body
+
+    assert (
+        "void(vector org, float idx, vector color, float fresh, float opacity, float area) screwm_add_content_source_light"
+        in body
+    )
+    assert "fresh * 78 + opacity * 46 + area * 42" in body
+    assert "screwm_content_source_count * 16" in body
+    assert "screwm_add_content_source_light('-322 -486 318', 1" in body
+    assert "screwm_add_content_source_light('322 -486 158', 6" in body
+
+
 def test_csqc_aoa_panes_and_scroom_scene_graph_carry_live_lightfields() -> None:
     map_module = _load_script("scripts/generate-screwm-map.py")
     body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")

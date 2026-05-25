@@ -83,6 +83,8 @@ SOURCE_EXPORTS: tuple[tuple[str, str], ...] = (
     ("06", "c920-overhead"),
 )
 
+CONTENT_SOURCE_EXPORTS: tuple[str, ...] = ("01", "02", "03", "04", "05", "06")
+
 AOA_PANE_EXPORTS: tuple[tuple[str, str], ...] = (
     ("01", "root"),
     ("02", "tri_texture"),
@@ -665,6 +667,81 @@ def _source_frame_freshness(source_dir: Path, now: float | None = None) -> float
     return 1.0 if age <= ttl_s * 3.0 else 0.0
 
 
+def _content_source_freshness(
+    source_dir: Path,
+    manifest: dict[str, Any],
+    now: float | None = None,
+) -> float:
+    frame_path = source_dir / "frame.rgba"
+    if not frame_path.exists():
+        return 0.0
+    try:
+        age = (time.time() if now is None else now) - frame_path.stat().st_mtime
+    except OSError:
+        return 0.0
+    ttl_ms = _entry_float(manifest, "ttl_ms", 3000.0)
+    if ttl_ms <= 0:
+        return 1.0
+    ttl_s = max(1.0, ttl_ms / 1000.0)
+    return 1.0 if age <= ttl_s * 3.0 else 0.0
+
+
+def _content_source_entries(
+    imagination_sources_dir: Path,
+    now: float | None = None,
+) -> list[dict[str, float | str]]:
+    entries: list[dict[str, float | str]] = []
+    try:
+        source_dirs = [item for item in imagination_sources_dir.iterdir() if item.is_dir()]
+    except OSError:
+        source_dirs = []
+    for source_dir in source_dirs:
+        manifest = _read_json(source_dir / "manifest.json")
+        source_id = _one_line(manifest.get("source_id", source_dir.name), limit=48)
+        width = max(0.0, _entry_float(manifest, "width"))
+        height = max(0.0, _entry_float(manifest, "height"))
+        entries.append(
+            {
+                "source_id": source_id,
+                "fresh": _content_source_freshness(source_dir, manifest, now),
+                "opacity": _float01(manifest, "opacity"),
+                "layer": _clamp01(_entry_float(manifest, "layer") / 6.0),
+                "area": _clamp01((width * height) / float(1920 * 1080)),
+                "z_order": _entry_float(manifest, "z_order"),
+            }
+        )
+    return sorted(
+        entries,
+        key=lambda item: (
+            float(item["fresh"]),
+            float(item["opacity"]),
+            float(item["z_order"]),
+            str(item["source_id"]),
+        ),
+        reverse=True,
+    )
+
+
+def build_content_source_lines(
+    imagination_sources_dir: Path = DEFAULT_IMAGINATION_SOURCES_DIR,
+    now: float | None = None,
+) -> dict[str, str]:
+    """Export live RGBA content-source manifests as in-scroom source pressure."""
+    entries = _content_source_entries(imagination_sources_dir, now)
+    lines: dict[str, str] = {}
+    for idx, ordinal in enumerate(CONTENT_SOURCE_EXPORTS):
+        entry = entries[idx] if idx < len(entries) else {}
+        lines[f"content-source-fresh-{ordinal}.txt"] = f"{float(entry.get('fresh', 0.0)):.4f}"
+        lines[f"content-source-opacity-{ordinal}.txt"] = f"{float(entry.get('opacity', 0.0)):.4f}"
+        lines[f"content-source-layer-{ordinal}.txt"] = f"{float(entry.get('layer', 0.0)):.4f}"
+        lines[f"content-source-area-{ordinal}.txt"] = f"{float(entry.get('area', 0.0)):.4f}"
+    lines["content-source-count.txt"] = (
+        f"{_clamp01(len(entries) / float(len(CONTENT_SOURCE_EXPORTS))):.4f}"
+    )
+    lines["content-source-route.txt"] = "IN_SCROOM_CONTENT_SOURCE_MANIFESTS"
+    return lines
+
+
 def build_source_lines(
     shm_dir: Path,
     imagination_sources_dir: Path = DEFAULT_IMAGINATION_SOURCES_DIR,
@@ -1014,6 +1091,8 @@ def export_state(
     for filename, line in build_homage_lines(shm_dir, uniforms_file).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_source_lines(shm_dir, imagination_sources_dir).items():
+        _write_atomic(game_dir / filename, line)
+    for filename, line in build_content_source_lines(imagination_sources_dir).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_aoa_pane_lines(
         shm_dir, uniforms_file, imagination_sources_dir

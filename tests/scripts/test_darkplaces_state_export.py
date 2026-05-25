@@ -701,6 +701,72 @@ def test_darkplaces_state_export_writes_camera_source_scalars(tmp_path: Path) ->
     assert lines["source-fresh-06.txt"] == "0.0000"
 
 
+def test_darkplaces_state_export_builds_content_source_manifest_scalars(
+    tmp_path: Path,
+) -> None:
+    exporter = _load_exporter()
+    sources_dir = tmp_path / "sources"
+    pool_dir = sources_dir / "visual-pool-slot-0"
+    overlay_dir = sources_dir / "overlay-zones"
+    stale_dir = sources_dir / "stale"
+    pool_dir.mkdir(parents=True)
+    overlay_dir.mkdir(parents=True)
+    stale_dir.mkdir(parents=True)
+    _write_json(
+        pool_dir / "manifest.json",
+        {
+            "source_id": "visual-pool-slot-0",
+            "width": 640,
+            "height": 360,
+            "opacity": 0.9,
+            "layer": 1,
+            "z_order": 5,
+            "ttl_ms": 0,
+        },
+    )
+    _write_json(
+        overlay_dir / "manifest.json",
+        {
+            "source_id": "overlay-zones",
+            "width": 1280,
+            "height": 720,
+            "opacity": 0.5,
+            "layer": 1,
+            "z_order": 2,
+            "ttl_ms": 3000,
+        },
+    )
+    _write_json(
+        stale_dir / "manifest.json",
+        {
+            "source_id": "stale",
+            "width": 320,
+            "height": 180,
+            "opacity": 1.0,
+            "layer": 1,
+            "z_order": 9,
+            "ttl_ms": 1000,
+        },
+    )
+    for frame in (pool_dir / "frame.rgba", overlay_dir / "frame.rgba", stale_dir / "frame.rgba"):
+        frame.write_bytes(b"rgba")
+    os.utime(pool_dir / "frame.rgba", (100.0, 100.0))
+    os.utime(overlay_dir / "frame.rgba", (99.0, 99.0))
+    os.utime(stale_dir / "frame.rgba", (80.0, 80.0))
+
+    lines = exporter.build_content_source_lines(sources_dir, now=100.0)
+
+    assert lines["content-source-count.txt"] == "0.5000"
+    assert lines["content-source-fresh-01.txt"] == "1.0000"
+    assert lines["content-source-opacity-01.txt"] == "0.9000"
+    assert lines["content-source-area-01.txt"] == "0.1111"
+    assert lines["content-source-fresh-02.txt"] == "1.0000"
+    assert lines["content-source-opacity-02.txt"] == "0.5000"
+    assert lines["content-source-area-02.txt"] == "0.4444"
+    assert lines["content-source-fresh-03.txt"] == "0.0000"
+    assert lines["content-source-route.txt"] == "IN_SCROOM_CONTENT_SOURCE_MANIFESTS"
+
+
 def test_darkplaces_state_export_builds_aoa_pane_binding_scalars(tmp_path: Path) -> None:
     exporter = _load_exporter()
     shm_dir = tmp_path / "shm"
