@@ -16,29 +16,23 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
 
     assert len(module["WARD_ANCHORS"]) == 36
-    assert content.count("// ward-anchor ") == 36
-    assert content.count("// ward-depth-plate ") == 36
-    assert content.count("// ward-frame ") == 108
-    assert content.count("// ward-glow ") == 36
+    assert content.count("// ward-anchor ") == 0
+    assert content.count("// ward-depth-plate ") == 0
+    assert content.count("// ward-frame ") == 0
+    assert content.count("// ward-glow ") == 0
     assert content.count("// ward-light ") == 36
     assert content.count("// review-fill-light ") == 4
     assert content.count("// ward-review-light ") == 36
     assert content.count("// ward-review-pane ") == 36
-    assert content.count("// ward-review-frame ") == 36
+    assert content.count("// ward-review-frame ") == 144
     assert content.count("// ward-review-drift ") >= 25
-    assert content.count("// ward-rail row") == 6
-    assert content.count("// ward-spine col") == 7
-    assert content.count("// ward-drift ") >= 25
+    assert content.count("// ward-rail row") == 0
+    assert content.count("// ward-spine col") == 0
+    assert content.count("// ward-drift ") == 0
     assert "w01" in content
     assert "w35" in content
     assert "drift_c" in content
     assert "drift_r" in content
-    assert "// ward-anchor 05: reverie domain=perception" in content
-    assert "// ward-anchor 34: segment_content" in content
-    assert "// ward-anchor 36: cbip_dual_ir_displacement domain=perception" in content
-    assert "pos=-222,62,280" in content
-    assert "pos=222,-82,64" in content
-    assert "pos=0,-118,28" in content
     assert "// section: ward-review-plane" in content
     assert "// section: ward-review-drift-paths" in content
     assert "// ward-review-pane 01: token_pole" in content
@@ -46,12 +40,8 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert module["ward_review_position"](1) == (-222, -360, 280)
     assert module["ward_review_position"](36) == (0, -360, 28)
     assert module["ward_review_drift_midpoint"](1, 9) == (-185, -378, 253)
-    assert "ward-glow 01: token_pole drift_c" in content
-    assert "ward-glow 02: album drift_r" in content
-    assert "ward-glow 03: stream_overlay drift_g" in content
-    assert "ward-frame 01: token_pole top drift_c" in content
-    assert "ward-frame 04: sierpinski left drift_g" in content
-    assert "ward-depth-plate 36: cbip_dual_ir_displacement" in content
+    assert "ward-review-frame 01: token_pole top drift_c" in content
+    assert "ward-review-frame 04: sierpinski left drift_g" in content
     assert '"origin" "0 -144 176"' in content
 
 
@@ -66,7 +56,7 @@ def test_screwm_drift_graph_physically_touches_every_ward_anchor() -> None:
     assert "// section: ward-drift-paths" in content
 
 
-def test_screwm_map_keeps_foundational_tower_geometry_in_regenerated_bsp() -> None:
+def test_screwm_map_keeps_open_scroom_geometry_in_regenerated_bsp() -> None:
     module = _load_script("scripts/generate-screwm-map.py")
     content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
 
@@ -75,26 +65,23 @@ def test_screwm_map_keeps_foundational_tower_geometry_in_regenerated_bsp() -> No
     assert "// section: central-aoa-lattice" in content
     assert "// section: tower-ramp-shelves" in content
     assert "// section: central-aoa-pedestal" in content
-    assert content.count("r_percep") > 1
+    assert content.count("r_percep") == 0
     assert content.count("r_ground") > 1
 
 
 def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
     source = (REPO_ROOT / "scripts" / "generate-screwm-map.py").read_text(encoding="utf-8")
 
-    assert "ledge_depth = 18" in source
-    assert "ledge_height = 6" in source
+    assert "No free-standing columns in the reviewable scroom baseline" in source
+    assert "Wall bands are deferred" in source
+    assert "The duplicate deep ward lattice is disabled" in source
     assert "REVIEW_ALCOVE_Y_MIN" in source
     assert "REVIEW_WARD_Y = -360" in source
     assert "REVIEW_DRIFT_Y = REVIEW_WARD_Y - 18" in source
     assert "t = 1" in source
-    assert "WARD_FRAME_PAD = 6" in source
+    assert "WARD_FRAME_PAD = 5" in source
     assert "WARD_FRAME_T = 4" in source
-    assert "inner = 78" in source
-    assert "ring_height = 4" in source
-    assert "rod_half = 3" in source
-    assert "ramp_w = 52" in source
-    assert "ramp_d = 22" in source
+    assert "Low, non-obstructing AoA floor mark" in source
     assert 'base = int(preset.get("wall_light", 100) * 0.72)' in source
 
 

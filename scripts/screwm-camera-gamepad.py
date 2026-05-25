@@ -28,9 +28,9 @@ EVENT = struct.Struct("IhBB")
 
 DEFAULT_GAME_DIR = Path.home() / ".darkplaces" / "screwm" / "data"
 PREFERRED_DEVICE_WORDS = ("xbox", "microsoft", "xinput")
-DEFAULT_ORIGIN = (-244.0, -500.0, 204.0)
-DEFAULT_YAW = 29.85
-DEFAULT_PITCH = 11.5
+DEFAULT_ORIGIN = (0.0, -575.0, 188.0)
+DEFAULT_YAW = 90.0
+DEFAULT_PITCH = 5.5
 DEFAULT_FOV = 76.0
 MANUAL_HOLD_SECONDS = 6.0
 
@@ -181,7 +181,7 @@ class CameraState:
         if not self.manual:
             return
 
-        self.yaw = (self.yaw + right_x * dt * 105.0) % 360.0
+        self.yaw = (self.yaw - right_x * dt * 105.0) % 360.0
         self.pitch = clamp(self.pitch + right_y * dt * 82.0, -78.0, 78.0)
 
         yaw_rad = math.radians(self.yaw)
@@ -194,8 +194,8 @@ class CameraState:
         if self.buttons.get(5):  # RB speeds traversal.
             speed = 760.0
 
-        self.origin_x += (math.cos(yaw_rad) * forward - math.sin(yaw_rad) * side) * speed * dt
-        self.origin_y += (math.sin(yaw_rad) * forward + math.cos(yaw_rad) * side) * speed * dt
+        self.origin_x += (math.cos(yaw_rad) * forward + math.sin(yaw_rad) * side) * speed * dt
+        self.origin_y += (math.sin(yaw_rad) * forward - math.cos(yaw_rad) * side) * speed * dt
         self.origin_z += lift * speed * dt * 0.75
 
         # These are broad safety rails around the generated scroom volume, not

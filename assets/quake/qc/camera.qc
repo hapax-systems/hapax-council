@@ -72,8 +72,8 @@ vector() camera_file_angles =
 {
     vector angles;
 
-    angles_x = camera_read_float("data/camera-pitch.txt", 11.5);
-    angles_y = camera_read_float("data/camera-yaw.txt", 29.85);
+    angles_x = camera_read_float("data/camera-pitch.txt", 5.5);
+    angles_y = camera_read_float("data/camera-yaw.txt", 90);
     angles_z = 0;
     return angles;
 };

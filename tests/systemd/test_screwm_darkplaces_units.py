@@ -15,6 +15,7 @@ def test_darkplaces_v4l2_service_remains_runtime_guarded_and_uses_visible_xvfb_r
     body = _read("hapax-darkplaces-v4l2.service")
 
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in body
+    assert "Wants=hapax-screwm-camera-gamepad.service" in body
     assert "Type=notify" in body
     assert "NotifyAccess=all" in body
     assert "WatchdogSec=30s" in body
@@ -126,8 +127,8 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     world = (REPO_ROOT / "assets" / "quake" / "qc" / "world.qc").read_text(encoding="utf-8")
 
     assert "vector AOA_CENTER = '0 0 176';" in defs
-    assert "vector CAMERA_REVIEW_POS = '-244 -500 204';" in defs
-    assert "vector CAMERA_REVIEW_TARGET = '0 -360 150';" in defs
+    assert "vector CAMERA_REVIEW_POS = '0 -575 188';" in defs
+    assert "vector CAMERA_REVIEW_TARGET = '0 -360 168';" in defs
     assert "vector(vector v) vectoangles = #51;" in defs
     assert "ang = vectoangles(target - pos);" in camera
     assert 'if (cvar("screwm_camera_orbit") > 0)' in camera
@@ -184,7 +185,8 @@ def test_visual_stack_conditionally_wants_darkplaces_runtime_units() -> None:
 
     assert "hapax-darkplaces-v4l2.service" in target
     assert "hapax-darkplaces-bridge.service" in target
-    assert "hapax-screwm-camera-gamepad.service" in target
+    assert "hapax-screwm-camera-gamepad.service" not in target
+    assert "Wants=hapax-screwm-camera-gamepad.service" in v4l2
     assert "hapax-obs-video50-yuyv-compat-bridge.service" in target
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in v4l2
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in bridge

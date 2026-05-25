@@ -86,8 +86,8 @@ def test_gamepad_state_writes_headless_camera_files(tmp_path: Path) -> None:
     state.write(tmp_path)
 
     assert (tmp_path / "camera-manual.txt").read_text(encoding="utf-8").strip() == "1.0000"
-    assert (tmp_path / "camera-origin-x.txt").read_text(encoding="utf-8").strip() != "-244.0000"
-    assert (tmp_path / "camera-yaw.txt").read_text(encoding="utf-8").strip() != "29.8500"
+    assert (tmp_path / "camera-origin-x.txt").read_text(encoding="utf-8").strip() != "0.0000"
+    assert (tmp_path / "camera-yaw.txt").read_text(encoding="utf-8").strip() != "90.0000"
     assert (tmp_path / "camera-pitch.txt").exists()
     assert "axis:3" in (tmp_path / "camera-debug.txt").read_text(encoding="utf-8")
 
@@ -105,5 +105,19 @@ def test_gamepad_camera_motion_is_visible_enough_for_live_pov() -> None:
     state.update_axis(3, 32767)
     state.tick(1.0)
 
-    assert abs(state.origin_x + 244) + abs(state.origin_y + 500) > 400
-    assert state.yaw > 130
+    assert abs(state.origin_x) + abs(state.origin_y + 575) > 400
+    assert state.yaw > 300
+
+
+def test_gamepad_freecam_horizontal_axes_match_first_person_expectations() -> None:
+    gamepad = _load_gamepad()
+    look = gamepad.CameraState()
+    strafe = gamepad.CameraState()
+
+    look.update_axis(3, 32767)
+    look.tick(0.25)
+    strafe.update_axis(0, 32767)
+    strafe.tick(0.25)
+
+    assert look.yaw < gamepad.DEFAULT_YAW
+    assert strafe.origin_x > gamepad.DEFAULT_ORIGIN[0]

@@ -1,6 +1,7 @@
 [Unit]
 Description=Hapax DarkPlaces visible v4l2 renderer feed
 After=graphical-session.target
+Wants=hapax-screwm-camera-gamepad.service
 PartOf=hapax-visual-stack.target
 # Runtime containment, 2026-05-23: opt-in only until the renderer feed is
 # validated without reproducing the AMD data-fabric reset.

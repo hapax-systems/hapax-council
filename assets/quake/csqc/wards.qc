@@ -338,12 +338,12 @@ void() screwm_apply_review_camera =
     {
         phase = time * screwm_review_camera_two_pi / screwm_review_camera_period;
         lift_phase = phase * 0.5 + 1.5708;
-        screwm_review_camera_origin_x = -244 + sin(phase) * 36;
-        screwm_review_camera_origin_y = -500 + cos(phase) * 10;
-        screwm_review_camera_origin_z = 204 + sin(lift_phase) * 12;
-        screwm_review_camera_angles = vectoangles('0 -360 150' - screwm_review_camera_origin);
+        screwm_review_camera_origin_x = sin(phase) * 72;
+        screwm_review_camera_origin_y = -575 + cos(phase) * 18;
+        screwm_review_camera_origin_z = 188 + sin(lift_phase) * 14;
+        screwm_review_camera_angles = vectoangles('0 -360 168' - screwm_review_camera_origin);
         screwm_review_camera_angles_z = 0;
-        screwm_review_camera_fov = '96 60 0';
+        screwm_review_camera_fov = '82 51 0';
     }
     screwm_native_last_angles = input_angles;
 
@@ -700,12 +700,12 @@ void() screwm_add_dynamic_lights =
     screwm_add_drift_light('0 -378 73', 26, screwm_rose, screwm_active_25, screwm_active_36);
     screwm_add_drift_light('0 -378 46', 27, screwm_cyan, screwm_active_32, screwm_active_36);
 
-    screwm_add_source_light('-244 112 286', 1, screwm_amber, screwm_source_priority_01, screwm_source_fresh_01);
-    screwm_add_source_light('-244 112 174', 2, screwm_green, screwm_source_priority_02, screwm_source_fresh_02);
-    screwm_add_source_light('-244 112 62', 3, screwm_rose, screwm_source_priority_03, screwm_source_fresh_03);
-    screwm_add_source_light('244 112 286', 4, screwm_cyan, screwm_source_priority_04, screwm_source_fresh_04);
-    screwm_add_source_light('244 112 174', 5, screwm_green, screwm_source_priority_05, screwm_source_fresh_05);
-    screwm_add_source_light('244 112 62', 6, screwm_green, screwm_source_priority_06, screwm_source_fresh_06);
+    screwm_add_source_light('-312 -88 286', 1, screwm_amber, screwm_source_priority_01, screwm_source_fresh_01);
+    screwm_add_source_light('-312 -88 174', 2, screwm_green, screwm_source_priority_02, screwm_source_fresh_02);
+    screwm_add_source_light('-312 -88 62', 3, screwm_rose, screwm_source_priority_03, screwm_source_fresh_03);
+    screwm_add_source_light('312 -88 286', 4, screwm_cyan, screwm_source_priority_04, screwm_source_fresh_04);
+    screwm_add_source_light('312 -88 174', 5, screwm_green, screwm_source_priority_05, screwm_source_fresh_05);
+    screwm_add_source_light('312 -88 62', 6, screwm_green, screwm_source_priority_06, screwm_source_fresh_06);
 };
 
 void(float apilevel, string enginename, float engineversion) CSQC_Init =
@@ -714,10 +714,10 @@ void(float apilevel, string enginename, float engineversion) CSQC_Init =
     screwm_voice = 0;
     screwm_mode = "rnd";
     screwm_next_poll = 0;
-    screwm_review_camera_origin = '-244 -500 204';
-    screwm_review_camera_angles = vectoangles('0 -360 150' - screwm_review_camera_origin);
+    screwm_review_camera_origin = '0 -575 188';
+    screwm_review_camera_angles = vectoangles('0 -360 168' - screwm_review_camera_origin);
     screwm_review_camera_angles_z = 0;
-    screwm_review_camera_fov = '96 60 0';
+    screwm_review_camera_fov = '82 51 0';
     screwm_review_camera_period = 96.0;
     screwm_review_camera_two_pi = 6.283185;
 };

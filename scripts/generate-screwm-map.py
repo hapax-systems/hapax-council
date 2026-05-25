@@ -17,7 +17,7 @@ import subprocess
 from pathlib import Path
 
 UNITS_PER_METER = 32
-TOWER_RADIUS_M = 7.8
+TOWER_RADIUS_M = 10.5
 TOWER_FLOOR_M = -2.0
 TOWER_CEIL_M = 13.0
 WALL_THICK = 16
@@ -29,7 +29,7 @@ FLOOR_Z = int(TOWER_FLOOR_M * UNITS_PER_METER)
 CEIL_Z = int(TOWER_CEIL_M * UNITS_PER_METER)
 AOA_Z = int(AOA_HEIGHT_M * UNITS_PER_METER)
 EXT = TR + WALL_THICK + 32
-REVIEW_ALCOVE_Y_MIN = -(TR + WALL_THICK + 355)
+REVIEW_ALCOVE_Y_MIN = -(TR + WALL_THICK + 430)
 REVIEW_WARD_Y = -360
 REVIEW_DRIFT_Y = REVIEW_WARD_Y - 18
 LEVEL_BANDS = [
@@ -139,9 +139,9 @@ DOMAIN_LIGHT_COLOR = {
 }
 
 WARD_COLUMNS = 7
-WARD_PANE_W = 68
-WARD_PANE_H = 50
-WARD_FRAME_PAD = 6
+WARD_PANE_W = 58
+WARD_PANE_H = 42
+WARD_FRAME_PAD = 5
 WARD_FRAME_T = 4
 WARD_X_SPACING = 74
 WARD_Z_SPACING = 54
@@ -161,42 +161,42 @@ SOURCE_ANCHORS = [
         "texture": "cam_bop",
         "camera_class": "brio",
         "domain": "presence",
-        "pos": (-244, 112, FLOOR_Z + 350),
+        "pos": (-312, -88, FLOOR_Z + 350),
     },
     {
         "role": "brio-room",
         "texture": "cam_brm",
         "camera_class": "brio",
         "domain": "perception",
-        "pos": (-244, 112, FLOOR_Z + 238),
+        "pos": (-312, -88, FLOOR_Z + 238),
     },
     {
         "role": "brio-synths",
         "texture": "cam_bsy",
         "camera_class": "brio",
         "domain": "music",
-        "pos": (-244, 112, FLOOR_Z + 126),
+        "pos": (-312, -88, FLOOR_Z + 126),
     },
     {
         "role": "c920-desk",
         "texture": "cam_cdk",
         "camera_class": "c920",
         "domain": "cognition",
-        "pos": (244, 112, FLOOR_Z + 350),
+        "pos": (312, -88, FLOOR_Z + 350),
     },
     {
         "role": "c920-room",
         "texture": "cam_crm",
         "camera_class": "c920",
         "domain": "perception",
-        "pos": (244, 112, FLOOR_Z + 238),
+        "pos": (312, -88, FLOOR_Z + 238),
     },
     {
         "role": "c920-overhead",
         "texture": "cam_cov",
         "camera_class": "c920",
         "domain": "perception",
-        "pos": (244, 112, FLOOR_Z + 126),
+        "pos": (312, -88, FLOOR_Z + 126),
     },
 ]
 
@@ -332,122 +332,29 @@ def sealed_room(preset):
 
 
 def pillar_columns(preset):
-    """8 pillars along walls at 45° intervals — Tower of Babel columns."""
-    brushes = []
-    pillar_size = 24
-    for i in range(8):
-        angle = i * (math.pi / 4) + math.pi / 8
-        px = int((TR - 32) * math.cos(angle))
-        py = int((TR - 32) * math.sin(angle))
-        for _level, z1, z2, tex in level_texture_bands(preset):
-            b = box_brush(
-                px - pillar_size,
-                py - pillar_size,
-                z1,
-                px + pillar_size,
-                py + pillar_size,
-                z2,
-                tex,
-            )
-            if b:
-                brushes.append(b)
-    return brushes
+    """No free-standing columns in the reviewable scroom baseline."""
+    return []
 
 
 def level_ledges(preset):
-    """Stepped ledges at each level boundary — architectural strata."""
-    brushes = []
-    rt = preset["ramp_tex"]
-    ledge_depth = 18
-    ledge_height = 6
-
-    for level in range(5):
-        frac = level / 4
-        z = FLOOR_Z + int((CEIL_Z - FLOOR_Z) * frac)
-        level_tex = preset.get("level_ledge_tex", [rt] * 5)[level]
-        # Ledge on each wall (4 walls = 4 ledges per level)
-        for wall in range(4):
-            if wall == 0:
-                b = box_brush(
-                    -EXT + WALL_THICK,
-                    REVIEW_ALCOVE_Y_MIN + WALL_THICK,
-                    z,
-                    EXT - WALL_THICK,
-                    REVIEW_ALCOVE_Y_MIN + WALL_THICK + ledge_depth,
-                    z + ledge_height,
-                    level_tex,
-                )
-            elif wall == 1:
-                b = box_brush(
-                    EXT - WALL_THICK - ledge_depth,
-                    REVIEW_ALCOVE_Y_MIN + WALL_THICK,
-                    z,
-                    EXT - WALL_THICK,
-                    EXT - WALL_THICK,
-                    z + ledge_height,
-                    level_tex,
-                )
-            elif wall == 2:
-                b = box_brush(
-                    -EXT + WALL_THICK,
-                    EXT - WALL_THICK - ledge_depth,
-                    z,
-                    EXT - WALL_THICK,
-                    EXT - WALL_THICK,
-                    z + ledge_height,
-                    level_tex,
-                )
-            else:
-                b = box_brush(
-                    -EXT + WALL_THICK,
-                    REVIEW_ALCOVE_Y_MIN + WALL_THICK,
-                    z,
-                    -EXT + WALL_THICK + ledge_depth,
-                    EXT - WALL_THICK,
-                    z + ledge_height,
-                    level_tex,
-                )
-            if b:
-                brushes.append(b)
-    return brushes
+    """Wall bands are deferred; the baseline must read as open space first."""
+    return []
 
 
 def central_lattice(preset):
-    """Level rings and vertical rods in the scene core so the AoA has a structural field."""
+    """Low, non-obstructing AoA floor mark in the scroom center."""
     brushes = []
-    outer = 96
-    inner = 78
-    rod_half = 3
-    ring_height = 4
-
-    for _level, z1, z2, tex in level_texture_bands(preset, "level_ledge_tex"):
-        mid_z = z1 + int((z2 - z1) * 0.55)
-        # Four ring segments around the central AoA sightline.
-        segments = [
-            (-outer, -outer, inner, -inner),
-            (-outer, inner, inner, outer),
-            (-outer, -inner, -inner, inner),
-            (inner, -inner, outer, inner),
-        ]
-        for x1, y1, x2, y2 in segments:
-            b = box_brush(x1, y1, mid_z, x2, y2, mid_z + ring_height, tex)
-            if b:
-                brushes.append(b)
-
-        for x in (-outer, outer):
-            for y in (-outer, outer):
-                b = box_brush(
-                    x - rod_half,
-                    y - rod_half,
-                    z1,
-                    x + rod_half,
-                    y + rod_half,
-                    z2,
-                    tex,
-                )
-                if b:
-                    brushes.append(b)
-
+    tex = preset.get("pedestal_tex", preset["ramp_tex"])
+    mark_z = FLOOR_Z + 4
+    for x1, y1, x2, y2 in (
+        (-110, -5, 110, 5),
+        (-5, -110, 5, 110),
+        (-78, -78, -68, 78),
+        (68, -78, 78, 78),
+    ):
+        b = box_brush(x1, y1, mark_z, x2, y2, mark_z + 4, tex)
+        if b:
+            brushes.append(b)
     return brushes
 
 
@@ -478,8 +385,35 @@ def ward_review_panes(_preset):
         if pane:
             brushes.append(f"// ward-review-pane {idx:02d}: {anchor}\n{pane}")
 
-        frame = box_brush(
+        frame_top = box_brush(
             x - WARD_PANE_W // 2 - WARD_FRAME_PAD,
+            REVIEW_WARD_Y - 8,
+            z + WARD_PANE_H // 2 + 2,
+            x + WARD_PANE_W // 2 + WARD_FRAME_PAD,
+            REVIEW_WARD_Y - 4,
+            z + WARD_PANE_H // 2 + WARD_FRAME_PAD,
+            glow_tex,
+        )
+        frame_bottom = box_brush(
+            x - WARD_PANE_W // 2 - WARD_FRAME_PAD,
+            REVIEW_WARD_Y - 8,
+            z - WARD_PANE_H // 2 - WARD_FRAME_PAD,
+            x + WARD_PANE_W // 2 + WARD_FRAME_PAD,
+            REVIEW_WARD_Y - 4,
+            z - WARD_PANE_H // 2 - 2,
+            glow_tex,
+        )
+        frame_left = box_brush(
+            x - WARD_PANE_W // 2 - WARD_FRAME_PAD,
+            REVIEW_WARD_Y - 8,
+            z - WARD_PANE_H // 2 - WARD_FRAME_PAD,
+            x - WARD_PANE_W // 2 - 1,
+            REVIEW_WARD_Y - 4,
+            z + WARD_PANE_H // 2 + WARD_FRAME_PAD,
+            glow_tex,
+        )
+        frame_right = box_brush(
+            x + WARD_PANE_W // 2 + 1,
             REVIEW_WARD_Y - 8,
             z - WARD_PANE_H // 2 - WARD_FRAME_PAD,
             x + WARD_PANE_W // 2 + WARD_FRAME_PAD,
@@ -487,8 +421,16 @@ def ward_review_panes(_preset):
             z + WARD_PANE_H // 2 + WARD_FRAME_PAD,
             glow_tex,
         )
-        if frame:
-            brushes.append(f"// ward-review-frame {idx:02d}: {anchor} {glow_tex}\n{frame}")
+        for name, frame in (
+            ("top", frame_top),
+            ("bottom", frame_bottom),
+            ("left", frame_left),
+            ("right", frame_right),
+        ):
+            if frame:
+                brushes.append(
+                    f"// ward-review-frame {idx:02d}: {anchor} {name} {glow_tex}\n{frame}"
+                )
 
     return brushes
 
@@ -537,121 +479,8 @@ def ward_review_drift_paths(_preset):
 
 
 def ward_scrim_panes(_preset):
-    """Baked in-engine ward anchors held in the scroom volume.
-
-    These are not HUD labels or fourth-wall overlays. They are physical ward
-    panes and rails inside the DarkPlaces world: a 5x7 field plus the CBIP
-    dual-IR displacement ward carried below it, moving from rear/high to
-    near/low, so the camera looks into Screwm rather than at a flat wall.
-    """
-    brushes = []
-    row_min_x = -224
-    row_max_x = 224
-
-    for idx, anchor in enumerate(WARD_ANCHORS, start=1):
-        x, y, z = ward_anchor_position(idx)
-        tex = f"w{idx:02d}"
-        domain = ward_domain(idx)
-        glow_tex = DOMAIN_GLOW_TEX[domain]
-        brush = box_brush(
-            x - WARD_PANE_W // 2,
-            y - 2,
-            z - WARD_PANE_H // 2,
-            x + WARD_PANE_W // 2,
-            y + 2,
-            z + WARD_PANE_H // 2,
-            tex,
-        )
-        if brush:
-            brushes.append(
-                f"// ward-anchor {idx:02d}: {anchor} domain={domain} pos={x},{y},{z}\n{brush}"
-            )
-        depth_plate = box_brush(
-            x - WARD_PANE_W // 2 - WARD_FRAME_PAD,
-            y + 4,
-            z - WARD_PANE_H // 2 - WARD_FRAME_PAD,
-            x + WARD_PANE_W // 2 + WARD_FRAME_PAD,
-            y + 8,
-            z + WARD_PANE_H // 2 + WARD_FRAME_PAD,
-            "scroom",
-        )
-        if depth_plate:
-            brushes.append(f"// ward-depth-plate {idx:02d}: {anchor}\n{depth_plate}")
-
-        frame_top = box_brush(
-            x - WARD_PANE_W // 2 - WARD_FRAME_PAD,
-            y - 8,
-            z + WARD_PANE_H // 2 + 2,
-            x + WARD_PANE_W // 2 + WARD_FRAME_PAD,
-            y - 4,
-            z + WARD_PANE_H // 2 + 2 + WARD_FRAME_T,
-            glow_tex,
-        )
-        frame_left = box_brush(
-            x - WARD_PANE_W // 2 - WARD_FRAME_PAD,
-            y - 8,
-            z - WARD_PANE_H // 2 - WARD_FRAME_PAD,
-            x - WARD_PANE_W // 2 - WARD_FRAME_PAD + WARD_FRAME_T,
-            y - 4,
-            z + WARD_PANE_H // 2 + WARD_FRAME_PAD,
-            glow_tex,
-        )
-        frame_right = box_brush(
-            x + WARD_PANE_W // 2 + WARD_FRAME_PAD - WARD_FRAME_T,
-            y - 8,
-            z - WARD_PANE_H // 2 - WARD_FRAME_PAD,
-            x + WARD_PANE_W // 2 + WARD_FRAME_PAD,
-            y - 4,
-            z + WARD_PANE_H // 2 + WARD_FRAME_PAD,
-            glow_tex,
-        )
-        for frame_name, frame in (
-            ("top", frame_top),
-            ("left", frame_left),
-            ("right", frame_right),
-        ):
-            if frame:
-                brushes.append(
-                    f"// ward-frame {idx:02d}: {anchor} {frame_name} {glow_tex}\n{frame}"
-                )
-        glow = box_brush(
-            x - WARD_PANE_W // 2,
-            y - 7,
-            z - WARD_PANE_H // 2 - 7,
-            x + WARD_PANE_W // 2,
-            y - 3,
-            z - WARD_PANE_H // 2 - 2,
-            glow_tex,
-        )
-        if glow:
-            brushes.append(f"// ward-glow {idx:02d}: {anchor} {glow_tex}\n{glow}")
-
-    ward_rows = math.ceil(WARD_PANEL_COUNT / WARD_COLUMNS)
-    for row in range(ward_rows):
-        row_anchor_idx = min(row * WARD_COLUMNS + 1, WARD_PANEL_COUNT)
-        _, y, z = ward_anchor_position(row_anchor_idx)
-        rail = box_brush(row_min_x, y + 6, z - 4, row_max_x, y + 10, z + 4, "scroom")
-        if rail:
-            brushes.append(f"// ward-rail row {row + 1}: scroom carrier\n{rail}")
-
-    for col in range(WARD_COLUMNS):
-        x = int((col - (WARD_COLUMNS - 1) * 0.5) * WARD_X_SPACING)
-        _, lowest_y, lowest_z = ward_anchor_position(WARD_PANEL_COUNT)
-        z_low = lowest_z - WARD_PANE_H // 2
-        z_high = WARD_TOP_Z + WARD_PANE_H // 2
-        spine = box_brush(
-            x - 3,
-            lowest_y + 8,
-            z_low,
-            x + 3,
-            WARD_Y_TOP + 10,
-            z_high,
-            "scroom",
-        )
-        if spine:
-            brushes.append(f"// ward-spine col {col + 1}: scroom carrier\n{spine}")
-
-    return brushes
+    """The duplicate deep ward lattice is disabled in the open scroom baseline."""
+    return []
 
 
 def source_constellation_panes(_preset):
@@ -748,35 +577,8 @@ DRIFT_LINKS = [
 
 
 def ward_drift_paths(_preset):
-    """Physical drift graph embedded in the scroom.
-
-    Axis-aligned BSP brushes approximate the old overlay drift links as
-    material rails through the ward field. This keeps drift inside the rendered
-    world even when diagnostic CSQC lines are disabled.
-    """
-    brushes = []
-    t = 5
-    camera_forward_y = -10
-
-    for link_idx, (src, dst, tex) in enumerate(DRIFT_LINKS, start=1):
-        x1, y1, z1 = ward_anchor_position(src)
-        x2, y2, z2 = ward_anchor_position(dst)
-        y1 = y1 + camera_forward_y
-        y2 = y2 + camera_forward_y
-        parts = []
-        if x1 != x2:
-            parts.append(box_brush(min(x1, x2), y1 - t, z1 - t, max(x1, x2), y1 + t, z1 + t, tex))
-        if y1 != y2:
-            parts.append(box_brush(x2 - t, min(y1, y2), z1 - t, x2 + t, max(y1, y2), z1 + t, tex))
-        if z1 != z2:
-            parts.append(box_brush(x2 - t, y2 - t, min(z1, z2), x2 + t, y2 + t, max(z1, z2), tex))
-        for part_idx, part in enumerate(parts, start=1):
-            if part:
-                brushes.append(
-                    f"// ward-drift {link_idx:02d}.{part_idx}: {src:02d}->{dst:02d} {tex}\n{part}"
-                )
-
-    return brushes
+    """The duplicate deep drift lattice is disabled in the open scroom baseline."""
+    return []
 
 
 def central_pedestal(preset):
@@ -797,20 +599,7 @@ def central_pedestal(preset):
 
 
 def ramp_shelves(preset):
-    brushes = []
-    ramp_w = 52
-    ramp_d = 22
-    for i in range(4):
-        angle = i * (math.pi / 2) + math.pi / 8
-        frac = (i + 1) / 5
-        z = FLOOR_Z + int((CEIL_Z - FLOOR_Z) * frac)
-        cx = int((TR * 0.7) * math.cos(angle))
-        cy = int((TR * 0.7) * math.sin(angle))
-        rt = preset.get("level_ledge_tex", [preset["ramp_tex"]] * 5)[i + 1]
-        b = box_brush(cx - ramp_w, cy - ramp_d, z, cx + ramp_w, cy + ramp_d, z + 8, rt)
-        if b:
-            brushes.append(b)
-    return brushes
+    return []
 
 
 def lights(preset):

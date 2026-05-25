@@ -78,8 +78,8 @@ entity aoa_entity;
 entity camera_entity;
 
 vector AOA_CENTER = '0 0 176';
-vector CAMERA_REVIEW_POS = '-244 -500 204';
-vector CAMERA_REVIEW_TARGET = '0 -360 150';
+vector CAMERA_REVIEW_POS = '0 -575 188';
+vector CAMERA_REVIEW_TARGET = '0 -360 168';
 
 float CAMERA_PERIOD;
 float CAMERA_ORBIT_PERIOD;
