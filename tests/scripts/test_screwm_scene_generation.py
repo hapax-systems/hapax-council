@@ -33,6 +33,17 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert content.count("// legacy-sierpinski-slot ") == 4
     assert content.count("// legacy-sierpinski-slot-frame ") == 16
     assert content.count("// legacy-sierpinski-light ") == 4
+    assert content.count("// aoa-payload-pane ") == 10
+    assert content.count("// aoa-payload-pane-frame ") == 40
+    assert content.count("// aoa-payload-tether ") == 10
+    assert content.count("// aoa-payload-light ") == 10
+    assert content.count("// scroom-scene-hls ") == 3
+    assert content.count("// scroom-scene-ir ") == 4
+    assert content.count("// scroom-scene-ward-shelf ") == 3
+    assert content.count("// scroom-scene-mid-band ") == 2
+    assert content.count("// scroom-scene-far-band ") == 2
+    assert content.count("// scroom-scene-rail ") == len(module["SCROOM_SCENE_GRAPH_PANES"])
+    assert content.count("// scroom-scene-light ") == len(module["SCROOM_SCENE_GRAPH_PANES"])
     assert content.count("// ward-rail row") == 0
     assert content.count("// ward-spine col") == 0
     assert content.count("// ward-drift ") == 0
@@ -43,11 +54,19 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "// section: ward-review-plane" in content
     assert "// section: ward-review-drift-paths" in content
     assert "// section: legacy-sierpinski-scrim" in content
+    assert "// section: aoa-payload-panes" in content
+    assert "// section: scroom-scene-graph-bands" in content
     assert "// section: ward-depth-echo-planes" in content
     assert "slot_sierp" in content
     assert "slot_album" in content
     assert "slot_rev" in content
     assert "slot_voice" in content
+    assert "aoa_root" in content
+    assert "aoa_gate" in content
+    assert "// aoa-payload-pane 01: root-pane aoa_root" in content
+    assert "// scroom-scene-hls 01: brio-operator cam_bop" in content
+    assert "// scroom-scene-ir 07: cbip-ir w36" in content
+    assert "// scroom-scene-ward-shelf 08: programme-history w23" in content
     assert "// ward-review-pane 01: token_pole" in content
     assert "// ward-depth-plate 01: token_pole hero-presence layer=1" in content
     assert "// ward-depth-plate 02: album beyond-scrim layer=3" in content
@@ -100,6 +119,8 @@ def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
     assert "WARD_FRAME_T = 4" in source
     assert "WARD_DEPTH_PLANES" in source
     assert "ward_depth_echo_panes" in source
+    assert "aoa_payload_panes" in source
+    assert "scroom_scene_graph_bands" in source
     assert "Low, non-obstructing AoA floor mark" in source
     assert 'base = int(preset.get("wall_light", 100) * 0.72)' in source
 
@@ -196,6 +217,29 @@ def test_screwm_wad_defines_legacy_sierpinski_slot_textures() -> None:
     assert textures["slot_voice"]["code"] == "VOICE"
 
 
+def test_screwm_wad_defines_current_aoa_payload_pane_textures() -> None:
+    module = _load_script("scripts/generate-screwm-wad.py")
+    textures = module["TEXTURES"]
+
+    pane_names = [name for name, _code, _accent in module["AOA_PANE_TEXTURES"]]
+    assert pane_names == [
+        "aoa_root",
+        "aoa_tri",
+        "aoa_data",
+        "aoa_glyph",
+        "aoa_edge",
+        "aoa_lod",
+        "aoa_priv",
+        "aoa_src",
+        "aoa_comp",
+        "aoa_gate",
+    ]
+    assert all(textures[name]["pattern"] == "aoa_pane" for name in pane_names)
+    assert textures["aoa_root"]["code"] == "ROOT"
+    assert textures["aoa_data"]["accent"] == 198
+    assert textures["aoa_gate"]["code"] == "GATE"
+
+
 def test_ward_panel_texture_has_semantic_glyph_contrast() -> None:
     module = _load_script("scripts/generate-screwm-wad.py")
     pixels, _palette = module["generate_pixel_data"](
@@ -260,3 +304,20 @@ def test_legacy_sierpinski_slot_texture_has_legible_code() -> None:
     assert max(pixels) >= 232
     assert min(pixels) <= 34
     assert pixels.count(202) > 20
+
+
+def test_current_aoa_payload_pane_texture_has_pane_local_triangle() -> None:
+    module = _load_script("scripts/generate-screwm-wad.py")
+    pixels, _palette = module["generate_pixel_data"](
+        (56, 70, 74),
+        0,
+        module["TEX_SIZE"],
+        module["TEX_SIZE"],
+        pattern="aoa_pane",
+        code="GATE",
+        accent=202,
+    )
+
+    assert max(pixels) >= 232
+    assert min(pixels) <= 34
+    assert pixels.count(202) > 90

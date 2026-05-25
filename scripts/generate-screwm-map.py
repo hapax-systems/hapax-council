@@ -226,6 +226,40 @@ LEGACY_SLOT_PANES = [
         "frame": "drift_a",
     },
 ]
+AOA_PAYLOAD_PANE_W = 42
+AOA_PAYLOAD_PANE_H = 30
+AOA_PAYLOAD_PANES = [
+    ("root-pane", "aoa_root", "drift_c", -4, 108, 1.00),
+    ("tri-texture", "aoa_tri", "drift_g", -72, 62, 0.92),
+    ("data-glyph", "aoa_data", "drift_a", 72, 62, 0.92),
+    ("signal-glyph", "aoa_glyph", "drift_r", -118, -6, 0.78),
+    ("edge-accent", "aoa_edge", "drift_c", 118, -6, 0.78),
+    ("lod-gate", "aoa_lod", "drift_g", -76, -74, 0.70),
+    ("privacy-gate", "aoa_priv", "drift_a", 76, -74, 0.70),
+    ("source-posture", "aoa_src", "drift_r", -176, 40, 0.58),
+    ("composition", "aoa_comp", "drift_c", 176, 40, 0.58),
+    ("payload-gate", "aoa_gate", "drift_g", 0, -112, 0.64),
+]
+
+SCROOM_SCENE_GRAPH_PANES = [
+    # Mirrors hapax-logos scene.rs: left HLS shelf.
+    ("hls", "brio-operator", "cam_bop", "drift_a", -300, -430, FLOOR_Z + 340, 76, 48),
+    ("hls", "brio-room", "cam_brm", "drift_g", -300, -420, FLOOR_Z + 254, 70, 44),
+    ("hls", "brio-synths", "cam_bsy", "drift_r", -300, -410, FLOOR_Z + 168, 70, 44),
+    # Mirrors hapax-logos scene.rs: upper IR/source arc.
+    ("ir", "c920-desk", "cam_cdk", "drift_c", -178, -424, FLOOR_Z + 392, 58, 38),
+    ("ir", "c920-room", "cam_crm", "drift_g", -94, -430, FLOOR_Z + 410, 58, 38),
+    ("ir", "c920-overhead", "cam_cov", "drift_c", -10, -424, FLOOR_Z + 392, 58, 38),
+    ("ir", "cbip-ir", "w36", "drift_g", 74, -416, FLOOR_Z + 372, 54, 36),
+    # Right ward shelf and mid/far Scroom bands from the old dynamic scene.
+    ("ward-shelf", "programme-history", "w23", "drift_a", 288, -426, FLOOR_Z + 324, 62, 42),
+    ("ward-shelf", "instrument-dashboard", "w24", "drift_c", 292, -416, FLOOR_Z + 246, 62, 42),
+    ("ward-shelf", "interactive-query", "w30", "drift_a", 284, -406, FLOOR_Z + 168, 62, 42),
+    ("mid-band", "chat-ambient", "w26", "drift_g", 176, -390, FLOOR_Z + 100, 52, 34),
+    ("mid-band", "impingement", "w10", "drift_a", 96, -386, FLOOR_Z + 76, 52, 34),
+    ("far-band", "variety-log", "w14", "drift_c", -114, -356, FLOOR_Z + 78, 48, 32),
+    ("far-band", "scope-wave", "w35", "drift_r", -186, -350, FLOOR_Z + 102, 48, 32),
+]
 SOURCE_ANCHORS = [
     {
         "role": "brio-operator",
@@ -352,6 +386,70 @@ def box_brush(x1, y1, z1, x2, y2, z2, tex):
         fmt_plane((mn[0], mn[1], mx[2]), (mn[0], mx[1], mx[2]), (mx[0], mn[1], mx[2]), tex),
     ]
     return "{\n" + "\n".join(planes) + "\n}"
+
+
+def framed_y_pane(comment_prefix, idx, name, tex, frame_tex, x, y, z, w, h):
+    """Return a y-facing physical pane and four-bar frame."""
+    brushes = []
+    pane = box_brush(x - w // 2, y - 2, z - h // 2, x + w // 2, y + 2, z + h // 2, tex)
+    if pane:
+        brushes.append(f"// {comment_prefix} {idx:02d}: {name} {tex}\n{pane}")
+
+    frame_pad = 5
+    for frame_name, frame in (
+        (
+            "top",
+            box_brush(
+                x - w // 2 - frame_pad,
+                y - 8,
+                z + h // 2 + 2,
+                x + w // 2 + frame_pad,
+                y - 4,
+                z + h // 2 + frame_pad,
+                frame_tex,
+            ),
+        ),
+        (
+            "bottom",
+            box_brush(
+                x - w // 2 - frame_pad,
+                y - 8,
+                z - h // 2 - frame_pad,
+                x + w // 2 + frame_pad,
+                y - 4,
+                z - h // 2 - 2,
+                frame_tex,
+            ),
+        ),
+        (
+            "left",
+            box_brush(
+                x - w // 2 - frame_pad,
+                y - 8,
+                z - h // 2 - frame_pad,
+                x - w // 2 - 1,
+                y - 4,
+                z + h // 2 + frame_pad,
+                frame_tex,
+            ),
+        ),
+        (
+            "right",
+            box_brush(
+                x + w // 2 + 1,
+                y - 8,
+                z - h // 2 - frame_pad,
+                x + w // 2 + frame_pad,
+                y - 4,
+                z + h // 2 + frame_pad,
+                frame_tex,
+            ),
+        ),
+    ):
+        if frame:
+            brushes.append(f"// {comment_prefix}-frame {idx:02d}: {name} {frame_name}\n{frame}")
+
+    return brushes
 
 
 def ward_anchor_position(idx):
@@ -516,6 +614,107 @@ def ward_review_panes(_preset):
                 brushes.append(
                     f"// ward-review-frame {idx:02d}: {anchor} {name} {glow_tex}\n{frame}"
                 )
+
+    return brushes
+
+
+def aoa_payload_panes(_preset):
+    """Pane-local payload plaques around the current AoA/tetrix anchor.
+
+    These mirror the latest Scroom AoA pane binding contract: root pane,
+    tri-texture masked payloads, glyph modes, LOD/privacy/source gates, and
+    composition posture live on the AoA object rather than as a flat overlay.
+    """
+    brushes = []
+
+    for idx, (name, tex, frame_tex, dx, dz, _opacity) in enumerate(AOA_PAYLOAD_PANES, start=1):
+        x = AOA_X + dx
+        y = AOA_Y - 18
+        z = AOA_Z + dz
+        brushes.extend(
+            framed_y_pane(
+                "aoa-payload-pane",
+                idx,
+                name,
+                tex,
+                frame_tex,
+                x,
+                y,
+                z,
+                AOA_PAYLOAD_PANE_W,
+                AOA_PAYLOAD_PANE_H,
+            )
+        )
+
+        # Short orthogonal tether back to the AoA axis: visibly pane-local.
+        t = 3
+        if x == AOA_X:
+            tether = box_brush(
+                x - t,
+                y + 10 - t,
+                min(z, AOA_Z),
+                x + t,
+                y + 10 + t,
+                max(z, AOA_Z),
+                frame_tex,
+            )
+        else:
+            tether = box_brush(
+                min(x, AOA_X),
+                y + 10 - t,
+                z - t,
+                max(x, AOA_X),
+                y + 10 + t,
+                z + t,
+                frame_tex,
+            )
+        if tether:
+            brushes.append(f"// aoa-payload-tether {idx:02d}: {name} {frame_tex}\n{tether}")
+
+    return brushes
+
+
+def scroom_scene_graph_bands(_preset):
+    """Physicalized Scroom scene-graph bands from the pre-Quake renderer.
+
+    The old 3D Scroom did not treat cameras, wards, and status panes as a
+    flat board; it arranged them in deoccluded left/right/mid/far bands around
+    the AoA. This brings that grammar into BSP geometry.
+    """
+    brushes = []
+
+    for idx, (band, name, tex, frame_tex, x, y, z, w, h) in enumerate(
+        SCROOM_SCENE_GRAPH_PANES, start=1
+    ):
+        brushes.extend(
+            framed_y_pane(
+                f"scroom-scene-{band}",
+                idx,
+                name,
+                tex,
+                frame_tex,
+                x,
+                y,
+                z,
+                w,
+                h,
+            )
+        )
+        # Bands are tied into the ward/source volume through short material
+        # rails so they read as inhabitants of the scroom.
+        t = 3
+        anchor_x = int(x * 0.42)
+        rail = box_brush(
+            min(x, anchor_x),
+            y + 12 - t,
+            z - t,
+            max(x, anchor_x),
+            y + 12 + t,
+            z + t,
+            frame_tex,
+        )
+        if rail:
+            brushes.append(f"// scroom-scene-rail {idx:02d}: {band} {name} {frame_tex}\n{rail}")
 
     return brushes
 
@@ -1034,6 +1233,64 @@ def legacy_sierpinski_lights(preset):
     return entities
 
 
+def aoa_payload_lights(preset):
+    """Baked light support for current AoA pane-local payload plaques."""
+    entities = []
+    base = int(preset.get("wall_light", 100) * 0.92)
+
+    for idx, (name, _tex, frame_tex, dx, dz, _opacity) in enumerate(AOA_PAYLOAD_PANES, start=1):
+        x = AOA_X + dx
+        y = AOA_Y - 42
+        z = AOA_Z + dz
+        color_key = {
+            "drift_c": "token",
+            "drift_g": "perception",
+            "drift_a": "director",
+            "drift_r": "music",
+        }.get(frame_tex, "perception")
+        r, g, b = DOMAIN_LIGHT_COLOR[color_key]
+        entities.append(
+            f"// aoa-payload-light {idx:02d}: {name}\n"
+            "{\n"
+            '"classname" "light"\n'
+            f'"origin" "{x} {y} {z}"\n'
+            f'"light" "{base}"\n'
+            f'"_color" "{r} {g} {b}"\n'
+            "}"
+        )
+
+    return entities
+
+
+def scroom_scene_graph_lights(preset):
+    """Baked lights for the embodied old Scroom scene-graph bands."""
+    entities = []
+    base = int(preset.get("wall_light", 100) * 0.76)
+
+    band_domain = {
+        "hls": "presence",
+        "ir": "perception",
+        "ward-shelf": "director",
+        "mid-band": "communication",
+        "far-band": "cognition",
+    }
+    for idx, (band, name, _tex, _frame_tex, x, y, z, _w, _h) in enumerate(
+        SCROOM_SCENE_GRAPH_PANES, start=1
+    ):
+        r, g, b = DOMAIN_LIGHT_COLOR[band_domain[band]]
+        entities.append(
+            f"// scroom-scene-light {idx:02d}: {band} {name}\n"
+            "{\n"
+            '"classname" "light"\n'
+            f'"origin" "{x} {y - 30} {z}"\n'
+            f'"light" "{base}"\n'
+            f'"_color" "{r} {g} {b}"\n'
+            "}"
+        )
+
+    return entities
+
+
 def sectioned_brushes(section, brushes):
     return [f"// section: {section}", *brushes]
 
@@ -1051,6 +1308,8 @@ def generate_map(preset):
         + sectioned_brushes("tower-ramp-shelves", ramp_shelves(preset))
         + sectioned_brushes("central-aoa-pedestal", central_pedestal(preset))
         + sectioned_brushes("legacy-sierpinski-scrim", legacy_sierpinski_scrim(preset))
+        + sectioned_brushes("aoa-payload-panes", aoa_payload_panes(preset))
+        + sectioned_brushes("scroom-scene-graph-bands", scroom_scene_graph_bands(preset))
         + sectioned_brushes("ward-depth-echo-planes", ward_depth_echo_panes(preset))
         + sectioned_brushes("ward-review-plane", ward_review_panes(preset))
         + sectioned_brushes("ward-review-drift-paths", ward_review_drift_paths(preset))
@@ -1077,6 +1336,8 @@ def generate_map(preset):
     for light in (
         lights(preset)
         + legacy_sierpinski_lights(preset)
+        + aoa_payload_lights(preset)
+        + scroom_scene_graph_lights(preset)
         + ward_review_lights(preset)
         + ward_lights(preset)
         + source_lights(preset)

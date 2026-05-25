@@ -109,6 +109,19 @@ LEGACY_SLOT_TEXTURES = [
     ("slot_voice", "VOICE", 198),
 ]
 
+AOA_PANE_TEXTURES = [
+    ("aoa_root", "ROOT", 214),
+    ("aoa_tri", "TRI", 202),
+    ("aoa_data", "DATA", 198),
+    ("aoa_glyph", "GLYPH", 186),
+    ("aoa_edge", "EDGE", 214),
+    ("aoa_lod", "LOD", 202),
+    ("aoa_priv", "PRIV", 198),
+    ("aoa_src", "SRC", 186),
+    ("aoa_comp", "COMP", 214),
+    ("aoa_gate", "GATE", 202),
+]
+
 TEXTURES = {
     "city4_2": {"color": (100, 80, 55), "noise": 12, "pattern": "stone_blocks"},
     "ground1_6": {"color": (60, 55, 50), "noise": 8, "pattern": "worn_stone"},
@@ -160,6 +173,15 @@ for tex_name, code, accent in LEGACY_SLOT_TEXTURES:
         "color": (62, 76, 72),
         "noise": 0,
         "pattern": "legacy_slot",
+        "code": code,
+        "accent": accent,
+    }
+
+for tex_name, code, accent in AOA_PANE_TEXTURES:
+    TEXTURES[tex_name] = {
+        "color": (56, 70, 74),
+        "noise": 0,
+        "pattern": "aoa_pane",
         "code": code,
         "accent": accent,
     }
@@ -585,6 +607,53 @@ def legacy_slot_index(x, y, code, accent):
     return 22 + ((x * 11 + y * 5 + len(code) * 13) % 22)
 
 
+def aoa_pane_index(x, y, code, accent):
+    """AoA pane-local payload texture from the current Scroom tetrix contract."""
+    dark_accent = max(62, accent - 116)
+    mid_accent = max(92, accent - 72)
+
+    if x < 2 or y < 2 or x >= TEX_SIZE - 2 or y >= TEX_SIZE - 2:
+        return 245
+    if x < 5 or y < 5 or x >= TEX_SIZE - 5 or y >= TEX_SIZE - 5:
+        return accent
+
+    # Pane-local triangular mask: this is content bound to the AoA volume,
+    # not a free floating screen tile.
+    edges = (
+        (32, 9, 12, 52),
+        (12, 52, 52, 52),
+        (52, 52, 32, 9),
+        (22, 31, 42, 31),
+        (22, 31, 32, 52),
+        (42, 31, 32, 52),
+    )
+    if any(line_near(x, y, *edge, radius=1.25) for edge in edges):
+        return accent
+
+    # Sparse pane diagnostics: LOD/privacy/source gates from the current
+    # AoA pane binding metadata.
+    if y in (15, 27, 39, 51) and 10 <= x <= 54:
+        return mid_accent
+    if x in (18, 32, 46) and 18 <= y <= 50:
+        return dark_accent
+    if (x * 5 + y * 9 + len(code) * 17) % 43 < 4:
+        return 245
+
+    short_code = code[:5].upper()
+    scale = 2
+    text_width = len(short_code) * 3 * scale + max(0, len(short_code) - 1) * scale
+    if text_pixel_lit(x, y, short_code, (TEX_SIZE - text_width) // 2, 24, scale):
+        return 245
+
+    dx = x - 32
+    dy = y - 35
+    ring = dx * dx + dy * dy
+    if 280 <= ring <= 360:
+        return mid_accent
+
+    return 20 + ((x * 7 + y * 13 + len(code) * 11) % 24)
+
+
 def generate_pixel_data(
     color,
     noise,
@@ -702,6 +771,10 @@ def generate_pixel_data(
 
             elif pattern == "legacy_slot":
                 pixels.append(legacy_slot_index(x, y, str(code), int(accent) if accent else 214))
+                continue
+
+            elif pattern == "aoa_pane":
+                pixels.append(aoa_pane_index(x, y, str(code), int(accent) if accent else 214))
                 continue
 
             # Add surface noise
