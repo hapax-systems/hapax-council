@@ -380,6 +380,12 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   freshness/count, layer density/opacity, hold pressure, and narrative pressure
   modulate the in-scroom GEM/recruitment region instead of remaining only a
   compositor CP437 band.
+- Recent impingement and recruitment pressure is exported as
+  `IN_SCROOM_IMPINGEMENT_RECRUITMENT_FIELD`: impingement count, strength,
+  freshness, curiosity, reverie-alert pressure, recruitment family count,
+  freshness ratio, score, transition pressure, and studio pressure modulate the
+  in-scroom impingement/recruitment ward region instead of requiring a fourth
+  wall status panel.
 
 ### D8: hapax-darkplaces Systemd Unit [COMPLETE]
 - `systemd/units/hapax-darkplaces-v4l2.service`
@@ -505,7 +511,7 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - [x] 5 ambient sound zones are present and spawned by QuakeC
 - [x] Working mode switch changes fog color + texture set
 - [x] Stimmung/audio/Reverie state modulates AoA spin, fog, postprocess fields, and ward/source light intensity
-- [x] Visual-layer, visual-chain/effect-drift, imagination-fragment, content-source manifest, and GEM recruitment/mural intent is exported into DarkPlaces as in-scroom scalar fields
+- [x] Visual-layer, visual-chain/effect-drift, imagination-fragment, content-source manifest, GEM recruitment/mural, and impingement/recruitment intent is exported into DarkPlaces as in-scroom scalar fields
 - [x] Texture/asset provenance documented in `assets/quake/LICENSES.md`
 - [x] Systemd unit starts/restarts cleanly with WatchdogSec
 - [ ] 1-hour stability test without memory growth or crashes

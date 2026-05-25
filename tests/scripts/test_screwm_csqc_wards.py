@@ -332,6 +332,23 @@ def test_csqc_gem_recruitment_mural_lives_in_scroom_lightfield() -> None:
     assert "screwm_add_gem_mural_lights();" in body
 
 
+def test_csqc_impingement_recruitment_field_lives_in_scroom_lightfield() -> None:
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    assert 'screwm_read_norm("data/impingement-count.txt")' in body
+    assert 'screwm_read_norm("data/impingement-strength.txt")' in body
+    assert 'screwm_read_norm("data/impingement-reverie-alert.txt")' in body
+    assert 'screwm_read_norm("data/recruitment-family-count.txt")' in body
+    assert 'screwm_read_norm("data/recruitment-transition-pressure.txt")' in body
+    assert 'screwm_read_norm("data/recruitment-studio-pressure.txt")' in body
+    assert "void() screwm_add_impingement_recruitment_lights" in body
+    assert "screwm_impingement_strength * 82" in body
+    assert "screwm_recruitment_transition_pressure * 98" in body
+    assert "adddynamiclight('-74 -360 226'" in body
+    assert "adddynamiclight('120 -532 276'" in body
+    assert "screwm_add_impingement_recruitment_lights();" in body
+
+
 def test_darkplaces_review_camera_is_locked_by_default() -> None:
     autoexec = AUTOEXEC.read_text(encoding="utf-8")
     camera = (REPO_ROOT / "assets" / "quake" / "qc" / "camera.qc").read_text(encoding="utf-8")

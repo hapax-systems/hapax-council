@@ -29,6 +29,8 @@ DEFAULT_SHADER_PLAN_FILE = Path("/dev/shm/hapax-imagination/pipeline/plan.json")
 DEFAULT_GEM_RECRUITMENT_FILE = Path("/dev/shm/hapax-gem/recruitment.json")
 DEFAULT_GEM_FRAMES_FILE = Path("/dev/shm/hapax-gem/gem-frames.json")
 DEFAULT_LEGACY_GEM_FRAMES_FILE = Path("/dev/shm/hapax-compositor/gem-frames.json")
+DEFAULT_RECENT_IMPINGEMENTS_FILE = Path("/dev/shm/hapax-compositor/recent-impingements.json")
+DEFAULT_RECENT_RECRUITMENT_FILE = Path("/dev/shm/hapax-compositor/recent-recruitment.json")
 DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE = Path(
     "/dev/shm/hapax-visual/entity-local-effect-state.json"
 )
@@ -1013,6 +1015,81 @@ def build_gem_mural_lines(
     }
 
 
+def _recent_impingement_entries(path: Path) -> list[dict[str, Any]]:
+    entries = _read_json(path).get("entries")
+    if not isinstance(entries, list):
+        return []
+    return [item for item in entries if isinstance(item, dict)]
+
+
+def _recent_recruitment_entries(path: Path) -> list[tuple[str, dict[str, Any]]]:
+    families = _read_json(path).get("families")
+    if not isinstance(families, dict):
+        return []
+    return [(str(name), details) for name, details in families.items() if isinstance(details, dict)]
+
+
+def build_impingement_recruitment_lines(
+    recent_impingements_file: Path = DEFAULT_RECENT_IMPINGEMENTS_FILE,
+    recent_recruitment_file: Path = DEFAULT_RECENT_RECRUITMENT_FILE,
+    now: float | None = None,
+) -> dict[str, str]:
+    """Export recent impingement/recruitment pressure as in-scroom fields."""
+    now = time.time() if now is None else now
+    impingements = _recent_impingement_entries(recent_impingements_file)
+    strengths = [_float01(item, "value") for item in impingements]
+    freshness = [
+        _clamp01(1.0 - max(0.0, now - _entry_float(item, "ts", 0.0)) / 60.0)
+        for item in impingements
+    ]
+    curiosity = [
+        _float01(item, "value")
+        for item in impingements
+        if str(item.get("source") or "").startswith("exploration.")
+    ]
+    reverie_alert = [
+        _float01(item, "value")
+        for item in impingements
+        if str(item.get("source") or "") == "reverie_prediction"
+    ]
+
+    recruitment = _recent_recruitment_entries(recent_recruitment_file)
+    fresh_count = 0
+    transition_pressure = 0.0
+    studio_pressure = 0.0
+    max_score = 0.0
+    for family, details in recruitment:
+        last_ts = _entry_float(details, "last_recruited_ts", 0.0)
+        ttl = max(1.0, _entry_float(details, "ttl_s", 180.0))
+        fresh = _clamp01(1.0 - max(0.0, now - last_ts) / ttl) if last_ts else 0.0
+        if fresh > 0:
+            fresh_count += 1
+        score = _float01(details, "score")
+        max_score = max(max_score, score)
+        if family.startswith("transition."):
+            transition_pressure = max(transition_pressure, fresh)
+        if (
+            family.startswith("overlay.")
+            or family.startswith("preset.")
+            or family.startswith("gem.")
+        ):
+            studio_pressure = max(studio_pressure, fresh, score)
+
+    return {
+        "impingement-count.txt": f"{_clamp01(len(impingements) / 15.0):.4f}",
+        "impingement-strength.txt": f"{max(strengths, default=0.0):.4f}",
+        "impingement-fresh.txt": f"{max(freshness, default=0.0):.4f}",
+        "impingement-curiosity.txt": f"{max(curiosity, default=0.0):.4f}",
+        "impingement-reverie-alert.txt": f"{max(reverie_alert, default=0.0):.4f}",
+        "recruitment-family-count.txt": f"{_clamp01(len(recruitment) / 12.0):.4f}",
+        "recruitment-fresh-ratio.txt": f"{_clamp01(fresh_count / max(len(recruitment), 1)):.4f}",
+        "recruitment-score.txt": f"{max_score:.4f}",
+        "recruitment-transition-pressure.txt": f"{transition_pressure:.4f}",
+        "recruitment-studio-pressure.txt": f"{studio_pressure:.4f}",
+        "impingement-recruitment-route.txt": "IN_SCROOM_IMPINGEMENT_RECRUITMENT_FIELD",
+    }
+
+
 def _signal_severity(visual_state: dict[str, Any], category: str) -> float:
     signals = visual_state.get("signals")
     if not isinstance(signals, dict):
@@ -1235,6 +1312,8 @@ def export_state(
     gem_recruitment_file: Path = DEFAULT_GEM_RECRUITMENT_FILE,
     gem_frames_file: Path = DEFAULT_GEM_FRAMES_FILE,
     legacy_gem_frames_file: Path = DEFAULT_LEGACY_GEM_FRAMES_FILE,
+    recent_impingements_file: Path = DEFAULT_RECENT_IMPINGEMENTS_FILE,
+    recent_recruitment_file: Path = DEFAULT_RECENT_RECRUITMENT_FILE,
     entity_local_effect_state_file: Path = DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE,
     stimmung_state_file: Path = DEFAULT_STIMMUNG_STATE_FILE,
     visual_chain_state_file: Path = DEFAULT_VISUAL_CHAIN_STATE_FILE,
@@ -1276,6 +1355,10 @@ def export_state(
         _write_atomic(game_dir / filename, line)
     for filename, line in build_gem_mural_lines(
         gem_recruitment_file, gem_frames_file, legacy_gem_frames_file, now
+    ).items():
+        _write_atomic(game_dir / filename, line)
+    for filename, line in build_impingement_recruitment_lines(
+        recent_impingements_file, recent_recruitment_file, now
     ).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_visual_layer_lines(shm_dir, stimmung_state_file).items():
@@ -1321,6 +1404,16 @@ def main() -> int:
         default=DEFAULT_LEGACY_GEM_FRAMES_FILE,
     )
     parser.add_argument(
+        "--recent-impingements-file",
+        type=Path,
+        default=DEFAULT_RECENT_IMPINGEMENTS_FILE,
+    )
+    parser.add_argument(
+        "--recent-recruitment-file",
+        type=Path,
+        default=DEFAULT_RECENT_RECRUITMENT_FILE,
+    )
+    parser.add_argument(
         "--entity-local-effect-state-file",
         type=Path,
         default=DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE,
@@ -1354,6 +1447,8 @@ def main() -> int:
         args.gem_recruitment_file,
         args.gem_frames_file,
         args.legacy_gem_frames_file,
+        args.recent_impingements_file,
+        args.recent_recruitment_file,
         args.entity_local_effect_state_file,
         args.stimmung_state_file,
         args.visual_chain_state_file,

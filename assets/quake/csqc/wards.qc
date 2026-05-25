@@ -253,6 +253,16 @@ float screwm_gem_layer_density;
 float screwm_gem_layer_opacity;
 float screwm_gem_hold_pressure;
 float screwm_gem_narrative_pressure;
+float screwm_impingement_count;
+float screwm_impingement_strength;
+float screwm_impingement_fresh;
+float screwm_impingement_curiosity;
+float screwm_impingement_reverie_alert;
+float screwm_recruitment_family_count;
+float screwm_recruitment_fresh_ratio;
+float screwm_recruitment_score;
+float screwm_recruitment_transition_pressure;
+float screwm_recruitment_studio_pressure;
 
 vector screwm_cyan = '0.45 0.95 0.88';
 vector screwm_amber = '1.00 0.62 0.23';
@@ -585,6 +595,16 @@ void() screwm_poll_state =
     screwm_gem_layer_opacity = screwm_read_norm("data/gem-layer-opacity.txt");
     screwm_gem_hold_pressure = screwm_read_norm("data/gem-hold-pressure.txt");
     screwm_gem_narrative_pressure = screwm_read_norm("data/gem-narrative-pressure.txt");
+    screwm_impingement_count = screwm_read_norm("data/impingement-count.txt");
+    screwm_impingement_strength = screwm_read_norm("data/impingement-strength.txt");
+    screwm_impingement_fresh = screwm_read_norm("data/impingement-fresh.txt");
+    screwm_impingement_curiosity = screwm_read_norm("data/impingement-curiosity.txt");
+    screwm_impingement_reverie_alert = screwm_read_norm("data/impingement-reverie-alert.txt");
+    screwm_recruitment_family_count = screwm_read_norm("data/recruitment-family-count.txt");
+    screwm_recruitment_fresh_ratio = screwm_read_norm("data/recruitment-fresh-ratio.txt");
+    screwm_recruitment_score = screwm_read_norm("data/recruitment-score.txt");
+    screwm_recruitment_transition_pressure = screwm_read_norm("data/recruitment-transition-pressure.txt");
+    screwm_recruitment_studio_pressure = screwm_read_norm("data/recruitment-studio-pressure.txt");
 };
 
 void() screwm_apply_review_camera =
@@ -1038,6 +1058,24 @@ void() screwm_add_gem_mural_lights =
     adddynamiclight('250 -518 226', screwm_clamp(narrative_radius, 8, 166), screwm_rose);
 };
 
+void() screwm_add_impingement_recruitment_lights =
+{
+    float impingement_radius;
+    float recruitment_radius;
+    float transition_radius;
+
+    impingement_radius = 16 + screwm_impingement_count * 58 + screwm_impingement_strength * 82;
+    impingement_radius = impingement_radius + screwm_impingement_fresh * 48;
+    adddynamiclight('-74 -360 226', screwm_clamp(impingement_radius, 10, 174), screwm_green);
+    adddynamiclight('-120 -532 276', screwm_clamp(12 + screwm_impingement_curiosity * 106 + screwm_impingement_reverie_alert * 58, 8, 168), screwm_cyan);
+
+    recruitment_radius = 16 + screwm_recruitment_family_count * 46 + screwm_recruitment_fresh_ratio * 62;
+    recruitment_radius = recruitment_radius + screwm_recruitment_score * 74;
+    adddynamiclight('0 -360 226', screwm_clamp(recruitment_radius, 10, 172), screwm_cyan);
+    transition_radius = 12 + screwm_recruitment_transition_pressure * 98 + screwm_recruitment_studio_pressure * 66;
+    adddynamiclight('120 -532 276', screwm_clamp(transition_radius, 8, 176), screwm_amber);
+};
+
 void() screwm_draw_ward_links =
 {
     vector c01;
@@ -1197,6 +1235,7 @@ void() screwm_add_dynamic_lights =
     screwm_add_local_effect_lights();
     screwm_add_shader_plan_lights();
     screwm_add_gem_mural_lights();
+    screwm_add_impingement_recruitment_lights();
     screwm_add_ward_property_field_lights();
 
     screwm_add_ward_light('-222 -360 280', 1, screwm_cyan, screwm_active_01, screwm_presence_01);

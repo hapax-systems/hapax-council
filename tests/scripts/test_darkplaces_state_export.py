@@ -37,6 +37,8 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     gem_recruitment_file = tmp_path / "gem-recruitment.json"
     gem_frames_file = tmp_path / "gem-frames.json"
     legacy_gem_frames_file = tmp_path / "legacy-gem-frames.json"
+    recent_impingements_file = tmp_path / "recent-impingements.json"
+    recent_recruitment_file = tmp_path / "recent-recruitment.json"
     effect_state_file = tmp_path / "entity-local-effect-state.json"
     stimmung_state_file = tmp_path / "stimmung-state.json"
     visual_chain_state_file = tmp_path / "visual-chain-state.json"
@@ -181,6 +183,42 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         },
     )
     _write_json(legacy_gem_frames_file, {"frames": []})
+    _write_json(
+        recent_impingements_file,
+        {
+            "generated_at": 120.0,
+            "entries": [
+                {
+                    "path": "trigger_novelty",
+                    "value": 0.6,
+                    "family": "attention.winner",
+                    "source": "exploration.apperception",
+                    "ts": 90.0,
+                },
+                {
+                    "path": "reverie_prediction",
+                    "value": 1.0,
+                    "family": "prediction.alert",
+                    "source": "reverie_prediction",
+                    "ts": 119.0,
+                },
+            ],
+        },
+    )
+    _write_json(
+        recent_recruitment_file,
+        {
+            "families": {
+                "transition.cut.hard": {"last_recruited_ts": 110.0, "ttl_s": 20.0},
+                "gem.composition": {
+                    "last_recruited_ts": 100.0,
+                    "ttl_s": 40.0,
+                    "score": 0.7,
+                },
+            },
+            "updated_at": 120.0,
+        },
+    )
 
     _write_json(
         shm_dir / "active-segment.json",
@@ -335,6 +373,8 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         gem_recruitment_file=gem_recruitment_file,
         gem_frames_file=gem_frames_file,
         legacy_gem_frames_file=legacy_gem_frames_file,
+        recent_impingements_file=recent_impingements_file,
+        recent_recruitment_file=recent_recruitment_file,
         entity_local_effect_state_file=effect_state_file,
         stimmung_state_file=stimmung_state_file,
         visual_chain_state_file=visual_chain_state_file,
@@ -441,6 +481,29 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "gem-route.txt").read_text(
         encoding="utf-8"
     ).strip() == "IN_SCROOM_GEM_RECRUITMENT_MURAL"
+    assert (game_dir / "impingement-count.txt").read_text(encoding="utf-8").strip() == "0.1333"
+    assert (game_dir / "impingement-strength.txt").read_text(encoding="utf-8").strip() == "1.0000"
+    assert (game_dir / "impingement-fresh.txt").read_text(encoding="utf-8").strip() == "0.9833"
+    assert (game_dir / "impingement-curiosity.txt").read_text(encoding="utf-8").strip() == "0.6000"
+    assert (game_dir / "impingement-reverie-alert.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "1.0000"
+    assert (game_dir / "recruitment-family-count.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.1667"
+    assert (game_dir / "recruitment-fresh-ratio.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "1.0000"
+    assert (game_dir / "recruitment-score.txt").read_text(encoding="utf-8").strip() == "0.7000"
+    assert (game_dir / "recruitment-transition-pressure.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.5000"
+    assert (game_dir / "recruitment-studio-pressure.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.7000"
+    assert (game_dir / "impingement-recruitment-route.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "IN_SCROOM_IMPINGEMENT_RECRUITMENT_FIELD"
     assert (game_dir / "visual-zone-01.txt").read_text(encoding="utf-8").strip() == "0.2500"
     assert (game_dir / "visual-zone-02.txt").read_text(encoding="utf-8").strip() == "0.8500"
     assert (game_dir / "visual-zone-03.txt").read_text(encoding="utf-8").strip() == "1.0000"
