@@ -44,6 +44,13 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert content.count("// scroom-scene-far-band ") == 2
     assert content.count("// scroom-scene-rail ") == len(module["SCROOM_SCENE_GRAPH_PANES"])
     assert content.count("// scroom-scene-light ") == len(module["SCROOM_SCENE_GRAPH_PANES"])
+    assert content.count("// scroom-light-marker ") == 3
+    assert (
+        content.count("// scroom-volumetric-beam ") == len(module["scroom_material_field"]({})) - 12
+    )
+    assert content.count("// scroom-material-grid ") == (
+        len(module["SCROOM_GRID_X_LINES"]) + len(module["SCROOM_GRID_Y_LINES"])
+    )
     assert content.count("// ward-rail row") == 0
     assert content.count("// ward-spine col") == 0
     assert content.count("// ward-drift ") == 0
@@ -56,6 +63,7 @@ def test_screwm_map_sourceizes_all_legacy_ward_anchors() -> None:
     assert "// section: legacy-sierpinski-scrim" in content
     assert "// section: aoa-payload-panes" in content
     assert "// section: scroom-scene-graph-bands" in content
+    assert "// section: scroom-material-field" in content
     assert "// section: ward-depth-echo-planes" in content
     assert "slot_sierp" in content
     assert "slot_album" in content
@@ -121,6 +129,8 @@ def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
     assert "ward_depth_echo_panes" in source
     assert "aoa_payload_panes" in source
     assert "scroom_scene_graph_bands" in source
+    assert "scroom_material_field" in source
+    assert "scene_grid.wgsl" in source
     assert "Low, non-obstructing AoA floor mark" in source
     assert 'base = int(preset.get("wall_light", 100) * 0.72)' in source
 

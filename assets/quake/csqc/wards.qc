@@ -7,6 +7,10 @@ float screwm_energy;
 float screwm_voice;
 float screwm_audio_rms;
 float screwm_audio_onset;
+float screwm_reverie_temporal;
+float screwm_reverie_spectral;
+float screwm_reverie_material;
+float screwm_reverie_thermal;
 float screwm_homage_quake;
 float screwm_homage_transition;
 float screwm_homage_hue;
@@ -188,6 +192,10 @@ void() screwm_poll_state =
     screwm_voice = screwm_clamp(stof(line), 0, 1);
     screwm_audio_rms = screwm_read_norm("data/audio-rms.txt");
     screwm_audio_onset = screwm_read_norm("data/audio-onset.txt");
+    screwm_reverie_temporal = screwm_read_norm("data/reverie-temporal.txt");
+    screwm_reverie_spectral = screwm_read_norm("data/reverie-spectral.txt");
+    screwm_reverie_material = screwm_read_norm("data/reverie-material.txt");
+    screwm_reverie_thermal = screwm_read_norm("data/reverie-thermal.txt");
     screwm_homage_quake = screwm_read_norm("data/homage-quake-active.txt");
     screwm_homage_transition = screwm_read_norm("data/homage-transition-energy.txt");
     screwm_homage_hue = screwm_read_norm("data/homage-accent-hue.txt");
@@ -517,6 +525,25 @@ void() screwm_add_homage_lights =
     adddynamiclight('148 -360 118', screwm_clamp(field * 0.55, 24, 88), screwm_green);
 };
 
+void() screwm_add_material_field_lights =
+{
+    float material_field;
+    float spectral_field;
+    float temporal_field;
+    float thermal_field;
+
+    material_field = screwm_reverie_material + screwm_audio_rms * 0.55 + screwm_homage_signature * 0.35;
+    spectral_field = screwm_reverie_spectral + screwm_audio_onset * 0.40 + screwm_homage_transition * 0.30;
+    temporal_field = screwm_reverie_temporal + screwm_audio_onset * 0.35;
+    thermal_field = screwm_reverie_thermal + screwm_homage_quake * 0.28;
+
+    adddynamiclight('0 -520 326', screwm_clamp(42 + material_field * 96, 24, 138), screwm_cyan);
+    adddynamiclight('0 -488 252', screwm_clamp(26 + spectral_field * 76, 14, 106), screwm_green);
+    adddynamiclight('-150 -490 300', screwm_clamp(22 + material_field * 64, 12, 92), screwm_amber);
+    adddynamiclight('144 -488 260', screwm_clamp(22 + thermal_field * 72, 12, 104), screwm_rose);
+    adddynamiclight('-96 -448 104', screwm_clamp(18 + temporal_field * 58, 10, 84), screwm_green);
+};
+
 void() screwm_draw_ward_links =
 {
     vector c01;
@@ -669,6 +696,7 @@ void() screwm_add_dynamic_lights =
     adddynamiclight('-222 -360 118', 58 + screwm_energy * 34, screwm_green);
     adddynamiclight('222 -360 64', 58 + screwm_voice * 70, screwm_amber);
     screwm_add_homage_lights();
+    screwm_add_material_field_lights();
 
     screwm_add_ward_light('-222 -360 280', 1, screwm_cyan, screwm_active_01);
     screwm_add_ward_light('-148 -360 280', 2, screwm_rose, screwm_active_02);

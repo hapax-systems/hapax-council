@@ -145,6 +145,26 @@ def test_csqc_homage_package_lives_in_scroom_lightfield() -> None:
     assert "screwm_add_homage_lights();" in body
 
 
+def test_csqc_reverie_material_fields_live_on_scroom_geometry() -> None:
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    assert 'screwm_read_norm("data/reverie-temporal.txt")' in body
+    assert 'screwm_read_norm("data/reverie-spectral.txt")' in body
+    assert 'screwm_read_norm("data/reverie-material.txt")' in body
+    assert 'screwm_read_norm("data/reverie-thermal.txt")' in body
+    assert "void() screwm_add_material_field_lights" in body
+    assert "material_field = screwm_reverie_material" in body
+    assert "spectral_field = screwm_reverie_spectral" in body
+    assert "temporal_field = screwm_reverie_temporal" in body
+    assert "thermal_field = screwm_reverie_thermal" in body
+    assert "adddynamiclight('0 -520 326'" in body
+    assert "adddynamiclight('0 -488 252'" in body
+    assert "adddynamiclight('-150 -490 300'" in body
+    assert "adddynamiclight('144 -488 260'" in body
+    assert "adddynamiclight('-96 -448 104'" in body
+    assert "screwm_add_material_field_lights();" in body
+
+
 def test_darkplaces_review_camera_is_locked_by_default() -> None:
     autoexec = AUTOEXEC.read_text(encoding="utf-8")
     camera = (REPO_ROOT / "assets" / "quake" / "qc" / "camera.qc").read_text(encoding="utf-8")

@@ -260,6 +260,17 @@ SCROOM_SCENE_GRAPH_PANES = [
     ("far-band", "variety-log", "w14", "drift_c", -114, -356, FLOOR_Z + 78, 48, 32),
     ("far-band", "scope-wave", "w35", "drift_r", -186, -350, FLOOR_Z + 102, 48, 32),
 ]
+SCROOM_LIGHT_MARKER = (0, -520, FLOOR_Z + 390)
+SCROOM_MATERIAL_BEAMS = [
+    ("aoa-core", "drift_c", SCROOM_LIGHT_MARKER, (AOA_X, AOA_Y, AOA_Z)),
+    ("root-pane", "drift_g", SCROOM_LIGHT_MARKER, (AOA_X - 4, AOA_Y - 42, AOA_Z + 108)),
+    ("hls-shelf", "drift_a", SCROOM_LIGHT_MARKER, (-300, -460, FLOOR_Z + 340)),
+    ("source-arc", "drift_c", SCROOM_LIGHT_MARKER, (-94, -460, FLOOR_Z + 410)),
+    ("ward-shelf", "drift_r", SCROOM_LIGHT_MARKER, (288, -456, FLOOR_Z + 324)),
+    ("far-band", "drift_g", SCROOM_LIGHT_MARKER, (-186, -380, FLOOR_Z + 102)),
+]
+SCROOM_GRID_X_LINES = [-240, -120, 0, 120, 240]
+SCROOM_GRID_Y_LINES = [-590, -520, -450, -380]
 SOURCE_ANCHORS = [
     {
         "role": "brio-operator",
@@ -448,6 +459,33 @@ def framed_y_pane(comment_prefix, idx, name, tex, frame_tex, x, y, z, w, h):
     ):
         if frame:
             brushes.append(f"// {comment_prefix}-frame {idx:02d}: {name} {frame_name}\n{frame}")
+
+    return brushes
+
+
+def axis_beam_segments(comment_prefix, idx, name, tex, start, end, thickness=3):
+    """Return orthogonal thin beam segments approximating a volumetric ray."""
+    sx, sy, sz = start
+    ex, ey, ez = end
+    joints = ((sx, sy, sz), (ex, sy, sz), (ex, ey, sz), (ex, ey, ez))
+    brushes = []
+
+    for part_idx, (a, b) in enumerate(zip(joints[:-1], joints[1:], strict=True), start=1):
+        ax, ay, az = a
+        bx, by, bz = b
+        if a == b:
+            continue
+        segment = box_brush(
+            min(ax, bx) - thickness,
+            min(ay, by) - thickness,
+            min(az, bz) - thickness,
+            max(ax, bx) + thickness,
+            max(ay, by) + thickness,
+            max(az, bz) + thickness,
+            tex,
+        )
+        if segment:
+            brushes.append(f"// {comment_prefix} {idx:02d}.{part_idx}: {name} {tex}\n{segment}")
 
     return brushes
 
@@ -715,6 +753,42 @@ def scroom_scene_graph_bands(_preset):
         )
         if rail:
             brushes.append(f"// scroom-scene-rail {idx:02d}: {band} {name} {frame_tex}\n{rail}")
+
+    return brushes
+
+
+def scroom_material_field(_preset):
+    """Physical scene-grid material, light marker, and volumetric beam grammar.
+
+    This ports the old `scene_grid.wgsl` floor/back-wall material and authored
+    light/beam language into Quake BSP so the scroom itself carries the field.
+    """
+    brushes = []
+    mx, my, mz = SCROOM_LIGHT_MARKER
+
+    for idx, marker in enumerate(
+        (
+            box_brush(mx - 18, my - 3, mz - 3, mx + 18, my + 3, mz + 3, "drift_c"),
+            box_brush(mx - 3, my - 18, mz - 3, mx + 3, my + 18, mz + 3, "drift_a"),
+            box_brush(mx - 3, my - 3, mz - 18, mx + 3, my + 3, mz + 18, "drift_g"),
+        ),
+        start=1,
+    ):
+        if marker:
+            brushes.append(f"// scroom-light-marker {idx:02d}\n{marker}")
+
+    for idx, (name, tex, start, end) in enumerate(SCROOM_MATERIAL_BEAMS, start=1):
+        brushes.extend(axis_beam_segments("scroom-volumetric-beam", idx, name, tex, start, end))
+
+    grid_z = FLOOR_Z + 7
+    for idx, x in enumerate(SCROOM_GRID_X_LINES, start=1):
+        grid = box_brush(x - 2, -612, grid_z, x + 2, -342, grid_z + 3, "scroom")
+        if grid:
+            brushes.append(f"// scroom-material-grid x{idx:02d}\n{grid}")
+    for idx, y in enumerate(SCROOM_GRID_Y_LINES, start=1):
+        grid = box_brush(-264, y - 2, grid_z, 264, y + 2, grid_z + 3, "scroom")
+        if grid:
+            brushes.append(f"// scroom-material-grid y{idx:02d}\n{grid}")
 
     return brushes
 
@@ -1310,6 +1384,7 @@ def generate_map(preset):
         + sectioned_brushes("legacy-sierpinski-scrim", legacy_sierpinski_scrim(preset))
         + sectioned_brushes("aoa-payload-panes", aoa_payload_panes(preset))
         + sectioned_brushes("scroom-scene-graph-bands", scroom_scene_graph_bands(preset))
+        + sectioned_brushes("scroom-material-field", scroom_material_field(preset))
         + sectioned_brushes("ward-depth-echo-planes", ward_depth_echo_panes(preset))
         + sectioned_brushes("ward-review-plane", ward_review_panes(preset))
         + sectioned_brushes("ward-review-drift-paths", ward_review_drift_paths(preset))
