@@ -349,6 +349,23 @@ def test_csqc_impingement_recruitment_field_lives_in_scroom_lightfield() -> None
     assert "screwm_add_impingement_recruitment_lights();" in body
 
 
+def test_csqc_programme_segment_field_lives_in_scroom_lightfield() -> None:
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    assert 'screwm_read_norm("data/programme-role.txt")' in body
+    assert 'screwm_read_norm("data/programme-beat-progress.txt")' in body
+    assert 'screwm_read_norm("data/programme-source-pressure.txt")' in body
+    assert 'screwm_read_norm("data/programme-asset-pressure.txt")' in body
+    assert 'screwm_read_norm("data/programme-cue-hold.txt")' in body
+    assert "void() screwm_add_programme_segment_lights" in body
+    assert "screwm_programme_role * 72" in body
+    assert "screwm_programme_beat_progress * 96" in body
+    assert "screwm_programme_source_pressure * 78" in body
+    assert "adddynamiclight('222 -360 172'" in body
+    assert "adddynamiclight('148 -360 64'" in body
+    assert "screwm_add_programme_segment_lights();" in body
+
+
 def test_darkplaces_review_camera_is_locked_by_default() -> None:
     autoexec = AUTOEXEC.read_text(encoding="utf-8")
     camera = (REPO_ROOT / "assets" / "quake" / "qc" / "camera.qc").read_text(encoding="utf-8")

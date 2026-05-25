@@ -263,6 +263,14 @@ float screwm_recruitment_fresh_ratio;
 float screwm_recruitment_score;
 float screwm_recruitment_transition_pressure;
 float screwm_recruitment_studio_pressure;
+float screwm_programme_role;
+float screwm_programme_beat_progress;
+float screwm_programme_beat_index;
+float screwm_programme_duration_pressure;
+float screwm_programme_source_pressure;
+float screwm_programme_asset_pressure;
+float screwm_programme_affordance_pressure;
+float screwm_programme_cue_hold;
 
 vector screwm_cyan = '0.45 0.95 0.88';
 vector screwm_amber = '1.00 0.62 0.23';
@@ -605,6 +613,14 @@ void() screwm_poll_state =
     screwm_recruitment_score = screwm_read_norm("data/recruitment-score.txt");
     screwm_recruitment_transition_pressure = screwm_read_norm("data/recruitment-transition-pressure.txt");
     screwm_recruitment_studio_pressure = screwm_read_norm("data/recruitment-studio-pressure.txt");
+    screwm_programme_role = screwm_read_norm("data/programme-role.txt");
+    screwm_programme_beat_progress = screwm_read_norm("data/programme-beat-progress.txt");
+    screwm_programme_beat_index = screwm_read_norm("data/programme-beat-index.txt");
+    screwm_programme_duration_pressure = screwm_read_norm("data/programme-duration-pressure.txt");
+    screwm_programme_source_pressure = screwm_read_norm("data/programme-source-pressure.txt");
+    screwm_programme_asset_pressure = screwm_read_norm("data/programme-asset-pressure.txt");
+    screwm_programme_affordance_pressure = screwm_read_norm("data/programme-affordance-pressure.txt");
+    screwm_programme_cue_hold = screwm_read_norm("data/programme-cue-hold.txt");
 };
 
 void() screwm_apply_review_camera =
@@ -1076,6 +1092,29 @@ void() screwm_add_impingement_recruitment_lights =
     adddynamiclight('120 -532 276', screwm_clamp(transition_radius, 8, 176), screwm_amber);
 };
 
+void() screwm_add_programme_segment_lights =
+{
+    float banner_radius;
+    float state_radius;
+    float segment_radius;
+    float grounding_radius;
+
+    banner_radius = 16 + screwm_programme_role * 72 + screwm_programme_cue_hold * 64;
+    banner_radius = banner_radius + screwm_active_21 * 36;
+    adddynamiclight('222 -360 172', screwm_clamp(banner_radius, 10, 158), screwm_amber);
+
+    state_radius = 14 + screwm_programme_beat_progress * 96 + screwm_programme_beat_index * 42;
+    state_radius = state_radius + screwm_programme_duration_pressure * 34;
+    adddynamiclight('222 -360 118', screwm_clamp(state_radius, 10, 174), screwm_amber);
+
+    segment_radius = 14 + screwm_programme_source_pressure * 78 + screwm_programme_asset_pressure * 74;
+    segment_radius = segment_radius + screwm_programme_affordance_pressure * 48;
+    adddynamiclight('148 -360 64', screwm_clamp(segment_radius, 10, 178), screwm_green);
+
+    grounding_radius = 12 + screwm_programme_source_pressure * 88 + screwm_programme_asset_pressure * 72;
+    adddynamiclight('0 -536 330', screwm_clamp(grounding_radius, 8, 176), screwm_cyan);
+};
+
 void() screwm_draw_ward_links =
 {
     vector c01;
@@ -1236,6 +1275,7 @@ void() screwm_add_dynamic_lights =
     screwm_add_shader_plan_lights();
     screwm_add_gem_mural_lights();
     screwm_add_impingement_recruitment_lights();
+    screwm_add_programme_segment_lights();
     screwm_add_ward_property_field_lights();
 
     screwm_add_ward_light('-222 -360 280', 1, screwm_cyan, screwm_active_01, screwm_presence_01);

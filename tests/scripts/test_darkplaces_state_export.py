@@ -237,6 +237,10 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         },
     )
     _write_json(
+        shm_dir / "segment-cue-hold.json",
+        {"set_at": 118.0, "ttl_s": 4.0, "programme": "rant-governance"},
+    )
+    _write_json(
         shm_dir / "active_wards.json",
         {"ward_ids": ["programme_banner", "segment_content", "pressure_gauge"]},
     )
@@ -504,6 +508,27 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "impingement-recruitment-route.txt").read_text(
         encoding="utf-8"
     ).strip() == "IN_SCROOM_IMPINGEMENT_RECRUITMENT_FIELD"
+    assert (game_dir / "programme-role.txt").read_text(encoding="utf-8").strip() == "0.2800"
+    assert (game_dir / "programme-beat-progress.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.5000"
+    assert (game_dir / "programme-beat-index.txt").read_text(encoding="utf-8").strip() == "0.5000"
+    assert (game_dir / "programme-duration-pressure.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.0000"
+    assert (game_dir / "programme-source-pressure.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.5000"
+    assert (game_dir / "programme-asset-pressure.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.0000"
+    assert (game_dir / "programme-affordance-pressure.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.0000"
+    assert (game_dir / "programme-cue-hold.txt").read_text(encoding="utf-8").strip() == "0.5000"
+    assert (game_dir / "programme-segment-route.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "IN_SCROOM_PROGRAMME_SEGMENT_FIELD"
     assert (game_dir / "visual-zone-01.txt").read_text(encoding="utf-8").strip() == "0.2500"
     assert (game_dir / "visual-zone-02.txt").read_text(encoding="utf-8").strip() == "0.8500"
     assert (game_dir / "visual-zone-03.txt").read_text(encoding="utf-8").strip() == "1.0000"

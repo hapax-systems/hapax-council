@@ -321,6 +321,25 @@ def test_screwm_quake_embodies_impingement_recruitment_field_state() -> None:
     assert "screwm_recruitment_transition_pressure * 98" in wards
 
 
+def test_screwm_quake_embodies_programme_segment_field_state() -> None:
+    exporter = (REPO_ROOT / "scripts" / "darkplaces-state-export.py").read_text(encoding="utf-8")
+    wards = (REPO_ROOT / "assets" / "quake" / "csqc" / "wards.qc").read_text(encoding="utf-8")
+    programme_state = (REPO_ROOT / "agents" / "operator_awareness" / "state.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "class ProgrammeBlock" in programme_state
+    assert "active_programme" in programme_state
+    assert "PROGRAMME_ROLE_VALUES" in exporter
+    assert "build_programme_segment_lines" in exporter
+    assert "IN_SCROOM_PROGRAMME_SEGMENT_FIELD" in exporter
+    assert 'screwm_read_norm("data/programme-role.txt")' in wards
+    assert 'screwm_read_norm("data/programme-beat-progress.txt")' in wards
+    assert "screwm_add_programme_segment_lights" in wards
+    assert "screwm_programme_role * 72" in wards
+    assert "screwm_programme_source_pressure * 78" in wards
+
+
 def test_screwm_quake_spec_contains_migrated_intention_routes() -> None:
     spec = (
         REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-05-23-screwm-quake-hybrid-isap.md"
@@ -332,13 +351,15 @@ def test_screwm_quake_spec_contains_migrated_intention_routes() -> None:
     assert "IN_SCROOM_CONTENT_SOURCE_MANIFESTS" in spec
     assert "IN_SCROOM_GEM_RECRUITMENT_MURAL" in spec
     assert "IN_SCROOM_IMPINGEMENT_RECRUITMENT_FIELD" in spec
+    assert "IN_SCROOM_PROGRAMME_SEGMENT_FIELD" in spec
     assert "visual-chain/effect-drift exporter is the intentional containment layer" in spec
     assert "does not satisfy the Phase 4 parity gate by" in spec
     assert "itself, but it prevents the legacy Scroom systems" in spec
     assert (
         "Visual-layer, visual-chain/effect-drift, imagination-fragment, "
-        "content-source manifest, GEM recruitment/mural, and "
-        "impingement/recruitment intent is exported into DarkPlaces" in spec
+        "content-source manifest, GEM recruitment/mural, "
+        "impingement/recruitment, and programme/segment intent is exported "
+        "into DarkPlaces" in spec
     )
 
 

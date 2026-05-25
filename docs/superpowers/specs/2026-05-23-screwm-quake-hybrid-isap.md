@@ -386,6 +386,11 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   freshness ratio, score, transition pressure, and studio pressure modulate the
   in-scroom impingement/recruitment ward region instead of requiring a fourth
   wall status panel.
+- Active programme and segment state is exported as
+  `IN_SCROOM_PROGRAMME_SEGMENT_FIELD`: role, beat progress, beat index,
+  duration pressure, source grounding, asset grounding, affordance pressure,
+  and cue-hold state modulate the in-scroom programme banner/state/segment
+  region instead of relying on a flat programme overlay.
 
 ### D8: hapax-darkplaces Systemd Unit [COMPLETE]
 - `systemd/units/hapax-darkplaces-v4l2.service`
@@ -511,7 +516,7 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - [x] 5 ambient sound zones are present and spawned by QuakeC
 - [x] Working mode switch changes fog color + texture set
 - [x] Stimmung/audio/Reverie state modulates AoA spin, fog, postprocess fields, and ward/source light intensity
-- [x] Visual-layer, visual-chain/effect-drift, imagination-fragment, content-source manifest, GEM recruitment/mural, and impingement/recruitment intent is exported into DarkPlaces as in-scroom scalar fields
+- [x] Visual-layer, visual-chain/effect-drift, imagination-fragment, content-source manifest, GEM recruitment/mural, impingement/recruitment, and programme/segment intent is exported into DarkPlaces as in-scroom scalar fields
 - [x] Texture/asset provenance documented in `assets/quake/LICENSES.md`
 - [x] Systemd unit starts/restarts cleanly with WatchdogSec
 - [ ] 1-hour stability test without memory growth or crashes

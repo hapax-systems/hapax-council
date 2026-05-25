@@ -254,6 +254,19 @@ SHADER_PLAN_GROUPS: dict[str, tuple[str, ...]] = {
     "post": ("post", "postprocess", "vignette", "bloom", "sharpen", "scanlines"),
 }
 
+PROGRAMME_ROLE_VALUES: dict[str, float] = {
+    "idle": 0.05,
+    "ambient": 0.12,
+    "listening": 0.18,
+    "rant": 0.28,
+    "tier_list": 0.42,
+    "top_10": 0.54,
+    "react": 0.62,
+    "iceberg": 0.72,
+    "interview": 0.82,
+    "lecture": 0.92,
+}
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
@@ -1090,6 +1103,47 @@ def build_impingement_recruitment_lines(
     }
 
 
+def _list_ratio(value: object, scale: float) -> float:
+    if not isinstance(value, list):
+        return 0.0
+    return _clamp01(len(value) / max(scale, 1.0))
+
+
+def build_programme_segment_lines(shm_dir: Path, now: float | None = None) -> dict[str, str]:
+    """Export active programme/segment state as in-scroom field pressure."""
+    now = time.time() if now is None else now
+    segment = _read_json(shm_dir / "active-segment.json")
+    cue_hold = _read_json(shm_dir / "segment-cue-hold.json")
+    role = str(segment.get("role") or "idle").strip().lower()
+    beat_progress = _clamp01(_entry_float(segment, "beat_progress", 0.0))
+    current_beat = max(0.0, _entry_float(segment, "current_beat_index", 0.0) + 1.0)
+    total_beats = max(1.0, _entry_float(segment, "total_beats", 1.0))
+    elapsed = max(0.0, _entry_float(segment, "beat_elapsed_s", 0.0))
+    planned = max(1.0, _entry_float(segment, "planned_duration_s", 3600.0))
+    cue_set_at = _entry_float(cue_hold, "set_at", 0.0)
+    cue_ttl = max(1.0, _entry_float(cue_hold, "ttl_s", 1.0))
+    cue_fresh = _clamp01(1.0 - max(0.0, now - cue_set_at) / cue_ttl) if cue_set_at else 0.0
+
+    source_pressure = _list_ratio(segment.get("source_refs"), 6.0)
+    asset_pressure = max(
+        _list_ratio(segment.get("asset_attributions"), 4.0),
+        _list_ratio(segment.get("asset_requirements"), 6.0),
+    )
+    affordance_pressure = _list_ratio(segment.get("source_affordance_kinds"), 6.0)
+
+    return {
+        "programme-role.txt": f"{PROGRAMME_ROLE_VALUES.get(role, 0.24):.4f}",
+        "programme-beat-progress.txt": f"{beat_progress:.4f}",
+        "programme-beat-index.txt": f"{_clamp01(current_beat / total_beats):.4f}",
+        "programme-duration-pressure.txt": f"{_clamp01(elapsed / planned):.4f}",
+        "programme-source-pressure.txt": f"{source_pressure:.4f}",
+        "programme-asset-pressure.txt": f"{asset_pressure:.4f}",
+        "programme-affordance-pressure.txt": f"{affordance_pressure:.4f}",
+        "programme-cue-hold.txt": f"{cue_fresh:.4f}",
+        "programme-segment-route.txt": "IN_SCROOM_PROGRAMME_SEGMENT_FIELD",
+    }
+
+
 def _signal_severity(visual_state: dict[str, Any], category: str) -> float:
     signals = visual_state.get("signals")
     if not isinstance(signals, dict):
@@ -1360,6 +1414,8 @@ def export_state(
     for filename, line in build_impingement_recruitment_lines(
         recent_impingements_file, recent_recruitment_file, now
     ).items():
+        _write_atomic(game_dir / filename, line)
+    for filename, line in build_programme_segment_lines(shm_dir, now).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_visual_layer_lines(shm_dir, stimmung_state_file).items():
         _write_atomic(game_dir / filename, line)
