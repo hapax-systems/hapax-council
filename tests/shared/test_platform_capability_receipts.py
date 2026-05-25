@@ -31,6 +31,7 @@ def _run_receipts(
     *,
     env: dict[str, str] | None = None,
     now: str = NOW,
+    platform: str = "codex",
 ) -> subprocess.CompletedProcess[str]:
     merged_env = {**os.environ, **(env or {})}
     return subprocess.run(
@@ -42,7 +43,7 @@ def _run_receipts(
             "--receipt-dir",
             str(tmp_path),
             "--platform",
-            "codex",
+            platform,
             "--now",
             now,
             "--json",
@@ -147,6 +148,35 @@ def test_fresh_subscription_receipt_allows_dispatch_without_rollback(
     assert decision.action is DispatchAction.LAUNCH
     assert decision.route_policy_green is True
     assert decision.registry_freshness_green is True
+
+
+def test_antigrav_agy_receipt_clears_unobservable_quota_catch22(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "agy", "1.0.0")
+    wrapper = tmp_path / "home" / ".local" / "bin" / "hapax-antigrav"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir), "HOME": str(tmp_path / "home")},
+        platform="antigrav",
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads((tmp_path / "antigrav.json").read_text(encoding="utf-8"))
+    assert receipt["cli"]["binary"] == "agy"
+    assert receipt["cli"]["available"] is True
+    assert "quota_telemetry_unknown" in receipt["quota"]["reason_codes"]
+
+    registry = load_platform_capability_registry(REGISTRY, receipt_dir=tmp_path, now=NOW_DT)
+    route = registry.require("antigrav.interactive.full")
+
+    assert route.route_state.value == "active"
+    assert "quota_telemetry_unknown" not in route.blocked_reasons
+    assert "quota_telemetry_unknown" not in route.freshness.evidence.quota.blocked_reasons
 
 
 def test_stale_receipt_is_not_consumed(tmp_path: Path) -> None:

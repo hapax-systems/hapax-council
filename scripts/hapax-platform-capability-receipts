@@ -40,7 +40,7 @@ from shared.platform_capability_registry import (  # noqa: E402
 )
 
 BINARY_BY_PLATFORM = {
-    "antigrav": "antigravity",
+    "antigrav": "agy",
     "claude": "claude",
     "codex": "codex",
     "gemini": "gemini",
@@ -56,8 +56,11 @@ VERSION_ARGS_BY_PLATFORM = {
 CONFIG_REFS_BY_PLATFORM = {
     "antigrav": [
         "~/.cache/hapax/relay/onboarding-antigrav.md",
+        "~/.gemini/antigravity-cli/settings.json",
+        "~/.gemini/antigravity/global_workflows",
         ".agents/rules",
         ".agents/workflows",
+        ".agents/mcp_config.json",
         ".agent",
     ],
     "claude": ["~/.claude/settings.json", "~/.claude.json", "CLAUDE.md"],
@@ -130,14 +133,38 @@ def sha256_file(path: Path) -> str | None:
     return digest.hexdigest()
 
 
+def candidate_binaries(platform: str) -> list[str]:
+    override = os.environ.get(f"HAPAX_{platform.upper()}_BIN", "").strip()
+    candidates = [BINARY_BY_PLATFORM[platform]]
+    if platform == "antigrav":
+        candidates.extend(["antigravity", "/usr/bin/agy", "/usr/bin/antigravity"])
+    if override:
+        candidates.insert(0, override)
+    return list(dict.fromkeys(candidates))
+
+
+def resolve_binary(binary: str) -> str | None:
+    path = Path(binary).expanduser()
+    if path.is_absolute():
+        return str(path) if path.is_file() and os.access(path, os.X_OK) else None
+    return shutil.which(binary)
+
+
 def observe_cli(platform: str, *, timeout: float) -> CliEvidence:
+    attempted: list[str] = []
     binary = BINARY_BY_PLATFORM[platform]
-    resolved = shutil.which(binary)
+    resolved = None
+    for candidate in candidate_binaries(platform):
+        attempted.append(candidate)
+        resolved = resolve_binary(candidate)
+        if resolved is not None:
+            binary = candidate
+            break
     if resolved is None:
         return CliEvidence(
             binary=binary,
             available=False,
-            error=f"{binary} not found on PATH",
+            error=f"{binary} not found; tried {', '.join(attempted)}",
         )
     command = [resolved, *VERSION_ARGS_BY_PLATFORM[platform]]
     try:

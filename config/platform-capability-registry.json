@@ -31,16 +31,15 @@
       "platform": "antigrav",
       "mode": "interactive",
       "profile": "full",
-      "launcher": "~/.local/bin/hapax-antigrav --session <lane> --task <task>",
-      "summary": "Anthropic Antigravity IDE lane",
-      "notes": "IDE-only audited full-worker lane; terminal auto-approval posture requires external task gates, PR review, and sensitive-surface restrictions.",
+      "launcher": "~/.local/bin/hapax-antigrav --session <lane> --task <task> --terminal tmux",
+      "summary": "Google Antigravity CLI lane",
+      "notes": "agy CLI audited full-worker lane; requires governed dispatch bootstrap, task claim, external gates, PR review, and sensitive-surface restrictions.",
       "route_state": "blocked",
       "blocked_reasons": [
         "fresh_capability_evidence_absent",
-        "privacy_posture_unknown",
         "quota_telemetry_unknown"
       ],
-      "model_or_engine": "anthropic-antigravity-ide",
+      "model_or_engine": "google-antigravity-cli-agy",
       "auth_surface": "operator_session",
       "capacity_pool": "subscription_quota",
       "mutability": {
@@ -50,16 +49,17 @@
         "public": false,
         "provider_spend": false
       },
-      "authority_ceiling": "frontier_review_required",
+      "authority_ceiling": "authoritative",
       "tool_access": {
         "filesystem": "read_write",
         "shell": "full",
         "browser": true,
         "mcp": []
       },
-      "privacy_posture": "unknown",
+      "privacy_posture": "provider_training_unknown",
       "quality_envelope": {
         "eligible_quality_floors": [
+          "frontier_required",
           "frontier_review_required",
           "deterministic_ok"
         ],
@@ -75,9 +75,9 @@
         "max_context_class": "large"
       },
       "telemetry": {
-        "quota_source": "unknown",
+        "quota_source": "manual",
         "cost_source": "none",
-        "resource_source": "unknown"
+        "resource_source": "local_probe"
       },
       "freshness": {
         "capability_checked_at": null,
@@ -92,8 +92,7 @@
           "capability": {
             "evidence_refs": [],
             "blocked_reasons": [
-              "fresh_capability_evidence_absent",
-              "privacy_posture_unknown"
+              "fresh_capability_evidence_absent"
             ]
           },
           "quota": {
@@ -117,8 +116,9 @@
         }
       },
       "known_unknowns": [
-        "Antigravity quota and account-live limits are not yet exposed as local telemetry.",
-        "Installed extension accepts .agent and .agents paths; official docs prefer .agents/rules and .agents/workflows."
+        "Antigravity account-live quota is not exposed as local telemetry; fresh local receipts record this as an advisory blocker rather than a pre-launch catch-22.",
+        "Provider training/privacy posture is not equivalent to local execution; privacy/secret-sensitive tasks remain excluded by route policy.",
+        "Current Antigravity implementation is the agy terminal CLI; legacy antigravity IDE naming is compatibility only."
       ],
       "capability_scores": {
         "grounding": {
@@ -285,7 +285,7 @@
         }
       ],
       "sanctioned_wrapper": "~/.local/bin/hapax-antigrav",
-      "approval_posture": "ide_terminal_auto_approve",
+      "approval_posture": "default_deny_enable_latch",
       "capability_tier": "audited_full_worker",
       "worker_tier": "audited_full_worker"
     },
