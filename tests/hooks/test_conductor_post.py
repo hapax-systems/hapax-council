@@ -123,7 +123,7 @@ class TestSocketProtocol:
                     "session_id": "sX",
                     "tool_name": "Bash",
                     "tool_input": {"command": "ls"},
-                    "tool_output": "stdout",
+                    "tool_response": {"stdout": "stdout"},
                 },
                 role=role,
             )
@@ -138,7 +138,7 @@ class TestSocketProtocol:
                     "session_id": "sX",
                     "tool_name": "Bash",
                     "tool_input": {"command": "ls"},
-                    "tool_output": "ok",
+                    "tool_response": {"stdout": "ok"},
                 },
                 role=role,
             )
@@ -154,7 +154,7 @@ class TestSocketProtocol:
                     "session_id": "sX",
                     "tool_name": "Bash",
                     "tool_input": {"command": "ls"},
-                    "tool_output": "ok",
+                    "tool_response": {"stdout": "ok"},
                 },
                 role=role,
             )
@@ -169,7 +169,7 @@ class TestSocketProtocol:
                     "session_id": "sY",
                     "tool_name": "Bash",
                     "tool_input": {"command": "echo hi"},
-                    "tool_output": "hi\n",
+                    "tool_response": {"stdout": "hi\n"},
                 },
                 role=role,
             )
