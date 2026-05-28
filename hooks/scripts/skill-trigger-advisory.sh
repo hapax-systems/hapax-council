@@ -9,8 +9,8 @@ TOOL="$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)" || exit 0
 [ "$TOOL" = "Bash" ] || exit 0
 
 CMD="$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)" || exit 0
-OUTPUT="$(echo "$INPUT" | jq -r '.tool_result.stdout // empty' 2>/dev/null)" || exit 0
-STDERR_OUT="$(echo "$INPUT" | jq -r '.tool_result.stderr // empty' 2>/dev/null)" || exit 0
+OUTPUT="$(echo "$INPUT" | jq -r '.tool_response.stdout // empty' 2>/dev/null)" || exit 0
+STDERR_OUT="$(echo "$INPUT" | jq -r '.tool_response.stderr // empty' 2>/dev/null)" || exit 0
 COMBINED="${OUTPUT}${STDERR_OUT}"
 
 # /ci-watch — after gh pr create

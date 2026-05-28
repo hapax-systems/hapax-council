@@ -1,0 +1,22 @@
+# CODEOWNERS — governance-protected surfaces require operator (Code Owner) review.
+#
+# Single-operator system (axiom: single_user): @ryanklee is the sole owner.
+# This file deliberately sets NO blanket `*` owner, so ordinary PRs keep
+# flowing through the autonomous autoqueue. Only the governance surfaces
+# below require explicit operator review — closing the "governance paths have
+# zero permission-layer protection" gap from
+# REQ-20260528-claude-code-config-sdlc-conformance (P1 slice 8).
+#
+# Enforcement requires the branch-protection setting
+# "Require review from Code Owners" on `main` (operator-side; see the P1 PR
+# activation notes). Without it, GitHub still requests owner review on
+# matching PRs but does not block.
+
+/axioms/                 @ryanklee
+/shared/governance/      @ryanklee
+/CLAUDE.md               @ryanklee
+CLAUDE.md                @ryanklee
+**/CLAUDE.md             @ryanklee
+/config/pipewire/        @ryanklee
+/CODEOWNERS              @ryanklee
+/.github/CODEOWNERS      @ryanklee
