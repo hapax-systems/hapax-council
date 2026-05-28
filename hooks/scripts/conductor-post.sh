@@ -20,7 +20,7 @@ SOCK="/run/user/$(id -u)/conductor-${ROLE}.sock"
 # Build event JSON safely with jq (no string interpolation)
 TOOL_NAME="$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)"
 TOOL_INPUT="$(echo "$INPUT" | jq -c '.tool_input // {}' 2>/dev/null)"
-TOOL_OUTPUT="$(echo "$INPUT" | jq -r '.tool_output // empty' 2>/dev/null)"
+TOOL_OUTPUT="$(echo "$INPUT" | jq -r '.tool_response.stdout // empty' 2>/dev/null)"
 EVENT="$(jq -cn \
     --arg event_type "post_tool_use" \
     --arg tool_name "$TOOL_NAME" \

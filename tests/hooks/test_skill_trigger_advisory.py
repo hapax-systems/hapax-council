@@ -2,8 +2,8 @@
 
 PostToolUse advisory hook (non-blocking) that watches Bash command +
 output for patterns and suggests relevant slash-commands. The hook
-inspects ``tool_input.command``, ``tool_result.stdout``, and
-``tool_result.stderr`` from the JSON payload. Pure stderr emission;
+inspects ``tool_input.command``, ``tool_response.stdout``, and
+``tool_response.stderr`` from the JSON payload. Pure stderr emission;
 never blocks. Hook was untested.
 
 The hook has 10 distinct trigger patterns (`/ci-watch`, `/diagnose`,
@@ -36,7 +36,7 @@ def _bash(command: str, *, stdout: str = "", stderr: str = "") -> dict:
     return {
         "tool_name": "Bash",
         "tool_input": {"command": command},
-        "tool_result": {"stdout": stdout, "stderr": stderr},
+        "tool_response": {"stdout": stdout, "stderr": stderr},
     }
 
 

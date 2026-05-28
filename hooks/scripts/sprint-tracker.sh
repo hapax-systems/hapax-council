@@ -39,7 +39,7 @@ case "$TOOL" in
         ;;
     Bash)
         CMD="$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)"
-        OUTPUT="$(echo "$INPUT" | jq -r '.tool_output // empty' 2>/dev/null)"
+        OUTPUT="$(echo "$INPUT" | jq -r '.tool_response.stdout // empty' 2>/dev/null)"
 
         # git commit: extract committed files from output
         if echo "$CMD" | grep -qE '^\s*git\s+commit'; then

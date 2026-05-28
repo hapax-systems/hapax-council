@@ -7,7 +7,7 @@ INPUT="$(cat)"
 TOOL="$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)"
 [ "$TOOL" = "Bash" ] || exit 0
 
-OUTPUT="$(echo "$INPUT" | jq -r '.tool_output // empty' 2>/dev/null)"
+OUTPUT="$(echo "$INPUT" | jq -r '.tool_response.stdout // empty' 2>/dev/null)"
 
 # Detect gh pr create output (contains a github PR URL)
 if ! echo "$OUTPUT" | grep -qE 'github\.com/.+/pull/[0-9]+'; then
