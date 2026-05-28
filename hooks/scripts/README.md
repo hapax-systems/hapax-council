@@ -23,7 +23,7 @@ verdict.
 | `conflict-marker-scan.sh` | Write / Edit | WARN on merge-conflict markers in content |
 | `docs-only-pr-warn.sh` | Bash | ADVISORY: docs-only PRs use required-check sentinels; no carrier file needed |
 | `doc-update-advisory.sh` | Edit / Write | ADVISORY: suggest related doc updates |
-| `llm-metadata-gate.sh` | Bash | BLOCK LLM calls missing required metadata |
+| `llm-metadata-gate.sh` | Write (PostToolUse) | ADVISORY: warn when a new `agents/<name>/__init__.py` lacks a sibling `METADATA.yaml` |
 | `pip-guard.sh` | Bash | BLOCK `pip install` invocations; project uses uv |
 | `registry-guard.sh` | Edit / Write | BLOCK changes to sealed registry files |
 | `relay-coordination-check.sh` | session | ADVISORY: relay protocol status |

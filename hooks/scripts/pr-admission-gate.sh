@@ -80,13 +80,13 @@ if echo "$STRIPPED" | grep -qE '^\s*gh\s+pr\s+(create|ready)\b'; then
     echo "  See: hapax-pr-admission status"
     echo "  Allowed: pushing to existing snapshot branches; gh pr update-branch;"
     echo "           fixing failed checks on already-open PRs; closing duplicates."
-    exit 1
+    exit 2
 fi
 
 # 2. gh repo fork in this repo
 if echo "$STRIPPED" | grep -qE '^\s*gh\s+repo\s+fork\b'; then
     echo "PR admission BLOCKED: governor mode is '$MODE' — gh repo fork suppressed."
-    exit 1
+    exit 2
 fi
 
 # 3. git push origin HEAD:refs/heads/<branch>   (the explicit detached-HEAD bypass pattern)
@@ -99,7 +99,7 @@ if echo "$STRIPPED" | grep -qE '^\s*git\s+push\s+origin\s+HEAD:refs/heads/[A-Za-
     echo "PR admission BLOCKED: detached-HEAD push to new branch '$target' rejected."
     echo "  Governor mode: $MODE. Branch is not in the freeze snapshot."
     echo "  This was the bypass pattern that re-filled the queue during the prior drain."
-    exit 1
+    exit 2
 fi
 
 # 4. git push origin <local>:refs/heads/<branch>
@@ -110,7 +110,7 @@ if echo "$STRIPPED" | grep -qE '^\s*git\s+push\s+origin\s+[A-Za-z0-9._/-]+:refs/
     fi
     echo "PR admission BLOCKED: push to new branch '$target' rejected."
     echo "  Governor mode: $MODE. Branch is not in the freeze snapshot."
-    exit 1
+    exit 2
 fi
 
 # 5. git push -u origin HEAD     (only blocks if current branch not in snapshot)
@@ -118,13 +118,13 @@ if echo "$STRIPPED" | grep -qE '^\s*git\s+push\s+-u\s+origin\s+HEAD'; then
     cur_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
     if [ -z "$cur_branch" ]; then
         echo "PR admission BLOCKED: detached HEAD push without target — refuse during $MODE."
-        exit 1
+        exit 2
     fi
     if is_branch_in_snapshot "$cur_branch"; then
         exit 0
     fi
     echo "PR admission BLOCKED: git push -u for new branch '$cur_branch' rejected during $MODE."
-    exit 1
+    exit 2
 fi
 
 # 6. git branch <name>  / git switch -c  / git checkout -b

@@ -7,6 +7,19 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/axiom-patterns.sh"
 
+# Fail LOUD when jq is missing (parity with axiom-commit-scan). Without
+# this guard a host lacking jq extracts empty CONTENT below and exits 0,
+# silently pretending every edit passed the T0 axiom scan. A governance
+# gate that quietly no-ops is worse than one that fails: block so the
+# missing dependency is noticed rather than fail open.
+if ! command -v jq >/dev/null 2>&1; then
+  echo "axiom-scan: BLOCKED — 'jq' is not installed." >&2
+  echo "The T0 axiom edit gate requires jq to parse the Claude Code hook" >&2
+  echo "input. Install jq (Arch: 'paru -S jq'; Debian: 'apt install jq')." >&2
+  echo "This gate fails loud rather than silently passing." >&2
+  exit 2
+fi
+
 INPUT="$(cat)"
 
 # Extract content from tool input (Edit: new_string, Write: content, MultiEdit: edits[], NotebookEdit: new_source)
