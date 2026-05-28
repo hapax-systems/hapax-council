@@ -9,6 +9,26 @@
 # Only blocks on HIGH-confidence matches to avoid false positives.
 set -euo pipefail
 
+# Fail LOUD when jq is missing: without it tool_name parses empty, the
+# case below never matches Edit/Write, and the hook exits 0 — silently
+# letting PII through. A privacy gate that no-ops is worse than one that
+# fails, so block instead of failing open.
+if ! command -v jq >/dev/null 2>&1; then
+  echo "pii-guard: BLOCKED — 'jq' is not installed; cannot parse hook input." >&2
+  echo "Install jq before mutating tracked files. This gate fails closed." >&2
+  exit 2
+fi
+
+# Fail LOUD when grep lacks PCRE (-P): every pattern below uses grep -P,
+# which on a non-PCRE grep errors out — indistinguishable from a clean
+# no-match, i.e. PII would pass undetected. Probe once, fail closed.
+if ! printf 'probe' | grep -qP 'probe' 2>/dev/null; then
+  echo "pii-guard: BLOCKED — 'grep -P' (PCRE) is unavailable." >&2
+  echo "The PII patterns require PCRE. Install GNU grep with PCRE support." >&2
+  echo "This gate fails closed rather than silently passing PII through." >&2
+  exit 2
+fi
+
 input="$(cat)"
 tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
 

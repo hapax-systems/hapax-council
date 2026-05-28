@@ -11,8 +11,8 @@ mutated.
 Decision matrix:
   - no peer claim → exit 0 (allow)
   - peer claim path != edit path, no prefix → exit 0
-  - peer claim path == edit path, claim still active → exit 1 (BLOCK)
-  - peer claim path is directory, edit is in subtree → exit 1 (BLOCK)
+  - peer claim path == edit path, claim still active → exit 2 (BLOCK)
+  - peer claim path is directory, edit is in subtree → exit 2 (BLOCK)
   - peer claim with `until` in the past → skipped silently → exit 0
   - HAPAX_INCIDENT=1 → bypass even when blocked → exit 0
   - HAPAX_RELAY_CHECK_HOOK=0 → bypass entirely → exit 0
@@ -158,7 +158,7 @@ def test_exact_path_claim_blocks(relay_dir: Path) -> None:
         relay_dir=relay_dir,
         file_path="agents/studio_compositor/durf_source.py",
     )
-    assert result.returncode == 1, (
+    assert result.returncode == 2, (
         f"Expected block; got exit {result.returncode}, stderr={result.stderr!r}"
     )
     assert "BLOCKED" in result.stderr
@@ -183,7 +183,7 @@ def test_directory_claim_blocks_subtree(relay_dir: Path) -> None:
         relay_dir=relay_dir,
         file_path="agents/studio_compositor/cairo_source.py",
     )
-    assert result.returncode == 1, f"Expected block on subtree match; got {result.returncode}"
+    assert result.returncode == 2, f"Expected block on subtree match; got {result.returncode}"
 
 
 def test_stale_claim_skipped(relay_dir: Path) -> None:
@@ -309,7 +309,7 @@ def test_worktree_prefixed_path_resolves(relay_dir: Path, tmp_path: Path) -> Non
         relay_dir=relay_dir,
         file_path=abs_path,
     )
-    assert result.returncode == 1, (
+    assert result.returncode == 2, (
         f"Worktree-prefixed path should resolve and match; got {result.returncode}, "
         f"stderr={result.stderr!r}"
     )

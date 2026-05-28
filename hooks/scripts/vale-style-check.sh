@@ -44,8 +44,8 @@ if [ "$errors" -gt 0 ]; then
   echo "$output" | grep ":error:"
   echo ""
   echo "Fix these issues before publishing. Banned terms and structural"
-  echo "violations must be resolved. Warnings are informational."
-  exit 1
+  echo "violations must be resolved. Warnings are informational." >&2
+  exit 2
 fi
 
 exit 0

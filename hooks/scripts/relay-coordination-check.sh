@@ -254,7 +254,7 @@ Resolution paths:
 This block prevents worktree-collision incidents (alpha #1347, beta
 Phase 1 recovery in 24h window 2026-04-24/25). See v4 §3.4 AUDIT-06.
 EOF
-  exit 1
+  exit 2
 fi
 
 exit 0
