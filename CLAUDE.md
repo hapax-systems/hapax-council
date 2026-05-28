@@ -74,9 +74,10 @@ Non-formal referents: "The Operator"/"Oudepode"/"OTO" (sticky per utterance via 
 |------|--------|
 | work-resolution-gate | Edit/Write on feature branch without PR |
 | no-stale-branches | Branch creation with unmerged branches; max 20 worktrees |
-| push-gate | Push without tests |
 | pii-guard | PII patterns |
 | attribution-entity-check | Product-company misattributions in publication-adjacent files (registry: `config/publication-hardening/known-entities.yaml`) |
+
+Test-before-push and pre-commit are **not** auto-active (REQ-20260528 audit): `push-gate.sh` is unwired; pre-commit requires a one-time `scripts/install-git-hooks.sh` per clone (`docs/runbooks/pre-commit-bootstrap.md`); the in-session PR release-evidence gate (`pr-release-gate.sh`) ships but needs `~/.claude/settings.json` registration to fire.
 
 ## Voice & Research
 
