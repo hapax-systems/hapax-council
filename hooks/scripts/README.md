@@ -16,7 +16,7 @@ verdict.
 |------|-----------|-----------|
 | `work-resolution-gate.sh` | Edit / Write | BLOCK when a feature branch has commits but no PR, or when on main with open PRs whose branches are local |
 | `no-stale-branches.sh` | Bash | BLOCK branch creation if any unmerged branch exists; BLOCK destructive git on feature branches; enforce visible worktree cap during Claude+Codex transition |
-| `push-gate.sh` | Bash | BLOCK `git push` without passing tests |
+| `push-gate.sh` | Bash — **unwired** | Unconditional `git push`/PR approval block, but NOT registered in settings.json (inactive). The conditional in-session PR release-evidence gate is `pr-release-gate.sh` (ships; pending settings.json registration). |
 | `pii-guard.sh` | Edit / Write | BLOCK edits whose file content matches PII patterns |
 | `axiom-commit-scan.sh` | Bash | BLOCK commits whose messages violate axiom patterns |
 | `axiom-scan.sh` / `axiom-patterns.sh` / `axiom-audit.sh` | session | Axiom compliance scanning, retroactive audit |
