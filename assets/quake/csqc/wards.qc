@@ -933,11 +933,27 @@ void(vector org, float idx, vector color, float active, float presence) screwm_a
     float radius;
     float activity;
     float homage_boost;
+    float gate;
 
     if (!screwm_effect_lightfield_enabled())
         return;
 
     activity = screwm_clamp(active + presence * 0.70, 0, 1);
+
+    // Drift-gated lightfield (operator 2026-05-29: drift should interact with the
+    // lighting, w/ shadows). A ward emits light only when its OWN drift signal is
+    // live, so the lit — and therefore shadow-casting — set stays small and moves
+    // spatially through the room as drift moves; it is never all 36 at once (which
+    // both reads as a global pulse and blows the shadowed-dlight 1080p60 budget).
+    // Tunable live via screwm_ward_light_gate so the shadow budget dials without a
+    // rebuild. The scroom geometry + emissive live-textures carry the room at idle;
+    // ward dlights are the drift-driven accent pools on top.
+    gate = cvar("screwm_ward_light_gate");
+    if (gate <= 0)
+        gate = 0.10;
+    if (activity < gate)
+        return;
+
     radius = 34 + screwm_energy * 24 + screwm_voice * 38 + active * 118;
     radius = radius + presence * 96 + activity * 34;
     radius = radius + screwm_audio_rms * 16 + screwm_audio_onset * 26;
