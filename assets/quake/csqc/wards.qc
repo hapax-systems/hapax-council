@@ -934,7 +934,7 @@ void(vector org, float idx, vector color, float active, float presence) screwm_a
     float activity;
     float homage_boost;
 
-    if (idx != 5 && idx != 9 && idx != 22 && idx != 27)
+    if (!screwm_effect_lightfield_enabled())
         return;
 
     activity = screwm_clamp(active + presence * 0.70, 0, 1);
