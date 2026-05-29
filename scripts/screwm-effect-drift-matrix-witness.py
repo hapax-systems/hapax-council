@@ -149,6 +149,11 @@ def _load_permutation_sets() -> dict[str, tuple[str, ...]]:
     return {spec.label: tuple(spec.effects) for spec in module["PERMUTATION_SETS"]}
 
 
+def _load_fast_evict() -> frozenset[str]:
+    module = runpy.run_path(str(PERMUTATION_AUDIT), run_name="__screwm_matrix__")
+    return frozenset(module["FAST_EVICT"])
+
+
 def _row_by_label_or_ordinal(value: str) -> MatrixRow:
     for row in MATRIX_ROWS:
         if value == str(row.ordinal) or value == row.label:
@@ -203,6 +208,11 @@ def _quiet_live_lines() -> dict[str, str]:
     for name in (
         "pass-count",
         "active-ratio",
+        "active-slot-ratio",
+        "active-effect-ratio",
+        "fast-ratio",
+        "slow-ratio",
+        "kind-variance",
         "max-delta",
         "region-count",
         "tonal",
@@ -216,6 +226,9 @@ def _quiet_live_lines() -> dict[str, str]:
     for family in ("tonal", "atmospheric", "temporal", "texture", "edge", "compositing"):
         lines[f"effect-drift-mode-{family}.txt"] = "0.0000"
     lines["effect-drift-route.txt"] = "IN_SCROOM_EFFECT_DRIFT_STATE"
+    lines["effect-drift-source.txt"] = "quiet-live-state"
+    lines["effect-drift-real-source.txt"] = "0.0000"
+    lines["visual-chain-source.txt"] = "quiet-live-state"
     for name in (
         "pass-count",
         "render-ratio",
@@ -301,25 +314,68 @@ def _visual_chain_state(row: MatrixRow) -> dict[str, object]:
     }
 
 
-def _effect_drift_state(effects: tuple[str, ...], row: MatrixRow) -> dict[str, object]:
-    passes = []
-    for index, effect in enumerate(effects):
-        delta = min(9.5, 4.8 + row.ordinal * 0.55 + (index % 3) * 0.35)
+def _effect_drift_state(
+    effects: tuple[str, ...],
+    row: MatrixRow,
+    *,
+    fast_evict: frozenset[str],
+    families: tuple[str, ...],
+) -> dict[str, object]:
+    """Synthesize a *real* SlotDrift state for the row.
+
+    Mirrors the canonical pass shape emitted by ``screwm-drift-state-source.py``
+    so the exporter classifies it as ``slotdrift`` (not the synthetic fallback)
+    and the new slot/effect/fast-slow/kind scalars round-trip. Active slot count
+    and intensity rise with the row ordinal so the scalars vary across the matrix
+    instead of collapsing to a single fallback for every row.
+    """
+    family_count = len(families)
+    active_slots = min(family_count, 1 + row.ordinal)
+    passes: list[dict[str, object]] = []
+    non_neutral_count = 0
+    for slot, family in enumerate(families):
+        effect = effects[slot % len(effects)] if effects else family
+        active = slot < active_slots
+        if active:
+            intensity = round(min(1.0, (0.40 + row.ordinal * 0.085) * (1.0 - slot * 0.08)), 4)
+            delta = round(min(9.5, 4.8 + row.ordinal * 0.55 + slot * 0.35), 4)
+            non_neutral_count += 1
+        else:
+            intensity = 0.0
+            delta = 0.0
         passes.append(
             {
-                "node_id": effect,
-                "non_neutral": True,
+                "node_id": f"slot{slot}_{effect}",
+                "slot_index": slot,
+                "effect_family": family,
+                "eviction_cadence": "fast" if effect in fast_evict else "slow",
+                "effect_binding": "source_presence_gated",
+                "non_neutral": active,
                 "max_delta": delta,
-                "parameter_regions": [
-                    {"param": "mix", "region": "high"},
-                    {"param": "phase", "region": "drift"},
-                ],
-                "params": [{"name": "mix", "delta": delta}],
+                "slot_intensity": intensity,
+                "parameter_regions": (
+                    [{"param": "mix", "region": "high"}, {"param": "phase", "region": "drift"}]
+                    if active
+                    else []
+                ),
+                "params": [{"name": "mix", "delta": delta}] if active else [],
             }
         )
     return {
         "pass_count": len(passes),
-        "non_neutral_pass_count": len(passes),
+        "non_neutral_pass_count": non_neutral_count,
+        "dominant_family": families[0] if families else "",
+        "source_presence": {
+            "fail_closed": False,
+            "visible_source_count": active_slots + family_count,
+            "minimum_effect_source_count": 1,
+        },
+        "slotdrift_coverage": {
+            "mode": "matrix-witness-bank",
+            "bank_label": row.bank_label,
+            "active_slots": active_slots,
+            "families": list(families),
+        },
         "passes": passes,
     }
 
@@ -337,6 +393,8 @@ def build_row_lines(
         return lines
 
     effects = bank_effects[row.bank_label]
+    families = tuple(exporter.EFFECT_DRIFT_FAMILIES)
+    fast_evict = _load_fast_evict()
     effect_state = state_dir / f"{row.label}-entity-local-effect-state.json"
     shader_plan = state_dir / f"{row.label}-shader-plan.json"
     visual_chain = state_dir / f"{row.label}-visual-chain-state.json"
@@ -344,7 +402,10 @@ def build_row_lines(
     _json_write(effect_state, _effect_state(effects))
     _json_write(shader_plan, _shader_plan(effects))
     _json_write(visual_chain, _visual_chain_state(row))
-    _json_write(effect_drift, _effect_drift_state(effects, row))
+    _json_write(
+        effect_drift,
+        _effect_drift_state(effects, row, fast_evict=fast_evict, families=families),
+    )
 
     lines.update(exporter.build_entity_local_effect_lines(effect_state))
     lines.update(exporter.build_shader_plan_lines(shader_plan))
