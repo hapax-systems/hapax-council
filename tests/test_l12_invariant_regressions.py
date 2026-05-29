@@ -53,6 +53,10 @@ L12_OUTPUT_NODE = (
     "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"
 )
 MPC_OUTPUT_NODE = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
+# Interim MPC-only return (2026-05-29, L-12 removed): the MPC's own 24-ch USB
+# return source. capture_AUX0/1 = public mix (broadcast); capture_AUX2/3 =
+# private monitor (fenced from broadcast).
+MPC_RETURN_NODE = "alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0"
 L12_CAPTURE_NODE = (
     "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
 )
@@ -70,28 +74,35 @@ def _strip_comments(text: str) -> str:
     )
 
 
-def test_v3_tts_chain_routes_through_mpc_l12_wet_return() -> None:
-    """v3: TTS must reach broadcast through the current MPC/L-12 wet
-    return, not through the retired software direct-to-tap bridge."""
+def test_v3_tts_chain_routes_through_mpc_usb_return() -> None:
+    """v3: TTS must reach broadcast through the interim MPC-only USB return
+    (2026-05-29, L-12 removed), not through the retired software direct-to-tap
+    bridge nor the orphaned L-12 wet return."""
     descriptor = TopologyDescriptor.from_yaml(CANONICAL_TOPOLOGY)
     tts_loudnorm = descriptor.node_by_id("tts-loudnorm")
-    wet_return = descriptor.node_by_id("l12-usb-return-capture")
+    wet_return = descriptor.node_by_id("mpc-usb-return-capture")
     assert tts_loudnorm.target_object == MPC_OUTPUT_NODE
     assert tts_loudnorm.params["playback_positions"] == "AUX2 AUX3"
     assert (
         tts_loudnorm.params["broadcast_forward_path"]
-        == "mpc-usb-output l12-usb-return-capture hapax-livestream-tap"
+        == "mpc-usb-output mpc-usb-return-capture hapax-livestream-tap"
     )
-    assert wet_return.target_object == L12_CAPTURE_NODE
-    assert wet_return.params["capture_positions"] == "AUX8 AUX9 AUX10 AUX11"
+    assert wet_return.target_object == MPC_RETURN_NODE
+    assert wet_return.params["capture_positions"] == "AUX0 AUX1"
 
     link_map = _strip_comments(_read_conf(HAPAX_LINK_MAP))
-    for aux in ("AUX8", "AUX9", "AUX10", "AUX11"):
+    for aux in ("AUX0", "AUX1"):
         assert (
-            f"{L12_CAPTURE_NODE}:capture_{aux}|hapax-l12-usb-return-capture:input_{aux}" in link_map
+            f"{MPC_RETURN_NODE}:capture_{aux}|hapax-mpc-usb-return-capture:input_{aux}" in link_map
         )
-    assert "hapax-l12-usb-return-playback:output_FL|hapax-livestream-tap:playback_FL" in link_map
-    assert "hapax-l12-usb-return-playback:output_FR|hapax-livestream-tap:playback_FR" in link_map
+    assert "hapax-mpc-usb-return-playback:output_FL|hapax-livestream-tap:playback_FL" in link_map
+    assert "hapax-mpc-usb-return-playback:output_FR|hapax-livestream-tap:playback_FR" in link_map
+
+    # The orphaned L-12 wet/evilpet return legs must NOT be in the desired map
+    # (the reconciler must never enforce links to absent L-12 hardware).
+    assert "hapax-l12-usb-return-playback|" not in link_map
+    assert "hapax-l12-evilpet-playback:output_FL|hapax-livestream-tap" not in link_map
+    assert f"{L12_CAPTURE_NODE}:capture_AUX8|" not in link_map
 
     forbidden = _strip_comments(_read_conf(HAPAX_FORBIDDEN_LINKS))
     assert "hapax-tts-broadcast-playback:output_FL|hapax-livestream-tap:playback_FL" in forbidden
@@ -100,6 +111,51 @@ def test_v3_tts_chain_routes_through_mpc_l12_wet_return() -> None:
     tts_duck_conf = _strip_comments(_read_conf(PIPEWIRE_DIR / "hapax-tts-duck.conf"))
     assert "hapax-tts-broadcast-playback" not in tts_duck_conf
     assert 'target.object = "hapax-livestream-tap"' not in tts_duck_conf
+
+
+def test_interim_private_return_fenced_from_broadcast() -> None:
+    """Interim MPC-only private fence (2026-05-29): the MPC private monitor
+    return (capture_AUX2/3) must be forbidden into every broadcast node, and
+    must NOT appear in the desired link map. Defense-in-depth for the
+    operator-owned MPC public mix that should already exclude private."""
+    forbidden = _strip_comments(_read_conf(HAPAX_FORBIDDEN_LINKS))
+    broadcast_targets = (
+        "hapax-livestream-tap:playback_FL",
+        "hapax-livestream-tap:playback_FR",
+        "hapax-broadcast-master-capture:input_FL",
+        "hapax-broadcast-master-capture:input_FR",
+        "hapax-broadcast-normalized-capture:input_FL",
+        "hapax-broadcast-normalized-capture:input_FR",
+        "hapax-obs-broadcast-remap-capture:input_FL",
+        "hapax-obs-broadcast-remap-capture:input_FR",
+    )
+    for aux in ("AUX2", "AUX3"):
+        for target in broadcast_targets:
+            assert f"{MPC_RETURN_NODE}:capture_{aux}|{target}" in forbidden, (
+                f"private return capture_{aux} must be fenced from {target}"
+            )
+
+    # The private return must never be a desired-map source.
+    link_map = _strip_comments(_read_conf(HAPAX_LINK_MAP))
+    assert f"{MPC_RETURN_NODE}:capture_AUX2|" not in link_map
+    assert f"{MPC_RETURN_NODE}:capture_AUX3|" not in link_map
+
+
+def test_interim_youtube_send_enabled_eligibility_gated() -> None:
+    """Interim MPC-only (2026-05-29): the YouTube send to MPC AUX6/7 is enabled
+    (desired map), AUX6/7 is no longer forbidden, but the youtube-bed route
+    stays broadcast-ineligible (blocked_until_smoke)."""
+    descriptor = TopologyDescriptor.from_yaml(CANONICAL_TOPOLOGY)
+    yt = descriptor.node_by_id("yt-loudnorm")
+    assert yt.params["playback_positions"] == "AUX6 AUX7"
+
+    link_map = _strip_comments(_read_conf(HAPAX_LINK_MAP))
+    assert f"hapax-yt-loudnorm-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX6" in link_map
+    assert f"hapax-yt-loudnorm-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX7" in link_map
+
+    forbidden = _strip_comments(_read_conf(HAPAX_FORBIDDEN_LINKS))
+    assert f"hapax-yt-loudnorm-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX6" not in forbidden
+    assert f"hapax-yt-loudnorm-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX7" not in forbidden
 
 
 def test_generated_tts_artifacts_do_not_reintroduce_direct_broadcast_bridge() -> None:

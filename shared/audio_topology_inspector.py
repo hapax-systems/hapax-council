@@ -221,6 +221,9 @@ _PRIVATE_FORBIDDEN_REACHABILITY = {
     "l12-capture",
     "l12-usb-return",
     "l12-evilpet-capture",
+    # Interim MPC-only broadcast return (2026-05-29, L-12 removed): the MPC USB
+    # return capture is broadcast-family — private nodes must never reach it.
+    "mpc-usb-return-capture",
     "livestream-tap",
     "livestream-legacy",
     "broadcast-master-capture",
@@ -519,17 +522,18 @@ def check_tts_broadcast_path(
     voice_fx_name: str = "hapax-voice-fx-capture",
     loudnorm_name: str = "hapax-loudnorm-capture",
     mpc_output_name: str = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0",
-    wet_return_name: str = "hapax-l12-usb-return-capture",
+    wet_return_name: str = "hapax-mpc-usb-return-capture",
     target_name: str = "hapax-livestream-tap",
     master_name: str = "hapax-broadcast-master-capture",
 ) -> TtsBroadcastPathCheck:
-    """Verify broadcast TTS has the current MPC-first path to livestream.
+    """Verify broadcast TTS has the current MPC path to livestream.
 
     The retired software bridge was:
     ``hapax-tts-duck -> hapax-tts-broadcast-* -> hapax-livestream-tap``.
-    The current baseline is hardware-first:
-    ``role.broadcast -> voice-fx -> loudnorm -> MPC USB AUX2/3 -> MPC TRS
-    out 3/4 -> L-12 CH11/12 -> l12-usb-return-capture -> livestream-tap``.
+    The current interim baseline (2026-05-29, ZOOM L-12 removed) is MPC-only:
+    ``role.broadcast -> voice-fx -> loudnorm -> MPC USB AUX2/3 -> MPC public
+    mix -> MPC USB out 1/2 -> host capture_AUX0/1 -> mpc-usb-return-capture ->
+    livestream-tap``. (Previously the wet return ran via the L-12.)
 
     ``pw-dump`` does not expose every port-level link in that chain as
     descriptor edges, so this check treats the current path as healthy when
@@ -1053,9 +1057,12 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
                 )
             )
         forward_path = _param_words(tts_loudnorm.params.get("broadcast_forward_path"))
+        # Interim MPC-only (2026-05-29, L-12 removed): the broadcast return is
+        # the MPC's own USB return (mpc-usb-return-capture), not the L-12 wet
+        # return. MOTU/FadeFox migration will revise this again.
         expected_forward_path = [
             "mpc-usb-output",
-            "l12-usb-return-capture",
+            "mpc-usb-return-capture",
             "hapax-livestream-tap",
         ]
         if forward_path != expected_forward_path:

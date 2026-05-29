@@ -167,16 +167,31 @@ def test_generated_route_maps_only_allow_specified_mpc_channels() -> None:
     assert "playback_AUX8" in desired
     assert "playback_AUX9" in desired
 
+    # Interim MPC-only (2026-05-29): YouTube send to MPC AUX6/7 is enabled.
+    assert "hapax-yt-loudnorm-playback:output_FL|" in desired
+    assert "playback_AUX6" in desired
+    assert "playback_AUX7" in desired
+    # MPC public return capture legs (AUX0/1) are the broadcast return.
+    assert (
+        "alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0:capture_AUX0|"
+        "hapax-mpc-usb-return-capture:input_AUX0" in desired
+    )
+    assert "hapax-mpc-usb-return-playback:output_FL|hapax-livestream-tap:playback_FL" in desired
+
     for disallowed in (
-        "hapax-yt-loudnorm-playback",
         "hapax-notification-private-playback",
         "hapax-m8-loudnorm-playback",
         "hapax-pc-loudnorm-playback",
     ):
         assert disallowed not in desired
 
-    assert "hapax-yt-loudnorm-playback:output_FL|" in forbidden
-    assert "playback_AUX6" in forbidden
+    # YouTube AUX6/7 is no longer forbidden (send enabled); the MPC private
+    # return (capture_AUX2/3) is fenced from broadcast instead.
+    assert "hapax-yt-loudnorm-playback:output_FL|" not in forbidden
+    assert (
+        "alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0:capture_AUX2|"
+        "hapax-livestream-tap:playback_FL" in forbidden
+    )
     assert "hapax-notification-private-playback:output_FL|" in forbidden
     assert "playback_AUX8" in forbidden
     assert "hapax-m8-loudnorm-playback:output_AUX10|" in forbidden
@@ -217,7 +232,14 @@ def test_generated_wireplumber_deny_policy_matches_golden_output() -> None:
     assert "hapax-tts-broadcast-playback|hapax-livestream-tap" in deny_script
     assert "hapax-pc-loudnorm-playback|" in deny_script
     assert "hapax-private-playback|" in deny_script
-    assert "hapax-yt-loudnorm-playback|" in deny_script
+    # Interim MPC-only (2026-05-29): YouTube AUX6/7 is no longer forbidden (the
+    # send is enabled); instead the MPC private monitor return (capture_AUX2/3)
+    # is fenced from every broadcast node.
+    assert "hapax-yt-loudnorm-playback|" not in deny_script
+    assert (
+        "alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0|hapax-livestream-tap"
+        in deny_script
+    )
     assert "hapax-notification-private-playback|" in deny_script
     assert "hapax-s4-tap|hapax-livestream-tap" in deny_script
     assert (

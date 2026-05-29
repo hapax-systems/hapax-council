@@ -406,14 +406,20 @@ def _desired_links(
     topology: TopologyDescriptor,
     policy: AudioRoutingPolicy,
 ) -> tuple[tuple[str, str], ...]:
-    l12 = _node(topology, "l12-capture")
-    l12_evilpet = _node(topology, "l12-evilpet-capture")
-    l12_wet = _node(topology, "l12-usb-return-capture")
+    # Interim MPC-only baseline (2026-05-29, L-12 removed): the broadcast
+    # return runs entirely over the MPC's own 24-ch USB return. The orphaned
+    # L-12 evilpet / wet-return legs are intentionally NOT emitted into the
+    # desired map — the reconciler must never enforce links to absent L-12
+    # hardware. Restore them only if the L-12 returns before the MOTU/FadeFox
+    # migration lands.
+    mpc_return = _node(topology, "mpc-usb-return")
+    mpc_wet = _node(topology, "mpc-usb-return-capture")
     livestream = _node(topology, "livestream-tap")
     master = _node(topology, "broadcast-master-capture")
     voice_fx = _node(topology, "voice-fx")
     tts = _node(topology, "tts-loudnorm")
     music = _node(topology, "music-loudnorm")
+    youtube = _node(topology, "yt-loudnorm")
     mpc = _node(topology, "mpc-usb-output")
     private_sink = _node(topology, "private-sink")
     private_capture = _node(topology, "private-monitor-capture")
@@ -424,16 +430,19 @@ def _desired_links(
     role_broadcast = _node(topology, "role-broadcast")
 
     links: list[tuple[str, str]] = []
-    links.extend(_pair_links(_playback_name(l12_evilpet), livestream.pipewire_name))
 
-    for position in _words(l12_wet.params.get("capture_positions")):
+    # MPC USB return: the public mix (music + voice + YouTube, pre-summed inside
+    # the MPC) lands on pro-input-0 capture_AUX0/1, is captured by
+    # mpc-usb-return-capture, and summed into livestream-tap. The private monitor
+    # pair capture_AUX2/3 is NOT captured here (fenced in _forbidden_links).
+    for position in _words(mpc_wet.params.get("capture_positions")):
         links.append(
             (
-                f"{l12.pipewire_name}:capture_{position}",
-                f"{l12_wet.pipewire_name}:input_{position}",
+                f"{mpc_return.pipewire_name}:capture_{position}",
+                f"{mpc_wet.pipewire_name}:input_{position}",
             )
         )
-    links.extend(_pair_links(_playback_name(l12_wet), livestream.pipewire_name))
+    links.extend(_pair_links(_playback_name(mpc_wet), livestream.pipewire_name))
     links.extend(
         _pair_links(
             livestream.pipewire_name,
@@ -455,6 +464,12 @@ def _desired_links(
 
     if _broadcast_route_enabled(policy, "music-bed"):
         links.extend(_loudnorm_to_mpc_links(music, mpc))
+
+    # YouTube send to MPC AUX6/7. Emitted whenever the topology enables the send
+    # (yt-loudnorm playback_positions != disabled). Broadcast eligibility of the
+    # youtube-bed route is a separate policy gate (blocked_until_smoke); the MPC
+    # mixer — operator-owned — decides whether YouTube reaches the public return.
+    links.extend(_loudnorm_to_mpc_links(youtube, mpc))
 
     if _private_tts_route_enabled(policy):
         links.extend(
@@ -486,7 +501,6 @@ def _forbidden_links(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...
     tts = _node(topology, "tts-loudnorm")
     private_output = _node(topology, "private-monitor-output")
     notification_output = _node(topology, "notification-private-monitor-output")
-    youtube = _node(topology, "yt-loudnorm")
     m8 = _node(topology, "m8-loudnorm")
     s4 = _node(topology, "s4-loopback")
     role_assistant = _node(topology, "role-assistant")
@@ -516,13 +530,10 @@ def _forbidden_links(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...
                 target_ports=("playback_AUX4", "playback_AUX5"),
             )
         )
-        links.extend(
-            _pair_links(
-                _playback_name(youtube),
-                mpc_target,
-                target_ports=("playback_AUX6", "playback_AUX7"),
-            )
-        )
+        # NOTE: YouTube AUX6/7 is no longer forbidden — the interim MPC-only
+        # baseline (2026-05-29) enables the YouTube send to MPC AUX6/7 (see
+        # _desired_links + yt-loudnorm). Broadcast eligibility stays gated in
+        # policy (blocked_until_smoke), not by a link-time deny.
         links.extend(
             _pair_links(
                 _playback_name(notification_output),
@@ -564,6 +575,28 @@ def _forbidden_links(topology: TopologyDescriptor) -> tuple[tuple[str, str], ...
             f"{role.pipewire_name}-output",
         ):
             links.extend(_pair_links(role_source, role_multimedia.pipewire_name))
+
+    # Private monitor fence (interim MPC-only, 2026-05-29). The MPC returns the
+    # private monitor mix on pro-input-0 capture_AUX2/3; it must NEVER reach any
+    # broadcast node. Defense-in-depth — the MPC public mix (capture_AUX0/1) must
+    # already exclude private (operator-owned MPC mixer); this cross-product
+    # makes any stray capture_AUX2/3 -> broadcast link a hard WirePlumber deny
+    # (both as an exact port link and as a source|target node-boundary pair).
+    mpc_return = _node(topology, "mpc-usb-return")
+    broadcast_normalized = _node(topology, "broadcast-normalized-capture")
+    obs_remap = _node(topology, "obs-broadcast-remap-capture")
+    private_fence_sinks: tuple[tuple[str, tuple[str, str]], ...] = (
+        (livestream.pipewire_name, ("playback_FL", "playback_FR")),
+        (master.pipewire_name, ("input_FL", "input_FR")),
+        (broadcast_normalized.pipewire_name, ("input_FL", "input_FR")),
+        (obs_remap.pipewire_name, ("input_FL", "input_FR")),
+    )
+    for capture_position in _words(mpc_return.params.get("private_return_positions")):
+        source_port = f"{mpc_return.pipewire_name}:capture_{capture_position}"
+        for sink_name, sink_ports in private_fence_sinks:
+            for sink_port in sink_ports:
+                links.append((source_port, f"{sink_name}:{sink_port}"))
+
     return tuple(dict.fromkeys(links))
 
 
