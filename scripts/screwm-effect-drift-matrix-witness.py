@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import runpy
 import subprocess
 import time
@@ -25,6 +26,32 @@ EXPORTER = REPO_ROOT / "scripts" / "darkplaces-state-export.py"
 DEFAULT_GAME_DATA = Path.home() / ".darkplaces/screwm/data"
 DEFAULT_OUTPUT_ROOT = Path.home() / ".cache/hapax/screenshots/screwm-effect-drift-matrix"
 DEFAULT_VIDEO_DEVICE = Path("/dev/video52")
+DEFAULT_OBS_SCENE = "Scene"
+OBS_WS_CONFIG = Path.home() / ".config/obs-studio/plugin_config/obs-websocket/config.json"
+
+# Tactical POV stations for witness coverage, resolved from generate-screwm-map
+# GARDEN_CAMERA_STATIONS (AoA object-of-attention at (0, -555, 176); 32 units/m).
+# Sweeping these per witness frames receivers, depth planes, the AoA sphere, and
+# the borrowed-view band from multiple angles for maximum coverage.
+Station = tuple[str, tuple[float, float, float], tuple[float, float, float]]
+AOA_LOOKAT = (0.0, -555.0, 176.0)
+POV_STATIONS: tuple[Station, ...] = (
+    ("entry-stone", (0.0, -2380.0, 164.0), AOA_LOOKAT),
+    ("threshold-stone", (-320.0, -2200.0, 168.0), AOA_LOOKAT),
+    ("left-borrowed-view", (-860.0, -1880.0, 184.0), (-1180.0, -1600.0, 240.0)),
+    ("left-media-window", (-1040.0, -1480.0, 196.0), (-1580.0, -1320.0, 230.0)),
+    ("aoa-pause", (-320.0, -900.0, 182.0), AOA_LOOKAT),
+    ("right-borrowed-view", (860.0, -1000.0, 184.0), (1180.0, -1120.0, 240.0)),
+    ("right-media-window", (1040.0, -1480.0, 196.0), (1580.0, -1320.0, 230.0)),
+    ("far-garden-view", (420.0, -430.0, 220.0), (0.0, -555.0, 194.0)),
+)
+DEFAULT_POV_LABELS = (
+    "entry-stone",
+    "aoa-pause",
+    "left-media-window",
+    "right-media-window",
+    "far-garden-view",
+)
 
 LOCAL_EFFECTS = (
     "mirror",
@@ -413,72 +440,122 @@ def build_row_lines(
     return lines
 
 
-def _capture(command: list[str], output_path: Path, *, timeout_s: float) -> dict[str, object]:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    started = time.monotonic()
-    proc = subprocess.run(
-        command,
-        cwd=REPO_ROOT,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=timeout_s,
-        check=False,
-    )
+def _aim(
+    origin: tuple[float, float, float], lookat: tuple[float, float, float]
+) -> tuple[float, float]:
+    dx, dy, dz = lookat[0] - origin[0], lookat[1] - origin[1], lookat[2] - origin[2]
+    yaw = math.degrees(math.atan2(dy, dx))
+    pitch = -math.degrees(math.atan2(dz, math.hypot(dx, dy)))
+    return round(pitch, 4), round(yaw, 4)
+
+
+def _pov_lines(station: Station) -> dict[str, str]:
+    _label, origin, lookat = station
+    pitch, yaw = _aim(origin, lookat)
     return {
-        "path": str(output_path),
-        "returncode": proc.returncode,
-        "elapsed_s": round(time.monotonic() - started, 3),
-        "output": proc.stdout[-1200:],
-        "exists": output_path.exists(),
-        "bytes": output_path.stat().st_size if output_path.exists() else 0,
+        "camera-manual.txt": "1.0000",
+        "camera-origin-x.txt": f"{origin[0]:.4f}",
+        "camera-origin-y.txt": f"{origin[1]:.4f}",
+        "camera-origin-z.txt": f"{origin[2]:.4f}",
+        "camera-pitch.txt": f"{pitch:.4f}",
+        "camera-yaw.txt": f"{yaw:.4f}",
+        "camera-fov.txt": "74.0000",
     }
 
 
-def capture_witnesses(
+def selected_stations(raw: str) -> list[Station]:
+    by_label = {station[0]: station for station in POV_STATIONS}
+    if raw == "all":
+        return list(POV_STATIONS)
+    if raw == "default":
+        return [by_label[label] for label in DEFAULT_POV_LABELS]
+    picked: list[Station] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if item not in by_label:
+            raise argparse.ArgumentTypeError(f"unknown POV station: {item}")
+        picked.append(by_label[item])
+    return picked
+
+
+def _obs_capture(
+    out_path: Path,
+    *,
+    scene: str = DEFAULT_OBS_SCENE,
+    width: int = 1920,
+    height: int = 1080,
+    direct_display: str = ":82",
+    timeout_s: float = 12.0,
+) -> dict[str, object]:
+    """Save a clean 1080p OBS program-output frame via obs-websocket.
+
+    The websocket password is read from the OBS config at call time and never
+    logged. Falls back to a clean x11 grab of the DarkPlaces Xvfb display when
+    obsws_python is unavailable (eg. running under a venv without it).
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    try:
+        import obsws_python as obs
+
+        cfg = json.loads(OBS_WS_CONFIG.read_text(encoding="utf-8"))
+        client = obs.ReqClient(
+            host="localhost",
+            port=int(cfg.get("server_port", 4455)),
+            password=cfg.get("server_password", ""),
+            timeout=timeout_s,
+        )
+        client.save_source_screenshot(scene, "png", str(out_path), width, height, -1)
+        via = "obs-websocket"
+    except Exception as exc:
+        via = f"x11-fallback:{type(exc).__name__}"
+        subprocess.run(
+            ["bash", "-lc", f"DISPLAY={direct_display} import -window root {str(out_path)!r}"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout_s,
+            check=False,
+        )
+    return {
+        "path": str(out_path),
+        "via": via,
+        "elapsed_s": round(time.monotonic() - started, 3),
+        "exists": out_path.exists(),
+        "bytes": out_path.stat().st_size if out_path.exists() else 0,
+    }
+
+
+def capture_pov_sweep(
     row: MatrixRow,
     output_dir: Path,
     *,
-    video_device: Path,
-    direct_display: str,
+    game_data: Path,
+    base_lines: dict[str, str],
+    stations: list[Station],
+    obs_scene: str,
+    settle_s: float,
     timeout_s: float,
+    direct_display: str,
 ) -> dict[str, object]:
-    obs_path = output_dir / f"{row.ordinal:02d}-{row.label}-obs.png"
-    direct_path = output_dir / f"{row.ordinal:02d}-{row.label}-video52.png"
-    x11_path = output_dir / f"{row.ordinal:02d}-{row.label}-x11.png"
-    captures: dict[str, object] = {
-        "obs": _capture(
-            ["spectacle", "-b", "-n", "-o", str(obs_path)], obs_path, timeout_s=timeout_s
-        )
-    }
-    if video_device.exists():
-        captures["video52"] = _capture(
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-f",
-                "v4l2",
-                "-video_size",
-                "1920x1080",
-                "-i",
-                str(video_device),
-                "-frames:v",
-                "1",
-                "-update",
-                "1",
-                str(direct_path),
-            ],
-            direct_path,
-            timeout_s=timeout_s,
-        )
-    captures["x11"] = _capture(
-        ["bash", "-lc", f"DISPLAY={direct_display} import -window root {str(x11_path)!r}"],
-        x11_path,
-        timeout_s=timeout_s,
-    )
+    captures: dict[str, object] = {}
+    for station in stations:
+        label = station[0]
+        _stabilize_lines(game_data, {**base_lines, **_pov_lines(station)}, settle_s)
+        pitch, yaw = _aim(station[1], station[2])
+        captures[label] = {
+            "origin": list(station[1]),
+            "pitch": pitch,
+            "yaw": yaw,
+            "obs": _obs_capture(
+                output_dir / f"{row.ordinal:02d}-{row.label}-{label}-obs.png",
+                scene=obs_scene,
+                direct_display=direct_display,
+                timeout_s=timeout_s,
+            ),
+        }
     return captures
 
 
@@ -520,12 +597,16 @@ def run_matrix(args: argparse.Namespace) -> int:
             "expected_cues": list(row.expected_cues),
         }
         if args.capture:
-            row_manifest["captures"] = capture_witnesses(
+            row_manifest["captures"] = capture_pov_sweep(
                 row,
                 output_dir,
-                video_device=args.video_device,
-                direct_display=args.direct_display,
+                game_data=args.game_data,
+                base_lines=lines,
+                stations=selected_stations(args.pov),
+                obs_scene=args.obs_scene,
+                settle_s=args.pov_settle_s,
                 timeout_s=args.capture_timeout_s,
+                direct_display=args.direct_display,
             )
             _stabilize_lines(args.game_data, lines, 0.5)
         manifest["rows"].append(row_manifest)
@@ -554,6 +635,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--capture-timeout-s", type=float, default=12.0)
     parser.add_argument("--video-device", type=Path, default=DEFAULT_VIDEO_DEVICE)
     parser.add_argument("--direct-display", default=":82")
+    parser.add_argument(
+        "--pov", default="default", help="all, default, or a comma list of POV station labels"
+    )
+    parser.add_argument("--obs-scene", default=DEFAULT_OBS_SCENE)
+    parser.add_argument("--pov-settle-s", type=float, default=1.2)
     parser.add_argument("--no-restore-camera", dest="restore_camera", action="store_false")
     parser.set_defaults(restore_camera=True)
     return parser.parse_args()
