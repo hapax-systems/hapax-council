@@ -291,8 +291,6 @@ def _paint_reverie_state_proxy(
     """
     uniforms = _read_json(uniforms_path)
     visual_chain = _read_json(visual_chain_path)
-    levels = visual_chain.get("levels") if isinstance(visual_chain.get("levels"), dict) else {}
-    params = visual_chain.get("params") if isinstance(visual_chain.get("params"), dict) else {}
     hue = float(uniforms.get("color.hue_rotate", 0.0) or 0.0) % 360.0
     hue = (
         hue + _nested_float(visual_chain, "params.color.hue_rotate", "color.hue_rotate") * 160.0
