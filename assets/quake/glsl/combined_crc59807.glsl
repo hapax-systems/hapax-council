@@ -717,6 +717,32 @@ void main(void)
 	// Clamp
 	color = max(color, vec3(0.0));
 
+	// === Always-present scrim ground (no pure-black void; studio legible-but-mediated) ===
+	// The scroom is seen THROUGH a translucent tinted weave: every low-signal region
+	// carries the ground instead of pure black, so B2 structural-content passes by
+	// construction. Warm/cool follows temperature_bias (UserVec1.z, mode-driven); the
+	// tint is a bias around a neutral dark base, not a baked palette hex. Breath is
+	// SPATIAL+cyclic (a slow wave across the ground), never a global pulse/flash.
+	float scrim_temp = UserVec1.z;
+	vec3 scrim_warm = vec3(0.165, 0.130, 0.092);
+	vec3 scrim_cool = vec3(0.092, 0.120, 0.170);
+	vec3 scrim_neutral = vec3(0.125, 0.125, 0.145);
+	vec3 scrim_base = mix(scrim_neutral, mix(scrim_cool, scrim_warm, smoothstep(-0.5, 0.5, scrim_temp)), 0.9);
+	vec2 scrim_g = uv * 6.0 + vec2(ClientTime * 0.013, ClientTime * -0.009);
+	float scrim_n1 = fract(sin(dot(floor(scrim_g), vec2(127.1, 311.7))) * 43758.5453);
+	float scrim_n2 = fract(sin(dot(floor(scrim_g * 2.3), vec2(269.5, 183.3))) * 28461.632);
+	float scrim_gauze = scrim_n1 * 0.65 + scrim_n2 * 0.35;
+	float scrim_warp = sin(uv.x * 142.0 + sin(uv.y * 12.0) * 2.0);
+	float scrim_weft = sin(uv.y * 116.0 + sin(uv.x * 10.0) * 2.0);
+	float scrim_weave = (scrim_warp * scrim_weft) * 0.5 + 0.5;
+	float scrim_breath = 0.5 + 0.5 * sin(ClientTime * 0.31 + uv.x * 2.0 + uv.y * 1.3);
+	vec2 scrim_vc = uv - 0.5;
+	float scrim_invig = 1.0 + dot(scrim_vc, scrim_vc) * 0.55;
+	vec3 scrim_ground = scrim_base * (0.72 + scrim_gauze * 0.42 + scrim_weave * 0.16) * scrim_invig * (0.95 + scrim_breath * 0.10);
+	float scrim_final_lum = dot(color, vec3(0.299, 0.587, 0.114));
+	float scrim_reveal = clamp(max(signal_presence, smoothstep(0.012, 0.10, scrim_final_lum)), 0.0, 1.0);
+	color = mix(scrim_ground, color, scrim_reveal);
+
 	dp_FragColor.rgb = color;
 // (removed #endif for USERVEC guard — effects now unconditional)
 #endif
