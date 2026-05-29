@@ -239,6 +239,40 @@ if [ -n "$LAST_SWEEP" ]; then
   fi
 fi
 
+# Methodology gate-loosening ledger (FR-EMERGENCY-BYPASS-UNSURFACED)
+# Every gate loosening — emergency bypass, blank-stage→S6 derivation, route-schema
+# default, cognition-surface allow — appends to this append-only ledger. Surface a
+# 24h digest at SessionStart so loosenings are REVIEWED, not silent. Read-only.
+# The same digest powers a daily ntfy + a CI PR check via:
+#   hooks/scripts/methodology-ledger-digest.sh
+METHODOLOGY_LEDGER="$HOME/.cache/hapax/methodology-emergency-ledger.jsonl"
+if [ -f "$METHODOLOGY_LEDGER" ] && command -v jq >/dev/null 2>&1; then
+  LEDGER_DIGEST="$(jq -rs '
+    (now - 86400) as $cutoff
+    | [ .[]
+        | {kind: (.kind // "emergency_bypass"),
+           t: (try (.ts | fromdateiso8601) catch 0)}
+        | select(.t >= $cutoff) ] as $recent
+    | if ($recent | length) == 0 then empty
+      else
+        ($recent | map(select(.kind | test("bypass")))) as $byp
+        | (($recent | group_by(.kind)
+            | map("\(.[0].kind)×\(length)")) | join(", ")) as $by_kind
+        | ($recent | map(.t) | min) as $oldest
+        | ((now - $oldest) / 3600 | floor) as $age_h
+        | "METHODOLOGY LEDGER (24h): \($recent | length) loosening(s) — \($by_kind)"
+          + (if ($byp | length) > 0
+             then "\n  ⚠ \($byp | length) emergency bypass(es) — REVIEW (oldest \($age_h)h ago)"
+                  + (if $age_h > 24 then " — OVERDUE (review SLA 24h)" else "" end)
+             else "" end)
+      end
+  ' "$METHODOLOGY_LEDGER" 2>/dev/null || true)"
+  if [ -n "$LEDGER_DIGEST" ]; then
+    echo ""
+    printf '%s\n' "$LEDGER_DIGEST"
+  fi
+fi
+
 # Sprint tracker state
 SPRINT_STATE="/dev/shm/hapax-sprint/state.json"
 if [ -f "$SPRINT_STATE" ]; then

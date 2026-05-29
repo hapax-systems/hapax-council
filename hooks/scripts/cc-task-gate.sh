@@ -55,14 +55,51 @@ bash_is_runtime_mutation() {
 
 bash_source_mutation_requires_scope() {
   local cmd="$1"
+  # The sed/perl/cat sub-patterns are anchored with [^|;&]* (not greedy .*) so the
+  # mutating flag/redirect must belong to the sed/perl/cat invocation itself and
+  # cannot be borrowed from a downstream command across a pipe or separator. This
+  # kills the `sed 's/x/y/' f | grep -iE p` false positive (the `-i` there is grep's)
+  # while keeping a real `sed -i …` / `cat … > f` blocked. (FR-BASH-MUTATION-FALSE-POSITIVES)
   printf '%s' "$cmd" | grep -Eiq \
-    '(^|[;&|()[:space:]])((git[[:space:]]+(apply|reset|checkout|switch|merge|rebase))|(python[0-9.]*[[:space:]]*<<)|(python[0-9.]*[[:space:]].*(-c|--command).*([.]write_text|[.]write_bytes|open\(|shutil[.]|os[.](remove|unlink|rename|replace)|Path\())|(sed[[:space:]].*-i)|(perl[[:space:]].*-p?i)|(tee([[:space:]]|$))|(cat[[:space:]].*>[[:space:]])|(cp|install|touch|truncate|chmod|chown|mkdir|rm|mv)([[:space:]]|$))'
+    '(^|[;&|()[:space:]])((git[[:space:]]+(apply|reset|checkout|switch|merge|rebase))|(python[0-9.]*[[:space:]]*<<)|(python[0-9.]*[[:space:]].*(-c|--command).*([.]write_text|[.]write_bytes|open\(|shutil[.]|os[.](remove|unlink|rename|replace)|Path\())|(sed[[:space:]][^|;&]*-i)|(perl[[:space:]][^|;&]*-p?i)|(tee([[:space:]]|$))|(cat[[:space:]][^|;&]*>[[:space:]])|(cp|install|touch|truncate|chmod|chown|mkdir|rm|mv)([[:space:]]|$))'
 }
 
 github_tool_is_mutating() {
   local name="$1"
   printf '%s' "$name" | grep -Eiq \
     '(create|update|delete|merge|push|commit|file|branch|tag|release|pull_request|issue_comment)'
+}
+
+# Cognition / diagnostic surfaces are never release-risk: operator auto-memory,
+# the personal vault (notes, relay receipts), and ephemeral scratch (/dev/shm,
+# project /tmp diagnostics). Edits to these are allowed regardless of claim,
+# authority, stage, or scope — a blocked lane must still be able to think, take
+# notes, and report state. Their integrity is enforced by content-validating
+# writers, not the claim gate. (FR-SCOPE-GATES-COGNITION)
+#
+# Deliberately NARROW vs the design's bare "/tmp": only /tmp/hapax-* diagnostic
+# scratch is carved out, so an unclaimed lane cannot write arbitrary /tmp source.
+# Repo docs/*.md are deliberately NOT carved here — they keep the existing
+# docs_mutation_authorized gate below; broadening cognition to repo docs is a
+# separate, explicit follow-on (it would change the docs-authorization invariant).
+is_cognition_path() {
+  local p="$1"
+  [[ -z "$p" ]] && return 1
+  # operator auto-memory at any depth under ~/.claude/**/memory/
+  if [[ "$p" == "$HOME"/.claude/* && ( "$p" == */memory/* || "$p" == */memory ) ]]; then
+    return 0
+  fi
+  case "$p" in
+    # The governance SSOT (cc-task + request notes) is NOT cognition: it keeps its
+    # dedicated content-validated bootstrap/claim path so notes cannot be forged or
+    # edited unclaimed. Must precede the general vault rule below.
+    "$HOME"/Documents/Personal/20-projects/hapax-cc-tasks/*) return 1 ;;
+    "$HOME"/Documents/Personal/20-projects/hapax-requests/*) return 1 ;;
+    "$HOME"/Documents/Personal/*) return 0 ;;  # personal vault (cognition / PARA notes)
+    /dev/shm/*) return 0 ;;                     # ephemeral diagnostic scratch
+    /tmp/hapax-*|/tmp/hapax/*) return 0 ;;      # project diagnostic scratch
+  esac
+  return 1
 }
 
 # --- 2. Only gate file-mutating tools ---
@@ -93,6 +130,22 @@ esac
 
 # --- 2b. Extract edit path for docs-vs-source classification (section 10) ---
 edit_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path // .tool_input.notebook_path // empty' 2>/dev/null || echo "")"
+
+# --- 2c. Cognition / diagnostic surfaces: always-allow (FR-SCOPE-GATES-COGNITION) ---
+# Placed BEFORE the claim/authority/stage/scope blocks so memory, vault notes,
+# and ephemeral scratch are never gated — a blocked lane can still think, take
+# notes, and report state. Fail-open-WITH-ledger: an advisory + a ledger line
+# are emitted (never silent), but no operator gate stands in the way.
+if [[ -n "$edit_path" ]] && is_cognition_path "$edit_path"; then
+  _cog_role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-unknown}}}"
+  _cog_ledger="$HOME/.cache/hapax/methodology-emergency-ledger.jsonl"
+  mkdir -p "$(dirname "$_cog_ledger")" 2>/dev/null || true
+  printf '{"ts":"%s","kind":"cognition_allow","role":"%s","tool":"%s","path":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_cog_role" "$tool_name" "$edit_path" \
+    >> "$_cog_ledger" 2>/dev/null || true
+  echo "cc-task-gate: cognition surface — allowed (advisory, logged): $edit_path" >&2
+  exit 0
+fi
 
 # --- 3. Bypass for incident response ---
 if [[ "${HAPAX_CC_TASK_GATE_OFF:-0}" == "1" ]]; then
@@ -407,6 +460,44 @@ is_nullish() {
   esac
 }
 
+# Idempotently set a single frontmatter key in a cc-task note: replace the key
+# if present, else insert it before the closing '---'. Atomic (tmp + rename).
+# Used to stamp a derived/defaulted field durably so downstream release/packet
+# checks read it consistently. Best-effort: returns non-zero on any failure.
+_stamp_frontmatter_field() {
+  local note="$1" key="$2" value="$3"
+  python3 - "$note" "$key" "$value" <<'PYEOF' 2>/dev/null || return 1
+import sys
+from pathlib import Path
+
+path, key, value = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+text = path.read_text(encoding="utf-8")
+if not text.startswith("---"):
+    sys.exit(1)
+end = text.find("\n---", 4)
+if end < 0:
+    sys.exit(1)
+front, body = text[4:end], text[end:]
+out, found = [], False
+for line in front.splitlines():
+    stripped = line.strip()
+    if stripped.startswith(f"{key}:") or stripped.startswith(f"{key} :"):
+        out.append(f"{key}: {value}")
+        found = True
+    else:
+        out.append(line)
+if not found:
+    out.append(f"{key}: {value}")
+new = "---\n" + "\n".join(out) + body
+tmp = path.with_suffix(path.suffix + ".tmp")
+tmp.write_text(new, encoding="utf-8")
+tmp.replace(path)
+PYEOF
+}
+
+# authority_case and parent_spec remain HARD requirements: they are the verified
+# root of authority, not derivable defaults. Error messages point at in-session
+# repair (cc-task-repair, next cluster) rather than a dead end.
 if is_nullish "$authority_case"; then
   cat >&2 <<EOF
 cc-task-gate: BLOCKED — mutating task '$task_id' has no authority_case.
@@ -414,6 +505,7 @@ cc-task-gate: BLOCKED — mutating task '$task_id' has no authority_case.
   Task: $note_path
   Current field may be missing or legacy-only. Modern mutating work requires
   authority_case plus a non-null parent_spec before any source/runtime change.
+  Repair in place (next cluster): cc-task-repair $task_id --backfill-authority
 EOF
   exit 2
 fi
@@ -427,18 +519,23 @@ cc-task-gate: BLOCKED — mutating task '$task_id' has no non-null parent_spec.
 
   Create or attach the parent request/spec first. Read-only diagnosis and
   governed bootstrap note creation remain allowed; source/runtime mutation does not.
+  Repair in place (next cluster): cc-task-repair $task_id --attach-parent-spec
 EOF
   exit 2
 fi
 
+# route_metadata_schema has exactly one legal value (1). A nullish value is a
+# template/migration gap, not an authority defect — default it in-memory and log
+# a ledger line (fail-open-WITH-ledger) instead of bricking authorized work.
+# (FR-AUTHORITY-FIELDS-FIRST-MUTATION-BLOCK)
 if is_nullish "$route_schema"; then
-  cat >&2 <<EOF
-cc-task-gate: BLOCKED — mutating task '$task_id' lacks route_metadata_schema.
-
-  AuthorityCase: $authority_case
-  Task: $note_path
-EOF
-  exit 2
+  route_schema=1
+  _route_ledger="$HOME/.cache/hapax/methodology-emergency-ledger.jsonl"
+  mkdir -p "$(dirname "$_route_ledger")" 2>/dev/null || true
+  printf '{"ts":"%s","kind":"route_schema_defaulted","role":"%s","task":"%s","case":"%s","value":1}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task_id" "$authority_case" \
+    >> "$_route_ledger" 2>/dev/null || true
+  echo "cc-task-gate: route_metadata_schema missing — defaulted to 1 (logged for review)." >&2
 fi
 
 # Direct docs/report mutations are allowed to happen before implementation
@@ -466,6 +563,26 @@ fi
 _stage_num=""
 if [[ "$case_stage" =~ ^S([0-9]+) ]]; then
   _stage_num="${BASH_REMATCH[1]}"
+fi
+# FR-STAGE-S6-TRAP: a blank/unparseable stage on a fully-authorized task
+# (authority_case + parent_spec already verified non-null above, plus
+# implementation_authorized: true) is a template gap, not a stage deficiency.
+# Derive S6 AND stamp an explicit numeric stage into the note so downstream
+# release/packet checks read it consistently (closes the shadow-denial brick
+# where stage_num=-1 tripped a release-time denial). Fail-open-WITH-ledger.
+# Source mutation still requires impl auth + scope below.
+if [[ "$_is_docs_edit" != "true" && -z "$_stage_num" && "$impl_authorized" == "true" ]] \
+   && ! is_nullish "$authority_case" && ! is_nullish "$parent_spec"; then
+  _orig_stage="${case_stage:-<blank>}"
+  case_stage="S6_IMPLEMENTATION"
+  _stage_num=6
+  _stamp_frontmatter_field "$note_path" "stage" "S6_IMPLEMENTATION" || true
+  _stage_ledger="$HOME/.cache/hapax/methodology-emergency-ledger.jsonl"
+  mkdir -p "$(dirname "$_stage_ledger")" 2>/dev/null || true
+  printf '{"ts":"%s","kind":"stage_derived","role":"%s","task":"%s","case":"%s","from":"%s","to":"S6_IMPLEMENTATION"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task_id" "$authority_case" "$_orig_stage" \
+    >> "$_stage_ledger" 2>/dev/null || true
+  echo "cc-task-gate: blank stage on authorized task — derived + stamped S6_IMPLEMENTATION (logged)." >&2
 fi
 if [[ "$_is_docs_edit" != "true" && ( -z "$_stage_num" || "$_stage_num" -lt 6 ) ]]; then
   cat >&2 <<EOF
@@ -535,15 +652,26 @@ EOF
   exit 2
 fi
 
-if [[ -z "$edit_path" && -n "$bash_cmd" && "$mutation_surface_hint" != "runtime" ]] \
-  && bash_source_mutation_requires_scope "$bash_cmd"; then
-  cat >&2 <<EOF
+if [[ -z "$edit_path" && -n "$bash_cmd" && "$mutation_surface_hint" != "runtime" ]]; then
+  # Strip single/double-quoted spans + trailing comments before the source-scope
+  # check so mutation tokens that appear only inside a message/echo payload (e.g.
+  # `git commit -m "remove the rm and mv helpers"`) don't false-trigger the guard.
+  # The quote-strip mirrors the proven no-stale-branches.sh:75 line (sed -z spans
+  # newlines, so multi-line "$(cat <<'EOF'…)" payloads are stripped too); the
+  # comment-strip only removes '#' at a word boundary so `${v#x}` / URL fragments
+  # survive. NOT applied to bash_is_mutating / bash_is_runtime_mutation — those
+  # stay raw so a quoted `systemctl` or python-write inside a heredoc still fails
+  # closed. (FR-BASH-MUTATION-FALSE-POSITIVES)
+  _cmd_stripped="$(printf '%s' "$bash_cmd" | sed -zE "s/'[^']*'//g; s/\"[^\"]*\"//g; s/(^|[[:space:]])#[^\n]*//g")"
+  if bash_source_mutation_requires_scope "$_cmd_stripped"; then
+    cat >&2 <<EOF
 cc-task-gate: BLOCKED — cannot verify mutation_scope_refs for shell source mutation.
 
   Command: ${bash_cmd:0:160}
   Task: $note_path
 EOF
-  exit 2
+    exit 2
+  fi
 fi
 
 if [[ -n "$edit_path" ]]; then

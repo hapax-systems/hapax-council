@@ -24,6 +24,27 @@ esac
 # --- 2b. Extract the file path being edited ---
 edit_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path // .tool_input.notebook_path // empty' 2>/dev/null || true)"
 
+# --- 2c. Cognition / docs / diagnostic surfaces are never unmerged-source-at-risk ---
+# A parked feature branch (commits ahead, no PR) must not block a session from
+# keeping notes, writing docs, or emitting diagnostics — only release-risk SOURCE
+# work needs the PR gate. Allow these regardless of branch/PR state. The source
+# block below is keyed to THIS worktree's branch (git rev-parse in the file's
+# repo) and to PRs whose head branch is checked out in THIS worktree (§7 worktree
+# membership), never a role-name prefix. (FR-WRG-PARKED-BRANCH-EDIT-BLOCK)
+if [[ -n "$edit_path" ]]; then
+  case "$edit_path" in
+    # Governance SSOT keeps its dedicated gate; do not blanket-exempt it here.
+    "$HOME"/Documents/Personal/20-projects/hapax-cc-tasks/*) : ;;
+    "$HOME"/Documents/Personal/20-projects/hapax-requests/*) : ;;
+    */docs/*|*.md) exit 0 ;;
+    /dev/shm/*|/tmp/hapax-*|/tmp/hapax/*) exit 0 ;;
+    "$HOME"/Documents/Personal/*) exit 0 ;;
+  esac
+  if [[ "$edit_path" == "$HOME"/.claude/* && ( "$edit_path" == */memory/* || "$edit_path" == */memory ) ]]; then
+    exit 0
+  fi
+fi
+
 # --- 3. Determine git context from file path (not CWD) ---
 # The Edit tool may run with CWD in a different repo than the file being edited.
 # cd to the file's directory so all git/gh commands resolve the correct repo.
