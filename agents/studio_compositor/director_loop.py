@@ -4663,6 +4663,7 @@ class DirectorLoop:
             return ""
 
     def _speak_activity(self, text: str, activity: str) -> None:
+        return  # Director speech disabled — conversation-first
         """Speak text, then advance slot if reacting. Single thread, locked."""
         if not self._transition_lock.acquire(blocking=False):
             log.info(

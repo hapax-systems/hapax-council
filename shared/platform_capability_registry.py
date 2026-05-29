@@ -44,6 +44,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "claude.headless.full",
         "claude.headless.opus",
         "claude.headless.sonnet",
+        "claude.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
         "gemini.headless.flash",
@@ -56,7 +57,7 @@ REQUIRED_ROUTE_IDS = frozenset(
 )
 
 UNKNOWN_TELEMETRY_SOURCES = frozenset({"none", "unknown"})
-UNKNOWN_PRIVACY_POSTURES = frozenset({"unknown", "provider_training_unknown", "public_risk"})
+UNKNOWN_PRIVACY_POSTURES = frozenset({"unknown", "public_risk"})
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
 
 
@@ -1065,6 +1066,7 @@ def _apply_receipt_to_route_payload(
     }
     if subscription_quota_unobservable:
         removable_top_blockers.add("account_live_quota_receipt_absent")
+        removable_top_blockers.add("quota_telemetry_unknown")
     top_blockers = [reason for reason in top_blockers if reason not in removable_top_blockers]
     route_payload["blocked_reasons"] = list(dict.fromkeys(top_blockers))
     route_payload["route_state"] = "blocked" if route_payload["blocked_reasons"] else "active"
@@ -1085,7 +1087,8 @@ def _subscription_quota_unobservable_nonblocking(
     return (
         route_payload.get("capacity_pool") == CapacityPool.SUBSCRIPTION_QUOTA.value
         and receipt.quota.status is EvidenceStatus.UNOBSERVABLE
-        and set(receipt.quota.reason_codes) == {"account_live_quota_receipt_absent"}
+        and set(receipt.quota.reason_codes)
+        <= {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
         and receipt.capability.status is EvidenceStatus.OBSERVED
         and receipt.resource.status is EvidenceStatus.OBSERVED
     )

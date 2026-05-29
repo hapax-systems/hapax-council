@@ -1,0 +1,50 @@
+{
+  "name": "screwm-quake",
+  "description": "Screwm migration layout: DarkPlaces owns the ward field inside the scroom; the compositor only routes egress.",
+  "sources": [
+    {
+      "id": "darkplaces",
+      "kind": "video",
+      "backend": "v4l2",
+      "params": {
+        "device": "/dev/video52",
+        "natural_w": 1920,
+        "natural_h": 1080,
+        "fps": 60,
+        "role": "darkplaces_background"
+      },
+      "update_cadence": "always",
+      "tags": ["darkplaces", "background", "substrate", "screwm"]
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "video_out_v4l2_loopback",
+      "geometry": {
+        "kind": "video_out",
+        "target": "/dev/video42",
+        "render_target": "main"
+      },
+      "z_order": 100
+    },
+    {
+      "id": "video_out_rtmp_mediamtx",
+      "geometry": {
+        "kind": "video_out",
+        "target": "rtmp://127.0.0.1:1935/studio",
+        "render_target": "main"
+      },
+      "z_order": 101
+    },
+    {
+      "id": "video_out_hls_playlist",
+      "geometry": {
+        "kind": "video_out",
+        "target": "hls://local",
+        "render_target": "main"
+      },
+      "z_order": 102
+    }
+  ],
+  "assignments": []
+}

@@ -1,0 +1,159 @@
+{
+  "version": "screwm-homage-pack-v1",
+  "id": "bitchx-acid-enlightenment",
+  "status": "reference_implementation",
+  "portable_boundary": "Homage-specific palette, glyph, material, transition, and provenance choices live here, not in the portable framework or the portable Screwm media-mount contract.",
+  "technology_lineage": ["BitchX", "ACiD ASCII", "Enlightenment GTK"],
+  "material_profile_bindings": {
+    "flat-live-camera-instrument": {
+      "homage_role": "camera-instrument",
+      "visual_sources": ["ACiD ANSI line discipline", "Enlightenment GTK depth/shadow grammar"],
+      "license_boundary": "style vocabulary only; source media remains mount-specific",
+      "mount_expression": {
+        "geometry": "borderless-camera-receiver-v2",
+        "layers": [
+          "live_surface",
+          "source-bound-drift-field",
+          "depth-shadow-from-receiver",
+          "state-light-reception"
+        ],
+        "drift_interaction": {
+          "mode": "source-bound-presence",
+          "families": ["colorgrade", "vhs", "scanlines", "chromatic_aberration", "trail"],
+          "shape_role": "drift gives the camera instrument its visible substance without a border or backing plate"
+        },
+        "inspection_affordance": "camera reads as a bounded instrument because of source role, scale, light, and drift, not because of visible chrome"
+      }
+    },
+    "spherical-attention-live-media": {
+      "homage_role": "object-of-attention",
+      "visual_sources": ["ACiD color cycling", "BitchX status-object density"],
+      "license_boundary": "procedural material treatment; live media rights remain source-specific",
+      "mount_expression": {
+        "geometry": "attention-orb-enclosure-v1",
+        "layers": [
+          "aoa_inner_void",
+          "spherical_live_surface",
+          "tetrix_enclosure",
+          "state_lighting"
+        ],
+        "drift_interaction": {
+          "mode": "attention-object",
+          "families": ["colorgrade", "bloom", "chromatic_aberration", "feedback-veiled"],
+          "shape_role": "drift and live media make the OARB read as the attention object inside the AoA"
+        },
+        "inspection_affordance": "OARB reads as the fitted object-of-attention inside the AoA"
+      }
+    },
+    "live-authority-ticker-field": {
+      "homage_role": "synthwave-grounding-ticker",
+      "visual_sources": ["BitchX status ticker cadence", "ACiD CP437 glyph density"],
+      "license_boundary": "procedural text surface; quoted/source text must be separately cleared",
+      "mount_expression": {
+        "geometry": "borderless-terminal-ticker-field-v2",
+        "layers": [
+          "live_text_surface",
+          "glyph-cadence",
+          "source-bound-drift-field",
+          "state-light-reception"
+        ],
+        "drift_interaction": {
+          "mode": "operational-text-cadence",
+          "families": ["scanlines", "chromatic_aberration", "palette_remap", "trail"],
+          "shape_role": "ticker rhythm and drift define the field; no border or terminal frame is emitted"
+        },
+        "inspection_affordance": "ticker reads as an in-world operational terminal field, not overlay text or framed chrome"
+      }
+    },
+    "ticker-operational-text": {
+      "homage_role": "synthwave-ticker",
+      "visual_sources": ["BitchX status ticker cadence", "ACiD CP437 glyph density"],
+      "license_boundary": "procedural text surface; quoted/source text must be separately cleared",
+      "mount_expression": {
+        "geometry": "borderless-terminal-ticker-field-v2",
+        "layers": [
+          "live_text_surface",
+          "glyph-cadence",
+          "source-bound-drift-field",
+          "state-light-reception"
+        ],
+        "drift_interaction": {
+          "mode": "operational-text-cadence",
+          "families": ["scanlines", "chromatic_aberration", "palette_remap", "trail"],
+          "shape_role": "ticker rhythm and drift define the field; no border or terminal frame is emitted"
+        },
+        "inspection_affordance": "ticker reads as an in-world operational terminal field, not overlay text or framed chrome"
+      }
+    },
+    "state-ward-instrument": {
+      "homage_role": "state-ward",
+      "visual_sources": ["BitchX channel/status cadence", "ACiD ANSI line discipline", "Enlightenment GTK depth/shadow grammar"],
+      "license_boundary": "procedural state surface only; operator-specific ward content remains outside the portable framework",
+      "mount_expression": {
+        "geometry": "borderless-state-ward-receiver-v2",
+        "layers": [
+          "live_state_surface",
+          "source-bound-drift-field",
+          "state-light-reception",
+          "semantic-depth-shadow"
+        ],
+        "drift_interaction": {
+          "mode": "ward-substance",
+          "families": ["slotdrift_pool", "colorgrade", "edge_detect", "chromatic_aberration", "trail"],
+          "shape_role": "ward content and drift interaction define the entity; atlas storage and mount chrome do not"
+        },
+        "inspection_affordance": "ward reads as a bounded in-world state instrument through role, scale, drift, light, and data cadence"
+      }
+    },
+    "room-floor-compositor-field": {
+      "homage_role": "room-floor",
+      "visual_sources": ["ACiD vector-grid rooms", "BitchX terminal darkness", "Enlightenment metallic bevel contrast"],
+      "license_boundary": "procedural spatial material; no source media embedded",
+      "surface_expression": {
+        "geometry": "walkable-dark-grid-field-v1",
+        "layers": ["dark_substrate", "drift_grid", "path_luminance", "speckle_noise"],
+        "chrome_textures": {
+          "substrate": "cmp_floor",
+          "accent": "drift_c",
+          "secondary": "drift_r"
+        },
+        "inspection_affordance": "floor reads as a walkable compositor/drift field, not Quake stone"
+      }
+    },
+    "room-ceiling-compositor-field": {
+      "homage_role": "room-ceiling",
+      "visual_sources": ["ACiD wire lattice", "Scroom truss canopy", "Enlightenment specular dark chrome"],
+      "license_boundary": "procedural spatial material; no source media embedded",
+      "surface_expression": {
+        "geometry": "overhead-dark-truss-field-v1",
+        "layers": ["dark_substrate", "colored_truss_grid", "borrowed_depth_nodes", "volumetric_beam_receivers"],
+        "chrome_textures": {
+          "substrate": "cmp_ceil",
+          "accent": "drift_a",
+          "secondary": "drift_g"
+        },
+        "inspection_affordance": "ceiling reads as an orienting canopy and depth field"
+      }
+    },
+    "room-wall-compositor-field": {
+      "homage_role": "room-wall",
+      "visual_sources": ["BitchX pane boundaries", "ACiD ANSI grid discipline", "Enlightenment dark paneling"],
+      "license_boundary": "procedural spatial material; no source media embedded",
+      "surface_expression": {
+        "geometry": "boundary-dark-grid-field-v1",
+        "layers": ["dark_substrate", "ward_alignment_grid", "terminal_nodes", "low_contrast_depth_lines"],
+        "chrome_textures": {
+          "substrate": "cmp_wall",
+          "accent": "drift_c",
+          "secondary": "drift_a"
+        },
+        "inspection_affordance": "wall reads as a neutral ward/support field rather than scenic texture"
+      }
+    }
+  },
+  "distribution_boundary": {
+    "portable_framework": "ships generic contracts, projection math, engine adapters, audit gates",
+    "homage_pack": "ships optional expressive mappings, provenance, risk notes, and theme-specific assets",
+    "reference_screwm": "operator-specific placement/content demonstrating the framework"
+  }
+}

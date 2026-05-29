@@ -1,0 +1,40 @@
+---- light / ericw-tools 2.0.0-alpha10-87-g97795db8 ----
+LoadBSPFile: '/home/hapax/projects/hapax-council--cx-alpha/assets/quake/maps/screwm-research.bsp'
+BSP is version Quake BSP bsp29
+INFO: using built-in palette.
+load: WARNING: filesystem error: cannot get file size: Is a directory [/home/hapax/projects/hapax-council--cx-alpha/assets/quake/maps/]
+ConvertTextures: WARNING: invalid size data for 
+Loading extended texinfo flags from /home/hapax/projects/hapax-council--cx-alpha/assets/quake/maps/screwm-research.texinfo.json...
+Loading extended content flags from /home/hapax/projects/hapax-council--cx-alpha/assets/quake/maps/screwm-research.content.json...
+151 entities read, 149 are lights.
+.lit colored light output requested on command line.
+
+--- Options Summary ---
+    "light" was set to "18.000000" (from map)
+    "minlight_color" was set to "40.8 48.45 56.1" (from map)
+    "extra" was set to "2" (from command line)
+
+DecompressAllVis: invalid visofs for leaf 0
+Embree_TraceInit: Embree version: 4.4.1
+Embree_TraceInit: 
+	0 sky faces
+	6085 solid faces
+	0 filtered faces
+	0 shadow-casting skip faces
+SetupLights: 149 initial lights
+SetupLights: 149 after surface lights
+SetupLights: 149 after jittering
+WARNING: couldn't nudge light out of solid at 0 -551 184
+Final count: 149 lights, 0 suns in use.
+0 surface light points in use.
+map uses color: true
+lightmap size (total): 431072
+Lighting Completed.
+
+Writing /home/hapax/projects/hapax-council--cx-alpha/assets/quake/maps/screwm-research.lit
+0 switchable light styles (32 max)
+Writing /home/hapax/projects/hapax-council--cx-alpha/assets/quake/maps/screwm-research.bsp as Quake BSP bsp29
+0.082s seconds elapsed
+0 empty lightmaps
+
+

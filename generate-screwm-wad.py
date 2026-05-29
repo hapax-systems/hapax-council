@@ -1,0 +1,1090 @@
+#!/usr/bin/env python3
+"""Generate a Quake WAD2 file with procedural Screwm migration textures.
+
+WAD2 format:
+  Header: magic "WAD2", num_entries, dir_offset
+  Entry directory: 32 bytes each (offset, disksize, size, type, compression, name[16])
+  Texture data: MIPTEX header + 4 mipmap levels + palette
+"""
+
+import argparse
+import struct
+import zlib
+from pathlib import Path
+
+WARD_COUNT = 36
+WARD_CODES = [
+    "TOKEN",
+    "ALBUM",
+    "STREAM",
+    "SIERP",
+    "REV",
+    "ACT",
+    "STANCE",
+    "GEM",
+    "GROUND",
+    "IMP",
+    "RECR",
+    "THINK",
+    "PRESS",
+    "VAR",
+    "HERE",
+    "DURF",
+    "CODE",
+    "M8",
+    "DECK",
+    "EGRESS",
+    "BANNER",
+    "PRECED",
+    "HIST",
+    "INSTR",
+    "CBIP",
+    "CHAT",
+    "CHRON",
+    "STATE",
+    "POLY",
+    "QUERY",
+    "POSTER",
+    "TUFTE",
+    "ASCII",
+    "SEG",
+    "SCOPE",
+    "IRDUAL",
+]
+
+WARD_TEXTURE_TYPES = [
+    "token_path",
+    "album_cover",
+    "stream_status",
+    "sierpinski",
+    "reverie_field",
+    "activity_banner",
+    "stance_chip",
+    "gem_facets",
+    "provenance_ticker",
+    "impingement_cascade",
+    "recruitment_cells",
+    "thinking_dot",
+    "pressure_bar",
+    "variety_log",
+    "here_counter",
+    "durf_grid",
+    "code_diff",
+    "hardware_grid",
+    "hardware_grid",
+    "egress_footer",
+    "programme_banner",
+    "precedent_ticker",
+    "history_corridor",
+    "instrument_dashboard",
+    "cbip_density",
+    "chat_keywords",
+    "chronicle_ticker",
+    "programme_state",
+    "hardware_grid",
+    "query_card",
+    "poster_field",
+    "tufte_bars",
+    "ascii_schema",
+    "segment_page",
+    "scope_wave",
+    "ir_dual",
+]
+
+WARD_ACCENT_INDICES = [214, 198, 186, 202, 176]
+
+CAMERA_SOURCE_TEXTURES = [
+    ("cam_bop", "BRIOOP", 198),
+    ("cam_brm", "BRIORM", 202),
+    ("cam_bsy", "BRIOSYN", 186),
+    ("cam_cdk", "C920DSK", 214),
+    ("cam_crm", "C920RM", 202),
+    ("cam_cov", "C920OVH", 214),
+]
+
+LEGACY_SLOT_TEXTURES = [
+    ("slot_sierp", "SIERP", 214),
+    ("slot_album", "ALBUM", 186),
+    ("slot_rev", "REVERIE", 202),
+    ("slot_voice", "VOICE", 198),
+]
+
+AOA_PANE_TEXTURES = [
+    ("aoa_root", "ROOT", 214),
+    ("aoa_tri", "TRI", 202),
+    ("aoa_data", "DATA", 198),
+    ("aoa_glyph", "GLYPH", 186),
+    ("aoa_edge", "EDGE", 214),
+    ("aoa_lod", "LOD", 202),
+    ("aoa_priv", "PRIV", 198),
+    ("aoa_src", "SRC", 186),
+    ("aoa_comp", "COMP", 214),
+    ("aoa_gate", "GATE", 202),
+]
+AOA_SPHERE_TEXTURES = [
+    ("yt_sphere", "YT", 236),
+]
+
+LOCAL_EFFECT_TEXTURES = [
+    ("fx_mirr", "MIRR", 214, "mirror"),
+    ("fx_kale", "KALEI", 186, "kaleidoscope"),
+    ("fx_warp", "WARP", 202, "warp"),
+    ("fx_fish", "FISH", 214, "fisheye"),
+    ("fx_xfrm", "XFRM", 198, "transform"),
+    ("fx_disp", "DISP", 186, "displacement"),
+    ("fx_dros", "DROST", 214, "droste"),
+    ("fx_tunn", "TUNNL", 202, "tunnel"),
+    ("fx_tile", "TILE", 198, "tile"),
+    ("fx_drif", "DRIFT", 202, "drift"),
+    ("fx_brea", "BRETH", 198, "breathing"),
+]
+
+TEXTURES = {
+    "city4_2": {"color": (100, 80, 55), "noise": 12, "pattern": "stone_blocks"},
+    "ground1_6": {"color": (60, 55, 50), "noise": 8, "pattern": "worn_stone"},
+    "sky4": {"color": (25, 22, 30), "noise": 5, "pattern": "dark_ceiling"},
+    "metal5_2": {"color": (85, 80, 75), "noise": 10, "pattern": "brushed_metal"},
+    "scroom": {"color": (44, 38, 34), "noise": 4, "pattern": "scroom"},
+    # R&D / Gruvbox tower bands, bottom to top.
+    "r_percep": {"color": (108, 74, 45), "noise": 12, "pattern": "stone_blocks"},
+    "r_cognit": {"color": (78, 86, 74), "noise": 10, "pattern": "carved_stone"},
+    "r_comm": {"color": (58, 88, 78), "noise": 11, "pattern": "metal_grate"},
+    "r_express": {"color": (84, 54, 72), "noise": 12, "pattern": "dark_ornate"},
+    "r_ground": {"color": (128, 104, 58), "noise": 9, "pattern": "polished_stone"},
+    # Research / Solarized tower bands, bottom to top.
+    "s_percep": {"color": (48, 68, 78), "noise": 10, "pattern": "stone_blocks"},
+    "s_cognit": {"color": (70, 86, 92), "noise": 9, "pattern": "carved_stone"},
+    "s_comm": {"color": (52, 88, 88), "noise": 10, "pattern": "metal_grate"},
+    "s_express": {"color": (62, 58, 88), "noise": 10, "pattern": "dark_ornate"},
+    "s_ground": {"color": (92, 86, 72), "noise": 8, "pattern": "polished_stone"},
+    # In-scroom drift carriers. These are physical materials, not overlay strokes.
+    "drift_c": {"color": (80, 180, 170), "noise": 0, "pattern": "drift_line", "drift": 214},
+    "drift_a": {"color": (210, 150, 74), "noise": 0, "pattern": "drift_line", "drift": 198},
+    "drift_r": {"color": (205, 82, 120), "noise": 0, "pattern": "drift_line", "drift": 186},
+    "drift_g": {"color": (120, 180, 86), "noise": 0, "pattern": "drift_line", "drift": 202},
+}
+
+TEX_SIZE = 64
+
+for ward_idx in range(1, WARD_COUNT + 1):
+    TEXTURES[f"w{ward_idx:02d}"] = {
+        "color": (120, 105, 70),
+        "noise": 0,
+        "pattern": "ward_panel",
+        "label": ward_idx,
+        "code": WARD_CODES[ward_idx - 1],
+        "ward_type": WARD_TEXTURE_TYPES[ward_idx - 1],
+    }
+
+for tex_name, code, accent in CAMERA_SOURCE_TEXTURES:
+    TEXTURES[tex_name] = {
+        "color": (74, 88, 84),
+        "noise": 0,
+        "pattern": "source_portal",
+        "code": code,
+        "accent": accent,
+    }
+
+for tex_name, code, accent in LEGACY_SLOT_TEXTURES:
+    TEXTURES[tex_name] = {
+        "color": (62, 76, 72),
+        "noise": 0,
+        "pattern": "legacy_slot",
+        "code": code,
+        "accent": accent,
+    }
+
+for tex_name, code, accent in AOA_PANE_TEXTURES:
+    TEXTURES[tex_name] = {
+        "color": (56, 70, 74),
+        "noise": 0,
+        "pattern": "aoa_pane",
+        "code": code,
+        "accent": accent,
+    }
+
+for tex_name, code, accent in AOA_SPHERE_TEXTURES:
+    TEXTURES[tex_name] = {
+        "color": (76, 68, 74),
+        "noise": 0,
+        "pattern": "aoa_sphere",
+        "code": code,
+        "accent": accent,
+    }
+
+for tex_name, code, accent, effect in LOCAL_EFFECT_TEXTURES:
+    TEXTURES[tex_name] = {
+        "color": (52, 60, 64),
+        "noise": 0,
+        "pattern": "effect_lens",
+        "code": code,
+        "accent": accent,
+        "effect": effect,
+    }
+
+
+TINY_FONT = {
+    "0": ("111", "101", "101", "101", "111"),
+    "1": ("010", "110", "010", "010", "111"),
+    "2": ("111", "001", "111", "100", "111"),
+    "3": ("111", "001", "111", "001", "111"),
+    "4": ("101", "101", "111", "001", "001"),
+    "5": ("111", "100", "111", "001", "111"),
+    "6": ("111", "100", "111", "101", "111"),
+    "7": ("111", "001", "010", "010", "010"),
+    "8": ("111", "101", "111", "101", "111"),
+    "9": ("111", "101", "111", "001", "111"),
+    "A": ("111", "101", "111", "101", "101"),
+    "B": ("110", "101", "110", "101", "110"),
+    "C": ("111", "100", "100", "100", "111"),
+    "D": ("110", "101", "101", "101", "110"),
+    "E": ("111", "100", "110", "100", "111"),
+    "F": ("111", "100", "110", "100", "100"),
+    "G": ("111", "100", "101", "101", "111"),
+    "H": ("101", "101", "111", "101", "101"),
+    "I": ("111", "010", "010", "010", "111"),
+    "J": ("001", "001", "001", "101", "111"),
+    "K": ("101", "101", "110", "101", "101"),
+    "L": ("100", "100", "100", "100", "111"),
+    "M": ("101", "111", "111", "101", "101"),
+    "N": ("101", "111", "111", "111", "101"),
+    "O": ("111", "101", "101", "101", "111"),
+    "P": ("111", "101", "111", "100", "100"),
+    "Q": ("111", "101", "101", "111", "001"),
+    "R": ("111", "101", "111", "110", "101"),
+    "S": ("111", "100", "111", "001", "111"),
+    "T": ("111", "010", "010", "010", "010"),
+    "U": ("101", "101", "101", "101", "111"),
+    "V": ("101", "101", "101", "101", "010"),
+    "W": ("101", "101", "111", "111", "101"),
+    "X": ("101", "101", "010", "101", "101"),
+    "Y": ("101", "101", "010", "010", "010"),
+    "Z": ("111", "001", "010", "100", "111"),
+}
+
+
+def digit_is_lit(char, col, row):
+    """Return true when the tiny ward-panel font lights a cell."""
+    glyph = TINY_FONT.get(char)
+    if not glyph:
+        return False
+    return glyph[row][col] == "1"
+
+
+def text_pixel_lit(x, y, text, start_x, start_y, scale):
+    """Return true when a small all-caps ward label covers this pixel."""
+    glyph_w = 3 * scale
+    glyph_h = 5 * scale
+    gap = scale
+
+    for char_idx, char in enumerate(text):
+        glyph_x = x - start_x - char_idx * (glyph_w + gap)
+        glyph_y = y - start_y
+        if 0 <= glyph_x < glyph_w and 0 <= glyph_y < glyph_h:
+            col = glyph_x // scale
+            row = glyph_y // scale
+            return digit_is_lit(char, col, row)
+    return False
+
+
+def line_near(x, y, x1, y1, x2, y2, radius=1.35):
+    """Return true when a pixel is near a 2D segment."""
+    dx = x2 - x1
+    dy = y2 - y1
+    length_sq = dx * dx + dy * dy
+    if length_sq <= 0:
+        return (x - x1) * (x - x1) + (y - y1) * (y - y1) <= radius * radius
+    t = ((x - x1) * dx + (y - y1) * dy) / length_sq
+    t = max(0.0, min(1.0, t))
+    px = x1 + t * dx
+    py = y1 + t * dy
+    return (x - px) * (x - px) + (y - py) * (y - py) <= radius * radius
+
+
+def ward_symbol_index(x, y, label, ward_type, accent):
+    """Ward-specific glyph grammar from the pre-Quake Screwm inventory."""
+    dark_accent = max(58, accent - 118)
+    mid_accent = max(90, accent - 76)
+
+    if ward_type == "token_path":
+        if line_near(x, y, 24, 52, 32, 34, 1.8) or line_near(x, y, 32, 34, 40, 12, 1.8):
+            return accent
+        if abs(x - 32) <= 2 and 14 <= y <= 51:
+            return mid_accent
+        if (x - 40) * (x - 40) + (y - 12) * (y - 12) <= 18:
+            return 245
+        if (x - 24) * (x - 24) + (y - 52) * (y - 52) <= 22:
+            return dark_accent
+
+    elif ward_type == "album_cover":
+        if 13 <= x <= 50 and 12 <= y <= 48:
+            if x in (13, 14, 49, 50) or y in (12, 13, 47, 48):
+                return accent
+            if line_near(x, y, 16, 45, 47, 15, 1.2):
+                return 245
+            if (x + y + label) % 11 < 2:
+                return mid_accent
+
+    elif ward_type == "stream_status":
+        if y in (17, 18, 30, 31, 43, 44) and 8 <= x <= 56:
+            return accent
+        if x in (12, 18, 24) and 14 <= y <= 47:
+            return 245
+        if 30 <= x <= 54 and y in (22, 36, 50):
+            return mid_accent
+
+    elif ward_type == "sierpinski":
+        edges = [
+            (32, 9, 12, 51),
+            (12, 51, 52, 51),
+            (52, 51, 32, 9),
+            (22, 30, 42, 30),
+            (22, 30, 32, 51),
+            (42, 30, 32, 51),
+            (27, 40, 37, 40),
+        ]
+        if any(line_near(x, y, *edge, radius=1.25) for edge in edges):
+            return accent
+        if (x - 32) * (x - 32) + (y - 35) * (y - 35) <= 10:
+            return 245
+
+    elif ward_type == "reverie_field":
+        dx = x - 32
+        dy = y - 32
+        ring = dx * dx + dy * dy
+        if 260 <= ring <= 340 or 590 <= ring <= 710:
+            return accent
+        if (x * 7 + y * 13 + label * 17) % 31 < 4:
+            return mid_accent
+
+    elif ward_type == "activity_banner":
+        if 8 <= x <= 56 and y in (14, 15, 48, 49):
+            return accent
+        if 13 <= y <= 25 and 12 <= x <= 52:
+            return mid_accent
+        if x in (18, 27, 36, 45) and 30 <= y <= 45:
+            return 245
+
+    elif ward_type == "stance_chip":
+        if 12 <= x <= 52 and 18 <= y <= 44:
+            if x in (12, 13, 51, 52) or y in (18, 19, 43, 44):
+                return accent
+            if abs(x - 26) <= 1 or abs(y - 31) <= 1:
+                return 245
+
+    elif ward_type == "gem_facets":
+        facets = [(32, 8, 52, 32), (52, 32, 32, 56), (32, 56, 12, 32), (12, 32, 32, 8)]
+        if any(line_near(x, y, *edge, radius=1.2) for edge in facets):
+            return accent
+        if line_near(x, y, 12, 32, 52, 32, 1.0) or line_near(x, y, 32, 8, 32, 56, 1.0):
+            return 245
+
+    elif ward_type in {"provenance_ticker", "precedent_ticker", "chronicle_ticker"}:
+        if y in (19, 31, 43) and 8 <= x <= 56:
+            return accent
+        if (x + label * 5) % 15 < 8 and y in (23, 35, 47):
+            return 245
+
+    elif ward_type == "impingement_cascade":
+        for row in range(5):
+            y0 = 13 + row * 8
+            if y0 <= y <= y0 + 4 and 10 <= x <= 54:
+                fill = 10 + row * 8 + (label % 7)
+                return accent if x <= fill else dark_accent
+
+    elif ward_type == "recruitment_cells":
+        for col in range(3):
+            x0 = 10 + col * 15
+            if x0 <= x <= x0 + 11 and 17 <= y <= 45:
+                if x in (x0, x0 + 11) or y in (17, 45):
+                    return accent
+                if (x + y + col) % 6 < 2:
+                    return mid_accent
+
+    elif ward_type == "thinking_dot":
+        r = (x - 32) * (x - 32) + (y - 32) * (y - 32)
+        if 90 <= r <= 122 or 190 <= r <= 230:
+            return accent
+        if r <= 42:
+            return 245
+
+    elif ward_type == "pressure_bar":
+        if 12 <= x <= 52 and 28 <= y <= 36:
+            if x in (12, 52) or y in (28, 36):
+                return 245
+            return accent if x < 40 else mid_accent
+        if x % 5 == 0 and 24 <= y <= 40:
+            return dark_accent
+
+    elif ward_type == "variety_log":
+        for col in range(6):
+            x0 = 8 + col * 9
+            if x0 <= x <= x0 + 6 and 21 <= y <= 42:
+                return accent if (col + label) % 2 else mid_accent
+
+    elif ward_type == "here_counter":
+        if (x - 23) * (x - 23) + (y - 30) * (y - 30) <= 48:
+            return accent
+        if (x - 42) * (x - 42) + (y - 30) * (y - 30) <= 48:
+            return mid_accent
+        if 21 <= x <= 44 and 39 <= y <= 43:
+            return 245
+
+    elif ward_type == "durf_grid":
+        if 10 <= x <= 54 and 10 <= y <= 54 and (x % 8 in (0, 1) or y % 8 in (0, 1)):
+            return accent
+        if (x + y + label) % 13 == 0:
+            return 245
+
+    elif ward_type == "code_diff":
+        if 10 <= x <= 55 and y in (14, 22, 30, 38, 46):
+            return accent if y in (14, 30, 46) else mid_accent
+        if x in (12, 16) and 12 <= y <= 48:
+            return 245
+
+    elif ward_type == "hardware_grid":
+        if 11 <= x <= 53 and 13 <= y <= 47:
+            if x in (11, 53) or y in (13, 47):
+                return accent
+            if x % 7 == 0 or y % 7 == 0:
+                return dark_accent
+            if (x * y + label) % 37 < 3:
+                return 245
+
+    elif ward_type in {"egress_footer", "programme_banner", "segment_page"}:
+        if 9 <= x <= 55 and y in (18, 19, 44, 45):
+            return accent
+        if 13 <= x <= 51 and 24 <= y <= 38:
+            return mid_accent
+        if x in (17, 24, 31, 38, 45) and 24 <= y <= 38:
+            return 245
+
+    elif ward_type == "history_corridor":
+        if 12 <= x <= 52 and y in (14, 24, 34, 44, 54):
+            return accent
+        if x in (18, 31, 44) and 14 <= y <= 54:
+            return mid_accent
+
+    elif ward_type == "instrument_dashboard":
+        if x in (14, 32, 50) and 12 <= y <= 52:
+            return dark_accent
+        if y in (18, 32, 46) and 10 <= x <= 54:
+            return dark_accent
+        if line_near(x, y, 12, 48, 52, 18, 1.2):
+            return accent
+        if (x - 46) * (x - 46) + (y - 20) * (y - 20) <= 10:
+            return 245
+
+    elif ward_type in {"cbip_density", "ir_dual"}:
+        if ward_type == "ir_dual" and (abs(x - 24) <= 1 or abs(x - 40) <= 1):
+            return 245
+        if 10 <= x <= 54 and 12 <= y <= 52 and (x * 5 + y * 11 + label) % 17 < 5:
+            return accent
+        if (x + y) % 9 == 0:
+            return mid_accent
+
+    elif ward_type == "chat_keywords":
+        for cx, cy in ((22, 24), (42, 24), (30, 42)):
+            if (x - cx) * (x - cx) + (y - cy) * (y - cy) <= 38:
+                return accent
+
+    elif ward_type == "programme_state":
+        for row in range(3):
+            y0 = 16 + row * 12
+            if 12 <= x <= 52 and y0 <= y <= y0 + 7:
+                return accent if row == 1 else mid_accent
+
+    elif ward_type == "query_card":
+        if (x - 32) * (x - 32) + (y - 25) * (y - 25) <= 92 and x > 26:
+            return accent
+        if 30 <= x <= 34 and 39 <= y <= 44:
+            return 245
+
+    elif ward_type == "poster_field":
+        if line_near(x, y, 10, 50, 54, 14, 1.4):
+            return accent
+        if 12 <= x <= 52 and y in (18, 27, 36, 45):
+            return mid_accent
+
+    elif ward_type == "tufte_bars":
+        for col, height in enumerate((20, 34, 13, 42, 27)):
+            x0 = 14 + col * 8
+            if x0 <= x <= x0 + 4 and 52 - height <= y <= 52:
+                return accent if col % 2 else mid_accent
+
+    elif ward_type == "ascii_schema":
+        if x in (14, 32, 50) and 14 <= y <= 50:
+            return accent
+        if y in (14, 32, 50) and 14 <= x <= 50:
+            return accent
+        if (x, y) in ((23, 23), (41, 23), (23, 41), (41, 41)):
+            return 245
+
+    elif ward_type == "scope_wave":
+        wave_y = 32 + int(10 * __import__("math").sin((x + label) * 0.32))
+        if abs(y - wave_y) <= 1 and 8 <= x <= 56:
+            return accent
+        if y in (20, 32, 44) and 10 <= x <= 54:
+            return dark_accent
+
+    return None
+
+
+def ward_panel_index(x, y, label, code, ward_type):
+    """High-contrast in-engine ward anchor texture with identity baked in."""
+    accent = WARD_ACCENT_INDICES[(int(label) - 1) % len(WARD_ACCENT_INDICES)]
+
+    if x < 2 or y < 2 or x >= TEX_SIZE - 2 or y >= TEX_SIZE - 2:
+        return 245
+    if x < 5 or y < 5 or x >= TEX_SIZE - 5 or y >= TEX_SIZE - 5:
+        return accent
+    if y in (12, 13, 48, 49):
+        return accent
+    if x in (12, 13, 50, 51):
+        return max(72, accent - 96)
+
+    # Diagonal scan-strata give every pane motion-read even as a baked texture.
+    base = 18 + ((x * 3 + y * 5 + label * 11) % 18)
+    if (x + y + label * 3) % 17 == 0:
+        base = max(118, accent - 74)
+
+    symbol = ward_symbol_index(x, y, label, ward_type, accent)
+    if symbol is not None:
+        return symbol
+
+    text = f"{label:02d}"
+    scale = 2
+    start_x = 7
+    start_y = 7
+    digit_w = 3 * scale
+    gap = 2
+    for digit_idx, char in enumerate(text):
+        glyph_x = x - start_x - digit_idx * (digit_w + gap)
+        glyph_y = y - start_y
+        if 0 <= glyph_x < digit_w and 0 <= glyph_y < 5 * scale:
+            col = glyph_x // scale
+            row = glyph_y // scale
+            if digit_is_lit(char, col, row):
+                return 245
+            if (glyph_x % scale in (0, scale - 1)) or (glyph_y % scale in (0, scale - 1)):
+                return 10
+
+    short_code = code[:7].upper()
+    code_scale = 2
+    code_width = len(short_code) * 3 * code_scale + max(0, len(short_code) - 1) * code_scale
+    if text_pixel_lit(x, y, short_code, (TEX_SIZE - code_width) // 2, 43, code_scale):
+        return 245
+
+    return base
+
+
+def source_portal_index(x, y, code, accent):
+    """Camera/source anchor texture: terminal plaque, scanlines, and role code."""
+    if x < 2 or y < 2 or x >= TEX_SIZE - 2 or y >= TEX_SIZE - 2:
+        return 245
+    if x < 5 or y < 5 or x >= TEX_SIZE - 5 or y >= TEX_SIZE - 5:
+        return accent
+    if x in (15, 16, 47, 48) or y in (15, 16, 47, 48):
+        return max(84, accent - 94)
+    if y % 8 in (0, 1):
+        return max(66, accent - 118)
+    if (x + y) % 19 == 0:
+        return max(100, accent - 72)
+
+    if text_pixel_lit(x, y, "CAM", 20, 10, 2):
+        return 232
+
+    short_code = code[:7].upper()
+    scale = 2
+    text_width = len(short_code) * 3 * scale + max(0, len(short_code) - 1) * scale
+    if text_pixel_lit(x, y, short_code, (TEX_SIZE - text_width) // 2, 42, scale):
+        return 232
+
+    # Reticle around the source point keeps these as in-world portals, not labels.
+    dx = abs(x - 32)
+    dy = abs(y - 32)
+    if (dx < 12 and dy in (10, 11)) or (dy < 12 and dx in (10, 11)):
+        return accent
+    if dx <= 1 or dy <= 1:
+        return max(74, accent - 108)
+
+    return 32 + ((x * 5 + y * 7 + len(code) * 11) % 24)
+
+
+def legacy_slot_index(x, y, code, accent):
+    """Large Sierpinski-era content slot texture with baked identity."""
+    if x < 2 or y < 2 or x >= TEX_SIZE - 2 or y >= TEX_SIZE - 2:
+        return 245
+    if x < 5 or y < 5 or x >= TEX_SIZE - 5 or y >= TEX_SIZE - 5:
+        return accent
+    if y in (9, 10, 53, 54):
+        return max(72, accent - 96)
+    if x in (9, 10, 53, 54):
+        return max(86, accent - 82)
+    if y % 6 in (0, 1):
+        return max(48, accent - 128)
+    if (x * 3 + y * 7 + len(code) * 5) % 29 < 3:
+        return max(110, accent - 52)
+
+    short_code = code[:7].upper()
+    scale = 3 if len(short_code) <= 5 else 2
+    text_width = len(short_code) * 3 * scale + max(0, len(short_code) - 1) * scale
+    if text_pixel_lit(x, y, short_code, (TEX_SIZE - text_width) // 2, 24, scale):
+        return 245
+
+    # A quiet center trace keeps the slot from reading as a blank label tile.
+    dx = abs(x - 32)
+    dy = abs(y - 32)
+    if dx <= 1 or dy <= 1:
+        return max(82, accent - 108)
+    if dx + dy in (20, 21, 22):
+        return max(96, accent - 80)
+
+    return 22 + ((x * 11 + y * 5 + len(code) * 13) % 22)
+
+
+def aoa_pane_index(x, y, code, accent):
+    """AoA pane-local payload texture from the current Scroom tetrix contract."""
+    dark_accent = max(62, accent - 116)
+    mid_accent = max(92, accent - 72)
+
+    if x < 2 or y < 2 or x >= TEX_SIZE - 2 or y >= TEX_SIZE - 2:
+        return 245
+    if x < 5 or y < 5 or x >= TEX_SIZE - 5 or y >= TEX_SIZE - 5:
+        return accent
+
+    # Pane-local triangular mask: this is content bound to the AoA volume,
+    # not a free floating screen tile.
+    edges = (
+        (32, 9, 12, 52),
+        (12, 52, 52, 52),
+        (52, 52, 32, 9),
+        (22, 31, 42, 31),
+        (22, 31, 32, 52),
+        (42, 31, 32, 52),
+    )
+    if any(line_near(x, y, *edge, radius=1.25) for edge in edges):
+        return accent
+
+    # Sparse pane diagnostics: LOD/privacy/source gates from the current
+    # AoA pane binding metadata.
+    if y in (15, 27, 39, 51) and 10 <= x <= 54:
+        return mid_accent
+    if x in (18, 32, 46) and 18 <= y <= 50:
+        return dark_accent
+    if (x * 5 + y * 9 + len(code) * 17) % 43 < 4:
+        return 245
+
+    short_code = code[:5].upper()
+    scale = 2
+    text_width = len(short_code) * 3 * scale + max(0, len(short_code) - 1) * scale
+    if text_pixel_lit(x, y, short_code, (TEX_SIZE - text_width) // 2, 24, scale):
+        return 245
+
+    dx = x - 32
+    dy = y - 35
+    ring = dx * dx + dy * dy
+    if 280 <= ring <= 360:
+        return mid_accent
+
+    return 20 + ((x * 7 + y * 13 + len(code) * 11) % 24)
+
+
+def aoa_sphere_index(x, y, code, accent):
+    """Attendant sphere/YT media-face texture for the central AoA."""
+    dark_accent = max(120, accent - 90)
+    mid_accent = max(172, accent - 46)
+    dx = x - 32
+    dy = y - 32
+    radius = dx * dx + dy * dy
+
+    if x < 2 or y < 2 or x >= TEX_SIZE - 2 or y >= TEX_SIZE - 2:
+        return 245
+    if 660 <= radius <= 850:
+        return 245 if (x + y) % 3 == 0 else accent
+    if 360 <= radius <= 430 or 120 <= radius <= 160:
+        return 245 if (x * y) % 5 == 0 else mid_accent
+    if radius > 860:
+        return 8 + ((x * 5 + y * 11) % 10)
+
+    # YT is intentionally baked as media identity, not a UI overlay.
+    if text_pixel_lit(x, y, code[:2].upper(), 22, 24, 4):
+        return 245
+    if y % 7 in (0, 1) and radius < 720:
+        return dark_accent
+    if abs(dx) <= 1 or abs(dy) <= 1:
+        return accent
+    if (x * 7 + y * 13) % 31 < 4:
+        return 245
+    if radius < 640 and (x * 3 + y * 5) % 11 < 3:
+        return mid_accent
+
+    return 86 + ((x * 9 + y * 5 + len(code) * 17) % 58)
+
+
+def effect_lens_index(x, y, code, accent, effect):
+    """Entity-local spatial effect lens texture from scene_quad.wgsl."""
+    dark_accent = max(60, accent - 116)
+    mid_accent = max(92, accent - 74)
+
+    if x < 2 or y < 2 or x >= TEX_SIZE - 2 or y >= TEX_SIZE - 2:
+        return 245
+    if x < 5 or y < 5 or x >= TEX_SIZE - 5 or y >= TEX_SIZE - 5:
+        return accent
+    if x in (12, 13, 50, 51) or y in (12, 13, 50, 51):
+        return dark_accent
+
+    dx = x - 32
+    dy = y - 32
+    radius = dx * dx + dy * dy
+    if 540 <= radius <= 720:
+        return mid_accent
+
+    if effect == "mirror":
+        if x in (31, 32) and 12 <= y <= 52:
+            return accent
+        if abs((63 - x) - y) <= 1:
+            return mid_accent
+    elif effect == "kaleidoscope":
+        for edge in ((32, 8, 12, 52), (32, 8, 52, 52), (12, 52, 52, 52), (32, 8, 32, 52)):
+            if line_near(x, y, *edge, radius=1.1):
+                return accent
+    elif effect == "warp":
+        wave_y = 32 + int(8 * __import__("math").sin(x * 0.32))
+        if abs(y - wave_y) <= 1:
+            return accent
+        if y % 11 in (0, 1):
+            return dark_accent
+    elif effect == "fisheye":
+        if 140 <= radius <= 210:
+            return accent
+        if radius <= 52:
+            return 245
+    elif effect == "transform":
+        if line_near(x, y, 17, 45, 47, 17, 1.3) or line_near(x, y, 17, 17, 47, 45, 1.3):
+            return accent
+        if x in (19, 45) or y in (19, 45):
+            return mid_accent
+    elif effect == "displacement":
+        if (x * 7 + y * 13) % 17 < 4:
+            return accent
+        if (x + y) % 9 == 0:
+            return 245
+    elif effect == "droste":
+        if 120 <= radius <= 170 or 300 <= radius <= 360 or 560 <= radius <= 630:
+            return accent
+    elif effect == "tunnel":
+        angle_band = (abs(dx) + abs(dy)) % 12
+        if angle_band < 2 and radius > 72:
+            return accent
+        if radius <= 36:
+            return 245
+    elif effect == "tile":
+        if x % 16 in (0, 1) or y % 16 in (0, 1):
+            return accent
+        if (x // 16 + y // 16) % 2 == 0:
+            return mid_accent
+    elif effect == "drift":
+        if (x + y) % 13 < 2 or (x * 3 - y * 2) % 19 < 3:
+            return accent
+    elif effect == "breathing":
+        if 180 <= radius <= 240 or 420 <= radius <= 500:
+            return accent
+        if radius <= 72:
+            return mid_accent
+
+    short_code = code[:5].upper()
+    scale = 2
+    text_width = len(short_code) * 3 * scale + max(0, len(short_code) - 1) * scale
+    if text_pixel_lit(x, y, short_code, (TEX_SIZE - text_width) // 2, 42, scale):
+        return 245
+
+    return 20 + ((x * 11 + y * 7 + len(effect) * 13) % 24)
+
+
+def generate_pixel_data(
+    color,
+    noise,
+    width,
+    height,
+    seed=0,
+    pattern="stone_blocks",
+    label=0,
+    code="",
+    ward_type="",
+    drift=0,
+    accent=0,
+    effect="",
+):
+    """Generate Quake-style texture with visible material character."""
+    import random
+
+    random.seed(seed)
+    pixels = bytearray()
+    palette = []
+
+    for i in range(256):
+        t = i / 255.0
+        r = max(0, min(255, int(color[0] * (0.3 + t * 0.7))))
+        g = max(0, min(255, int(color[1] * (0.3 + t * 0.7))))
+        b = max(0, min(255, int(color[2] * (0.3 + t * 0.7))))
+        palette.extend([r, g, b])
+
+    for y in range(height):
+        for x in range(width):
+            base = 140
+
+            if pattern == "stone_blocks":
+                row = y // 16
+                col_offset = 16 if row % 2 else 0
+                mortar_h = y % 16 < 2
+                mortar_v = (x + col_offset) % 32 < 2
+                if mortar_h or mortar_v:
+                    base = 40
+                else:
+                    block_id = row * 4 + ((x + col_offset) // 32)
+                    random.seed(seed + block_id * 97)
+                    base = 160 + random.randint(-40, 40)
+
+            elif pattern == "worn_stone":
+                base = 80 + random.randint(-15, 15)
+                if (x + y * 3) % 47 < 2:
+                    base -= 50
+
+            elif pattern == "dark_ceiling":
+                base = 35 + random.randint(-8, 8)
+
+            elif pattern == "brushed_metal":
+                grain = (x * 7 + seed) % 11
+                base = 170 + grain - 5 + random.randint(-10, 10)
+
+            elif pattern == "carved_stone":
+                base = 118 + random.randint(-18, 18)
+                if x % 24 < 2 or y % 24 < 2:
+                    base -= 44
+                if (x * 3 + y * 5 + seed) % 61 < 3:
+                    base += 24
+
+            elif pattern == "metal_grate":
+                base = 105 + random.randint(-18, 18)
+                if x % 16 < 2 or y % 16 < 2:
+                    base = 172 + random.randint(-14, 14)
+                if (x + y) % 32 < 3:
+                    base -= 34
+
+            elif pattern == "dark_ornate":
+                base = 82 + random.randint(-15, 15)
+                arch = abs((x % 32) - 16) + abs((y % 32) - 16)
+                if arch < 8:
+                    base += 38
+                if x % 32 < 2 or y % 32 < 2:
+                    base -= 32
+
+            elif pattern == "polished_stone":
+                base = 126 + random.randint(-14, 14)
+                if y % 12 < 2:
+                    base -= 24
+                if (x * 5 + y + seed) % 79 < 4:
+                    base += 34
+
+            elif pattern == "scroom":
+                base = 34 + random.randint(-5, 7)
+                diag_a = abs(((x + y // 2) % 32) - 16)
+                diag_b = abs(((x - y // 2) % 32) - 16)
+                if diag_a < 2 or diag_b < 2:
+                    base += 34
+                if x % 16 == 0 or y % 16 == 0:
+                    base += 22
+                if (x * 7 + y * 11 + seed) % 101 < 3:
+                    base += 54
+
+            elif pattern == "drift_line":
+                drift_idx = int(drift) if drift else 206
+                edge = min(x, y, width - 1 - x, height - 1 - y)
+                if edge < 2:
+                    base = 245
+                elif x in (31, 32) or y in (31, 32):
+                    base = drift_idx
+                elif (x * 5 + y * 3 + seed) % 23 < 5:
+                    base = max(120, drift_idx - 34)
+                else:
+                    base = max(76, drift_idx - 70)
+
+            elif pattern == "ward_panel":
+                pixels.append(ward_panel_index(x, y, int(label), str(code), str(ward_type)))
+                continue
+
+            elif pattern == "source_portal":
+                pixels.append(source_portal_index(x, y, str(code), int(accent) if accent else 214))
+                continue
+
+            elif pattern == "legacy_slot":
+                pixels.append(legacy_slot_index(x, y, str(code), int(accent) if accent else 214))
+                continue
+
+            elif pattern == "aoa_pane":
+                pixels.append(aoa_pane_index(x, y, str(code), int(accent) if accent else 214))
+                continue
+
+            elif pattern == "aoa_sphere":
+                pixels.append(aoa_sphere_index(x, y, str(code), int(accent) if accent else 214))
+                continue
+
+            elif pattern == "effect_lens":
+                pixels.append(
+                    effect_lens_index(
+                        x,
+                        y,
+                        str(code),
+                        int(accent) if accent else 214,
+                        str(effect),
+                    )
+                )
+                continue
+
+            # Add surface noise
+            random.seed(seed + y * width + x)
+            base += random.randint(-noise, noise)
+            idx = max(10, min(245, base))
+            pixels.append(idx)
+
+    return bytes(pixels), bytes(palette)
+
+
+def make_miptex(name, width, height, pixels, palette):
+    """Create MIPTEX structure with 4 mipmap levels."""
+    name_bytes = name.encode("ascii")[:15].ljust(16, b"\x00")
+
+    mip0 = pixels
+    mip1 = bytearray()
+    for y in range(0, height, 2):
+        for x in range(0, width, 2):
+            mip1.append(pixels[y * width + x])
+    mip1 = bytes(mip1)
+
+    mip2 = bytearray()
+    for y in range(0, height, 4):
+        for x in range(0, width, 4):
+            mip2.append(pixels[y * width + x])
+    mip2 = bytes(mip2)
+
+    mip3 = bytearray()
+    for y in range(0, height, 8):
+        for x in range(0, width, 8):
+            mip3.append(pixels[y * width + x])
+    mip3 = bytes(mip3)
+
+    header_size = 40
+    off0 = header_size
+    off1 = off0 + len(mip0)
+    off2 = off1 + len(mip1)
+    off3 = off2 + len(mip2)
+
+    header = struct.pack(
+        "<16sII4I",
+        name_bytes,
+        width,
+        height,
+        off0,
+        off1,
+        off2,
+        off3,
+    )
+
+    return header + mip0 + mip1 + mip2 + mip3
+
+
+def texture_seed(name):
+    """Return a deterministic texture seed across Python processes."""
+    return zlib.crc32(name.encode("ascii")) & 0xFFFFFFFF
+
+
+def write_wad(textures_data, output_path):
+    """Write WAD2 file."""
+    entries = []
+    data_parts = []
+    data_offset = 12
+
+    for name, (miptex, _palette) in textures_data.items():
+        entries.append(
+            {
+                "name": name,
+                "offset": data_offset,
+                "size": len(miptex),
+            }
+        )
+        data_parts.append(miptex)
+        data_offset += len(miptex)
+
+    dir_offset = data_offset
+
+    with open(output_path, "wb") as f:
+        f.write(b"WAD2")
+        f.write(struct.pack("<ii", len(entries), dir_offset))
+
+        for part in data_parts:
+            f.write(part)
+
+        for entry in entries:
+            name_bytes = entry["name"].encode("ascii")[:15].ljust(16, b"\x00")
+            f.write(
+                struct.pack(
+                    "<iiiBBh16s",
+                    entry["offset"],
+                    entry["size"],
+                    entry["size"],
+                    0x44,
+                    0,
+                    0,
+                    name_bytes,
+                )
+            )
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate Screwm Quake WAD2 textures")
+    parser.add_argument(
+        "--no-deploy",
+        action="store_true",
+        help="only write assets/quake/maps/screwm.wad; do not copy into ~/.darkplaces",
+    )
+    args = parser.parse_args()
+
+    textures_data = {}
+    for name, params in TEXTURES.items():
+        pixels, palette = generate_pixel_data(
+            params["color"],
+            params["noise"],
+            TEX_SIZE,
+            TEX_SIZE,
+            seed=texture_seed(name),
+            pattern=params.get("pattern", "stone_blocks"),
+            label=params.get("label", 0),
+            code=params.get("code", ""),
+            ward_type=params.get("ward_type", ""),
+            drift=params.get("drift", 0),
+            accent=params.get("accent", 0),
+            effect=params.get("effect", ""),
+        )
+        miptex = make_miptex(name, TEX_SIZE, TEX_SIZE, pixels, palette)
+        textures_data[name] = (miptex, palette)
+        print(f"  {name}: {TEX_SIZE}x{TEX_SIZE}, {len(miptex)} bytes")
+
+    output_dir = Path(__file__).parent.parent / "assets" / "quake" / "maps"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    wad_path = output_dir / "screwm.wad"
+    write_wad(textures_data, wad_path)
+    print(f"WAD: {wad_path} ({wad_path.stat().st_size} bytes)")
+
+    if args.no_deploy:
+        return
+
+    dp_wad = Path.home() / ".darkplaces" / "screwm" / "screwm.wad"
+    import shutil
+
+    shutil.copy2(wad_path, dp_wad)
+    print(f"Deployed to {dp_wad}")
+
+
+if __name__ == "__main__":
+    main()

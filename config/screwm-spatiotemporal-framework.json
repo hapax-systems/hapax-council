@@ -1,0 +1,240 @@
+{
+  "version": "screwm-spatiotemporal-framework-v1",
+  "status": "operative_required",
+  "principle": "Screwm spatial, temporal, media, and aural choices must be justified by declared embodied-perception, garden, media-theory, anti-parasocial, and audiovisual constraints before they enter the live Quake/DarkPlaces + Hapax compositor hybrid. Homage Wards receive substance through their source identity and through their constant declared interaction with the drift/compositing system; geometry alone is never the entity.",
+  "research_lanes": [
+    {
+      "id": "lane-1-phenomenology",
+      "focus": "embodied being-within, body schema, affordances, orientation",
+      "source_threads": ["Merleau-Ponty", "Gibson", "immersive presence"]
+    },
+    {
+      "id": "lane-2-japanese-garden",
+      "focus": "roji, stroll garden, miegakure, ma, borrowed scenery, compression and release",
+      "source_threads": ["Sakuteiki", "kaiyu-shiki", "miegakure", "shakkei"]
+    },
+    {
+      "id": "lane-3-perception-legibility",
+      "focus": "Gestalt grouping, depth cues, visual hierarchy, clutter, motion sickness, contrast, luminance adaptation",
+      "source_threads": ["Gestalt grouping", "visual crowding", "simulator sickness", "contrast sensitivity"]
+    },
+    {
+      "id": "lane-4-cinematography-exhibition-game-space",
+      "focus": "viewing distance, screen angular size, focal length/FOV, pause points, readable aspect ratios, wayfinding, room scale, and immersive rather than theatrical screen placement",
+      "source_threads": ["cinematography", "exhibition design", "game spatial composition", "immersive installation"]
+    },
+    {
+      "id": "lane-5-media-theory",
+      "focus": "medium specificity, remediation, liveness, media archaeology, screens inside worlds",
+      "source_threads": ["McLuhan", "Kittler", "Bolter-Grusin", "Manovich"]
+    },
+    {
+      "id": "lane-6-anti-parasocial",
+      "focus": "anti-extractive audience relation, mediated presence boundaries, role/consent/source legibility",
+      "source_threads": ["Horton-Wohl", "parasocial interaction", "live-streaming studies", "HARDM anti-anthropomorphization"]
+    },
+    {
+      "id": "lane-7-light-material-temporality",
+      "focus": "luminance hierarchy, adaptation, fog, bloom, material readability, temporal drift and flicker",
+      "source_threads": ["contrast adaptation", "atmospheric perspective", "motion perception", "temporal binding"]
+    },
+    {
+      "id": "lane-8-sonic-aural",
+      "focus": "soundscape, auditory scene analysis, acousmatic/synchresis, near-far sonic staging",
+      "source_threads": ["Schafer", "Chion", "Bregman", "spatial audio"]
+    }
+  ],
+  "spatial_constraints": {
+    "units_per_meter": 32,
+    "minimum_walkable_width_m": 1.8,
+    "minimum_walkable_height_m": 2.4,
+    "minimum_room_width_m": 24.0,
+    "minimum_room_depth_m": 24.0,
+    "minimum_room_height_m": 8.0,
+    "target_primary_loop_station_count": 8,
+    "minimum_pause_node_spacing_m": 4.5,
+    "maximum_pause_node_spacing_m": 10.0,
+    "clear_floor_ratio_minimum": 0.55,
+    "no_front_required": true,
+    "minimum_foreground_midground_background_layers": 3
+  },
+  "media_constraints": {
+    "deterministic_mount_contract_required": true,
+    "required_mount_fields": [
+      "id",
+      "source_id",
+      "role",
+      "producer_kind",
+      "liveness_class",
+      "mount_kind",
+      "substrate",
+      "surface",
+      "native_resolution",
+      "source_aspect",
+      "texture_size",
+      "projection",
+      "origin",
+      "producer_output",
+      "hybrid_contract",
+      "material_profile",
+      "intended_view_distance",
+      "target_visual_angle_deg",
+      "computed_mount_width",
+      "latency_budget_s",
+      "anti_parasocial_posture",
+      "freshness",
+      "consent_or_license",
+      "purpose",
+      "drift_interaction"
+    ],
+    "required_flat_mount_fields": [
+      "physical_width",
+      "facing",
+      "visible_border",
+      "visible_backing_panel",
+      "visible_grid_background",
+      "physical_chrome",
+      "edge_faces",
+      "stale_texture_style",
+      "size_policy"
+    ],
+    "required_sphere_mount_fields": [
+      "physical_radius",
+      "owner",
+      "enclosure",
+      "fit_contract",
+      "fit_basis",
+      "enclosure_clearance_ratio",
+      "inner_void_radius_fill_ratio"
+    ],
+    "minimum_camera_texture_width_px": 1280,
+    "minimum_camera_texture_height_px": 720,
+    "preferred_camera_texture_width_px": 1920,
+    "preferred_camera_texture_height_px": 1080,
+    "camera_capture_contract_required": true,
+    "required_camera_mount_fields": [
+      "capture_format",
+      "capture_resolution",
+      "capture_fps",
+      "texture_fps",
+      "resolution_basis"
+    ],
+    "camera_capture_fps_min": 15,
+    "minimum_aoa_sphere_texture_width_px": 2048,
+    "minimum_aoa_sphere_texture_height_px": 1024,
+    "required_hybrid_contract_fields": [
+      "quake_binding",
+      "producer_binding",
+      "memory_format",
+      "update_semantics",
+      "aspect_policy",
+      "compositor_role"
+    ],
+    "minimum_aoa_inner_void_clearance_ratio": 1.04,
+    "maximum_aoa_oarb_inner_void_radius_fill_ratio": 0.98,
+    "minimum_inspection_visual_angle_deg": 18.0,
+    "target_primary_media_visual_angle_deg": 24.0,
+    "target_hero_media_visual_angle_deg_max": 34.0,
+    "minimum_media_px_per_degree": 50.0,
+    "aspect_ratio_must_follow_source": true,
+    "media_visibility_priority": "scale geometry to media legibility rather than forcing media into arbitrary frame proportions",
+    "ward_atlas_storage_aspect_must_not_leak_to_mount": true
+  },
+  "media_theory_constraints": {
+    "screens_are_spatial_objects_not_windows": true,
+    "remediation_contract_required": true,
+    "medium_specificity_required": true,
+    "homage_technology_must_remain_swappable": true,
+    "portable_framework_must_not_embed_homage_specific_assets": true,
+    "deep_homage_pack_must_remain_data_profile": true,
+    "material_profile_binding_required": true,
+    "fourth_wall_surface_is_not_entity": true,
+    "screen_space_overlays_forbidden_for_final_wards": true,
+    "physical_bsp_mount_chrome_disabled_by_default": true,
+    "mount_expression_must_be_coordinate_bound_to_receiver": true,
+    "drift_interaction_required_for_entity_substance": true,
+    "ward_mount_visible_border_forbidden": true,
+    "ward_mount_visible_backing_panel_forbidden": true,
+    "ward_mount_visible_grid_background_forbidden": true,
+    "true_temporal_history_belongs_to_compositor": true,
+    "required_homage_mount_expression_fields": [
+      "geometry",
+      "layers",
+      "drift_interaction",
+      "inspection_affordance"
+    ],
+    "mount_projection_must_be_declared_before_runtime": true,
+    "portable_mount_forbidden_homage_tokens": [
+      "bitchx",
+      "acid",
+      "enlightenment",
+      "gtk",
+      "vaporwave",
+      "minecraft",
+      "aol"
+    ],
+    "reference_homage_pack": "bitchx-acid-enlightenment"
+  },
+  "camera_temporal_constraints": {
+    "default_review_path_required": true,
+    "manual_control_noclip_required": true,
+    "target_fps": 60,
+    "review_path_period_s_min": 300,
+    "review_path_period_s_target": 360,
+    "horizontal_fov_min_deg": 90,
+    "horizontal_fov_max_deg": 110,
+    "max_review_yaw_velocity_deg_s": 30,
+    "max_review_yaw_accel_deg_s2": 150,
+    "max_global_luminance_step_per_500ms": 0.25,
+    "max_uncued_periodic_brightness_shift": 0.1,
+    "forbidden_uncued_brightness_period_s_min": 4.0,
+    "forbidden_uncued_brightness_period_s_max": 8.0,
+    "global_signal_attack_s_min": 2.0,
+    "global_signal_release_s_min": 4.0,
+    "ward_light_ema_s_min": 0.5,
+    "ward_light_ema_s_max": 1.5
+  },
+  "density_constraints": {
+    "max_primary_media_wards_per_pause_view": 3,
+    "max_independent_dynamic_objects_within_10m": 8,
+    "max_animation_frequency_hz": 2.0,
+    "ward_spacing_min_visual_angle_deg": 2.0,
+    "static_landmark_required_per_station": true,
+    "dynamic_elements_must_expose_affordance_or_state": true
+  },
+  "anti_parasocial_constraints": {
+    "camera_wards_are_instruments_not_intimacy_billboards": true,
+    "required_source_context": ["role", "freshness", "consent_or_license", "purpose"],
+    "forbid_extractive_face_hero_default": true,
+    "operator_presence_must_be_mediated_by_system_role": true,
+    "audience_address_must_be_operational_not_simulated_rapport": true,
+    "spatialized_presence_required": true,
+    "camera_wards_must_not_own_the_centerline_by_default": true,
+    "object_of_attention_discipline_required": true,
+    "viewer_agency_targets_space_or_object_not_personality": true,
+    "max_face_dominant_camera_wards_per_pause_view": 1,
+    "ticker_text_must_be_operational_not_intimate_address": true,
+    "reveal_hide_cycle_required_for_presence_media": true
+  },
+  "failure_predicates": [
+    "Any media surface lacks a deterministic mount contract.",
+    "A camera or YouTube ward is visibly letterboxed/cropped for arbitrary frame reasons rather than declared source aspect or projection reasons.",
+    "The default path has no stable AoA-oriented station suitable for OBS feedback.",
+    "The room reads as a front-facing theater instead of a no-front walkable environment.",
+    "A ward cannot be identified by role and purpose from its intended inspection station.",
+    "The AoA sphere is not centered within the AoA volume or the AoA base is not parallel to the floor.",
+    "Global brightness pulses by more than 10 percent every 4-8 seconds without an explicit audio/state cue.",
+    "More than three primary media wards compete in the same pause view.",
+    "Dynamic motion distracts without revealing affordance, state, or drift pressure.",
+    "Camera movement exceeds the yaw velocity/acceleration budget during default review.",
+    "A camera ward presents the operator as a parasocial face-object rather than a bounded system source.",
+    "A fourth-wall surface, HUD, or screen-space effect is treated as a ward or final spatial entity.",
+    "Physical BSP frames, standoffs, status spines, or decorative mount chrome are emitted by default instead of coordinate-bound compositor/CSQC mount expression.",
+    "A Homage Ward has no declared drift/compositing interaction to give shape to the receiver and source.",
+    "A Homage Ward receiver has a visible border, backing panel, grid background, or physical chrome not required by the ward's source/purpose contract.",
+    "A ward's visible size or aspect ratio is inherited from atlas storage rather than from source aspect, media legibility, and intended inspection distance.",
+    "A full-frame drift or GLSL effect carries ward semantics without an explicit entity, mask, depth, or receiver contract.",
+    "The default recurrent path period is below 300 seconds or changes instantaneous speed instead of station dwell/selection.",
+    "A Homage package embeds licensed/risk-specific choices in the portable framework instead of isolating them in the homage distribution layer."
+  ]
+}

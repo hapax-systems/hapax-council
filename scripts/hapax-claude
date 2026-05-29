@@ -25,7 +25,7 @@ COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
 usage() {
   cat <<'EOF'
 usage: hapax-claude [--role alpha|beta|gamma|delta|epsilon|zeta|eta|theta] [--cd DIR]
-                    [--terminal none|tmux|foot] [--force]
+                    [--terminal none|tmux|foot] [--force] [--task TASK_ID|--readonly]
                     [--] [claude args...]
 
 Defaults:
@@ -42,6 +42,8 @@ WORKDIR=""
 WORKDIR_EXPLICIT=0
 TERMINAL="${HAPAX_CLAUDE_TERMINAL:-none}"
 FORCE=0
+CLAUDE_TASK="${HAPAX_METHODOLOGY_DISPATCH_TASK:-}"
+READONLY=0
 CLAUDE_EXTRA=()
 
 while [ $# -gt 0 ]; do
@@ -74,6 +76,18 @@ while [ $# -gt 0 ]; do
       ;;
     --force)
       FORCE=1
+      shift
+      ;;
+    --task)
+      CLAUDE_TASK="${2:-}"
+      shift 2
+      ;;
+    --task=*)
+      CLAUDE_TASK="${1#--task=}"
+      shift
+      ;;
+    --readonly|--read-only)
+      READONLY=1
       shift
       ;;
     --help|-h)
@@ -217,6 +231,9 @@ fi
 # bypassed. Override per-spawn via env: HAPAX_CLAUDE_EFFORT=xhigh,
 # HAPAX_CLAUDE_SKIP_PERMS=0. Anything passed after `--` wins over the
 # defaults because the user-supplied args trail CLAUDE_DEFAULT_ARGS.
+if [ "$READONLY" -eq 1 ] && [ -z "${HAPAX_CLAUDE_SKIP_PERMS+x}" ]; then
+  HAPAX_CLAUDE_SKIP_PERMS=0
+fi
 CLAUDE_DEFAULT_ARGS=()
 CLAUDE_EFFORT="${HAPAX_CLAUDE_EFFORT:-max}"
 case "$CLAUDE_EFFORT" in
@@ -256,6 +273,45 @@ export HAPAX_AGENT_ROLE="$ROLE"
 export HAPAX_WORKTREE_ROLE="$ROLE"
 export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
 
+CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$ROLE"
+CLAIMED_TASK=""
+if [ -s "$CLAIM_FILE" ]; then
+  CLAIMED_TASK="$(head -n1 "$CLAIM_FILE" | tr -d '[:space:]')"
+fi
+if [ "$READONLY" -ne 1 ]; then
+  if [ -n "$CLAUDE_TASK" ]; then
+    if [ -n "$CLAIMED_TASK" ] && [ "$CLAIMED_TASK" != "$CLAUDE_TASK" ]; then
+      echo "hapax-claude: refusing mutating launch; role '$ROLE' already claims '$CLAIMED_TASK', not dispatch task '$CLAUDE_TASK'" >&2
+      echo "  Close or resolve the existing claim before launching a new visible lane." >&2
+      exit 13
+    fi
+    if [ -z "$CLAIMED_TASK" ]; then
+      if [ ! -x "$WORKDIR/scripts/cc-claim" ]; then
+        echo "hapax-claude: refusing mutating launch; missing worktree cc-claim at $WORKDIR/scripts/cc-claim" >&2
+        exit 14
+      fi
+      (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CLAUDE_TASK")
+      CLAIMED_TASK="$CLAUDE_TASK"
+    fi
+  elif [ -n "$CLAIMED_TASK" ]; then
+    CLAUDE_TASK="$CLAIMED_TASK"
+  elif [ -z "$CLAIMED_TASK" ]; then
+    cat >&2 <<EOF
+hapax-claude: refusing mutating visible lane without governed task binding.
+
+  Visible Claude lanes must be launched with --task <cc-task-id> from
+  hapax-methodology-dispatch, or with an existing active claim for this role.
+
+  For inspection only, pass --readonly. Read-only mode does not add
+  --dangerously-skip-permissions by default.
+EOF
+    exit 13
+  fi
+fi
+if [ -n "$CLAUDE_TASK" ]; then
+  export HAPAX_METHODOLOGY_DISPATCH_TASK="$CLAUDE_TASK"
+fi
+
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 
 if [ "$TERMINAL" = "none" ]; then
@@ -281,6 +337,9 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
   printf 'export HAPAX_AGENT_ROLE=%q\n' "$ROLE"
   printf 'export HAPAX_WORKTREE_ROLE=%q\n' "$ROLE"
   printf 'export HAPAX_IDLE_UPDATE_SECONDS=%q\n' "$HAPAX_IDLE_UPDATE_SECONDS"
+  if [ -n "$CLAUDE_TASK" ]; then
+    printf 'export HAPAX_METHODOLOGY_DISPATCH_TASK=%q\n' "$CLAUDE_TASK"
+  fi
   printf 'exec %q' "$CLAUDE_BIN"
   for arg in "${CLAUDE_DEFAULT_ARGS[@]}"; do
     printf ' %q' "$arg"

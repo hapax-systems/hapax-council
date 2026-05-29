@@ -14,11 +14,28 @@ headless_allowed() {
   [[ "${HAPAX_CLAUDE_HEADLESS_ALLOW:-}" == "1" || -e "$ENABLE_FILE" ]]
 }
 
-ROLE="${1:-}"
-shift || true
+ROLE=""
+CLAUDE_TASK="${HAPAX_METHODOLOGY_DISPATCH_TASK:-}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --task)
+      CLAUDE_TASK="${2:-}"
+      shift 2
+      ;;
+    --task=*)
+      CLAUDE_TASK="${1#--task=}"
+      shift
+      ;;
+    *)
+      ROLE="$1"
+      shift
+      break
+      ;;
+  esac
+done
 
 if [[ -z "$ROLE" ]]; then
-  echo "usage: hapax-claude-headless <role> [governed-initial-message]" >&2
+  echo "usage: hapax-claude-headless [--task TASK_ID] <role> [governed-initial-message]" >&2
   exit 1
 fi
 
@@ -88,6 +105,27 @@ if [[ -z "$INITIAL_MSG" ]]; then
   echo "hapax-claude-headless: governed initial message required" >&2
   exit 5
 fi
+CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$ROLE"
+CLAIMED_TASK=""
+if [[ -s "$CLAIM_FILE" ]]; then
+  CLAIMED_TASK="$(head -n1 "$CLAIM_FILE" | tr -d '[:space:]')"
+fi
+if [[ -z "$CLAUDE_TASK" && -n "$CLAIMED_TASK" ]]; then
+  CLAUDE_TASK="$CLAIMED_TASK"
+fi
+if [[ -z "$CLAUDE_TASK" ]]; then
+  echo "hapax-claude-headless: refusing mutating launch without --task <cc-task-id> or existing active claim for role '$ROLE'" >&2
+  exit 15
+fi
+if [[ -n "$CLAIMED_TASK" && "$CLAIMED_TASK" != "$CLAUDE_TASK" ]]; then
+  echo "hapax-claude-headless: refusing launch; role '$ROLE' already claims '$CLAIMED_TASK', not dispatch task '$CLAUDE_TASK'" >&2
+  exit 13
+fi
+if [[ -z "$CLAIMED_TASK" ]]; then
+  [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-claude-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
+  (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CLAUDE_TASK")
+fi
+export HAPAX_METHODOLOGY_DISPATCH_TASK="$CLAUDE_TASK"
 
 SDLC_PREAMBLE="SDLC DISCIPLINE (MANDATORY):
 1. Work only on the task named in this dispatch.

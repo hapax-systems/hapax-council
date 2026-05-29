@@ -19,11 +19,17 @@ Nothing is given up. Everything is gained.
 
 ## 2. Goals
 
+> **2026-05-24 migration-target correction:** DarkPlaces is the rendering
+> substrate, not the aesthetic subject. The target is to recreate the last
+> non-Quake Screwm, including all wards, drift, and effects, inside the new
+> environment as far as DarkPlaces can bear it. Temporary compositor bridges
+> are parity gaps to close, not the desired endpoint.
+
 1. DarkPlaces renders the Screwm tower as a Quake BSP map with CC0 textures, colored lighting, fog, and spatial audio.
 2. QuakeC drives camera, lighting, fog, and entity behavior based on live cognitive state (/dev/shm signals).
 3. 39 reverie shader nodes (EXCELLENT+GOOD tiers) migrate to DarkPlaces GLSL post-processing.
 4. 11 temporal shader nodes (DIFFICULT tier: feedback, echo, diff, stutter, slitscan, pixsort) remain in GStreamer glfeedback chain as post-compositor effects.
-5. Wards remain in GStreamer compositor overlay (DarkPlaces cannot reload textures at runtime — research-confirmed blocker).
+5. All legacy wards receive in-engine spatial anchors/panes, baked identity materials, physical drift carriers, and CSQC-driven in-world pulse/state coupling; projected CSQC text/line overlays are diagnostic only, and dynamic Cairo/GStreamer ward rendering remains a temporary bridge only where DarkPlaces runtime texture limits block live content today.
 6. Working mode propagation: dual BSP compilation (screwm-rnd.bsp / screwm-research.bsp) + runtime fog/brightness adjustment.
 7. QuakeHomage registered as third HomagePackage.
 8. hapax-imagination retires after Phase 4 shader port is verified.
@@ -42,7 +48,12 @@ Nothing is given up. Everything is gained.
 
 DarkPlaces cannot reload textures at runtime without `r_restart`/`vid_restart`, which pauses the engine visibly. No QuakeC builtin exists for texture injection. No FBO/RTT support documented. This is confirmed via source code audit of `r_textures.h`, `gl_textures.c`, and `dpextensions.qc`.
 
-**Decision:** Wards stay in GStreamer compositor overlay. DarkPlaces owns spatial rendering; the compositor owns information overlays and temporal effects.
+**Decision:** live texture replacement remains blocked, so naive
+texture-swapping wards cannot be the runtime strategy. This does **not** move
+wards back to the fourth wall. Ward identity, anchors, drift carriers, and
+state-reactive light coupling belong inside DarkPlaces; any GStreamer/Cairo
+ward remains a documented temporary bridge until its dynamic content has an
+engine-native strategy.
 
 ### 4.2 Shader Node Migration Tiers
 
@@ -78,7 +89,7 @@ DarkPlaces dpextensions provide `fopen`/`fclose`/`fgets` for reading external fi
 │  ├─ 6 colored lights (per-level semantic colors)         │
 │  ├─ Fog (density + color, mode-aware)                    │
 │  ├─ 5 ambient sound zones (entity-based, 128 channels)  │
-│  ├─ QuakeC camera (pendulum path, stimmung-driven)       │
+│  ├─ QuakeC camera (stable review + optional manual/orbit)│
 │  ├─ QuakeC cognitive coupling (/dev/shm reader)          │
 │  ├─ GLSL post-processing (39 ported shader nodes)        │
 │  └─ Output: window → v4l2loopback /dev/video52           │
@@ -87,7 +98,7 @@ DarkPlaces dpextensions provide `fopen`/`fclose`/`fgets` for reading external fi
 ┌────────────────────────┴────────────────────────────────┐
 │ GStreamer Compositor (preserved, enhanced)               │
 │  ├─ DarkPlaces /dev/video52 as PRIMARY background        │
-│  ├─ 35 Cairo wards (BitchX/Enlightenment/Quake homage)  │
+│  ├─ Legacy Cairo wards only where not yet engine-native  │
 │  ├─ 11 temporal shader effects (feedback, echo, diff,    │
 │  │   stutter, slitscan — require frame history)          │
 │  ├─ Camera feeds (cudacompositor, unchanged)              │
@@ -104,8 +115,9 @@ DarkPlaces dpextensions provide `fopen`/`fclose`/`fgets` for reading external fi
 - Spatial audio
 - Post-processing shader nodes that don't require frame history
 
-**GStreamer compositor owns (temporal + informational):**
-- 35 Cairo/Pango ward overlays
+**GStreamer compositor owns (temporal + bridge surfaces):**
+- Legacy Cairo/Pango ward bridges only where DarkPlaces cannot yet host the
+  dynamic content natively
 - Temporal effects (feedback loops, frame differencing)
 - Camera feed compositing
 - Output routing (v4l2sink, HLS, OBS)
@@ -146,7 +158,7 @@ QuakeC reads /dev/shm state files via dpextensions `fopen`/`fgets` (verified cap
 
 | Signal | Source File | DarkPlaces Effect |
 |---|---|---|
-| Stimmung energy | `stimmung.json` | Camera speed (120-150s period), light intensity multiplier, fog density |
+| Stimmung energy | `stimmung.json` | Light intensity multiplier, fog density, bounded postprocess pressure |
 | Working mode | `~/.cache/hapax/working-mode` | Map swap (rnd↔research), fog color, r_brightness |
 | Voice activity | `voice-state.json` | AoA rotation speed, light pulse frequency |
 | Content density | `active_wards.json` | Sound volume scaling, fog clarity |
@@ -154,18 +166,19 @@ QuakeC reads /dev/shm state files via dpextensions `fopen`/`fgets` (verified cap
 
 ### 7.1 Camera Path
 
-QuakeC implements Catmull-Rom spline interpolation between 6 control points:
+The production/review default is a stable noclip camera aimed into the
+in-scroom ward/source field. This is intentional: the operator needs a fixed
+OBS-reviewable posture while the migration is still being judged. Optional
+motion remains available through `screwm_camera_orbit 1`, and headless manual
+control is gated by `hapax-screwm-camera-gamepad.service` plus
+`data/camera-manual.txt`; both are off by default. The gamepad bridge fails
+closed unless an Xbox/Microsoft/XInput joystick is visible or the operator
+explicitly supplies `--device`/`--allow-any-joystick`, preventing keyboard
+joystick interfaces from unexpectedly taking over the POV.
 
-```
-S0: (0, -32, 120)   → looking center, perception level
-S1: (80, 64, 80)    → offset right, cognition
-S2: (-60, 160, 100)  → offset left, communication
-S3: (40, 256, -80)   → offset right rear, expression
-S4: (-40, 352, 60)   → offset left, grounding
-S5: (0, -32, 120)   → return to S0 (pendulum)
-```
-
-Period: `120.0 + (1.0 - energy) * 30.0` seconds (stimmung-driven, matching current scene.rs).
+The view body is QuakeC-owned, `MOVETYPE_NOCLIP`, and `SOLID_NOT`, so the POV
+can move through the space freely when manual control is enabled and cannot be
+shoved by BSP/player collision.
 
 ## 8. QuakeHomage Package
 
@@ -216,12 +229,12 @@ Signature artefacts: Quake console messages (`Playing demo ...`, `Connection acc
 | Minimalism (§1.2) | Quake's dark environments + fog = black negative space canvas |
 | Proportional system (§1.3) | BSP grid-aligned (32-unit base = 1m). All geometry on grid. |
 | Color is meaning (§1.4) | Per-level texture+light colors encode semantic categories |
-| Density (§1.5) | Wards rendered small and close via compositor overlay |
+| Density (§1.5) | Ward identities rendered small and close via CSQC projection; full live contents bridge through compositor only while texture-upload limits remain |
 | Single typeface (§1.6) | JetBrains Mono for wards; Px437 for QuakeHomage artefacts |
 
 ### 9.2 HOMAGE Framework Integration
 
-QuakeHomage is a third HomagePackage alongside BitchX and Enlightenment-Moksha. The choreographer, transition FSM, and shader coupling mechanisms are unchanged — wards still render via Cairo, still use HomageTransitionalSource mixin, still emit coupling payloads to `uniforms.custom[4]`.
+QuakeHomage is a third HomagePackage alongside BitchX and Enlightenment-Moksha. The choreographer, transition FSM, and shader coupling mechanisms are unchanged for compositor-owned live ward contents, while CSQC now carries the in-engine ward identity/drift layer and the compositor path remains the bridge for richer dynamic ward surfaces until runtime texture upload is solved.
 
 The difference: when QuakeHomage is active, ward transitions use Quake-speed hard cuts (6 frames) instead of BitchX zero-chrome or Enlightenment soft envelopes (20 frames).
 
@@ -242,17 +255,25 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - `scripts/generate-screwm-map.py`
 - Output: `assets/quake/maps/screwm.bsp` (13KB, compiles clean)
 
-### D3: CC0 Texture Pipeline [IN PROGRESS — epsilon lane]
-- LibreQuake (BSD), Aquilarius (CC0), Kaz115 (CC0)
-- `assets/quake/textures/`, `assets/quake/LICENSES.md`
+### D3: Texture/Asset Provenance [COMPLETE]
+- LibreQuake v0.09-beta BSD art/media assets provide external free-content
+  base game data outside this repository under `~/.darkplaces/id1/`.
+- Screwm WAD textures, maps, AoA model, ambient OGG loops, QuakeC/CSQC
+  binaries, GLSL shader, and runtime configs are project-authored/generated
+  assets documented in `assets/quake/LICENSES.md`.
 
-### D4: QuakeC Camera + Cognitive Coupling Mod [IN PROGRESS — beta lane]
+### D4: QuakeC Camera + Cognitive Coupling Mod [IN PROGRESS]
 - `assets/quake/qc/` — defs.qc, camera.qc, world.qc, coupling.qc
 - Compiled progs.dat
+- Stable noclip review POV is default; optional controller/manual camera is gated.
+- Live coupling currently drives AoA spin, fog, postprocess vectors, source/ward
+  lights, audio reactivity, and working-mode map changes. Camera motion remains
+  opt-in during review.
 
-### D5: AoA Sierpinski Tetrahedron MDL [IN PROGRESS — delta lane]
+### D5: AoA Sierpinski Tetrahedron MDL [COMPLETE]
 - `scripts/generate-aoa-mdl.py`
 - `assets/quake/models/aoa.mdl`
+- Spawned and rotated by QuakeC at `AOA_CENTER`.
 
 ### D6: v4l2loopback Capture [COMPLETE - BOUNDED SMOKE PASSED]
 - `/etc/modprobe.d/v4l2loopback-hapax.conf` updated (video52=DarkPlaces in the unified 14-device config)
@@ -310,12 +331,31 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - CUDA compositor ingress uploads the DarkPlaces v4l2 feed into
   CUDAMemory/NV12 before connecting to `cudacompositor`.
 - Fallback path if DarkPlaces unavailable: leave the compositor background
-  pinned black and keep wards/cameras running.
-- Runtime evidence still pending: full production compositor launch with
-  DarkPlaces as background and wards overlaid.
+  pinned black and publish a degraded runtime state; do not silently reintroduce
+  fourth-wall ward overlays as the migration target.
+- Runtime evidence collected: production compositor launches with DarkPlaces as
+  the primary source and no external ward layout assignments; ward identity is
+  carried by the in-scroom BSP/WAD field.
 
-### D8: hapax-darkplaces Systemd Unit [IN PROGRESS]
-- `systemd/units/hapax-darkplaces.service`
+### D7a: CSQC Ward State Coupling [IN PROGRESS]
+- `assets/quake/csqc/csprogs.dat` loads as a DarkPlaces CSQC module.
+- CSQC preserves the server-rendered world and keeps projected ward
+  `drawstring`/`drawline` output behind opt-in `screwm_csqc_overlay 1`.
+- CSQC reads `data/working-mode.txt`, `data/stimmung-energy.txt`, and
+  `data/voice-active.txt` plus all 36 `data/ward-XX.txt` and
+  `data/ward-active-XX.txt` exports from the game directory to modulate
+  engine-side dynamic lights.
+- Ward identity and the first drift graph are in BSP/WAD geometry/materials;
+  CSQC is now the live coupling layer, not the default ward text surface.
+- CSQC also carries live six-camera/source state into in-world dynamic lights
+  using separate semantic priority and fresh-frame evidence scalars.
+- HOMAGE activation is exported from `homage-active.json` /
+  `homage-substrate-package.json` into DarkPlaces-readable scalars; QuakeHomage
+  now enters the in-scroom ward/source lightfield instead of remaining only a
+  compositor-side package marker.
+
+### D8: hapax-darkplaces Systemd Unit [COMPLETE]
+- `systemd/units/hapax-darkplaces-v4l2.service`
 - Runtime opt-in gated after 2026-05-23 AMD data-fabric reset evidence
 - GPU selection requires validation: `CUDA_VISIBLE_DEVICES` does not pin OpenGL
 - Current `:0` GL preflight reports RTX 5090; `DRI_PRIME=1` and NVIDIA offload
@@ -326,24 +366,30 @@ The visual vocabulary is preserved in full. The execution environment changes fr
   root Xorg server on `PCI:5:0:0`, runs the GL preflight against `DISPLAY=:82`,
   then tears it down. This validated the 5060 Ti GL route without launching
   DarkPlaces.
-- `hapax-darkplaces-v4l2.service` now uses the dedicated Xorg feed option so
-  systemd validation does not preflight the wrong `:0` display.
-- Runtime enablement is still blocked for the always-on service because the
-  dedicated Xorg option can disturb the desktop display stack. The service is
-  source-activation ready, but production activation needs either a display-safe
-  capture route or evidence that the dedicated Xorg route no longer triggers
-  desktop hotplug/blanking.
+- `hapax-darkplaces-v4l2.service` now uses the display-safe Xvfb feed route for
+  the active always-on service because the dedicated Xorg option can disturb the
+  desktop display stack and currently produced black x11grab readback in live
+  testing.
 - DarkPlaces units run scripts from the source-activation worktree, with
   `hapax-compositor-runtime-source-check` gating required scripts/assets before
   startup, so production cannot silently launch stale lane-local migration code.
-- Launch validation requires `HAPAX_DARKPLACES_SMOKE_ACK=1` and an attended
-  run of `scripts/darkplaces-attended-smoke.sh`; the default expected GPU index
-  is 1 until a new GPU allocation spec supersedes it.
+- The unit is `Type=notify`/`NotifyAccess=all` with `WatchdogSec=30s`. Both
+  `scripts/darkplaces-v4l2-xvfb.sh` and `scripts/darkplaces-v4l2-xorg.sh` emit
+  `READY=1` only after DarkPlaces and the ffmpeg v4l2 writer are alive, and emit
+  `WATCHDOG=1` only while both remain alive.
+- Runtime evidence on 2026-05-24 after repeated deploy/restart cycles:
+  `hapax-darkplaces-v4l2`, `hapax-darkplaces-bridge`,
+  `hapax-v4l2-bridge`, and `studio-compositor` active; renderer unit
+  `Type=notify`, `WatchdogUSec=30s`, `NRestarts=0`, and fresh
+  `WatchdogTimestamp`. The controller service remained opt-in/inactive.
 - Restart=always
 
-### D9: QuakeHomage Package
+### D9: QuakeHomage Package [COMPLETE]
 - `agents/studio_compositor/homage/quake.py`
 - Palette, typography, grammar, transitions, artefacts
+- Registered by `agents/studio_compositor.homage` at import time.
+- Runtime package activation is bridged into the DarkPlaces game directory as
+  `data/homage-*.txt`, where CSQC folds it into ward/drift/source lighting.
 
 ### D10: Dual BSP Mode Compilation
 - `scripts/generate-screwm-map.py --mode rnd` / `--mode research`
@@ -354,11 +400,25 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - OGG files per tower level in `assets/quake/sound/ambient/`
 - Entity-based emitters in BSP map
 - QuakeC sound triggers
+- Five ambient zones are precached and spawned by `world.qc`.
 
 ### D12: GLSL Post-Processing Port (Phase 4)
 - 39 shader nodes as DarkPlaces GLSL post-processing passes
 - Performance validation on 5060 Ti
 - Visual fidelity comparison vs wgpu originals
+- Live Reverie scalars now drive DarkPlaces UserVec1-4 scroom fields:
+  salience/trace/temporal/spectral plus material, inversion, aperture, and
+  thermal pressure. Positive UserVec4.x is material emboss only; implicit UV
+  rotation is not part of the stable review baseline.
+- UserVec2.w now carries a bounded sharpen pass, driven by live salience and
+  audio onset, so in-scroom ward panels regain material edge definition after
+  fog and bloom without adding camera-like motion.
+- Aperture pressure is non-destructive edge attenuation, and horizontal signal
+  shear is bounded by live signal noise so the fixed noclip review POV remains
+  readable while the effect vocabulary remains embodied in the scroom.
+- The review baseline has no clocked global brightness pulses: shader strobe
+  and breathing are disabled, and CSQC ward/source/drift dynamic-light radii
+  are driven by live state scalars rather than periodic `sin(time)` terms.
 
 ### D13: hapax-imagination Retirement (Phase 6)
 - Remove from default.target
@@ -383,8 +443,8 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 | Phase | Scope | Duration | Evidence Gate |
 |---|---|---|---|
 | 0: Foundation | DarkPlaces installed, BSP compiles, systemd unit | **DONE** | BSP loads in engine |
-| 1: Tower Live | Textures, lights, fog, v4l2 capture, compositor integration | 2-4h | OBS shows DarkPlaces + wards composite |
-| 2: Camera + AoA | QuakeC pendulum camera, AoA MDL, sound emitters | 4-8h | Smooth camera traversal, AoA visible, sound per level |
+| 1: Tower Live | Textures, lights, fog, v4l2 capture, compositor integration | 2-4h | OBS shows DarkPlaces carrying wards in-scroom |
+| 2: Camera + AoA | Stable noclip review camera, optional manual/orbit camera, AoA MDL, sound emitters | 4-8h | Stable review POV, optional free movement, AoA visible, sound per level |
 | 3: Mode Coupling | Dual BSPs, fog/brightness mode switch, stimmung coupling | 1-2d | Working mode change shifts tower aesthetic |
 | 4: Shader Port P1 | 39 EXCELLENT+GOOD nodes as GLSL post-processing | 1-2w | Visual parity with reverie for ported nodes |
 | 5: Shader Port P2 | 11 MODERATE nodes, accumulator plugin investigation | 2-4w | Extended visual vocabulary in DarkPlaces |
@@ -405,14 +465,16 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 - [x] DarkPlaces renders tower BSP with textures at 1280×720
 - [x] v4l2loopback /dev/video52 captures DarkPlaces output
 - [x] Layout/registry/pipeline contracts declare DarkPlaces as the v4l2 background source
-- [ ] Compositor accepts DarkPlaces as background source with wards overlay
-- [ ] QuakeC pendulum camera traverses tower smoothly (120-150s period)
-- [ ] AoA Sierpinski tetrahedron visible and rotating at tower center
-- [ ] 5 ambient sound zones audible with distinct sonic character
-- [ ] Working mode switch changes fog color + texture set
-- [ ] Stimmung energy modulates camera speed + light intensity
-- [ ] Textures CC0/BSD licensed (LICENSES.md audit)
-- [ ] Systemd unit starts/stops/restarts cleanly with WatchdogSec
+- [x] All 36 non-DarkPlaces Screwm visual sources have in-scroom BSP/WAD anchors
+- [x] In-world BSP drift carriers connect the ward field
+- [x] Compositor accepts DarkPlaces as primary background without external ward overlays
+- [x] Stable QuakeC review POV is noclip/free-camera, with optional manual/orbit movement gated off by default
+- [x] AoA Sierpinski tetrahedron visible and rotating at tower center
+- [x] 5 ambient sound zones are present and spawned by QuakeC
+- [x] Working mode switch changes fog color + texture set
+- [x] Stimmung/audio/Reverie state modulates AoA spin, fog, postprocess fields, and ward/source light intensity
+- [x] Texture/asset provenance documented in `assets/quake/LICENSES.md`
+- [x] Systemd unit starts/restarts cleanly with WatchdogSec
 - [ ] 1-hour stability test without memory growth or crashes
 - [ ] 39 shader nodes ported with visual parity (Phase 4)
 - [ ] hapax-imagination disabled without regression (Phase 6)

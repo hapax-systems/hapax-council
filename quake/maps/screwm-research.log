@@ -1,0 +1,98 @@
+---- qbsp / ericw-tools 2.0.0-alpha10-87-g97795db8 ----
+
+--- Options Summary ---
+
+Input file: /home/hapax/projects/hapax-council--cx-alpha/assets/quake/maps/screwm-research.map
+Output file: /home/hapax/projects/hapax-council--cx-alpha/assets/quake/maps/screwm-research.bsp
+
+INFO: using built-in palette.
+      151 entities
+       71 unique textures
+      211 texinfos
+    1,818 unique planes
+
+INFO: world extents calculated to 1920 units
+      558 brushes
+    3,348 sides
+
+            0 texture frames added
+WARNING: unable to find texture skip
+Processing hull 0...
+    558 SOLID brushes
+    558 brushes total
+    3,348 visible sides
+INFO: calculating BSP for 558 brushes with 3348 sides
+      558 brushes
+    3,348 visible faces
+    6,871 nodes
+    6,440 expensive split nodes
+      431 mid-split nodes
+    6,872 leaves
+    3,104 SOLID leafs
+    3,768 EMPTY leafs
+    6,872 leafs total
+    34 max tree height
+    16 avg tree height
+    32,876 tree portals
+    543 outside leaves
+    0 detail filled leafs
+      558 brushes
+    3,305 visible faces
+       43 non-visible faces
+    3,763 nodes
+      146 non-visible nodes
+    3,763 expensive split nodes
+    3,764 leaves
+    1,941 SOLID leafs
+    1,823 EMPTY leafs
+    3,764 leafs total
+    37 max tree height
+    17 avg tree height
+    18,392 tree portals
+    140 outside leaves
+    0 detail filled leafs
+    18,392 tree portals
+    14,768 sides visible
+    7,384 makefaces
+    2,741 merged
+      324 subdivided
+    799 nodes pruned
+    1,683 player-occupiable leaves
+    1,683 clusters of leaves
+    7,709 vis portals
+    1,683 EMPTY leafs
+    1,282 SOLID leafs
+    2,965 leafs total
+    37 max tree height
+    16 avg tree height
+     3,670 edges added by tjunctions
+     4,967 faces optimized through MWT
+    13,604 triangles computed from MWT
+     1,118 faces created via optimization of MWT triangles
+    12,889 edges
+     6,085 faces
+Processing hull 1...
+Processing hull 2...
+Writing /home/hapax/projects/hapax-council--cx-alpha/assets/quake/maps/screwm-research.bsp as Quake BSP bsp29
+Wrote /home/hapax/projects/hapax-council--cx-alpha/assets/quake/maps/screwm-research.bsp
+
+count   lump name    byte size 
+      1 models               64
+   1490 planes            29800
+   6882 vertexes          82584
+   2964 nodes             71136
+    210 texinfos           8400
+   6085 faces            121700
+   7136 clipnodes         57088
+   1684 leafs             47152
+   7126 marksurfaces      14252
+  12890 edges             51560
+  25774 surfedges        103096
+     71 textures         383888
+        lightdata             0
+        visdata               0
+        entdata           13069
+
+1.188s seconds elapsed
+
+

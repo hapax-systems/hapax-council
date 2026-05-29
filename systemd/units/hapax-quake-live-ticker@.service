@@ -1,0 +1,17 @@
+[Unit]
+Description=Hapax Quake in-world ticker live texture source (%i)
+After=graphical-session.target
+PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/config/quake-live-tickers/%i.env
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+EnvironmentFile=%h/.cache/hapax/source-activation/worktree/config/quake-live-tickers/%i.env
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/quake-live-ticker-source.py --ticker-role ${HAPAX_QUAKE_TICKER_ROLE} --intent-path ${HAPAX_QUAKE_TICKER_INTENT_PATH} --output ${HAPAX_QUAKE_TICKER_OUTPUT} --meta ${HAPAX_QUAKE_TICKER_META} --width ${HAPAX_QUAKE_TICKER_WIDTH} --height ${HAPAX_QUAKE_TICKER_HEIGHT} --fps ${HAPAX_QUAKE_TICKER_FPS} --preflip-y ${HAPAX_QUAKE_TICKER_PREFLIP_Y}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=hapax-visual-stack.target
