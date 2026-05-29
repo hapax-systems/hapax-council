@@ -405,6 +405,8 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         stimmung_state_file=stimmung_state_file,
         visual_chain_state_file=visual_chain_state_file,
         effect_drift_state_file=effect_drift_state_file,
+        visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
+        effect_drift_fallback_state_file=tmp_path / "missing-effect-drift-fallback.json",
         now=120.0,
     )
 
@@ -633,6 +635,13 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
     assert (game_dir / "effect-drift-route.txt").read_text(
         encoding="utf-8"
     ).strip() == "IN_SCROOM_EFFECT_DRIFT_STATE"
+    assert (game_dir / "effect-drift-source.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "primary-stale-or-noncanonical"
+    assert (game_dir / "effect-drift-real-source.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "0.0000"
+    assert (game_dir / "visual-chain-source.txt").read_text(encoding="utf-8").strip() == "canonical"
     assert len(list(game_dir.glob("visual-chain-[0-9][0-9].txt"))) == 9
     assert (game_dir / "imagination-salience.txt").read_text(encoding="utf-8").strip() == "0.7000"
     assert (game_dir / "imagination-continuation.txt").read_text(
@@ -839,7 +848,11 @@ def test_darkplaces_state_export_builds_visual_chain_and_effect_drift_scalars(
         },
     )
 
-    lines = exporter.build_visual_chain_lines(visual_chain_state_file, effect_drift_state_file)
+    lines = exporter.build_visual_chain_lines(
+        visual_chain_state_file,
+        effect_drift_state_file,
+        effect_drift_fallback_state_file=tmp_path / "missing-effect-drift-fallback.json",
+    )
 
     assert (
         len([key for key in lines if key.startswith("visual-chain-") and key[13:15].isdigit()]) == 9
@@ -861,7 +874,280 @@ def test_darkplaces_state_export_builds_visual_chain_and_effect_drift_scalars(
     assert lines["effect-drift-atmospheric.txt"] == "0.0000"
     assert lines["effect-drift-temporal.txt"] == "0.2000"
     assert lines["effect-drift-edge.txt"] == "0.0000"
+    assert lines["effect-drift-mode-tonal.txt"] == "0.1000"
+    assert lines["effect-drift-mode-temporal.txt"] == "0.9800"
     assert lines["effect-drift-route.txt"] == "IN_SCROOM_EFFECT_DRIFT_STATE"
+    assert lines["effect-drift-source.txt"] == "primary-stale-or-noncanonical"
+    assert lines["effect-drift-real-source.txt"] == "0.0000"
+    assert lines["visual-chain-source.txt"] == "canonical"
+
+
+def test_darkplaces_state_export_covers_all_effect_drift_families(tmp_path: Path) -> None:
+    exporter = _load_exporter()
+    visual_chain_state_file = tmp_path / "visual-chain-state.json"
+    effect_drift_state_file = tmp_path / "effect-drift-state.json"
+    _write_json(visual_chain_state_file, {"levels": {}, "params": {}})
+    _write_json(
+        effect_drift_state_file,
+        {
+            "passes": [
+                {"node_id": "colorgrade", "non_neutral": True, "max_delta": 7.0},
+                {"node_id": "fisheye", "non_neutral": True, "max_delta": 6.0},
+                {"node_id": "trail", "non_neutral": True, "max_delta": 5.0},
+                {"node_id": "scanlines", "non_neutral": True, "max_delta": 4.0},
+                {"node_id": "edge_detect", "non_neutral": True, "max_delta": 3.0},
+                {"node_id": "blend", "non_neutral": True, "max_delta": 2.0},
+            ],
+            "pass_count": 6,
+            "non_neutral_pass_count": 6,
+        },
+    )
+
+    lines = exporter.build_visual_chain_lines(
+        visual_chain_state_file,
+        effect_drift_state_file,
+        effect_drift_fallback_state_file=tmp_path / "missing-effect-drift-fallback.json",
+    )
+
+    assert lines["effect-drift-tonal.txt"] == "0.7000"
+    assert lines["effect-drift-atmospheric.txt"] == "0.6000"
+    assert lines["effect-drift-temporal.txt"] == "0.5000"
+    assert lines["effect-drift-texture.txt"] == "0.4000"
+    assert lines["effect-drift-edge.txt"] == "0.3000"
+    assert lines["effect-drift-compositing.txt"] == "0.2000"
+    assert lines["effect-drift-mode-tonal.txt"] == "0.1000"
+    assert lines["effect-drift-mode-atmospheric.txt"] == "0.4800"
+    assert lines["effect-drift-mode-temporal.txt"] == "0.1500"
+    assert lines["effect-drift-mode-texture.txt"] == "0.4400"
+    assert lines["effect-drift-mode-edge.txt"] == "0.2000"
+    assert lines["effect-drift-mode-compositing.txt"] == "0.2000"
+
+
+def test_darkplaces_state_export_routes_real_slotdrift_through_full_family_vector(
+    tmp_path: Path,
+) -> None:
+    exporter = _load_exporter()
+    visual_chain_state_file = tmp_path / "visual-chain-state.json"
+    effect_drift_state_file = tmp_path / "effect-drift-state.json"
+    _write_json(visual_chain_state_file, {"levels": {}, "params": {}})
+    _write_json(
+        effect_drift_state_file,
+        {
+            "source_presence": {"main": True},
+            "slotdrift_coverage": {"covered": 1.0},
+            "passes": [
+                {"node_id": "colorgrade", "non_neutral": True, "max_delta": 7.0},
+                {"node_id": "fisheye", "non_neutral": True, "max_delta": 6.0},
+                {"node_id": "trail", "non_neutral": True, "max_delta": 5.0},
+                {"node_id": "scanlines", "non_neutral": True, "max_delta": 4.0},
+                {"node_id": "edge_detect", "non_neutral": True, "max_delta": 3.0},
+                {"node_id": "blend", "non_neutral": True, "max_delta": 2.0},
+            ],
+            "pass_count": 6,
+            "non_neutral_pass_count": 6,
+        },
+    )
+
+    lines = exporter.build_visual_chain_lines(
+        visual_chain_state_file,
+        effect_drift_state_file,
+        effect_drift_fallback_state_file=tmp_path / "missing-effect-drift-fallback.json",
+        now=15.0,
+    )
+
+    assert lines["effect-drift-source.txt"] == "slotdrift"
+    assert lines["effect-drift-active-ratio.txt"] == "0.6480"
+    assert lines["effect-drift-texture.txt"] == "0.4000"
+    assert lines["effect-drift-edge.txt"] == "0.3000"
+    assert lines["effect-drift-compositing.txt"] == "0.2000"
+    assert lines["effect-drift-tonal.txt"] == "0.7000"
+    assert lines["effect-drift-atmospheric.txt"] == "0.6000"
+    assert lines["effect-drift-temporal.txt"] == "0.5000"
+
+
+def test_darkplaces_state_export_rejects_fail_closed_slotdrift(
+    tmp_path: Path,
+) -> None:
+    exporter = _load_exporter()
+    visual_chain_state_file = tmp_path / "visual-chain-state.json"
+    effect_drift_state_file = tmp_path / "effect-drift-state.json"
+    fallback_effect_drift_state_file = tmp_path / "screwm-effect-drift-fallback-state.json"
+    _write_json(visual_chain_state_file, {"levels": {}, "params": {}})
+    _write_json(
+        effect_drift_state_file,
+        {
+            "source_presence": {
+                "visible_source_count": 0,
+                "minimum_effect_source_count": 4,
+                "fail_closed": True,
+            },
+            "slotdrift_coverage": {"covered": 1.0},
+            "pass_count": 1,
+            "non_neutral_pass_count": 1,
+            "passes": [{"node_id": "blend", "non_neutral": True, "max_delta": 9.0}],
+        },
+    )
+    _write_json(
+        fallback_effect_drift_state_file,
+        {
+            "source_presence": "synthetic-fallback-live-state-only",
+            "fallback_state": True,
+            "slotdrift_coverage": "six-family-baseline-fast-slow-eviction",
+            "pass_count": 1,
+            "non_neutral_pass_count": 1,
+            "passes": [{"node_id": "particle_system", "non_neutral": True, "max_delta": 5.0}],
+        },
+    )
+
+    lines = exporter.build_visual_chain_lines(
+        visual_chain_state_file,
+        effect_drift_state_file,
+        effect_drift_fallback_state_file=fallback_effect_drift_state_file,
+    )
+
+    assert lines["effect-drift-source.txt"] == "synthetic-fallback"
+    assert lines["effect-drift-real-source.txt"] == "0.0000"
+    assert lines["effect-drift-compositing.txt"] == "0.0000"
+    assert lines["effect-drift-texture.txt"] == "0.5000"
+    assert lines["effect-drift-mode-texture.txt"] == "0.9600"
+
+
+def test_darkplaces_state_export_prefers_fresh_real_slotdrift_over_fallback(
+    tmp_path: Path,
+) -> None:
+    exporter = _load_exporter()
+    visual_chain_state_file = tmp_path / "visual-chain-state.json"
+    effect_drift_state_file = tmp_path / "effect-drift-state.json"
+    fallback_effect_drift_state_file = tmp_path / "screwm-effect-drift-fallback-state.json"
+    _write_json(
+        visual_chain_state_file,
+        {"levels": {"visual_chain.intensity": 0.4}, "params": {"drift.amplitude": 0.3}},
+    )
+    _write_json(
+        effect_drift_state_file,
+        {
+            "source_presence": {"main": True},
+            "slotdrift_coverage": {"covered": 1.0},
+            "pass_count": 1,
+            "non_neutral_pass_count": 1,
+            "passes": [
+                {"node_id": "blend", "non_neutral": True, "max_delta": 7.0},
+            ],
+        },
+    )
+    _write_json(
+        fallback_effect_drift_state_file,
+        {
+            "source_presence": "synthetic-fallback-live-state-only",
+            "slotdrift_coverage": "six-family-baseline-fast-slow-eviction",
+            "pass_count": 1,
+            "non_neutral_pass_count": 1,
+            "passes": [
+                {"node_id": "scanlines", "non_neutral": True, "max_delta": 1.0},
+            ],
+        },
+    )
+
+    lines = exporter.build_visual_chain_lines(
+        visual_chain_state_file,
+        effect_drift_state_file,
+        effect_drift_fallback_state_file=fallback_effect_drift_state_file,
+    )
+
+    assert lines["effect-drift-source.txt"] == "slotdrift"
+    assert lines["effect-drift-real-source.txt"] == "1.0000"
+    assert lines["effect-drift-compositing.txt"] == "0.7000"
+    assert lines["effect-drift-mode-compositing.txt"] == "0.2000"
+    assert lines["effect-drift-texture.txt"] == "0.0000"
+
+
+def test_darkplaces_state_export_does_not_replace_recent_slotdrift_with_synthetic_fallback(
+    tmp_path: Path,
+) -> None:
+    exporter = _load_exporter()
+    visual_chain_state_file = tmp_path / "visual-chain-state.json"
+    effect_drift_state_file = tmp_path / "effect-drift-state.json"
+    fallback_effect_drift_state_file = tmp_path / "screwm-effect-drift-fallback-state.json"
+    _write_json(visual_chain_state_file, {"levels": {}, "params": {}})
+    _write_json(
+        effect_drift_state_file,
+        {
+            "source_presence": {"main": True},
+            "slotdrift_coverage": {"covered": 1.0},
+            "pass_count": 1,
+            "non_neutral_pass_count": 1,
+            "passes": [{"node_id": "blend", "non_neutral": True, "max_delta": 6.0}],
+        },
+    )
+    _write_json(
+        fallback_effect_drift_state_file,
+        {
+            "source_presence": "synthetic-fallback-live-state-only",
+            "fallback_state": True,
+            "slotdrift_coverage": "six-family-baseline-fast-slow-eviction",
+            "pass_count": 1,
+            "non_neutral_pass_count": 1,
+            "passes": [{"node_id": "scanlines", "non_neutral": True, "max_delta": 2.0}],
+        },
+    )
+    os.utime(effect_drift_state_file, (180.0, 180.0))
+    os.utime(fallback_effect_drift_state_file, (200.0, 200.0))
+
+    lines = exporter.build_visual_chain_lines(
+        visual_chain_state_file,
+        effect_drift_state_file,
+        effect_drift_fallback_state_file=fallback_effect_drift_state_file,
+        now=220.0,
+    )
+
+    assert lines["effect-drift-source.txt"] == "slotdrift"
+    assert lines["effect-drift-real-source.txt"] == "1.0000"
+    assert lines["effect-drift-compositing.txt"] == "0.6000"
+    assert lines["effect-drift-mode-compositing.txt"] == "0.2000"
+    assert lines["effect-drift-texture.txt"] == "0.0000"
+
+
+def test_darkplaces_state_export_uses_named_synthetic_fallback_when_primary_is_not_slotdrift(
+    tmp_path: Path,
+) -> None:
+    exporter = _load_exporter()
+    visual_chain_state_file = tmp_path / "visual-chain-state.json"
+    effect_drift_state_file = tmp_path / "effect-drift-state.json"
+    fallback_effect_drift_state_file = tmp_path / "screwm-effect-drift-fallback-state.json"
+    _write_json(visual_chain_state_file, {"levels": {}, "params": {}})
+    _write_json(
+        effect_drift_state_file,
+        {
+            "source_presence": "legacy-live-state-only",
+            "slotdrift_coverage": "not-canonical",
+            "passes": [{"node_id": "blend", "non_neutral": True, "max_delta": 7.0}],
+            "pass_count": 1,
+            "non_neutral_pass_count": 1,
+        },
+    )
+    _write_json(
+        fallback_effect_drift_state_file,
+        {
+            "source_presence": "synthetic-fallback-live-state-only",
+            "fallback_state": True,
+            "slotdrift_coverage": "six-family-baseline-fast-slow-eviction",
+            "passes": [{"node_id": "scanlines", "non_neutral": True, "max_delta": 5.0}],
+            "pass_count": 1,
+            "non_neutral_pass_count": 1,
+        },
+    )
+
+    lines = exporter.build_visual_chain_lines(
+        visual_chain_state_file,
+        effect_drift_state_file,
+        effect_drift_fallback_state_file=fallback_effect_drift_state_file,
+    )
+
+    assert lines["effect-drift-source.txt"] == "synthetic-fallback"
+    assert lines["effect-drift-real-source.txt"] == "0.0000"
+    assert lines["effect-drift-texture.txt"] == "0.5000"
+    assert lines["effect-drift-mode-texture.txt"] == "0.4400"
+    assert lines["effect-drift-compositing.txt"] == "0.0000"
 
 
 def test_darkplaces_state_export_builds_imagination_intent_scalars(
@@ -914,7 +1200,7 @@ def test_darkplaces_state_export_normalizes_all_in_scroom_ward_activity() -> Non
         {
             "ward_ids": [
                 "album_overlay",
-                "sierpinski",
+                "aoa_oarb_state",
                 "activity_header",
                 "coding-session-reveal",
                 "programme-banner",
@@ -933,6 +1219,37 @@ def test_darkplaces_state_export_normalizes_all_in_scroom_ward_activity() -> Non
     assert lines["ward-active-21.txt"] == "1.0000"
     assert lines["ward-active-36.txt"] == "1.0000"
     assert lines["ward-active-01.txt"] == "0.0000"
+
+    layout_lines = exporter.build_ward_activity_lines(
+        {"active_ward_ids": ["programme_banner", "cbip-dual-ir-displacement"]}
+    )
+
+    assert layout_lines["ward-active-21.txt"] == "1.0000"
+    assert layout_lines["ward-active-36.txt"] == "1.0000"
+    assert layout_lines["ward-active-01.txt"] == "0.0000"
+
+
+def test_darkplaces_state_export_falls_back_to_current_layout_active_wards(
+    tmp_path: Path,
+) -> None:
+    exporter = _load_exporter()
+    shm_dir = tmp_path / "shm"
+    shm_dir.mkdir()
+
+    _write_json(
+        shm_dir / "current-layout-state.json",
+        {"active_ward_ids": ["programme_banner", "segment_content"]},
+    )
+
+    active_wards = exporter._active_wards_with_layout_fallback(shm_dir)
+    lines = exporter.build_ward_activity_lines(active_wards)
+    ward_lines = exporter.build_ward_lines(shm_dir)
+
+    assert active_wards["ward_ids"] == ["programme_banner", "segment_content"]
+    assert lines["ward-active-21.txt"] == "1.0000"
+    assert lines["ward-active-34.txt"] == "1.0000"
+    assert lines["ward-active-01.txt"] == "0.0000"
+    assert "PROGRAMME_BANNER SEGMENT_CONTENT" in ward_lines["06"]
 
 
 def test_darkplaces_state_export_writes_camera_source_scalars(tmp_path: Path) -> None:
@@ -970,6 +1287,30 @@ def test_darkplaces_state_export_writes_camera_source_scalars(tmp_path: Path) ->
     assert lines["source-fresh-01.txt"] == "1.0000"
     assert lines["source-fresh-05.txt"] == "0.0000"
     assert lines["source-fresh-06.txt"] == "0.0000"
+
+
+def test_darkplaces_state_export_reads_quake_live_camera_freshness(tmp_path: Path) -> None:
+    exporter = _load_exporter()
+    shm_dir = tmp_path / "shm"
+    sources_dir = tmp_path / "sources"
+    shm_dir.mkdir()
+    sources_dir.mkdir()
+    _write_json(
+        shm_dir / "camera-classifications.json",
+        {
+            "brio-operator": {"ambient_priority": 7},
+            "brio-room": {"ambient_priority": 3},
+        },
+    )
+    _write_json(
+        shm_dir / "quake-live-cam-brio-room.json",
+        {"updated_at": 98.0, "fps": 10, "drift_changed": True},
+    )
+
+    lines = exporter.build_source_lines(shm_dir, sources_dir, now=100.0)
+
+    assert lines["source-fresh-01.txt"] == "0.0000"
+    assert lines["source-fresh-02.txt"] == "1.0000"
 
 
 def test_darkplaces_state_export_builds_content_source_manifest_scalars(
@@ -1069,7 +1410,7 @@ def test_darkplaces_state_export_builds_aoa_pane_binding_scalars(tmp_path: Path)
                 "token_pole",
                 "album",
                 "stream_overlay",
-                "sierpinski",
+                "aoa_oarb_state",
                 "reverie",
                 "activity_header",
                 "stance_indicator",

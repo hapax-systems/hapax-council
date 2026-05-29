@@ -1,0 +1,16 @@
+[Unit]
+Description=Hapax Screwm drift state source for DarkPlaces hybrid runtime
+After=graphical-session.target hapax-reverie.service
+PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/screwm-drift-state-source.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/screwm-drift-state-source.py --fps 1 --effect-drift /dev/shm/hapax-visual/screwm-effect-drift-fallback-state.json
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=hapax-visual-stack.target hapax-darkplaces-v4l2.service

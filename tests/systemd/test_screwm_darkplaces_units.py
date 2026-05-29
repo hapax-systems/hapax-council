@@ -16,6 +16,21 @@ def test_darkplaces_v4l2_service_remains_runtime_guarded_and_uses_visible_xvfb_r
 
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in body
     assert "Wants=hapax-screwm-camera-gamepad.service" in body
+    assert "hapax-screwm-drift-state-source.service" in body
+    assert "hapax-screwm-imagination-source-publisher.service" in body
+    assert "hapax-darkplaces-bridge.service" in body
+    assert "hapax-quake-live-youtube.service" in body
+    assert "hapax-quake-live-ward-atlas.service" in body
+    assert "hapax-quake-live-reverie.service" in body
+    for role in (
+        "brio-operator",
+        "brio-room",
+        "brio-synths",
+        "c920-desk",
+        "c920-room",
+        "c920-overhead",
+    ):
+        assert f"hapax-quake-live-camera@{role}.service" in body
     assert "Type=notify" in body
     assert "NotifyAccess=all" in body
     assert "WatchdogSec=30s" in body
@@ -49,6 +64,170 @@ def test_darkplaces_launchers_use_native_xbox_joystick_input() -> None:
         assert "+joy_sensitivityforward -1" in body
         assert "+joy_deadzoneforward 0.12" in body
         assert "+cl_forwardspeed 360" in body
+
+
+def test_darkplaces_launchers_ensure_persistent_live_texture_binary() -> None:
+    ensure = (SCRIPTS_DIR / "ensure-darkplaces-live-texture-build.sh").read_text(encoding="utf-8")
+
+    assert "HAPAX_DARKPLACES_LIVE_TEXTURE_ROOT" in ensure
+    assert "assets/quake/darkplaces/hapax-live-texture.patch" in ensure
+    assert "$HOME/.cache/hapax/darkplaces-live-texture" in ensure
+    assert "make -C" in ensure
+    assert "sdl-release" in ensure
+    assert "patch_sha256=" in ensure
+
+    for launcher in ("darkplaces-v4l2-xvfb.sh", "darkplaces-v4l2-xorg.sh"):
+        body = (SCRIPTS_DIR / launcher).read_text(encoding="utf-8")
+        assert 'DARKPLACES_BIN="${HAPAX_DARKPLACES_BIN:-}"' in body
+        assert "resolve_darkplaces_bin()" in body
+        assert "ensure-darkplaces-live-texture-build.sh" in body
+        assert 'DARKPLACES_BIN="$(resolve_darkplaces_bin)"' in body
+
+
+def test_darkplaces_launchers_bind_youtube_camera_and_ward_atlas_textures() -> None:
+    autoexec = (REPO_ROOT / "assets" / "quake" / "config" / "autoexec.cfg").read_text(
+        encoding="utf-8"
+    )
+    for body in (
+        autoexec,
+        (SCRIPTS_DIR / "darkplaces-v4l2-xvfb.sh").read_text(encoding="utf-8"),
+        (SCRIPTS_DIR / "darkplaces-v4l2-xorg.sh").read_text(encoding="utf-8"),
+    ):
+        assert "hapax_live_texture_enable 1" in body or "+hapax_live_texture_enable 1" in body
+        assert "hapax_live_texture_name progs/aoa_sphere.mdl_0" in body or (
+            "+hapax_live_texture_name progs/aoa_sphere.mdl_0" in body
+        )
+        assert "quake-live-yt.bgra" in body
+        assert "hapax_live_texture_width 2048" in body or "+hapax_live_texture_width 2048" in body
+        assert "hapax_live_texture_height 1024" in body or "+hapax_live_texture_height 1024" in body
+        for slot, texture, frame in (
+            ("2", "cam_bop", "quake-live-cam-brio-operator.bgra"),
+            ("3", "cam_brm", "quake-live-cam-brio-room.bgra"),
+            ("4", "cam_bsy", "quake-live-cam-brio-synths.bgra"),
+            ("5", "cam_cdk", "quake-live-cam-c920-desk.bgra"),
+            ("6", "cam_crm", "quake-live-cam-c920-room.bgra"),
+            ("7", "cam_cov", "quake-live-cam-c920-overhead.bgra"),
+        ):
+            prefix = f"hapax_live_texture{slot}"
+            assert f"{prefix}_enable 1" in body or f"+{prefix}_enable 1" in body
+            assert f"{prefix}_name {texture}" in body or f"+{prefix}_name {texture}" in body
+            assert frame in body
+            assert f"{prefix}_width 1280" in body or f"+{prefix}_width 1280" in body
+            assert f"{prefix}_height 720" in body or f"+{prefix}_height 720" in body
+        assert "hapax_live_texture8_enable 1" in body or "+hapax_live_texture8_enable 1" in body
+        assert "hapax_live_texture8_name ward_atlas" in body or (
+            "+hapax_live_texture8_name ward_atlas" in body
+        )
+        assert "quake-live-ward-atlas.bgra" in body
+        assert "hapax_live_texture8_width 2048" in body or "+hapax_live_texture8_width 2048" in body
+        assert (
+            "hapax_live_texture8_height 2304" in body or "+hapax_live_texture8_height 2304" in body
+        )
+        for slot, texture, frame in (
+            ("9", "w09", "quake-live-ticker-grounding.bgra"),
+            ("10", "w22", "quake-live-ticker-precedent.bgra"),
+            ("11", "w27", "quake-live-ticker-chronicle.bgra"),
+        ):
+            prefix = f"hapax_live_texture{slot}"
+            assert f"{prefix}_enable 1" in body or f"+{prefix}_enable 1" in body
+            assert f"{prefix}_name {texture}" in body or f"+{prefix}_name {texture}" in body
+            assert frame in body
+            assert f"{prefix}_width 1344" in body or f"+{prefix}_width 1344" in body
+            assert f"{prefix}_height 176" in body or f"+{prefix}_height 176" in body
+        assert "hapax_live_texture12_enable 1" in body or "+hapax_live_texture12_enable 1" in body
+        assert "hapax_live_texture12_name w05" in body or "+hapax_live_texture12_name w05" in body
+        assert "quake-live-reverie.bgra" in body
+        assert "hapax_live_texture12_width 960" in body or "+hapax_live_texture12_width 960" in body
+        assert (
+            "hapax_live_texture12_height 540" in body or "+hapax_live_texture12_height 540" in body
+        )
+
+
+def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() -> None:
+    youtube = _read("hapax-quake-live-youtube.service")
+    camera = _read("hapax-quake-live-camera@.service")
+    atlas = _read("hapax-quake-live-ward-atlas.service")
+    reverie = _read("hapax-quake-live-reverie.service")
+
+    assert "PartOf=hapax-visual-stack.target" in youtube
+    assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in youtube
+    assert "scripts/quake-live-media-source.py --source youtube" in youtube
+    assert "--url-file /dev/shm/hapax-compositor/youtube-video-id.txt" in youtube
+    assert "--youtube-fallback canary" in youtube
+    assert "--fps 10 --width 2048 --height 1024 --projection sphere-front" in youtube
+    assert "--sphere-front-aspect 1.7777777778" in youtube
+    assert "--mask none --mask-background 0c0b0d" in youtube
+    assert "--freshness-overlay" not in youtube
+    assert "--output /dev/shm/hapax-compositor/quake-live-yt.bgra" in youtube
+    assert "--meta /dev/shm/hapax-compositor/quake-live-yt.json" in youtube
+    assert "Restart=always" in youtube
+
+    assert "PartOf=hapax-visual-stack.target" in camera
+    assert "PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service" in camera
+    assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in camera
+    assert "config/quake-live-cameras/%i.env" in camera
+    assert "scripts/quake-live-media-source.py --source camera" in camera
+    assert "--camera-role %i" in camera
+    assert "--output ${HAPAX_QUAKE_LIVE_TEXTURE_OUTPUT}" in camera
+    assert "--meta ${HAPAX_QUAKE_LIVE_TEXTURE_META}" in camera
+    assert "Restart=always" in camera
+
+    assert "PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service" in atlas
+    assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in atlas
+    assert ".venv/bin/python %h/.cache/hapax/source-activation/worktree/" in atlas
+    assert "scripts/quake-live-ward-atlas-source.py" in atlas
+    assert "--width 2048 --height 2304 --columns 4" in atlas
+    assert "--fps 0.5" in atlas
+    assert "--cell-width 512 --cell-height 256" in atlas
+    assert "--drift on --drift-intensity 1.6" in atlas
+    assert "--output /dev/shm/hapax-compositor/quake-live-ward-atlas.bgra" in atlas
+    assert "--meta /dev/shm/hapax-compositor/quake-live-ward-atlas.json" in atlas
+    assert "Restart=always" in atlas
+
+    assert "PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service" in reverie
+    assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in reverie
+    assert "--require-file scripts/quake-live-reverie-source.py" in reverie
+    assert "--require-file scripts/quake_media_drift.py" in reverie
+    assert "scripts/quake-live-reverie-source.py --fps 15 --width 960 --height 540" in reverie
+    assert "--input /dev/shm/hapax-sources/reverie.rgba" in reverie
+    assert "--output /dev/shm/hapax-compositor/quake-live-reverie.bgra" in reverie
+    assert "--meta /dev/shm/hapax-compositor/quake-live-reverie.json" in reverie
+
+    drift = _read("hapax-screwm-drift-state-source.service")
+    assert "PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service" in drift
+    assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in drift
+    assert "scripts/screwm-drift-state-source.py --fps 1" in drift
+    assert "--effect-drift /dev/shm/hapax-visual/screwm-effect-drift-fallback-state.json" in drift
+
+    source_publisher = _read("hapax-screwm-imagination-source-publisher.service")
+    assert "PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service" in source_publisher
+    assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in source_publisher
+    assert "--require-file scripts/screwm-imagination-source-publisher.py" in source_publisher
+    assert (
+        "scripts/screwm-imagination-source-publisher.py --fps 1 --width 320 --height 180"
+        in source_publisher
+    )
+    assert "--ttl-ms 3000" in source_publisher
+
+    config_dir = REPO_ROOT / "config" / "quake-live-cameras"
+    expected = {
+        "brio-operator": ("cam_bop", "quake-live-cam-brio-operator.bgra"),
+        "brio-room": ("cam_brm", "quake-live-cam-brio-room.bgra"),
+        "brio-synths": ("cam_bsy", "quake-live-cam-brio-synths.bgra"),
+        "c920-desk": ("cam_cdk", "quake-live-cam-c920-desk.bgra"),
+        "c920-room": ("cam_crm", "quake-live-cam-c920-room.bgra"),
+        "c920-overhead": ("cam_cov", "quake-live-cam-c920-overhead.bgra"),
+    }
+    for role, (texture, frame) in expected.items():
+        env = (config_dir / f"{role}.env").read_text(encoding="utf-8")
+        assert f"HAPAX_QUAKE_CAMERA_ROLE={role}" in env
+        assert f"HAPAX_QUAKE_LIVE_TEXTURE_NAME={texture}" in env
+        assert frame in env
+        assert "HAPAX_QUAKE_CAMERA_SIZE=1280x720" in env
+        assert "HAPAX_QUAKE_CAMERA_FPS=10" in env
+        assert "HAPAX_QUAKE_LIVE_TEXTURE_WIDTH=1280" in env
+        assert "HAPAX_QUAKE_LIVE_TEXTURE_HEIGHT=720" in env
+        assert "HAPAX_QUAKE_LIVE_TEXTURE_FPS=5" in env
 
 
 def test_darkplaces_xorg_launcher_disables_headless_screen_blanking() -> None:
@@ -129,11 +308,18 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     )
     world = (REPO_ROOT / "assets" / "quake" / "qc" / "world.qc").read_text(encoding="utf-8")
 
-    assert "vector AOA_CENTER = '0 -455 176';" in defs
-    assert "vector CAMERA_REVIEW_POS = '0 -760 205';" in defs
-    assert "vector CAMERA_REVIEW_TARGET = '0 -455 184';" in defs
+    assert "vector AOA_CENTER = '0 -555 176';" in defs
+    assert "vector CAMERA_REVIEW_POS = '0 -2380 164';" in defs
+    assert "vector CAMERA_REVIEW_TARGET = '0 -555 176';" in defs
     assert ".float scale;" in defs
-    assert "float AOA_MODEL_SCALE = 0.62;" in defs
+    assert ".float alpha;" in defs
+    assert ".vector colormod;" in defs
+    assert ".float glow_size;" in defs
+    assert "float EF_FULLBRIGHT = 512;" in defs
+    assert "float EF_DOUBLESIDED = 32768;" in defs
+    assert "float EF_ADDITIVE = 32;" in defs
+    assert "float AOA_MODEL_SCALE = 4.85;" in defs
+    assert "float AOA_SPHERE_MODEL_SCALE = 1.92;" in defs
     assert "vector(vector v) vectoangles = #51;" in defs
     assert "ang = vectoangles(target - pos);" in camera
     assert 'if (cvar("screwm_camera_orbit") > 0)' in camera
@@ -146,15 +332,34 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     assert "pos = CAMERA_REVIEW_POS;" in camera
     assert "CAMERA_ORBIT_PERIOD = 360.0;" in coupling
     assert "CAMERA_PERIOD = 120 + (1.0 - coupling_energy) * 30.0;" not in coupling
-    assert "float base_rot = 3.0;" in coupling
-    assert "coupling_voice_active * 8.0" in coupling
-    assert "coupling_energy * 4.0" in coupling
-    assert "UserVec2: mortar_lines, edge_glow, posterize, sharpen" in autoexec
-    assert 'r_glsl_postprocess_uservec2 "0.05 0.18 0 0.03"' in autoexec
+    assert "coupling_read_effect_review_preset" in coupling
+    assert 'fopen("data/effect-review-preset.txt", FILE_READ)' in coupling
+    assert "coupling_apply_effect_review_preset" in coupling
+    assert 'cvar_set("r_glsl_postprocess_uservec1"' in coupling
+    assert "localcmd(cmd);" not in coupling
+    assert "coupling_write_uservecs(0.04, 3.55" in coupling
+    assert "coupling_write_uservecs(0.03, 1.90" in coupling
+    assert "float base_rot = 0.0;" in coupling
+    assert "coupling_voice_active * 1.5" in coupling
+    assert "aoa_entity.screwm_spin_y = base_rot + voice_boost + audio_boost;" in coupling
+    assert "UserVec2: scan_field, edge_glow, posterize, sharpen" in autoexec
+    assert "mortar_lines" not in autoexec
+    assert 'r_glsl_postprocess_uservec1 "0.10 1.25 0.00 0.020"' in autoexec
+    assert 'r_glsl_postprocess_uservec2 "0.28 1.15 0 0.06"' in autoexec
+    assert 'r_glsl_postprocess_uservec3 "0 0.055 0 0"' in autoexec
     assert 'cvar("screwm_player_noclip_control") > 0' in world
     assert "void(entity view) screwm_player_noclip_body" in world
+    assert "void(entity view) screwm_follow_camera_body" in world
+    assert 'camera_read_norm("data/camera-manual.txt", 0) > 0' in world
     assert "aoa_entity.scale = AOA_MODEL_SCALE;" in world
+    assert "ent.angles_y = 180;" in world
+    assert 'setmodel(aoa_sphere_entity, "progs/aoa_sphere.mdl");' in world
+    assert "aoa_entity.alpha = 0.20;" in world
+    assert "aoa_entity.colormod = '1.08 0.64 0.88';" in world
+    assert "aoa_entity.effects = aoa_entity.effects + EF_ADDITIVE;" in world
+    assert "aoa_sphere_entity.screwm_spin_y = 0;" in world
     assert "screwm_player_noclip_body(self);" in world
+    assert "screwm_follow_camera_body(self);" in world
     assert "setorigin(self, CAMERA_REVIEW_POS);" in world
     assert "self.angles = vectoangles(CAMERA_REVIEW_TARGET - CAMERA_REVIEW_POS);" in world
 
@@ -178,6 +383,8 @@ def test_screwm_camera_gamepad_service_is_opt_in_and_headless() -> None:
     assert "ConditionPathExists=%h/.config/hapax/enable-screwm-camera-gamepad" in body
     assert "--require-file scripts/screwm-camera-gamepad.py" in body
     assert "scripts/screwm-camera-gamepad.py" in body
+    assert "--wait-for-device --wait-interval 1" in body
+    assert "StartLimitIntervalSec=0" in body
     assert "--device /dev/input/js" not in body
     assert "WantedBy=hapax-darkplaces-v4l2.service" in body
 
@@ -191,9 +398,13 @@ def test_visual_stack_conditionally_wants_darkplaces_runtime_units() -> None:
 
     assert "hapax-darkplaces-v4l2.service" in target
     assert "hapax-darkplaces-bridge.service" in target
+    assert "hapax-quake-live-reverie.service" in target
+    assert "hapax-quake-live-ward-atlas.service" in target
     assert "hapax-screwm-camera-gamepad.service" not in target
     assert "Wants=hapax-screwm-camera-gamepad.service" in v4l2
-    assert "hapax-obs-video50-yuyv-compat-bridge.service" in target
+    assert "hapax-darkplaces-bridge.service" in v4l2
+    assert "hapax-obs-video50-yuyv-compat-bridge.service" not in v4l2
+    assert "hapax-obs-video50-yuyv-compat-bridge.service" not in target
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in v4l2
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in bridge
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in gamepad

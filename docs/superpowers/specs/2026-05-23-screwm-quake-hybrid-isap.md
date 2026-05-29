@@ -7,11 +7,11 @@
 > **Design Language:** `docs/logos-design-language.md` — §11 governed surface
 > **HOMAGE Spec:** `docs/superpowers/specs/2026-04-18-homage-framework-design.md`
 > **Render Architecture:** `docs/superpowers/specs/2026-05-10-livestream-render-architecture-shadow-plan.md`
-> **Research Artifacts:** `docs/research/2026-05-23-darkplaces-capabilities-audit.md`, `docs/research/2026-05-23-quakec-live-coupling-audit.md`, `docs/research/2026-05-23-aesthetic-migration-audit.md`
+> **Research Artifacts:** `docs/research/2026-05-23-darkplaces-capabilities-audit.md`, `docs/research/2026-05-23-quakec-live-coupling-audit.md`, `docs/research/2026-05-23-aesthetic-migration-audit.md`, `docs/research/2026-05-26-screwm-spatiotemporal-framework.md`
 
 ## 1. Problem
 
-The Screwm (Tower of Babel interior) is rendered by hapax-imagination via custom wgpu/WGSL shaders. The operator directive is to fully migrate the visual rendering surface into the DarkPlaces Quake engine. This is not a hybrid coexistence — DarkPlaces becomes THE renderer, hapax-imagination retires.
+The Screwm (Tower of Babel interior) was rendered by hapax-imagination via custom wgpu/WGSL shaders. The migration target is now a true aggregate of DarkPlaces/Quake-native spatial rendering and Hapax compositor/drift/effects technology. The operator-facing result should not expose a fourth-wall split between "engine" and "compositor"; the two layers must behave as one instrument with a deterministic contract at every boundary.
 
 All prior aesthetic commitments must migrate: design language (Gruvbox/Solarized mode system), HOMAGE framework (BitchX/Enlightenment-Moksha), reverie shader vocabulary (62 WGSL nodes), stimmung-driven animation, audio reactivity, and spatial perspective management.
 
@@ -79,18 +79,51 @@ Mode switch triggers `map screwm-<mode>` via rcon or config reload. Brief load s
 
 DarkPlaces dpextensions provide `fopen`/`fclose`/`fgets` for reading external files. To be verified at runtime. Fallback: config file polling via `exec` console command.
 
+### 4.5 Operative Spatiotemporal Framework
+
+The spatial/temporal/media framework is a gate, not optional advice:
+
+- Research artifact: `docs/research/2026-05-26-screwm-spatiotemporal-framework.md`.
+- Machine contract: `config/screwm-spatiotemporal-framework.json`.
+- Generator gate: `scripts/generate-screwm-map.py` loads and validates the
+  contract before emitting maps.
+
+The core rule is determinant relation. Anything injected into the hybrid
+environment - media, text, audio-reactive state, Pango/compositor surfaces,
+drift fields, or Quake entities - must declare its source role, mount,
+projection/aspect, scale, purpose, and risk/provenance boundary. Arbitrary
+relationships between Hapax media/compositor systems and DarkPlaces geometry
+are release blockers.
+
+Current operative constraints:
+
+- No-front room: the Scroom must read as a walkable garden, not a theater.
+- Media legibility first: scale the room and ward containers around readable
+  media instead of forcing media into arbitrary Quake base scales.
+- Stable OBS review: the default path requires pause stations suitable for
+  feedback; camera jerk, uncued brightness pulses, and disorienting roll are
+  failures.
+- AoA object-of-attention: the sphere is inside the AoA volume, not beside it
+  or on a fourth-wall overlay.
+- Anti-parasocial media relation: camera wards are bounded instruments with
+  role/freshness/consent/purpose context, not intimacy billboards.
+- Portable Homage separation: framework contracts stay generic; specific
+  BitchX/ACiD/Enlightenment or future Vaporwave/Minecraft/AOL choices belong
+  in swappable Homage packages with their own risk boundaries.
+
 ## 5. Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │ DarkPlaces (GPU: 5060 Ti, ~200-500MB VRAM)              │
-│  ├─ Tower BSP (8 octagonal walls, ramps, floor, ceiling)│
-│  ├─ AoA MDL entity (current tetrix + sphere, rotating)  │
+│  ├─ Scroom BSP room (no-front garden grid + media mounts)│
+│  ├─ AoA MDL lattice + live-textured media sphere MDL     │
 │  ├─ 6 colored lights (per-level semantic colors)         │
 │  ├─ Fog (density + color, mode-aware)                    │
 │  ├─ 5 ambient sound zones (entity-based, 128 channels)  │
 │  ├─ QuakeC camera (stable review + optional manual/orbit)│
 │  ├─ QuakeC cognitive coupling (/dev/shm reader)          │
+│  ├─ Deterministic mount contract for injected media      │
 │  ├─ GLSL post-processing (39 ported shader nodes)        │
 │  └─ Output: window → v4l2loopback /dev/video52           │
 └────────────────────────┬────────────────────────────────┘
@@ -253,7 +286,7 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 
 ### D2: Tower BSP Map Generator [COMPLETE]
 - `scripts/generate-screwm-map.py`
-- Output: `assets/quake/maps/screwm.bsp` (13KB, compiles clean)
+- Output: `assets/quake/maps/screwm.bsp` (live-media mount BSP, compiles clean)
 
 ### D3: Texture/Asset Provenance [COMPLETE]
 - LibreQuake v0.09-beta BSD art/media assets provide external free-content
@@ -273,9 +306,18 @@ The visual vocabulary is preserved in full. The execution environment changes fr
 ### D5: AoA/Tetrix Anchor MDL [COMPLETE]
 - `scripts/generate-aoa-mdl.py`
 - `assets/quake/models/aoa.mdl`
-- Spawned and rotated by QuakeC at `AOA_CENTER`.
-- Geometry follows the authored `aoa-tetrix-v2` root with an attendant sphere
-  instead of the retired flat/legacy Sierpinski-only anchor.
+- `assets/quake/models/aoa_sphere.mdl`
+- Spawned by QuakeC at `AOA_CENTER`: the AoA lattice rotates slowly, while the
+  media sphere is stable for legibility.
+- Geometry follows the authored `aoa-tetrix-v3-live-sphere` root. The sphere is
+  a separate solid MDL skinframe target (`progs/aoa_sphere.mdl_0`) fed by the
+  Hapax live texture hook, not BSP strips or a fourth-wall compositor overlay.
+- `config/screwm-quake-media-mounts.json` is the contract for media projection,
+  texture dimensions, producer output, and physical mount scale.
+- Media legibility is now part of that contract: the AoA sphere uses a
+  2048x1024 equirectangular live texture, while camera mounts use 1280x720
+  live textures that match the 16:9 camera capture contract and deterministic
+  BSP texture scale.
 
 ### D6: v4l2loopback Capture [COMPLETE - BOUNDED SMOKE PASSED]
 - `/etc/modprobe.d/v4l2loopback-hapax.conf` updated (video52=DarkPlaces in the unified 14-device config)

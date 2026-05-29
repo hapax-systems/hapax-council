@@ -1,8 +1,8 @@
 [Unit]
 Description=Hapax OBS v4l2 capture source auto-reset monitor
-After=pipewire.service studio-compositor.service hapax-obs-livestream.service
-Wants=studio-compositor.service
-PartOf=studio-compositor.service
+After=pipewire.service hapax-darkplaces-v4l2.service hapax-obs-livestream.service
+Wants=hapax-darkplaces-v4l2.service
+PartOf=hapax-visual-stack.target
 ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-obs-v4l2-source-reset
 
 [Service]
@@ -10,7 +10,7 @@ Type=notify
 NotifyAccess=main
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/hapax-obs-v4l2-source-reset
-ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-obs-v4l2-source-reset --source-name "Video Capture Device (V4L2)" --reset-cooldown 60
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-obs-v4l2-source-reset --source-name "Video Capture Device (V4L2)" --stall-threshold 300 --reset-cooldown 60 --device-id /dev/video52 --resolution 1920x1080 --framerate 60 --pixelformat YUYV --disable-buffering --auto-reset-input
 Restart=on-failure
 RestartSec=15
 WatchdogSec=120

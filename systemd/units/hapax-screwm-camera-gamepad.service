@@ -4,12 +4,13 @@ PartOf=hapax-darkplaces-v4l2.service
 After=hapax-darkplaces-v4l2.service
 ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 ConditionPathExists=%h/.config/hapax/enable-screwm-camera-gamepad
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/screwm-camera-gamepad.py
-ExecStart=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/worktree/scripts/screwm-camera-gamepad.py"'
+ExecStart=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/worktree/scripts/screwm-camera-gamepad.py" --wait-for-device --wait-interval 1'
 Restart=on-failure
 RestartSec=2
 

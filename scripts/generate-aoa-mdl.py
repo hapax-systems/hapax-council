@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Generate the current AoA/tetrix anchor as a Quake MDL file.
+"""Generate the current AoA/tetrix anchor as Quake MDL files.
 
 The source authority is the authored 3D AoA in hapax-visual, not the older
-flat Sierpinski overlay. The model keeps a recursive tetrix core and adds the
-attendant sphere as physical ring geometry so the anchor reads as the newer
-contained AoA object inside DarkPlaces.
+flat Sierpinski overlay. The lattice and media sphere are separate models:
+Quake/DarkPlaces owns their spatial placement, while the Hapax live texture
+hook updates the sphere skin from the YouTube/media producer.
 
 Each sub-tetrahedron is generated with its own 4 vertices to avoid
 shared-vertex ambiguity in the MDL format's flat shading model.
@@ -14,12 +14,43 @@ import math
 import struct
 from pathlib import Path
 
-AOA_GEOMETRY_REVISION = "aoa-tetrix-v2"
+AOA_GEOMETRY_REVISION = "aoa-tetrix-v3-live-sphere"
 DEPTH = 3
-SCALE = 92
-ATTENDANT_SPHERE_RADIUS = 1.10
-ATTENDANT_SPHERE_RING_WIDTH = 0.026
-ATTENDANT_SPHERE_SEGMENTS = 72
+SCALE = 104
+ATTENDANT_SPHERE_RADIUS = 0.46
+AOA_SPHERE_MODEL_SCALE = 1.92
+# The OARB is meant to read as the "O" held inside the AoA, not as a loose
+# payload behind it. Keep only enough clearance to avoid model quantization and
+# depth-sorting artifacts.
+ATTENDANT_SPHERE_CLEARANCE_RATIO = 1.04
+MEDIA_SPHERE_SEGMENTS = 64
+MEDIA_SPHERE_RINGS = 32
+AOA_SKIN_W = 16
+AOA_SKIN_H = 16
+MEDIA_SPHERE_SKIN_W = 2048
+MEDIA_SPHERE_SKIN_H = 1024
+
+AOA_INNER_VOID_EDGE_PAIRS = [
+    (0, 1),
+    (0, 2),
+    (0, 3),
+    (1, 2),
+    (1, 3),
+    (2, 3),
+]
+
+# Convex-hull faces of the central octahedral void, indexed into the six
+# edge-midpoint vertices above. This is the volume that must contain the OARB.
+AOA_INNER_VOID_FACES = [
+    (0, 3, 1),
+    (5, 1, 3),
+    (2, 1, 0),
+    (2, 5, 1),
+    (4, 3, 5),
+    (4, 0, 3),
+    (4, 5, 2),
+    (4, 2, 0),
+]
 
 # Mirrors hapax-logos/crates/hapax-visual/src/aoa_panes.rs::AOA_ROOT_MODEL_VERTICES.
 AOA_ROOT_MODEL_VERTICES = [
@@ -232,51 +263,105 @@ def tetrix_tetrahedra(depth: int, corners=None):
     return result
 
 
-def sphere_ring(axis: str, radius: float, width: float, segments: int):
-    """Return a broad ring strip for the AoA attendant sphere."""
+def source_to_quake(v):
+    """Map hapax-visual model axes into Quake axes.
+
+    The current authored AoA root uses source Z as its vertical/depth-of-form
+    axis: the three base vertices share source Z, while the apex moves in
+    source -Z. Quake also uses Z as vertical, so source Z must map onto Quake Z
+    rather than being swapped into Quake Y. The sign inversion makes the apex
+    stand upward like a pyramid while preserving source Y as room depth.
+    """
+    return [v[0], v[1], -v[2]]
+
+
+def triangle_area(a, b, c):
+    u = [b[i] - a[i] for i in range(3)]
+    v = [c[i] - a[i] for i in range(3)]
+    cross = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ]
+    return 0.5 * math.sqrt(sum(component * component for component in cross))
+
+
+def tetrahedron_incenter(corners):
+    """Return the incenter of a tetrahedron.
+
+    The OARB is the AoA's inner object of attention, so the lattice origin is
+    the incenter rather than an arbitrary model centroid. This lets the media
+    sphere remain centered while the AoA shell scales around it.
+    """
+    weights = []
+    for idx in range(4):
+        opposite = [corner for corner_idx, corner in enumerate(corners) if corner_idx != idx]
+        weights.append(triangle_area(*opposite))
+
+    total = sum(weights)
+    if total <= 0:
+        return [0.0, 0.0, 0.0]
+    return [sum(weights[idx] * corners[idx][axis] for idx in range(4)) / total for axis in range(3)]
+
+
+def aoa_root_quake_vertices():
+    return [source_to_quake(v) for v in AOA_ROOT_MODEL_VERTICES]
+
+
+def aoa_inner_center():
+    return tetrahedron_incenter(aoa_root_quake_vertices())
+
+
+def transform_vertices(verts):
+    center = aoa_inner_center()
+    transformed = []
+    for v in verts:
+        q = source_to_quake(v)
+        transformed.append([q[i] - center[i] for i in range(3)])
+    return transformed
+
+
+def media_sphere_mesh(radius: float, segments: int, rings: int):
+    """Return a UV sphere using equirectangular media coordinates."""
     verts = []
+    uvs = []
     faces = []
 
-    for i in range(segments):
-        theta = 2.0 * math.pi * i / segments
-        c = math.cos(theta)
-        s = math.sin(theta)
-        if axis == "xy":
-            center = [radius * c, radius * s, 0.0]
-            outward = [c, s, 0.0]
-        elif axis == "xz":
-            center = [radius * c, 0.0, radius * s]
-            outward = [c, 0.0, s]
-        elif axis == "yz":
-            center = [0.0, radius * c, radius * s]
-            outward = [0.0, c, s]
-        else:
-            raise ValueError(f"unknown sphere ring axis: {axis}")
-        verts.append([center[j] + outward[j] * width for j in range(3)])
-        verts.append([center[j] - outward[j] * width for j in range(3)])
+    for lat in range(rings + 1):
+        v = lat / rings
+        phi = math.pi * v
+        sin_phi = math.sin(phi)
+        cos_phi = math.cos(phi)
+        for lon in range(segments + 1):
+            u = lon / segments
+            theta = 2.0 * math.pi * u
+            # Source coordinates follow the AoA convention above: X lateral,
+            # Y room depth, source -Z upward. The texture center (u=.5, v=.5)
+            # faces negative Quake Y, which is the default review approach.
+            x = radius * sin_phi * math.sin(theta)
+            y = radius * sin_phi * math.cos(theta)
+            z = -radius * cos_phi
+            verts.append([x, y, z])
+            uvs.append((u, v))
 
-    for i in range(segments):
-        a = i * 2
-        b = ((i + 1) % segments) * 2
-        faces.append((a, b, a + 1))
-        faces.append((a + 1, b, b + 1))
+    stride = segments + 1
+    for lat in range(rings):
+        for lon in range(segments):
+            a = lat * stride + lon
+            b = a + 1
+            c = a + stride
+            d = c + 1
+            if lat > 0:
+                faces.append((a, c, b))
+            if lat < rings - 1:
+                faces.append((b, c, d))
 
-    return verts, faces
+    return [source_to_quake(v) for v in verts], faces, uvs
 
 
 def compose_aoa_parts(depth: int):
-    """Tetrix core plus three great-circle sphere rings."""
-    parts = tetrix_tetrahedra(depth)
-    for axis in ("xy", "xz", "yz"):
-        parts.append(
-            sphere_ring(
-                axis,
-                ATTENDANT_SPHERE_RADIUS,
-                ATTENDANT_SPHERE_RING_WIDTH,
-                ATTENDANT_SPHERE_SEGMENTS,
-            )
-        )
-    return parts
+    """Tetrix core only; the solid live-media sphere is a separate model."""
+    return tetrix_tetrahedra(depth)
 
 
 def flatten_mesh(parts):
@@ -303,9 +388,88 @@ def face_normal(v0, v1, v2):
     return 0.0, 0.0, 1.0
 
 
-def write_mdl(verts, faces, output_path: Path, scale: float):
+def aoa_inner_void_vertices():
+    root = transform_vertices(AOA_ROOT_MODEL_VERTICES)
+    return [midpoint(root[start], root[end]) for start, end in AOA_INNER_VOID_EDGE_PAIRS]
+
+
+def distance_from_point_to_face(point, face, verts):
+    n = face_normal(verts[face[0]], verts[face[1]], verts[face[2]])
+    origin = verts[face[0]]
+    return abs(sum(n[axis] * (point[axis] - origin[axis]) for axis in range(3)))
+
+
+def aoa_inner_void_inradius():
+    """Minimum distance from the centered OARB origin to the tetrix void."""
+    verts = aoa_inner_void_vertices()
+    center = [0.0, 0.0, 0.0]
+    return min(distance_from_point_to_face(center, face, verts) for face in AOA_INNER_VOID_FACES)
+
+
+def derived_aoa_model_scale():
+    """AoA scale required to fit the OARB inside the central void."""
+    return (
+        ATTENDANT_SPHERE_RADIUS
+        * AOA_SPHERE_MODEL_SCALE
+        * ATTENDANT_SPHERE_CLEARANCE_RATIO
+        / aoa_inner_void_inradius()
+    )
+
+
+def aoa_skin_pixels(width: int, height: int) -> bytes:
+    pixels = bytearray()
+    for y in range(height):
+        for x in range(width):
+            edge = x in (0, width - 1) or y in (0, height - 1)
+            diagonal = x == y or x + y == width - 1
+            lattice = x % 5 == 0 or y % 5 == 0
+            if edge or diagonal:
+                bright = 238
+            elif lattice:
+                bright = 178
+            else:
+                bright = 38 + ((x * 3 + y * 5) % 5) * 4
+            pixels.append(min(255, bright))
+    return bytes(pixels)
+
+
+def media_sphere_skin_pixels(width: int, height: int) -> bytes:
+    """Placeholder only; live BGRA upload replaces this skin at runtime."""
+    pixels = bytearray()
+    for y in range(height):
+        for x in range(width):
+            equator = abs(y - height * 0.5) < 2
+            meridian = x % max(1, width // 16) < 2
+            if x < 2 or y < 2 or x >= width - 2 or y >= height - 2:
+                pixels.append(245)
+            elif equator or meridian:
+                pixels.append(236)
+            elif (x * 7 + y * 11) % 29 < 5:
+                pixels.append(198)
+            else:
+                pixels.append(74 + ((x * 5 + y * 3) % 62))
+    return bytes(pixels)
+
+
+def write_mdl(
+    verts,
+    faces,
+    output_path: Path,
+    scale: float,
+    *,
+    skin_width: int,
+    skin_height: int,
+    skin_pixels: bytes,
+    uvs=None,
+):
     num_verts = len(verts)
     num_tris = len(faces)
+    if len(skin_pixels) != skin_width * skin_height:
+        raise ValueError("skin pixel buffer does not match skin dimensions")
+    if uvs is None:
+        uvs = [(0.0, 0.0)] * num_verts
+    if len(uvs) != num_verts:
+        raise ValueError("uv count does not match vertex count")
 
     mins = [min(v[i] for v in verts) for i in range(3)]
     maxs = [max(v[i] for v in verts) for i in range(3)]
@@ -341,8 +505,6 @@ def write_mdl(verts, faces, output_path: Path, scale: float):
             pv.append(max(1, min(254, byte_val)))
         packed_verts.append(pv)
 
-    skin_w, skin_h = 16, 16
-
     with open(output_path, "wb") as f:
         f.write(b"IDPO")
         f.write(struct.pack("<i", 6))
@@ -351,8 +513,8 @@ def write_mdl(verts, faces, output_path: Path, scale: float):
         f.write(struct.pack("<f", scale * 1.2))
         f.write(struct.pack("<fff", 0, 0, 0))
         f.write(struct.pack("<i", 1))
-        f.write(struct.pack("<i", skin_w))
-        f.write(struct.pack("<i", skin_h))
+        f.write(struct.pack("<i", skin_width))
+        f.write(struct.pack("<i", skin_height))
         f.write(struct.pack("<i", num_verts))
         f.write(struct.pack("<i", num_tris))
         f.write(struct.pack("<i", 1))
@@ -361,16 +523,14 @@ def write_mdl(verts, faces, output_path: Path, scale: float):
         f.write(struct.pack("<f", scale))
 
         f.write(struct.pack("<i", 0))
-        # 16x16 warm gold skin
-        for y in range(skin_h):
-            for x in range(skin_w):
-                bright = 200 + ((x + y) % 3) * 18
-                f.write(bytes([min(255, bright)]))
+        f.write(skin_pixels)
 
-        for _ in range(num_verts):
+        for u, v in uvs:
+            s = int(max(0, min(skin_width - 1, round(u * (skin_width - 1)))))
+            t = int(max(0, min(skin_height - 1, round(v * (skin_height - 1)))))
             f.write(struct.pack("<i", 1))
-            f.write(struct.pack("<i", 0))
-            f.write(struct.pack("<i", 0))
+            f.write(struct.pack("<i", s))
+            f.write(struct.pack("<i", t))
 
         for face in faces:
             f.write(struct.pack("<i", 1))
@@ -381,8 +541,8 @@ def write_mdl(verts, faces, output_path: Path, scale: float):
         f.write(struct.pack("<BBBB", *min_packed, 0))
         max_packed = [254, 254, 254]
         f.write(struct.pack("<BBBB", *max_packed, 0))
-        name = b"aoa\x00" + b"\x00" * 12
-        f.write(name)
+        frame_name = output_path.stem.encode("ascii")[:15].ljust(16, b"\x00")
+        f.write(frame_name)
 
         for i, pv in enumerate(packed_verts):
             f.write(struct.pack("<BBBB", pv[0], pv[1], pv[2], normal_indices[i]))
@@ -391,23 +551,52 @@ def write_mdl(verts, faces, output_path: Path, scale: float):
 def main():
     parts = compose_aoa_parts(DEPTH)
     verts, faces = flatten_mesh(parts)
+    verts = transform_vertices(verts)
+    sphere_verts, sphere_faces, sphere_uvs = media_sphere_mesh(
+        ATTENDANT_SPHERE_RADIUS,
+        MEDIA_SPHERE_SEGMENTS,
+        MEDIA_SPHERE_RINGS,
+    )
     print(
-        f"{AOA_GEOMETRY_REVISION} depth {DEPTH} + attendant sphere: "
-        f"{len(verts)} vertices, {len(faces)} triangles"
+        f"{AOA_GEOMETRY_REVISION} depth {DEPTH}: "
+        f"lattice {len(verts)} vertices/{len(faces)} triangles; "
+        f"media sphere {len(sphere_verts)} vertices/{len(sphere_faces)} triangles"
     )
 
     output_dir = Path(__file__).parent.parent / "assets" / "quake" / "models"
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "aoa.mdl"
-    write_mdl(verts, faces, output_path, SCALE)
-    print(f"Written {output_path} ({output_path.stat().st_size} bytes)")
+    aoa_path = output_dir / "aoa.mdl"
+    sphere_path = output_dir / "aoa_sphere.mdl"
+    write_mdl(
+        verts,
+        faces,
+        aoa_path,
+        SCALE,
+        skin_width=AOA_SKIN_W,
+        skin_height=AOA_SKIN_H,
+        skin_pixels=aoa_skin_pixels(AOA_SKIN_W, AOA_SKIN_H),
+    )
+    write_mdl(
+        sphere_verts,
+        sphere_faces,
+        sphere_path,
+        SCALE,
+        skin_width=MEDIA_SPHERE_SKIN_W,
+        skin_height=MEDIA_SPHERE_SKIN_H,
+        skin_pixels=media_sphere_skin_pixels(MEDIA_SPHERE_SKIN_W, MEDIA_SPHERE_SKIN_H),
+        uvs=sphere_uvs,
+    )
+    print(f"Written {aoa_path} ({aoa_path.stat().st_size} bytes)")
+    print(f"Written {sphere_path} ({sphere_path.stat().st_size} bytes)")
 
     dp_dir = Path.home() / ".darkplaces" / "screwm" / "progs"
     dp_dir.mkdir(parents=True, exist_ok=True)
     import shutil
 
-    shutil.copy2(output_path, dp_dir / "aoa.mdl")
+    shutil.copy2(aoa_path, dp_dir / "aoa.mdl")
+    shutil.copy2(sphere_path, dp_dir / "aoa_sphere.mdl")
     print(f"Deployed to {dp_dir / 'aoa.mdl'}")
+    print(f"Deployed to {dp_dir / 'aoa_sphere.mdl'}")
 
 
 if __name__ == "__main__":

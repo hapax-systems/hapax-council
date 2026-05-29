@@ -1,0 +1,123 @@
+{
+  "version": "screwm-quake-surface-contracts-v1",
+  "principle": "Room-scale floor, ceiling, and wall identity comes from Hapax compositor/drift material contracts; DarkPlaces BSP supplies sealed walkable surfaces, collision, lighting, and final spatial rendering.",
+  "information_surface_contract": {
+    "principle": "Textures are permitted only when they operate as information surfaces. They may carry orientation, state, rhythm, provenance, liveness, or homage grammar; they may not simulate identifiable scenic materials such as stone, wood, metal, brick, ceiling tile, or Quake-native texture identity.",
+    "admissible_texture_types": [
+      "void_substrate",
+      "alignment_lattice",
+      "path_rhythm_field",
+      "state_signal_panel",
+      "terminal_glyph_field",
+      "clean_room_homage_chrome",
+      "live_media_receiver",
+      "drift_carrier",
+      "provenance_ticker",
+      "attention_object_skin"
+    ],
+    "required_semantic_channels": [
+      "orientation",
+      "state",
+      "rhythm",
+      "signal",
+      "provenance",
+      "liveness",
+      "homage_lineage"
+    ],
+    "forbidden_material_semantics": [
+      "stone",
+      "wood",
+      "metal",
+      "brick",
+      "masonry",
+      "ceiling_tile",
+      "roof",
+      "terrain",
+      "quake_scenic_material"
+    ],
+    "failure_predicates": [
+      "A room texture can be named as a real-world material before it can be named as an information role.",
+      "A texture repeats at a scale that reads as decorative tiling rather than spatial encoding.",
+      "A surface contains copied homage/source pixels instead of clean-room procedural homage grammar.",
+      "A texture has no declared relationship to ward placement, path orientation, source state, or drift/compositor behavior.",
+      "Texture detail competes with media legibility from the intended inspection station."
+    ]
+  },
+  "surfaces": [
+    {
+      "id": "scroom-floor-field",
+      "role": "floor",
+      "surface_kind": "walkable-compositor-field",
+      "substrate": "darkplaces_bsp_collision_surface",
+      "texture": "cmp_floor",
+      "producer_kind": "hapax-compositor-drift-material",
+      "source_id": "scroom-floor-material-profile",
+      "freshness": "material-profile-static-with-live-lightfield",
+      "consent_or_license": "procedural-system-material",
+      "purpose": "walkable garden floor carrying low-contrast path-rhythm signal so the room remains legible while ward/media/lightfield behavior stays primary",
+      "material_profile": "room-floor-compositor-field",
+      "projection": "planar-room-surface",
+      "texture_scale": [12, 12],
+      "texture_optional": true,
+      "live_texture_slot_required": false,
+      "hybrid_contract": {
+        "quake_binding": "BSP floor brush texture cmp_floor as dark collision and orientation receiver",
+        "producer_binding": "Hapax compositor/drift material profile generates a non-scenic floor signal field baked into WAD; live expression remains entity/compositor behavior",
+        "memory_format": "Quake WAD indexed texture now; BGRA live receiver when slot registry expands",
+        "update_semantics": "Static compositor-derived substrate with dynamic state carried by in-world lights and postprocess",
+        "aspect_policy": "room-scale field, not media aspect; only low-contrast path rhythm and orientation marks are admissible",
+        "compositor_role": "Hapax owns floor material grammar and drift semantics; DarkPlaces owns walkable collision and spatial lighting"
+      }
+    },
+    {
+      "id": "scroom-ceiling-field",
+      "role": "ceiling",
+      "surface_kind": "overhead-compositor-field",
+      "substrate": "darkplaces_bsp_occlusion_surface",
+      "texture": "cmp_ceil",
+      "producer_kind": "hapax-compositor-drift-material",
+      "source_id": "scroom-ceiling-material-profile",
+      "freshness": "material-profile-static-with-live-lightfield",
+      "consent_or_license": "procedural-system-material",
+      "purpose": "overhead dark occlusion receiver with faint canopy signal so the room has visible height without becoming Quake architecture",
+      "material_profile": "room-ceiling-compositor-field",
+      "projection": "planar-room-surface",
+      "texture_scale": [14, 14],
+      "texture_optional": true,
+      "live_texture_slot_required": false,
+      "hybrid_contract": {
+        "quake_binding": "BSP ceiling brush texture cmp_ceil as dark occlusion and canopy receiver",
+        "producer_binding": "Hapax compositor/drift material profile generates a non-scenic ceiling signal field baked into WAD; live expression remains entity/compositor behavior",
+        "memory_format": "Quake WAD indexed texture now; BGRA live receiver when slot registry expands",
+        "update_semantics": "Static compositor-derived substrate with dynamic state carried by in-world lights and postprocess",
+        "aspect_policy": "room-scale field, not media aspect; faint overhead linework may orient the walker but must not compete with wards",
+        "compositor_role": "Hapax owns ceiling material grammar and drift semantics; DarkPlaces owns occlusion and spatial lighting"
+      }
+    },
+    {
+      "id": "scroom-wall-field",
+      "role": "wall",
+      "surface_kind": "boundary-compositor-field",
+      "substrate": "darkplaces_bsp_sealing_surface",
+      "texture": "cmp_wall",
+      "producer_kind": "hapax-compositor-drift-material",
+      "source_id": "scroom-wall-material-profile",
+      "freshness": "material-profile-static-with-live-lightfield",
+      "consent_or_license": "procedural-system-material",
+      "purpose": "neutral no-front enclosure carrying dark boundary signal without Quake scenic texture identity or static mounting structure",
+      "material_profile": "room-wall-compositor-field",
+      "projection": "planar-room-surface",
+      "texture_scale": [12, 12],
+      "texture_optional": true,
+      "live_texture_slot_required": false,
+      "hybrid_contract": {
+        "quake_binding": "BSP wall brush texture cmp_wall as dark sealing and boundary receiver",
+        "producer_binding": "Hapax compositor/drift material profile generates a non-scenic wall boundary field baked into WAD; live expression remains entity/compositor behavior",
+        "memory_format": "Quake WAD indexed texture now; BGRA live receiver when slot registry expands",
+        "update_semantics": "Static compositor-derived substrate with dynamic state carried by in-world lights and postprocess",
+        "aspect_policy": "room-scale field, not media aspect; wall grid/support marks are forbidden until they are explicit ward entities",
+        "compositor_role": "Hapax owns wall material grammar and drift semantics; DarkPlaces owns room sealing and spatial lighting"
+      }
+    }
+  ]
+}

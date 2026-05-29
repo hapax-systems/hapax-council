@@ -38,13 +38,20 @@ def test_csqc_text_overlay_is_not_the_default_ward_surface() -> None:
 
     assert "set screwm_csqc_overlay 0" in autoexec
     assert "set screwm_csqc_lightfield 1" in autoexec
+    assert "set screwm_csqc_diagnostic_lightfield 0" in autoexec
+    assert "set screwm_csqc_effect_lightfield 1" in autoexec
     assert "set screwm_review_fill_light 1" in autoexec
+    assert "set screwm_csqc_material_field 1" in autoexec
+    assert "set screwm_csqc_theatre_spots 1" in autoexec
+    assert "r_ambient 12" in autoexec
     assert "Ward identity belongs to the scroom geometry" in autoexec
+    assert "screwm_effect_lightfield_enabled" in body
+    assert 'cvar("screwm_csqc_effect_lightfield") > 0' in body
     assert 'cvar("screwm_review_fill_light") > 0' in body
-    assert "adddynamiclight('0 -455 196'" in body
-    assert "220 + screwm_energy * 80" in body
-    assert "screwm_add_ward_light('0 -650 155'" in body
-    assert "screwm_add_ward_light('-345 -405 125'" in body
+    assert "adddynamiclight('0 -555 196'" in body
+    assert "92 + screwm_energy * 34" in body
+    assert "screwm_add_ward_light('-900 -2360 130'" in body
+    assert "screwm_add_ward_light('-1180 -600 330'" in body
 
 
 def test_csqc_dynamic_lights_cover_all_physical_ward_panes() -> None:
@@ -54,8 +61,10 @@ def test_csqc_dynamic_lights_cover_all_physical_ward_panes() -> None:
     assert body.count("screwm_add_ward_light('") == 36
     assert body.count('screwm_read_norm("data/ward-active-') == 36
     assert body.count('screwm_read_norm("data/ward-presence-') == 36
-    assert "active * 74" in body
-    assert "presence * 56" in body
+    assert "active * 118" in body
+    assert "presence * 96" in body
+    assert "activity = screwm_clamp(active + presence * 0.70" in body
+    assert "screwm_clamp(radius, 28, 158)" in body
     assert 'screwm_read_norm("data/audio-rms.txt")' in body
     assert "screwm_audio_onset * 20" in body
     assert 'screwm_read_norm("data/homage-quake-active.txt")' in body
@@ -130,8 +139,8 @@ def test_csqc_content_source_manifests_live_on_source_planes() -> None:
     )
     assert "fresh * 78 + opacity * 46 + area * 42" in body
     assert "screwm_content_source_count * 16" in body
-    assert "screwm_add_content_source_light('-322 -486 318', 1" in body
-    assert "screwm_add_content_source_light('322 -486 158', 6" in body
+    assert "screwm_add_content_source_light('-1580 -2140 290', 1" in body
+    assert "screwm_add_content_source_light('1580 -500 300', 6" in body
 
 
 def test_csqc_aoa_panes_and_scroom_scene_graph_carry_live_lightfields() -> None:
@@ -186,11 +195,12 @@ def test_csqc_reverie_material_fields_live_on_scroom_geometry() -> None:
     assert "spectral_field = screwm_reverie_spectral" in body
     assert "temporal_field = screwm_reverie_temporal" in body
     assert "thermal_field = screwm_reverie_thermal" in body
-    assert "adddynamiclight('0 -520 326'" in body
-    assert "adddynamiclight('0 -488 252'" in body
-    assert "adddynamiclight('-150 -490 300'" in body
-    assert "adddynamiclight('144 -488 260'" in body
-    assert "adddynamiclight('-96 -448 104'" in body
+    assert 'cvar("screwm_csqc_material_field") <= 0' in body
+    assert "adddynamiclight('0 -620 326'" in body
+    assert "adddynamiclight('0 -588 252'" in body
+    assert "adddynamiclight('-180 -595 300'" in body
+    assert "adddynamiclight('180 -595 260'" in body
+    assert "adddynamiclight('-120 -650 104'" in body
     assert "screwm_add_material_field_lights();" in body
 
 
@@ -246,6 +256,7 @@ def test_csqc_visual_chain_and_effect_drift_live_in_scroom_lightfield() -> None:
         "temporal",
         "texture",
         "edge",
+        "compositing",
     ):
         assert f"data/effect-drift-{name}.txt" in body
 
@@ -258,6 +269,7 @@ def test_csqc_visual_chain_and_effect_drift_live_in_scroom_lightfield() -> None:
     assert "screwm_effect_drift_active_ratio * 22" in body
     assert "screwm_chain_drift * 104 + screwm_effect_drift_atmospheric * 56" in body
     assert "screwm_effect_drift_region_count * 34" in body
+    assert "screwm_effect_drift_compositing * 104" in body
     assert "screwm_add_visual_chain_light('-300 -526 74', 1" in body
     assert "screwm_add_visual_chain_light('300 -526 74', 9" in body
     assert "screwm_add_visual_chain_lights();" in body
@@ -282,8 +294,8 @@ def test_csqc_imagination_fragment_intent_lives_in_scroom_lightfield() -> None:
     assert "screwm_imagination_salience * 118" in body
     assert "screwm_imagination_continuation * 34" in body
     assert "screwm_imagination_material_weight(0.25)" in body
-    assert "screwm_add_imagination_dim_light('-132 -502 284', 1" in body
-    assert "screwm_add_imagination_dim_light('0 -502 238', 9" in body
+    assert "screwm_add_imagination_dim_light('-132 -602 284', 1" in body
+    assert "screwm_add_imagination_dim_light('0 -602 238', 9" in body
     assert "screwm_add_imagination_intent_lights();" in body
 
 
@@ -405,7 +417,7 @@ def test_darkplaces_review_camera_is_locked_by_default() -> None:
     assert "set screwm_camera_orbit 0" in autoexec
     assert "cl_bob 0" in autoexec
     assert "cl_rollangle 0" in autoexec
-    assert "fov 78" in autoexec
+    assert "fov 90" in autoexec
     assert "set screwm_camera_file_control 1" in autoexec
     assert "set screwm_player_noclip_control 1" in autoexec
     assert "set screwm_csqc_review_camera 1" in autoexec
@@ -448,24 +460,41 @@ def test_csqc_review_camera_overrides_render_view_for_obs_feedback() -> None:
     assert 'screwm_read_float("data/camera-yaw.txt"' in body
     assert "screwm_review_camera_fov_y = fov * 0.625;" in body
     assert 'cvar("screwm_csqc_review_path") > 0' in body
+    assert "cycle = time * 800 / screwm_review_camera_period;" in body
+    assert "while (cycle >= 800)" in body
+    assert "origin_a = '0 -2360 190';" in body
+    assert "origin_b = '-240 -2200 204';" in body
+    assert "origin_b = '-560 -1880 218';" in body
+    assert "origin_b = '-720 -1460 230';" in body
+    assert "origin_b = '520 -1120 224';" in body
+    assert "origin_b = '720 -1460 230';" in body
+    assert "origin_b = '560 -1880 218';" in body
+    assert "origin_b = '0 -2360 190';" in body
+    assert "target_a = '0 -555 206';" in body
+    assert "target_b = '-420 -1160 230';" not in body
+    assert "target_b = '-1180 -1320 245';" not in body
+    assert "target_b = '1180 -1320 245';" not in body
+    assert "target_b = '420 -1160 230';" not in body
+    assert "target_b = '0 -555 214';" in body
+    assert "screwm_review_camera_fov = '92 57.5 0';" in body
+    assert "s = u * u * (3 - 2 * u);" in body
     assert "phase = time * screwm_review_camera_two_pi / screwm_review_camera_period;" in body
-    assert "screwm_review_camera_origin_x = sin(phase) * 160;" in body
-    assert "screwm_review_camera_origin_y = -755 + cos(phase) * 35;" in body
-    assert "screwm_review_camera_origin_z = 205 + sin(lift_phase) * 14;" in body
-    assert "target_y = -455 + cos(phase + 0.25) * 18;" in body
-    assert "target_z = 190 + sin(phase * 0.5 + 0.4) * 20;" in body
-    assert "screwm_review_camera_angles = vectoangles(target - screwm_review_camera_origin);" in body
+    assert "screwm_review_camera_origin = origin_a + (origin_b - origin_a) * s;" in body
+    assert "target = target_a + (target_b - target_a) * s;" in body
+    assert (
+        "screwm_review_camera_angles = vectoangles(target - screwm_review_camera_origin);" in body
+    )
     assert "setproperty(VF_ORIGIN, screwm_review_camera_origin);" in body
     assert "setproperty(VF_ANGLES, screwm_review_camera_angles);" in body
     assert "setproperty(VF_CL_VIEWANGLES, screwm_review_camera_angles);" in body
     assert "setproperty(VF_FOV, screwm_review_camera_fov);" in body
-    assert "screwm_review_camera_origin = '0 -760 205';" in body
+    assert "screwm_review_camera_origin = '0 -2360 190';" in body
     assert (
-        "screwm_review_camera_angles = vectoangles('0 -455 184' - screwm_review_camera_origin);"
+        "screwm_review_camera_angles = vectoangles('0 -555 206' - screwm_review_camera_origin);"
         in body
     )
-    assert "screwm_review_camera_fov = '78 49 0';" in body
-    assert "screwm_review_camera_period = 160.0;" in body
+    assert "screwm_review_camera_fov = '92 57.5 0';" in body
+    assert "screwm_review_camera_period = 360.0;" in body
 
 
 def test_darkplaces_review_camera_is_noclip_not_player_physics() -> None:

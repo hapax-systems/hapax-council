@@ -51,6 +51,11 @@ float screwm_chain_aperture;
 float screwm_chain_param_pressure;
 float screwm_effect_drift_pass_count;
 float screwm_effect_drift_active_ratio;
+float screwm_effect_drift_active_slot_ratio;
+float screwm_effect_drift_active_effect_ratio;
+float screwm_effect_drift_fast_ratio;
+float screwm_effect_drift_slow_ratio;
+float screwm_effect_drift_kind_variance;
 float screwm_effect_drift_max_delta;
 float screwm_effect_drift_region_count;
 float screwm_effect_drift_tonal;
@@ -58,6 +63,7 @@ float screwm_effect_drift_atmospheric;
 float screwm_effect_drift_temporal;
 float screwm_effect_drift_texture;
 float screwm_effect_drift_edge;
+float screwm_effect_drift_compositing;
 float screwm_imagination_salience;
 float screwm_imagination_continuation;
 float screwm_imagination_material;
@@ -336,6 +342,17 @@ float(float value) screwm_abs =
     return value;
 };
 
+vector(float phase) screwm_synthwave_color =
+{
+    vector color;
+
+    color = '0 0 0';
+    color_x = screwm_clamp(0.48 + 0.34 * sin(phase), 0.08, 0.86);
+    color_y = screwm_clamp(0.26 + 0.24 * sin(phase + 2.094), 0.06, 0.58);
+    color_z = screwm_clamp(0.60 + 0.36 * sin(phase + 4.188), 0.22, 0.98);
+    return color;
+};
+
 float(string path) screwm_read_norm =
 {
     string line;
@@ -413,6 +430,11 @@ void() screwm_poll_state =
     screwm_chain_param_pressure = screwm_read_norm("data/visual-chain-param-pressure.txt");
     screwm_effect_drift_pass_count = screwm_read_norm("data/effect-drift-pass-count.txt");
     screwm_effect_drift_active_ratio = screwm_read_norm("data/effect-drift-active-ratio.txt");
+    screwm_effect_drift_active_slot_ratio = screwm_read_norm("data/effect-drift-active-slot-ratio.txt");
+    screwm_effect_drift_active_effect_ratio = screwm_read_norm("data/effect-drift-active-effect-ratio.txt");
+    screwm_effect_drift_fast_ratio = screwm_read_norm("data/effect-drift-fast-ratio.txt");
+    screwm_effect_drift_slow_ratio = screwm_read_norm("data/effect-drift-slow-ratio.txt");
+    screwm_effect_drift_kind_variance = screwm_read_norm("data/effect-drift-kind-variance.txt");
     screwm_effect_drift_max_delta = screwm_read_norm("data/effect-drift-max-delta.txt");
     screwm_effect_drift_region_count = screwm_read_norm("data/effect-drift-region-count.txt");
     screwm_effect_drift_tonal = screwm_read_norm("data/effect-drift-tonal.txt");
@@ -420,6 +442,7 @@ void() screwm_poll_state =
     screwm_effect_drift_temporal = screwm_read_norm("data/effect-drift-temporal.txt");
     screwm_effect_drift_texture = screwm_read_norm("data/effect-drift-texture.txt");
     screwm_effect_drift_edge = screwm_read_norm("data/effect-drift-edge.txt");
+    screwm_effect_drift_compositing = screwm_read_norm("data/effect-drift-compositing.txt");
     screwm_imagination_salience = screwm_read_norm("data/imagination-salience.txt");
     screwm_imagination_continuation = screwm_read_norm("data/imagination-continuation.txt");
     screwm_imagination_material = screwm_read_norm("data/imagination-material.txt");
@@ -660,7 +683,9 @@ void() screwm_poll_state =
 void() screwm_apply_review_camera =
 {
     float phase;
-    float lift_phase;
+    float cycle;
+    float u;
+    float s;
     float manual;
     float fov;
     float native_delta;
@@ -668,7 +693,11 @@ void() screwm_apply_review_camera =
     float native_hold;
     float native_speed;
     vector angle_delta;
+    vector origin_a;
+    vector origin_b;
     vector target;
+    vector target_a;
+    vector target_b;
 
     if (cvar("screwm_csqc_review_camera") <= 0)
         return;
@@ -704,9 +733,9 @@ void() screwm_apply_review_camera =
         screwm_review_camera_origin = screwm_review_camera_origin + v_forward * input_movevalues_x * frametime * native_speed;
         screwm_review_camera_origin = screwm_review_camera_origin + v_right * input_movevalues_y * frametime * native_speed;
         screwm_review_camera_origin_z = screwm_review_camera_origin_z + input_movevalues_z * frametime * native_speed;
-        screwm_review_camera_origin_x = screwm_clamp(screwm_review_camera_origin_x, -360, 360);
-        screwm_review_camera_origin_y = screwm_clamp(screwm_review_camera_origin_y, -720, 40);
-        screwm_review_camera_origin_z = screwm_clamp(screwm_review_camera_origin_z, 24, 340);
+        screwm_review_camera_origin_x = screwm_clamp(screwm_review_camera_origin_x, -1900, 1900);
+        screwm_review_camera_origin_y = screwm_clamp(screwm_review_camera_origin_y, -2440, 1180);
+        screwm_review_camera_origin_z = screwm_clamp(screwm_review_camera_origin_z, -48, 780);
     }
     else if (cvar("screwm_csqc_manual_camera") > 0 && manual > 0)
     {
@@ -716,28 +745,94 @@ void() screwm_apply_review_camera =
         screwm_review_camera_angles_x = screwm_read_float("data/camera-pitch.txt", screwm_review_camera_angles_x);
         screwm_review_camera_angles_y = screwm_read_float("data/camera-yaw.txt", screwm_review_camera_angles_y);
         screwm_review_camera_angles_z = 0;
-        fov = screwm_read_float("data/camera-fov.txt", 78);
+        fov = screwm_read_float("data/camera-fov.txt", 70);
         screwm_review_camera_fov_x = fov;
         screwm_review_camera_fov_y = fov * 0.625;
     }
     else if (cvar("screwm_csqc_review_path") > 0)
     {
+        cycle = time * 800 / screwm_review_camera_period;
+        while (cycle >= 800)
+            cycle = cycle - 800;
+
+        // Eight-station roji walk: broad loop, deliberate reveal/conceal, and
+        // no roll/spin. The opening segment holds the AoA centered so OBS
+        // feedback starts from an oriented, critiqueable room view.
+        if (cycle < 100)
+        {
+            u = cycle / 100;
+            origin_a = '0 -2360 190';
+            origin_b = '-240 -2200 204';
+            target_a = '0 -555 206';
+            target_b = '0 -555 210';
+        }
+        else if (cycle < 200)
+        {
+            u = (cycle - 100) / 100;
+            origin_a = '-240 -2200 204';
+            origin_b = '-560 -1880 218';
+            target_a = '0 -555 210';
+            target_b = '0 -555 214';
+        }
+        else if (cycle < 300)
+        {
+            u = (cycle - 200) / 100;
+            origin_a = '-560 -1880 218';
+            origin_b = '-720 -1460 230';
+            target_a = '0 -555 214';
+            target_b = '0 -555 214';
+        }
+        else if (cycle < 400)
+        {
+            u = (cycle - 300) / 100;
+            origin_a = '-720 -1460 230';
+            origin_b = '-520 -1120 224';
+            target_a = '0 -555 214';
+            target_b = '0 -555 214';
+        }
+        else if (cycle < 500)
+        {
+            u = (cycle - 400) / 100;
+            origin_a = '-520 -1120 224';
+            origin_b = '520 -1120 224';
+            target_a = '0 -555 214';
+            target_b = '0 -555 214';
+        }
+        else if (cycle < 600)
+        {
+            u = (cycle - 500) / 100;
+            origin_a = '520 -1120 224';
+            origin_b = '720 -1460 230';
+            target_a = '0 -555 214';
+            target_b = '0 -555 214';
+        }
+        else if (cycle < 700)
+        {
+            u = (cycle - 600) / 100;
+            origin_a = '720 -1460 230';
+            origin_b = '560 -1880 218';
+            target_a = '0 -555 214';
+            target_b = '0 -555 214';
+        }
+        else
+        {
+            u = (cycle - 700) / 100;
+            origin_a = '560 -1880 218';
+            origin_b = '0 -2360 190';
+            target_a = '0 -555 214';
+            target_b = '0 -555 206';
+        }
+
+        s = u * u * (3 - 2 * u);
         phase = time * screwm_review_camera_two_pi / screwm_review_camera_period;
-        lift_phase = phase + 1.5708;
+        screwm_review_camera_origin = origin_a + (origin_b - origin_a) * s;
+        screwm_review_camera_origin_z = screwm_review_camera_origin_z + sin(phase * 2) * 3;
 
-        // No-front garden stroll: slow exterior loop with a stable gaze into
-        // the AoA and semantic islands. The path reads the space without
-        // corkscrewing through the ward panes while we iterate on placement.
-        screwm_review_camera_origin_x = sin(phase) * 160;
-        screwm_review_camera_origin_y = -755 + cos(phase) * 35;
-        screwm_review_camera_origin_z = 205 + sin(lift_phase) * 14;
-
-        target_x = sin(phase + 0.45) * 28;
-        target_y = -455 + cos(phase + 0.25) * 18;
-        target_z = 190 + sin(phase * 0.5 + 0.4) * 20;
+        target = target_a + (target_b - target_a) * s;
+        target_z = target_z + sin(phase * 1.5 + 0.4) * 4;
         screwm_review_camera_angles = vectoangles(target - screwm_review_camera_origin);
         screwm_review_camera_angles_z = 0;
-        screwm_review_camera_fov = '78 49 0';
+        screwm_review_camera_fov = '92 57.5 0';
     }
     screwm_native_last_angles = input_angles;
 
@@ -823,17 +918,33 @@ void(vector org, string text, float idx, vector color) screwm_draw_ward_detail =
     drawstring(p + '-31 10 0', text, '4 4 0', color, screwm_clamp(alpha, 0.18, 0.56), DRAWFLAG_ADDITIVE);
 };
 
+float() screwm_diagnostic_lightfield_enabled =
+{
+    return cvar("screwm_csqc_diagnostic_lightfield") > 0;
+};
+
+float() screwm_effect_lightfield_enabled =
+{
+    return cvar("screwm_csqc_effect_lightfield") > 0 || screwm_diagnostic_lightfield_enabled();
+};
+
 void(vector org, float idx, vector color, float active, float presence) screwm_add_ward_light =
 {
     float radius;
+    float activity;
     float homage_boost;
 
-    radius = 22 + screwm_energy * 18 + screwm_voice * 32 + active * 74;
-    radius = radius + presence * 56;
-    radius = radius + screwm_audio_rms * 12 + screwm_audio_onset * 20;
-    homage_boost = screwm_homage_quake * (7 + screwm_homage_transition * 28 + screwm_homage_signature * 22);
+    if (idx != 5 && idx != 9 && idx != 22 && idx != 27)
+        return;
+
+    activity = screwm_clamp(active + presence * 0.70, 0, 1);
+    radius = 34 + screwm_energy * 24 + screwm_voice * 38 + active * 118;
+    radius = radius + presence * 96 + activity * 34;
+    radius = radius + screwm_audio_rms * 16 + screwm_audio_onset * 26;
+    homage_boost = screwm_homage_quake * (10 + screwm_homage_transition * 34 + screwm_homage_signature * 26);
     radius = radius + homage_boost;
-    adddynamiclight(org, screwm_clamp(radius, 14, 78), color);
+    adddynamiclight(org, screwm_clamp(radius, 28, 158), color);
+    adddynamiclight(org + '0 0 18', screwm_clamp(radius * 0.42, 12, 78), color);
 };
 
 void() screwm_add_ward_property_field_lights =
@@ -843,6 +954,9 @@ void() screwm_add_ward_property_field_lights =
     float front_radius;
     float drift_radius;
     float presence_radius;
+
+    if (!screwm_effect_lightfield_enabled())
+        return;
 
     depth_radius = 18 + screwm_ward_property_depth_pressure * 82;
     depth_radius = depth_radius + screwm_ward_property_fishbowl_pressure * 34;
@@ -878,6 +992,9 @@ void(vector org, float idx, vector color, float signal) screwm_add_aoa_pane_ligh
 {
     float radius;
 
+    if (!screwm_effect_lightfield_enabled())
+        return;
+
     radius = 16 + screwm_energy * 22 + signal * 92;
     radius = radius + screwm_audio_onset * 18 + screwm_homage_quake * (8 + screwm_homage_transition * 20);
     adddynamiclight(org, screwm_clamp(radius, 10, 120), color);
@@ -886,6 +1003,9 @@ void(vector org, float idx, vector color, float signal) screwm_add_aoa_pane_ligh
 void(vector org, float idx, vector color, float signal, float fresh) screwm_add_scene_graph_light =
 {
     float radius;
+
+    if (!screwm_diagnostic_lightfield_enabled())
+        return;
 
     radius = 14 + screwm_energy * 18 + signal * 64 + fresh * 52;
     radius = radius + screwm_audio_rms * 10 + screwm_homage_quake * (6 + screwm_homage_signature * 18);
@@ -905,7 +1025,11 @@ void(vector org, float idx, vector color, float signal) screwm_add_local_effect_
 {
     float radius;
 
+    if (!screwm_effect_lightfield_enabled())
+        return;
+
     radius = 12 + screwm_energy * 16 + signal * 104;
+    radius = radius + screwm_effect_drift_active_effect_ratio * 28 + screwm_effect_drift_kind_variance * 18;
     radius = radius + screwm_reverie_temporal * 16 + screwm_reverie_material * 18;
     radius = radius + screwm_audio_onset * 20 + screwm_homage_signature * 14;
     adddynamiclight(org, screwm_clamp(radius, 8, 128), color);
@@ -917,9 +1041,15 @@ void(vector org, float idx, vector color, float active_src, float active_dst) sc
     float radius;
     float homage_boost;
 
+    if (!screwm_effect_lightfield_enabled())
+        return;
+
     activity = screwm_clamp(active_src + active_dst, 0, 1);
     radius = 18 + screwm_energy * 20 + activity * 58;
     radius = radius + screwm_audio_rms * 18 + screwm_audio_onset * 34;
+    radius = radius + screwm_effect_drift_active_ratio * 30 + screwm_chain_drift * 22;
+    radius = radius + screwm_effect_drift_active_slot_ratio * 18 + screwm_effect_drift_kind_variance * 20;
+    radius = radius + screwm_effect_drift_fast_ratio * 14 + screwm_effect_drift_slow_ratio * 10;
     homage_boost = screwm_homage_quake * (10 + screwm_homage_transition * 26);
     radius = radius + homage_boost;
     adddynamiclight(org, screwm_clamp(radius, 12, 94), color);
@@ -945,17 +1075,36 @@ void() screwm_add_material_field_lights =
     float spectral_field;
     float temporal_field;
     float thermal_field;
+    float room_field;
+    float floor_field;
+    float wall_field;
+    float ceiling_field;
+
+    if (cvar("screwm_csqc_material_field") <= 0)
+        return;
 
     material_field = screwm_reverie_material + screwm_audio_rms * 0.55 + screwm_homage_signature * 0.35;
     spectral_field = screwm_reverie_spectral + screwm_audio_onset * 0.40 + screwm_homage_transition * 0.30;
     temporal_field = screwm_reverie_temporal + screwm_audio_onset * 0.35;
     thermal_field = screwm_reverie_thermal + screwm_homage_quake * 0.28;
+    room_field = screwm_clamp(material_field + screwm_effect_drift_active_ratio * 0.85 + screwm_chain_drift * 0.50 + screwm_effect_drift_kind_variance * 0.35, 0, 2.5);
+    floor_field = screwm_clamp(temporal_field + screwm_effect_drift_edge * 0.70 + screwm_chain_aperture * 0.40 + screwm_effect_drift_fast_ratio * 0.28, 0, 2.5);
+    wall_field = screwm_clamp(spectral_field + screwm_chain_color * 0.45 + screwm_chain_noise * 0.35 + screwm_effect_drift_active_effect_ratio * 0.32, 0, 2.5);
+    ceiling_field = screwm_clamp(thermal_field + screwm_chain_feedback * 0.45 + screwm_chain_drift * 0.35 + screwm_effect_drift_slow_ratio * 0.28, 0, 2.5);
 
-    adddynamiclight('0 -520 326', screwm_clamp(42 + material_field * 96, 24, 138), screwm_cyan);
-    adddynamiclight('0 -488 252', screwm_clamp(26 + spectral_field * 76, 14, 106), screwm_green);
-    adddynamiclight('-150 -490 300', screwm_clamp(22 + material_field * 64, 12, 92), screwm_amber);
-    adddynamiclight('144 -488 260', screwm_clamp(22 + thermal_field * 72, 12, 104), screwm_rose);
-    adddynamiclight('-96 -448 104', screwm_clamp(18 + temporal_field * 58, 10, 84), screwm_green);
+    adddynamiclight('0 -620 326', screwm_clamp(42 + material_field * 96, 24, 138), screwm_cyan);
+    adddynamiclight('0 -588 252', screwm_clamp(26 + spectral_field * 76, 14, 106), screwm_green);
+    adddynamiclight('-180 -595 300', screwm_clamp(22 + material_field * 64, 12, 92), screwm_amber);
+    adddynamiclight('180 -595 260', screwm_clamp(22 + thermal_field * 72, 12, 104), screwm_rose);
+    adddynamiclight('-120 -650 104', screwm_clamp(18 + temporal_field * 58, 10, 84), screwm_green);
+    adddynamiclight('0 -1910 36', screwm_clamp(34 + floor_field * 88, 18, 154), screwm_cyan);
+    adddynamiclight('-760 -1510 42', screwm_clamp(22 + floor_field * 66, 12, 126), screwm_green);
+    adddynamiclight('760 -1210 42', screwm_clamp(22 + room_field * 62, 12, 132), screwm_rose);
+    adddynamiclight('420 -430 54', screwm_clamp(20 + floor_field * 70, 10, 132), screwm_amber);
+    adddynamiclight('-1170 -1320 230', screwm_clamp(18 + wall_field * 74, 10, 138), screwm_cyan);
+    adddynamiclight('1170 -1320 230', screwm_clamp(18 + wall_field * 74, 10, 138), screwm_rose);
+    adddynamiclight('0 -1320 504', screwm_clamp(18 + ceiling_field * 84, 10, 146), screwm_cyan);
+    adddynamiclight('0 -430 512', screwm_clamp(16 + ceiling_field * 72, 8, 132), screwm_green);
 };
 
 void(vector org, float idx, vector color, float signal) screwm_add_visual_zone_light =
@@ -971,6 +1120,9 @@ void() screwm_add_visual_layer_lights =
 {
     float stance_radius;
     float fault_radius;
+
+    if (!screwm_effect_lightfield_enabled())
+        return;
 
     screwm_add_visual_zone_light('-300 -548 340', 1, screwm_amber, screwm_visual_zone_01);
     screwm_add_visual_zone_light('-214 -548 340', 2, screwm_rose, screwm_visual_zone_02);
@@ -996,7 +1148,8 @@ void(vector org, float idx, vector color, float signal) screwm_add_visual_chain_
     float radius;
 
     radius = 10 + signal * 96 + screwm_chain_param_pressure * 24;
-    radius = radius + screwm_effect_drift_active_ratio * 22 + screwm_audio_rms * 10;
+    radius = radius + screwm_effect_drift_active_ratio * 22 + screwm_effect_drift_kind_variance * 20;
+    radius = radius + screwm_audio_rms * 10;
     adddynamiclight(org, screwm_clamp(radius, 8, 136), color);
 };
 
@@ -1004,6 +1157,9 @@ void() screwm_add_visual_chain_lights =
 {
     float param_radius;
     float drift_radius;
+
+    if (!screwm_effect_lightfield_enabled())
+        return;
 
     screwm_add_visual_chain_light('-300 -526 74', 1, screwm_amber, screwm_chain_01);
     screwm_add_visual_chain_light('-225 -526 74', 2, screwm_rose, screwm_chain_02);
@@ -1023,6 +1179,7 @@ void() screwm_add_visual_chain_lights =
     drift_radius = 18 + screwm_chain_drift * 104 + screwm_effect_drift_atmospheric * 56;
     drift_radius = drift_radius + screwm_effect_drift_region_count * 34;
     adddynamiclight('314 -512 128', screwm_clamp(drift_radius, 12, 156), screwm_cyan);
+    adddynamiclight('314 -512 42', screwm_clamp(14 + screwm_effect_drift_compositing * 104 + screwm_chain_feedback * 24, 10, 142), screwm_rose);
     adddynamiclight('0 -512 42', screwm_clamp(14 + screwm_chain_aperture * 84 + screwm_effect_drift_edge * 52, 10, 132), screwm_green);
 };
 
@@ -1045,26 +1202,29 @@ void() screwm_add_imagination_intent_lights =
     float core;
 
     core = 24 + screwm_imagination_salience * 118 + screwm_imagination_continuation * 34;
-    adddynamiclight('0 -497 178', screwm_clamp(core, 18, 170), screwm_amber);
-    adddynamiclight('-54 -496 216', screwm_clamp(18 + screwm_imagination_material_weight(0.00) * 112, 10, 138), screwm_cyan);
-    adddynamiclight('54 -496 216', screwm_clamp(18 + screwm_imagination_material_weight(0.25) * 112, 10, 138), screwm_rose);
-    adddynamiclight('-54 -496 140', screwm_clamp(18 + screwm_imagination_material_weight(0.50) * 112, 10, 138), screwm_green);
-    adddynamiclight('54 -496 140', screwm_clamp(18 + screwm_imagination_material_weight(0.75) * 112, 10, 138), screwm_cyan);
-    adddynamiclight('0 -496 104', screwm_clamp(12 + screwm_imagination_material_weight(1.00) * 96, 8, 118), screwm_dim);
+    adddynamiclight('0 -597 178', screwm_clamp(core, 18, 170), screwm_amber);
+    adddynamiclight('-54 -596 216', screwm_clamp(18 + screwm_imagination_material_weight(0.00) * 112, 10, 138), screwm_cyan);
+    adddynamiclight('54 -596 216', screwm_clamp(18 + screwm_imagination_material_weight(0.25) * 112, 10, 138), screwm_rose);
+    adddynamiclight('-54 -596 140', screwm_clamp(18 + screwm_imagination_material_weight(0.50) * 112, 10, 138), screwm_green);
+    adddynamiclight('54 -596 140', screwm_clamp(18 + screwm_imagination_material_weight(0.75) * 112, 10, 138), screwm_cyan);
+    adddynamiclight('0 -596 104', screwm_clamp(12 + screwm_imagination_material_weight(1.00) * 96, 8, 118), screwm_dim);
 
-    screwm_add_imagination_dim_light('-132 -502 284', 1, screwm_amber, screwm_imagination_dim_01);
-    screwm_add_imagination_dim_light('0 -502 304', 2, screwm_rose, screwm_imagination_dim_02);
-    screwm_add_imagination_dim_light('132 -502 284', 3, screwm_cyan, screwm_imagination_dim_03);
-    screwm_add_imagination_dim_light('-150 -502 206', 4, screwm_green, screwm_imagination_dim_04);
-    screwm_add_imagination_dim_light('150 -502 206', 5, screwm_rose, screwm_imagination_dim_05);
-    screwm_add_imagination_dim_light('-132 -502 122', 6, screwm_cyan, screwm_imagination_dim_06);
-    screwm_add_imagination_dim_light('0 -502 92', 7, screwm_amber, screwm_imagination_dim_07);
-    screwm_add_imagination_dim_light('132 -502 122', 8, screwm_green, screwm_imagination_dim_08);
-    screwm_add_imagination_dim_light('0 -502 238', 9, screwm_rose, screwm_imagination_dim_09);
+    screwm_add_imagination_dim_light('-132 -602 284', 1, screwm_amber, screwm_imagination_dim_01);
+    screwm_add_imagination_dim_light('0 -602 304', 2, screwm_rose, screwm_imagination_dim_02);
+    screwm_add_imagination_dim_light('132 -602 284', 3, screwm_cyan, screwm_imagination_dim_03);
+    screwm_add_imagination_dim_light('-150 -602 206', 4, screwm_green, screwm_imagination_dim_04);
+    screwm_add_imagination_dim_light('150 -602 206', 5, screwm_rose, screwm_imagination_dim_05);
+    screwm_add_imagination_dim_light('-132 -602 122', 6, screwm_cyan, screwm_imagination_dim_06);
+    screwm_add_imagination_dim_light('0 -602 92', 7, screwm_amber, screwm_imagination_dim_07);
+    screwm_add_imagination_dim_light('132 -602 122', 8, screwm_green, screwm_imagination_dim_08);
+    screwm_add_imagination_dim_light('0 -602 238', 9, screwm_rose, screwm_imagination_dim_09);
 };
 
 void() screwm_add_local_effect_lights =
 {
+    if (!screwm_effect_lightfield_enabled())
+        return;
+
     screwm_add_local_effect_light('-250 -546 28', 1, screwm_cyan, screwm_effect_01);
     screwm_add_local_effect_light('-200 -546 28', 2, screwm_rose, screwm_effect_02);
     screwm_add_local_effect_light('-150 -546 28', 3, screwm_green, screwm_effect_03);
@@ -1082,6 +1242,9 @@ void() screwm_add_shader_plan_lights =
 {
     float plan_radius;
     float temporal_radius;
+
+    if (!screwm_effect_lightfield_enabled())
+        return;
 
     plan_radius = 14 + screwm_shader_plan_pass_count * 78;
     plan_radius = plan_radius + screwm_shader_plan_render_ratio * 28;
@@ -1104,6 +1267,9 @@ void() screwm_add_gem_mural_lights =
     float density_radius;
     float narrative_radius;
 
+    if (!screwm_diagnostic_lightfield_enabled())
+        return;
+
     recruitment_radius = 14 + screwm_gem_recruitment_score * 92 + screwm_gem_recruitment_fresh * 64;
     recruitment_radius = recruitment_radius + screwm_active_08 * 42 + screwm_active_11 * 28;
     adddynamiclight('-222 -360 226', screwm_clamp(recruitment_radius, 10, 170), screwm_green);
@@ -1123,6 +1289,9 @@ void() screwm_add_impingement_recruitment_lights =
     float recruitment_radius;
     float transition_radius;
 
+    if (!screwm_diagnostic_lightfield_enabled())
+        return;
+
     impingement_radius = 16 + screwm_impingement_count * 58 + screwm_impingement_strength * 82;
     impingement_radius = impingement_radius + screwm_impingement_fresh * 48;
     adddynamiclight('-74 -360 226', screwm_clamp(impingement_radius, 10, 174), screwm_green);
@@ -1141,6 +1310,9 @@ void() screwm_add_programme_segment_lights =
     float state_radius;
     float segment_radius;
     float grounding_radius;
+
+    if (!screwm_diagnostic_lightfield_enabled())
+        return;
 
     banner_radius = 16 + screwm_programme_role * 72 + screwm_programme_cue_hold * 64;
     banner_radius = banner_radius + screwm_active_21 * 36;
@@ -1164,6 +1336,9 @@ void() screwm_add_live_context_lights =
     float album_radius;
     float voice_radius;
 
+    if (!screwm_diagnostic_lightfield_enabled())
+        return;
+
     token_radius = 14 + screwm_live_token_pressure * 88 + screwm_live_token_burst * 54;
     token_radius = token_radius + screwm_live_viewer_pressure * 38;
     adddynamiclight('-222 -360 280', screwm_clamp(token_radius, 10, 172), screwm_cyan);
@@ -1183,6 +1358,9 @@ void() screwm_add_governance_health_lights =
     float health_radius;
     float follow_radius;
 
+    if (!screwm_diagnostic_lightfield_enabled())
+        return;
+
     consent_radius = 14 + screwm_governance_consent_allowed * 82 + screwm_governance_persistence_allowed * 42;
     adddynamiclight('-300 -548 460', screwm_clamp(consent_radius, 8, 156), screwm_green);
 
@@ -1194,6 +1372,44 @@ void() screwm_add_governance_health_lights =
     follow_radius = 12 + screwm_governance_follow_active * 74 + screwm_governance_follow_confidence * 64;
     follow_radius = follow_radius + screwm_governance_follow_fresh * 36;
     adddynamiclight('300 -548 460', screwm_clamp(follow_radius, 8, 168), screwm_amber);
+};
+
+void(float slot, vector base, vector sweep, float phase_offset) screwm_add_theatre_spot =
+{
+    vector color;
+    vector top;
+    vector mid;
+    vector foot;
+    float phase;
+    float slow_a;
+    float slow_b;
+    float radius;
+
+    phase = time * 0.055 + phase_offset + screwm_effect_drift_kind_variance * 1.2;
+    slow_a = sin(time * (0.043 + slot * 0.007) + phase_offset);
+    slow_b = sin(time * (0.029 + slot * 0.011) + phase_offset * 1.7);
+    color = screwm_synthwave_color(phase);
+
+    top = base;
+    top_x = top_x + sweep_x * slow_a;
+    top_y = top_y + sweep_y * slow_b;
+    top_z = top_z + sweep_z * sin(time * 0.021 + phase_offset);
+
+    mid = top;
+    mid_x = mid_x * 0.70;
+    mid_y = mid_y * 0.66 + -650 * 0.34;
+    mid_z = mid_z - 190;
+
+    foot = mid;
+    foot_x = foot_x * 0.50;
+    foot_y = foot_y - 360;
+    foot_z = 72 + 32 * sin(time * 0.037 + phase_offset);
+
+    radius = 34 + screwm_effect_drift_active_ratio * 18 + screwm_chain_color * 16;
+    radius = radius + screwm_effect_drift_kind_variance * 18;
+    adddynamiclight(top, screwm_clamp(radius * 0.24, 8, 24), color * 0.18);
+    adddynamiclight(mid, screwm_clamp(radius * 0.72, 24, 58), color * 0.54);
+    adddynamiclight(foot, screwm_clamp(radius * 0.22, 6, 22), color * 0.16);
 };
 
 void() screwm_draw_ward_links =
@@ -1337,16 +1553,21 @@ void() screwm_add_dynamic_lights =
     if (cvar("screwm_csqc_lightfield") < 0)
         return;
 
-    pulse = 170 + screwm_energy * 80 + screwm_audio_rms * 90;
-    voice_radius = 20 + screwm_voice * 90 + screwm_audio_onset * 40;
+    pulse = 82 + screwm_energy * 38 + screwm_audio_rms * 24;
+    voice_radius = 12 + screwm_voice * 28 + screwm_audio_onset * 18;
 
-    adddynamiclight('0 -455 176', pulse + voice_radius, '1.0 0.58 0.18');
+    adddynamiclight('0 -555 176', pulse + voice_radius, '0.70 0.36 0.16');
     if (cvar("screwm_review_fill_light") > 0)
-        adddynamiclight('0 -455 196', 220 + screwm_energy * 80, '0.74 0.58 0.38');
-    adddynamiclight('-310 -575 194', 70 + screwm_energy * 40, screwm_cyan);
-    adddynamiclight('300 -410 188', 70 + screwm_voice * 80, screwm_rose);
-    adddynamiclight('24 -370 300', 58 + screwm_energy * 34, screwm_green);
-    adddynamiclight('0 -760 205', 58 + screwm_voice * 70, screwm_amber);
+        adddynamiclight('0 -555 196', 92 + screwm_energy * 34, '0.36 0.28 0.24');
+    adddynamiclight('-420 -870 210', 42 + screwm_energy * 22, screwm_cyan * 0.55);
+    adddynamiclight('420 -760 200', 42 + screwm_voice * 28, screwm_rose * 0.55);
+    adddynamiclight('0 -555 300', 34 + screwm_energy * 18, screwm_green * 0.50);
+    adddynamiclight('0 -1240 205', 34 + screwm_voice * 26, screwm_amber * 0.48);
+    if (cvar("screwm_csqc_theatre_spots") > 0)
+    {
+        screwm_add_theatre_spot(1, '-720 -1880 700', '360 520 70', 0.3);
+        screwm_add_theatre_spot(2, '760 -880 680', '-420 460 90', 3.1);
+    }
     screwm_add_homage_lights();
     screwm_add_material_field_lights();
     screwm_add_visual_layer_lights();
@@ -1361,109 +1582,109 @@ void() screwm_add_dynamic_lights =
     screwm_add_governance_health_lights();
     screwm_add_ward_property_field_lights();
 
-    screwm_add_ward_light('0 -650 155', 1, screwm_cyan, screwm_active_01, screwm_presence_01);
-    screwm_add_ward_light('-240 -665 135', 2, screwm_rose, screwm_active_02, screwm_presence_02);
-    screwm_add_ward_light('35 -330 310', 3, screwm_green, screwm_active_03, screwm_presence_03);
-    screwm_add_ward_light('0 -455 300', 4, screwm_green, screwm_active_04, screwm_presence_04);
-    screwm_add_ward_light('-180 -540 170', 5, screwm_green, screwm_active_05, screwm_presence_05);
-    screwm_add_ward_light('230 -365 225', 6, screwm_cyan, screwm_active_06, screwm_presence_06);
-    screwm_add_ward_light('-60 -620 180', 7, screwm_amber, screwm_active_07, screwm_presence_07);
-    screwm_add_ward_light('0 -455 225', 8, screwm_green, screwm_active_08, screwm_presence_08);
-    screwm_add_ward_light('0 -700 105', 9, screwm_amber, screwm_active_09, screwm_presence_09);
-    screwm_add_ward_light('80 -335 260', 10, screwm_green, screwm_active_10, screwm_presence_10);
-    screwm_add_ward_light('280 -360 205', 11, screwm_cyan, screwm_active_11, screwm_presence_11);
-    screwm_add_ward_light('210 -500 230', 12, screwm_amber, screwm_active_12, screwm_presence_12);
-    screwm_add_ward_light('60 -620 135', 13, screwm_amber, screwm_active_13, screwm_presence_13);
-    screwm_add_ward_light('350 -345 145', 14, screwm_cyan, screwm_active_14, screwm_presence_14);
-    screwm_add_ward_light('-110 -615 215', 15, screwm_amber, screwm_active_15, screwm_presence_15);
-    screwm_add_ward_light('-330 -500 210', 16, screwm_green, screwm_active_16, screwm_presence_16);
-    screwm_add_ward_light('315 -305 250', 17, screwm_cyan, screwm_active_17, screwm_presence_17);
-    screwm_add_ward_light('-285 -645 195', 18, screwm_rose, screwm_active_18, screwm_presence_18);
-    screwm_add_ward_light('-330 -610 115', 19, screwm_rose, screwm_active_19, screwm_presence_19);
-    screwm_add_ward_light('0 -735 75', 20, screwm_amber, screwm_active_20, screwm_presence_20);
-    screwm_add_ward_light('0 -350 335', 21, screwm_amber, screwm_active_21, screwm_presence_21);
-    screwm_add_ward_light('-165 -380 315', 22, screwm_amber, screwm_active_22, screwm_presence_22);
-    screwm_add_ward_light('245 -300 290', 23, screwm_cyan, screwm_active_23, screwm_presence_23);
-    screwm_add_ward_light('355 -370 235', 24, screwm_cyan, screwm_active_24, screwm_presence_24);
-    screwm_add_ward_light('-300 -360 300', 25, screwm_green, screwm_active_25, screwm_presence_25);
-    screwm_add_ward_light('150 -315 330', 26, screwm_green, screwm_active_26, screwm_presence_26);
-    screwm_add_ward_light('0 -325 360', 27, screwm_amber, screwm_active_27, screwm_presence_27);
-    screwm_add_ward_light('180 -430 125', 28, screwm_amber, screwm_active_28, screwm_presence_28);
-    screwm_add_ward_light('-245 -610 260', 29, screwm_rose, screwm_active_29, screwm_presence_29);
-    screwm_add_ward_light('325 -285 175', 30, screwm_cyan, screwm_active_30, screwm_presence_30);
-    screwm_add_ward_light('370 -475 165', 31, screwm_cyan, screwm_active_31, screwm_presence_31);
-    screwm_add_ward_light('245 -270 110', 32, screwm_cyan, screwm_active_32, screwm_presence_32);
-    screwm_add_ward_light('130 -305 100', 33, screwm_cyan, screwm_active_33, screwm_presence_33);
-    screwm_add_ward_light('75 -355 280', 34, screwm_green, screwm_active_34, screwm_presence_34);
-    screwm_add_ward_light('-285 -565 295', 35, screwm_rose, screwm_active_35, screwm_presence_35);
-    screwm_add_ward_light('-345 -405 125', 36, screwm_green, screwm_active_36, screwm_presence_36);
+    screwm_add_ward_light('-900 -2360 130', 1, screwm_cyan, screwm_active_01, screwm_presence_01);
+    screwm_add_ward_light('-1180 -1780 150', 2, screwm_rose, screwm_active_02, screwm_presence_02);
+    screwm_add_ward_light('-1040 980 300', 3, screwm_green, screwm_active_03, screwm_presence_03);
+    screwm_add_ward_light('-1180 -1540 245', 4, screwm_green, screwm_active_04, screwm_presence_04);
+    screwm_add_ward_light('-700 -1120 260', 5, screwm_green, screwm_active_05, screwm_presence_05);
+    screwm_add_ward_light('1180 -1780 315', 6, screwm_cyan, screwm_active_06, screwm_presence_06);
+    screwm_add_ward_light('-640 980 190', 7, screwm_amber, screwm_active_07, screwm_presence_07);
+    screwm_add_ward_light('-1180 -760 260', 8, screwm_green, screwm_active_08, screwm_presence_08);
+    screwm_add_ward_light('-1580 -1860 220', 9, screwm_amber, screwm_active_09, screwm_presence_09);
+    screwm_add_ward_light('-260 980 330', 10, screwm_green, screwm_active_10, screwm_presence_10);
+    screwm_add_ward_light('1180 -1540 230', 11, screwm_cyan, screwm_active_11, screwm_presence_11);
+    screwm_add_ward_light('80 980 215', 12, screwm_amber, screwm_active_12, screwm_presence_12);
+    screwm_add_ward_light('420 980 140', 13, screwm_amber, screwm_active_13, screwm_presence_13);
+    screwm_add_ward_light('1180 -980 165', 14, screwm_cyan, screwm_active_14, screwm_presence_14);
+    screwm_add_ward_light('800 980 285', 15, screwm_amber, screwm_active_15, screwm_presence_15);
+    screwm_add_ward_light('-1180 -420 150', 16, screwm_green, screwm_active_16, screwm_presence_16);
+    screwm_add_ward_light('1180 -760 290', 17, screwm_cyan, screwm_active_17, screwm_presence_17);
+    screwm_add_ward_light('-1180 -150 250', 18, screwm_rose, screwm_active_18, screwm_presence_18);
+    screwm_add_ward_light('-1180 -2020 310', 19, screwm_rose, screwm_active_19, screwm_presence_19);
+    screwm_add_ward_light('520 -2360 105', 20, screwm_amber, screwm_active_20, screwm_presence_20);
+    screwm_add_ward_light('1160 980 340', 21, screwm_amber, screwm_active_21, screwm_presence_21);
+    screwm_add_ward_light('1580 -1860 220', 22, screwm_amber, screwm_active_22, screwm_presence_22);
+    screwm_add_ward_light('1180 -420 160', 23, screwm_cyan, screwm_active_23, screwm_presence_23);
+    screwm_add_ward_light('1180 -150 300', 24, screwm_cyan, screwm_active_24, screwm_presence_24);
+    screwm_add_ward_light('-1180 -1180 350', 25, screwm_green, screwm_active_25, screwm_presence_25);
+    screwm_add_ward_light('-1040 980 140', 26, screwm_green, screwm_active_26, screwm_presence_26);
+    screwm_add_ward_light('-1580 -980 360', 27, screwm_amber, screwm_active_27, screwm_presence_27);
+    screwm_add_ward_light('-80 980 120', 28, screwm_amber, screwm_active_28, screwm_presence_28);
+    screwm_add_ward_light('-1180 120 345', 29, screwm_rose, screwm_active_29, screwm_presence_29);
+    screwm_add_ward_light('1180 -2020 115', 30, screwm_cyan, screwm_active_30, screwm_presence_30);
+    screwm_add_ward_light('1180 -1240 300', 31, screwm_cyan, screwm_active_31, screwm_presence_31);
+    screwm_add_ward_light('1180 -580 110', 32, screwm_cyan, screwm_active_32, screwm_presence_32);
+    screwm_add_ward_light('1180 -280 330', 33, screwm_cyan, screwm_active_33, screwm_presence_33);
+    screwm_add_ward_light('1160 980 210', 34, screwm_green, screwm_active_34, screwm_presence_34);
+    screwm_add_ward_light('-1180 -1320 330', 35, screwm_rose, screwm_active_35, screwm_presence_35);
+    screwm_add_ward_light('-1180 -600 330', 36, screwm_green, screwm_active_36, screwm_presence_36);
 
-    screwm_add_drift_light('0 -675 130', 1, screwm_cyan, screwm_active_01, screwm_active_09);
-    screwm_add_drift_light('-80 -500 197', 2, screwm_amber, screwm_active_02, screwm_active_10);
-    screwm_add_drift_light('157 -345 257', 3, screwm_rose, screwm_active_03, screwm_active_11);
-    screwm_add_drift_light('105 -478 265', 4, screwm_green, screwm_active_04, screwm_active_12);
-    screwm_add_drift_light('-60 -580 152', 5, screwm_cyan, screwm_active_05, screwm_active_13);
-    screwm_add_drift_light('290 -355 185', 6, screwm_amber, screwm_active_06, screwm_active_14);
-    screwm_add_drift_light('-85 -618 197', 7, screwm_amber, screwm_active_07, screwm_active_15);
-    screwm_add_drift_light('-165 -478 217', 8, screwm_green, screwm_active_08, screwm_active_16);
-    screwm_add_drift_light('67 -458 252', 9, screwm_green, screwm_active_15, screwm_active_23);
-    screwm_add_drift_light('12 -435 222', 10, screwm_cyan, screwm_active_16, screwm_active_24);
-    screwm_add_drift_light('7 -333 275', 11, screwm_cyan, screwm_active_17, screwm_active_25);
-    screwm_add_drift_light('-68 -480 262', 12, screwm_rose, screwm_active_18, screwm_active_26);
-    screwm_add_drift_light('-165 -468 237', 13, screwm_rose, screwm_active_19, screwm_active_27);
-    screwm_add_drift_light('90 -583 100', 14, screwm_amber, screwm_active_20, screwm_active_28);
-    screwm_add_drift_light('90 -390 230', 15, screwm_amber, screwm_active_21, screwm_active_28);
-    screwm_add_drift_light('80 -333 245', 16, screwm_amber, screwm_active_22, screwm_active_30);
-    screwm_add_drift_light('362 -423 200', 17, screwm_cyan, screwm_active_24, screwm_active_31);
-    screwm_add_drift_light('37 -340 320', 18, screwm_amber, screwm_active_27, screwm_active_34);
-    screwm_add_drift_light('-143 -550 247', 19, screwm_cyan, screwm_active_04, screwm_active_18);
-    screwm_add_drift_light('-20 -458 152', 20, screwm_green, screwm_active_18, screwm_active_32);
-    screwm_add_drift_light('-265 -588 277', 21, screwm_rose, screwm_active_29, screwm_active_35);
-    screwm_add_drift_light('227 -295 137', 22, screwm_cyan, screwm_active_30, screwm_active_33);
-    screwm_add_drift_light('222 -415 222', 23, screwm_cyan, screwm_active_31, screwm_active_34);
-    screwm_add_drift_light('-108 -355 112', 24, screwm_cyan, screwm_active_33, screwm_active_36);
-    screwm_add_drift_light('-135 -380 202', 25, screwm_green, screwm_active_34, screwm_active_36);
-    screwm_add_drift_light('-323 -383 212', 26, screwm_rose, screwm_active_25, screwm_active_36);
-    screwm_add_drift_light('-50 -338 117', 27, screwm_cyan, screwm_active_32, screwm_active_36);
+    screwm_add_drift_light('-1240 -2110 175', 1, screwm_cyan, screwm_active_01, screwm_active_09);
+    screwm_add_drift_light('-720 -400 240', 2, screwm_amber, screwm_active_02, screwm_active_10);
+    screwm_add_drift_light('70 -280 265', 3, screwm_rose, screwm_active_03, screwm_active_11);
+    screwm_add_drift_light('-550 -280 230', 4, screwm_green, screwm_active_04, screwm_active_12);
+    screwm_add_drift_light('-140 -70 200', 5, screwm_cyan, screwm_active_05, screwm_active_13);
+    screwm_add_drift_light('1180 -1380 240', 6, screwm_amber, screwm_active_06, screwm_active_14);
+    screwm_add_drift_light('80 980 237', 7, screwm_amber, screwm_active_07, screwm_active_15);
+    screwm_add_drift_light('-1180 -590 205', 8, screwm_green, screwm_active_08, screwm_active_16);
+    screwm_add_drift_light('990 280 222', 9, screwm_green, screwm_active_15, screwm_active_23);
+    screwm_add_drift_light('0 -285 225', 10, screwm_cyan, screwm_active_16, screwm_active_24);
+    screwm_add_drift_light('0 -970 320', 11, screwm_cyan, screwm_active_17, screwm_active_25);
+    screwm_add_drift_light('-1110 415 195', 12, screwm_rose, screwm_active_18, screwm_active_26);
+    screwm_add_drift_light('-1380 -1500 335', 13, screwm_rose, screwm_active_19, screwm_active_27);
+    screwm_add_drift_light('220 -690 112', 14, screwm_amber, screwm_active_20, screwm_active_28);
+    screwm_add_drift_light('540 980 230', 15, screwm_amber, screwm_active_21, screwm_active_28);
+    screwm_add_drift_light('1380 -1940 167', 16, screwm_amber, screwm_active_22, screwm_active_30);
+    screwm_add_drift_light('1180 -695 300', 17, screwm_cyan, screwm_active_24, screwm_active_31);
+    screwm_add_drift_light('-210 0 285', 18, screwm_amber, screwm_active_27, screwm_active_34);
+    screwm_add_drift_light('-1180 -845 247', 19, screwm_cyan, screwm_active_04, screwm_active_18);
+    screwm_add_drift_light('0 -365 180', 20, screwm_green, screwm_active_18, screwm_active_32);
+    screwm_add_drift_light('-1180 -600 337', 21, screwm_rose, screwm_active_29, screwm_active_35);
+    screwm_add_drift_light('1180 -1150 222', 22, screwm_cyan, screwm_active_30, screwm_active_33);
+    screwm_add_drift_light('1170 -130 255', 23, screwm_cyan, screwm_active_31, screwm_active_34);
+    screwm_add_drift_light('0 -440 330', 24, screwm_cyan, screwm_active_33, screwm_active_36);
+    screwm_add_drift_light('-10 190 270', 25, screwm_green, screwm_active_34, screwm_active_36);
+    screwm_add_drift_light('-1180 -890 340', 26, screwm_rose, screwm_active_25, screwm_active_36);
+    screwm_add_drift_light('0 -590 220', 27, screwm_cyan, screwm_active_32, screwm_active_36);
 
-    screwm_add_source_light('-385 -600 266', 1, screwm_amber, screwm_source_priority_01, screwm_source_fresh_01);
-    screwm_add_source_light('-420 -505 174', 2, screwm_green, screwm_source_priority_02, screwm_source_fresh_02);
-    screwm_add_source_light('-380 -660 86', 3, screwm_rose, screwm_source_priority_03, screwm_source_fresh_03);
-    screwm_add_source_light('405 -370 250', 4, screwm_cyan, screwm_source_priority_04, screwm_source_fresh_04);
-    screwm_add_source_light('430 -455 162', 5, screwm_green, screwm_source_priority_05, screwm_source_fresh_05);
-    screwm_add_source_light('390 -300 68', 6, screwm_green, screwm_source_priority_06, screwm_source_fresh_06);
-    screwm_add_content_source_light('-322 -486 318', 1, screwm_cyan, screwm_content_fresh_01, screwm_content_opacity_01, screwm_content_area_01);
-    screwm_add_content_source_light('-322 -486 238', 2, screwm_green, screwm_content_fresh_02, screwm_content_opacity_02, screwm_content_area_02);
-    screwm_add_content_source_light('-322 -486 158', 3, screwm_rose, screwm_content_fresh_03, screwm_content_opacity_03, screwm_content_area_03);
-    screwm_add_content_source_light('322 -486 318', 4, screwm_amber, screwm_content_fresh_04, screwm_content_opacity_04, screwm_content_area_04);
-    screwm_add_content_source_light('322 -486 238', 5, screwm_cyan, screwm_content_fresh_05, screwm_content_opacity_05, screwm_content_area_05);
-    screwm_add_content_source_light('322 -486 158', 6, screwm_green, screwm_content_fresh_06, screwm_content_opacity_06, screwm_content_area_06);
+    screwm_add_source_light('-1580 -2140 290', 1, screwm_amber, screwm_source_priority_01, screwm_source_fresh_01);
+    screwm_add_source_light('-1580 -1320 190', 2, screwm_green, screwm_source_priority_02, screwm_source_fresh_02);
+    screwm_add_source_light('-1580 -500 300', 3, screwm_rose, screwm_source_priority_03, screwm_source_fresh_03);
+    screwm_add_source_light('1580 -2140 290', 4, screwm_cyan, screwm_source_priority_04, screwm_source_fresh_04);
+    screwm_add_source_light('1580 -1320 190', 5, screwm_green, screwm_source_priority_05, screwm_source_fresh_05);
+    screwm_add_source_light('1580 -500 300', 6, screwm_green, screwm_source_priority_06, screwm_source_fresh_06);
+    screwm_add_content_source_light('-1580 -2140 290', 1, screwm_cyan, screwm_content_fresh_01, screwm_content_opacity_01, screwm_content_area_01);
+    screwm_add_content_source_light('-1580 -1320 190', 2, screwm_green, screwm_content_fresh_02, screwm_content_opacity_02, screwm_content_area_02);
+    screwm_add_content_source_light('-1580 -500 300', 3, screwm_rose, screwm_content_fresh_03, screwm_content_opacity_03, screwm_content_area_03);
+    screwm_add_content_source_light('1580 -2140 290', 4, screwm_amber, screwm_content_fresh_04, screwm_content_opacity_04, screwm_content_area_04);
+    screwm_add_content_source_light('1580 -1320 190', 5, screwm_cyan, screwm_content_fresh_05, screwm_content_opacity_05, screwm_content_area_05);
+    screwm_add_content_source_light('1580 -500 300', 6, screwm_green, screwm_content_fresh_06, screwm_content_opacity_06, screwm_content_area_06);
 
-    screwm_add_aoa_pane_light('-4 -497 284', 1, screwm_cyan, screwm_aoa_pane_01);
-    screwm_add_aoa_pane_light('-72 -497 238', 2, screwm_green, screwm_aoa_pane_02);
-    screwm_add_aoa_pane_light('72 -497 238', 3, screwm_amber, screwm_aoa_pane_03);
-    screwm_add_aoa_pane_light('-118 -497 170', 4, screwm_rose, screwm_aoa_pane_04);
-    screwm_add_aoa_pane_light('118 -497 170', 5, screwm_cyan, screwm_aoa_pane_05);
-    screwm_add_aoa_pane_light('-76 -497 102', 6, screwm_green, screwm_aoa_pane_06);
-    screwm_add_aoa_pane_light('76 -497 102', 7, screwm_amber, screwm_aoa_pane_07);
-    screwm_add_aoa_pane_light('-176 -497 216', 8, screwm_rose, screwm_aoa_pane_08);
-    screwm_add_aoa_pane_light('176 -497 216', 9, screwm_cyan, screwm_aoa_pane_09);
-    screwm_add_aoa_pane_light('0 -497 64', 10, screwm_green, screwm_aoa_pane_10);
+    screwm_add_aoa_pane_light('-4 -597 284', 1, screwm_cyan, screwm_aoa_pane_01);
+    screwm_add_aoa_pane_light('-72 -597 238', 2, screwm_green, screwm_aoa_pane_02);
+    screwm_add_aoa_pane_light('72 -597 238', 3, screwm_amber, screwm_aoa_pane_03);
+    screwm_add_aoa_pane_light('-118 -597 170', 4, screwm_rose, screwm_aoa_pane_04);
+    screwm_add_aoa_pane_light('118 -597 170', 5, screwm_cyan, screwm_aoa_pane_05);
+    screwm_add_aoa_pane_light('-76 -597 102', 6, screwm_green, screwm_aoa_pane_06);
+    screwm_add_aoa_pane_light('76 -597 102', 7, screwm_amber, screwm_aoa_pane_07);
+    screwm_add_aoa_pane_light('-176 -597 216', 8, screwm_rose, screwm_aoa_pane_08);
+    screwm_add_aoa_pane_light('176 -597 216', 9, screwm_cyan, screwm_aoa_pane_09);
+    screwm_add_aoa_pane_light('0 -597 64', 10, screwm_green, screwm_aoa_pane_10);
 
-    screwm_add_scene_graph_light('-320 -655 254', 1, screwm_amber, screwm_source_priority_01, screwm_source_fresh_01);
-    screwm_add_scene_graph_light('-365 -562 162', 2, screwm_green, screwm_source_priority_02, screwm_source_fresh_02);
-    screwm_add_scene_graph_light('-284 -716 94', 3, screwm_rose, screwm_source_priority_03, screwm_source_fresh_03);
-    screwm_add_scene_graph_light('278 -388 252', 4, screwm_cyan, screwm_source_priority_04, screwm_source_fresh_04);
-    screwm_add_scene_graph_light('358 -468 174', 5, screwm_green, screwm_source_priority_05, screwm_source_fresh_05);
-    screwm_add_scene_graph_light('268 -322 108', 6, screwm_cyan, screwm_source_priority_06, screwm_source_fresh_06);
-    screwm_add_scene_graph_light('-328 -460 130', 7, screwm_green, screwm_active_36, screwm_active_36);
-    screwm_add_scene_graph_light('300 -342 252', 8, screwm_amber, screwm_active_23, screwm_active_23);
-    screwm_add_scene_graph_light('376 -418 182', 9, screwm_cyan, screwm_active_24, screwm_active_24);
-    screwm_add_scene_graph_light('342 -312 104', 10, screwm_amber, screwm_active_30, screwm_active_30);
-    screwm_add_scene_graph_light('118 -342 284', 11, screwm_green, screwm_active_26, screwm_active_26);
-    screwm_add_scene_graph_light('86 -384 188', 12, screwm_amber, screwm_active_10, screwm_active_10);
-    screwm_add_scene_graph_light('356 -384 68', 13, screwm_cyan, screwm_active_14, screwm_active_14);
-    screwm_add_scene_graph_light('-286 -602 236', 14, screwm_rose, screwm_active_35, screwm_active_35);
+    screwm_add_scene_graph_light('-1580 -2170 290', 1, screwm_amber, screwm_source_priority_01, screwm_source_fresh_01);
+    screwm_add_scene_graph_light('-1580 -1350 190', 2, screwm_green, screwm_source_priority_02, screwm_source_fresh_02);
+    screwm_add_scene_graph_light('-1580 -530 300', 3, screwm_rose, screwm_source_priority_03, screwm_source_fresh_03);
+    screwm_add_scene_graph_light('1580 -2170 290', 4, screwm_cyan, screwm_source_priority_04, screwm_source_fresh_04);
+    screwm_add_scene_graph_light('1580 -1350 190', 5, screwm_green, screwm_source_priority_05, screwm_source_fresh_05);
+    screwm_add_scene_graph_light('1580 -530 300', 6, screwm_green, screwm_source_priority_06, screwm_source_fresh_06);
+    screwm_add_scene_graph_light('-1180 -630 330', 7, screwm_cyan, screwm_active_36, screwm_active_36);
+    screwm_add_scene_graph_light('1180 -450 160', 8, screwm_amber, screwm_active_23, screwm_active_23);
+    screwm_add_scene_graph_light('1180 -180 300', 9, screwm_amber, screwm_active_24, screwm_active_24);
+    screwm_add_scene_graph_light('1180 -2050 115', 10, screwm_amber, screwm_active_30, screwm_active_30);
+    screwm_add_scene_graph_light('-1040 980 140', 11, screwm_green, screwm_active_26, screwm_active_26);
+    screwm_add_scene_graph_light('-260 980 330', 12, screwm_green, screwm_active_10, screwm_active_10);
+    screwm_add_scene_graph_light('1180 -1010 165', 13, screwm_cyan, screwm_active_14, screwm_active_14);
+    screwm_add_scene_graph_light('-1180 -1350 330', 14, screwm_cyan, screwm_active_35, screwm_active_35);
 };
 
 void(float apilevel, string enginename, float engineversion) CSQC_Init =
@@ -1472,11 +1693,11 @@ void(float apilevel, string enginename, float engineversion) CSQC_Init =
     screwm_voice = 0;
     screwm_mode = "rnd";
     screwm_next_poll = 0;
-    screwm_review_camera_origin = '0 -760 205';
-    screwm_review_camera_angles = vectoangles('0 -455 184' - screwm_review_camera_origin);
+    screwm_review_camera_origin = '0 -2360 190';
+    screwm_review_camera_angles = vectoangles('0 -555 206' - screwm_review_camera_origin);
     screwm_review_camera_angles_z = 0;
-    screwm_review_camera_fov = '78 49 0';
-    screwm_review_camera_period = 160.0;
+    screwm_review_camera_fov = '92 57.5 0';
+    screwm_review_camera_period = 360.0;
     screwm_review_camera_two_pi = 6.283185;
 };
 

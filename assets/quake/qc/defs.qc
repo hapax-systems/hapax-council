@@ -72,16 +72,30 @@ float SOUNDFLAG_FORCELOOP = 1;
 .float effects;
 .float fixangle;
 .float scale;
+.float alpha;
+.vector colormod;
+.float glow_color;
+.float glow_size;
+.float glow_trail;
+.vector glowmod;
 .float screwm_spin_y;
+
+float EF_ADDITIVE = 32;
+float EF_FULLBRIGHT = 512;
+float EF_NOSHADOW = 4096;
+float EF_DOUBLESIDED = 32768;
+float EF_DYNAMICMODELLIGHT = 131072;
 
 // Shared entity references
 entity aoa_entity;
+entity aoa_sphere_entity;
 entity camera_entity;
 
-vector AOA_CENTER = '0 -455 176';
-vector CAMERA_REVIEW_POS = '0 -760 205';
-vector CAMERA_REVIEW_TARGET = '0 -455 184';
-float AOA_MODEL_SCALE = 0.62;
+vector AOA_CENTER = '0 -555 176';
+vector CAMERA_REVIEW_POS = '0 -2380 164';
+vector CAMERA_REVIEW_TARGET = '0 -555 176';
+float AOA_MODEL_SCALE = 4.85;
+float AOA_SPHERE_MODEL_SCALE = 1.92;
 
 float CAMERA_PERIOD;
 float CAMERA_ORBIT_PERIOD;

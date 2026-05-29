@@ -10,18 +10,44 @@ void() aoa_think =
     self.nextthink = time + 0.0139;
 };
 
+void(entity ent) aoa_common_visuals =
+{
+    ent.movetype = MOVETYPE_NONE;
+    ent.solid = SOLID_NOT;
+    setorigin(ent, AOA_CENTER);
+    ent.angles_y = 180;
+    ent.think = aoa_think;
+    ent.nextthink = time + 0.1;
+    ent.screwm_spin_y = 0;
+    ent.effects = EF_FULLBRIGHT + EF_NOSHADOW + EF_DOUBLESIDED + EF_DYNAMICMODELLIGHT;
+};
+
 void() spawn_aoa =
 {
     aoa_entity = spawn();
     aoa_entity.classname = "aoa";
-    aoa_entity.movetype = MOVETYPE_NONE;
-    aoa_entity.solid = SOLID_NOT;
-    setorigin(aoa_entity, AOA_CENTER);
-    aoa_entity.think = aoa_think;
-    aoa_entity.nextthink = time + 0.1;
-    aoa_entity.screwm_spin_y = 3;
+    aoa_common_visuals(aoa_entity);
     setmodel(aoa_entity, "progs/aoa.mdl");
     aoa_entity.scale = AOA_MODEL_SCALE;
+    aoa_entity.alpha = 0.20;
+    aoa_entity.colormod = '1.08 0.64 0.88';
+    aoa_entity.glowmod = '0.80 0.40 0.58';
+    aoa_entity.glow_color = 236;
+    aoa_entity.glow_size = 0;
+    aoa_entity.glow_trail = 0;
+    aoa_entity.effects = aoa_entity.effects + EF_ADDITIVE;
+
+    aoa_sphere_entity = spawn();
+    aoa_sphere_entity.classname = "aoa_media_sphere";
+    aoa_common_visuals(aoa_sphere_entity);
+    setmodel(aoa_sphere_entity, "progs/aoa_sphere.mdl");
+    aoa_sphere_entity.scale = AOA_SPHERE_MODEL_SCALE;
+    aoa_sphere_entity.alpha = 1.0;
+    aoa_sphere_entity.colormod = '1.0 1.0 1.0';
+    aoa_sphere_entity.glowmod = '0.35 0.25 0.10';
+    aoa_sphere_entity.glow_color = 236;
+    aoa_sphere_entity.glow_size = 0;
+    aoa_sphere_entity.screwm_spin_y = 0;
 };
 
 void() spawn_ambient_sounds =
@@ -74,8 +100,26 @@ void(entity view) screwm_player_noclip_body =
     view.avelocity = '0 0 0';
 };
 
+void(entity view) screwm_follow_camera_body =
+{
+    screwm_free_view_body(view);
+    setorigin(view, camera_entity.origin);
+    view.angles = camera_entity.angles;
+    view.fixangle = 1;
+};
+
 void() PlayerPreThink =
 {
+    if (
+        camera_entity
+        && cvar("screwm_csqc_review_camera") > 0
+        && camera_read_norm("data/camera-manual.txt", 0) > 0
+    )
+    {
+        screwm_follow_camera_body(self);
+        return;
+    }
+
     if (cvar("screwm_player_noclip_control") > 0)
     {
         screwm_player_noclip_body(self);
@@ -90,10 +134,7 @@ void() PlayerPreThink =
 
     if (camera_entity)
     {
-        screwm_free_view_body(self);
-        setorigin(self, camera_entity.origin);
-        self.angles = camera_entity.angles;
-        self.fixangle = 1;
+        screwm_follow_camera_body(self);
     }
 };
 void() PlayerPostThink = {};
@@ -113,6 +154,7 @@ void() SetChangeParms = {};
 void() worldspawn =
 {
     precache_model("progs/aoa.mdl");
+    precache_model("progs/aoa_sphere.mdl");
 
     precache_sound("ambient/perception.ogg");
     precache_sound("ambient/cognition.ogg");

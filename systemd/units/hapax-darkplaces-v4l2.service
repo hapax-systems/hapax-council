@@ -1,7 +1,9 @@
 [Unit]
 Description=Hapax DarkPlaces visible v4l2 renderer feed
-After=graphical-session.target
-Wants=hapax-screwm-camera-gamepad.service
+After=hapax-quake-live-youtube.service hapax-quake-live-reverie.service hapax-quake-live-ward-atlas.service hapax-screwm-drift-state-source.service hapax-screwm-imagination-source-publisher.service
+Wants=hapax-screwm-camera-gamepad.service hapax-darkplaces-bridge.service hapax-quake-live-youtube.service hapax-quake-live-reverie.service hapax-quake-live-ward-atlas.service hapax-screwm-drift-state-source.service hapax-screwm-imagination-source-publisher.service
+Wants=hapax-quake-live-camera@brio-operator.service hapax-quake-live-camera@brio-room.service hapax-quake-live-camera@brio-synths.service
+Wants=hapax-quake-live-camera@c920-desk.service hapax-quake-live-camera@c920-room.service hapax-quake-live-camera@c920-overhead.service
 PartOf=hapax-visual-stack.target
 # Runtime containment, 2026-05-23: opt-in only until the renderer feed is
 # validated without reproducing the AMD data-fabric reset.

@@ -8,16 +8,20 @@ WAD2 format:
 """
 
 import argparse
+import json
 import struct
 import zlib
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+MEDIA_MOUNT_CONTRACTS_PATH = REPO_ROOT / "config" / "screwm-quake-media-mounts.json"
+TEX_SIZE = 64
 WARD_COUNT = 36
 WARD_CODES = [
     "TOKEN",
     "ALBUM",
     "STREAM",
-    "SIERP",
+    "AOAO",
     "REV",
     "ACT",
     "STANCE",
@@ -56,7 +60,7 @@ WARD_TEXTURE_TYPES = [
     "token_path",
     "album_cover",
     "stream_status",
-    "sierpinski",
+    "aoa_oarb_state",
     "reverie_field",
     "activity_banner",
     "stance_chip",
@@ -103,7 +107,7 @@ CAMERA_SOURCE_TEXTURES = [
 ]
 
 LEGACY_SLOT_TEXTURES = [
-    ("slot_sierp", "SIERP", 214),
+    ("slot_aoa", "OARB", 214),
     ("slot_album", "ALBUM", 186),
     ("slot_rev", "REVERIE", 202),
     ("slot_voice", "VOICE", 198),
@@ -121,6 +125,9 @@ AOA_PANE_TEXTURES = [
     ("aoa_comp", "COMP", 214),
     ("aoa_gate", "GATE", 202),
 ]
+AOA_SPHERE_TEXTURES = [
+    ("aoa_media_sphere", "MEDIA", 236),
+]
 
 LOCAL_EFFECT_TEXTURES = [
     ("fx_mirr", "MIRR", 214, "mirror"),
@@ -137,23 +144,135 @@ LOCAL_EFFECT_TEXTURES = [
 ]
 
 TEXTURES = {
-    "city4_2": {"color": (100, 80, 55), "noise": 12, "pattern": "stone_blocks"},
-    "ground1_6": {"color": (60, 55, 50), "noise": 8, "pattern": "worn_stone"},
-    "sky4": {"color": (25, 22, 30), "noise": 5, "pattern": "dark_ceiling"},
-    "metal5_2": {"color": (85, 80, 75), "noise": 10, "pattern": "brushed_metal"},
-    "scroom": {"color": (44, 38, 34), "noise": 4, "pattern": "scroom"},
-    # R&D / Gruvbox tower bands, bottom to top.
-    "r_percep": {"color": (108, 74, 45), "noise": 12, "pattern": "stone_blocks"},
-    "r_cognit": {"color": (78, 86, 74), "noise": 10, "pattern": "carved_stone"},
-    "r_comm": {"color": (58, 88, 78), "noise": 11, "pattern": "metal_grate"},
-    "r_express": {"color": (84, 54, 72), "noise": 12, "pattern": "dark_ornate"},
-    "r_ground": {"color": (128, 104, 58), "noise": 9, "pattern": "polished_stone"},
-    # Research / Solarized tower bands, bottom to top.
-    "s_percep": {"color": (48, 68, 78), "noise": 10, "pattern": "stone_blocks"},
-    "s_cognit": {"color": (70, 86, 92), "noise": 9, "pattern": "carved_stone"},
-    "s_comm": {"color": (52, 88, 88), "noise": 10, "pattern": "metal_grate"},
-    "s_express": {"color": (62, 58, 88), "noise": 10, "pattern": "dark_ornate"},
-    "s_ground": {"color": (92, 86, 72), "noise": 8, "pattern": "polished_stone"},
+    # Legacy texture names remain only as compatibility handles. Their content
+    # is now abstract Scroom information-surface material, not stone/metal/sky.
+    "city4_2": {
+        "color": (4, 4, 6),
+        "noise": 0,
+        "pattern": "hard_void",
+        "palette": "scroom",
+        "size": 128,
+    },
+    "ground1_6": {
+        "color": (4, 4, 6),
+        "noise": 0,
+        "pattern": "hard_void",
+        "palette": "scroom",
+        "size": 128,
+    },
+    "sky4": {
+        "color": (4, 4, 6),
+        "noise": 0,
+        "pattern": "hard_void",
+        "palette": "scroom",
+        "size": 128,
+    },
+    "metal5_2": {
+        "color": (4, 4, 6),
+        "noise": 0,
+        "pattern": "hard_void",
+        "palette": "scroom",
+        "size": 128,
+    },
+    "scroom": {
+        "color": (4, 4, 6),
+        "noise": 0,
+        "pattern": "hard_void",
+        "palette": "scroom",
+        "size": 128,
+    },
+    "cmp_floor": {
+        "color": (4, 4, 6),
+        "noise": 0,
+        "pattern": "compositor_floor",
+        "palette": "scroom",
+        "size": 256,
+    },
+    "cmp_ceil": {
+        "color": (4, 4, 6),
+        "noise": 0,
+        "pattern": "compositor_ceiling",
+        "palette": "scroom",
+        "size": 256,
+    },
+    "cmp_wall": {
+        "color": (4, 4, 6),
+        "noise": 0,
+        "pattern": "compositor_wall",
+        "palette": "scroom",
+        "size": 256,
+    },
+    # R&D / Research band handles: procedural signal surfaces, never scenic materials.
+    "r_percep": {
+        "color": (38, 46, 62),
+        "noise": 1,
+        "pattern": "signal_panel",
+        "palette": "scroom",
+        "size": 128,
+    },
+    "r_cognit": {
+        "color": (38, 46, 62),
+        "noise": 1,
+        "pattern": "signal_panel",
+        "palette": "scroom",
+        "size": 128,
+    },
+    "r_comm": {
+        "color": (38, 46, 62),
+        "noise": 1,
+        "pattern": "signal_panel",
+        "palette": "scroom",
+        "size": 128,
+    },
+    "r_express": {
+        "color": (38, 46, 62),
+        "noise": 1,
+        "pattern": "signal_panel",
+        "palette": "scroom",
+        "size": 128,
+    },
+    "r_ground": {
+        "color": (38, 46, 62),
+        "noise": 1,
+        "pattern": "signal_panel",
+        "palette": "scroom",
+        "size": 128,
+    },
+    "s_percep": {
+        "color": (34, 44, 62),
+        "noise": 1,
+        "pattern": "signal_panel",
+        "palette": "scroom",
+        "size": 128,
+    },
+    "s_cognit": {
+        "color": (34, 44, 62),
+        "noise": 1,
+        "pattern": "signal_panel",
+        "palette": "scroom",
+        "size": 128,
+    },
+    "s_comm": {
+        "color": (34, 44, 62),
+        "noise": 1,
+        "pattern": "signal_panel",
+        "palette": "scroom",
+        "size": 128,
+    },
+    "s_express": {
+        "color": (34, 44, 62),
+        "noise": 1,
+        "pattern": "signal_panel",
+        "palette": "scroom",
+        "size": 128,
+    },
+    "s_ground": {
+        "color": (34, 44, 62),
+        "noise": 1,
+        "pattern": "signal_panel",
+        "palette": "scroom",
+        "size": 128,
+    },
     # In-scroom drift carriers. These are physical materials, not overlay strokes.
     "drift_c": {"color": (80, 180, 170), "noise": 0, "pattern": "drift_line", "drift": 214},
     "drift_a": {"color": (210, 150, 74), "noise": 0, "pattern": "drift_line", "drift": 198},
@@ -161,25 +280,61 @@ TEXTURES = {
     "drift_g": {"color": (120, 180, 86), "noise": 0, "pattern": "drift_line", "drift": 202},
 }
 
-TEX_SIZE = 64
+
+def load_media_mount_contracts(path=MEDIA_MOUNT_CONTRACTS_PATH):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+MEDIA_MOUNT_CONTRACTS = load_media_mount_contracts()
+MEDIA_MOUNTS_BY_TEXTURE = {
+    mount["texture"]: mount for mount in MEDIA_MOUNT_CONTRACTS["mounts"] if "texture" in mount
+}
+ACTIVE_WARD_TEXTURES = {
+    name for name in MEDIA_MOUNTS_BY_TEXTURE if name.startswith("w") and name[1:].isdigit()
+}
+WARD_ATLAS_MOUNT = MEDIA_MOUNTS_BY_TEXTURE.get("ward_atlas")
+
+if WARD_ATLAS_MOUNT:
+    atlas_width, atlas_height = WARD_ATLAS_MOUNT.get("texture_size", [2048, 2304])
+    TEXTURES["ward_atlas"] = {
+        "color": (36, 46, 56),
+        "noise": 0,
+        "pattern": "live_media",
+        "code": "WARD",
+        "accent": 214,
+        "width": int(atlas_width),
+        "height": int(atlas_height),
+    }
 
 for ward_idx in range(1, WARD_COUNT + 1):
-    TEXTURES[f"w{ward_idx:02d}"] = {
+    texture_name = f"w{ward_idx:02d}"
+    if texture_name not in ACTIVE_WARD_TEXTURES:
+        continue
+    mount = MEDIA_MOUNTS_BY_TEXTURE.get(texture_name)
+    texture_width, texture_height = mount.get("texture_size", [TEX_SIZE, TEX_SIZE])
+    TEXTURES[texture_name] = {
         "color": (120, 105, 70),
         "noise": 0,
-        "pattern": "ward_panel",
+        "pattern": "live_media",
         "label": ward_idx,
         "code": WARD_CODES[ward_idx - 1],
         "ward_type": WARD_TEXTURE_TYPES[ward_idx - 1],
+        "accent": WARD_ACCENT_INDICES[(ward_idx - 1) % len(WARD_ACCENT_INDICES)],
+        "width": int(texture_width),
+        "height": int(texture_height),
     }
 
 for tex_name, code, accent in CAMERA_SOURCE_TEXTURES:
+    mount = MEDIA_MOUNTS_BY_TEXTURE.get(tex_name, {})
+    texture_width, texture_height = mount.get("texture_size", [TEX_SIZE, TEX_SIZE])
     TEXTURES[tex_name] = {
         "color": (74, 88, 84),
         "noise": 0,
         "pattern": "source_portal",
         "code": code,
         "accent": accent,
+        "width": int(texture_width),
+        "height": int(texture_height),
     }
 
 for tex_name, code, accent in LEGACY_SLOT_TEXTURES:
@@ -198,6 +353,19 @@ for tex_name, code, accent in AOA_PANE_TEXTURES:
         "pattern": "aoa_pane",
         "code": code,
         "accent": accent,
+    }
+
+for tex_name, code, accent in AOA_SPHERE_TEXTURES:
+    mount = MEDIA_MOUNTS_BY_TEXTURE.get("progs/aoa_sphere.mdl_0", {})
+    texture_width, texture_height = mount.get("texture_size", [256, 128])
+    TEXTURES[tex_name] = {
+        "color": (76, 68, 74),
+        "noise": 0,
+        "pattern": "aoa_sphere",
+        "code": code,
+        "accent": accent,
+        "width": int(texture_width),
+        "height": int(texture_height),
     }
 
 for tex_name, code, accent, effect in LOCAL_EFFECT_TEXTURES:
@@ -289,6 +457,55 @@ def line_near(x, y, x1, y1, x2, y2, radius=1.35):
     return (x - px) * (x - px) + (y - py) * (y - py) <= radius * radius
 
 
+def lerp_color(a, b, t):
+    """Interpolate two RGB colors."""
+    return tuple(int(a[idx] + (b[idx] - a[idx]) * t) for idx in range(3))
+
+
+def build_scroom_palette():
+    """Palette for abstract dynamic information surfaces.
+
+    The bands intentionally encode signal roles rather than material identity:
+    dark substrate, cool alignment, magenta drift, amber attention, acid
+    liveness, and white-hot terminal glyphs.
+    """
+    bands = (
+        (0, 48, (4, 6, 12), (19, 21, 34)),
+        (48, 88, (20, 24, 42), (52, 44, 76)),
+        (88, 128, (22, 68, 92), (86, 214, 220)),
+        (128, 168, (72, 34, 78), (226, 82, 174)),
+        (168, 208, (88, 58, 18), (246, 184, 70)),
+        (208, 236, (38, 82, 62), (142, 248, 170)),
+        (236, 256, (186, 196, 202), (255, 248, 218)),
+    )
+    palette = []
+    for idx in range(256):
+        if idx == 0:
+            palette.extend((0, 0, 0))
+            continue
+        for start, end, left, right in bands:
+            if start <= idx < end:
+                span = max(1, end - start - 1)
+                t = (idx - start) / span
+                wave = 0.06 if idx % 2 else -0.02
+                color = lerp_color(left, right, max(0.0, min(1.0, t + wave)))
+                palette.extend(color)
+                break
+    return bytes(palette)
+
+
+def build_monochrome_palette(color):
+    """Single-hue palette for legacy placeholders and media mount canaries."""
+    palette = []
+    for i in range(256):
+        t = i / 255.0
+        r = max(0, min(255, int(color[0] * (0.3 + t * 0.7))))
+        g = max(0, min(255, int(color[1] * (0.3 + t * 0.7))))
+        b = max(0, min(255, int(color[2] * (0.3 + t * 0.7))))
+        palette.extend([r, g, b])
+    return bytes(palette)
+
+
 def ward_symbol_index(x, y, label, ward_type, accent):
     """Ward-specific glyph grammar from the pre-Quake Screwm inventory."""
     dark_accent = max(58, accent - 118)
@@ -321,7 +538,7 @@ def ward_symbol_index(x, y, label, ward_type, accent):
         if 30 <= x <= 54 and y in (22, 36, 50):
             return mid_accent
 
-    elif ward_type == "sierpinski":
+    elif ward_type == "aoa_oarb_state":
         edges = [
             (32, 9, 12, 51),
             (12, 51, 52, 51),
@@ -368,10 +585,19 @@ def ward_symbol_index(x, y, label, ward_type, accent):
             return 245
 
     elif ward_type in {"provenance_ticker", "precedent_ticker", "chronicle_ticker"}:
-        if y in (19, 31, 43) and 8 <= x <= 56:
+        if y in (9, 10, 53, 54) and 5 <= x <= 59:
             return accent
-        if (x + label * 5) % 15 < 8 and y in (23, 35, 47):
+        if y in (18, 31, 44) and 6 <= x <= 58:
+            return mid_accent
+        if 14 <= y <= 48 and (y + label) % 5 == 0:
+            return dark_accent
+        if 14 <= y <= 48 and (x + label * 7) % 16 < 7 and y in (23, 35, 47):
             return 245
+        for offset in (0, 18, 36, 54):
+            if line_near(x, y, offset, 50, offset + 10, 32, 1.0) or line_near(
+                x, y, offset + 10, 32, offset, 14, 1.0
+            ):
+                return accent
 
     elif ward_type == "impingement_cascade":
         for row in range(5):
@@ -519,7 +745,7 @@ def ward_symbol_index(x, y, label, ward_type, accent):
 
 
 def ward_panel_index(x, y, label, code, ward_type):
-    """High-contrast in-engine ward anchor texture with identity baked in."""
+    """Optional legacy/generated ward modulation; not a default ward identity."""
     accent = WARD_ACCENT_INDICES[(int(label) - 1) % len(WARD_ACCENT_INDICES)]
 
     if x < 2 or y < 2 or x >= TEX_SIZE - 2 or y >= TEX_SIZE - 2:
@@ -566,37 +792,21 @@ def ward_panel_index(x, y, label, code, ward_type):
     return base
 
 
-def source_portal_index(x, y, code, accent):
-    """Camera/source anchor texture: terminal plaque, scanlines, and role code."""
-    if x < 2 or y < 2 or x >= TEX_SIZE - 2 or y >= TEX_SIZE - 2:
-        return 245
-    if x < 5 or y < 5 or x >= TEX_SIZE - 5 or y >= TEX_SIZE - 5:
-        return accent
-    if x in (15, 16, 47, 48) or y in (15, 16, 47, 48):
-        return max(84, accent - 94)
-    if y % 8 in (0, 1):
-        return max(66, accent - 118)
-    if (x + y) % 19 == 0:
-        return max(100, accent - 72)
+def source_portal_index(x, y, code, accent, width=TEX_SIZE, height=TEX_SIZE):
+    """Borderless quiet fallback for a camera/source live texture.
 
-    if text_pixel_lit(x, y, "CAM", 20, 10, 2):
-        return 232
-
-    short_code = code[:7].upper()
-    scale = 2
-    text_width = len(short_code) * 3 * scale + max(0, len(short_code) - 1) * scale
-    if text_pixel_lit(x, y, short_code, (TEX_SIZE - text_width) // 2, 42, scale):
-        return 232
-
-    # Reticle around the source point keeps these as in-world portals, not labels.
-    dx = abs(x - 32)
-    dy = abs(y - 32)
-    if (dx < 12 and dy in (10, 11)) or (dy < 12 and dx in (10, 11)):
-        return accent
-    if dx <= 1 or dy <= 1:
-        return max(74, accent - 108)
-
-    return 32 + ((x * 5 + y * 7 + len(code) * 11) % 24)
+    A stale camera must not become a fake framed plaque. Until live pixels
+    arrive, the receiver only carries a dim source-bound drift/noise field.
+    """
+    drift_a = abs(((x * 5 + y * 2 + len(code) * 17) % 233) - 116)
+    drift_b = abs(((x - y * 3 + accent) % 251) - 125)
+    if drift_a < 1:
+        return max(72, accent - 128)
+    if drift_b < 1:
+        return max(58, accent - 150)
+    if (x * 13 + y * 7 + len(code) * 19) % 787 == 0:
+        return max(96, accent - 96)
+    return 0 if (x + y + len(code)) % 5 else 1
 
 
 def legacy_slot_index(x, y, code, accent):
@@ -676,6 +886,56 @@ def aoa_pane_index(x, y, code, accent):
         return mid_accent
 
     return 20 + ((x * 7 + y * 13 + len(code) * 11) % 24)
+
+
+def aoa_sphere_index(x, y, code, accent, width=TEX_SIZE, height=TEX_SIZE):
+    """Attendant sphere/YT media-face texture for the central AoA."""
+    dark_accent = max(120, accent - 90)
+    mid_accent = max(172, accent - 46)
+    cx = width // 2
+    cy = height // 2
+    radius_px = max(1, min(width, height) // 2)
+    dx = (x - cx) / radius_px
+    dy = (y - cy) / radius_px
+    radius = dx * dx + dy * dy
+
+    if x < 2 or y < 2 or x >= width - 2 or y >= height - 2:
+        return 245
+    if 0.80 <= radius <= 1.02:
+        return 245 if (x + y) % 3 == 0 else accent
+    if 0.42 <= radius <= 0.52 or 0.14 <= radius <= 0.20:
+        return 245 if (x * y) % 5 == 0 else mid_accent
+    if radius > 1.02:
+        return 8 + ((x * 5 + y * 11) % 10)
+
+    # Media identity is intentionally baked as mount provenance, not UI chrome.
+    scale = 4 if width <= 256 else 8
+    text_width = len(code[:5]) * 3 * scale + max(0, len(code[:5]) - 1) * scale
+    if text_pixel_lit(x, y, code[:5].upper(), (width - text_width) // 2, cy - 2 * scale, scale):
+        return 245
+    if y % max(7, height // 36) in (0, 1) and radius < 0.86:
+        return dark_accent
+    if abs(x - cx) <= 1 or abs(y - cy) <= 1:
+        return accent
+    if (x * 7 + y * 13) % 31 < 4:
+        return 245
+    if radius < 0.78 and (x * 3 + y * 5) % 11 < 3:
+        return mid_accent
+
+    return 86 + ((x * 9 + y * 5 + len(code) * 17) % 58)
+
+
+def live_media_placeholder_index(x, y, code, accent, width=TEX_SIZE, height=TEX_SIZE):
+    """Borderless quiet fallback for a runtime-replaced media texture."""
+    drift_a = abs(((x * 7 + y * 3 + len(code) * 11) % 257) - 128)
+    drift_b = abs(((x * 2 - y * 5 + accent) % 263) - 131)
+    if drift_a < 1:
+        return max(78, accent - 126)
+    if drift_b < 1:
+        return max(58, accent - 154)
+    if (x * 11 + y * 5 + len(code) * 23) % 997 == 0:
+        return max(116, accent - 74)
+    return 0 if (x * 3 + y + len(code)) % 7 else 1
 
 
 def effect_lens_index(x, y, code, accent, effect):
@@ -764,27 +1024,23 @@ def generate_pixel_data(
     width,
     height,
     seed=0,
-    pattern="stone_blocks",
+    pattern="void_substrate",
     label=0,
     code="",
     ward_type="",
     drift=0,
     accent=0,
     effect="",
+    palette_mode="monochrome",
 ):
-    """Generate Quake-style texture with visible material character."""
+    """Generate procedural Scroom information-surface texture data."""
     import random
 
     random.seed(seed)
     pixels = bytearray()
-    palette = []
-
-    for i in range(256):
-        t = i / 255.0
-        r = max(0, min(255, int(color[0] * (0.3 + t * 0.7))))
-        g = max(0, min(255, int(color[1] * (0.3 + t * 0.7))))
-        b = max(0, min(255, int(color[2] * (0.3 + t * 0.7))))
-        palette.extend([r, g, b])
+    palette = (
+        build_scroom_palette() if palette_mode == "scroom" else build_monochrome_palette(color)
+    )
 
     for y in range(height):
         for x in range(width):
@@ -843,16 +1099,80 @@ def generate_pixel_data(
                 if (x * 5 + y + seed) % 79 < 4:
                     base += 34
 
+            elif pattern == "void_substrate":
+                base = random.randint(0, 2)
+                if (x * 17 + y * 29 + seed) % 233 < 3:
+                    base = 4 + ((x + y + seed) % 4)
+                if (x * 7 + y * 13 + seed) % 521 == 0:
+                    base = 214
+
+            elif pattern == "hard_void":
+                # Hard reset for the room substrate: sealed BSP should read as
+                # absence until a declared ward, AoA, drift line, or live
+                # receiver claims the visual field.
+                base = 0
+
             elif pattern == "scroom":
-                base = 34 + random.randint(-5, 7)
-                diag_a = abs(((x + y // 2) % 32) - 16)
-                diag_b = abs(((x - y // 2) % 32) - 16)
-                if diag_a < 2 or diag_b < 2:
-                    base += 34
-                if x % 16 == 0 or y % 16 == 0:
-                    base += 22
-                if (x * 7 + y * 11 + seed) % 101 < 3:
-                    base += 54
+                base = random.randint(0, 2)
+                diag_a = abs(((x + y * 2) % 96) - 48)
+                diag_b = abs(((x * 2 - y) % 96) - 48)
+                if diag_a < 1:
+                    base = 10
+                elif diag_b < 1:
+                    base = 12
+                elif x % 32 == 0 or y % 32 == 0:
+                    base = 4
+                elif (x * 7 + y * 11 + seed) % 149 < 3:
+                    base = 214
+
+            elif pattern == "compositor_floor":
+                # Dark walkable signal field: enough albedo for room volume,
+                # with sparse path rhythm. This is not scenic material.
+                base = 52
+                path_a = line_near(
+                    x, y, width * 0.12, height * 0.82, width * 0.48, height * 0.58, 1.4
+                )
+                path_b = line_near(
+                    x, y, width * 0.48, height * 0.58, width * 0.82, height * 0.30, 1.4
+                )
+                if path_a or path_b:
+                    base = 132
+                elif abs(((x * 2 + y + seed) % 127) - 63) < 1:
+                    base = 88
+                elif (x * 7 + y * 11 + seed) % 389 < 2:
+                    base = 204
+
+            elif pattern == "compositor_ceiling":
+                # Overhead canopy signal: visible height without wallpaper.
+                # Only broad seams and rare glints are baked; moving light does
+                # the expressive work.
+                base = 42
+                if y in (height // 3, (height * 2) // 3):
+                    base = 66
+                elif x in (0, width - 1):
+                    base = 58
+
+            elif pattern == "compositor_wall":
+                # Boundary receiver: visible enclosure without fourth-wall
+                # content. The sparse seams are orientation cues, not a grid.
+                base = 44
+                vertical = x in (0, width - 1)
+                horizon = y in (height // 3, (height * 2) // 3)
+                if vertical:
+                    base = 62
+                elif horizon:
+                    base = 56
+
+            elif pattern == "signal_panel":
+                base = 8 + random.randint(0, 5)
+                if x % 32 == 0 or y % 32 == 0:
+                    base = 86
+                if (x + y) % 41 < 2:
+                    base = 136
+                if (x * 3 - y * 5 + seed) % 67 < 3:
+                    base = 178
+                if (x * 11 + y * 7 + seed) % 191 == 0:
+                    base = 241
 
             elif pattern == "drift_line":
                 drift_idx = int(drift) if drift else 206
@@ -871,7 +1191,16 @@ def generate_pixel_data(
                 continue
 
             elif pattern == "source_portal":
-                pixels.append(source_portal_index(x, y, str(code), int(accent) if accent else 214))
+                pixels.append(
+                    source_portal_index(
+                        x,
+                        y,
+                        str(code),
+                        int(accent) if accent else 214,
+                        width,
+                        height,
+                    )
+                )
                 continue
 
             elif pattern == "legacy_slot":
@@ -880,6 +1209,32 @@ def generate_pixel_data(
 
             elif pattern == "aoa_pane":
                 pixels.append(aoa_pane_index(x, y, str(code), int(accent) if accent else 214))
+                continue
+
+            elif pattern == "aoa_sphere":
+                pixels.append(
+                    aoa_sphere_index(
+                        x,
+                        y,
+                        str(code),
+                        int(accent) if accent else 214,
+                        width,
+                        height,
+                    )
+                )
+                continue
+
+            elif pattern == "live_media":
+                pixels.append(
+                    live_media_placeholder_index(
+                        x,
+                        y,
+                        str(code),
+                        int(accent) if accent else 214,
+                        width,
+                        height,
+                    )
+                )
                 continue
 
             elif pattern == "effect_lens":
@@ -897,7 +1252,8 @@ def generate_pixel_data(
             # Add surface noise
             random.seed(seed + y * width + x)
             base += random.randint(-noise, noise)
-            idx = max(10, min(245, base))
+            min_index = 0 if palette_mode == "scroom" else 10
+            idx = max(min_index, min(245, base))
             pixels.append(idx)
 
     return bytes(pixels), bytes(palette)
@@ -1004,23 +1360,26 @@ def main():
 
     textures_data = {}
     for name, params in TEXTURES.items():
+        texture_width = int(params.get("width", params.get("size", TEX_SIZE)))
+        texture_height = int(params.get("height", params.get("size", TEX_SIZE)))
         pixels, palette = generate_pixel_data(
             params["color"],
             params["noise"],
-            TEX_SIZE,
-            TEX_SIZE,
+            texture_width,
+            texture_height,
             seed=texture_seed(name),
-            pattern=params.get("pattern", "stone_blocks"),
+            pattern=params.get("pattern", "void_substrate"),
             label=params.get("label", 0),
             code=params.get("code", ""),
             ward_type=params.get("ward_type", ""),
             drift=params.get("drift", 0),
             accent=params.get("accent", 0),
             effect=params.get("effect", ""),
+            palette_mode=params.get("palette", "monochrome"),
         )
-        miptex = make_miptex(name, TEX_SIZE, TEX_SIZE, pixels, palette)
+        miptex = make_miptex(name, texture_width, texture_height, pixels, palette)
         textures_data[name] = (miptex, palette)
-        print(f"  {name}: {TEX_SIZE}x{TEX_SIZE}, {len(miptex)} bytes")
+        print(f"  {name}: {texture_width}x{texture_height}, {len(miptex)} bytes")
 
     output_dir = Path(__file__).parent.parent / "assets" / "quake" / "maps"
     output_dir.mkdir(parents=True, exist_ok=True)

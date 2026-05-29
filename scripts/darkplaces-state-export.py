@@ -36,14 +36,31 @@ DEFAULT_ENTITY_LOCAL_EFFECT_STATE_FILE = Path(
     "/dev/shm/hapax-visual/entity-local-effect-state.json"
 )
 DEFAULT_STIMMUNG_STATE_FILE = Path("/dev/shm/hapax-stimmung/state.json")
-DEFAULT_VISUAL_CHAIN_STATE_FILE = Path("/dev/shm/hapax-visual/visual-chain-state.json")
+DEFAULT_VISUAL_CHAIN_STATE_FILE = Path(
+    os.environ.get(
+        "HAPAX_DARKPLACES_VISUAL_CHAIN_STATE_FILE",
+        "/dev/shm/hapax-visual/visual-chain-state.json",
+    )
+)
+DEFAULT_VISUAL_CHAIN_FALLBACK_STATE_FILE = Path(
+    os.environ.get(
+        "HAPAX_DARKPLACES_VISUAL_CHAIN_FALLBACK_STATE_FILE",
+        "/dev/shm/hapax-visual/screwm-visual-chain-state.json",
+    )
+)
 DEFAULT_EFFECT_DRIFT_STATE_FILE = Path("/dev/shm/hapax-visual/effect-drift-state.json")
+DEFAULT_EFFECT_DRIFT_FALLBACK_STATE_FILE = Path(
+    os.environ.get(
+        "HAPAX_DARKPLACES_EFFECT_DRIFT_FALLBACK_STATE_FILE",
+        "/dev/shm/hapax-visual/screwm-effect-drift-fallback-state.json",
+    )
+)
 
 WARD_ACTIVITY_EXPORTS: tuple[tuple[str, str], ...] = (
     ("01", "token_pole"),
     ("02", "album"),
     ("03", "stream_overlay"),
-    ("04", "sierpinski"),
+    ("04", "aoa_oarb_state"),
     ("05", "reverie"),
     ("06", "activity_header"),
     ("07", "stance_indicator"),
@@ -137,36 +154,136 @@ EFFECT_DRIFT_FAMILIES: tuple[str, ...] = (
     "temporal",
     "texture",
     "edge",
+    "compositing",
 )
 
 EFFECT_DRIFT_NODE_FAMILY: dict[str, str] = {
     "color": "tonal",
     "colorgrade": "tonal",
+    "bloom": "tonal",
+    "invert": "tonal",
+    "vignette": "tonal",
     "palette": "tonal",
     "palette_remap": "tonal",
     "thermal": "tonal",
     "posterize": "tonal",
+    "color_map": "tonal",
+    "nightvision_tint": "tonal",
     "drift": "atmospheric",
+    "chromatic_aberration": "atmospheric",
     "mirror": "atmospheric",
     "kaleidoscope": "atmospheric",
     "fisheye": "atmospheric",
     "transform": "atmospheric",
+    "warp": "atmospheric",
+    "displacement_map": "atmospheric",
+    "pixsort": "atmospheric",
+    "droste": "atmospheric",
+    "tile": "atmospheric",
     "tunnel": "atmospheric",
+    "breathing": "atmospheric",
     "fb": "temporal",
     "feedback": "temporal",
     "trail": "temporal",
+    "echo": "temporal",
     "slitscan": "temporal",
     "stutter": "temporal",
+    "diff": "temporal",
+    "fluid_sim": "temporal",
+    "reaction_diffusion": "temporal",
     "post": "texture",
+    "postprocess": "texture",
+    "ascii": "texture",
     "vhs": "texture",
+    "glitch_block": "texture",
     "scanlines": "texture",
     "halftone": "texture",
+    "sharpen": "texture",
+    "kuwahara": "texture",
+    "noise_overlay": "texture",
+    "noise_gen": "texture",
+    "particle_system": "texture",
+    "strobe": "texture",
     "dither": "texture",
     "emboss": "texture",
     "grain_bump": "texture",
     "edge_detect": "edge",
     "threshold": "edge",
     "rutt_etra": "edge",
+    "voronoi_overlay": "edge",
+    "waveform_render": "edge",
+    "blend": "compositing",
+    "chroma_key": "compositing",
+    "crossfade": "compositing",
+    "luma_key": "compositing",
+}
+
+EFFECT_DRIFT_MODE_VALUES: dict[str, dict[str, float]] = {
+    "tonal": {
+        "color": 0.10,
+        "colorgrade": 0.10,
+        "bloom": 0.22,
+        "invert": 0.36,
+        "vignette": 0.48,
+        "thermal": 0.62,
+        "posterize": 0.74,
+        "palette": 0.86,
+        "palette_remap": 0.96,
+    },
+    "atmospheric": {
+        "drift": 0.10,
+        "chromatic_aberration": 0.22,
+        "kaleidoscope": 0.34,
+        "fisheye": 0.48,
+        "mirror": 0.60,
+        "transform": 0.70,
+        "slitscan": 0.80,
+        "warp": 0.86,
+        "displacement_map": 0.92,
+        "droste": 0.96,
+        "tile": 0.98,
+        "tunnel": 1.00,
+        "breathing": 0.42,
+    },
+    "temporal": {
+        "fb": 0.98,
+        "trail": 0.15,
+        "echo": 0.30,
+        "stutter": 0.45,
+        "diff": 0.60,
+        "fluid_sim": 0.75,
+        "reaction_diffusion": 0.88,
+        "feedback": 0.98,
+    },
+    "texture": {
+        "ascii": 0.10,
+        "vhs": 0.20,
+        "glitch_block": 0.32,
+        "scanlines": 0.44,
+        "emboss": 0.55,
+        "halftone": 0.66,
+        "sharpen": 0.76,
+        "kuwahara": 0.82,
+        "noise_overlay": 0.88,
+        "grain_bump": 0.90,
+        "dither": 0.92,
+        "noise_gen": 0.94,
+        "particle_system": 0.96,
+        "strobe": 0.99,
+    },
+    "edge": {
+        "edge_detect": 0.20,
+        "rutt_etra": 0.40,
+        "voronoi_overlay": 0.60,
+        "threshold": 0.80,
+        "waveform_render": 0.95,
+    },
+    "compositing": {
+        "blend": 0.20,
+        "chroma_key": 0.45,
+        "crossfade": 0.70,
+        "luma_key": 0.90,
+    },
 }
 
 IMAGINATION_DIMENSION_EXPORTS: tuple[tuple[str, str], ...] = (
@@ -237,7 +354,7 @@ WARD_PROPERTY_DEFAULT_PLANES: dict[str, str] = {
     "interactive_lore_query": "surface-scrim",
     "chat_ambient": "mid-scrim",
     "impingement_cascade": "mid-scrim",
-    "sierpinski": "beyond-scrim",
+    "aoa_oarb_state": "beyond-scrim",
     "album": "beyond-scrim",
 }
 
@@ -386,6 +503,8 @@ def _mean(values: list[float]) -> float:
 
 def _active_ward_count(active_wards: dict[str, Any]) -> int:
     ward_ids = active_wards.get("ward_ids")
+    if not isinstance(ward_ids, list):
+        ward_ids = active_wards.get("active_ward_ids")
     if isinstance(ward_ids, list):
         return len(ward_ids)
     return 0
@@ -416,6 +535,8 @@ def _screwm_ward_count(active_wards: dict[str, Any]) -> int:
 
 def build_ward_activity_lines(active_wards: dict[str, Any]) -> dict[str, str]:
     ward_ids = active_wards.get("ward_ids")
+    if not isinstance(ward_ids, list):
+        ward_ids = active_wards.get("active_ward_ids")
     active_set = (
         {
             alias
@@ -432,6 +553,23 @@ def build_ward_activity_lines(active_wards: dict[str, Any]) -> dict[str, str]:
         )
         for ordinal, ward_id in WARD_ACTIVITY_EXPORTS
     }
+
+
+def _active_wards_with_layout_fallback(shm_dir: Path) -> dict[str, Any]:
+    active_wards = _read_json(shm_dir / "active_wards.json")
+    ward_ids = active_wards.get("ward_ids")
+    if isinstance(ward_ids, list) and ward_ids:
+        return active_wards
+
+    layout_state = _read_json(shm_dir / "current-layout-state.json")
+    layout_ids = layout_state.get("active_ward_ids")
+    if not isinstance(layout_ids, list) or not layout_ids:
+        layout_ids = layout_state.get("ward_ids")
+    if isinstance(layout_ids, list) and layout_ids:
+        merged = dict(active_wards)
+        merged["ward_ids"] = layout_ids
+        return merged
+    return active_wards
 
 
 def _live_ward_property_entries(properties: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -552,7 +690,7 @@ def build_ward_property_lines(shm_dir: Path) -> dict[str, str]:
 
 def build_ward_lines(shm_dir: Path) -> dict[str, str]:
     active_segment = _read_json(shm_dir / "active-segment.json")
-    active_wards = _read_json(shm_dir / "active_wards.json")
+    active_wards = _active_wards_with_layout_fallback(shm_dir)
     album = _read_json(shm_dir / "album-state.json")
     voice = _read_json(shm_dir / "voice-state.json")
     token = _read_json(shm_dir / "token-ledger.json")
@@ -731,6 +869,21 @@ def _source_frame_freshness(source_dir: Path, now: float | None = None) -> float
     return 1.0 if age <= ttl_s * 3.0 else 0.0
 
 
+def _quake_live_camera_freshness(shm_dir: Path, role: str, now: float | None = None) -> float:
+    meta_path = shm_dir / f"quake-live-cam-{role}.json"
+    meta = _read_json(meta_path)
+    timestamp = _entry_float(meta, "updated_at")
+    if timestamp <= 0:
+        try:
+            timestamp = meta_path.stat().st_mtime
+        except OSError:
+            return 0.0
+    age = (time.time() if now is None else now) - timestamp
+    fps = max(1.0, _entry_float(meta, "fps", 10.0))
+    ttl_s = max(12.0, 30.0 / fps)
+    return 1.0 if age <= ttl_s else 0.0
+
+
 def _content_source_freshness(
     source_dir: Path,
     manifest: dict[str, Any],
@@ -822,7 +975,10 @@ def build_source_lines(
         except (TypeError, ValueError):
             priority = 0.0
         source_dir = imagination_sources_dir / f"camera-{role}"
-        freshness = _source_frame_freshness(source_dir, now)
+        freshness = max(
+            _source_frame_freshness(source_dir, now),
+            _quake_live_camera_freshness(shm_dir, role, now),
+        )
         lines[f"source-priority-{ordinal}.txt"] = f"{max(0.0, min(1.0, priority)):.4f}"
         lines[f"source-fresh-{ordinal}.txt"] = f"{freshness:.4f}"
 
@@ -837,7 +993,7 @@ def build_aoa_pane_lines(
 ) -> dict[str, str]:
     """Export current AoA pane-binding/gate pressure as in-world scalars."""
     active_segment = _read_json(shm_dir / "active-segment.json")
-    active_wards = _read_json(shm_dir / "active_wards.json")
+    active_wards = _active_wards_with_layout_fallback(shm_dir)
     uniforms = _read_json(uniforms_file)
     source_lines = build_source_lines(shm_dir, imagination_sources_dir, now)
 
@@ -1286,21 +1442,56 @@ def _effect_drift_family(pass_row: dict[str, Any]) -> str:
     family = str(pass_row.get("effect_family") or "").strip().lower()
     if family in EFFECT_DRIFT_FAMILIES:
         return family
+    return EFFECT_DRIFT_NODE_FAMILY.get(_effect_drift_effect_name(pass_row), "texture")
+
+
+def _effect_drift_effect_name(pass_row: dict[str, Any]) -> str:
+    for key in ("effect", "effect_name", "node"):
+        value = str(pass_row.get(key) or "").strip().lower()
+        if value:
+            return value
     node_id = str(pass_row.get("node_id") or "").strip().lower()
-    return EFFECT_DRIFT_NODE_FAMILY.get(node_id, "texture")
+    if not node_id:
+        return ""
+    match = re.match(r"^slot\d+_(?:\d+_)?(.+)$", node_id)
+    if match:
+        return match.group(1)
+    return node_id
+
+
+def _effect_drift_slot_index(pass_row: dict[str, Any]) -> str:
+    slot_index = pass_row.get("slot_index")
+    if isinstance(slot_index, (int, float)):
+        return str(int(slot_index))
+    node_id = str(pass_row.get("node_id") or "").strip().lower()
+    match = re.match(r"^slot(\d+)_", node_id)
+    if match:
+        return match.group(1)
+    return _effect_drift_effect_name(pass_row)
+
+
+def _effect_drift_mode_value(pass_row: dict[str, Any], family: str) -> float:
+    effect = _effect_drift_effect_name(pass_row)
+    mode_values = EFFECT_DRIFT_MODE_VALUES.get(family, {})
+    return mode_values.get(effect, 0.0)
 
 
 def _effect_drift_pass_strength(pass_row: dict[str, Any]) -> float:
     if pass_row.get("non_neutral") is False:
         return 0.0
-    strength = _clamp01(abs(_entry_float(pass_row, "max_delta")) / 10.0)
-    params = pass_row.get("params")
-    if isinstance(params, list):
-        for item in params:
-            if isinstance(item, dict):
-                strength = max(strength, _clamp01(abs(_entry_float(item, "delta")) / 10.0))
+    if "slot_intensity" in pass_row:
+        strength = _clamp01(_entry_float(pass_row, "slot_intensity"))
+        delta_hint = _clamp01(abs(_entry_float(pass_row, "max_delta")) / 100.0)
+        strength = max(strength, min(delta_hint, 0.18))
+    else:
+        strength = _clamp01(abs(_entry_float(pass_row, "max_delta")) / 10.0)
+        params = pass_row.get("params")
+        if isinstance(params, list):
+            for item in params:
+                if isinstance(item, dict):
+                    strength = max(strength, _clamp01(abs(_entry_float(item, "delta")) / 10.0))
     if pass_row.get("non_neutral") is True:
-        strength = max(strength, 0.20)
+        strength = max(strength, 0.06)
     return strength
 
 
@@ -1315,12 +1506,111 @@ def _effect_drift_region_count(passes: list[Any]) -> int:
     return count
 
 
+def _state_file_fresh(path: Path, *, now: float | None = None, max_age_s: float = 10.0) -> bool:
+    try:
+        age = (time.time() if now is None else now) - path.stat().st_mtime
+    except OSError:
+        return False
+    return age <= max_age_s
+
+
+def _visual_chain_pressure(payload: dict[str, Any]) -> float:
+    levels = payload.get("levels")
+    levels = levels if isinstance(levels, dict) else {}
+    params = payload.get("params")
+    params = params if isinstance(params, dict) else {}
+    level_pressure = max(
+        (_clamp01(_dict_float(levels, key)) for _ordinal, key in VISUAL_CHAIN_EXPORTS),
+        default=0.0,
+    )
+    param_pressure = max(
+        (
+            abs(_dict_float(params, key))
+            for key in (
+                "noise.amplitude",
+                "noise.frequency_x",
+                "noise.speed",
+                "drift.amplitude",
+                "drift.speed",
+                "color.hue_rotate",
+                "color.saturation",
+                "fb.decay",
+                "post.vignette_strength",
+            )
+        ),
+        default=0.0,
+    )
+    return max(level_pressure, min(param_pressure, 1.0))
+
+
+def _select_visual_chain_state(
+    primary_file: Path,
+    fallback_file: Path,
+    *,
+    now: float | None = None,
+) -> tuple[dict[str, Any], str]:
+    primary = _read_json(primary_file)
+    if primary and _state_file_fresh(primary_file, now=now) and _visual_chain_pressure(primary) > 0:
+        return primary, "canonical"
+    fallback = _read_json(fallback_file)
+    if fallback and _state_file_fresh(fallback_file, now=now):
+        return fallback, "fallback"
+    if primary:
+        return primary, "canonical-stale-or-neutral"
+    if fallback:
+        return fallback, "fallback-stale"
+    return {}, "missing"
+
+
+def _is_real_slotdrift_state(payload: dict[str, Any]) -> bool:
+    source_presence = payload.get("source_presence")
+    coverage = payload.get("slotdrift_coverage")
+    if not isinstance(source_presence, dict) or not isinstance(coverage, dict):
+        return False
+    if source_presence.get("fail_closed") is True:
+        return False
+    visible = source_presence.get("visible_source_count")
+    minimum = source_presence.get("minimum_effect_source_count")
+    try:
+        if visible is not None and minimum is not None and float(visible) < float(minimum):
+            return False
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _select_effect_drift_state(
+    primary_file: Path,
+    fallback_file: Path,
+    *,
+    now: float | None = None,
+) -> tuple[dict[str, Any], str]:
+    primary = _read_json(primary_file)
+    primary_fresh = bool(primary) and _state_file_fresh(primary_file, now=now, max_age_s=60.0)
+    if primary_fresh and _is_real_slotdrift_state(primary):
+        return primary, "slotdrift"
+    fallback = _read_json(fallback_file)
+    fallback_fresh = bool(fallback) and _state_file_fresh(fallback_file, now=now)
+    if fallback_fresh:
+        return fallback, "synthetic-fallback"
+    if primary:
+        return primary, "primary-stale-or-noncanonical"
+    if fallback:
+        return fallback, "synthetic-fallback-stale"
+    return {}, "missing"
+
+
 def build_visual_chain_lines(
     visual_chain_state_file: Path = DEFAULT_VISUAL_CHAIN_STATE_FILE,
     effect_drift_state_file: Path = DEFAULT_EFFECT_DRIFT_STATE_FILE,
+    visual_chain_fallback_state_file: Path = DEFAULT_VISUAL_CHAIN_FALLBACK_STATE_FILE,
+    effect_drift_fallback_state_file: Path = DEFAULT_EFFECT_DRIFT_FALLBACK_STATE_FILE,
+    now: float | None = None,
 ) -> dict[str, str]:
     """Export visual-chain and effect-drift pressure as in-scroom scalars."""
-    chain_state = _read_json(visual_chain_state_file)
+    chain_state, chain_source = _select_visual_chain_state(
+        visual_chain_state_file, visual_chain_fallback_state_file, now=now
+    )
     levels = chain_state.get("levels")
     levels = levels if isinstance(levels, dict) else {}
     params = chain_state.get("params")
@@ -1356,7 +1646,9 @@ def build_visual_chain_lines(
         (_clamp01(_dict_float(levels, key)) for _ord, key in VISUAL_CHAIN_EXPORTS), default=0.0
     )
 
-    effect_state = _read_json(effect_drift_state_file)
+    effect_state, effect_source = _select_effect_drift_state(
+        effect_drift_state_file, effect_drift_fallback_state_file, now=now
+    )
     passes = effect_state.get("passes")
     passes = passes if isinstance(passes, list) else []
     pass_count = max(0.0, _entry_float(effect_state, "pass_count", float(len(passes))))
@@ -1369,16 +1661,65 @@ def build_visual_chain_lines(
         ),
     )
     family_strengths = {family: 0.0 for family in EFFECT_DRIFT_FAMILIES}
+    family_modes = {family: 0.0 for family in EFFECT_DRIFT_FAMILIES}
+    family_mode_scores = {family: -1.0 for family in EFFECT_DRIFT_FAMILIES}
+    active_effect_names: set[str] = set()
+    active_slot_indices: set[str] = set()
+    active_fast_count = 0
+    active_slow_count = 0
+    active_pass_count = 0
+    active_strength_sum = 0.0
     max_delta = 0.0
     for pass_row in passes:
         if not isinstance(pass_row, dict):
             continue
         max_delta = max(max_delta, abs(_entry_float(pass_row, "max_delta")))
         family = _effect_drift_family(pass_row)
+        pass_strength = _effect_drift_pass_strength(pass_row)
+        if pass_strength > 0.0:
+            active_pass_count += 1
+            active_strength_sum += pass_strength
+            effect_name = _effect_drift_effect_name(pass_row)
+            if effect_name:
+                active_effect_names.add(effect_name)
+            active_slot_indices.add(_effect_drift_slot_index(pass_row))
+            cadence = str(pass_row.get("eviction_cadence") or "").strip().lower()
+            if cadence == "fast":
+                active_fast_count += 1
+            elif cadence == "slow":
+                active_slow_count += 1
         family_strengths[family] = max(
             family_strengths.get(family, 0.0),
-            _effect_drift_pass_strength(pass_row),
+            pass_strength,
         )
+        mode_score = pass_strength + _clamp01(_entry_float(pass_row, "slot_intensity")) * 0.25
+        mode_value = _effect_drift_mode_value(pass_row, family)
+        if mode_value > 0 and mode_score > family_mode_scores.get(family, -1.0):
+            family_mode_scores[family] = mode_score
+            family_modes[family] = mode_value
+    effective_non_neutral = non_neutral
+    active_families = [
+        family for family in EFFECT_DRIFT_FAMILIES if family_strengths.get(family, 0.0) > 0.0
+    ]
+    if effect_source == "slotdrift" and active_families:
+        # SlotDrift already performs fast/slow eviction and type rotation. Do
+        # not collapse that into a small rotating family subset here; DarkPlaces
+        # needs the full family vector so "kind" changes remain visible on
+        # media/entity surfaces instead of becoming a single intensity pulse.
+        effective_non_neutral = float(len(active_families))
+    active_ratio_denominator = max(1.0, min(pass_count, 6.0))
+    drift_strength_peak = max(family_strengths.values(), default=0.0)
+    active_strength_mean = active_strength_sum / max(1.0, float(active_pass_count))
+    if effect_source == "slotdrift" and active_pass_count > 0:
+        active_ratio = _clamp01(0.36 + active_strength_mean * 0.64)
+    else:
+        active_ratio = _clamp01(effective_non_neutral / active_ratio_denominator)
+    active_slot_ratio = _clamp01(len(active_slot_indices) / 5.0)
+    active_effect_ratio = _clamp01(active_pass_count / max(1.0, pass_count))
+    cadence_denominator = max(1.0, float(active_pass_count))
+    fast_ratio = _clamp01(active_fast_count / cadence_denominator)
+    slow_ratio = _clamp01(active_slow_count / cadence_denominator)
+    kind_variance = _clamp01(len(active_effect_names) / max(1.0, pass_count))
 
     lines.update(
         {
@@ -1389,14 +1730,24 @@ def build_visual_chain_lines(
             "visual-chain-aperture.txt": f"{aperture_pressure:.4f}",
             "visual-chain-param-pressure.txt": f"{max(noise_pressure, drift_pressure, color_pressure, feedback_pressure, aperture_pressure, max_level):.4f}",
             "effect-drift-pass-count.txt": f"{_clamp01(pass_count / 5.0):.4f}",
-            "effect-drift-active-ratio.txt": f"{_clamp01(non_neutral / max(pass_count, 1.0)):.4f}",
-            "effect-drift-max-delta.txt": f"{_clamp01(max_delta / 10.0):.4f}",
+            "effect-drift-active-ratio.txt": f"{active_ratio:.4f}",
+            "effect-drift-active-slot-ratio.txt": f"{active_slot_ratio:.4f}",
+            "effect-drift-active-effect-ratio.txt": f"{active_effect_ratio:.4f}",
+            "effect-drift-fast-ratio.txt": f"{fast_ratio:.4f}",
+            "effect-drift-slow-ratio.txt": f"{slow_ratio:.4f}",
+            "effect-drift-kind-variance.txt": f"{kind_variance:.4f}",
+            "effect-drift-max-delta.txt": f"{_clamp01(drift_strength_peak):.4f}",
             "effect-drift-region-count.txt": f"{_clamp01(_effect_drift_region_count(passes) / 12.0):.4f}",
             "effect-drift-route.txt": "IN_SCROOM_EFFECT_DRIFT_STATE",
+            "effect-drift-source.txt": effect_source,
+            "effect-drift-real-source.txt": "1.0000" if effect_source == "slotdrift" else "0.0000",
+            "visual-chain-source.txt": chain_source,
         }
     )
     for family, value in family_strengths.items():
         lines[f"effect-drift-{family}.txt"] = f"{value:.4f}"
+    for family, value in family_modes.items():
+        lines[f"effect-drift-mode-{family}.txt"] = f"{value:.4f}"
     return lines
 
 
@@ -1443,6 +1794,8 @@ def export_state(
     stimmung_state_file: Path = DEFAULT_STIMMUNG_STATE_FILE,
     visual_chain_state_file: Path = DEFAULT_VISUAL_CHAIN_STATE_FILE,
     effect_drift_state_file: Path = DEFAULT_EFFECT_DRIFT_STATE_FILE,
+    visual_chain_fallback_state_file: Path = DEFAULT_VISUAL_CHAIN_FALLBACK_STATE_FILE,
+    effect_drift_fallback_state_file: Path = DEFAULT_EFFECT_DRIFT_FALLBACK_STATE_FILE,
     now: float | None = None,
 ) -> None:
     game_dir.mkdir(parents=True, exist_ok=True)
@@ -1455,7 +1808,7 @@ def export_state(
     for ordinal, ward_id in WARD_EXPORTS.items():
         line = ward_lines.get(ordinal, ward_id.upper())
         _write_atomic(game_dir / f"ward-{ordinal}.txt", line)
-    active_wards = _read_json(shm_dir / "active_wards.json")
+    active_wards = _active_wards_with_layout_fallback(shm_dir)
     for filename, line in build_ward_activity_lines(active_wards).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_ward_property_lines(shm_dir).items():
@@ -1466,7 +1819,7 @@ def export_state(
         _write_atomic(game_dir / filename, line)
     for filename, line in build_homage_lines(shm_dir, uniforms_file).items():
         _write_atomic(game_dir / filename, line)
-    for filename, line in build_source_lines(shm_dir, imagination_sources_dir).items():
+    for filename, line in build_source_lines(shm_dir, imagination_sources_dir, now).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_content_source_lines(imagination_sources_dir).items():
         _write_atomic(game_dir / filename, line)
@@ -1497,7 +1850,11 @@ def export_state(
     for filename, line in build_visual_layer_lines(shm_dir, stimmung_state_file).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_visual_chain_lines(
-        visual_chain_state_file, effect_drift_state_file
+        visual_chain_state_file,
+        effect_drift_state_file,
+        visual_chain_fallback_state_file,
+        effect_drift_fallback_state_file,
+        now,
     ).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_imagination_fragment_lines(imagination_current_file).items():
@@ -1567,6 +1924,16 @@ def main() -> int:
         type=Path,
         default=DEFAULT_EFFECT_DRIFT_STATE_FILE,
     )
+    parser.add_argument(
+        "--visual-chain-fallback-state-file",
+        type=Path,
+        default=DEFAULT_VISUAL_CHAIN_FALLBACK_STATE_FILE,
+    )
+    parser.add_argument(
+        "--effect-drift-fallback-state-file",
+        type=Path,
+        default=DEFAULT_EFFECT_DRIFT_FALLBACK_STATE_FILE,
+    )
     parser.add_argument("--copy-self-test", type=Path, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -1592,6 +1959,8 @@ def main() -> int:
         args.stimmung_state_file,
         args.visual_chain_state_file,
         args.effect_drift_state_file,
+        args.visual_chain_fallback_state_file,
+        args.effect_drift_fallback_state_file,
     )
     return 0
 

@@ -13,6 +13,7 @@ FPS="${DARKPLACES_FPS:-60}"
 DISPLAY_NUM="${HAPAX_DARKPLACES_DISPLAY:-:82}"
 PORT="${DARKPLACES_PORT:-26001}"
 JOY_INDEX="${HAPAX_DARKPLACES_JOY_INDEX:-1}"
+DARKPLACES_BIN="${HAPAX_DARKPLACES_BIN:-}"
 PROBE_ONLY=0
 
 usage() {
@@ -50,8 +51,18 @@ need_cmd() {
     fi
 }
 
+resolve_darkplaces_bin() {
+    if [ -n "$DARKPLACES_BIN" ]; then
+        printf '%s\n' "$DARKPLACES_BIN"
+        return
+    fi
+    "$REPO_DIR/scripts/ensure-darkplaces-live-texture-build.sh"
+}
+
+DARKPLACES_BIN="$(resolve_darkplaces_bin)"
+
 need_cmd Xvfb
-need_cmd darkplaces-sdl
+need_cmd "$DARKPLACES_BIN"
 need_cmd ffmpeg
 need_cmd v4l2-ctl
 if [ -n "${NOTIFY_SOCKET:-}" ]; then
@@ -121,7 +132,7 @@ fi
 
 "$REPO_DIR/scripts/install-darkplaces-screwm-assets.sh"
 
-DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 darkplaces-sdl \
+DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 "$DARKPLACES_BIN" \
     -game screwm \
     -window \
     -width "$WIDTH" \
@@ -172,7 +183,67 @@ DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 darkplaces-sdl \
     +cl_forwardspeed 360 \
     +cl_backspeed 360 \
     +cl_sidespeed 360 \
-    +cl_upspeed 240 &
+    +cl_upspeed 240 \
+    +hapax_live_texture_enable 1 \
+    +hapax_live_texture_name progs/aoa_sphere.mdl_0 \
+    +hapax_live_texture_path /dev/shm/hapax-compositor/quake-live-yt.bgra \
+    +hapax_live_texture_width 2048 \
+    +hapax_live_texture_height 1024 \
+    +hapax_live_texture2_enable 1 \
+    +hapax_live_texture2_name cam_bop \
+    +hapax_live_texture2_path /dev/shm/hapax-compositor/quake-live-cam-brio-operator.bgra \
+    +hapax_live_texture2_width 1280 \
+    +hapax_live_texture2_height 720 \
+    +hapax_live_texture3_enable 1 \
+    +hapax_live_texture3_name cam_brm \
+    +hapax_live_texture3_path /dev/shm/hapax-compositor/quake-live-cam-brio-room.bgra \
+    +hapax_live_texture3_width 1280 \
+    +hapax_live_texture3_height 720 \
+    +hapax_live_texture4_enable 1 \
+    +hapax_live_texture4_name cam_bsy \
+    +hapax_live_texture4_path /dev/shm/hapax-compositor/quake-live-cam-brio-synths.bgra \
+    +hapax_live_texture4_width 1280 \
+    +hapax_live_texture4_height 720 \
+    +hapax_live_texture5_enable 1 \
+    +hapax_live_texture5_name cam_cdk \
+    +hapax_live_texture5_path /dev/shm/hapax-compositor/quake-live-cam-c920-desk.bgra \
+    +hapax_live_texture5_width 1280 \
+    +hapax_live_texture5_height 720 \
+    +hapax_live_texture6_enable 1 \
+    +hapax_live_texture6_name cam_crm \
+    +hapax_live_texture6_path /dev/shm/hapax-compositor/quake-live-cam-c920-room.bgra \
+    +hapax_live_texture6_width 1280 \
+    +hapax_live_texture6_height 720 \
+    +hapax_live_texture7_enable 1 \
+    +hapax_live_texture7_name cam_cov \
+    +hapax_live_texture7_path /dev/shm/hapax-compositor/quake-live-cam-c920-overhead.bgra \
+    +hapax_live_texture7_width 1280 \
+    +hapax_live_texture7_height 720 \
+    +hapax_live_texture8_enable 1 \
+    +hapax_live_texture8_name ward_atlas \
+    +hapax_live_texture8_path /dev/shm/hapax-compositor/quake-live-ward-atlas.bgra \
+    +hapax_live_texture8_width 2048 \
+    +hapax_live_texture8_height 2304 \
+    +hapax_live_texture9_enable 1 \
+    +hapax_live_texture9_name w09 \
+    +hapax_live_texture9_path /dev/shm/hapax-compositor/quake-live-ticker-grounding.bgra \
+    +hapax_live_texture9_width 1344 \
+    +hapax_live_texture9_height 176 \
+    +hapax_live_texture10_enable 1 \
+    +hapax_live_texture10_name w22 \
+    +hapax_live_texture10_path /dev/shm/hapax-compositor/quake-live-ticker-precedent.bgra \
+    +hapax_live_texture10_width 1344 \
+    +hapax_live_texture10_height 176 \
+    +hapax_live_texture11_enable 1 \
+    +hapax_live_texture11_name w27 \
+    +hapax_live_texture11_path /dev/shm/hapax-compositor/quake-live-ticker-chronicle.bgra \
+    +hapax_live_texture11_width 1344 \
+    +hapax_live_texture11_height 176 \
+    +hapax_live_texture12_enable 1 \
+    +hapax_live_texture12_name w05 \
+    +hapax_live_texture12_path /dev/shm/hapax-compositor/quake-live-reverie.bgra \
+    +hapax_live_texture12_width 960 \
+    +hapax_live_texture12_height 540 &
 darkplaces_pid="$!"
 
 sleep 3
