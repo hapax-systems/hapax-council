@@ -200,13 +200,41 @@ class TestAuthorityCaseStageGate:
         result = _run(HOOK, EDIT_INPUT, home=home)
         assert result.returncode == 2
 
-    def test_missing_stage_blocks_source_mutation(self, tmp_path: Path) -> None:
+    def test_missing_stage_with_impl_auth_derives_s6(self, tmp_path: Path) -> None:
+        # FR-STAGE-S6-TRAP: a blank stage on a task that already carries
+        # authority_case + parent_spec + implementation_authorized: true is a
+        # template gap, not a stage deficiency. The gate derives S6, stamps the
+        # note, logs a ledger line, and ALLOWS the mutation (fail-open-WITH-ledger).
         home = _make_case_vault(
             tmp_path,
             case_id="CASE-001",
             impl_authorized="true",
             src_authorized="true",
             runtime_authorized="false",
+        )
+        _write_claim(home, "alpha", "test-case-001")
+        result = _run(HOOK, EDIT_INPUT, home=home)
+        assert result.returncode == 0, f"stderr={result.stderr}"
+        assert "derived" in result.stderr.lower()
+        # Ledger line emitted (never silent).
+        ledger = home / ".cache" / "hapax" / "methodology-emergency-ledger.jsonl"
+        assert ledger.exists()
+        assert any(
+            json.loads(line).get("kind") == "stage_derived"
+            for line in ledger.read_text().splitlines()
+            if line.strip()
+        )
+        # Numeric stage stamped durably into the note (closes the shadow-denial brick).
+        note = home / "Documents/Personal/20-projects/hapax-cc-tasks/active/test-case-001-test.md"
+        assert "stage: S6_IMPLEMENTATION" in note.read_text()
+
+    def test_missing_stage_without_impl_auth_still_blocked(self, tmp_path: Path) -> None:
+        # The derivation requires implementation_authorized: true. A blank stage
+        # WITHOUT it stays blocked — the loosening never invents authority.
+        home = _make_case_vault(
+            tmp_path,
+            case_id="CASE-001",
+            impl_authorized="false",
         )
         _write_claim(home, "alpha", "test-case-001")
         result = _run(HOOK, EDIT_INPUT, home=home)
