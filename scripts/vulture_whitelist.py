@@ -3924,3 +3924,19 @@ get_triaged_claims
 get_progress
 get_claims
 get_timeline
+
+# Screwm fullest-expression epic (task 20260529-screwm-fullest-expression-build):
+# build-time generation + staged-scaffold callables in scripts/ that the map/model/
+# source build flow invokes, or that land in subsequent waves (Wave 2 depth/mount/
+# texture); not cleanly importable here (generate-screwm-map validates at import).
+# 60%-confidence vulture findings on an in-progress feature epic.
+derived_aoa_model_scale
+level_texture_bands
+offset_span
+mount_expression_for_mount
+mount_chrome_textures
+add_mount_brush
+axis_beam_segments
+ward_review_drift_midpoint
+_draw_scanlines
+_paint_reverie_state_proxy
