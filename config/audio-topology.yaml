@@ -1,13 +1,22 @@
 schema_version: 3
 description: |
-  Canonical workstation audio topology for the live L-12 broadcast graph.
+  Canonical workstation audio topology for the live broadcast graph.
+
+  INTERIM (2026-05-29): the ZOOM L-12 was physically removed. The Akai MPC
+  Live III is the sole interface until the MOTU UltraLite mk5 + FadeFox MX12
+  land. The broadcast return now runs PC -> MPC -> PC entirely over the MPC's
+  own 24-ch USB return (mpc-usb-return / mpc-usb-return-capture), replacing the
+  L-12 wet return. The L-12 nodes below are retained as ORPHANED until the
+  MOTU/FadeFox migration retires them. The safety invariant is unchanged in
+  spirit: the broadcast return carries only the MPC public mix (capture_AUX0/1);
+  the private monitor mix (capture_AUX2/3) is fenced from every broadcast node.
 
   This descriptor models the committed PipeWire/WirePlumber graph that
   drives the livestream after the L6/Ryzen-era retirement. It intentionally
-  keeps the inverse L-12 safety invariant explicit:
+  keeps the inverse safety invariant explicit:
 
-      anything that enters the L-12 reaches broadcast; private audio leaves
-      the L-12 entirely.
+      anything that enters the broadcast return reaches broadcast; private
+      audio leaves the broadcast path entirely.
 
   The current schema has one target_object per logical node, while several
   deployed PipeWire modules expose separate capture/playback sides. For those
@@ -78,28 +87,58 @@ nodes:
       Akai MPC Live III USB multichannel playback endpoint. Under the
       MPC-first baseline, host-side broadcast sources land here first:
       SoundCloud/music AUX0/1, public livestream TTS AUX2/3,
-      and private TTS monitor AUX8/9. AUX4/5, AUX6/7, AUX10/11,
+      YouTube bed AUX6/7, and private TTS monitor AUX8/9. AUX4/5, AUX10/11,
       notifications, instruments, PC/default multimedia, and other
       under-specified producers are disabled/fail-closed until a bounded
-      activation task explicitly promotes them. The MPC hardware mix exits over
-      governed TRS outputs into L-12 CH9-12 for broadcast-bound returns;
-      private monitor AUX8/9 is operator-routed inside the MPC and must
-      not be treated as an L-12/default fallback. The live PipeWire ALSA
-      profile is the MPC Pro profile (`pro-output-0`); the older
-      `multichannel-output` node name stays listed only as a deny-policy
-      legacy alias for PC USB 5/6 fail-closed protection.
+      activation task explicitly promotes them.
+
+      INTERIM (2026-05-29, L-12 physically removed): the MPC is the sole
+      interface until the MOTU UltraLite mk5 + FadeFox MX12 land. The MPC
+      internal mixer now returns two stereo busses to the host over its own
+      24-ch USB return (see mpc-usb-return): the public mix (music + voice +
+      YouTube) on capture_AUX0/1 is broadcast-bound; the private monitor mix
+      on capture_AUX2/3 is operator-monitor-only and fenced from broadcast.
+      The live PipeWire ALSA profile is the MPC Pro profile (`pro-output-0`);
+      the older `multichannel-output` node name stays listed only as a
+      deny-policy legacy alias for PC USB 5/6 fail-closed protection.
     hw: hw:CARD=MPCB
     channels:
       count: 24
       positions: [AUX0, AUX1, AUX2, AUX3, AUX4, AUX5, AUX6, AUX7, AUX8, AUX9, AUX10, AUX11, AUX12, AUX13, AUX14, AUX15, AUX16, AUX17, AUX18, AUX19, AUX20, AUX21, AUX22, AUX23]
     params:
       audit_role: mpc-first-broadcast-dsp
-      host_to_mpc_channel_map: "music-soundcloud:AUX0/AUX1 public-tts:AUX2/AUX3 pc:disabled/fail-closed youtube:disabled notification:disabled private-tts:AUX8/AUX9 other:disabled"
+      host_to_mpc_channel_map: "music-soundcloud:AUX0/AUX1 public-tts:AUX2/AUX3 pc:disabled/fail-closed youtube:AUX6/AUX7 notification:disabled private-tts:AUX8/AUX9 other:disabled"
       legacy_pipewire_names: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
       private_monitor_endpoint: true
       private_monitor_positions: AUX8 AUX9
       private_monitor_route: private-monitor-via-mpc-live-iii
-      hardware_forward_path: "MPC Out 1/2 -> L-12 CH9/10; MPC Out 3/4 -> L-12 CH11/12"
+      hardware_forward_path: "MPC Out 1/2 -> host capture_AUX0/1 (public mix, broadcast); MPC Out 3/4 -> host capture_AUX2/3 (private monitor, fenced) [interim, L-12 removed 2026-05-29]"
+      interim_l12_removed: true
+
+  - id: mpc-usb-return
+    kind: alsa_source
+    pipewire_name: alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0
+    industrial_name: interface.mpc-live-iii.usb-in.multichannel
+    description: |
+      Akai MPC Live III USB multichannel capture (24-ch return). Interim
+      MPC-only baseline (L-12 removed 2026-05-29): the MPC internal mixer
+      returns two stereo busses to the host —
+        capture_AUX0/1 = public mix (music + voice + YouTube), broadcast-bound
+        capture_AUX2/3 = private monitor mix, NEVER broadcast-bound
+      capture_AUX4..23 are unbound/reserved. The public pair is captured by
+      mpc-usb-return-capture and summed into livestream-tap; the private pair
+      is fenced out of every broadcast node by audio-forbidden-links
+      (defense-in-depth — the MPC public mix must already exclude private,
+      which is operator-owned). Superseded by the MOTU/FadeFox migration.
+    hw: hw:CARD=MPCB
+    channels:
+      count: 24
+      positions: [AUX0, AUX1, AUX2, AUX3, AUX4, AUX5, AUX6, AUX7, AUX8, AUX9, AUX10, AUX11, AUX12, AUX13, AUX14, AUX15, AUX16, AUX17, AUX18, AUX19, AUX20, AUX21, AUX22, AUX23]
+    params:
+      audit_role: mpc-usb-return-source
+      public_return_positions: AUX0 AUX1
+      private_return_positions: AUX2 AUX3
+      interim_l12_removed: true
 
   - id: yeti-headphone-output
     kind: alsa_sink
@@ -345,15 +384,20 @@ nodes:
       playback_target: hapax-livestream-tap
       playback_node_passive: false
 
+  # [ORPHANED 2026-05-29] L-12 physically removed; this wet-return node no
+  # longer has hardware. It is retained only so the deny-policy forbidden
+  # cross-product and history stay intact for the MOTU/FadeFox migration to
+  # clean up. The live broadcast return is now mpc-usb-return-capture. The
+  # deployed conf is quarantined; this node is NOT in the desired link map.
   - id: l12-usb-return-capture
     kind: filter_chain
     pipewire_name: hapax-l12-usb-return-capture
-    industrial_name: chain.broadcast.mpc-wet-return-capture
+    industrial_name: chain.broadcast.l12-wet-return-capture
     description: |
-      L-12 AUX8/AUX9/AUX10/AUX11 capture of MPC wet return. AUX8/9
-      carry the content mix from MPC Out 1/2; AUX10/11 carry Hapax
-      voice from MPC Out 3/4. This is the current path that replaces
-      the retired software TTS duck/direct-tap bridge.
+      [ORPHANED, L-12 removed 2026-05-29] L-12 AUX8/AUX9/AUX10/AUX11 capture
+      of the MPC wet return via the L-12. Superseded by mpc-usb-return-capture
+      (direct MPC USB return). Retained for forbidden-link history until the
+      MOTU/FadeFox migration retires the L-12 model entirely.
     target_object: alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input
     channels:
       count: 2
@@ -371,6 +415,43 @@ nodes:
       sink_dont_move: true
       mpc_wet_return: true
       no_dry_signal: true
+      interim_orphaned: true
+
+  # Interim MPC-only broadcast return (2026-05-29, L-12 removed). Captures the
+  # MPC public mix (music + voice + YouTube, summed inside the MPC) on
+  # pro-input-0 capture_AUX0/1 and sums it into livestream-tap. Replaces the
+  # orphaned L-12 wet return above. The private monitor mix on capture_AUX2/3
+  # is intentionally NOT captured here and is fenced from broadcast by
+  # audio-forbidden-links. Superseded by the MOTU/FadeFox migration.
+  - id: mpc-usb-return-capture
+    kind: filter_chain
+    pipewire_name: hapax-mpc-usb-return-capture
+    industrial_name: chain.broadcast.mpc-usb-return-capture
+    description: |
+      MPC USB return capture (interim, L-12 removed 2026-05-29). Captures the
+      MPC public mix on pro-input-0 capture_AUX0/1 (music + voice + YouTube,
+      pre-summed inside the MPC) and forwards the stereo pair to livestream-tap
+      via hapax-mpc-usb-return-playback. No dry signal: the audio has passed
+      MPC channel-strip DSP. The private monitor mix on capture_AUX2/3 is
+      excluded by construction and fenced from broadcast in audio-forbidden-links.
+    target_object: alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      capture_channels: 2
+      capture_positions: AUX0 AUX1
+      source_channel_identity: CH (public) MPC mix music+voice+youtube on USB out 1/2
+      playback_target: hapax-livestream-tap
+      playback_node: hapax-mpc-usb-return-playback
+      stream.dont-remix: true
+      state.restore: false
+      node.dont-reconnect: true
+      source_dont_move: true
+      sink_dont_move: true
+      mpc_wet_return: true
+      no_dry_signal: true
+      interim_l12_removed: true
 
   # H5 Phase 2: secondary L-12 USB-IN A/B tap. This is monitor-only and
   # never feeds the RTMP path; OBS may add it as a muted secondary source
@@ -568,7 +649,7 @@ nodes:
       mpc_usb_input_pair: AUX2 AUX3
       no_software_duck: true
       no_direct_livestream_tap: true
-      broadcast_forward_path: mpc-usb-output l12-usb-return-capture hapax-livestream-tap
+      broadcast_forward_path: mpc-usb-output mpc-usb-return-capture hapax-livestream-tap
 
   # PC, music, YouTube, S-4, and M8 content routes.
   - id: pc-loudnorm
@@ -665,7 +746,14 @@ nodes:
     kind: filter_chain
     pipewire_name: hapax-yt-loudnorm
     industrial_name: chain.youtube.loudnorm
-    description: YouTube bed loudnorm, disabled until route policy explicitly promotes it
+    description: |
+      YouTube bed loudnorm, routed to MPC USB IN 7/8 (AUX6/7). Interim
+      MPC-only baseline (2026-05-29): the send is ENABLED so YouTube can join
+      the operator's MPC mix and the public return (capture_AUX0/1). Broadcast
+      eligibility of the YouTube route stays GATED (broadcast_eligible=false,
+      blocked_until_smoke) until the real-content ducker smoke passes — the
+      enabled send is operator-mix plumbing, not a broadcast-rights claim.
+    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
     channels:
       count: 2
       positions: [FL, FR]
@@ -673,9 +761,9 @@ nodes:
     limit_db: -18.0
     release_s: 0.20
     params:
-      playback_positions: disabled
-      mpc_usb_input_pair: disabled
-      disabled_until_route_authority: true
+      playback_positions: AUX6 AUX7
+      mpc_usb_input_pair: AUX6 AUX7
+      broadcast_eligibility_gated: blocked_until_smoke
       no_software_duck: true
 
   - id: s4-source
@@ -830,6 +918,19 @@ nodes:
 
 edges:
   # Live edges the inspector can observe directly.
+
+  # Interim MPC-only broadcast return (2026-05-29, L-12 removed): the MPC
+  # public mix returns on pro-input-0 capture_AUX0/1 -> mpc-usb-return-capture
+  # -> livestream-tap. This is the live broadcast return path.
+  - source: mpc-usb-return
+    target: mpc-usb-return-capture
+
+  - source: mpc-usb-return-capture
+    target: livestream-tap
+
+  # [ORPHANED 2026-05-29] L-12 removed; the edges below describe the retired
+  # L-12 return path (no hardware). Retained for history until the MOTU/FadeFox
+  # migration; NOT a live broadcast path.
   - source: l12-capture
     target: l12-evilpet-capture
 

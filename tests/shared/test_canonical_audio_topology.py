@@ -259,23 +259,26 @@ def test_tts_broadcast_path_has_mpc_wet_return_and_livestream_forward_path() -> 
     voice_fx = d.node_by_id("voice-fx")
     loudnorm = d.node_by_id("tts-loudnorm")
     mpc = d.node_by_id("mpc-usb-output")
-    wet_return = d.node_by_id("l12-usb-return-capture")
+    # Interim MPC-only broadcast return (2026-05-29, L-12 removed): the wet
+    # return is now the MPC's own USB return (pro-input-0 capture_AUX0/1).
+    mpc_return_source = "alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0"
+    wet_return = d.node_by_id("mpc-usb-return-capture")
 
     assert role_broadcast.target_object == "hapax-voice-fx-capture"
     assert voice_fx.target_object == "hapax-loudnorm-capture"
     assert loudnorm.target_object == MPC_OUTPUT_NAME
     assert loudnorm.params["playback_positions"] == "AUX2 AUX3"
     assert loudnorm.params["broadcast_forward_path"] == (
-        "mpc-usb-output l12-usb-return-capture hapax-livestream-tap"
+        "mpc-usb-output mpc-usb-return-capture hapax-livestream-tap"
     )
     assert mpc.params["hardware_forward_path"]
-    assert wet_return.target_object == L12_SOURCE_NAME
-    assert wet_return.params["capture_positions"] == "AUX8 AUX9 AUX10 AUX11"
+    assert wet_return.target_object == mpc_return_source
+    assert wet_return.params["capture_positions"] == "AUX0 AUX1"
     assert wet_return.params["playback_target"] == "hapax-livestream-tap"
 
     edge_pairs = {(edge.source, edge.target) for edge in d.edges}
-    assert ("l12-capture", "l12-usb-return-capture") in edge_pairs
-    assert ("l12-usb-return-capture", "livestream-tap") in edge_pairs
+    assert ("mpc-usb-return", "mpc-usb-return-capture") in edge_pairs
+    assert ("mpc-usb-return-capture", "livestream-tap") in edge_pairs
 
 
 def test_pc_loudnorm_is_fail_closed_and_notifications_do_not_enter_multimedia() -> None:

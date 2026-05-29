@@ -3,13 +3,24 @@
 Single source of truth for the Hapax PipeWire broadcast audio architecture.
 All other audio docs (runbook, handoff, config README) defer to this document.
 
-**Architecture principle:** MPC-first for explicitly specified livestream
-sources only. Music and public TTS enter MPC Live III over USB, exit MPC over
-TRS, enter L-12 physical inputs, and only then reach the livestream through
-L-12 USB capture. Private TTS enters MPC AUX8/9 for private monitoring only.
-Under-specified host sources have no MPC, L-12, OBS, or livestream egress.
+> **⚠ INTERIM MPC-ONLY (2026-05-29): the ZOOM L-12 was physically removed.**
+> The Akai MPC Live III is the sole interface until the MOTU UltraLite mk5 +
+> FadeFox MX12 land (~2026-05-30/31). The broadcast return now runs
+> **PC → MPC → PC** entirely over the MPC's own 24-channel USB return — no L-12.
+> The MPC internal mixer returns two stereo busses to the host:
+> **capture_AUX0/1 = public mix** (music + voice + YouTube, broadcast-bound) and
+> **capture_AUX2/3 = private monitor** (fenced from broadcast). The L-12 sections
+> below are retained as ORPHANED until the MOTU/FadeFox migration retires them.
 
-**Last verified:** 2026-05-20
+**Architecture principle:** MPC-first for explicitly specified livestream
+sources only. Music, public TTS, and YouTube enter MPC Live III over USB; the
+MPC sums them into its public mix and returns it on the MPC's own USB capture
+(capture_AUX0/1), which reaches the livestream. Private TTS enters MPC AUX8/9
+for private monitoring only, and the private return (capture_AUX2/3) is fenced
+from broadcast. Under-specified host sources have no MPC, OBS, or livestream
+egress.
+
+**Last verified:** 2026-05-29 (interim MPC-only; L-12 removed)
 
 ---
 
@@ -22,37 +33,51 @@ Under-specified host sources have no MPC, L-12, OBS, or livestream egress.
   │  Music ──→ music-duck ──→ music-loudnorm ──→ MPC AUX0/1 │
   │  TTS ────→ voice-fx ───→ loudnorm ────────→ MPC AUX2/3  │
   │  PC ─────→ pc-loudnorm ───────────────→ disabled/no egress│
-  │  YouTube → yt-loudnorm ───────────────→ disabled/no egress│
+  │  YouTube → yt-loudnorm ───────────────────→ MPC AUX6/7  │
   │  Private → private-monitor-bridge ─────────→ MPC AUX8/9  │
   │  M8 ─────→ m8-loudnorm ───────────────→ disabled/no egress│
-  └─────────────┬─────────────────────┬──────────────────────┘
-                │ USB                 │ USB
-                ▼                     ▼
-  ┌─────────────────────┐   ┌──────────────────────┐
-  │  MPC LIVE III       │   │  ZOOM L-12           │
-  │  DSP mix + effects  │   │  CH 1-8: instruments │
-  │  Out 1/2 → L-12 9/10│   │  CH 9/10: MPC return │
-  │  Out 3/4 → L-12 11/12│  │  CH 11/12: MPC voice │
-  └─────────────────────┘   │  AUX B → Evil Pet    │
-                            │  USB capture → host  │
-                            └──────────┬───────────┘
-                                       │ USB capture
-                                       ▼
+  └─────────────┬────────────────────────────────────────────┘
+                │ USB out (send)              ▲ USB in (return)
+                ▼                             │
+  ┌────────────────────────────────────────────────────────┐
+  │  MPC LIVE III  (interim sole interface — L-12 removed)  │
+  │  DSP mix + effects                                      │
+  │  Public mix (music+voice+youtube) → USB out 1/2 ────────┼─→ host capture_AUX0/1
+  │  Private monitor mix             → USB out 3/4 ─────────┼─→ host capture_AUX2/3 (FENCED)
+  └────────────────────────────────────────────────────────┘
+                                              │ USB capture_AUX0/1 (public only)
+                                              ▼
   ┌──────────────────────────────────────────────────────────┐
-  │  livestream-tap → broadcast-master → broadcast-normalized│
+  │  hapax-mpc-usb-return-capture (USB transient clamp)      │
+  │  → livestream-tap → broadcast-master → broadcast-normalized│
   │  → obs-broadcast-remap → OBS → Twitch/YouTube           │
   └──────────────────────────────────────────────────────────┘
+
+  capture_AUX2/3 (private monitor) is NOT captured into broadcast and is
+  fenced from every broadcast node by config/hapax/audio-forbidden-links.conf.
 ```
 
 ## 2. MPC USB Channel Map (Fixed)
+
+### Send (host → MPC, USB IN / playback_AUX*)
 
 | USB Channels | AUX Pair | Source            | PipeWire Playback Node         |
 |-------------|----------|-------------------|--------------------------------|
 | AUX0/1      | IN 1/2   | Music (SoundCloud)| hapax-music-loudnorm-playback  |
 | AUX2/3      | IN 3/4   | TTS voice         | hapax-loudnorm-playback        |
 | AUX4/5      | IN 5/6   | Disabled          | PC/default multimedia fail-closed |
-| AUX6/7      | IN 7/8   | Disabled          | YouTube fail-closed            |
+| AUX6/7      | IN 7/8   | YouTube (send enabled; broadcast eligibility gated `blocked_until_smoke`) | hapax-yt-loudnorm-playback |
 | AUX8/9      | IN 9/10  | Private TTS only  | hapax-private-playback         |
+
+### Return (MPC → host, USB OUT / capture_AUX*) — interim MPC-only
+
+| USB Channels | AUX Pair | Content           | PipeWire Capture Node          |
+|-------------|----------|-------------------|--------------------------------|
+| AUX0/1      | OUT 1/2  | **Public mix** (music + voice + YouTube, summed in MPC) — broadcast-bound | hapax-mpc-usb-return-capture → livestream-tap |
+| AUX2/3      | OUT 3/4  | **Private monitor** — operator-only, **FENCED** from every broadcast node | (not captured into broadcast) |
+
+The MPC public mix MUST exclude the private source (operator-owned MPC mixer
+setting). The software fence (audio-forbidden-links.conf) is defense-in-depth.
 
 ## 3. Source Inventory
 
@@ -61,12 +86,12 @@ Under-specified host sources have no MPC, L-12, OBS, or livestream egress.
 | SoundCloud music | `hapax-music-player.service` (yt-dlp → ffmpeg → pw-cat) | hapax-music-loudnorm (direct) | loudnorm → MPC AUX0/1 | Active |
 | TTS voice | `hapax-daimonion.service` (Chatterbox/Kokoro → role.broadcast) | hapax-voice-fx-capture | voice-fx → loudnorm → MPC AUX2/3 | Active |
 | PC multimedia | WirePlumber role.multimedia loopback | hapax-pc-loudnorm | no MPC/livestream egress | Disabled/fail-closed |
-| YouTube bed | Browser/OBS → manual sink selection | hapax-yt-loudnorm | no MPC/livestream egress | Disabled/fail-closed |
+| YouTube bed | Browser/OBS → manual sink selection | hapax-yt-loudnorm | loudnorm → MPC AUX6/7 (send enabled; broadcast eligibility gated `blocked_until_smoke`) | Send active |
 | Private assistant | WirePlumber role.assistant loopback | hapax-private | private-monitor-bridge → MPC AUX8/9 | Active |
 | Notifications | WirePlumber role.notification loopback | hapax-notification-private | no MPC/livestream egress | Disabled/fail-closed |
-| M8 instrument | USB audio device (Dirtywave M8) | hapax-m8-loudnorm | no MPC/L-12/livestream egress | Disabled/fail-closed |
-| Operator voice | Rode Wireless Pro → L-12 physical CH5 | L-12 direct (no PipeWire) | L-12 hardware mix → USB capture | Always on |
-| L-12 instruments | Physical mics/guitars on L-12 CH1-8 | hapax-l12-evilpet-capture | evilpet-capture → livestream-tap | Always on |
+| M8 instrument | USB audio device (Dirtywave M8) | hapax-m8-loudnorm | no MPC/livestream egress | Disabled/fail-closed |
+| Operator voice | Rode Wireless Pro → MPC physical input (interim; was L-12 CH5) | MPC mix → public return | MPC public mix → capture_AUX0/1 | Always on (operator-routed in MPC) |
+| L-12 instruments | _ORPHANED — L-12 removed 2026-05-29_ (was physical mics/guitars on L-12 CH1-8) | ~~hapax-l12-evilpet-capture~~ | retired until MOTU/FadeFox | Orphaned |
 
 **SoundCloud is NOT a browser.** The music daemon (`hapax-music-player.service`)
 uses yt-dlp to download tracks and ffmpeg + pw-cat to pipe audio directly to
@@ -90,10 +115,9 @@ Daimonion (role.broadcast)
   → hapax-loudnorm-capture (true-peak limiter, -18 dBFS)
   → hapax-loudnorm-playback
   → MPC USB IN 3/4 (AUX2/3)
-  → MPC DSP mix → MPC TRS Out 3/4
-  → L-12 CH 11/12 (physical)
-  → L-12 USB capture AUX10/11
-  → hapax-l12-usb-return-capture → hapax-l12-usb-return-playback
+  → MPC DSP mix → MPC public mix → MPC USB OUT 1/2
+  → host capture_AUX0/1
+  → hapax-mpc-usb-return-capture → hapax-mpc-usb-return-playback
   → hapax-livestream-tap
   → hapax-broadcast-master-capture → hapax-broadcast-normalized
   → hapax-obs-broadcast-remap → OBS
@@ -106,8 +130,8 @@ hapax-music-player.service (pw-cat → hapax-music-loudnorm directly)
   → hapax-music-loudnorm (true-peak limiter, -18 dBFS)
   → hapax-music-loudnorm-playback
   → MPC USB IN 1/2 (AUX0/1)
-  → MPC DSP mix → MPC TRS Out 1/2
-  → L-12 CH 9/10 → ... → livestream-tap → OBS
+  → MPC DSP mix → MPC public mix → MPC USB OUT 1/2
+  → host capture_AUX0/1 → hapax-mpc-usb-return-capture → livestream-tap → OBS
 ```
 
 Music ducking: `hapax-audio-ducker.service` writes gain to `hapax-music-duck`
@@ -118,16 +142,19 @@ mixer nodes when operator voice (Rode VAD) or TTS is active.
 ```
 role.assistant → hapax-private (null sink)
   → hapax-private:monitor → hapax-private-monitor-capture
-  → hapax-private-playback → MPC AUX8/9
-  → MPC headphone only (NOT routed to TRS outputs)
+  → hapax-private-playback → MPC AUX8/9 (send)
+  → MPC private monitor mix → MPC USB OUT 3/4 → host capture_AUX2/3 (return)
+  → operator private monitor ONLY — FENCED from every broadcast node
+    (audio-forbidden-links.conf: capture_AUX2/3 → livestream-tap /
+     broadcast-master / broadcast-normalized / obs-broadcast-remap all denied)
 ```
 
 ## 5. Critical Invariants
 
 | # | Invariant | Failure Mode |
 |---|-----------|-------------|
-| 1 | Anything entering L-12 reaches broadcast | Silent audio leak if L-12 input isn't captured |
-| 2 | L-12 hardware settings never change | Every problem is software-side |
+| 1 | The MPC public mix (capture_AUX0/1) reaches broadcast; the private monitor return (capture_AUX2/3) is fenced from every broadcast node | Silent audio leak if the public return isn't captured; constitutional violation if private leaks to broadcast |
+| 2 | The MPC public mix is operator-owned and must exclude private; software fence is defense-in-depth | Private content on broadcast if the MPC mixer includes it |
 | 3 | MPC AUX assignments are fixed (§2) | Wrong audio on wrong bus |
 | 4 | OBS binds to broadcast-normalized or obs-broadcast-remap only | Bypasses master limiter |
 | 5 | TTS path: role.broadcast → voice-fx → loudnorm → MPC AUX2/3 | Voice silently disappears |

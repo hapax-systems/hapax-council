@@ -22,21 +22,18 @@ FORBIDDEN_LINKS_SOURCE = REPO_ROOT / "config" / "hapax" / "audio-forbidden-links
 
 
 def _base_graph(extra_tap_inputs: str = "") -> str:
-    tap_inputs = (
-        "|<- hapax-l12-evilpet-playback:output_FL\n"
-        "|<- hapax-l12-usb-return-playback:output_FL\n"
-        f"{extra_tap_inputs}"
-    )
+    # Interim MPC-only return (2026-05-29, L-12 removed): the broadcast return
+    # is the MPC's own USB return (hapax-mpc-usb-return-playback). The public
+    # mix returns on pro-input-0 capture_AUX0/1; the private monitor mix on
+    # capture_AUX2/3 is deliberately absent from this graph (fenced).
+    tap_inputs = f"|<- hapax-mpc-usb-return-playback:output_FL\n{extra_tap_inputs}"
     mpc_refs = "\n".join(f"Akai Professional MPC Live III:playback_AUX{i}" for i in range(10))
+    mpc_return = "alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0"
     return textwrap.dedent(f"""
-    alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX8
-    |-> hapax-l12-usb-return-capture:input_AUX8
-    alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX9
-    |-> hapax-l12-usb-return-capture:input_AUX9
-    alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX10
-    |-> hapax-l12-usb-return-capture:input_AUX10
-    alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX11
-    |-> hapax-l12-usb-return-capture:input_AUX11
+    {mpc_return}:capture_AUX0
+    |-> hapax-mpc-usb-return-capture:input_AUX0
+    {mpc_return}:capture_AUX1
+    |-> hapax-mpc-usb-return-capture:input_AUX1
     output.loopback.sink.role.broadcast:output_FL
     |-> hapax-voice-fx-capture:playback_FL
 hapax-voice-fx-playback:output_FL
@@ -58,17 +55,16 @@ hapax-broadcast-normalized:capture_FL
 hapax-obs-broadcast-remap:capture_FL
 |-> OBS:input_FL
 {mpc_refs}
-hapax-l12-evilpet-playback:output_FL
+hapax-mpc-usb-return-playback:output_FL
 |-> hapax-livestream-tap:playback_FL
-hapax-l12-usb-return-playback:output_FL
+hapax-mpc-usb-return-playback:output_FR
 |-> hapax-livestream-tap:playback_FR
 hapax-broadcast-master:monitor_FL
 |-> hapax-livestream:playback_FL
 hapax-livestream-tap:playback_FL
 {tap_inputs}|-> hapax-broadcast-master:playback_FL
     hapax-livestream-tap:playback_FR
-    |<- hapax-l12-evilpet-playback:output_FR
-    |<- hapax-l12-usb-return-playback:output_FR
+    |<- hapax-mpc-usb-return-playback:output_FR
     |-> hapax-broadcast-master:playback_FR
     """).strip()
 
@@ -178,7 +174,7 @@ def test_tap_input_parser_rejects_s4_direct_tap_until_promoted(tmp_path: Path) -
     assert "hapax-s4-tap:output_FL" in result.stdout
 
 
-def test_tap_input_parser_fails_direct_non_l12_input(tmp_path: Path) -> None:
+def test_tap_input_parser_fails_direct_non_mpc_input(tmp_path: Path) -> None:
     result = _run_with_graph(
         tmp_path,
         _base_graph("|<- hapax-direct-bypass-playback:output_FL\n"),
@@ -234,7 +230,11 @@ def test_pc_usb56_failclosed_guard_rejects_pc_loudnorm_to_mpc(tmp_path: Path) ->
     assert "PC loudnorm is feeding MPC AUX4/5" in result.stdout
 
 
-def test_youtube_aux67_is_rejected(tmp_path: Path) -> None:
+def test_youtube_aux67_send_is_allowed(tmp_path: Path) -> None:
+    """Interim MPC-only (2026-05-29): the YouTube send to MPC AUX6/7 is enabled
+    (operator-mix plumbing). It is no longer a forbidden boundary; the routing
+    check must NOT fail on it. Broadcast eligibility stays gated in policy, not
+    by a link-time guard."""
     graph = _base_graph() + textwrap.dedent(
         """
 
@@ -247,9 +247,9 @@ def test_youtube_aux67_is_rejected(tmp_path: Path) -> None:
 
     result = _run_with_graph(tmp_path, graph)
 
-    assert result.returncode == 1
-    assert "YouTube AUX6/7 is disabled" in result.stdout
-    assert "YT loudnorm is feeding MPC AUX6/7" in result.stdout
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "YouTube AUX6/7 is disabled" not in result.stdout
+    assert "YT loudnorm is feeding MPC AUX6/7" not in result.stdout
 
 
 def test_notification_private_mpc_bridge_is_rejected(tmp_path: Path) -> None:
@@ -354,17 +354,20 @@ def test_default_sink_must_be_fail_closed_not_raw_mpc(tmp_path: Path) -> None:
     assert "default sink is live/physical" in result.stdout
 
 
-def test_l12_wet_return_capture_requires_upstream_aux_links(tmp_path: Path) -> None:
+def test_mpc_return_capture_requires_upstream_aux_links(tmp_path: Path) -> None:
+    """Interim MPC-only (2026-05-29): if the MPC public-mix capture leg
+    (capture_AUX0 -> mpc-usb-return-capture) is missing, the broadcast return
+    is silently starved — Chain 10 must fail."""
     graph = "\n".join(
         line
         for line in _base_graph().splitlines()
-        if "capture_AUX8" not in line and "input_AUX8" not in line
+        if "capture_AUX0" not in line and "input_AUX0" not in line
     )
 
     result = _run_with_graph(tmp_path, graph)
 
     assert result.returncode == 1
-    assert "L-12 AUX8 → l12-usb-return-capture linked" in result.stdout
+    assert "MPC AUX0 → mpc-usb-return-capture linked" in result.stdout
     assert "MISSING" in result.stdout
 
 

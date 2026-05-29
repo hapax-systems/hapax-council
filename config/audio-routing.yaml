@@ -123,7 +123,7 @@ routes:
       - hapax-voice-fx-capture
       - hapax-loudnorm-capture
       - mpc-usb-output
-      - l12-usb-return-capture
+      - mpc-usb-return-capture
       - hapax-livestream-tap
     route_class: broadcast_voice
     broadcast_eligible: true
@@ -149,7 +149,7 @@ routes:
       - config/wireplumber/50-hapax-voice-duck.conf
       - config/pipewire/hapax-voice-fx-chain.conf
       - config/pipewire/hapax-voice-fx-loudnorm.conf
-      - config/pipewire/hapax-l12-usb-return-capture.conf
+      - config/pipewire/hapax-mpc-usb-return-capture.conf
 
   - source_id: multimedia-default
     producer: desktop-session
@@ -187,7 +187,7 @@ routes:
     target_chain:
       - hapax-music-loudnorm
       - mpc-usb-output
-      - l12-usb-return-capture
+      - mpc-usb-return-capture
       - hapax-livestream-tap
     route_class: broadcast_content
     broadcast_eligible: true
@@ -212,14 +212,21 @@ routes:
     generated_artifact_owner: hand_mirrored
     artifact_refs:
       - config/pipewire/hapax-music-loudnorm.conf
-      - config/pipewire/hapax-l12-usb-return-capture.conf
+      - config/pipewire/hapax-mpc-usb-return-capture.conf
 
   - source_id: youtube-bed
     producer: youtube-player
     role: youtube
     pipewire_node: hapax-yt-loudnorm
+    # Interim MPC-only (2026-05-29): the SEND to MPC AUX6/7 is enabled so
+    # YouTube can join the operator's MPC mix + public return. Broadcast
+    # eligibility stays GATED (blocked_until_smoke) — the enabled send is
+    # operator-mix plumbing, not a broadcast-rights claim. The MPC public mix
+    # is operator-owned; whether YouTube reaches the public return is the
+    # operator's MPC-mixer decision, not a Hapax software claim.
     target_chain:
       - hapax-yt-loudnorm
+      - mpc-usb-output
     route_class: broadcast_content
     broadcast_eligible: false
     public_claim_allowed: false
@@ -373,10 +380,14 @@ artifacts:
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts
     reason: TTS loudnorm constants must cite shared/audio_loudness.py.
+  - path: config/pipewire/hapax-mpc-usb-return-capture.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#broadcast-tts
+    reason: Interim MPC-only broadcast return (L-12 removed 2026-05-29) captures the MPC public mix on capture_AUX0/1 and is shared by broadcast voice/content routes. Supersedes hapax-l12-usb-return-capture.conf until the MOTU/FadeFox migration.
   - path: config/pipewire/hapax-l12-usb-return-capture.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts
-    reason: MPC-first wet return captures L-12 CH 9-12 and is shared by broadcast voice/content routes.
+    reason: "[ORPHANED 2026-05-29] L-12 removed; superseded by hapax-mpc-usb-return-capture.conf. Retained for history/forbidden-link cross-product until the MOTU/FadeFox migration."
   - path: config/pipewire/hapax-pc-loudnorm.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#multimedia-default
