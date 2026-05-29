@@ -7,6 +7,12 @@ Until it is installed in a given clone/worktree, the entire
 experiment-freeze, audio-conf gates, ...) never fires at commit time — only
 CI catches violations, minutes later. This runbook closes that gap.
 
+Current workstation state (2026-05-29): the hook is installed and executable
+in the active council clone (`~/projects/hapax-council`) and the
+active constitution clone (`~/projects/hapax-constitution`). New
+clones, repaired worktrees, or rewritten git directories still need this
+bootstrap because `.git/hooks/` is local state.
+
 ## One-time install (per clone)
 
 ```bash
@@ -31,7 +37,7 @@ Some council clones set `core.hooksPath` (redundantly) to the default
 Resolve by clearing the redundant setting, then re-running:
 
 ```bash
-git config --unset core.hooksPath
+git config --unset-all core.hooksPath || true
 scripts/install-git-hooks.sh
 ```
 
@@ -41,8 +47,20 @@ underlying repository.
 ## Verify
 
 ```bash
-pre-commit run --all-files   # first run is slow; it builds tool envs
+test -x .git/hooks/pre-commit
+sed -n '1,12p' .git/hooks/pre-commit
 ```
+
+For a task-scoped verification, run pre-commit on the files you touched:
+
+```bash
+pre-commit run --files path/to/changed-file.py path/to/changed-doc.md
+```
+
+Avoid `pre-commit run --all-files` in a dirty or peer-owned worktree unless the
+active task explicitly authorizes broad source rewrites. Some hooks auto-format
+files; an all-files run can create unrelated diffs outside your mutation
+scope.
 
 ## Why this is a bootstrap step, not a committed hook
 

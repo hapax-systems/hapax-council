@@ -77,7 +77,7 @@ Non-formal referents: "The Operator"/"Oudepode"/"OTO" (sticky per utterance via 
 | pii-guard | PII patterns |
 | attribution-entity-check | Product-company misattributions in publication-adjacent files (registry: `config/publication-hardening/known-entities.yaml`) |
 
-Test-before-push and pre-commit are **not** auto-active (REQ-20260528 audit): `push-gate.sh` is unwired; pre-commit requires a one-time `scripts/install-git-hooks.sh` per clone (`docs/runbooks/pre-commit-bootstrap.md`); the in-session PR release-evidence gate (`pr-release-gate.sh`) ships but needs `~/.claude/settings.json` registration to fire.
+Activation state (2026-05-29): `push-gate.sh` remains unwired, but the conditional in-session release gate `pr-release-gate.sh` is registered in `~/.claude/settings.json` for Bash and GitHub MCP PR create/merge paths. It runs the AVSDLC release precheck and the real test-before-push evidence check where the active task requires release evidence. `hook-presence-verify.sh` runs on session start, `visual-audio-evidence-reflex.sh` advises after visual/audio edits, and `subagent-git-safety.sh` runs on SubagentStop. Pre-commit hooks are installed in the current council and constitution clones; new clones still need the one-time bootstrap in `docs/runbooks/pre-commit-bootstrap.md`. `.github/CODEOWNERS` documents governance-protected paths, but required Code Owner review is disabled for this single-user repo because GitHub forbids self-approval. Full verification runbook: `docs/runbooks/claude-code-config-conformance.md`.
 
 ## Voice & Research
 

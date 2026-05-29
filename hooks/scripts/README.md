@@ -4,11 +4,16 @@ PreToolUse / PostToolUse hooks enforcing branch discipline, axiom
 compliance, session-naming invariants, and other governance rules at
 the tool-call level.
 
-Wired in `.claude/settings.json` (root `hooks` key). Each hook reads
-the tool call via stdin (JSON `{tool_name, tool_input, ...}`) and
-exits non-zero to block or emit advisory stderr to warn. All hooks
-are idempotent — re-running with the same input produces the same
-verdict.
+Wired through Claude Code settings (root `hooks` key; on this workstation,
+`~/.claude/settings.json`). Each hook reads the tool call via stdin (JSON
+`{tool_name, tool_input, ...}`) and exits non-zero to block or emit advisory
+stderr to warn. All hooks are idempotent — re-running with the same input
+produces the same verdict.
+
+As of 2026-05-29, normal Claude Code sessions point their hook commands at the
+clean merged source path `$HOME/.cache/hapax/rebuild/worktree/hooks/scripts/`
+rather than the dirty canonical checkout. See
+`docs/runbooks/claude-code-config-conformance.md` for verification commands.
 
 ## Hook inventory
 
@@ -16,7 +21,8 @@ verdict.
 |------|-----------|-----------|
 | `work-resolution-gate.sh` | Edit / Write | BLOCK when a feature branch has commits but no PR, or when on main with open PRs whose branches are local |
 | `no-stale-branches.sh` | Bash | BLOCK branch creation if any unmerged branch exists; BLOCK destructive git on feature branches; enforce visible worktree cap during Claude+Codex transition |
-| `push-gate.sh` | Bash — **unwired** | Unconditional `git push`/PR approval block, but NOT registered in settings.json (inactive). The conditional in-session PR release-evidence gate is `pr-release-gate.sh` (ships; pending settings.json registration). |
+| `push-gate.sh` | Bash — **unwired** | Unconditional `git push`/PR approval block, but NOT registered in settings.json (inactive). Use the conditional in-session release-evidence gate below. |
+| `pr-release-gate.sh` | Bash / GitHub MCP PR create+merge | BLOCKS PR create/merge when a task's AVSDLC/test-before-push release evidence is missing; degrades advisory-only on infrastructure failures. |
 | `pii-guard.sh` | Edit / Write | BLOCK edits whose file content matches PII patterns |
 | `axiom-commit-scan.sh` | Bash | BLOCK commits whose messages violate axiom patterns |
 | `axiom-scan.sh` / `axiom-patterns.sh` / `axiom-audit.sh` | session | Axiom compliance scanning, retroactive audit |
@@ -24,6 +30,8 @@ verdict.
 | `docs-only-pr-warn.sh` | Bash | ADVISORY: docs-only PRs use required-check sentinels; no carrier file needed |
 | `doc-update-advisory.sh` | Edit / Write | ADVISORY: suggest related doc updates |
 | `llm-metadata-gate.sh` | Write (PostToolUse) | ADVISORY: warn when a new `agents/<name>/__init__.py` lacks a sibling `METADATA.yaml` |
+| `visual-audio-evidence-reflex.sh` | Edit / Write / MultiEdit (PostToolUse) | ADVISORY: when visual/audio/audiovisual surfaces change, remind the session to collect AVSDLC witness evidence before release. |
+| `hook-presence-verify.sh` | SessionStart | ADVISORY: verify every absolute hook command in Claude settings exists and is executable. |
 | `pip-guard.sh` | Bash | BLOCK `pip install` invocations; project uses uv |
 | `registry-guard.sh` | Edit / Write | BLOCK changes to sealed registry files |
 | `relay-coordination-check.sh` | session | ADVISORY: relay protocol status |
@@ -31,10 +39,11 @@ verdict.
 | `session-context.sh` | session | ADVISORY: session context on start |
 | `session-name-enforcement.sh` | Bash | BLOCK Bash commands referencing unknown session names (zeta, sigma, etc.) |
 | `session-summary.sh` | session | ADVISORY: session summary on stop |
+| `subagent-git-safety.sh` | SubagentStop | ADVISORY: remind parent sessions to preserve subagent-produced git state before worktree cleanup. |
 | `skill-trigger-advisory.sh` | session | ADVISORY: suggest skills matching context |
 | `sprint-tracker.sh` | session | ADVISORY: sprint progress |
 | `branch-switch-guard.sh` | Bash | BLOCK cross-session branch switches |
-| `canonical-worktree-protect.sh` | Bash | BLOCK `git checkout/switch/reset --hard` to non-main refs in canonical worktree (`/home/hapax/projects/hapax-council`); allows main-targeting commands, file restores, fetches, pulls, worktree-add. Operator escape: `HAPAX_CANONICAL_PROTECT_BYPASS=1` |
+| `canonical-worktree-protect.sh` | Bash | BLOCK `git checkout/switch/reset --hard` to non-main refs in canonical worktree (`~/projects/hapax-council`); allows main-targeting commands, file restores, fetches, pulls, worktree-add. Operator escape: `HAPAX_CANONICAL_PROTECT_BYPASS=1` |
 | `gemini-session-adapter.sh` / `gemini-tool-adapter.sh` | session | Adapter bridges for Gemini subagents |
 | `conductor-*.sh` | session | Session-conductor protocol |
 | `cargo-check-rust.sh` | Edit / Write | PostToolUse: run cargo check on .rs edits |
@@ -97,7 +106,8 @@ result feedback.
 
 ## Related
 
-- `.claude/settings.json` — hook wiring
+- `~/.claude/settings.json` and project `.claude/settings.json` — hook wiring
+- `docs/runbooks/claude-code-config-conformance.md` — current activation and verification state
 - `docs/runbooks/worktree-cap-policy.md` — worktree cap + cleanup
 - `docs/governance/` — governance docs referenced by individual
   hooks (axiom-* scans, session-naming, etc.)
