@@ -528,6 +528,79 @@ def _obs_capture(
     }
 
 
+def _frame_stats(path: Path) -> tuple[float | None, list[int] | None]:
+    """Return (mean_luma 0..1, downsampled grayscale samples) for a PNG, or (None, None)."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            gray = im.convert("L")
+            gray.thumbnail((192, 108))
+            data = list(gray.getdata())
+        if not data:
+            return None, None
+        return sum(data) / (len(data) * 255.0), data
+    except Exception:
+        return None, None
+
+
+def _temporal_metrics(lumas: list[float], motions: list[float]) -> dict[str, object]:
+    """Duration-bound metrics: luma deltas (no-blink/no-global-flash) + motion (not static)."""
+    metrics: dict[str, object] = {"frame_count": len(lumas)}
+    if len(lumas) >= 2:
+        luma_deltas = [abs(lumas[i + 1] - lumas[i]) for i in range(len(lumas) - 1)]
+        metrics["luma_min"] = round(min(lumas), 5)
+        metrics["luma_max"] = round(max(lumas), 5)
+        metrics["max_consecutive_luma_delta"] = round(max(luma_deltas), 5)
+        metrics["mean_consecutive_luma_delta"] = round(sum(luma_deltas) / len(luma_deltas), 5)
+    if motions:
+        metrics["max_consecutive_motion"] = round(max(motions), 5)
+        metrics["mean_consecutive_motion"] = round(sum(motions) / len(motions), 5)
+    return metrics
+
+
+def capture_hold_sequence(
+    output_dir: Path,
+    stem: str,
+    *,
+    scene: str,
+    hold_s: float,
+    interval_s: float,
+    direct_display: str,
+    timeout_s: float,
+) -> dict[str, object]:
+    """Capture a time sequence of OBS frames over a hold window (duration-bound).
+
+    Records per-frame luma and consecutive frame-to-frame motion so no-blink /
+    no-global-flash (luma deltas) and presence-of-motion (frame diff) can be
+    asserted on temporal behavior, not just single frames.
+    """
+    frame_count = max(2, round(hold_s / interval_s) + 1)
+    frames: list[dict[str, object]] = []
+    lumas: list[float] = []
+    motions: list[float] = []
+    prev_samples: list[int] | None = None
+    for index in range(frame_count):
+        path = output_dir / f"{stem}-t{index:02d}-obs.png"
+        cap = _obs_capture(path, scene=scene, direct_display=direct_display, timeout_s=timeout_s)
+        luma, samples = _frame_stats(path)
+        cap["t_index"] = index
+        cap["luma"] = luma
+        if luma is not None:
+            lumas.append(luma)
+        if prev_samples is not None and samples is not None and len(prev_samples) == len(samples):
+            motion = sum(abs(a - b) for a, b in zip(prev_samples, samples, strict=True)) / (
+                len(samples) * 255.0
+            )
+            cap["motion_from_prev"] = round(motion, 5)
+            motions.append(motion)
+        prev_samples = samples
+        frames.append(cap)
+        if index < frame_count - 1:
+            time.sleep(interval_s)
+    return {"frames": frames, "metrics": _temporal_metrics(lumas, motions)}
+
+
 def capture_pov_sweep(
     row: MatrixRow,
     output_dir: Path,
@@ -539,23 +612,34 @@ def capture_pov_sweep(
     settle_s: float,
     timeout_s: float,
     direct_display: str,
+    hold_s: float = 0.0,
+    hold_interval_s: float = 2.0,
 ) -> dict[str, object]:
     captures: dict[str, object] = {}
     for station in stations:
         label = station[0]
         _stabilize_lines(game_data, {**base_lines, **_pov_lines(station)}, settle_s)
         pitch, yaw = _aim(station[1], station[2])
-        captures[label] = {
-            "origin": list(station[1]),
-            "pitch": pitch,
-            "yaw": yaw,
-            "obs": _obs_capture(
-                output_dir / f"{row.ordinal:02d}-{row.label}-{label}-obs.png",
+        stem = f"{row.ordinal:02d}-{row.label}-{label}"
+        entry: dict[str, object] = {"origin": list(station[1]), "pitch": pitch, "yaw": yaw}
+        if hold_s > 0.0:
+            entry["hold"] = capture_hold_sequence(
+                output_dir,
+                stem,
+                scene=obs_scene,
+                hold_s=hold_s,
+                interval_s=hold_interval_s,
+                direct_display=direct_display,
+                timeout_s=timeout_s,
+            )
+        else:
+            entry["obs"] = _obs_capture(
+                output_dir / f"{stem}-obs.png",
                 scene=obs_scene,
                 direct_display=direct_display,
                 timeout_s=timeout_s,
-            ),
-        }
+            )
+        captures[label] = entry
     return captures
 
 
@@ -607,6 +691,8 @@ def run_matrix(args: argparse.Namespace) -> int:
                 settle_s=args.pov_settle_s,
                 timeout_s=args.capture_timeout_s,
                 direct_display=args.direct_display,
+                hold_s=args.hold_s,
+                hold_interval_s=args.hold_interval_s,
             )
             _stabilize_lines(args.game_data, lines, 0.5)
         manifest["rows"].append(row_manifest)
@@ -640,6 +726,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--obs-scene", default=DEFAULT_OBS_SCENE)
     parser.add_argument("--pov-settle-s", type=float, default=1.2)
+    parser.add_argument(
+        "--hold-s",
+        type=float,
+        default=0.0,
+        help="duration-bound: hold each POV and capture a frame sequence over N seconds",
+    )
+    parser.add_argument("--hold-interval-s", type=float, default=2.0)
     parser.add_argument("--no-restore-camera", dest="restore_camera", action="store_false")
     parser.set_defaults(restore_camera=True)
     return parser.parse_args()
