@@ -1049,7 +1049,7 @@ def media_pane_brush(
 
     planes = []
     for face, p1, p2, p3 in plane_defs:
-        if face == front_face or face == opposite_face:
+        if face in (front_face, opposite_face):
             planes.append(
                 fmt_plane(
                     p1,
