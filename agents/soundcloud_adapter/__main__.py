@@ -45,6 +45,7 @@ import logging
 import os
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -116,15 +117,24 @@ def _scrape_client_id() -> str | None:
     return None
 
 
-def _resolve_client_id() -> str | None:
-    """Env → scrape fallback."""
+def _resolve_client_id_with_source() -> tuple[str | None, str]:
+    """Resolve a client_id and report where it came from.
+
+    Returns ``(client_id, source)`` where ``source`` is ``"env"`` (operator
+    pinned ``SOUNDCLOUD_CLIENT_ID``), ``"scraped"`` (freshly scraped because
+    env was empty), or ``"none"`` (env empty and scrape failed). The source
+    drives 401 auto-heal: only an ``"env"`` id is treated as a stale *hint*
+    worth re-scraping past (a scraped id is already fresh — re-scraping the
+    same bundle yields the same value).
+    """
     env_cid = os.environ.get("SOUNDCLOUD_CLIENT_ID", "").strip()
     if env_cid:
-        return env_cid
+        return env_cid, "env"
     scraped = _scrape_client_id()
     if scraped:
         log.info("Scraped fresh SoundCloud client_id (env was empty)")
-    return scraped
+        return scraped, "scraped"
+    return None, "none"
 
 
 def _resolve_user_id(args: argparse.Namespace) -> str | None:
@@ -141,6 +151,82 @@ def _resolve_user_id(args: argparse.Namespace) -> str | None:
     return None
 
 
+@dataclass
+class _FetchOutcome:
+    """Result of a single source fetch.
+
+    ``failed`` distinguishes a fetch that *errored* (auth/network — the source
+    is configured and a client library is present, but the call raised) from a
+    genuinely empty success or a stable "no source to fetch" state (no library
+    installed, no id configured). Only ``failed`` outcomes protect a non-empty
+    last-good playlist from being clobbered with 0 tracks; a genuine empty is
+    allowed to empty the file. See ``main``.
+    """
+
+    tracks: list[dict[str, Any]] = field(default_factory=list)
+    failed: bool = False
+
+
+def _sclib_resolve_with_retry(client_mod: Any, target: str) -> Any:
+    """Resolve a SoundCloud URL via sclib, auto-healing a stale env client_id.
+
+    A pinned/expired ``SOUNDCLOUD_CLIENT_ID`` makes ``api.resolve()`` 401;
+    sclib then indexes the bool error body (``obj['kind']``) and raises
+    ``TypeError: 'bool' object is not subscriptable``. Either failure — when
+    the id came from the *environment* — triggers a single fresh scrape and
+    retry: the env id is a hint, not gospel. A non-env (already scraped) id is
+    not retried, since re-scraping the same bundle yields the same value. The
+    final exception propagates so callers can flag the source failed.
+    """
+    client_id, source = _resolve_client_id_with_source()
+    api = client_mod.SoundcloudAPI(client_id=client_id)
+    try:
+        return api.resolve(target)
+    except Exception:
+        if source != "env":
+            raise  # already fresh-scraped (or none) — a retry can't help
+        fresh = _scrape_client_id()
+        if not fresh or fresh == client_id:
+            raise
+        log.warning(
+            "SoundCloud resolve failed with env client_id (likely stale/401); "
+            "retrying with a freshly scraped client_id"
+        )
+        api = client_mod.SoundcloudAPI(client_id=fresh)
+        return api.resolve(target)
+
+
+def _fetch_likes(
+    user_id: str,
+    *,
+    client_spec: tuple[Any, str] | None = None,
+    limit: int = 200,
+) -> _FetchOutcome:
+    """Fetch likes, reporting whether the attempt errored (see _FetchOutcome)."""
+    spec = client_spec if client_spec is not None else _try_import_client()
+    if spec is None:
+        log.warning(
+            "No SoundCloud client library available (sclib or soundcloud) — "
+            "skipping fetch. Install one locally if you want Phase 1 candidates."
+        )
+        return _FetchOutcome(tracks=[], failed=False)
+
+    client_mod, flavor = spec
+    try:
+        if flavor == "sclib":
+            user = _sclib_resolve_with_retry(client_mod, f"https://soundcloud.com/{user_id}")
+            tracks_attr = getattr(user, "tracks", None) or getattr(user, "likes", None) or []
+            return _FetchOutcome(tracks=[_normalize_sclib_track(t) for t in tracks_attr[:limit]])
+        if flavor == "soundcloud":
+            client = client_mod.Client()  # type: ignore[attr-defined]
+            raw = client.get(f"/users/{user_id}/favorites", limit=limit)
+            return _FetchOutcome(tracks=[_normalize_soundcloud_track(t) for t in raw])
+    except Exception:
+        log.warning("SoundCloud fetch failed", exc_info=True)
+        return _FetchOutcome(tracks=[], failed=True)
+    return _FetchOutcome(tracks=[], failed=False)
+
+
 def fetch_likes(
     user_id: str,
     *,
@@ -151,36 +237,69 @@ def fetch_likes(
 
     Returns an empty list — with a warning logged — when no SoundCloud
     library is installed, so callers degrade gracefully. The candidate
-    surfacer treats a missing SoundCloud pool as "local-only".
+    surfacer treats a missing SoundCloud pool as "local-only". A stale env
+    ``SOUNDCLOUD_CLIENT_ID`` that 401s self-heals via a fresh scrape + retry.
 
     Public endpoints only. No OAuth tokens read or written.
     """
+    return _fetch_likes(user_id, client_spec=client_spec, limit=limit).tracks
+
+
+def _tag_rows(
+    raw_tracks: list[Any],
+    normalizer: Any,
+    extra_tags: list[str],
+    limit: int,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for t in raw_tracks[:limit]:
+        row = normalizer(t)
+        for tag in extra_tags:
+            if tag not in row["tags"]:
+                row["tags"].append(tag)
+        out.append(row)
+    return out
+
+
+def _fetch_set(
+    url: str,
+    *,
+    client_spec: tuple[Any, str] | None = None,
+    limit: int = 500,
+    extra_tags: list[str] | None = None,
+) -> _FetchOutcome:
+    """Fetch a set, reporting whether the attempt errored (see _FetchOutcome)."""
+    if extra_tags is None:
+        extra_tags = ["banked"]
+
     spec = client_spec if client_spec is not None else _try_import_client()
     if spec is None:
         log.warning(
-            "No SoundCloud client library available (sclib or soundcloud) — "
-            "skipping fetch. Install one locally if you want Phase 1 candidates."
+            "No SoundCloud client library available — cannot fetch set from %s",
+            url,
         )
-        return []
+        return _FetchOutcome(tracks=[], failed=False)
 
     client_mod, flavor = spec
     try:
         if flavor == "sclib":
-            api = client_mod.SoundcloudAPI(client_id=_resolve_client_id())
-            user = api.resolve(f"https://soundcloud.com/{user_id}")
-            tracks_attr = getattr(user, "tracks", None) or getattr(user, "likes", None) or []
-            out: list[dict[str, Any]] = []
-            for t in tracks_attr[:limit]:
-                out.append(_normalize_sclib_track(t))
-            return out
+            obj = _sclib_resolve_with_retry(client_mod, url)
+            # sclib Playlist exposes .tracks; Track lists return empty
+            tracks_attr = getattr(obj, "tracks", None) or []
+            return _FetchOutcome(
+                tracks=_tag_rows(tracks_attr, _normalize_sclib_track, extra_tags, limit)
+            )
         if flavor == "soundcloud":
             client = client_mod.Client()  # type: ignore[attr-defined]
-            raw = client.get(f"/users/{user_id}/favorites", limit=limit)
-            return [_normalize_soundcloud_track(t) for t in raw]
+            resolved = client.get("/resolve", url=url)
+            raw_tracks = getattr(resolved, "tracks", None) or []
+            return _FetchOutcome(
+                tracks=_tag_rows(raw_tracks, _normalize_soundcloud_track, extra_tags, limit)
+            )
     except Exception:
-        log.warning("SoundCloud fetch failed", exc_info=True)
-        return []
-    return []
+        log.warning("SoundCloud set fetch failed for %s", url, exc_info=True)
+        return _FetchOutcome(tracks=[], failed=True)
+    return _FetchOutcome(tracks=[], failed=False)
 
 
 def fetch_set(
@@ -198,50 +317,10 @@ def fetch_set(
 
     Returns normalized track dicts tagged with ``"soundcloud"`` plus any
     ``extra_tags`` (default: ``["banked"]``). Empty list on any failure
-    — callers degrade to likes-only or local-only.
+    — callers degrade to likes-only or local-only. A stale env
+    ``SOUNDCLOUD_CLIENT_ID`` that 401s self-heals via a fresh scrape + retry.
     """
-    if extra_tags is None:
-        extra_tags = ["banked"]
-
-    spec = client_spec if client_spec is not None else _try_import_client()
-    if spec is None:
-        log.warning(
-            "No SoundCloud client library available — cannot fetch set from %s",
-            url,
-        )
-        return []
-
-    client_mod, flavor = spec
-    try:
-        if flavor == "sclib":
-            api = client_mod.SoundcloudAPI(client_id=_resolve_client_id())
-            obj = api.resolve(url)
-            # sclib Playlist exposes .tracks; Track lists return empty
-            tracks_attr = getattr(obj, "tracks", None) or []
-            out: list[dict[str, Any]] = []
-            for t in tracks_attr[:limit]:
-                row = _normalize_sclib_track(t)
-                for tag in extra_tags:
-                    if tag not in row["tags"]:
-                        row["tags"].append(tag)
-                out.append(row)
-            return out
-        if flavor == "soundcloud":
-            client = client_mod.Client()  # type: ignore[attr-defined]
-            resolved = client.get("/resolve", url=url)
-            raw_tracks = getattr(resolved, "tracks", None) or []
-            out = []
-            for t in raw_tracks[:limit]:
-                row = _normalize_soundcloud_track(t)
-                for tag in extra_tags:
-                    if tag not in row["tags"]:
-                        row["tags"].append(tag)
-                out.append(row)
-            return out
-    except Exception:
-        log.warning("SoundCloud set fetch failed for %s", url, exc_info=True)
-        return []
-    return []
+    return _fetch_set(url, client_spec=client_spec, limit=limit, extra_tags=extra_tags).tracks
 
 
 def _normalize_sclib_track(t: Any) -> dict[str, Any]:
@@ -337,6 +416,13 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> int:
     return len(rows)
 
 
+def _existing_track_count(path: Path) -> int:
+    """Count non-blank lines (≈ tracks) in an existing repo file; 0 if absent."""
+    if not path.exists():
+        return 0
+    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="SoundCloud adapter — Phase 1 metadata sync for task #131."
@@ -397,19 +483,22 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     started = time.time()
-    rows: list[dict[str, Any]] = []
     by_path: dict[str, dict[str, Any]] = {}
+    any_source_failed = False
 
     if user_id:
-        for row in fetch_likes(user_id, limit=args.limit):
+        likes = _fetch_likes(user_id, limit=args.limit)
+        any_source_failed = any_source_failed or likes.failed
+        for row in likes.tracks:
             path = row.get("path") or ""
             if path and path not in by_path:
                 by_path[path] = row
         log.info("soundcloud likes: %d tracks", len(by_path))
 
     if banked_url:
-        banked_rows = fetch_set(banked_url, limit=args.limit)
-        for row in banked_rows:
+        banked = _fetch_set(banked_url, limit=args.limit)
+        any_source_failed = any_source_failed or banked.failed
+        for row in banked.tracks:
             path = row.get("path") or ""
             if not path:
                 continue
@@ -420,9 +509,32 @@ def main(argv: list[str] | None = None) -> int:
                     existing_tags.append("banked")
             else:
                 by_path[path] = row
-        log.info("soundcloud banked: %d tracks (post-dedup)", len(banked_rows))
+        log.info("soundcloud banked: %d tracks (post-dedup)", len(banked.tracks))
 
     rows = list(by_path.values())
+
+    # Fail-safe: never clobber a non-empty last-good playlist with 0 tracks
+    # because a configured source's fetch *errored* (auth/network). Only a
+    # genuine, successful empty result may empty the file. A stale client_id
+    # that 401s is auto-healed upstream (scrape + retry); reaching here with an
+    # empty-and-failed result means even the fresh scrape failed — so preserve
+    # last-good and surface a nonzero exit (systemd OnFailure notifies).
+    if not rows and any_source_failed:
+        existing = _existing_track_count(SOUNDCLOUD_REPO_PATH)
+        if existing:
+            log.warning(
+                "All SoundCloud fetches failed; preserving last-good playlist "
+                "(%d tracks) at %s. Check $SOUNDCLOUD_CLIENT_ID / network.",
+                existing,
+                SOUNDCLOUD_REPO_PATH,
+            )
+        else:
+            log.warning(
+                "All SoundCloud fetches failed and no prior playlist to preserve. "
+                "Check $SOUNDCLOUD_CLIENT_ID / network."
+            )
+        return 1
+
     written = _write_jsonl(SOUNDCLOUD_REPO_PATH, rows)
     dur = time.time() - started
     log.info(
