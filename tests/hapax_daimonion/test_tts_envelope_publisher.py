@@ -33,9 +33,26 @@ def publisher_path(tmp_path: Path) -> Path:
 def publisher(publisher_path: Path):
     from agents.hapax_daimonion.tts_envelope_publisher import TtsEnvelopePublisher
 
-    p = TtsEnvelopePublisher(path=publisher_path, sample_rate_hz=24000)
+    p = TtsEnvelopePublisher(
+        path=publisher_path,
+        sample_rate_hz=24000,
+        wave_path=publisher_path.parent / "speech-wave.bin",
+    )
     yield p
     p.close()
+
+
+_WAVE_HEADER_FMT = "<QBBH"
+_WAVE_HEADER_SIZE = struct.calcsize(_WAVE_HEADER_FMT)  # 12
+_WAVE_MAX_SAMPLES = 480
+_WAVE_FILE_SIZE = _WAVE_HEADER_SIZE + _WAVE_MAX_SAMPLES  # 492
+
+
+def _read_wave(path: Path) -> tuple[int, int, bytes]:
+    data = path.read_bytes()
+    frame_id, _color, _reserved, sample_count = struct.unpack_from(_WAVE_HEADER_FMT, data, 0)
+    samples = data[_WAVE_HEADER_SIZE : _WAVE_HEADER_SIZE + sample_count]
+    return frame_id, sample_count, samples
 
 
 def _read_head(path: Path) -> int:
@@ -84,6 +101,30 @@ def test_rms_is_nonzero_for_tone(publisher, publisher_path) -> None:
     assert head >= 1
     rms, *_ = _read_slot(publisher_path, (head - 1) % RING_SLOTS)
     assert rms > 0.01, f"expected non-zero RMS, got {rms}"
+
+
+def test_wave_ring_has_expected_size(publisher, publisher_path) -> None:
+    wave_file = publisher_path.parent / "speech-wave.bin"
+    assert wave_file.exists()
+    assert wave_file.stat().st_size == _WAVE_FILE_SIZE
+
+
+def test_feed_writes_oscilloscope_wave_frame(publisher, publisher_path) -> None:
+    publisher.feed(_sine_pcm(220.0, 24000, 0.05))  # one 30 ms window
+    frame_id, sample_count, samples = _read_wave(publisher_path.parent / "speech-wave.bin")
+    assert frame_id >= 1
+    assert sample_count == _WAVE_MAX_SAMPLES
+    assert len(samples) == _WAVE_MAX_SAMPLES
+    # a tone deviates above AND below the 128 midline (raw oscilloscope, not bars)
+    assert max(samples) > 128 and min(samples) < 128
+
+
+def test_wave_silence_is_flat_midline(publisher, publisher_path) -> None:
+    publisher.feed(np.zeros(int(0.05 * 24000), dtype=np.int16).tobytes())
+    _frame, sample_count, samples = _read_wave(publisher_path.parent / "speech-wave.bin")
+    assert sample_count == _WAVE_MAX_SAMPLES
+    # silence reads as a centred ~128 midline (fades, never freezes/garbage)
+    assert all(127 <= s <= 129 for s in samples)
 
 
 def test_rms_is_zero_for_silence(publisher, publisher_path) -> None:

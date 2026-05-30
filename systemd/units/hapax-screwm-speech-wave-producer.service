@@ -1,0 +1,20 @@
+[Unit]
+Description=Hapax Screwm speech-wave producer (Sierpinski-centre = Hapax speech oscilloscope)
+# Reads the daimonion speech-wave ring; runs whenever the render is up.
+After=hapax-daimonion.service hapax-darkplaces-v4l2.service
+Wants=hapax-daimonion.service
+PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/screwm-speech-wave-producer.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/screwm-speech-wave-producer.py
+Restart=always
+RestartSec=2
+CPUWeight=25
+MemoryMax=384M
+
+[Install]
+WantedBy=hapax-visual-stack.target hapax-darkplaces-v4l2.service
