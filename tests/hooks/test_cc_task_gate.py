@@ -448,3 +448,101 @@ class TestVaultMissing:
         )
         assert result.returncode == 2
         assert "ghost-001" in result.stderr
+
+
+class TestCognitionCarveOut:
+    """Pin FR-SCOPE-GATES-COGNITION: cognition / diagnostic surfaces are always
+    writable without a claim (a blocked lane must still be able to think, take
+    notes, and report state); the governance SSOT dirs are explicitly NOT carved.
+
+    Regression guard for NEW-CATCH-3 of the coordination reform: is_cognition_path()
+    must live in the repo gate so a rebuild-from-repo (the 5-min rebuild timer)
+    cannot silently drop the carve-out and recreate the no-role hard-deadlock.
+    These tests fail if the function (or its always-allow call site) is removed.
+
+    The cognition allow fires BEFORE the claim-file check, so positive cases pass
+    with NO claim file present. Cases assert on the advisory message (not just the
+    exit code) so the governance-SSOT cases stay precise even though the intake
+    bootstrap may independently allow note creation in those dirs.
+    """
+
+    _COGNITION_MSG = "cognition surface — allowed"
+
+    def test_function_present_in_gate_source(self) -> None:
+        # Direct static pin: the carve-out function + its advisory must exist in
+        # the repo gate. Fails immediately if a rebuild/refactor drops them.
+        source = HOOK.read_text(encoding="utf-8")
+        assert "is_cognition_path()" in source
+        assert self._COGNITION_MSG in source
+
+    def test_memory_path_allowed_without_claim(self, tmp_path: Path) -> None:
+        p = tmp_path / ".claude" / "projects" / "proj" / "memory" / "note.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        result = _run_hook(
+            {"tool_name": "Write", "tool_input": {"file_path": str(p)}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr}"
+        assert self._COGNITION_MSG in result.stderr
+
+    def test_personal_vault_allowed_without_claim(self, tmp_path: Path) -> None:
+        p = tmp_path / "Documents" / "Personal" / "00-inbox" / "thought.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        result = _run_hook(
+            {"tool_name": "Write", "tool_input": {"file_path": str(p)}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr}"
+        assert self._COGNITION_MSG in result.stderr
+
+    def test_dev_shm_allowed_without_claim(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {"tool_name": "Write", "tool_input": {"file_path": "/dev/shm/hapax-probe.txt"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr}"
+        assert self._COGNITION_MSG in result.stderr
+
+    def test_tmp_hapax_allowed_without_claim(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {"tool_name": "Write", "tool_input": {"file_path": "/tmp/hapax-probe.txt"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr}"
+        assert self._COGNITION_MSG in result.stderr
+
+    def test_cc_tasks_dir_is_not_cognition(self, tmp_path: Path) -> None:
+        # Governance SSOT keeps its content-validated bootstrap path: it must NOT
+        # be waved through as a cognition surface (no cognition advisory emitted).
+        p = (
+            tmp_path
+            / "Documents"
+            / "Personal"
+            / "20-projects"
+            / "hapax-cc-tasks"
+            / "active"
+            / "x.md"
+        )
+        p.parent.mkdir(parents=True, exist_ok=True)
+        result = _run_hook(
+            {"tool_name": "Write", "tool_input": {"file_path": str(p)}},
+            home=tmp_path,
+        )
+        assert self._COGNITION_MSG not in result.stderr
+
+    def test_requests_dir_is_not_cognition(self, tmp_path: Path) -> None:
+        p = (
+            tmp_path
+            / "Documents"
+            / "Personal"
+            / "20-projects"
+            / "hapax-requests"
+            / "active"
+            / "x.md"
+        )
+        p.parent.mkdir(parents=True, exist_ok=True)
+        result = _run_hook(
+            {"tool_name": "Write", "tool_input": {"file_path": str(p)}},
+            home=tmp_path,
+        )
+        assert self._COGNITION_MSG not in result.stderr
