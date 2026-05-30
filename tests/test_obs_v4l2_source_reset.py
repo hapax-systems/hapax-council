@@ -140,6 +140,57 @@ class TestToggleVisibility:
         assert result is False
 
 
+class TestInputSettings:
+    def test_builds_obs_v4l2_contract_values(self, reset_mod: types.ModuleType) -> None:
+        settings = reset_mod._build_input_settings(
+            device_id="/dev/video50",
+            resolution="1920x1080",
+            framerate=60.0,
+            pixelformat="NV12",
+            disable_buffering=True,
+            auto_reset_input=True,
+        )
+
+        assert settings == {
+            "device_id": "/dev/video50",
+            "resolution": (1920 << 32) | 1080,
+            "framerate": (1 << 32) | 60,
+            "pixelformat": int.from_bytes(b"NV12", "little"),
+            "buffering": False,
+            "auto_reset": True,
+            "input": 0,
+        }
+
+    def test_apply_input_settings_supports_keyword_obsws_client(
+        self, reset_mod: types.ModuleType
+    ) -> None:
+        client = MagicMock()
+        settings = {"device_id": "/dev/video50"}
+
+        assert reset_mod._apply_input_settings(client, "Video Capture Device (V4L2)", settings)
+        client.set_input_settings.assert_called_once_with(
+            name="Video Capture Device (V4L2)",
+            settings=settings,
+            overlay=True,
+        )
+
+    def test_apply_input_settings_supports_positional_obsws_client(
+        self, reset_mod: types.ModuleType
+    ) -> None:
+        class PositionalClient:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[str, object], bool]] = []
+
+            def set_input_settings(self, name: str, settings: dict[str, object], overlay: bool):
+                self.calls.append((name, settings, overlay))
+
+        client = PositionalClient()
+        settings = {"device_id": "/dev/video50"}
+
+        assert reset_mod._apply_input_settings(client, "Video Capture Device (V4L2)", settings)
+        assert client.calls == [("Video Capture Device (V4L2)", settings, True)]
+
+
 class TestPrometheus:
     def test_writes_prom_file(self, reset_mod: types.ModuleType, tmp_path: Path) -> None:
         prom_path = tmp_path / "test.prom"
@@ -328,6 +379,68 @@ class TestHealthMetrics:
 
 
 class TestMonitorLoop:
+    def test_input_settings_reacquire_source_on_connect(
+        self,
+        reset_mod: types.ModuleType,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client = MagicMock()
+        client.get_source_active.return_value = MagicMock(video_active=True)
+        client.get_source_screenshot.return_value = MagicMock(image_data="frame")
+        client.get_current_program_scene.return_value = MagicMock(scene_name="Scene")
+        client.get_scene_item_list.return_value = MagicMock(
+            scene_items=[{"sourceName": "Video Capture Device (V4L2)", "sceneItemId": 366}]
+        )
+        prom_path = tmp_path / "reset.prom"
+        status_path = tmp_path / "status.json"
+        monkeypatch.setattr(reset_mod, "_connect", lambda _host, _port: client)
+        monkeypatch.setattr(reset_mod, "STATUS_PATH", status_path)
+        monkeypatch.setattr(reset_mod, "STATUS_DIR", tmp_path)
+        monkeypatch.setattr(reset_mod, "_shutdown", False)
+        monkeypatch.setattr(reset_mod.time, "monotonic", lambda: 100.0)
+
+        def fake_toggle(toggle_client, scene_name: str, item_id: int) -> bool:
+            toggle_client.set_scene_item_enabled(
+                scene_name=scene_name,
+                scene_item_id=item_id,
+                scene_item_enabled=False,
+            )
+            toggle_client.set_scene_item_enabled(
+                scene_name=scene_name,
+                scene_item_id=item_id,
+                scene_item_enabled=True,
+            )
+            return True
+
+        monkeypatch.setattr(reset_mod, "_toggle_visibility", fake_toggle)
+
+        def stop_after_sleep(_seconds: float) -> None:
+            monkeypatch.setattr(reset_mod, "_shutdown", True)
+
+        monkeypatch.setattr(reset_mod.time, "sleep", stop_after_sleep)
+
+        try:
+            reset_mod.monitor_loop(
+                host="localhost",
+                port=4455,
+                source_name="Video Capture Device (V4L2)",
+                poll_interval=0.01,
+                stall_threshold=300.0,
+                reset_cooldown=60.0,
+                metrics_path=prom_path,
+                input_settings={"device_id": "/dev/video50"},
+            )
+        finally:
+            monkeypatch.setattr(reset_mod, "_shutdown", False)
+
+        status = json.loads(status_path.read_text())
+        assert status["state"] == "healthy"
+        assert status["reset_count"] == 1
+        client.set_input_settings.assert_called_once()
+        calls = client.set_scene_item_enabled.call_args_list
+        assert [call.kwargs["scene_item_enabled"] for call in calls] == [False, True]
+
     def test_inactive_source_toggles_visibility_and_writes_reconnected_status(
         self,
         reset_mod: types.ModuleType,

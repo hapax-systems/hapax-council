@@ -1,0 +1,97 @@
+{
+  "version": "screwm-spatial-temporal-framework-v1",
+  "authority_case": "CASE-SCREWM-QUAKE-MIGRATION-20260523",
+  "status": "operative",
+  "source_research": {
+    "lane_1_phenomenology": "/tmp/tavily-lane1_phenomenology.json",
+    "lane_2_japanese_garden": "/tmp/tavily-lane2_japanese_garden.json",
+    "lane_3_perception": "/tmp/tavily-lane3_perception.json",
+    "lane_4_cinema_game_path": "/tmp/tavily-lane4_cinema_game_path.json",
+    "lane_5_media_installation": "/tmp/tavily-lane5_media_installation.json",
+    "lane_6_light_material": "local-web-search:mesopic-vision-luminance-contrast",
+    "lane_7_temporal_sonic": "local-web-search:auditory-scene-analysis-soundscape-masking",
+    "lane_8_anti_parasocial": "/tmp/tavily-lane8_anti_parasocial.json"
+  },
+  "source_anchors": [
+    "https://plato.stanford.edu/entries/merleau-ponty/",
+    "https://najga.org/japanese-gardens-borrowed-scenery",
+    "https://pmc.ncbi.nlm.nih.gov/articles/PMC7768324/",
+    "https://id.humanrights.ca/visitor-supports/wayfinding",
+    "https://www.nist.gov/publications/defining-visual-adaptation-field-mesopic-photometry-effect-surrounding-source-position",
+    "https://pmc.ncbi.nlm.nih.gov/articles/PMC7593298/",
+    "https://www.sciencedirect.com/science/article/pii/S0378595513001949",
+    "https://www.nature.com/articles/s41467-019-12893-0"
+  ],
+  "principles": [
+    {
+      "id": "embodied-scale",
+      "rule": "Every major object must be sized against a walking body, not against the Quake grid alone.",
+      "failure_predicate": "A ward, AoA, or room dimension is chosen without an explicit media legibility, passage, or viewing-distance reason."
+    },
+    {
+      "id": "ma-negative-space",
+      "rule": "Ward clusters require negative-space intervals so the viewer can recover orientation before the next stimulus.",
+      "failure_predicate": "A station view contains more major objects than can be named, or the path gives no empty interval between dense clusters."
+    },
+    {
+      "id": "miegakure-reveal",
+      "rule": "The recurrent path must reveal wards by oblique approach, partial occlusion, and pause stations, not by a frontal wall reveal.",
+      "failure_predicate": "A camera station presents the room as a flat theater or exposes every ward at once."
+    },
+    {
+      "id": "borrowed-depth",
+      "rule": "Far walls, side groves, and off-axis media must act as borrowed scenery that enlarges the room without confusing the current task.",
+      "failure_predicate": "Background detail competes with the current ward or erases near/mid/far depth."
+    },
+    {
+      "id": "media-legibility",
+      "rule": "Live media mounts must preserve a deterministic texture-to-surface contract and occupy enough visual angle for recognition.",
+      "failure_predicate": "A live media ward is present but its content cannot be identified from a normal path station screenshot."
+    },
+    {
+      "id": "anti-parasocial-spatialization",
+      "rule": "Camera and YouTube surfaces are spatial objects in the Screwm, not a fourth-wall performer window.",
+      "failure_predicate": "The streamer face becomes the central stable subject by default, or the scene collapses into a flat livestream layout."
+    },
+    {
+      "id": "stable-temporal-motion",
+      "rule": "Camera and effect motion must be slow enough for critiqueable OBS screenshots and fast enough to sustain a living room.",
+      "failure_predicate": "A screenshot cannot be repeated from the same station, or lighting/camera pulses produce unexplained jumps every few seconds."
+    },
+    {
+      "id": "luminance-hierarchy",
+      "rule": "Darkness must be structured by legible luminance contrast: media and task objects lead, atmosphere recedes, and texture never erases contour.",
+      "failure_predicate": "A media surface, path edge, or AoA boundary is present but visually collapses into the room background from an OBS screenshot."
+    },
+    {
+      "id": "auditory-scene-analogue",
+      "rule": "Visual dynamics must reserve future aural roles: foreground, midground, ambience, masking, and spatial release should have matching visual positions.",
+      "failure_predicate": "Multiple dynamic effects compete at the same apparent distance, frequency, and intensity with no clear source hierarchy."
+    }
+  ],
+  "numeric_constraints": {
+    "minimum_room_width_quake_units": 4000,
+    "minimum_room_depth_quake_units": 3600,
+    "minimum_room_height_quake_units": 850,
+    "minimum_recurrent_path_stations": 8,
+    "minimum_station_spacing_quake_units": 360,
+    "camera_station_roll_degrees": 0,
+    "review_fov_min_degrees": 58,
+    "review_fov_max_degrees": 74,
+    "primary_media_texture_min_width_px": 1280,
+    "primary_media_texture_min_height_px": 720,
+    "aoa_sphere_texture_min_width_px": 2048,
+    "aoa_sphere_texture_min_height_px": 1024,
+    "camera_mount_min_width_quake_units": 500,
+    "camera_mount_min_aspect": 1.72,
+    "camera_mount_max_aspect": 1.82,
+    "minimum_major_effect_cycle_seconds": 18,
+    "minimum_recurrent_path_period_seconds": 300
+  },
+  "witness_requirements": [
+    "OBS source screenshot after every material ward/layout change.",
+    "At least one intentional AoA station screenshot with the sphere visible.",
+    "At least one close camera-ward screenshot per camera source before layout approval.",
+    "At least one wide room screenshot proving no-front spatial orientation and negative space."
+  ]
+}

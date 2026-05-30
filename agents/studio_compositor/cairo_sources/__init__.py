@@ -96,11 +96,15 @@ def _register_builtins() -> None:
         StanceIndicatorCairoSource,
     )
     from agents.studio_compositor.research_marker_overlay import ResearchMarkerOverlay
+    from agents.studio_compositor.screwm_quake_status_source import (
+        ScrewmQuakeStatusCairoSource,
+    )
     from agents.studio_compositor.sierpinski_renderer import SierpinskiCairoSource
     from agents.studio_compositor.stream_overlay import StreamOverlayCairoSource
     from agents.studio_compositor.token_pole import TokenPoleCairoSource
 
     register("TokenPoleCairoSource", TokenPoleCairoSource)
+    register("ScrewmQuakeStatusCairoSource", ScrewmQuakeStatusCairoSource)
     register("AlbumOverlayCairoSource", AlbumOverlayCairoSource)
     register("CBIPSignalDensityCairoSource", CBIPSignalDensityCairoSource)
     register("SierpinskiCairoSource", SierpinskiCairoSource)

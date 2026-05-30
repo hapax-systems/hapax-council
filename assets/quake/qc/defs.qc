@@ -28,6 +28,7 @@ float(float v) floor = #37;
 float(float v) sin = #60;
 float(float v) cos = #61;
 float(float v) sqrt = #62;
+vector(vector v) vectoangles = #51;
 float(float v) fabs = #43;
 // asin not a Quake builtin — approximate in camera.qc
 void(float to, float f) WriteByte = #52;
@@ -53,6 +54,7 @@ entity msg_entity;
 
 // Constants
 float MOVETYPE_NONE = 0;
+float MOVETYPE_NOCLIP = 8;
 float SOLID_NOT = 0;
 float SOUNDFLAG_FORCELOOP = 1;
 
@@ -63,29 +65,42 @@ float SOUNDFLAG_FORCELOOP = 1;
 .string model;
 .vector origin;
 .vector angles;
+.vector velocity;
 .float movetype;
 .float solid;
 .vector avelocity;
 .float effects;
 .float fixangle;
+.float scale;
+.float alpha;
+.vector colormod;
+.float glow_color;
+.float glow_size;
+.float glow_trail;
+.vector glowmod;
 .float screwm_spin_y;
+
+float EF_ADDITIVE = 32;
+float EF_FULLBRIGHT = 512;
+float EF_NOSHADOW = 4096;
+float EF_DOUBLESIDED = 32768;
+float EF_DYNAMICMODELLIGHT = 131072;
 
 // Shared entity references
 entity aoa_entity;
+entity aoa_sphere_entity;
 entity camera_entity;
 
-// Spline control points (Quake units, 32u = 1m)
-// Matches scene.rs SPIRAL_STATIONS
-vector STATION_0 = '0 -32 120';
-vector STATION_1 = '80 64 80';
-vector STATION_2 = '-60 160 100';
-vector STATION_3 = '40 256 -80';
-vector STATION_4 = '-40 352 60';
-vector STATION_5 = '0 -32 120';
-
-vector AOA_CENTER = '0 176 0';
+vector AOA_CENTER = '0 -555 176';
+vector CAMERA_REVIEW_POS = '0 -2380 164';
+vector CAMERA_REVIEW_TARGET = '0 -555 176';
+float AOA_MODEL_SCALE = 4.85;
+float AOA_SPHERE_MODEL_SCALE = 1.92;
 
 float CAMERA_PERIOD;
+float CAMERA_ORBIT_PERIOD;
+float CAMERA_ORBIT_RADIUS;
+float CAMERA_ORBIT_TWO_PI;
 
 // Required entry points for DarkPlaces
 void() StartFrame;

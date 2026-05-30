@@ -216,6 +216,82 @@ def _set_scene_item_enabled(
         return client.set_scene_item_enabled(scene_name, item_id, enabled)
 
 
+def _set_input_settings(client: Any, source_name: str, settings: dict[str, Any]) -> Any:
+    try:
+        return client.set_input_settings(name=source_name, settings=settings, overlay=True)
+    except TypeError:
+        return client.set_input_settings(source_name, settings, True)
+
+
+def _obs_fourcc(value: str) -> int:
+    encoded = value.encode("ascii")
+    if len(encoded) != 4:
+        raise argparse.ArgumentTypeError("OBS pixel format must be a 4-character FOURCC")
+    return int.from_bytes(encoded, "little")
+
+
+def _obs_resolution_value(value: str) -> int:
+    try:
+        width_text, height_text = value.lower().split("x", 1)
+        width = int(width_text)
+        height = int(height_text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("resolution must be WIDTHxHEIGHT") from exc
+    if width <= 0 or height <= 0:
+        raise argparse.ArgumentTypeError("resolution dimensions must be positive")
+    return (width << 32) | height
+
+
+def _obs_framerate_value(value: float) -> int:
+    if value <= 0:
+        raise argparse.ArgumentTypeError("framerate must be positive")
+    if not float(value).is_integer():
+        raise argparse.ArgumentTypeError("only whole-number OBS framerates are supported")
+    return (1 << 32) | int(value)
+
+
+def _build_input_settings(
+    *,
+    device_id: str | None,
+    resolution: str | None,
+    framerate: float | None,
+    pixelformat: str | None,
+    disable_buffering: bool,
+    auto_reset_input: bool,
+) -> dict[str, Any] | None:
+    settings: dict[str, Any] = {}
+    if device_id:
+        settings["device_id"] = device_id
+    if resolution:
+        settings["resolution"] = _obs_resolution_value(resolution)
+    if framerate is not None:
+        settings["framerate"] = _obs_framerate_value(framerate)
+    if pixelformat:
+        settings["pixelformat"] = _obs_fourcc(pixelformat)
+    if disable_buffering:
+        settings["buffering"] = False
+    if auto_reset_input:
+        settings["auto_reset"] = True
+    if settings and "device_id" in settings:
+        settings.setdefault("input", 0)
+    return settings or None
+
+
+def _apply_input_settings(
+    client: Any,
+    source_name: str,
+    settings: dict[str, Any] | None,
+) -> bool:
+    if not settings:
+        return True
+    try:
+        _set_input_settings(client, source_name, settings)
+        return True
+    except Exception as exc:
+        logger.warning("input settings apply failed for '%s': %s", source_name, exc)
+        return False
+
+
 def _get_screenshot_hash(client: Any, source_name: str) -> str | None:
     """Take a tiny screenshot and return its SHA-256 hex digest."""
     try:
@@ -498,6 +574,7 @@ def monitor_loop(
     stall_threshold: float,
     reset_cooldown: float,
     metrics_path: Path | None,
+    input_settings: dict[str, Any] | None = None,
 ) -> None:
     client: Any = None
     reset_count = 0
@@ -516,6 +593,19 @@ def monitor_loop(
             try:
                 client = _connect(host, port)
                 logger.info("connected to OBS at %s:%d", host, port)
+                settings_applied = _apply_input_settings(client, source_name, input_settings)
+                if settings_applied and input_settings:
+                    scene_item = _find_scene_item(client, source_name)
+                    if scene_item is not None:
+                        scene_name, item_id = scene_item
+                        if _toggle_visibility(client, scene_name, item_id):
+                            logger.info("initial source reacquire after applying input settings")
+                            reset_count += 1
+                            now = time.monotonic()
+                            last_reset_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                            last_reset_monotonic = now
+                            prev_hash = None
+                            hash_stable_since = now
             except Exception as exc:
                 logger.debug("OBS connection failed: %s", exc)
                 status = MonitorStatus(
@@ -592,6 +682,7 @@ def monitor_loop(
         if needs_reset:
             reason = probe.reason or f"source '{source_name}' {probe.state.value}"
             logger.warning("RESET: %s", reason)
+            _apply_input_settings(client, source_name, input_settings)
             scene_item = _find_scene_item(client, source_name)
             if scene_item is not None:
                 scene_name, item_id = scene_item
@@ -694,7 +785,42 @@ def main() -> None:
         default=Path("/var/lib/node_exporter/textfile_collector/hapax-obs-v4l2-source-reset.prom"),
         help="Prometheus textfile collector output path",
     )
+    parser.add_argument(
+        "--device-id",
+        help="Optional OBS v4l2 device_id to enforce before probing/resetting",
+    )
+    parser.add_argument(
+        "--resolution",
+        help="Optional OBS v4l2 resolution to enforce, as WIDTHxHEIGHT",
+    )
+    parser.add_argument(
+        "--framerate",
+        type=float,
+        help="Optional whole-number OBS v4l2 framerate to enforce",
+    )
+    parser.add_argument(
+        "--pixelformat",
+        help="Optional OBS v4l2 FOURCC pixel format to enforce, e.g. NV12",
+    )
+    parser.add_argument(
+        "--disable-buffering",
+        action="store_true",
+        help="Force OBS v4l2 buffering off for low-latency loopback recovery",
+    )
+    parser.add_argument(
+        "--auto-reset-input",
+        action="store_true",
+        help="Force OBS v4l2 auto_reset on when applying input settings",
+    )
     args = parser.parse_args()
+    input_settings = _build_input_settings(
+        device_id=args.device_id,
+        resolution=args.resolution,
+        framerate=args.framerate,
+        pixelformat=args.pixelformat,
+        disable_buffering=args.disable_buffering,
+        auto_reset_input=args.auto_reset_input,
+    )
 
     _setup_logger()
     signal.signal(signal.SIGTERM, _on_signal)
@@ -715,6 +841,7 @@ def main() -> None:
         stall_threshold=args.stall_threshold,
         reset_cooldown=args.reset_cooldown,
         metrics_path=args.prom_path,
+        input_settings=input_settings,
     )
 
 

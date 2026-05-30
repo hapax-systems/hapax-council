@@ -1,0 +1,325 @@
+diff --git a/gl_rmain.c b/gl_rmain.c
+index f9007caf..0dab4417 100644
+--- a/gl_rmain.c
++++ b/gl_rmain.c
+@@ -28,6 +28,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ #include "cl_video.h"
+ #include "cl_collision.h"
+ 
++#ifndef WIN32
++#include <stdio.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#endif
++
+ #ifdef WIN32
+ // Enable NVIDIA High Performance Graphics while using Integrated Graphics.
+ #ifdef __cplusplus
+@@ -110,6 +116,78 @@ cvar_t r_cullentities_trace_eyejitter = {CF_CLIENT, "r_cullentities_trace_eyejit
+ cvar_t r_sortentities = {CF_CLIENT, "r_sortentities", "0", "sort entities before drawing (might be faster)"};
+ cvar_t r_speeds = {CF_CLIENT, "r_speeds","0", "displays rendering statistics and per-subsystem timings"};
+ cvar_t r_fullbright = {CF_CLIENT, "r_fullbright","0", "makes map very bright and renders faster"};
++#define HAPAX_LIVE_TEXTURE_SLOT_COUNT 12
++
++cvar_t hapax_live_texture_enable[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
++	{CF_CLIENT, "hapax_live_texture_enable", "0", "enable Hapax raw BGRA live texture upload slot 1"},
++	{CF_CLIENT, "hapax_live_texture2_enable", "0", "enable Hapax raw BGRA live texture upload slot 2"},
++	{CF_CLIENT, "hapax_live_texture3_enable", "0", "enable Hapax raw BGRA live texture upload slot 3"},
++	{CF_CLIENT, "hapax_live_texture4_enable", "0", "enable Hapax raw BGRA live texture upload slot 4"},
++	{CF_CLIENT, "hapax_live_texture5_enable", "0", "enable Hapax raw BGRA live texture upload slot 5"},
++	{CF_CLIENT, "hapax_live_texture6_enable", "0", "enable Hapax raw BGRA live texture upload slot 6"},
++	{CF_CLIENT, "hapax_live_texture7_enable", "0", "enable Hapax raw BGRA live texture upload slot 7"},
++	{CF_CLIENT, "hapax_live_texture8_enable", "0", "enable Hapax raw BGRA live texture upload slot 8"},
++	{CF_CLIENT, "hapax_live_texture9_enable", "0", "enable Hapax raw BGRA live texture upload slot 9"},
++	{CF_CLIENT, "hapax_live_texture10_enable", "0", "enable Hapax raw BGRA live texture upload slot 10"},
++	{CF_CLIENT, "hapax_live_texture11_enable", "0", "enable Hapax raw BGRA live texture upload slot 11"},
++	{CF_CLIENT, "hapax_live_texture12_enable", "0", "enable Hapax raw BGRA live texture upload slot 12"},
++};
++cvar_t hapax_live_texture_name[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
++	{CF_CLIENT, "hapax_live_texture_name", "progs/aoa_sphere.mdl_0", "skinframe/BSP texture basename to update from Hapax live texture slot 1"},
++	{CF_CLIENT, "hapax_live_texture2_name", "cam_bop", "skinframe/BSP texture basename to update from Hapax live texture slot 2"},
++	{CF_CLIENT, "hapax_live_texture3_name", "cam_brm", "skinframe/BSP texture basename to update from Hapax live texture slot 3"},
++	{CF_CLIENT, "hapax_live_texture4_name", "cam_bsy", "skinframe/BSP texture basename to update from Hapax live texture slot 4"},
++	{CF_CLIENT, "hapax_live_texture5_name", "cam_cdk", "skinframe/BSP texture basename to update from Hapax live texture slot 5"},
++	{CF_CLIENT, "hapax_live_texture6_name", "cam_crm", "skinframe/BSP texture basename to update from Hapax live texture slot 6"},
++	{CF_CLIENT, "hapax_live_texture7_name", "cam_cov", "skinframe/BSP texture basename to update from Hapax live texture slot 7"},
++	{CF_CLIENT, "hapax_live_texture8_name", "ward_atlas", "skinframe/BSP texture basename to update from Hapax live texture slot 8"},
++	{CF_CLIENT, "hapax_live_texture9_name", "w09", "skinframe/BSP texture basename to update from Hapax live texture slot 9"},
++	{CF_CLIENT, "hapax_live_texture10_name", "w22", "skinframe/BSP texture basename to update from Hapax live texture slot 10"},
++	{CF_CLIENT, "hapax_live_texture11_name", "w27", "skinframe/BSP texture basename to update from Hapax live texture slot 11"},
++	{CF_CLIENT, "hapax_live_texture12_name", "w05", "skinframe/BSP texture basename to update from Hapax live texture slot 12"},
++};
++cvar_t hapax_live_texture_path[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
++	{CF_CLIENT, "hapax_live_texture_path", "/dev/shm/hapax-compositor/quake-live-yt.bgra", "raw BGRA frame path for Hapax live texture slot 1"},
++	{CF_CLIENT, "hapax_live_texture2_path", "/dev/shm/hapax-compositor/quake-live-cam-brio-operator.bgra", "raw BGRA frame path for Hapax live texture slot 2"},
++	{CF_CLIENT, "hapax_live_texture3_path", "/dev/shm/hapax-compositor/quake-live-cam-brio-room.bgra", "raw BGRA frame path for Hapax live texture slot 3"},
++	{CF_CLIENT, "hapax_live_texture4_path", "/dev/shm/hapax-compositor/quake-live-cam-brio-synths.bgra", "raw BGRA frame path for Hapax live texture slot 4"},
++	{CF_CLIENT, "hapax_live_texture5_path", "/dev/shm/hapax-compositor/quake-live-cam-c920-desk.bgra", "raw BGRA frame path for Hapax live texture slot 5"},
++	{CF_CLIENT, "hapax_live_texture6_path", "/dev/shm/hapax-compositor/quake-live-cam-c920-room.bgra", "raw BGRA frame path for Hapax live texture slot 6"},
++	{CF_CLIENT, "hapax_live_texture7_path", "/dev/shm/hapax-compositor/quake-live-cam-c920-overhead.bgra", "raw BGRA frame path for Hapax live texture slot 7"},
++	{CF_CLIENT, "hapax_live_texture8_path", "/dev/shm/hapax-compositor/quake-live-ward-atlas.bgra", "raw BGRA frame path for Hapax live texture slot 8"},
++	{CF_CLIENT, "hapax_live_texture9_path", "/dev/shm/hapax-compositor/quake-live-ticker-grounding.bgra", "raw BGRA frame path for Hapax live texture slot 9"},
++	{CF_CLIENT, "hapax_live_texture10_path", "/dev/shm/hapax-compositor/quake-live-ticker-precedent.bgra", "raw BGRA frame path for Hapax live texture slot 10"},
++	{CF_CLIENT, "hapax_live_texture11_path", "/dev/shm/hapax-compositor/quake-live-ticker-chronicle.bgra", "raw BGRA frame path for Hapax live texture slot 11"},
++	{CF_CLIENT, "hapax_live_texture12_path", "/dev/shm/hapax-compositor/quake-live-reverie.bgra", "raw BGRA frame path for Hapax live texture slot 12"},
++};
++cvar_t hapax_live_texture_width[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
++	{CF_CLIENT, "hapax_live_texture_width", "2048", "raw BGRA frame width for Hapax live texture slot 1"},
++	{CF_CLIENT, "hapax_live_texture2_width", "1920", "raw BGRA frame width for Hapax live texture slot 2"},
++	{CF_CLIENT, "hapax_live_texture3_width", "1920", "raw BGRA frame width for Hapax live texture slot 3"},
++	{CF_CLIENT, "hapax_live_texture4_width", "1920", "raw BGRA frame width for Hapax live texture slot 4"},
++	{CF_CLIENT, "hapax_live_texture5_width", "1920", "raw BGRA frame width for Hapax live texture slot 5"},
++	{CF_CLIENT, "hapax_live_texture6_width", "1920", "raw BGRA frame width for Hapax live texture slot 6"},
++	{CF_CLIENT, "hapax_live_texture7_width", "1920", "raw BGRA frame width for Hapax live texture slot 7"},
++	{CF_CLIENT, "hapax_live_texture8_width", "2048", "raw BGRA frame width for Hapax live texture slot 8"},
++	{CF_CLIENT, "hapax_live_texture9_width", "1344", "raw BGRA frame width for Hapax live texture slot 9"},
++	{CF_CLIENT, "hapax_live_texture10_width", "1344", "raw BGRA frame width for Hapax live texture slot 10"},
++	{CF_CLIENT, "hapax_live_texture11_width", "1344", "raw BGRA frame width for Hapax live texture slot 11"},
++	{CF_CLIENT, "hapax_live_texture12_width", "960", "raw BGRA frame width for Hapax live texture slot 12"},
++};
++cvar_t hapax_live_texture_height[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
++	{CF_CLIENT, "hapax_live_texture_height", "1024", "raw BGRA frame height for Hapax live texture slot 1"},
++	{CF_CLIENT, "hapax_live_texture2_height", "1080", "raw BGRA frame height for Hapax live texture slot 2"},
++	{CF_CLIENT, "hapax_live_texture3_height", "1080", "raw BGRA frame height for Hapax live texture slot 3"},
++	{CF_CLIENT, "hapax_live_texture4_height", "1080", "raw BGRA frame height for Hapax live texture slot 4"},
++	{CF_CLIENT, "hapax_live_texture5_height", "1080", "raw BGRA frame height for Hapax live texture slot 5"},
++	{CF_CLIENT, "hapax_live_texture6_height", "1080", "raw BGRA frame height for Hapax live texture slot 6"},
++	{CF_CLIENT, "hapax_live_texture7_height", "1080", "raw BGRA frame height for Hapax live texture slot 7"},
++	{CF_CLIENT, "hapax_live_texture8_height", "2304", "raw BGRA frame height for Hapax live texture slot 8"},
++	{CF_CLIENT, "hapax_live_texture9_height", "176", "raw BGRA frame height for Hapax live texture slot 9"},
++	{CF_CLIENT, "hapax_live_texture10_height", "176", "raw BGRA frame height for Hapax live texture slot 10"},
++	{CF_CLIENT, "hapax_live_texture11_height", "176", "raw BGRA frame height for Hapax live texture slot 11"},
++	{CF_CLIENT, "hapax_live_texture12_height", "540", "raw BGRA frame height for Hapax live texture slot 12"},
++};
+ 
+ cvar_t r_fullbright_directed = {CF_CLIENT, "r_fullbright_directed", "0", "render fullbright things (unlit worldmodel and EF_FULLBRIGHT entities, but not fullbright shaders) using a constant light direction instead to add more depth while keeping uniform brightness"};
+ cvar_t r_fullbright_directed_ambient = {CF_CLIENT, "r_fullbright_directed_ambient", "0.5", "ambient light multiplier for directed fullbright"};
+@@ -2746,6 +2824,205 @@ static void R_SkinFrame_GenerateTexturesFromQPixels(skinframe_t *skinframe, qboo
+ 	}
+ }
+ 
++typedef struct hapax_live_texture_slot_state_s
++{
++	unsigned char *pixels;
++	size_t pixels_size;
++	time_t mtime_sec;
++	long mtime_nsec;
++	off_t file_size;
++	qbool uploaded;
++}
++hapax_live_texture_slot_state_t;
++static hapax_live_texture_slot_state_t hapax_live_texture_slot_state[HAPAX_LIVE_TEXTURE_SLOT_COUNT];
++
++static void R_HapaxLiveTexture_Debug(const char *stage, const char *name, const char *path, int width, int height, int texwidth, int texheight)
++{
++	FILE *file;
++
++	if ((r_textureframe % 120) != 0)
++		return;
++
++	file = fopen("/tmp/hapax-live-texture-debug.log", "a");
++	if (!file)
++		return;
++	fprintf(file, "frame=%d stage=%s name=%s path=%s width=%d height=%d texwidth=%d texheight=%d\n",
++		r_textureframe, stage, name ? name : "", path ? path : "", width, height, texwidth, texheight);
++	fclose(file);
++}
++
++static qbool R_HapaxLiveTexture_ReadFrame(const char *path, unsigned char *pixels, size_t size)
++{
++	FILE *file;
++	size_t bytes_read;
++
++	file = fopen(path, "rb");
++	if (!file)
++		return false;
++	bytes_read = fread(pixels, 1, size, file);
++	fclose(file);
++	return bytes_read == size;
++}
++
++static skinframe_t *R_HapaxLiveTexture_FindWorldSkinFrame(const char *name)
++{
++	int i;
++	static qbool dumped_texture_names = false;
++	model_t *model = r_refdef.scene.worldmodel ? r_refdef.scene.worldmodel : cl.worldmodel;
++	texture_t *texture;
++	FILE *dump;
++
++	if (!model || !model->data_textures)
++		return NULL;
++	if (!dumped_texture_names)
++	{
++		dumped_texture_names = true;
++		dump = fopen("/tmp/hapax-live-texture-names.log", "w");
++		if (dump)
++		{
++			fprintf(dump, "num_textures=%d model=%s\n", model->num_textures, model->name);
++			for (i = 0; i < model->num_textures; ++i)
++			{
++				texture = model->data_textures + i;
++				fprintf(dump, "%03d %s skinframe=%p material=%p\n", i, texture->name, (void *)texture->currentskinframe, (void *)texture->materialshaderpass);
++			}
++			fclose(dump);
++		}
++	}
++	for (i = 0; i < model->num_textures; ++i)
++	{
++		texture = model->data_textures + i;
++		if (strcmp(texture->name, name))
++			continue;
++		if (texture->currentskinframe)
++			return texture->currentskinframe;
++		if (texture->materialshaderpass && texture->materialshaderpass->numframes > 0)
++			return texture->materialshaderpass->skinframes[0];
++		return NULL;
++	}
++	return NULL;
++}
++
++static void R_HapaxLiveTexture_UpdateSlot(int slot, cvar_t *enable, cvar_t *name_cvar, cvar_t *path_cvar, cvar_t *width_cvar, cvar_t *height_cvar)
++{
++	const char *name;
++	const char *path;
++	int width;
++	int height;
++	size_t size;
++	struct stat st;
++	time_t mtime_sec;
++	long mtime_nsec;
++	hapax_live_texture_slot_state_t *state;
++	skinframe_t *skinframe;
++	rtexture_t *texture;
++	char identifier[MAX_QPATH];
++
++	if (!enable->integer || cls.state == ca_dedicated)
++		return;
++
++	name = name_cvar->string;
++	path = path_cvar->string;
++	width = width_cvar->integer;
++	height = height_cvar->integer;
++	if (!name[0] || !path[0] || width <= 0 || height <= 0 || width > 4096 || height > 4096)
++	{
++		R_HapaxLiveTexture_Debug("invalid", name, path, width, height, -1, -1);
++		return;
++	}
++
++	size = (size_t)width * (size_t)height * 4;
++	if (stat(path, &st) != 0)
++	{
++		R_HapaxLiveTexture_Debug("stat-failed", name, path, width, height, -1, -1);
++		return;
++	}
++	if ((size_t)st.st_size != size)
++	{
++		R_HapaxLiveTexture_Debug("size-mismatch", name, path, width, height, (int)st.st_size, (int)size);
++		return;
++	}
++	mtime_sec = st.st_mtim.tv_sec;
++	mtime_nsec = st.st_mtim.tv_nsec;
++	state = &hapax_live_texture_slot_state[slot];
++	if (state->uploaded && state->file_size == st.st_size && state->mtime_sec == mtime_sec && state->mtime_nsec == mtime_nsec)
++		return;
++	if (state->pixels_size != size || !state->pixels)
++	{
++		if (state->pixels)
++			Mem_Free(state->pixels);
++		state->pixels = (unsigned char *)Mem_Alloc(r_main_mempool, size);
++		state->pixels_size = size;
++	}
++	if (!state->pixels)
++		return;
++	if (!R_HapaxLiveTexture_ReadFrame(path, state->pixels, size))
++	{
++		R_HapaxLiveTexture_Debug("read-failed", name, path, width, height, -1, -1);
++		return;
++	}
++	skinframe = R_SkinFrame_FindNextByName(NULL, name);
++	if (!skinframe)
++		skinframe = R_HapaxLiveTexture_FindWorldSkinFrame(name);
++	if (!skinframe)
++	{
++		R_HapaxLiveTexture_Debug("skinframe-missing", name, path, width, height, -1, -1);
++		return;
++	}
++	R_SkinFrame_MarkUsed(skinframe);
++
++	texture = skinframe->merged ? skinframe->merged : skinframe->base;
++	if (!texture || R_TextureWidth(texture) != width || R_TextureHeight(texture) != height)
++	{
++		if (skinframe->qpixels)
++		{
++			Mem_Free(skinframe->qpixels);
++			skinframe->qpixels = NULL;
++		}
++		skinframe->qgeneratebase = false;
++		skinframe->qgeneratemerged = false;
++		skinframe->qgeneratenmap = false;
++		skinframe->qgenerateglow = false;
++		dpsnprintf(identifier, sizeof(identifier), "hapax_live_%s", skinframe->basename);
++		skinframe->base = skinframe->merged = R_LoadTexture2D(
++			r_main_texturepool,
++			identifier,
++			width,
++			height,
++			state->pixels,
++			TEXTYPE_BGRA,
++			TEXF_FORCELINEAR | TEXF_PERSISTENT | TEXF_ALLOWUPDATES,
++			-1,
++			NULL);
++		texture = skinframe->merged;
++		if (!texture)
++		{
++			R_HapaxLiveTexture_Debug("load-failed", name, path, width, height, -1, -1);
++			return;
++		}
++		R_HapaxLiveTexture_Debug("replaced", name, path, width, height, R_TextureWidth(texture), R_TextureHeight(texture));
++	}
++	else
++		R_HapaxLiveTexture_Debug("updating", name, path, width, height, R_TextureWidth(texture), R_TextureHeight(texture));
++
++	R_UpdateTexture(texture, state->pixels, 0, 0, 0, width, height, 1, 0);
++	if (skinframe->base && skinframe->base != texture &&
++		R_TextureWidth(skinframe->base) == width && R_TextureHeight(skinframe->base) == height)
++		R_UpdateTexture(skinframe->base, state->pixels, 0, 0, 0, width, height, 1, 0);
++	state->file_size = st.st_size;
++	state->mtime_sec = mtime_sec;
++	state->mtime_nsec = mtime_nsec;
++	state->uploaded = true;
++}
++
++static void R_HapaxLiveTexture_Update(void)
++{
++	int slot;
++
++	for (slot = 0; slot < HAPAX_LIVE_TEXTURE_SLOT_COUNT; ++slot)
++		R_HapaxLiveTexture_UpdateSlot(slot, &hapax_live_texture_enable[slot], &hapax_live_texture_name[slot], &hapax_live_texture_path[slot], &hapax_live_texture_width[slot], &hapax_live_texture_height[slot]);
++}
++
+ skinframe_t *R_SkinFrame_LoadInternal8bit(const char *name, int textureflags, const unsigned char *skindata, int width, int height, const unsigned int *palette, const unsigned int *alphapalette)
+ {
+ 	int i;
+@@ -3288,6 +3565,14 @@ void GL_Main_Init(void)
+ 	Cvar_RegisterVariable(&r_sortentities);
+ 	Cvar_RegisterVariable(&r_drawviewmodel);
+ 	Cvar_RegisterVariable(&r_drawexteriormodel);
++	for (i = 0; i < HAPAX_LIVE_TEXTURE_SLOT_COUNT; ++i)
++	{
++		Cvar_RegisterVariable(&hapax_live_texture_enable[i]);
++		Cvar_RegisterVariable(&hapax_live_texture_name[i]);
++		Cvar_RegisterVariable(&hapax_live_texture_path[i]);
++		Cvar_RegisterVariable(&hapax_live_texture_width[i]);
++		Cvar_RegisterVariable(&hapax_live_texture_height[i]);
++	}
+ 	Cvar_RegisterVariable(&r_speeds);
+ 	Cvar_RegisterVariable(&r_fullbrights);
+ 	Cvar_RegisterVariable(&r_wateralpha);
+@@ -5649,6 +5934,7 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
+ 	if (r_timereport_active)
+ 		R_TimeReport("start");
+ 	r_textureframe++; // used only by R_GetCurrentTexture
++	R_HapaxLiveTexture_Update();
+ 	rsurface.entity = NULL; // used only by R_GetCurrentTexture and RSurf_ActiveModelEntity
+ 
+ 	if(R_CompileShader_CheckStaticParms())

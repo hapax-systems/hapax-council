@@ -1,0 +1,18 @@
+[Unit]
+Description=Hapax Screwm Quake source-presence publisher for imagination drift
+After=hapax-quake-live-camera@brio-operator.service hapax-quake-live-camera@brio-room.service hapax-quake-live-camera@brio-synths.service
+Wants=hapax-quake-live-camera@brio-operator.service hapax-quake-live-camera@brio-room.service hapax-quake-live-camera@brio-synths.service
+Wants=hapax-quake-live-camera@c920-desk.service hapax-quake-live-camera@c920-room.service hapax-quake-live-camera@c920-overhead.service
+PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/screwm-imagination-source-publisher.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/screwm-imagination-source-publisher.py --fps 1 --width 320 --height 180 --max-age-s 8 --ttl-ms 3000
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=hapax-visual-stack.target hapax-darkplaces-v4l2.service

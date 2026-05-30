@@ -27,7 +27,11 @@ from typing import Literal
 
 import pytest
 
-from agents.studio_compositor.homage import BITCHX_PACKAGE
+from agents.studio_compositor.homage import (
+    BITCHX_AUTHENTIC_PACKAGE,
+    BITCHX_PACKAGE,
+    QUAKE_PACKAGE,
+)
 from agents.studio_compositor.homage.choreographer import Choreographer
 from agents.studio_compositor.homage.substrate_source import (
     SUBSTRATE_SOURCE_REGISTRY,
@@ -182,6 +186,25 @@ class TestPackageBroadcast:
         choreographer._substrate_package_file.unlink()
         choreographer.reconcile(BITCHX_PACKAGE, now=2.0)
         assert choreographer._substrate_package_file.exists()
+
+    def test_authentic_bitchx_broadcast_derives_hue_from_palette(
+        self, homage_on, choreographer: Choreographer
+    ) -> None:
+        choreographer.reconcile(BITCHX_AUTHENTIC_PACKAGE, now=1.0)
+        payload = json.loads(choreographer._substrate_package_file.read_text())
+        assert payload["package"] == "bitchx-authentic-v1"
+        assert payload["palette_accent_hue_deg"] == pytest.approx(180.0)
+
+    def test_quake_broadcast_derives_hue_from_palette(
+        self, homage_on, choreographer: Choreographer
+    ) -> None:
+        choreographer.reconcile(QUAKE_PACKAGE, now=1.0)
+        payload = json.loads(choreographer._substrate_package_file.read_text())
+        assert payload["package"] == "quake"
+        assert payload["palette_accent_hue_deg"] == pytest.approx(180.0)
+        slot = QUAKE_PACKAGE.coupling_rules.custom_slot_index
+        uniforms = json.loads(choreographer._uniforms_file.read_text())
+        assert uniforms[f"signal.homage_custom_{slot}_1"] == pytest.approx(180.0)
 
 
 class TestSubstrateSkipMetric:

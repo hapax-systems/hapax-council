@@ -22,6 +22,12 @@ Conflicts=hapax-video-cam@brio.service hapax-video-cam@c920-room.service
 StartLimitBurst=20
 StartLimitIntervalSec=3600
 OnFailure=notify-failure@%n.service
+# During the Screwm Quake migration, DarkPlaces owns /dev/video52 and the
+# OBS-facing YUYV bridge consumes that feed into /dev/video50. The legacy
+# compositor cannot be a second /dev/video52 reader without black/flicker
+# regressions, so the DarkPlaces runtime flag makes this service intentionally
+# inactive while the Quake route is live.
+ConditionPathExists=!%h/.config/hapax/enable-darkplaces-runtime
 
 [Service]
 # Type=notify + WatchdogSec: the compositor sends WATCHDOG=1 every 20s gated

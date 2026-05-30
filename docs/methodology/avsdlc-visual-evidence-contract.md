@@ -89,6 +89,55 @@ For interview-specific work:
 7. **Card readability test:** verify question card text, source card text, and answer card text at stream resolution
 8. **Consent indicator test:** verify boundary state indicators are visible and distinct
 
+### Live Broadcast Witness Tactics (OBS-captured surfaces)
+
+For surfaces whose ground truth is the broadcast-facing OBS frame — the
+DarkPlaces/Screwm live-texture renderer, or the studio compositor as OBS sees it,
+not a dev render or the in-engine view — evidence is collected through the
+broadcast path itself. Validated 2026-05-29 against the Screwm renderer
+(`scripts/screwm-effect-drift-matrix-witness.py`); for live surfaces these tactics
+supersede a single dev-resolution screenshot.
+
+1. **Capture from OBS, not the engine.** Use obs-websocket `SaveSourceScreenshot`
+   to capture the exact frame OBS is encoding (read the obs-websocket password from
+   the OBS plugin config and never log it; fall back to an X11 grab only when
+   obs-websocket is unreachable). A dev render or in-engine view can diverge from
+   what the audience sees (broadcast color envelope, scaling, source routing).
+
+2. **Tactical POV sweep — never trust one angle.** No single camera position shows
+   the whole surface. Sweep a small set of fixed, named stations that together
+   cover the failure modes that matter: a room/overview station (is the space
+   filled — no black void, expected element count), wall/receiver stations (are the
+   ward islands lit, distinct, legible), and a center station (is the focal element
+   — AoA sphere / Sierpinski substrate — crisp). Resolve stations from the surface's
+   own spatial layout (e.g. Screwm `GARDEN_CAMERA_STATIONS`) so coverage tracks the
+   geometry, not arbitrary viewpoints. Settle each station briefly before capturing
+   so the camera transition does not pollute the frame.
+
+3. **Duration-bound observation — single frames lie.** For any criterion about
+   change-over-time (liveness, no-blink / no-global-flash per WCAG 2.3.1, preset
+   transition smoothness, breathing stream-safety), capture a hold sequence (N
+   frames over a few seconds at a fixed POV) and compute temporal metrics
+   (consecutive luma delta + consecutive motion). This is the authoritative test for
+   two things a single frame — or an engine frame-counter — cannot decide:
+   - **Live vs frozen.** A CPU-bound renderer can sit at its normal ~90% CPU with an
+     unreliable internal frame counter; `mean_consecutive_motion > 0` over a hold is
+     the reliable proof the broadcast is advancing. (2026-05-29: a "frozen" reading
+     from the engine frame-counter was a false alarm; the motion metric correctly
+     showed the render live, preventing an unnecessary revert.)
+   - **No-blink / no-global-flash.** A global flash or hard blink shows up as a large
+     whole-frame luma delta between consecutive hold frames; the duration metrics
+     make the violation measurable instead of relying on a lucky single capture.
+
+4. **Perf is part of the visual evidence.** For live render surfaces under a
+   frame-budget invariant (Screwm: 1080p60), pair every visual capture with a
+   GPU-utilization + VRAM + renderer-CPU sample, so a change that quietly broke the
+   frame budget is caught with the frame, not hours later. Headless fps is not
+   directly measurable on this renderer — treat GPU headroom plus the duration
+   motion metric (advancing, not stalled) as the proxy, and bound any new per-frame
+   cost (e.g. a drift-gated dlight set) with a live-tunable knob so the budget can be
+   dialed without a rebuild.
+
 ### Failure Modes This Contract Prevents
 
 1. A visual change passes CI but makes wards unreadable on stream.
@@ -98,6 +147,7 @@ For interview-specific work:
 5. Camera framing changes shift the operator out of frame and nobody checks.
 6. A shader effect change passes code review but looks wrong (REQ-AVSDLC-010: metric-only pass insufficient for perceptual work).
 7. Stream-visible text ships at 10px and nobody catches it because it looked fine in development at 4K.
+8. A live render is declared frozen — or declared live — on the basis of an unreliable engine frame-counter or a single screenshot, when liveness is a temporal property only a duration-bound motion metric read from the broadcast frame can decide (2026-05-29 Screwm false alarm).
 
 ---
 

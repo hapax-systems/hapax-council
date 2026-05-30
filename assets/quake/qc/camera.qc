@@ -1,90 +1,130 @@
-// Screwm QuakeC — pendulum camera with Catmull-Rom interpolation
+// Screwm QuakeC — stable review camera with optional slow orbit
 
 float camera_phase;
 
-vector catmull_rom(vector p0, vector p1, vector p2, vector p3, float t)
+float(string path, float fallback) camera_read_norm =
 {
-    float t2 = t * t;
-    float t3 = t2 * t;
+    float fh;
+    string line;
+    float val;
 
-    float a0 = -0.5 * t3 + t2 - 0.5 * t;
-    float a1 = 1.5 * t3 - 2.5 * t2 + 1.0;
-    float a2 = -1.5 * t3 + 2.0 * t2 + 0.5 * t;
-    float a3 = 0.5 * t3 - 0.5 * t2;
+    fh = fopen(path, FILE_READ);
+    if (fh < 0)
+        return fallback;
+    line = fgets(fh);
+    fclose(fh);
+    if (!line)
+        return fallback;
 
-    vector result;
-    result_x = a0 * p0_x + a1 * p1_x + a2 * p2_x + a3 * p3_x;
-    result_y = a0 * p0_y + a1 * p1_y + a2 * p2_y + a3 * p3_y;
-    result_z = a0 * p0_z + a1 * p1_z + a2 * p2_z + a3 * p3_z;
-    return result;
+    val = stof(line);
+    if (val < 0)
+        return 0;
+    if (val > 1)
+        return 1;
+    return val;
 };
 
-vector get_station(float idx)
+float(string path, float fallback) camera_read_float =
 {
-    if (idx <= 0) return STATION_0;
-    if (idx <= 1) return STATION_1;
-    if (idx <= 2) return STATION_2;
-    if (idx <= 3) return STATION_3;
-    if (idx <= 4) return STATION_4;
-    return STATION_5;
+    float fh;
+    string line;
+
+    fh = fopen(path, FILE_READ);
+    if (fh < 0)
+        return fallback;
+    line = fgets(fh);
+    fclose(fh);
+    if (!line)
+        return fallback;
+
+    return stof(line);
 };
 
-vector spline_position(float phase)
+vector camera_look_angles(vector pos, vector target)
 {
-    float seg_count = 5;
-    float t_total = phase * seg_count;
-    float seg = floor(t_total);
-    float t = t_total - seg;
+    vector ang;
+    ang = vectoangles(target - pos);
+    ang_z = 0;
+    return ang;
+};
 
-    if (seg >= seg_count) seg = seg_count - 1;
+vector camera_orbit_position(float phase)
+{
+    float angle = phase * CAMERA_ORBIT_TWO_PI;
+    vector pos;
+    pos_x = AOA_CENTER_x + cos(angle) * CAMERA_ORBIT_RADIUS;
+    pos_y = AOA_CENTER_y + sin(angle) * CAMERA_ORBIT_RADIUS;
+    pos_z = CAMERA_REVIEW_POS_z;
+    return pos;
+};
 
-    float i0 = seg - 1;
-    float i1 = seg;
-    float i2 = seg + 1;
-    float i3 = seg + 2;
+vector() camera_file_position =
+{
+    vector pos;
 
-    if (i0 < 0) i0 = 0;
-    if (i3 > 5) i3 = 5;
+    pos_x = camera_read_float("data/camera-origin-x.txt", CAMERA_REVIEW_POS_x);
+    pos_y = camera_read_float("data/camera-origin-y.txt", CAMERA_REVIEW_POS_y);
+    pos_z = camera_read_float("data/camera-origin-z.txt", CAMERA_REVIEW_POS_z);
+    return pos;
+};
 
-    return catmull_rom(
-        get_station(i0),
-        get_station(i1),
-        get_station(i2),
-        get_station(i3),
-        t
-    );
+vector() camera_file_angles =
+{
+    vector angles;
+
+    angles_x = camera_read_float("data/camera-pitch.txt", 4.0);
+    angles_y = camera_read_float("data/camera-yaw.txt", 90);
+    angles_z = 0;
+    return angles;
+};
+
+void() camera_apply_file_fov =
+{
+    float fov_value;
+
+    fov_value = camera_read_float("data/camera-fov.txt", 78);
+    localcmd(strcat(strcat("fov ", ftos(fov_value)), "\n"));
 };
 
 void() camera_think =
 {
-    camera_phase = camera_phase + frametime / CAMERA_PERIOD;
-    if (camera_phase >= 1.0)
-        camera_phase = camera_phase - 1.0;
+    vector pos;
+    vector target;
+    vector freecam_angles;
+    float use_angles;
 
-    // Smoothstep speed remapping for gentle acceleration/deceleration
-    float phase = camera_phase;
-    float smooth = phase * phase * (3.0 - 2.0 * phase);
-
-    vector pos = spline_position(smooth);
-    setorigin(self, pos);
-
-    // Look toward AoA center
-    // Map uses Y-up. vectoyaw derives yaw from x,y horizontal plane.
-    // Pitch derived from vertical (y) vs horizontal distance (x,z).
-    vector look_dir = AOA_CENTER - pos;
-    vector ang;
-    ang_y = vectoyaw(look_dir);
-    float hdist = sqrt(look_dir_x * look_dir_x + look_dir_z * look_dir_z);
-    if (hdist > 0.01)
-        ang_x = 0 - (look_dir_y / hdist) * 45.0;
-    else if (look_dir_y > 0)
-        ang_x = -89;
+    target = CAMERA_REVIEW_TARGET;
+    use_angles = 0;
+    if (
+        cvar("screwm_camera_file_control") > 0
+        && camera_read_norm("data/camera-manual.txt", 0) > 0
+    )
+    {
+        pos = camera_file_position();
+        freecam_angles = camera_file_angles();
+        use_angles = 1;
+        camera_apply_file_fov();
+        camera_phase = 0;
+    }
+    else if (cvar("screwm_camera_orbit") > 0)
+    {
+        camera_phase = camera_phase + frametime / CAMERA_ORBIT_PERIOD;
+        if (camera_phase >= 1.0)
+            camera_phase = camera_phase - 1.0;
+        pos = camera_orbit_position(camera_phase);
+    }
     else
-        ang_x = 89;
-    ang_z = 0;
-    self.angles = ang;
+    {
+        pos = CAMERA_REVIEW_POS;
+        camera_phase = 0;
+    }
 
-    self.nextthink = time + 0.0139;
+    setorigin(self, pos);
+    if (use_angles)
+        self.angles = freecam_angles;
+    else
+        self.angles = camera_look_angles(pos, target);
+    self.nextthink = time + 0.0333;
 };
 
 void() spawn_camera =
@@ -95,6 +135,7 @@ void() spawn_camera =
     camera_entity.solid = SOLID_NOT;
     camera_entity.think = camera_think;
     camera_entity.nextthink = time + 0.1;
-    setorigin(camera_entity, STATION_0);
+    setorigin(camera_entity, CAMERA_REVIEW_POS);
+    camera_entity.angles = camera_look_angles(CAMERA_REVIEW_POS, CAMERA_REVIEW_TARGET);
     camera_phase = 0;
 };
