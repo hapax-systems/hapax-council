@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
+import socket
 import time
 import urllib.request
 from collections import Counter
@@ -60,6 +62,26 @@ def _read_source_value(src: dict[str, Any]) -> float:
         sub = data.get(subkey) if isinstance(data, dict) else None
         data = sub if isinstance(sub, dict) else None
     return _extract_float(data, *src["keys"])
+
+
+def _sd_notify(state: str) -> None:
+    """Best-effort systemd sd_notify (READY/WATCHDOG). No-op without NOTIFY_SOCKET.
+
+    The unit sets WatchdogSec=120; without these pings systemd SIGABRTs the
+    daemon every 2 min, resetting the Bayesian density models so density never
+    accumulates. This services the watchdog from the live loop.
+    """
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return
+    # Abstract-namespace sockets are prefixed with '@'.
+    path = "\0" + addr[1:] if addr.startswith("@") else addr
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect(path)
+            sock.sendall(state.encode("utf-8"))
+    except OSError:
+        pass
 
 
 def compute_concept_anchors() -> list[tuple[str, list[float]]]:
@@ -486,6 +508,7 @@ def run_density_daemon() -> None:
         len(SOURCE_REGISTRY),
         len(anchors),
     )
+    _sd_notify("READY=1")
 
     while True:
         try:
@@ -518,6 +541,10 @@ def run_density_daemon() -> None:
         except Exception:
             log.debug("density tick failed", exc_info=True)
 
+        # Service the systemd watchdog every tick so a healthy loop is never
+        # SIGABRT'd (which would reset the density models). Outside the try so a
+        # transient tick failure still pings while the loop is alive.
+        _sd_notify("WATCHDOG=1")
         time.sleep(TICK_INTERVAL_S)
 
 

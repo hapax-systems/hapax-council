@@ -95,3 +95,25 @@ def test_source_registry_includes_live_reactivity_and_centroid_fix() -> None:
         assert registry[sid]["shm"].endswith("unified-reactivity.json")
     # spectral centroid must read the real key name the producer writes.
     assert "spectral_centroid_hz" in registry["audio.spectral_centroid"]["keys"]
+
+
+def test_sd_notify_is_noop_without_socket(monkeypatch) -> None:
+    monkeypatch.delenv("NOTIFY_SOCKET", raising=False)
+    # Must not raise when systemd is absent (e.g. in tests / manual runs).
+    information_density_daemon._sd_notify("WATCHDOG=1")
+
+
+def test_sd_notify_sends_watchdog_ping_to_unix_socket(tmp_path, monkeypatch) -> None:
+    import socket
+
+    sock_path = str(tmp_path / "notify.sock")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    server.bind(sock_path)
+    server.settimeout(2.0)
+    monkeypatch.setenv("NOTIFY_SOCKET", sock_path)
+    try:
+        information_density_daemon._sd_notify("WATCHDOG=1")
+        data, _ = server.recvfrom(64)
+        assert data == b"WATCHDOG=1"
+    finally:
+        server.close()
