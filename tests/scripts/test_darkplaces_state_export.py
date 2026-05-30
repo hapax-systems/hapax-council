@@ -965,6 +965,79 @@ def test_darkplaces_state_export_routes_real_slotdrift_through_full_family_vecto
     assert lines["effect-drift-temporal.txt"] == "0.5000"
 
 
+def test_darkplaces_state_export_density_grounds_drift_currency(tmp_path: Path) -> None:
+    """W3: aggregate_density grounds drift currency, is_live-gated + fail-safe."""
+    exporter = _load_exporter()
+    visual_chain_state_file = tmp_path / "visual-chain-state.json"
+    slot_drift_file = tmp_path / "effect-drift-state.json"
+    nonslot_drift_file = tmp_path / "nonslot-drift-state.json"
+    density_file = tmp_path / "density-field.json"
+    missing_density = tmp_path / "missing-density.json"
+    _write_json(visual_chain_state_file, {"levels": {}, "params": {}})
+    # live slotdrift source present -> is_live True (B3 real-source gate)
+    _write_json(
+        slot_drift_file,
+        {
+            "source_presence": {"main": True},
+            "slotdrift_coverage": {"covered": 1.0},
+            "passes": [
+                {"node_id": "colorgrade", "non_neutral": True, "max_delta": 7.0},
+                {"node_id": "fisheye", "non_neutral": True, "max_delta": 6.0},
+                {"node_id": "trail", "non_neutral": True, "max_delta": 5.0},
+            ],
+            "pass_count": 6,
+            "non_neutral_pass_count": 3,
+        },
+    )
+    # non-canonical primary -> effect_source != slotdrift -> is_live False
+    _write_json(
+        nonslot_drift_file,
+        {
+            "pass_count": 4,
+            "non_neutral_pass_count": 2,
+            "passes": [
+                {"node_id": "color", "non_neutral": True, "max_delta": 6.0},
+                {"node_id": "fb", "non_neutral": True, "max_delta": 2.0},
+            ],
+        },
+    )
+    _write_json(density_file, {"aggregate_density": 0.20, "dominant_zone": "audio"})
+
+    def _run(density_path: Path, drift_file: Path = slot_drift_file) -> dict[str, str]:
+        return exporter.build_visual_chain_lines(
+            visual_chain_state_file,
+            drift_file,
+            effect_drift_fallback_state_file=tmp_path / "missing-fallback.json",
+            density_field_file=density_path,
+            now=15.0,
+        )
+
+    # (a) absent density -> fail-safe 0.0, no currency, no boost
+    base = _run(missing_density)
+    assert base["effect-drift-density.txt"] == "0.0000"
+    assert base["effect-drift-density-currency.txt"] == "0.0000"
+
+    # (b) density present + live slotdrift -> raw aggregate emitted, currency > 0,
+    #     zone->family affinity, and kind_variance/active_effect_ratio raised.
+    grounded = _run(density_file)
+    assert grounded["effect-drift-density.txt"] == "0.2000"
+    assert float(grounded["effect-drift-density-currency.txt"]) > 0.0
+    assert grounded["effect-drift-density-zone.txt"] == "atmospheric"  # audio -> atmospheric
+    assert float(grounded["effect-drift-kind-variance.txt"]) > float(
+        base["effect-drift-kind-variance.txt"]
+    )
+    assert float(grounded["effect-drift-active-effect-ratio.txt"]) > float(
+        base["effect-drift-active-effect-ratio.txt"]
+    )
+
+    # (c) density present + NO slotdrift -> density still emitted, but currency
+    #     gated to 0 (is_live False) so the quiet-baseline invariant holds.
+    nonslot = _run(density_file, drift_file=nonslot_drift_file)
+    assert nonslot["effect-drift-source.txt"] != "slotdrift"
+    assert nonslot["effect-drift-density.txt"] == "0.2000"
+    assert nonslot["effect-drift-density-currency.txt"] == "0.0000"
+
+
 def test_darkplaces_state_export_rejects_fail_closed_slotdrift(
     tmp_path: Path,
 ) -> None:
