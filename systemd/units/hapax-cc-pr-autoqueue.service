@@ -4,8 +4,12 @@ Documentation=file://%h/projects/hapax-council/docs/research/2026-05-17-ci-merge
 After=hapax-secrets.service
 
 [Service]
+# Storm open-PR threshold raised to 20: this ~10-lane workspace
+# normally carries ~10 open PRs, so the default (8) put the merge queue in
+# permanent storm and froze admission for ready PRs. 20 = genuine-flood
+# level; the failed-merge-group trigger still catches real thrash.
 Type=oneshot
-ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/cc-pr-autoqueue.py --repo-root %h/.cache/hapax/source-activation/worktree --apply
+ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/cc-pr-autoqueue.py --repo-root %h/.cache/hapax/source-activation/worktree --apply --storm-open-pr-threshold 20
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
