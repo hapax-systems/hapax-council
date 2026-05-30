@@ -17,7 +17,15 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve through symlinks — cc-claim is installed as ~/.local/bin/cc-claim ->
+# the deployed worktree, so the real script's sibling agent-role.sh (session-id /
+# role-less helpers) must be sourced. Without this, the symlinked install would
+# silently fall back to env-only role resolution and never session-key a claim.
+_cc_self="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+  _cc_self="$(readlink -f "$_cc_self" 2>/dev/null || printf '%s' "$_cc_self")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$_cc_self")" && pwd)"
 ROLE_HELPER="$SCRIPT_DIR/../hooks/scripts/agent-role.sh"
 if [[ -f "$ROLE_HELPER" ]]; then
   # shellcheck source=../hooks/scripts/agent-role.sh
@@ -37,45 +45,74 @@ if [[ -z "$task_id" ]]; then
   echo "usage: cc-claim [--force] <task_id>" >&2
   exit 1
 fi
-role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
-if [[ -z "$role" ]] && declare -F hapax_agent_role >/dev/null 2>&1; then
-  role="$(hapax_agent_role 2>/dev/null || true)"
+# Resolve identity from the SAME source of truth as the gate (agent-role.sh):
+# explicit env → agent-role recovery → relay presence → role-less fallback. A
+# session with no role but a session id resolves to "roleless" so it can always
+# claim (FM-1: "no role" never means "no escape").
+if declare -F hapax_effective_role >/dev/null 2>&1; then
+  role="$(hapax_effective_role 2>/dev/null || true)"
+else
+  role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
 fi
 if [[ -z "$role" ]]; then
-  echo "cc-claim: cannot determine role; set HAPAX_AGENT_ROLE, CODEX_ROLE, or CLAUDE_ROLE" >&2
+  echo "cc-claim: cannot determine identity; set HAPAX_AGENT_ROLE/CODEX_ROLE/CLAUDE_ROLE or a session id (HAPAX_SESSION_ID)" >&2
   exit 1
 fi
-
-# --- Multi-claim prevention ---
-# A role must close its current task before claiming a new one.
-# Without this, Codex lanes bulk-claimed dozens of tasks with zero implementation.
-claim_file="$HOME/.cache/hapax/cc-active-task-$role"
-if [[ -f "$claim_file" ]]; then
-  existing_task="$(head -n1 "$claim_file" | tr -d '[:space:]')"
-  if [[ -n "$existing_task" && "$existing_task" != "$task_id" ]]; then
-    vault_root_check="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
-    existing_note=""
-    for c in "$vault_root_check/active/$existing_task-"*.md "$vault_root_check/active/$existing_task.md"; do
-      [[ -f "$c" ]] && existing_note="$c" && break
-    done
-    if [[ -n "$existing_note" ]]; then
-      existing_status="$(grep -oP '^status:\s*\K\S+' "$existing_note" 2>/dev/null || echo "unknown")"
-      case "$existing_status" in
-        done|completed|closed|withdrawn|superseded)
-          ;;
-        *)
-          echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
-          echo "  Close it first: cc-close $existing_task" >&2
-          echo "  Or force: cc-claim --force $task_id" >&2
-          if [[ "$force" != "true" ]]; then
-            exit 7
-          fi
-          echo "cc-claim: --force override — releasing prior claim on '$existing_task'" >&2
-          ;;
-      esac
-    fi
-  fi
+session_id=""
+if declare -F hapax_session_id >/dev/null 2>&1; then
+  session_id="$(hapax_session_id 2>/dev/null || true)"
 fi
+if [[ -n "$session_id" ]]; then
+  session_claim_file="$HOME/.cache/hapax/cc-active-task-$role-$session_id"
+else
+  session_claim_file=""
+fi
+lease_ttl="${HAPAX_CLAIM_LEASE_TTL_SECS:-21600}"
+
+# --- Multi-claim prevention + lease expiry (reform Phase 1, cluster 6) ---
+# A role must close its current task before claiming a new one. Without this,
+# Codex lanes bulk-claimed dozens of tasks with zero implementation. Scan the
+# role's claim files — the legacy cc-active-task-<role> AND every session-keyed
+# cc-active-task-<role>-<session_id> (FM-2) — and treat any whose lease has
+# expired (mtime older than HAPAX_CLAIM_LEASE_TTL_SECS) as free: a dead/wedged
+# session's claim auto-frees instead of deadlocking the role forever. The gate
+# refreshes a live session's lease on each mutation, so only stale sessions age
+# out. A live claim on a DIFFERENT non-terminal task blocks (unless --force).
+vault_root_check="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+now_epoch="$(date +%s 2>/dev/null || echo 0)"
+legacy_claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+shopt -s nullglob
+for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
+  [[ -f "$cf" ]] || continue
+  cf_mtime="$(stat -c %Y "$cf" 2>/dev/null || echo "$now_epoch")"
+  if (( now_epoch - cf_mtime > lease_ttl )); then
+    # Expired lease. Reap session-keyed files (a dead session's lease auto-frees);
+    # leave the shared legacy file (it is overwritten below and never blocks once
+    # expired) for the out-of-scope consumers that still read it.
+    [[ "$cf" != "$legacy_claim_file" ]] && rm -f "$cf" 2>/dev/null || true
+    continue
+  fi
+  existing_task="$(head -n1 "$cf" | tr -d '[:space:]')"
+  [[ -n "$existing_task" && "$existing_task" != "$task_id" ]] || continue
+  existing_note=""
+  for c in "$vault_root_check/active/$existing_task-"*.md "$vault_root_check/active/$existing_task.md"; do
+    [[ -f "$c" ]] && existing_note="$c" && break
+  done
+  [[ -n "$existing_note" ]] || continue
+  existing_status="$(grep -oP '^status:\s*\K\S+' "$existing_note" 2>/dev/null || echo "unknown")"
+  case "$existing_status" in
+    done|completed|closed|withdrawn|superseded) continue ;;
+  esac
+  echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
+  echo "  Close it first: cc-close $existing_task" >&2
+  echo "  Or force: cc-claim --force $task_id" >&2
+  if [[ "$force" != "true" ]]; then
+    shopt -u nullglob
+    exit 7
+  fi
+  echo "cc-claim: --force override — releasing prior claim on '$existing_task'" >&2
+done
+shopt -u nullglob
 
 vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
 note_path=""
@@ -478,7 +515,17 @@ tmp.replace(path)
 print(result_message)
 PYEOF
 
-# Write the per-role claim file the hook reads.
+# Write the claim file(s) the gate + consumers read.
 mkdir -p "$HOME/.cache/hapax"
-echo "$task_id" > "$HOME/.cache/hapax/cc-active-task-$role"
-echo "cc-claim: wrote ~/.cache/hapax/cc-active-task-$role"
+# Legacy role-keyed file: read by cc-close, session-context, the coordinator, the
+# coordination TUI, and other consumers outside this task's scope. Always written.
+echo "$task_id" > "$legacy_claim_file"
+if [[ -n "$session_claim_file" ]]; then
+  # Session-keyed lease (FM-2): the gate reads this FIRST so two same-role
+  # sessions never collide on the shared legacy file. Same task id; the filename
+  # carries the session identity.
+  echo "$task_id" > "$session_claim_file"
+  echo "cc-claim: wrote $session_claim_file (+ legacy cc-active-task-$role)"
+else
+  echo "cc-claim: wrote ~/.cache/hapax/cc-active-task-$role"
+fi

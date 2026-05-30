@@ -243,6 +243,13 @@ EOF
   exit 2
 fi
 
+# Lease heartbeat (reform Phase 1, cluster 6): refresh the resolved claim file's
+# mtime — this session is demonstrably alive (it is making a gated call against a
+# valid claim). cc-claim treats a claim older than the lease TTL as free, so this
+# keeps a live session's lease from aging out and being reaped while a dead
+# session's lease still expires. Best-effort; never blocks the decision below.
+touch "$claim_file" 2>/dev/null || true
+
 task_id="$(head -n1 "$claim_file" | tr -d '[:space:]')"
 if [[ -z "$task_id" ]]; then
   echo "cc-task-gate: BLOCKED — claim file is empty for role '$role'." >&2

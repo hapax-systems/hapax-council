@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -777,3 +778,106 @@ class TestSessionKeyedGate:
         assert r.returncode == 2
         assert "cannot determine session role" in r.stderr
         assert "alpha" not in r.stderr
+
+
+def _write_claimable_task(home: Path, task_id: str, *, status: str = "offered") -> Path:
+    """Minimal offered, governed cc-task note that cc-claim will accept."""
+    root = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+    (root / "active").mkdir(parents=True, exist_ok=True)
+    (root / "closed").mkdir(parents=True, exist_ok=True)
+    note = root / "active" / f"{task_id}.md"
+    note.write_text(
+        "---\n"
+        "type: cc-task\n"
+        f"task_id: {task_id}\n"
+        f'title: "{task_id}"\n'
+        f"status: {status}\n"
+        "assigned_to: unassigned\n"
+        "kind: build\n"
+        "authority_case: CASE-TEST-001\n"
+        "parent_spec: /tmp/isap-test.md\n"
+        "quality_floor: frontier_required\n"
+        "mutation_surface: source\n"
+        "authority_level: authoritative\n"
+        "route_metadata_schema: 1\n"
+        "depends_on: []\n"
+        "created_at: 2026-05-09T00:00:00Z\n"
+        "updated_at: 2026-05-09T00:00:00Z\n"
+        "claimed_at: null\n"
+        "---\n\n"
+        f"# {task_id}\n\n## Session log\n"
+    )
+    return note
+
+
+def _run_cc_claim(
+    home: Path,
+    task_id: str,
+    *,
+    role: str | None = "delta",
+    role_env: str = "HAPAX_AGENT_ROLE",
+    extra_env: dict | None = None,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    for key in _IDENTITY_ENV:
+        env.pop(key, None)
+    if role is not None:
+        env[role_env] = role
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        ["bash", str(CC_CLAIM), task_id],
+        env=env,
+        text=True,
+        capture_output=True,
+        cwd=str(cwd) if cwd is not None else str(home),
+    )
+
+
+class TestCcClaimSessionKeyed:
+    """cc-claim writes a session-keyed lease + the legacy file (FM-2), TTL reaps."""
+
+    def test_writes_session_keyed_and_legacy(self, tmp_path: Path) -> None:
+        _write_claimable_task(tmp_path, "task-sk")
+        r = _run_cc_claim(tmp_path, "task-sk", role="delta", extra_env={"HAPAX_SESSION_ID": "sidX"})
+        assert r.returncode == 0, r.stderr
+        cache = tmp_path / ".cache" / "hapax"
+        # Legacy file kept for the ~11 out-of-scope consumers (cc-close, session-context, …).
+        assert (cache / "cc-active-task-delta").read_text().strip() == "task-sk"
+        # Session-keyed lease the gate prefers.
+        assert (cache / "cc-active-task-delta-sidX").read_text().strip() == "task-sk"
+
+    def test_legacy_only_without_session_id(self, tmp_path: Path) -> None:
+        _write_claimable_task(tmp_path, "task-ns")
+        r = _run_cc_claim(tmp_path, "task-ns", role="delta")
+        assert r.returncode == 0, r.stderr
+        cache = tmp_path / ".cache" / "hapax"
+        assert (cache / "cc-active-task-delta").read_text().strip() == "task-ns"
+        assert not list(cache.glob("cc-active-task-delta-*"))
+
+    def test_roleless_session_can_claim(self, tmp_path: Path) -> None:
+        # No role env but a session id → claims under the governed roleless identity.
+        _write_claimable_task(tmp_path, "task-rl")
+        r = _run_cc_claim(tmp_path, "task-rl", role=None, extra_env={"HAPAX_SESSION_ID": "sidZ"})
+        assert r.returncode == 0, r.stderr
+        cache = tmp_path / ".cache" / "hapax"
+        assert (cache / "cc-active-task-roleless-sidZ").read_text().strip() == "task-rl"
+
+    def test_expired_lease_is_reaped_and_does_not_block(self, tmp_path: Path) -> None:
+        _write_claimable_task(tmp_path, "task-new")
+        cache = tmp_path / ".cache" / "hapax"
+        cache.mkdir(parents=True, exist_ok=True)
+        stale = cache / "cc-active-task-delta-deadsid"
+        stale.write_text("task-old\n")
+        old = time.time() - 100_000  # well beyond the 6h default TTL
+        os.utime(stale, (old, old))
+        r = _run_cc_claim(
+            tmp_path,
+            "task-new",
+            role="delta",
+            extra_env={"HAPAX_SESSION_ID": "sidNew", "HAPAX_CLAIM_LEASE_TTL_SECS": "21600"},
+        )
+        assert r.returncode == 0, r.stderr
+        assert not stale.exists()  # dead session's lease auto-expired (reaped)
