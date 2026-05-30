@@ -740,7 +740,7 @@ void main(void)
 	float scrim_invig = 1.0 + dot(scrim_vc, scrim_vc) * 0.55;
 	vec3 scrim_ground = scrim_base * (0.72 + scrim_gauze * 0.42 + scrim_weave * 0.16) * scrim_invig * (0.95 + scrim_breath * 0.10);
 	float scrim_final_lum = dot(color, vec3(0.299, 0.587, 0.114));
-	float scrim_reveal = clamp(max(signal_presence, smoothstep(0.012, 0.10, scrim_final_lum)), 0.0, 1.0);
+	float scrim_reveal = clamp(smoothstep(0.012, 0.10, scrim_final_lum), 0.0, 1.0);
 	color = mix(scrim_ground, color, scrim_reveal);
 
 	dp_FragColor.rgb = color;
