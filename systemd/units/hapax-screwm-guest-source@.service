@@ -1,0 +1,34 @@
+[Unit]
+Description=Hapax Screwm consent-gated Meet-guest live-texture producer (%i)
+Documentation=https://github.com/ryanklee/hapax-council
+After=hapax-darkplaces-v4l2.service
+Wants=hapax-darkplaces-v4l2.service
+# Manual-start only (no [Install], no target): runs for the duration of a
+# consented meeting. The guest renders ONLY while `world_render` consent holds
+# (fail-closed -> quiet void otherwise). To free slot 7 (cam_cov) for the guest:
+#   hapax-guest-consent grant <person>
+#   systemctl --user mask hapax-quake-live-camera@c920-overhead   # release slot 7
+#   systemctl --user start hapax-screwm-guest-source@<person>
+# Teardown (restores the overhead camera):
+#   systemctl --user stop hapax-screwm-guest-source@<person>
+#   systemctl --user unmask hapax-quake-live-camera@c920-overhead
+#   systemctl --user start hapax-quake-live-camera@c920-overhead
+#   hapax-guest-consent revoke <person>
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/screwm-guest-source.py --person %i
+Restart=on-failure
+RestartSec=2
+CPUWeight=25
+MemoryMax=512M
+# SIGTERM (systemctl stop) is a clean shutdown; the producer catches it,
+# writes a final void frame, and exits 0.
+SuccessExitStatus=0 143 SIGTERM
+Environment=SCREWM_GUEST_DISPLAY=:0
+Environment=SCREWM_GUEST_GRAB=1280x720+0+0
+Environment=SCREWM_GUEST_OUTPUT=/dev/shm/hapax-compositor/quake-live-cam-c920-overhead.bgra
+Environment=SCREWM_GUEST_WIDTH=1280
+Environment=SCREWM_GUEST_HEIGHT=720
+Environment=SCREWM_GUEST_FPS=15
