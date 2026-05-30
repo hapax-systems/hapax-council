@@ -8,7 +8,9 @@
 #   - any AI agent before/after touching audio
 #   - the operator manually: ./scripts/hapax-audio-routing-check
 #
-# INVARIANTS (2026-05-05 golden state):
+# INVARIANTS (2026-05-29 interim MPC-only state; ZOOM L-12 physically removed,
+# MPC Live III is the sole interface until the MOTU UltraLite mk5 + FadeFox
+# MX12 land; PC -> MPC -> PC broadcast return):
 #
 #   1. TTS voice chain: role.broadcast → voice-fx-capture → voice-fx-playback
 #      → loudnorm-capture → loudnorm-playback → MPC AUX2/3
@@ -17,13 +19,20 @@
 #      must NOT exist or be connected to hapax-livestream-tap.
 #
 #   3. Livestream tap inputs: only route-policy-authorized producers feed
-#      hapax-livestream-tap. L-12 wet-return sources remain the default
-#      path; S-4/direct content taps are blocked until explicitly promoted.
+#      hapax-livestream-tap. The MPC USB return (hapax-mpc-usb-return-playback)
+#      is the sole broadcast return; S-4/direct content taps are blocked until
+#      explicitly promoted. (The L-12 wet/evilpet returns are retired.)
 #
 #   4. OBS chain: broadcast-normalized → obs-broadcast-remap → OBS
 #
 #   5. MPC receives only the specified live software channels:
-#      SoundCloud/music AUX0/1, public TTS AUX2/3, private TTS AUX8/9.
+#      SoundCloud/music AUX0/1, public TTS AUX2/3, YouTube AUX6/7 (gated send),
+#      private TTS AUX8/9.
+#
+#   10. MPC return completeness: the public mix returns on capture_AUX0/1 →
+#       mpc-usb-return-capture → livestream-tap → broadcast-master, and the
+#       private monitor return (capture_AUX2/3) is absent from every broadcast
+#       node.
 #
 # Exit codes: 0 = all good, 1 = invariant violation, 2 = PipeWire not running
 
@@ -136,12 +145,14 @@ TAP_INPUTS=$(printf '%s\n' "$GRAPH" | awk '
     /^[^[:space:]|]/ { in_tap = 0 }
     in_tap && /^[[:space:]]*\|<-/ { print }
 ')
-# Source authority:
-# - L-12 sources are the MPC-first wet return / processor return.
-# S-4, Polyend, M8, YouTube, notification, and the retired
-# hapax-tts-broadcast bridge are intentionally not listed here until route
-# policy owns and promotes them.
-ALLOWED_TAP_SOURCES="^[[:space:]]*\|<-[[:space:]]+(hapax-l12-evilpet-playback|hapax-l12-usb-return-playback):"
+# Source authority (interim MPC-only, 2026-05-29; ZOOM L-12 removed):
+# - The MPC USB return (hapax-mpc-usb-return-playback) is the sole broadcast
+#   return — it carries the MPC public mix (music + voice + youtube). S-4,
+#   Polyend, M8, notification, and the retired hapax-tts-broadcast bridge are
+#   intentionally not listed here until route policy owns and promotes them.
+#   The orphaned L-12 evilpet/wet-return sources are retired (MOTU/FadeFox
+#   migration finishes the L-12 model retirement).
+ALLOWED_TAP_SOURCES="^[[:space:]]*\|<-[[:space:]]+(hapax-mpc-usb-return-playback):"
 UNEXPECTED=$(printf '%s\n' "$TAP_INPUTS" | grep -vE "$ALLOWED_TAP_SOURCES" | grep -v "^$" || true)
 
 if [ -z "$UNEXPECTED" ]; then
@@ -203,12 +214,12 @@ else
     check "PC USB 5/6 is fail-closed" "PASS"
 fi
 
-if link_present "hapax-yt-loudnorm-playback:output_FL" "playback_AUX6" \
-    || link_present "hapax-yt-loudnorm-playback:output_FR" "playback_AUX7"; then
-    check "YouTube AUX6/7 is disabled" "YT loudnorm is feeding MPC AUX6/7"
-else
-    check "YouTube AUX6/7 is disabled" "PASS"
-fi
+# YouTube AUX6/7 (interim MPC-only, 2026-05-29): the send is now ENABLED so
+# YouTube can join the operator's MPC mix + public return. AUX6/7 is no longer
+# a forbidden boundary. Broadcast eligibility of the youtube route stays GATED
+# in policy (broadcast_eligible=false, blocked_until_smoke) — the MPC mixer,
+# operator-owned, decides whether YouTube reaches the public return. No
+# link-time guard here; the desired-state map + reconciler own the send.
 
 if link_present "hapax-notification-private-playback:output_FL" "playback_AUX8" \
     || link_present "hapax-notification-private-playback:output_FR" "playback_AUX9"; then
@@ -343,10 +354,11 @@ else
 fi
 
 # Check for any .conf that creates a PLAYBACK node targeting livestream-tap
-# that is NOT one of the legitimate L12/S4 sources.
-# Legitimate: hapax-l12-evilpet-capture, hapax-l12-usb-return-capture.
+# that is NOT one of the legitimate sources.
+# Legitimate (interim MPC-only, 2026-05-29): hapax-mpc-usb-return-capture is
+# the sole broadcast return; hapax-broadcast-master is the normalization stage.
 # Bypass:     anything else creating a playback→livestream-tap path.
-LEGIT_TAP_SOURCES="hapax-l12-evilpet|hapax-l12-usb-return|hapax-broadcast-master"
+LEGIT_TAP_SOURCES="hapax-mpc-usb-return|hapax-broadcast-master"
 SUSPECT=$(grep -rl "target.object.*livestream-tap" ~/.config/pipewire/pipewire.conf.d/*.conf 2>/dev/null | while read f; do
     bn=$(basename "$f")
     if ! echo "$bn" | grep -qE "$LEGIT_TAP_SOURCES"; then
@@ -430,69 +442,54 @@ echo "Chain 9: Webcam Mic Broadcast Leak Guard"
 
 # Per 2026-05-06 incident: C920 webcam mic leaked into broadcast via
 # hapax-l12-usb-return-capture filter-chain when L-12 USB was missing.
-# Regression check: NO webcam (C920/Brio) capture pad should be linked
-# into hapax-l12-usb-return-capture, hapax-l12-evilpet-capture,
-# hapax-m8-instrument-capture, or directly into livestream-feeding chains.
+# Regression check: NO webcam (C920/Brio) capture pad should be linked into
+# hapax-mpc-usb-return-capture (interim broadcast return), the orphaned L-12
+# capture chains, hapax-m8-instrument-capture, or directly into
+# livestream-feeding chains.
 
-WEBCAM_LEAK=$(pw-link -l 2>/dev/null | grep -B 1 -E "hapax-(l12-usb-return-capture|l12-evilpet-capture|m8-instrument-capture):input_AUX" 2>/dev/null | grep -E "C920|Brio|Logitech" 2>/dev/null || true)
+WEBCAM_LEAK=$(pw-link -l 2>/dev/null | grep -B 1 -E "hapax-(mpc-usb-return-capture|l12-usb-return-capture|l12-evilpet-capture|m8-instrument-capture):input_AUX" 2>/dev/null | grep -E "C920|Brio|Logitech" 2>/dev/null || true)
 if [ -n "$WEBCAM_LEAK" ]; then
-    check "no webcam mic in L-12/M-8 capture filter-chains" "LEAK:${WEBCAM_LEAK:0:80}..."
+    check "no webcam mic in MPC/L-12/M-8 capture filter-chains" "LEAK:${WEBCAM_LEAK:0:80}..."
 else
-    check "no webcam mic in L-12/M-8 capture filter-chains" "PASS"
+    check "no webcam mic in MPC/L-12/M-8 capture filter-chains" "PASS"
 fi
 
-# ── Invariant 10: L-12 completeness ──
-echo "Chain 10: L-12 Completeness (every active USB return channel reaches broadcast)"
+# ── Invariant 10: MPC return completeness ──
+echo "Chain 10: MPC Return Completeness (interim MPC-only; ZOOM L-12 removed 2026-05-29)"
 
-# Per feedback_l12_equals_livestream_invariant (operator directive
-# 2026-04-21): "anything entering the L-12 (input OR USB playback)
-# MUST reach broadcast. Monitor / private / non-broadcast audio must
-# leave L-12 entirely. No carve-outs."
-#
-# This checks that hapax-livestream-tap (the broadcast aggregation
-# point) has ACTIVE input links from both legitimate L-12 sources:
-# hapax-l12-evilpet-playback and hapax-l12-usb-return-playback.
-# If either is disconnected, L-12 audio is silently dropped from
-# broadcast — the invariant violation is a silent failure mode.
+# Interim MPC-only baseline: the broadcast return runs PC -> MPC -> PC over the
+# MPC's own 24-ch USB return. The MPC public mix (music + voice + youtube,
+# summed inside the MPC) returns on capture_AUX0/1, is captured by
+# hapax-mpc-usb-return-capture, and summed into livestream-tap. If a capture leg
+# is disconnected the public mix is silently dropped from broadcast — a silent
+# failure mode. The private monitor mix on capture_AUX2/3 must be ABSENT from
+# every broadcast node (inverse safety invariant). Supersedes the retired L-12
+# wet/evilpet returns; MOTU/FadeFox migration finishes the L-12 retirement.
 
-L12_COMPLETENESS_OK=true
-L12_SOURCE_RE="^alsa_input[.]usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00[.](pro-input-0|multichannel-input)"
+MPC_COMPLETENESS_OK=true
+MPC_RETURN_SOURCE="alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0"
 
-# Check MPC wet-return capture inputs. This is the signal-bearing upstream
-# leg for the hardware-first baseline: MPC Out 1/2 and 3/4 land on L-12
-# CH 9-12, exposed by PipeWire as AUX8-AUX11, then enter the wet-return
-# filter-chain before the stereo sum reaches livestream-tap.
+# Public-mix capture legs: MPC USB out 1/2 -> host capture_AUX0/1 -> wet return.
 for pair in \
-    "AUX8 hapax-l12-usb-return-capture:input_AUX8" \
-    "AUX9 hapax-l12-usb-return-capture:input_AUX9" \
-    "AUX10 hapax-l12-usb-return-capture:input_AUX10" \
-    "AUX11 hapax-l12-usb-return-capture:input_AUX11"; do
+    "AUX0 hapax-mpc-usb-return-capture:input_AUX0" \
+    "AUX1 hapax-mpc-usb-return-capture:input_AUX1"; do
     aux="${pair%% *}"
     target="${pair#* }"
-    if regex_link_present "$L12_SOURCE_RE:capture_$aux$" "$target"; then
-        check "L-12 $aux → l12-usb-return-capture linked" "PASS"
+    if link_present "$MPC_RETURN_SOURCE:capture_$aux" "$target"; then
+        check "MPC $aux → mpc-usb-return-capture linked" "PASS"
     else
-        check "L-12 $aux → l12-usb-return-capture linked" "MISSING"
-        L12_COMPLETENESS_OK=false
+        check "MPC $aux → mpc-usb-return-capture linked" "MISSING"
+        MPC_COMPLETENESS_OK=false
     fi
 done
 
-# Check l12-evilpet → livestream-tap link
-EVILPET_TO_TAP=$(pw-link -l 2>/dev/null | grep -A 5 "hapax-l12-evilpet-playback" 2>/dev/null | grep "hapax-livestream-tap" 2>/dev/null || true)
-if [ -z "$EVILPET_TO_TAP" ]; then
-    check "l12-evilpet-playback → livestream-tap linked" "MISSING"
-    L12_COMPLETENESS_OK=false
+# Check mpc-usb-return → livestream-tap link
+MPC_RETURN_TO_TAP=$(pw-link -l 2>/dev/null | grep -A 5 "hapax-mpc-usb-return-playback" 2>/dev/null | grep "hapax-livestream-tap" 2>/dev/null || true)
+if [ -z "$MPC_RETURN_TO_TAP" ]; then
+    check "mpc-usb-return-playback → livestream-tap linked" "MISSING"
+    MPC_COMPLETENESS_OK=false
 else
-    check "l12-evilpet-playback → livestream-tap linked" "PASS"
-fi
-
-# Check l12-usb-return → livestream-tap link
-USB_RETURN_TO_TAP=$(pw-link -l 2>/dev/null | grep -A 5 "hapax-l12-usb-return-playback" 2>/dev/null | grep "hapax-livestream-tap" 2>/dev/null || true)
-if [ -z "$USB_RETURN_TO_TAP" ]; then
-    check "l12-usb-return-playback → livestream-tap linked" "MISSING"
-    L12_COMPLETENESS_OK=false
-else
-    check "l12-usb-return-playback → livestream-tap linked" "PASS"
+    check "mpc-usb-return-playback → livestream-tap linked" "PASS"
 fi
 
 # Check that livestream-tap itself has at least one output going to
@@ -500,13 +497,25 @@ fi
 TAP_TO_MASTER=$(pw-link -l 2>/dev/null | grep -A 5 "hapax-livestream-tap" 2>/dev/null | grep "hapax-broadcast-master" 2>/dev/null || true)
 if [ -z "$TAP_TO_MASTER" ]; then
     check "livestream-tap → broadcast-master linked" "MISSING"
-    L12_COMPLETENESS_OK=false
+    MPC_COMPLETENESS_OK=false
 else
     check "livestream-tap → broadcast-master linked" "PASS"
 fi
 
-if [ "$L12_COMPLETENESS_OK" = true ]; then
-    echo "  L-12 completeness: ALL L-12 sources reach broadcast ✓"
+# Inverse safety invariant: the MPC private monitor return (capture_AUX2/3) must
+# NOT be linked into the broadcast return capture or any broadcast node.
+PRIVATE_RETURN_LEAK=$(pw-link -l 2>/dev/null \
+    | grep -A 5 -E "$MPC_RETURN_SOURCE:capture_AUX[23]" 2>/dev/null \
+    | grep -E "hapax-(mpc-usb-return-capture|livestream-tap|broadcast-master|broadcast-normalized|obs-broadcast-remap)" 2>/dev/null || true)
+if [ -n "$PRIVATE_RETURN_LEAK" ]; then
+    check "MPC private return (AUX2/3) absent from broadcast" "LEAK: ${PRIVATE_RETURN_LEAK:0:80}"
+    MPC_COMPLETENESS_OK=false
+else
+    check "MPC private return (AUX2/3) absent from broadcast" "PASS"
+fi
+
+if [ "$MPC_COMPLETENESS_OK" = true ]; then
+    echo "  MPC return completeness: public mix reaches broadcast, private fenced ✓"
 fi
 
 # ── Signal-Flow Advisory Check (Invariant 11) ──────────────────────────────

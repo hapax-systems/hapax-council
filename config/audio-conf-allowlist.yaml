@@ -35,6 +35,7 @@ orphans:
   - hapax-livestream-duck.conf
   - hapax-livestream-tap.conf
   - hapax-l12-usb-return-capture.conf  # MPC-first wet return; topology models it, conf stays hand-mirrored until generator parity.
+  - hapax-mpc-usb-return-capture.conf  # interim MPC-only broadcast return (L-12 removed 2026-05-29); stream-routing filter_chain (chain_kind=None), conf hand-mirrored. task: audio-mpc-only-interim-routing.
   - hapax-l12-mainmix-tap.conf  # H5 P2 monitor-only null-sink; topology node is kind=tap, loopback is systemd/pactl-owned.
   - hapax-notification-private.conf
   - hapax-l12-usb-return-capture.conf  # L-12 USB return capture, standalone conf

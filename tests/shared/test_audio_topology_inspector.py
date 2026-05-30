@@ -162,6 +162,23 @@ def _l12_contract_fixture() -> TopologyDescriptor:
               capture_positions: AUX8 AUX9 AUX10 AUX11
               playback_target: hapax-livestream-tap
               mpc_wet_return: true
+          - id: mpc-usb-return
+            kind: alsa_source
+            pipewire_name: alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0
+            hw: hw:MPCB,0
+            channels:
+              count: 24
+            params:
+              public_return_positions: AUX0 AUX1
+              private_return_positions: AUX2 AUX3
+          - id: mpc-usb-return-capture
+            kind: filter_chain
+            pipewire_name: hapax-mpc-usb-return-capture
+            target_object: alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0
+            params:
+              capture_positions: AUX0 AUX1
+              playback_target: hapax-livestream-tap
+              mpc_wet_return: true
           - id: mpc-usb-output
             kind: alsa_sink
             pipewire_name: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
@@ -260,13 +277,17 @@ def _l12_contract_fixture() -> TopologyDescriptor:
             target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0
             params:
               playback_positions: AUX2 AUX3
-              broadcast_forward_path: mpc-usb-output l12-usb-return-capture hapax-livestream-tap
+              broadcast_forward_path: mpc-usb-output mpc-usb-return-capture hapax-livestream-tap
         edges:
           - source: l12-capture
             target: l12-evilpet-capture
           - source: l12-capture
             target: l12-usb-return-capture
           - source: l12-usb-return-capture
+            target: livestream-tap
+          - source: mpc-usb-return
+            target: mpc-usb-return-capture
+          - source: mpc-usb-return-capture
             target: livestream-tap
           - source: private-sink
             target: private-monitor-capture
@@ -610,7 +631,7 @@ class TestTtsBroadcastPathCheck:
             ),
             _pw_node(
                 id=104,
-                node_name="hapax-l12-usb-return-capture",
+                node_name="hapax-mpc-usb-return-capture",
                 media_class="Audio/Sink",
                 factory="filter-chain",
             ),
@@ -642,11 +663,11 @@ class TestTtsBroadcastPathCheck:
             node
             for node in self._current_mpc_dump()
             if node.get("info", {}).get("props", {}).get("node.name")
-            != "hapax-l12-usb-return-capture"
+            != "hapax-mpc-usb-return-capture"
         ]
         result = check_tts_broadcast_path(pw_dump_to_descriptor(dump))
         assert result.ok is False
-        assert "hapax-l12-usb-return-capture" in result.missing_nodes
+        assert "hapax-mpc-usb-return-capture" in result.missing_nodes
 
     def test_reports_missing_final_tap_to_master_edge(self) -> None:
         dump = self._current_mpc_dump(include_final_edge=False)
