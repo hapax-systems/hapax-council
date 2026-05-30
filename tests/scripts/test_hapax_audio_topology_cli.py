@@ -722,7 +722,7 @@ class TestTtsBroadcastCheck:
                         "type": "PipeWire:Interface:Node",
                         "info": {
                             "props": {
-                                "node.name": "hapax-l12-usb-return-capture",
+                                "node.name": "hapax-mpc-usb-return-capture",
                                 "media.class": "Audio/Sink",
                                 "factory.name": "filter-chain",
                             }
@@ -773,7 +773,7 @@ class TestTtsBroadcastCheck:
         result = _run(["tts-broadcast-check", "--dump-file", str(dump)])
         assert result.returncode == 2
         assert "TTS broadcast path: FAIL" in result.stdout
-        assert "hapax-l12-usb-return-capture" in result.stdout
+        assert "hapax-mpc-usb-return-capture" in result.stdout
 
 
 class TestL12ForwardCheck:

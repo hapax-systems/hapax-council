@@ -106,7 +106,7 @@ def test_legacy_ad_hoc_pipewire_nodes_have_industrial_names() -> None:
     descriptor = TopologyDescriptor.from_yaml(CANONICAL_YAML)
     assert (
         descriptor.node_by_id("l12-usb-return-capture").industrial_name
-        == "chain.broadcast.mpc-wet-return-capture"
+        == "chain.broadcast.l12-wet-return-capture"
     )
     assert (
         descriptor.node_by_id("l12-evilpet-capture").industrial_name

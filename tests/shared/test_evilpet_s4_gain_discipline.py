@@ -72,6 +72,9 @@ EXPECTED_MIXER_GAINS: dict[str, set[float]] = {
     # level responsibility belongs to the MPC/L-12 hardware stages and
     # downstream broadcast limiter.
     "hapax-l12-usb-return-capture.conf": {1.0},
+    # Interim MPC-only broadcast return (L-12 removed 2026-05-29):
+    # unity public-mix capture, mirrors l12 conf gain discipline.
+    "hapax-mpc-usb-return-capture.conf": {1.0},
 }
 
 GAIN_RE = re.compile(r'"Gain 1"\s*=\s*([\d.]+)')
