@@ -1,0 +1,17 @@
+[Unit]
+Description=Hapax screwm-native audio-reactivity producer (unified-reactivity.json @60Hz)
+After=graphical-session.target hapax-reverie.service
+PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=HAPAX_UNIFIED_REACTIVITY_ACTIVE=1
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/screwm-audio-reactivity-source.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/screwm-audio-reactivity-source.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=hapax-visual-stack.target hapax-darkplaces-v4l2.service

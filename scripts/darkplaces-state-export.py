@@ -1579,6 +1579,30 @@ def _is_real_slotdrift_state(payload: dict[str, Any]) -> bool:
     return True
 
 
+EFFECT_DRIFT_CONTENT_MAX_AGE_S = 8.0
+
+
+def _payload_content_fresh(
+    payload: dict[str, Any], *, now: float | None = None, max_age_s: float
+) -> bool:
+    """Whether the payload's own content timestamp is recent.
+
+    The effect-drift producer re-touches the state-file mtime even when the
+    rendered scalars are unchanged, so mtime freshness alone cannot detect a
+    content freeze (a recently-touched file whose ``frame_count`` is pinned).
+    The live producer stamps ``timestamp_unix_ms`` with the content and it
+    freezes with the content, so a present-but-stale stamp is the authoritative
+    freeze signal and is rejected. When the stamp is absent (legacy payloads /
+    fixtures the live producer never emits), defer to mtime freshness so
+    behaviour is unchanged for sources that carry no content clock.
+    """
+    ts_ms = payload.get("timestamp_unix_ms")
+    if isinstance(ts_ms, bool) or not isinstance(ts_ms, (int, float)):
+        return True
+    now_ms = (time.time() if now is None else now) * 1000.0
+    return (now_ms - float(ts_ms)) <= max_age_s * 1000.0
+
+
 def _select_effect_drift_state(
     primary_file: Path,
     fallback_file: Path,
@@ -1586,7 +1610,11 @@ def _select_effect_drift_state(
     now: float | None = None,
 ) -> tuple[dict[str, Any], str]:
     primary = _read_json(primary_file)
-    primary_fresh = bool(primary) and _state_file_fresh(primary_file, now=now, max_age_s=60.0)
+    primary_fresh = (
+        bool(primary)
+        and _state_file_fresh(primary_file, now=now, max_age_s=60.0)
+        and _payload_content_fresh(primary, now=now, max_age_s=EFFECT_DRIFT_CONTENT_MAX_AGE_S)
+    )
     if primary_fresh and _is_real_slotdrift_state(primary):
         return primary, "slotdrift"
     fallback = _read_json(fallback_file)

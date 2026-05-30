@@ -2216,7 +2216,14 @@ impl DynamicPipeline {
         source_presence_count: usize,
         source_presence_fail_closed: bool,
     ) {
-        if !self.frame_count.is_multiple_of(30) {
+        // R1(a): publish the effect-drift scalars at the consumer-texture
+        // cadence. The prior `frame_count % 30` gate assumed 60fps, but the
+        // SlotDrift pipeline ticks ~1fps, so it fired only ~every 30s -- the
+        // scalar currency froze between writes while the texture stayed live
+        // (the texture path at L2111 already gates on should_write_consumer_output).
+        // If this pipeline is ever driven >~4fps, add a wall-clock throttle here
+        // to bound the ~117KB JSON serialize on the 1080p60 path.
+        if !should_write_consumer_output(self.frame_count, self.output_half_rate) {
             return;
         }
 
