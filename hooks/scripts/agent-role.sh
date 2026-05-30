@@ -204,9 +204,36 @@ hapax_session_id() {
 # yet is never hard-blocked — "no role" must never mean "no escape" (master
 # design §6/§7 FM-1, audit B). Returns nonzero only when there is no identity at
 # all (no role AND no session id) — genuinely unkeyable.
+# Legacy relay-presence inference: when exactly one slot relay file exists, treat
+# that slot as the session's role. A weak heuristic kept only for bare sessions
+# launched without explicit identity; spawner-launched sessions set an explicit
+# role and never reach it. (Branch-prefix inference was removed entirely — FM-1.)
+hapax_relay_inferred_role() {
+  local relay_dir="${HOME:-/nonexistent}/.cache/hapax/relay"
+  [ -d "$relay_dir" ] || return 1
+  local r f match="" count=0
+  for r in alpha beta delta epsilon; do
+    f="$relay_dir/$r.yaml"
+    if [ -f "$f" ]; then
+      match="$r"
+      count=$((count + 1))
+    fi
+  done
+  if [ "$count" -eq 1 ]; then
+    printf '%s\n' "$match"
+    return 0
+  fi
+  return 1
+}
+
 hapax_effective_role() {
   local role
   role="$(hapax_agent_identity 2>/dev/null || true)"
+  if [ -n "$role" ]; then
+    printf '%s\n' "$role"
+    return 0
+  fi
+  role="$(hapax_relay_inferred_role 2>/dev/null || true)"
   if [ -n "$role" ]; then
     printf '%s\n' "$role"
     return 0

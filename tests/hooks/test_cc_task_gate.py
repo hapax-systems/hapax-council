@@ -50,12 +50,21 @@ _IDENTITY_ENV = (
 
 
 def _role_helper(
-    expr: str, *, env: dict | None = None, cwd: Path | None = None
+    expr: str,
+    *,
+    env: dict | None = None,
+    cwd: Path | None = None,
+    home: Path | None = None,
 ) -> subprocess.CompletedProcess:
-    """Source agent-role.sh and evaluate a shell expression with a clean identity env."""
+    """Source agent-role.sh and evaluate a shell expression with a clean identity env.
+
+    HOME is pinned so relay-presence inference is deterministic: it defaults to a
+    nonexistent path (relay disabled) unless a test supplies a populated HOME.
+    """
     merged = os.environ.copy()
     for key in _IDENTITY_ENV:
         merged.pop(key, None)
+    merged["HOME"] = str(home) if home is not None else "/nonexistent-test-home"
     if env:
         merged.update(env)
     return subprocess.run(
@@ -596,6 +605,40 @@ class TestEffectiveRole:
     def test_nonzero_when_no_identity(self, tmp_path: Path) -> None:
         r = _role_helper("hapax_effective_role", cwd=tmp_path)
         assert r.returncode != 0
+
+
+class TestRelayInference:
+    """hapax_effective_role falls back to legacy relay-presence inference."""
+
+    def test_single_relay_file_infers_that_role(self, tmp_path: Path) -> None:
+        relay = tmp_path / ".cache" / "hapax" / "relay"
+        relay.mkdir(parents=True)
+        (relay / "delta.yaml").write_text("status: active\n")
+        r = _role_helper("hapax_effective_role", home=tmp_path, cwd=tmp_path)
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == "delta"
+
+    def test_multiple_relay_files_no_inference(self, tmp_path: Path) -> None:
+        relay = tmp_path / ".cache" / "hapax" / "relay"
+        relay.mkdir(parents=True)
+        (relay / "delta.yaml").write_text("x\n")
+        (relay / "alpha.yaml").write_text("x\n")
+        # Ambiguous relay + no role + no session id → no identity.
+        r = _role_helper("hapax_effective_role", home=tmp_path, cwd=tmp_path)
+        assert r.returncode != 0
+
+    def test_explicit_role_beats_relay(self, tmp_path: Path) -> None:
+        relay = tmp_path / ".cache" / "hapax" / "relay"
+        relay.mkdir(parents=True)
+        (relay / "delta.yaml").write_text("x\n")
+        r = _role_helper(
+            "hapax_effective_role",
+            home=tmp_path,
+            cwd=tmp_path,
+            env={"CLAUDE_ROLE": "theta"},
+        )
+        assert r.returncode == 0
+        assert r.stdout.strip() == "theta"
 
 
 class TestGeneralizedPathRecovery:

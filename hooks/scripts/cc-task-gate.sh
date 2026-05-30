@@ -187,55 +187,30 @@ case "$_bootstrap_rc" in
     ;;
 esac
 
-# --- 4. Determine session role ---
-role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
-if [[ -z "$role" ]] && declare -F hapax_agent_role >/dev/null 2>&1; then
-  role="$(hapax_agent_role 2>/dev/null || true)"
-fi
-if [[ -z "$role" ]]; then
-  # Infer from relay file presence: if exactly one of alpha/beta/delta/epsilon
-  # has a recently-modified yaml file (within last 1h), use that role.
-  relay_dir="$HOME/.cache/hapax/relay"
-  if [[ -d "$relay_dir" ]]; then
-    candidates=()
-    for r in alpha beta delta epsilon; do
-      f="$relay_dir/$r.yaml"
-      if [[ -f "$f" ]]; then
-        candidates+=("$r")
-      fi
-    done
-    if [[ ${#candidates[@]} -eq 1 ]]; then
-      role="${candidates[0]}"
-    fi
-  fi
-fi
-# NOTE: branch-prefix role inference was removed here (coordination reform
-# Phase 1, FM-1). A worktree's git branch (e.g. `alpha/feature`) is NOT identity:
-# a bare session on any branch resolved to a phantom role — usually alpha — and
-# then clobbered that role's shared claim file. Identity now comes only from
-# explicit env (spawners), agent-role recovery, or relay presence, then falls
-# through to the role-less-but-claimable degraded mode below.
-
-# Per-session identifier (empty when none is resolvable).
+# --- 4. Determine session identity (coordination reform Phase 1, cluster 6) ---
+# Single source of truth in agent-role.sh (sourced above): explicit env →
+# agent-role recovery → relay presence → role-less-but-claimable fallback
+# ("roleless"). Branch-prefix inference was REMOVED (FM-1): a worktree's git
+# branch is not identity — it produced phantom roles (usually alpha) that
+# clobbered the role's shared claim file. The role-less degraded mode (audit B)
+# lives inside hapax_effective_role: a session with a session id but no role
+# resolves to "roleless" and stays fully governed (authority/stage/scope still
+# enforced below) rather than being hard-blocked. "No role" never means "no
+# escape."
 session_id=""
 if declare -F hapax_session_id >/dev/null 2>&1; then
   session_id="$(hapax_session_id 2>/dev/null || true)"
 fi
-
+if declare -F hapax_effective_role >/dev/null 2>&1; then
+  role="$(hapax_effective_role 2>/dev/null || true)"
+else
+  role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
+fi
 if [[ -z "$role" ]]; then
-  # Permanent role-less-but-claimable degraded mode (reform Phase 1, audit B).
-  # A session with no recoverable role is NEVER hard-blocked while it still has a
-  # session identity: it operates under a session-scoped "roleless" identity, can
-  # always `cc-claim` explicitly, and stays fully governed (authority / stage /
-  # scope are still enforced below). "No role" must never mean "no escape." Only
-  # a session with no identity at all (no role AND no session id) is unkeyable.
-  if [[ -n "$session_id" ]]; then
-    role="roleless"
-  else
-    echo "cc-task-gate: BLOCKED — cannot determine session role (set HAPAX_AGENT_ROLE, CODEX_ROLE, or CLAUDE_ROLE)." >&2
-    echo "  Protected mutations require a role or a session id. Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
-    exit 2
-  fi
+  # No identity at all (no role AND no session id) — genuinely unkeyable.
+  echo "cc-task-gate: BLOCKED — cannot determine session role (set HAPAX_AGENT_ROLE, CODEX_ROLE, or CLAUDE_ROLE)." >&2
+  echo "  Protected mutations require a role or a session id. Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+  exit 2
 fi
 
 # Session-keyed claim lookup with legacy fallback. cc-claim keys a claim to
