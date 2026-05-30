@@ -277,11 +277,14 @@ fi
 PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
 PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-unknown}}"
 
+# Per-session id (coordination reform Phase 1): stable uuid for FM-2 lease keying.
+SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$SESSION" "$$")}"
 export HAPAX_AGENT_INTERFACE="vibe"
 export HAPAX_AGENT_NAME="$SESSION"
 export HAPAX_AGENT_SLOT="$SESSION"
 export HAPAX_AGENT_ROLE="$SESSION"
 export HAPAX_WORKTREE_ROLE="$SESSION"
+export HAPAX_SESSION_ID="$SESSION_UUID"
 export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
 export CLAUDE_ROLE="$SESSION"
 export HAPAX_PARENT_AGENT_INTERFACE="$PARENT_INTERFACE"
@@ -348,6 +351,7 @@ write_runner() {
     printf 'export HAPAX_AGENT_NAME=%q\n' "$SESSION"
     printf 'export HAPAX_AGENT_SLOT=%q\n' "$SESSION"
     printf 'export HAPAX_AGENT_ROLE=%q\n' "$SESSION"
+    printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
     printf 'exec %q' "$VIBE_BIN"

@@ -125,7 +125,10 @@ relay_value_is_retired() {
   local normalized
   normalized="$(printf '%s' "$value" | sed "s/^[[:space:]\"']*//; s/[[:space:]\"']*$//" | tr '[:lower:]' '[:upper:]')"
   case "$normalized" in
-    RETIR*|SUPERSEDED*|CLOSED*|ANTIGRAVITY*)
+    # NOTE: ANTIGRAVITY* was removed here (coordination reform Phase 1) — antigrav
+    # is a LIVE interface (scripts/hapax-antigrav), not a retired relay status, so
+    # treating its relay value as retired wrongly blocked reactivation.
+    RETIR*|SUPERSEDED*|CLOSED*)
       return 0
       ;;
     *)
@@ -622,6 +625,9 @@ fi
 PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
 PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_ROLE:-unknown}}}}"
 
+# Per-session id (coordination reform Phase 1): stable uuid so the gate keys a
+# claim lease to THIS session — two same-role sessions never collide (FM-2).
+SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$SESSION" "$$")}"
 export HAPAX_AGENT_INTERFACE="codex"
 export HAPAX_AGENT_NAME="$SESSION"
 export CODEX_THREAD_NAME="$SESSION"
@@ -629,6 +635,7 @@ export CODEX_ROLE="$SESSION"
 export HAPAX_AGENT_ROLE="$SESSION"
 export HAPAX_AGENT_SLOT="$SLOT"
 export HAPAX_WORKTREE_ROLE="$SLOT"
+export HAPAX_SESSION_ID="$SESSION_UUID"
 export CLAUDE_ROLE="${CLAUDE_ROLE:-$SESSION}"
 export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
 export PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
@@ -845,6 +852,9 @@ RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
   printf 'trap '\''%q %q --reason "clean exit (codex)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$SESSION"
   printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
   printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
+  # Propagate the session id so the re-exec'd inner hapax-codex keeps ONE stable
+  # uuid (reform Phase 1, FM-2) instead of minting a fresh one.
+  printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
   printf 'cd %q\n' "$WORKDIR"
   printf 'exec %q' "$COUNCIL_DIR/scripts/hapax-codex"
   for arg in "${CHILD_ARGS[@]}"; do

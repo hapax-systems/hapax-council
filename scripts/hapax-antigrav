@@ -398,11 +398,14 @@ fi
 
 # ---- export identity envs (for downstream tools that read $HAPAX_*) -----
 
+# Per-session id (coordination reform Phase 1): stable uuid for FM-2 lease keying.
+SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$SESSION" "$$")}"
 export HAPAX_AGENT_INTERFACE="antigravity"
 export HAPAX_AGENT_NAME="$SESSION"
 export HAPAX_AGENT_SLOT="$SESSION"
 export HAPAX_AGENT_ROLE="$SESSION"
 export HAPAX_WORKTREE_ROLE="$SESSION"
+export HAPAX_SESSION_ID="$SESSION_UUID"
 export CLAUDE_ROLE="$SESSION"
 export PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
 export LOGOS_BASE_URL="${LOGOS_BASE_URL:-http://localhost:8051/api}"
@@ -456,6 +459,13 @@ cat >"$RUN_SCRIPT" <<EOF_RUN
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$WORKDIR"
+export HAPAX_AGENT_INTERFACE="antigravity"
+export HAPAX_AGENT_NAME="$SESSION"
+export HAPAX_AGENT_SLOT="$SESSION"
+export HAPAX_AGENT_ROLE="$SESSION"
+export HAPAX_WORKTREE_ROLE="$SESSION"
+export HAPAX_SESSION_ID="$SESSION_UUID"
+export CLAUDE_ROLE="$SESSION"
 prompt=""
 if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
   prompt="\$(cat "$PROMPT_FILE")"

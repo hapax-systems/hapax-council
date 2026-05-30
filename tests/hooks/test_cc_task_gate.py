@@ -881,3 +881,60 @@ class TestCcClaimSessionKeyed:
         )
         assert r.returncode == 0, r.stderr
         assert not stale.exists()  # dead session's lease auto-expired (reaped)
+
+
+_SPAWNERS = ["hapax-claude", "hapax-codex", "hapax-gemini", "hapax-vibe", "hapax-antigrav"]
+
+
+class TestSpawnerSessionIdentity:
+    """All five spawners export HAPAX_AGENT_ROLE + a generated HAPAX_SESSION_ID.
+
+    The launchers spawn processes/tmux and cannot be run in isolation, so these
+    assert the identity wiring is present in the source (complemented by `bash -n`
+    syntax checks in CI and end-to-end exercise in real use).
+    """
+
+    @pytest.mark.parametrize("spawner", _SPAWNERS)
+    def test_exports_session_id_and_role(self, spawner: str) -> None:
+        src = (REPO_ROOT / "scripts" / spawner).read_text()
+        assert "export HAPAX_SESSION_ID=" in src, f"{spawner} missing HAPAX_SESSION_ID export"
+        assert "export HAPAX_AGENT_ROLE=" in src, f"{spawner} missing HAPAX_AGENT_ROLE export"
+
+    @pytest.mark.parametrize("spawner", _SPAWNERS)
+    def test_session_id_generated_from_uuid(self, spawner: str) -> None:
+        src = (REPO_ROOT / "scripts" / spawner).read_text()
+        assert "kernel/random/uuid" in src or "uuidgen" in src, (
+            f"{spawner} does not generate a session uuid"
+        )
+
+
+def _codex_retired_rc(value: str) -> int:
+    """Extract relay_value_is_retired from hapax-codex and run it in isolation."""
+    func = subprocess.run(
+        [
+            "sed",
+            "-n",
+            "/^relay_value_is_retired()/,/^}/p",
+            str(REPO_ROOT / "scripts" / "hapax-codex"),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return subprocess.run(
+        ["bash", "-c", func + f'\nrelay_value_is_retired "{value}"'],
+        capture_output=True,
+        text=True,
+    ).returncode
+
+
+class TestAntigravNotRetired:
+    """hapax-codex must not treat the live antigrav interface as a retired relay."""
+
+    @pytest.mark.parametrize("value", ["ANTIGRAVITY", "antigravity", "ANTIGRAVITY-cx-blue"])
+    def test_antigravity_is_not_retired(self, value: str) -> None:
+        assert _codex_retired_rc(value) != 0
+
+    @pytest.mark.parametrize("value", ["RETIRED", "SUPERSEDED", "CLOSED", "retired"])
+    def test_genuine_retired_statuses_still_match(self, value: str) -> None:
+        assert _codex_retired_rc(value) == 0
