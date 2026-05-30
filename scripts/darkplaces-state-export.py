@@ -49,6 +49,24 @@ DEFAULT_VISUAL_CHAIN_FALLBACK_STATE_FILE = Path(
     )
 )
 DEFAULT_EFFECT_DRIFT_STATE_FILE = Path("/dev/shm/hapax-visual/effect-drift-state.json")
+DEFAULT_DENSITY_FIELD_STATE_FILE = Path(
+    os.environ.get(
+        "HAPAX_DARKPLACES_DENSITY_FIELD_STATE_FILE",
+        "/dev/shm/hapax-density-field/state.json",
+    )
+)
+# Dominant density zone -> drift-family affinity. Lets the dominant zone bias
+# which spatial drift family carries the density grounding (cheap; no extra
+# files read by the engine — the zone label rides along on an existing scalar).
+DENSITY_ZONE_FAMILY_AFFINITY: dict[str, str] = {
+    "audio": "atmospheric",
+    "narrative": "tonal",
+    "perception": "edge",
+    "visual": "texture",
+    "stimmung": "temporal",
+    "body": "temporal",
+    "system": "compositing",
+}
 DEFAULT_EFFECT_DRIFT_FALLBACK_STATE_FILE = Path(
     os.environ.get(
         "HAPAX_DARKPLACES_EFFECT_DRIFT_FALLBACK_STATE_FILE",
@@ -461,6 +479,23 @@ def _entry_float(payload: dict[str, Any], key: str, default: float = 0.0) -> flo
         return float(payload.get(key, default))
     except (TypeError, ValueError):
         return default
+
+
+def _read_density_field(
+    path: Path = DEFAULT_DENSITY_FIELD_STATE_FILE, *, now: float | None = None
+) -> tuple[float, str]:
+    """Live aggregate density + dominant zone from the information-density field.
+
+    Fail-safe: never raises, and a stale file (daemon stopped touching it) reads
+    as 0.0 so the drift grounding collapses cleanly rather than freezing on the
+    last value. Returns (aggregate_density in [0,1], dominant_zone lowercased).
+    """
+    if not _state_file_fresh(path, now=now, max_age_s=15.0):
+        return 0.0, ""
+    payload = _read_json(path)
+    aggregate = _clamp01(_entry_float(payload, "aggregate_density", 0.0))
+    zone = str(payload.get("dominant_zone") or "").strip().lower()
+    return aggregate, zone
 
 
 def _nested_float(payload: dict[str, Any], key: str, default: float = 0.0) -> float:
@@ -1633,6 +1668,7 @@ def build_visual_chain_lines(
     effect_drift_state_file: Path = DEFAULT_EFFECT_DRIFT_STATE_FILE,
     visual_chain_fallback_state_file: Path = DEFAULT_VISUAL_CHAIN_FALLBACK_STATE_FILE,
     effect_drift_fallback_state_file: Path = DEFAULT_EFFECT_DRIFT_FALLBACK_STATE_FILE,
+    density_field_file: Path = DEFAULT_DENSITY_FIELD_STATE_FILE,
     now: float | None = None,
 ) -> dict[str, str]:
     """Export visual-chain and effect-drift pressure as in-scroom scalars."""
@@ -1749,6 +1785,24 @@ def build_visual_chain_lines(
     slow_ratio = _clamp01(active_slow_count / cadence_denominator)
     kind_variance = _clamp01(len(active_effect_names) / max(1.0, pass_count))
 
+    # --- density-grounded drift currency (W3, live, no recompile) ---
+    # aggregate_density (~0.03-0.30 live) grounds the SPATIAL drift handles the
+    # compiled engine already reads (coupling.qc drift_baseline; wards.qc room/
+    # wall fields + entity radii). The is_live gate (B3 = real slotdrift source
+    # present) makes the term ADDITIVE-ZERO when quiet -> the witness quiet-
+    # baseline and the fixed-input slotdrift contract test stay exactly 0.0000.
+    # Spatial fields + per-entity radii consume this, so it is never a global
+    # flash/dim/pulse; it moves only on density's own slow timescale.
+    density, density_zone = _read_density_field(density_field_file, now=now)
+    is_live = 1.0 if (effect_source == "slotdrift" and active_pass_count > 0) else 0.0
+    # Expand the low live range into a usable [0,1] currency (0.30 density -> ~0.75).
+    density_currency = _clamp01(density * 2.5) * is_live
+    affinity_family = DENSITY_ZONE_FAMILY_AFFINITY.get(density_zone, "")
+    # kind_variance carries the broadest spatial reach -> the larger grounding
+    # term; active_effect_ratio gets the smaller one. Both have live headroom.
+    kind_variance = _clamp01(kind_variance + density_currency * 0.22)
+    active_effect_ratio = _clamp01(active_effect_ratio + density_currency * 0.14)
+
     lines.update(
         {
             "visual-chain-noise.txt": f"{noise_pressure:.4f}",
@@ -1769,6 +1823,11 @@ def build_visual_chain_lines(
             "effect-drift-route.txt": "IN_SCROOM_EFFECT_DRIFT_STATE",
             "effect-drift-source.txt": effect_source,
             "effect-drift-real-source.txt": "1.0000" if effect_source == "slotdrift" else "0.0000",
+            # density grounding (W3): raw clamped aggregate (= R6b's coupling.qc
+            # input), the is_live-gated currency, and the affinity family/zone.
+            "effect-drift-density.txt": f"{density:.4f}",
+            "effect-drift-density-currency.txt": f"{density_currency:.4f}",
+            "effect-drift-density-zone.txt": affinity_family or density_zone or "none",
             "visual-chain-source.txt": chain_source,
         }
     )
@@ -1824,6 +1883,7 @@ def export_state(
     effect_drift_state_file: Path = DEFAULT_EFFECT_DRIFT_STATE_FILE,
     visual_chain_fallback_state_file: Path = DEFAULT_VISUAL_CHAIN_FALLBACK_STATE_FILE,
     effect_drift_fallback_state_file: Path = DEFAULT_EFFECT_DRIFT_FALLBACK_STATE_FILE,
+    density_field_file: Path = DEFAULT_DENSITY_FIELD_STATE_FILE,
     now: float | None = None,
 ) -> None:
     game_dir.mkdir(parents=True, exist_ok=True)
@@ -1882,6 +1942,7 @@ def export_state(
         effect_drift_state_file,
         visual_chain_fallback_state_file,
         effect_drift_fallback_state_file,
+        density_field_file,
         now,
     ).items():
         _write_atomic(game_dir / filename, line)
