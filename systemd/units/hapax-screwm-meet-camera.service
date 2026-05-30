@@ -1,0 +1,29 @@
+[Unit]
+Description=Hapax Screwm -> Meet outbound camera (Xvfb :82 -> /dev/video50 YouTube0)
+Documentation=https://github.com/ryanklee/hapax-council
+# The render must be live; this is a parallel grab off its Xvfb.
+After=hapax-darkplaces-v4l2.service
+Wants=hapax-darkplaces-v4l2.service
+# Intentionally NOT PartOf the visual stack and NOT in any .target:
+# this unit is started by hand only for the duration of a meeting.
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/worktree/scripts/screwm-meet-camera.sh" preflight'
+ExecStart=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/worktree/scripts/screwm-meet-camera.sh" run'
+Restart=on-failure
+RestartSec=2
+# ~0.5 core + a single ffmpeg; keep it cheap so the render is undisturbed.
+CPUWeight=30
+MemoryMax=512M
+Environment=SCREWM_MEET_DISPLAY=:82
+Environment=SCREWM_MEET_SINK=/dev/video50
+Environment=SCREWM_MEET_GRAB_SIZE=1920x1080
+Environment=SCREWM_MEET_OUT_SIZE=1280x720
+Environment=SCREWM_MEET_FPS=30
+
+# No [Install] section: start on demand with
+#   systemctl --user start hapax-screwm-meet-camera
+# stop with
+#   systemctl --user stop hapax-screwm-meet-camera
