@@ -209,22 +209,45 @@ if [[ -z "$role" ]]; then
     fi
   fi
 fi
+# NOTE: branch-prefix role inference was removed here (coordination reform
+# Phase 1, FM-1). A worktree's git branch (e.g. `alpha/feature`) is NOT identity:
+# a bare session on any branch resolved to a phantom role — usually alpha — and
+# then clobbered that role's shared claim file. Identity now comes only from
+# explicit env (spawners), agent-role recovery, or relay presence, then falls
+# through to the role-less-but-claimable degraded mode below.
+
+# Per-session identifier (empty when none is resolvable).
+session_id=""
+if declare -F hapax_session_id >/dev/null 2>&1; then
+  session_id="$(hapax_session_id 2>/dev/null || true)"
+fi
+
 if [[ -z "$role" ]]; then
-  _branch_name="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
-  if [[ "$_branch_name" =~ ^([a-z]+)/ ]]; then
-    _branch_role="${BASH_REMATCH[1]}"
-    case "$_branch_role" in
-      alpha|beta|gamma|delta|epsilon|zeta) role="$_branch_role" ;;
-    esac
+  # Permanent role-less-but-claimable degraded mode (reform Phase 1, audit B).
+  # A session with no recoverable role is NEVER hard-blocked while it still has a
+  # session identity: it operates under a session-scoped "roleless" identity, can
+  # always `cc-claim` explicitly, and stays fully governed (authority / stage /
+  # scope are still enforced below). "No role" must never mean "no escape." Only
+  # a session with no identity at all (no role AND no session id) is unkeyable.
+  if [[ -n "$session_id" ]]; then
+    role="roleless"
+  else
+    echo "cc-task-gate: BLOCKED — cannot determine session role (set HAPAX_AGENT_ROLE, CODEX_ROLE, or CLAUDE_ROLE)." >&2
+    echo "  Protected mutations require a role or a session id. Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+    exit 2
   fi
 fi
-if [[ -z "$role" ]]; then
-  echo "cc-task-gate: BLOCKED — cannot determine session role (set HAPAX_AGENT_ROLE, CODEX_ROLE, or CLAUDE_ROLE)." >&2
-  echo "  Protected mutations require role identification. Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
-  exit 2
+
+# Session-keyed claim lookup with legacy fallback. cc-claim keys a claim to
+# <role>-<session_id> so two same-role sessions never collide (FM-2); a pre-reform
+# claim at the legacy <role> path is still honoured through the cutover.
+claim_file=""
+if [[ -n "$session_id" ]] && [[ -f "$HOME/.cache/hapax/cc-active-task-$role-$session_id" ]]; then
+  claim_file="$HOME/.cache/hapax/cc-active-task-$role-$session_id"
+elif [[ -f "$HOME/.cache/hapax/cc-active-task-$role" ]]; then
+  claim_file="$HOME/.cache/hapax/cc-active-task-$role"
 fi
-claim_file="$HOME/.cache/hapax/cc-active-task-$role"
-if [[ ! -f "$claim_file" ]]; then
+if [[ -z "$claim_file" ]]; then
   cat >&2 <<EOF
 cc-task-gate: BLOCKED — no claimed task for role '$role'.
 
