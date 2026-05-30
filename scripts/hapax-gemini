@@ -263,11 +263,14 @@ fi
 
 # Identity wiring (matches scripts/hapax-claude / scripts/hapax-codex semantics
 # so shared hooks can read either GEMINI_ROLE or HAPAX_AGENT_NAME).
+# Per-session id (coordination reform Phase 1): stable uuid for FM-2 lease keying.
+SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$ROLE" "$$")}"
 export HAPAX_AGENT_INTERFACE="gemini"
 export HAPAX_AGENT_NAME="$ROLE"
 export GEMINI_ROLE="$ROLE"
 export HAPAX_AGENT_ROLE="$ROLE"
 export HAPAX_WORKTREE_ROLE="$ROLE"
+export HAPAX_SESSION_ID="$SESSION_UUID"
 export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -301,6 +304,7 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
   printf 'export GEMINI_ROLE=%q\n' "$ROLE"
   printf 'export HAPAX_AGENT_ROLE=%q\n' "$ROLE"
   printf 'export HAPAX_WORKTREE_ROLE=%q\n' "$ROLE"
+  printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
   printf 'export HAPAX_IDLE_UPDATE_SECONDS=%q\n' "$HAPAX_IDLE_UPDATE_SECONDS"
   printf 'exec %q' "$GEMINI_BIN"
   for arg in "${GEMINI_DEFAULT_ARGS[@]}"; do

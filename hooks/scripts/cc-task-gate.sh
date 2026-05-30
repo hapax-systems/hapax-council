@@ -187,44 +187,42 @@ case "$_bootstrap_rc" in
     ;;
 esac
 
-# --- 4. Determine session role ---
-role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
-if [[ -z "$role" ]] && declare -F hapax_agent_role >/dev/null 2>&1; then
-  role="$(hapax_agent_role 2>/dev/null || true)"
+# --- 4. Determine session identity (coordination reform Phase 1, cluster 6) ---
+# Single source of truth in agent-role.sh (sourced above): explicit env →
+# agent-role recovery → relay presence → role-less-but-claimable fallback
+# ("roleless"). Branch-prefix inference was REMOVED (FM-1): a worktree's git
+# branch is not identity — it produced phantom roles (usually alpha) that
+# clobbered the role's shared claim file. The role-less degraded mode (audit B)
+# lives inside hapax_effective_role: a session with a session id but no role
+# resolves to "roleless" and stays fully governed (authority/stage/scope still
+# enforced below) rather than being hard-blocked. "No role" never means "no
+# escape."
+session_id=""
+if declare -F hapax_session_id >/dev/null 2>&1; then
+  session_id="$(hapax_session_id 2>/dev/null || true)"
+fi
+if declare -F hapax_effective_role >/dev/null 2>&1; then
+  role="$(hapax_effective_role 2>/dev/null || true)"
+else
+  role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
 fi
 if [[ -z "$role" ]]; then
-  # Infer from relay file presence: if exactly one of alpha/beta/delta/epsilon
-  # has a recently-modified yaml file (within last 1h), use that role.
-  relay_dir="$HOME/.cache/hapax/relay"
-  if [[ -d "$relay_dir" ]]; then
-    candidates=()
-    for r in alpha beta delta epsilon; do
-      f="$relay_dir/$r.yaml"
-      if [[ -f "$f" ]]; then
-        candidates+=("$r")
-      fi
-    done
-    if [[ ${#candidates[@]} -eq 1 ]]; then
-      role="${candidates[0]}"
-    fi
-  fi
-fi
-if [[ -z "$role" ]]; then
-  _branch_name="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
-  if [[ "$_branch_name" =~ ^([a-z]+)/ ]]; then
-    _branch_role="${BASH_REMATCH[1]}"
-    case "$_branch_role" in
-      alpha|beta|gamma|delta|epsilon|zeta) role="$_branch_role" ;;
-    esac
-  fi
-fi
-if [[ -z "$role" ]]; then
+  # No identity at all (no role AND no session id) — genuinely unkeyable.
   echo "cc-task-gate: BLOCKED — cannot determine session role (set HAPAX_AGENT_ROLE, CODEX_ROLE, or CLAUDE_ROLE)." >&2
-  echo "  Protected mutations require role identification. Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+  echo "  Protected mutations require a role or a session id. Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
   exit 2
 fi
-claim_file="$HOME/.cache/hapax/cc-active-task-$role"
-if [[ ! -f "$claim_file" ]]; then
+
+# Session-keyed claim lookup with legacy fallback. cc-claim keys a claim to
+# <role>-<session_id> so two same-role sessions never collide (FM-2); a pre-reform
+# claim at the legacy <role> path is still honoured through the cutover.
+claim_file=""
+if [[ -n "$session_id" ]] && [[ -f "$HOME/.cache/hapax/cc-active-task-$role-$session_id" ]]; then
+  claim_file="$HOME/.cache/hapax/cc-active-task-$role-$session_id"
+elif [[ -f "$HOME/.cache/hapax/cc-active-task-$role" ]]; then
+  claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+fi
+if [[ -z "$claim_file" ]]; then
   cat >&2 <<EOF
 cc-task-gate: BLOCKED — no claimed task for role '$role'.
 
@@ -244,6 +242,13 @@ cc-task-gate: BLOCKED — no claimed task for role '$role'.
 EOF
   exit 2
 fi
+
+# Lease heartbeat (reform Phase 1, cluster 6): refresh the resolved claim file's
+# mtime — this session is demonstrably alive (it is making a gated call against a
+# valid claim). cc-claim treats a claim older than the lease TTL as free, so this
+# keeps a live session's lease from aging out and being reaped while a dead
+# session's lease still expires. Best-effort; never blocks the decision below.
+touch "$claim_file" 2>/dev/null || true
 
 task_id="$(head -n1 "$claim_file" | tr -d '[:space:]')"
 if [[ -z "$task_id" ]]; then
