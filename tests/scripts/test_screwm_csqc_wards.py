@@ -43,7 +43,7 @@ def test_csqc_text_overlay_is_not_the_default_ward_surface() -> None:
     assert "set screwm_review_fill_light 1" in autoexec
     assert "set screwm_csqc_material_field 1" in autoexec
     assert "set screwm_csqc_theatre_spots 1" in autoexec
-    assert "r_ambient 12" in autoexec
+    assert "r_ambient 22" in autoexec
     assert "Ward identity belongs to the scroom geometry" in autoexec
     assert "screwm_effect_lightfield_enabled" in body
     assert 'cvar("screwm_csqc_effect_lightfield") > 0' in body
