@@ -13,6 +13,11 @@ Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
 Environment=XDG_RUNTIME_DIR=%t
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+# YT audio engine only: the YT VISUAL lives in the screwm render's OARB, so the
+# redundant v4l2 video loopback (vestige of the retired studio-compositor) is
+# disabled — frees /dev/video50 for the screwm Meet-in-screwm camera, no contention.
+# Audio (-> hapax-yt-loudnorm -> MPC USB 7/8) + JPEG snapshots are unaffected.
+Environment=HAPAX_YOUTUBE_EMIT_V4L2=0
 ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/youtube-player.py
 Restart=on-failure
 RestartSec=15s

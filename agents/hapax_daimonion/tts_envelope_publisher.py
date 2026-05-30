@@ -74,6 +74,20 @@ _F0_MAX_HZ = 500.0
 # boundary when converting to a [0, 1] probability.
 _YIN_THRESHOLD = 0.15
 
+# --- speech-wave oscilloscope ring (R3: Sierpinski-centre = Hapax speech) ---
+# A parallel RAW time-domain waveform ring in the m8 oscilloscope on-disk format
+# (agents/studio_compositor/m8_oscilloscope_source.py reader), so a screwm-native
+# producer can render the centre waveform as Hapax's speech. Distinct from the
+# feature ring above (rms/centroid/f0 for GEAL) — this carries the raw decimated
+# samples for an oscilloscope draw. Gated by HAPAX_SPEECH_WAVE_PUBLISH (default on).
+DEFAULT_SPEECH_WAVE_PATH = Path("/dev/shm/hapax-daimonion/speech-wave.bin")
+# m8 format: 8-byte LE frame_id, 1-byte color, 1-byte reserved, 2-byte LE
+# sample_count, then up to 480 uint8 samples (silence = flat 128 midline).
+_WAVE_HEADER_FMT = "<QBBH"
+_WAVE_HEADER_SIZE = struct.calcsize(_WAVE_HEADER_FMT)  # 12
+_WAVE_MAX_SAMPLES = 480
+_WAVE_FILE_SIZE = _WAVE_HEADER_SIZE + _WAVE_MAX_SAMPLES  # 492
+
 
 class TtsEnvelopePublisher:
     """Computes per-window audio features and mmap-publishes them.
@@ -94,6 +108,7 @@ class TtsEnvelopePublisher:
         *,
         path: Path | str = DEFAULT_ENVELOPE_PATH,
         sample_rate_hz: int = 24000,
+        wave_path: Path | str | None = None,
     ) -> None:
         self._path = Path(path)
         self._sample_rate_hz = int(sample_rate_hz)
@@ -111,6 +126,37 @@ class TtsEnvelopePublisher:
         # Seed the header to 0 explicitly (truncate already zeroed, but
         # this makes intent obvious and tolerates any reallocation).
         struct.pack_into("<I", self._mmap, 0, 0)
+
+        # Parallel raw-waveform ring for the screwm centre oscilloscope (R3).
+        # VOICE-CRITICAL ISOLATION: a wave-ring allocation failure must NEVER
+        # block the envelope publisher init or the TTS path — degrade to no-wave.
+        self._wave_enabled = os.environ.get("HAPAX_SPEECH_WAVE_PUBLISH", "1") != "0"
+        self._wave_mmap: mmap.mmap | None = None
+        self._wave_file = None
+        self._wave_frame = 0
+        if self._wave_enabled:
+            try:
+                resolved_wave_path = Path(
+                    wave_path
+                    if wave_path is not None
+                    else os.environ.get("HAPAX_SPEECH_WAVE_PATH", str(DEFAULT_SPEECH_WAVE_PATH))
+                )
+                resolved_wave_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(resolved_wave_path, "wb") as wfh:
+                    wfh.truncate(_WAVE_FILE_SIZE)
+                self._wave_file = open(resolved_wave_path, "r+b")
+                self._wave_mmap = mmap.mmap(
+                    self._wave_file.fileno(), _WAVE_FILE_SIZE, access=mmap.ACCESS_WRITE
+                )
+                # Seed: frame 0, flat-128 midline so a reader before first speech
+                # sees a quiet centred line, not garbage.
+                struct.pack_into(_WAVE_HEADER_FMT, self._wave_mmap, 0, 0, 0, 0, _WAVE_MAX_SAMPLES)
+                self._wave_mmap[_WAVE_HEADER_SIZE : _WAVE_HEADER_SIZE + _WAVE_MAX_SAMPLES] = bytes(
+                    [128] * _WAVE_MAX_SAMPLES
+                )
+            except Exception:  # noqa: BLE001 — wave ring is non-critical; never block voice
+                log.exception("speech-wave ring init failed; continuing without it")
+                self._wave_mmap = None
 
     # -- Public API ---------------------------------------------------------
 
@@ -136,6 +182,7 @@ class TtsEnvelopePublisher:
             window = self._buffer[: self._window_samples].astype(np.float32) / 32768.0
             self._buffer = self._buffer[self._window_samples :]
             self._emit(window)
+            self._emit_wave(window)
 
     def snapshot(self, n: int) -> list[tuple[float, float, float, float, float]]:
         """Return the ``n`` most-recent ring entries in oldest-first order.
@@ -170,6 +217,13 @@ class TtsEnvelopePublisher:
             self._file.close()
         except OSError:
             pass
+        # speech-wave ring (best-effort; never raise on teardown)
+        for _obj in (self._wave_mmap, self._wave_file):
+            try:
+                if _obj is not None:
+                    _obj.close()
+            except (ValueError, OSError):
+                pass
 
     # -- Internals ----------------------------------------------------------
 
@@ -191,6 +245,31 @@ class TtsEnvelopePublisher:
         # written slot N-1. Wrap the visible head so 0 <= head < RING_SLOTS.
         self._head = (self._head + 1) % RING_SLOTS
         struct.pack_into("<I", self._mmap, 0, self._head)
+
+    def _emit_wave(self, window: np.ndarray) -> None:
+        """Write one raw-waveform frame to the m8-format speech-wave ring.
+
+        Non-critical: any failure is swallowed (and disables the ring) so a
+        wave-ring problem never disturbs the feature ring or the TTS path.
+        Decimates the 30 ms window to <=480 points and maps [-1, 1] -> uint8
+        centred at 128 — silence reads as a flat midline (fading, not freezing).
+        """
+        if self._wave_mmap is None:
+            return
+        try:
+            n = _WAVE_MAX_SAMPLES
+            if window.size >= 2:
+                idx = np.linspace(0.0, float(window.size - 1), n)
+                decimated = np.interp(idx, np.arange(window.size, dtype=np.float64), window)
+            else:
+                decimated = np.zeros(n, dtype=np.float64)
+            samples = np.clip(128.0 + decimated * 127.0, 0.0, 255.0).astype(np.uint8)
+            self._wave_frame = (self._wave_frame + 1) & 0xFFFFFFFFFFFFFFFF
+            struct.pack_into(_WAVE_HEADER_FMT, self._wave_mmap, 0, self._wave_frame, 0, 0, n)
+            self._wave_mmap[_WAVE_HEADER_SIZE : _WAVE_HEADER_SIZE + n] = samples.tobytes()
+        except Exception:  # noqa: BLE001 — never let the wave ring disturb voice
+            log.exception("speech-wave emit failed; disabling wave ring")
+            self._wave_mmap = None
 
 
 # -- Feature extractors ----------------------------------------------------

@@ -1,0 +1,20 @@
+[Unit]
+Description=Hapax Screwm YouTube playlist rotator (RNG rotation from the canonical playlist)
+Documentation=https://github.com/ryanklee/hapax-council
+# Drives the youtube-player (:8055): dispatches a random canonical-playlist entry whenever
+# the player goes idle, so the playlist streams on RNG rotation (audio -> MPC USB 7/8).
+# Re-homes the retired studio-compositor director's playlist rotation.
+After=youtube-player.service hapax-secrets.service
+Wants=youtube-player.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/screwm-oarb-playlist-rotator.py
+Restart=always
+RestartSec=5
+CPUWeight=15
+MemoryMax=256M
+
+[Install]
+WantedBy=default.target
