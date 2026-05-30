@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+"""cc-task-repair <task_id> [--set k=v ...]
+
+Backfill ONLY governance scaffolding into a malformed cc-task note so the session
+that bricked it can repair it in place — for BOTH ``offered`` and
+``claimed``/``in_progress`` notes — with no operator deletion. This dissolves the
+"Edit-needs-claim / can't-claim-malformed / can't-overwrite" triple-bind.
+
+Diff discipline (the load-bearing safety): repair may ONLY add a missing
+scaffolding key. It never overwrites an existing non-nullish value, never flips a
+no-go boolean to ``true`` (booleans only ever backfill absent -> false), never
+touches a non-scaffolding field, and never alters the markdown body except to
+append a ``## Session log`` heading when one is absent.
+
+The cc-tasks vault is a cognition surface (no claim needed to write here). Every
+repair appends ``kind="task_repair"`` to the bootstrap ledger.
+
+SDLC Reform cluster 5 (CASE-SDLC-REFORM-001, FR-MALFORMED-TASK-UNREPAIRABLE).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+OK = 0  # repaired (or already well-formed)
+RESIDUAL = 1  # scaffolding written, non-scaffolding deficiencies remain
+REFUSED = 2  # diff-gate violation — nothing written
+ERROR = 3  # note not found / usage / IO
+
+NULLISH = {"", "null", "none", "~", "[]"}
+
+# Scaffolding the repair writer may backfill when ABSENT. The value is the
+# least-privilege default inserted when the key is missing. No-go booleans
+# default false; stage/route schema match #3741's gate-derive convention.
+SCALAR_SCAFFOLD: dict[str, str] = {
+    "stage": "S6_IMPLEMENTATION",
+    "route_metadata_schema": "1",
+    "implementation_authorized": "false",
+    "source_mutation_authorized": "false",
+    "docs_mutation_authorized": "false",
+    "runtime_mutation_authorized": "false",
+    "release_authorized": "false",
+    "public_current": "false",
+    "branch": "null",
+    "pr": "null",
+    "claimed_at": "null",
+    "completed_at": "null",
+}
+LIST_SCAFFOLD: tuple[str, ...] = ("mutation_scope_refs", "depends_on", "blocks")
+NOGO_BOOLEANS: tuple[str, ...] = (
+    "implementation_authorized",
+    "source_mutation_authorized",
+    "docs_mutation_authorized",
+    "runtime_mutation_authorized",
+    "release_authorized",
+    "public_current",
+)
+ALLOWED_KEYS: frozenset[str] = frozenset(SCALAR_SCAFFOLD) | frozenset(LIST_SCAFFOLD)
+
+_KEY_RE = re.compile(r"^([A-Za-z0-9_-]+):(.*)$")
+
+
+def _vault_root() -> Path:
+    return Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+
+
+def _find_note(task_id: str) -> Path | None:
+    active = _vault_root() / "active"
+    for candidate in sorted(active.glob(f"{task_id}-*.md")):
+        return candidate
+    exact = active / f"{task_id}.md"
+    return exact if exact.is_file() else None
+
+
+def _scan_frontmatter(front: str) -> dict[str, str]:
+    """Map each TOP-LEVEL frontmatter key to its inline value (``""`` for a block).
+
+    Indented list items (``  - x``) never match, so a block list registers its
+    key as present with an empty inline value.
+    """
+    fields: dict[str, str] = {}
+    for line in front.splitlines():
+        match = _KEY_RE.match(line)
+        if match:
+            fields[match.group(1)] = match.group(2).strip()
+    return fields
+
+
+def _role() -> str:
+    for key in ("HAPAX_AGENT_ROLE", "CODEX_ROLE", "CLAUDE_ROLE", "HAPAX_AGENT_NAME"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return "unknown"
+
+
+def _write_ledger(task_id: str, note: Path, added: list[str], session_log_added: bool) -> None:
+    ledger = Path(
+        os.environ.get(
+            "HAPAX_CC_TASK_GATE_BOOTSTRAP_LEDGER",
+            str(Path.home() / ".cache" / "hapax" / "cc-task-gate-bootstrap-ledger.jsonl"),
+        )
+    ).expanduser()
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "role": _role(),
+        "tool": "cc-task-repair",
+        "kind": "task_repair",
+        "id": task_id,
+        "path": str(note),
+        "added": sorted(added),
+        "session_log_added": session_log_added,
+    }
+    with ledger.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _refuse(reason: str) -> int:
+    print(f"cc-task-repair: REFUSED — {reason}", file=sys.stderr)
+    return REFUSED
+
+
+def _parse_set(rest: list[str]) -> tuple[dict[str, str], str | None]:
+    """Parse ``--set k=v`` pairs. Returns ``(overrides, error_or_None)``."""
+    overrides: dict[str, str] = {}
+    index = 0
+    while index < len(rest):
+        token = rest[index]
+        if token == "--set":
+            if index + 1 >= len(rest):
+                return {}, "--set requires a k=v argument"
+            pair = rest[index + 1]
+            index += 2
+        elif token.startswith("--set="):
+            pair = token[len("--set=") :]
+            index += 1
+        else:
+            return {}, f"unsupported argument '{token}'"
+        if "=" not in pair:
+            return {}, f"--set expects k=v, got '{pair}'"
+        key, value = pair.split("=", 1)
+        overrides[key.strip()] = value.strip()
+    return overrides, None
+
+
+def _gate_overrides(overrides: dict[str, str], present: dict[str, str]) -> int | None:
+    """Diff-gate ``--set`` overrides. Returns a REFUSED code, or None when allowed.
+
+    This is the load-bearing safety: an override may only backfill an ABSENT
+    scaffolding key, and may never set a no-go boolean true.
+    """
+    for key, value in overrides.items():
+        if key not in ALLOWED_KEYS:
+            return _refuse(
+                f"'{key}' is not a scaffolding field; repair only backfills scaffolding "
+                f"({', '.join(sorted(ALLOWED_KEYS))})"
+            )
+        if key in present:
+            return _refuse(f"'{key}' is already present; repair never overwrites an existing field")
+        if key in NOGO_BOOLEANS and value.strip().lower() == "true":
+            return _refuse(
+                f"cannot set no-go boolean '{key}' to true; repair only backfills booleans to false"
+            )
+        if key == "route_metadata_schema" and value.strip() != "1":
+            return _refuse(f"route_metadata_schema must be 1, got '{value}'")
+    return None
+
+
+def _repair_validate(text: str) -> list[str]:
+    """Relaxed structural validation of a (repaired) cc-task note.
+
+    Mirrors the bootstrap's strict ``_validate_task`` format/regex rules but
+    accepts ``status`` in {offered, claimed, in_progress} and any ``assigned_to``,
+    and treats the present-empty lifecycle fields as valid. Returns the residual
+    (non-scaffolding) deficiencies repair could not backfill on its own.
+    """
+    if not text.startswith("---\n"):
+        return ["note must start with YAML frontmatter"]
+    end = text.find("\n---", 4)
+    if end < 0:
+        return ["frontmatter must close with ---"]
+    fields = _scan_frontmatter(text[4:end])
+    body = text[end + 4 :]
+    errors: list[str] = []
+
+    def nullish(value: str) -> bool:
+        return value.strip().lower() in NULLISH
+
+    if fields.get("type", "") != "cc-task":
+        errors.append("note must declare `type: cc-task`")
+    for key in (
+        "task_id",
+        "title",
+        "priority",
+        "wsjf",
+        "status",
+        "assigned_to",
+        "parent_spec",
+        "authority_case",
+        "quality_floor",
+        "mutation_surface",
+        "authority_level",
+        "route_metadata_schema",
+    ):
+        if key not in fields or nullish(fields[key]):
+            errors.append(f"missing non-empty `{key}`")
+    for key in (*NOGO_BOOLEANS, *LIST_SCAFFOLD):
+        if key not in fields:
+            errors.append(f"missing `{key}`")
+
+    status = fields.get("status", "")
+    if status and status not in {"offered", "claimed", "in_progress"}:
+        errors.append(f"`status` is `{status}`, not offered/claimed/in_progress")
+    task_id = fields.get("task_id", "")
+    if task_id and not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$", task_id):
+        errors.append("`task_id` contains unsupported characters")
+    authority_case = fields.get("authority_case", "")
+    if authority_case and not nullish(authority_case):
+        if not re.match(r"^CASE-[A-Z0-9-]+$", authority_case):
+            errors.append("`authority_case` must be a CASE-* identifier")
+    route_schema = fields.get("route_metadata_schema", "")
+    if route_schema and not nullish(route_schema) and route_schema != "1":
+        errors.append("`route_metadata_schema` must be 1")
+    try:
+        if float(fields.get("wsjf", "")) < 0:
+            errors.append("`wsjf` must be non-negative")
+    except ValueError:
+        errors.append("`wsjf` must be numeric")
+    if "## Session log" not in body:
+        errors.append("body must include `## Session log`")
+    return errors
+
+
+def _print_residual(prefix: str, residual: list[str]) -> int:
+    print(prefix, file=sys.stderr)
+    for item in residual:
+        print(f"  - {item}", file=sys.stderr)
+    return RESIDUAL
+
+
+def repair(task_id: str, overrides: dict[str, str]) -> int:
+    note = _find_note(task_id)
+    if note is None:
+        print(
+            f"cc-task-repair: task '{task_id}' not found in {_vault_root()}/active/",
+            file=sys.stderr,
+        )
+        return ERROR
+
+    text = note.read_text(encoding="utf-8")
+    if not text.startswith("---\n"):
+        print("cc-task-repair: note has no YAML frontmatter", file=sys.stderr)
+        return ERROR
+    end = text.find("\n---", 4)
+    if end < 0:
+        print("cc-task-repair: frontmatter not closed with ---", file=sys.stderr)
+        return ERROR
+    front = text[4:end]
+    body = text[end + 4 :]
+    present = _scan_frontmatter(front)
+
+    refused = _gate_overrides(overrides, present)
+    if refused is not None:
+        return refused
+
+    additions: list[str] = []
+    for key, default in SCALAR_SCAFFOLD.items():
+        if key not in present:
+            additions.append(f"{key}: {overrides.get(key, default)}")
+    for key in LIST_SCAFFOLD:
+        if key not in present:
+            additions.append(f"{key}: {overrides.get(key, '[]')}")
+
+    # Defense in depth: never emit a no-go boolean set true, whatever the inputs.
+    for line in additions:
+        added_key, _, added_value = line.partition(":")
+        if added_key.strip() in NOGO_BOOLEANS and added_value.strip().lower() == "true":
+            return _refuse(f"internal guard: would have written `{line.strip()}`")
+
+    session_log_added = "## Session log" not in body
+    new_body = body
+    if session_log_added:
+        separator = "" if body.endswith("\n") else "\n"
+        new_body = f"{body}{separator}\n## Session log\n"
+
+    if not additions and not session_log_added:
+        residual = _repair_validate(text)
+        if residual:
+            return _print_residual(
+                f"cc-task-repair: '{task_id}' has no missing scaffolding, but residual gaps remain:",
+                residual,
+            )
+        print(
+            f"cc-task-repair: '{task_id}' already well-formed — no scaffolding needed",
+            file=sys.stderr,
+        )
+        return OK
+
+    new_front = front.rstrip("\n")
+    if additions:
+        new_front = f"{new_front}\n" + "\n".join(additions)
+    new_text = f"---\n{new_front}\n---{new_body}"
+
+    tmp = note.with_suffix(note.suffix + ".repair.tmp")
+    tmp.write_text(new_text, encoding="utf-8")
+    tmp.replace(note)
+
+    added_keys = [line.split(":", 1)[0] for line in additions]
+    _write_ledger(task_id, note, added_keys, session_log_added)
+    suffix = ", +Session log" if session_log_added else ""
+    print(
+        f"cc-task-repair: scaffolded '{task_id}' (+{len(additions)} fields{suffix})",
+        file=sys.stderr,
+    )
+
+    residual = _repair_validate(new_text)
+    if residual:
+        return _print_residual(
+            "cc-task-repair: residual non-scaffolding gaps (operator must supply these):",
+            residual,
+        )
+    return OK
+
+
+def main(argv: list[str]) -> int:
+    args = argv[1:]
+    if not args or args[0].startswith("-"):
+        print("usage: cc-task-repair <task_id> [--set k=v ...]", file=sys.stderr)
+        return ERROR
+    task_id = args[0]
+    overrides, error = _parse_set(args[1:])
+    if error:
+        print(f"cc-task-repair: {error}", file=sys.stderr)
+        return ERROR
+    return repair(task_id, overrides)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

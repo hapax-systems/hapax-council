@@ -232,7 +232,10 @@ if ! command -v python3 &>/dev/null; then
 fi
 
 validation="$(python3 - "$note_path" "$release_kind" <<'PYEOF'
+import json
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 path = Path(sys.argv[1])
@@ -270,10 +273,35 @@ required_nogo = [
     "release_authorized",
     "public_current",
 ]
-missing = [f for f in required_nogo if f not in fields]
-if missing:
-    print(f"missing_fields:{','.join(missing)}")
-    sys.exit(0)
+# FR-PACKET-VALIDATOR-TEMPLATE-GAP: an absent no-go field is not a malformed
+# packet — default it to false at this PRESENCE check only, and ledger it. The
+# default is confined here; it never leaks into cc-task-gate.sh's VALUE checks
+# (those read the literal frontmatter), so "absent" deterministically reads as
+# "not authorized" everywhere and nothing is masked.
+defaulted = [f for f in required_nogo if f not in fields]
+if defaulted:
+    ledger = Path(os.path.expanduser("~/.cache/hapax/methodology-emergency-ledger.jsonl"))
+    try:
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        with ledger.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "kind": "nogo_field_defaulted",
+                        "hook": "authorization-packet-validator",
+                        "task": fields.get("task_id", ""),
+                        "case": authority_case,
+                        "release_kind": release_kind,
+                        "fields": defaulted,
+                        "value": "false",
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+    except OSError:
+        pass
 
 impl = fields.get("implementation_authorized", "false")
 release = fields.get("release_authorized", "false")
@@ -332,20 +360,6 @@ fi
 case "$validation" in
   valid)
     exit 0
-    ;;
-  missing_fields:*)
-    missing="${validation#missing_fields:}"
-    cat >&2 <<EOF
-authorization-packet-validator: BLOCKED — missing required no-go fields.
-
-  Task: $task_id
-  Missing: $missing
-  Note: $note_path
-
-  The authorization packet must declare all no-go fields explicitly.
-  To bypass for emergencies: HAPAX_METHODOLOGY_EMERGENCY=1
-EOF
-    exit 2
     ;;
   impl_not_authorized:*)
     cat >&2 <<EOF
