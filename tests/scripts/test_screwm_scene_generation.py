@@ -22,13 +22,13 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
 
     assert len(module["WARD_ANCHORS"]) == 36
-    assert module["WARD_ATLAS_VISIBLE_INDICES"] == frozenset({2})
-    assert module["ACTIVE_WARD_INDICES"] == frozenset({2, 5, 9, 22, 27})
+    assert module["WARD_ATLAS_VISIBLE_INDICES"] == frozenset(set(range(1, 37)) - {18, 19})
+    assert module["ACTIVE_WARD_INDICES"] == frozenset(set(range(1, 37)) - {18, 19})
     assert module["WARD_ATLAS_MOUNT"]["texture"] == "ward_atlas"
-    assert module["WARD_ATLAS_MOUNT"]["active_visible_indices"] == [2]
-    assert module["WARD_ATLAS_MOUNT"]["activation_policy"] == (
-        "one-ward-at-a-time-after-functional-witness"
+    assert module["WARD_ATLAS_MOUNT"]["active_visible_indices"] == sorted(
+        set(range(1, 37)) - {18, 19}
     )
+    assert module["WARD_ATLAS_MOUNT"]["activation_policy"] == ("all-wards-live-34-of-36")
     assert module["STATIC_WARD_MOUNT_PROFILE"] == "state-ward-instrument"
     assert content.count("// ward-anchor ") == 0
     assert content.count("// ward-depth-plate ") == 0
@@ -93,8 +93,8 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert "w35" not in content
     assert "// ward-garden-pane 02: album ward_atlas" in content
     assert "ward_atlas" in content
-    assert "// ward-garden-pane 01: token_pole" not in content
-    assert "// ward-garden-pane 35: m8_oscilloscope" not in content
+    assert "// ward-garden-pane 01: token_pole" in content
+    assert "// ward-garden-pane 35: m8_oscilloscope" in content
     assert "drift_c" not in content
     assert "drift_r" not in content
     assert "// section: ward-garden-clumps" in content
@@ -125,7 +125,7 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert module["ward_live_mount_contract"](2, "album")["atlas_cell"] == [1, 0]
     assert module["ward_live_mount_contract"](5, "reverie")["texture"] == "w05"
     assert module["ward_garden_facing"](5) == "y"
-    assert module["ward_live_mount_contract"](8, "gem") is None
+    assert module["ward_live_mount_contract"](8, "gem")["texture"] == "ward_atlas"
     assert module["ward_atlas_cell"](1) == (0, 0)
     assert module["ward_atlas_cell"](9) == (0, 2)
     assert module["ward_atlas_texture_transform"](9)["v_offset_px"] == 512

@@ -1579,6 +1579,10 @@ void() screwm_add_dynamic_lights =
     adddynamiclight('420 -760 200', 42 + screwm_voice * 28, screwm_rose * 0.55);
     adddynamiclight('0 -555 300', 34 + screwm_energy * 18, screwm_green * 0.50);
     adddynamiclight('0 -1240 205', 34 + screwm_voice * 26, screwm_amber * 0.48);
+    // Floor wash: the world floor had no floor-aimed light, so cmp_floor stayed
+    // below the signal_presence gate while walls transformed. Grounds the scene
+    // and lifts the floor into the drift band; audio-reactive like the others.
+    adddynamiclight('0 -555 -32', 110 + screwm_energy * 42 + screwm_audio_rms * 28, '0.70 0.56 0.34');
     if (cvar("screwm_csqc_theatre_spots") > 0)
     {
         screwm_add_theatre_spot(1, '-720 -1880 700', '360 520 70', 0.3);
