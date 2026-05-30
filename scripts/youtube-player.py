@@ -131,7 +131,17 @@ class VideoSlot:
         # scale=960:540 was pure waste. Keep the v4l2 output for slot 0,
         # skip it for the other slots. JPEG snapshots (used by the
         # Sierpinski triangle) + pulse audio remain for every slot.
-        emit_v4l2 = self.slot_id == 0
+        # HAPAX_YOUTUBE_EMIT_V4L2=0 disables the v4l2 video loopback entirely:
+        # the YT VISUAL now lives in the screwm render's OARB (its own decode), so
+        # this loopback is redundant (it fed the retired studio-compositor). Disabling
+        # it frees /dev/video50 for the screwm Meet-in-screwm camera with no contention,
+        # while the YT AUDIO (-> hapax-yt-loudnorm -> MPC USB 7/8) and the JPEG snapshots
+        # are unaffected.
+        emit_v4l2 = self.slot_id == 0 and os.environ.get("HAPAX_YOUTUBE_EMIT_V4L2", "1") not in (
+            "0",
+            "false",
+            "no",
+        )
         cmd: list[str] = [
             "ffmpeg",
             "-y",
