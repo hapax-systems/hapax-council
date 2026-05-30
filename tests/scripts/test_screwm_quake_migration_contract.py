@@ -301,8 +301,11 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
     assert ward_atlas["cell_size"] == [512, 256]
     assert ward_atlas["atlas_columns"] == 4
     assert ward_atlas["atlas_rows"] == 9
-    assert ward_atlas["active_visible_indices"] == [2]
-    assert ward_atlas["activation_policy"] == "one-ward-at-a-time-after-functional-witness"
+    assert ward_atlas["active_visible_indices"] == list(range(36))
+    assert ward_atlas["activation_policy"] == (
+        "full-36-after-currency-witness-20260530; per-ward drift-gated lighting "
+        "(wards.qc screwm_ward_light_gate) governs which light up at any moment"
+    )
     assert ward_atlas["hybrid_contract"]["update_semantics"].startswith(
         "DarkPlaces live-texture slot updates one atlas"
     )
