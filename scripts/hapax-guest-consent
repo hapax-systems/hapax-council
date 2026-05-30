@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""hapax-guest-consent — grant/revoke/list `world_render` consent for Meet guests.
+
+A meeting participant is rendered INTO the Screwm world only while an active
+`world_render` consent contract names them. This is the operator-mediated
+threshold: default is NO render (the guest producer writes a quiet-void frame
+unless contract_check passes — fail-closed). Granting consent crosses the
+threshold; the guest develops out of the void. Revoking returns them to void
+within one producer freshness cycle.
+
+Lawful under the interpersonal_transparency axiom (wt 88): no persistent state
+on a non-operator without consent. Contracts are session-scoped and live in a
+stable runtime dir (NOT the worktree's axioms/contracts, which source-activate
+force-resets):
+
+    ~/.cache/hapax/guest-consent/contracts/   (override: $HAPAX_GUEST_CONSENT_DIR)
+
+The guest producer (`quake-live-media-source.py --source meet`) reads the same
+dir, so a grant here is visible to the live render.
+
+Usage:
+    hapax-guest-consent grant  <person>
+    hapax-guest-consent revoke <person>
+    hapax-guest-consent list
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from datetime import date
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+# Use the lightweight agentgov registry directly (avoids pulling the council's
+# health-signal / ntfy stack into a tiny CLI).
+sys.path.insert(0, str(REPO / "packages" / "agentgov" / "src"))
+
+from agentgov.consent import ConsentRegistry  # noqa: E402
+
+SCOPE = frozenset({"world_render"})
+
+
+def contracts_dir() -> Path:
+    raw = os.environ.get("HAPAX_GUEST_CONSENT_DIR")
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".cache" / "hapax" / "guest-consent" / "contracts"
+
+
+def _registry(directory: Path) -> ConsentRegistry:
+    reg = ConsentRegistry(_contracts_dir=directory)
+    reg.load(directory)
+    return reg
+
+
+def cmd_grant(person: str) -> int:
+    directory = contracts_dir()
+    reg = _registry(directory)
+    cid = f"guest-render-{person}-{date.today().isoformat()}"
+    contract = reg.create_contract(
+        person,
+        SCOPE,
+        contract_id=cid,
+        visibility_mechanism="threshold_ceremony",
+        contracts_dir=directory,
+    )
+    print(f"granted world_render to '{person}' — contract {contract.id}")
+    print(f"  parties: operator <-> {person}   scope: world_render")
+    print(f"  dir: {directory}")
+    print("  the guest renders in Screwm while this contract is active; revoke to return to void.")
+    return 0
+
+
+def cmd_revoke(person: str) -> int:
+    directory = contracts_dir()
+    reg = _registry(directory)
+    revoked = []
+    for contract in list(reg.active_contracts):
+        if person in contract.parties and "world_render" in contract.scope:
+            reg.revoke_contract(contract.id, contracts_dir=directory)
+            revoked.append(contract.id)
+    if revoked:
+        print(
+            f"revoked {len(revoked)} world_render contract(s) for '{person}': {', '.join(revoked)}"
+        )
+        print(
+            "  the guest producer writes quiet-void frames within one freshness cycle (<=5s on reload)."
+        )
+        return 0
+    print(f"no active world_render contract for '{person}'")
+    return 0
+
+
+def cmd_list() -> int:
+    directory = contracts_dir()
+    reg = _registry(directory)
+    rows = [c for c in reg.active_contracts if "world_render" in c.scope]
+    if not rows:
+        print(f"no active world_render consent contracts ({directory})")
+        return 0
+    print(f"{'contract':42} {'guest':16} created_at")
+    for contract in rows:
+        guests = [p for p in contract.parties if p != "operator"]
+        guest = guests[0] if guests else "?"
+        print(f"{contract.id:42} {guest:16} {contract.created_at}")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="hapax-guest-consent", description=__doc__)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    grant = sub.add_parser("grant", help="grant world_render consent for a guest")
+    grant.add_argument("person")
+    revoke = sub.add_parser("revoke", help="revoke world_render consent for a guest")
+    revoke.add_argument("person")
+    sub.add_parser("list", help="list active world_render consent contracts")
+    args = parser.parse_args(argv)
+    if args.cmd == "grant":
+        return cmd_grant(args.person)
+    if args.cmd == "revoke":
+        return cmd_revoke(args.person)
+    return cmd_list()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

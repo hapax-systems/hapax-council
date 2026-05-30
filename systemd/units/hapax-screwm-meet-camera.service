@@ -14,6 +14,9 @@ ExecStartPre=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/workt
 ExecStart=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/worktree/scripts/screwm-meet-camera.sh" run'
 Restart=on-failure
 RestartSec=2
+# ffmpeg returns non-zero when SIGTERM'd; a `systemctl stop` is a clean
+# teardown, not a failure.
+SuccessExitStatus=0 143 255 SIGTERM
 # ~0.5 core + a single ffmpeg; keep it cheap so the render is undisturbed.
 CPUWeight=30
 MemoryMax=512M
