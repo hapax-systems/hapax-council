@@ -17,6 +17,10 @@ fi
 
 if [ -f "$REPO_DIR/assets/quake/maps/screwm.wad" ]; then
     install -m 0644 "$REPO_DIR/assets/quake/maps/screwm.wad" "$GAME_DIR/screwm.wad"
+    # DarkPlaces resolves the BSP's referenced WAD from the gamedir data/ path;
+    # without it, world brush textures fall back to stock id1 (brown Quake).
+    install -d "$GAME_DIR/data"
+    install -m 0644 "$REPO_DIR/assets/quake/maps/screwm.wad" "$GAME_DIR/data/screwm.wad"
 fi
 
 if [ -f "$REPO_DIR/assets/quake/qc/progs.dat" ]; then
