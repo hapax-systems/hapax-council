@@ -44,9 +44,22 @@ def _extract_float(data: dict[str, Any] | None, *keys: str, default: float = 0.0
         return default
     for key in keys:
         val = data.get(key)
+        # Some producers (e.g. stimmung) wrap scalars as {"value": x, "trend": ...}.
+        if isinstance(val, dict):
+            val = val.get("value")
         if isinstance(val, (int, float)) and math.isfinite(val):
             return float(val)
     return default
+
+
+def _read_source_value(src: dict[str, Any]) -> float:
+    """Read a registry source's scalar, honoring an optional ``subkey`` sub-dict."""
+    data = _read_json(Path(src["shm"]))
+    subkey = src.get("subkey")
+    if subkey:
+        sub = data.get(subkey) if isinstance(data, dict) else None
+        data = sub if isinstance(sub, dict) else None
+    return _extract_float(data, *src["keys"])
 
 
 def compute_concept_anchors() -> list[tuple[str, list[float]]]:
@@ -322,10 +335,36 @@ SOURCE_REGISTRY: list[dict[str, Any]] = [
         "obs_min": -60.0,
         "obs_max": 0.0,
     },
+    # Live unified audio reactivity (screwm-audio-reactivity-source.py, 60 Hz).
+    # Fields live under the "blended" sub-dict and are normalized [0, 1].
+    {
+        "id": "audio.reactivity_rms",
+        "shm": "/dev/shm/hapax-compositor/unified-reactivity.json",
+        "subkey": "blended",
+        "keys": ["rms"],
+        "obs_min": 0.0,
+        "obs_max": 1.0,
+    },
+    {
+        "id": "audio.reactivity_bass",
+        "shm": "/dev/shm/hapax-compositor/unified-reactivity.json",
+        "subkey": "blended",
+        "keys": ["bass_band"],
+        "obs_min": 0.0,
+        "obs_max": 1.0,
+    },
+    {
+        "id": "audio.reactivity_onset",
+        "shm": "/dev/shm/hapax-compositor/unified-reactivity.json",
+        "subkey": "blended",
+        "keys": ["onset"],
+        "obs_min": 0.0,
+        "obs_max": 1.0,
+    },
     {
         "id": "audio.spectral_centroid",
         "shm": "/dev/shm/hapax-audio-self-perception/state.json",
-        "keys": ["spectral_centroid"],
+        "keys": ["spectral_centroid", "spectral_centroid_hz"],
         "obs_min": 0.0,
         "obs_max": 8000.0,
     },
@@ -451,10 +490,7 @@ def run_density_daemon() -> None:
     while True:
         try:
             for src in SOURCE_REGISTRY:
-                shm_path = Path(src["shm"])
-                data = _read_json(shm_path)
-                value = _extract_float(data, *src["keys"])
-                field.update(src["id"], value)
+                field.update(src["id"], _read_source_value(src))
 
             # Update narrative source with pre-computed density signals
             narrative_density = narrative.compute()
