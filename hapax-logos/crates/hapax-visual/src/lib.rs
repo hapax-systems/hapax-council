@@ -7,6 +7,7 @@ pub mod control;
 pub mod dynamic_pipeline;
 pub mod effect_drift;
 pub mod gpu;
+pub mod media_drift;
 pub mod output;
 pub mod scene;
 pub mod scene_renderer;

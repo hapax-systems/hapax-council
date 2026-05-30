@@ -1,0 +1,24 @@
+[Unit]
+Description=Screwm media-drift GPU service — per-slot raw BGRA -> drift (5060 Ti) -> BGRA the engine blits
+Documentation=file://%h/projects/hapax-council/docs/superpowers/specs/2026-05-30-screwm-gpu-drift-port-design.md
+ConditionPathExists=%h/.cache/hapax/enable-darkplaces-runtime
+After=hapax-secrets.service hapax-darkplaces-v4l2.service
+
+[Service]
+Type=simple
+Environment=RUST_LOG=info
+# Pin the drift work to the 5060 Ti (matched by adapter name); the 5090 stays
+# for the render + TabbyAPI.
+Environment=HAPAX_SCREWM_DRIFT_GPU=5060
+# Comma list of GPU-drifted slots: name:WxH[:intensity]. EMPTY = clean no-op exit
+# (Restart=on-failure, so an empty list stops the unit rather than crash-looping).
+# Cutover sets this AND the matching producers' HAPAX_QUAKE_GPU_DRIFT=1.
+Environment=HAPAX_SCREWM_DRIFT_SLOTS=
+Environment=HAPAX_SCREWM_DRIFT_GAME_DATA=%h/.darkplaces/screwm/data
+Environment=HAPAX_SCREWM_DRIFT_FPS=20
+ExecStart=%h/.local/bin/screwm-media-drift
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
