@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""cc-task-backfill-nogo [--dry-run]
+
+One-shot batch migrator: backfill any missing no-go field across EVERY active
+cc-task via the diff-gated, ledger-logged ``cc-task-repair`` path — in one pass,
+with no per-task claim. Idempotent: a second run over already-backfilled notes
+writes nothing.
+
+This honors the reform-atomicity rule — when a required field is added to the
+gate, the live tasks AND the template must migrate together. ``cc-task-repair``
+provides the safety (scaffolding-only, never flips a boolean true, never touches
+a non-scaffolding field); this script only enumerates and delegates.
+
+SDLC Reform cluster 5 (CASE-SDLC-REFORM-001, FR-PACKET-VALIDATOR-TEMPLATE-GAP).
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+NOGO_FIELDS: tuple[str, ...] = (
+    "implementation_authorized",
+    "source_mutation_authorized",
+    "docs_mutation_authorized",
+    "runtime_mutation_authorized",
+    "release_authorized",
+    "public_current",
+)
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPAIR = SCRIPT_DIR / "cc-task-repair"
+_KEY_RE = re.compile(r"^([A-Za-z0-9_-]+):(.*)$")
+
+
+def _active_dir() -> Path:
+    return Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+
+
+def _scan(note: Path) -> tuple[str | None, set[str]]:
+    """Return ``(task_id, top_level_keys)`` for a note, or ``(None, set())``."""
+    text = note.read_text(encoding="utf-8")
+    if not text.startswith("---\n"):
+        return None, set()
+    end = text.find("\n---", 4)
+    if end < 0:
+        return None, set()
+    keys: set[str] = set()
+    task_id: str | None = None
+    for line in text[4:end].splitlines():
+        match = _KEY_RE.match(line)
+        if not match:
+            continue
+        keys.add(match.group(1))
+        if match.group(1) == "task_id":
+            task_id = match.group(2).strip().strip('"').strip("'")
+    return task_id, keys
+
+
+def main(argv: list[str]) -> int:
+    dry_run = "--dry-run" in argv[1:]
+    active = _active_dir()
+    if not active.is_dir():
+        print(f"cc-task-backfill-nogo: no active task dir at {active}", file=sys.stderr)
+        return 1
+
+    scanned = repaired = residual = skipped = 0
+    for note in sorted(active.glob("*.md")):
+        scanned += 1
+        task_id, keys = _scan(note)
+        if task_id is None:
+            skipped += 1
+            print(f"cc-task-backfill-nogo: skip {note.name} (no task_id)", file=sys.stderr)
+            continue
+        missing = [field for field in NOGO_FIELDS if field not in keys]
+        if not missing:
+            continue
+        if dry_run:
+            repaired += 1
+            print(f"would repair {task_id}: missing {', '.join(missing)}")
+            continue
+        completed = subprocess.run(
+            ["python3", str(REPAIR), task_id],
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode == 0:
+            repaired += 1
+        elif completed.returncode == 1:
+            # Scaffolding (incl. the no-go fields) was written; a residual
+            # non-scaffolding gap remains for the operator to supply.
+            repaired += 1
+            residual += 1
+        else:
+            skipped += 1
+            print(
+                f"cc-task-backfill-nogo: repair did not apply for {task_id} "
+                f"(rc={completed.returncode}): {completed.stderr.strip()}",
+                file=sys.stderr,
+            )
+
+    print(
+        f"cc-task-backfill-nogo: scanned={scanned} repaired={repaired} "
+        f"residual={residual} skipped={skipped}{' (dry-run)' if dry_run else ''}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

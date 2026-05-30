@@ -367,7 +367,11 @@ class TestAuthorizationPacketValidator:
         assert result.returncode == 2
         assert "implementation_authorized" in result.stderr
 
-    def test_push_blocked_missing_nogo_fields(self, tmp_path: Path) -> None:
+    def test_push_allowed_when_nogo_fields_absent_default_false(self, tmp_path: Path) -> None:
+        # FR-PACKET-VALIDATOR-TEMPLATE-GAP: absent no-go fields default to false
+        # at the PRESENCE check (ledgered), so a push with implementation
+        # authorized is no longer walled merely because docs/public/etc. are
+        # absent. Absence becomes "not authorized" (false), never a malformed brick.
         home = _make_case_vault(
             tmp_path,
             case_id="CASE-001",
@@ -376,8 +380,10 @@ class TestAuthorizationPacketValidator:
         )
         _write_claim(home, "alpha", "test-case-001")
         result = _run(VALIDATOR, PUSH_INPUT, home=home)
-        assert result.returncode == 2
-        assert "missing" in result.stderr.lower()
+        assert result.returncode == 0, result.stderr
+        ledger = home / ".cache" / "hapax" / "methodology-emergency-ledger.jsonl"
+        records = [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
+        assert any(r.get("kind") == "nogo_field_defaulted" for r in records), records
 
     def test_shadow_denial_violation_blocked(self, tmp_path: Path) -> None:
         home = _make_case_vault(
