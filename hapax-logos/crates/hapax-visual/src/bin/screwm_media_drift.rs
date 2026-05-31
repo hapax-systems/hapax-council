@@ -51,7 +51,10 @@ impl SlotConfig {
             let (ws, hs) = dims.split_once('x')?;
             (ws.trim().parse().ok()?, hs.trim().parse().ok()?)
         };
-        let intensity = parts.next().and_then(|s| s.trim().parse().ok()).unwrap_or(1.0);
+        let intensity = parts
+            .next()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(1.0);
         Some(Self {
             raw_path: PathBuf::from(format!("{SHM_DIR}/quake-live-{name}.raw.bgra")),
             out_path: PathBuf::from(format!("{SHM_DIR}/quake-live-{name}.bgra")),
@@ -124,7 +127,10 @@ impl SlotGpu {
             label: Some("media-drift bind"),
             layout: bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform.as_entire_binding(),
+                },
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&in_view),
@@ -158,19 +164,22 @@ impl SlotGpu {
         }
     }
 
-    /// One drift pass: read raw → upload → render → readback → write drifted.
-    /// Returns false (skip) if the raw frame is missing or wrong-size.
-    fn process(
+    /// Encode one slot pass into a command buffer.
+    ///
+    /// Returns `None` if the producer has not written a complete raw frame yet.
+    /// Readback is intentionally drained later so all slots can submit together
+    /// and share one `device.poll(Maintain::Wait)` per tick.
+    fn encode(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         pipeline: &wgpu::RenderPipeline,
         state: &hapax_visual::media_drift::DriftState,
         now: f32,
-    ) -> bool {
+    ) -> Option<wgpu::CommandBuffer> {
         let raw = match std::fs::read(&self.cfg.raw_path) {
             Ok(d) if d.len() == self.expected_bytes => d,
-            _ => return false, // producer not (yet) writing raw, or wrong dims — skip
+            _ => return None, // producer not (yet) writing raw, or wrong dims — skip
         };
 
         queue.write_texture(
@@ -247,18 +256,10 @@ impl SlotGpu {
                 depth_or_array_layers: 1,
             },
         );
-        queue.submit(Some(enc.finish()));
+        Some(enc.finish())
+    }
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
-            let _ = tx.send(r);
-        });
-        device.poll(wgpu::Maintain::Wait);
-        if rx.recv().map(|r| r.is_err()).unwrap_or(true) {
-            self.staging.unmap();
-            return false;
-        }
-
+    fn finish_readback(&mut self) -> bool {
         let mapped = self.staging.slice(..).get_mapped_range();
         let mut out = Vec::with_capacity(self.expected_bytes);
         if self.padded_bytes_per_row == self.bytes_per_row {
@@ -274,10 +275,14 @@ impl SlotGpu {
 
         // Atomic write so the engine never blits a torn frame.
         let tmp = self.cfg.out_path.with_extension("bgra.tmp");
-        if std::fs::write(&tmp, &out).and_then(|_| std::fs::rename(&tmp, &self.cfg.out_path)).is_ok() {
+        if std::fs::write(&tmp, &out)
+            .and_then(|_| std::fs::rename(&tmp, &self.cfg.out_path))
+            .is_ok()
+        {
             self.frame += 1;
+            return true;
         }
-        true
+        false
     }
 }
 
@@ -285,7 +290,11 @@ fn pick_adapter(instance: &wgpu::Instance) -> wgpu::Adapter {
     let want = std::env::var("HAPAX_SCREWM_DRIFT_GPU").unwrap_or_else(|_| "5060".to_string());
     let adapters = instance.enumerate_adapters(wgpu::Backends::VULKAN);
     for a in &adapters {
-        if a.get_info().name.to_lowercase().contains(&want.to_lowercase()) {
+        if a.get_info()
+            .name
+            .to_lowercase()
+            .contains(&want.to_lowercase())
+        {
             log::info!("media-drift GPU: {} (matched '{want}')", a.get_info().name);
             return a.clone();
         }
@@ -305,13 +314,18 @@ async fn run() {
     let spec = std::env::var("HAPAX_SCREWM_DRIFT_SLOTS").unwrap_or_default();
     let slots: Vec<SlotConfig> = spec.split(',').filter_map(SlotConfig::parse).collect();
     if slots.is_empty() {
-        log::error!("HAPAX_SCREWM_DRIFT_SLOTS empty — nothing to drift; set e.g. 'ward-atlas:2048x2304'");
+        log::error!(
+            "HAPAX_SCREWM_DRIFT_SLOTS empty — nothing to drift; set e.g. 'ward-atlas:2048x2304'"
+        );
         return;
     }
-    let game_data = std::env::var("HAPAX_SCREWM_DRIFT_GAME_DATA").map(PathBuf::from).unwrap_or_else(
-        |_| dirs_home().join(".darkplaces/screwm/data"),
-    );
-    let fps: f32 = std::env::var("HAPAX_SCREWM_DRIFT_FPS").ok().and_then(|s| s.parse().ok()).unwrap_or(20.0);
+    let game_data = std::env::var("HAPAX_SCREWM_DRIFT_GAME_DATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| dirs_home().join(".darkplaces/screwm/data"));
+    let fps: f32 = std::env::var("HAPAX_SCREWM_DRIFT_FPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20.0);
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN,
@@ -406,11 +420,19 @@ async fn run() {
         ..Default::default()
     });
 
-    let mut gpus: Vec<SlotGpu> =
-        slots.into_iter().map(|c| SlotGpu::new(&device, &bgl, &sampler, c)).collect();
+    let slot_names = slots
+        .iter()
+        .map(|slot| slot.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut gpus: Vec<SlotGpu> = slots
+        .into_iter()
+        .map(|c| SlotGpu::new(&device, &bgl, &sampler, c))
+        .collect();
     log::info!(
-        "media-drift live: {} slot(s) @ {fps}fps, game_data={}",
+        "media-drift live: {} slot(s) [{}] @ {fps}fps, game_data={}",
         gpus.len(),
+        slot_names,
         game_data.display()
     );
 
@@ -420,8 +442,36 @@ async fn run() {
         let tick = Instant::now();
         let state = load_drift_state(&game_data);
         let now = start.elapsed().as_secs_f32();
-        for g in &mut gpus {
-            g.process(&device, &queue, &pipeline, &state, now);
+        let mut ready = Vec::new();
+        let mut commands = Vec::new();
+        for (idx, g) in gpus.iter_mut().enumerate() {
+            if let Some(command) = g.encode(&device, &queue, &pipeline, &state, now) {
+                ready.push(idx);
+                commands.push(command);
+            }
+        }
+
+        if !commands.is_empty() {
+            queue.submit(commands);
+            let mut waits = Vec::with_capacity(ready.len());
+            for idx in ready {
+                let (tx, rx) = std::sync::mpsc::channel();
+                gpus[idx]
+                    .staging
+                    .slice(..)
+                    .map_async(wgpu::MapMode::Read, move |r| {
+                        let _ = tx.send(r);
+                    });
+                waits.push((idx, rx));
+            }
+            device.poll(wgpu::Maintain::Wait);
+            for (idx, rx) in waits {
+                if rx.recv().map(|r| r.is_err()).unwrap_or(true) {
+                    gpus[idx].staging.unmap();
+                    continue;
+                }
+                gpus[idx].finish_readback();
+            }
         }
         if let Some(rem) = period.checked_sub(tick.elapsed()) {
             std::thread::sleep(rem);
@@ -430,7 +480,9 @@ async fn run() {
 }
 
 fn dirs_home() -> PathBuf {
-    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/root"))
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/root"))
 }
 
 fn main() {
