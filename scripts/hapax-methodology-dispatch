@@ -18,6 +18,13 @@ REPO_ROOT_FOR_IMPORTS = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT_FOR_IMPORTS) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT_FOR_IMPORTS))
 
+from shared.coord_dispatch import (
+    CoordDispatchError,
+    DispatchLaunchRequest,
+    DispatchLaunchResult,
+    run_atomic_dispatch_launch,
+)
+from shared.coord_event_log import CoordEventLog
 from shared.dispatcher_policy import (
     DispatchAction,
     RouteDecision,
@@ -621,6 +628,7 @@ def write_receipt(
     route_decision: RouteDecision | None = None,
     route_decision_receipt_path: Path | None = None,
     durable_binding: DurableDispatchBinding | None = None,
+    dispatch_launch: DispatchLaunchResult | None = None,
 ) -> Path:
     ledger_dir = orchestration_ledger_dir()
     ledger_dir.mkdir(parents=True, exist_ok=True)
@@ -653,6 +661,12 @@ def write_receipt(
         record["advisory_only"] = durable_binding.advisory_only
         record["durable_mq_reason"] = durable_binding.reason
         record["durable_mq_message_id"] = durable_binding.message_id
+    if dispatch_launch is not None:
+        record["coord_dispatch_idempotency_key"] = dispatch_launch.idempotency_key
+        record["coord_dispatch_replayed"] = dispatch_launch.replayed
+        record["coord_dispatch_reason"] = dispatch_launch.reason
+        record["coord_dispatch_event_id"] = dispatch_launch.event_id
+        record["coord_dispatch_cleanup_state"] = dispatch_launch.cleanup_state
     if route_decision is not None:
         record.update(route_decision_receipt_payload(route_decision))
         record["route_decision_receipt_path"] = (
@@ -815,6 +829,28 @@ def env_flag(name: str) -> bool:
 def optional_env_path(name: str) -> Path | None:
     value = os.environ.get(name, "").strip()
     return Path(value).expanduser() if value else None
+
+
+def dispatch_message_id(cli_value: str | None) -> str | None:
+    value = (cli_value or os.environ.get("HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID", "")).strip()
+    return value or None
+
+
+def coord_event_log_from_env() -> CoordEventLog:
+    return CoordEventLog(
+        db_path=os.environ.get(
+            "HAPAX_COORD_LEDGER_DB",
+            "/var/lib/hapax/coord/ledger.db",
+        ),
+        jsonl_path=os.environ.get(
+            "HAPAX_COORD_JSONL_MIRROR",
+            "/var/lib/hapax/coord/ledger.jsonl",
+        ),
+        spool_dir=os.environ.get(
+            "HAPAX_COORD_SPOOL_DIR",
+            "/var/lib/hapax/coord/spool",
+        ),
+    )
 
 
 def orchestration_ledger_dir() -> Path:
@@ -1061,6 +1097,10 @@ def main(argv: list[str] | None = None) -> int:
         "--mq-message-id",
         help="Durable relay MQ dispatch message id to bind this governed dispatch to",
     )
+    parser.add_argument(
+        "--idempotency-key",
+        help="Stable idempotency key for atomic bind/consume/launch replay",
+    )
     args = parser.parse_args(argv)
     args.profile = normalize_profile(args.platform, args.profile)
 
@@ -1241,12 +1281,20 @@ def main(argv: list[str] | None = None) -> int:
         return 10
 
     assert route is not None
-    durable_binding = check_durable_dispatch_binding(
-        task_id=args.task,
-        lane=args.lane,
-        validation=validation,
-        message_id=args.mq_message_id,
-    )
+    mq_message_id = dispatch_message_id(args.mq_message_id)
+    if args.launch and route.mutable and not validation.exempt_read_only and mq_message_id is None:
+        durable_binding = DurableDispatchBinding(
+            False,
+            True,
+            "strict_mq_message_id_required",
+        )
+    else:
+        durable_binding = check_durable_dispatch_binding(
+            task_id=args.task,
+            lane=args.lane,
+            validation=validation,
+            message_id=mq_message_id,
+        )
     if not durable_binding.ok and args.launch:
         reason = f"durable MQ authority binding required: {durable_binding.reason}"
         blocked = Validation(
@@ -1290,19 +1338,20 @@ def main(argv: list[str] | None = None) -> int:
         print(prompt)
 
     if args.launch:
-        if args.platform == "claude" and args.mode == "headless":
-            rc = launch_claude_headless(args.task, args.lane, prompt or "", route)
-        elif args.platform == "claude" and args.mode == "interactive":
-            rc = launch_claude_interactive(args.task, args.lane, validation)
-        elif args.platform == "codex" and args.mode == "headless":
-            rc = launch_codex_headless(args.task, args.lane, prompt or "", validation, route)
-        elif args.platform == "vibe" and args.mode == "headless":
-            rc = launch_vibe_headless(args.task, args.lane, prompt or "", validation)
-        elif args.platform == "gemini" and args.mode == "headless":
-            rc = launch_gemini_headless(args.lane, prompt or "", route)
-        elif args.platform == "antigrav" and args.mode == "interactive":
-            rc = launch_antigrav_interactive(args.task, args.lane, validation, prompt or "")
-        else:
+
+        def run_platform_launch() -> int:
+            if args.platform == "claude" and args.mode == "headless":
+                return launch_claude_headless(args.task, args.lane, prompt or "", route)
+            if args.platform == "claude" and args.mode == "interactive":
+                return launch_claude_interactive(args.task, args.lane, validation)
+            if args.platform == "codex" and args.mode == "headless":
+                return launch_codex_headless(args.task, args.lane, prompt or "", validation, route)
+            if args.platform == "vibe" and args.mode == "headless":
+                return launch_vibe_headless(args.task, args.lane, prompt or "", validation)
+            if args.platform == "gemini" and args.mode == "headless":
+                return launch_gemini_headless(args.lane, prompt or "", route)
+            if args.platform == "antigrav" and args.mode == "interactive":
+                return launch_antigrav_interactive(args.task, args.lane, validation, prompt or "")
             print(
                 "launch currently unsupported for "
                 f"--platform {args.platform} --mode {args.mode} --profile {args.profile}",
@@ -1311,6 +1360,59 @@ def main(argv: list[str] | None = None) -> int:
             print("Supported governed routes:", file=sys.stderr)
             print("\n".join(supported_route_lines()), file=sys.stderr)
             return 2
+
+        dispatch_launch: DispatchLaunchResult | None = None
+        if route.mutable and not validation.exempt_read_only:
+            assert validation.task is not None
+            assert mq_message_id is not None
+            fields = validation.task.fields
+            try:
+                dispatch_launch = run_atomic_dispatch_launch(
+                    DispatchLaunchRequest(
+                        task_id=args.task,
+                        lane=args.lane,
+                        platform=args.platform,
+                        mode=args.mode,
+                        profile=args.profile,
+                        authority_case=strip_scalar(str(fields.get("authority_case", ""))),
+                        authority_item=strip_scalar(str(fields.get("authority_item", ""))),
+                        parent_spec=strip_scalar(str(fields.get("parent_spec", ""))),
+                        message_id=mq_message_id,
+                        mq_db_path=_relay_mq_db_path(),
+                        event_log=coord_event_log_from_env(),
+                        idempotency_key=args.idempotency_key,
+                    ),
+                    run_platform_launch,
+                )
+                rc = dispatch_launch.launch_returncode
+            except CoordDispatchError as exc:
+                reason = f"atomic dispatch launch failed: {exc.reason}"
+                blocked = Validation(
+                    False,
+                    reason,
+                    validation.task,
+                    validation.parent_spec_path,
+                    validation.exempt_read_only,
+                )
+                if not args.no_receipt:
+                    write_receipt(
+                        task_id=args.task,
+                        lane=args.lane,
+                        platform=args.platform,
+                        mode=args.mode,
+                        profile=args.profile,
+                        route=route,
+                        validation=blocked,
+                        prompt=prompt,
+                        launched=False,
+                        route_decision=route_decision,
+                        route_decision_receipt_path=route_decision_receipt_path,
+                        durable_binding=durable_binding,
+                    )
+                print(f"BLOCKED: {reason}", file=sys.stderr)
+                return 10
+        else:
+            rc = run_platform_launch()
 
         if not args.no_receipt:
             write_receipt(
@@ -1327,6 +1429,7 @@ def main(argv: list[str] | None = None) -> int:
                 route_decision=route_decision,
                 route_decision_receipt_path=route_decision_receipt_path,
                 durable_binding=durable_binding,
+                dispatch_launch=dispatch_launch,
             )
         return rc
 
