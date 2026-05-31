@@ -11,11 +11,14 @@ import json
 import os
 import re
 from collections import Counter, defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from collections.abc import Collection, Iterable, Sequence
 
 BottleneckKind = Literal[
     "queue_admission",
@@ -725,10 +728,290 @@ def _blank_to_none(value: Any) -> str | None:
     return str(value)
 
 
+# --------------------------------------------------------------------------- #
+# Failure-rate-attributed admission, reversible quarantine, batch bisection    #
+# (the reform ENGINE — FM-3/FM-4). Pure functions over the lineage records      #
+# above, so the autoqueue, the admission governor, and CI all decide alike.     #
+# --------------------------------------------------------------------------- #
+
+# Run conclusions that count toward the fleet failure rate. ``cancelled`` is
+# excluded on purpose: it is a requeue / stale-synthetic signal (classified as
+# ``stale_synthetic_run``), not a CI verdict, so it must not freeze admission.
+SUCCESS_CONCLUSIONS = frozenset({"success"})
+FAILURE_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure"})
+_RATED_CONCLUSIONS = SUCCESS_CONCLUSIONS | FAILURE_CONCLUSIONS
+
+DEFAULT_QUARANTINE_PATH = DEFAULT_TRACE_DIR / "merge-queue-quarantine.jsonl"
+
+# Recommended GitHub merge-queue ``max_entries_to_build`` for healthy vs storm rate.
+HEALTHY_MAX_ENTRIES = 6
+STORM_MAX_ENTRIES = 1
+
+
+class FleetThrottlePolicy(BaseModel):
+    """Thresholds for the failure-rate merge-queue admission throttle."""
+
+    failure_rate_threshold: float = 0.5
+    min_samples: int = 4
+    window_seconds: float = 6 * 3600
+    advisory_open_pr_count: int = 14
+    quarantine_failures: int = 2
+    quarantine_cooldown_seconds: float = 6 * 3600
+
+
+class ThrottleDecision(BaseModel):
+    """Result of :func:`decide_fleet_throttle`. ``frozen`` is the only gate."""
+
+    state: str  # "calm" | "busy" | "rate_freeze"
+    frozen: bool
+    reason: str
+    failure_rate: float
+    samples: int
+    open_pr_count: int
+
+
+class FlakeQuarantine(BaseModel):
+    """A reversible quarantine of a flaky PR from the merge queue."""
+
+    pr_number: int
+    reason: str
+    quarantined_at: datetime
+    cooldown_seconds: float
+    released_at: datetime | None = None
+
+
+def _record_resolved_at(record: MergeQueueLineageRecord) -> datetime:
+    return record.run_completed_at or record.queue_entry_time or record.observed_at
+
+
+def merge_failure_rate(
+    records: Iterable[MergeQueueLineageRecord],
+    *,
+    window_seconds: float,
+    now: datetime,
+    exclude_prs: Collection[int] = (),
+) -> tuple[float, int]:
+    """Failure rate over rated merge-group runs within ``window_seconds`` of ``now``.
+
+    Returns ``(rate, samples)`` where ``rate`` is failures / (failures + successes).
+    ``cancelled`` runs and runs for ``exclude_prs`` (e.g. quarantined) are ignored.
+    """
+    excluded = set(exclude_prs)
+    failures = 0
+    samples = 0
+    for record in records:
+        if record.run_conclusion not in _RATED_CONCLUSIONS:
+            continue
+        if record.pr_number is not None and record.pr_number in excluded:
+            continue
+        if (now - _record_resolved_at(record)).total_seconds() > window_seconds:
+            continue
+        samples += 1
+        if record.run_conclusion in FAILURE_CONCLUSIONS:
+            failures += 1
+    if samples == 0:
+        return (0.0, 0)
+    return (failures / samples, samples)
+
+
+def pr_failure_counts(
+    records: Iterable[MergeQueueLineageRecord], *, window_seconds: float, now: datetime
+) -> dict[int, int]:
+    """Count genuine CI failures per PR within the window."""
+    counts: dict[int, int] = defaultdict(int)
+    for record in records:
+        if record.pr_number is None or record.run_conclusion not in FAILURE_CONCLUSIONS:
+            continue
+        if (now - _record_resolved_at(record)).total_seconds() > window_seconds:
+            continue
+        counts[record.pr_number] += 1
+    return dict(counts)
+
+
+def decide_fleet_throttle(
+    records: Iterable[MergeQueueLineageRecord],
+    *,
+    open_pr_count: int,
+    policy: FleetThrottlePolicy | None = None,
+    now: datetime | None = None,
+    quarantined_prs: Collection[int] = (),
+) -> ThrottleDecision:
+    """Decide whether to throttle merge-queue admission, keyed on failure RATE.
+
+    Freeze only when the recent failure rate crosses the threshold with enough
+    samples, and auto-thaw the instant it drops (FM-4). A high open-PR count is
+    advisory ``busy`` only — never a freeze — because the merge queue serializes
+    landings (FM-3).
+    """
+    policy = policy or FleetThrottlePolicy()
+    now = now or datetime.now(UTC)
+    rate, samples = merge_failure_rate(
+        records, window_seconds=policy.window_seconds, now=now, exclude_prs=quarantined_prs
+    )
+    if samples >= policy.min_samples and rate >= policy.failure_rate_threshold:
+        return ThrottleDecision(
+            state="rate_freeze",
+            frozen=True,
+            reason=(
+                f"merge failure_rate {rate:.0%} >= {policy.failure_rate_threshold:.0%} "
+                f"over {samples} runs (auto-thaws when rate drops)"
+            ),
+            failure_rate=rate,
+            samples=samples,
+            open_pr_count=open_pr_count,
+        )
+    if open_pr_count >= policy.advisory_open_pr_count:
+        return ThrottleDecision(
+            state="busy",
+            frozen=False,
+            reason=(
+                f"{open_pr_count} open PRs >= {policy.advisory_open_pr_count} "
+                "(advisory; merge queue serializes — not a freeze)"
+            ),
+            failure_rate=rate,
+            samples=samples,
+            open_pr_count=open_pr_count,
+        )
+    return ThrottleDecision(
+        state="calm",
+        frozen=False,
+        reason=f"merge failure_rate {rate:.0%} over {samples} runs; {open_pr_count} open PRs",
+        failure_rate=rate,
+        samples=samples,
+        open_pr_count=open_pr_count,
+    )
+
+
+def should_quarantine_pr(
+    pr_number: int,
+    records: Iterable[MergeQueueLineageRecord],
+    *,
+    policy: FleetThrottlePolicy | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """True when a PR has accrued enough recent failures to be quarantined."""
+    policy = policy or FleetThrottlePolicy()
+    now = now or datetime.now(UTC)
+    counts = pr_failure_counts(records, window_seconds=policy.window_seconds, now=now)
+    return counts.get(pr_number, 0) >= policy.quarantine_failures
+
+
+def open_quarantine(
+    pr_number: int, *, reason: str, now: datetime, cooldown_seconds: float
+) -> FlakeQuarantine:
+    """Open a reversible quarantine record for ``pr_number``."""
+    return FlakeQuarantine(
+        pr_number=pr_number, reason=reason, quarantined_at=now, cooldown_seconds=cooldown_seconds
+    )
+
+
+def quarantine_active(record: FlakeQuarantine, *, now: datetime) -> bool:
+    """True while the quarantine holds: not lifted and still within its cooldown."""
+    if record.released_at is not None:
+        return False
+    return now < record.quarantined_at + timedelta(seconds=record.cooldown_seconds)
+
+
+def lift_quarantine(record: FlakeQuarantine, *, now: datetime) -> FlakeQuarantine:
+    """Return a copy released at ``now`` — the reverse of :func:`open_quarantine`."""
+    return record.model_copy(update={"released_at": now})
+
+
+def active_quarantined_pr_numbers(records: Iterable[FlakeQuarantine], *, now: datetime) -> set[int]:
+    """PR numbers whose quarantine is currently active."""
+    return {record.pr_number for record in records if quarantine_active(record, now=now)}
+
+
+def read_quarantine(path: Path) -> list[FlakeQuarantine]:
+    """Read quarantine records, skipping malformed rows."""
+    path = Path(path)
+    if not path.exists():
+        return []
+    out: list[FlakeQuarantine] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            out.append(FlakeQuarantine.model_validate_json(line))
+        except ValueError:
+            continue
+    return out
+
+
+def write_quarantine(path: Path, records: Iterable[FlakeQuarantine]) -> None:
+    """Overwrite the quarantine store atomically (one JSON object per line)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        "".join(json.dumps(r.model_dump(mode="json"), sort_keys=True) + "\n" for r in records),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
+def plan_merge_batches(pr_numbers: Sequence[int], *, max_batch_size: int) -> list[tuple[int, ...]]:
+    """Chunk PRs into ordered merge batches of at most ``max_batch_size``."""
+    if max_batch_size < 1:
+        raise ValueError("max_batch_size must be >= 1")
+    items = list(pr_numbers)
+    return [tuple(items[i : i + max_batch_size]) for i in range(0, len(items), max_batch_size)]
+
+
+def bisect_failed_batch(batch: Sequence[int]) -> list[tuple[int, ...]]:
+    """Split a failed batch in half to isolate the culprit; a single PR is terminal."""
+    items = tuple(batch)
+    if len(items) <= 1:
+        return []
+    mid = len(items) // 2
+    return [items[:mid], items[mid:]]
+
+
+def recommend_max_entries_to_build(
+    records: Iterable[MergeQueueLineageRecord],
+    *,
+    policy: FleetThrottlePolicy | None = None,
+    now: datetime | None = None,
+    quarantined_prs: Collection[int] = (),
+) -> int:
+    """Recommend the GitHub merge-queue batch width from the recent failure rate."""
+    policy = policy or FleetThrottlePolicy()
+    now = now or datetime.now(UTC)
+    rate, samples = merge_failure_rate(
+        records,
+        window_seconds=policy.window_seconds,
+        now=now,
+        exclude_prs=quarantined_prs,
+    )
+    if samples >= policy.min_samples and rate >= policy.failure_rate_threshold:
+        return STORM_MAX_ENTRIES
+    return HEALTHY_MAX_ENTRIES
+
+
 __all__ = [
     "DEFAULT_LEDGER_PATH",
     "DEFAULT_MAX_RECORDS",
+    "DEFAULT_QUARANTINE_PATH",
     "DEFAULT_SUMMARY_PATH",
+    "FAILURE_CONCLUSIONS",
+    "HEALTHY_MAX_ENTRIES",
+    "STORM_MAX_ENTRIES",
+    "SUCCESS_CONCLUSIONS",
+    "FleetThrottlePolicy",
+    "FlakeQuarantine",
+    "ThrottleDecision",
+    "active_quarantined_pr_numbers",
+    "bisect_failed_batch",
+    "decide_fleet_throttle",
+    "lift_quarantine",
+    "merge_failure_rate",
+    "open_quarantine",
+    "plan_merge_batches",
+    "pr_failure_counts",
+    "read_quarantine",
+    "recommend_max_entries_to_build",
+    "should_quarantine_pr",
+    "write_quarantine",
     "BottleneckClassification",
     "JobDuration",
     "MergeQueueLineageRecord",
