@@ -12,10 +12,9 @@ Environment=RUST_LOG=info
 Environment=HAPAX_WARD_ATLAS_GPU=5060
 # DORMANT by default: writes the SHADOW path quake-live-ward-atlas.gpu.bgra
 # (NOT the engine-read path), so this can run safely for the AVSDLC witness
-# without touching the live render. Per-mount cutover sets HAPAX_WARD_ATLAS_REAL=1
-# to own the real quake-live-ward-atlas.bgra; the Python producer
-# (hapax-quake-live-ward-atlas) is the instant rollback.
-# Environment=HAPAX_WARD_ATLAS_REAL=1
+# without touching the live render. Per-mount cutover lists only the slots this
+# service owns; unlisted slots stay shadow and keep their Python producers.
+# Environment=HAPAX_WARD_ATLAS_ACTIVE_SLOTS=ward-atlas
 Environment=HAPAX_WARD_ATLAS_FPS=2
 # Reclaim the ~69%-core the Python Cairo producer pegs; keep off audio-reserved cores.
 ExecStart=%h/.local/bin/screwm-ward-atlas

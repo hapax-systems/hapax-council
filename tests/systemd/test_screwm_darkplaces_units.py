@@ -441,6 +441,7 @@ def test_screwm_gpu_services_use_darkplaces_runtime_marker_and_stay_dormant() ->
         assert "ConditionPathExists=%h/.cache/hapax/enable-darkplaces-runtime" not in body
 
     assert "HAPAX_SCREWM_DRIFT_SLOTS=" in media_drift
-    assert "# Environment=HAPAX_WARD_ATLAS_REAL=1" in ward_atlas_gpu
+    assert "# Environment=HAPAX_WARD_ATLAS_ACTIVE_SLOTS=ward-atlas" in ward_atlas_gpu
+    assert "HAPAX_WARD_ATLAS_REAL" not in ward_atlas_gpu
     assert "ExecStart=%h/.local/bin/screwm-ward-atlas" in ward_atlas_gpu
     assert "ExecStart=%h/.local/bin/screwm-media-drift" in media_drift
