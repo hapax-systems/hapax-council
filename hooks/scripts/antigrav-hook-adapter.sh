@@ -24,8 +24,8 @@ translate_json() {
   jq '
     def mapped_tool:
       if . == "run_shell_command" or . == "run_command" or . == "terminal" or . == "shell" or . == "bash" then "Bash"
-      elif . == "replace" or . == "edit_file" or . == "edit" then "Edit"
-      elif . == "write_file" or . == "write" then "Write"
+      elif . == "replace" or . == "replace_file_content" or . == "multi_replace_file_content" or . == "edit_file" or . == "edit" then "Edit"
+      elif . == "write_file" or . == "write_to_file" or . == "create_file" or . == "delete_file" or . == "write" then "Write"
       elif . == "read_file" then "Read"
       elif . == "read_many_files" then "Read"
       elif . == "glob" then "Glob"

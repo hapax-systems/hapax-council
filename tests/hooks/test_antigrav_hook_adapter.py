@@ -135,3 +135,99 @@ def test_delegate_exit_code_propagates(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 2
+
+
+# --- agy's real native tool-name vocabulary -------------------------------
+# Verified against /usr/bin/agy (string table) and the env-style hooks that
+# Hapax previously dropped into ~/.gemini/antigravity-cli/hooks/: agy's
+# mutation tools are run_command, write_to_file, create_file, delete_file,
+# replace_file_content and multi_replace_file_content. Unless the adapter maps
+# the write/edit names to Claude's Write/Edit, cc-task-gate's "Edit|Write"
+# matcher never fires and agy file mutations bypass every Hapax gate.
+
+
+def test_json_write_to_file_payload_translates_to_write(tmp_path: Path) -> None:
+    delegate, capture = _make_capture_delegate(tmp_path)
+    result = _run(
+        delegate,
+        payload={
+            "hook_event_name": "PreToolUse",
+            "tool_name": "write_to_file",
+            "tool_input": {"file_path": "/repo/x.py", "content": "data"},
+        },
+    )
+
+    assert result.returncode == 0
+    translated = json.loads(capture.read_text())
+    assert translated["tool_name"] == "Write"
+    assert translated["tool_input"]["file_path"] == "/repo/x.py"
+    assert translated["tool_input"]["content"] == "data"
+
+
+def test_json_create_file_payload_translates_to_write(tmp_path: Path) -> None:
+    delegate, capture = _make_capture_delegate(tmp_path)
+    result = _run(
+        delegate,
+        payload={
+            "tool_name": "create_file",
+            "tool_input": {"path": "/repo/new.py", "content": "x"},
+        },
+    )
+
+    assert result.returncode == 0
+    translated = json.loads(capture.read_text())
+    assert translated["tool_name"] == "Write"
+    assert translated["tool_input"]["file_path"] == "/repo/new.py"
+
+
+def test_json_replace_file_content_payload_translates_to_edit(tmp_path: Path) -> None:
+    delegate, capture = _make_capture_delegate(tmp_path)
+    result = _run(
+        delegate,
+        payload={
+            "tool_name": "replace_file_content",
+            "tool_input": {
+                "file_path": "/repo/y.py",
+                "old_string": "a",
+                "new_string": "b",
+            },
+        },
+    )
+
+    assert result.returncode == 0
+    translated = json.loads(capture.read_text())
+    assert translated["tool_name"] == "Edit"
+    assert translated["tool_input"]["file_path"] == "/repo/y.py"
+    assert translated["tool_input"]["old_string"] == "a"
+    assert translated["tool_input"]["new_string"] == "b"
+
+
+def test_json_multi_replace_file_content_payload_translates_to_edit(tmp_path: Path) -> None:
+    delegate, capture = _make_capture_delegate(tmp_path)
+    result = _run(
+        delegate,
+        payload={
+            "tool_name": "multi_replace_file_content",
+            "tool_input": {"file_path": "/repo/z.py"},
+        },
+    )
+
+    assert result.returncode == 0
+    translated = json.loads(capture.read_text())
+    assert translated["tool_name"] == "Edit"
+    assert translated["tool_input"]["file_path"] == "/repo/z.py"
+
+
+def test_json_delete_file_payload_is_gated_as_write(tmp_path: Path) -> None:
+    # delete_file is a path-scoped mutation; mapping it to Write routes it
+    # through cc-task-gate's file-scope check rather than slipping past ungated.
+    delegate, capture = _make_capture_delegate(tmp_path)
+    result = _run(
+        delegate,
+        payload={"tool_name": "delete_file", "tool_input": {"path": "/repo/gone.py"}},
+    )
+
+    assert result.returncode == 0
+    translated = json.loads(capture.read_text())
+    assert translated["tool_name"] == "Write"
+    assert translated["tool_input"]["file_path"] == "/repo/gone.py"
