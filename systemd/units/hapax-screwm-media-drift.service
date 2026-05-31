@@ -1,7 +1,7 @@
 [Unit]
 Description=Screwm media-drift GPU service — per-slot raw BGRA -> drift (5060 Ti) -> BGRA the engine blits
 Documentation=file://%h/projects/hapax-council/docs/superpowers/specs/2026-05-30-screwm-gpu-drift-port-design.md
-ConditionPathExists=%h/.cache/hapax/enable-darkplaces-runtime
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 After=hapax-secrets.service hapax-darkplaces-v4l2.service
 
 [Service]

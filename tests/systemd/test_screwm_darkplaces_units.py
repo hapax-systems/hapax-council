@@ -409,3 +409,17 @@ def test_visual_stack_conditionally_wants_darkplaces_runtime_units() -> None:
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in bridge
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in gamepad
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in obs_bridge
+
+
+def test_screwm_gpu_services_use_darkplaces_runtime_marker_and_stay_dormant() -> None:
+    ward_atlas_gpu = _read("hapax-ward-atlas-gpu.service")
+    media_drift = _read("hapax-screwm-media-drift.service")
+
+    for body in (ward_atlas_gpu, media_drift):
+        assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in body
+        assert "ConditionPathExists=%h/.cache/hapax/enable-darkplaces-runtime" not in body
+
+    assert "HAPAX_SCREWM_DRIFT_SLOTS=" in media_drift
+    assert "# Environment=HAPAX_WARD_ATLAS_REAL=1" in ward_atlas_gpu
+    assert "ExecStart=%h/.local/bin/screwm-ward-atlas" in ward_atlas_gpu
+    assert "ExecStart=%h/.local/bin/screwm-media-drift" in media_drift
