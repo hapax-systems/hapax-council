@@ -14,8 +14,10 @@ Environment=HAPAX_WARD_ATLAS_GPU=5060
 # (NOT the engine-read path), so this can run safely for the AVSDLC witness
 # without touching the live render. Per-mount cutover lists only the slots this
 # service owns; unlisted slots stay shadow and keep their Python producers.
+# Default slot list is atlas-only. The future multi-slot shadow config is:
+# HAPAX_WARD_ATLAS_SLOTS=ward-atlas:2048x2304@2,ticker-grounding:1344x176@8,ticker-precedent:1344x176@8,ticker-chronicle:1344x176@8
+Environment=HAPAX_WARD_ATLAS_SLOTS=ward-atlas:2048x2304@2
 # Environment=HAPAX_WARD_ATLAS_ACTIVE_SLOTS=ward-atlas
-Environment=HAPAX_WARD_ATLAS_FPS=2
 # Reclaim the ~69%-core the Python Cairo producer pegs; keep off audio-reserved cores.
 ExecStart=%h/.local/bin/screwm-ward-atlas
 Restart=on-failure
