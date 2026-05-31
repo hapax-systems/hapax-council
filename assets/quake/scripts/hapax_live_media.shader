@@ -129,3 +129,15 @@ cam_cov
 		rgbgen const 0.72 0.72 0.78
 	}
 }
+
+speech_wave
+{
+	surfaceparm nolightmap
+	surfaceparm nomarks
+	surfaceparm nonsolid
+	dpnoshadow
+	{
+		map speech_wave
+		rgbgen const 0.72 0.72 0.78
+	}
+}

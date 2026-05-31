@@ -85,6 +85,26 @@
         "inspection_affordance": "reverie reads as an in-world living material plane rather than a static reprojection"
       }
     },
+    "live-speech-waveform-field": {
+      "homage_role": "speech-oscilloscope",
+      "visual_sources": ["M8 oscilloscope line discipline", "ACiD signal density"],
+      "license_boundary": "procedural waveform surface; voice representation remains generated system state",
+      "mount_expression": {
+        "geometry": "borderless-speech-oscilloscope-field-v1",
+        "layers": [
+          "live_waveform_surface",
+          "source-bound-alpha-width",
+          "source-bound-drift-field",
+          "state-light-reception"
+        ],
+        "drift_interaction": {
+          "mode": "speech-time-domain-cadence",
+          "families": ["scanlines", "chromatic_aberration", "trail", "source-bound-alpha"],
+          "shape_role": "raw speech samples define line path; amplitude affects only the local receiver line width and alpha"
+        },
+        "inspection_affordance": "speech reads as an in-world oscilloscope field near the AoA, not a global scene pulse or overlay"
+      }
+    },
     "ticker-operational-text": {
       "homage_role": "synthwave-ticker",
       "visual_sources": ["BitchX status ticker cadence", "ACiD CP437 glyph density"],

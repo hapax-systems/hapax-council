@@ -19,7 +19,7 @@ index f9007caf..0dab4417 100644
  cvar_t r_sortentities = {CF_CLIENT, "r_sortentities", "0", "sort entities before drawing (might be faster)"};
  cvar_t r_speeds = {CF_CLIENT, "r_speeds","0", "displays rendering statistics and per-subsystem timings"};
  cvar_t r_fullbright = {CF_CLIENT, "r_fullbright","0", "makes map very bright and renders faster"};
-+#define HAPAX_LIVE_TEXTURE_SLOT_COUNT 12
++#define HAPAX_LIVE_TEXTURE_SLOT_COUNT 13
 +
 +cvar_t hapax_live_texture_enable[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_enable", "0", "enable Hapax raw BGRA live texture upload slot 1"},
@@ -34,6 +34,7 @@ index f9007caf..0dab4417 100644
 +	{CF_CLIENT, "hapax_live_texture10_enable", "0", "enable Hapax raw BGRA live texture upload slot 10"},
 +	{CF_CLIENT, "hapax_live_texture11_enable", "0", "enable Hapax raw BGRA live texture upload slot 11"},
 +	{CF_CLIENT, "hapax_live_texture12_enable", "0", "enable Hapax raw BGRA live texture upload slot 12"},
++	{CF_CLIENT, "hapax_live_texture13_enable", "0", "enable Hapax raw BGRA live texture upload slot 13"},
 +};
 +cvar_t hapax_live_texture_name[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_name", "progs/aoa_sphere.mdl_0", "skinframe/BSP texture basename to update from Hapax live texture slot 1"},
@@ -48,6 +49,7 @@ index f9007caf..0dab4417 100644
 +	{CF_CLIENT, "hapax_live_texture10_name", "w22", "skinframe/BSP texture basename to update from Hapax live texture slot 10"},
 +	{CF_CLIENT, "hapax_live_texture11_name", "w27", "skinframe/BSP texture basename to update from Hapax live texture slot 11"},
 +	{CF_CLIENT, "hapax_live_texture12_name", "w05", "skinframe/BSP texture basename to update from Hapax live texture slot 12"},
++	{CF_CLIENT, "hapax_live_texture13_name", "speech_wave", "skinframe/BSP texture basename to update from Hapax live texture slot 13"},
 +};
 +cvar_t hapax_live_texture_path[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_path", "/dev/shm/hapax-compositor/quake-live-yt.bgra", "raw BGRA frame path for Hapax live texture slot 1"},
@@ -62,6 +64,7 @@ index f9007caf..0dab4417 100644
 +	{CF_CLIENT, "hapax_live_texture10_path", "/dev/shm/hapax-compositor/quake-live-ticker-precedent.bgra", "raw BGRA frame path for Hapax live texture slot 10"},
 +	{CF_CLIENT, "hapax_live_texture11_path", "/dev/shm/hapax-compositor/quake-live-ticker-chronicle.bgra", "raw BGRA frame path for Hapax live texture slot 11"},
 +	{CF_CLIENT, "hapax_live_texture12_path", "/dev/shm/hapax-compositor/quake-live-reverie.bgra", "raw BGRA frame path for Hapax live texture slot 12"},
++	{CF_CLIENT, "hapax_live_texture13_path", "/dev/shm/hapax-compositor/quake-live-speech-wave.bgra", "raw BGRA frame path for Hapax live texture slot 13"},
 +};
 +cvar_t hapax_live_texture_width[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_width", "2048", "raw BGRA frame width for Hapax live texture slot 1"},
@@ -76,6 +79,7 @@ index f9007caf..0dab4417 100644
 +	{CF_CLIENT, "hapax_live_texture10_width", "1344", "raw BGRA frame width for Hapax live texture slot 10"},
 +	{CF_CLIENT, "hapax_live_texture11_width", "1344", "raw BGRA frame width for Hapax live texture slot 11"},
 +	{CF_CLIENT, "hapax_live_texture12_width", "960", "raw BGRA frame width for Hapax live texture slot 12"},
++	{CF_CLIENT, "hapax_live_texture13_width", "512", "raw BGRA frame width for Hapax live texture slot 13"},
 +};
 +cvar_t hapax_live_texture_height[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_height", "1024", "raw BGRA frame height for Hapax live texture slot 1"},
@@ -90,6 +94,7 @@ index f9007caf..0dab4417 100644
 +	{CF_CLIENT, "hapax_live_texture10_height", "176", "raw BGRA frame height for Hapax live texture slot 10"},
 +	{CF_CLIENT, "hapax_live_texture11_height", "176", "raw BGRA frame height for Hapax live texture slot 11"},
 +	{CF_CLIENT, "hapax_live_texture12_height", "540", "raw BGRA frame height for Hapax live texture slot 12"},
++	{CF_CLIENT, "hapax_live_texture13_height", "128", "raw BGRA frame height for Hapax live texture slot 13"},
 +};
  
  cvar_t r_fullbright_directed = {CF_CLIENT, "r_fullbright_directed", "0", "render fullbright things (unlit worldmodel and EF_FULLBRIGHT entities, but not fullbright shaders) using a constant light direction instead to add more depth while keeping uniform brightness"};

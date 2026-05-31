@@ -432,6 +432,8 @@ WARD_ATLAS_VISIBLE_INDICES = (
     else frozenset()
 )
 ACTIVE_WARD_INDICES = frozenset(ACTIVE_WARD_MOUNTS_BY_INDEX) | WARD_ATLAS_VISIBLE_INDICES
+SPEECH_WAVE_MOUNT = MEDIA_MOUNTS_BY_ID.get("speech-waveform")
+SPEECH_WAVE_ANCHOR = source_anchor_from_mount(SPEECH_WAVE_MOUNT) if SPEECH_WAVE_MOUNT else None
 
 # Current visual baseline: the compositor owns the ward pixels through the
 # live atlas; DarkPlaces owns the spatial mount, occlusion, lighting, and camera.
@@ -594,7 +596,12 @@ def validate_spatiotemporal_framework():
                 )
             if isinstance(native, list) and len(native) == 2:
                 px_per_degree = native[0] / target_angle
-                if px_per_degree < media["minimum_media_px_per_degree"]:
+                px_per_degree_floor = media["minimum_media_px_per_degree"]
+                if mount.get("mount_kind") == "live-speech-waveform":
+                    px_per_degree_floor = float(
+                        mount.get("signal_legibility_px_per_degree_floor", px_per_degree_floor)
+                    )
+                if px_per_degree < px_per_degree_floor:
                     failures.append(
                         f"media mount {mount.get('id', '<unknown>')} below px/degree legibility floor"
                     )
@@ -693,6 +700,30 @@ def validate_spatiotemporal_framework():
             expected_h = aspect_height(int(mount["physical_width"]), (aspect_w, aspect_h))
             if expected_h <= 0:
                 failures.append(f"camera mount {mount['id']} has invalid aspect height")
+        if mount.get("id") == "speech-waveform":
+            if mount.get("role") != "speech-wave-source":
+                failures.append("speech waveform mount must declare speech-wave-source role")
+            if mount.get("texture") != "speech_wave":
+                failures.append("speech waveform mount must bind speech_wave texture")
+            if mount.get("producer_output") != (
+                "/dev/shm/hapax-compositor/quake-live-speech-wave.bgra"
+            ):
+                failures.append("speech waveform mount output does not match slot 13 producer")
+            if mount.get("texture_size") != [512, 128]:
+                failures.append("speech waveform mount must use 512x128 live texture")
+            if mount.get("source_aspect") != [4, 1]:
+                failures.append("speech waveform mount must preserve 4:1 oscilloscope aspect")
+            if float(mount.get("signal_legibility_px_per_degree_floor", 0)) < 24.0:
+                failures.append("speech waveform must keep a declared line legibility floor")
+            if int(mount.get("physical_width", 0)) != 384:
+                failures.append("speech waveform physical width must remain 384u")
+            if mount.get("origin") != [-80, -555, 104]:
+                failures.append("speech waveform must stay off-centerline at OARB depth")
+            if mount.get("facing") != "y":
+                failures.append("speech waveform must face the OARB/depth axis")
+            principle = mount.get("drift_interaction", {}).get("principle", "")
+            if "never a global scene pulse" not in principle:
+                failures.append("speech waveform drift contract must forbid global pulses")
         if mount.get("id") == "aoa-media-sphere":
             tex_w, tex_h = mount["texture_size"]
             if tex_w < media["minimum_aoa_sphere_texture_width_px"]:
@@ -1719,6 +1750,35 @@ def source_constellation_panes(_preset):
     return brushes
 
 
+def speech_wave_panes(_preset):
+    """Spatial speech waveform receiver near the AoA center, not an overlay."""
+    if SPEECH_WAVE_ANCHOR is None:
+        return []
+
+    source = SPEECH_WAVE_ANCHOR
+    tex = source["texture"]
+    domain = source["domain"]
+    glow_tex = DOMAIN_GLOW_TEX[domain]
+    x, y, z = source["pos"]
+    brushes = framed_garden_pane(
+        "speech-waveform",
+        1,
+        "hapax-speech",
+        tex,
+        glow_tex,
+        x,
+        y,
+        z,
+        int(source.get("w", 384)),
+        int(source.get("h", 96)),
+        source.get("facing", "y"),
+        source.get("texture_size"),
+        source.get("texture_transform"),
+        mount=source.get("mount"),
+    )
+    return brushes
+
+
 DRIFT_LINKS = [
     (1, 9, "drift_c"),
     (2, 10, "drift_a"),
@@ -1888,6 +1948,30 @@ def source_lights(preset):
     return entities
 
 
+def speech_wave_lights(preset):
+    """Baked support light for the spatial speech waveform receiver."""
+    if SPEECH_WAVE_ANCHOR is None:
+        return []
+
+    source = SPEECH_WAVE_ANCHOR
+    mount = source.get("mount") or {}
+    x, y, z = source["pos"]
+    light_distance = int(mount.get("receiver_light_distance", 20))
+    light_multiplier = float(mount.get("receiver_light_multiplier", 1.0))
+    lx, ly, lz = pane_light_origin(x, y, z, source.get("facing", "y"), light_distance)
+    r, g, b = DOMAIN_LIGHT_COLOR[source["domain"]]
+    base = int(preset.get("wall_light", 100) * 1.15 * light_multiplier)
+    return [
+        "// speech-waveform-light 01: hapax-speech\n"
+        "{\n"
+        '"classname" "light"\n'
+        f'"origin" "{lx} {ly} {lz}"\n'
+        f'"light" "{base}"\n'
+        f'"_color" "{r} {g} {b}"\n'
+        "}"
+    ]
+
+
 def aoa_payload_lights(preset):
     """Deferred so the AoA reads as one coherent object first."""
     return []
@@ -1948,6 +2032,7 @@ def generate_map(preset):
         + sectioned_brushes("ward-garden-clumps", ward_review_panes(preset))
         + sectioned_brushes("ward-garden-drift-stones", ward_review_drift_paths(preset))
         + sectioned_brushes("source-camera-constellation", source_constellation_panes(preset))
+        + sectioned_brushes("speech-waveform", speech_wave_panes(preset))
         + sectioned_brushes("ward-scrim-panes", ward_scrim_panes(preset))
         + sectioned_brushes("ward-drift-paths", ward_drift_paths(preset))
     )
@@ -1978,6 +2063,7 @@ def generate_map(preset):
         + ward_review_lights(preset)
         + ward_lights(preset)
         + source_lights(preset)
+        + speech_wave_lights(preset)
     ):
         lines.append(light)
         lines.append("")
