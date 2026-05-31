@@ -18,9 +18,9 @@
 //! texture exclusions, and external RGBA shm sources render from their declared
 //! layout paths. Cairo-backed wards fail closed until their GPU IR is ported.
 use fontdue::{Font, FontSettings};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -36,6 +36,10 @@ const EXT_TEX: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const ATLAS_W: u32 = 1024;
 const GEM_CELL: usize = 7;
 const SHM_DIR: &str = "/dev/shm/hapax-compositor";
+const REAL_BGRA_NAME: &str = "quake-live-ward-atlas.bgra";
+const SHADOW_BGRA_NAME: &str = "quake-live-ward-atlas.gpu.bgra";
+const REAL_META_NAME: &str = "quake-live-ward-atlas.json";
+const SHADOW_META_NAME: &str = "quake-live-ward-atlas.gpu.json";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct WardSpec {
@@ -235,6 +239,54 @@ struct WardSource {
     external_rgba: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OutputPaths {
+    bgra: PathBuf,
+    meta: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExternalFrameRead {
+    Ready(Vec<u8>),
+    WrongSize { actual: usize, expected: usize },
+    Missing { reason: String },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+struct WardMetadata {
+    index: usize,
+    label: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    texture: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    actual_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expected_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct WardAtlasMetadata {
+    w: u32,
+    h: u32,
+    stride: u32,
+    frame_id: u64,
+    ward_count: usize,
+    layout_path: String,
+    real: bool,
+    output_path: String,
+    meta_path: String,
+    wards: BTreeMap<String, WardMetadata>,
+}
+
 #[derive(Debug, Deserialize)]
 struct LayoutDoc {
     #[serde(default)]
@@ -306,28 +358,176 @@ fn default_layout_path(_home: &str) -> PathBuf {
         })
 }
 
-fn read_external_rgba_frame(path: &Path, width: u32, height: u32) -> Option<Vec<u8>> {
-    let expected = (width as usize)
+fn ward_atlas_output_paths(real: bool) -> OutputPaths {
+    let (bgra_name, meta_name) = if real {
+        (REAL_BGRA_NAME, REAL_META_NAME)
+    } else {
+        (SHADOW_BGRA_NAME, SHADOW_META_NAME)
+    };
+    OutputPaths {
+        bgra: Path::new(SHM_DIR).join(bgra_name),
+        meta: Path::new(SHM_DIR).join(meta_name),
+    }
+}
+
+fn expected_rgba_bytes(width: u32, height: u32) -> Option<usize> {
+    (width as usize)
         .checked_mul(height as usize)?
-        .checked_mul(4)?;
+        .checked_mul(4)
+}
+
+fn read_external_rgba_frame_status(path: &Path, width: u32, height: u32) -> ExternalFrameRead {
+    let Some(expected) = expected_rgba_bytes(width, height) else {
+        return ExternalFrameRead::Missing {
+            reason: "invalid dimensions".to_string(),
+        };
+    };
     match std::fs::read(path) {
-        Ok(bytes) if bytes.len() == expected => Some(bytes),
+        Ok(bytes) if bytes.len() == expected => ExternalFrameRead::Ready(bytes),
         Ok(bytes) => {
             log::warn!(
                 "ward-atlas: external source {} wrong size: {} != {expected}",
                 path.display(),
                 bytes.len()
             );
-            None
+            ExternalFrameRead::WrongSize {
+                actual: bytes.len(),
+                expected,
+            }
         }
         Err(err) => {
             log::debug!(
                 "ward-atlas: external source {} unavailable: {err}",
                 path.display()
             );
-            None
+            ExternalFrameRead::Missing {
+                reason: err.to_string(),
+            }
         }
     }
+}
+
+fn external_status_metadata(
+    index: usize,
+    source: &WardSource,
+    status: &ExternalFrameRead,
+) -> WardMetadata {
+    let path = source
+        .external_rgba
+        .as_ref()
+        .map(|p| p.display().to_string());
+    let expected_bytes = source
+        .natural_w
+        .zip(source.natural_h)
+        .and_then(|(w, h)| expected_rgba_bytes(w, h));
+    match status {
+        ExternalFrameRead::Ready(_) => WardMetadata {
+            index,
+            label: source.spec.label.to_string(),
+            status: "rendered".to_string(),
+            source_path: path,
+            source_width: source.natural_w,
+            source_height: source.natural_h,
+            expected_bytes,
+            ..Default::default()
+        },
+        ExternalFrameRead::WrongSize { actual, expected } => WardMetadata {
+            index,
+            label: source.spec.label.to_string(),
+            status: "wrong-size".to_string(),
+            reason: Some("external RGBA frame size mismatch".to_string()),
+            source_path: path,
+            source_width: source.natural_w,
+            source_height: source.natural_h,
+            actual_bytes: Some(*actual),
+            expected_bytes: Some(*expected),
+            ..Default::default()
+        },
+        ExternalFrameRead::Missing { reason } => WardMetadata {
+            index,
+            label: source.spec.label.to_string(),
+            status: "missing".to_string(),
+            reason: Some(reason.clone()),
+            source_path: path,
+            source_width: source.natural_w,
+            source_height: source.natural_h,
+            expected_bytes,
+            ..Default::default()
+        },
+    }
+}
+
+fn build_metadata(
+    frame_id: u64,
+    real: bool,
+    paths: &OutputPaths,
+    layout_path: &Path,
+    ward_sources: &[WardSource],
+    external_statuses: &BTreeMap<&'static str, ExternalFrameRead>,
+) -> WardAtlasMetadata {
+    let mut wards = BTreeMap::new();
+    for (index, source) in ward_sources.iter().enumerate() {
+        let metadata = if source.spec.direct_texture {
+            WardMetadata {
+                index,
+                label: source.spec.label.to_string(),
+                status: "direct-texture-owned".to_string(),
+                reason: Some("direct live texture owns this ward".to_string()),
+                texture: Some("w05".to_string()),
+                source_path: source
+                    .external_rgba
+                    .as_ref()
+                    .map(|p| p.display().to_string()),
+                source_width: source.natural_w,
+                source_height: source.natural_h,
+                ..Default::default()
+            }
+        } else if let Some(status) = external_statuses.get(source.spec.id) {
+            external_status_metadata(index, source, status)
+        } else if source.external_rgba.is_some() {
+            external_status_metadata(
+                index,
+                source,
+                &ExternalFrameRead::Missing {
+                    reason: "not read this frame".to_string(),
+                },
+            )
+        } else {
+            WardMetadata {
+                index,
+                label: source.spec.label.to_string(),
+                status: "fallback".to_string(),
+                reason: Some("gpu ward IR not ported".to_string()),
+                source_width: source.natural_w,
+                source_height: source.natural_h,
+                ..Default::default()
+            }
+        };
+        wards.insert(source.spec.id.to_string(), metadata);
+    }
+    WardAtlasMetadata {
+        w: AW,
+        h: AH,
+        stride: AW * 4,
+        frame_id,
+        ward_count: ward_sources.len(),
+        layout_path: layout_path.display().to_string(),
+        real,
+        output_path: paths.bgra.display().to_string(),
+        meta_path: paths.meta.display().to_string(),
+        wards,
+    }
+}
+
+fn tmp_path_for(path: &Path) -> PathBuf {
+    let mut tmp = path.as_os_str().to_os_string();
+    tmp.push(".tmp");
+    PathBuf::from(tmp)
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = tmp_path_for(path);
+    std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, path))
 }
 
 // ── Gray-Scott RD substrate (gem_substrate.py U-skate constants) ──────────────
@@ -728,16 +928,19 @@ impl ExternalWardGpu {
         })
     }
 
-    fn upload_if_present(&self, queue: &wgpu::Queue) -> bool {
+    fn upload_status(&self, queue: &wgpu::Queue) -> ExternalFrameRead {
         let (Some(path), Some(width), Some(height)) = (
             self.source.external_rgba.as_ref(),
             self.source.natural_w,
             self.source.natural_h,
         ) else {
-            return false;
+            return ExternalFrameRead::Missing {
+                reason: "external RGBA source is not configured".to_string(),
+            };
         };
-        let Some(bytes) = read_external_rgba_frame(path, width, height) else {
-            return false;
+        let status = read_external_rgba_frame_status(path, width, height);
+        let ExternalFrameRead::Ready(bytes) = &status else {
+            return status;
         };
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -758,7 +961,7 @@ impl ExternalWardGpu {
                 depth_or_array_layers: 1,
             },
         );
-        true
+        status
     }
 }
 
@@ -811,12 +1014,7 @@ async fn run() {
     let real = std::env::var("HAPAX_WARD_ATLAS_REAL")
         .map(|v| v == "1")
         .unwrap_or(false);
-    let out_name = if real {
-        "quake-live-ward-atlas.bgra"
-    } else {
-        "quake-live-ward-atlas.gpu.bgra"
-    };
-    let out_path = format!("{SHM_DIR}/{out_name}");
+    let output_paths = ward_atlas_output_paths(real);
     let fps: f32 = std::env::var("HAPAX_WARD_ATLAS_FPS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -953,7 +1151,8 @@ async fn run() {
         push_constant_ranges: &[],
     });
     let external_gpus: Vec<ExternalWardGpu> = ward_sources
-        .into_iter()
+        .iter()
+        .cloned()
         .enumerate()
         .filter(|(_, source)| !source.spec.direct_texture)
         .filter_map(|(idx, source)| ExternalWardGpu::new(&device, &bgl, &lin, source, idx))
@@ -1107,21 +1306,29 @@ async fn run() {
         rd.step(); // warm to a developed spotted pattern
     }
     log::info!(
-        "ward-atlas live: {} glyph instances, {} external RGBA source(s), layout={} @ {fps}fps -> {out_path} (real={real})",
+        "ward-atlas live: {} glyph instances, {} external RGBA source(s), layout={} @ {fps}fps -> {} (real={real})",
         instances.len(),
         external_gpus.len(),
         layout_path.display(),
+        output_paths.bgra.display(),
     );
 
     let period = Duration::from_secs_f32(1.0 / fps.max(0.5));
+    let mut frame_id = 0u64;
     loop {
+        frame_id += 1;
         let t0 = Instant::now();
         rd.step();
         up(&rd_tex, GW as u32, GH as u32, &rd.r8());
-        let present_external: Vec<&ExternalWardGpu> = external_gpus
-            .iter()
-            .filter(|source| source.upload_if_present(&queue))
-            .collect();
+        let mut external_statuses = BTreeMap::new();
+        let mut present_external = Vec::new();
+        for source in &external_gpus {
+            let status = source.upload_status(&queue);
+            if matches!(status, ExternalFrameRead::Ready(_)) {
+                present_external.push(source);
+            }
+            external_statuses.insert(source.source.spec.id, status);
+        }
 
         let mut enc = device.create_command_encoder(&Default::default());
         {
@@ -1196,8 +1403,18 @@ async fn run() {
         drop(mapped);
         staging.unmap();
 
-        let tmp = format!("{out_path}.tmp");
-        let _ = std::fs::write(&tmp, &out).and_then(|_| std::fs::rename(&tmp, &out_path));
+        let _ = atomic_write(&output_paths.bgra, &out);
+        let metadata = build_metadata(
+            frame_id,
+            real,
+            &output_paths,
+            &layout_path,
+            &ward_sources,
+            &external_statuses,
+        );
+        if let Ok(bytes) = serde_json::to_vec(&metadata) {
+            let _ = atomic_write(&output_paths.meta, &bytes);
+        }
 
         if let Some(rem) = period.checked_sub(t0.elapsed()) {
             std::thread::sleep(rem);
@@ -1335,8 +1552,120 @@ mod tests {
         let frame = dir.path().join("source.rgba");
         fs::write(&frame, vec![7u8; 2 * 3 * 4]).unwrap();
 
-        assert_eq!(read_external_rgba_frame(&frame, 2, 3).unwrap().len(), 24);
-        assert!(read_external_rgba_frame(&frame, 2, 4).is_none());
-        assert!(read_external_rgba_frame(&dir.path().join("missing.rgba"), 2, 3).is_none());
+        assert!(matches!(
+            read_external_rgba_frame_status(&frame, 2, 3),
+            ExternalFrameRead::Ready(bytes) if bytes.len() == 24
+        ));
+        assert!(matches!(
+            read_external_rgba_frame_status(&frame, 2, 4),
+            ExternalFrameRead::WrongSize {
+                actual: 24,
+                expected: 32
+            }
+        ));
+        assert!(matches!(
+            read_external_rgba_frame_status(&dir.path().join("missing.rgba"), 2, 3),
+            ExternalFrameRead::Missing { .. }
+        ));
+    }
+
+    #[test]
+    fn output_paths_model_shadow_and_real_sidecars_without_env_flip() {
+        let shadow = ward_atlas_output_paths(false);
+        assert_eq!(shadow.bgra, Path::new(SHM_DIR).join(SHADOW_BGRA_NAME));
+        assert_eq!(shadow.meta, Path::new(SHM_DIR).join(SHADOW_META_NAME));
+
+        let real = ward_atlas_output_paths(true);
+        assert_eq!(real.bgra, Path::new(SHM_DIR).join(REAL_BGRA_NAME));
+        assert_eq!(real.meta, Path::new(SHM_DIR).join(REAL_META_NAME));
+    }
+
+    #[test]
+    fn metadata_records_direct_texture_and_external_rgba_statuses() {
+        let dir = tempdir().unwrap();
+        let layout = dir.path().join("default.json");
+        fs::write(
+            &layout,
+            r#"{
+              "sources": [
+                {
+                  "id": "reverie",
+                  "kind": "external_rgba",
+                  "params": {"natural_w": 960, "natural_h": 540, "shm_path": "/dev/shm/hapax-sources/reverie.rgba"}
+                },
+                {
+                  "id": "m8-display",
+                  "kind": "external_rgba",
+                  "params": {"natural_w": 320, "natural_h": 240, "shm_path": "/tmp/m8-display.rgba"}
+                },
+                {
+                  "id": "steamdeck-display",
+                  "kind": "external_rgba",
+                  "params": {"natural_w": 640, "natural_h": 400, "shm_path": "/tmp/steamdeck-display.rgba"}
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let sources = load_ward_sources(&layout);
+        let mut statuses = BTreeMap::new();
+        statuses.insert("m8-display", ExternalFrameRead::Ready(Vec::new()));
+        statuses.insert(
+            "steamdeck-display",
+            ExternalFrameRead::WrongSize {
+                actual: 17,
+                expected: 640 * 400 * 4,
+            },
+        );
+
+        let paths = OutputPaths {
+            bgra: dir.path().join("quake-live-ward-atlas.gpu.bgra"),
+            meta: dir.path().join("quake-live-ward-atlas.gpu.json"),
+        };
+        let metadata = build_metadata(7, false, &paths, &layout, &sources, &statuses);
+
+        assert_eq!(metadata.w, AW);
+        assert_eq!(metadata.h, AH);
+        assert_eq!(metadata.stride, AW * 4);
+        assert_eq!(metadata.frame_id, 7);
+        assert_eq!(metadata.ward_count, 36);
+        assert!(!metadata.real);
+        assert_eq!(metadata.output_path, paths.bgra.display().to_string());
+        assert_eq!(metadata.meta_path, paths.meta.display().to_string());
+
+        let reverie = metadata.wards.get("reverie").unwrap();
+        assert_eq!(reverie.status, "direct-texture-owned");
+        assert_eq!(reverie.texture.as_deref(), Some("w05"));
+        assert_eq!(
+            reverie.reason.as_deref(),
+            Some("direct live texture owns this ward")
+        );
+
+        let m8 = metadata.wards.get("m8-display").unwrap();
+        assert_eq!(m8.status, "rendered");
+        assert_eq!(m8.source_width, Some(320));
+        assert_eq!(m8.source_height, Some(240));
+        assert_eq!(m8.expected_bytes, Some(320 * 240 * 4));
+
+        let steamdeck = metadata.wards.get("steamdeck-display").unwrap();
+        assert_eq!(steamdeck.status, "wrong-size");
+        assert_eq!(steamdeck.actual_bytes, Some(17));
+        assert_eq!(steamdeck.expected_bytes, Some(640 * 400 * 4));
+
+        let aoa = metadata.wards.get("aoa_oarb_state").unwrap();
+        assert_eq!(aoa.status, "fallback");
+        assert_eq!(aoa.reason.as_deref(), Some("gpu ward IR not ported"));
+    }
+
+    #[test]
+    fn atomic_write_uses_tmp_rename_path() {
+        let dir = tempdir().unwrap();
+        let sidecar = dir.path().join("quake-live-ward-atlas.gpu.json");
+        let tmp = tmp_path_for(&sidecar);
+
+        atomic_write(&sidecar, br#"{"ok":true}"#).unwrap();
+
+        assert_eq!(fs::read_to_string(&sidecar).unwrap(), r#"{"ok":true}"#);
+        assert!(!tmp.exists());
     }
 }
