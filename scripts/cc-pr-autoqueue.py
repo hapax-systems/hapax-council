@@ -29,6 +29,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +39,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.merge_queue_lineage import DEFAULT_LEDGER_PATH, read_jsonl_records  # noqa: E402
+from shared.merge_queue_lineage import (  # noqa: E402
+    DEFAULT_LEDGER_PATH,
+    DEFAULT_QUARANTINE_PATH,
+    FleetThrottlePolicy,
+    ThrottleDecision,
+    active_quarantined_pr_numbers,
+    decide_fleet_throttle,
+    read_jsonl_records,
+    read_quarantine,
+    recommend_max_entries_to_build,
+)
 from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_MERGE_READY_STATUSES,
@@ -179,11 +190,14 @@ class StormMode:
     failed_recent_merge_group_runs: tuple[dict[str, Any], ...]
     recommended_max_entries_to_build: int
     recommended_throttle_state: str
+    failure_rate: float
+    failure_rate_samples: int
+    rate_frozen: bool
 
     def as_dict(self, *, repo: str) -> dict[str, Any]:
         return {
             "active": self.active,
-            "mode": "storm" if self.active else "normal",
+            "mode": "rate_freeze" if self.active else self.recommended_throttle_state,
             "reasons": list(self.reasons),
             "open_pr_count": self.open_pr_count,
             "queued_pr_count": self.queued_pr_count,
@@ -191,6 +205,9 @@ class StormMode:
             "blocked_queued_prs": list(self.blocked_queued_prs),
             "failed_recent_merge_group_run_count": len(self.failed_recent_merge_group_runs),
             "failed_recent_merge_group_runs": list(self.failed_recent_merge_group_runs),
+            "failure_rate": self.failure_rate,
+            "failure_rate_samples": self.failure_rate_samples,
+            "rate_frozen": self.rate_frozen,
             "recommended_throttle": {
                 "state": self.recommended_throttle_state,
                 "max_entries_to_build": self.recommended_max_entries_to_build,
@@ -203,7 +220,7 @@ class StormMode:
         if not self.active:
             return None
         return {
-            "reason": "storm mode is non-mutating; ruleset updates replace live rule definitions",
+            "reason": "failure-rate freeze is non-mutating; ruleset updates replace live rule definitions",
             "api": {
                 "method": "PATCH",
                 "path": f"/repos/{repo}/rulesets/<ruleset_id>",
@@ -221,7 +238,7 @@ class StormMode:
             "risks": [
                 "fetch the current ruleset first and patch the full existing payload",
                 "do not remove required checks, required reviews, or branch protection rules",
-                "restore steady-state max_entries_to_build only after storm reasons clear",
+                "restore steady-state max_entries_to_build only after the failure rate clears",
             ],
         }
 
@@ -874,27 +891,17 @@ def _build_storm_mode(
     prs: list[PullRequest],
     queued_prs: set[int],
     decisions: list[Decision],
-    active_ci_repair_task_ids: tuple[str, ...],
     failed_recent_merge_group_runs: tuple[dict[str, Any], ...],
-    storm_open_pr_threshold: int,
-    storm_failed_merge_group_threshold: int,
+    throttle_decision: ThrottleDecision,
+    recommended_max_entries_to_build: int,
 ) -> StormMode:
     blocked_queued = tuple(
         decision.as_dict()
         for decision in decisions
         if decision.pr.number in queued_prs and decision.action == "dequeue"
     )
-    reasons: list[str] = []
-    if len(prs) >= storm_open_pr_threshold:
-        reasons.append(f"open_pr_count:{len(prs)}>=threshold:{storm_open_pr_threshold}")
-    if active_ci_repair_task_ids:
-        reasons.append("active_ci_repair:" + ",".join(active_ci_repair_task_ids))
-    if blocked_queued:
-        reasons.append(f"blocked_queued_prs:{len(blocked_queued)}")
-    if len(failed_recent_merge_group_runs) >= storm_failed_merge_group_threshold:
-        reasons.append(f"failed_recent_merge_group_runs:{len(failed_recent_merge_group_runs)}")
-
-    active = bool(reasons)
+    active = throttle_decision.frozen
+    reasons = [throttle_decision.reason] if active else []
     return StormMode(
         active=active,
         reasons=tuple(reasons),
@@ -903,10 +910,11 @@ def _build_storm_mode(
         blocked_queued_pr_count=len(blocked_queued),
         blocked_queued_prs=blocked_queued,
         failed_recent_merge_group_runs=failed_recent_merge_group_runs,
-        recommended_max_entries_to_build=STORM_MAX_ENTRIES_TO_BUILD
-        if active
-        else STEADY_MAX_ENTRIES_TO_BUILD,
-        recommended_throttle_state="storm" if active else "steady",
+        recommended_max_entries_to_build=recommended_max_entries_to_build,
+        recommended_throttle_state=throttle_decision.state,
+        failure_rate=throttle_decision.failure_rate,
+        failure_rate_samples=throttle_decision.samples,
+        rate_frozen=throttle_decision.frozen,
     )
 
 
@@ -953,6 +961,25 @@ def run_reconciler(
         )
         for pr in prs
     ]
+    now = datetime.now(UTC)
+    lineage_records = read_jsonl_records(lineage_ledger_path) if lineage_ledger_path else []
+    quarantined_prs = active_quarantined_pr_numbers(
+        read_quarantine(DEFAULT_QUARANTINE_PATH), now=now
+    )
+    throttle_policy = FleetThrottlePolicy(advisory_open_pr_count=storm_open_pr_threshold)
+    throttle_decision = decide_fleet_throttle(
+        lineage_records,
+        open_pr_count=len(prs),
+        policy=throttle_policy,
+        now=now,
+        quarantined_prs=quarantined_prs,
+    )
+    recommended_entries = recommend_max_entries_to_build(
+        lineage_records,
+        policy=throttle_policy,
+        now=now,
+        quarantined_prs=quarantined_prs,
+    )
     failed_recent_merge_group_runs = _recent_failed_non_ready_merge_group_runs(
         lineage_ledger_path=lineage_ledger_path,
         decisions=preliminary_decisions,
@@ -962,10 +989,9 @@ def run_reconciler(
         prs=prs,
         queued_prs=queued_prs,
         decisions=preliminary_decisions,
-        active_ci_repair_task_ids=active_ci_repair_task_ids,
         failed_recent_merge_group_runs=failed_recent_merge_group_runs,
-        storm_open_pr_threshold=storm_open_pr_threshold,
-        storm_failed_merge_group_threshold=storm_failed_merge_group_threshold,
+        throttle_decision=throttle_decision,
+        recommended_max_entries_to_build=recommended_entries,
     )
     decisions = preliminary_decisions
     if storm_mode_enabled and storm_mode.active:
@@ -992,10 +1018,9 @@ def run_reconciler(
             prs=prs,
             queued_prs=queued_prs,
             decisions=decisions,
-            active_ci_repair_task_ids=active_ci_repair_task_ids,
             failed_recent_merge_group_runs=failed_recent_merge_group_runs,
-            storm_open_pr_threshold=storm_open_pr_threshold,
-            storm_failed_merge_group_threshold=storm_failed_merge_group_threshold,
+            throttle_decision=throttle_decision,
+            recommended_max_entries_to_build=recommended_entries,
         )
 
     mutation_results: list[dict[str, Any]] = []

@@ -974,7 +974,7 @@ def test_stabilization_allows_governed_independent_route(tmp_path: Path) -> None
     )
 
 
-def test_storm_mode_dry_run_reports_build_ahead_risk_and_pr_reasons(
+def test_open_pr_count_is_advisory_and_does_not_freeze_admission(
     tmp_path: Path,
 ) -> None:
     vault = _make_vault(tmp_path)
@@ -996,15 +996,18 @@ def test_storm_mode_dry_run_reports_build_ahead_risk_and_pr_reasons(
     )
 
     decisions = {item["pr"]: item for item in report["decisions"]}
-    assert report["storm_mode"]["active"] is True
+    assert report["storm_mode"]["active"] is False
+    assert report["storm_mode"]["mode"] == "busy"
     assert report["storm_mode"]["queued_pr_count"] == 2
     assert report["storm_mode"]["blocked_queued_pr_count"] == 1
-    assert report["storm_mode"]["recommended_throttle"]["max_entries_to_build"] == 1
+    assert report["storm_mode"]["recommended_throttle"]["max_entries_to_build"] == 6
     assert decisions[100]["action"] == "already_queued"
     assert decisions[101]["action"] == "dequeue"
     assert any(reason.startswith("failed_checks:") for reason in decisions[101]["reasons"])
-    assert decisions[102]["action"] == "blocked"
-    assert any(reason.startswith("storm_admission_hold:") for reason in decisions[102]["reasons"])
+    assert decisions[102]["action"] == "queue"
+    assert not any(
+        reason.startswith("storm_admission_hold:") for reason in decisions[102].get("reasons", [])
+    )
 
 
 def test_storm_apply_dequeues_only_non_ready_queued_prs(tmp_path: Path) -> None:
@@ -1026,12 +1029,27 @@ def test_storm_apply_dequeues_only_non_ready_queued_prs(tmp_path: Path) -> None:
     runner = _FakeRunner()
     runner.queued_prs = {110, 111, 112}
     runner.open_prs = [_pr(number) for number in range(110, 118)]
+    ledger = tmp_path / "merge-queue-lineage.jsonl"
+    write_jsonl_records(
+        ledger,
+        [
+            MergeQueueLineageRecord(
+                observed_at=datetime(2026, 5, 31, 12, i, tzinfo=UTC),
+                pr_number=113 + i,
+                merge_group_run_id=9100 + i,
+                run_conclusion="failure",
+                run_outcome="failure",
+            )
+            for i in range(4)
+        ],
+    )
 
     report = autoqueue.run_reconciler(
         repo="owner/repo",
         repo_root=tmp_path,
         vault_root=vault,
         apply=True,
+        lineage_ledger_path=ledger,
         runner=runner,
     )
 
@@ -1077,12 +1095,27 @@ def test_storm_allows_ci_repair_and_independent_admissions(tmp_path: Path) -> No
         _write_task(vault, task_id=f"task-{number}", pr=number)
     runner = _FakeRunner()
     runner.open_prs = [_pr(number) for number in range(120, 128)]
+    ledger = tmp_path / "merge-queue-lineage.jsonl"
+    write_jsonl_records(
+        ledger,
+        [
+            MergeQueueLineageRecord(
+                observed_at=datetime(2026, 5, 31, 12, i, tzinfo=UTC),
+                pr_number=120 + i,
+                merge_group_run_id=9200 + i,
+                run_conclusion="failure",
+                run_outcome="failure",
+            )
+            for i in range(4)
+        ],
+    )
 
     report = autoqueue.run_reconciler(
         repo="owner/repo",
         repo_root=tmp_path,
         vault_root=vault,
         apply=True,
+        lineage_ledger_path=ledger,
         runner=runner,
     )
 
@@ -1106,12 +1139,13 @@ def test_failed_recent_non_ready_merge_group_run_activates_storm_mode(
         ledger,
         [
             MergeQueueLineageRecord(
-                observed_at=datetime(2026, 5, 18, 23, 30, tzinfo=UTC),
+                observed_at=datetime(2026, 5, 31, 12, i, tzinfo=UTC),
                 pr_number=130,
-                merge_group_run_id=9001,
+                merge_group_run_id=9001 + i,
                 run_conclusion="failure",
                 run_outcome="failure",
             )
+            for i in range(4)
         ],
     )
     runner = _FakeRunner()
@@ -1127,7 +1161,7 @@ def test_failed_recent_non_ready_merge_group_run_activates_storm_mode(
 
     failed = report["storm_mode"]["failed_recent_merge_group_runs"]
     assert report["storm_mode"]["active"] is True
-    assert "failed_recent_merge_group_runs:1" in report["storm_mode"]["reasons"]
+    assert report["storm_mode"]["rate_frozen"] is True
     assert failed[0]["run_id"] == 9001
     assert failed[0]["pr"] == 130
     assert "task_missing_route_metadata_schema_1" in failed[0]["reasons"]

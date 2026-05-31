@@ -14,12 +14,32 @@ import importlib.util
 import json
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO / "scripts" / "hapax-pr-admission"
+
+
+def _throttle(
+    *,
+    frozen: bool = False,
+    state: str = "calm",
+    reason: str = "merge failure_rate 0% over 0 runs",
+    failure_rate: float = 0.0,
+    samples: int = 0,
+    open_pr_count: int = 0,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        frozen=frozen,
+        state=state,
+        reason=reason,
+        failure_rate=failure_rate,
+        samples=samples,
+        open_pr_count=open_pr_count,
+    )
 
 
 @pytest.fixture
@@ -98,7 +118,10 @@ class TestStatusCommand:
             encoding="utf-8",
         )
 
-        with patch.object(gov_module, "query_open_prs", return_value=[]):
+        with (
+            patch.object(gov_module, "query_open_prs", return_value=[]),
+            patch.object(gov_module, "current_throttle_decision", return_value=_throttle()),
+        ):
             ns = type("NS", (), {})()
             rc = gov_module.cmd_status(ns)
 
@@ -161,33 +184,57 @@ class TestAdmissionLibrary:
 
 
 class TestNormalCommand:
-    def test_refuses_to_clear_when_stability_not_met(self, gov_module, capsys):
+    def test_refuses_to_clear_when_failure_rate_freeze_active(self, gov_module, capsys):
         state = gov_module.load_state()
         state["mode"] = "frozen"
         state["stable_ticks_observed"] = 0
         gov_module.save_state(state)
 
-        # Mock query_open_prs to return 4 PRs (below threshold of 6)
-        with patch.object(
-            gov_module, "query_open_prs", return_value=[{"number": i} for i in range(4)]
+        with (
+            patch.object(
+                gov_module, "query_open_prs", return_value=[{"number": i} for i in range(4)]
+            ),
+            patch.object(
+                gov_module,
+                "current_throttle_decision",
+                return_value=_throttle(
+                    frozen=True,
+                    state="rate_freeze",
+                    reason="merge failure_rate 75% >= 50% over 4 runs",
+                    failure_rate=0.75,
+                    samples=4,
+                    open_pr_count=4,
+                ),
+            ),
         ):
             ns = type("NS", (), {"reason": "test", "force": False})()
             rc = gov_module.cmd_normal(ns)
 
         assert rc == 1  # refused
-        # Stability was incremented but not enough yet
         loaded = gov_module.load_state()
         assert loaded["mode"] == "frozen"
-        assert loaded["stable_ticks_observed"] == 1
+        assert loaded["stable_ticks_observed"] == 0
 
-    def test_clears_after_required_stable_ticks(self, gov_module):
+    def test_clears_when_failure_rate_throttle_is_calm(self, gov_module):
         state = gov_module.load_state()
         state["mode"] = "frozen"
-        state["stable_ticks_observed"] = 1  # one tick already
+        state["stable_ticks_observed"] = 1
         gov_module.save_state(state)
 
-        with patch.object(
-            gov_module, "query_open_prs", return_value=[{"number": i} for i in range(4)]
+        with (
+            patch.object(
+                gov_module, "query_open_prs", return_value=[{"number": i} for i in range(20)]
+            ),
+            patch.object(
+                gov_module,
+                "current_throttle_decision",
+                return_value=_throttle(
+                    frozen=False,
+                    state="busy",
+                    reason="20 open PRs advisory; merge queue serializes",
+                    open_pr_count=20,
+                ),
+            ),
         ):
             ns = type("NS", (), {"reason": "test", "force": False})()
             rc = gov_module.cmd_normal(ns)
@@ -215,12 +262,25 @@ class TestNormalCommand:
 
 
 class TestAutoCmd:
-    def test_auto_freezes_when_threshold_crossed(self, gov_module):
-        # Default state is normal; mock 10+ open PRs
-        with patch.object(
-            gov_module,
-            "query_open_prs",
-            return_value=[{"number": i, "headRefName": f"branch-{i}"} for i in range(10)],
+    def test_auto_freezes_when_failure_rate_threshold_crossed(self, gov_module):
+        with (
+            patch.object(
+                gov_module,
+                "query_open_prs",
+                return_value=[{"number": i, "headRefName": f"branch-{i}"} for i in range(3)],
+            ),
+            patch.object(
+                gov_module,
+                "current_throttle_decision",
+                return_value=_throttle(
+                    frozen=True,
+                    state="rate_freeze",
+                    reason="merge failure_rate 100% >= 50% over 4 runs",
+                    failure_rate=1.0,
+                    samples=4,
+                    open_pr_count=3,
+                ),
+            ),
         ):
             ns = type("NS", (), {})()
             rc = gov_module.cmd_auto(ns)
@@ -229,13 +289,16 @@ class TestAutoCmd:
         assert loaded["mode"] == "frozen"
         assert loaded["set_by"] == "auto"
         assert "auto-freeze" in loaded["reason"]
-        assert len(loaded["allowed_existing_branches"]) == 10
+        assert len(loaded["allowed_existing_branches"]) == 3
 
     def test_auto_no_op_when_below_threshold_in_normal(self, gov_module):
-        with patch.object(
-            gov_module,
-            "query_open_prs",
-            return_value=[{"number": i, "headRefName": f"b{i}"} for i in range(5)],
+        with (
+            patch.object(
+                gov_module,
+                "query_open_prs",
+                return_value=[{"number": i, "headRefName": f"b{i}"} for i in range(5)],
+            ),
+            patch.object(gov_module, "current_throttle_decision", return_value=_throttle()),
         ):
             ns = type("NS", (), {})()
             rc = gov_module.cmd_auto(ns)
@@ -243,18 +306,28 @@ class TestAutoCmd:
         loaded = gov_module.load_state()
         assert loaded["mode"] == "normal"
 
-    def test_auto_clears_after_stable_ticks(self, gov_module):
-        # Set up in frozen mode with one stable tick already observed
+    def test_auto_clears_when_failure_rate_throttle_is_calm(self, gov_module):
         state = gov_module.load_state()
         state["mode"] = "frozen"
-        state["stable_ticks_observed"] = 1  # one tick already
+        state["stable_ticks_observed"] = 1
         gov_module.save_state(state)
 
-        # Mock count below threshold (4 < 6)
-        with patch.object(
-            gov_module,
-            "query_open_prs",
-            return_value=[{"number": i, "headRefName": f"b{i}"} for i in range(4)],
+        with (
+            patch.object(
+                gov_module,
+                "query_open_prs",
+                return_value=[{"number": i, "headRefName": f"b{i}"} for i in range(12)],
+            ),
+            patch.object(
+                gov_module,
+                "current_throttle_decision",
+                return_value=_throttle(
+                    frozen=False,
+                    state="busy",
+                    reason="12 open PRs advisory; merge queue serializes",
+                    open_pr_count=12,
+                ),
+            ),
         ):
             ns = type("NS", (), {})()
             rc = gov_module.cmd_auto(ns)
@@ -265,21 +338,35 @@ class TestAutoCmd:
         assert loaded["set_by"] == "auto"
         assert "auto-clear" in loaded["reason"]
 
-    def test_auto_increments_stable_tick_when_below_threshold(self, gov_module):
+    def test_auto_keeps_freeze_when_failure_rate_throttle_is_frozen(self, gov_module):
         state = gov_module.load_state()
         state["mode"] = "frozen"
         state["stable_ticks_observed"] = 0
         gov_module.save_state(state)
 
-        with patch.object(
-            gov_module,
-            "query_open_prs",
-            return_value=[{"number": i, "headRefName": f"b{i}"} for i in range(4)],
+        with (
+            patch.object(
+                gov_module,
+                "query_open_prs",
+                return_value=[{"number": i, "headRefName": f"b{i}"} for i in range(4)],
+            ),
+            patch.object(
+                gov_module,
+                "current_throttle_decision",
+                return_value=_throttle(
+                    frozen=True,
+                    state="rate_freeze",
+                    reason="merge failure_rate 75% >= 50% over 4 runs",
+                    failure_rate=0.75,
+                    samples=4,
+                    open_pr_count=4,
+                ),
+            ),
         ):
             ns = type("NS", (), {})()
             rc = gov_module.cmd_auto(ns)
 
         assert rc == 0
         loaded = gov_module.load_state()
-        assert loaded["mode"] == "frozen"  # not yet stable enough
-        assert loaded["stable_ticks_observed"] == 1
+        assert loaded["mode"] == "frozen"
+        assert loaded["stable_ticks_observed"] == 0

@@ -36,10 +36,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.merge_queue_lineage import DEFAULT_SUMMARY_PATH, load_summary
+from shared.merge_queue_lineage import (
+    DEFAULT_LEDGER_PATH,
+    DEFAULT_SUMMARY_PATH,
+    FleetThrottlePolicy,
+    decide_fleet_throttle,
+    load_summary,
+    read_jsonl_records,
+)
 
 CONTROL_PATH = Path(os.path.expanduser("~/.cache/hapax/pr-admission-governor.yaml"))
 MERGE_QUEUE_SUMMARY_PATH = DEFAULT_SUMMARY_PATH
+MERGE_QUEUE_LEDGER_PATH = DEFAULT_LEDGER_PATH
 DEFAULT_EXIT_BELOW_COUNT = 6
 DEFAULT_STABLE_TICKS = 2
 ALLOWED_MODES = {"normal", "drain", "frozen"}
@@ -118,6 +126,17 @@ def query_open_prs() -> list[dict[str, Any]]:
         return []
 
 
+def current_throttle_decision(open_count: int | None = None):
+    prs_count = len(query_open_prs()) if open_count is None else open_count
+    records = read_jsonl_records(MERGE_QUEUE_LEDGER_PATH)
+    return decide_fleet_throttle(
+        records,
+        open_pr_count=prs_count,
+        policy=FleetThrottlePolicy(advisory_open_pr_count=AUTO_FREEZE_THRESHOLD),
+        now=datetime.now(UTC),
+    )
+
+
 def classify_pr(pr: dict[str, Any]) -> str:
     """Classify PR into one of: failed, pending, behind, blocked, green."""
     rollup = pr.get("statusCheckRollup") or []
@@ -167,6 +186,14 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     print()
     _print_merge_queue_summary()
+    throttle = current_throttle_decision(open_count)
+    print()
+    print("Failure-rate admission throttle:")
+    print(
+        f"  state={throttle.state} frozen={throttle.frozen} "
+        f"failure_rate={throttle.failure_rate:.0%} samples={throttle.samples}"
+    )
+    print(f"  reason: {throttle.reason}")
     print()
     if state["mode"] == "normal":
         print("ADMISSION: ALLOWED — new PRs / new branches OK.")
@@ -174,8 +201,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"ADMISSION: BLOCKED — mode is {state['mode']}.")
     print("  Allowed: pushing to snapshot branches; gh pr update-branch; failed-check fixes;")
     print("           closing duplicates; vault/relay updates; valid one-shot exception tokens.")
-    print(f"  To clear: open PR count must drop below {state['exit_below_count']}")
-    print(f"            for {state['exit_stable_ticks_required']} consecutive ticks, then run:")
+    print("  To clear: merge-group failure rate must drop below the freeze threshold, then run:")
     print("            hapax-pr-admission normal --reason 'drain complete'")
     return 0
 
@@ -251,19 +277,12 @@ def cmd_drain(args: argparse.Namespace) -> int:
 def cmd_normal(args: argparse.Namespace) -> int:
     state = load_state()
     open_count = len(query_open_prs())
-    threshold = state["exit_below_count"]
-    required_stable = state["exit_stable_ticks_required"]
-
-    if open_count < threshold:
-        state["stable_ticks_observed"] = state["stable_ticks_observed"] + 1
-    else:
-        state["stable_ticks_observed"] = 0
-
-    can_clear = state["stable_ticks_observed"] >= required_stable
+    throttle = current_throttle_decision(open_count)
+    can_clear = not throttle.frozen
     if not can_clear and not args.force:
         save_state(state)
-        print(f"PR admission governor: cannot clear — open={open_count} threshold={threshold}")
-        print(f"  Stable ticks observed: {state['stable_ticks_observed']}/{required_stable}")
+        print("PR admission governor: cannot clear — failure-rate freeze still active")
+        print(f"  {throttle.reason}")
         print("  Override with --force (operator only)")
         return 1
 
@@ -321,74 +340,57 @@ def is_admission_allowed(branch: str | None) -> tuple[bool, str]:
     return False, f"mode is {state['mode']} and branch {branch!r} not in snapshot"
 
 
-# Anti-pileup auto-cycle thresholds.
-# When count >= AUTO_FREEZE_THRESHOLD and mode is normal: auto-freeze.
-# When count < AUTO_NORMAL_THRESHOLD for AUTO_NORMAL_STABLE_TICKS: auto-clear.
+# Admission throttle threshold used only as the advisory open-PR count in the
+# failure-rate policy. Open count alone is never a freeze.
 AUTO_FREEZE_THRESHOLD = 10
-AUTO_NORMAL_THRESHOLD = 6
-AUTO_NORMAL_STABLE_TICKS = 2
 
 
 def cmd_auto(args: argparse.Namespace) -> int:
-    """Auto-cycle: freeze when too many open PRs; clear when count is stable below threshold.
+    """Auto-cycle: freeze/thaw from merge-group failure rate.
 
     Designed for systemd-timer or GitHub-Action invocation every 5 min.
     No-op (exit 0) for unrelated cases. Only acts when thresholds cross.
     """
     state = load_state()
     open_count = len(query_open_prs())
+    throttle = current_throttle_decision(open_count)
     mode = state["mode"]
 
-    # Auto-freeze trigger
-    if mode == "normal" and open_count >= AUTO_FREEZE_THRESHOLD:
+    # Auto-freeze trigger: rate-attributed, not raw open-PR count.
+    if mode == "normal" and throttle.frozen:
         snapshot = _snapshot_open_branches()
         state.update(
             {
                 "mode": "frozen",
                 "set_by": "auto",
-                "reason": f"auto-freeze: {open_count} open PRs >= {AUTO_FREEZE_THRESHOLD}",
+                "reason": f"auto-freeze: {throttle.reason}",
                 "entry_open_pr_count": len(snapshot),
                 "stable_ticks_observed": 0,
                 "allowed_existing_branches": snapshot,
             }
         )
         save_state(state)
-        print(
-            f"AUTO-FREEZE: open={open_count} >= {AUTO_FREEZE_THRESHOLD}; snapshot {len(snapshot)} branches"
-        )
+        print(f"AUTO-FREEZE: {throttle.reason}; snapshot {len(snapshot)} branches")
         return 0
 
-    # Auto-clear trigger
-    if mode in ("frozen", "drain"):
-        if open_count < AUTO_NORMAL_THRESHOLD:
-            state["stable_ticks_observed"] = state["stable_ticks_observed"] + 1
-        else:
-            state["stable_ticks_observed"] = 0
-        save_state(state)
-
-        if state["stable_ticks_observed"] >= AUTO_NORMAL_STABLE_TICKS:
-            state.update(
-                {
-                    "mode": "normal",
-                    "set_by": "auto",
-                    "reason": f"auto-clear: count<{AUTO_NORMAL_THRESHOLD} stable for {AUTO_NORMAL_STABLE_TICKS} ticks",
-                    "stable_ticks_observed": 0,
-                    "allowed_existing_branches": [],
-                    "allowed_exception_tokens": [],
-                }
-            )
-            save_state(state)
-            print(
-                f"AUTO-CLEAR: open={open_count} < {AUTO_NORMAL_THRESHOLD} stable for {AUTO_NORMAL_STABLE_TICKS} ticks"
-            )
-            return 0
-        print(
-            f"auto-tick: mode={mode} open={open_count} stable_ticks={state['stable_ticks_observed']}/{AUTO_NORMAL_STABLE_TICKS}"
+    # Auto-clear trigger: auto-thaw immediately when the rate drops.
+    if mode in ("frozen", "drain") and not throttle.frozen:
+        state.update(
+            {
+                "mode": "normal",
+                "set_by": "auto",
+                "reason": f"auto-clear: {throttle.reason}",
+                "stable_ticks_observed": 0,
+                "allowed_existing_branches": [],
+                "allowed_exception_tokens": [],
+            }
         )
+        save_state(state)
+        print(f"AUTO-CLEAR: {throttle.reason}; open={open_count}")
         return 0
 
     # No-op
-    print(f"auto-tick: mode={mode} open={open_count} (no action)")
+    print(f"auto-tick: mode={mode} open={open_count} throttle={throttle.state} (no action)")
     return 0
 
 
@@ -414,7 +416,7 @@ def main() -> int:
 
     sub_auto = subs.add_parser(
         "auto",
-        help="Auto-cycle: freeze if PRs >= 10; clear if PRs < 6 for 2 ticks. For systemd timer.",
+        help="Auto-cycle: freeze/thaw from merge-group failure rate. For systemd timer.",
     )
     sub_auto.set_defaults(fn=cmd_auto)
 
