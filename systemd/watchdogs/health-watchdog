@@ -123,7 +123,9 @@ print(json.dumps(entry))
 " 2>/dev/null) || true
 
 if [[ -n "$ENTRY" ]]; then
-    echo "$ENTRY" >> "$HISTORY_FILE" 2>/dev/null || echo "WARN: Could not write history" >&2
+    if ! WRITE_ERR=$( { echo "$ENTRY" >> "$HISTORY_FILE"; } 2>&1 ); then
+        echo "WARN: Could not write history: $WRITE_ERR" >&2
+    fi
 fi
 
 # Exit code matches status
