@@ -119,7 +119,8 @@
       "texture_fps",
       "resolution_basis"
     ],
-    "camera_capture_fps_min": 15,
+    "camera_capture_fps_min": 10,
+    "preferred_camera_capture_fps_min": 15,
     "minimum_aoa_sphere_texture_width_px": 2048,
     "minimum_aoa_sphere_texture_height_px": 1024,
     "required_hybrid_contract_fields": [
