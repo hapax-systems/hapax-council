@@ -18,7 +18,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
 from shared.platform_capability_receipts import PLATFORM_CAPABILITY_RECEIPT_DIR_ENV
 from shared.platform_capability_registry import (
@@ -53,6 +53,8 @@ from shared.route_metadata_schema import (
 ROUTE_DECISION_SCHEMA_VERSION = 1
 ROUTE_DECISION_LEDGER = "route-decisions.jsonl"
 DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION = 1
+ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION = 1
+ROUTE_AUTHORITY_RECEIPT_DIRNAME = "route-authority"
 ROUTING_MODEL_VERSION = "capacity-dimensional-v1"
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
 UNKNOWN_OR_RISKY_PRIVACY_POSTURES = frozenset(
@@ -200,6 +202,33 @@ class ReviewRequirementReceipt(_PolicyModel):
     authoritative_acceptor_profile: str | None = None
 
 
+class RouteAuthorityReceipt(_PolicyModel):
+    route_authority_receipt_schema: Literal[1] = ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION
+    receipt_id: str
+    receipt_type: Literal["opus_model_entitlement", "quality_equivalence"]
+    route_id: str
+    issued_at: datetime
+    stale_after: str
+    signed_by: str
+    signed_payload_sha256: str
+    evidence_refs: tuple[str, ...] = Field(min_length=1)
+    quality_floors: tuple[str, ...] = Field(default=())
+
+    @model_validator(mode="after")
+    def _valid_signed_receipt(self) -> RouteAuthorityReceipt:
+        _parse_duration_spec(self.stale_after)
+        if not self.signed_by.strip():
+            raise ValueError("signed_by is required")
+        expected = route_authority_receipt_payload_hash(self)
+        if self.signed_payload_sha256 != expected:
+            raise ValueError("signed payload hash mismatch")
+        if self.receipt_type == "quality_equivalence" and not self.quality_floors:
+            raise ValueError("quality_equivalence receipts require quality_floors")
+        if self.receipt_type == "opus_model_entitlement" and not self.route_id.endswith(".opus"):
+            raise ValueError("opus_model_entitlement receipts must target an opus route")
+        return self
+
+
 class DimensionalRouteReceipt(_PolicyModel):
     dimensional_route_receipt_schema: Literal[1] = DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION
     decision_id: str
@@ -307,6 +336,7 @@ def load_dispatch_policy_sources(
     registry_path: Path | None = None,
     quota_ledger_path: Path | None = None,
     receipt_dir: Path | None = None,
+    now: datetime | None = None,
 ) -> DispatchPolicySources:
     """Load inert policy sources, turning failures into request evidence."""
 
@@ -320,13 +350,22 @@ def load_dispatch_policy_sources(
         registry = load_platform_capability_registry(
             registry_path or PLATFORM_CAPABILITY_REGISTRY,
             receipt_dir=effective_receipt_dir,
+            now=now,
         )
+        if registry is not None and effective_receipt_dir is not None:
+            registry = apply_route_authority_receipts(
+                registry,
+                receipt_dir=effective_receipt_dir,
+                now=now,
+            )
     except (IndexError, PlatformCapabilityRegistryError, OSError, ValueError) as exc:
+        registry = None
         registry_error = str(exc)
 
     try:
         quota_ledger = load_quota_spend_ledger(quota_ledger_path or QUOTA_SPEND_LEDGER_FIXTURES)
     except (IndexError, QuotaSpendLedgerError, OSError, ValueError) as exc:
+        quota_ledger = None
         quota_error = str(exc)
 
     return DispatchPolicySources(
@@ -448,42 +487,13 @@ def evaluate_dispatch_policy(
         )
 
     if request.rollback_mode:
-        if not request.legacy_route_supported:
-            return _decision(
-                request,
-                DispatchAction.REFUSE,
-                ("rollback_unsupported_route_refused",),
-                checked_at,
-                quality_floor_satisfied=False,
-                authority_allowed=False,
-            )
-        if request.profile != "full":
-            return _decision(
-                request,
-                DispatchAction.HOLD,
-                ("rollback_non_full_profile_hold",),
-                checked_at,
-                quality_floor_satisfied=False,
-                authority_allowed=False,
-            )
-        if _mutation_requested(request) and not request.legacy_route_mutable:
-            return _decision(
-                request,
-                DispatchAction.REFUSE,
-                ("rollback_read_only_mutation_refused",),
-                checked_at,
-                quality_floor_satisfied=False,
-                authority_allowed=False,
-            )
         return _decision(
             request,
-            DispatchAction.LAUNCH,
-            ("rollback_full_profile_launch",),
+            DispatchAction.HOLD,
+            ("policy_rollback_retired", "signed_route_authority_receipt_required"),
             checked_at,
-            quality_floor_satisfied=True,
-            authority_allowed=True,
-            compatibility_mode="rollback_full_profile",
-            degraded_state="compatibility_rollback",
+            quality_floor_satisfied=False,
+            authority_allowed=False,
         )
 
     if request.route_metadata_status == "hold":
@@ -672,9 +682,173 @@ def route_decision_receipt_payload(decision: RouteDecision) -> dict[str, Any]:
                 "dimensional_selected_route_id": decision.dimensional_receipt.selected_route_id,
                 "dimensional_candidate_count": len(decision.dimensional_receipt.candidates),
                 "dimensional_degraded_mode": decision.dimensional_receipt.degraded_mode,
+                "dimensional_evidence_refs": list(
+                    _dimensional_receipt_evidence_refs(decision.dimensional_receipt)
+                ),
             }
         )
     return payload
+
+
+def route_authority_receipt_payload_hash(
+    payload: Mapping[str, Any] | RouteAuthorityReceipt,
+) -> str:
+    if isinstance(payload, RouteAuthorityReceipt):
+        raw = payload.model_dump(mode="json")
+    else:
+        raw = dict(payload)
+    raw.pop("signed_payload_sha256", None)
+    return stable_payload_hash(raw)
+
+
+def route_authority_receipt_reference(receipt: RouteAuthorityReceipt) -> str:
+    route_id = normalize_route_id(receipt.route_id)
+    return f"route-authority-receipt:{receipt.receipt_type}:{route_id}:{receipt.receipt_id}"
+
+
+def apply_route_authority_receipts(
+    registry: PlatformCapabilityRegistry,
+    *,
+    receipt_dir: Path,
+    now: datetime | None = None,
+) -> PlatformCapabilityRegistry:
+    authority_receipts = _load_fresh_route_authority_receipts(
+        receipt_dir / ROUTE_AUTHORITY_RECEIPT_DIRNAME,
+        now=now,
+    )
+    if not authority_receipts:
+        return registry
+
+    payload = registry.model_dump(mode="json")
+    routes_by_id = {route["route_id"]: route for route in payload["routes"]}
+    for receipt in authority_receipts:
+        route_id = normalize_route_id(receipt.route_id)
+        route_payload = routes_by_id.get(route_id)
+        if route_payload is None:
+            raise ValueError(
+                f"route authority receipt {receipt.receipt_id!r} targets unsupported route "
+                f"{route_id!r}"
+            )
+        _apply_route_authority_receipt_to_route_payload(route_payload, receipt)
+    return PlatformCapabilityRegistry.model_validate(payload)
+
+
+def _load_fresh_route_authority_receipts(
+    receipt_dir: Path,
+    *,
+    now: datetime | None,
+) -> tuple[RouteAuthorityReceipt, ...]:
+    if not receipt_dir.exists():
+        return ()
+    checked_now = _coerce_utc(now_utc() if now is None else now)
+    receipts: dict[tuple[str, str], RouteAuthorityReceipt] = {}
+    for path in sorted(receipt_dir.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            receipt = RouteAuthorityReceipt.model_validate(payload)
+        except (OSError, json.JSONDecodeError, ValidationError, ValueError) as exc:
+            raise ValueError(f"invalid route authority receipt at {path}: {exc}") from exc
+        if not _route_authority_receipt_is_fresh(receipt, now=checked_now):
+            continue
+        key = (normalize_route_id(receipt.route_id), receipt.receipt_type)
+        prior = receipts.get(key)
+        if prior is None or _coerce_utc(receipt.issued_at) > _coerce_utc(prior.issued_at):
+            receipts[key] = receipt
+    return tuple(receipts[key] for key in sorted(receipts))
+
+
+def _route_authority_receipt_is_fresh(
+    receipt: RouteAuthorityReceipt,
+    *,
+    now: datetime,
+) -> bool:
+    issued_at = _coerce_utc(receipt.issued_at)
+    return now - issued_at <= _parse_duration_spec(receipt.stale_after)
+
+
+def _apply_route_authority_receipt_to_route_payload(
+    route_payload: dict[str, Any],
+    receipt: RouteAuthorityReceipt,
+) -> None:
+    receipt_ref = route_authority_receipt_reference(receipt)
+    removable_reasons = _route_authority_removable_reasons(receipt)
+
+    top_blockers = [
+        reason
+        for reason in route_payload.get("blocked_reasons", [])
+        if reason not in removable_reasons
+    ]
+    freshness = route_payload["freshness"]
+    capability_evidence = freshness["evidence"]["capability"]
+    capability_evidence["blocked_reasons"] = [
+        reason
+        for reason in capability_evidence.get("blocked_reasons", [])
+        if reason not in removable_reasons
+    ]
+    capability_evidence["evidence_refs"] = list(
+        dict.fromkeys(
+            [
+                *capability_evidence.get("evidence_refs", []),
+                *receipt.evidence_refs,
+                receipt_ref,
+            ]
+        )
+    )
+    issued_at = _coerce_utc(receipt.issued_at).isoformat().replace("+00:00", "Z")
+    freshness["capability_checked_at"] = issued_at
+    freshness["capability_stale_after"] = receipt.stale_after
+
+    quality_envelope = route_payload["quality_envelope"]
+    quality_envelope["explicit_equivalence_records"] = list(
+        dict.fromkeys(
+            [
+                *quality_envelope.get("explicit_equivalence_records", []),
+                receipt_ref,
+            ]
+        )
+    )
+    if receipt.receipt_type == "quality_equivalence":
+        quality_envelope["eligible_quality_floors"] = list(
+            dict.fromkeys(
+                [
+                    *quality_envelope.get("eligible_quality_floors", []),
+                    *receipt.quality_floors,
+                ]
+            )
+        )
+        quality_envelope["excluded_task_classes"] = [
+            item
+            for item in quality_envelope.get("excluded_task_classes", [])
+            if item != "frontier_required_without_equivalence_record"
+        ]
+
+    surface_blockers: list[str] = []
+    for surface_payload in freshness["evidence"].values():
+        surface_blockers.extend(surface_payload.get("blocked_reasons", []))
+    route_payload["blocked_reasons"] = list(dict.fromkeys([*top_blockers, *surface_blockers]))
+    route_payload["route_state"] = "blocked" if route_payload["blocked_reasons"] else "active"
+
+
+def _route_authority_removable_reasons(receipt: RouteAuthorityReceipt) -> set[str]:
+    if receipt.receipt_type == "opus_model_entitlement":
+        return {"opus_model_entitlement_receipt_absent", "fresh_capability_evidence_absent"}
+    return {"quality_equivalence_record_absent", "fresh_capability_evidence_absent"}
+
+
+def _dimensional_receipt_evidence_refs(
+    receipt: DimensionalRouteReceipt,
+) -> tuple[str, ...]:
+    refs: list[str] = []
+    refs.append(receipt.demand_vector_ref.artifact_path)
+    for candidate in receipt.candidates:
+        for veto in candidate.vetoes:
+            if veto.evidence_ref:
+                refs.append(veto.evidence_ref)
+        for score in candidate.dimensional_scores:
+            refs.extend(score.evidence_refs)
+    for item in receipt.stale_metadata:
+        refs.append(item.source_id)
+    return tuple(dict.fromkeys(ref for ref in refs if ref))
 
 
 DIMENSION_WEIGHTS: Mapping[str, int] = {
@@ -1802,12 +1976,16 @@ __all__ = [
     "DispatchRequest",
     "DominanceRelation",
     "QuotaSpendState",
+    "RouteAuthorityReceipt",
     "RouteCapabilityState",
     "RouteDecision",
     "StaleMetadataReceipt",
+    "apply_route_authority_receipts",
     "build_dispatch_request",
     "evaluate_dispatch_policy",
     "load_dispatch_policy_sources",
+    "route_authority_receipt_payload_hash",
+    "route_authority_receipt_reference",
     "route_decision_receipt_payload",
     "write_route_decision_receipt",
 ]

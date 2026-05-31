@@ -150,6 +150,7 @@ from shared.director_world_surface_snapshot import (
 from shared.director_world_surface_snapshot import (
     Freshness as DirectorWorldSurfaceFreshness,
 )
+from shared.dispatcher_policy import RouteAuthorityReceipt
 from shared.egress_cadence_feasibility import (
     assess_egress_cadence as _assess_egress_cadence,
 )
@@ -720,6 +721,10 @@ WorldSurfaceHealthFixtureSet.rows_for_fixture_case
 # Provider/tool route health validators are invoked dynamically by Pydantic
 # while projecting model/search/MCP/publication/local routes into WCS rows.
 ProviderToolRouteHealth._validate_route_claim_authority
+
+# Route authority receipts are Pydantic-validated when loaded from receipt
+# files; vulture cannot see model_validator invocation.
+RouteAuthorityReceipt._valid_signed_receipt
 
 # Temporal/perceptual WCS health rows are loaded through Pydantic fixture
 # validation; vulture cannot see model_validator invocation.
