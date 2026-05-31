@@ -95,6 +95,7 @@ def test_ticker_metadata_records_renderer(tmp_path: Path) -> None:
     args = Namespace(
         ticker_role="grounding",
         intent_path=tmp_path / "intent.jsonl",
+        output=tmp_path / "ticker.bgra",
         width=1344,
         height=176,
         fps=8,
@@ -110,3 +111,57 @@ def test_ticker_metadata_records_renderer(tmp_path: Path) -> None:
     assert payload["preflip_y"] is True
     assert payload["width"] == 1344
     assert payload["height"] == 176
+
+
+def test_ticker_gpu_drift_writes_raw_handoff_without_final_output(tmp_path: Path) -> None:
+    module = _load_module()
+    intent = tmp_path / "intent.jsonl"
+    intent.write_text(
+        json.dumps({"grounding_provenance": ["visual.scene_type"]}) + "\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "quake-live-ticker-grounding.bgra"
+    meta = tmp_path / "quake-live-ticker-grounding.json"
+
+    assert (
+        module["main"](
+            [
+                "--ticker-role",
+                "grounding",
+                "--intent-path",
+                str(intent),
+                "--output",
+                str(output),
+                "--meta",
+                str(meta),
+                "--width",
+                "96",
+                "--height",
+                "32",
+                "--fps",
+                "4",
+                "--preflip-y",
+                "1",
+                "--gpu-drift",
+                "--once",
+            ]
+        )
+        == 0
+    )
+
+    raw_output, raw_meta = module["_gpu_drift_paths"](output)
+    payload = json.loads(raw_meta.read_text(encoding="utf-8"))
+
+    assert raw_output.read_bytes()
+    assert raw_output.stat().st_size == 96 * 32 * 4
+    assert not output.exists()
+    assert not meta.exists()
+    assert payload["gpu_drift"] is True
+    assert payload["gpu_drift_raw_output"] == str(raw_output)
+    assert payload["gpu_drift_final_output"] == str(output)
+    assert payload["gpu_drift_output_owner"] == "screwm_media_drift"
+    assert payload["drift_enabled"] is False
+    assert payload["drift_receiver"] == "ticker:grounding"
+    assert payload["drift_input_hash"]
+    assert payload["drift_output_hash"] == ""
+    assert payload["preflip_y"] is True

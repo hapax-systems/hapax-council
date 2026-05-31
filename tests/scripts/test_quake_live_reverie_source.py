@@ -91,3 +91,50 @@ def test_reverie_wrapper_applies_drift_and_writes_metadata(tmp_path: Path) -> No
     assert payload["drift_receiver"] == "reverie:w05"
     assert payload["drift_changed"] is True
     assert payload["source_fresh"] is True
+
+
+def test_reverie_gpu_drift_writes_raw_handoff_without_final_output(tmp_path: Path) -> None:
+    reverie = _load_reverie()
+    width = 32
+    height = 16
+    source = tmp_path / "reverie.rgba"
+    output = tmp_path / "quake-live-reverie.bgra"
+    meta = tmp_path / "quake-live-reverie.json"
+    frame = bytes((10, 30, 90, 255)) * (width * height)
+    source.write_bytes(frame)
+
+    assert (
+        reverie.main(
+            [
+                "--input",
+                str(source),
+                "--output",
+                str(output),
+                "--meta",
+                str(meta),
+                "--width",
+                str(width),
+                "--height",
+                str(height),
+                "--gpu-drift",
+                "--once",
+            ]
+        )
+        == 0
+    )
+
+    raw_output, raw_meta = reverie._gpu_drift_paths(output)  # noqa: SLF001
+    payload = json.loads(raw_meta.read_text(encoding="utf-8"))
+    assert raw_output.read_bytes() == frame
+    assert not output.exists()
+    assert not meta.exists()
+    assert payload["gpu_drift"] is True
+    assert payload["gpu_drift_raw_output"] == str(raw_output)
+    assert payload["gpu_drift_final_output"] == str(output)
+    assert payload["gpu_drift_output_owner"] == "screwm_media_drift"
+    assert payload["drift_enabled"] is False
+    assert payload["drift_receiver"] == "reverie:w05"
+    assert payload["drift_input_hash"]
+    assert payload["drift_output_hash"] == ""
+    assert payload["drift_changed"] is False
+    assert payload["source_fresh"] is True

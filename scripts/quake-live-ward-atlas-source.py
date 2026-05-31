@@ -181,6 +181,19 @@ def _truthy(value: object) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
+def _gpu_drift_default() -> bool:
+    value = os.environ.get(
+        "HAPAX_QUAKE_WARD_ATLAS_GPU_DRIFT",
+        os.environ.get("HAPAX_QUAKE_GPU_DRIFT", ""),
+    )
+    return _truthy(value)
+
+
+def _gpu_drift_paths(output: Path) -> tuple[Path, Path]:
+    raw_output = output.with_name(f"{output.stem}.raw.bgra")
+    return raw_output, raw_output.with_suffix(".json")
+
+
 def _short_hash(data: bytes) -> str:
     return hashlib.blake2s(data, digest_size=8).hexdigest()
 
@@ -471,6 +484,7 @@ def render_atlas(
     stale_source_seconds: float = DEFAULT_STALE_SOURCE_SECONDS,
     drift_renderer: MediaDriftRenderer | None = None,
     drift_receiver: str = "ward-atlas",
+    gpu_drift_raw_output: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if backends is None or errors is None:
         backends, errors = _construct_backends(layout_path)
@@ -565,6 +579,41 @@ def render_atlas(
 
     data = _surface_bgra_bytes(surface, width, height)
     drift_input_hash = _short_hash(data)
+    if gpu_drift_raw_output is not None:
+        _atomic_write(gpu_drift_raw_output, data)
+        payload = {
+            "w": width,
+            "h": height,
+            "stride": width * 4,
+            "frame_id": frame_id,
+            "observed_at": time.time(),
+            "cell_width": cell_width,
+            "cell_height": cell_height,
+            "columns": columns,
+            "ward_count": len(WARD_IDS),
+            "wards": observed,
+            "gpu_drift": True,
+            "gpu_drift_raw_output": str(gpu_drift_raw_output),
+            "gpu_drift_final_output": str(output),
+            "gpu_drift_output_owner": "screwm_media_drift",
+            "drift_renderer": "quake-media-drift-v1",
+            "drift_enabled": False,
+            "drift_receiver": drift_receiver,
+            "drift_game_data": str(getattr(drift_renderer, "game_data", ""))
+            if drift_renderer is not None
+            else "",
+            "drift_intensity": float(getattr(drift_renderer, "intensity", 0.0))
+            if drift_renderer is not None
+            else 0.0,
+            "drift_input_hash": drift_input_hash,
+            "drift_output_hash": "",
+            "drift_changed": False,
+        }
+        _atomic_write(
+            gpu_drift_raw_output.with_suffix(".json"),
+            json.dumps(payload, sort_keys=True).encode("utf-8"),
+        )
+        return observed, errors
     if drift_renderer is not None:
         data = drift_renderer.apply(
             data,
@@ -641,6 +690,16 @@ def main() -> int:
         default=float(os.environ.get("HAPAX_QUAKE_WARD_ATLAS_DRIFT_INTENSITY", "1.2")),
         help="Receiver-local drift intensity multiplier.",
     )
+    parser.add_argument(
+        "--gpu-drift",
+        action="store_true",
+        default=_gpu_drift_default(),
+        help=(
+            "GPU media-drift cutover: write the undrifted atlas frame to "
+            "<output>.raw.bgra and leave final output/metadata ownership to "
+            "screwm_media_drift."
+        ),
+    )
     args = parser.parse_args()
 
     if args.width > 4096 or args.height > 4096:
@@ -663,6 +722,7 @@ def main() -> int:
         enabled=_truthy(args.drift),
         intensity=args.drift_intensity,
     )
+    raw_output, _raw_meta = _gpu_drift_paths(args.output) if args.gpu_drift else (None, None)
     frame_id = 0
     period = 1.0 / max(0.1, args.fps)
     while running:
@@ -682,6 +742,7 @@ def main() -> int:
             errors=errors,
             drift_renderer=drift_renderer,
             drift_receiver=args.drift_receiver,
+            gpu_drift_raw_output=raw_output,
         )
         if args.once:
             break

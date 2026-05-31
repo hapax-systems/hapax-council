@@ -248,6 +248,18 @@ def test_screwm_live_media_sources_apply_receiver_local_drift() -> None:
     assert "drift_input_hash" in ticker_source
     assert "drift_input_hash" in atlas_source
     assert "drift_input_hash" in reverie_source
+    assert "--gpu-drift" in media_source
+    assert "--gpu-drift" in ticker_source
+    assert "--gpu-drift" in atlas_source
+    assert "--gpu-drift" in reverie_source
+    assert "_gpu_drift_paths" in media_source
+    assert "_gpu_drift_paths" in ticker_source
+    assert "_gpu_drift_paths" in atlas_source
+    assert "_gpu_drift_paths" in reverie_source
+    assert "gpu_drift_output_owner" in media_source
+    assert "gpu_drift_output_owner" in ticker_source
+    assert "gpu_drift_output_owner" in atlas_source
+    assert "gpu_drift_output_owner" in reverie_source
     assert "receiver-local drift" in drift_source.lower()
     assert "effect-drift-active-ratio.txt" in drift_source
     assert "effect-drift-active-slot-ratio.txt" in drift_source

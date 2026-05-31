@@ -484,6 +484,7 @@ def _write_atomic(path: Path, data: bytes) -> None:
 
 
 def _write_meta(path: Path, args: argparse.Namespace, frames: int) -> None:
+    gpu_drift = bool(getattr(args, "gpu_drift", False))
     payload = {
         "source": args.source,
         "url": getattr(args, "resolved_url", args.url) if args.source == "youtube" else "",
@@ -506,8 +507,12 @@ def _write_meta(path: Path, args: argparse.Namespace, frames: int) -> None:
         "projection_front_height_ratio": (
             SPHERE_FRONT_HEIGHT_RATIO if args.projection == "sphere-front" else None
         ),
+        "gpu_drift": gpu_drift,
+        "gpu_drift_raw_output": str(getattr(args, "gpu_drift_raw_output", "")),
+        "gpu_drift_final_output": str(getattr(args, "output", "")),
+        "gpu_drift_output_owner": "screwm_media_drift" if gpu_drift else "producer",
         "drift_renderer": "quake-media-drift-v1",
-        "drift_enabled": _truthy(getattr(args, "drift", "on")),
+        "drift_enabled": _truthy(getattr(args, "drift", "on")) and not gpu_drift,
         "drift_receiver": _drift_receiver(args),
         "drift_game_data": str(getattr(args, "drift_game_data", DEFAULT_GAME_DATA)),
         "drift_intensity": float(getattr(args, "drift_intensity", 1.0)),
@@ -541,9 +546,15 @@ def _short_hash(data: bytes) -> str:
     return hashlib.blake2s(data, digest_size=8).hexdigest()
 
 
+def _gpu_drift_paths(output: Path) -> tuple[Path, Path]:
+    raw_output = output.with_name(f"{output.stem}.raw.bgra")
+    return raw_output, raw_output.with_suffix(".json")
+
+
 def stream_frames(args: argparse.Namespace) -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    raw_output = args.output.with_name(f"{args.output.stem}.raw.bgra") if args.gpu_drift else None
+    raw_output, raw_meta = _gpu_drift_paths(args.output) if args.gpu_drift else (None, None)
+    args.gpu_drift_raw_output = raw_output or ""
     frame_width, frame_height = _decode_dimensions(args)
     args.source_frame_width = frame_width
     args.source_frame_height = frame_height
@@ -578,9 +589,13 @@ def stream_frames(args: argparse.Namespace) -> int:
                 if raw_output is not None:
                     # GPU media-drift cutover: emit the undrifted frame for the
                     # screwm_media_drift service (it writes the drifted args.output).
-                    _write_atomic(raw_output, data)
                     if should_write_meta:
-                        _write_meta(args.meta, args, frames)
+                        args.drift_input_hash = _short_hash(data)
+                        args.drift_output_hash = ""
+                        args.drift_changed = False
+                    _write_atomic(raw_output, data)
+                    if should_write_meta and raw_meta is not None:
+                        _write_meta(raw_meta, args, frames)
                     continue
                 drift_input_hash = _short_hash(data) if should_write_meta else ""
                 data = drift_renderer.apply(
@@ -606,7 +621,7 @@ def stream_frames(args: argparse.Namespace) -> int:
                 proc.wait(timeout=3)
         if not stop:
             time.sleep(args.restart_delay)
-    _write_meta(args.meta, args, frames)
+    _write_meta(raw_meta if raw_meta is not None else args.meta, args, frames)
     return 0
 
 

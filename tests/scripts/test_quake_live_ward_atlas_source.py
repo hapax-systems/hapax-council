@@ -147,6 +147,44 @@ def test_ward_atlas_applies_receiver_local_drift_before_write(tmp_path: Path) ->
     assert payload["drift_input_hash"] != payload["drift_output_hash"]
 
 
+def test_ward_atlas_gpu_drift_writes_raw_handoff_without_final_output(tmp_path: Path) -> None:
+    atlas = _load_atlas()
+    ward_id = atlas.WARD_IDS[0]
+    source = _solid_surface(64, 32, (0.0, 0.4, 1.0))
+    output = tmp_path / "quake-live-ward-atlas.bgra"
+    meta = tmp_path / "quake-live-ward-atlas.json"
+    raw_output, raw_meta = atlas._gpu_drift_paths(output)  # noqa: SLF001
+
+    observed, _errors = atlas.render_atlas(
+        output=output,
+        meta=meta,
+        layout_path=Path("/nonexistent-layout.json"),
+        width=64,
+        height=32,
+        columns=1,
+        cell_width=64,
+        cell_height=32,
+        frame_id=5,
+        backends={ward_id: _Registry(ward_id, source)},
+        errors={},
+        gpu_drift_raw_output=raw_output,
+    )
+
+    payload = json.loads(raw_meta.read_text(encoding="utf-8"))
+    assert observed[ward_id]["status"] == "rendered"
+    assert raw_output.stat().st_size == 64 * 32 * 4
+    assert not output.exists()
+    assert not meta.exists()
+    assert payload["gpu_drift"] is True
+    assert payload["gpu_drift_raw_output"] == str(raw_output)
+    assert payload["gpu_drift_final_output"] == str(output)
+    assert payload["gpu_drift_output_owner"] == "screwm_media_drift"
+    assert payload["drift_enabled"] is False
+    assert payload["drift_receiver"] == "ward-atlas"
+    assert payload["drift_input_hash"]
+    assert payload["drift_output_hash"] == ""
+
+
 def test_ward_atlas_reserves_reverie_for_direct_texture_instead_of_proxying_it(
     tmp_path: Path,
 ) -> None:

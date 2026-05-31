@@ -32,8 +32,21 @@ def _truthy(value: object) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
+def _gpu_drift_default() -> bool:
+    value = os.environ.get(
+        "HAPAX_QUAKE_REVERIE_GPU_DRIFT",
+        os.environ.get("HAPAX_QUAKE_GPU_DRIFT", ""),
+    )
+    return _truthy(value)
+
+
 def _short_hash(data: bytes) -> str:
     return hashlib.blake2s(data, digest_size=8).hexdigest()
+
+
+def _gpu_drift_paths(output: Path) -> tuple[Path, Path]:
+    raw_output = output.with_name(f"{output.stem}.raw.bgra")
+    return raw_output, raw_output.with_suffix(".json")
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
@@ -82,6 +95,7 @@ def _write_meta(
     input_hash: str,
     output_hash: str,
 ) -> None:
+    gpu_drift = bool(getattr(args, "gpu_drift", False))
     payload = {
         "source": "reverie",
         "renderer": "quake-live-reverie-source",
@@ -91,14 +105,18 @@ def _write_meta(
         "fps": args.fps,
         "frames": frames,
         "updated_at": time.time(),
+        "gpu_drift": gpu_drift,
+        "gpu_drift_raw_output": str(getattr(args, "gpu_drift_raw_output", "")),
+        "gpu_drift_final_output": str(getattr(args, "output", "")),
+        "gpu_drift_output_owner": "screwm_media_drift" if gpu_drift else "producer",
         "drift_renderer": "quake-media-drift-v1",
-        "drift_enabled": _truthy(args.drift),
+        "drift_enabled": _truthy(args.drift) and not gpu_drift,
         "drift_receiver": args.drift_receiver,
         "drift_game_data": str(args.drift_game_data),
         "drift_intensity": float(args.drift_intensity),
         "drift_input_hash": input_hash,
         "drift_output_hash": output_hash,
-        "drift_changed": input_hash != output_hash,
+        "drift_changed": input_hash != output_hash if not gpu_drift else False,
         **source_meta,
     }
     _atomic_write(path, json.dumps(payload, sort_keys=True).encode("utf-8") + b"\n")
@@ -106,6 +124,8 @@ def _write_meta(
 
 def stream_frames(args: argparse.Namespace) -> int:
     expected_size = args.width * args.height * 4
+    raw_output, raw_meta = _gpu_drift_paths(args.output) if args.gpu_drift else (None, None)
+    args.gpu_drift_raw_output = raw_output or ""
     drift_renderer = MediaDriftRenderer(
         game_data=args.drift_game_data,
         enabled=_truthy(args.drift),
@@ -137,6 +157,28 @@ def stream_frames(args: argparse.Namespace) -> int:
             )
         frames += 1
         should_write_meta = frames == 1 or frames % max(1, args.fps * 5) == 0
+        if raw_output is not None:
+            input_hash = _short_hash(data) if should_write_meta else last_input_hash
+            output_hash = ""
+            _atomic_write(raw_output, data)
+            last_meta = source_meta
+            if should_write_meta:
+                last_input_hash = input_hash
+                last_output_hash = output_hash
+                if raw_meta is not None:
+                    _write_meta(
+                        raw_meta,
+                        args=args,
+                        frames=frames,
+                        source_meta=source_meta,
+                        input_hash=input_hash,
+                        output_hash=output_hash,
+                    )
+            if args.once:
+                break
+            elapsed = time.monotonic() - started
+            time.sleep(max(0.01, period - elapsed))
+            continue
         input_hash = _short_hash(data) if should_write_meta else last_input_hash
         data = drift_renderer.apply(
             data,
@@ -166,7 +208,7 @@ def stream_frames(args: argparse.Namespace) -> int:
         time.sleep(max(0.01, period - elapsed))
 
     _write_meta(
-        args.meta,
+        raw_meta if raw_meta is not None else args.meta,
         args=args,
         frames=frames,
         source_meta=last_meta,
@@ -204,6 +246,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--drift-intensity",
         type=float,
         default=float(os.environ.get("HAPAX_QUAKE_REVERIE_DRIFT_INTENSITY", "1.35")),
+    )
+    parser.add_argument(
+        "--gpu-drift",
+        action="store_true",
+        default=_gpu_drift_default(),
+        help=(
+            "GPU media-drift cutover: write the undrifted reverie frame to "
+            "<output>.raw.bgra and leave final output/metadata ownership to "
+            "screwm_media_drift."
+        ),
     )
     return parser.parse_args(argv)
 

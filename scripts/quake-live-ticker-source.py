@@ -227,7 +227,19 @@ def _flip_bgra_y(data: bytes, width: int, height: int) -> bytes:
 
 
 def _truthy(value: object) -> bool:
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _gpu_drift_default() -> bool:
+    value = os.environ.get(
+        "HAPAX_QUAKE_TICKER_GPU_DRIFT", os.environ.get("HAPAX_QUAKE_GPU_DRIFT", "")
+    )
+    return _truthy(value)
+
+
+def _gpu_drift_paths(output: Path) -> tuple[Path, Path]:
+    raw_output = output.with_name(f"{output.stem}.raw.bgra")
+    return raw_output, raw_output.with_suffix(".json")
 
 
 def render_ticker_frame(
@@ -308,6 +320,7 @@ def _write_atomic(path: Path, data: bytes) -> None:
 
 
 def _write_meta(path: Path, args: argparse.Namespace, frames: int, row_count: int) -> None:
+    gpu_drift = bool(getattr(args, "gpu_drift", False))
     payload = {
         "source": "ticker",
         "renderer": "cairo-pango",
@@ -318,8 +331,12 @@ def _write_meta(path: Path, args: argparse.Namespace, frames: int, row_count: in
         "height": args.height,
         "fps": args.fps,
         "preflip_y": _truthy(args.preflip_y),
+        "gpu_drift": gpu_drift,
+        "gpu_drift_raw_output": str(getattr(args, "gpu_drift_raw_output", "")),
+        "gpu_drift_final_output": str(getattr(args, "output", "")),
+        "gpu_drift_output_owner": "screwm_media_drift" if gpu_drift else "producer",
         "drift_renderer": "quake-media-drift-v1",
-        "drift_enabled": _truthy(getattr(args, "drift", "on")),
+        "drift_enabled": _truthy(getattr(args, "drift", "on")) and not gpu_drift,
         "drift_receiver": _drift_receiver(args),
         "drift_game_data": str(getattr(args, "drift_game_data", DEFAULT_GAME_DATA)),
         "drift_intensity": float(getattr(args, "drift_intensity", 1.0)),
@@ -337,6 +354,8 @@ def stream_frames(args: argparse.Namespace) -> int:
     frames = 0
     rows: list[str] = []
     stop = False
+    raw_output, raw_meta = _gpu_drift_paths(args.output) if args.gpu_drift else (None, None)
+    args.gpu_drift_raw_output = raw_output or ""
     drift_renderer = MediaDriftRenderer(
         game_data=getattr(args, "drift_game_data", DEFAULT_GAME_DATA),
         enabled=_truthy(getattr(args, "drift", "on")),
@@ -365,6 +384,21 @@ def stream_frames(args: argparse.Namespace) -> int:
         )
         next_frame = frames + 1
         should_write_meta = next_frame == 1 or next_frame % max(1, args.fps * 5) == 0
+        if raw_output is not None:
+            if _truthy(args.preflip_y):
+                data = _flip_bgra_y(data, args.width, args.height)
+            if should_write_meta:
+                args.drift_input_hash = hashlib.blake2s(data, digest_size=8).hexdigest()
+                args.drift_output_hash = ""
+                args.drift_changed = False
+            _write_atomic(raw_output, data)
+            frames = next_frame
+            if should_write_meta and raw_meta is not None:
+                _write_meta(raw_meta, args, frames, len(rows))
+            if args.once:
+                break
+            time.sleep(frame_interval)
+            continue
         drift_input_hash = (
             hashlib.blake2s(data, digest_size=8).hexdigest()
             if should_write_meta
@@ -397,7 +431,7 @@ def stream_frames(args: argparse.Namespace) -> int:
             break
         time.sleep(frame_interval)
 
-    _write_meta(args.meta, args, frames, len(rows))
+    _write_meta(raw_meta if raw_meta is not None else args.meta, args, frames, len(rows))
     return 0
 
 
@@ -435,6 +469,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=float,
         default=float(os.environ.get("HAPAX_QUAKE_TICKER_DRIFT_INTENSITY", "1.0")),
         help="Multiplier for texture-local ticker drift intensity.",
+    )
+    parser.add_argument(
+        "--gpu-drift",
+        action="store_true",
+        default=_gpu_drift_default(),
+        help=(
+            "GPU media-drift cutover: write the undrifted ticker frame to "
+            "<output>.raw.bgra and leave final output/metadata ownership to "
+            "screwm_media_drift."
+        ),
     )
     parser.add_argument("--once", action="store_true")
     return parser.parse_args(argv)
