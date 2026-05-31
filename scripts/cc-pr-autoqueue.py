@@ -40,7 +40,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from shared.merge_queue_lineage import DEFAULT_LEDGER_PATH, read_jsonl_records  # noqa: E402
 from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
-from shared.sdlc_lifecycle import task_closure_validity  # noqa: E402
+from shared.sdlc_lifecycle import (  # noqa: E402
+    TASK_MERGE_READY_STATUSES,
+    task_closure_validity,
+)
 
 LOG = logging.getLogger("cc-pr-autoqueue")
 
@@ -56,17 +59,10 @@ NON_BLOCKING_CHECKBOX_RE = re.compile(
     r"\b(optional|non[-_\s]?blocking|informational|follow[-_\s]?up|stretch)\b",
     re.IGNORECASE,
 )
-ACTIVE_READY_STATUSES = {
-    "pr_open",
-    "ci_green",
-    "merge_queue",
-    "ready",
-    "ready_for_review",
-    "review_ready",
-    "ready_for_merge",
-    "done",
-    "completed",
-}
+# Sourced from the canonical SSOT so the autoqueue and the cc-task gate agree on
+# the ready family (shared/sdlc_lifecycle.py TASK_MERGE_READY_STATUSES). The two
+# fulfilling-closed states stay admissible for closeout reconciliation.
+ACTIVE_READY_STATUSES = set(TASK_MERGE_READY_STATUSES) | {"done", "completed"}
 ACTIVE_WORK_STATUSES = ACTIVE_READY_STATUSES | {"claimed", "in_progress"}
 CLOSED_READY_STATUSES = {"done", "completed", "complete", "closed", "fulfilled"}
 HOLD_LABEL_RE = re.compile(

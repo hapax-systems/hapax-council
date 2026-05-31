@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""cc-stage-advance <task_id> <stage> [--allow-backward] — council AVSDLC stage-setter.
+
+Sets the ``stage:`` field on a cc-task note and appends the transition to the
+authority-case ledger, so a task can move S6 (implementation) -> S7 (release)
+without hand-editing frontmatter. This is the highest-frequency block the reform
+removes: before Phase 2 only ~21/230 active tasks carried a stage, so the
+release gate (``stage >= S7`` for ``release_authorized``) could not be satisfied
+without manual YAML surgery.
+
+The cc-tasks vault is writable by sanctioned tooling (the gate classifies by
+command head, and ``python3`` is not a mutation verb); every advance appends a
+``kind="stage_transition"`` record to the authority-case ledger for audit.
+
+Coordination reform Phase 2 (CASE-SDLC-REFORM-001; master design section 8). The
+guard for a forward transition (e.g. implementation complete + CI green for
+S6->S7) is the caller's responsibility; this tool enforces only stage shape,
+authority-case presence, and forward-only ordering (unless --allow-backward).
+
+Usage:
+    cc-stage-advance <task_id> <stage e.g. S7_RELEASE>
+    cc-stage-advance <task_id> S6_IMPLEMENTATION --allow-backward
+
+Exit: 0 advanced (or already at stage), 2 refused (bad stage / no authority_case
+/ backward without flag), 3 not found / IO / usage.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+OK = 0
+REFUSED = 2
+ERROR = 3
+
+VAULT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+LEDGER = Path(
+    os.environ.get(
+        "HAPAX_AUTHORITY_CASE_LEDGER",
+        str(Path.home() / ".cache" / "hapax" / "authority-case-ledger.jsonl"),
+    )
+).expanduser()
+
+_STAGE_RE = re.compile(r"^S(\d{1,2})(?:_[A-Z][A-Z0-9_]*)?$")
+_CASE_RE = re.compile(r"^CASE-[A-Z0-9-]+$")
+_NULLISH = {"", "null", "none", "~"}
+
+
+def _find_note(task_id: str) -> Path | None:
+    for sub in ("active", "closed"):
+        for cand in sorted((VAULT / sub).glob(f"{task_id}-*.md")):
+            return cand
+        exact = VAULT / sub / f"{task_id}.md"
+        if exact.is_file():
+            return exact
+    return None
+
+
+def _stage_num(stage: str) -> int | None:
+    m = _STAGE_RE.match(stage)
+    return int(m.group(1)) if m else None
+
+
+def _scalar(front: str, key: str) -> str:
+    m = re.search(rf"(?m)^{re.escape(key)}:\s*(.*)$", front)
+    return m.group(1).strip().strip('"').strip("'") if m else ""
+
+
+def _role() -> str:
+    for key in ("HAPAX_AGENT_ROLE", "CODEX_ROLE", "CLAUDE_ROLE", "HAPAX_AGENT_NAME"):
+        v = os.environ.get(key, "").strip()
+        if v:
+            return v
+    return "unknown"
+
+
+def _refuse(msg: str) -> int:
+    print(f"cc-stage-advance: REFUSED — {msg}", file=sys.stderr)
+    return REFUSED
+
+
+def advance(task_id: str, new_stage: str, allow_backward: bool) -> int:
+    if _stage_num(new_stage) is None:
+        return _refuse(f"'{new_stage}' is not a valid stage (expected S0..S11[_LABEL])")
+    note = _find_note(task_id)
+    if note is None:
+        print(f"cc-stage-advance: task '{task_id}' not found under {VAULT}", file=sys.stderr)
+        return ERROR
+    text = note.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        print("cc-stage-advance: note has no frontmatter", file=sys.stderr)
+        return ERROR
+    end = text.find("\n---", 4)
+    if end < 0:
+        print("cc-stage-advance: frontmatter not closed", file=sys.stderr)
+        return ERROR
+    front, body = text[: end + 1], text[end + 1 :]
+
+    authority_case = _scalar(front, "authority_case")
+    if authority_case.lower() in _NULLISH or not _CASE_RE.match(authority_case):
+        return _refuse(
+            f"task '{task_id}' has no valid authority_case (CASE-*); a stage "
+            "transition must be anchored to an authority case"
+        )
+
+    from_stage = _scalar(front, "stage") or "(none)"
+    if from_stage == new_stage:
+        print(f"cc-stage-advance: '{task_id}' already at {new_stage}", file=sys.stderr)
+        return OK
+    from_num = _stage_num(from_stage)
+    to_num = _stage_num(new_stage)
+    if from_num is not None and to_num is not None and to_num < from_num and not allow_backward:
+        return _refuse(
+            f"backward transition {from_stage} -> {new_stage} (use --allow-backward to override)"
+        )
+
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if re.search(r"(?m)^stage:", front):
+        front = re.sub(r"(?m)^stage:\s*.*$", f"stage: {new_stage}", front)
+    else:
+        front = front.rstrip("\n") + f"\nstage: {new_stage}\n"
+    if re.search(r"(?m)^updated_at:", front):
+        front = re.sub(r"(?m)^updated_at:\s*.*$", f"updated_at: {now}", front)
+
+    log = f"- {now} {_role()}: stage {from_stage} -> {new_stage} (cc-stage-advance)."
+    body = body.rstrip("\n") + "\n" + log + "\n"
+    note.write_text(front + body, encoding="utf-8")
+
+    LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    with LEDGER.open("a", encoding="utf-8") as h:
+        h.write(
+            json.dumps(
+                {
+                    "ts": now,
+                    "kind": "stage_transition",
+                    "tool": "cc-stage-advance",
+                    "role": _role(),
+                    "task_id": task_id,
+                    "authority_case": authority_case,
+                    "from_stage": from_stage,
+                    "to_stage": new_stage,
+                    "note": str(note),
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+    print(f"cc-stage-advance: {task_id} stage {from_stage} -> {new_stage} (ledgered)")
+    return OK
+
+
+def main(argv: list[str]) -> int:
+    args = [a for a in argv[1:] if a != "--allow-backward"]
+    allow_backward = "--allow-backward" in argv[1:]
+    if len(args) != 2:
+        print("usage: cc-stage-advance <task_id> <stage> [--allow-backward]", file=sys.stderr)
+        return ERROR
+    return advance(args[0], args[1], allow_backward)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
