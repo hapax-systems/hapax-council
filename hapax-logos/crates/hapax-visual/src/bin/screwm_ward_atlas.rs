@@ -9,9 +9,9 @@
 //! BGRA the DarkPlaces engine blits.
 //!
 //! Ships DORMANT: writes the SHADOW path `quake-live-ward-atlas.gpu.bgra` by
-//! default (the engine reads `quake-live-ward-atlas.bgra`). Set
-//! `HAPAX_WARD_ATLAS_REAL=1` to own the real path (per-mount cutover). The
-//! Python Cairo producer stays intact as instant rollback.
+//! default (the engine reads `quake-live-ward-atlas.bgra`). Add `ward-atlas` to
+//! `HAPAX_WARD_ATLAS_ACTIVE_SLOTS` to own only this mount's real path during a
+//! witnessed cutover. The Python Cairo producer stays intact as instant rollback.
 //!
 //! Scene content is still an incremental port. The first live-content seam is
 //! data-driven: the Rust manifest mirrors the Python atlas ward order and direct
@@ -20,7 +20,7 @@
 use fontdue::{Font, FontSettings};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -40,6 +40,7 @@ const REAL_BGRA_NAME: &str = "quake-live-ward-atlas.bgra";
 const SHADOW_BGRA_NAME: &str = "quake-live-ward-atlas.gpu.bgra";
 const REAL_META_NAME: &str = "quake-live-ward-atlas.json";
 const SHADOW_META_NAME: &str = "quake-live-ward-atlas.gpu.json";
+const WARD_ATLAS_SLOT: &str = "ward-atlas";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct WardSpec {
@@ -241,8 +242,37 @@ struct WardSource {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OutputPaths {
+    real: bool,
     bgra: PathBuf,
     meta: PathBuf,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ActiveSlots {
+    slots: BTreeSet<String>,
+}
+
+impl ActiveSlots {
+    fn parse(spec: &str) -> Self {
+        Self {
+            slots: spec
+                .split(',')
+                .map(|slot| slot.trim())
+                .filter(|slot| !slot.is_empty())
+                .map(|slot| slot.to_ascii_lowercase())
+                .collect(),
+        }
+    }
+
+    fn from_env() -> Self {
+        std::env::var("HAPAX_WARD_ATLAS_ACTIVE_SLOTS")
+            .map(|spec| Self::parse(&spec))
+            .unwrap_or_default()
+    }
+
+    fn contains(&self, slot: &str) -> bool {
+        self.slots.contains(&slot.to_ascii_lowercase())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,13 +388,15 @@ fn default_layout_path(_home: &str) -> PathBuf {
         })
 }
 
-fn ward_atlas_output_paths(real: bool) -> OutputPaths {
+fn ward_atlas_output_paths(active_slots: &ActiveSlots) -> OutputPaths {
+    let real = active_slots.contains(WARD_ATLAS_SLOT);
     let (bgra_name, meta_name) = if real {
         (REAL_BGRA_NAME, REAL_META_NAME)
     } else {
         (SHADOW_BGRA_NAME, SHADOW_META_NAME)
     };
     OutputPaths {
+        real,
         bgra: Path::new(SHM_DIR).join(bgra_name),
         meta: Path::new(SHM_DIR).join(meta_name),
     }
@@ -459,7 +491,6 @@ fn external_status_metadata(
 
 fn build_metadata(
     frame_id: u64,
-    real: bool,
     paths: &OutputPaths,
     layout_path: &Path,
     ward_sources: &[WardSource],
@@ -512,7 +543,7 @@ fn build_metadata(
         frame_id,
         ward_count: ward_sources.len(),
         layout_path: layout_path.display().to_string(),
-        real,
+        real: paths.real,
         output_path: paths.bgra.display().to_string(),
         meta_path: paths.meta.display().to_string(),
         wards,
@@ -1011,10 +1042,8 @@ async fn run() {
     let (atlas_bytes, atlas_h, map, solid) = bake(&font, &chars, &[PX]);
     let instances = build_scene(&font, &map, solid, atlas_h, asc_px, lh_px);
 
-    let real = std::env::var("HAPAX_WARD_ATLAS_REAL")
-        .map(|v| v == "1")
-        .unwrap_or(false);
-    let output_paths = ward_atlas_output_paths(real);
+    let active_slots = ActiveSlots::from_env();
+    let output_paths = ward_atlas_output_paths(&active_slots);
     let fps: f32 = std::env::var("HAPAX_WARD_ATLAS_FPS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -1306,11 +1335,12 @@ async fn run() {
         rd.step(); // warm to a developed spotted pattern
     }
     log::info!(
-        "ward-atlas live: {} glyph instances, {} external RGBA source(s), layout={} @ {fps}fps -> {} (real={real})",
+        "ward-atlas live: {} glyph instances, {} external RGBA source(s), layout={} @ {fps}fps -> {} (real={})",
         instances.len(),
         external_gpus.len(),
         layout_path.display(),
         output_paths.bgra.display(),
+        output_paths.real,
     );
 
     let period = Duration::from_secs_f32(1.0 / fps.max(0.5));
@@ -1406,7 +1436,6 @@ async fn run() {
         let _ = atomic_write(&output_paths.bgra, &out);
         let metadata = build_metadata(
             frame_id,
-            real,
             &output_paths,
             &layout_path,
             &ward_sources,
@@ -1570,12 +1599,23 @@ mod tests {
     }
 
     #[test]
-    fn output_paths_model_shadow_and_real_sidecars_without_env_flip() {
-        let shadow = ward_atlas_output_paths(false);
+    fn output_paths_model_shadow_and_active_sidecars_without_env_flip() {
+        let shadow = ward_atlas_output_paths(&ActiveSlots::default());
+        assert!(!shadow.real);
         assert_eq!(shadow.bgra, Path::new(SHM_DIR).join(SHADOW_BGRA_NAME));
         assert_eq!(shadow.meta, Path::new(SHM_DIR).join(SHADOW_META_NAME));
 
-        let real = ward_atlas_output_paths(true);
+        let unrelated = ward_atlas_output_paths(&ActiveSlots::parse(
+            " ticker-grounding, ticker-grounding, chronicle-ticker ",
+        ));
+        assert!(!unrelated.real);
+        assert_eq!(unrelated.bgra, Path::new(SHM_DIR).join(SHADOW_BGRA_NAME));
+        assert_eq!(unrelated.meta, Path::new(SHM_DIR).join(SHADOW_META_NAME));
+
+        let real = ward_atlas_output_paths(&ActiveSlots::parse(
+            "ticker-grounding, ward-atlas, ward-atlas",
+        ));
+        assert!(real.real);
         assert_eq!(real.bgra, Path::new(SHM_DIR).join(REAL_BGRA_NAME));
         assert_eq!(real.meta, Path::new(SHM_DIR).join(REAL_META_NAME));
     }
@@ -1619,10 +1659,11 @@ mod tests {
         );
 
         let paths = OutputPaths {
+            real: false,
             bgra: dir.path().join("quake-live-ward-atlas.gpu.bgra"),
             meta: dir.path().join("quake-live-ward-atlas.gpu.json"),
         };
-        let metadata = build_metadata(7, false, &paths, &layout, &sources, &statuses);
+        let metadata = build_metadata(7, &paths, &layout, &sources, &statuses);
 
         assert_eq!(metadata.w, AW);
         assert_eq!(metadata.h, AH);
