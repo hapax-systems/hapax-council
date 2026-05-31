@@ -36,9 +36,11 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -359,6 +361,396 @@ def status_to_exit(status: str) -> int:
     return 3  # unknown
 
 
+# --------------------------------------------------------------------------- #
+# Reform ENGINE — auto-advance dispatcher (CASE-SDLC-REFORM-001)
+#
+# Drains the coordination-reform execution manifest: each tick, any unit whose
+# hard_deps are all MERGED and whose preferred lane is idle gets dispatched
+# (hapax-claude/-codex --task + a --require-ack conductor send), subject to the
+# <=2x-lane-count open-PR throttle. This is invoked two ways with ZERO new
+# daemon: (1) the RTE 270s session tick calls ``hapax-rte-state --dispatch``;
+# (2) cc-pr-merge-watcher calls the same after each close (event complement).
+# One degrades to the other — poll covers a missed event, event covers a missed
+# poll.
+#
+# Source of truth for "merged": the manifest's per-unit ``status`` field. The
+# merge-watcher closes the task on PR-merge and the manifest status is advanced
+# to MERGED, which unblocks downstream units on the next sweep.
+# --------------------------------------------------------------------------- #
+
+REFORM_MANIFEST_DEFAULT = (
+    Path.home() / "Documents" / "Personal" / "30-areas" / "hapax" / "reform-execution-manifest.yaml"
+)
+LEASE_DIR_DEFAULT = Path.home() / ".cache" / "hapax"
+VAULT_ROOT_DEFAULT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+
+# A dep is satisfied only when its unit is fully MERGED. MERGING (in the merge
+# queue), blocked, blocked_on_research are NOT satisfied.
+MERGED_STATUSES = frozenset({"merged"})
+# A unit is dispatchable only when it is pending (or status-less, as the
+# immediate ``fixes`` entries are). Everything else is in-flight or terminal.
+DISPATCHABLE_STATUSES = frozenset({"", "pending"})
+
+# Codex first-class lanes use the cx- prefix; everything else is a Claude lane.
+CODEX_LANE_PREFIX = "cx-"
+
+
+@dataclass(frozen=True)
+class ReformUnit:
+    """One dispatchable reform work item (a ``units`` phase or a ``fixes`` entry)."""
+
+    id: str
+    lane: str
+    hard_deps: tuple[str, ...]
+    status: str  # normalized lower-case; "" when the manifest omits it
+    authority_case: str | None
+    branch: str | None
+    summary: str
+
+
+@dataclass(frozen=True)
+class DispatchDecision:
+    """A single resolved decision to wake one lane for one ready unit."""
+
+    unit_id: str
+    lane: str
+    authority_case: str | None
+    summary: str
+
+
+def _reform_unit_from_raw(raw: Mapping[str, Any]) -> ReformUnit | None:
+    uid = str(raw.get("id") or "").strip()
+    if not uid:
+        return None
+    deps_raw = raw.get("hard_deps") or []
+    deps = tuple(str(d).strip() for d in deps_raw if str(d).strip())
+    ac = raw.get("authority_case")
+    branch = raw.get("branch")
+    return ReformUnit(
+        id=uid,
+        lane=str(raw.get("lane") or "").strip(),
+        hard_deps=deps,
+        status=str(raw.get("status") or "").strip().lower(),
+        authority_case=str(ac).strip() if ac else None,
+        branch=str(branch).strip() if branch else None,
+        summary=str(raw.get("summary") or "").strip(),
+    )
+
+
+def _load_yaml_section(text: str, key: str, yaml: Any) -> list[Any]:
+    """Parse a single top-level ``key:`` block independently of its siblings.
+
+    The execution manifest's prose-heavy ``meta``/``auto_advance`` blocks contain
+    unquoted colons that make whole-document parsing raise; isolating the
+    ``units``/``fixes`` blocks lets them load anyway.
+    """
+    captured: list[str] = []
+    capturing = False
+    for line in text.split("\n"):
+        if not capturing:
+            if re.match(rf"^{re.escape(key)}:\s*(#.*)?$", line):
+                capturing = True
+                captured.append(line)
+            continue
+        # Stop at the next top-level key (a non-indented ``word:``).
+        if line[:1] not in (" ", "\t", "") and re.match(r"^[A-Za-z_][\w-]*:", line):
+            break
+        captured.append(line)
+    if not captured:
+        return []
+    try:
+        doc = yaml.safe_load("\n".join(captured))
+    except yaml.YAMLError:
+        return []
+    if isinstance(doc, Mapping) and isinstance(doc.get(key), list):
+        return doc[key]
+    return []
+
+
+def load_reform_manifest(path: Path) -> list[ReformUnit]:
+    """Parse the execution manifest into ReformUnit items (fail-open to []).
+
+    Reads the ``units`` phases first, then the immediate ``fixes`` follow-ups —
+    both are lane-assigned, dep-aware work the dispatcher can drain. Falls back
+    to per-section parsing when whole-document YAML fails (the live manifest
+    carries unquoted colons in its prose blocks).
+    """
+    try:
+        import yaml  # lazy: keep the rest of this tool dependency-free
+    except ImportError:
+        return []
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        data = None
+    if not isinstance(data, Mapping):
+        data = {}
+
+    out: list[ReformUnit] = []
+    for key in ("units", "fixes"):
+        section = data.get(key)
+        if not isinstance(section, list):
+            section = _load_yaml_section(text, key, yaml)
+        for raw in section:
+            if isinstance(raw, Mapping):
+                unit = _reform_unit_from_raw(raw)
+                if unit is not None:
+                    out.append(unit)
+    return out
+
+
+def unit_is_merged(unit: ReformUnit) -> bool:
+    return unit.status in MERGED_STATUSES
+
+
+def unit_is_dispatchable(unit: ReformUnit) -> bool:
+    return unit.status in DISPATCHABLE_STATUSES
+
+
+def ready_units(units: list[ReformUnit]) -> list[ReformUnit]:
+    """Dispatchable units whose every hard_dep resolves to a MERGED unit.
+
+    An unknown dep id (not present in the manifest) is treated as NOT merged, so
+    a unit with a dangling dep stays blocked rather than dispatching early.
+    """
+    by_id = {u.id: u for u in units}
+    ready: list[ReformUnit] = []
+    for unit in units:
+        if not unit_is_dispatchable(unit):
+            continue
+        deps_ok = all(dep in by_id and unit_is_merged(by_id[dep]) for dep in unit.hard_deps)
+        if deps_ok:
+            ready.append(unit)
+    return ready
+
+
+def lane_is_idle(lane: str, *, lease_dir: Path) -> bool:
+    """A lane is idle when it holds no non-empty cc-active-task lease.
+
+    Checks both the legacy ``cc-active-task-<lane>`` and any session-keyed
+    ``cc-active-task-<lane>-<session>`` lease (cc-claim writes both).
+    """
+    lease_dir = Path(lease_dir)
+    exact = lease_dir / f"cc-active-task-{lane}"
+    if exact.is_file():
+        try:
+            if exact.read_text(encoding="utf-8").strip():
+                return False
+        except OSError:
+            pass
+    for leased in lease_dir.glob(f"cc-active-task-{lane}-*"):
+        if not leased.is_file():
+            continue
+        try:
+            if leased.read_text(encoding="utf-8").strip():
+                return False
+        except OSError:
+            continue
+    return True
+
+
+def manifest_lane_count(units: list[ReformUnit]) -> int:
+    return len({u.lane for u in units if u.lane})
+
+
+def count_open_prs(
+    *, repo_root: Path, runner: Callable[..., subprocess.CompletedProcess] | None = None
+) -> int | None:
+    """Return the number of open PRs, or None when ``gh`` is unavailable."""
+    runner = runner or subprocess.run
+    try:
+        proc = runner(
+            ["gh", "pr", "list", "--state", "open", "--json", "number", "--limit", "200"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if getattr(proc, "returncode", 1) != 0:
+        return None
+    try:
+        return len(json.loads(proc.stdout or "[]"))
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def dispatch_headroom(open_pr_count: int | None, lane_count: int) -> int:
+    """Open-PR throttle: cap = 2 x lane-count. Unknown count fails closed (0)."""
+    if open_pr_count is None:
+        return 0
+    return max(0, (2 * lane_count) - open_pr_count)
+
+
+def plan_dispatch(
+    units: list[ReformUnit], *, idle_lanes: set[str], headroom: int
+) -> list[DispatchDecision]:
+    """Pick ready units on idle lanes — one per lane per sweep, capped at headroom."""
+    if headroom <= 0:
+        return []
+    decisions: list[DispatchDecision] = []
+    used_lanes: set[str] = set()
+    for unit in ready_units(units):
+        if unit.lane not in idle_lanes or unit.lane in used_lanes:
+            continue
+        decisions.append(
+            DispatchDecision(
+                unit_id=unit.id,
+                lane=unit.lane,
+                authority_case=unit.authority_case,
+                summary=unit.summary,
+            )
+        )
+        used_lanes.add(unit.lane)
+        if len(decisions) >= headroom:
+            break
+    return decisions
+
+
+def _note_task_id(note: Path) -> str | None:
+    try:
+        text = note.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = re.search(r"^task_id:\s*(.+?)\s*$", text, flags=re.MULTILINE)
+    return m.group(1).strip() if m else None
+
+
+def resolve_task_for_unit(unit: ReformUnit, *, vault_root: Path) -> str | None:
+    """Find an active cc-task note for this unit (task_id contains the unit slug).
+
+    Returns None when no task is filed — the dispatcher reports such units rather
+    than minting tasks itself (idempotency: poll + event both call this).
+    """
+    active = Path(vault_root) / "active"
+    if not active.is_dir():
+        return None
+    slug = unit.id.lower()
+    for note in sorted(active.glob("*.md")):
+        if slug in note.stem.lower():
+            return _note_task_id(note) or note.stem
+    return None
+
+
+def _conductor_prompt(unit_id: str, lane: str, summary: str) -> str:
+    """The --require-ack send body that re-establishes a build lane on a unit."""
+    return (
+        f"You are a coordination-reform BUILD LANE, claimed on reform unit {unit_id} "
+        f"(lane {lane}). READ FIRST: your unit in "
+        "~/Documents/Personal/30-areas/hapax/reform-execution-manifest.yaml (follow its "
+        "re-steered summary) + memory project_coordination_reform_driving (merge recipe + "
+        "gate route-arounds). Implement YOUR unit ONLY, TDD-first, within your "
+        "mutation_scope_refs, to a merged PR, then auto-advance. Standing authorization: "
+        "everything approved, mint capabilities yourself, no human sign-off, no live-broadcast "
+        f"gates. Bounded slice — systematic bottom-up, no scope creep. Summary: {summary}"
+    )
+
+
+def dispatch_command(
+    decision: DispatchDecision, task_id: str, *, repo_root: Path
+) -> tuple[list[str], list[str]]:
+    """Build the (launch, send) argv pair for one dispatch decision."""
+    repo_root = Path(repo_root)
+    is_codex = decision.lane.startswith(CODEX_LANE_PREFIX)
+    launch_tool = "hapax-codex" if is_codex else "hapax-claude"
+    send_tool = "hapax-codex-send" if is_codex else "hapax-claude-send"
+    launch = [
+        str(repo_root / "scripts" / launch_tool),
+        "--terminal",
+        "tmux",
+        "--role",
+        decision.lane,
+        "--task",
+        task_id,
+    ]
+    send = [
+        str(repo_root / "scripts" / send_tool),
+        "--session",
+        decision.lane,
+        "--require-ack",
+        "--",
+        _conductor_prompt(decision.unit_id, decision.lane, decision.summary),
+    ]
+    return launch, send
+
+
+def dispatch_one(
+    decision: DispatchDecision,
+    task_id: str,
+    *,
+    repo_root: Path,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
+) -> bool:
+    """Launch the lane then send the conductor prompt. Returns True on launch success."""
+    runner = runner or subprocess.run
+    launch, send = dispatch_command(decision, task_id, repo_root=repo_root)
+    try:
+        proc = runner(
+            launch, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=120
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if getattr(proc, "returncode", 1) != 0:
+        return False
+    # Lane is up; the prompt is best-effort (a re-poll re-sends if it was missed).
+    try:
+        runner(send, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return True
+
+
+def run_dispatch(
+    *,
+    manifest_path: Path,
+    lease_dir: Path,
+    vault_root: Path,
+    repo_root: Path,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """One manifest-drain sweep. Pure decision-making + (unless dry-run) execution."""
+    runner = runner or subprocess.run
+    units = load_reform_manifest(manifest_path)
+    by_id = {u.id: u for u in units}
+    ready = ready_units(units)
+    lane_count = manifest_lane_count(units)
+    open_prs = count_open_prs(repo_root=repo_root, runner=runner)
+    headroom = dispatch_headroom(open_prs, lane_count)
+    idle_lanes = {u.lane for u in ready if lane_is_idle(u.lane, lease_dir=lease_dir)}
+    plan = plan_dispatch(units, idle_lanes=idle_lanes, headroom=headroom)
+
+    result: dict[str, Any] = {
+        "ready": [u.id for u in ready],
+        "lane_count": lane_count,
+        "open_prs": open_prs,
+        "headroom": headroom,
+        "throttled": headroom <= 0,
+        "planned": [d.unit_id for d in plan],
+        "dispatched": [],
+        "skipped_no_task": [],
+        "dry_run": dry_run,
+    }
+
+    for decision in plan:
+        unit = by_id[decision.unit_id]
+        task_id = resolve_task_for_unit(unit, vault_root=vault_root)
+        if not task_id:
+            result["skipped_no_task"].append(decision.unit_id)
+            continue
+        if dry_run:
+            continue
+        if dispatch_one(decision, task_id, repo_root=repo_root, runner=runner):
+            result["dispatched"].append(decision.unit_id)
+    return result
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -380,7 +772,35 @@ def main() -> int:
         action="store_true",
         help="fail-open escalate MQ messages past deadline before reporting state",
     )
+    ap.add_argument(
+        "--dispatch",
+        action="store_true",
+        help="drain the reform execution manifest: dispatch ready+idle units (auto-advance)",
+    )
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="with --dispatch: compute the plan without launching any lane",
+    )
     args = ap.parse_args()
+
+    if args.dispatch:
+        result = run_dispatch(
+            manifest_path=Path(os.environ.get("HAPAX_REFORM_MANIFEST", REFORM_MANIFEST_DEFAULT)),
+            lease_dir=Path(os.environ.get("HAPAX_LEASE_DIR", LEASE_DIR_DEFAULT)),
+            vault_root=Path(os.environ.get("HAPAX_CC_TASKS_VAULT", VAULT_ROOT_DEFAULT)),
+            repo_root=REPO_ROOT,
+            dry_run=args.dry_run,
+        )
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print(
+                f"reform dispatch: ready={len(result['ready'])} "
+                f"planned={len(result['planned'])} dispatched={result['dispatched']} "
+                f"skipped_no_task={result['skipped_no_task']} throttled={result['throttled']}"
+            )
+        return 0
 
     mq_maintenance = execute_requested_mq_maintenance(
         retry=args.mq_retry,
