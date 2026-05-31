@@ -16,11 +16,16 @@
 //! but are not rendered by this source slice. The Python Cairo producer stays
 //! intact as instant rollback.
 //!
+//! Inline drift is default-on and reuses the committed `media_drift.wgsl` pass
+//! after scene render, before readback. Set `HAPAX_WARD_ATLAS_INLINE_DRIFT=0`
+//! only for source/debug parity checks that need the undrifted scene output.
+//!
 //! Scene content is still an incremental port. The first live-content seam is
 //! data-driven: the Rust manifest mirrors the Python atlas ward order and direct
 //! texture exclusions, and external RGBA shm sources render from their declared
 //! layout paths. Cairo-backed wards fail closed until their GPU IR is ported.
 use fontdue::{Font, FontSettings};
+use hapax_visual::media_drift::{load_drift_state, DriftUniforms, ReceiverClass};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -46,6 +51,11 @@ const SHADOW_META_NAME: &str = "quake-live-ward-atlas.gpu.json";
 const WARD_ATLAS_SLOT: &str = "ward-atlas";
 const DEFAULT_SLOT_SPEC: &str = "ward-atlas:2048x2304@2";
 const FULL_SLOT_SPEC_EXAMPLE: &str = "ward-atlas:2048x2304@2,ticker-grounding:1344x176@8,ticker-precedent:1344x176@8,ticker-chronicle:1344x176@8";
+const DEFAULT_ATLAS_DRIFT_INTENSITY: f32 = 1.6;
+const MEDIA_DRIFT_SHADER_SRC: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../../agents/shaders/nodes/media_drift.wgsl"
+));
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct WardSpec {
@@ -358,7 +368,7 @@ struct WardMetadata {
     expected_bytes: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct WardAtlasMetadata {
     w: u32,
     h: u32,
@@ -367,6 +377,10 @@ struct WardAtlasMetadata {
     ward_count: usize,
     layout_path: String,
     real: bool,
+    inline_drift: bool,
+    drift_receiver_class: String,
+    drift_intensity: f32,
+    drift_state_intensity: f32,
     output_path: String,
     meta_path: String,
     wards: BTreeMap<String, WardMetadata>,
@@ -650,6 +664,9 @@ fn build_metadata(
     layout_path: &Path,
     ward_sources: &[WardSource],
     external_statuses: &BTreeMap<&'static str, ExternalFrameRead>,
+    inline_drift: bool,
+    drift_intensity: f32,
+    drift_state_intensity: f32,
 ) -> WardAtlasMetadata {
     let mut wards = BTreeMap::new();
     for (index, source) in ward_sources.iter().enumerate() {
@@ -699,6 +716,10 @@ fn build_metadata(
         ward_count: ward_sources.len(),
         layout_path: layout_path.display().to_string(),
         real: paths.real,
+        inline_drift,
+        drift_receiver_class: "atlas".to_string(),
+        drift_intensity,
+        drift_state_intensity,
         output_path: paths.bgra.display().to_string(),
         meta_path: paths.meta.display().to_string(),
         wards,
@@ -714,6 +735,29 @@ fn tmp_path_for(path: &Path) -> PathBuf {
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = tmp_path_for(path);
     std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, path))
+}
+
+fn default_true_flag(value: Option<&str>) -> bool {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => true,
+        Some(value) => !matches!(
+            value.to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off" | "disabled"
+        ),
+    }
+}
+
+fn inline_drift_enabled_from_env() -> bool {
+    let value = std::env::var("HAPAX_WARD_ATLAS_INLINE_DRIFT").ok();
+    default_true_flag(value.as_deref())
+}
+
+fn env_f32_or_default(name: &str, default: f32) -> f32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(default)
 }
 
 // ── Gray-Scott RD substrate (gem_substrate.py U-skate constants) ──────────────
@@ -1180,6 +1224,15 @@ async fn run() {
     let font_path = std::env::var("HAPAX_WARD_ATLAS_FONT")
         .unwrap_or_else(|_| format!("{home}/.local/share/fonts/Px437_IBM_VGA_8x16.ttf"));
     let layout_path = default_layout_path(&home);
+    let drift_game_data = std::env::var("HAPAX_WARD_ATLAS_DRIFT_GAME_DATA")
+        .or_else(|_| std::env::var("HAPAX_SCREWM_DRIFT_GAME_DATA"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| Path::new(&home).join(".darkplaces/screwm/data"));
+    let inline_drift = inline_drift_enabled_from_env();
+    let drift_intensity = env_f32_or_default(
+        "HAPAX_WARD_ATLAS_DRIFT_INTENSITY",
+        DEFAULT_ATLAS_DRIFT_INTENSITY,
+    );
     let ward_sources = load_ward_sources(&layout_path);
     let data = std::fs::read(&font_path)
         .unwrap_or_else(|e| panic!("ward-atlas: read font {font_path}: {e}"));
@@ -1291,9 +1344,18 @@ async fn run() {
         AW,
         AH,
         TEX,
-        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::TEXTURE_BINDING,
     );
     let out_view = out_tex.create_view(&Default::default());
+    let drift_tex = mk(
+        AW,
+        AH,
+        TEX,
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+    );
+    let drift_view = drift_tex.create_view(&Default::default());
 
     let lin = device.create_sampler(&wgpu::SamplerDescriptor {
         mag_filter: wgpu::FilterMode::Linear,
@@ -1484,6 +1546,96 @@ async fn run() {
         cache: None,
     });
 
+    let drift_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("ward-atlas-media-drift.wgsl"),
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(MEDIA_DRIFT_SHADER_SRC)),
+    });
+    let drift_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("ward-atlas media-drift uniform"),
+        size: std::mem::size_of::<DriftUniforms>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let drift_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("ward-atlas media-drift bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let drift_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("ward-atlas media-drift layout"),
+        bind_group_layouts: &[&drift_bgl],
+        push_constant_ranges: &[],
+    });
+    let drift_pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("ward-atlas media-drift pipeline"),
+        layout: Some(&drift_layout),
+        vertex: wgpu::VertexState {
+            module: &drift_shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &drift_shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: TEX,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        multiview: None,
+        cache: None,
+    });
+    let drift_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("ward-atlas media-drift bind"),
+        layout: &drift_bgl,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: drift_uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&out_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&lin),
+            },
+        ],
+    });
+
     use wgpu::util::DeviceExt;
     let inst_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
@@ -1503,7 +1655,7 @@ async fn run() {
         rd.step(); // warm to a developed spotted pattern
     }
     log::info!(
-        "ward-atlas live: {} glyph instances, {} external RGBA source(s), layout={} slot={} {}x{} @ {fps}fps -> {} (real={})",
+        "ward-atlas live: {} glyph instances, {} external RGBA source(s), layout={} slot={} {}x{} @ {fps}fps -> {} (real={}, inline_drift={}, drift_game_data={})",
         instances.len(),
         external_gpus.len(),
         layout_path.display(),
@@ -1512,6 +1664,8 @@ async fn run() {
         ward_slot.height,
         output_paths.bgra.display(),
         output_paths.real,
+        inline_drift,
+        drift_game_data.display(),
     );
     if !modeled_only_slots.is_empty() {
         log::info!(
@@ -1520,6 +1674,7 @@ async fn run() {
         );
     }
 
+    let start = Instant::now();
     let period = Duration::from_secs_f32(1.0 / fps.max(0.5));
     let mut frame_id = 0u64;
     loop {
@@ -1527,6 +1682,20 @@ async fn run() {
         let t0 = Instant::now();
         rd.step();
         up(&rd_tex, GW as u32, GH as u32, &rd.r8());
+        let drift_state = load_drift_state(&drift_game_data);
+        let drift_state_intensity = drift_state.intensity();
+        if inline_drift {
+            let uniform = DriftUniforms::new(
+                &drift_state,
+                ReceiverClass::Atlas,
+                start.elapsed().as_secs_f32(),
+                frame_id as f32,
+                drift_intensity,
+                AW,
+                AH,
+            );
+            queue.write_buffer(&drift_uniform, 0, bytemuck::bytes_of(&uniform));
+        }
         let mut external_statuses = BTreeMap::new();
         let mut present_external = Vec::new();
         for source in &external_gpus {
@@ -1572,9 +1741,29 @@ async fn run() {
             p.set_vertex_buffer(0, inst_buf.slice(..));
             p.draw(0..4, 0..instances.len() as u32);
         }
+        if inline_drift {
+            let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ward-atlas inline media-drift pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &drift_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            p.set_pipeline(&drift_pipe);
+            p.set_bind_group(0, &drift_bind, &[]);
+            p.draw(0..3, 0..1);
+        }
+        let readback_tex = if inline_drift { &drift_tex } else { &out_tex };
         enc.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &out_tex,
+                texture: readback_tex,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -1617,6 +1806,9 @@ async fn run() {
             &layout_path,
             &ward_sources,
             &external_statuses,
+            inline_drift,
+            drift_intensity,
+            drift_state_intensity,
         );
         if let Ok(bytes) = serde_json::to_vec(&metadata) {
             let _ = atomic_write(&output_paths.meta, &bytes);
@@ -1926,7 +2118,16 @@ mod tests {
             bgra: dir.path().join("quake-live-ward-atlas.gpu.bgra"),
             meta: dir.path().join("quake-live-ward-atlas.gpu.json"),
         };
-        let metadata = build_metadata(7, &paths, &layout, &sources, &statuses);
+        let metadata = build_metadata(
+            7,
+            &paths,
+            &layout,
+            &sources,
+            &statuses,
+            true,
+            DEFAULT_ATLAS_DRIFT_INTENSITY,
+            0.42,
+        );
 
         assert_eq!(metadata.w, AW);
         assert_eq!(metadata.h, AH);
@@ -1934,6 +2135,10 @@ mod tests {
         assert_eq!(metadata.frame_id, 7);
         assert_eq!(metadata.ward_count, 36);
         assert!(!metadata.real);
+        assert!(metadata.inline_drift);
+        assert_eq!(metadata.drift_receiver_class, "atlas");
+        assert_eq!(metadata.drift_intensity, DEFAULT_ATLAS_DRIFT_INTENSITY);
+        assert_eq!(metadata.drift_state_intensity, 0.42);
         assert_eq!(metadata.output_path, paths.bgra.display().to_string());
         assert_eq!(metadata.meta_path, paths.meta.display().to_string());
 
@@ -1959,6 +2164,19 @@ mod tests {
         let aoa = metadata.wards.get("aoa_oarb_state").unwrap();
         assert_eq!(aoa.status, "fallback");
         assert_eq!(aoa.reason.as_deref(), Some("gpu ward IR not ported"));
+    }
+
+    #[test]
+    fn inline_drift_flag_defaults_on_and_accepts_debug_off_values() {
+        assert!(default_true_flag(None));
+        assert!(default_true_flag(Some("")));
+        assert!(default_true_flag(Some("1")));
+        assert!(default_true_flag(Some("true")));
+        assert!(default_true_flag(Some("enabled")));
+
+        for value in ["0", "false", "no", "off", "disabled", " OFF "] {
+            assert!(!default_true_flag(Some(value)));
+        }
     }
 
     #[test]

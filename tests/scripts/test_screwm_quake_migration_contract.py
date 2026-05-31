@@ -307,6 +307,33 @@ def test_screwm_media_drift_batches_slot_readback() -> None:
     assert "producer_input_hash_matches_raw" in source
 
 
+def test_screwm_ward_atlas_reuses_media_drift_inline_without_runtime_flip() -> None:
+    source = (
+        REPO_ROOT
+        / "hapax-logos"
+        / "crates"
+        / "hapax-visual"
+        / "src"
+        / "bin"
+        / "screwm_ward_atlas.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "MEDIA_DRIFT_SHADER_SRC" in source
+    assert "media_drift.wgsl" in source
+    assert "load_drift_state" in source
+    assert "DriftUniforms::new(" in source
+    assert "ReceiverClass::Atlas" in source
+    assert "HAPAX_WARD_ATLAS_INLINE_DRIFT" in source
+    assert "HAPAX_WARD_ATLAS_DRIFT_GAME_DATA" in source
+    assert "HAPAX_SCREWM_DRIFT_GAME_DATA" in source
+    assert "DEFAULT_ATLAS_DRIFT_INTENSITY" in source
+    assert "inline_drift" in source
+    assert "drift_state_intensity" in source
+    assert "ward-atlas inline media-drift pass" in source
+    assert "HAPAX_WARD_ATLAS_ACTIVE_SLOTS=ward-atlas" not in source
+    assert "systemctl" not in source
+
+
 def test_screwm_gpu_drift_cutover_preflight_is_source_only() -> None:
     source = (REPO_ROOT / "scripts" / "screwm-gpu-drift-cutover-preflight.py").read_text(
         encoding="utf-8"
