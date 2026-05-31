@@ -15,7 +15,7 @@ index f9007caf..0dab4417 100644
  #ifdef WIN32
  // Enable NVIDIA High Performance Graphics while using Integrated Graphics.
  #ifdef __cplusplus
-@@ -110,6 +116,78 @@ cvar_t r_cullentities_trace_eyejitter = {CF_CLIENT, "r_cullentities_trace_eyejit
+@@ -110,6 +116,83 @@ cvar_t r_cullentities_trace_eyejitter = {CF_CLIENT, "r_cullentities_trace_eyejit
  cvar_t r_sortentities = {CF_CLIENT, "r_sortentities", "0", "sort entities before drawing (might be faster)"};
  cvar_t r_speeds = {CF_CLIENT, "r_speeds","0", "displays rendering statistics and per-subsystem timings"};
  cvar_t r_fullbright = {CF_CLIENT, "r_fullbright","0", "makes map very bright and renders faster"};
