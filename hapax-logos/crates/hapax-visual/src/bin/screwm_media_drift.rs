@@ -12,10 +12,12 @@
 //! name: in = `quake-live-<name>.raw.bgra`, out = `quake-live-<name>.bgra`.
 
 use std::borrow::Cow;
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hapax_visual::media_drift::{load_drift_state, DriftUniforms, ReceiverClass};
+use serde::Serialize;
 
 const SHADER_SRC: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -28,6 +30,7 @@ fn align_up(v: u32, a: u32) -> u32 {
     (v + a - 1) & !(a - 1)
 }
 
+#[derive(Debug, Clone, PartialEq)]
 struct SlotConfig {
     name: String,
     raw_path: PathBuf,
@@ -40,22 +43,52 @@ struct SlotConfig {
 
 impl SlotConfig {
     /// Parse one `name:WxH[:intensity]` spec.
-    fn parse(spec: &str) -> Option<Self> {
+    fn parse(spec: &str) -> Result<Self, String> {
         let mut parts = spec.split(':');
-        let name = parts.next()?.trim().to_string();
+        let name = parts
+            .next()
+            .ok_or_else(|| format!("slot spec {spec:?} is empty"))?
+            .trim()
+            .to_ascii_lowercase();
         if name.is_empty() {
-            return None;
+            return Err(format!("slot spec {spec:?} has an empty name"));
         }
         let (w, h) = {
-            let dims = parts.next()?;
-            let (ws, hs) = dims.split_once('x')?;
-            (ws.trim().parse().ok()?, hs.trim().parse().ok()?)
+            let dims = parts
+                .next()
+                .ok_or_else(|| format!("slot {name:?} must include WxH dimensions"))?;
+            let (ws, hs) = dims
+                .split_once('x')
+                .ok_or_else(|| format!("slot {name:?} dimensions must use WxH"))?;
+            let width: u32 = ws
+                .trim()
+                .parse()
+                .map_err(|_| format!("slot {name:?} width must be an integer"))?;
+            let height: u32 = hs
+                .trim()
+                .parse()
+                .map_err(|_| format!("slot {name:?} height must be an integer"))?;
+            if width == 0 || height == 0 {
+                return Err(format!("slot {name:?} dimensions must be positive"));
+            }
+            (width, height)
         };
         let intensity = parts
             .next()
-            .and_then(|s| s.trim().parse().ok())
+            .map(|s| {
+                s.trim()
+                    .parse::<f32>()
+                    .map_err(|_| format!("slot {name:?} intensity must be numeric"))
+            })
+            .transpose()?
             .unwrap_or(1.0);
-        Some(Self {
+        if !intensity.is_finite() || intensity <= 0.0 {
+            return Err(format!("slot {name:?} intensity must be positive"));
+        }
+        if parts.next().is_some() {
+            return Err(format!("slot {name:?} has too many ':' fields"));
+        }
+        Ok(Self {
             raw_path: PathBuf::from(format!("{SHM_DIR}/quake-live-{name}.raw.bgra")),
             out_path: PathBuf::from(format!("{SHM_DIR}/quake-live-{name}.bgra")),
             class: ReceiverClass::from_name(&name),
@@ -65,6 +98,88 @@ impl SlotConfig {
             intensity,
         })
     }
+}
+
+fn parse_slot_configs(spec: &str) -> Result<Vec<SlotConfig>, String> {
+    let mut seen = BTreeSet::new();
+    let mut slots = Vec::new();
+    for part in spec
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        let slot = SlotConfig::parse(part)?;
+        if !seen.insert(slot.name.clone()) {
+            return Err(format!("duplicate media-drift slot {:?}", slot.name));
+        }
+        slots.push(slot);
+    }
+    Ok(slots)
+}
+
+fn receiver_class_name(class: ReceiverClass) -> &'static str {
+    match class {
+        ReceiverClass::Camera => "camera",
+        ReceiverClass::Oarb => "oarb",
+        ReceiverClass::Ticker => "ticker",
+        ReceiverClass::Atlas => "atlas",
+        ReceiverClass::Reverie => "reverie",
+        ReceiverClass::Other => "other",
+    }
+}
+
+fn stable_short_hash(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn unix_ms_now() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn tmp_path_for(path: &Path) -> PathBuf {
+    let mut tmp = path.as_os_str().to_os_string();
+    tmp.push(".tmp");
+    PathBuf::from(tmp)
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = tmp_path_for(path);
+    std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, path))
+}
+
+fn read_complete_frame(path: &Path, expected_bytes: usize) -> Option<Vec<u8>> {
+    match std::fs::read(path) {
+        Ok(bytes) if bytes.len() == expected_bytes => Some(bytes),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct SlotMetadata {
+    slot: String,
+    w: u32,
+    h: u32,
+    stride: u32,
+    frame_id: u64,
+    receiver_class: &'static str,
+    receiver_class_code: u32,
+    raw_path: String,
+    output_path: String,
+    meta_path: String,
+    intensity: f32,
+    drift_state_intensity: f32,
+    input_hash: String,
+    output_hash: String,
+    drift_changed: bool,
+    observed_at_unix_ms: u128,
 }
 
 /// Per-slot GPU resources: input texture, output render target, uniform buffer,
@@ -81,6 +196,8 @@ struct SlotGpu {
     padded_bytes_per_row: u32,
     expected_bytes: usize,
     frame: u64,
+    last_input_hash: String,
+    last_drift_state_intensity: f32,
 }
 
 impl SlotGpu {
@@ -161,6 +278,8 @@ impl SlotGpu {
             bytes_per_row,
             padded_bytes_per_row,
             frame: 0,
+            last_input_hash: String::new(),
+            last_drift_state_intensity: 0.0,
         }
     }
 
@@ -177,10 +296,9 @@ impl SlotGpu {
         state: &hapax_visual::media_drift::DriftState,
         now: f32,
     ) -> Option<wgpu::CommandBuffer> {
-        let raw = match std::fs::read(&self.cfg.raw_path) {
-            Ok(d) if d.len() == self.expected_bytes => d,
-            _ => return None, // producer not (yet) writing raw, or wrong dims — skip
-        };
+        let raw = read_complete_frame(&self.cfg.raw_path, self.expected_bytes)?;
+        self.last_input_hash = stable_short_hash(&raw);
+        self.last_drift_state_intensity = state.intensity();
 
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -273,16 +391,36 @@ impl SlotGpu {
         drop(mapped);
         self.staging.unmap();
 
-        // Atomic write so the engine never blits a torn frame.
-        let tmp = self.cfg.out_path.with_extension("bgra.tmp");
-        if std::fs::write(&tmp, &out)
-            .and_then(|_| std::fs::rename(&tmp, &self.cfg.out_path))
-            .is_ok()
-        {
-            self.frame += 1;
-            return true;
+        let output_hash = stable_short_hash(&out);
+        if atomic_write(&self.cfg.out_path, &out).is_err() {
+            return false;
         }
-        false
+
+        let frame_id = self.frame + 1;
+        let meta_path = self.cfg.out_path.with_extension("json");
+        let metadata = SlotMetadata {
+            slot: self.cfg.name.clone(),
+            w: self.cfg.width,
+            h: self.cfg.height,
+            stride: self.bytes_per_row,
+            frame_id,
+            receiver_class: receiver_class_name(self.cfg.class),
+            receiver_class_code: self.cfg.class.as_u32(),
+            raw_path: self.cfg.raw_path.display().to_string(),
+            output_path: self.cfg.out_path.display().to_string(),
+            meta_path: meta_path.display().to_string(),
+            intensity: self.cfg.intensity,
+            drift_state_intensity: self.last_drift_state_intensity,
+            input_hash: self.last_input_hash.clone(),
+            output_hash: output_hash.clone(),
+            drift_changed: self.last_input_hash != output_hash,
+            observed_at_unix_ms: unix_ms_now(),
+        };
+        if let Ok(bytes) = serde_json::to_vec(&metadata) {
+            let _ = atomic_write(&meta_path, &bytes);
+        }
+        self.frame = frame_id;
+        true
     }
 }
 
@@ -312,7 +450,13 @@ fn pick_adapter(instance: &wgpu::Instance) -> wgpu::Adapter {
 
 async fn run() {
     let spec = std::env::var("HAPAX_SCREWM_DRIFT_SLOTS").unwrap_or_default();
-    let slots: Vec<SlotConfig> = spec.split(',').filter_map(SlotConfig::parse).collect();
+    let slots = match parse_slot_configs(&spec) {
+        Ok(slots) => slots,
+        Err(err) => {
+            log::error!("invalid HAPAX_SCREWM_DRIFT_SLOTS: {err}");
+            return;
+        }
+    };
     if slots.is_empty() {
         log::error!(
             "HAPAX_SCREWM_DRIFT_SLOTS empty — nothing to drift; set e.g. 'ward-atlas:2048x2304'"
@@ -483,6 +627,132 @@ fn dirs_home() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/root"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn slot_config_parse_derives_paths_and_receiver_class() {
+        let slots =
+            parse_slot_configs(" ward-atlas:2048x2304:1.3, ticker-grounding:1344x176 ").unwrap();
+        assert_eq!(slots.len(), 2);
+
+        let atlas = &slots[0];
+        assert_eq!(atlas.name, "ward-atlas");
+        assert_eq!(
+            atlas.raw_path,
+            Path::new(SHM_DIR).join("quake-live-ward-atlas.raw.bgra")
+        );
+        assert_eq!(
+            atlas.out_path,
+            Path::new(SHM_DIR).join("quake-live-ward-atlas.bgra")
+        );
+        assert_eq!(atlas.width, 2048);
+        assert_eq!(atlas.height, 2304);
+        assert_eq!(atlas.class, ReceiverClass::Atlas);
+        assert_eq!(atlas.intensity, 1.3);
+
+        let ticker = &slots[1];
+        assert_eq!(ticker.name, "ticker-grounding");
+        assert_eq!(
+            ticker.raw_path,
+            Path::new(SHM_DIR).join("quake-live-ticker-grounding.raw.bgra")
+        );
+        assert_eq!(
+            ticker.out_path,
+            Path::new(SHM_DIR).join("quake-live-ticker-grounding.bgra")
+        );
+        assert_eq!(ticker.class, ReceiverClass::Ticker);
+        assert_eq!(ticker.intensity, 1.0);
+    }
+
+    #[test]
+    fn slot_config_parse_rejects_malformed_duplicate_or_non_positive_entries() {
+        for spec in [
+            "ward-atlas",
+            "ward-atlas:2048",
+            "ward-atlas:0x2304",
+            "ward-atlas:2048x0",
+            "ward-atlas:2048x2304:0",
+            "ward-atlas:2048x2304:nan",
+            "ward-atlas:2048x2304:1.0:extra",
+            "ward-atlas:2048x2304, ward-atlas:2048x2304",
+        ] {
+            assert!(
+                parse_slot_configs(spec).is_err(),
+                "spec should be rejected: {spec}"
+            );
+        }
+    }
+
+    #[test]
+    fn frame_reader_requires_exact_frame_size_without_side_effects() {
+        let dir = tempdir().unwrap();
+        let frame = dir.path().join("slot.raw.bgra");
+        fs::write(&frame, vec![1u8; 15]).unwrap();
+
+        assert!(read_complete_frame(&frame, 16).is_none());
+        assert!(read_complete_frame(&dir.path().join("missing.raw.bgra"), 16).is_none());
+
+        fs::write(&frame, vec![2u8; 16]).unwrap();
+        assert_eq!(read_complete_frame(&frame, 16).unwrap(), vec![2u8; 16]);
+    }
+
+    #[test]
+    fn stable_hash_and_atomic_write_are_deterministic() {
+        assert_eq!(stable_short_hash(b"abc"), "e71fa2190541574b");
+        assert_eq!(stable_short_hash(b"abc"), stable_short_hash(b"abc"));
+        assert_ne!(stable_short_hash(b"abc"), stable_short_hash(b"abcd"));
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("quake-live-slot.json");
+        let tmp = tmp_path_for(&path);
+        atomic_write(&path, br#"{"ok":true}"#).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"ok":true}"#);
+        assert!(!tmp.exists());
+    }
+
+    #[test]
+    fn slot_metadata_serializes_gpu_output_audit_fields() {
+        let meta = SlotMetadata {
+            slot: "ward-atlas".to_string(),
+            w: 2048,
+            h: 2304,
+            stride: 8192,
+            frame_id: 9,
+            receiver_class: receiver_class_name(ReceiverClass::Atlas),
+            receiver_class_code: ReceiverClass::Atlas.as_u32(),
+            raw_path: "/tmp/quake-live-ward-atlas.raw.bgra".to_string(),
+            output_path: "/tmp/quake-live-ward-atlas.bgra".to_string(),
+            meta_path: "/tmp/quake-live-ward-atlas.json".to_string(),
+            intensity: 1.3,
+            drift_state_intensity: 0.52,
+            input_hash: "input".to_string(),
+            output_hash: "output".to_string(),
+            drift_changed: true,
+            observed_at_unix_ms: 123,
+        };
+        let value: Value = serde_json::from_slice(&serde_json::to_vec(&meta).unwrap()).unwrap();
+        assert_eq!(value["slot"], "ward-atlas");
+        assert_eq!(value["w"], 2048);
+        assert_eq!(value["h"], 2304);
+        assert_eq!(value["stride"], 8192);
+        assert_eq!(value["frame_id"], 9);
+        assert_eq!(value["receiver_class"], "atlas");
+        assert_eq!(value["receiver_class_code"], ReceiverClass::Atlas.as_u32());
+        assert_eq!(value["raw_path"], "/tmp/quake-live-ward-atlas.raw.bgra");
+        assert_eq!(value["output_path"], "/tmp/quake-live-ward-atlas.bgra");
+        assert_eq!(value["meta_path"], "/tmp/quake-live-ward-atlas.json");
+        assert_eq!(value["drift_state_intensity"], 0.52);
+        assert_eq!(value["input_hash"], "input");
+        assert_eq!(value["output_hash"], "output");
+        assert_eq!(value["drift_changed"], true);
+    }
 }
 
 fn main() {
