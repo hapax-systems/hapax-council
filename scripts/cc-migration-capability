@@ -1,28 +1,30 @@
 #!/usr/bin/env python3
-"""cc-migration-capability — mint/check/consume a one-time scoped migration
-capability, and run capability-gated bulk backfills of cc-task scaffolding.
+"""cc-migration-capability — mint/check/consume a scoped migration intent
+record, and run TTL-guarded bulk backfills of cc-task scaffolding.
 
 NEW-6 (master design section 4.3): bulk-stamping ``stage`` + ``mutation_scope_refs``
-across the ~209 stage-less active tasks is a mass mutation. Rather than an env
-bypass, it runs under a one-time root capability — operator-minted, scoped to a
-migration namespace, expiring, fully ledgered — so the mass mutation carries a
-recorded authorization. This is the interim of the Phase-4 typed grant ledger;
-it mirrors the consent GateToken shape (unforgeable nonce, frozen scope, expiry)
-without full crypto signing.
+across the active task population is a mass mutation. Rather than an env bypass,
+it runs under an operator-minted migration record scoped to a namespace and
+bounded by TTL. This is not a cryptographic grant: enforcement is the recorded
+operator intent, expiry check, per-task audit ledger, and automatic consumption
+after ``--apply``.
 
 Subcommands:
   mint --namespace NS [--ttl-minutes N] [--grantor G]
-        Mint a capability scoped to NS; print its id. Default TTL 120 min.
+        Mint a migration record scoped to NS; print its id. Default TTL 120 min.
   check --namespace NS
-        Exit 0 if an active (unexpired) capability exists for NS, else 2.
-  list  List capabilities (active first).
+        Exit 0 if an active (unexpired) migration record exists for NS, else 2.
+  list  List migration records (active first).
   expire --id ID
-        Mark a capability consumed.
+        Mark a migration record consumed.
   backfill --namespace NS [--apply] [--stage S6_IMPLEMENTATION]
-        Stamp absent ``stage`` (default S6_IMPLEMENTATION) and an absent
-        ``mutation_scope_refs`` field across ACTIVE cc-tasks. Diff-disciplined:
-        only fills ABSENT fields, never overwrites. Requires a valid capability
-        for NS. Dry-run unless --apply. Idempotent.
+        Derive or repair ``stage`` across ACTIVE cc-tasks from status:
+        offered -> S0_INTAKE, blocked -> S5_REVIEW_GATE,
+        claimed/in_progress -> S6_IMPLEMENTATION, ready/pr_open/open/merge_queue
+        -> S7_RELEASE. Terminal tasks are left untouched. Also stamps an absent
+        ``mutation_scope_refs`` field on non-terminal tasks. Requires a valid
+        migration record for NS. Dry-run unless --apply. ``--apply`` emits
+        per-task ledger rows and consumes the record.
 
 Coordination reform Phase 2 (CASE-SDLC-REFORM-001).
 """
@@ -40,6 +42,13 @@ CAP_DIR = Path.home() / ".cache" / "hapax" / "migration-capabilities"
 LEDGER = CAP_DIR / "ledger.jsonl"
 VAULT_ACTIVE = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
 _NULLISH = {"", "null", "none", "~", "[]"}
+TERMINAL_STATUSES = frozenset({"closed", "completed", "done", "superseded", "withdrawn"})
+RELEASE_STATUSES = frozenset({"merge_queue", "open", "pr_open", "ready"})
+IMPLEMENTATION_STATUSES = frozenset({"claimed", "in_progress"})
+PRE_IMPLEMENTATION_STAGES = {
+    "offered": "S0_INTAKE",
+    "blocked": "S5_REVIEW_GATE",
+}
 
 
 def _now() -> datetime:
@@ -68,6 +77,10 @@ def _load_caps() -> list[dict]:
     return caps
 
 
+def _cap_path(cap_id: str) -> Path:
+    return CAP_DIR / f"{cap_id}.json"
+
+
 def _active_cap(namespace: str) -> dict | None:
     now = _now()
     for cap in _load_caps():
@@ -82,6 +95,17 @@ def _active_cap(namespace: str) -> dict | None:
     return None
 
 
+def _consume_capability(cap: dict, *, reason: str) -> None:
+    cap_id = str(cap["id"])
+    path = _cap_path(cap_id)
+    now = _iso(_now())
+    cap["status"] = "consumed"
+    cap["consumed_at"] = now
+    cap["consumed_reason"] = reason
+    path.write_text(json.dumps(cap, indent=2, sort_keys=True), encoding="utf-8")
+    _ledger({"ts": now, "kind": "capability_consume", "id": cap_id, "reason": reason})
+
+
 def cmd_mint(args: argparse.Namespace) -> int:
     CAP_DIR.mkdir(parents=True, exist_ok=True)
     now = _now()
@@ -89,7 +113,6 @@ def cmd_mint(args: argparse.Namespace) -> int:
         "id": f"mig-{now.strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(4)}",
         "namespace": args.namespace,
         "grantor": args.grantor,
-        "nonce": secrets.token_hex(16),
         "minted_at": _iso(now),
         "expires_at": _iso(now + timedelta(minutes=args.ttl_minutes)),
         "status": "active",
@@ -105,9 +128,9 @@ def cmd_mint(args: argparse.Namespace) -> int:
 def cmd_check(args: argparse.Namespace) -> int:
     cap = _active_cap(args.namespace)
     if cap is None:
-        print(f"cc-migration-capability: no active capability for '{args.namespace}'")
+        print(f"cc-migration-capability: no active migration record for '{args.namespace}'")
         return 2
-    print(f"active: {cap['id']} (expires {cap['expires_at']})")
+    print(f"active record: {cap['id']} (expires {cap['expires_at']})")
     return 0
 
 
@@ -123,15 +146,12 @@ def cmd_list(_args: argparse.Namespace) -> int:
 
 
 def cmd_expire(args: argparse.Namespace) -> int:
-    path = CAP_DIR / f"{args.id}.json"
+    path = _cap_path(args.id)
     if not path.is_file():
-        print(f"cc-migration-capability: no such capability '{args.id}'")
+        print(f"cc-migration-capability: no such migration record '{args.id}'")
         return 2
     cap = json.loads(path.read_text(encoding="utf-8"))
-    cap["status"] = "consumed"
-    cap["consumed_at"] = _iso(_now())
-    path.write_text(json.dumps(cap, indent=2, sort_keys=True), encoding="utf-8")
-    _ledger({"ts": _iso(_now()), "kind": "capability_consume", "id": args.id})
+    _consume_capability(cap, reason="manual_expire")
     print(f"consumed {args.id}")
     return 0
 
@@ -145,11 +165,47 @@ def _has_field(front: str, key: str) -> bool:
     return re.search(rf"(?m)^{re.escape(key)}:", front) is not None
 
 
+def _normalize_status(status: str) -> str:
+    return status.strip().strip('"').strip("'").lower().replace("-", "_").replace(" ", "_")
+
+
+def _derived_stage(status: str, implementation_stage: str) -> str | None:
+    normalized = _normalize_status(status)
+    if normalized in TERMINAL_STATUSES:
+        return None
+    if normalized in RELEASE_STATUSES:
+        return "S7_RELEASE"
+    if normalized in IMPLEMENTATION_STATUSES:
+        return implementation_stage
+    return PRE_IMPLEMENTATION_STAGES.get(normalized, "S0_INTAKE")
+
+
+def _field_snapshot(front: str, key: str) -> str | None:
+    lines = front.splitlines()
+    for index, line in enumerate(lines):
+        if not re.match(rf"^{re.escape(key)}:", line):
+            continue
+        captured = [line]
+        for child in lines[index + 1 :]:
+            if child.startswith((" ", "\t")):
+                captured.append(child)
+                continue
+            break
+        return "\n".join(captured)
+    return None
+
+
+def _set_scalar(front: str, key: str, value: str) -> str:
+    if _has_field(front, key):
+        return re.sub(rf"(?m)^{re.escape(key)}:.*$", f"{key}: {value}", front, count=1)
+    return front.rstrip("\n") + f"\n{key}: {value}\n"
+
+
 def cmd_backfill(args: argparse.Namespace) -> int:
     cap = _active_cap(args.namespace)
     if cap is None:
         print(
-            f"cc-migration-capability: REFUSED — no active capability for "
+            f"cc-migration-capability: REFUSED — no active migration record for "
             f"'{args.namespace}'. Mint one first: cc-migration-capability mint "
             f"--namespace {args.namespace}"
         )
@@ -158,8 +214,10 @@ def cmd_backfill(args: argparse.Namespace) -> int:
         print(f"cc-migration-capability: no active vault at {VAULT_ACTIVE}")
         return 3
 
-    stamped_stage: list[str] = []
+    stage_changed: list[str] = []
     stamped_scope: list[str] = []
+    terminal_skipped = 0
+    task_records: list[dict] = []
     for note in sorted(VAULT_ACTIVE.glob("*.md")):
         text = note.read_text(encoding="utf-8")
         if not text.startswith("---"):
@@ -170,36 +228,65 @@ def cmd_backfill(args: argparse.Namespace) -> int:
         front, body = text[: end + 1], text[end + 1 :]
         if _scalar(front, "type") != "cc-task":
             continue
-        additions: list[str] = []
-        if not _has_field(front, "stage"):
-            additions.append(f"stage: {args.stage}")
-            stamped_stage.append(note.stem)
-        if not _has_field(front, "mutation_scope_refs"):
-            additions.append("mutation_scope_refs: []")
-            stamped_scope.append(note.stem)
-        if not additions:
+        task_id = _scalar(front, "task_id") or note.stem
+        status = _scalar(front, "status") or "offered"
+        stage_before = _field_snapshot(front, "stage")
+        scope_before = _field_snapshot(front, "mutation_scope_refs")
+        derived_stage = _derived_stage(status, args.stage)
+        if derived_stage is None:
+            terminal_skipped += 1
             continue
+
+        new_front = front
+        if _scalar(front, "stage") != derived_stage:
+            new_front = _set_scalar(new_front, "stage", derived_stage)
+            stage_changed.append(note.stem)
+        if not _has_field(new_front, "mutation_scope_refs"):
+            new_front = new_front.rstrip("\n") + "\nmutation_scope_refs: []\n"
+            stamped_scope.append(note.stem)
+        if new_front == front:
+            continue
+        task_records.append(
+            {
+                "kind": "migration_backfill_task",
+                "capability_id": cap["id"],
+                "namespace": args.namespace,
+                "path": str(note),
+                "task_id": task_id,
+                "status": _normalize_status(status),
+                "stage_before": stage_before,
+                "stage_after": _field_snapshot(new_front, "stage"),
+                "scope_before": scope_before,
+                "scope_after": _field_snapshot(new_front, "mutation_scope_refs"),
+            }
+        )
         if args.apply:
-            new_front = front.rstrip("\n") + "\n" + "\n".join(additions) + "\n"
             note.write_text(new_front + body, encoding="utf-8")
 
     if args.apply:
+        ts = _iso(_now())
+        for record in task_records:
+            _ledger({"ts": ts, **record})
         _ledger(
             {
                 "ts": _iso(_now()),
                 "kind": "migration_backfill",
                 "capability_id": cap["id"],
                 "namespace": args.namespace,
-                "stage_stamped": len(stamped_stage),
+                "task_records": len(task_records),
+                "stage_changed": len(stage_changed),
                 "scope_stamped": len(stamped_scope),
-                "stage": args.stage,
+                "terminal_skipped": terminal_skipped,
+                "implementation_stage": args.stage,
             }
         )
-    verb = "stamped" if args.apply else "would stamp"
+        _consume_capability(cap, reason="migration_backfill_apply")
+    verb = "set" if args.apply else "would set"
     print(
         f"cc-migration-capability backfill ({'APPLY' if args.apply else 'dry-run'}, "
-        f"cap={cap['id']}): {verb} stage on {len(stamped_stage)} tasks, "
-        f"mutation_scope_refs on {len(stamped_scope)} tasks."
+        f"cap={cap['id']}): {verb} stage on {len(stage_changed)} tasks, "
+        f"mutation_scope_refs on {len(stamped_scope)} tasks; "
+        f"left {terminal_skipped} terminal tasks untouched."
     )
     return 0
 
