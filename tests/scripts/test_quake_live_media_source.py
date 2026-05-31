@@ -291,3 +291,50 @@ def test_metadata_records_oarb_sphere_fill(tmp_path: Path) -> None:
     assert payload["configured_url"] == "https://example.invalid/video"
     assert payload["url_source"] == "unit-test"
     assert payload["freshness_overlay"] == "seam-pulse"
+
+
+def test_gpu_drift_metadata_uses_raw_sidecar_and_final_output_owner(tmp_path: Path) -> None:
+    module = _load_module()
+    output = tmp_path / "quake-live-yt.bgra"
+    raw_output, raw_meta = module["_gpu_drift_paths"](output)
+    args = Namespace(
+        source="test",
+        url="",
+        configured_url="",
+        camera_role="",
+        camera_device="",
+        output=output,
+        meta=tmp_path / "quake-live-yt.json",
+        fps=10,
+        width=64,
+        height=32,
+        source_frame_width=64,
+        source_frame_height=32,
+        projection="flat",
+        mask="none",
+        mask_background="0c0b0d",
+        freshness_overlay="none",
+        drift="on",
+        drift_receiver="media:test",
+        drift_game_data=tmp_path / "data",
+        drift_intensity=1.0,
+        drift_input_hash="abc123",
+        drift_output_hash="",
+        drift_changed=False,
+        fallback_reason="",
+        gpu_drift=True,
+        gpu_drift_raw_output=raw_output,
+    )
+
+    module["_write_meta"](raw_meta, args, 3)
+    payload = json.loads(raw_meta.read_text(encoding="utf-8"))
+
+    assert raw_output == tmp_path / "quake-live-yt.raw.bgra"
+    assert raw_meta == tmp_path / "quake-live-yt.raw.json"
+    assert payload["gpu_drift"] is True
+    assert payload["gpu_drift_raw_output"] == str(raw_output)
+    assert payload["gpu_drift_final_output"] == str(output)
+    assert payload["gpu_drift_output_owner"] == "screwm_media_drift"
+    assert payload["drift_enabled"] is False
+    assert payload["drift_input_hash"] == "abc123"
+    assert payload["drift_output_hash"] == ""
