@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -99,6 +100,87 @@ exit 0
     run_text = run_scripts[-1].read_text(encoding="utf-8")
     assert str(bin_dir / "agy") in run_text
     assert "--prompt-interactive" in run_text
+
+
+def test_launcher_wires_agy_pretooluse_gate(tmp_path: Path) -> None:
+    # agy loads Claude-compatible hooks from $HOME/.gemini/antigravity-cli/hooks.json
+    # (verified via strace). The launcher must deploy that file so an agy
+    # run_command/write_to_file/replace_file_content call is translated by the
+    # adapter and gated by cc-task-gate — closing the Antigrav enforcing-gate P0.
+    env = _base_env(tmp_path)
+    workdir = tmp_path / "projects" / "hapax-council--antigrav"
+    workdir.mkdir(parents=True)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "antigrav",
+            "--cd",
+            str(workdir),
+            "--no-claim",
+            "--no-open",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+    hooks_json = Path(env["HOME"]) / ".gemini" / "antigravity-cli" / "hooks.json"
+    assert hooks_json.is_file(), f"hooks.json not deployed; stderr={result.stderr}"
+
+    data = json.loads(hooks_json.read_text(encoding="utf-8"))
+    pre = data["hooks"]["PreToolUse"]
+    assert pre, "PreToolUse must register at least one hook"
+    entry = pre[0]
+    matcher = entry["matcher"]
+    # Matcher targets agy's native mutation tool names (the gate runs pre-translation).
+    assert "run_command" in matcher
+    assert "write_to_file" in matcher
+    assert "replace_file_content" in matcher
+
+    command = entry["hooks"][0]["command"]
+    assert entry["hooks"][0]["type"] == "command"
+    assert "antigrav-hook-adapter.sh" in command
+    assert "cc-task-gate.sh" in command
+    # Adapter + delegate resolve under COUNCIL_DIR so the gate stays repo-sourced.
+    assert str(REPO_ROOT) in command
+
+
+def test_launcher_preserves_foreign_hooks_json(tmp_path: Path) -> None:
+    # A hand-rolled hooks.json that Hapax did not author must not be clobbered.
+    env = _base_env(tmp_path)
+    workdir = tmp_path / "projects" / "hapax-council--antigrav"
+    workdir.mkdir(parents=True)
+    cfg_dir = Path(env["HOME"]) / ".gemini" / "antigravity-cli"
+    cfg_dir.mkdir(parents=True)
+    foreign = cfg_dir / "hooks.json"
+    foreign.write_text('{"hooks": {"PreToolUse": []}, "operator": "custom"}\n', encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "antigrav",
+            "--cd",
+            str(workdir),
+            "--no-claim",
+            "--no-open",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert foreign.read_text(encoding="utf-8") == (
+        '{"hooks": {"PreToolUse": []}, "operator": "custom"}\n'
+    )
+    assert "not overwriting" in result.stderr
 
 
 def test_launcher_env_override_missing_fails_closed(tmp_path: Path) -> None:

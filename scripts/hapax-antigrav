@@ -359,6 +359,61 @@ This \`.agent/\` file exists only for older Antigravity builds.
 EOF_COMPAT
 echo "hapax-antigrav: refreshed compatibility $COMPAT_RULE_PATH" >&2
 
+# ---- agy enforcing hook wiring (Antigrav parity P0) -----------------------
+#
+# Antigravity CLI (`agy`) loads Claude-compatible hooks from
+#   $HOME/.gemini/antigravity-cli/hooks.json
+# This path and format were verified empirically (strace of `agy`): at session
+# start agy opens exactly that file and parses it through its jsonhook /
+# backend.HooksFile loader, which honors Claude `matcher` semantics and applies
+# PreToolUse results (the binary exports applyPreToolHooks +
+# EXECUTOR_TERMINATION_REASON_TERMINAL_CUSTOM_HOOK, i.e. a hook may block a
+# tool call). `agy plugin import` even accepts Claude plugins directly.
+#
+# Until this file exists, agy runs with NO Hapax hook: its
+# run_command/write_to_file/replace_file_content tools bypass every gate — the
+# reform's opening P0 ("Antigravity has NO enforcing gate"). Drop-in env-style
+# shell hooks previously left in the hooks/ dir never fired (agy delivers a JSON
+# payload, not ANTIGRAV_* env vars), so they asserted false parity.
+#
+# We register the Hapax guardrail chain for PreToolUse: antigrav-hook-adapter.sh
+# normalizes agy's payload into Claude hook JSON, then delegates to
+# cc-task-gate.sh — the same governance chokepoint Claude Code and Codex enforce.
+# The matcher lists agy's native mutation tool names (gate runs pre-translation).
+#
+# Live caveat (2026-05-31): an end-to-end witness of agy executing a gated tool
+# call is blocked by the agy CLI's interactive OAuth wall. The config path and
+# load are strace-verified; the chain is covered by
+# tests/hooks/test_antigrav_hook_adapter.py (translation),
+# tests/scripts/test_hapax_antigrav_launcher.py (this wiring), and
+# tests/hooks/test_antigrav_gate_enforcement.py (adapter→real cc-task-gate block).
+AGY_CONFIG_DIR="${HAPAX_ANTIGRAV_CONFIG_DIR:-$HOME/.gemini/antigravity-cli}"
+AGY_HOOKS_JSON="$AGY_CONFIG_DIR/hooks.json"
+AGY_ADAPTER="$COUNCIL_DIR/hooks/scripts/antigrav-hook-adapter.sh"
+AGY_PRE_GATE="$COUNCIL_DIR/hooks/scripts/cc-task-gate.sh"
+if [ -f "$AGY_HOOKS_JSON" ] && ! grep -q 'antigrav-hook-adapter' "$AGY_HOOKS_JSON" 2>/dev/null; then
+  echo "hapax-antigrav: WARNING existing non-Hapax hooks.json at $AGY_HOOKS_JSON — not overwriting; agy gate NOT wired" >&2
+elif [ ! -x "$AGY_ADAPTER" ] || [ ! -x "$AGY_PRE_GATE" ]; then
+  echo "hapax-antigrav: WARNING adapter/gate missing or not executable ($AGY_ADAPTER, $AGY_PRE_GATE) — agy gate NOT wired" >&2
+else
+  mkdir -p "$AGY_CONFIG_DIR"
+  cat > "$AGY_HOOKS_JSON" <<EOF_HOOKS
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command|run_shell_command|write_to_file|create_file|delete_file|replace_file_content|multi_replace_file_content",
+        "hooks": [
+          { "type": "command", "command": "$AGY_ADAPTER $AGY_PRE_GATE" }
+        ]
+      }
+    ]
+  }
+}
+EOF_HOOKS
+  echo "hapax-antigrav: wired agy PreToolUse gate → $AGY_HOOKS_JSON" >&2
+fi
+
 # ---- export identity envs (for cc-claim and downstream tools) -------------
 
 # Per-session id (coordination reform Phase 1): stable uuid for FM-2 lease keying.
