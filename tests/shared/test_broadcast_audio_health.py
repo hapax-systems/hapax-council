@@ -970,6 +970,59 @@ def test_egress_loopback_witness_silent_blocks(tmp_path: Path) -> None:
     assert "egress_loopback_silent" in _codes(health)
 
 
+def test_egress_loopback_witness_quality_silence_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    _write_json(
+        paths.egress_loopback_witness,
+        _live_loopback_witness(
+            quality="silence",
+            quality_reasons=["rms below floor"],
+            silence_ratio=0.2,
+            rms_dbfs=-70.0,
+        ),
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "egress_loopback_silent" in _codes(health)
+    assert health.evidence["egress_loopback"]["quality"] == "silence"
+
+
+def test_egress_loopback_witness_garbled_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+    _write_json(
+        paths.egress_loopback_witness,
+        _live_loopback_witness(
+            quality="garbled",
+            crest_factor_db=0.4,
+            zero_crossing_rate_hz=22_000.0,
+            quality_reasons=["high zero-crossing rate with crushed crest factor"],
+        ),
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "egress_loopback_garbled" in _codes(health)
+    record = health.evidence["egress_loopback"]
+    assert record["quality"] == "garbled"
+    assert record["crest_factor_db"] == 0.4
+    assert record["zero_crossing_rate_hz"] == 22_000.0
+
+
 def test_egress_loopback_witness_producer_error_blocks(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     _write_clear_runtime_states(paths)
@@ -1056,6 +1109,7 @@ def test_egress_loopback_witness_happy_path_populates_evidence(tmp_path: Path) -
     assert record["rms_dbfs"] == -18.0
     assert record["target_sink"] == "hapax-livestream"
     assert record["silence_ratio"] == 0.05
+    assert record["quality"] == "unknown"
     # No loopback-related contributions to blocking/warnings.
     assert not any(c.startswith("egress_loopback") for c in _codes(health))
     assert not any(w.code.startswith("egress_loopback") for w in health.warnings)

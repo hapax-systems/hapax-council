@@ -27,7 +27,7 @@ from agents.broadcast_egress_loopback_producer.producer import (
     load_config_from_env,
     write_witness_atomic,
 )
-from shared.broadcast_audio_health import EgressLoopbackWitness
+from shared.broadcast_audio_health import EgressLoopbackQuality, EgressLoopbackWitness
 
 # ── PCM helpers ────────────────────────────────────────────────────
 
@@ -59,6 +59,14 @@ def _half_silent_bytes(n_samples: int, sample_rate: int = 44100) -> bytes:
     return silent + audible
 
 
+def _garbled_bytes(n_samples: int) -> bytes:
+    """Alternating full-scale samples: crushed, high-ZCR corrupt capture."""
+    samples = array.array("h")
+    for i in range(n_samples):
+        samples.append(32767 if i % 2 == 0 else -32768)
+    return samples.tobytes()
+
+
 # ── compute_loopback_metrics ────────────────────────────────────────
 
 
@@ -68,11 +76,13 @@ class TestComputeLoopbackMetrics:
         assert sample.rms_dbfs == -120.0
         assert sample.peak_dbfs == -120.0
         assert sample.silence_ratio == 1.0
+        assert sample.quality == EgressLoopbackQuality.SILENCE
 
     def test_empty_input_returns_floor_metrics(self) -> None:
         sample = compute_loopback_metrics(b"")
         assert sample.rms_dbfs == -120.0
         assert sample.silence_ratio == 1.0
+        assert sample.quality == EgressLoopbackQuality.UNKNOWN
 
     def test_full_scale_sine_rms_near_minus_three_db(self) -> None:
         # Sine wave at amplitude 1.0 → RMS = 1/sqrt(2) → ~-3.01 dBFS
@@ -82,6 +92,8 @@ class TestComputeLoopbackMetrics:
         assert sample.peak_dbfs == pytest.approx(0.0, abs=0.1)
         # Sine never sits below the silence floor for long → ratio ≈ small.
         assert sample.silence_ratio < 0.1
+        assert sample.quality == EgressLoopbackQuality.NORMAL
+        assert sample.crest_factor_db == pytest.approx(3.01, abs=0.2)
 
     def test_half_silent_input_yields_half_silence_ratio(self) -> None:
         sample = compute_loopback_metrics(_half_silent_bytes(44100))
@@ -89,6 +101,13 @@ class TestComputeLoopbackMetrics:
         # Exact value drifts a hair because the boundary sample of the
         # sine half sits just above 0; widen tolerance to suit.
         assert sample.silence_ratio == pytest.approx(0.5, abs=0.05)
+
+    def test_garbled_capture_reports_quality_metrics(self) -> None:
+        sample = compute_loopback_metrics(_garbled_bytes(44100))
+        assert sample.quality == EgressLoopbackQuality.GARBLED
+        assert sample.zero_crossing_rate_hz > 40_000
+        assert sample.crest_factor_db == pytest.approx(0.0, abs=0.1)
+        assert sample.quality_reasons
 
     def test_odd_byte_count_does_not_crash(self) -> None:
         # parec could in principle return a partial last sample; the
@@ -178,6 +197,7 @@ class TestProducerTickOnce:
         assert witness.window_seconds == 1.0
         assert witness.silence_ratio == 1.0
         assert witness.rms_dbfs == -120.0
+        assert witness.quality == EgressLoopbackQuality.SILENCE
         # Re-load to confirm shape consumable by evaluator.
         EgressLoopbackWitness.model_validate(json.loads(out.read_text()))
 
@@ -199,6 +219,31 @@ class TestProducerTickOnce:
         # 0.5 amp sine RMS ≈ -9 dBFS (half full scale → -6 dB; rms half-power → -9)
         assert witness.rms_dbfs == pytest.approx(-9.03, abs=0.2)
         assert witness.silence_ratio < 0.1
+        assert witness.quality == EgressLoopbackQuality.NORMAL
+        assert witness.zero_crossing_rate_hz is not None
+
+    def test_writes_witness_for_garbled_capture(self, tmp_path: Path) -> None:
+        out = tmp_path / "egress-loopback.json"
+
+        def cap(_source: str, duration_s: float, sample_rate: int) -> bytes:
+            return _garbled_bytes(int(duration_s * sample_rate))
+
+        producer = EgressLoopbackProducer(
+            source="hapax-broadcast-normalized",
+            window_seconds=1.0,
+            tick_seconds=1.0,
+            witness_path=out,
+            capture=cap,
+        )
+        witness = producer.tick_once()
+        assert witness.error is None
+        assert witness.quality == EgressLoopbackQuality.GARBLED
+        assert witness.zero_crossing_rate_hz is not None
+        assert witness.zero_crossing_rate_hz > 40_000
+        assert witness.crest_factor_db == pytest.approx(0.0, abs=0.1)
+        loaded = json.loads(out.read_text())
+        assert loaded["quality"] == "garbled"
+        assert loaded["quality_reasons"]
 
     def test_capture_subprocess_failure_writes_error_witness(self, tmp_path: Path) -> None:
         out = tmp_path / "egress-loopback.json"
