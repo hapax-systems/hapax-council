@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
@@ -20,7 +20,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
-from shared.platform_capability_receipts import PLATFORM_CAPABILITY_RECEIPT_DIR_ENV
+from shared.platform_capability_receipts import (
+    DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+    PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
+)
 from shared.platform_capability_registry import (
     PLATFORM_CAPABILITY_REGISTRY,
     PlatformCapabilityRegistry,
@@ -377,10 +380,20 @@ def load_dispatch_policy_sources(
 
 
 def _receipt_dir_from_env() -> Path | None:
+    """Resolve the route/platform capability receipt directory for the read-path.
+
+    Defaults to ``DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR`` when
+    ``HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR`` is unset, so the live dispatch
+    read-path discovers minted route-authority receipts without the env var
+    being set — otherwise opus un-degrade is silently gated on an unset var.
+    Set the env var to a path to override the directory, or to one of
+    ``{"", "0", "none", "false"}`` (``none``/``false`` case-insensitive) to
+    disable receipt loading entirely.
+    """
     configured = os.environ.get(PLATFORM_CAPABILITY_RECEIPT_DIR_ENV)
-    if not configured:
-        return None
-    if configured.strip() in {"0", "none", "None", "false", "False"}:
+    if configured is None:
+        return DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+    if configured.strip() in {"", "0", "none", "None", "false", "False"}:
         return None
     return Path(configured).expanduser()
 
@@ -704,6 +717,74 @@ def route_authority_receipt_payload_hash(
 def route_authority_receipt_reference(receipt: RouteAuthorityReceipt) -> str:
     route_id = normalize_route_id(receipt.route_id)
     return f"route-authority-receipt:{receipt.receipt_type}:{route_id}:{receipt.receipt_id}"
+
+
+def _default_route_authority_receipt_id(
+    receipt_type: str,
+    route_id: str,
+    issued_at: datetime,
+) -> str:
+    slug = normalize_route_id(route_id).replace(".", "-")
+    stamp = _coerce_utc(issued_at).strftime("%Y%m%dT%H%M%SZ")
+    return f"{receipt_type}-{slug}-{stamp}"
+
+
+def build_route_authority_receipt(
+    *,
+    receipt_type: Literal["opus_model_entitlement", "quality_equivalence"],
+    route_id: str,
+    evidence_refs: Sequence[str],
+    receipt_id: str | None = None,
+    signed_by: str = "operator",
+    stale_after: str = "24h",
+    quality_floors: Sequence[str] = (),
+    issued_at: datetime | None = None,
+) -> RouteAuthorityReceipt:
+    """Build a signed route-authority receipt (the canonical minting path).
+
+    Computes ``signed_payload_sha256`` over the canonical payload and returns a
+    validated :class:`RouteAuthorityReceipt`. Raises if the receipt is invalid
+    (e.g. an ``opus_model_entitlement`` not targeting an ``.opus`` route, or a
+    ``quality_equivalence`` without ``quality_floors``) so callers fail closed.
+    Backs ``scripts/hapax-mint-route-authority-receipt`` (the executable form of
+    OQ-5: the operator signs the entitlement that un-degrades opus).
+    """
+    issued = _coerce_utc(now_utc() if issued_at is None else issued_at)
+    payload: dict[str, Any] = {
+        "route_authority_receipt_schema": ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION,
+        "receipt_id": receipt_id
+        or _default_route_authority_receipt_id(receipt_type, route_id, issued),
+        "receipt_type": receipt_type,
+        "route_id": route_id,
+        "issued_at": issued.isoformat().replace("+00:00", "Z"),
+        "stale_after": stale_after,
+        "signed_by": signed_by,
+        "evidence_refs": list(evidence_refs),
+        "quality_floors": list(quality_floors),
+    }
+    payload["signed_payload_sha256"] = route_authority_receipt_payload_hash(payload)
+    return RouteAuthorityReceipt.model_validate(payload)
+
+
+def write_route_authority_receipt(
+    receipt: RouteAuthorityReceipt,
+    *,
+    receipt_dir: Path,
+) -> Path:
+    """Write a route-authority receipt to ``<receipt_dir>/route-authority/<id>.json``.
+
+    This is the directory the dispatch read-path scans
+    (:func:`apply_route_authority_receipts`); the default ``receipt_dir`` is
+    ``DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR``.
+    """
+    target_dir = receipt_dir / ROUTE_AUTHORITY_RECEIPT_DIRNAME
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{receipt.receipt_id}.json"
+    target.write_text(
+        json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return target
 
 
 def apply_route_authority_receipts(
@@ -1982,10 +2063,12 @@ __all__ = [
     "StaleMetadataReceipt",
     "apply_route_authority_receipts",
     "build_dispatch_request",
+    "build_route_authority_receipt",
     "evaluate_dispatch_policy",
     "load_dispatch_policy_sources",
     "route_authority_receipt_payload_hash",
     "route_authority_receipt_reference",
     "route_decision_receipt_payload",
+    "write_route_authority_receipt",
     "write_route_decision_receipt",
 ]

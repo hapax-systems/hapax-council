@@ -1785,3 +1785,20 @@ def test_codex_launch_unsupported_mode_fails_closed(tmp_path: Path) -> None:
 
     assert result.returncode == 10
     assert "unsupported_route" in result.stderr
+
+
+def test_policy_rollback_help_documents_retirement() -> None:
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--help"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--policy-rollback" in result.stdout
+    help_text = result.stdout.lower()
+    assert "deprecated" in help_text or "retired" in help_text
+    # The old help claimed legacy full-profile routes "may launch" — that is now
+    # false (rollback HOLDs). Guard against the stale promise regressing.
+    assert "may launch" not in help_text
