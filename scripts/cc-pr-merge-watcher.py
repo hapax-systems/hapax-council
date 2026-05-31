@@ -40,6 +40,11 @@ DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "h
 DEFAULT_CURSOR_PATH = Path.home() / ".cache" / "hapax" / "cc-pr-merge-watcher-cursor.txt"
 KILLSWITCH_ENV = "HAPAX_CC_HYGIENE_OFF"
 
+# Reform ENGINE auto-advance (CASE-SDLC-REFORM-001): after a close, nudge the
+# RTE manifest-drain dispatcher so a freshly-unblocked unit gets picked up
+# without waiting for the next 270s poll. Set to "0" to disable the nudge.
+REFORM_AUTO_DISPATCH_ENV = "HAPAX_REFORM_AUTO_DISPATCH"
+
 # RFC3339 / ISO-8601 timestamp shape gh emits on `mergedAt`.
 _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 
@@ -252,6 +257,36 @@ def close_linked_task(
         "cc-close OK for task %s PR #%d: %s", task.task_id, task.pr_number, proc.stdout.strip()
     )
     return True
+
+
+def trigger_reform_dispatch(
+    *,
+    repo_root: Path | None = None,
+    runner: callable[..., subprocess.CompletedProcess] | None = None,
+) -> bool:
+    """Nudge the RTE manifest-drain dispatcher (event complement to the 270s poll).
+
+    Fail-open: any error (disabled env, missing script, launch failure) returns
+    False without raising — a close must never be undone by a dispatch hiccup,
+    and the next RTE poll covers a missed nudge.
+    """
+    if os.environ.get(REFORM_AUTO_DISPATCH_ENV) == "0":
+        return False
+    runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
+    script = Path(repo_root) / "scripts" / "hapax-rte-state"
+    try:
+        proc = runner(
+            [str(script), "--dispatch"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return getattr(proc, "returncode", 1) == 0
 
 
 def run_watcher(
@@ -469,6 +504,13 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
     )
     LOG.info("watcher cycle done: %s", counters)
+
+    # Event-driven complement to the RTE 270s poll: a close may have flipped a
+    # reform dep to MERGED, so nudge the manifest-drain dispatcher to pick up the
+    # next ready unit without waiting for the next poll. Fail-open.
+    if not args.dry_run and counters.get("closed", 0) > 0:
+        if trigger_reform_dispatch(repo_root=args.repo_root):
+            LOG.info("nudged reform auto-advance dispatcher after %d close(s)", counters["closed"])
 
     stale_counters = reconcile_stale_pr_states(
         vault_root=args.vault_root,
