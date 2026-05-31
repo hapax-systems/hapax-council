@@ -153,8 +153,24 @@ class TestResidentSTTInterface(unittest.TestCase):
         from agents.hapax_daimonion.resident_stt import ResidentSTT
 
         stt = ResidentSTT(model="tiny")
-        result = asyncio.get_event_loop().run_until_complete(stt.transcribe(b"\x00" * 1000))
-        assert result == ""
+        old_loop = None
+        new_loop = None
+        try:
+            try:
+                old_loop = asyncio.get_event_loop()
+            except RuntimeError:
+                old_loop = None
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            result = new_loop.run_until_complete(stt.transcribe(b"\x00" * 1000))
+            assert result == ""
+        finally:
+            if new_loop is not None:
+                new_loop.close()
+            if old_loop is not None:
+                asyncio.set_event_loop(old_loop)
+            else:
+                asyncio.set_event_loop(None)
 
 
 class TestSpeakingGate:

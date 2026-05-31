@@ -1,0 +1,4 @@
+[
+  "shared.some_library_module",
+  "scripts/check-new-module-consumers.py"
+]

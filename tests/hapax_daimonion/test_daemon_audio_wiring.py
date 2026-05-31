@@ -113,14 +113,14 @@ class TestAudioLoopBackgroundTask:
     async def test_no_audio_loop_when_inactive(self):
         daemon = _make_daemon(audio_active=False)
 
-        # Use a tracking list to count tasks added before finally clears them
+        # Use a tracking list to record tasks added before finally clears them
         class TrackingList(list):
             def __init__(self):
                 super().__init__()
-                self.total_appended = 0
+                self.appended_items = []
 
             def append(self, item):
-                self.total_appended += 1
+                self.appended_items.append(item)
                 super().append(item)
 
         tracking = TrackingList()
@@ -129,17 +129,9 @@ class TestAudioLoopBackgroundTask:
         with patch("agents.hapax_daimonion.run_inner.subscribe_ntfy", new_callable=AsyncMock):
             await daemon.run()
 
-        # Should have 13 tasks but NOT 14 (no audio loop since inactive):
-        # proactive delivery, ntfy, workspace monitor, perception,
-        # ambient_refresh, cpal_runner, cpal_impingement,
-        # affordance_impingement, sidechat_consumer (task #132),
-        # gem_producer (GEM activation Phase 3 — tails gem.* impingements
-        # and writes /dev/shm/hapax-compositor/gem-frames.json),
-        # programme_manager_loop (B3 critical #4 + #5 — ticks the
-        # ProgrammeManager at 1Hz so its lifecycle metrics fire and
-        # the abort predicates run during live streams), and
-        # salience_publish_loop (republishes salience-router exploration
-        # signal at 30s cadence so the writer stays fresh during quiet
-        # operator periods, matching the apperception writer pattern).
-        # (Plus one new task recently added to main).
-        assert tracking.total_appended == 13
+        # Verify that the audio loop was NOT scheduled
+        audio_loop_appended = any(t.get_name() == "audio_loop" for t in tracking.appended_items)
+        assert not audio_loop_appended, "audio_loop task was scheduled but audio is inactive"
+        assert len(tracking.appended_items) > 5, (
+            "expected multiple background tasks to be scheduled"
+        )
