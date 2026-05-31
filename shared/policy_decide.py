@@ -35,7 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from shared.policy_decision import Decision, FailMode, Verdict
-from shared.policy_floor import evaluate_floor
+from shared.policy_floor import evaluate_floor, irreversible_gate
 from shared.sdlc_lifecycle import (
     TASK_CLAIMABLE_STATUSES,
     TASK_MUTABLE_STATUSES,
@@ -198,7 +198,12 @@ def _is_gated_mutation(tool_name: str, command: str) -> bool:
     if tool_name in _EDIT_TOOLS:
         return True
     if tool_name in _BASH_TOOLS:
-        return _bash_is_mutating(command)
+        # Mirror the floor's irreversible-harm SSOT so module-target egress and the
+        # other floor classes are never short-circuited here as "non-mutating"
+        # (otherwise the kernel-down floor at _decide never even runs on them).
+        return (
+            _bash_is_mutating(command) or irreversible_gate(tool_name, command=command) is not None
+        )
     if tool_name.startswith("mcp__github__"):
         return bool(_GITHUB_MUTATING_RE.search(tool_name))
     return False
