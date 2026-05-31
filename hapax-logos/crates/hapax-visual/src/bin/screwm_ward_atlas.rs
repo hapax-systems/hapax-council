@@ -8,10 +8,13 @@
 //! `Bgra8Unorm` target, reads it back byte-exact, and atomically writes the
 //! BGRA the DarkPlaces engine blits.
 //!
-//! Ships DORMANT: writes the SHADOW path `quake-live-ward-atlas.gpu.bgra` by
-//! default (the engine reads `quake-live-ward-atlas.bgra`). Add `ward-atlas` to
+//! Ships DORMANT: `HAPAX_WARD_ATLAS_SLOTS` defaults to the atlas slot only and
+//! writes the SHADOW path `quake-live-ward-atlas.gpu.bgra` (the engine reads
+//! `quake-live-ward-atlas.bgra`). Add `ward-atlas` to
 //! `HAPAX_WARD_ATLAS_ACTIVE_SLOTS` to own only this mount's real path during a
-//! witnessed cutover. The Python Cairo producer stays intact as instant rollback.
+//! witnessed cutover. Ticker slots are modeled for the future multi-slot daemon
+//! but are not rendered by this source slice. The Python Cairo producer stays
+//! intact as instant rollback.
 //!
 //! Scene content is still an incremental port. The first live-content seam is
 //! data-driven: the Rust manifest mirrors the Python atlas ward order and direct
@@ -41,6 +44,8 @@ const SHADOW_BGRA_NAME: &str = "quake-live-ward-atlas.gpu.bgra";
 const REAL_META_NAME: &str = "quake-live-ward-atlas.json";
 const SHADOW_META_NAME: &str = "quake-live-ward-atlas.gpu.json";
 const WARD_ATLAS_SLOT: &str = "ward-atlas";
+const DEFAULT_SLOT_SPEC: &str = "ward-atlas:2048x2304@2";
+const FULL_SLOT_SPEC_EXAMPLE: &str = "ward-atlas:2048x2304@2,ticker-grounding:1344x176@8,ticker-precedent:1344x176@8,ticker-chronicle:1344x176@8";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct WardSpec {
@@ -247,6 +252,56 @@ struct OutputPaths {
     meta: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SlotTemplate {
+    name: &'static str,
+    width: u32,
+    height: u32,
+    fps: f32,
+    rendered_now: bool,
+}
+
+const SLOT_TEMPLATES: [SlotTemplate; 4] = [
+    SlotTemplate {
+        name: WARD_ATLAS_SLOT,
+        width: AW,
+        height: AH,
+        fps: 2.0,
+        rendered_now: true,
+    },
+    SlotTemplate {
+        name: "ticker-grounding",
+        width: 1344,
+        height: 176,
+        fps: 8.0,
+        rendered_now: false,
+    },
+    SlotTemplate {
+        name: "ticker-precedent",
+        width: 1344,
+        height: 176,
+        fps: 8.0,
+        rendered_now: false,
+    },
+    SlotTemplate {
+        name: "ticker-chronicle",
+        width: 1344,
+        height: 176,
+        fps: 8.0,
+        rendered_now: false,
+    },
+];
+
+#[derive(Debug, Clone, PartialEq)]
+struct SlotConfig {
+    name: String,
+    width: u32,
+    height: u32,
+    fps: f32,
+    rendered_now: bool,
+    output_paths: OutputPaths,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ActiveSlots {
     slots: BTreeSet<String>,
@@ -388,18 +443,118 @@ fn default_layout_path(_home: &str) -> PathBuf {
         })
 }
 
-fn ward_atlas_output_paths(active_slots: &ActiveSlots) -> OutputPaths {
-    let real = active_slots.contains(WARD_ATLAS_SLOT);
-    let (bgra_name, meta_name) = if real {
-        (REAL_BGRA_NAME, REAL_META_NAME)
+fn slot_template(slot: &str) -> Option<SlotTemplate> {
+    let normalized = slot.trim().to_ascii_lowercase();
+    SLOT_TEMPLATES
+        .iter()
+        .copied()
+        .find(|template| template.name == normalized)
+}
+
+fn slot_output_paths(slot: &str, active_slots: &ActiveSlots) -> Option<OutputPaths> {
+    let template = slot_template(slot)?;
+    let real = active_slots.contains(template.name);
+    let (bgra_name, meta_name) = if template.name == WARD_ATLAS_SLOT {
+        if real {
+            (REAL_BGRA_NAME.to_string(), REAL_META_NAME.to_string())
+        } else {
+            (SHADOW_BGRA_NAME.to_string(), SHADOW_META_NAME.to_string())
+        }
+    } else if real {
+        (
+            format!("quake-live-{}.bgra", template.name),
+            format!("quake-live-{}.json", template.name),
+        )
     } else {
-        (SHADOW_BGRA_NAME, SHADOW_META_NAME)
+        (
+            format!("quake-live-{}.gpu.bgra", template.name),
+            format!("quake-live-{}.gpu.json", template.name),
+        )
     };
-    OutputPaths {
+    Some(OutputPaths {
         real,
         bgra: Path::new(SHM_DIR).join(bgra_name),
         meta: Path::new(SHM_DIR).join(meta_name),
+    })
+}
+
+fn parse_slot_config(spec: &str, active_slots: &ActiveSlots) -> Result<SlotConfig, String> {
+    let (name, rest) = spec
+        .trim()
+        .split_once(':')
+        .ok_or_else(|| format!("slot spec {spec:?} must use name:WxH@fps"))?;
+    let name = name.trim().to_ascii_lowercase();
+    let template =
+        slot_template(&name).ok_or_else(|| format!("unsupported ward-atlas slot {name:?}"))?;
+    let (dims, fps) = rest
+        .trim()
+        .split_once('@')
+        .ok_or_else(|| format!("slot spec {spec:?} must use name:WxH@fps"))?;
+    let (width, height) = dims
+        .trim()
+        .split_once('x')
+        .ok_or_else(|| format!("slot dimensions {dims:?} must use WxH"))?;
+    let width: u32 = width
+        .trim()
+        .parse()
+        .map_err(|_| format!("slot {name:?} width must be an integer"))?;
+    let height: u32 = height
+        .trim()
+        .parse()
+        .map_err(|_| format!("slot {name:?} height must be an integer"))?;
+    if width != template.width || height != template.height {
+        return Err(format!(
+            "slot {name:?} dimensions {width}x{height} do not match {}x{}",
+            template.width, template.height
+        ));
     }
+    let fps: f32 = fps
+        .trim()
+        .parse()
+        .map_err(|_| format!("slot {name:?} fps must be numeric"))?;
+    if !fps.is_finite() || fps <= 0.0 {
+        return Err(format!("slot {name:?} fps must be positive"));
+    }
+    let output_paths = slot_output_paths(&name, active_slots)
+        .ok_or_else(|| format!("unsupported ward-atlas slot {name:?}"))?;
+    Ok(SlotConfig {
+        name,
+        width,
+        height,
+        fps,
+        rendered_now: template.rendered_now,
+        output_paths,
+    })
+}
+
+fn parse_slot_configs(spec: &str, active_slots: &ActiveSlots) -> Result<Vec<SlotConfig>, String> {
+    let source = if spec.trim().is_empty() {
+        DEFAULT_SLOT_SPEC
+    } else {
+        spec
+    };
+    let mut seen = BTreeSet::new();
+    let mut slots = Vec::new();
+    for part in source
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        let slot = parse_slot_config(part, active_slots)?;
+        if !seen.insert(slot.name.clone()) {
+            return Err(format!("duplicate ward-atlas slot {:?}", slot.name));
+        }
+        slots.push(slot);
+    }
+    if slots.is_empty() {
+        return Err("no ward-atlas slots configured".to_string());
+    }
+    Ok(slots)
+}
+
+fn slot_configs_from_env(active_slots: &ActiveSlots) -> Result<Vec<SlotConfig>, String> {
+    let spec = std::env::var("HAPAX_WARD_ATLAS_SLOTS").unwrap_or_default();
+    parse_slot_configs(&spec, active_slots)
 }
 
 fn expected_rgba_bytes(width: u32, height: u32) -> Option<usize> {
@@ -1043,11 +1198,24 @@ async fn run() {
     let instances = build_scene(&font, &map, solid, atlas_h, asc_px, lh_px);
 
     let active_slots = ActiveSlots::from_env();
-    let output_paths = ward_atlas_output_paths(&active_slots);
-    let fps: f32 = std::env::var("HAPAX_WARD_ATLAS_FPS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(2.0);
+    let slot_configs = slot_configs_from_env(&active_slots)
+        .unwrap_or_else(|err| panic!("ward-atlas: invalid HAPAX_WARD_ATLAS_SLOTS: {err}"));
+    let Some(ward_slot) = slot_configs
+        .iter()
+        .find(|slot| slot.name == WARD_ATLAS_SLOT)
+    else {
+        log::warn!(
+            "ward-atlas: configured slots contain no renderable ward-atlas slot; ticker slots are modeled but not rendered in this slice. Example full spec: {FULL_SLOT_SPEC_EXAMPLE}"
+        );
+        return;
+    };
+    let output_paths = ward_slot.output_paths.clone();
+    let fps = ward_slot.fps;
+    let modeled_only_slots: Vec<&str> = slot_configs
+        .iter()
+        .filter(|slot| !slot.rendered_now)
+        .map(|slot| slot.name.as_str())
+        .collect();
     let _ = std::fs::create_dir_all(SHM_DIR);
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
@@ -1335,13 +1503,22 @@ async fn run() {
         rd.step(); // warm to a developed spotted pattern
     }
     log::info!(
-        "ward-atlas live: {} glyph instances, {} external RGBA source(s), layout={} @ {fps}fps -> {} (real={})",
+        "ward-atlas live: {} glyph instances, {} external RGBA source(s), layout={} slot={} {}x{} @ {fps}fps -> {} (real={})",
         instances.len(),
         external_gpus.len(),
         layout_path.display(),
+        ward_slot.name,
+        ward_slot.width,
+        ward_slot.height,
         output_paths.bgra.display(),
         output_paths.real,
     );
+    if !modeled_only_slots.is_empty() {
+        log::info!(
+            "ward-atlas: modeled-only slots not rendered in this slice: {}",
+            modeled_only_slots.join(",")
+        );
+    }
 
     let period = Duration::from_secs_f32(1.0 / fps.max(0.5));
     let mut frame_id = 0u64;
@@ -1600,24 +1777,110 @@ mod tests {
 
     #[test]
     fn output_paths_model_shadow_and_active_sidecars_without_env_flip() {
-        let shadow = ward_atlas_output_paths(&ActiveSlots::default());
+        let shadow = slot_output_paths(WARD_ATLAS_SLOT, &ActiveSlots::default()).unwrap();
         assert!(!shadow.real);
         assert_eq!(shadow.bgra, Path::new(SHM_DIR).join(SHADOW_BGRA_NAME));
         assert_eq!(shadow.meta, Path::new(SHM_DIR).join(SHADOW_META_NAME));
 
-        let unrelated = ward_atlas_output_paths(&ActiveSlots::parse(
-            " ticker-grounding, ticker-grounding, chronicle-ticker ",
-        ));
+        let unrelated = slot_output_paths(
+            WARD_ATLAS_SLOT,
+            &ActiveSlots::parse(" ticker-grounding, ticker-grounding, chronicle-ticker "),
+        )
+        .unwrap();
         assert!(!unrelated.real);
         assert_eq!(unrelated.bgra, Path::new(SHM_DIR).join(SHADOW_BGRA_NAME));
         assert_eq!(unrelated.meta, Path::new(SHM_DIR).join(SHADOW_META_NAME));
 
-        let real = ward_atlas_output_paths(&ActiveSlots::parse(
-            "ticker-grounding, ward-atlas, ward-atlas",
-        ));
+        let real = slot_output_paths(
+            WARD_ATLAS_SLOT,
+            &ActiveSlots::parse("ticker-grounding, ward-atlas, ward-atlas"),
+        )
+        .unwrap();
         assert!(real.real);
         assert_eq!(real.bgra, Path::new(SHM_DIR).join(REAL_BGRA_NAME));
         assert_eq!(real.meta, Path::new(SHM_DIR).join(REAL_META_NAME));
+    }
+
+    #[test]
+    fn slot_specs_model_atlas_and_ticker_outputs_without_rendering_tickers() {
+        let active_slots = ActiveSlots::parse("ticker-grounding, ward-atlas");
+        let slots = parse_slot_configs(FULL_SLOT_SPEC_EXAMPLE, &active_slots).unwrap();
+        assert_eq!(slots.len(), 4);
+
+        let atlas = slots
+            .iter()
+            .find(|slot| slot.name == WARD_ATLAS_SLOT)
+            .unwrap();
+        assert_eq!(atlas.width, AW);
+        assert_eq!(atlas.height, AH);
+        assert_eq!(atlas.fps, 2.0);
+        assert!(atlas.rendered_now);
+        assert!(atlas.output_paths.real);
+        assert_eq!(
+            atlas.output_paths.bgra,
+            Path::new(SHM_DIR).join(REAL_BGRA_NAME)
+        );
+        assert_eq!(
+            atlas.output_paths.meta,
+            Path::new(SHM_DIR).join(REAL_META_NAME)
+        );
+
+        let grounding = slots
+            .iter()
+            .find(|slot| slot.name == "ticker-grounding")
+            .unwrap();
+        assert_eq!(grounding.width, 1344);
+        assert_eq!(grounding.height, 176);
+        assert_eq!(grounding.fps, 8.0);
+        assert!(!grounding.rendered_now);
+        assert!(grounding.output_paths.real);
+        assert_eq!(
+            grounding.output_paths.bgra,
+            Path::new(SHM_DIR).join("quake-live-ticker-grounding.bgra")
+        );
+        assert_eq!(
+            grounding.output_paths.meta,
+            Path::new(SHM_DIR).join("quake-live-ticker-grounding.json")
+        );
+
+        let precedent = slots
+            .iter()
+            .find(|slot| slot.name == "ticker-precedent")
+            .unwrap();
+        assert!(!precedent.rendered_now);
+        assert!(!precedent.output_paths.real);
+        assert_eq!(
+            precedent.output_paths.bgra,
+            Path::new(SHM_DIR).join("quake-live-ticker-precedent.gpu.bgra")
+        );
+        assert_eq!(
+            precedent.output_paths.meta,
+            Path::new(SHM_DIR).join("quake-live-ticker-precedent.gpu.json")
+        );
+
+        let default_slots = parse_slot_configs("", &ActiveSlots::default()).unwrap();
+        assert_eq!(default_slots.len(), 1);
+        assert_eq!(default_slots[0].name, WARD_ATLAS_SLOT);
+        assert!(!default_slots[0].output_paths.real);
+    }
+
+    #[test]
+    fn slot_specs_reject_malformed_or_unsupported_entries() {
+        let active_slots = ActiveSlots::default();
+        for spec in [
+            "ward-atlas",
+            "ward-atlas:2048x2304",
+            "ward-atlas:2048@2",
+            "ward-atlas:2048x2304@0",
+            "ward-atlas:1344x176@2",
+            "ticker-unknown:1344x176@8",
+            "ward-atlas:2048x2304@2, ward-atlas:2048x2304@2",
+        ] {
+            assert!(
+                parse_slot_configs(spec, &active_slots).is_err(),
+                "spec should be rejected: {spec}"
+            );
+        }
     }
 
     #[test]
