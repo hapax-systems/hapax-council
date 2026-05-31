@@ -43,6 +43,43 @@ Defined in `RouteConstraints.preferred_platforms` / `allowed_platforms` / `prohi
 | `vibe` | Mistral Medium 3.5 | JR+ | 256K | Mechanical: tests, deps, CI fixes |
 | `antigrav` | Antigravity IDE | JR+ | Opus | Directed, bounded, IDE-bound |
 
+## Reaching the Opus Route (signed route-authority receipts)
+
+`--policy-rollback` is **retired** (#3792). It is now a deprecated no-op alias
+that HOLDs every route (`policy_rollback_retired`) — passing it does not launch
+opus. A structurally degraded frontier route un-degrades only with a **signed
+route-authority receipt**, not a flag:
+
+| Receipt type | Removes blockers | Effect |
+|--------------|------------------|--------|
+| `opus_model_entitlement` | `opus_model_entitlement_receipt_absent`, `fresh_capability_evidence_absent` | Raises the opus authority ceiling so `claude.headless.opus` can LAUNCH |
+| `quality_equivalence` | `quality_equivalence_record_absent`, `fresh_capability_evidence_absent` | Records a bounded-floor equivalence for a fallback route (e.g. sonnet); does **not** widen the authority ceiling |
+
+Mint a receipt — the executable form of OQ-5 (the operator signs the entitlement):
+
+```bash
+# Make opus reachable:
+scripts/hapax-mint-route-authority-receipt \
+    --receipt-type opus_model_entitlement --route-id claude.headless.opus
+
+# Record sonnet quality-equivalence for a bounded floor:
+scripts/hapax-mint-route-authority-receipt \
+    --receipt-type quality_equivalence --route-id claude.headless.sonnet \
+    --quality-floor frontier_required --evidence-ref isap:SLICE-123
+```
+
+The receipt is written to `<receipt-dir>/route-authority/<id>.json`. The dispatch
+read-path (`load_dispatch_policy_sources`) defaults `receipt_dir` to
+`~/.cache/hapax/platform-capability-receipts` (override with
+`HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR`; set it to `none`/`0`/`false` to disable
+receipt loading). Receipts carry a `stale_after` window (default `24h`) and a
+`signed_payload_sha256` — a tampered or stale receipt fails closed. An
+`opus_model_entitlement` receipt must target a route ending in `.opus`; a
+`quality_equivalence` receipt requires at least one `--quality-floor`.
+
+Source of truth: `shared/dispatcher_policy.py`
+(`build_route_authority_receipt`, `apply_route_authority_receipts`).
+
 ## Route Metadata Schema (v1)
 
 Every cc-task and request carries `route_metadata` in YAML frontmatter:

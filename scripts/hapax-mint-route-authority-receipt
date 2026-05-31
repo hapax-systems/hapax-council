@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""Mint a signed route-authority receipt that un-degrades a frontier route.
+
+After #3792 retired ``--policy-rollback``, every route HOLDs until a signed
+route-authority receipt is present (reasons ``opus_model_entitlement_receipt_absent``
+/ ``quality_equivalence_record_absent`` are only removable by a receipt). This
+tool is the executable form of OQ-5 — the operator's standing authorization to
+sign the Opus model-entitlement and quality-equivalence receipts.
+
+It computes ``signed_payload_sha256`` via
+``shared.dispatcher_policy.route_authority_receipt_payload_hash`` and writes a
+validated receipt to ``<receipt-dir>/route-authority/<receipt-id>.json``, where
+the live dispatch read-path (``load_dispatch_policy_sources``) discovers it.
+
+Examples
+--------
+Make opus reachable (default receipt dir, default evidence ref)::
+
+    scripts/hapax-mint-route-authority-receipt \\
+        --receipt-type opus_model_entitlement --route-id claude.headless.opus
+
+Record sonnet quality-equivalence for a bounded floor::
+
+    scripts/hapax-mint-route-authority-receipt \\
+        --receipt-type quality_equivalence --route-id claude.headless.sonnet \\
+        --quality-floor frontier_required --evidence-ref isap:SLICE-123
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import datetime
+from pathlib import Path
+
+from pydantic import ValidationError
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.dispatcher_policy import (  # noqa: E402
+    build_route_authority_receipt,
+    route_authority_receipt_reference,
+    write_route_authority_receipt,
+)
+from shared.platform_capability_receipts import (  # noqa: E402
+    DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+)
+
+
+def _parse_now(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Mint a signed route-authority receipt (opus model entitlement or "
+            "quality equivalence) that un-degrades a frontier route to LAUNCH."
+        )
+    )
+    parser.add_argument(
+        "--receipt-type",
+        required=True,
+        choices=["opus_model_entitlement", "quality_equivalence"],
+        help="opus_model_entitlement raises the opus authority ceiling; "
+        "quality_equivalence records a bounded-floor equivalence for a fallback route.",
+    )
+    parser.add_argument(
+        "--route-id",
+        required=True,
+        help="Target route, e.g. claude.headless.opus (opus_model_entitlement must end in .opus).",
+    )
+    parser.add_argument(
+        "--signed-by",
+        default="operator",
+        help="Signing principal (default: operator — the standing OQ-5 authority).",
+    )
+    parser.add_argument(
+        "--stale-after",
+        default="24h",
+        help="Freshness window as <int><s|m|h|d> (default: 24h).",
+    )
+    parser.add_argument(
+        "--evidence-ref",
+        action="append",
+        dest="evidence_refs",
+        default=[],
+        metavar="REF",
+        help="Evidence reference (repeatable). Defaults to operator-signed:<type>:<route>.",
+    )
+    parser.add_argument(
+        "--quality-floor",
+        action="append",
+        dest="quality_floors",
+        default=[],
+        metavar="FLOOR",
+        help="Quality floor (repeatable). Required for quality_equivalence receipts.",
+    )
+    parser.add_argument(
+        "--receipt-id",
+        default=None,
+        help="Explicit receipt id (default: derived from type, route, and timestamp).",
+    )
+    parser.add_argument(
+        "--receipt-dir",
+        type=Path,
+        default=DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+        help="Receipt directory; the receipt lands under <dir>/route-authority/ "
+        f"(default: {DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR}).",
+    )
+    parser.add_argument(
+        "--now",
+        default=None,
+        help="ISO timestamp override for issued_at (testing/determinism).",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a machine-readable JSON summary instead of human text.",
+    )
+    args = parser.parse_args(argv)
+
+    evidence_refs = args.evidence_refs or [f"operator-signed:{args.receipt_type}:{args.route_id}"]
+
+    try:
+        receipt = build_route_authority_receipt(
+            receipt_type=args.receipt_type,
+            route_id=args.route_id,
+            evidence_refs=evidence_refs,
+            receipt_id=args.receipt_id,
+            signed_by=args.signed_by,
+            stale_after=args.stale_after,
+            quality_floors=args.quality_floors,
+            issued_at=_parse_now(args.now),
+        )
+    except (ValueError, ValidationError) as exc:
+        print(f"refused to mint route-authority receipt: {exc}", file=sys.stderr)
+        return 2
+
+    path = write_route_authority_receipt(receipt, receipt_dir=args.receipt_dir)
+    reference = route_authority_receipt_reference(receipt)
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "receipt_path": str(path),
+                    "receipt_reference": reference,
+                    "receipt_id": receipt.receipt_id,
+                    "receipt_type": receipt.receipt_type,
+                    "route_id": receipt.route_id,
+                    "signed_by": receipt.signed_by,
+                    "stale_after": receipt.stale_after,
+                    "signed_payload_sha256": receipt.signed_payload_sha256,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+    else:
+        print(f"minted {receipt.receipt_type} receipt for {receipt.route_id}")
+        print(f"  path:      {path}")
+        print(f"  reference: {reference}")
+        print(f"  stale_after: {receipt.stale_after} (signed_by={receipt.signed_by})")
+        print("The live dispatch read-path will apply it from the default receipt dir.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
