@@ -543,6 +543,7 @@ def _short_hash(data: bytes) -> str:
 
 def stream_frames(args: argparse.Namespace) -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    raw_output = args.output.with_name(f"{args.output.stem}.raw.bgra") if args.gpu_drift else None
     frame_width, frame_height = _decode_dimensions(args)
     args.source_frame_width = frame_width
     args.source_frame_height = frame_height
@@ -574,6 +575,13 @@ def stream_frames(args: argparse.Namespace) -> int:
                 frames += 1
                 data = _project_frame(data, args, frame_width, frame_height, frames)
                 should_write_meta = frames == 1 or frames % max(1, args.fps * 5) == 0
+                if raw_output is not None:
+                    # GPU media-drift cutover: emit the undrifted frame for the
+                    # screwm_media_drift service (it writes the drifted args.output).
+                    _write_atomic(raw_output, data)
+                    if should_write_meta:
+                        _write_meta(args.meta, args, frames)
+                    continue
                 drift_input_hash = _short_hash(data) if should_write_meta else ""
                 data = drift_renderer.apply(
                     data,
@@ -685,6 +693,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=float,
         default=float(os.environ.get("HAPAX_QUAKE_MEDIA_DRIFT_INTENSITY", "1.0")),
         help="Multiplier for texture-local drift intensity.",
+    )
+    parser.add_argument(
+        "--gpu-drift",
+        action="store_true",
+        default=os.environ.get("HAPAX_QUAKE_GPU_DRIFT", "").strip().lower()
+        in ("1", "on", "true", "yes", "enabled"),
+        help="GPU media-drift cutover: write the undrifted frame to "
+        "<output>.raw.bgra and skip the Python drift; the screwm_media_drift "
+        "GPU service applies drift and writes <output> (which the engine blits).",
     )
     parser.add_argument("--restart-delay", type=float, default=2.0)
     parser.add_argument("--camera-role", default=os.environ.get("HAPAX_QUAKE_CAMERA_ROLE", ""))

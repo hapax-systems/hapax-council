@@ -44,10 +44,16 @@ MIN_NODE_SPECS = 63
 
 # Some specs are intentionally not 1:1 WGSL shader nodes:
 # - output is a graph-level pseudo node.
+# - media_drift is the screwm media-drift SERVICE shader, consumed by the
+#   screwm_media_drift wgpu binary via include_str! (NOT a reverie graph node):
+#   it is uniform-driven (DriftUniforms), has no recruitable param signature,
+#   and is never loaded by the affordance-registry node graph. It lives in the
+#   shader collection alongside the vocabulary nodes; the param-spec audit does
+#   not apply to it.
 # Keep these exceptions explicit so future drift cannot hide inside the raw
 # count floor.
 JSON_SPECS_WITHOUT_WGSL = frozenset({"output"})
-WGSL_NODES_WITHOUT_JSON_SPEC = frozenset()
+WGSL_NODES_WITHOUT_JSON_SPEC = frozenset({"media_drift"})
 
 
 def _spec_files() -> list[Path]:
