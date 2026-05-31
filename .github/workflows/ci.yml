@@ -214,11 +214,15 @@ jobs:
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
-          if [ -n "$PR_BASE_SHA" ]; then
+          if [ -n "$PR_BASE_REF" ]; then
+            git fetch --quiet origin "$PR_BASE_REF:refs/remotes/origin/$PR_BASE_REF" || true
+            uv run python scripts/check-new-module-consumers.py --base-ref "origin/$PR_BASE_REF"
+          elif [ -n "$PR_BASE_SHA" ]; then
             git fetch --quiet origin "$PR_BASE_SHA" || true
-            uv run python scripts/check-new-module-consumers.py --diff-range "$PR_BASE_SHA..HEAD"
+            uv run python scripts/check-new-module-consumers.py --diff-range "$PR_BASE_SHA...HEAD"
           else
             if [ -z "$PUSH_BEFORE_SHA" ] || [ "$PUSH_BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
               echo "no base SHA; skipping new-module-consumer-check"
