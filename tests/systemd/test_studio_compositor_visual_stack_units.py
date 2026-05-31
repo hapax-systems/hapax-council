@@ -161,7 +161,7 @@ def test_obs_video50_bridge_is_guarded_as_manual_fallback() -> None:
     assert "ConditionPathExists=/dev/video50" in unit_lines
     assert parser.get("Unit", "Conflicts") == "studio-fx-output.service"
     assert parser.get("Unit", "After") == "hapax-darkplaces-v4l2.service"
-    assert parser.get("Unit", "Wants") == "hapax-darkplaces-v4l2.service"
+    assert not parser.has_option("Unit", "Wants")
     assert parser.get("Unit", "PartOf") == "hapax-darkplaces-v4l2.service"
     assert parser.get("Service", "TimeoutStopSec") == "10s"
     assert parser.get("Service", "KillMode") == "control-group"
