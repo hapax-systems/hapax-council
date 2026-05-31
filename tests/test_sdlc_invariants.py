@@ -1,0 +1,205 @@
+"""Tests for the SDLC-ladder runtime invariant trace checks (Phase 3c).
+
+Coordination reform Phase 3c (master design §4.5, NEW-1). The never-stuck
+invariants INV-1..5 ship as RUNTIME trace checks: pure, advisory functions over
+the ladder + an authority-case-ledger trace. They NEVER raise and NEVER block —
+a violation is ledgered, never enforced (TLC stays advisory-only; these are its
+runtime companions). INV-4/INV-5 build on Phase 3b ``policy_decide(kernel_up=
+False)`` + the cognition carve-out, proving escape survives a dead kernel.
+"""
+
+import json
+import os
+
+from shared.policy_decide import ToolCall, policy_decide
+from shared.sdlc_invariants import (
+    SDLC_LADDER,
+    InvariantResult,
+    Ladder,
+    check_all,
+    check_inv1_deadlock_freedom,
+    check_inv2_liveness,
+    check_inv3_escape,
+    check_inv4_authority_escapable,
+    check_inv5_cognition_writable,
+    record_invariant_findings,
+)
+
+# --- ladder shape -------------------------------------------------------------
+
+
+class TestLadderShape:
+    def test_has_s0_through_s11(self):
+        for n in range(12):
+            assert f"S{n}" in SDLC_LADDER.stages
+
+    def test_s11_is_terminal(self):
+        assert "S11" in SDLC_LADDER.terminal
+
+    def test_has_disconfirmation_branch_and_blocked(self):
+        assert "S3_5" in SDLC_LADDER.stages
+        assert SDLC_LADDER.blocked  # non-empty blocked set
+
+    def test_blocked_has_escape_edges(self):
+        for b in SDLC_LADDER.blocked:
+            assert SDLC_LADDER.transitions.get(b)  # escape exists
+
+
+# --- INV-1 deadlock-freedom ---------------------------------------------------
+
+
+class TestInv1DeadlockFreedom:
+    def test_holds_on_canonical_ladder(self):
+        r = check_inv1_deadlock_freedom()
+        assert isinstance(r, InvariantResult)
+        assert r.invariant == "INV-1"
+        assert r.holds and not r.violations
+
+    def test_detects_nonterminal_deadend(self):
+        bad = Ladder(
+            stages=("S0", "X"),
+            transitions={"S0": frozenset({"X"}), "X": frozenset()},
+            terminal=frozenset(),
+            blocked=frozenset(),
+        )
+        r = check_inv1_deadlock_freedom(bad)
+        assert not r.holds
+        assert any("X" in v for v in r.violations)
+
+
+# --- INV-3 escape -------------------------------------------------------------
+
+
+class TestInv3Escape:
+    def test_holds_blocked_has_escape(self):
+        r = check_inv3_escape()
+        assert r.invariant == "INV-3"
+        assert r.holds
+
+    def test_detects_blocked_without_escape(self):
+        bad = Ladder(
+            stages=("BLOCKED",),
+            transitions={"BLOCKED": frozenset()},
+            terminal=frozenset(),
+            blocked=frozenset({"BLOCKED"}),
+        )
+        r = check_inv3_escape(bad)
+        assert not r.holds
+        assert any("BLOCKED" in v for v in r.violations)
+
+
+# --- INV-2 liveness (trace check) ---------------------------------------------
+
+
+class TestInv2Liveness:
+    def test_terminal_task_is_live(self):
+        trace = [{"task_id": "t1", "to_stage": "S11", "timestamp": 100.0}]
+        r = check_inv2_liveness(trace, now=1_000_000.0, stale_after_s=3600)
+        assert r.invariant == "INV-2"
+        assert r.holds
+
+    def test_fresh_nonterminal_is_live(self):
+        trace = [{"task_id": "t1", "to_stage": "S6", "timestamp": 999_000.0}]
+        r = check_inv2_liveness(trace, now=1_000_000.0, stale_after_s=3600)
+        assert r.holds
+
+    def test_stale_nonterminal_violates(self):
+        trace = [{"task_id": "t1", "to_stage": "S6", "timestamp": 100.0}]
+        r = check_inv2_liveness(trace, now=1_000_000.0, stale_after_s=3600)
+        assert not r.holds
+        assert any("t1" in v for v in r.violations)
+
+    def test_uses_latest_transition_per_task(self):
+        trace = [
+            {"task_id": "t1", "to_stage": "S6", "timestamp": 100.0},
+            {"task_id": "t1", "to_stage": "S11", "timestamp": 999_500.0},
+        ]
+        r = check_inv2_liveness(trace, now=1_000_000.0, stale_after_s=3600)
+        assert r.holds  # latest stage is terminal
+
+    def test_unknown_stage_violates(self):
+        trace = [{"task_id": "t1", "to_stage": "S99", "timestamp": 999_999.0}]
+        r = check_inv2_liveness(trace, now=1_000_000.0, stale_after_s=3600)
+        assert not r.holds
+
+    def test_empty_trace_holds_vacuously(self):
+        r = check_inv2_liveness([], now=1_000_000.0, stale_after_s=3600)
+        assert r.holds
+
+
+# --- INV-4 / INV-5 build on Phase 3b policy_decide ----------------------------
+
+
+class TestInv4AuthorityEscapable:
+    def test_holds_kernel_down_directionally_correct(self):
+        r = check_inv4_authority_escapable()
+        assert r.invariant == "INV-4"
+        assert r.holds
+
+
+class TestInv5CognitionWritable:
+    def test_holds_cognition_always_allowed(self):
+        r = check_inv5_cognition_writable()
+        assert r.invariant == "INV-5"
+        assert r.holds
+
+
+# --- check_all + advisory ledger ----------------------------------------------
+
+
+class TestCheckAll:
+    def test_all_canonical_invariants_hold(self):
+        results = check_all(trace=[], now=0.0)
+        assert {r.invariant for r in results} == {"INV-1", "INV-2", "INV-3", "INV-4", "INV-5"}
+        assert all(r.holds for r in results)
+
+
+class TestRecordFindings:
+    def test_records_only_violations(self, tmp_path):
+        ledger = tmp_path / "inv.jsonl"
+        bad = check_inv3_escape(
+            Ladder(
+                stages=("BLOCKED",),
+                transitions={"BLOCKED": frozenset()},
+                terminal=frozenset(),
+                blocked=frozenset({"BLOCKED"}),
+            )
+        )
+        good = check_inv1_deadlock_freedom()
+        record_invariant_findings([bad, good], ledger_path=ledger)
+        lines = ledger.read_text().strip().splitlines()
+        assert len(lines) == 1  # only the violation is recorded
+        row = json.loads(lines[0])
+        assert row["invariant"] == "INV-3"
+        assert row["holds"] is False
+
+    def test_never_raises_on_unwritable_path(self):
+        bad = check_inv3_escape(
+            Ladder(
+                stages=("BLOCKED",),
+                transitions={"BLOCKED": frozenset()},
+                terminal=frozenset(),
+                blocked=frozenset({"BLOCKED"}),
+            )
+        )
+        record_invariant_findings([bad], ledger_path="/this/does/not/exist/inv.jsonl")
+
+
+# --- daemon-down chaos test (INV-4/INV-5) -------------------------------------
+
+
+class TestDaemonDownChaos:
+    """Kill the kernel (kernel_up=False) and prove escape survives (master design §4.5 INV-4)."""
+
+    def test_reversible_work_not_stuck_when_kernel_down(self):
+        d = policy_decide(ToolCall("Edit", file_path="shared/foo.py"), None, None, kernel_up=False)
+        assert d.allowed  # reversible op fails OPEN — never stuck on a dead kernel
+
+    def test_irreversible_still_blocked_when_kernel_down(self):
+        d = policy_decide(ToolCall("Bash", command="gh pr merge 1"), None, None, kernel_up=False)
+        assert d.blocked  # the embedded floor still protects irreversible harm
+
+    def test_cognition_writable_when_kernel_down(self):
+        path = os.path.expanduser("~/.claude/projects/x/memory/note.md")
+        d = policy_decide(ToolCall("Write", file_path=path), None, None, kernel_up=False)
+        assert d.allowed  # a blocked lane can always think, even with the kernel down
