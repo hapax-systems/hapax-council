@@ -117,3 +117,30 @@ def test_inject_rgba_creates_source_directory_once(monkeypatch, tmp_path):
     assert content_injector.inject_rgba("hot-source", b"\1" * 16, 2, 2)
 
     assert len(mkdir_calls) == 1
+
+
+def test_inject_rgba_recovers_repeated_transient_replace_failures(monkeypatch, tmp_path):
+    """Atomic source writes should survive short-lived temp-file races."""
+    from agents.reverie import content_injector
+
+    source_dir = tmp_path / "sources" / "race-source"
+    monkeypatch.setattr(content_injector, "SOURCES_DIR", tmp_path / "sources")
+    with content_injector._SOURCE_DIRS_LOCK:
+        content_injector._CREATED_SOURCE_DIRS.clear()
+    replace_calls = 0
+    original_replace = Path.replace
+
+    def _flaky_replace(self: Path, target: Path) -> Path:
+        nonlocal replace_calls
+        if target == source_dir / "frame.rgba":
+            replace_calls += 1
+            if replace_calls < 3:
+                raise FileNotFoundError("simulated temp race")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", _flaky_replace)
+
+    assert content_injector.inject_rgba("race-source", b"\0" * 16, 2, 2)
+    assert replace_calls == 3
+    assert (source_dir / "frame.rgba").exists()
+    assert (source_dir / "manifest.json").exists()

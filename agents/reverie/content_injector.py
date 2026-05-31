@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
+import time
 from pathlib import Path
 
 log = logging.getLogger("reverie.injector")
@@ -35,6 +37,35 @@ def _ensure_source_dir(source_dir: Path) -> None:
             return
         source_dir.mkdir(parents=True, exist_ok=True)
         _CREATED_SOURCE_DIRS.add(source_dir)
+
+
+def _forget_source_dir(source_dir: Path) -> None:
+    with _SOURCE_DIRS_LOCK:
+        _CREATED_SOURCE_DIRS.discard(source_dir)
+
+
+def _fallback_text_rgba(text: str, width: int, height: int) -> tuple[bytes, int, int]:
+    """Build a dependency-free visual placeholder when Pillow text rendering fails."""
+    safe_width = max(1, int(width))
+    safe_height = max(1, int(height))
+    rgba = bytearray(safe_width * safe_height * 4)
+    line_count = max(1, min(6, len(text.splitlines()) or len(text) // 48 + 1))
+    band_width = max(1, int(safe_width * 0.72))
+    band_height = max(2, safe_height // 64)
+    x0 = max(0, (safe_width - band_width) // 2)
+    y0 = max(0, (safe_height - line_count * band_height * 3) // 2)
+    for line_idx in range(line_count):
+        y_start = y0 + line_idx * band_height * 3
+        for y in range(y_start, min(safe_height, y_start + band_height)):
+            row = y * safe_width * 4
+            for x in range(x0, min(safe_width, x0 + band_width)):
+                idx = row + x * 4
+                rgba[idx : idx + 4] = b"\xff\xff\xff\xb4"
+    return bytes(rgba), safe_width, safe_height
+
+
+def _tmp_path(source_dir: Path, stem: str) -> Path:
+    return source_dir / f"{stem}.{os.getpid()}.{threading.get_ident()}.{time.monotonic_ns()}.tmp"
 
 
 def inject_image(
@@ -96,6 +127,11 @@ def inject_text(
         from agents.imagination_source_protocol import _render_text_to_rgba
 
         rgba, w, h = _render_text_to_rgba(text, width, height)
+    except Exception:
+        log.debug("Failed to render text %s; using fallback RGBA", source_id, exc_info=True)
+        rgba, w, h = _fallback_text_rgba(text, width, height)
+
+    try:
         return inject_rgba(
             source_id,
             rgba,
@@ -108,7 +144,7 @@ def inject_text(
             sources_dir=sources_dir,
         )
     except Exception:
-        log.debug("Failed to inject text %s", source_id, exc_info=True)
+        log.debug("Failed to inject rendered text %s", source_id, exc_info=True)
         return False
 
 
@@ -128,33 +164,51 @@ def inject_rgba(
     if sources_dir is None:
         sources_dir = SOURCES_DIR
     source_dir = sources_dir / source_id
-    _ensure_source_dir(source_dir)
 
-    try:
-        tmp_frame = source_dir / "frame.tmp"
-        tmp_frame.write_bytes(rgba_data)
-        tmp_frame.rename(source_dir / "frame.rgba")
+    for attempt in range(3):
+        tmp_frame: Path | None = None
+        tmp_manifest: Path | None = None
+        try:
+            _ensure_source_dir(source_dir)
+            tmp_frame = _tmp_path(source_dir, "frame")
+            tmp_frame.write_bytes(rgba_data)
+            tmp_frame.replace(source_dir / "frame.rgba")
 
-        manifest = {
-            "source_id": source_id,
-            "content_type": "rgba",
-            "width": width,
-            "height": height,
-            "opacity": opacity,
-            "layer": 1,
-            "blend_mode": blend_mode,
-            "z_order": z_order,
-            "ttl_ms": max(0, int(ttl_ms)),
-            "tags": tags or [],
-        }
+            manifest = {
+                "source_id": source_id,
+                "content_type": "rgba",
+                "width": width,
+                "height": height,
+                "opacity": opacity,
+                "layer": 1,
+                "blend_mode": blend_mode,
+                "z_order": z_order,
+                "ttl_ms": max(0, int(ttl_ms)),
+                "tags": tags or [],
+            }
 
-        tmp = source_dir / "manifest.tmp"
-        tmp.write_text(json.dumps(manifest))
-        tmp.rename(source_dir / "manifest.json")
-        return True
-    except Exception:
-        log.debug("Failed to inject rgba %s", source_id, exc_info=True)
-        return False
+            tmp_manifest = _tmp_path(source_dir, "manifest")
+            tmp_manifest.write_text(json.dumps(manifest))
+            tmp_manifest.replace(source_dir / "manifest.json")
+            return True
+        except OSError:
+            _forget_source_dir(source_dir)
+            if tmp_frame is not None:
+                tmp_frame.unlink(missing_ok=True)
+            if tmp_manifest is not None:
+                tmp_manifest.unlink(missing_ok=True)
+            if attempt < 2:
+                continue
+            log.debug(
+                "Failed to inject rgba %s after recreating source dir",
+                source_id,
+                exc_info=True,
+            )
+            return False
+        except Exception:
+            log.debug("Failed to inject rgba %s", source_id, exc_info=True)
+            return False
+    return False
 
 
 def inject_url(
