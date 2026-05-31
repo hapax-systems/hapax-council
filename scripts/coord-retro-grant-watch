@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""coord-retro-grant-watch — enforce the retro-grant obligation on HAPAX_*_OFF.
+
+Reform Phase 4 (NEW-2 deprecation). The unconditional emergency off-switch
+(HAPAX_METHODOLOGY_EMERGENCY) is incident-only and now incurs a MANDATORY signed
+EscapeGrant within 1h (master design §4.4 / §7 NEW-2). cc-task-gate records a
+pending obligation each time the switch is used; this watcher closes the loop:
+
+  - FULFILLED  — a covering, signed EscapeGrant minted at/after the bypass landed.
+  - ESCALATED  — the 1h deadline passed with none → ntfy the operator.
+  - PENDING    — not yet due; leave for a later run.
+
+So the blunt off-switch can never be used silently and then forgotten. Run it
+periodically (e.g. a systemd timer) or on demand. Prints a JSON summary.
+
+Paths (env-overridable):
+  obligations  $HAPAX_COORD_RETRO_OBLIGATIONS  (~/.cache/hapax/coord-retro-grant-obligations.jsonl)
+  grants       $HAPAX_COORD_GRANT_DIR          (/var/lib/hapax/coord/grants)
+  key          $HAPAX_COORD_GRANT_KEY          (/var/lib/hapax/coord/grant-key)
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.governance.coord_capabilities import (  # noqa: E402
+    read_grant_file,
+    verify_escape_grant,
+)
+
+DEFAULT_OBLIGATIONS = Path.home() / ".cache" / "hapax" / "coord-retro-grant-obligations.jsonl"
+DEFAULT_GRANT_DIR = "/var/lib/hapax/coord/grants"
+DEFAULT_GRANT_KEY = "/var/lib/hapax/coord/grant-key"
+
+
+def _load_key(path: Path) -> bytes:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return b""
+
+
+def _has_covering_grant(
+    grant_dir: Path, key: bytes, gate: str, min_issued_at: float, now: float
+) -> bool:
+    """True iff a valid signed grant covers ``gate`` and was minted at/after the bypass.
+
+    A grant predating the obligation cannot retro-justify it; the retro-grant must
+    be a deliberate act taken AFTER the emergency.
+    """
+    if not grant_dir.is_dir():
+        return False
+    for path in sorted(grant_dir.glob("*.grant")):
+        grant = read_grant_file(path)
+        if grant is None or grant.issued_at < min_issued_at:
+            continue
+        if verify_escape_grant(grant, key=key, now=now, gate=gate):
+            return True
+    return False
+
+
+def process(
+    records: list[dict], *, grant_dir: Path, key: bytes, now: float
+) -> tuple[list[dict], dict, list[dict]]:
+    """Resolve each pending obligation. Returns (updated_records, summary, to_notify)."""
+    out: list[dict] = []
+    summary = {"total": len(records), "pending": 0, "fulfilled": 0, "escalated": 0}
+    to_notify: list[dict] = []
+    for rec in records:
+        if rec.get("status") != "pending":
+            out.append(rec)
+            continue
+        gate = str(rec.get("gate", "*"))
+        ts_s = float(rec.get("ts_s", 0))
+        deadline_s = float(rec.get("deadline_s", 0))
+        if _has_covering_grant(grant_dir, key, gate, ts_s, now):
+            out.append({**rec, "status": "fulfilled", "resolved_s": int(now)})
+            summary["fulfilled"] += 1
+        elif now >= deadline_s:
+            updated = {**rec, "status": "escalated", "resolved_s": int(now)}
+            out.append(updated)
+            summary["escalated"] += 1
+            to_notify.append(updated)
+        else:
+            out.append(rec)
+            summary["pending"] += 1
+    return out, summary, to_notify
+
+
+def _escalate(to_notify: list[dict]) -> None:
+    """Best-effort operator escalation; never raises (the obligation is overdue regardless)."""
+    try:
+        from shared.notify import send_notification
+    except Exception:
+        return
+    lines = [
+        f"- {o.get('role', '?')}/{o.get('task', '?')} gate={o.get('gate', '?')} "
+        f"(case {o.get('case', '?')})"
+        for o in to_notify
+    ]
+    try:
+        send_notification(
+            f"⚠ {len(to_notify)} retro-grant obligation(s) OVERDUE",
+            "HAPAX_*_OFF emergency bypass used with no signed EscapeGrant within 1h:\n"
+            + "\n".join(lines)
+            + "\n\nMint one: coord-grant-mint --scope <gate> --reason '<incident>'.",
+            priority="high",
+            tags=["rotating_light", "warning"],
+        )
+    except Exception:
+        pass
+
+
+def _atomic_write(path: Path, records: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text("".join(json.dumps(rec) + "\n" for rec in records), encoding="utf-8")
+    tmp.replace(path)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="coord-retro-grant-watch", description="Escalate overdue retro-grant obligations."
+    )
+    parser.add_argument("--dry-run", action="store_true", help="resolve + record but do not ntfy")
+    parser.add_argument("--now", type=float, default=None, help="override current epoch (testing)")
+    parser.add_argument("--obligations", default=None, help="override the obligations ledger path")
+    parser.add_argument("--grant-dir", default=None, help="override the grant directory")
+    parser.add_argument("--key-file", default=None, help="override the signing key path")
+    args = parser.parse_args(argv)
+
+    obligations = Path(
+        args.obligations
+        or os.environ.get("HAPAX_COORD_RETRO_OBLIGATIONS", str(DEFAULT_OBLIGATIONS))
+    )
+    grant_dir = Path(args.grant_dir or os.environ.get("HAPAX_COORD_GRANT_DIR", DEFAULT_GRANT_DIR))
+    key_path = Path(args.key_file or os.environ.get("HAPAX_COORD_GRANT_KEY", DEFAULT_GRANT_KEY))
+    now = args.now if args.now is not None else time.time()
+
+    if not obligations.exists():
+        print(json.dumps({"total": 0, "pending": 0, "fulfilled": 0, "escalated": 0}))
+        return 0
+
+    records = [json.loads(line) for line in obligations.read_text().splitlines() if line.strip()]
+    key = _load_key(key_path)
+    updated, summary, to_notify = process(records, grant_dir=grant_dir, key=key, now=now)
+
+    if to_notify and not args.dry_run:
+        _escalate(to_notify)
+
+    _atomic_write(obligations, updated)
+    print(json.dumps(summary))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
