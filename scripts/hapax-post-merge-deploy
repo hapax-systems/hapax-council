@@ -110,6 +110,7 @@ record_post_merge_trace() {
     HAPAX_TRACE_WATCHDOGS="$(_trace_join "${WATCHDOGS[@]}")" \
     HAPAX_TRACE_SCRIPTS="$(_trace_join "${SCRIPTS[@]}")" \
     HAPAX_TRACE_SCRIPT_PY="$(_trace_join "${SCRIPT_PY[@]}")" \
+    HAPAX_TRACE_AUDIO_SAFE_RESTARTS="$(_trace_join "${AUDIO_SAFE_RESTARTS[@]}")" \
     HAPAX_TRACE_SYSTEMD_UNCLASSIFIED="$(_trace_join "${SYSTEMD_UNCLASSIFIED[@]}")" \
     python3 - "$TRACE_PATH" "$TRACE_MAX_RECORDS" "$SHA" "$DRY_RUN" "$status" "$exit_code" \
         "$DID_ANYTHING" <<'PY'
@@ -179,6 +180,7 @@ record = {
     "deploy_groups": deploy_groups,
     "manual_deploy_needed": any(deploy_groups.values()),
     "manual_deploy_executed": manual_deploy_executed,
+    "audio_safe_restart_units": lines("HAPAX_TRACE_AUDIO_SAFE_RESTARTS"),
     "systemd_unclassified": lines("HAPAX_TRACE_SYSTEMD_UNCLASSIFIED"),
     "avsdlc": {
         "gate_point": "S9 post-merge production witness",
@@ -241,6 +243,7 @@ fi
 
 PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=()
 SYSTEMD_UNCLASSIFIED=()
+AUDIO_SAFE_RESTARTS=()
 DID_ANYTHING=0
 
 unit_install_scope() {
@@ -257,6 +260,69 @@ unit_install_scope() {
     else
         printf 'user\n'
     fi
+}
+
+AUDIO_SAFE_RESTART_UNITS=(
+    hapax-broadcast-orchestrator.service
+    hapax-music-player.service
+    hapax-content-resolver.service
+    hapax-audio-router.service
+    hapax-audio-ducker.service
+    hapax-daimonion.service
+)
+
+is_audio_safe_restart_unit() {
+    local unit="$1"
+    local candidate
+    for candidate in "${AUDIO_SAFE_RESTART_UNITS[@]}"; do
+        if [[ "$candidate" == "$unit" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+audio_safe_restart_bin() {
+    if [[ -n "${HAPAX_AUDIO_SAFE_RESTART_BIN:-}" ]]; then
+        printf '%s\n' "$HAPAX_AUDIO_SAFE_RESTART_BIN"
+        return 0
+    fi
+    if command -v hapax-audio-safe-restart >/dev/null 2>&1; then
+        command -v hapax-audio-safe-restart
+        return 0
+    fi
+    if [[ -x "$REPO/scripts/hapax-audio-safe-restart" ]]; then
+        printf '%s\n' "$REPO/scripts/hapax-audio-safe-restart"
+        return 0
+    fi
+    return 1
+}
+
+restart_user_unit() {
+    local unit="$1"
+    if is_audio_safe_restart_unit "$unit"; then
+        local safe_bin
+        if ! safe_bin="$(audio_safe_restart_bin)"; then
+            echo "hapax-post-merge-deploy: refusing plain restart for audio-touching unit $unit; hapax-audio-safe-restart not found" >&2
+            return 4
+        fi
+        echo "audio-safe restarting $unit"
+        set +e
+        "$safe_bin" "$unit"
+        local safe_rc=$?
+        set -e
+        AUDIO_SAFE_RESTARTS+=("$unit")
+        if [[ "$safe_rc" -eq 0 ]]; then
+            return 0
+        fi
+        if [[ "$safe_rc" -eq 1 ]]; then
+            echo "hapax-post-merge-deploy: audio-safe restart rolled back $unit successfully" >&2
+            return 0
+        fi
+        return "$safe_rc"
+    fi
+
+    systemctl --user restart "$unit"
 }
 
 # Per-file deploy uses `git cat-file -e $SHA:$path` + `git show $SHA:$path`
@@ -439,7 +505,7 @@ if [ "${#WATCHDOGS[@]}" -gt 0 ]; then
             base_unit="$(basename "$unit_path")"
             if systemctl --user is-active --quiet "$base_unit"; then
                 echo "  restarting $base_unit (uses $dest)"
-                systemctl --user restart "$base_unit"
+                restart_user_unit "$base_unit"
             fi
         done
     done
@@ -471,7 +537,7 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
     for u in "${DROPIN_UNITS_TO_RESTART[@]}"; do
         if systemctl --user is-active --quiet "$u"; then
             echo "restarting $u"
-            systemctl --user restart "$u"
+            restart_user_unit "$u"
         elif [[ "$u" == *.timer ]]; then
             echo "try-restarting $u"
             systemctl --user try-restart "$u" || true
@@ -517,7 +583,7 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
         # Only restart if it's already running; timers we try-restart
         if systemctl --user is-active --quiet "$u"; then
             echo "restarting $u"
-            systemctl --user restart "$u"
+            restart_user_unit "$u"
         elif [[ "$u" == *.timer ]]; then
             echo "enabling+starting $u"
             systemctl --user enable --now "$u"
@@ -567,7 +633,7 @@ if [ "${#SCRIPTS[@]}" -gt 0 ]; then
             base_unit="$(basename "$unit_path")"
             if systemctl --user is-active --quiet "$base_unit"; then
                 echo "  restarting $base_unit (uses $dest)"
-                systemctl --user restart "$base_unit"
+                restart_user_unit "$base_unit"
             fi
         done
     done
@@ -589,7 +655,7 @@ if [ "${#SCRIPT_PY[@]}" -gt 0 ]; then
             base="$(basename "$unit_path")"
             if systemctl --user is-active --quiet "$base"; then
                 echo "  restarting $base (backs $f)"
-                systemctl --user restart "$base"
+                restart_user_unit "$base"
                 DID_ANYTHING=1
             fi
         done
