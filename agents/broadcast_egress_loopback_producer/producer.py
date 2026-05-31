@@ -38,6 +38,7 @@ from typing import Final
 
 from shared.broadcast_audio_health import (
     DEFAULT_EGRESS_LOOPBACK_WITNESS,
+    EgressLoopbackQuality,
     EgressLoopbackWitness,
 )
 
@@ -89,6 +90,10 @@ class LoopbackSample:
     rms_dbfs: float
     peak_dbfs: float
     silence_ratio: float
+    crest_factor_db: float | None
+    zero_crossing_rate_hz: float
+    quality: EgressLoopbackQuality
+    quality_reasons: tuple[str, ...]
 
 
 # Subprocess shell type: tests inject stubs that return synthetic PCM
@@ -171,6 +176,7 @@ def compute_loopback_metrics(
     pcm_bytes: bytes,
     *,
     silence_floor_dbfs: float = SILENCE_FLOOR_DBFS,
+    sample_rate: int = DEFAULT_SAMPLE_RATE_HZ,
 ) -> LoopbackSample:
     """Compute RMS dBFS / peak dBFS / silence_ratio from int16 PCM bytes.
 
@@ -190,7 +196,15 @@ def compute_loopback_metrics(
         evaluator's intuitive "loudest momentary sample" semantic.
     """
     if not pcm_bytes:
-        return LoopbackSample(rms_dbfs=-120.0, peak_dbfs=-120.0, silence_ratio=1.0)
+        return LoopbackSample(
+            rms_dbfs=-120.0,
+            peak_dbfs=-120.0,
+            silence_ratio=1.0,
+            crest_factor_db=None,
+            zero_crossing_rate_hz=0.0,
+            quality=EgressLoopbackQuality.UNKNOWN,
+            quality_reasons=("empty PCM buffer",),
+        )
 
     samples = array.array("h")  # signed short, native endian on Linux x86_64
     # array.frombytes requires len % itemsize == 0 — pad/truncate the
@@ -198,7 +212,15 @@ def compute_loopback_metrics(
     usable = len(pcm_bytes) - (len(pcm_bytes) % 2)
     samples.frombytes(pcm_bytes[:usable])
     if not samples:
-        return LoopbackSample(rms_dbfs=-120.0, peak_dbfs=-120.0, silence_ratio=1.0)
+        return LoopbackSample(
+            rms_dbfs=-120.0,
+            peak_dbfs=-120.0,
+            silence_ratio=1.0,
+            crest_factor_db=None,
+            zero_crossing_rate_hz=0.0,
+            quality=EgressLoopbackQuality.UNKNOWN,
+            quality_reasons=("no complete int16 samples",),
+        )
 
     full_scale = 32767.0
     silence_threshold_amp = full_scale * (10.0 ** (silence_floor_dbfs / 20.0))
@@ -206,6 +228,8 @@ def compute_loopback_metrics(
     sum_sq = 0.0
     peak_amp = 0
     silent_count = 0
+    zero_crossings = 0
+    last_sign = 0
     for s in samples:
         sum_sq += float(s) * float(s)
         a = abs(s)
@@ -213,6 +237,11 @@ def compute_loopback_metrics(
             peak_amp = a
         if a < silence_threshold_amp:
             silent_count += 1
+        sign = 1 if s > 0 else -1 if s < 0 else 0
+        if sign and last_sign and sign != last_sign:
+            zero_crossings += 1
+        if sign:
+            last_sign = sign
 
     n = len(samples)
     rms_amp = math.sqrt(sum_sq / n)
@@ -220,10 +249,72 @@ def compute_loopback_metrics(
     rms_dbfs = _safe_dbfs(rms_amp, full_scale)
     peak_dbfs = _safe_dbfs(float(peak_amp), full_scale)
     silence_ratio = silent_count / n
+    crest_factor_db = peak_dbfs - rms_dbfs if peak_dbfs > -120.0 and rms_dbfs > -120.0 else None
+    duration_s = n / sample_rate if sample_rate > 0 else 0.0
+    zero_crossing_rate_hz = zero_crossings / duration_s if duration_s > 0.0 else 0.0
+    quality, quality_reasons = classify_loopback_quality(
+        rms_dbfs=rms_dbfs,
+        peak_dbfs=peak_dbfs,
+        silence_ratio=silence_ratio,
+        crest_factor_db=crest_factor_db,
+        zero_crossing_rate_hz=zero_crossing_rate_hz,
+        silence_floor_dbfs=silence_floor_dbfs,
+    )
     return LoopbackSample(
         rms_dbfs=rms_dbfs,
         peak_dbfs=peak_dbfs,
         silence_ratio=silence_ratio,
+        crest_factor_db=crest_factor_db,
+        zero_crossing_rate_hz=zero_crossing_rate_hz,
+        quality=quality,
+        quality_reasons=tuple(quality_reasons),
+    )
+
+
+def classify_loopback_quality(
+    *,
+    rms_dbfs: float,
+    peak_dbfs: float,
+    silence_ratio: float,
+    crest_factor_db: float | None,
+    zero_crossing_rate_hz: float,
+    silence_floor_dbfs: float = SILENCE_FLOOR_DBFS,
+) -> tuple[EgressLoopbackQuality, list[str]]:
+    """Classify the captured egress window beyond link presence.
+
+    RMS and silence ratio catch no-programme states. The added crest/ZCR
+    checks catch the corrupt-capture class behind garbled OBS egress: lots of
+    zero crossings with crushed dynamics, or near-full-scale flat clipping.
+    """
+
+    if rms_dbfs <= silence_floor_dbfs or silence_ratio >= 0.98:
+        return (
+            EgressLoopbackQuality.SILENCE,
+            [f"rms {rms_dbfs:.1f} dBFS / silence_ratio {silence_ratio:.2f} indicates silence"],
+        )
+
+    reasons: list[str] = []
+    if crest_factor_db is not None:
+        if zero_crossing_rate_hz >= 8000.0 and crest_factor_db <= 4.0:
+            reasons.append(
+                f"high zero-crossing rate {zero_crossing_rate_hz:.0f} Hz "
+                f"with low crest factor {crest_factor_db:.1f} dB"
+            )
+        if peak_dbfs >= -0.5 and crest_factor_db <= 3.0:
+            reasons.append(
+                f"near-full-scale peak {peak_dbfs:.1f} dBFS "
+                f"with crushed crest factor {crest_factor_db:.1f} dB"
+            )
+
+    if reasons:
+        return EgressLoopbackQuality.GARBLED, reasons
+
+    return (
+        EgressLoopbackQuality.NORMAL,
+        [
+            f"normal programme window: rms={rms_dbfs:.1f} dBFS, "
+            f"peak={peak_dbfs:.1f} dBFS, zcr={zero_crossing_rate_hz:.0f} Hz"
+        ],
     )
 
 
@@ -343,7 +434,7 @@ class EgressLoopbackProducer:
             write_witness_atomic(witness, self.witness_path)
             return witness
 
-        sample = compute_loopback_metrics(pcm)
+        sample = compute_loopback_metrics(pcm, sample_rate=self.sample_rate)
         witness = EgressLoopbackWitness(
             checked_at=ts,
             rms_dbfs=sample.rms_dbfs,
@@ -351,6 +442,10 @@ class EgressLoopbackProducer:
             silence_ratio=sample.silence_ratio,
             window_seconds=self.window_seconds,
             target_sink=self.source,
+            quality=sample.quality,
+            crest_factor_db=sample.crest_factor_db,
+            zero_crossing_rate_hz=sample.zero_crossing_rate_hz,
+            quality_reasons=list(sample.quality_reasons),
             error=None,
         )
         write_witness_atomic(witness, self.witness_path)
@@ -406,6 +501,10 @@ def _error_witness(
         silence_ratio=1.0,
         window_seconds=window_seconds,
         target_sink=target_sink,
+        quality=EgressLoopbackQuality.UNKNOWN,
+        crest_factor_db=None,
+        zero_crossing_rate_hz=0.0,
+        quality_reasons=[error],
         error=error,
     )
 

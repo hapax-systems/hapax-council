@@ -83,6 +83,13 @@ class BroadcastAudioStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+class EgressLoopbackQuality(StrEnum):
+    SILENCE = "silence"
+    NORMAL = "normal"
+    GARBLED = "garbled"
+    UNKNOWN = "unknown"
+
+
 class ReasonSeverity(StrEnum):
     BLOCKING = "blocking"
     WARNING = "warning"
@@ -115,8 +122,8 @@ class EgressLoopbackWitness(BaseModel):
     """Live signal-level snapshot of the broadcast egress sink.
 
     Written by an out-of-band sampler daemon (e.g. `pw-cat --record --target
-    hapax-livestream` → DSP → atomic JSON write). The producer is out of
-    scope for this consume-side gate; the producer cc-task is a follow-up.
+    hapax-broadcast-normalized` → DSP → atomic JSON write). The producer
+    reports both signal presence and corrupt-capture classification.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -127,6 +134,10 @@ class EgressLoopbackWitness(BaseModel):
     silence_ratio: float = Field(ge=0.0, le=1.0)
     window_seconds: float = Field(gt=0.0)
     target_sink: str = Field(min_length=1)
+    quality: EgressLoopbackQuality = EgressLoopbackQuality.UNKNOWN
+    crest_factor_db: float | None = None
+    zero_crossing_rate_hz: float | None = None
+    quality_reasons: list[str] = Field(default_factory=list)
     error: str | None = None
 
 
@@ -813,6 +824,10 @@ def _evaluate_egress_loopback(
             "silence_ratio": witness.silence_ratio,
             "window_seconds": witness.window_seconds,
             "target_sink": witness.target_sink,
+            "quality": witness.quality.value,
+            "crest_factor_db": witness.crest_factor_db,
+            "zero_crossing_rate_hz": witness.zero_crossing_rate_hz,
+            "quality_reasons": list(witness.quality_reasons),
             "checked_at": witness.checked_at,
             "max_age_s": thresholds.loopback_max_age_s,
         }
@@ -832,7 +847,23 @@ def _evaluate_egress_loopback(
         )
         return
 
-    if witness.silence_ratio > thresholds.silence_ratio_max:
+    if witness.quality == EgressLoopbackQuality.GARBLED:
+        _block(
+            blocking,
+            code="egress_loopback_garbled",
+            owner=str(path),
+            message=(
+                "egress loopback classifier reports garbled/corrupt capture "
+                f"(rms={witness.rms_dbfs:.1f} dBFS, peak={witness.peak_dbfs:.1f} dBFS, "
+                f"crest={witness.crest_factor_db}, zcr={witness.zero_crossing_rate_hz})"
+            ),
+            evidence_refs=["egress_loopback"],
+        )
+        return
+
+    if witness.quality == EgressLoopbackQuality.SILENCE or (
+        witness.silence_ratio > thresholds.silence_ratio_max
+    ):
         _block(
             blocking,
             code="egress_loopback_silent",
