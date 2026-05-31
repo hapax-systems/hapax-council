@@ -81,6 +81,18 @@ install-imagination: build check
     echo "  systemctl --user restart hapax-imagination.service"
     $IMAG_DST --version 2>/dev/null || true
 
+# Build + install the screwm ward-atlas GPU service (Cairo->GPU port). Dormant:
+# enable hapax-ward-atlas-gpu.service to run (writes the shadow shm by default).
+install-screwm-ward-atlas:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release -p hapax-visual --bin screwm_ward_atlas
+    SRC="{{prod_target}}/release/screwm_ward_atlas"
+    DST="{{bin_dir}}/screwm-ward-atlas"
+    [ -f "$DST" ] && cp "$DST" "$DST.prev"
+    cp "$SRC" "$DST.new" && mv -f "$DST.new" "$DST"
+    echo "Installed screwm-ward-atlas (dormant; enable hapax-ward-atlas-gpu.service)."
+
 # ── Rollback ──────────────────────────────────────────────────────
 
 # Restore previous binaries
