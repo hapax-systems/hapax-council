@@ -18,9 +18,18 @@ Authority: `docs/logos-design-language.md`. No hardcoded hex — use CSS vars/Ta
 
 Vault: `~/Documents/Personal/` (kebab-case, PARA). Plugin `obsidian-hapax/` provides context panel. Goal notes: `type: goal` frontmatter. Agents: `obsidian_sync.py` (6h), `vault_context_writer.py` (15min), `vault_canvas_writer.py`, `sprint_tracker.py` (5min).
 
-## Tauri-Only Runtime
+## Screwm Aggregate Runtime
 
-Logos = Tauri 2, IPC only (zero `fetch()`). 60+ invoke handlers, SSE bridge, command relay WS on :8052, frame server on :8053. Reverie: `hapax-imagination` systemd service, wgpu shader graphs, 8-pass vocabulary (`noise→rd→color→drift→breath→feedback→content_layer→postprocess`). Params: `uniforms.json` per-node, multiplicative defaults=1.0. 9 expressive dims in GPU uniform buffer. NVIDIA Wayland workaround: `__NV_DISABLE_EXPLICIT_SYNC=1`. Dev: `pnpm tauri dev`.
+Only the Logos/Tauri desktop frontend is intentionally sunsetted and disabled.
+Do not revive it as the primary runtime. The aggregate target is
+Screwm-native: DarkPlaces/Quake spatial rendering plus Hapax compositor, drift,
+and effects capabilities re-homed behind governed contracts. Required ports
+include audio reactivity, drift/modulation currency, WGSL node graph parity,
+Cairo/ward atlas rendering, image/video classification, audio governance:
+ducking, LUFS panic, VAD, and consent egress, layout switching and transition
+FSM, director/programme control, temporal/glfeedback effects, recording/HLS
+egress, and camera resilience. The `hapax-logos` workspace may still contain
+shared visual crates, but the Tauri shell is not the live surface.
 
 ## Unified Semantic Recruitment
 

@@ -1,0 +1,106 @@
+{
+  "version": "screwm-compositor-sunset-boundary-v1",
+  "authority_case": "CASE-SCREWM-QUAKE-MIGRATION-20260523",
+  "parent_spec": "docs/superpowers/specs/2026-05-23-screwm-quake-hybrid-isap.md",
+  "aggregate_target": {
+    "id": "screwm_native_aggregate",
+    "description": "DarkPlaces/Quake spatial rendering plus Hapax compositor, drift, and effects capabilities as one governed runtime instrument.",
+    "lost_capabilities_allowed": false,
+    "runtime_mutation_in_this_slice": false
+  },
+  "sunsetted_surfaces": [
+    {
+      "id": "logos_tauri_frontend",
+      "scope": "Logos/Tauri desktop UI shell only",
+      "status": "sunsetted_intentional",
+      "runtime_required": false,
+      "must_not_revive_as_primary_runtime": true,
+      "does_not_sunset_compositor_capabilities": true
+    }
+  ],
+  "required_compositor_ports": [
+    {
+      "id": "audio_reactivity",
+      "label": "audio reactivity",
+      "status": "required_port",
+      "target_owner": "screwm_native_aggregate",
+      "minimum_contract": "A Screwm-native producer supplies tight, live audio-reactive state without depending on the retired Tauri frontend."
+    },
+    {
+      "id": "drift_modulation_currency",
+      "label": "drift/modulation currency",
+      "status": "required_port",
+      "target_owner": "screwm_native_aggregate",
+      "minimum_contract": "Effect-drift scalars remain content-fresh, grounded in live signals, and visible at the engine/compositor boundary."
+    },
+    {
+      "id": "wgsl_node_graph_parity",
+      "label": "WGSL node graph parity",
+      "status": "required_port",
+      "target_owner": "screwm_native_aggregate",
+      "minimum_contract": "Shader vocabulary is either ported to DarkPlaces GLSL or explicitly preserved by a governed temporal compositor bridge."
+    },
+    {
+      "id": "cairo_ward_atlas",
+      "label": "Cairo/ward atlas rendering",
+      "status": "required_port",
+      "target_owner": "screwm_native_aggregate",
+      "minimum_contract": "Ward identity and live ward content remain available while engine-native dynamic-content ports mature."
+    },
+    {
+      "id": "image_video_classification",
+      "label": "image/video classification",
+      "status": "required_port",
+      "target_owner": "screwm_native_aggregate",
+      "minimum_contract": "Perceptual classification and diagnostic labels remain governed inputs to Screwm behavior, not frontend-only affordances."
+    },
+    {
+      "id": "audio_governance_ducking_lufs_vad_consent",
+      "label": "audio governance: ducking, LUFS panic, VAD, and consent egress",
+      "status": "required_port",
+      "target_owner": "screwm_native_aggregate",
+      "minimum_contract": "Protected audio-governance controls are re-homed or preserved without bypassing MPC/L-12 routing invariants."
+    },
+    {
+      "id": "layout_switching_transition_fsm",
+      "label": "layout switching and transition FSM",
+      "status": "required_port",
+      "target_owner": "screwm_native_aggregate",
+      "minimum_contract": "Layout-mode decisions and transitions remain witnessed runtime behavior, not static template claims."
+    },
+    {
+      "id": "director_programme_control",
+      "label": "director/programme control",
+      "status": "required_port",
+      "target_owner": "screwm_native_aggregate",
+      "minimum_contract": "Director loop state can still influence program posture and visible composition under governed control."
+    },
+    {
+      "id": "temporal_glfeedback_effects",
+      "label": "temporal/glfeedback effects",
+      "status": "required_port",
+      "target_owner": "screwm_native_aggregate",
+      "minimum_contract": "Frame-history effects remain available through a bridge or a native accumulator until parity is proven."
+    },
+    {
+      "id": "recording_hls_egress",
+      "label": "recording/HLS egress",
+      "status": "required_port",
+      "target_owner": "screwm_native_aggregate",
+      "minimum_contract": "Recording and HLS output continuity remain first-class public-output evidence surfaces."
+    },
+    {
+      "id": "camera_resilience",
+      "label": "camera resilience",
+      "status": "required_port",
+      "target_owner": "screwm_native_aggregate",
+      "minimum_contract": "Camera fallback producers, health state, and recovery behavior remain explicit Screwm aggregate obligations."
+    }
+  ],
+  "forbidden_interpretations": [
+    "Treating hapax-logos inactivity as a regression by itself.",
+    "Using Tauri sunset as permission to remove studio-compositor behavior.",
+    "Shipping Screwm as DarkPlaces-only when required compositor ports are absent.",
+    "Counting advisory layout/config state as witnessed runtime layout success."
+  ]
+}
