@@ -1,0 +1,257 @@
+schema_version: 1
+unit: 6a-gate-manifest
+description: "Single source of truth for cross-runtime gate wiring until generation replaces hand wiring."
+
+runtimes:
+  claude:
+    source: "live Claude settings JSON; hook command roots are ignored, hook basenames and matcher order are authoritative"
+    phases:
+      SessionStart:
+        - matcher: ""
+          hooks:
+            - hook-presence-verify.sh
+        - matcher: ""
+          hooks:
+            - session-context.sh
+        - matcher: ""
+          hooks:
+            - conductor-start.sh
+      PreToolUse:
+        - matcher: "Bash|mcp__github__create_pull_request|mcp__github__merge_pull_request"
+          hooks:
+            - pr-release-gate.sh
+        - matcher: "Bash"
+          hooks:
+            - host-power-command-guard.sh
+        - matcher: "Edit|Write|MultiEdit|NotebookEdit"
+          hooks:
+            - axiom-scan.sh
+        - matcher: "Bash"
+          hooks:
+            - axiom-commit-scan.sh
+        - matcher: "Bash"
+          hooks:
+            - pip-guard.sh
+        - matcher: "Edit|Write|MultiEdit|NotebookEdit"
+          hooks:
+            - work-resolution-gate.sh
+        - matcher: "Edit|Write|MultiEdit|NotebookEdit"
+          hooks:
+            - registry-guard.sh
+        - matcher: "Bash"
+          hooks:
+            - safe-stash-guard.sh
+        - matcher: "Edit|Write|MultiEdit|Bash|NotebookEdit"
+          hooks:
+            - conductor-pre.sh
+        - matcher: "Edit|Write|MultiEdit|NotebookEdit"
+          hooks:
+            - pii-guard.sh
+        - matcher: "Bash"
+          hooks:
+            - branch-switch-guard.sh
+        - matcher: "Bash"
+          hooks:
+            - canonical-worktree-protect.sh
+        - matcher: "Bash"
+          hooks:
+            - docs-only-pr-warn.sh
+        - matcher: "Edit|Write|MultiEdit|NotebookEdit"
+          hooks:
+            - relay-coordination-check.sh
+        - matcher: "Edit|Write|MultiEdit|NotebookEdit|Bash"
+          hooks:
+            - cc-task-gate.sh
+        - matcher: "Bash"
+          hooks:
+            - authorization-packet-validator.sh
+        - matcher: "Bash"
+          hooks:
+            - cc-task-closure-gate.sh
+      PostToolUse:
+        - matcher: "Edit|Write|MultiEdit"
+          hooks:
+            - visual-audio-evidence-reflex.sh
+        - matcher: "Write"
+          hooks:
+            - llm-metadata-gate.sh
+        - matcher: "Edit|Write|MultiEdit|Bash|NotebookEdit"
+          hooks:
+            - axiom-audit.sh
+        - matcher: "Bash"
+          hooks:
+            - doc-update-advisory.sh
+        - matcher: "Bash"
+          hooks:
+            - conflict-marker-scan.sh
+        - matcher: "Bash"
+          hooks:
+            - skill-trigger-advisory.sh
+        - matcher: "Edit|Write|MultiEdit|Bash|NotebookEdit"
+          hooks:
+            - conductor-post.sh
+        - matcher: "Bash|Write|Edit|MultiEdit"
+          hooks:
+            - sprint-tracker.sh
+        - matcher: "Edit|Write|MultiEdit|NotebookEdit"
+          hooks:
+            - cargo-check-rust.sh
+        - matcher: "Bash"
+          hooks:
+            - pr-size-advisory.sh
+        - matcher: "Edit|Write|MultiEdit"
+          hooks:
+            - ruff-autoformat.sh
+        - matcher: "Edit|Write|MultiEdit"
+          hooks:
+            - wgsl-coverage-check.sh
+        - matcher: "Agent"
+          hooks:
+            - subagent-file-persistence-check.sh
+      SubagentStop:
+        - matcher: ""
+          hooks:
+            - subagent-git-safety.sh
+      Stop:
+        - matcher: ""
+          hooks:
+            - session-summary.sh
+        - matcher: ""
+          hooks:
+            - conductor-stop.sh
+
+  codex:
+    source: "hooks/scripts/codex-hook-adapter.sh plus config/codex/config.toml and scripts/hapax-codex"
+    hook_adapter: codex-hook-adapter.sh
+    config_phases:
+      - SessionStart
+      - PreToolUse
+      - PostToolUse
+      - Stop
+    adapter_phases:
+      SessionStart:
+        - session-context.sh
+        - conductor-start.sh
+      PreToolUse:
+        shell:
+          - host-power-command-guard.sh
+          - cc-task-gate.sh
+          - authorization-packet-validator.sh
+          - pr-admission-gate.sh
+          - session-name-enforcement.sh
+          - axiom-commit-scan.sh
+          - pip-guard.sh
+          - no-stale-branches.sh
+          - canonical-worktree-protect.sh
+          - safe-stash-guard.sh
+          - cc-task-closure-gate.sh
+          - conductor-pre.sh
+          - branch-switch-guard.sh
+          - docs-only-pr-warn.sh
+        mutation:
+          - cc-task-gate.sh
+          - authorization-packet-validator.sh
+          - axiom-scan.sh
+          - pipewire-graph-edit-gate.sh
+          - work-resolution-gate.sh
+          - registry-guard.sh
+          - conductor-pre.sh
+          - pii-guard.sh
+          - relay-coordination-check.sh
+      PostToolUse:
+        shell:
+          - axiom-audit.sh
+          - doc-update-advisory.sh
+          - conflict-marker-scan.sh
+          - skill-trigger-advisory.sh
+          - conductor-post.sh
+          - sprint-tracker.sh
+          - cc-task-pr-link.sh
+        mutation:
+          - cc-task-pr-link.sh
+          - llm-metadata-gate.sh
+          - axiom-audit.sh
+          - conductor-post.sh
+          - sprint-tracker.sh
+          - cargo-check-rust.sh
+      Stop:
+        - session-summary.sh
+        - conductor-stop.sh
+
+  antigravity:
+    source: "scripts/hapax-antigrav"
+    script: scripts/hapax-antigrav
+    capability_markers:
+      - 'export HAPAX_AGENT_INTERFACE="antigravity"'
+      - 'export HAPAX_AGENT_NAME="$SESSION"'
+      - 'export HAPAX_AGENT_SLOT="$SESSION"'
+      - 'export HAPAX_WORKTREE_ROLE="$SESSION"'
+      - '.agents/rules'
+      - '.agents/workflows'
+      - 'hapax-antigrav-lane.md'
+      - 'governed-dispatch-first.md'
+      - '--add-dir'
+      - '--prompt-interactive'
+      - 'HAPAX_ANTIGRAV_SANDBOX'
+      - 'cc-claim'
+
+  vibe:
+    source: "scripts/hapax-vibe"
+    script: scripts/hapax-vibe
+    capability_markers:
+      - 'export HAPAX_AGENT_INTERFACE="vibe"'
+      - 'export HAPAX_AGENT_NAME="$SESSION"'
+      - 'export HAPAX_AGENT_SLOT="$SESSION"'
+      - 'export HAPAX_WORKTREE_ROLE="$SESSION"'
+      - '--agent'
+      - '--workdir'
+      - '--trust'
+      - '--max-turns'
+      - '--max-price'
+      - '--output'
+      - 'cc-claim'
+
+  gemini:
+    source: "scripts/hapax-gemini"
+    script: scripts/hapax-gemini
+    capability_markers:
+      - 'export HAPAX_AGENT_INTERFACE="gemini"'
+      - 'export HAPAX_AGENT_NAME="$ROLE"'
+      - 'export GEMINI_ROLE="$ROLE"'
+      - 'export HAPAX_WORKTREE_ROLE="$ROLE"'
+      - '--approval-mode'
+      - 'plan'
+      - '--policy'
+      - 'hapax-governance-firewall.toml'
+      - '--include-directories'
+      - '--resume'
+
+  ci:
+    source: ".github/workflows/ci.yml"
+    workflow: .github/workflows/ci.yml
+    jobs:
+      - post_merge_duplicate_filter
+      - docs_only_filter
+      - lint
+      - typecheck
+      - test-full-shard
+      - test-title-cards
+      - test
+      - homage-visual-regression
+      - web-build
+      - rust-check
+      - vscode-build
+      - secrets-scan
+      - security
+    run_markers:
+      - 'astral-sh/ruff-action@v3'
+      - 'uv run python scripts/check-unused-functions.py'
+      - 'uv run python scripts/check-new-module-consumers.py'
+      - 'uv run python scripts/check-audio-conf-consistency.py'
+      - 'uv run python scripts/verify-aesthetic-library.py'
+      - 'uv run python scripts/verify-redaction-transforms.py'
+      - 'uv run python scripts/check-claim-registry.py'
+      - 'bash scripts/check-legal-name-leaks.sh'
+      - 'uv run --no-project --with pyrefly==0.62.0 pyrefly check'
+      - 'uv run --no-project --with pytest==9.0.2 --with pyyaml pytest'
+      - 'uv run --no-sync python scripts/ci_governance_coverage_gate.py'
