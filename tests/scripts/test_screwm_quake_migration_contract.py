@@ -286,6 +286,9 @@ def test_screwm_media_drift_batches_slot_readback() -> None:
     assert "Option<wgpu::CommandBuffer>" in source
     assert "fn read_complete_frame(" in source
     assert "read_complete_frame(&self.cfg.raw_path, self.expected_bytes)?" in source
+    assert "fn producer_sidecar_path_for(" in source
+    assert "fn read_producer_raw_sidecar(" in source
+    assert "read_producer_raw_sidecar(&self.last_producer_sidecar_path)" in source
     assert "fn finish_readback(" in source
     assert "queue.submit(commands)" in source
     assert ".map_async(wgpu::MapMode::Read" in source
@@ -297,6 +300,11 @@ def test_screwm_media_drift_batches_slot_readback() -> None:
     assert "atomic_write(&meta_path" in source
     assert "output_hash" in source
     assert "drift_changed" in source
+    assert "producer_sidecar_path" in source
+    assert "producer_sidecar_present" in source
+    assert "producer_raw_output_matches_raw_path" in source
+    assert "producer_final_output_matches_output_path" in source
+    assert "producer_input_hash_matches_raw" in source
 
 
 def test_screwm_media_mount_contracts_are_deterministic() -> None:
