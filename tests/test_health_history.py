@@ -91,17 +91,14 @@ def test_rotate_with_rollup_creates_parent_dirs(tmp_path):
 
     assert not nested.exists()
 
-    entries = [_make_entry(1, "healthy")]
     # Parent dir doesn't exist yet — rotate_with_rollup should create it
-    nested.mkdir(parents=True)
-    raw_path.write_text("\n".join(json.dumps(e) for e in entries))
-
     result = rotate_with_rollup(
         raw_path=raw_path,
         hourly_path=hourly_path,
         daily_path=daily_path,
     )
-    assert result["raw_kept"] >= 1
+    assert result["raw_kept"] == 0
+    assert raw_path.parent.exists()
     assert hourly_path.parent.exists()
 
 
