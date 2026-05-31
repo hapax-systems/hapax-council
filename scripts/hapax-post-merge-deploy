@@ -287,12 +287,14 @@ audio_safe_restart_bin() {
         printf '%s\n' "$HAPAX_AUDIO_SAFE_RESTART_BIN"
         return 0
     fi
-    if command -v hapax-audio-safe-restart >/dev/null 2>&1; then
-        command -v hapax-audio-safe-restart
-        return 0
-    fi
     if [[ -x "$REPO/scripts/hapax-audio-safe-restart" ]]; then
         printf '%s\n' "$REPO/scripts/hapax-audio-safe-restart"
+        return 0
+    fi
+    local candidate
+    if candidate="$(command -v hapax-audio-safe-restart 2>/dev/null)" \
+        && [[ -x "$candidate" ]]; then
+        printf '%s\n' "$candidate"
         return 0
     fi
     return 1

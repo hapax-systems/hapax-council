@@ -200,9 +200,49 @@ log "phase=post snapshot=$POST_SNAP"
 post_rc=$?
 log "phase=post verify_exit=$post_rc"
 
+preexisting_silence_unchanged() {
+  python3 - "$PRE_VERIFY" "$POST_VERIFY" <<'PY' >/dev/null 2>&1
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        pre = json.load(fh)
+    with open(sys.argv[2], encoding="utf-8") as fh:
+        post = json.load(fh)
+except Exception:
+    raise SystemExit(1)
+
+if pre.get("exit_code") != 1 or post.get("exit_code") != 1:
+    raise SystemExit(1)
+if pre.get("overall_status") != "silent" or post.get("overall_status") != "silent":
+    raise SystemExit(1)
+
+def signature(payload):
+    return [
+        (stage.get("monitor"), stage.get("expected"), stage.get("status"))
+        for stage in payload.get("stages", [])
+    ]
+
+if signature(pre) != signature(post):
+    raise SystemExit(1)
+
+for _, _, status in signature(post):
+    if status in {"noise", "clipping", "topology-drift", "capture-failed", "measure-failed"}:
+        raise SystemExit(1)
+
+raise SystemExit(0)
+PY
+}
+
 # ── Decide ────────────────────────────────────────────────────────
 if [ "$post_rc" -eq 0 ]; then
   log "phase=done status=clean"
+  exit 0
+fi
+
+if [ "$pre_rc" -ne 0 ] && preexisting_silence_unchanged; then
+  log "phase=done status=unchanged-preexisting-silence pre_rc=$pre_rc post_rc=$post_rc"
   exit 0
 fi
 
