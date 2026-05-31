@@ -145,6 +145,17 @@ def test_screwm_effect_modes_are_family_gated_before_reaching_shader() -> None:
     assert "mode_compositing > 0.38" in coupling
 
 
+def test_screwm_density_grounding_feeds_spatial_drift_baseline() -> None:
+    coupling = (REPO_ROOT / "assets" / "quake" / "qc" / "coupling.qc").read_text(encoding="utf-8")
+
+    assert "float coupling_effect_drift_density;" in coupling
+    assert 'coupling_read_float("data/effect-drift-density.txt", 0)' in coupling
+    assert "float density_grounding = coupling_clamp_range(" in coupling
+    assert "+ density_grounding + coupling_visual_chain_param_pressure" in coupling
+    assert "fog_density = 0.008 - coupling_energy" in coupling
+    assert "coupling_effect_drift_density * fog_density" not in coupling
+
+
 def test_screwm_spec_marks_compositor_wards_as_temporary_gap() -> None:
     spec_path = (
         REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-05-23-screwm-quake-hybrid-isap.md"
