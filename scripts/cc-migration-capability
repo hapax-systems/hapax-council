@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""cc-migration-capability — mint/check/consume a one-time scoped migration
+capability, and run capability-gated bulk backfills of cc-task scaffolding.
+
+NEW-6 (master design section 4.3): bulk-stamping ``stage`` + ``mutation_scope_refs``
+across the ~209 stage-less active tasks is a mass mutation. Rather than an env
+bypass, it runs under a one-time root capability — operator-minted, scoped to a
+migration namespace, expiring, fully ledgered — so the mass mutation carries a
+recorded authorization. This is the interim of the Phase-4 typed grant ledger;
+it mirrors the consent GateToken shape (unforgeable nonce, frozen scope, expiry)
+without full crypto signing.
+
+Subcommands:
+  mint --namespace NS [--ttl-minutes N] [--grantor G]
+        Mint a capability scoped to NS; print its id. Default TTL 120 min.
+  check --namespace NS
+        Exit 0 if an active (unexpired) capability exists for NS, else 2.
+  list  List capabilities (active first).
+  expire --id ID
+        Mark a capability consumed.
+  backfill --namespace NS [--apply] [--stage S6_IMPLEMENTATION]
+        Stamp absent ``stage`` (default S6_IMPLEMENTATION) and an absent
+        ``mutation_scope_refs`` field across ACTIVE cc-tasks. Diff-disciplined:
+        only fills ABSENT fields, never overwrites. Requires a valid capability
+        for NS. Dry-run unless --apply. Idempotent.
+
+Coordination reform Phase 2 (CASE-SDLC-REFORM-001).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import secrets
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+CAP_DIR = Path.home() / ".cache" / "hapax" / "migration-capabilities"
+LEDGER = CAP_DIR / "ledger.jsonl"
+VAULT_ACTIVE = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+_NULLISH = {"", "null", "none", "~", "[]"}
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _iso(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _ledger(record: dict) -> None:
+    CAP_DIR.mkdir(parents=True, exist_ok=True)
+    with LEDGER.open("a", encoding="utf-8") as h:
+        h.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _load_caps() -> list[dict]:
+    caps: list[dict] = []
+    if not CAP_DIR.is_dir():
+        return caps
+    for p in sorted(CAP_DIR.glob("*.json")):
+        try:
+            caps.append(json.loads(p.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError):
+            continue
+    return caps
+
+
+def _active_cap(namespace: str) -> dict | None:
+    now = _now()
+    for cap in _load_caps():
+        if cap.get("namespace") != namespace or cap.get("status") != "active":
+            continue
+        try:
+            expires = datetime.fromisoformat(cap["expires_at"].replace("Z", "+00:00"))
+        except (KeyError, ValueError):
+            continue
+        if expires > now:
+            return cap
+    return None
+
+
+def cmd_mint(args: argparse.Namespace) -> int:
+    CAP_DIR.mkdir(parents=True, exist_ok=True)
+    now = _now()
+    cap = {
+        "id": f"mig-{now.strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(4)}",
+        "namespace": args.namespace,
+        "grantor": args.grantor,
+        "nonce": secrets.token_hex(16),
+        "minted_at": _iso(now),
+        "expires_at": _iso(now + timedelta(minutes=args.ttl_minutes)),
+        "status": "active",
+    }
+    (CAP_DIR / f"{cap['id']}.json").write_text(
+        json.dumps(cap, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    _ledger({"ts": _iso(now), "kind": "capability_mint", **cap})
+    print(cap["id"])
+    return 0
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    cap = _active_cap(args.namespace)
+    if cap is None:
+        print(f"cc-migration-capability: no active capability for '{args.namespace}'")
+        return 2
+    print(f"active: {cap['id']} (expires {cap['expires_at']})")
+    return 0
+
+
+def cmd_list(_args: argparse.Namespace) -> int:
+    caps = sorted(_load_caps(), key=lambda c: (c.get("status") != "active", c.get("minted_at", "")))
+    for c in caps:
+        print(
+            f"{c.get('status'):9} {c.get('id')} ns={c.get('namespace')} expires={c.get('expires_at')}"
+        )
+    if not caps:
+        print("(none)")
+    return 0
+
+
+def cmd_expire(args: argparse.Namespace) -> int:
+    path = CAP_DIR / f"{args.id}.json"
+    if not path.is_file():
+        print(f"cc-migration-capability: no such capability '{args.id}'")
+        return 2
+    cap = json.loads(path.read_text(encoding="utf-8"))
+    cap["status"] = "consumed"
+    cap["consumed_at"] = _iso(_now())
+    path.write_text(json.dumps(cap, indent=2, sort_keys=True), encoding="utf-8")
+    _ledger({"ts": _iso(_now()), "kind": "capability_consume", "id": args.id})
+    print(f"consumed {args.id}")
+    return 0
+
+
+def _scalar(front: str, key: str) -> str:
+    m = re.search(rf"(?m)^{re.escape(key)}:\s*(.*)$", front)
+    return m.group(1).strip().strip('"').strip("'") if m else ""
+
+
+def _has_field(front: str, key: str) -> bool:
+    return re.search(rf"(?m)^{re.escape(key)}:", front) is not None
+
+
+def cmd_backfill(args: argparse.Namespace) -> int:
+    cap = _active_cap(args.namespace)
+    if cap is None:
+        print(
+            f"cc-migration-capability: REFUSED — no active capability for "
+            f"'{args.namespace}'. Mint one first: cc-migration-capability mint "
+            f"--namespace {args.namespace}"
+        )
+        return 2
+    if not VAULT_ACTIVE.is_dir():
+        print(f"cc-migration-capability: no active vault at {VAULT_ACTIVE}")
+        return 3
+
+    stamped_stage: list[str] = []
+    stamped_scope: list[str] = []
+    for note in sorted(VAULT_ACTIVE.glob("*.md")):
+        text = note.read_text(encoding="utf-8")
+        if not text.startswith("---"):
+            continue
+        end = text.find("\n---", 4)
+        if end < 0:
+            continue
+        front, body = text[: end + 1], text[end + 1 :]
+        if _scalar(front, "type") != "cc-task":
+            continue
+        additions: list[str] = []
+        if not _has_field(front, "stage"):
+            additions.append(f"stage: {args.stage}")
+            stamped_stage.append(note.stem)
+        if not _has_field(front, "mutation_scope_refs"):
+            additions.append("mutation_scope_refs: []")
+            stamped_scope.append(note.stem)
+        if not additions:
+            continue
+        if args.apply:
+            new_front = front.rstrip("\n") + "\n" + "\n".join(additions) + "\n"
+            note.write_text(new_front + body, encoding="utf-8")
+
+    if args.apply:
+        _ledger(
+            {
+                "ts": _iso(_now()),
+                "kind": "migration_backfill",
+                "capability_id": cap["id"],
+                "namespace": args.namespace,
+                "stage_stamped": len(stamped_stage),
+                "scope_stamped": len(stamped_scope),
+                "stage": args.stage,
+            }
+        )
+    verb = "stamped" if args.apply else "would stamp"
+    print(
+        f"cc-migration-capability backfill ({'APPLY' if args.apply else 'dry-run'}, "
+        f"cap={cap['id']}): {verb} stage on {len(stamped_stage)} tasks, "
+        f"mutation_scope_refs on {len(stamped_scope)} tasks."
+    )
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="cc-migration-capability")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_mint = sub.add_parser("mint")
+    p_mint.add_argument("--namespace", required=True)
+    p_mint.add_argument("--ttl-minutes", type=int, default=120)
+    p_mint.add_argument("--grantor", default="operator_blanket_reform_preauthorization_20260530")
+    p_mint.set_defaults(func=cmd_mint)
+
+    p_check = sub.add_parser("check")
+    p_check.add_argument("--namespace", required=True)
+    p_check.set_defaults(func=cmd_check)
+
+    sub.add_parser("list").set_defaults(func=cmd_list)
+
+    p_exp = sub.add_parser("expire")
+    p_exp.add_argument("--id", required=True)
+    p_exp.set_defaults(func=cmd_expire)
+
+    p_bf = sub.add_parser("backfill")
+    p_bf.add_argument("--namespace", required=True)
+    p_bf.add_argument("--apply", action="store_true")
+    p_bf.add_argument("--stage", default="S6_IMPLEMENTATION")
+    p_bf.set_defaults(func=cmd_backfill)
+
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

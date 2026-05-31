@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -31,6 +32,10 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 HOOK = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.sh"
 ROLE_HELPER = REPO_ROOT / "hooks" / "scripts" / "agent-role.sh"
 CC_CLAIM = REPO_ROOT / "scripts" / "cc-claim"
+
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from shared.sdlc_lifecycle import TASK_MUTABLE_STATUSES  # noqa: E402
 
 # Identity-system env vars that must be cleared so a test controls resolution
 # explicitly (a real lane session leaks several of these — test_env_leak).
@@ -359,6 +364,50 @@ class TestCognitionCarveOut:
         assert result.returncode == 2, (
             f"requests SSOT must not be free cognition; stderr={result.stderr}"
         )
+
+
+class TestStatusVocabularyUnification:
+    """Phase 2: gate proceed-set == canonical TASK_MUTABLE_STATUSES (FM-5/G2/FM-6).
+
+    Before the status-vocabulary unification the gate proceeded only on
+    in_progress/claimed/pr_open/merge_queue; the whole `ready` family fell to the
+    unknown-status branch and BLOCKED — stranding ~88 active `ready` tasks (the
+    gate blocked exactly the statuses the autoqueue admits). These pin the gate
+    to the shared SSOT so the two can never silently drift apart again.
+    """
+
+    @pytest.mark.parametrize("status", sorted(TASK_MUTABLE_STATUSES))
+    def test_every_mutable_status_proceeds(self, tmp_path: Path, status: str) -> None:
+        _make_vault(tmp_path, status=status, assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, (
+            f"TASK_MUTABLE_STATUSES has '{status}' but the gate blocks it "
+            f"(SSOT/gate drift); stderr={result.stderr}"
+        )
+
+    def test_ready_for_merge_no_longer_rejected(self, tmp_path: Path) -> None:
+        # The exact gate/autoqueue mismatch that stranded tasks this cycle.
+        _make_vault(tmp_path, status="ready_for_merge", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr}"
+
+    @pytest.mark.parametrize("status", ["offered", "blocked"])
+    def test_non_mutable_status_still_blocks(self, tmp_path: Path, status: str) -> None:
+        _make_vault(tmp_path, status=status, assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 2, f"status '{status}' should block; stderr={result.stderr}"
 
 
 class TestStatusGating:

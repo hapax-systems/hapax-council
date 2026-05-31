@@ -416,15 +416,17 @@ cc-task-gate: BLOCKED — task '$task_id' is in BLOCKED state.
 EOF
     exit 2
     ;;
-  pr_open)
-    # PR-open is fine for further edits (CI fixes, review feedback).
+  pr_open|merge_queue|ci_green|ready|ready_for_review|review_ready|ready_for_merge)
+    # PR-open / merge-queue / ready-family: the owning lane may still mutate
+    # files (CI fixes, review feedback, queue/closeout maintenance). The
+    # ready-family was previously unhandled here and fell to *) → BLOCK,
+    # stranding the ~88 active `ready` tasks (the gate blocked exactly the
+    # statuses the autoqueue admits). SSOT: shared/sdlc_lifecycle.py
+    # TASK_MUTABLE_STATUSES, pinned by
+    # tests/hooks/test_cc_task_gate.py::TestStatusVocabularyDrift.
     # Fall through to AuthorityCase validation (section 10).
     ;;
-  merge_queue)
-    # Merge-queue is fine for queue/closeout maintenance by the owning lane.
-    # Fall through to AuthorityCase validation (section 10).
-    ;;
-  done|withdrawn|superseded)
+  done|withdrawn|superseded|completed|complete|closed|fulfilled|resolved|withdrawn_stale|closed_superseded|rejected|refused|not_applicable|deferred|closed_poisoned)
     cat >&2 <<EOF
 cc-task-gate: BLOCKED — task '$task_id' is terminal ('$status').
 

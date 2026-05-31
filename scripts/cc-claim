@@ -158,7 +158,11 @@ path, role, task_id, repo_root = (
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from shared.sdlc_lifecycle import task_closure_validity  # noqa: E402
+from shared.sdlc_lifecycle import (  # noqa: E402
+    TASK_CLAIMABLE_STATUSES,
+    TASK_RESUMABLE_STATUSES,
+    task_closure_validity,
+)
 
 text = path.read_text(encoding="utf-8")
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -176,7 +180,9 @@ def _is_claimable_assignee(value: str) -> bool:
     return stripped == "unassigned" or stripped.lower() in _YAML_NULLS
 
 
-READY_STATUSES = frozenset({"pr_open", "merge_queue"})
+# Canonical SSOT: a lane may resume an owned task in any merge-ready state, not
+# just pr_open/merge_queue (shared/sdlc_lifecycle.py TASK_RESUMABLE_STATUSES).
+READY_STATUSES = TASK_RESUMABLE_STATUSES
 
 
 status_match = re.search(r"^status:\s*(\S+)$", text, flags=re.MULTILINE)
@@ -185,7 +191,7 @@ assigned_match = re.search(r"^assigned_to:[ \t]*(.*)$", text, flags=re.MULTILINE
 assigned_raw = assigned_match.group(1) if assigned_match else "unassigned"
 assigned_to = _strip_scalar(assigned_raw)
 
-if status == "offered":
+if status in TASK_CLAIMABLE_STATUSES:
     if assigned_match and not _is_claimable_assignee(assigned_raw):
         print(
             f"cc-claim: refusing to claim '{task_id}' — already assigned to '{assigned_to}'",
