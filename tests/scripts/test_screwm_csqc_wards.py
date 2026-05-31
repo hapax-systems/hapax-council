@@ -9,6 +9,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CSQC_DIR = REPO_ROOT / "assets" / "quake" / "csqc"
+QC_DIR = REPO_ROOT / "assets" / "quake" / "qc"
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install-darkplaces-screwm-assets.sh"
 AUTOEXEC = REPO_ROOT / "assets" / "quake" / "config" / "autoexec.cfg"
 
@@ -532,6 +533,27 @@ def test_csqc_compiles_in_temporary_directory(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
     assert (work / "csprogs.dat").exists()
     assert "DP-specific CSQC module" in result.stdout + result.stderr
+
+
+def test_server_qc_compiles_in_temporary_directory(tmp_path: Path) -> None:
+    if not shutil.which("fteqcc"):
+        pytest.skip("fteqcc is not installed")
+
+    work = tmp_path / "qc"
+    shutil.copytree(QC_DIR, work)
+    (work / "progs.dat").unlink(missing_ok=True)
+
+    result = subprocess.run(
+        ["fteqcc", "-Tdp"],
+        cwd=work,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (work / "progs.dat").exists()
+    assert "Writing progs.dat" in result.stdout + result.stderr
 
 
 def test_darkplaces_asset_installer_deploys_csqc_dat() -> None:

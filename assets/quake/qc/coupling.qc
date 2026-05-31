@@ -23,6 +23,7 @@ float coupling_effect_drift_fast_ratio;
 float coupling_effect_drift_slow_ratio;
 float coupling_effect_drift_kind_variance;
 float coupling_effect_drift_max_delta;
+float coupling_effect_drift_density;
 float coupling_effect_drift_region_count;
 float coupling_effect_drift_tonal;
 float coupling_effect_drift_atmospheric;
@@ -88,6 +89,7 @@ void() coupling_init =
     coupling_effect_drift_slow_ratio = 0;
     coupling_effect_drift_kind_variance = 0;
     coupling_effect_drift_max_delta = 0;
+    coupling_effect_drift_density = 0;
     coupling_effect_drift_region_count = 0;
     coupling_effect_drift_tonal = 0;
     coupling_effect_drift_atmospheric = 0;
@@ -336,6 +338,7 @@ void() coupling_read_effect_drift =
     coupling_effect_drift_slow_ratio = coupling_read_float("data/effect-drift-slow-ratio.txt", 0);
     coupling_effect_drift_kind_variance = coupling_read_float("data/effect-drift-kind-variance.txt", 0);
     coupling_effect_drift_max_delta = coupling_read_float("data/effect-drift-max-delta.txt", 0);
+    coupling_effect_drift_density = coupling_read_float("data/effect-drift-density.txt", 0);
     coupling_effect_drift_region_count = coupling_read_float("data/effect-drift-region-count.txt", 0);
     coupling_effect_drift_tonal = coupling_read_float("data/effect-drift-tonal.txt", 0);
     coupling_effect_drift_atmospheric = coupling_read_float("data/effect-drift-atmospheric.txt", 0);
@@ -403,7 +406,8 @@ void() coupling_apply_stimmung =
         return;
     }
 
-    float drift_baseline = coupling_clamp_range(0.42 + coupling_effect_drift_active_ratio * 0.18 + coupling_effect_drift_active_effect_ratio * 0.20 + coupling_effect_drift_kind_variance * 0.24 + coupling_effect_drift_max_delta * 0.16 + coupling_visual_chain_param_pressure * 0.08, 0.36, 0.96);
+    float density_grounding = coupling_clamp_range(coupling_effect_drift_density * 1.6, 0, 0.24);
+    float drift_baseline = coupling_clamp_range(0.42 + coupling_effect_drift_active_ratio * 0.18 + coupling_effect_drift_active_effect_ratio * 0.20 + coupling_effect_drift_kind_variance * 0.24 + coupling_effect_drift_max_delta * 0.16 + density_grounding + coupling_visual_chain_param_pressure * 0.08, 0.36, 0.96);
     float fast_jitter = 0.5 + sin(time * (1.55 + coupling_effect_drift_fast_ratio * 1.15) + coupling_effect_drift_region_count * 5.6) * 0.5;
     float slow_jitter = 0.5 + sin(time * (0.17 + coupling_effect_drift_slow_ratio * 0.18) + coupling_effect_drift_tonal * 3.1 + coupling_effect_drift_kind_variance * 2.4) * 0.5;
     float family_mutation = coupling_clamp_range(coupling_effect_drift_active_slot_ratio * 0.35 + coupling_effect_drift_kind_variance * 0.45 + coupling_effect_drift_fast_ratio * 0.20, 0, 1);
