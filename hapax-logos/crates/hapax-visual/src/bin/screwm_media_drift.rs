@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hapax_visual::media_drift::{load_drift_state, DriftUniforms, ReceiverClass};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const SHADER_SRC: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -162,6 +162,142 @@ fn read_complete_frame(path: &Path, expected_bytes: usize) -> Option<Vec<u8>> {
     }
 }
 
+fn producer_sidecar_path_for(raw_path: &Path) -> PathBuf {
+    raw_path.with_extension("json")
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+struct ProducerRawSidecar {
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    renderer: String,
+    #[serde(default)]
+    drift_renderer: String,
+    #[serde(default)]
+    frame_id: Option<u64>,
+    #[serde(default)]
+    frames: Option<u64>,
+    #[serde(default)]
+    updated_at: Option<f64>,
+    #[serde(default)]
+    observed_at: Option<f64>,
+    #[serde(default)]
+    gpu_drift: bool,
+    #[serde(default)]
+    gpu_drift_raw_output: String,
+    #[serde(default)]
+    gpu_drift_final_output: String,
+    #[serde(default)]
+    gpu_drift_output_owner: String,
+    #[serde(default)]
+    drift_input_hash: String,
+    #[serde(default)]
+    preflip_y: Option<bool>,
+}
+
+fn read_producer_raw_sidecar(path: &Path) -> Option<ProducerRawSidecar> {
+    let bytes = std::fs::read(path).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    if !value.is_object() {
+        return None;
+    }
+    serde_json::from_value(value).ok()
+}
+
+fn path_claim_matches(claim: &str, expected: &Path) -> bool {
+    !claim.is_empty() && Path::new(claim) == expected
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ProducerSidecarMetadata {
+    producer_sidecar_path: String,
+    producer_sidecar_present: bool,
+    producer_source: String,
+    producer_renderer: String,
+    producer_drift_renderer: String,
+    producer_frame_id: Option<u64>,
+    producer_frames: Option<u64>,
+    producer_updated_at_unix_s: Option<f64>,
+    producer_observed_at_unix_s: Option<f64>,
+    producer_gpu_drift: bool,
+    producer_raw_output: String,
+    producer_final_output: String,
+    producer_output_owner: String,
+    producer_input_hash: String,
+    producer_preflip_y: Option<bool>,
+    producer_raw_output_matches_raw_path: bool,
+    producer_final_output_matches_output_path: bool,
+    producer_output_owner_matches: bool,
+    producer_input_hash_matches_raw: bool,
+}
+
+impl ProducerSidecarMetadata {
+    fn absent(sidecar_path: &Path) -> Self {
+        Self {
+            producer_sidecar_path: sidecar_path.display().to_string(),
+            producer_sidecar_present: false,
+            producer_source: String::new(),
+            producer_renderer: String::new(),
+            producer_drift_renderer: String::new(),
+            producer_frame_id: None,
+            producer_frames: None,
+            producer_updated_at_unix_s: None,
+            producer_observed_at_unix_s: None,
+            producer_gpu_drift: false,
+            producer_raw_output: String::new(),
+            producer_final_output: String::new(),
+            producer_output_owner: String::new(),
+            producer_input_hash: String::new(),
+            producer_preflip_y: None,
+            producer_raw_output_matches_raw_path: false,
+            producer_final_output_matches_output_path: false,
+            producer_output_owner_matches: false,
+            producer_input_hash_matches_raw: false,
+        }
+    }
+
+    fn from_sidecar(
+        sidecar_path: &Path,
+        sidecar: Option<&ProducerRawSidecar>,
+        raw_path: &Path,
+        output_path: &Path,
+        input_hash: &str,
+    ) -> Self {
+        let Some(sidecar) = sidecar else {
+            return Self::absent(sidecar_path);
+        };
+        Self {
+            producer_sidecar_path: sidecar_path.display().to_string(),
+            producer_sidecar_present: true,
+            producer_source: sidecar.source.clone(),
+            producer_renderer: sidecar.renderer.clone(),
+            producer_drift_renderer: sidecar.drift_renderer.clone(),
+            producer_frame_id: sidecar.frame_id,
+            producer_frames: sidecar.frames,
+            producer_updated_at_unix_s: sidecar.updated_at,
+            producer_observed_at_unix_s: sidecar.observed_at,
+            producer_gpu_drift: sidecar.gpu_drift,
+            producer_raw_output: sidecar.gpu_drift_raw_output.clone(),
+            producer_final_output: sidecar.gpu_drift_final_output.clone(),
+            producer_output_owner: sidecar.gpu_drift_output_owner.clone(),
+            producer_input_hash: sidecar.drift_input_hash.clone(),
+            producer_preflip_y: sidecar.preflip_y,
+            producer_raw_output_matches_raw_path: path_claim_matches(
+                &sidecar.gpu_drift_raw_output,
+                raw_path,
+            ),
+            producer_final_output_matches_output_path: path_claim_matches(
+                &sidecar.gpu_drift_final_output,
+                output_path,
+            ),
+            producer_output_owner_matches: sidecar.gpu_drift_output_owner == "screwm_media_drift",
+            producer_input_hash_matches_raw: !sidecar.drift_input_hash.is_empty()
+                && sidecar.drift_input_hash == input_hash,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct SlotMetadata {
     slot: String,
@@ -180,6 +316,8 @@ struct SlotMetadata {
     output_hash: String,
     drift_changed: bool,
     observed_at_unix_ms: u128,
+    #[serde(flatten)]
+    producer: ProducerSidecarMetadata,
 }
 
 /// Per-slot GPU resources: input texture, output render target, uniform buffer,
@@ -198,6 +336,8 @@ struct SlotGpu {
     frame: u64,
     last_input_hash: String,
     last_drift_state_intensity: f32,
+    last_producer_sidecar_path: PathBuf,
+    last_producer_sidecar: Option<ProducerRawSidecar>,
 }
 
 impl SlotGpu {
@@ -266,6 +406,7 @@ impl SlotGpu {
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let producer_sidecar_path = producer_sidecar_path_for(&cfg.raw_path);
         Self {
             expected_bytes: (cfg.width * cfg.height * 4) as usize,
             cfg,
@@ -280,6 +421,8 @@ impl SlotGpu {
             frame: 0,
             last_input_hash: String::new(),
             last_drift_state_intensity: 0.0,
+            last_producer_sidecar_path: producer_sidecar_path,
+            last_producer_sidecar: None,
         }
     }
 
@@ -299,6 +442,7 @@ impl SlotGpu {
         let raw = read_complete_frame(&self.cfg.raw_path, self.expected_bytes)?;
         self.last_input_hash = stable_short_hash(&raw);
         self.last_drift_state_intensity = state.intensity();
+        self.last_producer_sidecar = read_producer_raw_sidecar(&self.last_producer_sidecar_path);
 
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -398,6 +542,13 @@ impl SlotGpu {
 
         let frame_id = self.frame + 1;
         let meta_path = self.cfg.out_path.with_extension("json");
+        let producer = ProducerSidecarMetadata::from_sidecar(
+            &self.last_producer_sidecar_path,
+            self.last_producer_sidecar.as_ref(),
+            &self.cfg.raw_path,
+            &self.cfg.out_path,
+            &self.last_input_hash,
+        );
         let metadata = SlotMetadata {
             slot: self.cfg.name.clone(),
             w: self.cfg.width,
@@ -415,6 +566,7 @@ impl SlotGpu {
             output_hash: output_hash.clone(),
             drift_changed: self.last_input_hash != output_hash,
             observed_at_unix_ms: unix_ms_now(),
+            producer,
         };
         if let Ok(bytes) = serde_json::to_vec(&metadata) {
             let _ = atomic_write(&meta_path, &bytes);
@@ -704,6 +856,126 @@ mod tests {
     }
 
     #[test]
+    fn producer_sidecar_path_derives_raw_json_sibling() {
+        let raw_path = Path::new("/tmp/quake-live-ward-atlas.raw.bgra");
+        assert_eq!(
+            producer_sidecar_path_for(raw_path),
+            Path::new("/tmp/quake-live-ward-atlas.raw.json")
+        );
+    }
+
+    #[test]
+    fn producer_raw_sidecar_reader_is_tolerant() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("slot.raw.json");
+
+        assert!(read_producer_raw_sidecar(&path).is_none());
+
+        fs::write(&path, b"{not-json").unwrap();
+        assert!(read_producer_raw_sidecar(&path).is_none());
+
+        fs::write(&path, br#"["not", "an", "object"]"#).unwrap();
+        assert!(read_producer_raw_sidecar(&path).is_none());
+
+        fs::write(
+            &path,
+            br#"{
+                "source": "ticker",
+                "renderer": "cairo-pango",
+                "drift_renderer": "quake-media-drift-v1",
+                "frames": 42,
+                "gpu_drift": true,
+                "gpu_drift_raw_output": "/tmp/quake-live-ticker.raw.bgra",
+                "gpu_drift_final_output": "/tmp/quake-live-ticker.bgra",
+                "gpu_drift_output_owner": "screwm_media_drift",
+                "drift_input_hash": "abc123",
+                "preflip_y": true,
+                "updated_at": 123.5
+            }"#,
+        )
+        .unwrap();
+
+        let sidecar = read_producer_raw_sidecar(&path).unwrap();
+        assert_eq!(sidecar.source, "ticker");
+        assert_eq!(sidecar.renderer, "cairo-pango");
+        assert_eq!(sidecar.drift_renderer, "quake-media-drift-v1");
+        assert_eq!(sidecar.frames, Some(42));
+        assert!(sidecar.gpu_drift);
+        assert_eq!(
+            sidecar.gpu_drift_raw_output,
+            "/tmp/quake-live-ticker.raw.bgra"
+        );
+        assert_eq!(sidecar.preflip_y, Some(true));
+        assert_eq!(sidecar.updated_at, Some(123.5));
+    }
+
+    #[test]
+    fn producer_sidecar_metadata_records_claim_matches() {
+        let sidecar_path = Path::new("/tmp/quake-live-ward-atlas.raw.json");
+        let raw_path = Path::new("/tmp/quake-live-ward-atlas.raw.bgra");
+        let output_path = Path::new("/tmp/quake-live-ward-atlas.bgra");
+        let sidecar = ProducerRawSidecar {
+            source: "ward-atlas".to_string(),
+            renderer: "quake-live-ward-atlas-source".to_string(),
+            drift_renderer: "quake-media-drift-v1".to_string(),
+            frame_id: Some(7),
+            frames: None,
+            updated_at: None,
+            observed_at: Some(456.25),
+            gpu_drift: true,
+            gpu_drift_raw_output: raw_path.display().to_string(),
+            gpu_drift_final_output: output_path.display().to_string(),
+            gpu_drift_output_owner: "screwm_media_drift".to_string(),
+            drift_input_hash: "input-hash".to_string(),
+            preflip_y: None,
+        };
+
+        let metadata = ProducerSidecarMetadata::from_sidecar(
+            sidecar_path,
+            Some(&sidecar),
+            raw_path,
+            output_path,
+            "input-hash",
+        );
+        assert!(metadata.producer_sidecar_present);
+        assert_eq!(metadata.producer_source, "ward-atlas");
+        assert_eq!(metadata.producer_renderer, "quake-live-ward-atlas-source");
+        assert_eq!(metadata.producer_drift_renderer, "quake-media-drift-v1");
+        assert_eq!(metadata.producer_frame_id, Some(7));
+        assert_eq!(metadata.producer_observed_at_unix_s, Some(456.25));
+        assert!(metadata.producer_gpu_drift);
+        assert!(metadata.producer_raw_output_matches_raw_path);
+        assert!(metadata.producer_final_output_matches_output_path);
+        assert!(metadata.producer_output_owner_matches);
+        assert!(metadata.producer_input_hash_matches_raw);
+
+        let mut mismatched = sidecar;
+        mismatched.gpu_drift_raw_output = "/tmp/other.raw.bgra".to_string();
+        mismatched.gpu_drift_final_output = "/tmp/other.bgra".to_string();
+        mismatched.gpu_drift_output_owner = "producer".to_string();
+        mismatched.drift_input_hash = "stale-hash".to_string();
+        let metadata = ProducerSidecarMetadata::from_sidecar(
+            sidecar_path,
+            Some(&mismatched),
+            raw_path,
+            output_path,
+            "input-hash",
+        );
+        assert!(!metadata.producer_raw_output_matches_raw_path);
+        assert!(!metadata.producer_final_output_matches_output_path);
+        assert!(!metadata.producer_output_owner_matches);
+        assert!(!metadata.producer_input_hash_matches_raw);
+
+        let absent =
+            ProducerSidecarMetadata::from_sidecar(sidecar_path, None, raw_path, output_path, "");
+        assert!(!absent.producer_sidecar_present);
+        assert_eq!(
+            absent.producer_sidecar_path,
+            "/tmp/quake-live-ward-atlas.raw.json"
+        );
+    }
+
+    #[test]
     fn stable_hash_and_atomic_write_are_deterministic() {
         assert_eq!(stable_short_hash(b"abc"), "e71fa2190541574b");
         assert_eq!(stable_short_hash(b"abc"), stable_short_hash(b"abc"));
@@ -719,6 +991,24 @@ mod tests {
 
     #[test]
     fn slot_metadata_serializes_gpu_output_audit_fields() {
+        let sidecar_path = Path::new("/tmp/quake-live-ward-atlas.raw.json");
+        let raw_path = Path::new("/tmp/quake-live-ward-atlas.raw.bgra");
+        let output_path = Path::new("/tmp/quake-live-ward-atlas.bgra");
+        let sidecar = ProducerRawSidecar {
+            source: "ward-atlas".to_string(),
+            renderer: "quake-live-ward-atlas-source".to_string(),
+            drift_renderer: "quake-media-drift-v1".to_string(),
+            frame_id: Some(8),
+            frames: None,
+            updated_at: None,
+            observed_at: Some(777.0),
+            gpu_drift: true,
+            gpu_drift_raw_output: raw_path.display().to_string(),
+            gpu_drift_final_output: output_path.display().to_string(),
+            gpu_drift_output_owner: "screwm_media_drift".to_string(),
+            drift_input_hash: "input".to_string(),
+            preflip_y: Some(false),
+        };
         let meta = SlotMetadata {
             slot: "ward-atlas".to_string(),
             w: 2048,
@@ -736,6 +1026,13 @@ mod tests {
             output_hash: "output".to_string(),
             drift_changed: true,
             observed_at_unix_ms: 123,
+            producer: ProducerSidecarMetadata::from_sidecar(
+                sidecar_path,
+                Some(&sidecar),
+                raw_path,
+                output_path,
+                "input",
+            ),
         };
         let value: Value = serde_json::from_slice(&serde_json::to_vec(&meta).unwrap()).unwrap();
         assert_eq!(value["slot"], "ward-atlas");
@@ -752,6 +1049,29 @@ mod tests {
         assert_eq!(value["input_hash"], "input");
         assert_eq!(value["output_hash"], "output");
         assert_eq!(value["drift_changed"], true);
+        assert_eq!(
+            value["producer_sidecar_path"],
+            "/tmp/quake-live-ward-atlas.raw.json"
+        );
+        assert_eq!(value["producer_sidecar_present"], true);
+        assert_eq!(value["producer_source"], "ward-atlas");
+        assert_eq!(value["producer_renderer"], "quake-live-ward-atlas-source");
+        assert_eq!(value["producer_drift_renderer"], "quake-media-drift-v1");
+        assert_eq!(value["producer_frame_id"], 8);
+        assert_eq!(value["producer_observed_at_unix_s"], 777.0);
+        assert_eq!(value["producer_gpu_drift"], true);
+        assert_eq!(value["producer_raw_output"], raw_path.display().to_string());
+        assert_eq!(
+            value["producer_final_output"],
+            output_path.display().to_string()
+        );
+        assert_eq!(value["producer_output_owner"], "screwm_media_drift");
+        assert_eq!(value["producer_input_hash"], "input");
+        assert_eq!(value["producer_preflip_y"], false);
+        assert_eq!(value["producer_raw_output_matches_raw_path"], true);
+        assert_eq!(value["producer_final_output_matches_output_path"], true);
+        assert_eq!(value["producer_output_owner_matches"], true);
+        assert_eq!(value["producer_input_hash_matches_raw"], true);
     }
 }
 
