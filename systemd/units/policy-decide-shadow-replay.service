@@ -1,0 +1,19 @@
+[Unit]
+Description=Reform 3b shadow PRODUCER — replay cc-task-gate decisions through policy_decide
+Documentation=file:///home/hapax/Documents/Personal/30-areas/hapax/reform-execution-manifest.yaml
+After=network.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+# Advisory shadow producer: replays the gate's REAL-verdict decision log into the
+# divergence ledger (rebuild = idempotent). Runs from the canonical worktree (the
+# deploy target). Never enforces — exits 0 regardless of divergences.
+ExecStart=/home/hapax/.local/bin/uv run --directory /home/hapax/projects/hapax-council python scripts/policy-decide-shadow-replay
+Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Nice=10
+MemoryMax=1G
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=policy-decide-shadow-replay
