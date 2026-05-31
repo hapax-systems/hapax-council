@@ -297,6 +297,32 @@ def test_failed_deploy_rolls_back_active_symlink_to_previous_release(tmp_path: P
     ).strip() == active_sha
 
 
+def test_failed_deploy_rolls_back_legacy_direct_worktree_without_self_link(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, latest_sha = _make_repos(tmp_path)
+    legacy_sha = _git(canonical, "rev-parse", "HEAD")
+    active_source = tmp_path / "active-source"
+    _git(canonical, "worktree", "add", "--detach", str(active_source), legacy_sha)
+
+    result = _run_activate(tmp_path, canonical, deploy_exit=7)
+
+    assert result.returncode == 7
+    assert active_source.is_symlink()
+    assert os.readlink(active_source) != str(active_source)
+    assert active_source.resolve() != active_source
+    assert _git(active_source, "rev-parse", "HEAD") == legacy_sha
+    assert latest_sha != legacy_sha
+    legacy_targets = list((tmp_path / "state").glob("legacy-worktree-*"))
+    assert len(legacy_targets) == 1
+    assert active_source.resolve() == legacy_targets[0]
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["active_source_head"] == legacy_sha
+    assert receipt["source_cutover"]["rollback_status"] == "success"
+    assert receipt["source_cutover"]["previous_active_target"] == str(legacy_targets[0])
+
+
 def test_live_window_defers_cutover_without_manual_signoff(tmp_path: Path) -> None:
     canonical, _origin, new_sha = _make_repos(tmp_path)
     live_flag = tmp_path / "livestream-active"
