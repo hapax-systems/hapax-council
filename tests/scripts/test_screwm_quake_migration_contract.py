@@ -15,6 +15,46 @@ LIVE_TEXTURE_CVAR_RE = re.compile(
 PATCH_LIVE_TEXTURE_DIM_RE = re.compile(
     r'"hapax_live_texture(?P<slot>\d*)_(?P<key>width|height)",\s+"(?P<value>\d+)"'
 )
+UNIFIED_DIFF_HUNK_RE = re.compile(
+    r"^@@ -\d+(?:,(?P<old_count>\d+))? \+\d+(?:,(?P<new_count>\d+))? @@"
+)
+
+
+def _assert_unified_patch_hunk_counts(patch_text: str) -> None:
+    current_header = ""
+    old_count = 0
+    new_count = 0
+    expected_old = 0
+    expected_new = 0
+
+    def assert_current_hunk() -> None:
+        if current_header:
+            assert old_count == expected_old, current_header
+            assert new_count == expected_new, current_header
+
+    for line in patch_text.splitlines():
+        hunk = UNIFIED_DIFF_HUNK_RE.match(line)
+        if hunk:
+            assert_current_hunk()
+            current_header = line
+            expected_old = int(hunk.group("old_count") or "1")
+            expected_new = int(hunk.group("new_count") or "1")
+            old_count = 0
+            new_count = 0
+            continue
+        if not current_header:
+            continue
+        if line.startswith("\\"):
+            continue
+        prefix = line[:1]
+        if prefix == "+":
+            new_count += 1
+        elif prefix == "-":
+            old_count += 1
+        else:
+            old_count += 1
+            new_count += 1
+    assert_current_hunk()
 
 
 def _live_texture_slots_from_text(text: str) -> dict[int, dict[str, str]]:
@@ -175,6 +215,7 @@ def test_darkplaces_fork_patch_uploads_live_media_into_world_textures() -> None:
         encoding="utf-8"
     )
 
+    _assert_unified_patch_hunk_counts(patch)
     assert "HAPAX_LIVE_TEXTURE_SLOT_COUNT 13" in patch
     assert "hapax_live_texture_name" in patch
     assert "hapax_live_texture7_name" in patch
