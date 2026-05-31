@@ -1,0 +1,509 @@
+{
+  "version": "screwm-aggregate-port-owners-v1",
+  "status": "operative_required",
+  "scope": "Screwm aggregate runtime ports retained after Logos/Tauri frontend retirement",
+  "runtime_witness_policy": "This source contract proves owner and test anchors only. Live capture, restart, broadcast egress, and audiovisual quality remain separate AVSDLC/runtime gates.",
+  "retired_surfaces": [
+    "logos_tauri_frontend"
+  ],
+  "required_ports": [
+    {
+      "id": "audio_governance",
+      "required_capabilities": [
+        "ducking",
+        "vad",
+        "lufs_panic",
+        "consent_egress",
+        "egress_loopback",
+        "screwm_audio_reactivity"
+      ],
+      "source_owners": [
+        {
+          "path": "agents/studio_compositor/audio_ducking.py",
+          "anchors": [
+            "class AudioDuckingController",
+            "def _default_read_vad",
+            "hapax-backing-ducked"
+          ]
+        },
+        {
+          "path": "agents/studio_compositor/vad_ducking.py",
+          "anchors": [
+            "publish_vad_state",
+            "VOICE_STATE_FILE",
+            "class TtsDuckController"
+          ]
+        },
+        {
+          "path": "agents/studio_compositor/lufs_panic_cap.py",
+          "anchors": [
+            "class LufsPanicCap",
+            "LUFS panic-cap",
+            "broadcast_no_loopback"
+          ]
+        },
+        {
+          "path": "agents/studio_compositor/consent_live_egress.py",
+          "anchors": [
+            "should_egress_compose_safe",
+            "consent_granted",
+            "CONSENT_SAFE_LAYOUT_NAME"
+          ]
+        },
+        {
+          "path": "agents/broadcast_egress_loopback_producer/producer.py",
+          "anchors": [
+            "class EgressLoopbackProducer",
+            "compute_loopback_metrics",
+            "egress-loopback.json"
+          ]
+        }
+      ],
+      "route_bridges": [
+        {
+          "path": "systemd/units/hapax-screwm-audio-reactivity.service",
+          "anchors": [
+            "HAPAX_UNIFIED_REACTIVITY_ACTIVE=1",
+            "Read-only capture",
+            "hapax-broadcast-normalized-capture"
+          ]
+        },
+        {
+          "path": "scripts/screwm-audio-reactivity-source.py",
+          "anchors": [
+            "CompositorAudioCapture",
+            "UnifiedReactivityBus",
+            "HAPAX_SCREWM_AUDIO_TARGET"
+          ]
+        }
+      ],
+      "deterministic_tests": [
+        {
+          "path": "tests/studio_compositor/test_audio_ducking.py",
+          "anchors": [
+            "test_simultaneous_vad_and_yt_is_both_active",
+            "hapax-backing-ducked"
+          ]
+        },
+        {
+          "path": "tests/studio_compositor/test_tts_duck_controller.py",
+          "anchors": [
+            "test_default_thresholds_match_plan",
+            "test_recovery_from_stale_when_fresh_signal_arrives"
+          ]
+        },
+        {
+          "path": "tests/studio_compositor/test_lufs_panic_cap.py",
+          "anchors": [
+            "test_three_consecutive_loud_windows_trigger",
+            "broadcast_no_loopback"
+          ]
+        },
+        {
+          "path": "tests/studio_compositor/test_consent_live_egress.py",
+          "anchors": [
+            "test_unknown_phase_is_unsafe",
+            "CONSENT_SAFE_LAYOUT_NAME"
+          ]
+        }
+      ],
+      "failure_predicates": [
+        "Screwm route produces reactivity without VAD-backed ducking ownership.",
+        "LUFS panic or consent-egress predicates disappear from source.",
+        "Broadcast egress loopback evidence has no producer owner."
+      ]
+    },
+    {
+      "id": "layout_programme_control",
+      "required_capabilities": [
+        "layout_switching",
+        "segment_responsibility",
+        "programme_rotation",
+        "director_context",
+        "darkplaces_route_layout"
+      ],
+      "source_owners": [
+        {
+          "path": "agents/studio_compositor/layout_switcher.py",
+          "anchors": [
+            "class LayoutSwitcher",
+            "def apply_layout_switch",
+            "def run_layout_switch_loop"
+          ]
+        },
+        {
+          "path": "agents/studio_compositor/segment_layout_control.py",
+          "anchors": [
+            "POSTURE_TO_LAYOUT",
+            "def decide_layout_responsibility",
+            "segment-programme-context"
+          ]
+        },
+        {
+          "path": "agents/studio_compositor/homage/choreographer.py",
+          "anchors": [
+            "programme_provider",
+            "_read_rotation_mode_from_programme",
+            "homage_rotation_modes"
+          ]
+        }
+      ],
+      "route_bridges": [
+        {
+          "path": "config/compositor-layouts/screwm-quake.json",
+          "anchors": [
+            "\"name\": \"screwm-quake\"",
+            "\"/dev/video52\"",
+            "\"darkplaces_background\""
+          ]
+        },
+        {
+          "path": "systemd/units/hapax-darkplaces-v4l2.service",
+          "anchors": [
+            "HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52",
+            "hapax-screwm-camera-gamepad.service",
+            "hapax-darkplaces-bridge.service"
+          ]
+        }
+      ],
+      "deterministic_tests": [
+        {
+          "path": "tests/studio_compositor/test_layout_switcher.py",
+          "anchors": [
+            "test_stream_mode_transition_triggers_layout_change_within_one_tick",
+            "LayoutSwitcher"
+          ]
+        },
+        {
+          "path": "tests/studio_compositor/test_layout_switcher_apply.py",
+          "anchors": [
+            "test_apply_stream_mode_deep_returns_default_not_retired_layout",
+            "apply_layout_switch"
+          ]
+        },
+        {
+          "path": "tests/studio_compositor/test_segment_layout_control.py",
+          "anchors": [
+            "test_programme_context_never_launders_default_as_responsible_success",
+            "test_responsible_posture_layouts_exist_in_real_config_corpus"
+          ]
+        },
+        {
+          "path": "tests/studio_compositor/test_choreographer_programme_rotation.py",
+          "anchors": [
+            "test_structural_intent_wins_over_programme_prior",
+            "test_programme_prior_wins_when_no_intent_files"
+          ]
+        }
+      ],
+      "failure_predicates": [
+        "The Screwm route names DarkPlaces but no layout/programme owner remains.",
+        "Programme priors can masquerade as responsible rendered readback.",
+        "Layout switching falls back to retired static layouts."
+      ]
+    },
+    {
+      "id": "temporal_glfeedback_effects",
+      "required_capabilities": [
+        "glfeedback_chain",
+        "pre_fx",
+        "post_fx",
+        "receiver_local_drift",
+        "shader_postprocess"
+      ],
+      "source_owners": [
+        {
+          "path": "agents/studio_compositor/fx_chain.py",
+          "anchors": [
+            "def build_inline_fx_chain",
+            "glfeedback",
+            "def fx_tick_callback"
+          ]
+        },
+        {
+          "path": "scripts/quake_media_drift.py",
+          "anchors": [
+            "class MediaDriftRenderer",
+            "effect-drift-temporal.txt",
+            "Receiver-local drift"
+          ]
+        },
+        {
+          "path": "assets/quake/glsl/combined_crc59807.glsl",
+          "anchors": [
+            "Screwm/Scroom post-processing",
+            "entity-local drift/compositing field",
+            "UserVec2: x=signal_aura"
+          ]
+        }
+      ],
+      "route_bridges": [
+        {
+          "path": "systemd/units/hapax-screwm-media-drift.service",
+          "anchors": [
+            "Screwm media-drift GPU service",
+            "HAPAX_SCREWM_DRIFT_SLOTS",
+            "HAPAX_SCREWM_DRIFT_GAME_DATA"
+          ]
+        }
+      ],
+      "deterministic_tests": [
+        {
+          "path": "tests/studio_compositor/test_fx_tick_callback_3d.py",
+          "anchors": [
+            "test_3d_fx_tick_keeps_ward_modulator_alive_without_slot_pipeline",
+            "fx_tick_callback"
+          ]
+        },
+        {
+          "path": "tests/studio_compositor/test_state_3d_legacy_fx_guard.py",
+          "anchors": [
+            "test_legacy_studio_fx_mutations_disabled_by_default_in_3d",
+            "skipping legacy studio graph recruitment consumers"
+          ]
+        },
+        {
+          "path": "tests/scripts/test_quake_media_drift.py",
+          "anchors": [
+            "MediaDriftRenderer",
+            "effect-drift-mode-temporal.txt"
+          ]
+        },
+        {
+          "path": "tests/scripts/test_screwm_quake_migration_contract.py",
+          "anchors": [
+            "test_screwm_shader_effects_are_unconditional_scroom_fields",
+            "max(signal_presence"
+          ]
+        }
+      ],
+      "failure_predicates": [
+        "The DarkPlaces route drops temporal/glfeedback ownership without a replacement.",
+        "Receiver-local drift regresses into screen/global pulse behavior.",
+        "Shader postprocess loses the entity-local Screwm field contract."
+      ]
+    },
+    {
+      "id": "recording_hls_egress",
+      "required_capabilities": [
+        "hls_branch",
+        "no_cache_serving",
+        "segment_archive_rotation",
+        "recording_valve",
+        "runtime_witness_required"
+      ],
+      "source_owners": [
+        {
+          "path": "agents/studio_compositor/recording.py",
+          "anchors": [
+            "def add_hls_branch",
+            "hlssink2",
+            "compositor._hls_valve"
+          ]
+        },
+        {
+          "path": "agents/studio_compositor/hls_archive.py",
+          "anchors": [
+            "DEFAULT_HLS_SOURCE_DIR",
+            "def rotate_pass",
+            "hlssink2"
+          ]
+        },
+        {
+          "path": "agents/live_surface_guard/hls_no_cache_server.py",
+          "anchors": [
+            "No-cache HLS HTTP server",
+            "NoCacheHlsRequestHandler",
+            "Cache-Control"
+          ]
+        }
+      ],
+      "route_bridges": [
+        {
+          "path": "systemd/units/hapax-hls-no-cache.service",
+          "anchors": [
+            "hapax-compositor/hls",
+            "hls_no_cache_server.py",
+            "scripts/hapax-hls-no-cache-server"
+          ]
+        },
+        {
+          "path": "systemd/units/hls-archive-rotate.service",
+          "anchors": [
+            "hls-archive-rotate.py --json",
+            "WorkingDirectory=%h/.cache/hapax/source-activation/worktree"
+          ]
+        }
+      ],
+      "deterministic_tests": [
+        {
+          "path": "tests/studio_compositor/test_recording_hls_branch.py",
+          "anchors": [
+            "test_add_hls_branch_uploads_converts_and_caps_nv12_before_nvenc",
+            "hlssink2"
+          ]
+        },
+        {
+          "path": "tests/test_hls_archive_rotation.py",
+          "anchors": [
+            "test_rotates_only_stable_segments",
+            "live HLS cache remains hlssink2-owned"
+          ]
+        }
+      ],
+      "failure_predicates": [
+        "The aggregate route claims HLS/recording without an HLS branch owner.",
+        "HLS serving loses no-cache inspection semantics.",
+        "Segment archival mutates or deletes the live hlssink2 cache."
+      ]
+    },
+    {
+      "id": "camera_resilience_live_texture",
+      "required_capabilities": [
+        "stable_by_id_devices",
+        "role_local_fallback",
+        "freshness_overlay",
+        "frame_meta",
+        "v4l2_stall_recovery",
+        "darkplaces_camera_units"
+      ],
+      "source_owners": [
+        {
+          "path": "scripts/quake-live-media-source.py",
+          "anchors": [
+            "CAMERA_ROLE_DEFAULTS",
+            "def _camera_fallback_command",
+            "def _write_meta"
+          ]
+        },
+        {
+          "path": "agents/studio_compositor/v4l2_stall_recovery.py",
+          "anchors": [
+            "class StallRecoveryState",
+            "def attempt_recovery",
+            "v4l2_frame_seen_within"
+          ]
+        },
+        {
+          "path": "config/quake-live-cameras/brio-operator.env",
+          "anchors": [
+            "HAPAX_QUAKE_CAMERA_DEVICE=/dev/v4l/by-id/",
+            "HAPAX_QUAKE_LIVE_TEXTURE_WIDTH=1280",
+            "HAPAX_QUAKE_LIVE_TEXTURE_HEIGHT=720"
+          ]
+        }
+      ],
+      "route_bridges": [
+        {
+          "path": "systemd/units/hapax-quake-live-camera@.service",
+          "anchors": [
+            "config/quake-live-cameras/%i.env",
+            "scripts/quake-live-media-source.py --source camera",
+            "HAPAX_QUAKE_LIVE_TEXTURE_OUTPUT"
+          ]
+        },
+        {
+          "path": "systemd/units/hapax-darkplaces-v4l2.service",
+          "anchors": [
+            "hapax-quake-live-camera@brio-operator.service",
+            "hapax-quake-live-camera@c920-overhead.service"
+          ]
+        }
+      ],
+      "deterministic_tests": [
+        {
+          "path": "tests/scripts/test_quake_live_media_source.py",
+          "anchors": [
+            "test_freshness_overlay",
+            "source_frame_width"
+          ]
+        },
+        {
+          "path": "tests/studio_compositor/test_camera_source_topology_defaults.py",
+          "anchors": [
+            "test_repaired_camera_roles_use_stable_by_id_devices",
+            "/dev/v4l/by-id/"
+          ]
+        },
+        {
+          "path": "tests/studio_compositor/test_v4l2_stall_recovery.py",
+          "anchors": [
+            "test_three_sequential_stalls_all_recover",
+            "v4l2_frame_seen_within"
+          ]
+        }
+      ],
+      "failure_predicates": [
+        "Camera live-texture producers regress to unstable /dev/videoN defaults.",
+        "A role-local camera failure cannot produce fallback frames or metadata.",
+        "DarkPlaces camera units are no longer tied to the visible renderer."
+      ]
+    },
+    {
+      "id": "drift_modulation_currency",
+      "required_capabilities": [
+        "unified_reactivity_export",
+        "slotdrift_currency",
+        "density_grounding",
+        "receiver_local_drift",
+        "fail_safe_fallback"
+      ],
+      "source_owners": [
+        {
+          "path": "scripts/darkplaces-state-export.py",
+          "anchors": [
+            "def build_visual_chain_lines",
+            "effect-drift-density.txt",
+            "unified-reactivity.json"
+          ]
+        },
+        {
+          "path": "scripts/quake_media_drift.py",
+          "anchors": [
+            "effect-drift-active-ratio.txt",
+            "visual-chain-drift.txt",
+            "class MediaDriftRenderer"
+          ]
+        }
+      ],
+      "route_bridges": [
+        {
+          "path": "systemd/units/hapax-screwm-drift-state-source.service",
+          "anchors": [
+            "Hapax Screwm drift state source",
+            "screwm-drift-state-source.py",
+            "screwm-effect-drift-fallback-state.json"
+          ]
+        },
+        {
+          "path": "systemd/units/hapax-screwm-audio-reactivity.service",
+          "anchors": [
+            "unified-reactivity.json @60Hz",
+            "HAPAX_SCREWM_AUDIO_TARGET"
+          ]
+        }
+      ],
+      "deterministic_tests": [
+        {
+          "path": "tests/scripts/test_darkplaces_state_export.py",
+          "anchors": [
+            "test_darkplaces_state_export_density_grounds_drift_currency",
+            "effect-drift-density-currency.txt"
+          ]
+        },
+        {
+          "path": "tests/scripts/test_quake_media_drift.py",
+          "anchors": [
+            "effect-drift-active-effect-ratio.txt",
+            "effect-drift-mode-compositing.txt"
+          ]
+        }
+      ],
+      "failure_predicates": [
+        "Audio or density signals exist but never become DarkPlaces drift currency.",
+        "SlotDrift state disappears without a synthetic fail-safe source.",
+        "Drift currency bypasses receiver-local media drift."
+      ]
+    }
+  ]
+}
