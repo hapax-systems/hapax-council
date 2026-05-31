@@ -88,6 +88,21 @@ def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
     return bin_dir, calls
 
 
+def _fake_audio_safe_restart(
+    bin_dir: Path, tmp_path: Path, *, exit_code: int = 0
+) -> tuple[Path, Path]:
+    calls = tmp_path / "audio-safe-restart-calls.txt"
+    fake = bin_dir / "hapax-audio-safe-restart"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$HAPAX_AUDIO_SAFE_RESTART_CALLS"\n'
+        f"exit {exit_code}\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return fake, calls
+
+
 def test_dry_run_writes_bounded_post_merge_trace(tmp_path: Path) -> None:
     repo, sha = _repo_with_merge_commit(tmp_path)
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
@@ -255,6 +270,56 @@ def test_user_scoped_units_still_deploy_to_user_dir(tmp_path: Path) -> None:
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
     assert record["deploy_groups"]["systemd_units"] == [unit_path]
     assert record["deploy_groups"]["systemd_system_units"] == []
+
+
+def test_audio_touching_units_restart_through_audio_safe_wrapper(tmp_path: Path) -> None:
+    unit_path = "systemd/units/hapax-music-player.service"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            unit_path: (
+                "[Unit]\n"
+                "Description=Music player\n"
+                "\n"
+                "[Service]\n"
+                "ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python "
+                "-m agents.local_music_player\n"
+            )
+        },
+    )
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    audio_safe_bin, audio_safe_calls = _fake_audio_safe_restart(bin_dir, tmp_path, exit_code=1)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_AUDIO_SAFE_RESTART_BIN": str(audio_safe_bin),
+        "HAPAX_AUDIO_SAFE_RESTART_CALLS": str(audio_safe_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "--user is-active --quiet hapax-music-player.service" in calls
+    assert "--user restart hapax-music-player.service" not in calls
+    assert audio_safe_calls.read_text(encoding="utf-8").splitlines() == [
+        "hapax-music-player.service"
+    ]
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["audio_safe_restart_units"] == ["hapax-music-player.service"]
+    assert record["deploy_groups"]["systemd_units"] == [unit_path]
 
 
 def test_hapax_runtime_config_deploys_to_user_config_and_restarts_reconciler(

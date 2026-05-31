@@ -169,6 +169,48 @@ class TestCcPrMergeWatcherSourceResolution:
         assert any("scripts/cc-pr-merge-watcher.py" in line for line in execution_lines)
 
 
+class TestDeployChainServiceSourceResolution:
+    UNIT_REQUIRE_FILES = {
+        "hapax-daimonion.service": "agents/hapax_daimonion/__main__.py",
+        "logos-api.service": "logos/api/__main__.py",
+        "hapax-broadcast-orchestrator.service": "agents/broadcast_orchestrator/__main__.py",
+        "hapax-music-player.service": "agents/local_music_player/__main__.py",
+    }
+
+    @pytest.mark.parametrize(
+        ("unit_name", "require_file"),
+        UNIT_REQUIRE_FILES.items(),
+        ids=UNIT_REQUIRE_FILES.keys(),
+    )
+    def test_deploy_chain_units_use_activation_worktree(
+        self,
+        unit_name: str,
+        require_file: str,
+    ) -> None:
+        text = (UNITS_DIR / unit_name).read_text(encoding="utf-8")
+        execution_lines = [
+            line
+            for line in text.splitlines()
+            if line.startswith(
+                (
+                    "ExecStart=",
+                    "ExecStartPre=",
+                    "WorkingDirectory=",
+                    "Environment=PATH=",
+                    "Environment=PYTHONPATH=",
+                    "Environment=HOME=",
+                )
+            )
+        ]
+
+        assert execution_lines
+        assert all("%h/projects/hapax-council" not in line for line in execution_lines)
+        assert all("/home/hapax/projects/hapax-council" not in line for line in execution_lines)
+        assert any(ACTIVATION_WORKTREE in line for line in execution_lines)
+        assert any("hapax-compositor-runtime-source-check" in line for line in execution_lines)
+        assert any(f"--require-file {require_file}" in line for line in execution_lines)
+
+
 class TestOptionalAudioDeviceStateSourceResolution:
     def test_optional_audio_unit_uses_activation_worktree(self) -> None:
         text = (UNITS_DIR / "hapax-audio-optional-device-state.service").read_text()

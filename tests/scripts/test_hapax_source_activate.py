@@ -92,6 +92,7 @@ def _run_activate(
     env["HAPAX_SOURCE_ACTIVATE_CANONICAL"] = str(canonical)
     env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = str(tmp_path / "active-source")
     env["HAPAX_SOURCE_ACTIVATE_STATE_DIR"] = str(tmp_path / "state")
+    env["HAPAX_SOURCE_ACTIVATE_SYSTEMD_PROBES"] = "0"
     env["HAPAX_FAKE_DEPLOY_RECORD"] = str(tmp_path / "deploy-record.txt")
     env["HAPAX_FAKE_DEPLOY_EXIT"] = str(deploy_exit)
     if env_overrides:
@@ -119,6 +120,8 @@ def test_activation_uses_clean_worktree_without_touching_dirty_canonical(tmp_pat
     assert result.returncode == 0, result.stderr
     assert _git(canonical, "rev-parse", "HEAD") == before_head
     assert _git(canonical, "status", "--porcelain=v1") == before_status
+    assert (tmp_path / "active-source").is_symlink()
+    assert (tmp_path / "active-source").resolve() == tmp_path / "state" / "releases" / new_sha
     assert _git(tmp_path / "active-source", "rev-parse", "HEAD") == new_sha
     assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [new_sha]
     receipt = _current_receipt(tmp_path)
@@ -126,7 +129,10 @@ def test_activation_uses_clean_worktree_without_touching_dirty_canonical(tmp_pat
     assert receipt["deploy_status"] == "success"
     assert receipt["origin_main_sha"] == new_sha
     assert receipt["active_source_head"] == new_sha
+    assert receipt["active_source_target"] == str(tmp_path / "state" / "releases" / new_sha)
+    assert receipt["candidate_source_path"] == str(tmp_path / "state" / "releases" / new_sha)
     assert receipt["canonical"]["dirty_count"] == 1
+    assert receipt["health_probes"]["status"] == "success"
     assert (tmp_path / "state" / "last-success-sha").read_text(encoding="utf-8").strip() == new_sha
 
 
@@ -171,6 +177,7 @@ def test_audio_critical_active_drift_holds_before_reset_or_deploy(tmp_path: Path
     assert "audio-critical drift" in second.stderr
     assert "config/voice-output-routes.yaml" in second.stderr
     assert _git(active_source, "rev-parse", "HEAD") == active_sha
+    assert active_source.resolve() == tmp_path / "state" / "releases" / active_sha
     assert (active_source / "config" / "voice-output-routes.yaml").exists()
     assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [active_sha]
     receipt = _current_receipt(tmp_path)
@@ -194,9 +201,14 @@ def test_same_sha_rerun_writes_no_op_and_does_not_redeploy(tmp_path: Path) -> No
 
     assert first.returncode == 0, first.stderr
     assert second.returncode == 0, second.stderr
+    assert (tmp_path / "active-source").is_symlink()
     assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [new_sha]
-    assert (local_bin / "cc-claim").resolve() == tmp_path / "active-source" / "scripts" / "cc-claim"
-    assert (local_bin / "cc-close").resolve() == tmp_path / "active-source" / "scripts" / "cc-close"
+    assert os.readlink(local_bin / "cc-claim") == str(
+        tmp_path / "active-source" / "scripts" / "cc-claim"
+    )
+    assert os.readlink(local_bin / "cc-close") == str(
+        tmp_path / "active-source" / "scripts" / "cc-close"
+    )
     assert installed_policy.exists()
     receipt = _current_receipt(tmp_path)
     assert receipt["status"] == "no_op"
@@ -242,12 +254,72 @@ def test_failed_deploy_writes_failed_receipt_without_last_success(tmp_path: Path
     result = _run_activate(tmp_path, canonical, deploy_exit=7)
 
     assert result.returncode == 7
+    assert (tmp_path / "active-source").is_symlink()
     assert _git(tmp_path / "active-source", "rev-parse", "HEAD") == new_sha
     receipt = _current_receipt(tmp_path)
     assert receipt["status"] == "failed"
     assert receipt["deploy_status"] == "failed"
     assert receipt["exit_code"] == 7
+    assert receipt["source_cutover"]["rollback_status"] == "unavailable"
     assert not (tmp_path / "state" / "last-success-sha").exists()
+
+
+def test_failed_deploy_rolls_back_active_symlink_to_previous_release(tmp_path: Path) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    latest_sha = _advance_origin(tmp_path, origin, "advance before failed deploy")
+
+    second = _run_activate(tmp_path, canonical, deploy_exit=7)
+
+    assert second.returncode == 7
+    assert latest_sha != active_sha
+    assert (tmp_path / "active-source").resolve() == tmp_path / "state" / "releases" / active_sha
+    assert _git(tmp_path / "active-source", "rev-parse", "HEAD") == active_sha
+    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [
+        active_sha,
+        latest_sha,
+    ]
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["origin_main_sha"] == latest_sha
+    assert receipt["active_source_head"] == active_sha
+    assert receipt["source_cutover"]["rollback_status"] == "success"
+    assert receipt["source_cutover"]["previous_active_target"] == str(
+        tmp_path / "state" / "releases" / active_sha
+    )
+    assert receipt["source_cutover"]["promoted_active_target"] == str(
+        tmp_path / "state" / "releases" / latest_sha
+    )
+    assert (tmp_path / "state" / "last-success-sha").read_text(
+        encoding="utf-8"
+    ).strip() == active_sha
+
+
+def test_live_window_defers_cutover_without_manual_signoff(tmp_path: Path) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+    live_flag = tmp_path / "livestream-active"
+    live_flag.write_text("on\n", encoding="utf-8")
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"HAPAX_SOURCE_ACTIVATE_LIVE_FLAG": str(live_flag)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "unsafe live window is active" in result.stderr
+    assert not (tmp_path / "active-source").exists()
+    assert not (tmp_path / "deploy-record.txt").exists()
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "held"
+    assert receipt["deploy_status"] == "skipped_live_window"
+    assert receipt["origin_main_sha"] == new_sha
+    assert receipt["active_source_head"] == "unknown"
+    assert receipt["candidate_source_path"] == str(tmp_path / "state" / "releases" / new_sha)
+    assert receipt["live_window"]["status"] == "active"
+    assert "livestream-active" in receipt["live_window"]["message"]
 
 
 def test_activation_sweeps_cc_task_tools_into_local_bin(tmp_path: Path) -> None:
@@ -258,8 +330,8 @@ def test_activation_sweeps_cc_task_tools_into_local_bin(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     local_bin = tmp_path / "home" / ".local" / "bin"
     active_source = tmp_path / "active-source"
-    assert (local_bin / "cc-claim").resolve() == active_source / "scripts" / "cc-claim"
-    assert (local_bin / "cc-close").resolve() == active_source / "scripts" / "cc-close"
+    assert os.readlink(local_bin / "cc-claim") == str(active_source / "scripts" / "cc-claim")
+    assert os.readlink(local_bin / "cc-close") == str(active_source / "scripts" / "cc-close")
 
 
 def test_activation_syncs_usb_topology_policy_config(tmp_path: Path) -> None:
@@ -308,8 +380,25 @@ def test_activation_syncs_active_source_dependencies_before_deploy(tmp_path: Pat
 
     assert result.returncode == 0, result.stderr
     assert uv_record.read_text(encoding="utf-8").splitlines() == [
-        f"{tmp_path / 'active-source'}|sync --all-extras --quiet"
+        f"{tmp_path / 'state' / 'releases' / latest_sha}|sync --all-extras --quiet"
     ]
     assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [latest_sha]
     receipt = _current_receipt(tmp_path)
     assert receipt["dependency_sync"]["status"] == "success"
+
+
+def test_activation_records_configured_frame_freshness_probe(tmp_path: Path) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+    frame = tmp_path / "latest-frame.jpg"
+    frame.write_bytes(b"fresh")
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"HAPAX_SOURCE_ACTIVATE_FRAME_PROBES": str(frame)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = _current_receipt(tmp_path)
+    assert receipt["health_probes"]["status"] == "success"
+    assert f"frame={frame}" in receipt["health_probes"]["message"]

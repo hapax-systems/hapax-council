@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # hapax-source-activate — make origin/main operationally visible.
 #
-# Maintains a clean detached activation worktree that follows origin/main,
-# runs commit-addressed post-merge deployment from that clean source root,
-# and writes receipts describing whether the latest source is active. It
-# never resets or checks out the operator's canonical worktree.
+# Maintains clean detached release worktrees that follow origin/main, promotes
+# the stable active-source symlink after candidate checks pass, runs
+# commit-addressed post-merge deployment from that source root, and writes
+# receipts describing whether the latest source is active. It never resets or
+# checks out the operator's canonical worktree.
 
 set -euo pipefail
 
@@ -21,6 +22,7 @@ done
 CANONICAL_REPO="${HAPAX_SOURCE_ACTIVATE_CANONICAL:-$HOME/projects/hapax-council}"
 ACTIVE_WORKTREE="${HAPAX_SOURCE_ACTIVATE_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}"
 STATE_DIR="${HAPAX_SOURCE_ACTIVATE_STATE_DIR:-$HOME/.cache/hapax/source-activation}"
+RELEASES_DIR="${HAPAX_SOURCE_ACTIVATE_RELEASES_DIR:-$STATE_DIR/releases}"
 CURRENT_JSON="$STATE_DIR/current.json"
 HISTORY_JSONL="$STATE_DIR/source-activation.jsonl"
 LAST_SUCCESS_SHA="$STATE_DIR/last-success-sha"
@@ -34,8 +36,18 @@ canonical_dirty_count=0
 canonical_status_hash=""
 origin_sha="unknown"
 active_head="unknown"
+candidate_worktree=""
+active_source_target=""
 dependency_sync_status="not_started"
 dependency_sync_message=""
+health_probe_status="not_started"
+health_probe_message=""
+live_window_status="not_checked"
+live_window_message=""
+previous_active_target=""
+promoted_active_target=""
+rollback_status="not_needed"
+rollback_message=""
 quarantined_untracked_count=0
 quarantined_untracked_path=""
 quarantined_symlink_count=0
@@ -76,6 +88,25 @@ canonical_snapshot() {
     fi
 }
 
+active_source_git_available() {
+    [[ -e "$ACTIVE_WORKTREE/.git" ]]
+}
+
+refresh_active_source_fields() {
+    if active_source_git_available; then
+        active_head="$(git -C "$ACTIVE_WORKTREE" rev-parse HEAD 2>/dev/null || echo unknown)"
+    else
+        active_head="unknown"
+    fi
+    if [[ -L "$ACTIVE_WORKTREE" ]]; then
+        active_source_target="$(readlink -f "$ACTIVE_WORKTREE" 2>/dev/null || readlink "$ACTIVE_WORKTREE" 2>/dev/null || true)"
+    elif [[ -e "$ACTIVE_WORKTREE" ]]; then
+        active_source_target="$(realpath -m "$ACTIVE_WORKTREE" 2>/dev/null || true)"
+    else
+        active_source_target=""
+    fi
+}
+
 write_receipt() {
     local status="$1"
     local deploy_status="$2"
@@ -88,6 +119,11 @@ write_receipt() {
         "$canonical_branch" "$canonical_head" "$canonical_main" \
         "$canonical_dirty_count" "$canonical_status_hash" \
         "$dependency_sync_status" "$dependency_sync_message" \
+        "$health_probe_status" "$health_probe_message" \
+        "$live_window_status" "$live_window_message" \
+        "$candidate_worktree" "$active_source_target" \
+        "$previous_active_target" "$promoted_active_target" \
+        "$rollback_status" "$rollback_message" \
         "$quarantined_untracked_count" "$quarantined_untracked_path" \
         "$quarantined_symlink_count" <<'PY'
 from __future__ import annotations
@@ -116,6 +152,16 @@ from pathlib import Path
     canonical_status_hash,
     dependency_sync_status,
     dependency_sync_message,
+    health_probe_status,
+    health_probe_message,
+    live_window_status,
+    live_window_message,
+    candidate_worktree,
+    active_source_target,
+    previous_active_target,
+    promoted_active_target,
+    rollback_status,
+    rollback_message,
     quarantined_untracked_count,
     quarantined_untracked_path,
     quarantined_symlink_count,
@@ -140,9 +186,25 @@ record = {
         "status_hash": canonical_status_hash,
     },
     "active_source_path": active_worktree,
+    "active_source_target": active_source_target,
+    "candidate_source_path": candidate_worktree,
     "dependency_sync": {
         "status": dependency_sync_status,
         "message": dependency_sync_message,
+    },
+    "health_probes": {
+        "status": health_probe_status,
+        "message": health_probe_message,
+    },
+    "live_window": {
+        "status": live_window_status,
+        "message": live_window_message,
+    },
+    "source_cutover": {
+        "previous_active_target": previous_active_target,
+        "promoted_active_target": promoted_active_target,
+        "rollback_status": rollback_status,
+        "rollback_message": rollback_message,
     },
     "source_hygiene": {
         "untracked_quarantine_count": int(quarantined_untracked_count),
@@ -176,7 +238,7 @@ hold_on_audio_critical_active_drift() {
         return 0
     fi
 
-    active_head="$(git -C "$ACTIVE_WORKTREE" rev-parse HEAD 2>/dev/null || echo unknown)"
+    refresh_active_source_fields
     local drift_summary
     drift_summary="$(
         printf '%s\n' "${drift_lines[@]}" \
@@ -196,10 +258,283 @@ hold_on_audio_critical_active_drift() {
     exit 0
 }
 
-if [[ "${HAPAX_SOURCE_ACTIVATE_HOLD:-0}" == "1" || -f "$STATE_DIR/HOLD" ]]; then
-    if [[ -e "$ACTIVE_WORKTREE/.git" ]]; then
-        active_head="$(git -C "$ACTIVE_WORKTREE" rev-parse HEAD 2>/dev/null || echo unknown)"
+fresh_file_exists() {
+    local path="$1"
+    local max_age_s="$2"
+    [[ -f "$path" ]] || return 1
+    if [[ "$max_age_s" == "0" ]]; then
+        return 0
     fi
+    local now mtime age
+    now="$(date +%s)"
+    mtime="$(stat -c %Y "$path" 2>/dev/null || echo 0)"
+    age=$((now - mtime))
+    [[ "$age" -ge 0 && "$age" -le "$max_age_s" ]]
+}
+
+stream_intent_indicates_live() {
+    local path="$1"
+    [[ -f "$path" ]] || return 1
+    python3 - "$path" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+
+live_values = {
+    "live",
+    "public",
+    "public_live",
+    "public-live",
+    "public_research",
+    "youtube_live",
+}
+
+
+def walk(value):
+    if isinstance(value, str):
+        if value.strip().lower() in live_values:
+            raise SystemExit(0)
+    elif isinstance(value, dict):
+        for child in value.values():
+            walk(child)
+    elif isinstance(value, list):
+        for child in value:
+            walk(child)
+
+
+walk(payload)
+raise SystemExit(1)
+PY
+}
+
+systemd_probes_enabled() {
+    [[ "${HAPAX_SOURCE_ACTIVATE_SYSTEMD_PROBES:-1}" == "1" ]]
+}
+
+live_window_active() {
+    if [[ "${HAPAX_SOURCE_ACTIVATE_ALLOW_LIVE_CUTOVER:-0}" == "1" ]]; then
+        live_window_status="overridden"
+        live_window_message="HAPAX_SOURCE_ACTIVATE_ALLOW_LIVE_CUTOVER enabled"
+        return 1
+    fi
+
+    local live_flag="${HAPAX_SOURCE_ACTIVATE_LIVE_FLAG:-/dev/shm/hapax-broadcast/livestream-active}"
+    local live_flag_max_age_s="${HAPAX_SOURCE_ACTIVATE_LIVE_FLAG_MAX_AGE_S:-120}"
+    if fresh_file_exists "$live_flag" "$live_flag_max_age_s"; then
+        live_window_status="active"
+        live_window_message="fresh livestream active flag: $live_flag"
+        return 0
+    fi
+
+    local stream_mode_file="${HAPAX_SOURCE_ACTIVATE_STREAM_MODE_FILE:-$HOME/.cache/hapax/stream-mode}"
+    if [[ -f "$stream_mode_file" ]]; then
+        local stream_mode
+        stream_mode="$(tr -d '[:space:]' < "$stream_mode_file" 2>/dev/null || true)"
+        case "$stream_mode" in
+            public|public_research)
+                live_window_status="active"
+                live_window_message="stream-mode is $stream_mode"
+                return 0
+                ;;
+        esac
+    fi
+
+    local stream_intent_file="${HAPAX_SOURCE_ACTIVATE_STREAM_INTENT_FILE:-/dev/shm/hapax-compositor/stream-mode-intent.json}"
+    if stream_intent_indicates_live "$stream_intent_file"; then
+        live_window_status="active"
+        live_window_message="stream intent indicates live/public output: $stream_intent_file"
+        return 0
+    fi
+
+    if systemd_probes_enabled \
+        && systemctl --user is-active --quiet hapax-obs-livestream.service >/dev/null 2>&1; then
+        live_window_status="active"
+        live_window_message="hapax-obs-livestream.service is active"
+        return 0
+    fi
+
+    live_window_status="clear"
+    live_window_message="no active live-window signal"
+    return 1
+}
+
+candidate_path_for_sha() {
+    printf '%s/%s\n' "$RELEASES_DIR" "$1"
+}
+
+prepare_candidate_worktree() {
+    local sha="$1"
+    candidate_worktree="$(candidate_path_for_sha "$sha")"
+    mkdir -p "$RELEASES_DIR"
+
+    if [[ -e "$candidate_worktree/.git" ]]; then
+        git -C "$candidate_worktree" fetch origin main --quiet
+        git -C "$candidate_worktree" reset --hard "$sha" --quiet
+    elif [[ -e "$candidate_worktree" ]] \
+        && [[ -n "$(find "$candidate_worktree" -mindepth 1 -maxdepth 1 2>/dev/null | head -n 1)" ]]; then
+        write_receipt "failed" "not_started" "2" "candidate release path exists but is not a git worktree"
+        echo "hapax-source-activate: candidate release path exists but is not a git worktree: $candidate_worktree" >&2
+        exit 2
+    else
+        git -C "$CANONICAL_REPO" worktree prune 2>/dev/null || true
+        git -C "$CANONICAL_REPO" worktree add --detach "$candidate_worktree" "$sha" --quiet
+    fi
+
+    local candidate_head
+    candidate_head="$(git -C "$candidate_worktree" rev-parse HEAD)"
+    if [[ "$candidate_head" != "$sha" ]]; then
+        write_receipt "failed" "not_started" "2" "candidate source head does not match origin/main"
+        echo "hapax-source-activate: candidate source $candidate_head != origin/main $sha" >&2
+        exit 2
+    fi
+}
+
+health_probe_fail() {
+    local rc="$1"
+    local message="$2"
+    health_probe_status="failed"
+    health_probe_message="$message"
+    write_receipt "failed" "not_started" "$rc" "activation health probe failed"
+    echo "hapax-source-activate: activation health probe failed: $message" >&2
+    exit "$rc"
+}
+
+run_activation_health_probes() {
+    local source_root="$1"
+    health_probe_status="running"
+    health_probe_message=""
+
+    local candidate_head
+    candidate_head="$(git -C "$source_root" rev-parse HEAD 2>/dev/null || true)"
+    if [[ "$candidate_head" != "$origin_sha" ]]; then
+        health_probe_fail 2 "candidate source freshness failed: $candidate_head != $origin_sha"
+    fi
+
+    if [[ ! -x "$source_root/scripts/hapax-post-merge-deploy" ]]; then
+        health_probe_fail 2 "candidate deploy script missing or not executable"
+    fi
+
+    local probe_parts=("source_freshness=ok" "deploy_script=ok")
+    local http_probe_urls="${HAPAX_SOURCE_ACTIVATE_HTTP_PROBES:-}"
+    if [[ -z "$http_probe_urls" ]] \
+        && systemd_probes_enabled \
+        && systemctl --user is-active --quiet logos-api.service >/dev/null 2>&1; then
+        http_probe_urls="http://127.0.0.1:8051/api/health http://127.0.0.1:8051/health http://127.0.0.1:8051/"
+    fi
+    http_probe_urls="${http_probe_urls//,/ }"
+    if [[ -n "$http_probe_urls" ]]; then
+        if ! command -v curl >/dev/null 2>&1; then
+            health_probe_fail 127 "curl executable not found for HTTP health probe"
+        fi
+        local url http_ok=0
+        for url in $http_probe_urls; do
+            if curl -fsS --max-time "${HAPAX_SOURCE_ACTIVATE_HTTP_TIMEOUT_S:-2}" "$url" >/dev/null; then
+                http_ok=1
+                probe_parts+=("http=$url")
+                break
+            fi
+        done
+        if [[ "$http_ok" != "1" ]]; then
+            health_probe_fail 1 "HTTP health probes failed: $http_probe_urls"
+        fi
+    else
+        probe_parts+=("http=skipped_inactive")
+    fi
+
+    local frame_probe_paths="${HAPAX_SOURCE_ACTIVATE_FRAME_PROBES:-}"
+    if [[ -z "$frame_probe_paths" ]] \
+        && systemd_probes_enabled \
+        && { systemctl --user is-active --quiet studio-compositor.service >/dev/null 2>&1 \
+            || systemctl --user is-active --quiet hapax-v4l2-bridge.service >/dev/null 2>&1; }; then
+        frame_probe_paths="/dev/shm/hapax-compositor/latest-frame.jpg /dev/shm/hapax-compositor/fx-snapshot.jpg /dev/shm/hapax-compositor/frame.jpg"
+    fi
+    frame_probe_paths="${frame_probe_paths//,/ }"
+    if [[ -n "$frame_probe_paths" ]]; then
+        local frame_path frame_ok=0
+        for frame_path in $frame_probe_paths; do
+            if fresh_file_exists "$frame_path" "${HAPAX_SOURCE_ACTIVATE_FRAME_MAX_AGE_S:-10}"; then
+                frame_ok=1
+                probe_parts+=("frame=$frame_path")
+                break
+            fi
+        done
+        if [[ "$frame_ok" != "1" ]]; then
+            health_probe_fail 1 "frame freshness probes failed: $frame_probe_paths"
+        fi
+    else
+        probe_parts+=("frame=skipped_inactive")
+    fi
+
+    health_probe_status="success"
+    health_probe_message="$(IFS=';'; echo "${probe_parts[*]}")"
+}
+
+promote_active_worktree() {
+    local target="$1"
+    local target_real
+    target_real="$(realpath -m "$target")"
+    refresh_active_source_fields
+    previous_active_target="$active_source_target"
+
+    if [[ -L "$ACTIVE_WORKTREE" ]] && [[ "$active_source_target" == "$target_real" ]]; then
+        promoted_active_target="$target_real"
+        refresh_active_source_fields
+        return 0
+    fi
+
+    mkdir -p "$(dirname "$ACTIVE_WORKTREE")"
+    local tmp_link="${ACTIVE_WORKTREE}.tmp.$$"
+    rm -f "$tmp_link"
+    ln -s "$target_real" "$tmp_link"
+
+    if [[ -e "$ACTIVE_WORKTREE" && ! -L "$ACTIVE_WORKTREE" ]]; then
+        if [[ -e "$ACTIVE_WORKTREE/.git" ]]; then
+            local legacy_path
+            legacy_path="$STATE_DIR/legacy-worktree-$(date -u +%Y%m%dT%H%M%SZ)"
+            mv "$ACTIVE_WORKTREE" "$legacy_path"
+            echo "hapax-source-activate: moved legacy activation worktree to $legacy_path"
+        elif [[ -z "$(find "$ACTIVE_WORKTREE" -mindepth 1 -maxdepth 1 2>/dev/null | head -n 1)" ]]; then
+            rmdir "$ACTIVE_WORKTREE"
+        else
+            rm -f "$tmp_link"
+            write_receipt "failed" "not_started" "2" "activation path exists but is not a git worktree"
+            echo "hapax-source-activate: activation path exists but is not a git worktree: $ACTIVE_WORKTREE" >&2
+            exit 2
+        fi
+    fi
+
+    mv -Tf "$tmp_link" "$ACTIVE_WORKTREE"
+    promoted_active_target="$target_real"
+    git -C "$CANONICAL_REPO" worktree prune 2>/dev/null || true
+    refresh_active_source_fields
+}
+
+rollback_active_worktree() {
+    local reason="$1"
+    if [[ -z "$previous_active_target" || ! -e "$previous_active_target/.git" ]]; then
+        rollback_status="unavailable"
+        rollback_message="no previous active target available after: $reason"
+        return 1
+    fi
+
+    local tmp_link="${ACTIVE_WORKTREE}.rollback.$$"
+    rm -f "$tmp_link"
+    ln -s "$previous_active_target" "$tmp_link"
+    mv -Tf "$tmp_link" "$ACTIVE_WORKTREE"
+    rollback_status="success"
+    rollback_message="restored previous active target after: $reason"
+    refresh_active_source_fields
+}
+
+if [[ "${HAPAX_SOURCE_ACTIVATE_HOLD:-0}" == "1" || -f "$STATE_DIR/HOLD" ]]; then
+    refresh_active_source_fields
     write_receipt "held" "skipped_hold" "0" "source activation hold active"
     echo "hapax-source-activate: held before fetch/reset/symlink sweep/deploy" >&2
     exit 0
@@ -217,35 +552,35 @@ git -C "$CANONICAL_REPO" fetch origin main --quiet
 origin_sha="$(git -C "$CANONICAL_REPO" rev-parse origin/main)"
 hold_on_audio_critical_active_drift
 
-if [[ ! -e "$ACTIVE_WORKTREE/.git" ]]; then
-    if [[ -e "$ACTIVE_WORKTREE" ]] && [[ -n "$(find "$ACTIVE_WORKTREE" -mindepth 1 -maxdepth 1 2>/dev/null | head -n 1)" ]]; then
-        write_receipt "failed" "not_started" "2" "activation path exists but is not a git worktree"
-        echo "hapax-source-activate: activation path exists but is not a git worktree: $ACTIVE_WORKTREE" >&2
-        exit 2
-    fi
-    mkdir -p "$(dirname "$ACTIVE_WORKTREE")"
-    git -C "$CANONICAL_REPO" worktree prune 2>/dev/null || true
-    git -C "$CANONICAL_REPO" worktree add --detach "$ACTIVE_WORKTREE" "$origin_sha" --quiet
-else
-    git -C "$ACTIVE_WORKTREE" fetch origin main --quiet
-    git -C "$ACTIVE_WORKTREE" reset --hard "$origin_sha" --quiet
-fi
+prepare_candidate_worktree "$origin_sha"
 
-active_head="$(git -C "$ACTIVE_WORKTREE" rev-parse HEAD)"
-if [[ "$active_head" != "$origin_sha" ]]; then
-    write_receipt "failed" "not_started" "2" "active source head does not match origin/main"
-    echo "hapax-source-activate: active source $active_head != origin/main $origin_sha" >&2
-    exit 2
+refresh_active_source_fields
+candidate_real="$(realpath -m "$candidate_worktree")"
+if [[ "$active_source_target" != "$candidate_real" ]]; then
+    if live_window_active; then
+        refresh_active_source_fields
+        write_receipt \
+            "held" \
+            "skipped_live_window" \
+            "0" \
+            "unsafe live window active; cutover deferred"
+        echo "hapax-source-activate: held because unsafe live window is active: $live_window_message" >&2
+        exit 0
+    fi
+else
+    live_window_status="not_needed"
+    live_window_message="active source already points at candidate"
 fi
 
 quarantine_untracked_active_source() {
+    local source_root="${1:-$ACTIVE_WORKTREE}"
     local rel
     local -a untracked_paths
     local local_bin
     local base
     local link_path
     local link_target
-    mapfile -t untracked_paths < <(git -C "$ACTIVE_WORKTREE" ls-files --others --exclude-standard)
+    mapfile -t untracked_paths < <(git -C "$source_root" ls-files --others --exclude-standard)
     if [[ "${#untracked_paths[@]}" -eq 0 ]]; then
         return 0
     fi
@@ -258,7 +593,7 @@ quarantine_untracked_active_source() {
     for rel in "${untracked_paths[@]}"; do
         [[ -z "$rel" ]] && continue
         mkdir -p "$quarantined_untracked_path/$(dirname "$rel")"
-        mv "$ACTIVE_WORKTREE/$rel" "$quarantined_untracked_path/$rel"
+        mv "$source_root/$rel" "$quarantined_untracked_path/$rel"
         quarantined_untracked_count=$((quarantined_untracked_count + 1))
         case "$rel" in
             scripts/hapax-*|scripts/cc-claim|scripts/cc-close)
@@ -266,7 +601,7 @@ quarantine_untracked_active_source() {
                 base="$(basename "$rel")"
                 link_path="$local_bin/$base"
                 link_target="$(readlink "$link_path" 2>/dev/null || true)"
-                if [[ "$link_target" == "$ACTIVE_WORKTREE/$rel" ]]; then
+                if [[ "$link_target" == "$source_root/$rel" || "$link_target" == "$ACTIVE_WORKTREE/$rel" ]]; then
                     rm -f "$link_path"
                     quarantined_symlink_count=$((quarantined_symlink_count + 1))
                 fi
@@ -280,7 +615,53 @@ quarantine_untracked_active_source() {
     fi
 }
 
-quarantine_untracked_active_source
+quarantine_untracked_active_source "$candidate_worktree"
+
+sync_dependency_environment() {
+    local source_root="${1:-$ACTIVE_WORKTREE}"
+    if [[ "${HAPAX_SOURCE_ACTIVATE_SYNC_DEPS:-1}" != "1" ]]; then
+        dependency_sync_status="skipped_by_flag"
+        dependency_sync_message="HAPAX_SOURCE_ACTIVATE_SYNC_DEPS disabled"
+        return 0
+    fi
+    if [[ ! -f "$source_root/pyproject.toml" ]]; then
+        dependency_sync_status="skipped_no_pyproject"
+        dependency_sync_message="active source has no pyproject.toml"
+        return 0
+    fi
+    if ! command -v uv >/dev/null 2>&1; then
+        dependency_sync_status="failed"
+        dependency_sync_message="uv executable not found"
+        write_receipt "failed" "not_started" "127" "dependency sync failed"
+        echo "hapax-source-activate: dependency sync failed — uv executable not found" >&2
+        exit 127
+    fi
+    if (
+        cd "$source_root"
+        uv sync --all-extras --quiet
+    ); then
+        dependency_sync_status="success"
+        dependency_sync_message="uv sync --all-extras --quiet completed"
+        echo "hapax-source-activate: dependency environment synced"
+    else
+        rc=$?
+        dependency_sync_status="failed"
+        dependency_sync_message="uv sync --all-extras --quiet failed"
+        write_receipt "failed" "not_started" "$rc" "dependency sync failed"
+        echo "hapax-source-activate: dependency sync failed for ${origin_sha:0:8}" >&2
+        exit "$rc"
+    fi
+}
+
+sync_dependency_environment "$candidate_worktree"
+run_activation_health_probes "$candidate_worktree"
+promote_active_worktree "$candidate_worktree"
+
+if [[ "$active_head" != "$origin_sha" ]]; then
+    write_receipt "failed" "not_started" "2" "active source head does not match origin/main"
+    echo "hapax-source-activate: active source $active_head != origin/main $origin_sha" >&2
+    exit 2
+fi
 
 LOCAL_BIN="${HAPAX_SOURCE_ACTIVATE_LOCAL_BIN:-$HOME/.local/bin}"
 mkdir -p "$LOCAL_BIN"
@@ -329,43 +710,6 @@ if [[ "$config_sync_count" -gt 0 ]]; then
     echo "hapax-source-activate: synced $config_sync_count config files from activation worktree"
 fi
 
-sync_dependency_environment() {
-    if [[ "${HAPAX_SOURCE_ACTIVATE_SYNC_DEPS:-1}" != "1" ]]; then
-        dependency_sync_status="skipped_by_flag"
-        dependency_sync_message="HAPAX_SOURCE_ACTIVATE_SYNC_DEPS disabled"
-        return 0
-    fi
-    if [[ ! -f "$ACTIVE_WORKTREE/pyproject.toml" ]]; then
-        dependency_sync_status="skipped_no_pyproject"
-        dependency_sync_message="active source has no pyproject.toml"
-        return 0
-    fi
-    if ! command -v uv >/dev/null 2>&1; then
-        dependency_sync_status="failed"
-        dependency_sync_message="uv executable not found"
-        write_receipt "failed" "not_started" "127" "dependency sync failed"
-        echo "hapax-source-activate: dependency sync failed — uv executable not found" >&2
-        exit 127
-    fi
-    if (
-        cd "$ACTIVE_WORKTREE"
-        uv sync --all-extras --quiet
-    ); then
-        dependency_sync_status="success"
-        dependency_sync_message="uv sync --all-extras --quiet completed"
-        echo "hapax-source-activate: dependency environment synced"
-    else
-        rc=$?
-        dependency_sync_status="failed"
-        dependency_sync_message="uv sync --all-extras --quiet failed"
-        write_receipt "failed" "not_started" "$rc" "dependency sync failed"
-        echo "hapax-source-activate: dependency sync failed for ${origin_sha:0:8}" >&2
-        exit "$rc"
-    fi
-}
-
-sync_dependency_environment
-
 previous_success="$(cat "$LAST_SUCCESS_SHA" 2>/dev/null || true)"
 if [[ "$FORCE" != "1" && "$SKIP_DEPLOY" != "1" && "$previous_success" == "$origin_sha" ]]; then
     write_receipt "no_op" "skipped_already_active" "0" "origin/main already activated"
@@ -381,10 +725,16 @@ fi
 
 DEPLOY_SCRIPT="${HAPAX_SOURCE_ACTIVATE_DEPLOY_SCRIPT:-$ACTIVE_WORKTREE/scripts/hapax-post-merge-deploy}"
 if [[ ! -x "$DEPLOY_SCRIPT" ]]; then
+    rollback_active_worktree "deploy script missing" || true
     write_receipt "failed" "not_started" "2" "deploy script missing or not executable"
     echo "hapax-source-activate: deploy script missing or not executable: $DEPLOY_SCRIPT" >&2
+    if [[ "$rollback_status" == "success" ]]; then
+        echo "hapax-source-activate: restored previous active source after missing deploy script" >&2
+    fi
     exit 2
 fi
+
+write_receipt "deploying" "in_progress" "0" "active source promoted; post-merge deploy starting"
 
 set +e
 (
@@ -395,11 +745,18 @@ deploy_rc=$?
 set -e
 
 if [[ "$deploy_rc" -ne 0 ]]; then
+    rollback_active_worktree "post-merge deploy failed" || true
     write_receipt "failed" "failed" "$deploy_rc" "post-merge deploy failed"
     echo "hapax-source-activate: post-merge deploy failed for ${origin_sha:0:8}" >&2
+    if [[ "$rollback_status" == "success" ]]; then
+        echo "hapax-source-activate: restored previous active source after failed deploy" >&2
+    else
+        echo "hapax-source-activate: rollback unavailable after failed deploy: $rollback_message" >&2
+    fi
     exit "$deploy_rc"
 fi
 
 printf '%s\n' "$origin_sha" > "$LAST_SUCCESS_SHA"
+refresh_active_source_fields
 write_receipt "completed" "success" "0" "origin/main activated"
 echo "hapax-source-activate: activated origin/main at ${origin_sha:0:8}"
