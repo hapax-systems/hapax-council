@@ -178,7 +178,7 @@
       "status": "blocked",
       "next_packet": {
         "task_id": "archive-replay-public-event-link-adapter",
-        "task_note": "active/archive-replay-public-event-link-adapter.md",
+        "task_note": "closed/archive-replay-public-event-link-adapter.md",
         "state": "closed",
         "reason": "This adapter is the first concrete bridge from public events to replayable artifacts."
       },
@@ -324,7 +324,7 @@
       "status": "offered",
       "next_packet": {
         "task_id": "support-surface-registry",
-        "task_note": "active/support-surface-registry.md",
+        "task_note": "closed/support-surface-registry.md",
         "state": "offered",
         "reason": "This task is directly blocked by the value stream registry and normalizes allowed support rails."
       },
@@ -406,7 +406,7 @@
       "status": "guarded",
       "next_packet": {
         "task_id": "license-request-price-class-router",
-        "task_note": "active/license-request-price-class-router.md",
+        "task_note": "closed/license-request-price-class-router.md",
         "state": "blocked",
         "reason": "This downstream router turns commercial interest into daemon-tractable license classes."
       },
@@ -483,7 +483,7 @@
       "status": "blocked",
       "next_packet": {
         "task_id": "artifact-catalog-release-workflow",
-        "task_note": "active/artifact-catalog-release-workflow.md",
+        "task_note": "closed/artifact-catalog-release-workflow.md",
         "state": "blocked",
         "reason": "This packet supplies the catalog and release workflow for artifact products."
       },
@@ -626,7 +626,7 @@
       "status": "offered",
       "next_packet": {
         "task_id": "grant-opportunity-scout-attestation-queue",
-        "task_note": "active/grant-opportunity-scout-attestation-queue.md",
+        "task_note": "closed/grant-opportunity-scout-attestation-queue.md",
         "state": "offered",
         "reason": "This packet turns opportunity scouting into automated packet prep and attestation isolation."
       },
@@ -697,7 +697,7 @@
       "status": "blocked",
       "next_packet": {
         "task_id": "aesthetic-condition-editions-ledger",
-        "task_note": "active/aesthetic-condition-editions-ledger.md",
+        "task_note": "closed/aesthetic-condition-editions-ledger.md",
         "state": "blocked",
         "reason": "This ledger is the direct blocker for condition-bound aesthetic products."
       },
@@ -839,7 +839,7 @@
       "status": "offered",
       "next_packet": {
         "task_id": "conversion-broker",
-        "task_note": "active/conversion-broker.md",
+        "task_note": "closed/conversion-broker.md",
         "state": "blocked",
         "reason": "The broker is the routing point for service-shaped demand into artifact products or refusals."
       },
@@ -918,7 +918,7 @@
       "status": "refusal_artifact",
       "next_packet": {
         "task_id": "refusal-annex-publish-fanout-closeout",
-        "task_note": "active/refusal-annex-publish-fanout-closeout.md",
+        "task_note": "closed/refusal-annex-publish-fanout-closeout.md",
         "state": "offered",
         "reason": "The refusal annex publishes converted refusals without reopening forbidden surfaces."
       },
