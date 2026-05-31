@@ -259,6 +259,28 @@ def test_screwm_live_media_sources_apply_receiver_local_drift() -> None:
     assert "localcmd(cmd);" not in coupling
 
 
+def test_screwm_media_drift_batches_slot_readback() -> None:
+    source = (
+        REPO_ROOT
+        / "hapax-logos"
+        / "crates"
+        / "hapax-visual"
+        / "src"
+        / "bin"
+        / "screwm_media_drift.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "fn encode(" in source
+    assert "Option<wgpu::CommandBuffer>" in source
+    assert "return None" in source
+    assert "fn finish_readback(" in source
+    assert "queue.submit(commands)" in source
+    assert ".map_async(wgpu::MapMode::Read" in source
+    assert "device.poll(wgpu::Maintain::Wait)" in source
+    assert source.count("device.poll(wgpu::Maintain::Wait)") == 1
+    assert "for (idx, rx) in waits" in source
+
+
 def test_screwm_media_mount_contracts_are_deterministic() -> None:
     contract = json.loads(
         (REPO_ROOT / "config" / "screwm-quake-media-mounts.json").read_text(encoding="utf-8")
