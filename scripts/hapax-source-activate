@@ -499,6 +499,7 @@ promote_active_worktree() {
             local legacy_path
             legacy_path="$STATE_DIR/legacy-worktree-$(date -u +%Y%m%dT%H%M%SZ)"
             mv "$ACTIVE_WORKTREE" "$legacy_path"
+            previous_active_target="$(realpath -m "$legacy_path")"
             echo "hapax-source-activate: moved legacy activation worktree to $legacy_path"
         elif [[ -z "$(find "$ACTIVE_WORKTREE" -mindepth 1 -maxdepth 1 2>/dev/null | head -n 1)" ]]; then
             rmdir "$ACTIVE_WORKTREE"
@@ -518,9 +519,24 @@ promote_active_worktree() {
 
 rollback_active_worktree() {
     local reason="$1"
-    if [[ -z "$previous_active_target" || ! -e "$previous_active_target/.git" ]]; then
+    if [[ -z "$previous_active_target" ]]; then
         rollback_status="unavailable"
         rollback_message="no previous active target available after: $reason"
+        return 1
+    fi
+
+    local active_worktree_real previous_target_real
+    active_worktree_real="$(realpath -m "$ACTIVE_WORKTREE")"
+    previous_target_real="$(realpath -m "$previous_active_target")"
+    if [[ "$previous_target_real" == "$active_worktree_real" ]]; then
+        rollback_status="unavailable"
+        rollback_message="previous active target would self-reference active worktree after: $reason"
+        return 1
+    fi
+
+    if [[ ! -e "$previous_active_target/.git" ]]; then
+        rollback_status="unavailable"
+        rollback_message="previous active target is not a git worktree after: $reason"
         return 1
     fi
 

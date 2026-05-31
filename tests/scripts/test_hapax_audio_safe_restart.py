@@ -355,6 +355,67 @@ exit $rc
         assert "phase=rollback step=retry-restart" in result.stdout
         assert "status=recovered-on-retry" in result.stdout
 
+    def test_preexisting_silence_unchanged_exits_zero_without_rollback(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        snap_dir = tmp_path / "snap"
+        snap_dir.mkdir()
+        snap_bin = tmp_path / "snap.sh"
+        _write_executable(
+            snap_bin,
+            "#!/usr/bin/env bash\n"
+            'OUTPUT=""\nwhile [ $# -gt 0 ]; do\n'
+            '  case "$1" in\n'
+            '    --output) shift; OUTPUT="$1" ;;\n'
+            "  esac\n"
+            "  shift\n"
+            "done\n"
+            'if [ -n "$OUTPUT" ]; then\n'
+            '  echo \'{"sources":[],"modules":[],"links":[],"sinks":[]}\' > "$OUTPUT"\n'
+            "fi\n"
+            "exit 0\n",
+        )
+        ver_bin = tmp_path / "ver.sh"
+        _write_executable(
+            ver_bin,
+            "#!/usr/bin/env bash\n"
+            "cat <<'JSON'\n"
+            '{"service":"x","exit_code":1,"overall_status":"silent","stages":['
+            '{"monitor":"hapax-livestream-tap.monitor","expected":"either","status":"silent-ok"},'
+            '{"monitor":"hapax-broadcast-master","expected":"audio","status":"silent"},'
+            '{"monitor":"hapax-broadcast-normalized","expected":"audio","status":"silent"},'
+            '{"monitor":"hapax-obs-broadcast-remap.monitor","expected":"audio","status":"missing"}'
+            "]}\n"
+            "JSON\n"
+            "exit 1\n",
+        )
+        env = {
+            **os.environ,
+            "HAPAX_AUDIO_SNAPSHOT_BIN": str(snap_bin),
+            "HAPAX_AUDIO_VERIFY_BIN": str(ver_bin),
+            "PATH": _fake_path(tmp_path, fakes={"systemctl": "exit 0\n"}),
+        }
+
+        result = subprocess.run(
+            [
+                str(WRAPPER),
+                "--settle",
+                "1",
+                "--snapshot-dir",
+                str(snap_dir),
+                "fake-audio.service",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=env,
+        )
+
+        assert result.returncode == 0, result.stdout + "\n--\n" + result.stderr
+        assert "status=unchanged-preexisting-silence" in result.stdout
+        assert "phase=rollback" not in result.stdout
+
     def test_post_noise_persistent_exits_2(self, tmp_path: Path) -> None:
         """Post probe says noise (rc=2); retry still bad; replay
         also fails to recover. Wrapper exits 2 (rollback failed)."""
