@@ -263,6 +263,7 @@ def test_obs_v4l2_source_reset_runs_from_activation_worktree_with_notify_watchdo
         f"{SOURCE_ROOT}/scripts/hapax-obs-v4l2-source-reset"
     )
     assert '--source-name "Video Capture Device (V4L2)"' in parser.get("Service", "ExecStart")
+    assert "--stall-threshold 60" in parser.get("Service", "ExecStart")
     assert "--reset-cooldown 60" in parser.get("Service", "ExecStart")
     assert "--device-id /dev/video52" in parser.get("Service", "ExecStart")
     assert "--resolution 1920x1080" in parser.get("Service", "ExecStart")
@@ -270,6 +271,8 @@ def test_obs_v4l2_source_reset_runs_from_activation_worktree_with_notify_watchdo
     assert "--pixelformat YUYV" in parser.get("Service", "ExecStart")
     assert "--disable-buffering" in parser.get("Service", "ExecStart")
     assert "--auto-reset-input" in parser.get("Service", "ExecStart")
+    assert "--producer-service hapax-darkplaces-v4l2.service" in parser.get("Service", "ExecStart")
+    assert "--producer-restart-after-obs-resets 1" in parser.get("Service", "ExecStart")
     assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
     lines = _active_unit_lines(OBS_SOURCE_RESET)
     assert all("%h/projects/hapax-council" not in line for line in lines)
@@ -281,7 +284,9 @@ def test_screwm_obs_v4l2_reset_dropin_pins_obs_to_direct_darkplaces_video52() ->
 
     assert "ExecStart=" in lines
     assert "--device-id /dev/video52" in joined
+    assert "--stall-threshold 60" in joined
     assert "--pixelformat YUYV" in joined
+    assert "--producer-service hapax-darkplaces-v4l2.service" in joined
     assert "--device-id /dev/video50" not in joined
     assert "--pixelformat NV12" not in joined
     assert "--prom-path %h/.local/share/node_exporter/textfile_collector/" in joined

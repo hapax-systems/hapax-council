@@ -4,7 +4,9 @@
 Polls OBS via obs-websocket every POLL_INTERVAL seconds. Detects stalls by
 comparing tiny source screenshots (hash-based). If the source image is
 identical for STALL_THRESHOLD seconds, or the source is inactive, toggles
-visibility off→on to force OBS to reacquire /dev/video42.
+visibility off->on to force OBS to reacquire the configured v4l2 device. If a
+stalled screenshot recurs after an OBS-only reset, it can optionally restart the
+systemd user service that owns the v4l2 producer.
 
 Writes:
   - Prometheus textfile health/counter metrics at --prom-path
@@ -25,6 +27,7 @@ import logging.handlers
 import os
 import signal
 import socket
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -39,6 +42,7 @@ STATUS_PATH = STATUS_DIR / "status.json"
 PROM_RESETS = "hapax_obs_v4l2_source_resets_total"
 PROM_ACTIVE = "hapax_obs_v4l2_source_reset_active"
 PROM_FAILURES = "hapax_obs_v4l2_source_reset_failures_total"
+PROM_PRODUCER_RESTARTS = "hapax_obs_v4l2_source_producer_restarts_total"
 
 
 class SourceState(StrEnum):
@@ -81,6 +85,8 @@ class MonitorStatus:
     stall_seconds: float
     cooldown_remaining_seconds: float
     reason: str | None = None
+    producer_restarts: int = 0
+    last_producer_restart_at: str | None = None
 
 
 logger = logging.getLogger(LOG_TAG)
@@ -461,6 +467,50 @@ def _send_ntfy(reason: str) -> None:
         logger.debug("ntfy send failed: %s", exc)
 
 
+def _run_user_systemctl(args: list[str], *, timeout: float) -> bool:
+    command = ["systemctl", "--user", *args]
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("systemctl --user %s failed: %s", " ".join(args), exc)
+        return False
+    if result.returncode == 0:
+        return True
+    detail = (result.stderr or result.stdout or "").strip()
+    logger.warning(
+        "systemctl --user %s exited %d%s%s",
+        " ".join(args),
+        result.returncode,
+        ": " if detail else "",
+        detail,
+    )
+    return False
+
+
+def _restart_producer_service(service_name: str, *, timeout: float) -> bool:
+    """Restart the unit that owns the v4l2 producer, clearing stuck children."""
+
+    if _run_user_systemctl(["restart", service_name], timeout=timeout):
+        return True
+
+    logger.warning(
+        "producer restart for %s did not finish cleanly; killing unit cgroup", service_name
+    )
+    _run_user_systemctl(
+        ["kill", "--kill-who=all", "--signal=KILL", service_name],
+        timeout=min(timeout, 10.0),
+    )
+    time.sleep(2.0)
+    _run_user_systemctl(["reset-failed", service_name], timeout=min(timeout, 10.0))
+    return _run_user_systemctl(["start", service_name], timeout=timeout)
+
+
 def _bool_sample(value: bool | None) -> str | None:
     if value is None:
         return None
@@ -481,6 +531,9 @@ def _emit_prometheus(
         f"# HELP {PROM_FAILURES} OBS v4l2 capture source failed reconnect attempts",
         f"# TYPE {PROM_FAILURES} counter",
         f"{PROM_FAILURES} {status.reset_failures if status is not None else 0}",
+        f"# HELP {PROM_PRODUCER_RESTARTS} v4l2 producer service restarts triggered by OBS source stalls",
+        f"# TYPE {PROM_PRODUCER_RESTARTS} counter",
+        f"{PROM_PRODUCER_RESTARTS} {status.producer_restarts if status is not None else 0}",
         f"# HELP {PROM_ACTIVE} 1 while the OBS v4l2 source monitor is running",
         f"# TYPE {PROM_ACTIVE} gauge",
         f"{PROM_ACTIVE} 1",
@@ -531,6 +584,8 @@ def _write_status(status: MonitorStatus) -> None:
         "last_hash": status.last_hash,
         "stall_seconds": round(status.stall_seconds, 1),
         "cooldown_remaining_seconds": round(status.cooldown_remaining_seconds, 1),
+        "producer_restarts": status.producer_restarts,
+        "last_producer_restart_at": status.last_producer_restart_at,
         "reason": status.reason,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
@@ -546,6 +601,8 @@ def _status_from_probe(
     consecutive_failures: int,
     last_reset_at: str | None,
     last_success_at: str | None,
+    producer_restarts: int = 0,
+    last_producer_restart_at: str | None = None,
     cooldown_remaining_seconds: float = 0.0,
 ) -> MonitorStatus:
     return MonitorStatus(
@@ -562,6 +619,8 @@ def _status_from_probe(
         stall_seconds=probe.stall_seconds,
         cooldown_remaining_seconds=cooldown_remaining_seconds,
         reason=probe.reason,
+        producer_restarts=producer_restarts,
+        last_producer_restart_at=last_producer_restart_at,
     )
 
 
@@ -575,6 +634,10 @@ def monitor_loop(
     reset_cooldown: float,
     metrics_path: Path | None,
     input_settings: dict[str, Any] | None = None,
+    producer_service: str | None = None,
+    producer_restart_after_obs_resets: int = 1,
+    producer_restart_cooldown: float = 300.0,
+    producer_restart_timeout: float = 30.0,
 ) -> None:
     client: Any = None
     reset_count = 0
@@ -585,6 +648,10 @@ def monitor_loop(
     prev_hash: str | None = None
     hash_stable_since: float = 0.0
     last_reset_monotonic: float | None = None
+    producer_restarts = 0
+    stall_obs_resets_since_producer = 0
+    last_producer_restart_at: str | None = None
+    last_producer_restart_monotonic: float | None = None
     _sd_notify("READY=1")
 
     while not _shutdown:
@@ -622,6 +689,8 @@ def monitor_loop(
                     stall_seconds=0.0,
                     cooldown_remaining_seconds=0.0,
                     reason=f"connect_failed:{type(exc).__name__}",
+                    producer_restarts=producer_restarts,
+                    last_producer_restart_at=last_producer_restart_at,
                 )
                 _write_status(status)
                 _emit_prometheus(metrics_path, reset_count, status)
@@ -682,6 +751,34 @@ def monitor_loop(
         if needs_reset:
             reason = probe.reason or f"source '{source_name}' {probe.state.value}"
             logger.warning("RESET: %s", reason)
+            producer_restart_allowed = bool(
+                producer_service
+                and probe.state is SourceState.STALLED
+                and stall_obs_resets_since_producer >= producer_restart_after_obs_resets
+                and (
+                    last_producer_restart_monotonic is None
+                    or now - last_producer_restart_monotonic >= producer_restart_cooldown
+                )
+            )
+            producer_restarted = False
+            if producer_restart_allowed:
+                producer_reason = f"producer_restart:{producer_service}:{reason}"
+                logger.warning("PRODUCER RESET: %s", producer_reason)
+                if _restart_producer_service(
+                    producer_service,
+                    timeout=producer_restart_timeout,
+                ):
+                    producer_restarts += 1
+                    last_producer_restart_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    last_producer_restart_monotonic = now
+                    stall_obs_resets_since_producer = 0
+                    reason = producer_reason
+                    producer_restarted = True
+                    # The device owner changed; force a fresh OBS client probe path.
+                    prev_hash = None
+                    hash_stable_since = now
+                else:
+                    logger.warning("producer restart failed for %s", producer_service)
             _apply_input_settings(client, source_name, input_settings)
             scene_item = _find_scene_item(client, source_name)
             if scene_item is not None:
@@ -691,6 +788,8 @@ def monitor_loop(
                     reset_count += 1
                     last_reset_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                     last_reset_monotonic = now
+                    if probe.state is SourceState.STALLED and not producer_restarted:
+                        stall_obs_resets_since_producer += 1
                     _send_ntfy(reason)
                     # Reset stall tracking after toggle
                     prev_hash = None
@@ -737,6 +836,8 @@ def monitor_loop(
             consecutive_failures=consecutive_failures,
             last_reset_at=last_reset_at,
             last_success_at=last_success_at,
+            producer_restarts=producer_restarts,
+            last_producer_restart_at=last_producer_restart_at,
             cooldown_remaining_seconds=cooldown_remaining_seconds,
         )
         _write_status(status)
@@ -812,6 +913,31 @@ def main() -> None:
         action="store_true",
         help="Force OBS v4l2 auto_reset on when applying input settings",
     )
+    parser.add_argument(
+        "--producer-service",
+        help="Optional systemd --user service that owns the v4l2 producer",
+    )
+    parser.add_argument(
+        "--producer-restart-after-obs-resets",
+        type=int,
+        default=1,
+        help=(
+            "Escalate a repeated screenshot stall to the producer service after this "
+            "many OBS-only stall resets (default: 1)"
+        ),
+    )
+    parser.add_argument(
+        "--producer-restart-cooldown",
+        type=float,
+        default=300.0,
+        help="Minimum seconds between producer service restarts (default: 300)",
+    )
+    parser.add_argument(
+        "--producer-restart-timeout",
+        type=float,
+        default=30.0,
+        help="Seconds to wait for systemctl producer restart/start commands (default: 30)",
+    )
     args = parser.parse_args()
     input_settings = _build_input_settings(
         device_id=args.device_id,
@@ -827,10 +953,11 @@ def main() -> None:
     signal.signal(signal.SIGINT, _on_signal)
 
     logger.info(
-        "starting: source=%s poll=%.0fs stall=%.0fs",
+        "starting: source=%s poll=%.0fs stall=%.0fs producer=%s",
         args.source_name,
         args.poll_interval,
         args.stall_threshold,
+        args.producer_service or "disabled",
     )
 
     monitor_loop(
@@ -842,6 +969,10 @@ def main() -> None:
         reset_cooldown=args.reset_cooldown,
         metrics_path=args.prom_path,
         input_settings=input_settings,
+        producer_service=args.producer_service,
+        producer_restart_after_obs_resets=args.producer_restart_after_obs_resets,
+        producer_restart_cooldown=args.producer_restart_cooldown,
+        producer_restart_timeout=args.producer_restart_timeout,
     )
 
 

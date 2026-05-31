@@ -346,6 +346,40 @@ class TestObswsCompatibility:
         assert client.calls == [("Scene", 7, False), ("Scene", 7, True)]
 
 
+class TestProducerRestart:
+    def test_restart_fallback_kills_stale_unit_children(
+        self, reset_mod: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(command: list[str], **kwargs: object):
+            calls.append(command)
+            if command[-2:] == ["restart", "hapax-darkplaces-v4l2.service"]:
+                raise reset_mod.subprocess.TimeoutExpired(command, kwargs["timeout"])
+            return reset_mod.subprocess.CompletedProcess(command, 0, "", "")
+
+        monkeypatch.setattr(reset_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(reset_mod.time, "sleep", lambda _seconds: None)
+
+        assert reset_mod._restart_producer_service(
+            "hapax-darkplaces-v4l2.service",
+            timeout=30.0,
+        )
+        assert calls == [
+            ["systemctl", "--user", "restart", "hapax-darkplaces-v4l2.service"],
+            [
+                "systemctl",
+                "--user",
+                "kill",
+                "--kill-who=all",
+                "--signal=KILL",
+                "hapax-darkplaces-v4l2.service",
+            ],
+            ["systemctl", "--user", "reset-failed", "hapax-darkplaces-v4l2.service"],
+            ["systemctl", "--user", "start", "hapax-darkplaces-v4l2.service"],
+        ]
+
+
 class TestHealthMetrics:
     def test_prometheus_includes_state_and_health_gauges(
         self,
@@ -376,6 +410,7 @@ class TestHealthMetrics:
         assert 'hapax_obs_v4l2_source_health{state="healthy"} 0' in content
         assert "hapax_obs_v4l2_source_active 0" in content
         assert "hapax_obs_v4l2_source_reconnect_cooldown_seconds 42.500" in content
+        assert "hapax_obs_v4l2_source_producer_restarts_total 0" in content
 
 
 class TestMonitorLoop:
@@ -578,3 +613,94 @@ class TestMonitorLoop:
         assert status["reset_count"] == 1
         assert status["cooldown_remaining_seconds"] == 50.0
         assert client.set_scene_item_enabled.call_count == 2
+
+    def test_repeated_stall_escalates_to_producer_restart(
+        self,
+        reset_mod: types.ModuleType,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client = MagicMock()
+        client.get_source_active.return_value = MagicMock(video_active=True)
+        client.get_source_screenshot.return_value = MagicMock(image_data="same-frame")
+        client.get_current_program_scene.return_value = MagicMock(scene_name="Scene")
+        client.get_scene_item_list.return_value = MagicMock(
+            scene_items=[{"sourceName": "StudioCompositor", "sceneItemId": 7}]
+        )
+        prom_path = tmp_path / "reset.prom"
+        status_path = tmp_path / "status.json"
+        restart_calls: list[tuple[str, float]] = []
+        sleep_calls = 0
+        real_time = reset_mod.time
+        monotonic_values = iter([100.0, 170.0, 180.0, 250.0])
+        monkeypatch.setattr(reset_mod, "_connect", lambda _host, _port: client)
+        monkeypatch.setattr(reset_mod, "_send_ntfy", lambda _reason: None)
+        monkeypatch.setattr(reset_mod, "STATUS_PATH", status_path)
+        monkeypatch.setattr(reset_mod, "STATUS_DIR", tmp_path)
+        monkeypatch.setattr(reset_mod, "_shutdown", False)
+
+        def fake_monotonic() -> float:
+            return next(monotonic_values)
+
+        def fake_toggle(toggle_client, scene_name: str, item_id: int) -> bool:
+            toggle_client.set_scene_item_enabled(
+                scene_name=scene_name,
+                scene_item_id=item_id,
+                scene_item_enabled=False,
+            )
+            toggle_client.set_scene_item_enabled(
+                scene_name=scene_name,
+                scene_item_id=item_id,
+                scene_item_enabled=True,
+            )
+            return True
+
+        def fake_restart(service_name: str, *, timeout: float) -> bool:
+            restart_calls.append((service_name, timeout))
+            return True
+
+        monkeypatch.setattr(reset_mod, "_toggle_visibility", fake_toggle)
+        monkeypatch.setattr(reset_mod, "_restart_producer_service", fake_restart)
+
+        def stop_after_four_loop_sleeps(_seconds: float) -> None:
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls >= 4:
+                monkeypatch.setattr(reset_mod, "_shutdown", True)
+
+        monkeypatch.setattr(
+            reset_mod,
+            "time",
+            types.SimpleNamespace(
+                monotonic=fake_monotonic,
+                sleep=stop_after_four_loop_sleeps,
+                strftime=real_time.strftime,
+                gmtime=real_time.gmtime,
+            ),
+        )
+
+        try:
+            reset_mod.monitor_loop(
+                host="localhost",
+                port=4455,
+                source_name="StudioCompositor",
+                poll_interval=0.01,
+                stall_threshold=60.0,
+                reset_cooldown=60.0,
+                metrics_path=prom_path,
+                producer_service="hapax-darkplaces-v4l2.service",
+                producer_restart_after_obs_resets=1,
+                producer_restart_cooldown=300.0,
+                producer_restart_timeout=30.0,
+            )
+        finally:
+            monkeypatch.setattr(reset_mod, "_shutdown", False)
+
+        status = json.loads(status_path.read_text())
+        assert status["state"] == "reconnected"
+        assert status["reset_count"] == 2
+        assert status["producer_restarts"] == 1
+        assert status["last_producer_restart_at"] is not None
+        assert restart_calls == [("hapax-darkplaces-v4l2.service", 30.0)]
+        assert client.set_scene_item_enabled.call_count == 4
+        assert "hapax_obs_v4l2_source_producer_restarts_total 1" in prom_path.read_text()
