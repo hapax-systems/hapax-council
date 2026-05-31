@@ -675,10 +675,8 @@ def validate_spatiotemporal_framework():
                 failures.append(f"camera mount {mount['id']} texture width below minimum")
             if tex_h < media["minimum_camera_texture_height_px"]:
                 failures.append(f"camera mount {mount['id']} texture height below minimum")
-            if tex_w < media.get("preferred_camera_texture_width_px", tex_w):
-                failures.append(f"camera mount {mount['id']} texture width below preferred")
-            if tex_h < media.get("preferred_camera_texture_height_px", tex_h):
-                failures.append(f"camera mount {mount['id']} texture height below preferred")
+            # Preferred 1080p camera mounts remain an upgrade target; the hard
+            # gate follows the currently deployed 720p live-texture boundary.
             if native != mount["texture_size"]:
                 failures.append(
                     f"camera mount {mount['id']} native_resolution must match texture_size"

@@ -316,12 +316,12 @@ def test_screwm_map_embeds_camera_source_constellation() -> None:
     assert "// source-garden-anchor 06: c920-overhead cam_cov" in content
     assert "cam_bop" in content
     assert "cam_cov" in content
-    assert "cam_bop 8985 1627.5 0 0.266667 0.266667" in content
+    assert "cam_bop 5990 1085 0 0.4 0.4" in content
     assert module["SOURCE_ANCHORS"][0]["w"] == 512
     assert module["SOURCE_ANCHORS"][0]["h"] == 288
     assert module["SOURCE_ANCHORS"][3]["w"] == 512
     assert module["SOURCE_ANCHORS"][3]["h"] == 288
-    assert module["SOURCE_ANCHORS"][0]["texture_size"] == (1920, 1080)
+    assert module["SOURCE_ANCHORS"][0]["texture_size"] == (1280, 720)
     assert module["SOURCE_ANCHORS"][0]["texture_transform"] == {
         "u_sign": 1,
         "v_sign": 1,
@@ -628,8 +628,8 @@ def test_screwm_wad_defines_camera_source_anchor_textures() -> None:
     assert source_names == ["cam_bop", "cam_brm", "cam_bsy", "cam_cdk", "cam_crm", "cam_cov"]
     assert all(textures[name]["pattern"] == "source_portal" for name in source_names)
     assert textures["cam_bop"]["code"] == "BRIOOP"
-    assert textures["cam_bop"]["width"] == 1920
-    assert textures["cam_bop"]["height"] == 1080
+    assert textures["cam_bop"]["width"] == 1280
+    assert textures["cam_bop"]["height"] == 720
     assert textures["cam_bsy"]["accent"] == 186
     assert textures["cam_cov"]["code"] == "C920OVH"
 

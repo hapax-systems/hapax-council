@@ -48,8 +48,12 @@ def test_spatiotemporal_framework_is_operative_and_complete() -> None:
     ):
         assert field in framework["media_constraints"]["required_mount_fields"]
     assert framework["media_constraints"]["minimum_media_px_per_degree"] >= 50.0
+    assert framework["media_constraints"]["minimum_camera_texture_width_px"] == 1280
+    assert framework["media_constraints"]["minimum_camera_texture_height_px"] == 720
     assert framework["media_constraints"]["preferred_camera_texture_width_px"] == 1920
     assert framework["media_constraints"]["preferred_camera_texture_height_px"] == 1080
+    assert framework["media_constraints"]["camera_capture_fps_min"] == 10
+    assert framework["media_constraints"]["preferred_camera_capture_fps_min"] == 15
     assert framework["media_constraints"]["camera_capture_contract_required"] is True
     assert framework["media_constraints"]["minimum_aoa_inner_void_clearance_ratio"] == 1.04
     assert framework["media_constraints"]["maximum_aoa_oarb_inner_void_radius_fill_ratio"] == 0.98
@@ -149,13 +153,16 @@ def test_screwm_generator_satisfies_framework_gates() -> None:
     for mount in camera_mounts:
         assert mount["texture_size"][0] >= media["minimum_camera_texture_width_px"]
         assert mount["texture_size"][1] >= media["minimum_camera_texture_height_px"]
-        assert mount["texture_size"][0] >= media["preferred_camera_texture_width_px"]
-        assert mount["texture_size"][1] >= media["preferred_camera_texture_height_px"]
+        assert media["preferred_camera_texture_width_px"] > media["minimum_camera_texture_width_px"]
+        assert (
+            media["preferred_camera_texture_height_px"] > media["minimum_camera_texture_height_px"]
+        )
         assert mount["native_resolution"] == mount["texture_size"]
         assert mount["capture_resolution"] == mount["texture_size"]
         assert mount["capture_format"] == "mjpeg"
         assert mount["capture_fps"] >= media["camera_capture_fps_min"]
-        assert mount["texture_fps"] == 10
+        assert mount["texture_fps"] > 0
+        assert mount["texture_fps"] <= mount["capture_fps"]
         assert mount["target_visual_angle_deg"] >= media["minimum_inspection_visual_angle_deg"]
         assert (
             mount["native_resolution"][0] / mount["target_visual_angle_deg"]

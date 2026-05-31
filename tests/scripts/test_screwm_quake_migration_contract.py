@@ -1,11 +1,53 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from agents.studio_compositor.homage import QUAKE_PACKAGE, get_package, registered_package_names
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+LIVE_TEXTURE_CVAR_RE = re.compile(
+    r"(?:^|[+\s])hapax_live_texture(?P<slot>\d*)_"
+    r"(?P<key>name|path|width|height)\s+(?P<value>\S+)",
+    re.MULTILINE,
+)
+PATCH_LIVE_TEXTURE_DIM_RE = re.compile(
+    r'"hapax_live_texture(?P<slot>\d*)_(?P<key>width|height)",\s+"(?P<value>\d+)"'
+)
+
+
+def _live_texture_slots_from_text(text: str) -> dict[int, dict[str, str]]:
+    slots: dict[int, dict[str, str]] = {}
+    for match in LIVE_TEXTURE_CVAR_RE.finditer(text):
+        slot = int(match.group("slot") or "1")
+        slots.setdefault(slot, {})[match.group("key")] = match.group("value")
+    return slots
+
+
+def _live_texture_patch_dimensions(text: str) -> dict[int, dict[str, int]]:
+    slots: dict[int, dict[str, int]] = {}
+    for match in PATCH_LIVE_TEXTURE_DIM_RE.finditer(text):
+        slot = int(match.group("slot") or "1")
+        slots.setdefault(slot, {})[match.group("key")] = int(match.group("value"))
+    return slots
+
+
+def _slot_for_texture(slots: dict[int, dict[str, str]], texture: str) -> int:
+    matching = [slot for slot, values in slots.items() if values.get("name") == texture]
+    assert len(matching) == 1
+    return matching[0]
+
+
+def _env_file(path: Path) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, value = line.split("=", 1)
+        env[key] = value
+    return env
 
 
 def test_screwm_quake_layout_routes_only_darkplaces_video() -> None:
@@ -128,8 +170,8 @@ def test_darkplaces_fork_patch_uploads_live_media_into_world_textures() -> None:
     assert '"progs/aoa_sphere.mdl_0"' in patch
     assert '"2048"' in patch
     assert '"1024"' in patch
-    assert '"1920"' in patch
-    assert '"1080"' in patch
+    assert '"1280"' in patch
+    assert '"720"' in patch
     assert '"cam_bop"' in patch
     assert '"cam_brm"' in patch
     assert '"cam_bsy"' in patch
@@ -257,21 +299,21 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
     for mount in camera_mounts:
         assert mount["source_id"] == mount["id"]
         assert mount["liveness_class"] == "live-local-camera"
-        assert mount["native_resolution"] == [1920, 1080]
+        assert mount["native_resolution"] == [1280, 720]
         assert mount["capture_format"] == "mjpeg"
-        assert mount["capture_resolution"] == [1920, 1080]
-        assert mount["capture_fps"] == 15
-        assert mount["texture_fps"] == 10
+        assert mount["capture_resolution"] == [1280, 720]
+        assert mount["capture_fps"] == 10
+        assert mount["texture_fps"] == 5
         assert mount["mount_kind"] == "live-camera-instrument"
         assert mount["hybrid_contract"]["memory_format"] == "BGRA8888"
-        assert mount["resolution_basis"] == "hardware-probed-mjpeg-1080p15-runtime-contained"
+        assert mount["resolution_basis"] == "runtime-contained-mjpeg-720p10-live-texture-5fps"
         assert mount["producer_kind"] == "live-camera"
         assert mount["freshness"] == "live-camera-frame"
         assert mount["consent_or_license"] == "operator-owned-local-camera"
         assert mount["purpose"]
         assert mount["projection"] == "flat"
         assert mount["source_aspect"] == [16, 9]
-        assert mount["texture_size"] == [1920, 1080]
+        assert mount["texture_size"] == [1280, 720]
         assert mount["target_visual_angle_deg"] == 24.0
         assert mount["anti_parasocial_posture"] == "instrument-not-intimacy-billboard"
         assert mount["material_profile"] == "flat-live-camera-instrument"
@@ -306,6 +348,46 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
     assert ward_atlas["hybrid_contract"]["update_semantics"].startswith(
         "DarkPlaces live-texture slot updates one atlas"
     )
+
+
+def test_screwm_live_camera_texture_dimensions_match_all_runtime_declarations() -> None:
+    contract = json.loads(
+        (REPO_ROOT / "config" / "screwm-quake-media-mounts.json").read_text(encoding="utf-8")
+    )
+    autoexec_slots = _live_texture_slots_from_text(
+        (REPO_ROOT / "assets" / "quake" / "config" / "autoexec.cfg").read_text(encoding="utf-8")
+    )
+    launcher_slots = _live_texture_slots_from_text(
+        (REPO_ROOT / "scripts" / "darkplaces-v4l2-xvfb.sh").read_text(encoding="utf-8")
+    )
+    patch_dims = _live_texture_patch_dimensions(
+        (REPO_ROOT / "assets" / "quake" / "darkplaces" / "hapax-live-texture.patch").read_text(
+            encoding="utf-8"
+        )
+    )
+    camera_mounts = [mount for mount in contract["mounts"] if mount["role"] == "camera-source"]
+
+    assert len(camera_mounts) == 6
+    for mount in camera_mounts:
+        width, height = mount["texture_size"]
+        assert mount["native_resolution"] == [width, height]
+        assert mount["capture_resolution"] == [width, height]
+
+        env = _env_file(REPO_ROOT / "config" / "quake-live-cameras" / f"{mount['id']}.env")
+        assert env["HAPAX_QUAKE_CAMERA_SIZE"] == f"{width}x{height}"
+        assert int(env["HAPAX_QUAKE_LIVE_TEXTURE_WIDTH"]) == width
+        assert int(env["HAPAX_QUAKE_LIVE_TEXTURE_HEIGHT"]) == height
+        assert int(env["HAPAX_QUAKE_CAMERA_FPS"]) == mount["capture_fps"]
+        assert int(env["HAPAX_QUAKE_LIVE_TEXTURE_FPS"]) == mount["texture_fps"]
+        assert env["HAPAX_QUAKE_LIVE_TEXTURE_NAME"] == mount["texture"]
+        assert env["HAPAX_QUAKE_LIVE_TEXTURE_OUTPUT"] == mount["producer_output"]
+
+        for slots in (autoexec_slots, launcher_slots):
+            slot = _slot_for_texture(slots, mount["texture"])
+            assert int(slots[slot]["width"]) == width
+            assert int(slots[slot]["height"]) == height
+            assert slots[slot]["path"] == mount["producer_output"]
+            assert patch_dims[slot] == {"width": width, "height": height}
 
 
 def test_screwm_media_mount_contract_keeps_homage_out_of_portable_surface() -> None:
