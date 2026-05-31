@@ -2,6 +2,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import textwrap
@@ -240,20 +241,22 @@ def _frontmatter_scalar(path: Path, key: str) -> str:
     return ""
 
 
-def _maybe_write_durable_mq_binding(tmp_path: Path, args: tuple[str, ...]) -> Path:
+def _maybe_write_durable_mq_binding(
+    tmp_path: Path, args: tuple[str, ...]
+) -> tuple[Path, str | None]:
     db_path = tmp_path / "relay" / "messages.db"
     task_id = _arg_value(args, "--task")
     lane = _arg_value(args, "--lane")
     if not task_id or not lane:
-        return db_path
+        return db_path, None
     task_path = tmp_path / "tasks" / "active" / f"{task_id}.md"
     if not task_path.exists():
-        return db_path
+        return db_path, None
     authority_case = _frontmatter_scalar(task_path, "authority_case")
     if not authority_case or authority_case in {"null", "None", "~"}:
-        return db_path
+        return db_path, None
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    send_message(
+    message_id = send_message(
         db_path,
         Envelope(
             sender="test-dispatcher",
@@ -266,7 +269,24 @@ def _maybe_write_durable_mq_binding(tmp_path: Path, args: tuple[str, ...]) -> Pa
             payload="durable dispatch binding",
         ),
     )
-    return db_path
+    return db_path, message_id
+
+
+def _recipient_row(db_path: Path, message_id: str, recipient: str) -> sqlite3.Row:
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT r.state, r.reason, m.message_id
+            FROM recipients r
+            JOIN messages m ON m.message_id = r.message_id
+            WHERE m.message_id = :message_id
+              AND r.recipient = :recipient
+            """,
+            {"message_id": message_id, "recipient": recipient},
+        ).fetchone()
+    assert row is not None
+    return row
 
 
 def _run(
@@ -281,10 +301,17 @@ def _run(
     env["HAPAX_DISPATCH_WORKTREE"] = str(tmp_path / "worktree")
     env["HAPAX_ORCHESTRATION_LEDGER_DIR"] = str(tmp_path / "ledger")
     env["HAPAX_PLATFORM_CAPABILITY_REGISTRY"] = str(_fresh_registry(tmp_path))
+    env["HAPAX_COORD_LEDGER_DB"] = str(tmp_path / "coord" / "ledger.db")
+    env["HAPAX_COORD_JSONL_MIRROR"] = str(tmp_path / "coord" / "ledger.jsonl")
+    env["HAPAX_COORD_SPOOL_DIR"] = str(tmp_path / "coord" / "spool")
     if durable_mq:
-        env["HAPAX_RELAY_MQ_DB"] = str(_maybe_write_durable_mq_binding(tmp_path, args))
+        mq_db, message_id = _maybe_write_durable_mq_binding(tmp_path, args)
+        env["HAPAX_RELAY_MQ_DB"] = str(mq_db)
+        if message_id:
+            env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = message_id
     else:
         env["HAPAX_RELAY_MQ_DB"] = str(tmp_path / "relay" / "missing.db")
+        env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "missing-message-id"
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -804,6 +831,99 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["advisory_only"] is True
 
 
+def test_launch_requires_strict_mq_message_id(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher),
+            "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID": "",
+        },
+    )
+
+    assert result.returncode == 10
+    assert not launcher_args.exists()
+    assert "strict_mq_message_id_required" in result.stderr
+
+
+def test_launch_blocks_mq_message_id_mismatch_without_consuming(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher),
+            "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID": "wrong-message-id",
+        },
+    )
+
+    assert result.returncode == 10
+    assert not launcher_args.exists()
+    assert "durable MQ authority binding required" in result.stderr
+    with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
+        states = conn.execute("SELECT state FROM recipients").fetchall()
+    assert states == [("offered",)]
+
+
 def test_launches_codex_headless_through_codex_launcher(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
@@ -878,6 +998,141 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["launch_returncode"] == 0
     assert receipt["route_policy_action"] == "launch"
     assert receipt["route_policy_launch_allowed"] is True
+    assert receipt["coord_dispatch_replayed"] is False
+    assert receipt["coord_dispatch_cleanup_state"] == "processed"
+
+
+def test_launch_idempotency_replays_without_second_launcher_call(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "launcher-args.txt"
+    launch_count = tmp_path / "launch-count.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+count=0
+if [ -f {launch_count} ]; then
+  count="$(cat {launch_count})"
+fi
+printf '%s\\n' "$((count + 1))" > {launch_count}
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    first = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        "--idempotency-key",
+        "dispatch-test-key",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+    assert first.returncode == 0, first.stderr
+    with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
+        message_id = conn.execute("SELECT message_id FROM messages").fetchone()[0]
+
+    second = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        "--idempotency-key",
+        "dispatch-test-key",
+        durable_mq=False,
+        extra_env={
+            "HAPAX_RELAY_MQ_DB": str(tmp_path / "relay" / "messages.db"),
+            "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID": message_id,
+            "HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert launch_count.read_text(encoding="utf-8").strip() == "1"
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["coord_dispatch_replayed"] is True
+    assert receipt["coord_dispatch_reason"] == "replayed_succeeded"
+
+
+def test_failed_launch_cleans_up_mq_state_and_records_failure(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text("#!/usr/bin/env bash\nexit 42\n", encoding="utf-8")
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher)},
+    )
+
+    assert result.returncode == 42
+    with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
+        message_id = conn.execute("SELECT message_id FROM messages").fetchone()[0]
+    row = _recipient_row(tmp_path / "relay" / "messages.db", message_id, "cx-green")
+    assert row["state"] == "deferred"
+    assert row["reason"].startswith("coord_dispatch_launch_deferred:42:")
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["launched"] is False
+    assert receipt["launch_returncode"] == 42
+    assert receipt["coord_dispatch_cleanup_state"] == "deferred"
+    mirror = (tmp_path / "coord" / "ledger.jsonl").read_text(encoding="utf-8")
+    assert "coord_dispatch.launch_failed" in mirror
 
 
 def test_launch_uses_subscription_receipt_without_policy_rollback(tmp_path: Path) -> None:
