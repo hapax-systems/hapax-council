@@ -1,0 +1,10 @@
+[Unit]
+Description=Hapax Lane Supervisor Timer — guarantee lane liveness every 60s (FM-11)
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target

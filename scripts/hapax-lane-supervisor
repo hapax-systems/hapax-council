@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# hapax-lane-supervisor — FM-11 lane supervisor (one_for_one re-spawn).
+#
+# Operator standing mandate: a DEAD lane must ALWAYS auto-restart. Liveness is
+# decoupled from task-presence — "idle-await is fine, dead is not".
+#
+# Clean split (coordination-reform-master-design-2026-05-30 §FM-11, Phase 6,
+# CASE-CROSS-RUNTIME-COMMS-001): the *supervisor* guarantees the lane process
+# exists; the *dispatcher/launcher* decides what it does. So respawning a
+# task-less or quota-walled lane into idle-await is correct, not spam — a
+# claimed lane resumes its task; a task-less lane comes up read-only and awaits
+# governed dispatch. This is the production replacement for the old, unwired,
+# task-gated, greek-only dead-lane block in hapax-lane-rate-limit-watchdog.
+#
+# Coverage spans every runtime (not greek-only):
+#   - claude (greek): headless pidfile model at $RUNTIME_DIR/<lane>.pid, OR a
+#                     live tmux session hapax-claude-<lane>.
+#   - codex  (cx-*):  tmux session hapax-codex-<lane>.
+#   - antigrav:       tmux session hapax-antigrav-<lane>.
+#
+# Spam control mirrors systemd Restart=always + StartLimit: a per-lane restart
+# cooldown plus a burst cap over a sliding window.
+#
+# Runs as a systemd oneshot on a 60s timer (hapax-lane-supervisor.timer).
+set -euo pipefail
+
+now="$(date +%s)"
+
+STATE_DIR="${HAPAX_SUPERVISOR_STATE_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/hapax-lane-supervisor}"
+RUNTIME_DIR="${HAPAX_SUPERVISOR_RUNTIME_DIR:-/run/user/$(id -u)/hapax-claude}"
+WORKTREE_ROOT="${HAPAX_SUPERVISOR_WORKTREE_ROOT:-$HOME/projects}"
+VAULT_ROOT="${HAPAX_SUPERVISOR_VAULT_ROOT:-$HOME/Documents/Personal/20-projects/hapax-cc-tasks}"
+
+# Lanes that must stay alive. Greek = non-alpha headless-capable roles (alpha is
+# the operator-attended integrator, never auto-respawned). cx-*/antigrav default
+# to the operator-designated always-on set; all overridable for ops + tests.
+CLAUDE_LANES="${HAPAX_SUPERVISOR_CLAUDE_LANES:-beta gamma delta epsilon zeta eta theta}"
+CODEX_LANES="${HAPAX_SUPERVISOR_CODEX_LANES:-cx-cpu-bridge cx-effect-drift-current cx-preset-storm cx-visual-bandwidth}"
+ANTIGRAV_LANES="${HAPAX_SUPERVISOR_ANTIGRAV_LANES:-antigrav}"
+
+RESTART_COOLDOWN_S="${HAPAX_SUPERVISOR_RESTART_COOLDOWN_S:-120}"
+BURST_LIMIT="${HAPAX_SUPERVISOR_BURST_LIMIT:-5}"
+BURST_WINDOW_S="${HAPAX_SUPERVISOR_BURST_WINDOW_S:-600}"
+LAUNCH_TIMEOUT_S="${HAPAX_SUPERVISOR_LAUNCH_TIMEOUT_S:-60}"
+DRY_RUN="${HAPAX_SUPERVISOR_DRY_RUN:-0}"
+
+CLAUDE_HEADLESS_BIN="${HAPAX_CLAUDE_HEADLESS_BIN:-$HOME/.local/bin/hapax-claude-headless}"
+CLAUDE_BIN="${HAPAX_CLAUDE_BIN:-$HOME/.local/bin/hapax-claude}"
+CODEX_BIN="${HAPAX_CODEX_BIN:-$HOME/.local/bin/hapax-codex}"
+ANTIGRAV_BIN="${HAPAX_ANTIGRAV_BIN:-$HOME/.local/bin/hapax-antigrav}"
+
+mkdir -p "$STATE_DIR"
+
+log() { printf '%s lane-supervisor: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+
+# ── liveness ──────────────────────────────────────────────────────────────────
+
+claude_alive() {
+  local lane="$1" pidfile="$RUNTIME_DIR/$1.pid" pid=""
+  if [ -f "$pidfile" ]; then
+    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  tmux has-session -t "hapax-claude-$lane" 2>/dev/null
+}
+
+tmux_session_alive() { tmux has-session -t "$1" 2>/dev/null; }
+
+# ── spam control ────────────────────────────────────────────────────────────
+
+within_cooldown() {
+  local marker="$STATE_DIR/$1.last-restart" last elapsed
+  [ -f "$marker" ] || return 1
+  last="$(cat "$marker" 2>/dev/null || echo 0)"
+  elapsed=$(( now - last ))
+  [ "$elapsed" -lt "$RESTART_COOLDOWN_S" ]
+}
+
+burst_exhausted() {
+  local logf="$STATE_DIR/$1.restart-log" cutoff count=0 ts
+  [ -f "$logf" ] || return 1
+  cutoff=$(( now - BURST_WINDOW_S ))
+  while read -r ts; do
+    [ -z "$ts" ] && continue
+    [ "$ts" -ge "$cutoff" ] && count=$(( count + 1 ))
+  done < "$logf"
+  [ "$count" -ge "$BURST_LIMIT" ]
+}
+
+record_restart() {
+  echo "$now" > "$STATE_DIR/$1.last-restart"
+  echo "$now" >> "$STATE_DIR/$1.restart-log"
+}
+
+# Active claim → "task_id<TAB>title", else empty. The claim file names the task;
+# the vault note is the authority for status/assignment.
+resolve_claimed_task() {
+  local lane="$1"
+  python3 - "$VAULT_ROOT" "$lane" "$HOME/.cache/hapax/cc-active-task-$lane" <<'PY' 2>/dev/null || true
+import re
+import sys
+from pathlib import Path
+
+vault_root, lane, claim_file = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+if not claim_file.is_file():
+    sys.exit(0)
+lines = [ln.strip() for ln in claim_file.read_text(errors="replace").splitlines() if ln.strip()]
+if not lines:
+    sys.exit(0)
+task_id = lines[0]
+
+active = vault_root / "active"
+note = active / f"{task_id}.md"
+if not note.is_file():
+    note = next(iter(sorted(active.glob(f"{task_id}-*.md"))), None) if active.is_dir() else None
+if note is None or not note.is_file():
+    sys.exit(0)
+
+text = note.read_text(errors="replace")
+
+def field(name: str) -> str:
+    m = re.search(rf"^{name}:\s*(.+?)\s*$", text, re.MULTILINE)
+    return m.group(1).strip().strip('"').strip("'") if m else ""
+
+if field("status") in {"claimed", "in_progress"} and field("assigned_to") == lane:
+    print(f"{task_id}\t{field('title')}")
+PY
+}
+
+# ── respawn ───────────────────────────────────────────────────────────────────
+
+# Fast launchers (hapax-claude --readonly / hapax-codex / hapax-antigrav) create
+# a detached tmux session and return promptly, so run them synchronously bounded
+# by a timeout. The headless launcher runs a foreground supervise-loop forever,
+# so it is the only one backgrounded (setsid + disown).
+respawn_sync() {
+  local lane="$1"; shift
+  local rc=0
+  timeout "$LAUNCH_TIMEOUT_S" "$@" >"/tmp/hapax-supervisor-$lane.log" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log "$lane: respawn command exited rc=$rc — see /tmp/hapax-supervisor-$lane.log"
+  fi
+}
+
+# guard <lane> <kind>: ensure the lane process exists; respawn if dead.
+guard() {
+  local lane="$1" kind="$2" worktree="$WORKTREE_ROOT/hapax-council--$1"
+
+  [ -d "$worktree" ] || { log "$lane ($kind): no worktree at $worktree — skipping"; return 0; }
+
+  case "$kind" in
+    claude)   claude_alive "$lane" && return 0 ;;
+    codex)    tmux_session_alive "hapax-codex-$lane" && return 0 ;;
+    antigrav) tmux_session_alive "hapax-antigrav-$lane" && return 0 ;;
+  esac
+
+  # Lane is DEAD. It must be respawned regardless of task presence; only spam
+  # control (cooldown + burst) may defer a respawn.
+  if within_cooldown "$lane"; then
+    log "$lane ($kind): DEAD but within restart cooldown — deferring"
+    return 0
+  fi
+  if burst_exhausted "$lane"; then
+    log "$lane ($kind): DEAD but restart burst limit reached (StartLimit) — backing off"
+    return 0
+  fi
+
+  local task_line task_id title
+  task_line="$(resolve_claimed_task "$lane")"
+  task_id="${task_line%%	*}"
+  title="${task_line#*	}"
+  [ "$title" = "$task_line" ] && title=""
+
+  if [ "$DRY_RUN" = "1" ]; then
+    if [ -n "$task_id" ]; then
+      log "$lane ($kind): DEAD — WOULD respawn (resume task $task_id) [dry-run]"
+    else
+      log "$lane ($kind): DEAD — WOULD respawn into idle-await [dry-run]"
+    fi
+    return 0
+  fi
+
+  case "$kind" in
+    claude)
+      if [ -n "$task_id" ]; then
+        log "$lane ($kind): DEAD with active task $task_id — respawning headless (resume)"
+        setsid "$CLAUDE_HEADLESS_BIN" --task "$task_id" "$lane" \
+          "Resume your assigned task: $task_id — $title. Ship a PR and cc-close --pr N after merge." \
+          >"/tmp/hapax-supervisor-$lane.log" 2>&1 &
+        disown
+      else
+        # Headless launcher is default-deny without a governed task; bring the
+        # lane up read-only so the process exists and awaits governed dispatch.
+        log "$lane ($kind): DEAD with no active task — respawning read-only (idle-await)"
+        respawn_sync "$lane" "$CLAUDE_BIN" --role "$lane" --terminal tmux --readonly
+      fi
+      ;;
+    codex)
+      log "$lane ($kind): DEAD — respawning tmux lane (idle-await; lane reads its own claim)"
+      respawn_sync "$lane" "$CODEX_BIN" --session "$lane" --no-claim --terminal tmux
+      ;;
+    antigrav)
+      log "$lane ($kind): DEAD — respawning tmux lane (idle-await; lane reads its own claim)"
+      respawn_sync "$lane" "$ANTIGRAV_BIN" --session "$lane" --no-claim --terminal tmux
+      ;;
+  esac
+
+  record_restart "$lane"
+}
+
+# ── sweep ─────────────────────────────────────────────────────────────────────
+
+for lane in $CLAUDE_LANES;   do guard "$lane" claude;   done
+for lane in $CODEX_LANES;    do guard "$lane" codex;     done
+for lane in $ANTIGRAV_LANES; do guard "$lane" antigrav;  done
+
+exit 0

@@ -1,0 +1,19 @@
+[Unit]
+Description=Hapax Lane Supervisor — FM-11 one_for_one re-spawn (dead lanes always auto-restart)
+Documentation=file:///home/hapax/projects/hapax-council/scripts/hapax-lane-supervisor
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/hapax-council/scripts/hapax-lane-supervisor
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-lane-supervisor
+# A hung launcher must never wedge the oneshot; fast launchers are bounded
+# internally too (HAPAX_SUPERVISOR_LAUNCH_TIMEOUT_S).
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target
