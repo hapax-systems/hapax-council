@@ -230,12 +230,30 @@ path.unlink()
 print(f"cc-close: moved '{task_id}' to closed/, status={final_status}")
 PYEOF
 
-# Clear the claim file if it points at this task.
+# Clear the claim file(s) that still name this task. cc-claim writes BOTH a
+# legacy cc-active-task-<role> AND a session-keyed cc-active-task-<role>-<sid>
+# (agent-role.sh hapax_session_id, reform Phase 1 FM-2). Clearing only the
+# legacy file leaked the session-keyed lease until its 6h TTL — and the gate
+# reads the session-keyed file FIRST, so it kept seeing the just-closed task
+# (reform finding #12/#13). Clear this session's lease forms, each only when its
+# head still names the closed task (never clobber a lease for other work).
 if [[ -n "$role" ]]; then
-  claim_file="$HOME/.cache/hapax/cc-active-task-$role"
-  if [[ -f "$claim_file" ]] && [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]]; then
-    rm -f "$claim_file"
-    echo "cc-close: cleared claim file for role '$role'"
+  session_id=""
+  if declare -F hapax_session_id >/dev/null 2>&1; then
+    session_id="$(hapax_session_id 2>/dev/null || true)"
+  fi
+  cleared_claim=0
+  for claim_file in \
+    "$HOME/.cache/hapax/cc-active-task-$role" \
+    ${session_id:+"$HOME/.cache/hapax/cc-active-task-$role-$session_id"}; do
+    if [[ -f "$claim_file" ]] &&
+       [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]]; then
+      rm -f "$claim_file"
+      echo "cc-close: cleared claim file '$claim_file' (role '$role')"
+      cleared_claim=1
+    fi
+  done
+  if [[ "$cleared_claim" == 1 ]]; then
     systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
   fi
 fi
