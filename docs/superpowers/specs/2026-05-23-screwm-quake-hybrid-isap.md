@@ -35,6 +35,31 @@ Nothing is given up. Everything is gained.
 8. hapax-imagination retires after Phase 4 shader port is verified.
 9. Stable 24/7 as a systemd user unit.
 
+### 2.1 Sunset Boundary (Load-Bearing)
+
+Only the Logos/Tauri desktop frontend is sunsetted. The studio compositor
+capability set is not sunsetted, optional, or abandoned. The Screwm aggregate
+must preserve or re-home every required compositor capability as a
+Screwm-native port, with explicit owner, contract, and witness before release.
+
+Required compositor ports:
+
+- audio reactivity
+- drift/modulation currency
+- WGSL node graph parity
+- Cairo/ward atlas rendering
+- image/video classification
+- audio governance: ducking, LUFS panic, VAD, and consent egress
+- layout switching and transition FSM
+- director/programme control
+- temporal/glfeedback effects
+- recording/HLS egress
+- camera resilience
+
+Interpreting "Tauri sunset" as permission to remove compositor behavior is a
+release-blocking error. The `hapax-logos` workspace may continue to host shared
+visual crates, but the retired desktop shell is not the aggregate runtime.
+
 ## 3. Non-Goals
 
 - Using proprietary id Software/Bethesda textures.
