@@ -6,7 +6,7 @@ hapax_agent_interface() {
     printf '%s\n' "$HAPAX_AGENT_INTERFACE"
     return 0
   fi
-  if [ -n "${CODEX_THREAD_NAME:-}" ] || [ -n "${CODEX_SESSION_NAME:-}" ] || [ -n "${CODEX_SESSION:-}" ] || [ -n "${CODEX_ROLE:-}" ] || [ -n "${CODEX_HOME:-}" ]; then
+  if [ -n "${CODEX_THREAD_ID:-}" ] || [ -n "${CODEX_THREAD_NAME:-}" ] || [ -n "${CODEX_SESSION_NAME:-}" ] || [ -n "${CODEX_SESSION:-}" ] || [ -n "${CODEX_ROLE:-}" ] || [ -n "${CODEX_HOME:-}" ]; then
     printf 'codex\n'
     return 0
   fi
@@ -177,7 +177,8 @@ hapax_agent_role_or_default() {
 # A per-session identifier so two same-role sessions never clobber one shared
 # claim file (FM-2). Spawners export HAPAX_SESSION_ID explicitly;
 # CLAUDE_CODE_SESSION_ID is Claude Code's always-present fallback; Codex sessions
-# carry CODEX_SESSION / CODEX_THREAD_NAME. Returns nonzero when none is set.
+# carry CODEX_SESSION / CODEX_THREAD_ID / CODEX_THREAD_NAME. Returns nonzero
+# when none is set.
 hapax_session_id() {
   if [ -n "${HAPAX_SESSION_ID:-}" ]; then
     printf '%s\n' "$HAPAX_SESSION_ID"
@@ -189,6 +190,10 @@ hapax_session_id() {
   fi
   if [ -n "${CODEX_SESSION:-}" ]; then
     printf '%s\n' "$CODEX_SESSION"
+    return 0
+  fi
+  if [ -n "${CODEX_THREAD_ID:-}" ]; then
+    printf '%s\n' "$CODEX_THREAD_ID"
     return 0
   fi
   if [ -n "${CODEX_THREAD_NAME:-}" ]; then

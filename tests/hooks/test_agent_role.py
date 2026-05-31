@@ -15,7 +15,14 @@ def _bash(expr: str, *, cwd: Path | None = None, env: dict[str, str] | None = No
     merged_env.pop("HAPAX_AGENT_ROLE", None)
     merged_env.pop("HAPAX_AGENT_NAME", None)
     merged_env.pop("HAPAX_WORKTREE_ROLE", None)
+    merged_env.pop("HAPAX_AGENT_SLOT", None)
+    merged_env.pop("HAPAX_SESSION_ID", None)
+    merged_env.pop("CLAUDE_CODE_SESSION_ID", None)
+    merged_env.pop("CODEX_THREAD_ID", None)
     merged_env.pop("CODEX_THREAD_NAME", None)
+    merged_env.pop("CODEX_SESSION", None)
+    merged_env.pop("CODEX_SESSION_NAME", None)
+    merged_env.pop("CODEX_HOME", None)
     merged_env.pop("CODEX_ROLE", None)
     merged_env.pop("CLAUDE_ROLE", None)
     merged_env.pop("HAPAX_AGENT_INTERFACE", None)
@@ -73,6 +80,11 @@ def test_role_from_delta_worktree_path(tmp_path: Path) -> None:
 
 def test_codex_interface_detection() -> None:
     out = _bash("hapax_agent_interface", env={"CODEX_THREAD_NAME": "cx-red"})
+    assert out == "codex"
+
+
+def test_codex_thread_id_detects_codex_interface() -> None:
+    out = _bash("hapax_agent_interface", env={"CODEX_THREAD_ID": "thread-123"})
     assert out == "codex"
 
 

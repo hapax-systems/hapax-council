@@ -51,6 +51,7 @@ _IDENTITY_ENV = (
     "CODEX_ROLE",
     "CODEX_SESSION",
     "CODEX_SESSION_NAME",
+    "CODEX_THREAD_ID",
     "CODEX_THREAD_NAME",
 )
 
@@ -693,6 +694,14 @@ class TestSessionId:
         assert r.returncode == 0
         assert r.stdout.strip() == "cdx-1"
 
+    def test_codex_thread_id_precedes_thread_name(self) -> None:
+        r = _role_helper(
+            "hapax_session_id",
+            env={"CODEX_THREAD_ID": "thread-123", "CODEX_THREAD_NAME": "cx-green"},
+        )
+        assert r.returncode == 0
+        assert r.stdout.strip() == "thread-123"
+
     def test_codex_thread_name_last_fallback(self) -> None:
         r = _role_helper("hapax_session_id", env={"CODEX_THREAD_NAME": "cx-green"})
         assert r.returncode == 0
@@ -1047,6 +1056,18 @@ class TestSpawnerSessionIdentity:
         src = (REPO_ROOT / "scripts" / spawner).read_text()
         assert "kernel/random/uuid" in src or "uuidgen" in src, (
             f"{spawner} does not generate a session uuid"
+        )
+
+    @pytest.mark.parametrize(
+        "spawner", ["hapax-claude", "hapax-codex", "hapax-vibe", "hapax-antigrav"]
+    )
+    def test_session_id_is_generated_before_cc_claim(self, spawner: str) -> None:
+        src = (REPO_ROOT / "scripts" / spawner).read_text()
+        claim_tokens = ['"$CC_CLAIM"', '"$WORKDIR/scripts/cc-claim"', '"$CLAIM_SCRIPT"']
+        claim_positions = [src.index(token) for token in claim_tokens if token in src]
+        assert claim_positions, f"{spawner} missing executable cc-claim invocation"
+        assert src.index("SESSION_UUID=") < min(claim_positions), (
+            f"{spawner} must mint HAPAX_SESSION_ID before cc-claim"
         )
 
 

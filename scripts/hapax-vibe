@@ -261,19 +261,6 @@ EOF_AGENTS
   echo "hapax-vibe: refreshed $WORKTREE_AGENTS" >&2
 fi
 
-if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
-  CC_CLAIM="$(command -v cc-claim || echo "$COUNCIL_DIR/scripts/cc-claim")"
-  if [ ! -x "$CC_CLAIM" ]; then
-    echo "hapax-vibe: cc-claim not executable at $CC_CLAIM; skipping claim" >&2
-  else
-    HAPAX_AGENT_NAME="$SESSION" HAPAX_AGENT_ROLE="$SESSION" CLAUDE_ROLE="$SESSION" \
-      "$CC_CLAIM" "$TASK_ID" || {
-        echo "hapax-vibe: cc-claim failed for '$TASK_ID' - refusing to launch" >&2
-        exit 8
-      }
-  fi
-fi
-
 PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
 PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-unknown}}"
 
@@ -289,6 +276,23 @@ export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
 export CLAUDE_ROLE="$SESSION"
 export HAPAX_PARENT_AGENT_INTERFACE="$PARENT_INTERFACE"
 export HAPAX_PARENT_AGENT_NAME="$PARENT_NAME"
+
+if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
+  CC_CLAIM="$(command -v cc-claim || echo "$COUNCIL_DIR/scripts/cc-claim")"
+  if [ ! -x "$CC_CLAIM" ]; then
+    echo "hapax-vibe: cc-claim not executable at $CC_CLAIM; skipping claim" >&2
+  else
+    HAPAX_AGENT_NAME="$SESSION" \
+      HAPAX_AGENT_ROLE="$SESSION" \
+      HAPAX_SESSION_ID="$SESSION_UUID" \
+      CLAUDE_ROLE="$SESSION" \
+      "$CC_CLAIM" "$TASK_ID" || {
+        echo "hapax-vibe: cc-claim failed for '$TASK_ID' - refusing to launch" >&2
+        exit 8
+      }
+  fi
+fi
+
 export PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
 export LOGOS_BASE_URL="${LOGOS_BASE_URL:-http://localhost:8051/api}"
 

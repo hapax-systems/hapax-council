@@ -20,6 +20,9 @@ SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null ||
 CWD_VALUE="$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)"
 
 export HAPAX_AGENT_INTERFACE="${HAPAX_AGENT_INTERFACE:-codex}"
+if [ -z "${HAPAX_SESSION_ID:-}" ] && [ -n "$SESSION_ID" ]; then
+  export HAPAX_SESSION_ID="$SESSION_ID"
+fi
 if [ -z "${HAPAX_AGENT_NAME:-}" ]; then
   if [ -n "${CODEX_THREAD_NAME:-}" ]; then
     HAPAX_AGENT_NAME="$CODEX_THREAD_NAME"
@@ -32,15 +35,19 @@ if [ -z "${HAPAX_AGENT_NAME:-}" ]; then
   elif [ -n "${HAPAX_AGENT_ROLE:-}" ]; then
     HAPAX_AGENT_NAME="$HAPAX_AGENT_ROLE"
   else
-    HAPAX_AGENT_NAME="${CODEX_DEFAULT_THREAD_NAME:-cx-blue}"
+    HAPAX_AGENT_NAME="$(hapax_agent_identity 2>/dev/null || true)"
   fi
-  export HAPAX_AGENT_NAME
+  if [ -n "$HAPAX_AGENT_NAME" ]; then
+    export HAPAX_AGENT_NAME
+  fi
 fi
-export CODEX_THREAD_NAME="${CODEX_THREAD_NAME:-$HAPAX_AGENT_NAME}"
-export CODEX_ROLE="${CODEX_ROLE:-$HAPAX_AGENT_NAME}"
-export HAPAX_AGENT_ROLE="${HAPAX_AGENT_ROLE:-$HAPAX_AGENT_NAME}"
+if [ -n "${HAPAX_AGENT_NAME:-}" ]; then
+  export CODEX_THREAD_NAME="${CODEX_THREAD_NAME:-$HAPAX_AGENT_NAME}"
+  export CODEX_ROLE="${CODEX_ROLE:-$HAPAX_AGENT_NAME}"
+  export HAPAX_AGENT_ROLE="${HAPAX_AGENT_ROLE:-$HAPAX_AGENT_NAME}"
+fi
 # Compatibility for older hook scripts that still read CLAUDE_ROLE.
-export CLAUDE_ROLE="${CLAUDE_ROLE:-$CODEX_ROLE}"
+export CLAUDE_ROLE="${CLAUDE_ROLE:-${CODEX_ROLE:-}}"
 
 NOTICES=""
 BLOCK_REASON=""
@@ -113,7 +120,7 @@ tool_kind() {
   if printf '%s' "$INPUT" | jq -e '
     .tool_input as $ti |
     ($ti | type) == "object" and
-    (($ti.command? // $ti.cmd? // $ti.shell_command?) != null)
+    (($ti.command? // $ti.cmd? // $ti.shell_command? // $ti.arguments.command? // $ti.args.command?) != null)
   ' >/dev/null 2>&1; then
     printf 'shell\n'
     return 0

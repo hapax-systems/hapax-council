@@ -43,9 +43,16 @@ def _run_adapter(
     env["HOME"] = str(home)
     env.pop("HAPAX_AGENT_NAME", None)
     env.pop("HAPAX_AGENT_ROLE", None)
+    env.pop("HAPAX_AGENT_SLOT", None)
+    env.pop("HAPAX_AGENT_INTERFACE", None)
+    env.pop("HAPAX_SESSION_ID", None)
+    env.pop("CLAUDE_ROLE", None)
+    env.pop("CLAUDE_CODE_SESSION_ID", None)
     env.pop("CODEX_ROLE", None)
     env.pop("CODEX_SESSION", None)
     env.pop("CODEX_SESSION_NAME", None)
+    env.pop("CODEX_THREAD_ID", None)
+    env.pop("CODEX_HOME", None)
     env["CODEX_THREAD_NAME"] = "cx-red"
     env["HAPAX_WORKTREE_ROLE"] = "alpha"
     if extra_env:
@@ -84,6 +91,61 @@ def test_shell_command_normalizes_to_bash_and_blocks_direct_pip(tmp_path: Path) 
     )
     assert result["decision"] == "block"
     assert "pip" in result["reason"].lower()
+
+
+def test_shell_command_normalizes_nested_arguments_command(tmp_path: Path) -> None:
+    result = _run_adapter(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "future_shell_tool",
+            "tool_input": {"arguments": {"command": "pip install requests"}},
+        },
+        home=tmp_path,
+        extra_env={"HAPAX_CC_TASK_GATE_OFF": "1"},
+    )
+    assert result["decision"] == "block"
+    assert "pip" in result["reason"].lower()
+
+
+def test_bare_codex_recovers_role_from_cx_worktree_without_blue_fallback(tmp_path: Path) -> None:
+    worktree = tmp_path / "hapax-council--cx-gold"
+    worktree.mkdir()
+    result = _run_adapter(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "Edit",
+            "tool_input": {"file_path": "/tmp/x"},
+        },
+        home=tmp_path,
+        cwd=worktree,
+        extra_env={"CODEX_THREAD_NAME": "", "HAPAX_WORKTREE_ROLE": ""},
+    )
+
+    assert result["decision"] == "block"
+    assert "role 'cx-gold'" in result["reason"]
+    assert "cx-blue" not in result["reason"]
+
+
+def test_bare_codex_payload_session_id_enables_roleless_claim_path(tmp_path: Path) -> None:
+    work = tmp_path / "plain-dir"
+    work.mkdir()
+    result = _run_adapter(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "payload-sid",
+            "tool_name": "Edit",
+            "tool_input": {"file_path": "/tmp/x"},
+        },
+        home=tmp_path,
+        cwd=work,
+        extra_env={"CODEX_THREAD_NAME": "", "HAPAX_WORKTREE_ROLE": "", "PATH": "/usr/bin:/bin"},
+    )
+
+    assert result["decision"] == "block"
+    assert "cannot determine session role" not in result["reason"]
+    assert "role 'roleless'" in result["reason"]
 
 
 def test_shell_command_runs_session_name_enforcement(tmp_path: Path) -> None:
