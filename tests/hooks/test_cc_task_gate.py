@@ -268,6 +268,99 @@ class TestNoClaimFile:
         assert result.returncode == 2
 
 
+class TestCognitionCarveOut:
+    """Regression pin for the always-writable cognition carve-out (NEW-3).
+
+    `is_cognition_path()` lives only in the LIVE `.cache` gate historically; the
+    5-min rebuild timer can rebuild the repo gate and silently drop the carve-out,
+    re-creating the no-role hard-deadlock (master design §7 NEW-3, Phase 0). These
+    tests fail loudly if the function is removed: each cognition surface MUST be
+    writable with NO role and NO claim — a blocked lane must always be able to
+    think, take notes, and report state. The hapax-cc-tasks/ and hapax-requests/
+    SSOT dirs are explicitly EXCLUDED (they keep their content-validated path).
+    """
+
+    def test_memory_path_allowed_roleless_unclaimed(self, tmp_path: Path) -> None:
+        # ~/.claude/**/memory/ at any depth — operator auto-memory.
+        path = tmp_path / ".claude" / "projects" / "p" / "memory" / "note.md"
+        result = _run_hook(
+            {"tool_name": "Write", "tool_input": {"file_path": str(path), "content": "x"}},
+            role=None,
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr}"
+
+    def test_personal_vault_allowed_roleless_unclaimed(self, tmp_path: Path) -> None:
+        # ~/Documents/Personal/* (PARA notes) — but NOT the cc-tasks/requests SSOT.
+        path = tmp_path / "Documents" / "Personal" / "10-notes" / "daily.md"
+        result = _run_hook(
+            {"tool_name": "Write", "tool_input": {"file_path": str(path), "content": "x"}},
+            role=None,
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr}"
+
+    def test_dev_shm_allowed_roleless_unclaimed(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {
+                "tool_name": "Write",
+                "tool_input": {"file_path": "/dev/shm/hapax-scratch", "content": "x"},
+            },
+            role=None,
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr}"
+
+    def test_tmp_hapax_allowed_roleless_unclaimed(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {
+                "tool_name": "Write",
+                "tool_input": {"file_path": "/tmp/hapax-scratch.json", "content": "x"},
+            },
+            role=None,
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"stderr={result.stderr}"
+
+    def test_cc_tasks_ssot_is_NOT_cognition(self, tmp_path: Path) -> None:
+        # The governance SSOT is excluded: an unclaimed write of non-note content
+        # must NOT be waved through as cognition (it routes to the validated path).
+        path = (
+            tmp_path
+            / "Documents"
+            / "Personal"
+            / "20-projects"
+            / "hapax-cc-tasks"
+            / "active"
+            / "forged.md"
+        )
+        result = _run_hook(
+            {
+                "tool_name": "Write",
+                "tool_input": {"file_path": str(path), "content": "not a task note"},
+            },
+            role=None,
+            home=tmp_path,
+        )
+        assert result.returncode == 2, (
+            f"cc-tasks SSOT must not be free cognition; stderr={result.stderr}"
+        )
+
+    def test_requests_ssot_is_NOT_cognition(self, tmp_path: Path) -> None:
+        path = tmp_path / "Documents" / "Personal" / "20-projects" / "hapax-requests" / "forged.md"
+        result = _run_hook(
+            {
+                "tool_name": "Write",
+                "tool_input": {"file_path": str(path), "content": "not a request"},
+            },
+            role=None,
+            home=tmp_path,
+        )
+        assert result.returncode == 2, (
+            f"requests SSOT must not be free cognition; stderr={result.stderr}"
+        )
+
+
 class TestStatusGating:
     def test_in_progress_allows(self, tmp_path: Path) -> None:
         _make_vault(tmp_path, status="in_progress", assigned="alpha")
