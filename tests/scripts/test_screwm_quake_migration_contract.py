@@ -272,13 +272,19 @@ def test_screwm_media_drift_batches_slot_readback() -> None:
 
     assert "fn encode(" in source
     assert "Option<wgpu::CommandBuffer>" in source
-    assert "return None" in source
+    assert "fn read_complete_frame(" in source
+    assert "read_complete_frame(&self.cfg.raw_path, self.expected_bytes)?" in source
     assert "fn finish_readback(" in source
     assert "queue.submit(commands)" in source
     assert ".map_async(wgpu::MapMode::Read" in source
     assert "device.poll(wgpu::Maintain::Wait)" in source
     assert source.count("device.poll(wgpu::Maintain::Wait)") == 1
     assert "for (idx, rx) in waits" in source
+    assert "struct SlotMetadata" in source
+    assert 'let meta_path = self.cfg.out_path.with_extension("json");' in source
+    assert "atomic_write(&meta_path" in source
+    assert "output_hash" in source
+    assert "drift_changed" in source
 
 
 def test_screwm_media_mount_contracts_are_deterministic() -> None:
