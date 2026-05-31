@@ -41,6 +41,7 @@ from shared.merge_queue_lineage import (
     DEFAULT_SUMMARY_PATH,
     FleetThrottlePolicy,
     decide_fleet_throttle,
+    load_summary,
     read_jsonl_records,
 )
 
