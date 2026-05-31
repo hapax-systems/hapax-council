@@ -6,7 +6,7 @@ import importlib.util
 import json
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -33,6 +33,10 @@ def _load_module() -> ModuleType:
 
 
 autoqueue = _load_module()
+
+
+def _recent_observed_at(index: int, *, total: int = 4) -> datetime:
+    return datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=total - index)
 
 
 def _make_vault(tmp_path: Path) -> Path:
@@ -1034,7 +1038,7 @@ def test_storm_apply_dequeues_only_non_ready_queued_prs(tmp_path: Path) -> None:
         ledger,
         [
             MergeQueueLineageRecord(
-                observed_at=datetime(2026, 5, 31, 12, i, tzinfo=UTC),
+                observed_at=_recent_observed_at(i),
                 pr_number=113 + i,
                 merge_group_run_id=9100 + i,
                 run_conclusion="failure",
@@ -1100,7 +1104,7 @@ def test_storm_allows_ci_repair_and_independent_admissions(tmp_path: Path) -> No
         ledger,
         [
             MergeQueueLineageRecord(
-                observed_at=datetime(2026, 5, 31, 12, i, tzinfo=UTC),
+                observed_at=_recent_observed_at(i),
                 pr_number=120 + i,
                 merge_group_run_id=9200 + i,
                 run_conclusion="failure",
@@ -1139,7 +1143,7 @@ def test_failed_recent_non_ready_merge_group_run_activates_storm_mode(
         ledger,
         [
             MergeQueueLineageRecord(
-                observed_at=datetime(2026, 5, 31, 12, i, tzinfo=UTC),
+                observed_at=_recent_observed_at(i),
                 pr_number=130,
                 merge_group_run_id=9001 + i,
                 run_conclusion="failure",
