@@ -307,6 +307,20 @@ def test_screwm_media_drift_batches_slot_readback() -> None:
     assert "producer_input_hash_matches_raw" in source
 
 
+def test_screwm_gpu_drift_cutover_preflight_is_source_only() -> None:
+    source = (REPO_ROOT / "scripts" / "screwm-gpu-drift-cutover-preflight.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "parse_live_texture_slots" in source
+    assert "build_manifest" in source
+    assert "drift_slots_env" in source
+    assert "producer_env_flag" in source
+    assert "runtime_actions_performed" in source
+    assert "subprocess" not in source
+    assert "systemctl" not in source
+
+
 def test_screwm_media_mount_contracts_are_deterministic() -> None:
     contract = json.loads(
         (REPO_ROOT / "config" / "screwm-quake-media-mounts.json").read_text(encoding="utf-8")
