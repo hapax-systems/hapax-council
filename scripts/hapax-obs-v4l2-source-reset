@@ -43,6 +43,8 @@ PROM_RESETS = "hapax_obs_v4l2_source_resets_total"
 PROM_ACTIVE = "hapax_obs_v4l2_source_reset_active"
 PROM_FAILURES = "hapax_obs_v4l2_source_reset_failures_total"
 PROM_PRODUCER_RESTARTS = "hapax_obs_v4l2_source_producer_restarts_total"
+OBS_LOG_V4L2_TIMEOUT_PREFIX = "obs_log_v4l2_timeout:"
+OBS_LOG_V4L2_SELF_RECOVERED_TIMEOUT_PREFIX = "obs_log_v4l2_timeout_self_recovered:"
 
 
 class SourceState(StrEnum):
@@ -576,10 +578,15 @@ def _scan_obs_log_v4l2_errors(
         return ObsLogCursor(path=path, offset=size), None
 
     next_cursor = ObsLogCursor(path=path, offset=size)
-    if f"v4l2-input: {device_id}: select timed out" in chunk:
-        return next_cursor, f"obs_log_v4l2_timeout:{device_id}"
     if "v4l2-helpers: unable to start stream" in chunk:
         return next_cursor, f"obs_log_v4l2_start_failed:{device_id}"
+    timeout_marker = f"v4l2-input: {device_id}: select timed out"
+    timeout_count = chunk.count(timeout_marker)
+    if timeout_count:
+        recovery_marker = f"v4l2-input: {device_id}: stream reset successful"
+        if timeout_count == 1 and recovery_marker in chunk:
+            return next_cursor, f"{OBS_LOG_V4L2_SELF_RECOVERED_TIMEOUT_PREFIX}{device_id}"
+        return next_cursor, f"{OBS_LOG_V4L2_TIMEOUT_PREFIX}{device_id}"
     return next_cursor, None
 
 
@@ -732,6 +739,8 @@ def monitor_loop(
     if producer_service:
         producer_service_sequence.append(producer_service)
     obs_log_cursor = ObsLogCursor()
+    self_recovered_obs_log_timeouts = 0
+    first_self_recovered_obs_log_timeout_monotonic: float | None = None
     _sd_notify("READY=1")
 
     while not _shutdown:
@@ -793,6 +802,30 @@ def monitor_loop(
                 log_dir=obs_log_dir,
                 device_id=obs_log_device_id,
             )
+            if obs_log_reason is not None and obs_log_reason.startswith(
+                OBS_LOG_V4L2_SELF_RECOVERED_TIMEOUT_PREFIX
+            ):
+                if (
+                    first_self_recovered_obs_log_timeout_monotonic is None
+                    or now - first_self_recovered_obs_log_timeout_monotonic > reset_cooldown
+                ):
+                    first_self_recovered_obs_log_timeout_monotonic = now
+                    self_recovered_obs_log_timeouts = 1
+                    obs_log_reason = None
+                else:
+                    self_recovered_obs_log_timeouts += 1
+                    if self_recovered_obs_log_timeouts >= 2:
+                        device = obs_log_reason.removeprefix(
+                            OBS_LOG_V4L2_SELF_RECOVERED_TIMEOUT_PREFIX
+                        )
+                        obs_log_reason = f"{OBS_LOG_V4L2_TIMEOUT_PREFIX}{device}"
+                        first_self_recovered_obs_log_timeout_monotonic = None
+                        self_recovered_obs_log_timeouts = 0
+                    else:
+                        obs_log_reason = None
+            elif obs_log_reason is not None:
+                first_self_recovered_obs_log_timeout_monotonic = None
+                self_recovered_obs_log_timeouts = 0
             if obs_log_reason is not None:
                 probe = ProbeResult(
                     state=SourceState.STALLED,

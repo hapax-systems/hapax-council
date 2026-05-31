@@ -1,6 +1,6 @@
 [Unit]
 Description=Hapax DarkPlaces visible v4l2 renderer feed
-After=hapax-quake-live-youtube.service hapax-quake-live-reverie.service hapax-quake-live-ward-atlas.service hapax-screwm-drift-state-source.service hapax-screwm-imagination-source-publisher.service hapax-screwm-speech-wave-producer.service
+After=hapax-quake-live-youtube.service hapax-quake-live-reverie.service hapax-quake-live-ward-atlas.service hapax-screwm-drift-state-source.service hapax-screwm-imagination-source-publisher.service
 Wants=hapax-screwm-camera-gamepad.service hapax-darkplaces-bridge.service hapax-quake-live-youtube.service hapax-quake-live-reverie.service hapax-quake-live-ward-atlas.service hapax-screwm-drift-state-source.service hapax-screwm-imagination-source-publisher.service hapax-screwm-speech-wave-producer.service
 Wants=hapax-quake-live-camera@brio-operator.service hapax-quake-live-camera@brio-room.service hapax-quake-live-camera@brio-synths.service
 Wants=hapax-quake-live-camera@c920-desk.service hapax-quake-live-camera@c920-room.service hapax-quake-live-camera@c920-overhead.service

@@ -23,6 +23,11 @@ def test_darkplaces_v4l2_service_remains_runtime_guarded_and_uses_visible_xvfb_r
     assert "hapax-quake-live-ward-atlas.service" in body
     assert "hapax-quake-live-reverie.service" in body
     assert "hapax-screwm-speech-wave-producer.service" in body
+    assert (
+        "After=hapax-quake-live-youtube.service hapax-quake-live-reverie.service "
+        "hapax-quake-live-ward-atlas.service hapax-screwm-drift-state-source.service "
+        "hapax-screwm-imagination-source-publisher.service\n"
+    ) in body
     for role in (
         "brio-operator",
         "brio-room",

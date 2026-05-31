@@ -1,7 +1,6 @@
 [Unit]
 Description=OBS-compatible YUYV bridge from DarkPlaces /dev/video52 to /dev/video50
 After=hapax-darkplaces-v4l2.service
-Wants=hapax-darkplaces-v4l2.service
 PartOf=hapax-darkplaces-v4l2.service
 Conflicts=studio-fx-output.service
 ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
