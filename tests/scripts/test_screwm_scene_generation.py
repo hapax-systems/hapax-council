@@ -112,6 +112,9 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert "aoa_root" not in content
     assert "aoa_gate" not in content
     assert "cam_cov" in content
+    assert "// section: speech-waveform" in content
+    assert "// speech-waveform 01: hapax-speech speech_wave" in content
+    assert "// speech-waveform-light 01: hapax-speech" in content
     assert module["ward_review_position"](1) == (-900, -2360, 130)
     assert module["ward_review_position"](5) == (-700, -1120, 260)
     assert module["ward_review_position"](36) == (-1180, -600, 330)
@@ -306,16 +309,23 @@ def test_screwm_map_embeds_camera_source_constellation() -> None:
     ]
     assert module["BASELINE_SOURCE_ROLES"] == set(roles)
     assert content.count("// source-garden-anchor ") == 6
+    assert content.count("// speech-waveform ") == 1
     assert content.count("// source-garden-anchor-frame ") == 0
+    assert content.count("// speech-waveform-frame ") == 0
     assert content.count("// source-garden-anchor-mount-") == 0
+    assert content.count("// speech-waveform-mount-") == 0
     assert content.count("// source-anchor ") == 0
     assert content.count("// source-glow ") == 0
     assert content.count("// source-tether ") == 0
     assert content.count("// source-light ") == 6
+    assert content.count("// speech-waveform-light ") == 1
     assert "// section: source-camera-constellation" in content
+    assert "// section: speech-waveform" in content
     assert "// source-garden-anchor 06: c920-overhead cam_cov" in content
+    assert "// speech-waveform 01: hapax-speech speech_wave" in content
     assert "cam_bop" in content
     assert "cam_cov" in content
+    assert "speech_wave" in content
     assert "cam_bop 5990 1085 0 0.4 0.4" in content
     assert module["SOURCE_ANCHORS"][0]["w"] == 512
     assert module["SOURCE_ANCHORS"][0]["h"] == 288
@@ -340,6 +350,18 @@ def test_screwm_map_embeds_camera_source_constellation() -> None:
     assert "hls" not in {pane[0] for pane in module["SCROOM_SCENE_GRAPH_PANES"]}
     assert module["MEDIA_MOUNT_CONTRACTS"]["version"] == "screwm-quake-media-mounts-v1"
     assert module["WARD_ATLAS_MOUNT"]["texture"] == "ward_atlas"
+    assert module["SPEECH_WAVE_MOUNT"]["texture"] == "speech_wave"
+    assert module["SPEECH_WAVE_ANCHOR"]["w"] == 384
+    assert module["SPEECH_WAVE_ANCHOR"]["h"] == 96
+    assert module["SPEECH_WAVE_ANCHOR"]["pos"] == (-80, -555, 104)
+    assert module["SPEECH_WAVE_ANCHOR"]["texture_size"] == (512, 128)
+    assert module["SPEECH_WAVE_ANCHOR"]["texture_transform"] == {
+        "u_sign": 1,
+        "v_sign": 1,
+        "rotation": 0,
+        "surface_local": True,
+        "reason": "OARB-depth y-facing waveform uses surface-local mapping so the live oscilloscope spans the receiver once without world-space tiling",
+    }
     assert module["MEDIA_MOUNTS_BY_ID"]["grounding-provenance-ticker"]["texture"] == "w09"
     assert module["MEDIA_MOUNTS_BY_ID"]["grounding-provenance-ticker"]["texture_transform"] == {
         "u_sign": 1,
@@ -368,6 +390,10 @@ def test_screwm_live_media_panes_are_double_sided_without_visible_backing() -> N
         assert source_pane.count(tex) == 7
         assert source_pane.count(module["MEDIA_RECEIVER_EDGE_TEX"]) == 0
 
+    speech_pane = _comment_block(content, "// speech-waveform 01: hapax-speech speech_wave")
+    assert speech_pane.count("speech_wave") == 7
+    assert speech_pane.count(module["MEDIA_RECEIVER_EDGE_TEX"]) == 0
+
     for idx, tex in ((9, "w09"), (22, "w22"), (27, "w27")):
         name = module["WARD_ANCHORS"][idx - 1]
         ticker_pane = _comment_block(content, f"// ward-garden-pane {idx:02d}: {name} {tex}")
@@ -377,6 +403,7 @@ def test_screwm_live_media_panes_are_double_sided_without_visible_backing() -> N
 
     assert content.count("// ward-garden-pane-mount-") == 0
     assert content.count("// source-garden-anchor-mount-") == 0
+    assert content.count("// speech-waveform-mount-") == 0
     assert "status-spine" not in content
     assert "standoff-" not in content
 
@@ -395,6 +422,7 @@ def test_live_media_textures_are_self_lit_information_surfaces() -> None:
         "cam_cdk",
         "cam_crm",
         "cam_cov",
+        "speech_wave",
     ]
     for name in live_names:
         block_start = shader.index(f"{name}\n{{")
@@ -573,6 +601,10 @@ def test_screwm_wad_defines_only_declared_live_ward_receiver_textures() -> None:
     assert textures["w27"]["width"] == 1344
     assert textures["w27"]["height"] == 176
     assert textures["w27"]["code"] == "CHRON"
+    assert textures["speech_wave"]["pattern"] == "live_media"
+    assert textures["speech_wave"]["width"] == 512
+    assert textures["speech_wave"]["height"] == 128
+    assert textures["speech_wave"]["code"] == "VOICE"
     assert len(module["WARD_ACCENT_INDICES"]) >= 4
     assert textures["drift_c"]["pattern"] == "drift_line"
     assert textures["drift_r"]["drift"] == 186
@@ -632,6 +664,18 @@ def test_screwm_wad_defines_camera_source_anchor_textures() -> None:
     assert textures["cam_bop"]["height"] == 720
     assert textures["cam_bsy"]["accent"] == 186
     assert textures["cam_cov"]["code"] == "C920OVH"
+
+
+def test_screwm_wad_defines_speech_waveform_texture() -> None:
+    module = _load_script("scripts/generate-screwm-wad.py")
+    textures = module["TEXTURES"]
+
+    speech_names = [name for name, _code, _accent in module["SPEECH_WAVE_TEXTURES"]]
+    assert speech_names == ["speech_wave"]
+    assert textures["speech_wave"]["pattern"] == "live_media"
+    assert textures["speech_wave"]["code"] == "VOICE"
+    assert textures["speech_wave"]["width"] == 512
+    assert textures["speech_wave"]["height"] == 128
 
 
 def test_screwm_wad_defines_aoa_oarb_slot_textures() -> None:

@@ -175,7 +175,7 @@ def test_darkplaces_fork_patch_uploads_live_media_into_world_textures() -> None:
         encoding="utf-8"
     )
 
-    assert "HAPAX_LIVE_TEXTURE_SLOT_COUNT 12" in patch
+    assert "HAPAX_LIVE_TEXTURE_SLOT_COUNT 13" in patch
     assert "hapax_live_texture_name" in patch
     assert "hapax_live_texture7_name" in patch
     assert '"progs/aoa_sphere.mdl_0"' in patch
@@ -194,11 +194,15 @@ def test_darkplaces_fork_patch_uploads_live_media_into_world_textures() -> None:
     assert '"w22"' in patch
     assert '"w27"' in patch
     assert '"w05"' in patch
+    assert '"speech_wave"' in patch
     assert "quake-live-reverie.bgra" in patch
+    assert "quake-live-speech-wave.bgra" in patch
     assert "quake-live-ticker-grounding.bgra" in patch
     assert "quake-live-ticker-precedent.bgra" in patch
     assert "quake-live-ticker-chronicle.bgra" in patch
     assert '"2304"' in patch
+    assert '"512"' in patch
+    assert '"128"' in patch
     assert "R_HapaxLiveTexture_UpdateSlot" in patch
     assert "R_HapaxLiveTexture_FindWorldSkinFrame" in patch
     assert "R_SkinFrame_FindNextByName(NULL, name)" in patch
@@ -360,6 +364,26 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
         "DarkPlaces live-texture slot updates one atlas"
     )
 
+    speech = mounts["speech-waveform"]
+    assert speech["role"] == "speech-wave-source"
+    assert speech["texture"] == "speech_wave"
+    assert speech["producer_kind"] == "live-speech-waveform"
+    assert speech["producer_output"] == "/dev/shm/hapax-compositor/quake-live-speech-wave.bgra"
+    assert speech["native_resolution"] == [512, 128]
+    assert speech["texture_size"] == [512, 128]
+    assert speech["source_aspect"] == [4, 1]
+    assert speech["target_visual_angle_deg"] == 18.0
+    assert speech["physical_width"] == 384
+    assert speech["signal_legibility_px_per_degree_floor"] == 24.0
+    assert "512x128 low-latency slot" in speech["legibility_basis"]
+    assert speech["origin"] == [-80, -555, 104]
+    assert speech["facing"] == "y"
+    assert speech["liveness_class"] == "live-voice-representation"
+    assert speech["material_profile"] == "live-speech-waveform-field"
+    assert speech["hybrid_contract"]["memory_format"] == "BGRA8888"
+    assert "slot 13" in speech["hybrid_contract"]["update_semantics"]
+    assert "never a global scene pulse" in speech["drift_interaction"]["principle"]
+
 
 def test_screwm_live_camera_texture_dimensions_match_all_runtime_declarations() -> None:
     contract = json.loads(
@@ -399,6 +423,17 @@ def test_screwm_live_camera_texture_dimensions_match_all_runtime_declarations() 
             assert int(slots[slot]["height"]) == height
             assert slots[slot]["path"] == mount["producer_output"]
             assert patch_dims[slot] == {"width": width, "height": height}
+
+    speech = next(mount for mount in contract["mounts"] if mount["id"] == "speech-waveform")
+    width, height = speech["texture_size"]
+    assert speech["native_resolution"] == [width, height]
+    for slots in (autoexec_slots, launcher_slots):
+        slot = _slot_for_texture(slots, speech["texture"])
+        assert slot == 13
+        assert int(slots[slot]["width"]) == width
+        assert int(slots[slot]["height"]) == height
+        assert slots[slot]["path"] == speech["producer_output"]
+        assert patch_dims[slot] == {"width": width, "height": height}
 
 
 def test_screwm_media_mount_contract_keeps_homage_out_of_portable_surface() -> None:

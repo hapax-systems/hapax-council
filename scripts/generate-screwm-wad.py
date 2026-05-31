@@ -106,6 +106,10 @@ CAMERA_SOURCE_TEXTURES = [
     ("cam_cov", "C920OVH", 214),
 ]
 
+SPEECH_WAVE_TEXTURES = [
+    ("speech_wave", "VOICE", 198),
+]
+
 LEGACY_SLOT_TEXTURES = [
     ("slot_aoa", "OARB", 214),
     ("slot_album", "ALBUM", 186),
@@ -331,6 +335,19 @@ for tex_name, code, accent in CAMERA_SOURCE_TEXTURES:
         "color": (74, 88, 84),
         "noise": 0,
         "pattern": "source_portal",
+        "code": code,
+        "accent": accent,
+        "width": int(texture_width),
+        "height": int(texture_height),
+    }
+
+for tex_name, code, accent in SPEECH_WAVE_TEXTURES:
+    mount = MEDIA_MOUNTS_BY_TEXTURE.get(tex_name, {})
+    texture_width, texture_height = mount.get("texture_size", [512, 128])
+    TEXTURES[tex_name] = {
+        "color": (46, 70, 82),
+        "noise": 0,
+        "pattern": "live_media",
         "code": code,
         "accent": accent,
         "width": int(texture_width),

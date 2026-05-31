@@ -331,7 +331,12 @@ DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 "$DARKPLACES_BIN" \
     +hapax_live_texture12_name w05 \
     +hapax_live_texture12_path /dev/shm/hapax-compositor/quake-live-reverie.bgra \
     +hapax_live_texture12_width 960 \
-    +hapax_live_texture12_height 540 &
+    +hapax_live_texture12_height 540 \
+    +hapax_live_texture13_enable 1 \
+    +hapax_live_texture13_name speech_wave \
+    +hapax_live_texture13_path /dev/shm/hapax-compositor/quake-live-speech-wave.bgra \
+    +hapax_live_texture13_width 512 \
+    +hapax_live_texture13_height 128 &
 darkplaces_pid="$!"
 
 sleep 3

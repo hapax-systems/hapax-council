@@ -22,6 +22,7 @@ def test_darkplaces_v4l2_service_remains_runtime_guarded_and_uses_visible_xvfb_r
     assert "hapax-quake-live-youtube.service" in body
     assert "hapax-quake-live-ward-atlas.service" in body
     assert "hapax-quake-live-reverie.service" in body
+    assert "hapax-screwm-speech-wave-producer.service" in body
     for role in (
         "brio-operator",
         "brio-room",
@@ -141,6 +142,17 @@ def test_darkplaces_launchers_bind_youtube_camera_and_ward_atlas_textures() -> N
         assert (
             "hapax_live_texture12_height 540" in body or "+hapax_live_texture12_height 540" in body
         )
+        assert "hapax_live_texture13_enable 1" in body or "+hapax_live_texture13_enable 1" in body
+        assert "hapax_live_texture13_name speech_wave" in body or (
+            "+hapax_live_texture13_name speech_wave" in body
+        )
+        assert "quake-live-speech-wave.bgra" in body
+        assert "hapax_live_texture13_width 512" in body or (
+            "+hapax_live_texture13_width 512" in body
+        )
+        assert "hapax_live_texture13_height 128" in body or (
+            "+hapax_live_texture13_height 128" in body
+        )
 
 
 def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() -> None:
@@ -148,6 +160,7 @@ def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() ->
     camera = _read("hapax-quake-live-camera@.service")
     atlas = _read("hapax-quake-live-ward-atlas.service")
     reverie = _read("hapax-quake-live-reverie.service")
+    speech = _read("hapax-screwm-speech-wave-producer.service")
 
     assert "PartOf=hapax-visual-stack.target" in youtube
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in youtube
@@ -192,6 +205,12 @@ def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() ->
     assert "--input /dev/shm/hapax-sources/reverie.rgba" in reverie
     assert "--output /dev/shm/hapax-compositor/quake-live-reverie.bgra" in reverie
     assert "--meta /dev/shm/hapax-compositor/quake-live-reverie.json" in reverie
+
+    assert "PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service" in speech
+    assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in speech
+    assert "--require-file scripts/screwm-speech-wave-producer.py" in speech
+    assert "scripts/screwm-speech-wave-producer.py" in speech
+    assert ".venv/bin/python %h/.cache/hapax/source-activation/worktree/" in speech
 
     drift = _read("hapax-screwm-drift-state-source.service")
     assert "PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service" in drift
@@ -400,8 +419,10 @@ def test_visual_stack_conditionally_wants_darkplaces_runtime_units() -> None:
     assert "hapax-darkplaces-bridge.service" in target
     assert "hapax-quake-live-reverie.service" in target
     assert "hapax-quake-live-ward-atlas.service" in target
+    assert "hapax-screwm-speech-wave-producer.service" in target
     assert "hapax-screwm-camera-gamepad.service" not in target
     assert "Wants=hapax-screwm-camera-gamepad.service" in v4l2
+    assert "hapax-screwm-speech-wave-producer.service" in v4l2
     assert "hapax-darkplaces-bridge.service" in v4l2
     assert "hapax-obs-video50-yuyv-compat-bridge.service" not in v4l2
     assert "hapax-obs-video50-yuyv-compat-bridge.service" not in target
