@@ -1101,3 +1101,95 @@ class TestAntigravNotRetired:
     @pytest.mark.parametrize("value", ["RETIRED", "SUPERSEDED", "CLOSED", "retired"])
     def test_genuine_retired_statuses_still_match(self, value: str) -> None:
         assert _codex_retired_rc(value) == 0
+
+
+class TestGateDecisionLog:
+    """The reform shadow PRODUCER's data source (unblock 3b-cutover).
+
+    The gate logs its REAL exit code plus the state it decided on to a decision
+    log, which the replay timer diffs against policy_decide. The logging is
+    advisory: it must capture the authoritative verdict (no _LEGACY_*_RE
+    re-derivation) and must NEVER change the gate's own exit code.
+    """
+
+    @staticmethod
+    def _rows(log_path: Path) -> list[dict]:
+        if not log_path.exists():
+            return []
+        return [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+
+    def test_allowed_mutation_logs_real_exit_zero(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        log = tmp_path / "decisions.jsonl"
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env={"HAPAX_GATE_DECISION_LOG": str(log)},
+        )
+        assert result.returncode == 0
+        rows = self._rows(log)
+        assert len(rows) == 1
+        assert rows[0]["legacy_exit"] == 0
+        assert rows[0]["tool_name"] == "Edit"
+        assert rows[0]["task_id"] == "test-001"
+        assert rows[0]["role"] == "alpha"
+        assert rows[0]["file_path"] == "/tmp/x"
+
+    def test_blocked_mutation_logs_real_exit_two(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        log = tmp_path / "decisions.jsonl"
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/out-of-scope"}},
+            home=tmp_path,
+            extra_env={"HAPAX_GATE_DECISION_LOG": str(log)},
+        )
+        assert result.returncode == 2
+        rows = self._rows(log)
+        assert len(rows) == 1
+        assert rows[0]["legacy_exit"] == 2
+
+    def test_non_mutating_read_is_not_logged(self, tmp_path: Path) -> None:
+        log = tmp_path / "decisions.jsonl"
+        result = _run_hook(
+            {"tool_name": "Read", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env={"HAPAX_GATE_DECISION_LOG": str(log)},
+        )
+        assert result.returncode == 0
+        assert self._rows(log) == []
+
+    def test_logging_off_writes_nothing_and_preserves_verdict(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        log = tmp_path / "decisions.jsonl"
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env={
+                "HAPAX_GATE_DECISION_LOG": str(log),
+                "HAPAX_GATE_DECISION_LOG_OFF": "1",
+            },
+        )
+        assert result.returncode == 0  # verdict unchanged by the kill-switch
+        assert not log.exists()
+
+    def test_logged_row_round_trips_through_replay_without_spurious_divergence(
+        self, tmp_path: Path
+    ) -> None:
+        # End-to-end: the row the gate logs must reconstruct the SAME TaskState the
+        # gate decided on, so replaying it through policy_decide agrees (both allow).
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        log = tmp_path / "decisions.jsonl"
+        _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env={"HAPAX_GATE_DECISION_LOG": str(log)},
+        )
+        from shared.policy_decide import replay_decision_log
+
+        summary = replay_decision_log(log, tmp_path / "shadow.jsonl")
+        assert summary["total"] == 1
+        assert summary["divergences"] == 0

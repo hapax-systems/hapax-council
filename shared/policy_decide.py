@@ -634,6 +634,223 @@ def run_shadow(
     return record
 
 
+# --- The live PRODUCER + the cutover EVALUATOR (reform fix: unblock 3b-cutover)
+#
+# Phase 3b shipped the harness above but nothing invoked it on a live tool-call
+# stream, so the 3b-cutover gate sat on an evidence-shaped predicate with no
+# producer. These two functions close that loop:
+#
+#   PRODUCER  — cc-task-gate.sh logs its REAL exit code + the state it decided on
+#               to a decision log; ``replay_decision_log`` (run by a systemd timer)
+#               replays it through ``policy_decide`` and rebuilds the divergence
+#               ledger. The legacy verdict is the gate's OWN exit code, never a
+#               re-derivation via _LEGACY_*_RE (closes the drift 3b-cutover flags).
+#   EVALUATOR — ``evaluate_shadow_clean`` turns the ledger into the checkable
+#               "shadow-week-clean + asymmetric-divergence" predicate the gate
+#               needs, so a real ledger can actually unblock it (and an empty one
+#               correctly cannot).
+
+#: The gate's decision log: one JSON row per GATED decision, carrying the gate's
+#: REAL exit code (``legacy_exit``) and the resolved state it decided on.
+DEFAULT_DECISION_LOG = Path(os.path.expanduser("~/.cache/hapax/cc-task-gate-decisions.jsonl"))
+
+
+def _decision_row_bool(row: dict[str, object], key: str) -> bool:
+    return str(row.get(key) or "").strip().lower() == "true"
+
+
+def _decision_row_field(row: dict[str, object], key: str) -> str | None:
+    value = row.get(key)
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
+def _task_from_decision_row(row: dict[str, object]) -> TaskState | None:
+    """Rebuild the TaskState the gate decided on from a decision-log row (no vault IO)."""
+    task_id = str(row.get("task_id") or "").strip()
+    if not task_id:
+        return None
+    scope_raw = str(row.get("mutation_scope_refs") or "")
+    scope = tuple(part for part in scope_raw.split("\x1f") if part.strip())
+    return TaskState(
+        task_id=task_id,
+        assigned_to=str(row.get("assigned_to") or ""),
+        status=str(row.get("status") or ""),
+        authority_case=_decision_row_field(row, "authority_case"),
+        parent_spec=_decision_row_field(row, "parent_spec"),
+        stage=_decision_row_field(row, "stage"),
+        implementation_authorized=_decision_row_bool(row, "implementation_authorized"),
+        source_mutation_authorized=_decision_row_bool(row, "source_mutation_authorized"),
+        docs_mutation_authorized=_decision_row_bool(row, "docs_mutation_authorized"),
+        runtime_mutation_authorized=_decision_row_bool(row, "runtime_mutation_authorized"),
+        mutation_scope_refs=scope,
+    )
+
+
+def _iter_jsonl(path: Path):
+    """Yield well-formed JSON objects from a JSONL file; skip blanks/garbage; tolerate absence."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(row, dict):
+            yield row
+
+
+def _atomic_write_lines(path: Path, lines: list[str]) -> None:
+    """Atomically (tmp + replace) write newline-terminated lines. Best-effort; never raises."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".replay-tmp")
+        tmp.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
+def replay_decision_log(
+    decision_log_path: str | os.PathLike[str],
+    shadow_ledger_path: str | os.PathLike[str],
+    *,
+    kernel_up: bool = True,
+) -> dict[str, int]:
+    """Replay the gate's REAL-verdict decision log through ``policy_decide``.
+
+    For each logged gated decision, recompute the new ``policy_decide`` verdict and
+    diff it against the gate's REAL exit code (``legacy_exit == 2`` ⇒ blocked). The
+    divergence ledger is REBUILT atomically from the full log on every call — a
+    derived projection, so the timer can run repeatedly with no offset drift or
+    double-counting. Returns counts (``total`` / ``divergences`` / ``loosening`` /
+    ``tightening``) for the evaluator. Never raises.
+    """
+    shadow_ledger_path = Path(shadow_ledger_path)
+    summary = {"total": 0, "divergences": 0, "loosening": 0, "tightening": 0}
+    out_lines: list[str] = []
+    for row in _iter_jsonl(Path(decision_log_path)):
+        summary["total"] += 1
+        tool_call = ToolCall(
+            tool_name=str(row.get("tool_name") or ""),
+            command=str(row.get("command") or ""),
+            file_path=str(row.get("file_path") or ""),
+        )
+        task = _task_from_decision_row(row)
+        role = str(row.get("role") or "") or None
+        try:
+            legacy_blocked = int(row.get("legacy_exit", 0)) == 2
+        except (ValueError, TypeError):
+            legacy_blocked = False
+        record = shadow_compare(
+            tool_call, task, role, legacy_blocked=legacy_blocked, kernel_up=kernel_up
+        )
+        if record.diverged:
+            summary["divergences"] += 1
+            if legacy_blocked and record.new_decision.allowed:
+                summary["loosening"] += 1
+            elif not legacy_blocked and record.new_decision.blocked:
+                summary["tightening"] += 1
+            out_lines.append(json.dumps(record.to_row()))
+    _atomic_write_lines(shadow_ledger_path, out_lines)
+    return summary
+
+
+def _parse_decision_ts(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+
+def evaluate_shadow_clean(
+    decision_log_path: str | os.PathLike[str],
+    shadow_ledger_path: str | os.PathLike[str],
+    *,
+    min_days: float = 7.0,
+    min_decisions: int = 200,
+) -> dict[str, object]:
+    """Compute "shadow-week-clean + asymmetric-divergence" for the 3b-cutover gate.
+
+    CLEAN iff BOTH:
+
+    * **coverage** — the decision log spans ``>= min_days`` AND carries
+      ``>= min_decisions`` gated decisions. An empty/short log (no real producer
+      evidence) is therefore NOT clean — the exact freeze-blocks-thaw bug this fix
+      closes: the old gate had a clean-shaped predicate but nothing producing the
+      evidence, so it could neither be satisfied nor honestly read.
+    * **asymmetry** — every divergence is a LOOSENING (legacy blocked, policy_decide
+      allows: the FM-16 false-positive being fixed) and there are ZERO TIGHTENING
+      divergences (legacy allowed, policy_decide blocks). Zero tightening proves
+      policy_decide is a strict relaxation of the legacy gate — it only removes
+      over-blocks, never adds a new block that would regress live work at cutover.
+
+    Returns a structured verdict (never raises). The caller decides exit status.
+    """
+    total = 0
+    timestamps: list[datetime] = []
+    for row in _iter_jsonl(Path(decision_log_path)):
+        total += 1
+        ts = _parse_decision_ts(row.get("ts"))
+        if ts is not None:
+            timestamps.append(ts)
+
+    span_days = 0.0
+    if len(timestamps) >= 2:
+        span_days = (max(timestamps) - min(timestamps)).total_seconds() / 86400.0
+
+    divergences = loosening = tightening = 0
+    for row in _iter_jsonl(Path(shadow_ledger_path)):
+        if not row.get("diverged"):
+            continue
+        divergences += 1
+        legacy_blocked = bool(row.get("legacy_blocked"))
+        new_verdict = str(row.get("new_verdict") or "")
+        if legacy_blocked and new_verdict == "allow":
+            loosening += 1
+        elif not legacy_blocked and new_verdict == "block":
+            tightening += 1
+
+    coverage_ok = total >= min_decisions and span_days >= min_days
+    asymmetric_ok = tightening == 0
+    clean = coverage_ok and asymmetric_ok
+
+    reasons: list[str] = []
+    if total < min_decisions:
+        reasons.append(f"insufficient evidence: {total} decisions < {min_decisions} required")
+    if span_days < min_days:
+        reasons.append(f"short window: {span_days:.1f}d span < {min_days}d shadow week")
+    if tightening:
+        reasons.append(
+            f"{tightening} TIGHTENING divergence(s): policy_decide newly blocks allowed work"
+        )
+
+    return {
+        "clean": clean,
+        "coverage_ok": coverage_ok,
+        "asymmetric_ok": asymmetric_ok,
+        "total_decisions": total,
+        "span_days": round(span_days, 2),
+        "divergences": divergences,
+        "loosening": loosening,
+        "tightening": tightening,
+        "min_days": min_days,
+        "min_decisions": min_decisions,
+        "reasons": reasons,
+    }
+
+
 # --- Advisory shadow CLI ------------------------------------------------------
 
 

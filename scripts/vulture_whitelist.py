@@ -239,6 +239,14 @@ from shared.operator_vad_gate import (
     OperatorVADDecision,
     OperatorVADGate,
 )
+from shared.policy_decide import evaluate_shadow_clean, replay_decision_log
+
+# Reform 3b shadow producer: replay_decision_log + evaluate_shadow_clean are the
+# producer/evaluator entrypoints invoked by the extensionless scripts
+# policy-decide-shadow-{replay,eval} (+ policy-decide-shadow-replay.timer), which
+# vulture cannot scan — reference them so the unused-callable gate sees the use.
+evaluate_shadow_clean
+replay_decision_log
 from shared.private_to_public_bridge import BridgeResult, evaluate_bridge
 from shared.programme_revenue_braid_adapters import (
     BraidSnapshotRowRef,
