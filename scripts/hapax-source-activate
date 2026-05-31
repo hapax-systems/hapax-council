@@ -51,6 +51,7 @@ rollback_message=""
 quarantined_untracked_count=0
 quarantined_untracked_path=""
 quarantined_symlink_count=0
+runtime_profile_link_count=0
 audio_critical_paths=(
     agents/studio_compositor/director_loop.py
     config/audio-routing.yaml
@@ -125,7 +126,7 @@ write_receipt() {
         "$previous_active_target" "$promoted_active_target" \
         "$rollback_status" "$rollback_message" \
         "$quarantined_untracked_count" "$quarantined_untracked_path" \
-        "$quarantined_symlink_count" <<'PY'
+        "$quarantined_symlink_count" "$runtime_profile_link_count" <<'PY'
 from __future__ import annotations
 
 import json
@@ -165,6 +166,7 @@ from pathlib import Path
     quarantined_untracked_count,
     quarantined_untracked_path,
     quarantined_symlink_count,
+    runtime_profile_link_count,
 ) = sys.argv[1:]
 
 record = {
@@ -210,6 +212,7 @@ record = {
         "untracked_quarantine_count": int(quarantined_untracked_count),
         "untracked_quarantine_path": quarantined_untracked_path,
         "untracked_symlink_removed_count": int(quarantined_symlink_count),
+        "runtime_profile_link_count": int(runtime_profile_link_count),
     },
 }
 
@@ -608,6 +611,9 @@ quarantine_untracked_active_source() {
 
     for rel in "${untracked_paths[@]}"; do
         [[ -z "$rel" ]] && continue
+        if is_canonical_runtime_profile_link "$source_root" "$rel"; then
+            continue
+        fi
         mkdir -p "$quarantined_untracked_path/$(dirname "$rel")"
         mv "$source_root/$rel" "$quarantined_untracked_path/$rel"
         quarantined_untracked_count=$((quarantined_untracked_count + 1))
@@ -631,7 +637,52 @@ quarantine_untracked_active_source() {
     fi
 }
 
+is_canonical_runtime_profile_link() {
+    local source_root="$1"
+    local rel="$2"
+    local path="$source_root/$rel"
+    [[ "$rel" == profiles/* ]] || return 1
+    [[ -L "$path" ]] || return 1
+    [[ -d "$CANONICAL_REPO/profiles" ]] || return 1
+
+    local target_real canonical_profiles_real
+    target_real="$(readlink -f "$path" 2>/dev/null || true)"
+    canonical_profiles_real="$(realpath -m "$CANONICAL_REPO/profiles")"
+    [[ -n "$target_real" && "$target_real" == "$canonical_profiles_real"/* ]]
+}
+
+link_canonical_runtime_profiles() {
+    local source_root="${1:-$ACTIVE_WORKTREE}"
+    local canonical_profiles="$CANONICAL_REPO/profiles"
+    local active_profiles="$source_root/profiles"
+    [[ -d "$canonical_profiles" && -d "$active_profiles" ]] || return 0
+
+    local canonical_profiles_real active_profiles_real
+    canonical_profiles_real="$(realpath -m "$canonical_profiles")"
+    active_profiles_real="$(realpath -m "$active_profiles")"
+    [[ "$canonical_profiles_real" != "$active_profiles_real" ]] || return 0
+
+    local profile_path base dest
+    while IFS= read -r -d '' profile_path; do
+        base="$(basename "$profile_path")"
+        case "$base" in
+            .gitkeep|.quarantine) continue ;;
+        esac
+        dest="$active_profiles/$base"
+        if [[ -e "$dest" || -L "$dest" ]]; then
+            continue
+        fi
+        ln -s "$profile_path" "$dest"
+        runtime_profile_link_count=$((runtime_profile_link_count + 1))
+    done < <(find "$canonical_profiles" -mindepth 1 -maxdepth 1 -print0)
+
+    if [[ "$runtime_profile_link_count" -gt 0 ]]; then
+        echo "hapax-source-activate: linked $runtime_profile_link_count runtime profile files from canonical worktree"
+    fi
+}
+
 quarantine_untracked_active_source "$candidate_worktree"
+link_canonical_runtime_profiles "$candidate_worktree"
 
 sync_dependency_environment() {
     local source_root="${1:-$ACTIVE_WORKTREE}"

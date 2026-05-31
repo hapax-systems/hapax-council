@@ -38,6 +38,7 @@ def _make_repos(tmp_path: Path) -> tuple[Path, Path, str]:
     _git(seed, "config", "user.name", "Source Activate")
     _write(seed / "README.md", "base\n")
     _write(seed / "config" / "usb-topology-policy.json", '{"known_absences": {}}\n')
+    _write(seed / "profiles" / ".gitkeep", "")
     _write(
         seed / "scripts" / "hapax-post-merge-deploy",
         textwrap.dedent(
@@ -246,6 +247,28 @@ def test_activation_quarantines_untracked_active_source_before_sweep(tmp_path: P
     assert receipt["source_hygiene"]["untracked_quarantine_count"] == 1
     assert receipt["source_hygiene"]["untracked_symlink_removed_count"] == 1
     assert "untracked-quarantine" in receipt["source_hygiene"]["untracked_quarantine_path"]
+
+
+def test_activation_links_canonical_runtime_profiles_without_quarantining_them(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+    runtime_profile = canonical / "profiles" / "health-history.jsonl"
+    _write(runtime_profile, '{"status":"healthy"}\n')
+
+    first = _run_activate(tmp_path, canonical)
+    second = _run_activate(tmp_path, canonical)
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    active_profile = tmp_path / "active-source" / "profiles" / "health-history.jsonl"
+    assert active_profile.is_symlink()
+    assert os.readlink(active_profile) == str(runtime_profile)
+    assert _git(tmp_path / "active-source", "rev-parse", "HEAD") == new_sha
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "no_op"
+    assert receipt["source_hygiene"]["runtime_profile_link_count"] == 0
+    assert receipt["source_hygiene"]["untracked_quarantine_count"] == 0
 
 
 def test_failed_deploy_writes_failed_receipt_without_last_success(tmp_path: Path) -> None:
