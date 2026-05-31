@@ -959,7 +959,7 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt.get("route_policy_compatibility_mode") in {None, "none"}
 
 
-def test_policy_rollback_allows_full_profile_after_route_decision_receipt(
+def test_policy_rollback_is_retired_before_launcher(
     tmp_path: Path,
 ) -> None:
     _worktree(tmp_path / "worktree")
@@ -1005,17 +1005,17 @@ printf '%s\\n' "$@" > {launcher_args}
         },
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 10
+    assert not launcher_args.exists()
+    assert "policy_rollback_retired" in result.stderr
     route_receipt = json.loads(route_decisions.read_text(encoding="utf-8").splitlines()[-1])
-    assert route_receipt["action"] == "launch"
-    assert "rollback_full_profile_launch" in route_receipt["reason_codes"]
+    assert route_receipt["action"] == "hold"
+    assert "policy_rollback_retired" in route_receipt["reason_codes"]
+    assert "signed_route_authority_receipt_required" in route_receipt["reason_codes"]
     assert route_receipt["route_policy_green"] is False
-    assert route_receipt["clog_state"] == "compatibility_degraded"
-    assert route_receipt["compatibility_mode"] == "rollback_full_profile"
-    assert route_receipt["degraded_state"] == "compatibility_rollback"
-    assert route_receipt["registry_freshness_green"] is False
-    assert route_receipt["quota_freshness_green"] is False
-    assert route_receipt["resource_freshness_green"] is False
+    assert route_receipt["clog_state"] == "held"
+    assert route_receipt["compatibility_mode"] == "none"
+    assert route_receipt["degraded_state"] is None
     assert route_receipt["route_selection_authority"] is False
     dispatch_receipt = json.loads(
         (tmp_path / "ledger" / "methodology-dispatch.jsonl")
@@ -1023,12 +1023,9 @@ printf '%s\\n' "$@" > {launcher_args}
         .splitlines()[-1]
     )
     assert dispatch_receipt["route_policy_green"] is False
-    assert dispatch_receipt["route_policy_clog_state"] == "compatibility_degraded"
-    assert dispatch_receipt["route_policy_compatibility_mode"] == "rollback_full_profile"
-    assert dispatch_receipt["route_policy_degraded_state"] == "compatibility_rollback"
-    assert dispatch_receipt["route_policy_registry_freshness_green"] is False
-    assert dispatch_receipt["route_policy_quota_freshness_green"] is False
-    assert dispatch_receipt["route_policy_resource_freshness_green"] is False
+    assert dispatch_receipt["route_policy_clog_state"] == "held"
+    assert dispatch_receipt["route_policy_compatibility_mode"] == "none"
+    assert dispatch_receipt["route_policy_degraded_state"] is None
     assert dispatch_receipt["route_policy_route_selection_authority"] is False
 
 
@@ -1077,7 +1074,7 @@ printf '%s\\n' "$@" > {launcher_args}
 
     assert result.returncode == 10
     assert not launcher_args.exists()
-    assert "rollback_non_full_profile_hold" in result.stderr
+    assert "policy_rollback_retired" in result.stderr
     receipt = json.loads(
         (tmp_path / "ledger" / "methodology-dispatch.jsonl")
         .read_text(encoding="utf-8")
@@ -1088,6 +1085,7 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["route_policy_action"] == "hold"
     assert receipt["route_policy_green"] is False
     assert receipt["route_policy_clog_state"] == "held"
+    assert "policy_rollback_retired" in receipt["route_policy_reason_codes"]
 
 
 def test_claude_sonnet_fallback_refuses_authoritative_dispatch(tmp_path: Path) -> None:

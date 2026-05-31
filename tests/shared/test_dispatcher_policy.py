@@ -486,47 +486,35 @@ def test_dimensional_policy_vetoes_missing_required_tool() -> None:
     assert any(veto.code == "required_tool_unavailable" for veto in candidate.vetoes)
 
 
-def test_policy_rollback_launch_is_compatibility_degraded_not_green() -> None:
+def test_policy_rollback_is_retired_and_requires_signed_route_receipts() -> None:
     request = _request(rollback_mode=True)
 
     decision = evaluate_dispatch_policy(request, now=NOW)
 
-    assert decision.action is DispatchAction.LAUNCH
-    assert decision.launch_allowed is True
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
     assert decision.route_policy_green is False
-    assert decision.clog_state is ClogRouteState.COMPATIBILITY_DEGRADED
-    assert decision.compatibility_mode == "rollback_full_profile"
-    assert decision.degraded_state == "compatibility_rollback"
-    assert decision.registry_freshness_green is False
-    assert decision.quota_freshness_green is False
-    assert decision.resource_freshness_green is False
+    assert decision.clog_state is ClogRouteState.HELD
+    assert decision.compatibility_mode == "none"
+    assert decision.degraded_state is None
     assert decision.route_selection_authority is False
-    assert "rollback_full_profile_launch" in decision.reason_codes
+    assert "policy_rollback_retired" in decision.reason_codes
+    assert "signed_route_authority_receipt_required" in decision.reason_codes
 
 
-def test_policy_rollback_refuses_unsupported_routes() -> None:
+def test_policy_rollback_retirement_does_not_fall_back_to_legacy_route_checks() -> None:
     request = _request(
         rollback_mode=True,
         legacy_route_supported=False,
-    )
-
-    decision = evaluate_dispatch_policy(request, now=NOW)
-
-    assert decision.action is DispatchAction.REFUSE
-    assert decision.route_policy_green is False
-    assert decision.clog_state is ClogRouteState.REFUSED
-    assert "rollback_unsupported_route_refused" in decision.reason_codes
-
-
-def test_policy_rollback_refuses_read_only_mutation_route() -> None:
-    request = _request(
-        rollback_mode=True,
         legacy_route_mutable=False,
     )
 
     decision = evaluate_dispatch_policy(request, now=NOW)
 
-    assert decision.action is DispatchAction.REFUSE
+    assert decision.action is DispatchAction.HOLD
     assert decision.route_policy_green is False
-    assert decision.clog_state is ClogRouteState.REFUSED
-    assert "rollback_read_only_mutation_refused" in decision.reason_codes
+    assert decision.clog_state is ClogRouteState.HELD
+    assert decision.reason_codes == (
+        "policy_rollback_retired",
+        "signed_route_authority_receipt_required",
+    )
