@@ -347,6 +347,31 @@ class TestObswsCompatibility:
 
 
 class TestProducerRestart:
+    def test_restart_sequence_allows_bridge_darkplaces_bridge_order(
+        self, reset_mod: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[tuple[str, float]] = []
+
+        def fake_restart(service_name: str, *, timeout: float) -> bool:
+            calls.append((service_name, timeout))
+            return True
+
+        monkeypatch.setattr(reset_mod, "_restart_producer_service", fake_restart)
+
+        assert reset_mod._restart_producer_services(
+            [
+                "hapax-obs-video50-yuyv-compat-bridge.service",
+                "hapax-darkplaces-v4l2.service",
+                "hapax-obs-video50-yuyv-compat-bridge.service",
+            ],
+            timeout=12.0,
+        )
+        assert calls == [
+            ("hapax-obs-video50-yuyv-compat-bridge.service", 12.0),
+            ("hapax-darkplaces-v4l2.service", 12.0),
+            ("hapax-obs-video50-yuyv-compat-bridge.service", 12.0),
+        ]
+
     def test_restart_fallback_kills_stale_unit_children(
         self, reset_mod: types.ModuleType, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -378,6 +403,36 @@ class TestProducerRestart:
             ["systemctl", "--user", "reset-failed", "hapax-darkplaces-v4l2.service"],
             ["systemctl", "--user", "start", "hapax-darkplaces-v4l2.service"],
         ]
+
+
+class TestObsLogV4l2Errors:
+    def test_scan_starts_at_eof_then_reports_fresh_device_timeout(
+        self, reset_mod: types.ModuleType, tmp_path: Path
+    ) -> None:
+        log = tmp_path / "obs.txt"
+        log.write_text(
+            "14:00:00.000: v4l2-input: /dev/video50: select timed out\n",
+            encoding="utf-8",
+        )
+
+        cursor, reason = reset_mod._scan_obs_log_v4l2_errors(
+            reset_mod.ObsLogCursor(),
+            log_dir=tmp_path,
+            device_id="/dev/video50",
+        )
+        assert reason is None
+
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write("14:00:01.000: v4l2-input: /dev/video50: select timed out\n")
+
+        cursor, reason = reset_mod._scan_obs_log_v4l2_errors(
+            cursor,
+            log_dir=tmp_path,
+            device_id="/dev/video50",
+        )
+        assert reason == "obs_log_v4l2_timeout:/dev/video50"
+        assert cursor.path == log
+        assert cursor.offset == log.stat().st_size
 
 
 class TestHealthMetrics:
@@ -704,3 +759,62 @@ class TestMonitorLoop:
         assert restart_calls == [("hapax-darkplaces-v4l2.service", 30.0)]
         assert client.set_scene_item_enabled.call_count == 4
         assert "hapax_obs_v4l2_source_producer_restarts_total 1" in prom_path.read_text()
+
+    def test_static_screenshot_can_be_ignored_when_log_errors_are_authority(
+        self,
+        reset_mod: types.ModuleType,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client = MagicMock()
+        client.get_source_active.return_value = MagicMock(video_active=True)
+        client.get_source_screenshot.return_value = MagicMock(image_data="same-frame")
+        prom_path = tmp_path / "reset.prom"
+        status_path = tmp_path / "status.json"
+        sleep_calls = 0
+        real_time = reset_mod.time
+        monotonic_values = iter([100.0, 170.0])
+        monkeypatch.setattr(reset_mod, "_connect", lambda _host, _port: client)
+        monkeypatch.setattr(reset_mod, "STATUS_PATH", status_path)
+        monkeypatch.setattr(reset_mod, "STATUS_DIR", tmp_path)
+        monkeypatch.setattr(reset_mod, "_shutdown", False)
+
+        def fake_monotonic() -> float:
+            return next(monotonic_values)
+
+        def stop_after_two_loop_sleeps(_seconds: float) -> None:
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls >= 2:
+                monkeypatch.setattr(reset_mod, "_shutdown", True)
+
+        monkeypatch.setattr(
+            reset_mod,
+            "time",
+            types.SimpleNamespace(
+                monotonic=fake_monotonic,
+                sleep=stop_after_two_loop_sleeps,
+                strftime=real_time.strftime,
+                gmtime=real_time.gmtime,
+            ),
+        )
+
+        try:
+            reset_mod.monitor_loop(
+                host="localhost",
+                port=4455,
+                source_name="Video Capture Device (V4L2)",
+                poll_interval=0.01,
+                stall_threshold=60.0,
+                reset_cooldown=60.0,
+                metrics_path=prom_path,
+                ignore_static_screenshot_stalls=True,
+            )
+        finally:
+            monkeypatch.setattr(reset_mod, "_shutdown", False)
+
+        status = json.loads(status_path.read_text())
+        assert status["state"] == "healthy"
+        assert status["reset_count"] == 0
+        assert status["reason"] == "static_screenshot_ignored"
+        client.set_scene_item_enabled.assert_not_called()
