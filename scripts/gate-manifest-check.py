@@ -210,20 +210,45 @@ def check_codex(
     return errors
 
 
-def check_marker_runtime(
-    runtime_name: str, runtime: dict[str, Any], *, script_path: Path
-) -> list[str]:
-    text = script_path.read_text(encoding="utf-8")
-    missing = [
-        marker
-        for marker in _literal_list(
-            runtime.get("capability_markers"), f"manifest {runtime_name}.capability_markers"
-        )
-        if marker not in text
-    ]
+def _check_marker_file(runtime_name: str, label: str, path: Path, markers: list[str]) -> list[str]:
+    if not path.exists():
+        return [f"{runtime_name} {label} missing: {path}"]
+    text = path.read_text(encoding="utf-8")
+    missing = [marker for marker in markers if marker not in text]
     if not missing:
         return []
-    return [f"{runtime_name} capability marker drift in {script_path}: missing {missing!r}"]
+    return [f"{runtime_name} {label} marker drift in {path}: missing {missing!r}"]
+
+
+def check_marker_runtime(
+    runtime_name: str, runtime: dict[str, Any], *, repo_root: Path, script_path: Path
+) -> list[str]:
+    errors = _check_marker_file(
+        runtime_name,
+        "capability",
+        script_path,
+        _literal_list(
+            runtime.get("capability_markers"), f"manifest {runtime_name}.capability_markers"
+        ),
+    )
+    adapter_raw = runtime.get("hook_adapter")
+    if adapter_raw:
+        adapter_path = Path(str(adapter_raw))
+        if not adapter_path.is_absolute():
+            adapter_path = repo_root / adapter_path
+        errors.extend(
+            _check_marker_file(
+                runtime_name,
+                "adapter",
+                adapter_path,
+                _literal_list(
+                    runtime.get("adapter_markers"), f"manifest {runtime_name}.adapter_markers"
+                ),
+            )
+        )
+        if adapter_path.exists() and not os.access(adapter_path, os.X_OK):
+            errors.append(f"{runtime_name} adapter not executable: {adapter_path}")
+    return errors
 
 
 def check_ci(runtime: dict[str, Any], *, workflow_path: Path) -> list[str]:
@@ -303,6 +328,7 @@ def main(argv: list[str] | None = None) -> int:
             check_marker_runtime(
                 runtime_name,
                 runtime,
+                repo_root=repo_root,
                 script_path=path_from_arg(override, default_script),
             )
         )

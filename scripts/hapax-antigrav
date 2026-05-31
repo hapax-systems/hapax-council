@@ -359,6 +359,20 @@ This \`.agent/\` file exists only for older Antigravity builds.
 EOF_COMPAT
 echo "hapax-antigrav: refreshed compatibility $COMPAT_RULE_PATH" >&2
 
+# ---- export identity envs (for cc-claim and downstream tools) -------------
+
+# Per-session id (coordination reform Phase 1): stable uuid for FM-2 lease keying.
+SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$SESSION" "$$")}"
+export HAPAX_AGENT_INTERFACE="antigravity"
+export HAPAX_AGENT_NAME="$SESSION"
+export HAPAX_AGENT_SLOT="$SESSION"
+export HAPAX_AGENT_ROLE="$SESSION"
+export HAPAX_WORKTREE_ROLE="$SESSION"
+export HAPAX_SESSION_ID="$SESSION_UUID"
+export CLAUDE_ROLE="$SESSION"
+export PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
+export LOGOS_BASE_URL="${LOGOS_BASE_URL:-http://localhost:8051/api}"
+
 # ---- claim task ----------------------------------------------------------
 
 if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
@@ -366,7 +380,10 @@ if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
   if [ ! -x "$CC_CLAIM" ]; then
     echo "hapax-antigrav: cc-claim not executable at $CC_CLAIM; skipping claim" >&2
   else
-    HAPAX_AGENT_NAME="$SESSION" CLAUDE_ROLE="$SESSION" \
+    HAPAX_AGENT_NAME="$SESSION" \
+      HAPAX_AGENT_ROLE="$SESSION" \
+      HAPAX_SESSION_ID="$SESSION_UUID" \
+      CLAUDE_ROLE="$SESSION" \
       "$CC_CLAIM" "$TASK_ID" || {
       echo "hapax-antigrav: cc-claim failed for '$TASK_ID' — refusing to launch" >&2
       exit 8
@@ -395,20 +412,6 @@ if [ -n "$INFLECTION_FILE" ]; then
   PROMPT_FILE="$RELAY_DIR/$base"
   echo "hapax-antigrav: staged inflection at $RELAY_DIR/$base" >&2
 fi
-
-# ---- export identity envs (for downstream tools that read $HAPAX_*) -----
-
-# Per-session id (coordination reform Phase 1): stable uuid for FM-2 lease keying.
-SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$SESSION" "$$")}"
-export HAPAX_AGENT_INTERFACE="antigravity"
-export HAPAX_AGENT_NAME="$SESSION"
-export HAPAX_AGENT_SLOT="$SESSION"
-export HAPAX_AGENT_ROLE="$SESSION"
-export HAPAX_WORKTREE_ROLE="$SESSION"
-export HAPAX_SESSION_ID="$SESSION_UUID"
-export CLAUDE_ROLE="$SESSION"
-export PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
-export LOGOS_BASE_URL="${LOGOS_BASE_URL:-http://localhost:8051/api}"
 
 # ---- spawn record --------------------------------------------------------
 

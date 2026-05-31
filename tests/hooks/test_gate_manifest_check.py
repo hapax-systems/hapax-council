@@ -100,6 +100,25 @@ def test_antigravity_cli_and_ide_marker_drift_fails(tmp_path: Path) -> None:
     assert ".agents/workflows" in result.stderr
 
 
+def test_antigravity_adapter_marker_drift_fails(tmp_path: Path) -> None:
+    manifest = _manifest()
+    adapter = tmp_path / "antigrav-hook-adapter.sh"
+    source = (REPO_ROOT / manifest["runtimes"]["antigravity"]["hook_adapter"]).read_text(
+        encoding="utf-8"
+    )
+    adapter.write_text(source.replace("ANTIGRAV_COMMAND", "ANTIGRAV_DISABLED"), encoding="utf-8")
+    adapter.chmod(0o755)
+    manifest["runtimes"]["antigravity"]["hook_adapter"] = str(adapter)
+    manifest_path = tmp_path / "gate-manifest.yaml"
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+
+    result = _run("--skip-claude-settings", "--manifest", manifest_path)
+
+    assert result.returncode == 1
+    assert "antigravity adapter marker drift" in result.stderr
+    assert "ANTIGRAV_COMMAND" in result.stderr
+
+
 def test_vibe_capability_marker_drift_fails(tmp_path: Path) -> None:
     launcher = tmp_path / "hapax-vibe"
     source = (REPO_ROOT / "scripts" / "hapax-vibe").read_text(encoding="utf-8")
