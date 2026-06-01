@@ -289,6 +289,7 @@ def test_obs_v4l2_source_reset_runs_from_activation_worktree_with_notify_watchdo
     assert "--producer-restart-after-obs-resets 1" in parser.get("Service", "ExecStart")
     assert "--obs-log-v4l2-errors" in parser.get("Service", "ExecStart")
     assert "--ignore-static-screenshot-stalls" in parser.get("Service", "ExecStart")
+    assert "--max-static-ignore-seconds 75" in parser.get("Service", "ExecStart")
     assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
     lines = _active_unit_lines(OBS_SOURCE_RESET)
     assert all("%h/projects/hapax-council" not in line for line in lines)
@@ -306,6 +307,7 @@ def test_screwm_obs_v4l2_reset_dropin_pins_obs_to_video50_bridge() -> None:
     assert "--producer-service hapax-darkplaces-v4l2.service" in joined
     assert "--obs-log-v4l2-errors" in joined
     assert "--ignore-static-screenshot-stalls" in joined
+    assert "--max-static-ignore-seconds 75" in joined
     assert "--device-id /dev/video52" not in joined
     assert "--pixelformat NV12" not in joined
     assert "--prom-path %h/.local/share/node_exporter/textfile_collector/" in joined

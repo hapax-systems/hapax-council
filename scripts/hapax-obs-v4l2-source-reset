@@ -264,6 +264,16 @@ def _obs_framerate_value(value: float) -> int:
     return (1 << 32) | int(value)
 
 
+def _nonnegative_seconds(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("seconds must be a number") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("seconds must be non-negative")
+    return parsed
+
+
 def _build_input_settings(
     *,
     device_id: str | None,
@@ -721,6 +731,7 @@ def monitor_loop(
     obs_log_dir: Path | None = None,
     obs_log_device_id: str | None = None,
     ignore_static_screenshot_stalls: bool = False,
+    max_static_ignore_seconds: float = 0.0,
 ) -> None:
     client: Any = None
     reset_count = 0
@@ -841,19 +852,33 @@ def monitor_loop(
             and probe.state is SourceState.STALLED
             and probe.reason == "screenshot_hash_unchanged"
         ):
-            probe = ProbeResult(
-                state=SourceState.HEALTHY,
-                source_active=probe.source_active,
-                screenshot_hash=probe.screenshot_hash,
-                screenshot_available=probe.screenshot_available,
-                stall_seconds=0.0,
-                reason="static_screenshot_ignored",
-            )
+            if max_static_ignore_seconds <= 0 or probe.stall_seconds < max_static_ignore_seconds:
+                probe = ProbeResult(
+                    state=SourceState.HEALTHY,
+                    source_active=probe.source_active,
+                    screenshot_hash=probe.screenshot_hash,
+                    screenshot_available=probe.screenshot_available,
+                    stall_seconds=probe.stall_seconds,
+                    reason="static_screenshot_ignored",
+                )
+            else:
+                probe = ProbeResult(
+                    state=SourceState.STALLED,
+                    source_active=probe.source_active,
+                    screenshot_hash=probe.screenshot_hash,
+                    screenshot_available=probe.screenshot_available,
+                    stall_seconds=probe.stall_seconds,
+                    reason=(
+                        f"static_screenshot_ignore_cap_exceeded:{max_static_ignore_seconds:.0f}s"
+                    ),
+                )
         if probe.state is SourceState.HEALTHY:
             prev_hash = probe.screenshot_hash
-            hash_stable_since = now
+            if probe.reason != "static_screenshot_ignored":
+                hash_stable_since = now
             consecutive_failures = 0
-            last_success_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            if probe.reason != "static_screenshot_ignored":
+                last_success_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         elif probe.state is SourceState.STALLED and probe.stall_seconds < stall_threshold:
             probe = ProbeResult(
                 state=SourceState.HEALTHY,
@@ -1102,6 +1127,15 @@ def main() -> None:
         action="store_true",
         help="Do not reset on unchanged screenshots without fresh OBS v4l2 log errors",
     )
+    parser.add_argument(
+        "--max-static-ignore-seconds",
+        type=_nonnegative_seconds,
+        default=0.0,
+        help=(
+            "Maximum seconds to ignore unchanged screenshots before treating them as a "
+            "stall anyway. Use 0 for the legacy unbounded ignore (default: 0)."
+        ),
+    )
     args = parser.parse_args()
     input_settings = _build_input_settings(
         device_id=args.device_id,
@@ -1140,6 +1174,7 @@ def main() -> None:
         obs_log_dir=args.obs_log_dir if args.obs_log_v4l2_errors else None,
         obs_log_device_id=args.device_id,
         ignore_static_screenshot_stalls=args.ignore_static_screenshot_stalls,
+        max_static_ignore_seconds=args.max_static_ignore_seconds,
     )
 
 
