@@ -170,8 +170,8 @@
           "path": "scripts/darkplaces-v4l2-xvfb.sh",
           "anchors": [
             "v4l2-ctl -d \"$DEVICE\" --set-parm=\"$FPS\"",
-            "-framerate \"$FPS\"",
-            "-f v4l2"
+            "ximagesrc display-name=\"$DISPLAY_NUM\" use-damage=0 show-pointer=false",
+            "v4l2sink device=\"$DEVICE\" sync=false"
           ]
         },
         {
