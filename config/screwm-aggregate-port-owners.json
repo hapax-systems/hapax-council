@@ -168,13 +168,13 @@
         {
           "path": "systemd/units/hapax-obs-v4l2-source-reset.service",
           "anchors": [
-            "--poll-interval 5",
+            "--poll-interval 15",
             "--device-id /dev/video50",
-            "--producer-service hapax-darkplaces-v4l2.service",
-            "--producer-restart-after-obs-resets 1",
-            "--max-static-ignore-seconds 45",
-            "--screenshot-width 320",
-            "--screenshot-height 180"
+            "--obs-log-v4l2-errors",
+            "Restart=no",
+            "--max-static-ignore-seconds 75",
+            "--screenshot-width 160",
+            "--screenshot-height 90"
           ]
         }
       ],
