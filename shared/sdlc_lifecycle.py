@@ -44,6 +44,38 @@ TASK_NON_FULFILLING_CLOSED_STATUSES = frozenset(
 TASK_CLOSED_STATUSES = TASK_FULFILLING_CLOSED_STATUSES | TASK_NON_FULFILLING_CLOSED_STATUSES
 TASK_TERMINAL_STATUSES = TASK_CLOSED_STATUSES | frozenset({"refused"})
 
+# --- Canonical semantic status groups (coordination reform Phase 2: FM-5/G2) ---
+# The single source of truth every status consumer references so the cc-task
+# gate, the PR autoqueue, cc-claim/cc-close and the shape check AGREE. Before
+# this, each hardcoded its own subset: the gate proceeded only on
+# in_progress/claimed/pr_open/merge_queue while the autoqueue admitted the whole
+# `ready` family — so ~88 active `ready` tasks were claimable-but-unmutatable
+# (stranded). Spec: docs/superpowers/specs/2026-05-30-sdlc-frictionless-self-direction-design.md.
+
+#: A fresh, unheld task may be claimed only from `offered`.
+TASK_CLAIMABLE_STATUSES = frozenset({"offered"})
+
+#: Ready-family — implementation done / under review / awaiting merge. Distinct
+#: labels accumulated historically; treated as one concept everywhere.
+TASK_READY_FAMILY_STATUSES = frozenset(
+    {"ci_green", "ready", "ready_for_review", "review_ready", "ready_for_merge"}
+)
+
+#: The owning lane may still mutate files in these states (CI fixes, review
+#: feedback, merge-queue/closeout maintenance). This is the gate proceed-set —
+#: the bash gate's section-9 case MUST match this set (pinned by
+#: tests/hooks/test_cc_task_gate.py::TestStatusVocabularyDrift).
+TASK_MUTABLE_STATUSES = (
+    frozenset({"claimed", "in_progress", "pr_open", "merge_queue"}) | TASK_READY_FAMILY_STATUSES
+)
+
+#: PRs the autoqueue may consider for merge admission (the active, not-yet-closed
+#: ready states). cc-pr-autoqueue adds the fulfilling-closed states separately.
+TASK_MERGE_READY_STATUSES = frozenset({"pr_open", "merge_queue"}) | TASK_READY_FAMILY_STATUSES
+
+#: A lane may RESUME (re-claim) an owned task in these states — not a fresh claim.
+TASK_RESUMABLE_STATUSES = TASK_MERGE_READY_STATUSES
+
 REQUEST_TERMINAL_SKIP_STATUSES = frozenset(
     {"rejected", "deferred", "superseded", "withdrawn", "closed"}
 )
