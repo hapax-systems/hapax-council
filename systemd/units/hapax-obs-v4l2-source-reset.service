@@ -1,7 +1,6 @@
 [Unit]
 Description=Hapax OBS v4l2 capture source auto-reset monitor
 After=pipewire.service hapax-darkplaces-v4l2.service hapax-obs-livestream.service
-Wants=hapax-darkplaces-v4l2.service
 PartOf=hapax-visual-stack.target
 ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-obs-v4l2-source-reset
 
@@ -10,8 +9,8 @@ Type=notify
 NotifyAccess=main
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/hapax-obs-v4l2-source-reset
-ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-obs-v4l2-source-reset --source-name "Video Capture Device (V4L2)" --poll-interval 5 --stall-threshold 60 --reset-cooldown 60 --device-id /dev/video50 --resolution 1920x1080 --framerate 60 --pixelformat YUYV --disable-buffering --auto-reset-input --producer-service hapax-darkplaces-v4l2.service --producer-restart-after-obs-resets 1 --producer-restart-cooldown 120 --producer-restart-timeout 30 --obs-log-v4l2-errors --ignore-static-screenshot-stalls --max-static-ignore-seconds 45 --screenshot-width 320 --screenshot-height 180
-Restart=on-failure
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-obs-v4l2-source-reset --source-name "Video Capture Device (V4L2)" --poll-interval 15 --stall-threshold 60 --reset-cooldown 60 --device-id /dev/video50 --resolution 1920x1080 --framerate 60 --pixelformat YUYV --disable-buffering --auto-reset-input --obs-log-v4l2-errors --ignore-static-screenshot-stalls --max-static-ignore-seconds 75 --screenshot-width 160 --screenshot-height 90
+Restart=no
 RestartSec=15
 WatchdogSec=120
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree

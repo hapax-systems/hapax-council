@@ -215,6 +215,26 @@ def _get_source_screenshot_response(
             image_format="png",
             image_width=width,
             image_height=height,
+            image_compression_quality=quality,
+        )
+    except TypeError:
+        pass
+    try:
+        return client.get_source_screenshot(
+            source_name=source_name,
+            image_format="png",
+            image_width=width,
+            image_height=height,
+            imageCompressionQuality=quality,
+        )
+    except TypeError:
+        pass
+    try:
+        return client.get_source_screenshot(
+            source_name=source_name,
+            image_format="png",
+            image_width=width,
+            image_height=height,
         )
     except TypeError:
         return client.get_source_screenshot(
@@ -841,6 +861,7 @@ def monitor_loop(
     producer_service_sequence = list(producer_services or [])
     if producer_service:
         producer_service_sequence.append(producer_service)
+    initial_reacquire_pending = bool(input_settings)
     obs_log_cursor = ObsLogCursor()
     self_recovered_obs_log_timeouts = 0
     first_self_recovered_obs_log_timeout_monotonic: float | None = None
@@ -852,8 +873,10 @@ def monitor_loop(
             try:
                 client = _connect(host, port)
                 logger.info("connected to OBS at %s:%d", host, port)
-                settings_applied = _apply_input_settings(client, source_name, input_settings)
-                if settings_applied and input_settings:
+                settings_applied = True
+                if initial_reacquire_pending:
+                    settings_applied = _apply_input_settings(client, source_name, input_settings)
+                if settings_applied and input_settings and initial_reacquire_pending:
                     scene_item = _find_scene_item(client, source_name)
                     if scene_item is not None:
                         scene_name, item_id = scene_item
@@ -865,6 +888,7 @@ def monitor_loop(
                             last_reset_monotonic = now
                             prev_hash = None
                             hash_stable_since = now
+                    initial_reacquire_pending = False
             except Exception as exc:
                 logger.debug("OBS connection failed: %s", exc)
                 status = MonitorStatus(
