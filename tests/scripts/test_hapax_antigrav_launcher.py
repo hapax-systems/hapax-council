@@ -183,6 +183,89 @@ def test_launcher_preserves_foreign_hooks_json(tmp_path: Path) -> None:
     assert "not overwriting" in result.stderr
 
 
+def test_wire_hooks_only_wires_gate_without_launching_ide(tmp_path: Path) -> None:
+    # --wire-hooks-only activates the agy enforcing gate (writes hooks.json) and
+    # exits WITHOUT provisioning a worktree, refreshing AGENTS.md, or launching
+    # the agy IDE/tmux lane. This is the path that turns the gate on live without
+    # popping an unsolicited Antigravity window.
+    env = _base_env(tmp_path)
+    bin_dir = Path(env["PATH"].split(":", 1)[0])
+    agy_log = tmp_path / "agy.log"
+    tmux_log = tmp_path / "tmux.log"
+    _write_executable(
+        bin_dir / "agy",
+        f"#!/usr/bin/env bash\nprintf 'CALLED %s\\n' \"$@\" >> {agy_log}\n",
+    )
+    _write_executable(
+        bin_dir / "tmux",
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {tmux_log}
+if [ "$1" = "has-session" ]; then
+  exit 1
+fi
+exit 0
+""",
+    )
+    workdir = tmp_path / "projects" / "hapax-council--antigrav"
+    workdir.mkdir(parents=True)
+
+    result = subprocess.run(
+        [str(LAUNCHER), "--wire-hooks-only", "--cd", str(workdir)],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "wired agy PreToolUse gate" in result.stderr
+
+    hooks_json = Path(env["HOME"]) / ".gemini" / "antigravity-cli" / "hooks.json"
+    assert hooks_json.is_file(), f"hooks.json not deployed; stderr={result.stderr}"
+    data = json.loads(hooks_json.read_text(encoding="utf-8"))
+    entry = data["hooks"]["PreToolUse"][0]
+    assert "antigrav-hook-adapter.sh" in entry["hooks"][0]["command"]
+    assert "cc-task-gate.sh" in entry["hooks"][0]["command"]
+
+    # No IDE / tmux launch — the gate is wired with no unsolicited window.
+    assert not agy_log.exists(), (
+        f"agy must not launch under --wire-hooks-only; stderr={result.stderr}"
+    )
+    assert not tmux_log.exists(), (
+        f"tmux must not launch under --wire-hooks-only; stderr={result.stderr}"
+    )
+    # No worktree-provisioning side effects (AGENTS.md/rules not refreshed).
+    assert not (workdir / ".agents").exists(), "wire-only must not refresh AGENTS rules"
+
+
+def test_wire_hooks_only_fails_closed_on_foreign_hooks(tmp_path: Path) -> None:
+    # If a non-Hapax hooks.json already exists, wire-only must refuse to clobber
+    # it and surface a non-zero exit (fail-closed), leaving the file untouched.
+    env = _base_env(tmp_path)
+    bin_dir = Path(env["PATH"].split(":", 1)[0])
+    _write_executable(bin_dir / "agy", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(bin_dir / "tmux", "#!/usr/bin/env bash\nexit 0\n")
+    cfg_dir = Path(env["HOME"]) / ".gemini" / "antigravity-cli"
+    cfg_dir.mkdir(parents=True)
+    foreign = cfg_dir / "hooks.json"
+    original = '{"hooks": {"PreToolUse": []}, "operator": "custom"}\n'
+    foreign.write_text(original, encoding="utf-8")
+    workdir = tmp_path / "projects" / "hapax-council--antigrav"
+    workdir.mkdir(parents=True)
+
+    result = subprocess.run(
+        [str(LAUNCHER), "--wire-hooks-only", "--cd", str(workdir)],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode != 0, "wire-only must fail closed on a foreign hooks.json"
+    assert "not overwriting" in result.stderr
+    assert foreign.read_text(encoding="utf-8") == original
+
+
 def test_launcher_env_override_missing_fails_closed(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     env["HAPAX_ANTIGRAV_BIN"] = str(tmp_path / "missing-agy")
