@@ -887,6 +887,7 @@ def monitor_loop(
                     stall_seconds=stall_threshold,
                     reason=obs_log_reason,
                 )
+        static_screenshot_cap_exceeded = False
         if (
             ignore_static_screenshot_stalls
             and obs_log_reason is None
@@ -903,6 +904,7 @@ def monitor_loop(
                     reason="static_screenshot_ignored",
                 )
             else:
+                static_screenshot_cap_exceeded = True
                 probe = ProbeResult(
                     state=SourceState.STALLED,
                     source_active=probe.source_active,
@@ -920,7 +922,11 @@ def monitor_loop(
             consecutive_failures = 0
             if probe.reason != "static_screenshot_ignored":
                 last_success_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        elif probe.state is SourceState.STALLED and probe.stall_seconds < stall_threshold:
+        elif (
+            probe.state is SourceState.STALLED
+            and probe.stall_seconds < stall_threshold
+            and not static_screenshot_cap_exceeded
+        ):
             probe = ProbeResult(
                 state=SourceState.HEALTHY,
                 source_active=probe.source_active,

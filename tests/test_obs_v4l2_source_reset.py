@@ -1107,6 +1107,87 @@ class TestMonitorLoop:
         calls = client.set_scene_item_enabled.call_args_list
         assert [call.kwargs["scene_item_enabled"] for call in calls] == [False, True]
 
+    def test_static_screenshot_ignore_cap_is_hard_boundary_below_stall_threshold(
+        self,
+        reset_mod: types.ModuleType,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client = MagicMock()
+        client.get_source_active.return_value = MagicMock(video_active=True)
+        client.get_source_screenshot.return_value = MagicMock(image_data="same-frame")
+        client.get_current_program_scene.return_value = MagicMock(scene_name="Scene")
+        client.get_scene_item_list.return_value = MagicMock(
+            scene_items=[{"sourceName": "Video Capture Device (V4L2)", "sceneItemId": 366}]
+        )
+        prom_path = tmp_path / "reset.prom"
+        status_path = tmp_path / "status.json"
+        sleep_calls = 0
+        real_time = reset_mod.time
+        monotonic_values = iter([100.0, 130.0])
+        monkeypatch.setattr(reset_mod, "_connect", lambda _host, _port: client)
+        monkeypatch.setattr(reset_mod, "_send_ntfy", lambda _reason: None)
+        monkeypatch.setattr(reset_mod, "STATUS_PATH", status_path)
+        monkeypatch.setattr(reset_mod, "STATUS_DIR", tmp_path)
+        monkeypatch.setattr(reset_mod, "_shutdown", False)
+
+        def fake_monotonic() -> float:
+            return next(monotonic_values)
+
+        def fake_toggle(toggle_client, scene_name: str, item_id: int) -> bool:
+            toggle_client.set_scene_item_enabled(
+                scene_name=scene_name,
+                scene_item_id=item_id,
+                scene_item_enabled=False,
+            )
+            toggle_client.set_scene_item_enabled(
+                scene_name=scene_name,
+                scene_item_id=item_id,
+                scene_item_enabled=True,
+            )
+            return True
+
+        monkeypatch.setattr(reset_mod, "_toggle_visibility", fake_toggle)
+
+        def stop_after_two_loop_sleeps(_seconds: float) -> None:
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls >= 2:
+                monkeypatch.setattr(reset_mod, "_shutdown", True)
+
+        monkeypatch.setattr(
+            reset_mod,
+            "time",
+            types.SimpleNamespace(
+                monotonic=fake_monotonic,
+                sleep=stop_after_two_loop_sleeps,
+                strftime=real_time.strftime,
+                gmtime=real_time.gmtime,
+            ),
+        )
+
+        try:
+            reset_mod.monitor_loop(
+                host="localhost",
+                port=4455,
+                source_name="Video Capture Device (V4L2)",
+                poll_interval=0.01,
+                stall_threshold=60.0,
+                reset_cooldown=60.0,
+                metrics_path=prom_path,
+                ignore_static_screenshot_stalls=True,
+                max_static_ignore_seconds=15.0,
+            )
+        finally:
+            monkeypatch.setattr(reset_mod, "_shutdown", False)
+
+        status = json.loads(status_path.read_text())
+        assert status["state"] == "reconnected"
+        assert status["reason"] == "static_screenshot_ignore_cap_exceeded:15s"
+        assert status["reset_count"] == 1
+        calls = client.set_scene_item_enabled.call_args_list
+        assert [call.kwargs["scene_item_enabled"] for call in calls] == [False, True]
+
     def test_repeated_self_recovered_log_timeouts_reset_across_polls(
         self,
         reset_mod: types.ModuleType,
