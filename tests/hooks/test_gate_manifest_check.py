@@ -143,6 +143,23 @@ def test_gemini_capability_marker_drift_fails(tmp_path: Path) -> None:
     assert "--approval-mode" in result.stderr
 
 
+def test_gate_manifest_check_is_wired_in_ci_and_precommit() -> None:
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    precommit_text = (REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    # The checker runs in CI (codex/antigrav/vibe/gemini/ci wiring) and in
+    # pre-commit (the live ~/.claude/settings.json, the most drift-prone wiring).
+    assert "scripts/gate-manifest-check.py" in ci_text
+    assert "scripts/gate-manifest-check.py" in precommit_text
+    assert "--require-claude-settings" in precommit_text  # live check in pre-commit
+    assert "--skip-claude-settings" in ci_text  # CI runners have no live settings
+    # The manifest lists its own CI invocation so the checker self-verifies the
+    # CI wiring is present (check_ci run-marker round-trip).
+    manifest = _manifest()
+    assert any(
+        "gate-manifest-check.py" in marker for marker in manifest["runtimes"]["ci"]["run_markers"]
+    )
+
+
 def test_ci_job_drift_fails(tmp_path: Path) -> None:
     workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text())
     workflow["jobs"].pop("security")

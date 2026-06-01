@@ -167,6 +167,47 @@ def _row_to_envelope(row: sqlite3.Row) -> Envelope:
     return Envelope.model_construct(**d)
 
 
+# Canonical Claude coordination-lane names (greek slots). Codex lanes are
+# ``cx-<color>``; Gemini is ``iota``; Antigrav lanes start ``antigrav``; Vibe
+# lanes start ``vbe``/``vibe``. These predicates are the single source of truth
+# shared by the per-runtime broadcast groups and the cross-runtime ``workers``
+# group (reform §6 P1 — every runtime is reachable by a group broadcast).
+_CLAUDE_LANE_NAMES = frozenset(
+    {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
+)
+
+
+def _is_claude_lane(peer: str) -> bool:
+    return peer in _CLAUDE_LANE_NAMES and not peer.startswith("cx-")
+
+
+def _is_codex_lane(peer: str) -> bool:
+    return peer.startswith("cx-")
+
+
+def _is_gemini_lane(peer: str) -> bool:
+    return peer == "iota"
+
+
+def _is_antigrav_lane(peer: str) -> bool:
+    return peer.startswith("antigrav")
+
+
+def _is_vibe_lane(peer: str) -> bool:
+    return peer.startswith("vbe") or peer.startswith("vibe")
+
+
+def _is_worker_lane(peer: str) -> bool:
+    """A recognised executor lane across any of the five runtimes."""
+    return (
+        _is_claude_lane(peer)
+        or _is_codex_lane(peer)
+        or _is_gemini_lane(peer)
+        or _is_antigrav_lane(peer)
+        or _is_vibe_lane(peer)
+    )
+
+
 def expand_recipients(
     spec: str,
     relay_dir: Path | None = None,
@@ -182,27 +223,22 @@ def expand_recipients(
         if not peers:
             raise ValueError(f"Broadcast spec '{spec}' but no peers found in {relay_dir}")
 
-        claude_names = {
-            "alpha",
-            "beta",
-            "gamma",
-            "delta",
-            "epsilon",
-            "zeta",
-            "eta",
-            "theta",
-        }
-
         if group == "all":
             return peers
         elif group == "coordinators":
             return [p for p in peers if p != "rte" and not p.startswith("timer:")]
         elif group == "claude":
-            return [p for p in peers if p in claude_names and not p.startswith("cx-")]
+            return [p for p in peers if _is_claude_lane(p)]
         elif group == "codex":
-            return [p for p in peers if p.startswith("cx-")]
+            return [p for p in peers if _is_codex_lane(p)]
         elif group == "gemini":
-            return [p for p in peers if p == "iota"]
+            return [p for p in peers if _is_gemini_lane(p)]
+        elif group == "antigrav":
+            return [p for p in peers if _is_antigrav_lane(p)]
+        elif group == "vibe":
+            return [p for p in peers if _is_vibe_lane(p)]
+        elif group == "workers":
+            return [p for p in peers if _is_worker_lane(p)]
         else:
             raise ValueError(f"Unknown broadcast group: '{group}'")
 

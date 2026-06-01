@@ -1,0 +1,136 @@
+"""Executor adapter contract — the one capability surface every runtime conforms
+to (reform §6 P1).
+
+Each launcher (Claude, Codex, Gemini, Vibe, Antigrav) speaks a common adapter
+CLI; their genuine differences (Gemini read-only, Antigrav's IDE-surface hook
+gap, which runtimes have a real headless path) are reported as machine-legible
+*capability flags* by :func:`capabilities`, NOT branched in the dispatcher. The
+dispatcher consumes :func:`supports_route` to decide launchability instead of a
+hard ``(platform, mode)`` if-ladder, and ``hapax-executor-capabilities`` /
+``hapax-methodology-dispatch --capabilities`` emit the registry as JSON so the
+CLOG cockpit and other clients read the same contract.
+
+Colocated with the dispatcher and the ``hapax-executor-capabilities`` probe under
+``scripts/`` so all three share one definition.
+"""
+
+from __future__ import annotations
+
+from pydantic import BaseModel
+
+# The canonical adapter CLI every launcher accepts (quirks live in the flags
+# below, not in extra options). Order is informational.
+ADAPTER_CLI_CONTRACT: tuple[str, ...] = (
+    "--lane",
+    "--task",
+    "--mode",  # headless | interactive | receipt-only
+    "--prompt",
+    "--no-claim",
+    "--force",
+)
+
+# Dispatch modes an executor can be launched in. ``receipt-only`` is a
+# dispatch-level validation mode (no spawn), so it is not an executor capability.
+LAUNCH_MODES: tuple[str, ...] = ("headless", "interactive")
+
+
+class ExecutorCapabilities(BaseModel, frozen=True):
+    """Machine-legible capability flags for one executor runtime."""
+
+    platform: str
+    modes: tuple[str, ...]  # launchable dispatch modes
+    profiles: tuple[str, ...]  # capability profiles the route table exposes
+    mutates: bool  # can mutate source under governance
+    claims: bool  # participates in the cc-task claim lease
+    hooks_wired: bool  # the dispatch-launched path enforces governance hooks
+    headless: bool  # has a genuine non-interactive (no tmux pane) path
+    read_only: bool = False  # default posture is read-only
+    notes: str = ""
+
+    def supports(self, mode: str) -> bool:
+        return mode in self.modes
+
+
+EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
+    "claude": ExecutorCapabilities(
+        platform="claude",
+        modes=("headless", "interactive"),
+        profiles=("full", "opus", "sonnet"),
+        mutates=True,
+        claims=True,
+        hooks_wired=True,
+        headless=True,
+        notes="stream-json headless lane (hapax-claude-headless) + tmux interactive",
+    ),
+    "codex": ExecutorCapabilities(
+        platform="codex",
+        modes=("headless", "interactive"),
+        profiles=("full", "spark"),
+        mutates=True,
+        claims=True,
+        hooks_wired=True,
+        headless=True,
+        notes="codex exec headless (hapax-codex-headless) + tmux interactive (hapax-codex)",
+    ),
+    "gemini": ExecutorCapabilities(
+        platform="gemini",
+        modes=("headless",),
+        profiles=("full", "worker", "flash", "lite"),
+        mutates=False,
+        claims=False,
+        hooks_wired=True,
+        headless=True,
+        read_only=True,
+        notes="read-only/plan-mode by policy; the worker profile is a governed auto-edit exception",
+    ),
+    "vibe": ExecutorCapabilities(
+        platform="vibe",
+        modes=("headless",),
+        profiles=("full",),
+        mutates=True,
+        claims=True,
+        hooks_wired=True,
+        headless=True,
+        notes="bounded one-shot headless worker lane",
+    ),
+    "antigrav": ExecutorCapabilities(
+        platform="antigrav",
+        modes=("interactive",),
+        profiles=("full",),
+        mutates=True,
+        claims=True,
+        hooks_wired=True,
+        headless=False,
+        notes=(
+            "agy CLI interactive; PreToolUse gate wired via antigrav-hook-adapter "
+            "(#3802). Residual gap: the IDE Edit/Write surface is not gated."
+        ),
+    ),
+}
+
+
+def capabilities(platform: str) -> ExecutorCapabilities | None:
+    """Return the capability flags for ``platform`` (None if unknown)."""
+    return EXECUTOR_REGISTRY.get(platform)
+
+
+def supports_route(platform: str, mode: str) -> bool:
+    """True when ``platform`` has a launchable adapter for ``mode``."""
+    caps = capabilities(platform)
+    return caps is not None and caps.supports(mode)
+
+
+def capabilities_payload() -> dict[str, dict]:
+    """The whole registry as JSON-serialisable flags (the ``capabilities`` probe)."""
+    return {name: caps.model_dump() for name, caps in sorted(EXECUTOR_REGISTRY.items())}
+
+
+__all__ = [
+    "ADAPTER_CLI_CONTRACT",
+    "LAUNCH_MODES",
+    "EXECUTOR_REGISTRY",
+    "ExecutorCapabilities",
+    "capabilities",
+    "supports_route",
+    "capabilities_payload",
+]

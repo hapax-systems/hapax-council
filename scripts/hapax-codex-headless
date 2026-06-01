@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+# hapax-codex-headless - Launch a Codex lane non-interactively via `codex exec`.
+#
+# The genuine headless analog to hapax-claude-headless: NO tmux pane. Codex runs
+# non-interactively, JSONL events stream to a log the headless-staleness watchdog
+# can read, a PID file marks the run live, and the same identity-env + governed
+# task-gate + hook wiring as hapax-codex applies. Default-deny: headless lanes
+# mutate source autonomously, so a governed enable must exist first.
+
+set -euo pipefail
+
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+ROLE_HELPER="$COUNCIL_DIR/hooks/scripts/agent-role.sh"
+if [ -f "$ROLE_HELPER" ]; then
+  # shellcheck source=../hooks/scripts/agent-role.sh
+  # shellcheck disable=SC1091
+  . "$ROLE_HELPER"
+fi
+if ! declare -F hapax_agent_is_codex_name >/dev/null 2>&1; then
+  hapax_agent_is_codex_name() {
+    [[ "${1:-}" =~ ^cx-[a-z][a-z-]*$ ]]
+  }
+fi
+
+DISABLE_FILE="${HAPAX_CODEX_HEADLESS_DISABLE_FILE:-$HOME/.cache/hapax/disable-codex-headless}"
+ENABLE_FILE="${HAPAX_CODEX_HEADLESS_ENABLE_FILE:-$HOME/.cache/hapax/enable-codex-headless}"
+
+headless_allowed() {
+  [[ "${HAPAX_CODEX_HEADLESS_ALLOW:-}" == "1" || -e "$ENABLE_FILE" ]]
+}
+
+usage() {
+  cat >&2 <<'EOF'
+usage: hapax-codex-headless [--task TASK_ID] [--no-claim] [--force] <cx-session> <governed-initial-message> [-- codex exec args...]
+
+Default-deny: enable with `touch ~/.cache/hapax/enable-codex-headless` or
+HAPAX_CODEX_HEADLESS_ALLOW=1. The governed initial message is the codex exec
+prompt; everything after `--` is passed through to `codex exec`.
+EOF
+}
+
+SESSION=""
+CODEX_TASK="${HAPAX_METHODOLOGY_DISPATCH_TASK:-}"
+CLAIM_TASK=1
+FORCE=0
+CODEX_EXTRA=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --task)
+      CODEX_TASK="${2:-}"
+      shift 2
+      ;;
+    --task=*)
+      CODEX_TASK="${1#--task=}"
+      shift
+      ;;
+    --no-claim)
+      CLAIM_TASK=0
+      shift
+      ;;
+    --force)
+      FORCE=1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      SESSION="$1"
+      shift
+      break
+      ;;
+  esac
+done
+
+if [[ -z "$SESSION" ]]; then
+  usage
+  exit 1
+fi
+if ! hapax_agent_is_codex_name "$SESSION"; then
+  echo "hapax-codex-headless: invalid session '$SESSION' (expected cx-<color>)" >&2
+  exit 2
+fi
+
+INITIAL_MSG="${1:-}"
+[[ $# -gt 0 ]] && shift
+# Strip an optional `--` separator, then pass the rest through to `codex exec`.
+[[ "${1:-}" == "--" ]] && shift
+if [[ $# -gt 0 ]]; then
+  CODEX_EXTRA+=("$@")
+fi
+
+if [[ -z "$INITIAL_MSG" ]]; then
+  echo "hapax-codex-headless: governed initial message required" >&2
+  exit 5
+fi
+
+if [[ -e "$DISABLE_FILE" ]]; then
+  echo "hapax-codex-headless: disabled by $DISABLE_FILE" >&2
+  exit 77
+fi
+if ! headless_allowed; then
+  echo "hapax-codex-headless: disabled until governed enable exists at $ENABLE_FILE or HAPAX_CODEX_HEADLESS_ALLOW=1 is set" >&2
+  echo "  enable with: touch $ENABLE_FILE" >&2
+  exit 77
+fi
+
+# Worktree selection mirrors hapax-codex's codex-native default.
+WORKDIR="${HAPAX_CODEX_HEADLESS_WORKDIR:-$HOME/projects/hapax-council--$SESSION}"
+if [[ ! -d "$WORKDIR" ]]; then
+  WORKDIR="$COUNCIL_DIR"
+fi
+[[ -d "$WORKDIR" ]] || { echo "hapax-codex-headless: worktree not found: $WORKDIR" >&2; exit 3; }
+WORKDIR="$(cd "$WORKDIR" && pwd)"
+
+CODEX_BIN="$(command -v codex || true)"
+[[ -n "$CODEX_BIN" ]] || { echo "hapax-codex-headless: codex not found in PATH" >&2; exit 4; }
+
+HOOK="$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh"
+[[ -x "$HOOK" ]] || { echo "hapax-codex-headless: hook adapter not executable: $HOOK" >&2; exit 6; }
+
+# Identity env — same contract as hapax-codex so the gate keys a session-scoped
+# claim lease (reform Phase 1, FM-2) and the hooks recover this lane's role.
+PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
+PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-unknown}}"
+SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$SESSION" "$$")}"
+export HAPAX_PARENT_AGENT_INTERFACE="$PARENT_INTERFACE"
+export HAPAX_PARENT_AGENT_NAME="$PARENT_NAME"
+export HAPAX_AGENT_INTERFACE="codex"
+export HAPAX_AGENT_NAME="$SESSION"
+export CODEX_THREAD_NAME="$SESSION"
+export CODEX_ROLE="$SESSION"
+export HAPAX_AGENT_ROLE="$SESSION"
+export HAPAX_AGENT_SLOT="${HAPAX_AGENT_SLOT:-alpha}"
+export HAPAX_WORKTREE_ROLE="$HAPAX_AGENT_SLOT"
+export HAPAX_SESSION_ID="$SESSION_UUID"
+export CLAUDE_ROLE="${CLAUDE_ROLE:-$SESSION}"
+export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
+export PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
+export LOGOS_BASE_URL="${LOGOS_BASE_URL:-http://localhost:8051/api}"
+export COCKPIT_BASE_URL="${COCKPIT_BASE_URL:-$LOGOS_BASE_URL}"
+
+# Governed task gate (mirrors hapax-claude-headless): refuse a mutating launch
+# without an explicit task or an existing session claim, and never launch onto a
+# claim that belongs to a different task.
+CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$SESSION"
+CLAIMED_TASK=""
+if [[ -s "$CLAIM_FILE" ]]; then
+  CLAIMED_TASK="$(head -n1 "$CLAIM_FILE" | tr -d '[:space:]')"
+fi
+if [[ -z "$CODEX_TASK" && -n "$CLAIMED_TASK" ]]; then
+  CODEX_TASK="$CLAIMED_TASK"
+fi
+if [[ -z "$CODEX_TASK" ]]; then
+  echo "hapax-codex-headless: refusing mutating launch without --task <cc-task-id> or existing active claim for '$SESSION'" >&2
+  exit 15
+fi
+if [[ -n "$CLAIMED_TASK" && "$CLAIMED_TASK" != "$CODEX_TASK" ]]; then
+  echo "hapax-codex-headless: refusing launch; '$SESSION' already claims '$CLAIMED_TASK', not dispatch task '$CODEX_TASK'" >&2
+  exit 13
+fi
+if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
+  [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
+  (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
+fi
+export HAPAX_METHODOLOGY_DISPATCH_TASK="$CODEX_TASK"
+
+# Keep the lane from becoming a credential sink (same scrub as hapax-codex).
+unset GITHUB_PERSONAL_ACCESS_TOKEN
+unset CODEX_GITHUB_PERSONAL_ACCESS_TOKEN
+unset TAVILY_API_KEY
+unset CONTEXT7_API_KEY
+MCP_CONFIG_SCRUB="$COUNCIL_DIR/scripts/hapax-codex-mcp-config-scrub"
+[[ -x "$MCP_CONFIG_SCRUB" ]] && "$MCP_CONFIG_SCRUB"
+
+LOG_DIR="$HOME/.cache/hapax/codex-headless/$SESSION"
+PID_DIR="/run/user/$(id -u)/hapax-codex"
+mkdir -p "$LOG_DIR" "$PID_DIR" 2>/dev/null || true
+[[ -d "$PID_DIR" ]] || PID_DIR="$LOG_DIR"
+LOG_FILE="$LOG_DIR/output.jsonl"
+PID_FILE="$PID_DIR/$SESSION.pid"
+
+RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
+cleanup() {
+  rm -f "$PID_FILE"
+  [[ -x "$RELAY_RETIRE" ]] && "$RELAY_RETIRE" "$SESSION" --reason "clean exit (codex headless)" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+SDLC_PREAMBLE="SDLC DISCIPLINE (MANDATORY):
+1. Work only on the task named in this dispatch.
+2. Run cc-claim for that exact task before mutation.
+3. If cc-claim rejects, stop and write a relay receipt.
+4. Use only the AuthorityCase and parent spec named in this dispatch.
+5. Do not create, select, or claim other work from the task pool.
+6. When the task is complete or blocked, report status and idle.
+
+DISPATCH:
+"
+INITIAL_MSG="${SDLC_PREAMBLE}${INITIAL_MSG}"
+
+# Config mirrors hapax-codex's governed CODEX_ARGS (shared contract — keep in
+# sync): full-access sandbox under external governance, the codex-hook-adapter on
+# every phase, and the hapax MCP surface. `--json` streams JSONL events; `--cd`
+# binds the worktree; trust is scoped to the worktree.
+CODEX_ARGS=(
+  exec
+  --dangerously-bypass-approvals-and-sandbox
+  --skip-git-repo-check
+  --json
+  --cd "$WORKDIR"
+  -c 'model="gpt-5.5"'
+  -c 'model_reasoning_effort="xhigh"'
+  -c 'approval_policy="never"'
+  -c 'sandbox_mode="danger-full-access"'
+  -c "projects.\"$HOME/projects\".trust_level=\"trusted\""
+  -c "projects.\"$WORKDIR\".trust_level=\"trusted\""
+  -c "hooks.SessionStart=[{command=\"$HOOK\",timeout=20,statusMessage=\"Loading Hapax context\"}]"
+  -c "hooks.PreToolUse=[{command=\"$HOOK\",timeout=20,include_apply_patch_tool=true,statusMessage=\"Hapax guardrails\"}]"
+  -c "hooks.PostToolUse=[{command=\"$HOOK\",timeout=20,include_apply_patch_tool=true,statusMessage=\"Hapax audit\"}]"
+  -c "hooks.Stop=[{command=\"$HOOK\",timeout=20,statusMessage=\"Writing Hapax session summary\"}]"
+  -c "mcp_servers.hapax.command=\"$HOME/.local/bin/uv\""
+  -c "mcp_servers.hapax.args=[\"--directory\",\"$HOME/projects/hapax-mcp\",\"run\",\"hapax-mcp\"]"
+  -c 'mcp_servers.hapax.env.LOGOS_BASE_URL="http://localhost:8051/api"'
+  -c "mcp_servers.github.command=\"$COUNCIL_DIR/scripts/hapax-github-mcp\""
+  -c "mcp_servers.context7.command=\"$COUNCIL_DIR/scripts/hapax-context7-mcp\""
+)
+CODEX_ARGS+=("${CODEX_EXTRA[@]}")
+CODEX_ARGS+=("$INITIAL_MSG")
+
+# Refuse to double-launch a live lane unless forced (the watchdog reads this PID).
+if [[ -f "$PID_FILE" && "$FORCE" -ne 1 ]]; then
+  EXISTING_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+  if [[ -n "$EXISTING_PID" ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
+    echo "hapax-codex-headless: lane '$SESSION' already live (pid=$EXISTING_PID); pass --force to relaunch" >&2
+    exit 11
+  fi
+fi
+
+echo "hapax-codex-headless: starting $SESSION (task=$CODEX_TASK) in $WORKDIR"
+echo "  log: $LOG_FILE"
+echo "  pid: $PID_FILE"
+
+cd "$WORKDIR"
+"$CODEX_BIN" "${CODEX_ARGS[@]}" >>"$LOG_FILE" 2>&1 &
+CODEX_PID=$!
+echo "$CODEX_PID" >"$PID_FILE"
+echo "hapax-codex-headless: pid=$CODEX_PID"
+
+if wait "$CODEX_PID"; then
+  EXIT_CODE=0
+else
+  EXIT_CODE=$?
+fi
+echo "hapax-codex-headless: $SESSION exited (code=$EXIT_CODE)"
+exit "$EXIT_CODE"

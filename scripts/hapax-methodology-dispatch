@@ -17,6 +17,15 @@ from typing import Any
 REPO_ROOT_FOR_IMPORTS = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT_FOR_IMPORTS) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT_FOR_IMPORTS))
+_SCRIPTS_DIR_FOR_IMPORTS = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR_FOR_IMPORTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR_FOR_IMPORTS))
+
+from executor_contract import (  # noqa: E402
+    capabilities,
+    capabilities_payload,
+    supports_route,
+)
 
 from shared.coord_dispatch import (
     CoordDispatchError,
@@ -878,6 +887,50 @@ def launch_codex_headless(
     validation: Validation,
     route: PlatformPath,
 ) -> int:
+    # Genuine headless path (reform §6 P0): `codex exec` via hapax-codex-headless,
+    # NOT a tmux pane. The tmux launcher (hapax-codex) remains the interactive
+    # analog (launch_codex_interactive).
+    launcher = Path(
+        os.environ.get(
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS",
+            str(Path(__file__).resolve().parent / "hapax-codex-headless"),
+        )
+    )
+    if not launcher.is_file():
+        print(f"Codex headless launcher not found: {launcher}", file=sys.stderr)
+        return 8
+
+    status = ""
+    if validation.task is not None:
+        status = strip_scalar(str(validation.task.fields.get("status", "")))
+    args = [str(launcher), "--task", task_id, "--force"]
+    if status in {"claimed", "in_progress"}:
+        args.append("--no-claim")
+    args.extend([lane, prompt])
+    if route.profile == "spark":
+        args.extend(
+            [
+                "--",
+                "-c",
+                'model="gpt-5.3-codex-spark"',
+                "-c",
+                'model_reasoning_effort="high"',
+            ]
+        )
+    env = os.environ.copy()
+    env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
+    return subprocess.call(args, env=env)
+
+
+def launch_codex_interactive(
+    task_id: str,
+    lane: str,
+    prompt: str,
+    validation: Validation,
+    route: PlatformPath,
+) -> int:
+    # Interactive Codex remains the visible tmux pane (hapax-codex). Headless
+    # work uses launch_codex_headless (codex exec).
     launcher = Path(
         os.environ.get(
             "HAPAX_METHODOLOGY_CODEX_LAUNCHER",
@@ -1075,6 +1128,11 @@ def main(argv: list[str] | None = None) -> int:
         help="List governed platform/mode/profile launch paths and exit",
     )
     parser.add_argument(
+        "--capabilities",
+        action="store_true",
+        help="Print the Executor adapter capability registry as JSON and exit",
+    )
+    parser.add_argument(
         "--print-prompt", action="store_true", help="Print the governed launch prompt"
     )
     parser.add_argument(
@@ -1110,8 +1168,14 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(supported_route_lines()))
         return 0
 
+    if args.capabilities:
+        print(json.dumps(capabilities_payload(), indent=2))
+        return 0
+
     if not args.task or not args.lane:
-        parser.error("--task and --lane are required unless --list-platform-paths is used")
+        parser.error(
+            "--task and --lane are required unless --list-platform-paths or --capabilities is used"
+        )
 
     task_root = Path(
         os.environ.get(
@@ -1340,28 +1404,51 @@ def main(argv: list[str] | None = None) -> int:
         print(prompt)
 
     if args.launch:
+        # Launchable (platform, mode) -> adapter call. Eligibility is decided by
+        # the Executor capability registry (supports_route), NOT a hard if-ladder
+        # (reform §6 P1) — adding a runtime/mode is a one-line table + registry edit.
+        launchers: dict[tuple[str, str], Any] = {
+            ("claude", "headless"): lambda: launch_claude_headless(
+                args.task, args.lane, prompt or "", route
+            ),
+            ("claude", "interactive"): lambda: launch_claude_interactive(
+                args.task, args.lane, validation
+            ),
+            ("codex", "headless"): lambda: launch_codex_headless(
+                args.task, args.lane, prompt or "", validation, route
+            ),
+            ("codex", "interactive"): lambda: launch_codex_interactive(
+                args.task, args.lane, prompt or "", validation, route
+            ),
+            ("vibe", "headless"): lambda: launch_vibe_headless(
+                args.task, args.lane, prompt or "", validation
+            ),
+            ("gemini", "headless"): lambda: launch_gemini_headless(args.lane, prompt or "", route),
+            ("antigrav", "interactive"): lambda: launch_antigrav_interactive(
+                args.task, args.lane, validation, prompt or ""
+            ),
+        }
 
         def run_platform_launch() -> int:
-            if args.platform == "claude" and args.mode == "headless":
-                return launch_claude_headless(args.task, args.lane, prompt or "", route)
-            if args.platform == "claude" and args.mode == "interactive":
-                return launch_claude_interactive(args.task, args.lane, validation)
-            if args.platform == "codex" and args.mode == "headless":
-                return launch_codex_headless(args.task, args.lane, prompt or "", validation, route)
-            if args.platform == "vibe" and args.mode == "headless":
-                return launch_vibe_headless(args.task, args.lane, prompt or "", validation)
-            if args.platform == "gemini" and args.mode == "headless":
-                return launch_gemini_headless(args.lane, prompt or "", route)
-            if args.platform == "antigrav" and args.mode == "interactive":
-                return launch_antigrav_interactive(args.task, args.lane, validation, prompt or "")
-            print(
-                "launch currently unsupported for "
-                f"--platform {args.platform} --mode {args.mode} --profile {args.profile}",
-                file=sys.stderr,
-            )
-            print("Supported governed routes:", file=sys.stderr)
-            print("\n".join(supported_route_lines()), file=sys.stderr)
-            return 2
+            launch = launchers.get((args.platform, args.mode))
+            if launch is None or not supports_route(args.platform, args.mode):
+                caps = capabilities(args.platform)
+                print(
+                    "launch unsupported for "
+                    f"--platform {args.platform} --mode {args.mode} --profile {args.profile}",
+                    file=sys.stderr,
+                )
+                if caps is not None:
+                    print(
+                        f"  {args.platform} capabilities: modes={list(caps.modes)} "
+                        f"mutates={caps.mutates} hooks_wired={caps.hooks_wired} "
+                        f"headless={caps.headless}",
+                        file=sys.stderr,
+                    )
+                print("Supported governed routes:", file=sys.stderr)
+                print("\n".join(supported_route_lines()), file=sys.stderr)
+                return 2
+            return launch()
 
         dispatch_launch: DispatchLaunchResult | None = None
         if route.mutable and not validation.exempt_read_only:

@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Iterable, Sequence
+    from collections.abc import Collection, Iterable, Mapping, Sequence
 
 BottleneckKind = Literal[
     "queue_admission",
@@ -967,6 +967,113 @@ def bisect_failed_batch(batch: Sequence[int]) -> list[tuple[int, ...]]:
     return [items[:mid], items[mid:]]
 
 
+class QuarantineReconciliation(BaseModel):
+    """Outcome of one quarantine write-side pass over the live store."""
+
+    records: list[FlakeQuarantine]  # full set to persist (kept + lifted + newly opened)
+    newly_quarantined: list[int]
+    lifted: list[int]
+    active: list[int]  # PR numbers whose quarantine is active AFTER reconciliation
+
+
+def reconcile_flake_quarantines(
+    existing: Iterable[FlakeQuarantine],
+    lineage_records: Iterable[MergeQueueLineageRecord],
+    *,
+    candidate_prs: Collection[int],
+    policy: FleetThrottlePolicy | None = None,
+    now: datetime | None = None,
+) -> QuarantineReconciliation:
+    """Open quarantines for flaky PRs and lift expired ones — the WRITE side.
+
+    The merge-queue reconciler already READS quarantines to exclude flaky PRs
+    from the failure-rate signal; this computes the records to persist back.
+    Reversible by construction (FM-3/FM-4): a PR already actively quarantined is
+    never re-opened, and a quarantine whose cooldown has elapsed is lifted
+    (``released_at`` stamped) so the PR re-enters the queue. Pure: every result
+    is a function of ``existing``, ``lineage_records`` and ``now``.
+    """
+    policy = policy or FleetThrottlePolicy()
+    now = now or datetime.now(UTC)
+    lineage = list(lineage_records)
+    counts = pr_failure_counts(lineage, window_seconds=policy.window_seconds, now=now)
+
+    out: list[FlakeQuarantine] = []
+    lifted: list[int] = []
+    for record in existing:
+        if record.released_at is None and not quarantine_active(record, now=now):
+            out.append(lift_quarantine(record, now=now))
+            lifted.append(record.pr_number)
+        else:
+            out.append(record)
+
+    active_after_lift = active_quarantined_pr_numbers(out, now=now)
+    newly: list[int] = []
+    window_hours = policy.window_seconds / 3600
+    for pr_number in sorted(set(candidate_prs)):
+        if pr_number in active_after_lift:
+            continue
+        if should_quarantine_pr(pr_number, lineage, policy=policy, now=now):
+            out.append(
+                open_quarantine(
+                    pr_number,
+                    reason=(
+                        f"{counts.get(pr_number, 0)} CI failures within "
+                        f"{window_hours:.0f}h (>= {policy.quarantine_failures}); "
+                        "reversible flake quarantine"
+                    ),
+                    now=now,
+                    cooldown_seconds=policy.quarantine_cooldown_seconds,
+                )
+            )
+            newly.append(pr_number)
+
+    active = sorted(active_quarantined_pr_numbers(out, now=now))
+    return QuarantineReconciliation(
+        records=out,
+        newly_quarantined=sorted(newly),
+        lifted=sorted(lifted),
+        active=active,
+    )
+
+
+def bisection_plan_for_failed_runs(
+    failed_runs: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Group failed merge-group runs by run id and propose the next split.
+
+    A merge group batches several PRs into one CI run; when it fails, halving the
+    batch isolates the culprit (FM-3/FM-4 batch bisection via
+    :func:`bisect_failed_batch`). Single-PR groups are terminal (the culprit is
+    already known) and yield no further split. Rows missing ``run_id``/``pr`` are
+    skipped so malformed lineage never crashes the reconciler.
+    """
+    by_run: dict[str, list[int]] = defaultdict(list)
+    for run in failed_runs:
+        run_id = run.get("run_id")
+        pr = run.get("pr")
+        if run_id is None or pr is None:
+            continue
+        bucket = by_run[str(run_id)]
+        if int(pr) not in bucket:
+            bucket.append(int(pr))
+
+    plans: list[dict[str, Any]] = []
+    for run_id, prs in sorted(by_run.items()):
+        batch = tuple(sorted(prs))
+        splits = bisect_failed_batch(batch)
+        if not splits:
+            continue
+        plans.append(
+            {
+                "merge_group_run_id": run_id,
+                "failed_batch": list(batch),
+                "next_bisection": [list(split) for split in splits],
+            }
+        )
+    return plans
+
+
 def recommend_max_entries_to_build(
     records: Iterable[MergeQueueLineageRecord],
     *,
@@ -999,10 +1106,13 @@ __all__ = [
     "SUCCESS_CONCLUSIONS",
     "FleetThrottlePolicy",
     "FlakeQuarantine",
+    "QuarantineReconciliation",
     "ThrottleDecision",
     "active_quarantined_pr_numbers",
     "bisect_failed_batch",
+    "bisection_plan_for_failed_runs",
     "decide_fleet_throttle",
+    "reconcile_flake_quarantines",
     "lift_quarantine",
     "merge_failure_rate",
     "open_quarantine",

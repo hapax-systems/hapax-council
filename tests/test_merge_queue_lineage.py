@@ -239,3 +239,93 @@ def test_recommend_max_entries_storm_vs_healthy():
     storm = [_rec(i, "failure") for i in range(8)]
     assert mql.recommend_max_entries_to_build(healthy, now=NOW) == mql.HEALTHY_MAX_ENTRIES
     assert mql.recommend_max_entries_to_build(storm, now=NOW) == mql.STORM_MAX_ENTRIES
+
+
+# --------------------------------------------------------------------------- #
+# reconcile_flake_quarantines (the WRITE side — FM-3/FM-4)                      #
+# --------------------------------------------------------------------------- #
+
+
+def test_reconcile_opens_quarantine_over_failure_threshold():
+    # PR 5 has 2 genuine failures (default quarantine_failures=2) → quarantine.
+    records = [_rec(5, "failure"), _rec(5, "failure"), _rec(6, "success")]
+    result = mql.reconcile_flake_quarantines([], records, candidate_prs={5, 6}, now=NOW)
+    assert result.newly_quarantined == [5]
+    assert result.lifted == []
+    assert result.active == [5]
+    assert len(result.records) == 1
+    assert result.records[0].pr_number == 5
+    assert result.records[0].released_at is None
+
+
+def test_reconcile_below_threshold_opens_nothing():
+    records = [_rec(5, "failure"), _rec(6, "success")]
+    result = mql.reconcile_flake_quarantines([], records, candidate_prs={5, 6}, now=NOW)
+    assert result.newly_quarantined == []
+    assert result.active == []
+    assert result.records == []
+
+
+def test_reconcile_does_not_reopen_active_quarantine():
+    existing = [mql.open_quarantine(5, reason="prior", now=NOW, cooldown_seconds=6 * 3600)]
+    records = [_rec(5, "failure"), _rec(5, "failure")]
+    result = mql.reconcile_flake_quarantines(
+        existing, records, candidate_prs={5}, now=NOW + timedelta(hours=1)
+    )
+    assert result.newly_quarantined == []
+    assert result.active == [5]
+    assert len(result.records) == 1  # not duplicated
+
+
+def test_reconcile_lifts_expired_quarantine_on_cooldown():
+    existing = [mql.open_quarantine(5, reason="prior", now=NOW, cooldown_seconds=3600)]
+    # 2h later the 1h cooldown has elapsed → lift (release), and no fresh
+    # failures in window means it is not re-opened.
+    later = NOW + timedelta(hours=2)
+    result = mql.reconcile_flake_quarantines(existing, [], candidate_prs={5}, now=later)
+    assert result.lifted == [5]
+    assert result.active == []
+    assert result.records[0].released_at == later
+
+
+def test_reconcile_is_deterministic_for_multiple_prs():
+    records = [
+        _rec(7, "failure"),
+        _rec(7, "failure"),
+        _rec(3, "failure"),
+        _rec(3, "failure"),
+    ]
+    result = mql.reconcile_flake_quarantines([], records, candidate_prs={7, 3}, now=NOW)
+    assert result.newly_quarantined == [3, 7]  # sorted
+
+
+# --------------------------------------------------------------------------- #
+# bisection_plan_for_failed_runs (wire bisect into the failure handler)        #
+# --------------------------------------------------------------------------- #
+
+
+def test_bisection_plan_groups_by_run_and_splits():
+    failed = [
+        {"run_id": "100", "pr": 1},
+        {"run_id": "100", "pr": 2},
+        {"run_id": "100", "pr": 3},
+        {"run_id": "100", "pr": 4},
+    ]
+    plan = mql.bisection_plan_for_failed_runs(failed)
+    assert plan == [
+        {
+            "merge_group_run_id": "100",
+            "failed_batch": [1, 2, 3, 4],
+            "next_bisection": [[1, 2], [3, 4]],
+        }
+    ]
+
+
+def test_bisection_plan_single_pr_group_is_terminal():
+    failed = [{"run_id": "200", "pr": 9}]
+    assert mql.bisection_plan_for_failed_runs(failed) == []
+
+
+def test_bisection_plan_skips_rows_missing_keys():
+    failed = [{"run_id": None, "pr": 1}, {"pr": 2}, {"run_id": "300"}]
+    assert mql.bisection_plan_for_failed_runs(failed) == []

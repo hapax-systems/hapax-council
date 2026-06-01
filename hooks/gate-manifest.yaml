@@ -264,3 +264,4 @@ runtimes:
       - 'uv run --no-project --with pyrefly==0.62.0 pyrefly check'
       - 'uv run --no-project --with pytest==9.0.2 --with pyyaml pytest'
       - 'uv run --no-sync python scripts/ci_governance_coverage_gate.py'
+      - 'uv run python scripts/gate-manifest-check.py --skip-claude-settings'

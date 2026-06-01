@@ -1169,3 +1169,61 @@ def test_failed_recent_non_ready_merge_group_run_activates_storm_mode(
     assert failed[0]["run_id"] == 9001
     assert failed[0]["pr"] == 130
     assert "task_missing_route_metadata_schema_1" in failed[0]["reasons"]
+
+
+def test_flake_quarantine_write_side_persists_and_excludes_next_tick(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="flaky-pr", pr=140, route_metadata_schema=None)
+    ledger = tmp_path / "merge-queue-lineage.jsonl"
+    write_jsonl_records(
+        ledger,
+        [
+            MergeQueueLineageRecord(
+                observed_at=_recent_observed_at(i),
+                pr_number=140,
+                merge_group_run_id=8000 + i,
+                run_conclusion="failure",
+                run_outcome="failure",
+            )
+            # 4 genuine failures: over the quarantine threshold (2) AND enough
+            # samples (min_samples 4) to also trip the failure-rate freeze.
+            for i in range(4)
+        ],
+    )
+    quarantine_path = tmp_path / "merge-queue-quarantine.jsonl"
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(140)]
+
+    # First apply: PR 140 is over the failure threshold → quarantine opened and
+    # persisted. The freshly-detected PR still counts toward THIS tick's rate.
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        lineage_ledger_path=ledger,
+        quarantine_path=quarantine_path,
+        runner=runner,
+    )
+    assert report["flake_quarantine"]["newly_quarantined"] == [140]
+    assert report["flake_quarantine"]["written"] is True
+    assert quarantine_path.exists()
+    assert report["storm_mode"]["rate_frozen"] is True
+
+    # Second apply: the persisted quarantine is now active → PR 140 is excluded
+    # from the failure-rate signal, so the isolated flaky PR no longer freezes the
+    # fleet, and it is not re-opened.
+    report2 = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        lineage_ledger_path=ledger,
+        quarantine_path=quarantine_path,
+        runner=runner,
+    )
+    assert 140 in report2["flake_quarantine"]["active"]
+    assert report2["flake_quarantine"]["newly_quarantined"] == []
+    assert report2["storm_mode"]["rate_frozen"] is False
