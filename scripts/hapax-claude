@@ -24,9 +24,15 @@ COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
 
 usage() {
   cat <<'EOF'
-usage: hapax-claude [--role alpha|beta|gamma|delta|epsilon|zeta|eta|theta] [--cd DIR]
+usage: hapax-claude [--role alpha|…|theta | dev|dev2|…] [--cd DIR]
                     [--terminal none|tmux|foot] [--force] [--task TASK_ID|--readonly]
                     [--] [claude args...]
+
+Roles:
+  - greek alpha..theta : the supervised headless reform lanes
+  - dev / dev2 / …     : interactive operator pool (visible sessions; see
+                         hapax-dev). Operator-driven, so no cc-task binding is
+                         required; defaults its worktree to the current dir.
 
 Defaults:
   - role inferred from HAPAX_AGENT_NAME / CLAUDE_ROLE / cwd basename
@@ -126,10 +132,16 @@ if [ -z "$ROLE" ]; then
   esac
 fi
 
+# IS_DEV_POOL marks the non-greek interactive operator pool (dev, dev2, …).
+# These lanes are distinct from the supervised headless greek fleet, so they
+# never collide with a reform dispatch and are exempt from the mandatory
+# cc-task binding below (the operator drives them in person).
+IS_DEV_POOL=0
 case "$ROLE" in
   alpha|beta|gamma|delta|epsilon|zeta|eta|theta) ;;
+  dev|dev[0-9]*) IS_DEV_POOL=1 ;;
   *)
-    echo "hapax-claude: invalid role '$ROLE' (expected alpha|beta|gamma|delta|epsilon|zeta|eta|theta)" >&2
+    echo "hapax-claude: invalid role '$ROLE' (expected alpha|beta|gamma|delta|epsilon|zeta|eta|theta, or interactive pool dev|dev2|…)" >&2
     exit 2
     ;;
 esac
@@ -170,6 +182,9 @@ claude_default_worktree() {
       ;;
     epsilon) printf '%s\n' "$root/hapax-council--epsilon" ;;
     gamma|zeta|eta|theta) printf '%s\n' "$root/hapax-council--$role" ;;
+    # Interactive dev pool has no fixed greek worktree. Default to the invoking
+    # cwd — hapax-dev passes --cd explicitly; this is the standalone fallback.
+    dev|dev[0-9]*) printf '%s\n' "$PWD" ;;
   esac
 }
 
@@ -299,7 +314,10 @@ if [ "$READONLY" -ne 1 ]; then
     fi
   elif [ -n "$CLAIMED_TASK" ]; then
     CLAUDE_TASK="$CLAIMED_TASK"
-  elif [ -z "$CLAIMED_TASK" ]; then
+  elif [ "$IS_DEV_POOL" -eq 1 ]; then
+    : # interactive operator dev pool — operator-driven, governed by operator
+      # presence; a visible dev lane needs no cc-task binding to launch.
+  else
     cat >&2 <<EOF
 hapax-claude: refusing mutating visible lane without governed task binding.
 
