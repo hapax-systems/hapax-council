@@ -14,7 +14,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CC_CLAIM = REPO_ROOT / "scripts" / "cc-claim"
-CC_TASK_GATE = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.sh"
+# Gate logic lives in the impl behind the shim (reform FM-6); exec it directly.
+CC_TASK_GATE = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
 NO_STALE = REPO_ROOT / "hooks" / "scripts" / "no-stale-branches.sh"
 CLAIM_AUDIT = REPO_ROOT / "scripts" / "codex-claim-audit"
 

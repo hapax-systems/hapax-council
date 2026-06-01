@@ -58,7 +58,9 @@ PEER_GROUPS: tuple[PeerGroup, ...] = (
         members=(
             "scripts/cc-claim",
             "scripts/cc-close",
-            "hooks/scripts/cc-task-gate.sh",
+            # The gate's single-task lookup lives in the impl behind the
+            # stable-abs-path shim (reform FM-6); the shim carries no vault globs.
+            "hooks/scripts/cc-task-gate.impl.sh",
         ),
         description=(
             "single-task lookup under hapax-cc-tasks/active/ — "

@@ -70,7 +70,8 @@ fi
 HAPAX_HOOKS=$(cat <<HEREDOC
 {
   "SessionStart": [
-    {"hooks": [{"type": "command", "command": "$PLUGIN_SRC/hooks/scripts/session-context.sh"}]}
+    {"hooks": [{"type": "command", "command": "$PLUGIN_SRC/hooks/scripts/session-context.sh"}]},
+    {"hooks": [{"type": "command", "command": "$PLUGIN_SRC/hooks/scripts/hooks-doctor.sh --session"}]}
   ],
   "PreToolUse": [
     {"matcher": "Edit|Write|MultiEdit", "hooks": [{"type": "command", "command": "$PLUGIN_SRC/hooks/scripts/axiom-scan.sh"}]},

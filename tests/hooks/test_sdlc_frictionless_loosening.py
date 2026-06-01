@@ -27,7 +27,8 @@ import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-GATE = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.sh"
+# Gate logic lives in the impl behind the shim (reform FM-6); exec it directly.
+GATE = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
 WRG = REPO_ROOT / "hooks" / "scripts" / "work-resolution-gate.sh"
 
 _ROLE_ENV_KEYS = (

@@ -36,7 +36,7 @@ def _seed_coherent_repo(root: Path) -> None:
     for relpath in (
         "scripts/cc-claim",
         "scripts/cc-close",
-        "hooks/scripts/cc-task-gate.sh",
+        "hooks/scripts/cc-task-gate.impl.sh",
     ):
         (root / relpath).write_text(COHERENT_BODY, encoding="utf-8")
 
@@ -104,7 +104,7 @@ def test_lint_detects_missing_member_file(tmp_path: Path) -> None:
     proc = _run_lint(tmp_path)
 
     assert proc.returncode == 1
-    assert "hooks/scripts/cc-task-gate.sh" in proc.stderr
+    assert "hooks/scripts/cc-task-gate.impl.sh" in proc.stderr
     assert "file missing" in proc.stderr
 
 

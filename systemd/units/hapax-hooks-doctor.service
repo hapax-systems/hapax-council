@@ -1,0 +1,18 @@
+[Unit]
+Description=Hapax gate-drift sweep — hooks-doctor (reform FM-6 shim collapse)
+Documentation=file:/home/hapax/projects/hapax-council/hooks/scripts/hooks-doctor.sh
+
+[Service]
+Type=oneshot
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+StandardOutput=journal
+StandardError=journal
+Nice=10
+# Resolve the freshest hooks-doctor (canonical deploy -> rebuild target ->
+# integrator worktree) and run an advisory fleet sweep rooted at the integrator
+# worktree, so every lane's cc-task-gate is classified against the canonical impl.
+# --session always exits 0 (never fail-stuck); --notify ntfy's when drift is
+# present, catching a rebuild that clobbers the canonical gate (NEW-CATCH-3) or a
+# lane that re-drifts between SessionStart/CI checks.
+ExecStart=/bin/bash -c 'r="$HOME/projects/hapax-council"; for d in "$HOME/.local/lib/hapax/hooks" "$HOME/.cache/hapax/rebuild/worktree/hooks/scripts" "$r/hooks/scripts"; do if [ -x "$d/hooks-doctor.sh" ]; then exec bash "$d/hooks-doctor.sh" --session --notify --root "$r"; fi; done; echo "hooks-doctor.sh not found in any known location" >&2; exit 0'
