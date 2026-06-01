@@ -62,6 +62,7 @@ def _write_task(
     authority_level: str | None = "authoritative",
     priority: str = "p2",
     kind: str = "implementation",
+    assigned_to: str = "alpha",
     tags: list[str] | None = None,
     queue_admission: str | None = None,
     extra_frontmatter: dict[str, object] | None = None,
@@ -108,7 +109,7 @@ type: cc-task
 task_id: {task_id}
 title: "{task_id}"
 status: {status}
-assigned_to: alpha
+assigned_to: {assigned_to}
 priority: {priority}
 kind: {kind}
 {pr_line}
@@ -1391,3 +1392,237 @@ def test_flake_quarantine_write_side_persists_and_excludes_next_tick(
     assert 140 in report2["flake_quarantine"]["active"]
     assert report2["flake_quarantine"]["newly_quarantined"] == []
     assert report2["storm_mode"]["rate_frozen"] is False
+
+
+# ── shared-file epic serialization: single-lane affinity (CASE-SBCL-CLOG-COORD-001) ──
+# The CLOG/Trainyard cockpit epic is a parallel DAG whose branches all mutate one
+# shared file (src/dashboard.lisp). Two lanes editing it concurrently merge-conflict
+# by construction. The autoqueue holds admission of an epic PR while a sibling epic
+# task is concurrently in flight in a DIFFERENT lane (the real hazard); same-lane
+# serial work is never held, and a deterministic lowest-PR tiebreak prevents two
+# different-lane epic PRs from dead-holding each other.
+
+_CLOG_SPEC = "clog-frontend-elevation-design-2026-06-01.md"
+
+
+def test_shared_file_epic_holds_pr_when_sibling_in_progress_in_other_lane(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="clog-c",
+        status="ready",
+        pr=300,
+        assigned_to="eta",
+        parent_spec=_CLOG_SPEC,
+    )
+    # Sibling mid-edit in a different lane: in flight, no PR yet.
+    _write_task(
+        vault,
+        task_id="clog-b",
+        status="in_progress",
+        assigned_to="zeta",
+        parent_spec=_CLOG_SPEC,
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(300)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    reasons = report["decisions"][0]["reasons"]
+    assert any(
+        reason.startswith("shared_file_epic_affinity_hold:clog-dashboard-lisp:clog-b@zeta")
+        for reason in reasons
+    )
+    assert not any(call[:4] == ["gh", "pr", "merge", "300"] for call in runner.calls)
+
+
+def test_shared_file_epic_allows_pr_when_sibling_same_lane(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="clog-c",
+        status="ready",
+        pr=310,
+        assigned_to="eta",
+        parent_spec=_CLOG_SPEC,
+    )
+    _write_task(
+        vault,
+        task_id="clog-d",
+        status="in_progress",
+        assigned_to="eta",  # same lane: serial work, no hazard
+        parent_spec=_CLOG_SPEC,
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(310)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert not any(
+        reason.startswith("shared_file_epic_affinity_hold:")
+        for reason in report["decisions"][0].get("reasons", [])
+    )
+
+
+def test_shared_file_epic_allows_pr_when_only_terminal_sibling(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="clog-c",
+        status="ready",
+        pr=320,
+        assigned_to="eta",
+        parent_spec=_CLOG_SPEC,
+    )
+    # Predecessor merged+closed in another lane: not in flight, must not hold.
+    _write_task(
+        vault,
+        task_id="clog-a",
+        folder="closed",
+        status="done",
+        assigned_to="zeta",
+        parent_spec=_CLOG_SPEC,
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(320)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+
+
+def test_shared_file_epic_lowest_pr_proceeds_across_lanes(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="clog-c",
+        status="ready",
+        pr=330,
+        assigned_to="eta",
+        parent_spec=_CLOG_SPEC,
+    )
+    _write_task(
+        vault,
+        task_id="clog-e",
+        status="ready",
+        pr=331,
+        assigned_to="zeta",
+        parent_spec=_CLOG_SPEC,
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(330), _pr(331)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decisions = {item["pr"]: item for item in report["decisions"]}
+    # Lower PR (opened first) proceeds; higher PR holds — deterministic, no deadlock.
+    assert decisions[330]["action"] == "queue"
+    assert decisions[331]["action"] == "blocked"
+    assert any(
+        reason.startswith("shared_file_epic_affinity_hold:clog-dashboard-lisp:clog-c@eta")
+        for reason in decisions[331]["reasons"]
+    )
+    assert ["gh", "pr", "merge", "330", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert not any(call[:4] == ["gh", "pr", "merge", "331"] for call in runner.calls)
+
+
+def test_shared_file_epic_detected_via_explicit_epic_serialize_field(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    # parent_spec NOT in the registry — membership comes from the explicit field.
+    _write_task(
+        vault,
+        task_id="x-consumer",
+        status="ready",
+        pr=340,
+        assigned_to="eta",
+        parent_spec="docs/other.md",
+        extra_frontmatter={"epic_serialize": "my-shared-file-epic"},
+    )
+    _write_task(
+        vault,
+        task_id="x-producer",
+        status="in_progress",
+        assigned_to="zeta",
+        parent_spec="docs/other.md",
+        extra_frontmatter={"epic_serialize": "my-shared-file-epic"},
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(340)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    assert any(
+        reason.startswith("shared_file_epic_affinity_hold:my-shared-file-epic:x-producer@zeta")
+        for reason in report["decisions"][0]["reasons"]
+    )
+
+
+def test_non_epic_pr_not_held_by_unrelated_in_progress_task(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="plain",
+        status="ready",
+        pr=350,
+        assigned_to="eta",
+        parent_spec="docs/spec.md",
+    )
+    _write_task(
+        vault,
+        task_id="other",
+        status="in_progress",
+        assigned_to="zeta",
+        parent_spec="docs/spec.md",
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(350)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    # No shared-file epic → no affinity hold; ordinary PR queues.
+    assert report["counts"]["queue"] == 1
+    assert not any(
+        reason.startswith("shared_file_epic_affinity_hold:")
+        for reason in report["decisions"][0].get("reasons", [])
+    )
