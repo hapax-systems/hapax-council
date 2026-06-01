@@ -661,8 +661,15 @@ def _advance_origin_externally(
     worktree's local refs/heads/main frozen (production shape: the operator
     worktree sits on a feature branch, so nothing advances its local main)."""
     ext = harness["tmp_path"] / f"ext-{message.replace(' ', '-')}"
+    # Clone main EXPLICITLY: the harness remote is `git init --bare` (no
+    # `-b main`), so its HEAD may point at an init-default branch (master) that
+    # doesn't exist. A bare `git clone` then leaves an unborn default branch and
+    # the subsequent `push HEAD:main` is a non-fast-forward root commit (green
+    # locally on git that defaults to main, red in CI that defaults to master).
     subprocess.run(
-        ["git", "clone", str(harness["remote"]), str(ext)], check=True, capture_output=True
+        ["git", "clone", "--branch", "main", str(harness["remote"]), str(ext)],
+        check=True,
+        capture_output=True,
     )
     env = os.environ.copy()
     env.update(
