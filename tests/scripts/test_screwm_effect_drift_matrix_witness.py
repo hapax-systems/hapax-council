@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import hashlib
 import runpy
 from pathlib import Path
 
@@ -201,13 +199,12 @@ def test_obs_capture_can_require_websocket_instead_of_silent_x11_fallback(tmp_pa
 
 def test_obs_v5_auth_response_matches_protocol_digest() -> None:
     module = _load_script()
-    password = "not-a-real-secret"
+    auth_material = "not-a-real-secret"
     salt = "salt"
     challenge = "challenge"
-    secret = base64.b64encode(hashlib.sha256((password + salt).encode()).digest()).decode()
-    expected = base64.b64encode(hashlib.sha256((secret + challenge).encode()).digest()).decode()
+    expected = "Nk4QNIJjQRgcFm5b1xL2ceoecI9Xdii9DRAYTHfJQz0="
 
-    assert module["_obs_v5_auth_response"](password, salt, challenge) == expected
+    assert module["_obs_v5_auth_response"](auth_material, salt, challenge) == expected
 
 
 def test_new_slotdrift_scalars_vary_across_rows(tmp_path: Path) -> None:
