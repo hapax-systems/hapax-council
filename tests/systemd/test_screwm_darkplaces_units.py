@@ -52,7 +52,7 @@ def test_darkplaces_v4l2_service_remains_runtime_guarded_and_uses_visible_xvfb_r
     assert "scripts/darkplaces-v4l2-xorg.sh" not in body
     assert "Environment=HAPAX_DARKPLACES_EXPECTED_GPU_INDEX=0" in body
     assert ('Environment="HAPAX_DARKPLACES_EXPECTED_GL_RENDERER=NVIDIA GeForce RTX 5090"') in body
-    assert "Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52" in body
+    assert "Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video50" in body
     assert "Environment=HAPAX_DARKPLACES_WATCHDOG_INTERVAL_SECONDS=10" in body
     assert "Environment=HAPAX_DARKPLACES_JOY_INDEX=1" in body
     assert "Environment=DARKPLACES_WIDTH=1920" in body
