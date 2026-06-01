@@ -15,8 +15,8 @@ Usage:
     coord-grant-mint --scope '*' --reason "kernel down" --ttl 1800
 
 Paths (env-overridable; defaults match hooks/scripts/escape-grant.sh):
-    grants   $HAPAX_COORD_GRANT_DIR   (/var/lib/hapax/coord/grants)
-    key      $HAPAX_COORD_GRANT_KEY   (/var/lib/hapax/coord/grant-key)
+    grants   $HAPAX_COORD_GRANT_DIR   (~/.cache/hapax/coord/grants)
+    key      $HAPAX_COORD_GRANT_KEY   (~/.cache/hapax/coord/grant-key)
 
 The signing key is auto-created (32 random bytes, mode 0600) on first mint and
 reused thereafter. Prints the absolute path of the grant file it wrote.
@@ -25,8 +25,6 @@ reused thereafter. Prints the absolute path of the grant file it wrote.
 from __future__ import annotations
 
 import argparse
-import os
-import secrets
 import sys
 import time
 from pathlib import Path
@@ -35,39 +33,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.coord_event_log import default_grant_dir, default_grant_key  # noqa: E402
 from shared.governance.coord_capabilities import (  # noqa: E402
+    load_or_create_key,
     mint_escape_grant,
     write_grant_file,
 )
-
-DEFAULT_GRANT_DIR = "/var/lib/hapax/coord/grants"
-DEFAULT_GRANT_KEY = "/var/lib/hapax/coord/grant-key"
-
-
-def _grant_dir() -> Path:
-    return Path(os.environ.get("HAPAX_COORD_GRANT_DIR", DEFAULT_GRANT_DIR))
-
-
-def _key_path() -> Path:
-    return Path(os.environ.get("HAPAX_COORD_GRANT_KEY", DEFAULT_GRANT_KEY))
-
-
-def load_or_create_key(path: Path) -> bytes:
-    """Read the operator signing key; create it (0600) atomically on first use.
-
-    Created with O_EXCL + a restrictive mode from the start, so there is never a
-    window where the key is world-readable.
-    """
-    if path.exists():
-        return path.read_bytes()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    key = secrets.token_bytes(32)
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        os.write(fd, key)
-    finally:
-        os.close(fd)
-    return key
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -86,8 +57,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--key-file", default=None, help="override the signing key path")
     args = parser.parse_args(argv)
 
-    grant_dir = Path(args.grant_dir) if args.grant_dir else _grant_dir()
-    key_path = Path(args.key_file) if args.key_file else _key_path()
+    grant_dir = Path(args.grant_dir) if args.grant_dir else default_grant_dir()
+    key_path = Path(args.key_file) if args.key_file else default_grant_key()
     grant_dir.mkdir(parents=True, exist_ok=True)
     key = load_or_create_key(key_path)
 
