@@ -1,0 +1,16 @@
+# Hapax-Auto-Enable: true
+# hapax-post-merge-deploy `enable --now`s units carrying this marker, so the
+# reform-complete regression detector goes live on merge instead of installing-
+# but-sleeping (a never-enabled timer never fires). The marker requires the
+# [Install] section below.
+[Unit]
+Description=Reform-complete regression detector — re-verify every reform realization every 6h
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=6h
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

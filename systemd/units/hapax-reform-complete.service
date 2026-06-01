@@ -1,0 +1,23 @@
+[Unit]
+Description=Reform-complete regression detector — alert if a realized reform invariant silently reverts
+Documentation=file:///home/hapax/Documents/Personal/30-areas/hapax/reform-execution-manifest.yaml
+After=network.target hapax-coord.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+# --regression-only exits non-zero (-> OnFailure notify) ONLY when a realization that
+# PREVIOUSLY passed reverts. This is the meta-fix guard against a 3rd merged-vs-realized
+# cycle: a silently-reverting realization (coord SSOT unprovisioned, lane supervisor
+# disabled, opus receipt lapsed, INV-5 clobbered by the rebuild timer, ...) is caught
+# here rather than by eyeball. The script also emits its own high-priority notification
+# naming the regressed checks. Runs from the active deploy worktree (mirrors
+# policy-decide-shadow-replay.service); rebuild is idempotent.
+ExecStart=/home/hapax/.local/bin/uv run --directory /home/hapax/projects/hapax-council python scripts/hapax-reform-complete --regression-only
+Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Nice=10
+MemoryMax=1G
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-reform-complete
