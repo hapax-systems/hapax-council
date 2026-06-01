@@ -545,6 +545,7 @@ These surfaces must comply with §1–§8. All colors must derive from §3, all 
 | **Foot terminal** | `~/.config/foot/foot.ini` | USR1/USR2 signal switching `[colors-dark]`/`[colors-light]` | Low — `[colors-dark]` is full BBS palette, not Gruvbox |
 | **Officium React app** | `hapax-officium/officium-web/src/` | **Not implemented** | Low — no ThemeProvider, hardcoded Gruvbox only |
 | **Studio compositor overlays** | `agents/studio_compositor.py` | **Not implemented** | Low — arbitrary RGB tuples, generic font |
+| **Coordination cockpit (hapax-coord)** | `hapax-coord/src/dashboard.lisp` (`dashboard-theme-vars-css`) | `data-working-mode` attribute + CSS custom properties, mode read from `~/.cache/hapax/working-mode` | Medium — own `--coord-*` palette with dual rnd/research variants; not yet derived from §3 tokens |
 
 ### 11.2 Governed surfaces — requirements
 
