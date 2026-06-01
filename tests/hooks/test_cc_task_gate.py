@@ -803,7 +803,6 @@ class TestGeneralizedPathRecovery:
     @pytest.mark.parametrize(
         "dirname,expected",
         [
-            ("hapax-council", "alpha"),
             ("hapax-council--beta", "beta"),
             ("hapax-council--delta-omg", "delta"),
             ("hapax-council--epsilon-x", "epsilon"),
@@ -831,6 +830,12 @@ class TestGeneralizedPathRecovery:
 
     def test_unrecognized_path_returns_nonzero(self, tmp_path: Path) -> None:
         wt = tmp_path / "not-a-council-worktree"
+        wt.mkdir()
+        r = _role_helper(f'hapax_agent_role_from_path "{wt}"')
+        assert r.returncode != 0
+
+    def test_primary_worktree_path_does_not_infer_alpha(self, tmp_path: Path) -> None:
+        wt = tmp_path / "hapax-council"
         wt.mkdir()
         r = _role_helper(f'hapax_agent_role_from_path "{wt}"')
         assert r.returncode != 0
@@ -933,6 +938,24 @@ class TestSessionKeyedGate:
         assert r.returncode == 2
         assert "cannot determine session role" in r.stderr
         assert "alpha" not in r.stderr
+
+    def test_branch_prefix_with_session_is_roleless_not_alpha_claim(self, tmp_path: Path) -> None:
+        # Same FM-1 case with the Phase-1 fallback live: a bare session on an
+        # alpha/ branch degrades to roleless and does not inherit a foreign alpha
+        # claim, even when an alpha claim file exists.
+        _make_vault(tmp_path, status="done", assigned="alpha", task_id="alpha-task")
+        _make_vault(tmp_path, status="in_progress", assigned="roleless", task_id="roleless-task")
+        _write_claim(tmp_path, "alpha", "alpha-task")
+        _write_session_claim(tmp_path, "roleless-sidZ", "roleless-task")
+        repo = _git_repo_on_branch(tmp_path, "alpha/scratch")
+        r = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            role=None,
+            cwd=repo,
+            extra_env={"HAPAX_SESSION_ID": "sidZ"},
+        )
+        assert r.returncode == 0, r.stderr
 
 
 def _write_claimable_task(home: Path, task_id: str, *, status: str = "offered") -> Path:
@@ -1049,7 +1072,7 @@ _SPAWNERS = [
 
 
 class TestSpawnerSessionIdentity:
-    """All five spawners export HAPAX_AGENT_ROLE + a generated HAPAX_SESSION_ID.
+    """All six spawners export HAPAX_AGENT_ROLE + a generated HAPAX_SESSION_ID.
 
     The launchers spawn processes/tmux and cannot be run in isolation, so these
     assert the identity wiring is present in the source (complemented by `bash -n`
