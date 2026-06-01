@@ -24,6 +24,7 @@
 #                                            + restart wireplumber
 #   systemd/*.service|timer|path   → cp + daemon-reload + restart
 #   systemd/units/*.service|timer|path|target → cp + daemon-reload + restart
+#   systemd/units/*.slice            → cp + daemon-reload (members activate it; no enable/restart)
 #       unless the unit has `# Hapax-Install-Scope: system`, in which case
 #       it is system/root-scoped and must be installed by its dedicated
 #       installer rather than copied into the user unit directory.
@@ -475,7 +476,7 @@ while IFS= read -r f; do
         config/hapax/*.conf)              HAPAX_CONF+=("$f") ;;
         config/wireplumber/scripts/hapax/*.lua) WP_LUA+=("$f") ;;
         config/wireplumber/*.conf)        WP+=("$f") ;;
-        systemd/units/*.service|systemd/units/*.timer|systemd/units/*.path|systemd/units/*.target)
+        systemd/units/*.service|systemd/units/*.timer|systemd/units/*.path|systemd/units/*.target|systemd/units/*.slice)
             if [ "$(unit_install_scope "$f")" = "system" ]; then
                 SYSTEMD_SYSTEM+=("$f")
             else
