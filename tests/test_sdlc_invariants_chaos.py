@@ -123,10 +123,11 @@ class TestMintEscapeForViolation:
             assert grant.scope == "*"
             assert grant.grantor == ESCAPE_GRANTOR
             assert inv in grant.reason
-            # the grant was written to disk and round-trips
-            files = list(tmp_path.glob(f"{inv.lower().replace('-', '')}-*.json"))
-            assert len(files) == 1
-            assert read_grant_file(files[0]) == grant
+            # the grant was written to disk as <grant_id>.grant — the extension the
+            # live shim globs, NOT the old <slug>-<id>.json — and round-trips
+            grant_file = tmp_path / f"{grant.grant_id}.grant"
+            assert grant_file.exists()
+            assert read_grant_file(grant_file) == grant
 
     def test_minted_grant_actually_unblocks_a_lane(self, tmp_path):
         grant = mint_escape_for_violation(
@@ -223,7 +224,7 @@ class TestRunEvaluator:
         # exactly one grant minted — for INV-3 (the auto-mint class), never for INV-1
         assert len(report.minted) == 1
         assert "INV-3" in report.minted[0].reason
-        assert list(grant_dir.glob("inv3-*.json"))
+        assert (grant_dir / f"{report.minted[0].grant_id}.grant").exists()
 
     def test_no_key_ledgers_but_cannot_mint(self, tmp_path):
         report = run_evaluator(
@@ -318,7 +319,7 @@ class TestDaemonKillChaos:
                 key=_KEY,
                 now=_NOW,
             )
-            grant_file = tmp_path / "escape.json"
+            grant_file = tmp_path / "escape.grant"
             write_grant_file(grant, grant_file)
 
             # 5. the lane reads the grant directly from disk — the daemon is STILL dead —

@@ -1,14 +1,28 @@
 [Unit]
 Description=Hapax SDLC never-stuck invariant evaluator (INV-1..5, advisory-with-ledger)
-Documentation=file://%h/projects/hapax-council/docs/formal/sdlc-ladder.tla
+Documentation=file://%h/.cache/hapax/rebuild/worktree/docs/formal/sdlc-ladder.tla
 After=network-online.target
+OnFailure=notify-failure@%n.service
+# Run from the STABLE deploy worktree kept fresh on origin/main by the
+# source-activation / rebuild chain (reform-deploy-chain-repair) — NEVER the
+# primary worktree %h/projects/hapax-council, which a lane may park on a feature
+# branch where scripts/hapax-sdlc-invariants + shared/sdlc_invariants.py do not
+# exist (the #3820 203/EXEC crash-loop root cause). ConditionPathExists turns an
+# absent / not-yet-deployed target into a CLEAN SKIP instead of a crash-loop —
+# the same deploy-worktree pattern the hapax-audio-health-* units use.
+ConditionPathExists=%h/.cache/hapax/rebuild/worktree/scripts/hapax-sdlc-invariants
 
 [Service]
 Type=oneshot
 # Advisory-with-ledger: evaluates INV-1..5 against the live authority-case ledger,
 # ledgers every violation, and AUTO-MINTS the relevant escape on INV-3/4/5 so a
 # stuck lane is unblocked, never frozen. The evaluator always exits 0 (never a gate).
-ExecStart=%h/projects/hapax-council/scripts/hapax-sdlc-invariants
+# ExecStartPre --verify catches a misdeployed target LOUDLY (→ OnFailure ntfy)
+# rather than via a silent 203/EXEC.
+ExecStartPre=%h/.cache/hapax/rebuild/worktree/scripts/hapax-sdlc-invariants --verify
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/hapax-sdlc-invariants
+Environment=HAPAX_COUNCIL_REPO=%h/.cache/hapax/rebuild/worktree
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=NTFY_URL=https://ntfy.sh
 Environment=NTFY_TOPIC=hapax-ops
 NoNewPrivileges=true
