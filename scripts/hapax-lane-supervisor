@@ -32,11 +32,24 @@ WORKTREE_ROOT="${HAPAX_SUPERVISOR_WORKTREE_ROOT:-$HOME/projects}"
 VAULT_ROOT="${HAPAX_SUPERVISOR_VAULT_ROOT:-$HOME/Documents/Personal/20-projects/hapax-cc-tasks}"
 
 # Lanes that must stay alive. Greek = non-alpha headless-capable roles (alpha is
-# the operator-attended integrator, never auto-respawned). cx-*/antigrav default
-# to the operator-designated always-on set; all overridable for ops + tests.
-CLAUDE_LANES="${HAPAX_SUPERVISOR_CLAUDE_LANES:-beta gamma delta epsilon zeta eta theta}"
-CODEX_LANES="${HAPAX_SUPERVISOR_CODEX_LANES:-cx-cpu-bridge cx-effect-drift-current cx-preset-storm cx-visual-bandwidth}"
-ANTIGRAV_LANES="${HAPAX_SUPERVISOR_ANTIGRAV_LANES:-antigrav}"
+# the operator-attended integrator, never auto-respawned); all greek lanes have
+# real worktrees (some parked under ~/.claude/worktrees/ — see lane_has_worktree).
+#
+# Codex/antigrav supervision is OPT-IN (default empty). The prior hardcoded
+# defaults (cx-cpu-bridge/cx-effect-drift-current/cx-preset-storm/cx-visual-bandwidth
+# and a bare `antigrav`) named lanes with NO git worktree and NO repo references —
+# stale entries whose only effect was a permanent rc=4 respawn storm (codex) and
+# silent "no worktree — skipping" lines every cycle. The live codex lanes are
+# color-named and task-spawned; designating an always-on codex/antigrav roster is
+# an operator policy decision (Phase 6 canonical lane registry). Set
+# HAPAX_SUPERVISOR_CODEX_LANES / HAPAX_SUPERVISOR_ANTIGRAV_LANES (e.g. a systemd
+# drop-in) to supervise specific lanes — a rostered lane that lacks a worktree now
+# ESCALATES (below) instead of being silently skipped.
+# `${VAR-default}` (not `:-`): an explicitly-set empty roster means "supervise no
+# lanes of this kind", not "fall back to the default". Only an UNSET var defaults.
+CLAUDE_LANES="${HAPAX_SUPERVISOR_CLAUDE_LANES-beta gamma delta epsilon zeta eta theta}"
+CODEX_LANES="${HAPAX_SUPERVISOR_CODEX_LANES-}"
+ANTIGRAV_LANES="${HAPAX_SUPERVISOR_ANTIGRAV_LANES-}"
 
 RESTART_COOLDOWN_S="${HAPAX_SUPERVISOR_RESTART_COOLDOWN_S:-120}"
 BURST_LIMIT="${HAPAX_SUPERVISOR_BURST_LIMIT:-5}"
@@ -48,6 +61,17 @@ CLAUDE_HEADLESS_BIN="${HAPAX_CLAUDE_HEADLESS_BIN:-$HOME/.local/bin/hapax-claude-
 CLAUDE_BIN="${HAPAX_CLAUDE_BIN:-$HOME/.local/bin/hapax-claude}"
 CODEX_BIN="${HAPAX_CODEX_BIN:-$HOME/.local/bin/hapax-codex}"
 ANTIGRAV_BIN="${HAPAX_ANTIGRAV_BIN:-$HOME/.local/bin/hapax-antigrav}"
+
+# ── escalation thresholds (surface chronic failures; never exit-0-silently) ─────
+# A lane that respawn-fails this many times in a row, or sits in the roster with no
+# worktree for this many sweep cycles, is escalated via ntfy instead of being
+# logged-and-forgotten. Re-fires at most once per ESCALATE_REFIRE_S while unhealthy.
+ESCALATE_RESPAWN_FAILS="${HAPAX_SUPERVISOR_ESCALATE_RESPAWN_FAILS:-3}"
+ESCALATE_MISSING_WORKTREE_CYCLES="${HAPAX_SUPERVISOR_ESCALATE_MISSING_WORKTREE_CYCLES:-10}"
+ESCALATE_REFIRE_S="${HAPAX_SUPERVISOR_ESCALATE_REFIRE_S:-3600}"
+NOTIFY_CMD="${HAPAX_SUPERVISOR_NOTIFY_CMD:-}"
+NTFY_URL="${HAPAX_SUPERVISOR_NTFY_URL:-${NTFY_URL:-https://ntfy.sh}}"
+NTFY_TOPIC="${HAPAX_SUPERVISOR_NTFY_TOPIC:-${NTFY_TOPIC:-hapax-ops}}"
 
 mkdir -p "$STATE_DIR"
 
@@ -92,6 +116,75 @@ burst_exhausted() {
 record_restart() {
   echo "$now" > "$STATE_DIR/$1.last-restart"
   echo "$now" >> "$STATE_DIR/$1.restart-log"
+}
+
+# ── escalation ────────────────────────────────────────────────────────────────
+
+# notify <title> <body>: emit an operator-visible alert. Overridable for tests
+# via HAPAX_SUPERVISOR_NOTIFY_CMD; the default posts to ntfy (headless-safe) plus
+# a best-effort desktop notification.
+notify() {
+  local title="$1" body="$2"
+  log "ESCALATION — $title: $body"
+  if [ -n "$NOTIFY_CMD" ]; then
+    "$NOTIFY_CMD" "$title" "$body" || log "notify: NOTIFY_CMD failed"
+    return 0
+  fi
+  if [ -n "$NTFY_TOPIC" ] && command -v curl >/dev/null 2>&1; then
+    curl -fsS --max-time 10 \
+      -H "Title: $title" -H "Priority: high" -H "Tags: warning,robot" \
+      -d "$body" "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 \
+      || log "notify: ntfy POST to $NTFY_URL/$NTFY_TOPIC failed"
+  fi
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send -u critical "$title" "$body" >/dev/null 2>&1 || true
+  fi
+}
+
+# bump_streak <lane> <tag>: increment a persisted counter, echo the new value.
+bump_streak() {
+  local f="$STATE_DIR/$1.$2-streak" v=0
+  [ -f "$f" ] && v="$(cat "$f" 2>/dev/null || echo 0)"
+  case "$v" in '' | *[!0-9]*) v=0 ;; esac
+  v=$(( v + 1 ))
+  echo "$v" > "$f"
+  printf '%s\n' "$v"
+}
+
+# clear_streak <lane> <tag>: reset counter + escalation marker after recovery.
+clear_streak() {
+  rm -f "$STATE_DIR/$1.$2-streak" "$STATE_DIR/$1.$2-escalated-at" 2>/dev/null || true
+}
+
+# escalate <lane> <tag> <title> <body>: notify on first crossing, then at most
+# once per ESCALATE_REFIRE_S while the condition persists (avoids per-cycle spam).
+escalate() {
+  local lane="$1" tag="$2" title="$3" body="$4"
+  local marker="$STATE_DIR/$lane.$tag-escalated-at" last=0
+  [ -f "$marker" ] && last="$(cat "$marker" 2>/dev/null || echo 0)"
+  case "$last" in '' | *[!0-9]*) last=0 ;; esac
+  if [ "$(( now - last ))" -lt "$ESCALATE_REFIRE_S" ]; then
+    return 0
+  fi
+  notify "$title" "$body"
+  echo "$now" > "$marker"
+}
+
+# lane_has_worktree <lane>: true if the lane has a real worktree. Checks the
+# configured root first (common case + tests), then any registered git worktree
+# (greek lanes can be parked under ~/.claude/worktrees/, not ~/projects/), so a
+# live lane is never falsely flagged missing.
+lane_has_worktree() {
+  local lane="$1"
+  [ -d "$WORKTREE_ROOT/hapax-council--$lane" ] && return 0
+  if [ "${HAPAX_SUPERVISOR_GIT_WORKTREE_DETECT:-1}" = "1" ] && command -v git >/dev/null 2>&1; then
+    local gitdir="${HAPAX_SUPERVISOR_GIT_DIR:-$WORKTREE_ROOT/hapax-council}"
+    if [ -d "$gitdir" ] && git -C "$gitdir" worktree list --porcelain 2>/dev/null \
+        | grep -qE "^worktree .*/hapax-council--$lane$"; then
+      return 0
+    fi
+  fi
+  return 1
 }
 
 # Active claim → "task_id<TAB>title", else empty. The claim file names the task;
@@ -142,13 +235,29 @@ respawn_sync() {
   if [ "$rc" -ne 0 ]; then
     log "$lane: respawn command exited rc=$rc — see /tmp/hapax-supervisor-$lane.log"
   fi
+  return "$rc"
 }
 
 # guard <lane> <kind>: ensure the lane process exists; respawn if dead.
 guard() {
   local lane="$1" kind="$2" worktree="$WORKTREE_ROOT/hapax-council--$1"
 
-  [ -d "$worktree" ] || { log "$lane ($kind): no worktree at $worktree — skipping"; return 0; }
+  # A rostered lane with no worktree can never be launched. Don't silently skip
+  # it forever — count the cycles and escalate once it crosses the threshold, so
+  # the operator either provisions the worktree or removes the lane (the roster
+  # is then honest). The escalation is the safety net for any future roster drift.
+  if ! lane_has_worktree "$lane"; then
+    local wstreak
+    wstreak="$(bump_streak "$lane" no-worktree)"
+    log "$lane ($kind): no worktree (configured root $worktree) — skipping (cycle $wstreak)"
+    if [ "$wstreak" -ge "$ESCALATE_MISSING_WORKTREE_CYCLES" ]; then
+      escalate "$lane" no-worktree \
+        "Hapax lane-supervisor: $lane has no worktree" \
+        "Rostered $kind lane '$lane' has had no worktree for $wstreak supervisor cycles (~$(( wstreak * 60 ))s). Provision its worktree or drop '$lane' from HAPAX_SUPERVISOR_${kind^^}_LANES."
+    fi
+    return 0
+  fi
+  clear_streak "$lane" no-worktree
 
   case "$kind" in
     claude)   claude_alive "$lane" && return 0 ;;
@@ -182,6 +291,10 @@ guard() {
     return 0
   fi
 
+  # respawn_tracked=1 only for the synchronous launchers whose exit code we can
+  # observe; the backgrounded headless resume returns immediately (rc unknowable
+  # here) so it is neither counted as a failure nor a recovery.
+  local respawn_rc=0 respawn_tracked=0
   case "$kind" in
     claude)
       if [ -n "$task_id" ]; then
@@ -194,20 +307,40 @@ guard() {
         # Headless launcher is default-deny without a governed task; bring the
         # lane up read-only so the process exists and awaits governed dispatch.
         log "$lane ($kind): DEAD with no active task — respawning read-only (idle-await)"
-        respawn_sync "$lane" "$CLAUDE_BIN" --role "$lane" --terminal tmux --readonly
+        respawn_sync "$lane" "$CLAUDE_BIN" --role "$lane" --terminal tmux --readonly || respawn_rc=$?
+        respawn_tracked=1
       fi
       ;;
     codex)
       log "$lane ($kind): DEAD — respawning tmux lane (idle-await; lane reads its own claim)"
-      respawn_sync "$lane" "$CODEX_BIN" --session "$lane" --no-claim --terminal tmux
+      respawn_sync "$lane" "$CODEX_BIN" --session "$lane" --no-claim --terminal tmux || respawn_rc=$?
+      respawn_tracked=1
       ;;
     antigrav)
       log "$lane ($kind): DEAD — respawning tmux lane (idle-await; lane reads its own claim)"
-      respawn_sync "$lane" "$ANTIGRAV_BIN" --session "$lane" --no-claim --terminal tmux
+      respawn_sync "$lane" "$ANTIGRAV_BIN" --session "$lane" --no-claim --terminal tmux || respawn_rc=$?
+      respawn_tracked=1
       ;;
   esac
 
   record_restart "$lane"
+
+  # A respawn that keeps failing (e.g. codex-not-found rc=4) is a chronic crash
+  # loop the cooldown can never cure — escalate after N consecutive failures
+  # instead of returning exit 0 forever.
+  if [ "$respawn_tracked" = "1" ]; then
+    if [ "$respawn_rc" -ne 0 ]; then
+      local fstreak
+      fstreak="$(bump_streak "$lane" respawn-fail)"
+      if [ "$fstreak" -ge "$ESCALATE_RESPAWN_FAILS" ]; then
+        escalate "$lane" respawn-fail \
+          "Hapax lane-supervisor: $lane respawn failing" \
+          "$kind lane '$lane' failed to respawn $fstreak consecutive times (last rc=$respawn_rc) — chronically DOWN. See /tmp/hapax-supervisor-$lane.log."
+      fi
+    else
+      clear_streak "$lane" respawn-fail
+    fi
+  fi
 }
 
 # ── sweep ─────────────────────────────────────────────────────────────────────
