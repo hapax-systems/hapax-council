@@ -215,6 +215,26 @@ def _get_source_screenshot_response(
             image_format="png",
             image_width=width,
             image_height=height,
+            image_compression_quality=quality,
+        )
+    except TypeError:
+        pass
+    try:
+        return client.get_source_screenshot(
+            source_name=source_name,
+            image_format="png",
+            image_width=width,
+            image_height=height,
+            imageCompressionQuality=quality,
+        )
+    except TypeError:
+        pass
+    try:
+        return client.get_source_screenshot(
+            source_name=source_name,
+            image_format="png",
+            image_width=width,
+            image_height=height,
         )
     except TypeError:
         return client.get_source_screenshot(

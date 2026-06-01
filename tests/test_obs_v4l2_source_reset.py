@@ -341,6 +341,26 @@ class TestProbeSource:
 
 
 class TestObswsCompatibility:
+    def test_keyword_screenshot_client_receives_quality(self, reset_mod: types.ModuleType) -> None:
+        client = MagicMock()
+        client.get_source_screenshot.return_value = MagicMock(image_data="frame")
+
+        reset_mod._get_source_screenshot_response(
+            client,
+            "Video Capture Device (V4L2)",
+            width=320,
+            height=180,
+            quality=75,
+        )
+
+        client.get_source_screenshot.assert_called_once_with(
+            source_name="Video Capture Device (V4L2)",
+            image_format="png",
+            image_width=320,
+            image_height=180,
+            image_compression_quality=75,
+        )
+
     def test_probe_supports_positional_obsws_client(self, reset_mod: types.ModuleType) -> None:
         class PositionalClient:
             def get_source_active(self, source_name: str):
