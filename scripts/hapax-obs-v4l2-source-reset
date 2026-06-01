@@ -20,6 +20,8 @@ an unbounded visibility-toggle loop.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -32,6 +34,7 @@ import sys
 import time
 from dataclasses import dataclass
 from enum import StrEnum
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +46,9 @@ PROM_RESETS = "hapax_obs_v4l2_source_resets_total"
 PROM_ACTIVE = "hapax_obs_v4l2_source_reset_active"
 PROM_FAILURES = "hapax_obs_v4l2_source_reset_failures_total"
 PROM_PRODUCER_RESTARTS = "hapax_obs_v4l2_source_producer_restarts_total"
+SCREENSHOT_WIDTH = 32
+SCREENSHOT_HEIGHT = 18
+SCREENSHOT_QUALITY = 50
 OBS_LOG_V4L2_TIMEOUT_PREFIX = "obs_log_v4l2_timeout:"
 OBS_LOG_V4L2_SELF_RECOVERED_TIMEOUT_PREFIX = "obs_log_v4l2_timeout_self_recovered:"
 
@@ -200,11 +206,17 @@ def _get_source_screenshot_response(client: Any, source_name: str) -> Any:
         return client.get_source_screenshot(
             source_name=source_name,
             image_format="png",
-            image_width=8,
-            image_height=8,
+            image_width=SCREENSHOT_WIDTH,
+            image_height=SCREENSHOT_HEIGHT,
         )
     except TypeError:
-        return client.get_source_screenshot(source_name, "png", 8, 8, 50)
+        return client.get_source_screenshot(
+            source_name,
+            "png",
+            SCREENSHOT_WIDTH,
+            SCREENSHOT_HEIGHT,
+            SCREENSHOT_QUALITY,
+        )
 
 
 def _get_scene_item_list_response(client: Any, scene_name: str) -> Any:
@@ -316,11 +328,40 @@ def _apply_input_settings(
         return False
 
 
+def _decode_obs_image_data(image_data: Any) -> bytes:
+    if isinstance(image_data, bytes):
+        return image_data
+    if not isinstance(image_data, str):
+        return bytes(image_data)
+    payload = image_data
+    if payload.startswith("data:") and "," in payload:
+        payload = payload.split(",", 1)[1]
+    try:
+        return base64.b64decode(payload, validate=False)
+    except (binascii.Error, ValueError):
+        return image_data.encode()
+
+
+def _screenshot_signature(image_data: Any) -> str:
+    raw = _decode_obs_image_data(image_data)
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(raw)) as image:
+            pixels = image.convert("RGB").resize(
+                (SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT),
+                resample=Image.Resampling.BILINEAR,
+            )
+            return hashlib.sha256(pixels.tobytes()).hexdigest()
+    except Exception:
+        return hashlib.sha256(raw).hexdigest()
+
+
 def _get_screenshot_hash(client: Any, source_name: str) -> str | None:
-    """Take a tiny screenshot and return its SHA-256 hex digest."""
+    """Take a small screenshot and return a stable pixel SHA-256 hex digest."""
     try:
         resp = _get_source_screenshot_response(client, source_name)
-        return hashlib.sha256(resp.image_data.encode()).hexdigest()
+        return _screenshot_signature(resp.image_data)
     except Exception as exc:
         logger.debug("screenshot failed: %s", exc)
         return None
@@ -409,7 +450,7 @@ def _probe_source(
 
     try:
         resp = _get_source_screenshot_response(client, source_name)
-        current_hash = hashlib.sha256(resp.image_data.encode()).hexdigest()
+        current_hash = _screenshot_signature(resp.image_data)
     except Exception as exc:
         state = _source_error_state(exc)
         return ProbeResult(

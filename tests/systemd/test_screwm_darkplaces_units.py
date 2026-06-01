@@ -40,7 +40,7 @@ def test_darkplaces_v4l2_service_remains_runtime_guarded_and_uses_visible_xvfb_r
     assert "Type=notify" in body
     assert "NotifyAccess=all" in body
     assert "WatchdogSec=30s" in body
-    assert "TimeoutStopSec=10s" in body
+    assert "TimeoutStopSec=3s" in body
     assert "KillMode=control-group" in body
     assert "SendSIGKILL=yes" in body
     assert (
