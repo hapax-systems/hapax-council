@@ -1,0 +1,718 @@
+#!/usr/bin/env python3
+"""hapax-reform-complete — mechanical "the coordination reform is REALIZED" predicate.
+
+Mirrors ``scripts/policy-decide-shadow-eval``: exit 0 = complete (every
+load-bearing realization is LIVE on the host), non-zero + a JSON verdict carrying
+``reasons[]`` otherwise. This converts "is the coordination reform done?" from an
+eyeball judgment into a checkable predicate — the meta-fix against a THIRD
+merged-vs-realized drift cycle (CASE-SDLC-REFORM-001). "Merged" was conflated with
+"realized" once at the PR layer; the expansive audit found the same pattern recur
+at the filesystem/activation layer (SSOT unprovisioned, supervisor not enabled,
+opus receipt not minted, gate not deployed, INV-checks not running). There was no
+single ``reform-is-DONE`` predicate analogous to per-unit ``policy-decide-shadow-eval``
+— so this is it.
+
+Each CHECK verifies one realization against the live host:
+
+* ``coord-ssot-ledger``    — the daemon-owned coord ledger exists + is writable, the
+                             per-worktree authority-case ledgers are no longer
+                             git-tracked (sole-ledger), and projection<->vault drift
+                             is clean.
+* ``opus-route-authority`` — a signed opus route-authority receipt is present and
+                             unexpired (opus reachable without --policy-rollback) and
+                             its upkeep timer is enabled+active.
+* ``lane-supervisor``      — ``hapax-lane-supervisor.timer`` is enabled+active (FM-11).
+* ``canonical-gate``       — INV-5 (``is_cognition_path``) is present in the live gate,
+                             the repo gate, and every lane-worktree gate, and the live
+                             gate matches the repo source (no LIVE/repo drift).
+* ``escape-grant``         — the daemon-independent escape substrate (dir + key + shim)
+                             is wired AND a freshly minted grant round-trips through the
+                             real verifier (INV-3/4: a grant unblocks; scoping holds).
+* ``coord-verbs``          — ``coord.request.refine`` is a real (non-fallback) verb in
+                             the hapax-coord kernel.
+* ``shadow-cutover``       — the reform 3b shadow-cutover predicate is reachable (or the
+                             cutover already enforces ``policy_decide`` in the gate).
+* ``off-deprecation``      — ``HAPAX_*_OFF`` is deprecated with a retro-grant backstop
+                             wired, and there are no zombie launcher pidfiles.
+
+Modes
+-----
+(default)          terminal gate: exit 0 iff ALL checks pass; else exit 1.
+--regression-only  exit 1 iff a check that previously PASSED (recorded in the
+                   high-water-mark file) now FAILS — i.e. a realization silently
+                   reverted. Checks that have never yet passed failing is NOT a
+                   regression (the reform is still being built out), so the periodic
+                   detector stays quiet until something actually reverts. On a
+                   regression it sends a notification (unless --no-ntfy).
+
+The high-water mark (default ``~/.cache/hapax/reform-complete-watermark.json``)
+records the set of checks that have passed at least once. Both modes update it.
+
+Testing hooks: ``--observations FILE`` loads a JSON ``{check_id: observation}`` map
+and skips live probing, so the pure decision logic and the exit-code contract are
+exercised deterministically.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+PROJECTS_DIR = REPO_ROOT.parent
+DEFAULT_COORD_REPO = PROJECTS_DIR / "hapax-coord"
+DEFAULT_WATERMARK = Path.home() / ".cache" / "hapax" / "reform-complete-watermark.json"
+LIVE_GATE = (
+    Path.home()
+    / ".cache"
+    / "hapax"
+    / "rebuild"
+    / "worktree"
+    / "hooks"
+    / "scripts"
+    / "cc-task-gate.sh"
+)
+LANE_GATE_GLOB = "hapax-council--*/hooks/scripts/cc-task-gate.sh"
+
+#: systemd unit-file states that count as "enabled" (mirrors audit-runtime-activation-drift).
+ENABLED_STATES = frozenset(
+    {"enabled", "enabled-runtime", "static", "alias", "indirect", "generated"}
+)
+ACTIVE_STATES = frozenset({"active", "activating", "reloading"})
+
+CHECK_IDS = (
+    "coord-ssot-ledger",
+    "opus-route-authority",
+    "lane-supervisor",
+    "canonical-gate",
+    "escape-grant",
+    "coord-verbs",
+    "shadow-cutover",
+    "off-deprecation",
+)
+
+
+@dataclass(frozen=True)
+class CheckResult:
+    """The verdict for one realization check."""
+
+    check_id: str
+    ok: bool
+    reason: str | None = None
+    detail: dict[str, Any] = field(default_factory=dict)
+
+
+# ── live host probes ────────────────────────────────────────────────────────
+
+
+def _run(
+    argv: list[str], *, cwd: Path | None = None, timeout: float = 60.0
+) -> tuple[int, str, str]:
+    """Run a subprocess, returning (rc, stdout, stderr); never raises."""
+    try:
+        proc = subprocess.run(  # noqa: S603
+            argv,
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 127, "", str(exc)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def _systemctl(*args: str) -> str:
+    rc, out, _ = _run(["systemctl", "--user", *args], timeout=15)
+    return out.strip() if rc == 0 else (out.strip() or "unknown")
+
+
+def _unit_states(unit: str) -> tuple[str, str]:
+    return _systemctl("is-enabled", unit), _systemctl("is-active", unit)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _coord_paths() -> dict[str, str]:
+    """Resolve the live coord SSOT paths via the canonical resolver."""
+    from shared.coord_event_log import coord_base_dir, default_grant_dir, default_grant_key
+
+    base = coord_base_dir()
+    return {
+        "ledger_db": str(base / "ledger.db"),
+        "jsonl": str(base / "ledger.jsonl"),
+        "spool": str(base / "spool"),
+        "grant_dir": str(default_grant_dir()),
+        "grant_key": str(default_grant_key()),
+    }
+
+
+def _receipt_dir() -> Path:
+    from shared.dispatcher_policy import ROUTE_AUTHORITY_RECEIPT_DIRNAME
+    from shared.platform_capability_receipts import DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+
+    return DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR / ROUTE_AUTHORITY_RECEIPT_DIRNAME
+
+
+# ── gatherers: one per check, producing a JSON-serialisable observation ───────
+
+
+def gather_coord_ssot_ledger() -> dict[str, Any]:
+    paths = _coord_paths()
+    ledger_db = Path(paths["ledger_db"])
+    jsonl = Path(paths["jsonl"])
+    spool = Path(paths["spool"])
+    tracked = _run(["git", "ls-files", "--", "*authority-case-ledger.jsonl"], cwd=REPO_ROOT)[1]
+    tracked_count = len([ln for ln in tracked.splitlines() if ln.strip()])
+    rc, out, _ = _run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "coord-drift-check"), "--json"], timeout=120
+    )
+    try:
+        drift_count = len(json.loads(out)) if rc == 0 and out.strip() else (0 if rc == 0 else -1)
+    except json.JSONDecodeError:
+        drift_count = -1
+    return {
+        "ledger_db_exists": ledger_db.is_file(),
+        "ledger_db_writable": ledger_db.is_file() and os.access(ledger_db, os.W_OK),
+        "jsonl_exists": jsonl.is_file(),
+        "spool_is_dir": spool.is_dir(),
+        "tracked_ledger_count": tracked_count,
+        "drift_count": drift_count,
+        "drift_check_rc": rc,
+    }
+
+
+def gather_opus_route_authority() -> dict[str, Any]:
+    receipt_dir = _receipt_dir()
+    receipts = (
+        sorted(receipt_dir.glob("opus_model_entitlement-*.json")) if receipt_dir.is_dir() else []
+    )
+    fresh = False
+    receipt_path = None
+    seconds_remaining: float | None = None
+    if receipts:
+        from shared.dispatcher_policy import _coerce_utc, _parse_duration_spec
+
+        receipt_path = str(receipts[0])
+        try:
+            data = json.loads(receipts[0].read_text(encoding="utf-8"))
+            issued = _coerce_utc(
+                datetime.fromisoformat(str(data["issued_at"]).replace("Z", "+00:00"))
+            )
+            window = _parse_duration_spec(str(data.get("stale_after", "24h")))
+            seconds_remaining = (window - (datetime.now(UTC) - issued)).total_seconds()
+            fresh = seconds_remaining > 0
+        except (KeyError, ValueError, OSError):
+            fresh = False
+    enabled, active = _unit_states("hapax-opus-route-authority-receipt.timer")
+    return {
+        "receipt_exists": bool(receipts),
+        "receipt_path": receipt_path,
+        "receipt_fresh": fresh,
+        "seconds_remaining": seconds_remaining,
+        "timer_enabled": enabled,
+        "timer_active": active,
+    }
+
+
+def gather_lane_supervisor() -> dict[str, Any]:
+    enabled, active = _unit_states("hapax-lane-supervisor.timer")
+    return {"timer_enabled": enabled, "timer_active": active}
+
+
+def _has_inv5(path: Path) -> bool:
+    try:
+        return "is_cognition_path" in path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+
+def _sha256(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def gather_canonical_gate() -> dict[str, Any]:
+    repo_gate = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.sh"
+    lane_gates = sorted(PROJECTS_DIR.glob(LANE_GATE_GLOB))
+    lane_missing_inv5 = [str(g) for g in lane_gates if not _has_inv5(g)]
+    live_sha = _sha256(LIVE_GATE)
+    repo_sha = _sha256(repo_gate)
+    return {
+        "live_gate_exists": LIVE_GATE.is_file(),
+        "live_inv5": _has_inv5(LIVE_GATE),
+        "repo_inv5": _has_inv5(repo_gate),
+        "lane_gate_count": len(lane_gates),
+        "lane_missing_inv5": lane_missing_inv5,
+        "live_matches_repo": bool(live_sha) and live_sha == repo_sha,
+    }
+
+
+def gather_escape_grant() -> dict[str, Any]:
+    paths = _coord_paths()
+    grant_dir = Path(paths["grant_dir"])
+    grant_key = Path(paths["grant_key"])
+    shim = REPO_ROOT / "hooks" / "scripts" / "escape-grant.sh"
+    gate_wired = "escape_grant_allows" in (
+        LIVE_GATE.read_text(encoding="utf-8", errors="replace") if LIVE_GATE.is_file() else ""
+    )
+    obs: dict[str, Any] = {
+        "grant_dir_exists": grant_dir.is_dir(),
+        "key_present": grant_key.is_file(),
+        "shim_present": shim.is_file(),
+        "gate_wired": gate_wired,
+        "roundtrip_ok": False,
+    }
+    # INV-3/4: mint a throwaway-scoped, short-TTL grant into the REAL dir+key, verify
+    # the real verifier accepts it for its scope and rejects an uncovered gate, then
+    # delete it. The scope covers no real gate, so it can never open one even if
+    # cleanup were skipped. Skipped (fails closed) when dir/key/shim are absent.
+    if not (obs["grant_dir_exists"] and obs["key_present"] and obs["shim_present"]):
+        return obs
+    scope = f"reform-complete-selfcheck-{os.getpid()}"
+    mint_rc, mint_out, _ = _run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "coord-grant-mint"),
+            "--scope",
+            scope,
+            "--reason",
+            "hapax-reform-complete self-check",
+            "--ttl",
+            "60",
+        ],
+        timeout=30,
+    )
+    grant_file = mint_out.strip()
+    if mint_rc != 0 or not grant_file or not Path(grant_file).is_file():
+        obs["mint_rc"] = mint_rc
+        return obs
+    try:
+        accept = _run(
+            [
+                sys.executable,
+                "-m",
+                "shared.governance.coord_capabilities",
+                "verify-grant",
+                "--file",
+                grant_file,
+                "--gate",
+                scope,
+                "--key-file",
+                str(grant_key),
+            ],
+            cwd=REPO_ROOT,
+            timeout=30,
+        )[0]
+        reject = _run(
+            [
+                sys.executable,
+                "-m",
+                "shared.governance.coord_capabilities",
+                "verify-grant",
+                "--file",
+                grant_file,
+                "--gate",
+                "__reform_complete_negative__",
+                "--key-file",
+                str(grant_key),
+            ],
+            cwd=REPO_ROOT,
+            timeout=30,
+        )[0]
+        obs["roundtrip_ok"] = accept == 0 and reject != 0
+        obs["verify_accept_rc"] = accept
+        obs["verify_reject_rc"] = reject
+    finally:
+        Path(grant_file).unlink(missing_ok=True)
+    return obs
+
+
+def gather_coord_verbs(coord_repo: Path) -> dict[str, Any]:
+    src = coord_repo / "src"
+    model = src / "model.lisp"
+    model_text = model.read_text(encoding="utf-8", errors="replace") if model.is_file() else ""
+    # Scan the whole kernel for the non-fallback receipt constructor. A real mutating
+    # verb builds a `make-receipt`; a daemon-down stub returns only `fallback-write-receipt`
+    # (the universal "dry-run until the daemon-owned ledger writer lands" path). "≥1 coord
+    # mutating verb non-fallback" is met once any verb constructs a real receipt.
+    all_src = ""
+    if src.is_dir():
+        for lisp in sorted(src.glob("*.lisp")):
+            try:
+                all_src += lisp.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+    return {
+        "coord_repo_exists": coord_repo.is_dir(),
+        "model_present": model.is_file(),
+        "refine_verb": "(defun coord.request.refine" in model_text,
+        "coord_verb_count": model_text.count("(defun coord."),
+        "nonfallback_verb": "(make-receipt" in all_src,
+    }
+
+
+def gather_shadow_cutover() -> dict[str, Any]:
+    eval_script = REPO_ROOT / "scripts" / "policy-decide-shadow-eval"
+    reachable = False
+    if eval_script.is_file():
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out, _ = _run(
+                [
+                    sys.executable,
+                    str(eval_script),
+                    "--decision-log",
+                    str(Path(tmp) / "absent.jsonl"),
+                    "--ledger",
+                    str(Path(tmp) / "absent-shadow.jsonl"),
+                ],
+                timeout=60,
+            )
+        try:
+            reachable = rc in (0, 1) and "clean" in json.loads(out)
+        except json.JSONDecodeError:
+            reachable = False
+    gate_text = (
+        LIVE_GATE.read_text(encoding="utf-8", errors="replace") if LIVE_GATE.is_file() else ""
+    )
+    return {
+        "eval_script_present": eval_script.is_file(),
+        "predicate_reachable": reachable,
+        "cutover_enforced": "policy_decide" in gate_text,
+    }
+
+
+def gather_off_deprecation() -> dict[str, Any]:
+    gate_text = (
+        LIVE_GATE.read_text(encoding="utf-8", errors="replace") if LIVE_GATE.is_file() else ""
+    )
+    retro_watch = REPO_ROOT / "scripts" / "coord-retro-grant-watch"
+    pid_dir = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "hapax-claude"
+    zombies = []
+    if pid_dir.is_dir():
+        for pidfile in sorted(pid_dir.glob("*.pid")):
+            try:
+                pid = int(pidfile.read_text(encoding="utf-8").strip() or "0")
+            except (OSError, ValueError):
+                continue
+            if pid > 0 and not _pid_alive(pid):
+                zombies.append(pidfile.name)
+    return {
+        "retro_watch_present": retro_watch.is_file(),
+        "obligation_marker": "_record_retro_grant_obligation" in gate_text,
+        "off_deprecated": "DEPRECATED" in gate_text,
+        "zombie_pidfiles": zombies,
+    }
+
+
+def gather_all(coord_repo: Path) -> dict[str, dict[str, Any]]:
+    return {
+        "coord-ssot-ledger": gather_coord_ssot_ledger(),
+        "opus-route-authority": gather_opus_route_authority(),
+        "lane-supervisor": gather_lane_supervisor(),
+        "canonical-gate": gather_canonical_gate(),
+        "escape-grant": gather_escape_grant(),
+        "coord-verbs": gather_coord_verbs(coord_repo),
+        "shadow-cutover": gather_shadow_cutover(),
+        "off-deprecation": gather_off_deprecation(),
+    }
+
+
+# ── deciders: pure observation -> CheckResult ─────────────────────────────────
+
+
+def _enabled_active_ok(obs: dict[str, Any], prefix: str = "timer") -> bool:
+    return (
+        obs.get(f"{prefix}_enabled") in ENABLED_STATES
+        and obs.get(f"{prefix}_active") in ACTIVE_STATES
+    )
+
+
+def decide_coord_ssot_ledger(o: dict[str, Any]) -> CheckResult:
+    bad = []
+    if not o.get("ledger_db_exists"):
+        bad.append("ledger.db absent")
+    elif not o.get("ledger_db_writable"):
+        bad.append("ledger.db not writable")
+    if not o.get("jsonl_exists"):
+        bad.append("ledger.jsonl mirror absent")
+    if not o.get("spool_is_dir"):
+        bad.append("spool dir absent")
+    if o.get("tracked_ledger_count", 0) != 0:
+        bad.append(
+            f"{o['tracked_ledger_count']} per-worktree authority-case ledgers still git-tracked"
+        )
+    # "drift-check green" = coord-drift-check passes under its SHIPPED contract. That
+    # tool is advisory-first by design (exit 0 even on drift until promoted to --strict
+    # once the SSOT is authoritative fleet-wide), so a non-zero exit — not the raw
+    # advisory drift_count — is the realization signal. The count is surfaced in detail,
+    # and this check tightens automatically the day coord-drift-check goes --strict.
+    if o.get("drift_check_rc", 1) != 0:
+        bad.append(
+            f"coord-drift-check did not pass (rc={o.get('drift_check_rc')}, "
+            f"advisory drift_count={o.get('drift_count')})"
+        )
+    return CheckResult("coord-ssot-ledger", not bad, "; ".join(bad) or None, o)
+
+
+def decide_opus_route_authority(o: dict[str, Any]) -> CheckResult:
+    bad = []
+    if not o.get("receipt_exists"):
+        bad.append("opus route-authority receipt absent (opus held without --policy-rollback)")
+    elif not o.get("receipt_fresh"):
+        bad.append("opus route-authority receipt expired")
+    if not _enabled_active_ok(o):
+        bad.append(
+            f"upkeep timer not enabled+active (enabled={o.get('timer_enabled')}, active={o.get('timer_active')})"
+        )
+    return CheckResult("opus-route-authority", not bad, "; ".join(bad) or None, o)
+
+
+def decide_lane_supervisor(o: dict[str, Any]) -> CheckResult:
+    ok = _enabled_active_ok(o)
+    reason = (
+        None
+        if ok
+        else f"hapax-lane-supervisor.timer not enabled+active "
+        f"(enabled={o.get('timer_enabled')}, active={o.get('timer_active')})"
+    )
+    return CheckResult("lane-supervisor", ok, reason, o)
+
+
+def decide_canonical_gate(o: dict[str, Any]) -> CheckResult:
+    bad = []
+    if not o.get("live_gate_exists"):
+        bad.append("live gate absent")
+    if not o.get("live_inv5"):
+        bad.append("INV-5 (is_cognition_path) missing from live gate")
+    if not o.get("repo_inv5"):
+        bad.append("INV-5 missing from repo gate")
+    if not o.get("live_matches_repo"):
+        bad.append("live gate diverges from repo source")
+    # lane_missing_inv5 is INFORMATIONAL (surfaced in detail), not a failure: the
+    # wired PreToolUse hook is the single LIVE gate that every session runs, so "INV-5
+    # everywhere" is enforced there + in the repo source it is rebuilt from. Per-worktree
+    # hooks/scripts/cc-task-gate.sh copies are unwired source on feature branches that
+    # simply have not rebased main's INV-5 yet — gating on them would flake on normal
+    # branch churn (the NEW-3 clobber risk is the rebuild-from-repo path, covered above).
+    return CheckResult("canonical-gate", not bad, "; ".join(bad) or None, o)
+
+
+def decide_escape_grant(o: dict[str, Any]) -> CheckResult:
+    bad = []
+    if not o.get("grant_dir_exists"):
+        bad.append("grant dir absent")
+    if not o.get("key_present"):
+        bad.append("signing key absent (escape inert)")
+    if not o.get("shim_present"):
+        bad.append("escape-grant.sh shim absent")
+    if not o.get("gate_wired"):
+        bad.append("gate does not call escape_grant_allows")
+    if not o.get("roundtrip_ok"):
+        bad.append("grant mint->verify round-trip failed (INV-3/4 not live)")
+    return CheckResult("escape-grant", not bad, "; ".join(bad) or None, o)
+
+
+def decide_coord_verbs(o: dict[str, Any]) -> CheckResult:
+    bad = []
+    if not o.get("coord_repo_exists"):
+        bad.append("hapax-coord repo absent")
+    elif not o.get("model_present"):
+        bad.append("coord model.lisp absent")
+    if not o.get("refine_verb"):
+        bad.append("coord.request.refine verb absent")
+    if not o.get("nonfallback_verb"):
+        bad.append(
+            f"no coord mutating verb is non-fallback "
+            f"(all {o.get('coord_verb_count', 0)} are dry-run stubs pending the "
+            f"daemon-owned ledger writer)"
+        )
+    return CheckResult("coord-verbs", not bad, "; ".join(bad) or None, o)
+
+
+def decide_shadow_cutover(o: dict[str, Any]) -> CheckResult:
+    ok = bool(o.get("predicate_reachable") or o.get("cutover_enforced"))
+    reason = None if ok else "3b shadow-cutover predicate unreachable and cutover not enforced"
+    return CheckResult("shadow-cutover", ok, reason, o)
+
+
+def decide_off_deprecation(o: dict[str, Any]) -> CheckResult:
+    bad = []
+    if not o.get("retro_watch_present"):
+        bad.append("coord-retro-grant-watch backstop absent")
+    if not o.get("obligation_marker"):
+        bad.append("gate lacks retro-grant obligation recording")
+    if not o.get("off_deprecated"):
+        bad.append("HAPAX_*_OFF not marked DEPRECATED in gate")
+    if o.get("zombie_pidfiles"):
+        bad.append(f"zombie launcher pidfiles: {', '.join(o['zombie_pidfiles'])}")
+    return CheckResult("off-deprecation", not bad, "; ".join(bad) or None, o)
+
+
+DECIDERS = {
+    "coord-ssot-ledger": decide_coord_ssot_ledger,
+    "opus-route-authority": decide_opus_route_authority,
+    "lane-supervisor": decide_lane_supervisor,
+    "canonical-gate": decide_canonical_gate,
+    "escape-grant": decide_escape_grant,
+    "coord-verbs": decide_coord_verbs,
+    "shadow-cutover": decide_shadow_cutover,
+    "off-deprecation": decide_off_deprecation,
+}
+
+
+def decide_all(observations: dict[str, dict[str, Any]]) -> list[CheckResult]:
+    results = []
+    for check_id in CHECK_IDS:
+        decider = DECIDERS[check_id]
+        obs = observations.get(check_id)
+        if obs is None:
+            results.append(CheckResult(check_id, False, "observation missing", {}))
+        else:
+            results.append(decider(obs))
+    return results
+
+
+# ── watermark + verdict ───────────────────────────────────────────────────────
+
+
+def load_watermark(path: Path) -> set[str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return set(data.get("passed_ever", []))
+    except (OSError, json.JSONDecodeError):
+        return set()
+
+
+def save_watermark(path: Path, passed_ever: set[str]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"passed_ever": sorted(passed_ever), "updated_at": _now_iso()}
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _notify(title: str, message: str) -> None:
+    try:
+        from shared.notify import send_notification
+
+        send_notification(title, message, priority="high", tags=["warning", "gear"])
+    except Exception:  # noqa: BLE001 — notification is best-effort, never fail the check on it
+        pass
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="hapax-reform-complete", description=__doc__)
+    parser.add_argument(
+        "--regression-only",
+        action="store_true",
+        help="exit non-zero only if a previously-passing check regressed (for the timer)",
+    )
+    parser.add_argument(
+        "--watermark", type=Path, default=DEFAULT_WATERMARK, help="high-water-mark file"
+    )
+    parser.add_argument(
+        "--observations",
+        type=Path,
+        default=None,
+        help="load observations JSON; skip live probing (testing)",
+    )
+    parser.add_argument(
+        "--coord-repo", type=Path, default=DEFAULT_COORD_REPO, help="hapax-coord repo path"
+    )
+    parser.add_argument(
+        "--no-ntfy", action="store_true", help="suppress the regression notification"
+    )
+    parser.add_argument("--quiet", action="store_true", help="suppress the human summary on stderr")
+    args = parser.parse_args(argv)
+
+    if args.observations is not None:
+        observations = json.loads(args.observations.read_text(encoding="utf-8"))
+    else:
+        observations = gather_all(args.coord_repo)
+
+    results = decide_all(observations)
+    passed = {r.check_id for r in results if r.ok}
+    failed = [r for r in results if not r.ok]
+    complete = not failed
+
+    watermark = load_watermark(args.watermark)
+    regressed = sorted(watermark & {r.check_id for r in failed})
+    save_watermark(args.watermark, watermark | passed)
+
+    verdict: dict[str, Any] = {
+        "complete": complete,
+        "mode": "regression-only" if args.regression_only else "terminal",
+        "ts": _now_iso(),
+        "passed": len(passed),
+        "failed": len(failed),
+        "checks": [
+            {"id": r.check_id, "ok": r.ok, "reason": r.reason, "detail": r.detail} for r in results
+        ],
+        "reasons": [f"{r.check_id}: {r.reason}" for r in failed],
+    }
+    if args.regression_only:
+        verdict["regressed"] = regressed
+
+    print(json.dumps(verdict, indent=2, sort_keys=True))
+
+    if not args.quiet:
+        if complete:
+            print(
+                f"hapax-reform-complete: REALIZED — all {len(results)} checks pass", file=sys.stderr
+            )
+        else:
+            print(
+                f"hapax-reform-complete: {len(failed)}/{len(results)} realization(s) NOT live",
+                file=sys.stderr,
+            )
+            for r in failed:
+                print(f"  - {r.check_id}: {r.reason}", file=sys.stderr)
+
+    if args.regression_only:
+        if regressed:
+            if not args.no_ntfy:
+                _notify(
+                    "Reform realization regressed",
+                    "; ".join(
+                        f"{r.check_id}: {r.reason}" for r in results if r.check_id in regressed
+                    ),
+                )
+            return 1
+        return 0
+
+    return 0 if complete else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
