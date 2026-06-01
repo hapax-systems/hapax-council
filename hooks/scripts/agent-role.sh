@@ -43,10 +43,8 @@ hapax_agent_role_from_path() {
   local path="${1:-$PWD}"
   local base suffix
   base="$(basename "$path")"
-  if [ "$base" = "hapax-council" ]; then
-    printf 'alpha\n'
-    return 0
-  fi
+  # The primary hapax-council checkout is not a lane identity. Bare sessions
+  # there must not phantom-inherit alpha; launchers export explicit roles.
   case "$base" in
     hapax-council--*) suffix="${base#hapax-council--}" ;;
     *) return 1 ;;
