@@ -761,7 +761,7 @@ printf '%s\\n' "$@" > {launcher_args}
         "headless",
         "--print-prompt",
         "--launch",
-        extra_env={"HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher)},
+        extra_env={"HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher)},
     )
 
     assert result.returncode == 10
@@ -815,7 +815,7 @@ printf '%s\\n' "$@" > {launcher_args}
         "--mode",
         "headless",
         "--launch",
-        extra_env={"HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher)},
+        extra_env={"HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher)},
         durable_mq=False,
     )
 
@@ -866,7 +866,7 @@ printf '%s\\n' "$@" > {launcher_args}
         "headless",
         "--launch",
         extra_env={
-            "HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher),
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
             "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID": "",
         },
     )
@@ -911,7 +911,7 @@ printf '%s\\n' "$@" > {launcher_args}
         "headless",
         "--launch",
         extra_env={
-            "HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher),
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
             "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID": "wrong-message-id",
         },
     )
@@ -959,32 +959,23 @@ printf '%s\\n' "$@" > {launcher_args}
         "headless",
         "--launch",
         extra_env={
-            "HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher),
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
             "XDG_CACHE_HOME": str(tmp_path / "cache"),
         },
     )
 
     assert result.returncode == 0, result.stderr
-    args = launcher_args.read_text(encoding="utf-8").splitlines()
-    assert args[:10] == [
-        "--session",
-        "cx-green",
-        "--terminal",
-        "tmux",
-        "--task",
-        "governed-build",
-        "--bootstrap",
-        args[7],
-        "--task-gate",
-        "--force",
-    ]
-    bootstrap = Path(args[7]).read_text(encoding="utf-8")
-    assert "SDLC GOVERNED DISPATCH." in bootstrap
-    assert "Task: governed-build" in bootstrap
-    assert "AuthorityCase: CASE-TEST-001" in bootstrap
-    assert "If the launcher already claimed it" in bootstrap
-    assert "claim the next" not in bootstrap
-    assert "highest-WSJF" not in bootstrap
+    # hapax-codex-headless takes `--task <id> --force <lane> <prompt>`; the prompt
+    # is passed inline (multi-line), so assert the flag prefix then the prompt
+    # body in the raw recorded args.
+    recorded = launcher_args.read_text(encoding="utf-8")
+    assert recorded.startswith("--task\ngoverned-build\n--force\ncx-green\n")
+    assert "SDLC GOVERNED DISPATCH." in recorded
+    assert "Task: governed-build" in recorded
+    assert "AuthorityCase: CASE-TEST-001" in recorded
+    assert "If the launcher already claimed it" in recorded
+    assert "claim the next" not in recorded
+    assert "highest-WSJF" not in recorded
 
     line = (
         (tmp_path / "ledger" / "methodology-dispatch.jsonl")
@@ -1045,7 +1036,7 @@ printf '%s\\n' "$@" > {launcher_args}
         "--idempotency-key",
         "dispatch-test-key",
         extra_env={
-            "HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher),
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
             "XDG_CACHE_HOME": str(tmp_path / "cache"),
         },
     )
@@ -1070,7 +1061,7 @@ printf '%s\\n' "$@" > {launcher_args}
         extra_env={
             "HAPAX_RELAY_MQ_DB": str(tmp_path / "relay" / "messages.db"),
             "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID": message_id,
-            "HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher),
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
             "XDG_CACHE_HOME": str(tmp_path / "cache"),
         },
     )
@@ -1114,7 +1105,7 @@ def test_failed_launch_cleans_up_mq_state_and_records_failure(tmp_path: Path) ->
         "--mode",
         "headless",
         "--launch",
-        extra_env={"HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher)},
+        extra_env={"HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher)},
     )
 
     assert result.returncode == 42
@@ -1193,7 +1184,7 @@ printf '%s\\n' "$@" > {launcher_args}
         "headless",
         "--launch",
         extra_env={
-            "HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher),
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
             "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(REGISTRY),
             "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR": str(receipt_dir),
             "XDG_CACHE_HOME": str(tmp_path / "cache"),
@@ -1254,7 +1245,7 @@ printf '%s\\n' "$@" > {launcher_args}
         "--policy-rollback",
         "--launch",
         extra_env={
-            "HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher),
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
             "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(REGISTRY),
             "XDG_CACHE_HOME": str(tmp_path / "cache"),
         },
@@ -1322,7 +1313,7 @@ printf '%s\\n' "$@" > {launcher_args}
         "--policy-rollback",
         "--launch",
         extra_env={
-            "HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher),
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
             "XDG_CACHE_HOME": str(tmp_path / "cache"),
         },
     )
@@ -1780,7 +1771,7 @@ def test_codex_launch_unsupported_mode_fails_closed(tmp_path: Path) -> None:
         "--mode",
         "interactive",
         "--launch",
-        extra_env={"HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher)},
+        extra_env={"HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher)},
     )
 
     assert result.returncode == 10

@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""Emit the Executor adapter capability registry as JSON (reform §6 P1).
+
+The machine-legible ``capabilities`` probe: one JSON object per executor runtime
+with its launchable modes, profiles, and governance flags (mutates / claims /
+hooks_wired / headless / read_only). The dispatcher consumes the same registry
+(``scripts/executor_contract.py``) to route on data instead of a hard if-ladder;
+this CLI lets the CLOG cockpit and other clients read it too.
+
+Usage::
+
+    scripts/hapax-executor-capabilities                 # all runtimes
+    scripts/hapax-executor-capabilities codex           # one runtime
+    scripts/hapax-executor-capabilities --contract      # the adapter CLI contract
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from executor_contract import (  # noqa: E402
+    ADAPTER_CLI_CONTRACT,
+    LAUNCH_MODES,
+    capabilities,
+    capabilities_payload,
+)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("platform", nargs="?", help="Limit output to one runtime.")
+    parser.add_argument(
+        "--contract",
+        action="store_true",
+        help="Print the canonical adapter CLI contract instead of the registry.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.contract:
+        print(
+            json.dumps(
+                {
+                    "adapter_cli_contract": list(ADAPTER_CLI_CONTRACT),
+                    "launch_modes": list(LAUNCH_MODES),
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    if args.platform:
+        caps = capabilities(args.platform)
+        if caps is None:
+            print(f"unknown executor: {args.platform}", file=sys.stderr)
+            return 1
+        print(json.dumps(caps.model_dump(), indent=2))
+        return 0
+
+    print(json.dumps(capabilities_payload(), indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

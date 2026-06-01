@@ -584,6 +584,49 @@ class TestRecipientExpansion(unittest.TestCase):
             self.assertIn("cx-blue", result)
             self.assertNotIn("alpha", result)
 
+    def test_expand_broadcast_gemini(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            relay_dir = _make_relay_dir(Path(td), ["alpha", "iota", "cx-red"])
+            result = expand_recipients("*:gemini", relay_dir)
+            self.assertEqual(result, ["iota"])
+
+    def test_expand_broadcast_antigrav(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            relay_dir = _make_relay_dir(
+                Path(td), ["alpha", "antigrav", "antigrav-2", "antigravity", "cx-red"]
+            )
+            result = expand_recipients("*:antigrav", relay_dir)
+            self.assertIn("antigrav", result)
+            self.assertIn("antigrav-2", result)
+            self.assertIn("antigravity", result)
+            self.assertNotIn("alpha", result)
+            self.assertNotIn("cx-red", result)
+
+    def test_expand_broadcast_vibe(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            relay_dir = _make_relay_dir(Path(td), ["alpha", "vbe-1", "vbe-2", "cx-red"])
+            result = expand_recipients("*:vibe", relay_dir)
+            self.assertIn("vbe-1", result)
+            self.assertIn("vbe-2", result)
+            self.assertNotIn("alpha", result)
+            self.assertNotIn("cx-red", result)
+
+    def test_expand_broadcast_workers_spans_all_runtimes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            relay_dir = _make_relay_dir(
+                Path(td),
+                ["alpha", "cx-red", "iota", "antigrav", "vbe-1", "rte", "alpha-status"],
+            )
+            result = expand_recipients("*:workers", relay_dir)
+            self.assertIn("alpha", result)
+            self.assertIn("cx-red", result)
+            self.assertIn("iota", result)
+            self.assertIn("antigrav", result)
+            self.assertIn("vbe-1", result)
+            # Coordinators-only and stray status-file stems are not worker lanes.
+            self.assertNotIn("rte", result)
+            self.assertNotIn("alpha-status", result)
+
     def test_expand_broadcast_unknown_group(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             relay_dir = _make_relay_dir(Path(td), ["alpha"])

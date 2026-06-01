@@ -1,0 +1,116 @@
+"""Tests for the Executor adapter contract (reform §6 P1).
+
+The capability registry is the machine-legible surface the dispatcher consumes
+instead of a hard ``(platform, mode)`` if-ladder, and that
+``hapax-executor-capabilities`` emits as JSON.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = REPO_ROOT / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+import executor_contract as ec  # noqa: E402
+
+ALL_PLATFORMS = {"claude", "codex", "gemini", "vibe", "antigrav"}
+
+
+def test_registry_covers_all_five_runtimes() -> None:
+    assert set(ec.EXECUTOR_REGISTRY) == ALL_PLATFORMS
+
+
+def test_headless_flag_matches_modes() -> None:
+    # headless capability is true iff a headless mode is launchable.
+    for caps in ec.EXECUTOR_REGISTRY.values():
+        assert caps.headless == ("headless" in caps.modes), caps.platform
+
+
+def test_read_only_implies_no_mutation() -> None:
+    for caps in ec.EXECUTOR_REGISTRY.values():
+        if caps.read_only:
+            assert not caps.mutates, caps.platform
+
+
+def test_supports_route_for_known_routes() -> None:
+    assert ec.supports_route("codex", "headless")
+    assert ec.supports_route("claude", "headless")
+    assert ec.supports_route("gemini", "headless")
+    assert ec.supports_route("vibe", "headless")
+    assert ec.supports_route("antigrav", "interactive")
+
+
+def test_supports_route_rejects_unlaunchable_routes() -> None:
+    assert not ec.supports_route("gemini", "interactive")
+    assert not ec.supports_route("antigrav", "headless")
+    assert not ec.supports_route("vibe", "interactive")
+    assert not ec.supports_route("codex", "interactive")  # tmux pane, not a dispatch route
+    assert not ec.supports_route("unknown", "headless")
+    # receipt-only is a dispatch validation mode, not an executor capability.
+    assert not ec.supports_route("codex", "receipt-only")
+
+
+def test_codex_has_a_genuine_headless_path() -> None:
+    codex = ec.capabilities("codex")
+    assert codex is not None
+    assert codex.headless is True
+    assert "hapax-codex-headless" in codex.notes
+
+
+def test_antigrav_hook_gap_is_machine_legible() -> None:
+    antigrav = ec.capabilities("antigrav")
+    assert antigrav is not None
+    # The agy CLI path is gated; the residual IDE-surface gap is documented.
+    assert antigrav.headless is False
+    assert "IDE" in antigrav.notes
+
+
+def test_capabilities_unknown_is_none() -> None:
+    assert ec.capabilities("nope") is None
+
+
+def test_adapter_cli_contract_has_canonical_flags() -> None:
+    for flag in ("--lane", "--task", "--mode", "--prompt", "--no-claim", "--force"):
+        assert flag in ec.ADAPTER_CLI_CONTRACT
+
+
+def test_capabilities_payload_is_json_serialisable_and_sorted() -> None:
+    payload = ec.capabilities_payload()
+    text = json.dumps(payload)  # must not raise
+    assert set(payload) == ALL_PLATFORMS
+    assert list(payload) == sorted(payload)
+    assert "hooks_wired" in text
+
+
+def test_standalone_capabilities_cli_emits_json() -> None:
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS / "hapax-executor-capabilities")],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert set(payload) == ALL_PLATFORMS
+    assert payload["codex"]["modes"] == ["headless"]
+
+
+def test_standalone_capabilities_cli_single_platform() -> None:
+    result = subprocess.run(
+        [sys.executable, str(SCRIPTS / "hapax-executor-capabilities"), "gemini"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    caps = json.loads(result.stdout)
+    assert caps["platform"] == "gemini"
+    assert caps["read_only"] is True
