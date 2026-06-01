@@ -409,6 +409,24 @@ health_probe_fail() {
     exit "$rc"
 }
 
+# Soft, re-armable failure for *liveness* probes (the live system isn't healthy
+# enough to safely cut over right now — e.g. logos-api restarting, stale frame).
+# Write a deferred receipt and exit 0 so this oneshot never enters a failed
+# state that could wedge the 2-min re-arming timer (the "died ~09:10 on a
+# health-probe exit-1 and never re-armed" failure mode this task fixes). The
+# active source stays at the last good SHA — promoting onto an unhealthy system
+# is exactly what we want to avoid — and the next cycle retries. Candidate-prep
+# failures (source freshness, missing deploy script) keep using health_probe_fail
+# (exit 2): those signal a genuinely broken release, not a transient blip.
+health_probe_defer() {
+    local message="$1"
+    health_probe_status="deferred"
+    health_probe_message="$message"
+    write_receipt "held" "skipped_health_probe" "0" "activation deferred (live system not ready): $message"
+    echo "hapax-source-activate: activation deferred, retrying next cycle: $message" >&2
+    exit 0
+}
+
 run_activation_health_probes() {
     local source_root="$1"
     health_probe_status="running"
@@ -434,7 +452,7 @@ run_activation_health_probes() {
     http_probe_urls="${http_probe_urls//,/ }"
     if [[ -n "$http_probe_urls" ]]; then
         if ! command -v curl >/dev/null 2>&1; then
-            health_probe_fail 127 "curl executable not found for HTTP health probe"
+            health_probe_defer "curl executable not found for HTTP health probe"
         fi
         local url http_ok=0
         for url in $http_probe_urls; do
@@ -445,7 +463,7 @@ run_activation_health_probes() {
             fi
         done
         if [[ "$http_ok" != "1" ]]; then
-            health_probe_fail 1 "HTTP health probes failed: $http_probe_urls"
+            health_probe_defer "HTTP health probes failed: $http_probe_urls"
         fi
     else
         probe_parts+=("http=skipped_inactive")
@@ -469,7 +487,7 @@ run_activation_health_probes() {
             fi
         done
         if [[ "$frame_ok" != "1" ]]; then
-            health_probe_fail 1 "frame freshness probes failed: $frame_probe_paths"
+            health_probe_defer "frame freshness probes failed: $frame_probe_paths"
         fi
     else
         probe_parts+=("frame=skipped_inactive")
@@ -803,10 +821,22 @@ fi
 
 write_receipt "deploying" "in_progress" "0" "active source promoted; post-merge deploy starting"
 
+# Deploy the CUMULATIVE range since the last successful activation so a
+# multi-merge jump (origin/main advancing several merges between 2-min cycles)
+# installs every intermediate merge's units / confs / scripts — not just the
+# tip merge's first-parent diff, which is the single-commit gap behind the
+# deploy backlog. Fall back to the single-SHA tip deploy when there is no clean
+# ancestor base (first activation, or rewritten history).
+deploy_args=("$origin_sha")
+if [[ -n "$previous_success" && "$previous_success" != "$origin_sha" ]] \
+    && git -C "$ACTIVE_WORKTREE" merge-base --is-ancestor "$previous_success" "$origin_sha" 2>/dev/null; then
+    deploy_args=(--since "$previous_success" "$origin_sha")
+fi
+
 set +e
 (
     cd "$ACTIVE_WORKTREE"
-    REPO="$ACTIVE_WORKTREE" "$DEPLOY_SCRIPT" "$origin_sha"
+    REPO="$ACTIVE_WORKTREE" "$DEPLOY_SCRIPT" "${deploy_args[@]}"
 )
 deploy_rc=$?
 set -e

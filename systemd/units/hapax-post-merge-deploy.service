@@ -28,11 +28,15 @@ WorkingDirectory=/home/hapax/projects/hapax-council
 Environment=HOME=%h
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 
-# Resolve the SHA at run time — refs/heads/main is what the .path unit
-# watched, so origin/main has either already been merged into local main
-# (rebuild-service.sh ff-merge path) or local main was advanced directly.
-# Either way, `git -C $REPO rev-parse main` is the right answer.
-ExecStart=/bin/bash -c 'sha=$(git -C %h/projects/hapax-council rev-parse main 2>/dev/null) && [ -n "$sha" ] && exec %h/.local/bin/hapax-post-merge-deploy "$sha"'
+# Resolve the deploy target at run time. The .path unit fires when
+# rebuild-service.sh advances refs/heads/main to origin/main (the canonical
+# interactive worktree sits on a feature branch, so nothing else advances local
+# main — the frozen + packed-only ref was the dead-trigger root cause). Resolve
+# `origin/main` directly (not local `main`) so the deploy always targets the
+# true merged HEAD even if the local ref lags. When a last-deployed-sha receipt
+# exists and is an ancestor, deploy the CUMULATIVE --since range so a multi-merge
+# jump installs every intermediate merge's units/confs/scripts, not just the tip.
+ExecStart=/bin/bash -c 'repo=%h/projects/hapax-council; sha=$(git -C "$repo" rev-parse origin/main 2>/dev/null); [ -n "$sha" ] || exit 0; since=$(cat %h/.cache/hapax/post-merge-traces/last-deployed-sha 2>/dev/null || true); if [ -n "$since" ] && [ "$since" != "$sha" ] && git -C "$repo" merge-base --is-ancestor "$since" "$sha" 2>/dev/null; then exec %h/.local/bin/hapax-post-merge-deploy --since "$since" "$sha"; else exec %h/.local/bin/hapax-post-merge-deploy "$sha"; fi'
 
 StandardOutput=journal
 StandardError=journal
