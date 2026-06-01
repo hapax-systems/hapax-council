@@ -1,0 +1,383 @@
+#!/usr/bin/env bash
+# hapax-dev — one front door for VISIBLE operator sessions across runtimes.
+#
+# The operator should not have to remember per-platform launch particulars
+# (`--role` vs `--session`, which lane is free, `--terminal tmux`, identity
+# export). One command:
+#
+#   hapax-dev claude            # visible claude session, auto non-conflicting identity
+#   hapax-dev codex             # visible codex session
+#   hapax-dev agy               # visible agy (Antigravity CLI) session
+#
+# ...and all the right things happen: a FRESH unique HAPAX_SESSION_ID and a
+# free interactive identity distinct from the headless reform fleet, dispatched
+# to the existing platform spawner (hapax-claude / hapax-codex / hapax-antigrav).
+# This is the ergonomic layer on top of the session-keyed identity model — a
+# session with a unique explicit identity is guaranteed non-conflicting, so the
+# operator can spin up a parallel stream (e.g. audio) that never collides with
+# the reform/headless fleet.
+#
+# It does NOT reimplement launch logic: identity export, governance wiring, tmux
+# spawn, and the runtime exec all stay in the per-platform spawners. hapax-dev
+# only (a) picks a free, non-conflicting identity, (b) refuses collisions by
+# construction, (c) guarantees a fresh session id, and (d) handles visibility.
+#
+# Subcommands:
+#   hapax-dev <platform> [name] [flags] [-- spawner-args]
+#   hapax-dev ls | list           table of live sessions + free pool slots
+#   hapax-dev attach <name>       attach to an existing session
+#   hapax-dev help                usage + the live/free table
+#
+# Run `hapax-dev help` for the full flag list.
+
+set -euo pipefail
+
+# ── Configuration (env-overridable; the HAPAX_DEV_* knobs also make the
+#    resolver hermetically testable without launching anything) ──────────────
+CLAIM_DIR="${HAPAX_DEV_CLAIM_DIR:-$HOME/.cache/hapax}"
+TMUX_BIN="${HAPAX_DEV_TMUX:-tmux}"
+HEARTBEAT_MAX_AGE="${HAPAX_DEV_HEARTBEAT_MAX_AGE:-900}"   # seconds
+DEFAULT_WORKDIR="${HAPAX_DEV_WORKDIR:-$PWD}"
+DRY_RUN="${HAPAX_DEV_DRY_RUN:-0}"
+# Test hook: when SET (even to an empty string) a space-separated list of tmux
+# session names is treated as the complete set of live sessions, bypassing the
+# real tmux server entirely. Empty therefore means "nothing live".
+FAKE_LIVE_TMUX="${HAPAX_DEV_FAKE_LIVE_TMUX:-}"
+FAKE_TMUX_ACTIVE="${HAPAX_DEV_FAKE_LIVE_TMUX+1}"
+
+# Interactive identity pools — DISTINCT from the supervised headless fleet:
+#   - claude greek roles alpha..theta are the headless reform fleet + are
+#     auto-respawned by hapax-lane-supervisor, so the interactive pool is the
+#     non-greek `dev` namespace. A free greek role is used ONLY if named.
+#   - codex colors red (primary) and violet (protected) are reserved.
+#   - agy interactive slots are the antigrav lane names the spawner accepts.
+CLAUDE_POOL="${HAPAX_DEV_CLAUDE_POOL:-dev dev2 dev3 dev4 dev5}"
+CODEX_POOL="${HAPAX_DEV_CODEX_POOL:-cx-blue cx-green cx-cyan cx-magenta cx-amber cx-teal}"
+AGY_POOL="${HAPAX_DEV_AGY_POOL:-antigrav antigrav-2 antigrav-3}"
+
+CLAUDE_BIN="${HAPAX_DEV_CLAUDE_BIN:-hapax-claude}"
+CODEX_BIN="${HAPAX_DEV_CODEX_BIN:-hapax-codex}"
+AGY_BIN="${HAPAX_DEV_AGY_BIN:-hapax-antigrav}"
+
+PROG="hapax-dev"
+
+die() { echo "$PROG: $*" >&2; exit "${2:-1}"; }
+
+# ── Per-platform descriptors ────────────────────────────────────────────────
+# Resolve a platform keyword to its spawner bin, tmux session prefix, identity
+# flag, pool, and headless-heartbeat subdir. Echoes TAB-separated fields.
+platform_descriptor() {
+  case "$1" in
+    claude)          printf '%s\t%s\t%s\t%s\t%s\n' "$CLAUDE_BIN" "hapax-claude"    "--role"    "$CLAUDE_POOL" "claude-headless" ;;
+    codex)           printf '%s\t%s\t%s\t%s\t%s\n' "$CODEX_BIN"  "hapax-codex"     "--session" "$CODEX_POOL"  "codex-headless" ;;
+    agy|antigrav)    printf '%s\t%s\t%s\t%s\t%s\n' "$AGY_BIN"    "hapax-antigrav"  "--session" "$AGY_POOL"    "" ;;
+    *) return 1 ;;
+  esac
+}
+
+normalize_platform() {
+  case "$1" in
+    claude) echo claude ;;
+    codex)  echo codex ;;
+    agy|antigrav) echo agy ;;
+    *) return 1 ;;
+  esac
+}
+
+# Validate an explicitly-supplied identity name against what the platform's
+# spawner will accept. Keeps the failure local + actionable instead of an
+# opaque downstream spawner reject.
+valid_name_for_platform() {
+  local platform="$1" name="$2"
+  case "$platform" in
+    claude) [[ "$name" =~ ^dev[0-9]*$ || "$name" =~ ^(alpha|beta|gamma|delta|epsilon|zeta|eta|theta)$ ]] ;;
+    codex)  [[ "$name" =~ ^cx-[a-z][a-z-]*$ ]] ;;
+    agy)    [[ "$name" =~ ^antigrav(-[a-z0-9-]+)?$ ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+# ── Liveness probe ──────────────────────────────────────────────────────────
+# A tmux session is live if the real server reports it (or, under the test
+# hook, if it is in HAPAX_DEV_FAKE_LIVE_TMUX).
+tmux_session_live() {
+  local session="$1"
+  if [ -n "$FAKE_TMUX_ACTIVE" ]; then
+    local s
+    for s in $FAKE_LIVE_TMUX; do
+      [ "$s" = "$session" ] && return 0
+    done
+    return 1
+  fi
+  command -v "$TMUX_BIN" >/dev/null 2>&1 || return 1
+  "$TMUX_BIN" has-session -t "$session" 2>/dev/null
+}
+
+# An identity is "live" — and therefore NOT free — if ANY of these hold. This
+# is stronger than a tmux check alone: headless reform lanes may hold a claim +
+# heartbeat without a tmux session, so an explicitly-named busy role is still
+# correctly refused.
+identity_is_live() {
+  local prefix="$1" name="$2" hbsub="$3"
+  # 1. tmux session
+  tmux_session_live "$prefix-$name" && return 0
+  # 2. active claim file (non-empty) or any session-keyed claim variant
+  [ -s "$CLAIM_DIR/cc-active-task-$name" ] && return 0
+  local f
+  for f in "$CLAIM_DIR/cc-active-task-$name-"*; do
+    [ -e "$f" ] && return 0
+  done
+  # 3. fresh headless-output heartbeat
+  if [ -n "$hbsub" ]; then
+    local hb="$CLAIM_DIR/$hbsub/$name/output.jsonl"
+    if [ -f "$hb" ]; then
+      local now mtime age
+      now="$(date +%s)"
+      mtime="$(date -r "$hb" +%s 2>/dev/null || echo 0)"
+      age=$(( now - mtime ))
+      [ "$age" -lt "$HEARTBEAT_MAX_AGE" ] && return 0
+    fi
+  fi
+  return 1
+}
+
+claimed_task_for() {
+  local name="$1" cf="$CLAIM_DIR/cc-active-task-$1"
+  [ -s "$cf" ] && head -n1 "$cf" | tr -d '[:space:]' || true
+}
+
+# Lowest-index free pool slot, or empty if the whole pool is busy.
+first_free_slot() {
+  local prefix="$1" hbsub="$2"; shift 2
+  local slot
+  for slot in "$@"; do
+    if ! identity_is_live "$prefix" "$slot" "$hbsub"; then
+      printf '%s\n' "$slot"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ── Subcommands ─────────────────────────────────────────────────────────────
+usage() {
+  cat <<EOF
+$PROG — one front door for visible operator sessions across runtimes.
+
+usage:
+  $PROG <platform> [name] [flags] [-- spawner-args]
+  $PROG ls | list
+  $PROG attach <name>
+  $PROG help
+
+platforms:
+  claude            interactive pool: $CLAUDE_POOL
+  codex             interactive pool: $CODEX_POOL
+  agy (= antigrav)  interactive pool: $AGY_POOL
+
+flags:
+  --window          open a new terminal window attached to the session
+  --detach          spawn but do not attach; print the attach command
+  --cd DIR          workdir for the session (default: \$PWD = $DEFAULT_WORKDIR)
+  --dry-run         print the resolution plan; do not spawn or attach
+  --                forward all remaining args verbatim to the spawner
+
+behavior:
+  - name omitted  → the lowest free pool slot is auto-selected (never a busy lane).
+  - name given    → honored as-is; a greek claude role is allowed only when named.
+  - collision     → refused (no second session); the attach command is printed.
+  - every launch  → a FRESH unique HAPAX_SESSION_ID + the resolved identity.
+EOF
+}
+
+cmd_ls() {
+  printf '%-8s  %-14s  %-5s  %-26s  %s\n' "PLATFORM" "NAME" "STATE" "TMUX" "TASK"
+  local platform desc bin prefix idflag pool hbsub slot seen
+  for platform in claude codex agy; do
+    desc="$(platform_descriptor "$platform")"
+    IFS=$'\t' read -r bin prefix idflag pool hbsub <<<"$desc"
+    seen=""
+    for slot in $pool; do
+      seen="$seen $slot"
+      _ls_row "$platform" "$slot" "$prefix" "$hbsub"
+    done
+    # Surface live sessions that are NOT in the pool (e.g. headless greek /
+    # supervised cx lanes) so the table reflects reality, not just the pool.
+    if [ -n "$FAKE_TMUX_ACTIVE" ]; then
+      local s name
+      for s in $FAKE_LIVE_TMUX; do
+        name="${s#"$prefix"-}"
+        [ "$name" = "$s" ] && continue
+        case " $seen " in *" $name "*) continue ;; esac
+        _ls_row "$platform" "$name" "$prefix" "$hbsub"
+      done
+    elif command -v "$TMUX_BIN" >/dev/null 2>&1; then
+      local sess name
+      while IFS= read -r sess; do
+        [ -n "$sess" ] || continue
+        name="${sess#"$prefix"-}"
+        [ "$name" = "$sess" ] && continue
+        case " $seen " in *" $name "*) continue ;; esac
+        _ls_row "$platform" "$name" "$prefix" "$hbsub"
+      done < <("$TMUX_BIN" list-sessions -F '#{session_name}' 2>/dev/null | grep -E "^$prefix-" || true)
+    fi
+  done
+}
+
+_ls_row() {
+  local platform="$1" name="$2" prefix="$3" hbsub="$4" state tmux_t task
+  if identity_is_live "$prefix" "$name" "$hbsub"; then state="live"; else state="free"; fi
+  if tmux_session_live "$prefix-$name"; then tmux_t="$prefix-$name"; else tmux_t="-"; fi
+  task="$(claimed_task_for "$name")"; [ -n "$task" ] || task="-"
+  printf '%-8s  %-14s  %-5s  %-26s  %s\n' "$platform" "$name" "$state" "$tmux_t" "$task"
+}
+
+cmd_attach() {
+  local name="${1:-}"
+  [ -n "$name" ] || die "attach: missing <name>" 2
+  local platform prefix
+  case "$name" in
+    dev|dev[0-9]*|alpha|beta|gamma|delta|epsilon|zeta|eta|theta) platform=claude; prefix=hapax-claude ;;
+    cx-*) platform=codex; prefix=hapax-codex ;;
+    antigrav|antigrav-*) platform=agy; prefix=hapax-antigrav ;;
+    *) die "attach: cannot infer platform from name '$name'" 2 ;;
+  esac
+  local session="$prefix-$name"
+  if ! tmux_session_live "$session"; then
+    die "attach: no live tmux session '$session' (try '$PROG ls')" 3
+  fi
+  [ "$DRY_RUN" = "1" ] && { echo "would attach: $TMUX_BIN attach -t $session"; return 0; }
+  exec "$TMUX_BIN" attach -t "$session"
+}
+
+# ── Launch ──────────────────────────────────────────────────────────────────
+cmd_launch() {
+  local platform_kw="$1"; shift
+  local platform
+  platform="$(normalize_platform "$platform_kw")" || die "unknown platform '$platform_kw' (claude|codex|agy)" 2
+
+  local name="" window=0 detach=0 workdir="$DEFAULT_WORKDIR"
+  local passthrough=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --window)  window=1; shift ;;
+      --detach)  detach=1; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      --cd)      workdir="${2:-}"; shift 2 ;;
+      --cd=*)    workdir="${1#--cd=}"; shift ;;
+      --)        shift; passthrough+=("$@"); break ;;
+      -*)        die "unknown flag '$1' (see '$PROG help')" 2 ;;
+      *)
+        if [ -z "$name" ]; then name="$1"; else passthrough+=("$1"); fi
+        shift ;;
+    esac
+  done
+
+  [ "$window" -eq 1 ] && [ "$detach" -eq 1 ] && die "--window and --detach are mutually exclusive" 2
+
+  local desc bin prefix idflag pool hbsub
+  desc="$(platform_descriptor "$platform")"
+  IFS=$'\t' read -r bin prefix idflag pool hbsub <<<"$desc"
+
+  # Resolve identity.
+  if [ -n "$name" ]; then
+    valid_name_for_platform "$platform" "$name" \
+      || die "invalid $platform identity '$name' (pool: $pool)" 2
+  else
+    # shellcheck disable=SC2086 # word-splitting the pool string is intended
+    name="$(first_free_slot "$prefix" "$hbsub" $pool || true)"
+    [ -n "$name" ] || die "no free $platform slot — whole pool busy ($pool). Name one explicitly or close a session." 1
+  fi
+
+  local tmux_session="$prefix-$name"
+
+  # Collision guard — refuse a second session by construction.
+  if identity_is_live "$prefix" "$name" "$hbsub"; then
+    echo "$PROG: '$name' is already live — not launching a second $platform session." >&2
+    if tmux_session_live "$tmux_session"; then
+      echo "  attach with: $TMUX_BIN attach -t $tmux_session" >&2
+    else
+      local t; t="$(claimed_task_for "$name")"
+      echo "  it holds an active claim/heartbeat${t:+ (task: $t)} — pick another name." >&2
+    fi
+    exit 3
+  fi
+
+  [ -d "$workdir" ] || die "--cd '$workdir' is not a directory" 2
+
+  # Fresh, unique session id — overrides any inherited HAPAX_SESSION_ID so a
+  # session launched from inside another session never shares its lease (FM-2).
+  local session_id
+  session_id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf 'dev-%s-%s' "$name" "$$")"
+
+  # Terminal mode for the spawner. claude/codex render a window themselves via
+  # `--terminal foot`; agy has no foot path so hapax-dev opens the window.
+  local term_mode="tmux" agy_window=0
+  if [ "$window" -eq 1 ]; then
+    if [ "$platform" = "agy" ]; then agy_window=1; else term_mode="foot"; fi
+  fi
+
+  local spawn_cmd=("$bin" "$idflag" "$name" --terminal "$term_mode" --cd "$workdir")
+  [ "${#passthrough[@]}" -gt 0 ] && spawn_cmd+=("${passthrough[@]}")
+
+  local visibility="attach"
+  if [ "$detach" -eq 1 ]; then visibility="detach"; elif [ "$window" -eq 1 ]; then visibility="window"; fi
+
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "platform:    $platform"
+    echo "identity:    $name"
+    echo "session_id:  $session_id"
+    echo "tmux:        $tmux_session"
+    echo "workdir:     $workdir"
+    echo "visibility:  $visibility"
+    echo "spawn:       ${spawn_cmd[*]}"
+    if [ "$detach" -eq 1 ]; then
+      echo "attach:      $TMUX_BIN attach -t $tmux_session"
+    fi
+    return 0
+  fi
+
+  # Spawn the detached session through the real spawner (identity + governance
+  # + tmux all happen there). The fresh session id is exported into its env.
+  HAPAX_SESSION_ID="$session_id" "${spawn_cmd[@]}"
+
+  if [ "$detach" -eq 1 ]; then
+    echo "$PROG: $platform '$name' started detached."
+    echo "  attach with: $TMUX_BIN attach -t $tmux_session"
+    return 0
+  fi
+
+  if [ "$agy_window" -eq 1 ]; then
+    # agy spawner has no native window path — open one over the tmux session.
+    local foot_bin
+    foot_bin="$(command -v footclient || command -v foot || true)"
+    [ -n "$foot_bin" ] || die "footclient/foot not found for --window" 10
+    setsid -f "$foot_bin" --app-id "hapax-antigrav-$name" --title "$name" \
+      "$TMUX_BIN" attach -t "$tmux_session" >/dev/null 2>&1
+    echo "$PROG: opened agy '$name' in a new window."
+    return 0
+  fi
+
+  if [ "$window" -eq 1 ]; then
+    # claude/codex already opened the foot window via --terminal foot.
+    echo "$PROG: opened $platform '$name' in a new window."
+    return 0
+  fi
+
+  # Default: attach in the CURRENT terminal (operator-initiated ⇒ attach wanted).
+  exec "$TMUX_BIN" attach -t "$tmux_session"
+}
+
+# ── Dispatch ────────────────────────────────────────────────────────────────
+main() {
+  local cmd="${1:-help}"
+  case "$cmd" in
+    help|-h|--help) usage ;;
+    ls|list)        shift || true; cmd_ls ;;
+    attach)         shift; cmd_attach "$@" ;;
+    claude|codex|agy|antigrav) cmd_launch "$@" ;;
+    *) usage >&2; die "unknown command or platform '$cmd'" 2 ;;
+  esac
+}
+
+main "$@"
