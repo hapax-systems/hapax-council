@@ -1179,3 +1179,37 @@ jobs:
             fi
           fi
           echo "No high-severity security issues found"
+
+  all-green:
+    # Single aggregate required context (task reform-native-merge-queue). Collapses
+    # the five literal required checks (lint/test/typecheck/web-build/vscode-build)
+    # into one job so the merge queue can't be permanently stalled by a
+    # required-context-name mismatch. `if: always()` + treating `skipped` as OK
+    # preserves the fast/slow split: `test-full-shard` is merge_group-only, so it
+    # is `skipped` on pull_request events and all-green still passes there.
+    name: all-green
+    needs: [lint, typecheck, test, test-full-shard, web-build, vscode-build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate required CI results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          echo "Aggregated required-job results: $RESULTS"
+          failed=0
+          for r in $RESULTS; do
+            case "$r" in
+            success | skipped) ;;
+            *)
+              echo "::error::A required CI job concluded '$r'"
+              failed=1
+              ;;
+            esac
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "all-green: FAIL — at least one required CI job did not succeed."
+            exit 1
+          fi
+          echo "all-green: PASS — all required CI jobs succeeded or were skipped."

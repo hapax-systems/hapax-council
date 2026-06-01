@@ -252,6 +252,7 @@ runtimes:
       - vscode-build
       - secrets-scan
       - security
+      - all-green
     run_markers:
       - 'astral-sh/ruff-action@v3'
       - 'uv run python scripts/check-unused-functions.py'

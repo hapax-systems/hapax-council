@@ -1,0 +1,56 @@
+name: governance-gate
+
+# Server-side governance required check for the native merge queue
+# (task reform-native-merge-queue, part 3).
+#
+# A PR may enter the merge queue only when its linked cc-task is
+# governance-releasable: stage >= S7_RELEASE, release_authorized == true, and an
+# authority_case present. That decision needs the local Obsidian cc-task vault,
+# which GitHub-hosted runners CANNOT read. So this gate verifies the server-side
+# PROOF instead: the `hapax/autoqueue-admission` commit status that the
+# vault-reading local autoqueue posts on the PR head SHA after it validates the
+# task. scripts/queue-admission-proof-check.py asserts that proof is fresh and
+# successful for queued / auto-merge PRs.
+#
+# Scope: the proof is enforced only for enqueued / auto_merge_enabled PRs (and
+# merge_group), so ordinary PR CI is never wedged by this gate. It is the
+# governance counterpart to pr-admission.yml's freeze governor — kept as a
+# distinct, clearly-named context so it can be made a required status check in
+# the main-merge-queue ruleset ("enqueueing itself is governed").
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - enqueued
+      - auto_merge_enabled
+      - auto_merge_disabled
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: read
+
+jobs:
+  governance-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify queue admission governance proof
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 scripts/queue-admission-proof-check.py \
+            --repo "$REPO" \
+            --event-path "$GITHUB_EVENT_PATH"
