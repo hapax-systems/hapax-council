@@ -64,13 +64,16 @@ EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
     ),
     "codex": ExecutorCapabilities(
         platform="codex",
-        modes=("headless", "interactive"),
+        modes=("headless",),
         profiles=("full", "spark"),
         mutates=True,
         claims=True,
         hooks_wired=True,
         headless=True,
-        notes="codex exec headless (hapax-codex-headless) + tmux interactive (hapax-codex)",
+        notes=(
+            "codex exec headless (hapax-codex-headless). The tmux pane (hapax-codex) "
+            "exists for direct interactive use but is not a governed dispatch route."
+        ),
     ),
     "gemini": ExecutorCapabilities(
         platform="gemini",

@@ -40,7 +40,6 @@ def test_read_only_implies_no_mutation() -> None:
 
 def test_supports_route_for_known_routes() -> None:
     assert ec.supports_route("codex", "headless")
-    assert ec.supports_route("codex", "interactive")
     assert ec.supports_route("claude", "headless")
     assert ec.supports_route("gemini", "headless")
     assert ec.supports_route("vibe", "headless")
@@ -51,6 +50,7 @@ def test_supports_route_rejects_unlaunchable_routes() -> None:
     assert not ec.supports_route("gemini", "interactive")
     assert not ec.supports_route("antigrav", "headless")
     assert not ec.supports_route("vibe", "interactive")
+    assert not ec.supports_route("codex", "interactive")  # tmux pane, not a dispatch route
     assert not ec.supports_route("unknown", "headless")
     # receipt-only is a dispatch validation mode, not an executor capability.
     assert not ec.supports_route("codex", "receipt-only")
@@ -99,7 +99,7 @@ def test_standalone_capabilities_cli_emits_json() -> None:
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert set(payload) == ALL_PLATFORMS
-    assert payload["codex"]["modes"] == ["headless", "interactive"]
+    assert payload["codex"]["modes"] == ["headless"]
 
 
 def test_standalone_capabilities_cli_single_platform() -> None:
