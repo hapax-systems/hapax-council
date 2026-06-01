@@ -3,6 +3,9 @@ Description=Reform-complete regression detector — alert if a realized reform i
 Documentation=file:///home/hapax/Documents/Personal/30-areas/hapax/reform-execution-manifest.yaml
 After=network.target hapax-coord.service
 OnFailure=notify-failure@%n.service
+# Skip (don't 203/EXEC-crashloop) when the deploy worktree is not provisioned yet —
+# the script lands there via hapax-post-merge-deploy on merge.
+ConditionPathExists=%h/.cache/hapax/rebuild/worktree/scripts/hapax-reform-complete
 
 [Service]
 Type=oneshot
@@ -11,9 +14,15 @@ Type=oneshot
 # cycle: a silently-reverting realization (coord SSOT unprovisioned, lane supervisor
 # disabled, opus receipt lapsed, INV-5 clobbered by the rebuild timer, ...) is caught
 # here rather than by eyeball. The script also emits its own high-priority notification
-# naming the regressed checks. Runs from the active deploy worktree (mirrors
-# policy-decide-shadow-replay.service); rebuild is idempotent.
-ExecStart=/home/hapax/.local/bin/uv run --directory /home/hapax/projects/hapax-council python scripts/hapax-reform-complete --regression-only
+# naming the regressed checks.
+#
+# Runs from the active DEPLOY worktree (%h/.cache/hapax/rebuild/worktree), NOT the
+# primary session worktree: %h/projects/hapax-council floats on whatever feature branch
+# its lane currently holds, so a hardcoded primary path would run stale (or entirely
+# absent) code — the same hardcoded-primary-worktree hazard fixed for
+# hapax-sdlc-invariants.service in #3839. The rebuild worktree tracks deployed main and
+# is rebuilt idempotently by hapax-post-merge-deploy.
+ExecStart=/home/hapax/.local/bin/uv run --directory %h/.cache/hapax/rebuild/worktree python scripts/hapax-reform-complete --regression-only
 Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Nice=10
