@@ -171,9 +171,28 @@ For each impacted axis, the quality dossier must declare:
 
 Before release authorization:
 
-- **Visual:** fresh screenshots or recordings across affected states/viewports, captured via `scripts/compositor-frame-capture.sh` or equivalent
-- **Audio:** routing verification (`scripts/hapax-audio-routing-check`), loudness measurement (`scripts/audio-measure.sh`), audibility/intelligibility spot-check, clipping/noise check
-- **Audiovisual:** temporal alignment witness (visual state matches audio state at key moments), pacing check, aesthetic unity check
+- **Witness tactics:** every visual, audio, or audiovisual evidence item must
+  declare the named POV set, duration window, per-POV failure predicates, and
+  any blocked/degraded POVs. At least two independent POVs are required when the
+  surface has more than one observable path; single-POV evidence is acceptable
+  only when the dossier proves no second POV exists and records the resulting
+  evidence ceiling.
+- **Visual:** fresh screenshots or recordings across affected states/viewports,
+  captured via `scripts/compositor-frame-capture.sh` or equivalent, with an
+  audience/user-facing POV plus a producer, upstream, diagnostic, or
+  geometry-alternate POV. Liveness, transition, animation, freeze/stall, and
+  stream-safety claims must be duration-bound.
+- **Audio:** routing verification (`scripts/hapax-audio-routing-check`),
+  loudness measurement (`scripts/audio-measure.sh`), audibility/intelligibility
+  spot-check, clipping/noise check, and output/egress monitoring. Route/config,
+  measurement, and audible/output POVs must be present where the chain exposes
+  them, with duration windows for routing, loudness, silence, latency, feedback,
+  degradation, sync, and pacing claims.
+- **Audiovisual:** temporal alignment witness (visual state matches audio state
+  at key moments), pacing check, aesthetic unity check, and cross-modal POV
+  coverage proving the audio and visual paths are observed at the same claimed
+  output level. Sync, pacing, reactivity, liveness, and stability claims must be
+  collected over a declared duration window.
 - **Theoretical:** claim map with source/counter-source, debt register entries
 
 #### Gate 4: Review (REQ-AVSDLC-010)
@@ -192,6 +211,8 @@ Review types by axis:
 Release is blocked when:
 
 - Required evidence is missing or stale
+- Witness tactics omit required POV coverage, duration windows, failure
+  predicates, or blocked/degraded evidence statements
 - Mechanical checks fail
 - Perceptual review identifies a contradiction the metrics did not catch
 - A theoretical claim lacks adequate source support
@@ -256,6 +277,8 @@ not an implicit bypass. For each impacted item, the mechanical minimum is:
 
 - `avsdlc_dossier` (or equivalent quality dossier reference)
 - `avsdlc_evidence_collected_at` with fresh evidence
+- a witness tactics declaration in the dossier naming the POV set, duration
+  window, per-POV failure predicates, and any blocked/degraded POVs
 - axis-specific witness fields: `visual_witness`, `audio_witness`,
   `audiovisual_witness`, `theoretical_claim_map`, or the equivalent field for
   the declared axis
