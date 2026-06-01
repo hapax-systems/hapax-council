@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from shared.coord_event_log import CoordEventLog
 
 LEDGER_DIR = Path.home() / ".cache" / "hapax" / "evidence-ledger"
 
@@ -95,11 +98,25 @@ TIER_REQUIREMENTS: dict[RiskTier, set[EvidenceKind]] = {
 
 
 class EvidenceLedger:
-    """Append-only file-backed evidence ledger."""
+    """Append-only file-backed evidence ledger.
 
-    def __init__(self, ledger_dir: Path | None = None) -> None:
+    The per-case JSONL files remain the authoritative tier-compliance read
+    surface. When a coordination ``event_log`` is injected (or
+    ``HAPAX_COORD_EVIDENCE_MIRROR=1``), each append is ALSO mirrored as a
+    best-effort ``evidence.appended`` event into the coord SSOT log for
+    observability — off by default, never raises, load-bearing for no invariant
+    (coordination reform Phase 4).
+    """
+
+    def __init__(
+        self,
+        ledger_dir: Path | None = None,
+        *,
+        event_log: CoordEventLog | None = None,
+    ) -> None:
         self._dir = ledger_dir or LEDGER_DIR
         self._dir.mkdir(parents=True, exist_ok=True)
+        self._event_log = event_log
 
     def _case_file(self, case_id: str) -> Path:
         safe = case_id.replace("/", "_").replace(" ", "_")
@@ -109,6 +126,16 @@ class EvidenceLedger:
         path = self._case_file(entry.case_id)
         with path.open("a") as f:
             f.write(entry.model_dump_json() + "\n")
+        # Best-effort, off-by-default observability mirror into the coord SSOT log.
+        # Lazy import avoids a module-level cycle (coord_projection type-checks
+        # against EvidenceEntry). No-op unless an event_log is injected or
+        # HAPAX_COORD_EVIDENCE_MIRROR=1; never raises.
+        try:
+            from shared.coord_projection import emit_evidence_appended
+
+            emit_evidence_appended(entry, event_log=self._event_log)
+        except Exception:  # noqa: BLE001 — the mirror must never break an append.
+            pass
 
     def entries_for_case(self, case_id: str) -> list[EvidenceEntry]:
         path = self._case_file(case_id)

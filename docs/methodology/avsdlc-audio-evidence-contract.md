@@ -67,6 +67,44 @@ Interview segments may run 30-60 minutes. Quality must not degrade over time.
 
 ### Evidence Collection Protocol
 
+#### Audio Witness Tactics Requirement
+
+This requirement applies to every audio witness, including routing checks,
+loudness captures, listener spot-checks, broadcast egress recordings, TTS
+samples, silence tests, and sustained-session measurements. An audio witness is
+not sufficient merely because one meter or one endpoint looks correct at one
+instant.
+
+Every audio witness plan must declare:
+
+1. **Route/config POV:** the signal graph or device routing view that proves the
+   intended path is connected. Examples include `pw-link -l`,
+   `scripts/hapax-audio-routing-check`, PipeWire node state, OBS source routing,
+   or the declared hardware mixer path.
+2. **Measurement POV:** the meter, analyzer, or classifier that measures the
+   relevant property at the correct point in the chain. Examples include LUFS-I,
+   true peak, short-term loudness, noise floor, spectrum, latency, silence
+   duration, or intelligibility samples.
+3. **Audible/output POV:** the captured or monitored output a listener or public
+   route would actually receive. Broadcast-path work must include the egress or
+   monitor feed, not only an upstream application source.
+4. **Duration window:** the span over which the witness is collected and why it
+   is long enough for the claim. Routing, loudness, silence, latency, feedback,
+   degradation, sync, and pacing claims require samples over time. Transient
+   claims must cover before, during, and after the event.
+5. **Per-POV failure predicates:** what would fail at each POV and across the
+   duration window, including disconnected graph legs, stale capture files,
+   meter-only false passes, egress silence, clipping, noise, drift, or audible
+   contradiction.
+6. **Blocked or degraded evidence statement:** any omitted POV or shortened
+   duration window must be recorded as a blocker or explicitly marked degraded
+   evidence. It cannot be treated as a pass.
+
+Default duration minima are intentionally conservative: broadcast-path audio
+witnesses must include at least 30 seconds of live output; transition, silence,
+latency, or feedback witnesses must include before/during/after coverage;
+sustained-session and interview claims use the longer windows below.
+
 For any work item with audio impact:
 
 1. **Pre-change baseline:** capture current loudness, routing, and TTS quality measurements
@@ -99,5 +137,7 @@ against the new engine before release authorization.
 4. Anthropomorphic language enters TTS content without being caught by review.
 5. Loudness changes are accepted because "the LUFS meter says it's fine" while a listener can plainly hear something wrong (REQ-AVSDLC-010: metrics cannot override perceptual judgment).
 6. A "small" audio change breaks the golden chain and nobody checks.
+7. An upstream source or meter looks healthy while the actual monitored egress is
+   silent, stale, clipped, or routed somewhere else.
 
 ---

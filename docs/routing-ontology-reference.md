@@ -55,11 +55,27 @@ route-authority receipt**, not a flag:
 | `opus_model_entitlement` | `opus_model_entitlement_receipt_absent`, `fresh_capability_evidence_absent` | Raises the opus authority ceiling so `claude.headless.opus` can LAUNCH |
 | `quality_equivalence` | `quality_equivalence_record_absent`, `fresh_capability_evidence_absent` | Records a bounded-floor equivalence for a fallback route (e.g. sonnet); does **not** widen the authority ceiling |
 
-Mint a receipt — the executable form of OQ-5 (the operator signs the entitlement):
+**Opus is reachable by default — no flag, no manual step.** The operator's
+standing OQ-5 authorization is kept live by
+`hapax-opus-route-authority-receipt.timer`, which re-signs a fresh
+`opus_model_entitlement` receipt for `claude.headless.opus` into the default
+receipt dir every 6h (`hapax-mint-route-authority-receipt --ensure-fresh`, a 24h
+window with an 8h re-sign floor). So a plain `--profile full` dispatch reaches
+the opus route with nothing extra — the old workaround (dispatching from a
+*stale* council worktree with `HAPAX_CLAUDE_MODEL=opus` + `--policy-rollback`)
+is retired; do not reintroduce it.
+
+Mint or re-mint a receipt by hand — the executable form of OQ-5 (the operator
+signs the entitlement) — for bootstrap, a custom route, or a quality floor:
 
 ```bash
-# Make opus reachable:
+# One-off mint (the timer keeps it fresh thereafter):
 scripts/hapax-mint-route-authority-receipt \
+    --receipt-type opus_model_entitlement --route-id claude.headless.opus
+
+# Idempotent upkeep — exactly what the timer runs: a stable receipt id,
+# re-minting only once the live receipt is within --refresh-within of staleness:
+scripts/hapax-mint-route-authority-receipt --ensure-fresh \
     --receipt-type opus_model_entitlement --route-id claude.headless.opus
 
 # Record sonnet quality-equivalence for a bounded floor:
@@ -78,7 +94,9 @@ receipt loading). Receipts carry a `stale_after` window (default `24h`) and a
 `quality_equivalence` receipt requires at least one `--quality-floor`.
 
 Source of truth: `shared/dispatcher_policy.py`
-(`build_route_authority_receipt`, `apply_route_authority_receipts`).
+(`build_route_authority_receipt`, `apply_route_authority_receipts`),
+`scripts/hapax-mint-route-authority-receipt` (`--ensure-fresh`), and
+`systemd/units/hapax-opus-route-authority-receipt.{service,timer}`.
 
 ## Route Metadata Schema (v1)
 

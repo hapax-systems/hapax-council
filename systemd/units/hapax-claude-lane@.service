@@ -2,13 +2,21 @@
 Description=Hapax Claude headless lane %i (methodology-dispatched)
 Documentation=file:///home/hapax/projects/hapax-council/scripts/hapax-methodology-dispatch
 ConditionPathExists=%h/.cache/hapax/enable-claude-headless
+# FM-11 (coordination-reform 2026-05-30 Phase 6): a dead lane must always
+# auto-restart, bounded by a StartLimit so a crashloop backs off (enters
+# failed) instead of spinning. 5 restarts / 5 min, then stop. The lane
+# supervisor (hapax-lane-supervisor.timer) covers process liveness for lanes
+# not managed by this systemd template (cx-*/antigrav and headless wrappers).
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=-%h/.cache/hapax/claude-headless/%i.env
 ExecStart=/usr/bin/env bash -lc 'exec "$HOME/.local/bin/hapax-methodology-dispatch" --lane "%i" --platform claude --mode headless --task "${HAPAX_DISPATCH_TASK:?HAPAX_DISPATCH_TASK required in per-lane env}" --launch'
-Restart=no
+Restart=always
+RestartSec=10
 
 [Install]
 WantedBy=default.target

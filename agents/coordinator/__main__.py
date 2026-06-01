@@ -34,6 +34,29 @@ def _handle_signal(signum: int, _frame: object) -> None:
     log.info("Received signal %d, shutting down", signum)
 
 
+def _boot_reconcile() -> None:
+    """Replay the coord SSOT log + drain fail-open spool intents on boot.
+
+    Realizes "the heap is DERIVED" (master design §2.2/NEW-5): rebuild state from
+    the durable log and fold in intents spooled while the daemon was down, so no
+    authorization survives only in a process image. Advisory — a failure here
+    must never stop the daemon from starting.
+    """
+    try:
+        from shared.coord_event_log import default_event_log
+
+        result = default_event_log().boot_reconcile()
+        log.info(
+            "coord boot reconcile: replayed=%d spool_ingested=%d spool_failed=%d degraded=%s",
+            result.replayed,
+            result.spool_ingested,
+            result.spool_failed,
+            result.degraded,
+        )
+    except Exception:
+        log.exception("coord boot reconcile failed (continuing daemon start)")
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.DEBUG if "--debug" in sys.argv else logging.INFO,
@@ -45,6 +68,8 @@ def main() -> None:
     tick_s = float(os.environ.get("HAPAX_COORDINATOR_TICK_S", "30"))
 
     coordinator = Coordinator()
+
+    _boot_reconcile()
 
     log.info("Coordinator daemon starting (tick=%.1fs)", tick_s)
 

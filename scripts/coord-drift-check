@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""coord-drift-check — advisory projection<->vault stage drift check.
+
+Coordination reform Phase 4 (CASE-SDLC-REFORM-001): replays the daemon-owned
+coord event log into a per-cc-task stage projection and diffs it against the
+vault ``stage:`` frontmatter. The ledger is the SSOT; the vault is a projection,
+so a divergence is drift.
+
+Advisory by default (exit 0 even on drift) — the check is shipped advisory-first
+and promoted to a hard gate (``--strict``) once the SSOT is authoritative across
+the fleet. Honors HAPAX_COORD_DIR.
+
+Usage:
+    coord-drift-check [--vault DIR] [--strict] [--json]
+
+Exit: 0 no drift (or advisory); 1 drift found AND --strict.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="coord-drift-check", description=__doc__)
+    parser.add_argument("--vault", type=Path, default=None, help="cc-tasks dir (active/ + closed/)")
+    parser.add_argument("--strict", action="store_true", help="exit 1 on drift (default: advisory)")
+    parser.add_argument("--json", action="store_true", help="emit drift as JSON")
+    args = parser.parse_args(argv)
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from shared.coord_event_log import default_event_log
+    from shared.coord_projection import (
+        CoordProjection,
+        diff_projection_vs_vault,
+        load_vault_task_stages,
+    )
+
+    projection = CoordProjection.from_replay(default_event_log().replay(fail_open=True))
+    vault_stages = load_vault_task_stages(args.vault)
+    drifts = diff_projection_vs_vault(projection, vault_stages)
+
+    if args.json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "task_id": d.task_id,
+                        "ledger_stage": d.ledger_stage,
+                        "vault_stage": d.vault_stage,
+                    }
+                    for d in drifts
+                ],
+                sort_keys=True,
+            )
+        )
+    elif not drifts:
+        print(
+            f"coord-drift-check: no drift "
+            f"({len(projection.tasks)} ledger subjects, {len(vault_stages)} vault stages)"
+        )
+    else:
+        print(f"coord-drift-check: {len(drifts)} drift(s) [advisory]")
+        for d in drifts:
+            print(f"  {d.task_id}: ledger={d.ledger_stage} vault={d.vault_stage}")
+
+    return 1 if (drifts and args.strict) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

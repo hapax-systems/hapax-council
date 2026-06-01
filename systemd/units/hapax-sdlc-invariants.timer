@@ -1,0 +1,15 @@
+[Unit]
+Description=Run the SDLC never-stuck invariant evaluator every 5 minutes
+
+[Timer]
+# First pass shortly after boot, then continuously every ~5 minutes (§4.5: the
+# kernel evaluates the invariants continuously against the live ledger).
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30
+Persistent=true
+
+[Install]
+# install-units.sh sweeps every *.timer with this stanza and enables it (the
+# auto-enable marker), so the evaluator actually runs without a manual step.
+WantedBy=timers.target

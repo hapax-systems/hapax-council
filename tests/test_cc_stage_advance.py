@@ -49,6 +49,9 @@ def _run(home: Path, *args: str) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "alpha"
+    # Redirect the coord SSOT log under the test HOME so emitting a stage event
+    # never touches /var/lib/hapax/coord during the test.
+    env["HAPAX_COORD_DIR"] = str(home / ".cache" / "hapax" / "coord")
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         capture_output=True,

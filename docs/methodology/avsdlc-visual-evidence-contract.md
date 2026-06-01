@@ -75,6 +75,40 @@ test spec (2026-05-06).
 
 ### Evidence Collection Protocol
 
+#### Universal Witness Tactics Requirement
+
+This requirement applies to every visual witness, including screenshots,
+recordings, OBS source captures, compositor grabs, UI viewport captures, and
+render-state probes. A witness is not sufficient merely because one perspective
+looks correct at one instant.
+
+Every visual witness plan must declare:
+
+1. **POV set:** at least two independent POVs that cover different failure
+   classes. One POV must be audience-facing or user-facing when such a path
+   exists. A second POV must be producer-facing, diagnostic, upstream, or
+   geometry-alternate so a stale egress feed, hidden upstream failure, viewport
+   crop, or routing mismatch cannot masquerade as success. Live spatial surfaces
+   should use named stations from their own geometry registry.
+2. **Duration window:** the span over which the witness is collected and why it
+   is long enough for the claim. Liveness, transition, animation, pacing,
+   freeze/stall, sync, and stream-safety claims require repeated samples over
+   time, not a single frame. Static UI claims still need before/after or
+   affected-state coverage plus the second POV.
+3. **Per-POV failure predicates:** what would fail at each POV and across the
+   duration window, including stale hashes, no motion, unreadable text, black
+   frames, crop/scale loss, stream compression artifacts, or missing state.
+4. **Blocked or degraded evidence statement:** any omitted POV or shortened
+   duration window must be recorded as a blocker or explicitly marked degraded
+   evidence. It cannot be treated as a pass.
+
+Default duration minima are intentionally conservative: live/runtime witnesses
+must span at least two watchdog or render-poll intervals, and at least 60 seconds
+when no tighter surface-specific interval exists; transition or animation
+witnesses must cover the whole transition plus a settled hold; static UI
+witnesses must cover pre-change, post-change, and every affected state or
+viewport claimed by the change.
+
 For any work item with visual impact:
 
 1. **Pre-change screenshots:** capture affected surfaces using `scripts/compositor-frame-capture.sh` across all affected states
@@ -96,7 +130,8 @@ DarkPlaces/Screwm live-texture renderer, or the studio compositor as OBS sees it
 not a dev render or the in-engine view — evidence is collected through the
 broadcast path itself. Validated 2026-05-29 against the Screwm renderer
 (`scripts/screwm-effect-drift-matrix-witness.py`); for live surfaces these tactics
-supersede a single dev-resolution screenshot.
+supersede a single dev-resolution screenshot and instantiate the universal
+witness tactics requirement above.
 
 1. **Capture from OBS, not the engine.** Use obs-websocket `SaveSourceScreenshot`
    to capture the exact frame OBS is encoding (read the obs-websocket password from
@@ -148,6 +183,9 @@ supersede a single dev-resolution screenshot.
 6. A shader effect change passes code review but looks wrong (REQ-AVSDLC-010: metric-only pass insufficient for perceptual work).
 7. Stream-visible text ships at 10px and nobody catches it because it looked fine in development at 4K.
 8. A live render is declared frozen — or declared live — on the basis of an unreliable engine frame-counter or a single screenshot, when liveness is a temporal property only a duration-bound motion metric read from the broadcast frame can decide (2026-05-29 Screwm false alarm).
+9. OBS or another broadcast egress path is stale while an upstream render path is
+   still moving, because the witness trusted one POV and did not run long enough
+   to cross a reset/watchdog boundary.
 
 ---
 

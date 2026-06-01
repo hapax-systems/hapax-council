@@ -36,6 +36,7 @@ from shared.frontmatter_schemas import (
     NudgeFrontmatter,
     validate_frontmatter,
 )
+from shared.vault_ownership import filter_system_egress
 
 _log = logging.getLogger(__name__)
 SYSTEM_DIR = VAULT_PATH / "30-system"
@@ -71,6 +72,12 @@ def write_to_vault(
         target_dir = VAULT_PATH / folder
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / filename
+
+        # OQ-9 guard: the daemon's 30-system/ egress is daemon-owned, so daemon and
+        # unknown note types pass through unchanged; only a known operator/coordination
+        # type routed through here has its operator-owned keys refused (defence in depth).
+        if frontmatter and frontmatter.get("type"):
+            frontmatter = filter_system_egress(frontmatter["type"], frontmatter)
 
         parts: list[str] = []
         if frontmatter:

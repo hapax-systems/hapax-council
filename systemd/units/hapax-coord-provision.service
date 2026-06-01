@@ -1,0 +1,22 @@
+# Hapax-Auto-Enable: true
+# reform-improve coord SSOT provisioning: hapax-post-merge-deploy `enable --now`s
+# units carrying this marker, so the coordination SSOT tree + escape-grant key are
+# provisioned on boot (and on merge) instead of installing-but-sleeping. This is
+# what makes the R2 event log materialize and the R3 daemon-independent escape
+# grant LIVE without manual intervention. The marker requires the [Install]
+# section below. The script is pure-stdlib, so no uv/venv is needed.
+[Unit]
+Description=Provision the Hapax coordination SSOT tree + escape-grant key (reform R2/R3)
+Documentation=file:%h/Documents/Personal/30-areas/hapax/coordination-reform-master-design-2026-05-30.md
+After=hapax-secrets.service
+Wants=hapax-secrets.service
+ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=%h/.cache/hapax/rebuild/worktree
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/coord-boot-reconcile --provision
+
+[Install]
+WantedBy=default.target

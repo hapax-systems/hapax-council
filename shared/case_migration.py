@@ -9,12 +9,19 @@ ISAP: SLICE-007-MIGRATION-CLOSURE (CASE-SDLC-REFORM-001)
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
+
+from shared.coord_event_log import CoordEvent, CoordWriter, DuplicateEventError, default_event_log
 
 TransitionStage = Literal["S0", "S1", "S6", "S7", "S11"]
 RiskTier = Literal["T0", "T1", "T2", "T3"]
@@ -240,3 +247,121 @@ def annotate_task_file(path: Path, stub: MigrationStub) -> str:
 
     new_fm = yaml.dump(data, default_flow_style=False, sort_keys=False, allow_unicode=True)
     return f"---\n{new_fm}---\n{text[m.end() :]}"
+
+
+# === Coord migration capability + ledger backfill ============================
+# Seeding the coord SSOT log from the legacy per-worktree authority-case ledgers
+# is a mass mutation the standard gate would block. It runs under a one-time,
+# operator-minted, auto-expiring capability scoped to the migration namespace
+# (master design §4.3, NEW-6).
+
+#: Namespace a migration capability must carry to authorize a coord backfill.
+MIGRATION_NAMESPACE = "coord-reform-migration"
+
+
+@dataclass(frozen=True)
+class MigrationCapability:
+    """A scoped, auto-expiring capability authorizing a coord-log backfill."""
+
+    token: str
+    grantor: str
+    namespace: str
+    issued_at: float
+    expires_at: float
+
+    def is_expired(self, now: float | None = None) -> bool:
+        return (now if now is not None else time.time()) >= self.expires_at
+
+    def assert_valid(self, *, namespace: str, now: float | None = None) -> None:
+        """Raise ValueError unless this capability is in-namespace and unexpired."""
+        if self.namespace != namespace:
+            raise ValueError(
+                f"migration capability namespace {self.namespace!r} != required {namespace!r}"
+            )
+        if self.is_expired(now):
+            raise ValueError("migration capability expired")
+
+
+def mint_capability(
+    *, grantor: str, namespace: str = MIGRATION_NAMESPACE, ttl_seconds: float = 3600.0
+) -> MigrationCapability:
+    """Mint a one-time backfill capability (default 1h TTL)."""
+    issued = time.time()
+    token = hashlib.blake2b(
+        f"{grantor}\x1f{namespace}\x1f{issued}".encode(), digest_size=16
+    ).hexdigest()
+    return MigrationCapability(
+        token=token,
+        grantor=grantor,
+        namespace=namespace,
+        issued_at=issued,
+        expires_at=issued + ttl_seconds,
+    )
+
+
+def backfill_from_ledger(
+    ledger_path: Path,
+    *,
+    capability: MigrationCapability,
+    event_log: CoordEventLog | None = None,
+) -> int:
+    """Append every legacy ledger row into the coord SSOT log under ``capability``.
+
+    Each JSONL row becomes one ``legacy.<kind>`` :class:`CoordEvent`. The event id
+    is a digest of the row content (path-independent), so identical rows that
+    accumulated across several per-worktree ledgers collapse to one event and a
+    re-run is idempotent. Returns the count of newly appended events.
+    """
+    capability.assert_valid(namespace=MIGRATION_NAMESPACE)
+    if not ledger_path.exists():
+        return 0
+    log = event_log or default_event_log()
+    appended = 0
+    for line in ledger_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        try:
+            log.append(_legacy_row_to_event(row), writer=CoordWriter.daemon())
+            appended += 1
+        except DuplicateEventError:
+            continue  # idempotent: row already migrated
+    return appended
+
+
+def _legacy_row_to_event(row: dict) -> CoordEvent:
+    kind = str(row.get("kind") or "event")
+    subject = str(
+        row.get("task_id") or row.get("case_id") or row.get("authority_case") or "unknown"
+    )
+    authority_case = row.get("authority_case")
+    return CoordEvent(
+        event_id=f"legacy-{_row_digest(row)}",
+        timestamp=str(row.get("ts") or row.get("timestamp") or _now_iso()),
+        event_type=f"legacy.{kind}",
+        actor=str(row.get("role") or row.get("actor") or "migration"),
+        subject=subject,
+        authority_case=authority_case if isinstance(authority_case, str) else None,
+        payload={"kind": kind, "row": row},
+    )
+
+
+def _row_digest(row: dict) -> str:
+    canonical = json.dumps(row, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return hashlib.blake2b(canonical.encode("utf-8"), digest_size=8).hexdigest()
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# Consumed by scripts/coord-migrate-ledgers — an extensionless CLI the
+# unused-function scanner does not parse — so reference them here to mark them
+# used (mirrors shared/coord_event_log.py's _DYNAMIC_ENTRYPOINTS pattern).
+_DYNAMIC_ENTRYPOINTS = (mint_capability, backfill_from_ledger)

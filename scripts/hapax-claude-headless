@@ -59,6 +59,13 @@ export CLAUDE_ROLE="$ROLE"
 export HAPAX_AGENT_ROLE="$ROLE"
 export HAPAX_WORKTREE_ROLE="$ROLE"
 
+# Per-session id (coordination reform Phase 1): a stable uuid so the gate keys a
+# claim lease to THIS session — two same-role sessions never collide (FM-2).
+# Minted before cc-claim below so the lease is session-keyed from the first
+# mutation. Matches the shared idiom in scripts/hapax-claude.
+SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$ROLE" "$$")}"
+export HAPAX_SESSION_ID="$SESSION_UUID"
+
 WORKDIR="$HOME/projects/hapax-council"
 [[ "$ROLE" != "alpha" ]] && WORKDIR="$HOME/projects/hapax-council--$ROLE"
 [[ -d "$WORKDIR" ]] || { echo "hapax-claude-headless: worktree not found: $WORKDIR" >&2; exit 3; }

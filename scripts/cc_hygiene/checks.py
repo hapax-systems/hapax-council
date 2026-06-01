@@ -684,6 +684,9 @@ def parse_task_note(path: Path) -> TaskNote | None:
         claimed_at=_parse_dt(fm.get("claimed_at")),
         branch=fm.get("branch"),
         pr=pr,
+        parent_request=(
+            str(fm["parent_request"]) if fm.get("parent_request") is not None else None
+        ),
         parent_plan=str(fm["parent_plan"]) if fm.get("parent_plan") is not None else None,
         parent_spec=str(fm["parent_spec"]) if fm.get("parent_spec") is not None else None,
         tags=tags,
@@ -754,6 +757,138 @@ def check_spec_staleness(
                         "age_days": str(age_days),
                         "threshold_days": str(SPEC_STALENESS_DAYS),
                     },
+                )
+            )
+    return events
+
+
+# ----- vault-link-integrity (Phase-0 housekeeping #3) -----
+
+_LINK_NULLISH = frozenset({"", "null", "none", "~"})
+"""Link values that carry no real pointer and are skipped."""
+
+# Note dirs (relative to vault_root / repo_root) where a bare-id or
+# basename-only link may resolve. Real notes name parent_request as a bare id
+# OR an id+`.md` OR any of these dirs' paths; parent_spec/parent_plan point at
+# specs/plans/requests across both the Obsidian vault and the repo. Resolution
+# is basename-against-known-dirs so the same id resolves regardless of which
+# spelling a note used — keeping the false-positive rate near zero (measured
+# 161 -> 3 dangling on the live vault, where the 3 are genuinely broken).
+_VAULT_NOTE_DIRS = (
+    "20-projects/hapax-requests/active",
+    "20-projects/hapax-requests/closed",
+    "20-projects/hapax-cc-tasks/active",
+    "20-projects/hapax-cc-tasks/closed",
+    "20-projects/hapax-research/specs",
+    "20-projects/hapax-research/plans",
+    "30-areas/hapax",
+)
+_REPO_NOTE_DIRS = (
+    "docs/superpowers/specs",
+    "docs/superpowers/plans",
+    "docs/research",
+)
+
+
+def _default_vault_root() -> Path:
+    return Path.home() / "Documents" / "Personal"
+
+
+def _default_repo_root() -> Path:
+    return Path.home() / "projects" / "hapax-council"
+
+
+def _link_is_nullish(value: str | None) -> bool:
+    """True when a parent_* value is absent or a YAML null sentinel."""
+    if value is None:
+        return True
+    return value.strip().strip("\"'").lower() in _LINK_NULLISH
+
+
+def _link_resolves(target: str, vault_root: Path, repo_root: Path) -> bool:
+    """True if a ``parent_*`` link target exists, in any of its real-world forms.
+
+    Pure existence probe (never opens the file). A target resolves if ANY of:
+
+    * it is an absolute / ``~``-expanded path that exists;
+    * it is a path resolved relative to the vault root or the repo root;
+    * its basename (with an implied ``.md``) exists in any known note dir under
+      the vault or the repo — this absorbs bare ids, ``id.md``, vault-relative
+      and repo-relative spellings of the same underlying note.
+
+    No prefix/fuzzy matching: a truncated id that is only a *prefix* of a real
+    filename is intentionally treated as dangling so it gets repaired.
+    """
+    raw = target.strip().strip("\"'")
+    expanded = Path(raw).expanduser()
+
+    if expanded.is_absolute():
+        if expanded.exists():
+            return True
+    else:
+        for root in (vault_root, repo_root, Path.home()):
+            if (root / raw).exists():
+                return True
+
+    stem = Path(raw).name
+    filename = stem if stem.endswith(".md") else f"{stem}.md"
+    for root, dirs in ((vault_root, _VAULT_NOTE_DIRS), (repo_root, _REPO_NOTE_DIRS)):
+        for note_dir in dirs:
+            if (root / note_dir / filename).exists():
+                return True
+    return False
+
+
+def check_vault_link_integrity(
+    notes: Iterable[TaskNote],
+    vault_root: Path | None = None,
+    *,
+    repo_root: Path | None = None,
+    now: datetime | None = None,
+) -> list[HygieneEvent]:
+    """Flag cc-task notes whose ``parent_*`` pointers dangle.
+
+    Resolves ``parent_request`` / ``parent_spec`` / ``parent_plan`` for each
+    note via :func:`_link_resolves`, which accepts every form these fields take
+    in the live vault (bare id, ``id.md``, vault-/repo-relative path,
+    ``~``-path, absolute path). ``null`` / ``None`` / empty values carry no link
+    and are skipped. One ``warning`` event is emitted per dangling field.
+
+    Read-only — only probes existence, never opens targets. Recurrence guard for
+    the five sbcl-clog specs that shipped with dangling ``parent_request`` refs.
+    """
+    now = now or _now()
+    if vault_root is None:
+        vault_root = _default_vault_root()
+    if repo_root is None:
+        repo_root = _default_repo_root()
+    events: list[HygieneEvent] = []
+    for note in notes:
+        link_fields = (
+            ("parent_request", note.parent_request),
+            ("parent_spec", note.parent_spec),
+            ("parent_plan", note.parent_plan),
+        )
+        for field, value in link_fields:
+            if _link_is_nullish(value):
+                continue
+            target = value.strip().strip("\"'")  # type: ignore[union-attr]  # narrowed above
+            if _link_resolves(target, vault_root, repo_root):
+                continue
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="vault_link_integrity",
+                    severity="warning",
+                    task_id=note.task_id,
+                    session=(
+                        note.assigned_to if note.assigned_to not in (None, "unassigned") else None
+                    ),
+                    message=(
+                        f"task '{note.task_id}' has dangling {field} -> "
+                        f"{target!r} (target not found on disk)"
+                    ),
+                    metadata={"field": field, "target": target},
                 )
             )
     return events

@@ -25,18 +25,49 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from shared.governance.coord_capabilities import (
+    EscapeGrant,
+    mint_escape_grant,
+    verify_escape_grant,
+    write_grant_file,
+)
 from shared.policy_decide import ToolCall, policy_decide
+from shared.policy_decision import Decision, FailMode, Verdict
+from shared.policy_floor import evaluate_floor
 
 #: Authority-case stage-transition ledger this monitor reads (the trace input).
 DEFAULT_AUTHORITY_LEDGER = Path(os.path.expanduser("~/.cache/hapax/authority-case-ledger.jsonl"))
 #: Advisory findings ledger this monitor writes (violations only).
 DEFAULT_INVARIANT_LEDGER = Path(os.path.expanduser("~/.cache/hapax/sdlc-invariant-findings.jsonl"))
+#: HMAC key the auto-mint signs escape grants with. The monitor is the first
+#: runtime minter, so it CREATES this key (0600) if absent; the daemon-independent
+#: shim (which honors grants kernel-down) reads the SAME path. Override via
+#: ``--key-file`` / ``HAPAX_COORD_GRANT_KEY_FILE``.
+DEFAULT_GRANT_KEY_FILE = Path(
+    os.environ.get(
+        "HAPAX_COORD_GRANT_KEY_FILE", os.path.expanduser("~/.config/hapax/coord-capability.key")
+    )
+)
+#: Directory the auto-minted escape grant FILES land in. The shim reads grants
+#: directly from disk here — no RPC, so a grant is honored with the kernel dead.
+DEFAULT_ESCAPE_GRANT_DIR = Path(
+    os.environ.get("HAPAX_ESCAPE_GRANT_DIR", os.path.expanduser("~/.cache/hapax/escape-grants"))
+)
+#: Only the escape-class invariants auto-mint a grant on violation (§4.5). INV-1/2
+#: are statechart/liveness properties — they ledger an advisory alert, never mint.
+AUTO_MINT_INVARIANTS = frozenset({"INV-3", "INV-4", "INV-5"})
+#: TTL for an auto-minted escape: long enough for a stuck lane to act, short enough
+#: that a stale escape expires rather than lingering as a standing bypass.
+ESCAPE_GRANT_TTL_S = 3600.0
+#: The auto-mint grantor identity stamped on every minted grant (legibility).
+ESCAPE_GRANTOR = "sdlc-invariant-monitor"
 
 
 # --- The statechart as data (mirrors docs/formal/sdlc-ladder.tla) -------------
@@ -286,6 +317,170 @@ def record_invariant_findings(
         pass
 
 
+# --- Daemon-independent escape: the auto-mint + the shim's grant carve-out -----
+#
+# §4.5: a violated invariant "emits a ledgered alert and (for INV-3/4/5) auto-mints
+# the relevant escape — it never freezes the system to 'protect' it." The escape is
+# the signed EscapeGrant from coord_capabilities: a FILE the L3 hook-shim reads
+# directly when the kernel is down (frictionless-self-direction design, L3) —
+# verification is a pure signature/expiry/scope check, never an RPC, so a grant
+# unblocks a lane regardless of daemon liveness (INV-4).
+
+
+def load_or_create_grant_key(path: str | os.PathLike[str] = DEFAULT_GRANT_KEY_FILE) -> bytes:
+    """Load the coord-capability HMAC key, creating a fresh 32-byte key (mode 0600) if absent.
+
+    The monitor is the first runtime minter, so it establishes the key the
+    daemon-independent shim later reads from the SAME path. Returns ``b""`` only if
+    the key can neither be read nor persisted — the caller then degrades to
+    ledger-only (no verifiable grant can be signed). Never raises.
+    """
+    target = Path(path)
+    try:
+        return target.read_bytes()
+    except OSError:
+        pass
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        key = secrets.token_bytes(32)
+        fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(key)
+        return key
+    except OSError:
+        return b""
+
+
+def decide_with_escape(
+    tool_name: str,
+    *,
+    command: str = "",
+    file_path: str = "",
+    grant: EscapeGrant | None = None,
+    key: bytes,
+    now: float,
+) -> Decision:
+    """The kernel-DOWN floor decision, with a valid escape grant overriding a block.
+
+    This is the Python form of the L3 hook-shim's daemon-down contract: evaluate the
+    embedded conservative floor and, if it BLOCKS, honor an escape grant iff it
+    verifies (signature + expiry + scope — pure, no RPC, no daemon). So a signed
+    grant unblocks a lane with the kernel dead, which is exactly INV-4
+    (authority-always-escapable). Never raises.
+    """
+    try:
+        decision = evaluate_floor(tool_name, command=command, file_path=file_path)
+        if decision.allowed:
+            return decision
+        if verify_escape_grant(grant, key=key, now=now, gate=decision.gate):
+            return Decision(
+                verdict=Verdict.ALLOW,
+                gate="escape:granted",
+                reason=f"escape grant overrides {decision.gate} (daemon-independent)",
+                fail_mode=FailMode.FAIL_OPEN_WITH_LEDGER,
+            )
+        return decision
+    except Exception:  # noqa: BLE001 — degrade to the conservative floor block on any error.
+        return evaluate_floor(tool_name, command=command, file_path=file_path)
+
+
+def mint_escape_for_violation(
+    result: InvariantResult,
+    *,
+    key: bytes,
+    grant_dir: str | os.PathLike[str] = DEFAULT_ESCAPE_GRANT_DIR,
+    now: float,
+    ttl_s: float = ESCAPE_GRANT_TTL_S,
+) -> EscapeGrant | None:
+    """Auto-mint a signed universal ("*") escape grant for an INV-3/4/5 violation.
+
+    INV-3/4/5 violations all mean the escape machinery itself may be compromised, so
+    the never-freeze response is a broad daemon-independent escape (the triggering
+    invariant is stamped in the grant ``reason`` for legibility). Returns the minted
+    grant written to ``grant_dir``, or ``None`` when the invariant holds, is not an
+    auto-mint class, or no signing key is available. Never raises — advisory.
+    """
+    if result.holds or result.invariant not in AUTO_MINT_INVARIANTS or not key:
+        return None
+    try:
+        grant = mint_escape_grant(
+            grantor=ESCAPE_GRANTOR,
+            scope="*",
+            reason=(
+                f"auto-mint: {result.invariant} ({result.name}) violated — "
+                "universal escape so no lane is frozen"
+            ),
+            ttl_s=ttl_s,
+            key=key,
+            now=now,
+        )
+        slug = result.invariant.lower().replace("-", "")
+        write_grant_file(grant, Path(grant_dir) / f"{slug}-{grant.grant_id}.json")
+        return grant
+    except Exception:  # noqa: BLE001 — auto-mint is advisory; a mint/IO failure must not block.
+        return None
+
+
+@dataclass(frozen=True)
+class EvaluationReport:
+    """The outcome of one evaluator pass: the checks, any auto-minted escapes, alert state."""
+
+    results: tuple[InvariantResult, ...]
+    minted: tuple[EscapeGrant, ...]
+    violations: tuple[str, ...]
+
+
+def _alert_violations(results: Iterable[InvariantResult], minted: Iterable[EscapeGrant]) -> None:
+    """Best-effort operator alert for violations. Advisory — never raises, never blocks."""
+    try:
+        from shared.notify import send_notification
+
+        bad = [r for r in results if not r.holds]
+        if not bad:
+            return
+        minted_n = len(list(minted))
+        lines = [f"{r.invariant} {r.name}: {'; '.join(r.violations) or 'violated'}" for r in bad]
+        send_notification(
+            f"SDLC invariant violation ({len(bad)})",
+            "\n".join(lines) + (f"\nauto-minted {minted_n} escape grant(s)" if minted_n else ""),
+            priority="high",
+            tags=["warning", "rotating_light"],
+        )
+    except Exception:  # noqa: BLE001 — the alert is advisory; a notify failure must not block.
+        pass
+
+
+def run_evaluator(
+    trace: Iterable[Mapping[str, object]] = (),
+    *,
+    now: float,
+    stale_after_s: float = 86400.0,
+    ladder: Ladder = SDLC_LADDER,
+    findings_path: str | os.PathLike[str] = DEFAULT_INVARIANT_LEDGER,
+    grant_dir: str | os.PathLike[str] = DEFAULT_ESCAPE_GRANT_DIR,
+    key: bytes = b"",
+    alert: bool = True,
+) -> EvaluationReport:
+    """Run one advisory-with-ledger evaluator pass over INV-1..5 against live state.
+
+    Evaluates the invariants, ledgers every violation, AUTO-MINTS the relevant escape
+    for each INV-3/4/5 violation (never for INV-1/2), and emits a best-effort operator
+    alert. Advisory-with-ledger ONLY: it NEVER blocks and NEVER raises — a violation is
+    surfaced and (for the escape class) self-remediated, never used to freeze the system.
+    """
+    results = check_all(trace, now=now, stale_after_s=stale_after_s, ladder=ladder)
+    record_invariant_findings(results, ledger_path=findings_path)
+    minted: list[EscapeGrant] = []
+    for result in results:
+        grant = mint_escape_for_violation(result, key=key, grant_dir=grant_dir, now=now)
+        if grant is not None:
+            minted.append(grant)
+    violations = tuple(r.invariant for r in results if not r.holds)
+    if alert and violations:
+        _alert_violations(results, minted)
+    return EvaluationReport(tuple(results), tuple(minted), violations)
+
+
 # --- Advisory CLI: monitor the live ledger ------------------------------------
 
 
@@ -327,28 +522,57 @@ def _stage_token(raw: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Advisory invariant monitor over the live authority-case-ledger.
+    """Advisory invariant evaluator over the live authority-case-ledger.
 
     ``python -m shared.sdlc_invariants [--ledger PATH] [--findings PATH]
-    [--stale-after-s N]`` evaluates INV-1..5, records violations to the findings
-    ledger, and prints each result. ADVISORY ONLY — always exits 0; never a gate.
+    [--stale-after-s N] [--mint-escapes] [--grant-dir DIR] [--key-file PATH]
+    [--no-alert]`` evaluates INV-1..5, records violations to the findings ledger, and
+    prints each result. With ``--mint-escapes`` (the systemd-timer mode) it also
+    AUTO-MINTS the relevant escape for each INV-3/4/5 violation and alerts the
+    operator. ADVISORY-WITH-LEDGER ONLY — always exits 0; never a gate.
     """
     parser = argparse.ArgumentParser(prog="sdlc_invariants")
     parser.add_argument("--ledger", default=str(DEFAULT_AUTHORITY_LEDGER))
     parser.add_argument("--findings", default=str(DEFAULT_INVARIANT_LEDGER))
     parser.add_argument("--stale-after-s", dest="stale_after_s", type=float, default=86400.0)
+    parser.add_argument(
+        "--mint-escapes",
+        dest="mint_escapes",
+        action="store_true",
+        help="auto-mint the relevant escape grant on each INV-3/4/5 violation (§4.5)",
+    )
+    parser.add_argument("--grant-dir", default=str(DEFAULT_ESCAPE_GRANT_DIR))
+    parser.add_argument("--key-file", dest="key_file", default=str(DEFAULT_GRANT_KEY_FILE))
+    parser.add_argument(
+        "--no-alert", dest="alert", action="store_false", help="suppress the operator notification"
+    )
     args = parser.parse_args(argv)
 
     trace = _load_ledger_trace(Path(args.ledger))
-    results = check_all(trace=trace, now=time.time(), stale_after_s=args.stale_after_s)
-    record_invariant_findings(results, ledger_path=args.findings)
-    for result in results:
+    key = load_or_create_grant_key(args.key_file) if args.mint_escapes else b""
+    report = run_evaluator(
+        trace=trace,
+        now=time.time(),
+        stale_after_s=args.stale_after_s,
+        findings_path=args.findings,
+        grant_dir=args.grant_dir,
+        key=key,
+        alert=args.alert and args.mint_escapes,
+    )
+    minted_by_inv: dict[str, str] = {}
+    for grant in report.minted:
+        for inv in AUTO_MINT_INVARIANTS:
+            if f" {inv} " in grant.reason:
+                minted_by_inv[inv] = grant.grant_id
+                break
+    for result in report.results:
         print(
             json.dumps(
                 {
                     "invariant": result.invariant,
                     "holds": result.holds,
                     "violations": list(result.violations),
+                    "minted_escape": minted_by_inv.get(result.invariant),
                 }
             )
         )

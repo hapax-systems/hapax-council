@@ -32,6 +32,59 @@ if [[ -f "$SCRIPT_DIR/agent-role.sh" ]]; then
   . "$SCRIPT_DIR/agent-role.sh"
 fi
 
+# Daemon-independent escape-grant substrate (reform Phase 4, NEW-2/INV-4). Gives
+# this shim `escape_grant_allows <gate>`: a pure file read that honors a signed
+# EscapeGrant when the gate would otherwise fail closed — no RPC, works with the
+# kernel down.
+if [[ -f "$SCRIPT_DIR/escape-grant.sh" ]]; then
+  # shellcheck source=escape-grant.sh
+  . "$SCRIPT_DIR/escape-grant.sh"
+fi
+
+# This gate's scope name for escape grants (a grant must cover this exact gate,
+# or "*"). One gate, not a global off-switch.
+GATE_NAME="cc-task-gate"
+
+# _emit_block — every BLOCK routes its existing message through here on stdin.
+# Before failing closed it honors a signed EscapeGrant covering this gate (a pure
+# file read, daemon-independent: NEW-2/INV-4). When no grant is present the
+# original operator-facing text is printed unchanged and the shim exits 2. The
+# trailing `exit 2` at each call site is an unreachable fail-closed backstop.
+_emit_block() {
+  local _msg
+  _msg="$(cat)"
+  if declare -F escape_grant_allows >/dev/null 2>&1 && escape_grant_allows "$GATE_NAME"; then
+    echo "cc-task-gate: escape grant honored for '$GATE_NAME' — allowed (logged, daemon-independent)." >&2
+    exit 0
+  fi
+  printf '%s\n' "$_msg" >&2
+  exit 2
+}
+
+# _record_retro_grant_obligation — deprecation backstop for the unconditional
+# HAPAX_METHODOLOGY_EMERGENCY off-switch (master design §4.4 / §7 NEW-2: the
+# emergency switch is incident-only and now incurs a MANDATORY signed EscapeGrant
+# within 1h). Writes a pending obligation that scripts/coord-retro-grant-watch
+# escalates (ntfy) if no covering grant lands before the deadline. Best-effort.
+_record_retro_grant_obligation() {
+  local role="${1:-unknown}" task="${2:-unknown}" case_id="${3:-unknown}"
+  local tool="${4:-unknown}" trigger="${5:-HAPAX_METHODOLOGY_EMERGENCY}"
+  local obligations="${HOME}/.cache/hapax/coord-retro-grant-obligations.jsonl"
+  local ledger="${HAPAX_METHODOLOGY_LEDGER:-${HOME}/.cache/hapax/methodology-emergency-ledger.jsonl}"
+  local now_s deadline_s
+  now_s="$(date +%s 2>/dev/null || echo 0)"
+  deadline_s=$((now_s + 3600))
+  mkdir -p "$(dirname "$obligations")" 2>/dev/null || true
+  printf '{"ts":"%s","ts_s":%s,"deadline_s":%s,"status":"pending","gate":"%s","trigger":"%s","role":"%s","task":"%s","case":"%s","tool":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$now_s" "$deadline_s" "$GATE_NAME" "$trigger" "$role" "$task" "$case_id" "$tool" \
+    >>"$obligations" 2>/dev/null || true
+  printf '{"ts":"%s","kind":"retro_grant_obligation","role":"%s","task":"%s","case":"%s","tool":"%s","deadline_s":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task" "$case_id" "$tool" "$deadline_s" \
+    >>"$ledger" 2>/dev/null || true
+  echo "cc-task-gate: retro-grant obligation recorded (1h deadline). HAPAX_*_OFF is DEPRECATED —" >&2
+  echo "  sign a scoped escape instead: scripts/coord-grant-mint --scope $GATE_NAME --reason '<incident>'." >&2
+}
+
 # --- 1. Read tool invocation from stdin ---
 input="$(cat)"
 tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || echo "")"
@@ -147,8 +200,20 @@ if [[ -n "$edit_path" ]] && is_cognition_path "$edit_path"; then
   exit 0
 fi
 
-# --- 3. Bypass for incident response ---
+# --- 3. Bypass for incident response (DEPRECATED — incident-only, now ledgered) ---
+# Historically a silent, unconditional, unscoped off-switch — the audit's core
+# complaint was that it logged NOTHING. It still works for incident response but
+# is now recorded to the methodology ledger (the digest counts it) and points the
+# operator at the scoped, signed, daemon-independent escape-grant path instead.
 if [[ "${HAPAX_CC_TASK_GATE_OFF:-0}" == "1" ]]; then
+  _gate_off_role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-unknown}}}"
+  _gate_off_ledger="${HAPAX_METHODOLOGY_LEDGER:-$HOME/.cache/hapax/methodology-emergency-ledger.jsonl}"
+  mkdir -p "$(dirname "$_gate_off_ledger")" 2>/dev/null || true
+  printf '{"ts":"%s","kind":"cc_task_gate_off_bypass","role":"%s","tool":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_gate_off_role" "$tool_name" \
+    >>"$_gate_off_ledger" 2>/dev/null || true
+  echo "cc-task-gate: HAPAX_CC_TASK_GATE_OFF bypass used — LEDGERED. This switch is DEPRECATED" >&2
+  echo "  (incident-only). Prefer a scoped signed escape: scripts/coord-grant-mint --scope $GATE_NAME." >&2
   exit 0
 fi
 # Methodology emergency bypass (logged in section 10 when case_id is present;
@@ -160,6 +225,7 @@ if [[ "${HAPAX_METHODOLOGY_EMERGENCY:-0}" == "1" ]]; then
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tool_name" \
     >> "$_emergency_ledger" 2>/dev/null || true
   echo "cc-task-gate: EMERGENCY BYPASS (early) — logged" >&2
+  _record_retro_grant_obligation "unknown" "unknown" "unknown" "$tool_name" "HAPAX_METHODOLOGY_EMERGENCY"
   exit 0
 fi
 
@@ -254,8 +320,10 @@ else
 fi
 if [[ -z "$role" ]]; then
   # No identity at all (no role AND no session id) — genuinely unkeyable.
-  echo "cc-task-gate: BLOCKED — cannot determine session role (set HAPAX_AGENT_ROLE, CODEX_ROLE, or CLAUDE_ROLE)." >&2
-  echo "  Protected mutations require a role or a session id. Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+  _emit_block <<EOF
+cc-task-gate: BLOCKED — cannot determine session role (set HAPAX_AGENT_ROLE, CODEX_ROLE, or CLAUDE_ROLE).
+  Protected mutations require a role or a session id. Bypass: HAPAX_METHODOLOGY_EMERGENCY=1
+EOF
   exit 2
 fi
 
@@ -269,7 +337,7 @@ elif [[ -f "$HOME/.cache/hapax/cc-active-task-$role" ]]; then
   claim_file="$HOME/.cache/hapax/cc-active-task-$role"
 fi
 if [[ -z "$claim_file" ]]; then
-  cat >&2 <<EOF
+  _emit_block <<EOF
 cc-task-gate: BLOCKED — no claimed task for role '$role'.
 
   Claim a task before mutating files:
@@ -298,8 +366,10 @@ touch "$claim_file" 2>/dev/null || true
 
 task_id="$(head -n1 "$claim_file" | tr -d '[:space:]')"
 if [[ -z "$task_id" ]]; then
-  echo "cc-task-gate: BLOCKED — claim file is empty for role '$role'." >&2
-  echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+  _emit_block <<EOF
+cc-task-gate: BLOCKED — claim file is empty for role '$role'.
+  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1
+EOF
   exit 2
 fi
 
@@ -316,7 +386,7 @@ if [[ -z "$note_path" && -f "$vault_root/active/$task_id.md" ]]; then
   note_path="$vault_root/active/$task_id.md"
 fi
 if [[ -z "$note_path" ]]; then
-  cat >&2 <<EOF
+  _emit_block <<EOF
 cc-task-gate: BLOCKED — claimed task '$task_id' not found in vault.
 
   Claim file:    $claim_file (says '$task_id')
@@ -430,7 +500,7 @@ mutation_scope_refs="$(printf '%s' "$parse_output" | cut -f12-)"
 
 # --- 8. Check assigned_to ---
 if [[ "$assigned" != "$role" ]]; then
-  cat >&2 <<EOF
+  _emit_block <<EOF
 cc-task-gate: BLOCKED — task '$task_id' is assigned to '$assigned', not '$role'.
 
   Note: $note_path
@@ -452,7 +522,7 @@ case "$status" in
     _transition_claimed=true
     ;;
   blocked)
-    cat >&2 <<EOF
+    _emit_block <<EOF
 cc-task-gate: BLOCKED — task '$task_id' is in BLOCKED state.
 
   Reason: ${blocked_reason:-(no reason set)}
@@ -473,7 +543,7 @@ EOF
     # Fall through to AuthorityCase validation (section 10).
     ;;
   done|withdrawn|superseded|completed|complete|closed|fulfilled|resolved|withdrawn_stale|closed_superseded|rejected|refused|not_applicable|deferred|closed_poisoned)
-    cat >&2 <<EOF
+    _emit_block <<EOF
 cc-task-gate: BLOCKED — task '$task_id' is terminal ('$status').
 
   Note: $note_path
@@ -484,7 +554,7 @@ EOF
     exit 2
     ;;
   offered|"")
-    cat >&2 <<EOF
+    _emit_block <<EOF
 cc-task-gate: BLOCKED — task '$task_id' is in '$status' state, not claimed.
 
   Note: $note_path
@@ -494,8 +564,10 @@ EOF
     exit 2
     ;;
   *)
-    echo "cc-task-gate: BLOCKED — unknown status '$status' for task '$task_id'." >&2
-    echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+    _emit_block <<EOF
+cc-task-gate: BLOCKED — unknown status '$status' for task '$task_id'.
+  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1
+EOF
     exit 2
     ;;
 esac
@@ -552,7 +624,7 @@ PYEOF
 # root of authority, not derivable defaults. Error messages point at in-session
 # repair (cc-task-repair, next cluster) rather than a dead end.
 if is_nullish "$authority_case"; then
-  cat >&2 <<EOF
+  _emit_block <<EOF
 cc-task-gate: BLOCKED — mutating task '$task_id' has no authority_case.
 
   Task: $note_path
@@ -564,7 +636,7 @@ EOF
 fi
 
 if is_nullish "$parent_spec"; then
-  cat >&2 <<EOF
+  _emit_block <<EOF
 cc-task-gate: BLOCKED — mutating task '$task_id' has no non-null parent_spec.
 
   AuthorityCase: $authority_case
@@ -609,6 +681,7 @@ if [[ "${HAPAX_METHODOLOGY_EMERGENCY:-0}" == "1" ]]; then
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task_id" "$authority_case" "$tool_name" \
     >> "$_emergency_ledger"
   echo "cc-task-gate: EMERGENCY BYPASS — logged to $_emergency_ledger" >&2
+  _record_retro_grant_obligation "$role" "$task_id" "$authority_case" "$tool_name" "HAPAX_METHODOLOGY_EMERGENCY"
   exit 0
 fi
 
@@ -638,7 +711,7 @@ if [[ "$_is_docs_edit" != "true" && -z "$_stage_num" && "$impl_authorized" == "t
   echo "cc-task-gate: blank stage on authorized task — derived + stamped S6_IMPLEMENTATION (logged)." >&2
 fi
 if [[ "$_is_docs_edit" != "true" && ( -z "$_stage_num" || "$_stage_num" -lt 6 ) ]]; then
-  cat >&2 <<EOF
+  _emit_block <<EOF
 cc-task-gate: BLOCKED — AuthorityCase '$authority_case' has invalid or insufficient stage '$case_stage' (< S6).
 
   Implementation requires stage >= S6 with implementation_authorized: true.
@@ -651,7 +724,7 @@ fi
 
 # implementation_authorized must be true
 if [[ "$_is_docs_edit" != "true" && "$impl_authorized" != "true" ]]; then
-  cat >&2 <<EOF
+  _emit_block <<EOF
 cc-task-gate: BLOCKED — AuthorityCase '$authority_case' does not have implementation_authorized: true.
 
   Current value: implementation_authorized: $impl_authorized
@@ -666,7 +739,7 @@ fi
 if [[ "$_is_docs_edit" == "true" && "$docs_authorized" != "true" ]]; then
   # Source mutation auth subsumes docs if source is authorized
   if [[ "$src_authorized" != "true" ]]; then
-    cat >&2 <<EOF
+    _emit_block <<EOF
 cc-task-gate: BLOCKED — AuthorityCase '$authority_case' does not authorize docs mutation.
 
   docs_mutation_authorized: $docs_authorized
@@ -681,7 +754,7 @@ EOF
 fi
 
 if [[ "$mutation_surface_hint" == "runtime" && "$runtime_authorized" != "true" ]]; then
-  cat >&2 <<EOF
+  _emit_block <<EOF
 cc-task-gate: BLOCKED — AuthorityCase '$authority_case' does not authorize runtime mutation.
 
   runtime_mutation_authorized: $runtime_authorized
@@ -695,7 +768,7 @@ EOF
 fi
 
 if [[ "$_is_docs_edit" != "true" && "$mutation_surface_hint" != "runtime" && "$src_authorized" != "true" ]]; then
-  cat >&2 <<EOF
+  _emit_block <<EOF
 cc-task-gate: BLOCKED — AuthorityCase '$authority_case' does not authorize source mutation.
 
   source_mutation_authorized: $src_authorized
@@ -717,7 +790,7 @@ if [[ -z "$edit_path" && -n "$bash_cmd" && "$mutation_surface_hint" != "runtime"
   # closed. (FR-BASH-MUTATION-FALSE-POSITIVES)
   _cmd_stripped="$(printf '%s' "$bash_cmd" | sed -zE "s/'[^']*'//g; s/\"[^\"]*\"//g; s/(^|[[:space:]])#[^\n]*//g")"
   if bash_source_mutation_requires_scope "$_cmd_stripped"; then
-    cat >&2 <<EOF
+    _emit_block <<EOF
 cc-task-gate: BLOCKED — cannot verify mutation_scope_refs for shell source mutation.
 
   Command: ${bash_cmd:0:160}
@@ -779,7 +852,7 @@ PYEOF
   case "$scope_check" in
     allowed) ;;
     missing)
-      cat >&2 <<EOF
+      _emit_block <<EOF
 cc-task-gate: BLOCKED — task '$task_id' has no mutation_scope_refs for direct file mutation.
 
   File: $edit_path
@@ -788,7 +861,7 @@ EOF
       exit 2
       ;;
     *)
-      cat >&2 <<EOF
+      _emit_block <<EOF
 cc-task-gate: BLOCKED — file is outside this task's declared mutation_scope_refs.
 
   File: $edit_path

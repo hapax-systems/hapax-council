@@ -21,6 +21,8 @@ from pathlib import Path
 import requests
 import urllib3
 
+from shared.vault_ownership import frontmatter_preserved
+
 # Suppress self-signed cert warnings for local REST API
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -223,6 +225,12 @@ def _append_to_daily(entry: str) -> bool:
 
     lines.insert(insert_idx, entry)
     new_content = "\n".join(lines)
+
+    # OQ-9: the daily note is operator-owned. A daemon body-section write must
+    # never alter the operator's frontmatter — refuse the write if it would.
+    if not frontmatter_preserved(content, new_content):
+        log.error("Refusing daily-note append: would mutate operator frontmatter")
+        return False
 
     # Write back via PUT — localhost Obsidian REST API uses self-signed cert.
     try:
@@ -470,6 +478,12 @@ def _replace_section_in_daily(
         return False
 
     new_content = _splice_section(resp.text, section_heading, rendered)
+
+    # OQ-9: operator-owned daily note — a body-section replace must never touch
+    # operator frontmatter. Refuse the write if it would.
+    if not frontmatter_preserved(resp.text, new_content):
+        log.error("Refusing %s write: would mutate operator frontmatter", section_heading)
+        return False
 
     try:
         resp = requests.put(

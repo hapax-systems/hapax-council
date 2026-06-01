@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from datetime import UTC, datetime
@@ -19,12 +20,55 @@ from pathlib import Path
 
 import yaml
 
+from shared.vault_ownership import governed_note_write
+
 log = logging.getLogger(__name__)
 
 # ── Paths ───────────────────────────────────────────────────────────────
 
 VAULT_DIR = Path.home() / "Documents" / "Personal"
-SPRINT_DIR = VAULT_DIR / "20-projects" / "hapax-research" / "sprint"
+
+_SKIP_DIR_PARTS = {"50-templates", "templates", "_retired", "_archive", "archive"}
+
+
+def _resolve_sprint_dir(vault_dir: Path = VAULT_DIR) -> Path:
+    """Resolve the sprint subtree dynamically — the PARA location may have moved.
+
+    The sprint subtree was hardcoded to ``20-projects/hapax-research/sprint``, so a
+    PARA reorganisation would silently strand the tracker (it would scan an empty or
+    missing ``measures/`` and do nothing). Resolution order:
+
+    1. ``HAPAX_SPRINT_DIR`` env override — zero-config escape hatch (executive_function).
+    2. The historical default, when it still holds a ``measures/`` subtree.
+    3. A vault search for the ``measures/`` directory with the most notes (the live
+       sprint), returning its parent — skipping template/archive trees.
+    4. The historical default path as a last resort, so callers degrade gracefully
+       instead of crashing when no sprint subtree exists yet.
+
+    The search runs only when the default is absent (the common case is one
+    ``is_dir()`` check), so this stays cheap at import time.
+    """
+    env = os.environ.get("HAPAX_SPRINT_DIR")
+    if env:
+        return Path(env)
+
+    default = vault_dir / "20-projects" / "hapax-research" / "sprint"
+    if (default / "measures").is_dir():
+        return default
+
+    best: Path | None = None
+    best_count = -1
+    for measures_dir in vault_dir.rglob("measures"):
+        if not measures_dir.is_dir() or _SKIP_DIR_PARTS & set(measures_dir.parts):
+            continue
+        count = sum(1 for _ in measures_dir.glob("*.md"))
+        if count > best_count:
+            best, best_count = measures_dir, count
+
+    return best.parent if best is not None else default
+
+
+SPRINT_DIR = _resolve_sprint_dir()
 MEASURES_DIR = SPRINT_DIR / "measures"
 GATES_DIR = SPRINT_DIR / "gates"
 SPRINTS_DIR = SPRINT_DIR / "sprints"
@@ -62,14 +106,16 @@ def _parse_note(path: Path) -> tuple[dict, str]:
         return {}, text
 
 
-def _write_frontmatter(path: Path, fm: dict, body: str) -> None:
-    """Atomically rewrite a vault note with updated frontmatter."""
-    # Preserve key ordering for readability
-    yaml_str = yaml.dump(fm, default_flow_style=False, sort_keys=False, allow_unicode=True)
-    content = f"---\n{yaml_str}---\n{body}"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.rename(path)
+def _write_frontmatter(path: Path, fm: dict, body: str, *, note_type: str) -> None:
+    """Atomically rewrite a vault note, preserving operator-owned fields (OQ-9).
+
+    ``note_type`` is the coordination type of the note (``"measure"`` / ``"gate"``).
+    The write re-reads the note on disk and merges only the daemon-owned
+    coordination fields for that type (status/result/etc.); any operator-owned
+    field the daemon would change is refused in favour of the human's on-disk
+    value. See ``shared.vault_ownership`` for the per-field ownership model.
+    """
+    governed_note_write(path, frontmatter=fm, note_type=note_type, body=body)
 
 
 # ── Completion signal I/O ───────────────────────────────────────────────
@@ -450,7 +496,7 @@ def tick() -> bool:
         for gid, (fm, body, path) in gates.items():
             if fm.get("status") == "failed" and not fm.get("acknowledged", False):
                 fm["acknowledged"] = True
-                _write_frontmatter(path, fm, body)
+                _write_frontmatter(path, fm, body, note_type="gate")
                 log.info("Gate %s acknowledged", gid)
                 changed = True
                 break
@@ -471,7 +517,7 @@ def tick() -> bool:
         fm["completed_at"] = signal.get("timestamp") or datetime.now(tz=UTC).isoformat()
         if signal.get("result_summary"):
             fm["result_summary"] = signal["result_summary"]
-        _write_frontmatter(path, fm, body)
+        _write_frontmatter(path, fm, body, note_type="measure")
         log.info("Measure %s completed", mid)
         changed = True
 
@@ -489,7 +535,7 @@ def tick() -> bool:
                     )
                     if all_done:
                         bfm["status"] = "pending"
-                        _write_frontmatter(bpath, bfm, bbody)
+                        _write_frontmatter(bpath, bfm, bbody, note_type="measure")
                         log.info("Measure %s unblocked", blocked_id)
                         changed = True
 
@@ -516,11 +562,11 @@ def tick() -> bool:
 
         if passed:
             gfm["status"] = "passed"
-            _write_frontmatter(gpath, gfm, gbody)
+            _write_frontmatter(gpath, gfm, gbody, note_type="gate")
             log.info("Gate %s PASSED (measured: %s)", gid, measured_value)
         else:
             gfm["status"] = "failed"
-            _write_frontmatter(gpath, gfm, gbody)
+            _write_frontmatter(gpath, gfm, gbody, note_type="gate")
             log.info("Gate %s FAILED (measured: %s)", gid, measured_value)
 
             # Block downstream measures
@@ -530,7 +576,7 @@ def tick() -> bool:
                     dfm, dbody, dpath = measures[dm_id]
                     if dfm.get("status") in ("pending", "in_progress"):
                         dfm["status"] = "skipped"
-                        _write_frontmatter(dpath, dfm, dbody)
+                        _write_frontmatter(dpath, dfm, dbody, note_type="measure")
                         log.info("Measure %s skipped (gate %s failed)", dm_id, gid)
 
             # Emit blocking nudge

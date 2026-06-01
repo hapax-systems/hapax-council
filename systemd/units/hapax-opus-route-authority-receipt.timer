@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh the opus route-authority receipt (every 6h; 24h window / 8h re-sign floor)
+
+[Timer]
+# Mint shortly after boot so opus is reachable on a fresh session, then keep it
+# fresh: 6h cadence vs the 8h re-sign floor on a 24h window leaves margin even
+# if a fire slips. Persistent re-mints immediately after downtime > the window.
+OnBootSec=2min
+OnUnitActiveSec=6h
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

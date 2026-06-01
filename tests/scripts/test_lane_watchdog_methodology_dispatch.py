@@ -88,6 +88,9 @@ def _base_env(tmp_path: Path, *, session: str, pane: str) -> dict[str, str]:
             "HAPAX_IDLE_STATE_DIR": str(state_dir),
             "HAPAX_IDLE_SKIP_LANES": "",
             "HAPAX_LANE_WATCHDOG_COOLDOWN_DIR": str(tmp_path / "rate-state"),
+            # Sandbox the headless runtime dir so the watchdog never reads the
+            # host's real /run/user/<uid>/hapax-claude pipes/pidfiles.
+            "HAPAX_HEADLESS_PIPE_DIR": str(tmp_path / "headless-run"),
         }
     )
     return env
@@ -255,35 +258,24 @@ def test_rate_limit_watchdog_sends_hold_not_assignment_when_lane_has_no_task(
     assert "cc-claim" not in sent
 
 
-def test_rate_limit_watchdog_does_not_restart_dead_lane_for_terminal_task(
-    tmp_path: Path,
-) -> None:
-    env = _base_env(
-        tmp_path,
-        session="hapax-claude-alpha",
-        pane="blocked\nbypass permissions on",
-    )
-    home = Path(env["HOME"])
-    (home / "projects" / "hapax-council--beta").mkdir(parents=True)
-    local_bin = home / ".local" / "bin"
-    local_bin.mkdir(parents=True)
-    headless_called = tmp_path / "headless-called.txt"
-    _write_executable(
-        local_bin / "hapax-claude-headless",
-        f"""
-        #!/usr/bin/env bash
-        printf '%s\n' "$*" >> {headless_called}
-        """,
-    )
-    task_dir = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
-    task_dir.mkdir(parents=True)
-    (task_dir / "terminal-task.md").write_text(
-        "---\nstatus: done\nassigned_to: beta\ntitle: Terminal task\n---\n# Done\n",
-        encoding="utf-8",
-    )
+def test_rate_limit_watchdog_delegates_dead_lane_restart_to_supervisor() -> None:
+    """FM-11 clean split (coordination-reform 2026-05-30, Phase 6): dead-lane
+    liveness moved out of the rate-limit watchdog into the dedicated
+    hapax-lane-supervisor. The watchdog no longer carries the task-gated,
+    greek-only "leave dead" logic — a dead lane is ALWAYS respawned by the
+    supervisor regardless of task presence (operator standing mandate).
+    """
+    text = RATE_LIMIT_WATCHDOG.read_text(encoding="utf-8")
+    # The old leave-dead behaviour and its dead-lane block are gone.
+    assert "DEAD with no active task" not in text
+    assert "not restarting" not in text
+    assert "Dead-lane auto-restart" not in text
+    assert "EXPECTED_LANES" not in text
 
-    result = subprocess.run([str(RATE_LIMIT_WATCHDOG)], env=env, capture_output=True, text=True)
-
-    assert result.returncode == 0, result.stderr
-    assert not headless_called.exists()
-    assert "DEAD with no active task" in result.stdout
+    # The supervisor exists and owns dead-lane respawn (asserted in detail by
+    # tests/scripts/test_lane_supervisor.py).
+    supervisor = REPO_ROOT / "scripts" / "hapax-lane-supervisor"
+    assert supervisor.exists(), "hapax-lane-supervisor must own lane liveness"
+    sup_text = supervisor.read_text(encoding="utf-8")
+    assert "respawn" in sup_text
+    assert "no active task" in sup_text  # the always-restart (idle-await) path

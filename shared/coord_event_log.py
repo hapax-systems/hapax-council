@@ -10,17 +10,66 @@ spool file for later daemon ingestion.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-DEFAULT_LEDGER_DB = Path("/var/lib/hapax/coord/ledger.db")
-DEFAULT_JSONL_MIRROR = Path("/var/lib/hapax/coord/ledger.jsonl")
-DEFAULT_SPOOL_DIR = Path("/var/lib/hapax/coord/spool")
+#: Env var redirecting the canonical coord tree for test isolation / sandboxed
+#: tools. Production leaves it unset; the default is a user-writable cache path.
+COORD_DIR_ENV = "HAPAX_COORD_DIR"
+#: Explicit per-surface overrides, honored ahead of ``HAPAX_COORD_DIR``.
+GRANT_DIR_ENV = "HAPAX_COORD_GRANT_DIR"
+GRANT_KEY_ENV = "HAPAX_COORD_GRANT_KEY"
+
+
+def _xdg_cache_home() -> Path:
+    xdg = os.environ.get("XDG_CACHE_HOME", "").strip()
+    return Path(xdg) if xdg else Path.home() / ".cache"
+
+
+def coord_base_dir() -> Path:
+    """Resolve the canonical coordination tree base directory.
+
+    Precedence: ``HAPAX_COORD_DIR`` (test/sandbox isolation) →
+    ``$XDG_CACHE_HOME/hapax/coord`` → ``~/.cache/hapax/coord``.
+
+    The default is a **user-writable cache path**, not the former root-owned
+    ``/var/lib/hapax/coord``: uid 1000 cannot ``mkdir`` into ``/var/lib/hapax``,
+    so that default left the R2 event log unmaterialized and the R3 escape grant
+    inert (reform-improve coord SSOT provisioning). ``~/.cache`` is still one
+    fixed location outside every git worktree (master design NEW-4), so the
+    single-writer / no-merge-conflict invariant holds.
+    """
+    override = os.environ.get(COORD_DIR_ENV, "").strip()
+    if override:
+        return Path(override)
+    return _xdg_cache_home() / "hapax" / "coord"
+
+
+def default_grant_dir() -> Path:
+    """Escape-grant directory: ``HAPAX_COORD_GRANT_DIR`` else ``<base>/grants``."""
+    explicit = os.environ.get(GRANT_DIR_ENV, "").strip()
+    return Path(explicit) if explicit else coord_base_dir() / "grants"
+
+
+def default_grant_key() -> Path:
+    """Escape signing key: ``HAPAX_COORD_GRANT_KEY`` else ``<base>/grant-key``."""
+    explicit = os.environ.get(GRANT_KEY_ENV, "").strip()
+    return Path(explicit) if explicit else coord_base_dir() / "grant-key"
+
+
+#: Import-time snapshot of the canonical tree with no override set. Call
+#: ``coord_base_dir`` / ``default_*`` for env-dynamic resolution.
+DEFAULT_COORD_DIR = coord_base_dir()
+DEFAULT_LEDGER_DB = DEFAULT_COORD_DIR / "ledger.db"
+DEFAULT_JSONL_MIRROR = DEFAULT_COORD_DIR / "ledger.jsonl"
+DEFAULT_SPOOL_DIR = DEFAULT_COORD_DIR / "spool"
 
 _SCHEMA_VERSION = 1
 _WRITER_KINDS = {"daemon", "shim", "lane"}
@@ -162,6 +211,41 @@ class ReplayResult:
     errors: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class SpoolIngestResult:
+    """Result of draining fail-open spool intents into the canonical log."""
+
+    ingested: int
+    duplicates: int
+    failed: int
+    removed: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class BootReconcileResult:
+    """Result of the daemon boot path: replay + spool ingestion."""
+
+    replayed: int
+    spool_ingested: int
+    spool_duplicates: int
+    spool_failed: int
+    degraded: bool = False
+    replay_source: Literal["sqlite", "jsonl_mirror"] = "sqlite"
+    errors: tuple[str, ...] = ()
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "replayed": self.replayed,
+            "degraded": self.degraded,
+            "replay_source": self.replay_source,
+            "spool_ingested": self.spool_ingested,
+            "spool_duplicates": self.spool_duplicates,
+            "spool_failed": self.spool_failed,
+            "errors": list(self.errors),
+        }
+
+
 class CoordEventLog:
     """SQLite + JSONL coordination event log."""
 
@@ -277,6 +361,86 @@ class CoordEventLog:
                 errors=(error, *mirror_errors),
             )
 
+    def ingest_spool(self) -> SpoolIngestResult:
+        """Drain fail-open spool intents into the canonical log (daemon boot path).
+
+        Each spool file holds one intent written by a shim while the daemon was
+        down. The daemon (the single writer) appends each to the canonical log
+        and removes the consumed file. A duplicate (event already canonical) is
+        idempotent success — the file is still removed. A file that fails to parse
+        or append is LEFT in place and recorded, so a transient fault never loses
+        a spooled authorization (master design §4.3).
+        """
+
+        if not self.spool_dir.is_dir():
+            return SpoolIngestResult(ingested=0, duplicates=0, failed=0)
+
+        ingested = 0
+        duplicates = 0
+        failed = 0
+        removed: list[str] = []
+        errors: list[str] = []
+        for spool_path in sorted(self.spool_dir.glob("*.jsonl")):
+            try:
+                event = self._read_spool_event(spool_path)
+            except Exception as exc:
+                failed += 1
+                errors.append(f"{spool_path.name}: parse_failed:{type(exc).__name__}:{exc}")
+                continue
+
+            consumed = False
+            try:
+                self.append(event, writer=CoordWriter.daemon())
+                ingested += 1
+                consumed = True
+            except DuplicateEventError:
+                duplicates += 1
+                consumed = True
+            except Exception as exc:
+                failed += 1
+                errors.append(f"{spool_path.name}: append_failed:{type(exc).__name__}:{exc}")
+
+            if consumed:
+                try:
+                    spool_path.unlink()
+                    removed.append(spool_path.name)
+                except OSError as exc:
+                    errors.append(f"{spool_path.name}: unlink_failed:{type(exc).__name__}:{exc}")
+
+        return SpoolIngestResult(
+            ingested=ingested,
+            duplicates=duplicates,
+            failed=failed,
+            removed=tuple(removed),
+            errors=tuple(errors),
+        )
+
+    def boot_reconcile(self, *, fail_open: bool = True) -> BootReconcileResult:
+        """Replay the canonical log then ingest fail-open spool intents.
+
+        Realizes "the heap is DERIVED" (master design §2.2/NEW-5): on boot the
+        daemon rebuilds in-memory state from the canonical log and folds in any
+        intents spooled while it was down, so no authorization survives only in a
+        process image.
+        """
+
+        replay = self.replay(fail_open=fail_open)
+        ingest = self.ingest_spool()
+        return BootReconcileResult(
+            replayed=len(replay.events),
+            spool_ingested=ingest.ingested,
+            spool_duplicates=ingest.duplicates,
+            spool_failed=ingest.failed,
+            degraded=replay.degraded,
+            replay_source=replay.source,
+            errors=(*replay.errors, *ingest.errors),
+        )
+
+    def _read_spool_event(self, spool_path: Path) -> CoordEvent:
+        line = spool_path.read_text(encoding="utf-8").splitlines()[0]
+        record = json.loads(line)
+        return CoordEvent.from_record(record["event"])
+
     def _append_sqlite(self, event: CoordEvent) -> int:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         payload_json = _canonical_json(event.payload)
@@ -365,8 +529,14 @@ class CoordEventLog:
 
     def _write_spool(self, event: CoordEvent, *, writer: CoordWriter, reason: str) -> Path:
         self.spool_dir.mkdir(parents=True, exist_ok=True)
+        # A uuid4 nonce keeps two intents with an identical timestamp+event_id from
+        # clobbering each other on disk: each spooled fail-open intent must survive
+        # until the daemon ingests it on boot, so a lost file is a lost authorization
+        # (coordination reform Phase 4 §4.3 — the spool is the daemon-down write path).
+        nonce = uuid.uuid4().hex[:8]
         path = (
-            self.spool_dir / f"{_safe_filename(_now_iso())}-{_safe_filename(event.event_id)}.jsonl"
+            self.spool_dir
+            / f"{_safe_filename(_now_iso())}-{_safe_filename(event.event_id)}-{nonce}.jsonl"
         )
         record = {
             "schema_version": _SCHEMA_VERSION,
@@ -430,18 +600,137 @@ def _safe_filename(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "coord-event"
 
 
+def default_event_log() -> CoordEventLog:
+    """Return the canonical coord log, honoring ``HAPAX_COORD_DIR`` for isolation.
+
+    Production uses the user-writable ``~/.cache/hapax/coord`` tree (one log
+    outside every worktree, NEW-4 — see ``coord_base_dir``). Tests and sandboxed
+    CLIs set ``HAPAX_COORD_DIR`` to redirect the SQLite DB, JSONL mirror, and
+    spool under a temporary directory so a tool that emits a coordination event
+    never writes the production log during a test.
+    """
+
+    base = coord_base_dir()
+    return CoordEventLog(
+        db_path=base / "ledger.db",
+        jsonl_path=base / "ledger.jsonl",
+        spool_dir=base / "spool",
+    )
+
+
+@dataclass(frozen=True)
+class ProvisionResult:
+    """Outcome of provisioning the coord SSOT tree + escape-grant signing key."""
+
+    base_dir: Path
+    spool_dir: Path
+    grant_dir: Path
+    grant_key: Path
+    created: tuple[str, ...]
+    key_created: bool
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "base_dir": str(self.base_dir),
+            "spool_dir": str(self.spool_dir),
+            "grant_dir": str(self.grant_dir),
+            "grant_key": str(self.grant_key),
+            "created": list(self.created),
+            "key_created": self.key_created,
+        }
+
+
+def provision_coord_tree(
+    *,
+    base_dir: Path | str | None = None,
+    grant_dir: Path | str | None = None,
+    grant_key: Path | str | None = None,
+) -> ProvisionResult:
+    """Materialize the coord SSOT tree + escape signing key so R2/R3 are live.
+
+    Idempotently creates ``{base, base/spool, grant_dir}`` and the 0600 escape
+    signing key, then proves the base is writable with a probe file. This is the
+    daemon-independent provisioner (master design §4.3/§4.4): a boot oneshot — or
+    the operator by hand — runs it with no kernel present, so the R2 event log can
+    materialize and the R3 escape grant is no longer inert.
+
+    Raises ``CoordEventLogError`` **loudly** (never a silent swallow — the SSOT
+    provisioning acceptance criterion) when the tree cannot be created or the base
+    is not writable, e.g. the legacy root-owned ``/var/lib/hapax/coord`` default
+    that uid 1000 could never provision.
+    """
+    from shared.governance.coord_capabilities import load_or_create_key
+
+    base = Path(base_dir) if base_dir is not None else coord_base_dir()
+    gdir = Path(grant_dir) if grant_dir is not None else default_grant_dir()
+    gkey = Path(grant_key) if grant_key is not None else default_grant_key()
+    spool = base / "spool"
+
+    created: list[str] = []
+    for directory in (base, spool, gdir):
+        existed = directory.is_dir()
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise CoordEventLogError(
+                f"coord SSOT provisioning failed: cannot create {directory}: "
+                f"{type(exc).__name__}: {exc} "
+                f"(base {base} must be writable by uid {os.getuid()})"
+            ) from exc
+        if not existed:
+            created.append(str(directory))
+
+    probe = base / ".provision-probe"
+    try:
+        probe.write_text("ok\n", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        raise CoordEventLogError(
+            f"coord SSOT base {base} exists but is not writable: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    key_existed = gkey.exists()
+    try:
+        load_or_create_key(gkey)
+    except OSError as exc:
+        raise CoordEventLogError(
+            f"coord escape-grant key {gkey} could not be provisioned: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    return ProvisionResult(
+        base_dir=base,
+        spool_dir=spool,
+        grant_dir=gdir,
+        grant_key=gkey,
+        created=tuple(created),
+        key_created=not key_existed,
+    )
+
+
 __all__ = [
     "AppendReceipt",
+    "BootReconcileResult",
+    "COORD_DIR_ENV",
     "CoordEvent",
     "CoordEventLog",
     "CoordEventLogError",
     "CoordWriter",
+    "DEFAULT_COORD_DIR",
     "DEFAULT_JSONL_MIRROR",
     "DEFAULT_LEDGER_DB",
     "DEFAULT_SPOOL_DIR",
     "DirectLaneWriteError",
     "DuplicateEventError",
+    "GRANT_DIR_ENV",
+    "GRANT_KEY_ENV",
+    "ProvisionResult",
     "ReplayResult",
+    "SpoolIngestResult",
+    "coord_base_dir",
+    "default_event_log",
+    "default_grant_dir",
+    "default_grant_key",
+    "provision_coord_tree",
 ]
 
 # Public API consumed by the coordination daemon/shim through dynamic dispatch.
@@ -450,4 +739,6 @@ _DYNAMIC_ENTRYPOINTS = (
     CoordWriter.shim,
     CoordEventLog.replay,
     CoordEventLog.spool_fail_open,
+    CoordEventLog.ingest_spool,
+    CoordEventLog.boot_reconcile,
 )

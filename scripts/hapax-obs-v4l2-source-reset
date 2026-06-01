@@ -2,7 +2,7 @@
 """Monitor OBS v4l2 capture source and auto-reset on stall.
 
 Polls OBS via obs-websocket every POLL_INTERVAL seconds. Detects stalls by
-comparing tiny source screenshots (hash-based). If the source image is
+comparing source screenshots (hash-based). If the source image is
 identical for STALL_THRESHOLD seconds, or the source is inactive, toggles
 visibility off->on to force OBS to reacquire the configured v4l2 device. If a
 stalled screenshot recurs after an OBS-only reset, it can optionally restart the
@@ -20,6 +20,8 @@ an unbounded visibility-toggle loop.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -32,6 +34,7 @@ import sys
 import time
 from dataclasses import dataclass
 from enum import StrEnum
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +46,9 @@ PROM_RESETS = "hapax_obs_v4l2_source_resets_total"
 PROM_ACTIVE = "hapax_obs_v4l2_source_reset_active"
 PROM_FAILURES = "hapax_obs_v4l2_source_reset_failures_total"
 PROM_PRODUCER_RESTARTS = "hapax_obs_v4l2_source_producer_restarts_total"
+SCREENSHOT_WIDTH = 32
+SCREENSHOT_HEIGHT = 18
+SCREENSHOT_QUALITY = 50
 OBS_LOG_V4L2_TIMEOUT_PREFIX = "obs_log_v4l2_timeout:"
 OBS_LOG_V4L2_SELF_RECOVERED_TIMEOUT_PREFIX = "obs_log_v4l2_timeout_self_recovered:"
 
@@ -195,16 +201,49 @@ def _get_source_active_response(client: Any, source_name: str) -> Any:
         return client.get_source_active(source_name)
 
 
-def _get_source_screenshot_response(client: Any, source_name: str) -> Any:
+def _get_source_screenshot_response(
+    client: Any,
+    source_name: str,
+    *,
+    width: int = SCREENSHOT_WIDTH,
+    height: int = SCREENSHOT_HEIGHT,
+    quality: int = SCREENSHOT_QUALITY,
+) -> Any:
     try:
         return client.get_source_screenshot(
             source_name=source_name,
             image_format="png",
-            image_width=8,
-            image_height=8,
+            image_width=width,
+            image_height=height,
+            image_compression_quality=quality,
         )
     except TypeError:
-        return client.get_source_screenshot(source_name, "png", 8, 8, 50)
+        pass
+    try:
+        return client.get_source_screenshot(
+            source_name=source_name,
+            image_format="png",
+            image_width=width,
+            image_height=height,
+            imageCompressionQuality=quality,
+        )
+    except TypeError:
+        pass
+    try:
+        return client.get_source_screenshot(
+            source_name=source_name,
+            image_format="png",
+            image_width=width,
+            image_height=height,
+        )
+    except TypeError:
+        return client.get_source_screenshot(
+            source_name,
+            "png",
+            width,
+            height,
+            quality,
+        )
 
 
 def _get_scene_item_list_response(client: Any, scene_name: str) -> Any:
@@ -264,6 +303,26 @@ def _obs_framerate_value(value: float) -> int:
     return (1 << 32) | int(value)
 
 
+def _nonnegative_seconds(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("seconds must be a number") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("seconds must be non-negative")
+    return parsed
+
+
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("value must be an integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return parsed
+
+
 def _build_input_settings(
     *,
     device_id: str | None,
@@ -306,11 +365,58 @@ def _apply_input_settings(
         return False
 
 
-def _get_screenshot_hash(client: Any, source_name: str) -> str | None:
-    """Take a tiny screenshot and return its SHA-256 hex digest."""
+def _decode_obs_image_data(image_data: Any) -> bytes:
+    if isinstance(image_data, bytes):
+        return image_data
+    if not isinstance(image_data, str):
+        return bytes(image_data)
+    payload = image_data
+    if payload.startswith("data:") and "," in payload:
+        payload = payload.split(",", 1)[1]
     try:
-        resp = _get_source_screenshot_response(client, source_name)
-        return hashlib.sha256(resp.image_data.encode()).hexdigest()
+        return base64.b64decode(payload, validate=False)
+    except (binascii.Error, ValueError):
+        return image_data.encode()
+
+
+def _screenshot_signature(
+    image_data: Any,
+    *,
+    width: int = SCREENSHOT_WIDTH,
+    height: int = SCREENSHOT_HEIGHT,
+) -> str:
+    raw = _decode_obs_image_data(image_data)
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(raw)) as image:
+            pixels = image.convert("RGB").resize(
+                (width, height),
+                resample=Image.Resampling.BILINEAR,
+            )
+            return hashlib.sha256(pixels.tobytes()).hexdigest()
+    except Exception:
+        return hashlib.sha256(raw).hexdigest()
+
+
+def _get_screenshot_hash(
+    client: Any,
+    source_name: str,
+    *,
+    width: int = SCREENSHOT_WIDTH,
+    height: int = SCREENSHOT_HEIGHT,
+    quality: int = SCREENSHOT_QUALITY,
+) -> str | None:
+    """Take a configured screenshot and return a stable pixel SHA-256 hex digest."""
+    try:
+        resp = _get_source_screenshot_response(
+            client,
+            source_name,
+            width=width,
+            height=height,
+            quality=quality,
+        )
+        return _screenshot_signature(resp.image_data, width=width, height=height)
     except Exception as exc:
         logger.debug("screenshot failed: %s", exc)
         return None
@@ -372,6 +478,9 @@ def _probe_source(
     previous_hash: str | None,
     hash_stable_since: float,
     now: float,
+    screenshot_width: int = SCREENSHOT_WIDTH,
+    screenshot_height: int = SCREENSHOT_HEIGHT,
+    screenshot_quality: int = SCREENSHOT_QUALITY,
 ) -> ProbeResult:
     try:
         resp = _get_source_active_response(client, source_name)
@@ -398,8 +507,18 @@ def _probe_source(
         )
 
     try:
-        resp = _get_source_screenshot_response(client, source_name)
-        current_hash = hashlib.sha256(resp.image_data.encode()).hexdigest()
+        resp = _get_source_screenshot_response(
+            client,
+            source_name,
+            width=screenshot_width,
+            height=screenshot_height,
+            quality=screenshot_quality,
+        )
+        current_hash = _screenshot_signature(
+            resp.image_data,
+            width=screenshot_width,
+            height=screenshot_height,
+        )
     except Exception as exc:
         state = _source_error_state(exc)
         return ProbeResult(
@@ -721,6 +840,10 @@ def monitor_loop(
     obs_log_dir: Path | None = None,
     obs_log_device_id: str | None = None,
     ignore_static_screenshot_stalls: bool = False,
+    max_static_ignore_seconds: float = 0.0,
+    screenshot_width: int = SCREENSHOT_WIDTH,
+    screenshot_height: int = SCREENSHOT_HEIGHT,
+    screenshot_quality: int = SCREENSHOT_QUALITY,
 ) -> None:
     client: Any = None
     reset_count = 0
@@ -738,6 +861,7 @@ def monitor_loop(
     producer_service_sequence = list(producer_services or [])
     if producer_service:
         producer_service_sequence.append(producer_service)
+    initial_reacquire_pending = bool(input_settings)
     obs_log_cursor = ObsLogCursor()
     self_recovered_obs_log_timeouts = 0
     first_self_recovered_obs_log_timeout_monotonic: float | None = None
@@ -749,8 +873,10 @@ def monitor_loop(
             try:
                 client = _connect(host, port)
                 logger.info("connected to OBS at %s:%d", host, port)
-                settings_applied = _apply_input_settings(client, source_name, input_settings)
-                if settings_applied and input_settings:
+                settings_applied = True
+                if initial_reacquire_pending:
+                    settings_applied = _apply_input_settings(client, source_name, input_settings)
+                if settings_applied and input_settings and initial_reacquire_pending:
                     scene_item = _find_scene_item(client, source_name)
                     if scene_item is not None:
                         scene_name, item_id = scene_item
@@ -762,6 +888,7 @@ def monitor_loop(
                             last_reset_monotonic = now
                             prev_hash = None
                             hash_stable_since = now
+                    initial_reacquire_pending = False
             except Exception as exc:
                 logger.debug("OBS connection failed: %s", exc)
                 status = MonitorStatus(
@@ -794,6 +921,9 @@ def monitor_loop(
             previous_hash=prev_hash,
             hash_stable_since=hash_stable_since,
             now=now,
+            screenshot_width=screenshot_width,
+            screenshot_height=screenshot_height,
+            screenshot_quality=screenshot_quality,
         )
         obs_log_reason: str | None = None
         if obs_log_dir is not None and obs_log_device_id:
@@ -835,26 +965,46 @@ def monitor_loop(
                     stall_seconds=stall_threshold,
                     reason=obs_log_reason,
                 )
+        static_screenshot_cap_exceeded = False
         if (
             ignore_static_screenshot_stalls
             and obs_log_reason is None
             and probe.state is SourceState.STALLED
             and probe.reason == "screenshot_hash_unchanged"
         ):
-            probe = ProbeResult(
-                state=SourceState.HEALTHY,
-                source_active=probe.source_active,
-                screenshot_hash=probe.screenshot_hash,
-                screenshot_available=probe.screenshot_available,
-                stall_seconds=0.0,
-                reason="static_screenshot_ignored",
-            )
+            if max_static_ignore_seconds <= 0 or probe.stall_seconds < max_static_ignore_seconds:
+                probe = ProbeResult(
+                    state=SourceState.HEALTHY,
+                    source_active=probe.source_active,
+                    screenshot_hash=probe.screenshot_hash,
+                    screenshot_available=probe.screenshot_available,
+                    stall_seconds=probe.stall_seconds,
+                    reason="static_screenshot_ignored",
+                )
+            else:
+                static_screenshot_cap_exceeded = True
+                probe = ProbeResult(
+                    state=SourceState.STALLED,
+                    source_active=probe.source_active,
+                    screenshot_hash=probe.screenshot_hash,
+                    screenshot_available=probe.screenshot_available,
+                    stall_seconds=probe.stall_seconds,
+                    reason=(
+                        f"static_screenshot_ignore_cap_exceeded:{max_static_ignore_seconds:.0f}s"
+                    ),
+                )
         if probe.state is SourceState.HEALTHY:
             prev_hash = probe.screenshot_hash
-            hash_stable_since = now
+            if probe.reason != "static_screenshot_ignored":
+                hash_stable_since = now
             consecutive_failures = 0
-            last_success_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        elif probe.state is SourceState.STALLED and probe.stall_seconds < stall_threshold:
+            if probe.reason != "static_screenshot_ignored":
+                last_success_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        elif (
+            probe.state is SourceState.STALLED
+            and probe.stall_seconds < stall_threshold
+            and not static_screenshot_cap_exceeded
+        ):
             probe = ProbeResult(
                 state=SourceState.HEALTHY,
                 source_active=probe.source_active,
@@ -1102,6 +1252,33 @@ def main() -> None:
         action="store_true",
         help="Do not reset on unchanged screenshots without fresh OBS v4l2 log errors",
     )
+    parser.add_argument(
+        "--max-static-ignore-seconds",
+        type=_nonnegative_seconds,
+        default=0.0,
+        help=(
+            "Maximum seconds to ignore unchanged screenshots before treating them as a "
+            "stall anyway. Use 0 for the legacy unbounded ignore (default: 0)."
+        ),
+    )
+    parser.add_argument(
+        "--screenshot-width",
+        type=_positive_int,
+        default=SCREENSHOT_WIDTH,
+        help=f"OBS source screenshot probe width in pixels (default: {SCREENSHOT_WIDTH})",
+    )
+    parser.add_argument(
+        "--screenshot-height",
+        type=_positive_int,
+        default=SCREENSHOT_HEIGHT,
+        help=f"OBS source screenshot probe height in pixels (default: {SCREENSHOT_HEIGHT})",
+    )
+    parser.add_argument(
+        "--screenshot-quality",
+        type=_positive_int,
+        default=SCREENSHOT_QUALITY,
+        help=f"OBS source screenshot probe quality for positional clients (default: {SCREENSHOT_QUALITY})",
+    )
     args = parser.parse_args()
     input_settings = _build_input_settings(
         device_id=args.device_id,
@@ -1140,6 +1317,10 @@ def main() -> None:
         obs_log_dir=args.obs_log_dir if args.obs_log_v4l2_errors else None,
         obs_log_device_id=args.device_id,
         ignore_static_screenshot_stalls=args.ignore_static_screenshot_stalls,
+        max_static_ignore_seconds=args.max_static_ignore_seconds,
+        screenshot_width=args.screenshot_width,
+        screenshot_height=args.screenshot_height,
+        screenshot_quality=args.screenshot_quality,
     )
 
 

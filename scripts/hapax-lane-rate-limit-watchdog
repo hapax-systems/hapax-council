@@ -13,6 +13,9 @@ set -euo pipefail
 
 COOLDOWN_DIR="${HAPAX_LANE_WATCHDOG_COOLDOWN_DIR:-/tmp/hapax-lane-watchdog}"
 COOLDOWN_S=90
+# Headless stdin-pipe + pidfile dir (overridable so tests do not read the real
+# /run/user lane runtime; default is the production path).
+HEADLESS_PIPE_DIR="${HAPAX_HEADLESS_PIPE_DIR:-/run/user/$(id -u)/hapax-claude}"
 
 mkdir -p "$COOLDOWN_DIR"
 now=$(date +%s)
@@ -27,71 +30,11 @@ if [[ -x "$GOVERNANCE_SCRIPT" ]]; then
   fi
 fi
 
-# Dead-lane auto-restart: if a lane worktree exists but the process is dead,
-# relaunch it. Lanes must NEVER be idle — operator directive.
-EXPECTED_LANES="beta gamma delta epsilon zeta"
-HEADLESS_BIN="$HOME/.local/bin/hapax-claude-headless"
-RESTART_COOLDOWN_S=120
-
-for lane in $EXPECTED_LANES; do
-    worktree="$HOME/projects/hapax-council--$lane"
-    [ -d "$worktree" ] || continue
-
-    pidfile="/run/user/$(id -u)/hapax-claude/$lane.pid"
-    pid=""
-    [ -f "$pidfile" ] && pid=$(cat "$pidfile" 2>/dev/null)
-
-    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
-        restart_marker="$COOLDOWN_DIR/${lane}-restart"
-        if [ -f "$restart_marker" ]; then
-            last_restart=$(cat "$restart_marker" 2>/dev/null || echo 0)
-            elapsed=$((now - last_restart))
-            if [ "$elapsed" -lt "$RESTART_COOLDOWN_S" ]; then
-                continue
-            fi
-        fi
-
-        if [ -x "$HEADLESS_BIN" ]; then
-            vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
-            assigned=$(python3 - "$vault_root" "$lane" 2>/dev/null <<'PY' || true
-from pathlib import Path
-import re
-import sys
-
-vault_root = Path(sys.argv[1])
-lane = sys.argv[2]
-
-for path in sorted((vault_root / "active").glob("*.md")):
-    text = path.read_text(errors="replace")
-    assigned = re.search(r"^assigned_to:\s*(\S+)", text, re.MULTILINE)
-    status = re.search(r"^status:\s*(\S+)", text, re.MULTILINE)
-    if (
-        assigned
-        and assigned.group(1) == lane
-        and status
-        and status.group(1) in {"claimed", "in_progress"}
-    ):
-        print(path)
-        break
-PY
-)
-            if [ -n "$assigned" ]; then
-                task_id=$(basename "$assigned" .md)
-                task_title=$(grep -m1 "^title:" "$assigned" | sed 's/^title:\s*//' | tr -d '"')
-                msg="Resume your assigned task: $task_id — $task_title. Ship a PR and cc-close --pr N after merge."
-            else
-                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $lane: DEAD with no active task — not restarting; run hapax-methodology-dispatch --launch for a governed assignment"
-                echo "$now" > "$restart_marker"
-                continue
-            fi
-
-            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $lane: DEAD with active task — auto-restarting via setsid"
-            setsid "$HEADLESS_BIN" "$lane" "$msg" > /tmp/hapax-headless-$lane.log 2>&1 &
-            disown
-            echo "$now" > "$restart_marker"
-        fi
-    fi
-done
+# Dead-lane liveness is owned by the dedicated hapax-lane-supervisor (FM-11
+# clean split — coordination-reform 2026-05-30 Phase 6, CASE-CROSS-RUNTIME-COMMS-001):
+# a dead lane is ALWAYS respawned regardless of task presence, across the
+# claude/codex/antigrav runtimes (operator standing mandate). This watchdog is
+# now purely the quota-aware idle re-kick of LIVE-but-idle lanes below.
 
 # Skip lanes that are quota-blocked (receipt exists from detect-quota-wall)
 RECEIPT_DIR="$HOME/.cache/hapax/relay/receipts"
@@ -135,7 +78,7 @@ done
 
 # Check headless (stream-json) lanes — detect idle by output file staleness
 HEADLESS_STALE_S=600  # 10 minutes without output = idle
-for pidfile in /run/user/$(id -u)/hapax-claude/*.pid; do
+for pidfile in "$HEADLESS_PIPE_DIR"/*.pid; do
     [ -f "$pidfile" ] || continue
     lane=$(basename "$pidfile" .pid)
     [ "$lane" = "alpha" ] && continue
@@ -178,7 +121,7 @@ done
 
 if [ -n "$best_lane" ]; then
     # Prefer headless pipe transport over tmux send-keys
-    headless_pipe="/run/user/$(id -u)/hapax-claude/$best_lane.stdin"
+    headless_pipe="$HEADLESS_PIPE_DIR/$best_lane.stdin"
     send_msg() {
         local msg="$1"
         if [ -p "$headless_pipe" ]; then

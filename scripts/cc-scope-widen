@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""cc-scope-widen — edit a cc-task note's mutation_scope_refs list in place.
+
+The cc-task-gate blocks a direct file mutation whose target is not covered by the
+claimed task's ``mutation_scope_refs``. When a dispatch's initial scope list is
+narrower than the work its AuthorityCase/parent-spec actually authorizes (a
+design pass commonly discovers additional files within the same authorized
+surface), the owning session cannot widen the declaration through any gated tool
+— a friction the reform's "never stuck" principle forbids. This is the
+sanctioned in-session path: it edits ONLY the ``mutation_scope_refs`` list,
+idempotently, and refuses to add a path whose surface does not exist (so a typo
+cannot silently grant scope).
+
+It refuses to operate on notes outside
+~/Documents/Personal/20-projects/hapax-cc-tasks, mirroring cc-task-repair. Every
+edit is logged to the authority-case ledger for audit.
+
+Usage:
+    cc-scope-widen <task_id> --add shared/coord_projection.py --add agents/foo/
+    cc-scope-widen <task_id> --remove stale-entry
+
+Exit: 0 changed (or already as requested), 2 refused (nonexistent added surface /
+no frontmatter), 3 not found / IO / usage.
+
+Coordination reform Phase 4 (CASE-SDLC-REFORM-001; master design section 8).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+OK = 0
+REFUSED = 2
+ERROR = 3
+
+VAULT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+LEDGER = Path(
+    os.environ.get(
+        "HAPAX_AUTHORITY_CASE_LEDGER",
+        str(Path.home() / ".cache" / "hapax" / "authority-case-ledger.jsonl"),
+    )
+).expanduser()
+
+
+def _role() -> str:
+    for key in ("HAPAX_AGENT_ROLE", "CODEX_ROLE", "CLAUDE_ROLE", "HAPAX_AGENT_NAME"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return "unknown"
+
+
+def _find_note(task_id: str) -> Path | None:
+    for sub in ("active", "closed"):
+        for cand in sorted((VAULT / sub).glob(f"{task_id}-*.md")):
+            return cand
+        exact = VAULT / sub / f"{task_id}.md"
+        if exact.is_file():
+            return exact
+    return None
+
+
+def _refuse(msg: str) -> int:
+    print(f"cc-scope-widen: REFUSED — {msg}", file=sys.stderr)
+    return REFUSED
+
+
+def _list_item(line: str) -> str | None:
+    """Return a YAML list item's value, or None if the line is not a list item."""
+    stripped = line.strip()
+    if not stripped.startswith("- "):
+        return None
+    return stripped[2:].strip().strip('"').strip("'")
+
+
+def _surface_ok(item: str) -> bool:
+    """A scope entry must name a real surface so a typo cannot grant scope.
+
+    A directory entry (trailing '/') must itself exist. A file entry may not yet
+    exist (the task is about to create it) but its parent directory must — that
+    blocks typo'd paths while allowing net-new files. Metadata refs
+    (cc-task:/request:) are not paths and are always accepted.
+    """
+    if item.startswith(("cc-task:", "request:")):
+        return True
+    target = REPO_ROOT / item.rstrip("/")
+    if item.endswith("/"):
+        return target.is_dir()
+    return target.exists() or target.parent.is_dir()
+
+
+def widen(task_id: str, additions: list[str], removals: list[str] | None = None) -> int:
+    removals = removals or []
+    note = _find_note(task_id)
+    if note is None:
+        print(f"cc-scope-widen: task '{task_id}' not found under {VAULT}", file=sys.stderr)
+        return ERROR
+
+    additions = [a.strip() for a in additions if a.strip()]
+    for item in additions:
+        if not _surface_ok(item):
+            return _refuse(f"path '{item}' has no existing surface under {REPO_ROOT}")
+
+    text = note.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        print("cc-scope-widen: note has no frontmatter", file=sys.stderr)
+        return ERROR
+
+    # Operate line-by-line over the whole note; never byte-slice the frontmatter
+    # (that risks mangling or duplicating the closing '---'). Frontmatter is the
+    # span between line 0 ('---') and the next bare '---'.
+    lines = text.splitlines()
+    close_idx = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    if close_idx is None:
+        print("cc-scope-widen: frontmatter not closed", file=sys.stderr)
+        return ERROR
+
+    key_idx = next(
+        (i for i in range(1, close_idx) if lines[i].strip() == "mutation_scope_refs:"),
+        None,
+    )
+    if key_idx is None:
+        lines.insert(close_idx, "mutation_scope_refs:")
+        key_idx = close_idx
+        close_idx += 1
+
+    # The contiguous list items directly under the key (stop at the first
+    # non-item line — the next key, a blank, or the close).
+    existing: list[str] = []
+    block_end = key_idx + 1
+    for i in range(key_idx + 1, close_idx):
+        value = _list_item(lines[i])
+        if value is None:
+            break
+        existing.append(value)
+        block_end = i + 1
+
+    removal_set = {r.strip() for r in removals if r.strip()}
+    kept = [e for e in existing if e not in removal_set]
+    new_items = kept + [a for a in additions if a not in kept]
+
+    if new_items == existing:
+        print(f"cc-scope-widen: '{task_id}' already as requested (no changes)")
+        return OK
+
+    lines[key_idx + 1 : block_end] = [f"  - {path}" for path in new_items]
+
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    lines = [f"updated_at: {now}" if line.startswith("updated_at:") else line for line in lines]
+    new_text = "\n".join(lines)
+    if text.endswith("\n"):
+        new_text += "\n"
+    note.write_text(new_text, encoding="utf-8")
+
+    added = [a for a in additions if a not in existing]
+    removed = [e for e in existing if e in removal_set]
+    LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    with LEDGER.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "ts": now,
+                    "kind": "scope_widen",
+                    "tool": "cc-scope-widen",
+                    "role": _role(),
+                    "task_id": task_id,
+                    "added": added,
+                    "removed": removed,
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+    print(
+        f"cc-scope-widen: {task_id} mutation_scope_refs added={added} removed={removed} (ledgered)"
+    )
+    return OK
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="cc-scope-widen")
+    parser.add_argument("task_id")
+    parser.add_argument("--add", action="append", default=[], metavar="PATH")
+    parser.add_argument("--remove", action="append", default=[], metavar="ENTRY")
+    args = parser.parse_args(argv[1:])
+    if not args.add and not args.remove:
+        print(
+            "usage: cc-scope-widen <task_id> --add PATH [--add PATH ...] [--remove ENTRY ...]",
+            file=sys.stderr,
+        )
+        return ERROR
+    return widen(args.task_id, args.add, args.remove)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

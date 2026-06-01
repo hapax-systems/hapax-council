@@ -41,16 +41,105 @@ def _log(tmp_path: Path) -> CoordEventLog:
     )
 
 
-def test_default_paths_are_single_coord_ledger_outside_worktrees() -> None:
-    assert Path("/var/lib/hapax/coord/ledger.db") == DEFAULT_LEDGER_DB
-    assert Path("/var/lib/hapax/coord/ledger.jsonl") == DEFAULT_JSONL_MIRROR
-    assert Path("/var/lib/hapax/coord/spool") == DEFAULT_SPOOL_DIR
+def test_default_paths_are_a_user_writable_coord_ledger_outside_worktrees() -> None:
+    # Must NOT be the old root-owned /var/lib/hapax/coord that uid 1000 could never
+    # provision — that default left R2 unmaterialized and R3 inert (reform-improve
+    # coord SSOT provisioning).
+    for path in (DEFAULT_LEDGER_DB, DEFAULT_JSONL_MIRROR, DEFAULT_SPOOL_DIR):
+        assert not str(path).startswith("/var/lib/"), path
 
+    # One fixed `.../hapax/coord` tree; the three artifacts share that base.
+    coord = DEFAULT_LEDGER_DB.parent
+    assert coord.name == "coord"
+    assert coord.parent.name == "hapax"
+    assert coord / "ledger.db" == DEFAULT_LEDGER_DB
+    assert coord / "ledger.jsonl" == DEFAULT_JSONL_MIRROR
+    assert coord / "spool" == DEFAULT_SPOOL_DIR
+
+    # Outside every git worktree (NEW-4).
     repo_root = Path.cwd().resolve()
     for path in (DEFAULT_LEDGER_DB, DEFAULT_JSONL_MIRROR, DEFAULT_SPOOL_DIR):
         assert path.is_absolute()
         assert not path.resolve().is_relative_to(repo_root)
         assert "evidence" not in path.parts
+
+
+def test_coord_base_dir_precedence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from shared.coord_event_log import coord_base_dir, default_grant_dir, default_grant_key
+
+    for var in ("HAPAX_COORD_DIR", "HAPAX_COORD_GRANT_DIR", "HAPAX_COORD_GRANT_KEY"):
+        monkeypatch.delenv(var, raising=False)
+
+    # 1. Clean env → user-writable ~/.cache/hapax/coord (no XDG override).
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    cache_coord = Path.home() / ".cache" / "hapax" / "coord"
+    assert coord_base_dir() == cache_coord
+    assert default_grant_dir() == cache_coord / "grants"
+    assert default_grant_key() == cache_coord / "grant-key"
+
+    # 2. XDG_CACHE_HOME is honored.
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    assert coord_base_dir() == tmp_path / "xdg" / "hapax" / "coord"
+
+    # 3. HAPAX_COORD_DIR (test/sandbox isolation) wins over XDG.
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "iso"))
+    assert coord_base_dir() == tmp_path / "iso"
+    assert default_grant_dir() == tmp_path / "iso" / "grants"
+    assert default_grant_key() == tmp_path / "iso" / "grant-key"
+
+    # 4. An explicit grant override wins over the resolved base.
+    monkeypatch.setenv("HAPAX_COORD_GRANT_DIR", str(tmp_path / "g"))
+    monkeypatch.setenv("HAPAX_COORD_GRANT_KEY", str(tmp_path / "k"))
+    assert default_grant_dir() == tmp_path / "g"
+    assert default_grant_key() == tmp_path / "k"
+
+
+def test_provision_coord_tree_creates_writable_tree_and_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from shared.coord_event_log import default_event_log, provision_coord_tree
+
+    base = tmp_path / "coord"
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(base))
+    monkeypatch.delenv("HAPAX_COORD_GRANT_DIR", raising=False)
+    monkeypatch.delenv("HAPAX_COORD_GRANT_KEY", raising=False)
+
+    result = provision_coord_tree()
+    assert result.base_dir == base
+    assert result.grant_dir == base / "grants"
+    assert (base / "spool").is_dir()
+    assert (base / "grants").is_dir()
+    grant_key = base / "grant-key"
+    assert grant_key.exists()
+    assert oct(grant_key.stat().st_mode & 0o777) == "0o600", "grant key must not be world-readable"
+    assert result.key_created is True
+
+    # A real append now succeeds against the provisioned, writable tree.
+    receipt = default_event_log().append(_event(), writer=CoordWriter.daemon())
+    assert receipt.appended is True
+    assert (base / "ledger.db").exists()
+
+    # Idempotent: a second run creates nothing new and reuses the operator key.
+    key_bytes = grant_key.read_bytes()
+    again = provision_coord_tree()
+    assert again.key_created is False
+    assert grant_key.read_bytes() == key_bytes
+
+
+def test_provision_coord_tree_fails_loud_when_unwritable(tmp_path: Path) -> None:
+    from shared.coord_event_log import CoordEventLogError, provision_coord_tree
+
+    # A regular file standing where the base dir must go: mkdir raises, and the
+    # provisioner must surface it LOUDLY rather than silently degrade.
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a dir", encoding="utf-8")
+    target = blocker / "coord"
+    with pytest.raises(CoordEventLogError):
+        provision_coord_tree(
+            base_dir=target,
+            grant_dir=target / "grants",
+            grant_key=target / "grant-key",
+        )
 
 
 def test_append_persists_sqlite_wal_and_jsonl_mirror(tmp_path: Path) -> None:

@@ -36,6 +36,7 @@ def _load_sweeper_module() -> ModuleType:
     return module
 
 
+from cc_hygiene import events as events_mod  # noqa: E402
 from cc_hygiene.checks import (  # noqa: E402
     OFFERED_STALE_DAYS,
     RELAY_STALE_MIN,
@@ -651,6 +652,273 @@ def test_append_events_with_no_events_still_appends_heartbeat(tmp_path: Path) ->
     assert "## sweep" in text
     assert "killswitch_active: true" in text
     assert "events: []" in text
+
+
+# ----------------------------------------------------------------------------
+# size-capped rotation + relocation (reform Phase-0 housekeeping)
+# ----------------------------------------------------------------------------
+
+
+def test_default_log_path_relocated_out_of_dashboard() -> None:
+    # The canonical log must NOT live inside the Obsidian _dashboard/ dir
+    # (a 100MB+ markdown there chokes Obsidian) and must sit under ~/.cache/hapax.
+    parts = events_mod.DEFAULT_EVENT_LOG_PATH.parts
+    assert "_dashboard" not in parts
+    assert ".cache" in parts and "hapax" in parts
+
+
+def test_event_log_max_bytes_default_is_positive_int() -> None:
+    assert isinstance(events_mod.EVENT_LOG_MAX_BYTES, int)
+    assert events_mod.EVENT_LOG_MAX_BYTES > 0
+
+
+def test_rotation_moves_oversized_log_to_archive(tmp_path: Path) -> None:
+    log = tmp_path / "cc-hygiene-events.md"
+    old_content = "# cc-hygiene event log\n\n" + ("x" * 400)
+    log.write_text(old_content, encoding="utf-8")
+
+    event = HygieneEvent(
+        timestamp=_now(), check_id="ghost_claimed", severity="violation", message="post-rotate"
+    )
+    append_events([event], _now(), path=log, max_bytes=100)
+
+    # the active log is fresh: header + the new block only; old bulk is gone
+    text = log.read_text()
+    assert text.startswith("# cc-hygiene event log")
+    assert "post-rotate" in text
+    assert "x" * 400 not in text
+
+    # the old log was moved whole into an archive/ sibling, byte-for-byte
+    archived = list((tmp_path / "archive").glob("*.md"))
+    assert len(archived) == 1
+    assert archived[0].read_text(encoding="utf-8") == old_content
+
+
+def test_no_rotation_when_under_cap(tmp_path: Path) -> None:
+    log = tmp_path / "cc-hygiene-events.md"
+    ev = HygieneEvent(timestamp=_now(), check_id="orphan_pr", severity="warning", message="m")
+    append_events([ev], _now(), path=log, max_bytes=10_000_000)
+    append_events([ev], _now(), path=log, max_bytes=10_000_000)
+    assert not (tmp_path / "archive").exists()
+    sweep_headings = [ln for ln in log.read_text().splitlines() if ln.startswith("## sweep 2")]
+    assert len(sweep_headings) == 2
+
+
+def test_rotation_disabled_when_cap_zero(tmp_path: Path) -> None:
+    log = tmp_path / "cc-hygiene-events.md"
+    log.write_text("# cc-hygiene event log\n\n" + ("y" * 500), encoding="utf-8")
+    ev = HygieneEvent(timestamp=_now(), check_id="orphan_pr", severity="warning", message="m")
+    append_events([ev], _now(), path=log, max_bytes=0)
+    assert not (tmp_path / "archive").exists()
+    assert "y" * 500 in log.read_text()  # appended in place, old content preserved
+
+
+def test_rotation_uses_module_default_cap_when_unspecified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With no explicit max_bytes, a file at/over the (current) module default rotates.
+    monkeypatch.setattr(events_mod, "EVENT_LOG_MAX_BYTES", 100)
+    log = tmp_path / "cc-hygiene-events.md"
+    log.write_text("# cc-hygiene event log\n\n" + ("z" * 400), encoding="utf-8")
+    ev = HygieneEvent(timestamp=_now(), check_id="orphan_pr", severity="warning", message="m")
+    append_events([ev], _now(), path=log)
+    assert (tmp_path / "archive").is_dir()
+    assert "z" * 400 not in log.read_text()
+
+
+# ----------------------------------------------------------------------------
+# vault-link integrity (reform Phase-0 housekeeping #3)
+# ----------------------------------------------------------------------------
+
+
+def _vault_with_request(tmp_path: Path, req_id: str, *, subdir: str = "active") -> Path:
+    """Synthetic vault root holding one request note under hapax-requests/."""
+    req_dir = tmp_path / "20-projects" / "hapax-requests" / subdir
+    req_dir.mkdir(parents=True, exist_ok=True)
+    (req_dir / f"{req_id}.md").write_text("# req\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_vault_link_integrity_flags_dangling_request(tmp_path: Path) -> None:
+    from cc_hygiene.checks import check_vault_link_integrity
+
+    vault = _vault_with_request(tmp_path, "REQ-exists")
+    note = TaskNote(
+        path=str(tmp_path / "t.md"),
+        task_id="cc-x",
+        status="in_progress",
+        assigned_to="beta",
+        parent_request="REQ-missing",
+    )
+    out = check_vault_link_integrity([note], vault_root=vault)
+    assert len(out) == 1
+    assert out[0].check_id == "vault_link_integrity"
+    assert out[0].severity == "warning"
+    assert out[0].task_id == "cc-x"
+    assert out[0].session == "beta"
+    assert out[0].metadata["field"] == "parent_request"
+    assert out[0].metadata["target"] == "REQ-missing"
+
+
+def test_vault_link_integrity_ok_when_request_resolves(tmp_path: Path) -> None:
+    from cc_hygiene.checks import check_vault_link_integrity
+
+    vault = _vault_with_request(tmp_path, "REQ-exists")
+    note = TaskNote(
+        path=str(tmp_path / "t.md"),
+        task_id="cc-x",
+        status="claimed",
+        parent_request="REQ-exists",
+    )
+    assert check_vault_link_integrity([note], vault_root=vault) == []
+
+
+def test_vault_link_integrity_resolves_request_in_closed(tmp_path: Path) -> None:
+    from cc_hygiene.checks import check_vault_link_integrity
+
+    vault = _vault_with_request(tmp_path, "REQ-old", subdir="closed")
+    note = TaskNote(
+        path=str(tmp_path / "t.md"),
+        task_id="cc-x",
+        status="claimed",
+        parent_request="REQ-old",
+    )
+    assert check_vault_link_integrity([note], vault_root=vault) == []
+
+
+def test_vault_link_integrity_flags_dangling_spec_path(tmp_path: Path) -> None:
+    from cc_hygiene.checks import check_vault_link_integrity
+
+    note = TaskNote(
+        path=str(tmp_path / "t.md"),
+        task_id="cc-x",
+        status="claimed",
+        parent_spec=str(tmp_path / "30-areas" / "nope.md"),
+    )
+    out = check_vault_link_integrity([note], vault_root=tmp_path)
+    assert len(out) == 1
+    assert out[0].metadata["field"] == "parent_spec"
+
+
+def test_vault_link_integrity_ok_when_spec_path_exists(tmp_path: Path) -> None:
+    from cc_hygiene.checks import check_vault_link_integrity
+
+    spec = tmp_path / "30-areas" / "design.md"
+    spec.parent.mkdir(parents=True, exist_ok=True)
+    spec.write_text("# design\n", encoding="utf-8")
+    note = TaskNote(
+        path=str(tmp_path / "t.md"),
+        task_id="cc-x",
+        status="claimed",
+        parent_spec=str(spec),
+    )
+    assert check_vault_link_integrity([note], vault_root=tmp_path) == []
+
+
+def test_vault_link_integrity_skips_null_pointers(tmp_path: Path) -> None:
+    from cc_hygiene.checks import check_vault_link_integrity
+
+    n1 = TaskNote(path=str(tmp_path / "a.md"), task_id="cc-a", status="claimed")
+    n2 = TaskNote(
+        path=str(tmp_path / "b.md"),
+        task_id="cc-b",
+        status="claimed",
+        parent_request="null",
+        parent_spec="~",
+        parent_plan="",
+    )
+    assert check_vault_link_integrity([n1, n2], vault_root=tmp_path) == []
+
+
+# Real vault data stores parent_* links in many forms: bare id, id+`.md`,
+# vault-relative path, repo-relative path, `~`-prefixed path, absolute path.
+# A resolver that only handles bare ids false-positives on ~70% of live notes
+# (measured 146/230 parent_request FPs) — noise that violates executive_function.
+# These pin the multi-form/multi-root resolution that keeps the signal clean.
+
+
+def test_vault_link_integrity_resolves_request_id_with_md_suffix(tmp_path: Path) -> None:
+    from cc_hygiene.checks import check_vault_link_integrity
+
+    vault = _vault_with_request(tmp_path, "REQ-exists")
+    note = TaskNote(
+        path=str(tmp_path / "t.md"),
+        task_id="cc-x",
+        status="claimed",
+        parent_request="REQ-exists.md",
+    )
+    assert check_vault_link_integrity([note], vault_root=vault) == []
+
+
+def test_vault_link_integrity_resolves_vault_relative_request_path(tmp_path: Path) -> None:
+    from cc_hygiene.checks import check_vault_link_integrity
+
+    vault = _vault_with_request(tmp_path, "REQ-exists")
+    note = TaskNote(
+        path=str(tmp_path / "t.md"),
+        task_id="cc-x",
+        status="claimed",
+        parent_request="20-projects/hapax-requests/active/REQ-exists.md",
+    )
+    assert check_vault_link_integrity([note], vault_root=vault) == []
+
+
+def test_vault_link_integrity_resolves_repo_relative_spec(tmp_path: Path) -> None:
+    from cc_hygiene.checks import check_vault_link_integrity
+
+    repo = tmp_path / "repo"
+    spec = repo / "docs" / "superpowers" / "specs" / "design.md"
+    spec.parent.mkdir(parents=True)
+    spec.write_text("# design\n", encoding="utf-8")
+    note = TaskNote(
+        path=str(tmp_path / "t.md"),
+        task_id="cc-x",
+        status="claimed",
+        parent_spec="docs/superpowers/specs/design.md",
+    )
+    assert check_vault_link_integrity([note], vault_root=tmp_path, repo_root=repo) == []
+
+
+def test_vault_link_integrity_expands_tilde_spec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cc_hygiene.checks import check_vault_link_integrity
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    spec = tmp_path / "Documents" / "Personal" / "30-areas" / "hapax" / "s.md"
+    spec.parent.mkdir(parents=True)
+    spec.write_text("# spec\n", encoding="utf-8")
+    note = TaskNote(
+        path=str(tmp_path / "t.md"),
+        task_id="cc-x",
+        status="claimed",
+        parent_spec="~/Documents/Personal/30-areas/hapax/s.md",
+    )
+    assert check_vault_link_integrity([note], vault_root=tmp_path / "Documents" / "Personal") == []
+
+
+def test_vault_link_integrity_flags_truncated_request_id(tmp_path: Path) -> None:
+    """A truncated id that is only a *prefix* of a real filename does not resolve —
+    it is flagged for repair (no prefix matching, which would be ambiguous)."""
+    from cc_hygiene.checks import check_vault_link_integrity
+
+    vault = _vault_with_request(tmp_path, "REQ-20260511154500-livestream-layout-identity")
+    note = TaskNote(
+        path=str(tmp_path / "t.md"),
+        task_id="cc-x",
+        status="claimed",
+        parent_request="REQ-20260511154500",
+    )
+    out = check_vault_link_integrity([note], vault_root=vault)
+    assert len(out) == 1
+    assert out[0].metadata["field"] == "parent_request"
+
+
+def test_parse_task_note_reads_parent_request(tmp_path: Path) -> None:
+    p = _write_note(tmp_path, "cc-x", status="claimed", parent_request="REQ-abc")
+    note = parse_task_note(p)
+    assert note is not None
+    assert note.parent_request == "REQ-abc"
 
 
 # ----------------------------------------------------------------------------

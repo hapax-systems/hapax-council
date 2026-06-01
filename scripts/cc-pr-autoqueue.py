@@ -56,6 +56,8 @@ from shared.merge_queue_lineage import (  # noqa: E402
 from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_MERGE_READY_STATUSES,
+    apply_release_auto_arm,
+    assess_release_auto_arm,
     task_closure_validity,
 )
 
@@ -167,6 +169,7 @@ class Decision:
     task: TaskNote | None = None
     tasks: tuple[TaskNote, ...] = ()
     reasons: tuple[str, ...] = ()
+    auto_arm: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -184,6 +187,8 @@ class Decision:
             out["task_paths"] = [str(task.path) for task in self.tasks]
         if self.reasons:
             out["reasons"] = list(self.reasons)
+        if self.auto_arm:
+            out["auto_arm"] = True
         return out
 
 
@@ -691,6 +696,20 @@ def classify_pr(
     ):
         reasons.append("storm_admission_hold:" + ",".join(storm_reasons or ("admission_pressure",)))
 
+    # Dispatch resilience to lane-death (CASE-CAPACITY-ROUTING-001). A CLEAN,
+    # green PR whose single linked task is pr_open but never had its release
+    # authorized (the lane died after `gh pr create`) strands forever. Running
+    # as the system (FM-20), the autoqueue may auto-arm an eligible task; a
+    # governance/public/audio-egress-sensitive one is held so it stays manual.
+    auto_arm = False
+    if task is not None and not reasons:
+        arm = assess_release_auto_arm(task.frontmatter)
+        if arm.needs_arming:
+            if arm.eligible:
+                auto_arm = True
+            else:
+                reasons.append("release_auto_arm_ineligible:" + ",".join(arm.blockers))
+
     if queued:
         if reasons:
             return Decision(
@@ -732,7 +751,13 @@ def classify_pr(
         )
     if pr.check_summary.has_pending:
         if include_pending_auto:
-            return Decision(pr=pr, task=task, tasks=matched_tasks, action="enable_auto_merge")
+            return Decision(
+                pr=pr,
+                task=task,
+                tasks=matched_tasks,
+                action="enable_auto_merge",
+                auto_arm=auto_arm,
+            )
         return Decision(
             pr=pr,
             task=task,
@@ -740,7 +765,7 @@ def classify_pr(
             action="blocked",
             reasons=("pending_checks:" + ",".join(pr.check_summary.pending),),
         )
-    return Decision(pr=pr, task=task, tasks=matched_tasks, action="queue")
+    return Decision(pr=pr, task=task, tasks=matched_tasks, action="queue", auto_arm=auto_arm)
 
 
 def merge_pr(
@@ -787,6 +812,68 @@ def merge_pr(
     if proc.returncode != 0:
         return False, output or f"gh pr merge failed rc={proc.returncode}"
     return True, output
+
+
+RELEASE_AUTO_ARM_ROLE = "autoqueue-system"
+DEFAULT_AUTHORITY_CASE_LEDGER = Path.home() / ".cache" / "hapax" / "authority-case-ledger.jsonl"
+
+
+def default_authority_case_ledger() -> Path:
+    raw = os.environ.get("HAPAX_AUTHORITY_CASE_LEDGER")
+    return Path(raw).expanduser() if raw else DEFAULT_AUTHORITY_CASE_LEDGER
+
+
+def _append_release_auto_arm_ledger(
+    task: TaskNote, *, ledger_path: Path, now_iso: str, role: str
+) -> None:
+    """Append an audit record for a system release auto-arm. Best-effort."""
+    record = {
+        "ts": now_iso,
+        "kind": "release_auto_arm",
+        "tool": "cc-pr-autoqueue",
+        "role": role,
+        "task_id": task.task_id,
+        "authority_case": task.authority_case,
+        "pr": task.pr,
+        "note": str(task.path),
+    }
+    try:
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        with ledger_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError as exc:  # never undo a written arm over a ledger hiccup
+        LOG.warning("release auto-arm ledger append failed for %s: %s", task.task_id, exc)
+
+
+def arm_release_for_task(
+    task: TaskNote,
+    *,
+    ledger_path: Path | None = None,
+    now: datetime | None = None,
+    role: str = RELEASE_AUTO_ARM_ROLE,
+) -> tuple[bool, str]:
+    """Authorize release for a stranded task on behalf of a dead lane (system).
+
+    Writes ``release_authorized: true`` + ``stage: S7_RELEASE`` to the note and
+    appends an authority-case ledger record. Eligibility MUST already have been
+    confirmed by :func:`assess_release_auto_arm` (the caller gates on it).
+    """
+    ledger_path = ledger_path or default_authority_case_ledger()
+    now = now or datetime.now(UTC)
+    now_iso = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        text = task.path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return False, f"note_unreadable:{exc}"
+    armed = apply_release_auto_arm(text, now_iso=now_iso, role=role)
+    if armed == text:
+        return False, "note_unchanged"
+    try:
+        task.path.write_text(armed, encoding="utf-8")
+    except OSError as exc:
+        return False, f"note_write_failed:{exc}"
+    _append_release_auto_arm_ledger(task, ledger_path=ledger_path, now_iso=now_iso, role=role)
+    return True, f"release auto-armed {task.task_id}"
 
 
 def _status_description(text: str, *, limit: int = 140) -> str:
@@ -947,6 +1034,7 @@ def run_reconciler(
     advisory_open_pr_count: int = DEFAULT_ADVISORY_OPEN_PR_COUNT,
     storm_failed_merge_group_threshold: int = DEFAULT_STORM_FAILED_MERGE_GROUP_THRESHOLD,
     storm_recent_run_limit: int = DEFAULT_STORM_RECENT_RUN_LIMIT,
+    auto_arm_ledger_path: Path | None = None,
     runner: Any = None,
 ) -> dict[str, Any]:
     if any(os.environ.get(name) == "1" for name in KILLSWITCH_ENVS):
@@ -1093,6 +1181,19 @@ def run_reconciler(
                     }
                 )
                 continue
+            if decision.auto_arm and decision.task is not None:
+                armed_ok, armed_message = arm_release_for_task(
+                    decision.task, ledger_path=auto_arm_ledger_path, now=now
+                )
+                if not armed_ok:
+                    mutation_results.append(
+                        {
+                            **decision.as_dict(),
+                            "ok": False,
+                            "message": f"release auto-arm failed: {armed_message}",
+                        }
+                    )
+                    continue
             ok, message = merge_pr(decision, repo=repo, repo_root=repo_root, runner=runner)
             result = {
                 **decision.as_dict(),

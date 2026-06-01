@@ -24,10 +24,19 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 HOOK = REPO_ROOT / "hooks" / "scripts" / "no-stale-branches.sh"
+
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from shared.governance.coord_capabilities import (  # noqa: E402
+    mint_escape_grant,
+    write_grant_file,
+)
 
 
 def _run(
@@ -197,3 +206,89 @@ class TestDestructiveCommands:
             cwd=repo,
         )
         assert result.returncode == 0
+
+
+# ── Escape grant (reform Phase 4, NEW-2/INV-4) ──────────────────────
+
+
+class TestEscapeGrant:
+    """A signed grant covering 'no-stale-branches' overrides the gate, daemon-free.
+
+    Demonstrates the reusable hooks/scripts/escape-grant.sh wiring on a SECOND
+    irreversible-harm shim — the exact gate that hard-walls a stale-worktree lane
+    from creating a branch. The override is a pure file read; no daemon required.
+    """
+
+    _KEY = b"test-operator-grant-key-0123456789abcdef"
+
+    def _grant_env(self, tmp_path: Path) -> dict:
+        grant_dir = tmp_path / "coord" / "grants"
+        grant_dir.mkdir(parents=True, exist_ok=True)
+        key = tmp_path / "coord" / "grant-key"
+        key.write_bytes(self._KEY)
+        env = dict(os.environ)
+        env["HAPAX_COORD_GRANT_DIR"] = str(grant_dir)
+        env["HAPAX_COORD_GRANT_KEY"] = str(key)
+        return env
+
+    def _drop_grant(self, tmp_path: Path, *, scope: str) -> None:
+        grant_dir = tmp_path / "coord" / "grants"
+        grant_dir.mkdir(parents=True, exist_ok=True)
+        grant = mint_escape_grant(
+            grantor="operator",
+            scope=scope,
+            reason="stale-worktree deadlock",
+            ttl_s=3600,
+            key=self._KEY,
+            now=time.time(),
+        )
+        write_grant_file(grant, grant_dir / f"{grant.grant_id}.grant")
+
+    def _run_env(self, payload: dict, cwd: Path, env: dict) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", str(HOOK)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            cwd=cwd,
+            timeout=20,
+        )
+
+    def test_no_grant_blocks_branch_creation_with_stale(self, tmp_path: Path) -> None:
+        # Control: the exact deadlock — an unmerged branch blocks new-branch creation.
+        repo = _make_repo(tmp_path)
+        _add_stale_branch(repo)
+        env = self._grant_env(tmp_path)  # empty grant dir
+        result = self._run_env(_bash("git checkout -b feat/new"), cwd=repo, env=env)
+        assert result.returncode == 2
+        assert "BLOCKED" in result.stderr
+
+    def test_grant_allows_branch_creation_despite_stale(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        _add_stale_branch(repo)
+        env = self._grant_env(tmp_path)
+        self._drop_grant(tmp_path, scope="no-stale-branches")
+        result = self._run_env(_bash("git checkout -b feat/new"), cwd=repo, env=env)
+        assert result.returncode == 0, (
+            f"grant must override branch-creation block; stderr={result.stderr}"
+        )
+
+    def test_wrong_scope_grant_does_not_override(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        _add_stale_branch(repo)
+        env = self._grant_env(tmp_path)
+        self._drop_grant(tmp_path, scope="cc-task-gate")  # a different gate
+        result = self._run_env(_bash("git checkout -b feat/new"), cwd=repo, env=env)
+        assert result.returncode == 2
+
+    def test_grant_allows_destructive_reset(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        _checkout_feature(repo, name="feat/has-work")
+        env = self._grant_env(tmp_path)
+        self._drop_grant(tmp_path, scope="no-stale-branches")
+        result = self._run_env(_bash("git reset --hard HEAD~1"), cwd=repo, env=env)
+        assert result.returncode == 0, (
+            f"grant must override destructive block; stderr={result.stderr}"
+        )

@@ -1,0 +1,15 @@
+# Hapax-Auto-Enable: true
+# reform-improve-deploy-activation: hapax-post-merge-deploy `enable --now`s
+# units carrying this marker, so the FM-11 supervisor goes live on merge
+# instead of installing-but-sleeping (try-restart is a no-op for a never-
+# enabled timer). The marker requires the [Install] section below.
+[Unit]
+Description=Hapax Lane Supervisor Timer — guarantee lane liveness every 60s (FM-11)
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target
