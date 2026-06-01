@@ -298,6 +298,7 @@ def test_darkplaces_xvfb_launcher_disables_headless_screen_blanking() -> None:
     body = (SCRIPTS_DIR / "darkplaces-v4l2-xvfb.sh").read_text(encoding="utf-8")
 
     assert "need_cmd systemd-notify" in body
+    assert "need_cmd gst-launch-1.0" in body
     assert "notify_systemd --ready" in body
     assert "WATCHDOG=1" in body
     assert "HAPAX_DARKPLACES_WATCHDOG_INTERVAL_SECONDS" in body
@@ -305,6 +306,8 @@ def test_darkplaces_xvfb_launcher_disables_headless_screen_blanking() -> None:
         'Xvfb "$DISPLAY_NUM" -screen 0 "${WIDTH}x${HEIGHT}x24" -nolisten tcp -s 0 -dpms &' in body
     )
     assert 'v4l2-ctl -d "$DEVICE" --set-parm="$FPS"' in body
+    assert 'ximagesrc display-name="$DISPLAY_NUM" use-damage=0 show-pointer=false' in body
+    assert '! v4l2sink device="$DEVICE" sync=false &' in body
     for expected in (
         "+viewsize 120",
         "+scr_viewsize 120",
