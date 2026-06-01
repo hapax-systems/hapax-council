@@ -87,11 +87,42 @@ class TestEvalScript:
             "7",
             "--min-decisions",
             "10",
+            "--window-start-file",
+            str(tmp_path / "no-window"),  # isolate from any machine-stamped boundary
         )
         assert r.returncode == 0, r.stdout + r.stderr
         out = json.loads(r.stdout)
         assert out["clean"] is True
         assert out["tightening"] == 0
+
+    def test_restart_window_then_receipt(self, tmp_path: Path) -> None:
+        log, ledger = _seed_clean_week(tmp_path)
+        window = tmp_path / "window-start"
+        receipt = tmp_path / "receipt.json"
+        # --restart-window stamps the boundary at NOW, so the pre-now seeded week is
+        # excluded → the fresh window has no decisions yet → not eligible, with a receipt.
+        r = _run(
+            EVAL,
+            "--decision-log",
+            str(log),
+            "--ledger",
+            str(ledger),
+            "--min-days",
+            "7",
+            "--min-decisions",
+            "10",
+            "--window-start-file",
+            str(window),
+            "--restart-window",
+            "--receipt",
+            str(receipt),
+        )
+        assert r.returncode == 1  # fresh window not yet mature
+        assert window.exists()
+        data = json.loads(receipt.read_text())
+        assert data["cutover_eligible"] is False
+        assert data["asymmetric_ok"] is True
+        assert "generated_at" in data
 
     def test_tightening_week_exits_nonzero(self, tmp_path: Path) -> None:
         log = tmp_path / "decisions.jsonl"
@@ -100,7 +131,17 @@ class TestEvalScript:
         rows.append(_row(legacy_exit=0, authority_case=""))  # legacy allowed, new blocks
         log.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
         replay_decision_log(log, ledger)
-        r = _run(EVAL, "--decision-log", str(log), "--ledger", str(ledger), "--min-decisions", "10")
+        r = _run(
+            EVAL,
+            "--decision-log",
+            str(log),
+            "--ledger",
+            str(ledger),
+            "--min-decisions",
+            "10",
+            "--window-start-file",
+            str(tmp_path / "no-window"),  # isolate from any machine-stamped boundary
+        )
         assert r.returncode == 1
         assert json.loads(r.stdout)["tightening"] >= 1
 
