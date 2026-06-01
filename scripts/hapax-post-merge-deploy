@@ -453,7 +453,7 @@ while IFS= read -r f; do
         systemd/udev/*.rules)             ;; # udev rules; require sudo install + udevadm reload (operator action)
         systemd/logrotate.d/*)            ;; # logrotate configs; require sudo install
         systemd/system/*)                 ;; # system-scoped configs; require sudo install
-        hooks/scripts/cc-task-gate.impl.sh|hooks/scripts/agent-role.sh|hooks/scripts/escape-grant.sh|hooks/scripts/hooks-doctor.sh|hooks/scripts/cc-task-gate.sh)
+        hooks/scripts/cc-task-gate.impl.sh|hooks/scripts/agent-role.sh|hooks/scripts/escape-grant.sh|hooks/scripts/cc-task-gate-bootstrap.py|hooks/scripts/hooks-doctor.sh|hooks/scripts/cc-task-gate.sh)
             GATE_CLOSURE+=("$f") ;;
         scripts/hapax-*)                  SCRIPTS+=("$f") ;;
         scripts/*.py|scripts/*.sh)        SCRIPT_PY+=("$f") ;;
@@ -769,8 +769,12 @@ if [ "${#GATE_CLOSURE[@]}" -gt 0 ]; then
     echo "gate closure changed (${#GATE_CLOSURE[@]}): redeploying canonical gate"
     GATE_STAGE="$(mktemp -d)"
     mkdir -p "$GATE_STAGE/hooks/scripts"
+    # The full closure the impl needs at runtime: the impl, the files it sources
+    # (agent-role, escape-grant) AND invokes (cc-task-gate-bootstrap.py, §3b), plus
+    # the doctor. Omitting any makes the deployed gate exit 2 on every mutation.
     for f in hooks/scripts/cc-task-gate.impl.sh hooks/scripts/agent-role.sh \
-             hooks/scripts/escape-grant.sh hooks/scripts/hooks-doctor.sh; do
+             hooks/scripts/escape-grant.sh hooks/scripts/cc-task-gate-bootstrap.py \
+             hooks/scripts/hooks-doctor.sh; do
         if git cat-file -e "$SHA:$f" 2>/dev/null; then
             git show "$SHA:$f" > "$GATE_STAGE/$f"
             chmod +x "$GATE_STAGE/$f" 2>/dev/null || true

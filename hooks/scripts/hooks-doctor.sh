@@ -32,6 +32,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CANONICAL_DIR="${HAPAX_CANONICAL_HOOKS:-$HOME/.local/lib/hapax/hooks}"
 SHIM_MARKER="HAPAX-GATE-SHIM"
 COGNITION_MARKER="is_cognition_path()"
+# The canonical closure's sibling files (besides cc-task-gate.sh = the deployed
+# impl): everything the impl SOURCES (agent-role, escape-grant) or INVOKES
+# (cc-task-gate-bootstrap.py, section 3b), plus the doctor itself. SINGLE source
+# of truth for deploy + health-check, so a new impl dependency is registered in
+# exactly one place and can never be silently dropped from the deployed gate.
+CLOSURE_SIBLINGS=(agent-role.sh escape-grant.sh cc-task-gate-bootstrap.py hooks-doctor.sh)
 
 MODE=session
 FROM=""
@@ -86,7 +92,10 @@ check_canonical() {
   if [[ ! -r "$c" ]]; then echo "CRITICAL canonical impl missing: $c"; return 3; fi
   if grep -q "$SHIM_MARKER" "$c" 2>/dev/null; then echo "CRITICAL canonical is a shim, not the impl: $c"; return 3; fi
   if ! grep -q "$COGNITION_MARKER" "$c" 2>/dev/null; then echo "CRITICAL canonical impl lacks INV-5 is_cognition_path: $c"; return 3; fi
-  for s in agent-role.sh escape-grant.sh; do
+  # The impl SOURCES agent-role.sh + escape-grant.sh and INVOKES
+  # cc-task-gate-bootstrap.py (section 3b) — all from its own dir. A missing one
+  # makes the gate exit 2 on every mutation, so the whole closure must be present.
+  for s in "${CLOSURE_SIBLINGS[@]}"; do
     [[ -r "$CANONICAL_DIR/$s" ]] || { echo "CRITICAL canonical closure missing sibling: $CANONICAL_DIR/$s"; return 3; }
   done
   echo "ok canonical healthy: $c"; return 0
@@ -177,11 +186,17 @@ deploy_canonical() {
   mkdir -p "$CANONICAL_DIR"
   # impl deploys AS cc-task-gate.sh (the name shims + settings.json resolve to).
   install -m 0755 "$src/cc-task-gate.impl.sh" "$CANONICAL_DIR/cc-task-gate.sh"
+  # REFUSE an incomplete closure: a missing sibling would make the deployed gate
+  # exit 2 on every mutation (the cc-task-gate-bootstrap.py omission incident).
   local s
-  for s in agent-role.sh escape-grant.sh hooks-doctor.sh; do
-    [[ -r "$src/$s" ]] && install -m 0755 "$src/$s" "$CANONICAL_DIR/$s"
+  for s in "${CLOSURE_SIBLINGS[@]}"; do
+    if [[ ! -r "$src/$s" ]]; then
+      echo "deploy: REFUSING incomplete closure — source missing $src/$s" >&2
+      return 1
+    fi
+    install -m 0755 "$src/$s" "$CANONICAL_DIR/$s"
   done
-  ( cd "$CANONICAL_DIR" && sha256sum cc-task-gate.sh agent-role.sh escape-grant.sh hooks-doctor.sh 2>/dev/null ) \
+  ( cd "$CANONICAL_DIR" && sha256sum cc-task-gate.sh "${CLOSURE_SIBLINGS[@]}" 2>/dev/null ) \
     > "$CANONICAL_DIR/MANIFEST.sha256" 2>/dev/null || true
   local bindir="${HAPAX_LOCAL_BIN:-$HOME/.local/bin}"
   mkdir -p "$bindir"
