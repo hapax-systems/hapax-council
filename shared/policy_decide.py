@@ -254,21 +254,51 @@ def _stage_num(stage: str | None) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _norm(path: str) -> str:
+#: The workspace root that contains every interface-qualified worktree
+#: (``~/projects/hapax-council--<lane>/``, ``~/projects/hapax-coord/`` …). The
+#: shadow REPLAY diffs decisions logged from MANY worktrees in ONE process and the
+#: decision rows record no cwd, so scope resolution must be cwd-INDEPENDENT: it
+#: cannot mirror the live gate's ``Path.cwd()``-anchored ``resolve`` because the
+#: replay's cwd is not the decision's worktree. Reducing BOTH sides to repo-
+#: relative form yields the same verdict the live gate returned in that worktree.
+_WORKTREE_ANCHOR = "/projects/"
+
+
+def _repo_relative(path: str) -> str:
+    """Reduce a path to cwd-independent repo-relative form.
+
+    An ABSOLUTE worktree path ``<home>/projects/<worktree>/<rel>`` collapses to
+    ``<rel>`` by cutting at the workspace ``/projects/`` anchor (its FIRST
+    occurrence — a repo may carry its own inner ``projects/`` dir) and dropping the
+    single worktree-directory segment that follows. A RELATIVE path is only
+    ``./``-stripped, so a relative ``shared/projects/x`` is never mis-anchored.
+    """
     p = path.strip()
     while p.startswith("./"):
         p = p[2:]
+    if p.startswith("/"):
+        anchor = p.find(_WORKTREE_ANCHOR)
+        if anchor != -1:
+            tail = p[anchor + len(_WORKTREE_ANCHOR) :]  # '<worktree>/<rel>'
+            slash = tail.find("/")
+            return tail[slash + 1 :] if slash != -1 else ""
     return p
 
 
 def _scope_result(path: str, scope_refs: tuple[str, ...]) -> str:
-    """One of 'allowed' / 'denied' / 'missing' — mirrors the gate's path-scope logic."""
+    """One of 'allowed' / 'denied' / 'missing'.
+
+    Reduces BOTH the target and each scope-ref to cwd-independent repo-relative
+    form (``_repo_relative``) before comparing, so an absolute worktree
+    ``file_path`` matches a repo-relative ref exactly as the live (cwd-anchored)
+    gate did when it ran inside that worktree.
+    """
     real_refs = [r for r in scope_refs if r and not r.startswith(("cc-task:", "request:"))]
     if not real_refs:
         return "missing"
-    target = _norm(path)
+    target = _repo_relative(path)
     for ref in real_refs:
-        rn = _norm(ref)
+        rn = _repo_relative(ref)
         if not rn:
             continue
         if target == rn:
@@ -463,7 +493,17 @@ def _decide(
 
     # 13. Shell source mutations carry no scope-verifiable path. Argument-aware
     #     (FM-16): only true working-tree writers block here — a branch op does not.
-    if name in _BASH_TOOLS and not path and not is_runtime and _bash_is_source_scope(command):
+    #     Strip quoted spans + comments first, mirroring the legacy gate
+    #     (cc-task-gate.sh:791), so a mutation marker that appears ONLY inside a
+    #     quoted payload — e.g. ``python3 -c "...open(...)..."`` — does not
+    #     false-block. (This is the lone residual TIGHTENING the scope-fix task
+    #     triaged: a genuine regression from not mirroring the gate's pre-scope strip.)
+    if (
+        name in _BASH_TOOLS
+        and not path
+        and not is_runtime
+        and _bash_is_source_scope(_strip_quotes_and_comments(command))
+    ):
         return _block(
             "scope:command",
             "shell source mutation cannot be scope-verified",
