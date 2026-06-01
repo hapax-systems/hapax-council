@@ -12,7 +12,9 @@
             "relay_yaml_stale",
             "wip_limit",
             "offered_stale",
-            "refusal_dormancy"
+            "refusal_dormancy",
+            "spec_staleness",
+            "vault_link_integrity"
           ],
           "title": "Check Id",
           "type": "string"
@@ -46,7 +48,9 @@
             "relay_yaml_stale",
             "wip_limit",
             "offered_stale",
-            "refusal_dormancy"
+            "refusal_dormancy",
+            "spec_staleness",
+            "vault_link_integrity"
           ],
           "title": "Check Id",
           "type": "string"

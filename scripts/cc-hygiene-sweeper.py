@@ -6,7 +6,8 @@ PR1 of the task-list-hygiene plan
 Implements the 8 checks described in §2 and emits:
 
 * an append-only markdown event log under
-  ``~/Documents/Personal/20-projects/hapax-cc-tasks/_dashboard/cc-hygiene-events.md``
+  ``~/.cache/hapax/cc-hygiene-events.md`` (size-capped via whole-file rotation
+  into an ``archive/`` sibling; see ``cc_hygiene.events``)
 * a machine-readable JSON snapshot at
   ``~/.cache/hapax/cc-hygiene-state.json``
 
@@ -48,6 +49,7 @@ from cc_hygiene.checks import (
     check_relay_yaml_staleness,
     check_spec_staleness,
     check_stale_in_progress,
+    check_vault_link_integrity,
     check_wip_limit,
     parse_task_note,
 )
@@ -332,6 +334,8 @@ def _summarize_checks(events: list[HygieneEvent]) -> list[CheckSummary]:
         "wip_limit",
         "offered_stale",
         "refusal_dormancy",
+        "spec_staleness",
+        "vault_link_integrity",
     )
     return [CheckSummary(check_id=cid, fired=counter.get(cid, 0)) for cid in all_ids]
 
@@ -365,6 +369,12 @@ def run_sweep(
     events.extend(check_offered_staleness(notes, now=now))
     events.extend(check_refusal_pipeline_dormancy(closed_notes, now=now))
     events.extend(check_spec_staleness(notes, now=now))
+    # Resolve parent_* links against the whole vault + repo, not just the
+    # cc-tasks dir: cc-tasks lives at <personal>/20-projects/hapax-cc-tasks,
+    # so its grandparent is the Obsidian vault root the links resolve against.
+    events.extend(
+        check_vault_link_integrity(notes, vault_root.parent.parent, repo_root=repo_root, now=now)
+    )
 
     sessions = _build_session_states(relay_payloads, notes)
     summaries = _summarize_checks(events)

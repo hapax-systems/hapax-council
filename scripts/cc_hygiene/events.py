@@ -1,18 +1,27 @@
 """Append-only event log writer.
 
-The markdown log at
-``~/Documents/Personal/20-projects/hapax-cc-tasks/_dashboard/cc-hygiene-events.md``
-is the canonical audit trail. Sweeper appends one fenced YAML block per
-sweep; the markdown wrapper exists so Obsidian renders the file
-readably.
+The markdown log at ``~/.cache/hapax/cc-hygiene-events.md`` is the canonical
+audit trail. Sweeper appends one fenced YAML block per sweep; the markdown
+wrapper exists so the file renders readably if opened.
 
-Invariant: this writer NEVER reads + rewrites the file. It only
-appends. That keeps concurrent sweeps safe (worst case: two YAML
-blocks at the same instant, both preserved).
+Two invariants:
+
+* **Never read-and-rewrite.** Appends only. That keeps concurrent sweeps safe
+  (worst case: two YAML blocks at the same instant, both preserved).
+* **Size-capped via whole-file rotation.** When the active log reaches
+  ``EVENT_LOG_MAX_BYTES`` it is moved whole (``os.rename``, no read) into an
+  ``archive/`` sibling and a fresh header is started. Rotating a whole file —
+  rather than truncating in place — preserves the append-only invariant.
+
+The log lives under ``~/.cache/hapax/`` (not the Obsidian ``_dashboard/`` dir):
+a 100MB+ markdown file inside the vault chokes Obsidian's renderer. Readers
+(``dashboard.py``'s tail reader, the dashboard renderer) import
+``DEFAULT_EVENT_LOG_PATH`` from here, so the relocation stays coherent.
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
@@ -21,16 +30,28 @@ import yaml
 
 from .models import HygieneEvent
 
-DEFAULT_EVENT_LOG_PATH = (
-    Path.home()
-    / "Documents"
-    / "Personal"
-    / "20-projects"
-    / "hapax-cc-tasks"
-    / "_dashboard"
-    / "cc-hygiene-events.md"
-)
-"""Canonical append-only event log."""
+
+def _env_int(name: str, default: int) -> int:
+    """Read an int from the environment, falling back to ``default`` on absence
+    or a non-numeric value."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+DEFAULT_EVENT_LOG_PATH = Path.home() / ".cache" / "hapax" / "cc-hygiene-events.md"
+"""Canonical append-only event log (relocated out of the Obsidian vault)."""
+
+EVENT_LOG_MAX_BYTES = _env_int("HAPAX_CC_HYGIENE_LOG_MAX_BYTES", 8 * 1024 * 1024)
+"""Rotate the active log once it reaches this size (default 8 MiB).
+
+Override with ``HAPAX_CC_HYGIENE_LOG_MAX_BYTES``. Set to 0 (or negative) to
+disable rotation entirely.
+"""
 
 _HEADER_TEMPLATE = (
     "# cc-hygiene event log\n\n"
@@ -46,18 +67,58 @@ def _ensure_header(path: Path) -> None:
     path.write_text(_HEADER_TEMPLATE, encoding="utf-8")
 
 
+def _rotate_if_needed(path: Path, max_bytes: int, sweep_timestamp: datetime) -> Path | None:
+    """Rotate ``path`` into an ``archive/`` sibling when it reaches ``max_bytes``.
+
+    Returns the archive path when a rotation happened, else ``None``. The whole
+    file is moved with a single ``os.rename`` — the (potentially huge) log is
+    never read, preserving the never-read-and-rewrite invariant. The subsequent
+    append recreates a fresh header. ``max_bytes <= 0`` disables rotation.
+    """
+    if max_bytes <= 0:
+        return None
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None  # missing file → nothing to rotate
+    if size < max_bytes:
+        return None
+
+    archive_dir = path.parent / "archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    stamp = sweep_timestamp.strftime("%Y%m%dT%H%M%S")
+    candidate = archive_dir / f"{path.stem}-{stamp}{path.suffix}"
+    counter = 1
+    while candidate.exists():
+        candidate = archive_dir / f"{path.stem}-{stamp}-{counter}{path.suffix}"
+        counter += 1
+    try:
+        os.rename(path, candidate)
+    except OSError:
+        # A racing sweep already rotated this file; safe to carry on and
+        # append into whatever fresh file the winner started.
+        return None
+    return candidate
+
+
 def append_events(
     events: Iterable[HygieneEvent],
     sweep_timestamp: datetime,
     path: Path = DEFAULT_EVENT_LOG_PATH,
     *,
     killswitch_active: bool = False,
+    max_bytes: int | None = None,
 ) -> Path:
     """Append a sweep's events to the markdown log.
 
-    Even if there are no events, append a heading + ``events: []`` block
-    so the heartbeat is visible in the log.
+    Even if there are no events, append a heading + ``events: []`` block so the
+    heartbeat is visible in the log. Rotates the log first when it has reached
+    the cap (whole-file move into ``archive/``). ``max_bytes`` defaults to the
+    module-level ``EVENT_LOG_MAX_BYTES`` (read at call time, so env overrides
+    apply); pass an explicit value (``0`` disables) to override per call.
     """
+    cap = EVENT_LOG_MAX_BYTES if max_bytes is None else max_bytes
+    _rotate_if_needed(path, cap, sweep_timestamp)
     _ensure_header(path)
     block_payload = {
         "sweep_timestamp": sweep_timestamp.isoformat(),
