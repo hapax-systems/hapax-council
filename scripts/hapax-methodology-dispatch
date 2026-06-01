@@ -33,7 +33,7 @@ from shared.coord_dispatch import (
     DispatchLaunchResult,
     run_atomic_dispatch_launch,
 )
-from shared.coord_event_log import CoordEventLog
+from shared.coord_event_log import CoordEventLog, coord_base_dir
 from shared.dispatcher_policy import (
     DispatchAction,
     RouteDecision,
@@ -809,19 +809,15 @@ def dispatch_message_id(cli_value: str | None) -> str | None:
 
 
 def coord_event_log_from_env() -> CoordEventLog:
+    # Per-surface overrides still win (test isolation sets them explicitly); the
+    # bare default is the single user-writable coord SSOT (coord_base_dir() →
+    # ~/.cache/hapax/coord), NOT the dead root-owned /var/lib tree that uid 1000
+    # could never mkdir — that default HARD-BLOCKED the launch coord write.
+    base = coord_base_dir()
     return CoordEventLog(
-        db_path=os.environ.get(
-            "HAPAX_COORD_LEDGER_DB",
-            "/var/lib/hapax/coord/ledger.db",
-        ),
-        jsonl_path=os.environ.get(
-            "HAPAX_COORD_JSONL_MIRROR",
-            "/var/lib/hapax/coord/ledger.jsonl",
-        ),
-        spool_dir=os.environ.get(
-            "HAPAX_COORD_SPOOL_DIR",
-            "/var/lib/hapax/coord/spool",
-        ),
+        db_path=os.environ.get("HAPAX_COORD_LEDGER_DB", str(base / "ledger.db")),
+        jsonl_path=os.environ.get("HAPAX_COORD_JSONL_MIRROR", str(base / "ledger.jsonl")),
+        spool_dir=os.environ.get("HAPAX_COORD_SPOOL_DIR", str(base / "spool")),
     )
 
 
