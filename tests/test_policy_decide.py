@@ -16,6 +16,8 @@ import json
 import os
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from shared.policy_decide import (
     TaskState,
@@ -520,3 +522,215 @@ class TestShadowCli:
         assert row["legacy_blocked"] is True
         assert row["new_verdict"] == "allow"
         assert row["task_id"] == "T-1"
+
+
+# --- the scope-normalization fix: absolute worktree paths resolve repo-relative --
+#
+# REGRESSION (reform-improve-policy-decide-scope-fix): `_scope_result` string-
+# compared an ABSOLUTE worktree `file_path` against REPO-RELATIVE scope refs, so
+# `startswith` never matched -> 220+ false `scope:denied` TIGHTENINGS that made the
+# 3b-cutover gate (asymmetric_ok = tightening==0) structurally unreachable. The
+# replay diffs decisions logged from MANY worktrees in ONE process with no recorded
+# cwd, so the fix reduces BOTH sides to repo-relative form independent of Path.cwd()
+# (it cannot mirror the live gate's cwd-anchored resolve — replay's cwd is not the
+# decision's worktree).
+
+#: A worktree-root prefix carrying a `projects/` anchor, built via expanduser so no
+#: home-path literal lives in source (portable across CI / operator machines).
+_WT = os.path.join(os.path.expanduser("~"), "projects")
+
+
+class TestScopeAbsoluteWorktreePaths:
+    def test_absolute_path_same_worktree_in_scope_allows(self):
+        d = policy_decide(
+            _edit(f"{_WT}/hapax-council--zeta/shared/policy_decide.py"),
+            _authorized_task(mutation_scope_refs=("shared/policy_decide.py", "tests/")),
+            "theta",
+        )
+        assert d.allowed, d.gate
+
+    def test_absolute_path_different_worktree_in_scope_allows(self):
+        # The replay runs in ONE worktree but the logged path is from ANOTHER
+        # (epsilon). A cwd-anchored resolve would mis-resolve; repo-relative does not.
+        d = policy_decide(
+            _edit(f"{_WT}/hapax-council--epsilon/tests/test_vault_ownership.py"),
+            _authorized_task(mutation_scope_refs=("tests/",)),
+            "theta",
+        )
+        assert d.allowed, d.gate
+
+    def test_absolute_path_sister_repo_in_scope_allows(self):
+        # hapax-coord is a different repo entirely; the projects/<worktree>/ anchor
+        # is repo-agnostic, so its relative refs resolve too.
+        d = policy_decide(
+            _edit(f"{_WT}/hapax-coord/shared/coord_event_log.py"),
+            _authorized_task(mutation_scope_refs=("shared/coord_event_log.py",)),
+            "theta",
+        )
+        assert d.allowed, d.gate
+
+    def test_absolute_path_out_of_scope_still_denies(self):
+        d = policy_decide(
+            _edit(f"{_WT}/hapax-council--zeta/agents/other.py"),
+            _authorized_task(mutation_scope_refs=("shared/policy_decide.py", "tests/")),
+            "theta",
+        )
+        assert d.blocked
+        assert d.gate == "scope:denied"
+
+    def test_absolute_exact_file_ref_not_prefix_confused(self):
+        # An exact-file ref must not allow a sibling that merely shares the prefix.
+        d = policy_decide(
+            _edit(f"{_WT}/hapax-council--zeta/shared/policy_decide_extra.py"),
+            _authorized_task(mutation_scope_refs=("shared/policy_decide.py",)),
+            "theta",
+        )
+        assert d.blocked
+        assert d.gate == "scope:denied"
+
+    @pytest.mark.parametrize("ref", ["tests/", "tests"])
+    def test_trailing_slash_and_bare_dir_refs_equivalent(self, ref):
+        d = policy_decide(
+            _edit(f"{_WT}/hapax-council--beta/tests/scripts/test_x.py"),
+            _authorized_task(mutation_scope_refs=(ref,)),
+            "theta",
+        )
+        assert d.allowed, f"ref={ref!r} gate={d.gate}"
+
+    def test_dot_slash_prefix_normalizes_on_both_sides(self):
+        d = policy_decide(
+            _edit("./shared/policy_decide.py"),
+            _authorized_task(mutation_scope_refs=("./shared/policy_decide.py",)),
+            "theta",
+        )
+        assert d.allowed, d.gate
+
+    def test_inner_projects_segment_does_not_mis_anchor(self):
+        # A repo that legitimately has a 'projects' dir of its own must anchor on the
+        # workspace 'projects' (first occurrence), not the inner one.
+        d = policy_decide(
+            _edit(f"{_WT}/hapax-council--zeta/shared/projects/registry.py"),
+            _authorized_task(mutation_scope_refs=("shared/projects/",)),
+            "theta",
+        )
+        assert d.allowed, d.gate
+
+
+class TestScopeAbsoluteRelativeParity:
+    """The absolute worktree form must yield the SAME verdict as the repo-relative
+    form — which is exactly what the live legacy gate returned (cwd == the worktree),
+    so this is the shadow-parity contract the replay relies on."""
+
+    @pytest.mark.parametrize(
+        "rel_target,refs,expect_allow",
+        [
+            ("shared/policy_decide.py", ("shared/policy_decide.py",), True),
+            ("tests/test_policy_decide.py", ("tests/",), True),
+            ("scripts/policy-decide-shadow-eval", ("scripts/policy-decide-shadow-eval",), True),
+            ("agents/x.py", ("shared/policy_decide.py", "tests/"), False),
+        ],
+    )
+    def test_absolute_worktree_form_agrees_with_relative_form(self, rel_target, refs, expect_allow):
+        task = _authorized_task(mutation_scope_refs=refs)
+        rel = policy_decide(_edit(rel_target), task, "theta")
+        for wt in ("hapax-council", "hapax-council--zeta", "hapax-council--epsilon"):
+            ab = policy_decide(_edit(f"{_WT}/{wt}/{rel_target}"), task, "theta")
+            assert ab.allowed == rel.allowed == expect_allow, f"{wt} {rel_target} gate={ab.gate}"
+
+
+_SEGMENT = st.text(alphabet="abcdefghijklmnopqrstuvwxyz0123456789_-", min_size=1, max_size=8)
+
+
+class TestScopePropertyInvariant:
+    @given(
+        prefix=st.sampled_from(
+            ["hapax-council", "hapax-council--zeta", "hapax-council--epsilon", "hapax-coord"]
+        ),
+        scope_dir=st.sampled_from(["tests", "shared", "scripts", "agents"]),
+        trailing=st.booleans(),
+        sub=st.lists(_SEGMENT, min_size=1, max_size=4),
+    )
+    def test_path_inside_scope_dir_always_allows_regardless_of_prefix(
+        self, prefix, scope_dir, trailing, sub
+    ):
+        ref = scope_dir + ("/" if trailing else "")
+        target = f"{_WT}/{prefix}/{scope_dir}/" + "/".join(sub) + ".py"
+        d = policy_decide(_edit(target), _authorized_task(mutation_scope_refs=(ref,)), "theta")
+        assert d.allowed, f"prefix={prefix} ref={ref!r} target={target} gate={d.gate}"
+
+    @given(
+        prefix=st.sampled_from(["hapax-council", "hapax-council--zeta", "hapax-coord"]),
+        sub=st.lists(_SEGMENT, min_size=1, max_size=3),
+    )
+    def test_path_outside_all_scope_dirs_denies(self, prefix, sub):
+        # 'agents/...' is never in this scope -> always denied, regardless of prefix.
+        target = f"{_WT}/{prefix}/agents/" + "/".join(sub) + ".py"
+        d = policy_decide(
+            _edit(target), _authorized_task(mutation_scope_refs=("shared/", "tests/")), "theta"
+        )
+        assert d.blocked and d.gate == "scope:denied"
+
+
+# --- residual TIGHTENING triage: the scope:command quote-strip parity fix ------
+#
+# After the _repo_relative fix above, replaying the REAL gate decision log left
+# exactly ONE residual tightening: a `python3 -c "...open('/tmp/x','w')..."`
+# verification heredoc. The legacy gate strips quoted spans BEFORE its shell-
+# source-scope test (cc-task-gate.sh:791), so the `open(` living only inside the
+# quoted -c payload does not count and the gate ALLOWS. policy_decide substring-
+# matched `open(` on the RAW command and BLOCKED at scope:command — a regression,
+# NOT a justified hardening (the reform design requires policy_decide to be a
+# strict relaxation of the legacy gate). The fix mirrors the legacy strip at the
+# scope:command site; these tests pin both the parity AND the fail-closed case
+# where the marker is OUTSIDE any quoted span (a heredoc body) and must still block.
+
+
+class TestScopeCommandQuoteStripParity:
+    def test_open_inside_quoted_dash_c_payload_is_not_a_source_mutation(self):
+        # THE residual tightening: open() lives only inside the double-quoted -c arg.
+        cmd = "python3 -c \"import sys; open('/tmp/verify.lisp','w').write(sys.stdin.read())\""
+        assert legacy_bash_scope_block(cmd) is False  # legacy strips the quoted span
+        d = policy_decide(_bash(cmd), _authorized_task(), "theta")
+        assert d.allowed, d.gate
+
+    def test_quoted_open_with_stdin_heredoc_matches_live_residual_shape(self):
+        # The exact shape from the live ledger: quoted -c open() + a stdin heredoc.
+        cmd = (
+            "python3 -c \"open('/tmp/x.lisp','w').write(sys.stdin.read())\" <<'LISPEOF'\n"
+            '(format t "hi")\n'
+            "LISPEOF"
+        )
+        assert legacy_bash_scope_block(cmd) is False
+        d = policy_decide(_bash(cmd), _authorized_task(), "theta")
+        assert d.allowed, d.gate
+
+    def test_shadow_compare_reports_no_divergence_on_quoted_open(self):
+        # The parity contract the replay relies on: same verdict as the legacy port,
+        # so this class of command produces ZERO divergence rows (no false tightening).
+        cmd = "python3 -c \"open('/tmp/x','w').write('y')\""
+        rec = shadow_compare(
+            _bash(cmd),
+            _authorized_task(),
+            "theta",
+            legacy_blocked=legacy_bash_scope_block(cmd),
+        )
+        assert rec.diverged is False
+        assert rec.new_decision.allowed
+
+    def test_open_in_unquoted_heredoc_body_still_blocks_fail_closed(self):
+        # Fail-closed preserved: when open() is NOT inside a quoted span (here a
+        # heredoc body fed to a bare python3) the source-scope block still fires —
+        # the quote-strip narrows ONLY the false positive, never the real writer.
+        cmd = "python3 <<'PYEOF'\nopen('out.txt','w').write('x')\nPYEOF"
+        d = policy_decide(_bash(cmd), _authorized_task(), "theta")
+        assert d.blocked
+        assert d.gate == "scope:command"
+
+    def test_sed_inplace_without_edit_path_still_blocks(self):
+        # Token-based source writers are unaffected by the strip: `sed -i` with no
+        # Edit-tool path stays a scope:command block, in parity with the legacy gate.
+        cmd = "sed -i 's/a/b/' shared/policy_decide.py"
+        assert legacy_bash_scope_block(cmd) is True
+        d = policy_decide(_bash(cmd), _authorized_task(), "theta")
+        assert d.blocked
+        assert d.gate == "scope:command"
