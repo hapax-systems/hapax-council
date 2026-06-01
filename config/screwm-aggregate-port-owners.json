@@ -160,9 +160,17 @@
         {
           "path": "systemd/units/hapax-darkplaces-v4l2.service",
           "anchors": [
-            "HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52",
+            "HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video50",
             "hapax-screwm-camera-gamepad.service",
             "hapax-darkplaces-bridge.service"
+          ]
+        },
+        {
+          "path": "systemd/units/hapax-obs-v4l2-source-reset.service",
+          "anchors": [
+            "--device-id /dev/video50",
+            "--producer-service hapax-darkplaces-v4l2.service",
+            "--max-static-ignore-seconds 15"
           ]
         }
       ],
