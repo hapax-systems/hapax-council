@@ -646,3 +646,191 @@ def test_foreign_repo_path_skips_worktree_bootstrap(harness: dict[str, Path]) ->
     assert head == origin_main, (
         f"foreign repo should ff-merge to origin/main ({origin_main}); got {head}"
     )
+
+
+# ----------------------------------------------------------------------
+# reform-deploy-chain-repair-20260601: post-merge-deploy trigger restore,
+# consecutive-pressure-skip force, and deploy-staleness alarm.
+# ----------------------------------------------------------------------
+
+
+def _advance_origin_externally(
+    harness: dict[str, Path], path: str, content: str, message: str
+) -> str:
+    """Advance origin/main from a THROWAWAY clone, leaving the canonical
+    worktree's local refs/heads/main frozen (production shape: the operator
+    worktree sits on a feature branch, so nothing advances its local main)."""
+    ext = harness["tmp_path"] / f"ext-{message.replace(' ', '-')}"
+    # Clone main EXPLICITLY: the harness remote is `git init --bare` (no
+    # `-b main`), so its HEAD may point at an init-default branch (master) that
+    # doesn't exist. A bare `git clone` then leaves an unborn default branch and
+    # the subsequent `push HEAD:main` is a non-fast-forward root commit (green
+    # locally on git that defaults to main, red in CI that defaults to master).
+    subprocess.run(
+        ["git", "clone", "--branch", "main", str(harness["remote"]), str(ext)],
+        check=True,
+        capture_output=True,
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+        }
+    )
+    target = ext / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content)
+    for cmd in (
+        ["git", "-C", str(ext), "add", path],
+        ["git", "-C", str(ext), "commit", "-m", message],
+        ["git", "-C", str(ext), "push", "origin", "HEAD:main"],
+    ):
+        subprocess.run(cmd, check=True, capture_output=True, env=env)
+    return subprocess.run(
+        ["git", "-C", str(ext), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _rev_parse(repo: Path, ref: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", ref],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def test_rebuild_advances_canonical_main_ref_for_path_trigger(harness: dict[str, Path]) -> None:
+    """The post-merge-deploy .path watches refs/heads/main; rebuild-service must
+    advance that SHARED ref to origin/main. Without it the ref is frozen (the
+    operator worktree is on a feature branch) and the deploy trigger is dead —
+    the reform-deploy-chain-repair root cause."""
+    canonical = harness["canonical"]
+    seed_main = _rev_parse(canonical, "refs/heads/main")
+    # Put canonical on a feature branch so its local main can only move via our
+    # explicit update-ref, never as a side effect of a commit-on-main.
+    _switch_canonical_to_feature_branch(harness)
+    new_sha = _advance_origin_externally(harness, "agents/voice/voice.py", "# advance\n", "advance")
+    assert new_sha != seed_main
+    assert _rev_parse(canonical, "refs/heads/main") == seed_main, "precondition: local main frozen"
+
+    result = _run(harness, service="hapax-daimonion.service")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    assert _rev_parse(canonical, "refs/heads/main") == new_sha, (
+        "rebuild-service must update-ref the shared refs/heads/main to origin/main "
+        "so the .path trigger fires"
+    )
+    loose_ref = canonical / ".git" / "refs" / "heads" / "main"
+    assert loose_ref.is_file(), "a loose refs/heads/main file must exist for PathChanged to watch"
+    log = harness["log_file"].read_text() if harness["log_file"].exists() else ""
+    assert f"advanced refs/heads/main → {new_sha[:8]}" in log
+
+
+def test_rebuild_does_not_rewrite_main_ref_when_already_current(harness: dict[str, Path]) -> None:
+    """Loop-safety: when refs/heads/main already equals origin/main the script
+    must NOT update-ref (no mtime churn → no spurious per-tick .path re-fires)."""
+    canonical = harness["canonical"]
+    # Bootstrap rebuild worktree + leave canonical on main at origin/main HEAD.
+    _add_remote_commit(harness, "agents/voice/voice.py", "# v\n", "v")
+    # canonical is on main and just committed+pushed, so refs/heads/main == origin/main.
+    assert _rev_parse(canonical, "refs/heads/main") == _rev_parse(canonical, "origin/main")
+
+    result = _run(harness, service="hapax-daimonion.service")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    log = harness["log_file"].read_text() if harness["log_file"].exists() else ""
+    assert "advanced refs/heads/main" not in log, (
+        "must not advance the ref when it already matches origin/main"
+    )
+
+
+def test_pressure_skip_counter_progresses_then_forces_restart(harness: dict[str, Path]) -> None:
+    """A permanently-loaded host would skip forever; after N consecutive
+    pressure-skips the restart is FORCED through and the counter resets."""
+    new_sha = _add_remote_commit(harness, "agents/voice/voice.py", "# pressure\n", "pressure")
+    count_file = harness["state_dir"] / "pressure-skip-count-voice"
+    sha_file = harness["state_dir"] / "last-voice-sha"
+    # Defeat the guard's defang and force a pressure condition every run.
+    extra = {
+        "HAPAX_REBUILD_SKIP_GUARD": "0",
+        "HAPAX_REBUILD_LOAD_MAX": "-1",
+        "HAPAX_REBUILD_PRESSURE_SKIP_MAX": "3",
+    }
+
+    for expected in ("1", "2"):
+        result = _run(harness, service="hapax-daimonion.service", extra_env=extra)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert count_file.read_text().strip() == expected
+        assert not sha_file.exists(), "a pressure-skip must not advance the deploy SHA"
+        assert _last_outcome(harness)["outcome"] == "deferred_pressure"
+
+    # Third run hits the cap → force the restart through, reset the counter.
+    result = _run(harness, service="hapax-daimonion.service", extra_env=extra)
+    assert result.returncode == 0, result.stdout + result.stderr
+    log = harness["log_file"].read_text()
+    assert "systemctl --user restart hapax-daimonion.service" in log, "forced restart must fire"
+    assert not count_file.exists(), "counter must reset after a forced restart"
+    assert sha_file.read_text().strip() == new_sha
+
+
+def test_pressure_skip_counter_resets_on_normal_restart(harness: dict[str, Path]) -> None:
+    """A successful non-pressure restart clears any stale consecutive-skip count
+    so the cap only ever measures *consecutive* skips."""
+    _add_remote_commit(harness, "agents/voice/voice.py", "# normal\n", "normal")
+    count_file = harness["state_dir"] / "pressure-skip-count-voice"
+    count_file.write_text("2")
+
+    # Harness default _run sets HAPAX_REBUILD_SKIP_GUARD=1 → no pressure → restart.
+    result = _run(harness, service="hapax-daimonion.service")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "systemctl --user restart hapax-daimonion.service" in harness["log_file"].read_text()
+    assert not count_file.exists(), "a successful non-pressure restart must reset the counter"
+
+
+def test_deploy_staleness_alarm_fires_when_receipt_lags(harness: dict[str, Path]) -> None:
+    """When the post-merge-deploy receipt lags origin/main beyond the threshold,
+    rebuild-service ntfys a high-priority staleness alarm."""
+    seed = _rev_parse(harness["canonical"], "HEAD")
+    new_sha = _add_remote_commit(harness, "logos/api.py", "# advance\n", "advance")
+    assert new_sha != seed
+    receipt = harness["tmp_path"] / "last-deployed-sha"
+    receipt.write_text(seed + "\n")
+    extra = {
+        "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(receipt),
+        "HAPAX_REBUILD_DEPLOY_STALENESS_SEC": "0",
+    }
+
+    result = _run(harness, service="hapax-daimonion.service", extra_env=extra)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    log = harness["log_file"].read_text()
+    assert "post-merge-deploy STALE" in log, "staleness alarm must fire when the receipt lags"
+    # The alarm is throttled per stalled SHA — a notified-state file is written.
+    assert (harness["state_dir"] / "post-merge-deploy-lag-notified-sha").exists()
+
+
+def test_deploy_staleness_alarm_silent_when_caught_up(harness: dict[str, Path]) -> None:
+    """No alarm when the receipt equals origin/main, and the lag state clears."""
+    new_sha = _add_remote_commit(harness, "logos/api.py", "# advance\n", "advance")
+    receipt = harness["tmp_path"] / "last-deployed-sha"
+    receipt.write_text(new_sha + "\n")
+    lag_since = harness["state_dir"] / "post-merge-deploy-lag-since"
+    lag_since.write_text("1")  # stale lag state that a caught-up run must clear
+    extra = {
+        "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH": str(receipt),
+        "HAPAX_REBUILD_DEPLOY_STALENESS_SEC": "0",
+    }
+
+    result = _run(harness, service="hapax-daimonion.service", extra_env=extra)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    log = harness["log_file"].read_text()
+    assert "post-merge-deploy STALE" not in log
+    assert not lag_since.exists(), "a caught-up run must clear the lag-since state"

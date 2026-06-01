@@ -8,12 +8,22 @@ Documentation=file://%h/projects/hapax-council/docs/superpowers/specs/2026-04-13
 # audit: 25 systemd units canonical-but-not-installed because nothing fired
 # hapax-post-merge-deploy after merges.
 #
-# Watching strategy: PathChanged on the canonical local main ref. The ref
-# advances when something runs `git pull` / `git merge --ff-only` against
-# origin/main — which is exactly what rebuild-service.sh does in its primary
-# pull step. So this unit naturally chains: timer fetches + ff-merges main →
-# refs/heads/main mtime advances → path unit fires → service computes the
-# new HEAD sha and runs hapax-post-merge-deploy with it.
+# Watching strategy: PathChanged on the canonical local main ref. That ref is
+# advanced EXPLICITLY by rebuild-service.sh, which `git update-ref
+# refs/heads/main origin/main`s the SHARED ref after fast-forwarding its
+# detached rebuild worktree (git worktrees share refs/heads/). The chain:
+# timer fetches origin/main → rebuild-service.sh update-refs refs/heads/main →
+# refs/heads/main changes → path unit fires → service resolves origin/main and
+# runs hapax-post-merge-deploy.
+#
+# ROOT-CAUSE NOTE (reform-deploy-chain-repair, 2026-06-01): before that explicit
+# update-ref, NOTHING advanced refs/heads/main — the canonical worktree sits on
+# a feature branch and the rebuild worktree only resets a DETACHED HEAD. The ref
+# was frozen tens of commits behind origin/main AND packed-only (no loose
+# .git/refs/heads/main file existed at all), so PathChanged could never fire and
+# the systemd-units / pipewire-confs / scripts side of every merge silently
+# never installed. The update-ref restores both the loose ref file and a live
+# trigger; the .service resolves origin/main so it is correct even if the ref lags.
 #
 # Loop-safety: hapax-post-merge-deploy writes to ~/.config/systemd/user/,
 # ~/.config/pipewire/, ~/.local/bin/, and ~/.cache/hapax/post-merge-traces/.
@@ -22,11 +32,11 @@ Documentation=file://%h/projects/hapax-council/docs/superpowers/specs/2026-04-13
 # fire. Belt-and-braces guard: hapax-post-merge-deploy.service carries
 # StartLimitIntervalSec=60 / StartLimitBurst=3.
 #
-# Migration note: rebuild-service.sh now runs council deploy checks from the
-# dedicated rebuild worktree at $HOME/.cache/hapax/rebuild/worktree/. The
-# watched ref remains the shared .git/refs/heads/main file because git
-# worktrees share refs/heads/, so the path trigger still fires when the deploy
-# worktree advances local main.
+# Migration note: rebuild-service.sh runs council deploy checks from the
+# dedicated rebuild worktree at $HOME/.cache/hapax/rebuild/worktree/ and, after
+# resetting it to origin/main, update-refs the shared refs/heads/main so this
+# path trigger fires. The watched ref remains the shared .git/refs/heads/main
+# file because git worktrees share refs/heads/.
 
 [Path]
 PathChanged=/home/hapax/projects/hapax-council/.git/refs/heads/main
