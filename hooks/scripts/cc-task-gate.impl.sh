@@ -103,29 +103,204 @@ tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || e
 bash_cmd=""
 mutation_surface_hint="source"
 
-bash_is_mutating() {
-  local cmd="$1"
-  # Match known write/runtime/release families. Read-only shell remains
-  # available without a claim so blocked lanes can inspect and report state.
-  printf '%s' "$cmd" | grep -Eiq \
-    '(^|[;&|()[:space:]])((git[[:space:]]+(commit|push|apply|reset|checkout|switch|branch|merge|rebase|tag))|(gh[[:space:]]+(api|pr[[:space:]]+(create|merge|edit|close|reopen)|repo|release))|(python[0-9.]*[[:space:]]*<<)|(python[0-9.]*[[:space:]].*(-c|--command).*([.]write_text|[.]write_bytes|open\(|shutil[.]|os[.](remove|unlink|rename|replace)|Path\())|(sed[[:space:]].*-i)|(perl[[:space:]].*-p?i)|(tee([[:space:]]|$))|(cat[[:space:]].*>[[:space:]])|(cp|install|touch|truncate|chmod|chown|mkdir|rm|mv)([[:space:]]|$)|(uv[[:space:]]+pip[[:space:]]+install)|(pip3?[[:space:]]+install)|(pacman|paru|apt|dnf|npm|pnpm|yarn)([[:space:]]|$)|(systemctl|journalctl[[:space:]].*--vacuum|ssh|scp|rsync|docker[[:space:]]+(compose[[:space:]])?(up|down|restart|rm|run|exec)|kill|pkill)([[:space:]]|$))'
+# --- Argument-aware bash classifier (FM-16) -----------------------------------
+# The legacy classifier grep-scanned the WHOLE command line, so a mutation verb
+# that appeared only inside a quoted ARGUMENT (e.g. a `grep -E 'git reset|x'`
+# pattern — whose interior `|` was even read as a command separator) or a purely
+# read-only `systemctl is-active` was misclassified as a mutation, blocking the
+# very inspection a blocked/roleless lane needs to report state (the gate's own
+# comment promised "read-only shell remains available" — FM-16 broke that).
+#
+# These helpers classify the EXECUTED COMMAND HEAD of each simple command: quoted
+# spans + comments are stripped (so verbs/separators inside them are inert), the
+# line is split on shell separators (; | & ( )), and each segment's leading
+# command word is matched against known families. Pure readers (grep/cat/ls/find/
+# awk, git log/show/diff/status/rev-list/ls-tree/branch/merge-base, systemctl
+# is-active/status/show/list-*, journalctl without --vacuum) match nothing and
+# pass. This mirrors the argument-aware classifier in shared/policy_decide.py
+# (`_bash_is_mutating`/`_bash_is_runtime`/`_bash_is_source_scope`) so the Phase-3b
+# shadow→cutover is verdict-stable on this corpus.
+
+# systemctl subcommands that mutate runtime state. Mirrors journalctl's
+# --vacuum-only pattern: everything else (is-active/is-enabled/is-failed/status/
+# show/cat/list-*/get-default/…) is a read and stays available without a claim.
+_systemctl_subcmd_mutates() {
+  case "$1" in
+    start|stop|restart|try-restart|reload|reload-or-restart|force-reload \
+      | enable|disable|reenable|preset|preset-all|mask|unmask|link|revert \
+      | set-property|set-default|isolate|kill|clean|freeze|thaw \
+      | daemon-reload|daemon-reexec|edit|switch-root|default \
+      | reboot|poweroff|halt|kexec|suspend|hibernate|hybrid-sleep|emergency|rescue) return 0 ;;
+  esac
+  return 1
 }
 
+# docker subcommands that mutate container/image/runtime state (docker ps/logs/
+# inspect/images/version remain reads). Covers `docker compose <verb>` too.
+_docker_subcmd_mutates() {
+  case "$1" in
+    up|down|start|stop|restart|kill|rm|rmi|run|exec|create|build|pull|push|load|import|prune|compose) return 0 ;;
+  esac
+  return 1
+}
+
+# `git branch` lists/shows by default (a read); it mutates only when it deletes,
+# renames, copies, force-updates, (re)sets upstream, or names a (new) branch to
+# create. Plain `git branch [-a|-r|-v|--show-current|--list|--contains X]` stays
+# readable. (FM-16 reader whitelist — branch creation is also governed by the
+# dedicated no-stale-branches hook.)
+_git_branch_mutates() { # args AFTER the `branch` subcommand
+  local a prev_value_flag=0
+  for a in "$@"; do
+    case "$a" in
+      -d | -D | --delete | -m | -M | --move | -c | -C | --copy | -f | --force \
+        | --edit-description | -u | --set-upstream-to | --set-upstream-to=* | --unset-upstream) return 0 ;;
+      --contains | --no-contains | --merged | --no-merged | --points-at | --sort | --format | --list | --column)
+        prev_value_flag=1 ;;
+      -*) prev_value_flag=0 ;;
+      *)
+        [[ "$prev_value_flag" == 1 ]] && { prev_value_flag=0; continue; }
+        return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# Emit each simple command (one per line) with quoted spans + comments removed.
+# Mirrors the proven strip at the source-scope call site (sed -z spans newlines,
+# so multi-line "$(cat <<'EOF'…)" payloads collapse) and additionally splits on
+# the shell command separators ; | & ( ) so a verb inside a quoted arg can no
+# longer read as its own command. `||`/`&&` collapse to blank segments (skipped).
+_bash_segments() {
+  # Trailing newline is REQUIRED: `while read` skips a final line with no newline,
+  # which would drop the (sole) segment of every un-piped command.
+  printf '%s\n' "$1" \
+    | sed -zE "s/'[^']*'//g; s/\"[^\"]*\"//g; s/(^|[[:space:]])#[^\n]*//g" \
+    | tr ';|&()' '\n'
+}
+
+# Resolve a segment's executed command HEAD into _HEAD, with the remaining tokens
+# in _ARGS. Skips leading VAR=val assignments and wrapper words (sudo/env/nohup/…)
+# so `sudo systemctl restart x` still classifies on `systemctl`. _HEAD is "" when
+# the segment has no command word.
+_bash_seg_head() {
+  _HEAD=""
+  _ARGS=()
+  local -a _toks=()
+  # `read` hits EOF on the here-string and returns 1; tolerate under `set -e`.
+  read -r -a _toks <<<"$1" || true
+  local i=0 n=${#_toks[@]}
+  while ((i < n)); do
+    case "${_toks[i]}" in
+      *=* | sudo | doas | env | command | builtin | nohup | time | exec | nice | ionice | stdbuf | setsid) i=$((i + 1)) ;;
+      -*) i=$((i + 1)) ;;
+      *) break ;;
+    esac
+  done
+  if ((i < n)); then
+    _HEAD="${_toks[i]}"
+    _ARGS=("${_toks[@]:i+1}")
+  fi
+}
+
+# True if a sed/perl segment carries an in-place-edit flag (the only mutating
+# form). The segment is already quote-stripped, so an `i`/`-i` inside a quoted
+# script/pattern cannot trip this — only a real `-i`/`--in-place`/`-pi` flag does.
+_seg_has_inplace() {
+  local head="$1" seg="$2"
+  case "$head" in
+    sed) [[ "$seg" =~ (^|[[:space:]])(-i|--in-place) ]] && return 0 ;;
+    perl) [[ "$seg" =~ (^|[[:space:]])-[[:alpha:]]*i ]] && return 0 ;;
+  esac
+  return 1
+}
+
+# True if a python command line writes the filesystem. `cmd` is passed verbatim
+# from the caller (RAW for is_mutating, pre-stripped for the scope check) so the
+# raw-vs-stripped asymmetry holds: `python3 -c "open(...)"` is a claim-gated
+# mutation (raw has the marker) but is NOT source-scope-blocked (the stripped
+# form drops the quoted payload), while a bare heredoc writer still blocks.
+_py_writes() {
+  local cmd="$1"
+  [[ "$cmd" == *"<<"* ]] && return 0
+  case "$cmd" in
+    *.write_text* | *.write_bytes* | *"open("* | *"shutil."* \
+      | *"os.remove"* | *"os.unlink"* | *"os.rename"* | *"os.replace"* | *"Path("*) return 0 ;;
+  esac
+  return 1
+}
+
+# Runtime/system-state mutations (need runtime_mutation_authorized): package
+# installs, remote shells, process signals, container/service lifecycle. systemctl
+# and docker are subcommand-gated; journalctl only on --vacuum.
 bash_is_runtime_mutation() {
-  local cmd="$1"
-  printf '%s' "$cmd" | grep -Eiq \
-    '(^|[;&|()[:space:]])((systemctl)|(ssh|scp|rsync)([[:space:]]|$)|(uv[[:space:]]+pip[[:space:]]+install)|(pip3?[[:space:]]+install)|(pacman|paru|apt|dnf)([[:space:]]|$)|(docker[[:space:]]+(compose[[:space:]])?(up|down|restart|rm|run|exec))|(kill|pkill)([[:space:]]|$))'
+  local cmd="$1" seg a
+  while IFS= read -r seg; do
+    [[ -z "${seg// /}" ]] && continue
+    _bash_seg_head "$seg"
+    [[ -z "$_HEAD" ]] && continue
+    case "$_HEAD" in
+      ssh | scp | rsync | kill | pkill | pacman | paru | apt | dnf) return 0 ;;
+      systemctl) for a in "${_ARGS[@]}"; do _systemctl_subcmd_mutates "$a" && return 0; done ;;
+      docker) for a in "${_ARGS[@]}"; do _docker_subcmd_mutates "$a" && return 0; done ;;
+      journalctl) for a in "${_ARGS[@]}"; do [[ "$a" == --vacuum* ]] && return 0; done ;;
+      uv) [[ " ${_ARGS[*]} " == *" pip "* && " ${_ARGS[*]} " == *" install "* ]] && return 0 ;;
+      pip | pip3) [[ " ${_ARGS[*]} " == *" install "* ]] && return 0 ;;
+    esac
+  done < <(_bash_segments "$cmd")
+  return 1
 }
 
+# True for any claim-gated mutation: a runtime mutation OR a source/VCS write.
+# npm/pnpm/yarn stay claim-gated-but-not-runtime (matching the legacy gate, so a
+# claimed `pnpm tauri build` is not newly forced to carry runtime authorization).
+bash_is_mutating() {
+  local cmd="$1" seg
+  bash_is_runtime_mutation "$cmd" && return 0
+  while IFS= read -r seg; do
+    [[ -z "${seg// /}" ]] && continue
+    _bash_seg_head "$seg"
+    [[ -z "$_HEAD" ]] && continue
+    case "$_HEAD" in
+      npm | pnpm | yarn) return 0 ;;
+      tee | cp | install | touch | truncate | chmod | chown | mkdir | rm | mv | dd) return 0 ;;
+      sed | perl) _seg_has_inplace "$_HEAD" "$seg" && return 0 ;;
+      cat) [[ "$seg" == *">"* ]] && return 0 ;;
+      git)
+        case "${_ARGS[0]:-}" in
+          branch) _git_branch_mutates "${_ARGS[@]:1}" && return 0 ;;
+          apply | reset | merge | rebase | restore | commit | push | checkout | switch | tag | add | stash | rm | mv) return 0 ;;
+        esac ;;
+      gh)
+        case "${_ARGS[0]:-}" in
+          api | repo | release) return 0 ;;
+          pr) case "${_ARGS[1]:-}" in create | merge | edit | close | reopen) return 0 ;; esac ;;
+        esac ;;
+      python*) _py_writes "$cmd" && return 0 ;;
+    esac
+  done < <(_bash_segments "$cmd")
+  return 1
+}
+
+# True for source-tree writes that must fall inside the task's mutation_scope_refs.
+# Excludes git ref ops (checkout/switch/branch write no source — the FM-16 fix,
+# matching policy_decide's _GIT_SOURCE_SUBCMDS); per-segment splitting means a
+# `sed -i` cannot borrow its flag from a downstream piped command.
 bash_source_mutation_requires_scope() {
-  local cmd="$1"
-  # The sed/perl/cat sub-patterns are anchored with [^|;&]* (not greedy .*) so the
-  # mutating flag/redirect must belong to the sed/perl/cat invocation itself and
-  # cannot be borrowed from a downstream command across a pipe or separator. This
-  # kills the `sed 's/x/y/' f | grep -iE p` false positive (the `-i` there is grep's)
-  # while keeping a real `sed -i …` / `cat … > f` blocked. (FR-BASH-MUTATION-FALSE-POSITIVES)
-  printf '%s' "$cmd" | grep -Eiq \
-    '(^|[;&|()[:space:]])((git[[:space:]]+(apply|reset|checkout|switch|merge|rebase))|(python[0-9.]*[[:space:]]*<<)|(python[0-9.]*[[:space:]].*(-c|--command).*([.]write_text|[.]write_bytes|open\(|shutil[.]|os[.](remove|unlink|rename|replace)|Path\())|(sed[[:space:]][^|;&]*-i)|(perl[[:space:]][^|;&]*-p?i)|(tee([[:space:]]|$))|(cat[[:space:]][^|;&]*>[[:space:]])|(cp|install|touch|truncate|chmod|chown|mkdir|rm|mv)([[:space:]]|$))'
+  local cmd="$1" seg
+  while IFS= read -r seg; do
+    [[ -z "${seg// /}" ]] && continue
+    _bash_seg_head "$seg"
+    [[ -z "$_HEAD" ]] && continue
+    case "$_HEAD" in
+      tee | cp | install | touch | truncate | chmod | chown | mkdir | rm | mv | dd) return 0 ;;
+      sed | perl) _seg_has_inplace "$_HEAD" "$seg" && return 0 ;;
+      cat) [[ "$seg" == *">"* ]] && return 0 ;;
+      git) case "${_ARGS[0]:-}" in apply | reset | merge | rebase | restore) return 0 ;; esac ;;
+      python*) _py_writes "$cmd" && return 0 ;;
+    esac
+  done < <(_bash_segments "$cmd")
+  return 1
 }
 
 github_tool_is_mutating() {

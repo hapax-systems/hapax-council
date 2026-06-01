@@ -97,26 +97,116 @@ _UNCONDITIONAL_SOURCE_CMDS = frozenset(
 #: git subcommands that mutate the WORKING TREE (need scope), vs ref/index/remote ops.
 _GIT_SOURCE_SUBCMDS = frozenset({"apply", "reset", "merge", "rebase", "restore"})
 #: git subcommands that mutate git state but write no source (so are NOT scope-bound).
+#: ``branch`` is argument-aware (see ``_git_branch_mutates``): list/show forms read.
 _GIT_MUTATING_SUBCMDS = _GIT_SOURCE_SUBCMDS | frozenset(
-    {"commit", "push", "checkout", "switch", "branch", "tag", "add", "stash", "rm", "mv"}
+    {"commit", "push", "checkout", "switch", "tag", "add", "stash", "rm", "mv"}
 )
-#: Command heads that mutate runtime/system state (need runtime authorization).
-_RUNTIME_CMDS = frozenset(
+#: ``git branch`` flags that mutate (delete/rename/copy/force/upstream); any other
+#: form (list/show/--contains/…) is a read.
+_GIT_BRANCH_MUTATING_FLAGS = frozenset(
     {
-        "systemctl",
-        "ssh",
-        "scp",
-        "rsync",
+        "-d",
+        "-D",
+        "--delete",
+        "-m",
+        "-M",
+        "--move",
+        "-c",
+        "-C",
+        "--copy",
+        "-f",
+        "--force",
+        "--edit-description",
+        "-u",
+        "--set-upstream-to",
+        "--unset-upstream",
+    }
+)
+#: ``git branch`` flags whose following positional is a VALUE, not a new branch name.
+_GIT_BRANCH_READ_VALUE_FLAGS = frozenset(
+    {
+        "--contains",
+        "--no-contains",
+        "--merged",
+        "--no-merged",
+        "--points-at",
+        "--sort",
+        "--format",
+        "--list",
+        "--column",
+    }
+)
+#: Command heads that ALWAYS mutate runtime/system state. systemctl/docker/
+#: journalctl are subcommand-gated separately (a read like ``systemctl is-active``
+#: or ``docker ps`` is NOT a mutation) — the FM-16 argument-aware fix.
+_RUNTIME_CMDS = frozenset(
+    {"ssh", "scp", "rsync", "kill", "pkill", "pacman", "paru", "apt", "dnf", "npm", "pnpm", "yarn"}
+)
+#: systemctl subcommands that mutate runtime state (mirror journalctl's --vacuum-
+#: only rule: every other subcommand — is-active/status/show/list-*/… — is a read).
+_SYSTEMCTL_MUTATING_SUBCMDS = frozenset(
+    {
+        "start",
+        "stop",
+        "restart",
+        "try-restart",
+        "reload",
+        "reload-or-restart",
+        "force-reload",
+        "enable",
+        "disable",
+        "reenable",
+        "preset",
+        "preset-all",
+        "mask",
+        "unmask",
+        "link",
+        "revert",
+        "set-property",
+        "set-default",
+        "isolate",
         "kill",
-        "pkill",
-        "docker",
-        "pacman",
-        "paru",
-        "apt",
-        "dnf",
-        "npm",
-        "pnpm",
-        "yarn",
+        "clean",
+        "freeze",
+        "thaw",
+        "daemon-reload",
+        "daemon-reexec",
+        "edit",
+        "switch-root",
+        "default",
+        "reboot",
+        "poweroff",
+        "halt",
+        "kexec",
+        "suspend",
+        "hibernate",
+        "hybrid-sleep",
+        "emergency",
+        "rescue",
+    }
+)
+#: docker subcommands that mutate container/image/runtime state (ps/logs/inspect
+#: stay reads); also matches ``docker compose <verb>``.
+_DOCKER_MUTATING_SUBCMDS = frozenset(
+    {
+        "up",
+        "down",
+        "start",
+        "stop",
+        "restart",
+        "kill",
+        "rm",
+        "rmi",
+        "run",
+        "exec",
+        "create",
+        "build",
+        "pull",
+        "push",
+        "load",
+        "import",
+        "prune",
+        "compose",
     }
 )
 _GH_MUTATING_SUBCMDS = frozenset({"api", "repo", "release"})
@@ -143,6 +233,15 @@ def _bash_is_runtime(command: str) -> bool:
     if not tokens:
         return False
     head = tokens[0]
+    rest = tokens[1:]
+    # Subcommand-gated runtime heads: a read (systemctl is-active, docker ps,
+    # journalctl -n) is NOT a runtime mutation — only the mutating subcommands are.
+    if head == "systemctl":
+        return any(t in _SYSTEMCTL_MUTATING_SUBCMDS for t in rest)
+    if head == "docker":
+        return any(t in _DOCKER_MUTATING_SUBCMDS for t in rest)
+    if head == "journalctl":
+        return any(t.startswith("--vacuum") for t in rest)
     if head in _RUNTIME_CMDS:
         return True
     if head == "uv" and "pip" in tokens and "install" in tokens:
@@ -171,6 +270,27 @@ def _bash_is_source_scope(command: str) -> bool:
     return False
 
 
+def _git_branch_mutates(args: list[str]) -> bool:
+    """``git branch`` mutates only on delete/rename/copy/force/upstream or a positional
+    (new) branch name; list/show forms (-a/-v/--show-current/--contains X/…) are reads.
+    The FM-16 reader whitelist — branch creation is also gated by no-stale-branches."""
+    prev_value_flag = False
+    for arg in args:
+        if arg in _GIT_BRANCH_MUTATING_FLAGS or arg.startswith("--set-upstream-to="):
+            return True
+        if arg in _GIT_BRANCH_READ_VALUE_FLAGS:
+            prev_value_flag = True
+            continue
+        if arg.startswith("-"):
+            prev_value_flag = False
+            continue
+        if prev_value_flag:  # the value of a read flag (e.g. --contains HEAD), not a name
+            prev_value_flag = False
+            continue
+        return True  # a positional → a (new) branch name to create/operate on
+    return False
+
+
 def _bash_is_mutating(command: str) -> bool:
     tokens = _head_tokens(command)
     if not tokens:
@@ -182,8 +302,11 @@ def _bash_is_mutating(command: str) -> bool:
         return _bash_is_source_scope(command)
     if _bash_is_runtime(command):
         return True
-    if head == "git" and len(tokens) > 1 and tokens[1] in _GIT_MUTATING_SUBCMDS:
-        return True
+    if head == "git" and len(tokens) > 1:
+        if tokens[1] == "branch":
+            return _git_branch_mutates(tokens[2:])
+        if tokens[1] in _GIT_MUTATING_SUBCMDS:
+            return True
     if head == "gh" and len(tokens) > 1:
         sub = tokens[1]
         if sub in _GH_MUTATING_SUBCMDS:
@@ -530,10 +653,16 @@ def _decide(
 
 # --- The legacy bash classifier (the FM-16 locus — ported verbatim) -----------
 #
-# These two regexes are copied byte-for-semantics from the LIVE cc-task-gate.sh
-# (bash_is_mutating + bash_source_mutation_requires_scope) so the shadow harness
-# can compute exactly the legacy verdict and diff it against policy_decide. They
-# are deliberately the over-broad substring classifiers policy_decide replaces.
+# These regexes are the PRE-FM-16 over-broad substring classifier — the snapshot
+# the shadow harness diffs against to produce cutover evidence, and the example the
+# divergence demo (TestShadowCompare) pins. They are deliberately NOT converged onto
+# the now argument-aware classifier above: the live gate already shipped the FM-16
+# fix (argument-aware systemctl/git/quoted-arg handling), so the production shadow's
+# legacy baseline is the gate's REAL exit code (see cc-task-gate.impl.sh §3c), not a
+# re-derivation here. The remaining legacy→modern convergence (retiring these REs)
+# is owned by reform-policy-decide-converge-20260601. Cutover stays verdict-stable
+# because the ACTIVE classifier (_bash_is_mutating/_bash_is_runtime) matches the new
+# bash gate on the read-only corpus — pinned by the parity test in tests/hooks/.
 
 _LEGACY_MUTATING_RE = re.compile(
     r"(^|[;&|()\s])((git\s+(commit|push|apply|reset|checkout|switch|branch|merge|rebase|tag))"

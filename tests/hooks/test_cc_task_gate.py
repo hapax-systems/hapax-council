@@ -1471,3 +1471,230 @@ class TestGateDecisionLog:
         summary = replay_decision_log(log, tmp_path / "shadow.jsonl")
         assert summary["total"] == 1
         assert summary["divergences"] == 0
+
+
+# Read subcommands a blocked/roleless lane MUST be able to run to inspect + report
+# state, and the mutating subcommands that MUST still require a claim+authorization.
+# The audit (cluster 6) found the legacy substring classifier blocked ALL of these.
+_SYSTEMCTL_READS = [
+    "is-active",
+    "is-enabled",
+    "is-failed",
+    "status",
+    "show",
+    "cat",
+    "list-units",
+    "list-timers",
+    "list-unit-files",
+    "get-default",
+]
+_SYSTEMCTL_MUTATES = ["start", "stop", "restart", "enable", "disable"]
+
+
+class TestArgumentAwareReadOnlyCarveOut:
+    """FM-16: a roleless, claimless session can run read-only diagnostics whose
+    ARGUMENTS merely contain mutation-verb substrings (the gate's own promise that
+    'read-only shell remains available so blocked lanes can inspect and report')."""
+
+    @pytest.mark.parametrize("sub", _SYSTEMCTL_READS)
+    def test_roleless_systemctl_read_subcommand_allowed(self, tmp_path: Path, sub: str) -> None:
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": f"systemctl --user {sub} hapax-logos"}},
+            role=None,
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"systemctl {sub} blocked: {result.stderr}"
+
+    def test_roleless_grep_with_mutation_pattern_allowed(self, tmp_path: Path) -> None:
+        # The case-in-chief: a `|` inside the quoted -E pattern must NOT read as a
+        # command separator that turns `checkout -b` into a fresh mutating command.
+        result = _run_hook(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "grep -E 'git reset|checkout -b' /tmp/x"},
+            },
+            role=None,
+            home=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_roleless_git_merge_base_allowed(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "git merge-base --is-ancestor HEAD origin/main"},
+            },
+            role=None,
+            home=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git log --oneline -5",
+            "git show HEAD --stat",
+            "git diff origin/main",
+            "git branch --show-current",
+            "git branch -a",
+            "docker ps",
+            "journalctl --user -u svc -n 50",
+            "grep -rn 'os.remove' shared/",
+        ],
+    )
+    def test_roleless_pure_reader_allowed(self, tmp_path: Path, command: str) -> None:
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": command}},
+            role=None,
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"{command!r} blocked: {result.stderr}"
+
+
+class TestArgumentAwareMutationsStillBlocked:
+    """No regression: the mutating systemctl subcommands stay claim+runtime gated."""
+
+    @pytest.mark.parametrize("sub", _SYSTEMCTL_MUTATES)
+    def test_roleless_systemctl_mutation_blocked(self, tmp_path: Path, sub: str) -> None:
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": f"systemctl --user {sub} svc"}},
+            role=None,
+            home=tmp_path,
+        )
+        assert result.returncode == 2, f"systemctl {sub} should be blocked roleless"
+
+    @pytest.mark.parametrize("sub", _SYSTEMCTL_MUTATES)
+    def test_claimed_systemctl_mutation_needs_runtime_auth(self, tmp_path: Path, sub: str) -> None:
+        # Stronger than "roleless blocks": with a valid claim but no runtime auth the
+        # mutation reaches — and is denied at — the RUNTIME gate, proving it is still
+        # classified as a runtime mutation (not merely blocked for lack of a role).
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")  # runtime_authorized=False
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": f"systemctl --user {sub} svc"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+        assert "does not authorize runtime mutation" in result.stderr
+
+    def test_claimed_systemctl_read_allowed_without_runtime_auth(self, tmp_path: Path) -> None:
+        # The read/mutate split on one fixture: the same claim that cannot `restart`
+        # (above) CAN `is-active` — the read never reaches the runtime gate.
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "systemctl --user is-active svc"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_roleless_git_branch_delete_blocked(self, tmp_path: Path) -> None:
+        # `git branch -D` mutates (deletes a ref) — it must stay claim-gated even
+        # though plain `git branch`/`--show-current` are reads.
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "git branch -D oldbranch"}},
+            role=None,
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+
+
+class TestPolicyDecideBashParity:
+    """AC #5: policy_decide's argument-aware command classification matches the bash
+    gate on the same read-only corpus, so the Phase-3b shadow→cutover is verdict
+    stable (the gate ALLOWS reads / BLOCKS mutations; policy_decide agrees)."""
+
+    READ_ONLY = [
+        "systemctl --user is-active svc",
+        "systemctl --user status svc",
+        "systemctl --user list-timers",
+        "systemctl --user show svc",
+        "grep -E 'git reset|checkout -b' /tmp/x",
+        "git merge-base --is-ancestor HEAD origin/main",
+        "git log --oneline -5",
+        "git branch --show-current",
+        "docker ps",
+        "journalctl --user -u svc -n 50",
+        "cat /tmp/x",
+        "ls -la",
+    ]
+    RUNTIME_MUTATIONS = [
+        "systemctl --user start svc",
+        "systemctl --user restart svc",
+        "systemctl --user enable svc",
+        "systemctl daemon-reload",
+        "docker compose up -d",
+        "journalctl --vacuum-time=2d",
+    ]
+
+    @pytest.mark.parametrize("command", READ_ONLY)
+    def test_readonly_corpus_parity(self, tmp_path: Path, command: str) -> None:
+        from shared.policy_decide import _bash_is_mutating
+
+        # policy_decide: not a mutation.
+        assert _bash_is_mutating(command) is False, f"policy_decide flags {command!r} as mutating"
+        # bash gate: allowed (a roleless, claimless lane may run it).
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": command}}, role=None, home=tmp_path
+        )
+        assert result.returncode == 0, f"gate blocked read-only {command!r}: {result.stderr}"
+
+    @pytest.mark.parametrize("command", RUNTIME_MUTATIONS)
+    def test_runtime_mutation_corpus_parity(self, tmp_path: Path, command: str) -> None:
+        from shared.policy_decide import _bash_is_mutating, _bash_is_runtime
+
+        # policy_decide: a runtime mutation.
+        assert _bash_is_mutating(command) is True, f"policy_decide misses mutation {command!r}"
+        assert _bash_is_runtime(command) is True, f"policy_decide misses runtime {command!r}"
+        # bash gate: denied at the runtime gate for a claim lacking runtime auth.
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook({"tool_name": "Bash", "tool_input": {"command": command}}, home=tmp_path)
+        assert result.returncode == 2
+        assert "does not authorize runtime mutation" in result.stderr
+
+
+class TestBashClassifierQuoteAndPipeParity:
+    """Rewrite-preservation: the argument-aware classifier must keep the raw-vs-
+    stripped asymmetry (a write-marker inside a quoted -c payload is a claim-gated
+    mutation but NOT a source-scope block) and must not borrow a flag across a pipe."""
+
+    def test_python_dash_c_quoted_open_is_allowed_for_claimed_lane(self, tmp_path: Path) -> None:
+        # `open(` lives only inside the quoted -c payload → mutating (needs a claim,
+        # which we hold) but the stripped form drops it, so it is NOT scope-blocked.
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        cmd = "python3 -c \"import sys; open('/tmp/verify','w').write(sys.stdin.read())\""
+        result = _run_hook({"tool_name": "Bash", "tool_input": {"command": cmd}}, home=tmp_path)
+        assert result.returncode == 0, result.stderr
+
+    def test_python_heredoc_open_is_source_scope_blocked(self, tmp_path: Path) -> None:
+        # Fail-closed preserved: an unquoted heredoc writer is a real source mutation
+        # outside the declared scope (/tmp/x), so it blocks at the scope gate.
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        cmd = "python3 <<'PYEOF'\nopen('out.txt', 'w').write('x')\nPYEOF"
+        result = _run_hook({"tool_name": "Bash", "tool_input": {"command": cmd}}, home=tmp_path)
+        assert result.returncode == 2
+        assert "mutation_scope_refs" in result.stderr
+
+    def test_sed_in_quotes_piped_to_grep_i_is_not_a_false_positive(self, tmp_path: Path) -> None:
+        # The `-i` belongs to grep, not sed; per-segment classification must not let
+        # a downstream flag make the upstream `sed` look in-place. Roleless → allowed.
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "sed 's/x/y/' f | grep -iE pat"}},
+            role=None,
+            home=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_real_sed_inplace_still_scope_blocked(self, tmp_path: Path) -> None:
+        # The complement: a genuine `sed -i` outside scope still blocks (no over-relax).
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "sed -i 's/a/b/' /etc/hosts"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+        assert "mutation_scope_refs" in result.stderr
