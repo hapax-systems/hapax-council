@@ -316,6 +316,15 @@ _FormalGovernanceOperationRecord._aware
 _export_formal_governance_runtime
 _formal_constraint_template_frontmatter
 
+# The daemon-down escape decision is the L3 hook-shim's grant carve-out expressed
+# in Python (SDLC reform §4.5 / INV-4): evaluate the kernel-down floor, then honor
+# a signed escape grant that overrides a block. It is exercised by the daemon-kill
+# chaos test and is the contract the coord grant-escape bash shim (R3) calls; there
+# is no in-tree static caller yet, so vulture cannot see the call sites.
+from shared.sdlc_invariants import decide_with_escape as _decide_with_escape
+
+_decide_with_escape
+
 # Audio reactivity runtime witness fixture validators are invoked by Pydantic
 # model validation when loading the fixture packet.
 _RuntimeAudioLedgerRowFixture._validate_active_source_evidence
