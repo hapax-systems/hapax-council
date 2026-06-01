@@ -200,6 +200,14 @@ class TestInputSettings:
         assert reset_mod._nonnegative_seconds("0") == 0.0
         assert reset_mod._nonnegative_seconds("75") == 75.0
 
+    def test_positive_int_rejects_non_positive_values(self, reset_mod: types.ModuleType) -> None:
+        with pytest.raises(reset_mod.argparse.ArgumentTypeError):
+            reset_mod._positive_int("0")
+        with pytest.raises(reset_mod.argparse.ArgumentTypeError):
+            reset_mod._positive_int("-1")
+
+        assert reset_mod._positive_int("320") == 320
+
     def test_apply_input_settings_supports_keyword_obsws_client(
         self, reset_mod: types.ModuleType
     ) -> None:
@@ -367,6 +375,41 @@ class TestObswsCompatibility:
         assert probe.state is reset_mod.SourceState.HEALTHY
         assert probe.source_active is True
         assert probe.screenshot_available is True
+
+    def test_probe_uses_configured_screenshot_dimensions(self, reset_mod: types.ModuleType) -> None:
+        calls: list[tuple[int, int, int]] = []
+
+        class PositionalClient:
+            def get_source_active(self, source_name: str):
+                assert source_name == "Video Capture Device (V4L2)"
+                return MagicMock(video_active=True)
+
+            def get_source_screenshot(
+                self,
+                source_name: str,
+                image_format: str,
+                image_width: int,
+                image_height: int,
+                quality: int,
+            ):
+                assert source_name == "Video Capture Device (V4L2)"
+                assert image_format == "png"
+                calls.append((image_width, image_height, quality))
+                return MagicMock(image_data="frame")
+
+        probe = reset_mod._probe_source(
+            PositionalClient(),
+            "Video Capture Device (V4L2)",
+            previous_hash=None,
+            hash_stable_since=10.0,
+            now=15.0,
+            screenshot_width=320,
+            screenshot_height=180,
+            screenshot_quality=75,
+        )
+
+        assert probe.state is reset_mod.SourceState.HEALTHY
+        assert calls == [(320, 180, 75)]
 
     def test_scene_toggle_supports_positional_obsws_client(
         self, reset_mod: types.ModuleType
