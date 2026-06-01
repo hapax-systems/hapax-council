@@ -103,6 +103,26 @@ STORM_MAX_ENTRIES_TO_BUILD = 1
 STEADY_MAX_ENTRIES_TO_BUILD = 6
 FAILED_MERGE_GROUP_CONCLUSIONS = {"failure", "timed_out", "startup_failure", "cancelled"}
 
+# Shared-file epic serialization — single-lane affinity (CASE-SBCL-CLOG-COORD-001).
+# The CLOG/Trainyard cockpit epic is a parallel dependency DAG whose branches all
+# mutate one shared file (src/dashboard.lisp); two lanes editing it concurrently
+# merge-conflict by construction (dependency closure alone does not serialize the
+# siblings). A task joins a serialized epic via an explicit ``epic_serialize``
+# frontmatter field OR by its ``parent_spec`` basename matching the registry
+# below — so an existing epic is covered without editing every member note. The
+# autoqueue then holds admission of an epic PR while a sibling epic task is
+# concurrently in flight in a DIFFERENT lane (the actual hazard); same-lane serial
+# work is never held, and a deterministic lowest-PR tiebreak keeps two
+# different-lane epic PRs from dead-holding each other.
+SHARED_FILE_EPIC_PARENT_SPECS = {
+    # parent_spec basename -> serialized-epic id (the shared file it contends on)
+    "clog-frontend-elevation-design-2026-06-01.md": "clog-dashboard-lisp",
+}
+EPIC_INFLIGHT_STATUSES = frozenset(
+    {"claimed", "in_progress", "pr_open", "in_review", "merge_queue", "ready_for_merge"}
+)
+EPIC_UNASSIGNED_LANES = {"unassigned", "null", "none", "~", ""}
+
 
 def default_repo_root() -> Path:
     raw = (
@@ -159,6 +179,9 @@ class TaskNote:
     kind: str | None
     tags: tuple[str, ...] = ()
     queue_admission: str | None = None
+    assigned_to: str | None = None
+    lane_affinity: str | None = None
+    epic_serialize: str | None = None
     frontmatter: dict[str, Any] = field(default_factory=dict)
 
 
@@ -522,6 +545,9 @@ def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
                     kind=(_scalar(fm.get("kind")) or "").lower() or None,
                     tags=tuple(tag.lower() for tag in _string_tuple(fm.get("tags"))),
                     queue_admission=((_scalar(fm.get("queue_admission")) or "").lower() or None),
+                    assigned_to=_scalar(fm.get("assigned_to")),
+                    lane_affinity=_scalar(fm.get("lane_affinity")),
+                    epic_serialize=_scalar(fm.get("epic_serialize")),
                     frontmatter=dict(fm),
                 )
             )
@@ -616,6 +642,85 @@ def unchecked_blocking_checkboxes(body: str) -> list[str]:
     return blockers
 
 
+def _epic_serialize_key(task: TaskNote) -> str | None:
+    """The serialized shared-file epic a task belongs to, or ``None``.
+
+    An explicit ``epic_serialize`` frontmatter value wins; otherwise the task's
+    ``parent_spec`` basename is matched against :data:`SHARED_FILE_EPIC_PARENT_SPECS`
+    so every member of a known epic is covered without editing each note.
+    """
+    if task.epic_serialize:
+        return task.epic_serialize
+    if task.parent_spec:
+        return SHARED_FILE_EPIC_PARENT_SPECS.get(Path(task.parent_spec).name)
+    return None
+
+
+def _task_lane(task: TaskNote) -> str | None:
+    """The lane a task is worked in: the live assignee, else declared affinity."""
+    for candidate in (task.assigned_to, task.lane_affinity):
+        lane = (candidate or "").strip().lower()
+        if lane and lane not in EPIC_UNASSIGNED_LANES:
+            return lane
+    return None
+
+
+def _epic_sibling_in_flight(task: TaskNote) -> bool:
+    """Whether an epic sibling is actively contending for the shared file.
+
+    In flight = active (not terminal) and either carrying an in-flight status or
+    an open PR. Merged/closed predecessors and not-yet-started (offered/ready
+    without a PR) siblings never contend.
+    """
+    if task.folder != "active" or task.status in CLOSED_READY_STATUSES:
+        return False
+    return task.status in EPIC_INFLIGHT_STATUSES or task.pr is not None
+
+
+def shared_file_epic_affinity_blockers(
+    matched_tasks: tuple[TaskNote, ...],
+    all_tasks: list[TaskNote],
+    *,
+    pr_number: int | None,
+) -> list[str]:
+    """Single-lane-affinity holds for shared-file epic PRs (CASE-SBCL-CLOG-COORD-001).
+
+    Hold this PR when a sibling in the same serialized epic is concurrently in
+    flight in a DIFFERENT lane and is "ahead" — mid-edit with no PR yet, or
+    carrying an earlier (lower-numbered) PR. Same-lane work, lane-ambiguous
+    siblings, and terminal siblings never hold; the lowest-PR rule keeps two
+    different-lane epic PRs from dead-holding each other.
+    """
+    blockers: list[str] = []
+    seen: set[str] = set()
+    for task in matched_tasks:
+        epic = _epic_serialize_key(task)
+        if epic is None:
+            continue
+        task_lane = _task_lane(task)
+        if task_lane is None:
+            continue
+        for sibling in all_tasks:
+            if sibling.task_id == task.task_id or _epic_serialize_key(sibling) != epic:
+                continue
+            if not _epic_sibling_in_flight(sibling):
+                continue
+            sibling_lane = _task_lane(sibling)
+            if sibling_lane is None or sibling_lane == task_lane:
+                continue  # same lane (serial) or lane unknown — not the hazard
+            ahead = sibling.pr is None or (pr_number is not None and sibling.pr < pr_number)
+            if not ahead:
+                continue
+            reason = (
+                f"shared_file_epic_affinity_hold:{epic}:"
+                f"{sibling.task_id}@{sibling_lane}:{sibling.status or 'unknown'}"
+            )
+            if reason not in seen:
+                seen.add(reason)
+                blockers.append(reason)
+    return blockers
+
+
 def classify_pr(
     pr: PullRequest,
     *,
@@ -675,6 +780,8 @@ def classify_pr(
                 reasons.extend(
                     f"task_blocker:{matched_task.task_id}:{blocker}" for blocker in blockers
                 )
+
+    reasons.extend(shared_file_epic_affinity_blockers(matched_tasks, tasks, pr_number=pr.number))
 
     if (
         active_ci_repair_task_ids
