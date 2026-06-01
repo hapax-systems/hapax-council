@@ -574,6 +574,24 @@ export HAPAX_CODEX_WORKTREE_STRATEGY="$CODEX_WORKTREE_STRATEGY"
 
 CODEX_BIN="$(command -v codex || true)"
 if [ -z "$CODEX_BIN" ]; then
+  # PATH lookup missed codex. A common cause is a thin systemd-unit PATH (e.g.
+  # hapax-lane-supervisor) that omits ~/.npm-global/bin, where `npm i -g
+  # @openai/codex` installs the launcher — the rc=4 "codex not found" respawn-loop
+  # root cause. Fall back to the usual npm-global install locations so any
+  # thin-PATH caller can still resolve codex.
+  for _cand in \
+    "${HAPAX_CODEX_BIN_PATH:-}" \
+    "$HOME/.npm-global/bin/codex" \
+    "${NPM_CONFIG_PREFIX:+$NPM_CONFIG_PREFIX/bin/codex}" \
+    "$HOME/.local/share/npm/bin/codex" \
+    "/usr/local/bin/codex"; do
+    if [ -n "$_cand" ] && [ -x "$_cand" ]; then
+      CODEX_BIN="$_cand"
+      break
+    fi
+  done
+fi
+if [ -z "$CODEX_BIN" ]; then
   echo "hapax-codex: codex not found in PATH" >&2
   exit 4
 fi
