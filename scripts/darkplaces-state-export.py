@@ -74,13 +74,13 @@ DEFAULT_EFFECT_DRIFT_FALLBACK_STATE_FILE = Path(
     )
 )
 EFFECT_REVIEW_PRESET_MANUAL_HOLD_S = float(
-    os.environ.get("HAPAX_SCREWM_EFFECT_REVIEW_PRESET_MANUAL_HOLD_S", "45.0")
+    os.environ.get("HAPAX_SCREWM_EFFECT_REVIEW_PRESET_MANUAL_HOLD_S", "12.0")
 )
 EFFECT_REVIEW_PRESET_AUTOCYCLE_S = float(
-    os.environ.get("HAPAX_SCREWM_EFFECT_REVIEW_PRESET_AUTOCYCLE_S", "18.0")
+    os.environ.get("HAPAX_SCREWM_EFFECT_REVIEW_PRESET_AUTOCYCLE_S", "6.0")
 )
 EFFECT_REVIEW_PRESET_SEQUENCE = (1, 2, 3, 4, 5, 6)
-REVIEW_CAMERA_PERIOD_S = float(os.environ.get("HAPAX_SCREWM_REVIEW_CAMERA_PERIOD_S", "72.0"))
+REVIEW_CAMERA_PERIOD_S = float(os.environ.get("HAPAX_SCREWM_REVIEW_CAMERA_PERIOD_S", "24.0"))
 
 WARD_ACTIVITY_EXPORTS: tuple[tuple[str, str], ...] = (
     ("01", "token_pole"),
@@ -1768,7 +1768,7 @@ def build_effect_review_preset_lines(
 
 
 def build_review_camera_lines() -> dict[str, str]:
-    period_s = max(48.0, min(720.0, REVIEW_CAMERA_PERIOD_S))
+    period_s = max(24.0, min(720.0, REVIEW_CAMERA_PERIOD_S))
     return {"camera-period.txt": f"{period_s:.4f}"}
 
 

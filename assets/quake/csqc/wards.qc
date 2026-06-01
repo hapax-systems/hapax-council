@@ -753,7 +753,7 @@ void() screwm_apply_review_camera =
     else if (cvar("screwm_csqc_review_path") > 0)
     {
         active_period = screwm_read_float("data/camera-period.txt", screwm_review_camera_period);
-        active_period = screwm_clamp(active_period, 48, 720);
+        active_period = screwm_clamp(active_period, 24, 720);
         cycle = time * 800 / active_period;
         while (cycle >= 800)
             cycle = cycle - 800;

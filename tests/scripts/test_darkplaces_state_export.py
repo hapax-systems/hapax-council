@@ -725,7 +725,7 @@ def test_darkplaces_state_export_autocycles_effect_review_preset(tmp_path: Path)
         game_dir,
         effect_drift,
         effect_drift_fallback_state_file=tmp_path / "missing-fallback.json",
-        now=18.0,
+        now=6.0,
     )
 
     assert first["effect-review-preset.txt"] == "4"
@@ -765,7 +765,7 @@ def test_darkplaces_state_export_preserves_fresh_manual_effect_review_preset(
 def test_darkplaces_state_export_publishes_review_camera_period() -> None:
     exporter = _load_exporter()
 
-    assert exporter.build_review_camera_lines()["camera-period.txt"] == "72.0000"
+    assert exporter.build_review_camera_lines()["camera-period.txt"] == "24.0000"
 
 
 def test_darkplaces_state_export_builds_ward_property_fishbowl_scalars(

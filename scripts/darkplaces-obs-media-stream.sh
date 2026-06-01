@@ -66,15 +66,25 @@ if [ "$ENCODER" = "h264_nvenc" ]; then
     exec ffmpeg "${base_args[@]}" \
         -c:v h264_nvenc \
         -preset "${HAPAX_DARKPLACES_OBS_MEDIA_NVENC_PRESET:-p1}" \
-        -tune "${HAPAX_DARKPLACES_OBS_MEDIA_NVENC_TUNE:-ll}" \
+        -tune "${HAPAX_DARKPLACES_OBS_MEDIA_NVENC_TUNE:-ull}" \
         -rc cbr \
+        -rc-lookahead 0 \
         -zerolatency 1 \
         -delay 0 \
+        -forced-idr 1 \
+        -no-scenecut 1 \
+        -strict_gop 1 \
+        -aud 1 \
         -g "$FPS" \
         -bf 0 \
         -b:v "$BITRATE" \
         -maxrate "$MAXRATE" \
         -bufsize "$BUFSIZE" \
+        -bsf:v dump_extra \
+        -mpegts_flags resend_headers+pat_pmt_at_frames \
+        -muxdelay 0 \
+        -muxpreload 0 \
+        -flush_packets 1 \
         -f mpegts \
         "$OUTPUT_URL"
 fi
@@ -89,5 +99,9 @@ exec ffmpeg "${base_args[@]}" \
     -maxrate "$MAXRATE" \
     -bufsize "$BUFSIZE" \
     -x264-params "repeat-headers=1:keyint=${FPS}:min-keyint=${FPS}:scenecut=0" \
+    -mpegts_flags resend_headers+pat_pmt_at_frames \
+    -muxdelay 0 \
+    -muxpreload 0 \
+    -flush_packets 1 \
     -f mpegts \
     "$OUTPUT_URL"

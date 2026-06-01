@@ -208,9 +208,13 @@ def test_screwm_darkplaces_obs_media_stream_publishes_x11_as_udp_mpegts() -> Non
     assert "format=yuv420p" in script_text
     assert "HAPAX_DARKPLACES_OBS_MEDIA_ENCODER" in script_text
     assert "-c:v h264_nvenc" in script_text
+    assert '-tune "${HAPAX_DARKPLACES_OBS_MEDIA_NVENC_TUNE:-ull}"' in script_text
     assert "-zerolatency 1" in script_text
+    assert "-bsf:v dump_extra" in script_text
+    assert "-mpegts_flags resend_headers+pat_pmt_at_frames" in script_text
     assert "-c:v libx264" in script_text
     assert "repeat-headers=1" in script_text
+    assert "-muxdelay 0" in script_text
     assert "-f mpegts" in script_text
     assert script.exists()
     assert script.stat().st_mode & 0o100

@@ -462,7 +462,7 @@ def test_csqc_review_camera_overrides_render_view_for_obs_feedback() -> None:
     assert "screwm_review_camera_fov_y = fov * 0.625;" in body
     assert 'cvar("screwm_csqc_review_path") > 0' in body
     assert 'screwm_read_float("data/camera-period.txt", screwm_review_camera_period)' in body
-    assert "active_period = screwm_clamp(active_period, 48, 720);" in body
+    assert "active_period = screwm_clamp(active_period, 24, 720);" in body
     assert "cycle = time * 800 / active_period;" in body
     assert "while (cycle >= 800)" in body
     assert "origin_a = '0 -2360 190';" in body
