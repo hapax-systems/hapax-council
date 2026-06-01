@@ -35,6 +35,10 @@ CC_CLAIM = REPO_ROOT / "scripts" / "cc-claim"
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+from shared.governance.coord_capabilities import (  # noqa: E402
+    mint_escape_grant,
+    write_grant_file,
+)
 from shared.sdlc_lifecycle import TASK_MUTABLE_STATUSES  # noqa: E402
 
 # Identity-system env vars that must be cleared so a test controls resolution
@@ -1101,6 +1105,245 @@ class TestAntigravNotRetired:
     @pytest.mark.parametrize("value", ["RETIRED", "SUPERSEDED", "CLOSED", "retired"])
     def test_genuine_retired_statuses_still_match(self, value: str) -> None:
         assert _codex_retired_rc(value) == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 (reform fix NEW-2 / INV-4) — daemon-independent escape grant shim.
+#
+# A would-be BLOCK is converted to ALLOW when a signed EscapeGrant covering this
+# gate is present on disk. Verification is a PURE FILE READ — no daemon, no RPC
+# (INV-4: no escape hatch depends on the process it governs). The chaos test
+# asserts a hand-written grant unblocks a lane with no daemon present at all.
+# ---------------------------------------------------------------------------
+
+_GRANT_KEY = b"test-operator-grant-key-0123456789abcdef"
+
+
+def _grant_env(tmp_path: Path, *, key: bytes = _GRANT_KEY) -> dict:
+    """Create a grant dir + operator key under tmp_path; return env pointing the gate at them."""
+    coord = tmp_path / "coord"
+    grant_dir = coord / "grants"
+    grant_dir.mkdir(parents=True, exist_ok=True)
+    key_file = coord / "grant-key"
+    key_file.write_bytes(key)
+    return {
+        "HAPAX_COORD_GRANT_DIR": str(grant_dir),
+        "HAPAX_COORD_GRANT_KEY": str(key_file),
+    }
+
+
+def _drop_grant(
+    tmp_path: Path,
+    *,
+    scope: str,
+    ttl_s: float = 3600.0,
+    key: bytes = _GRANT_KEY,
+    now: float | None = None,
+) -> Path:
+    """Mint + write a signed grant file into the tmp grant dir (no daemon involved)."""
+    grant_dir = tmp_path / "coord" / "grants"
+    grant_dir.mkdir(parents=True, exist_ok=True)
+    grant = mint_escape_grant(
+        grantor="operator",
+        scope=scope,
+        reason="test incident",
+        ttl_s=ttl_s,
+        key=key,
+        now=now if now is not None else time.time(),
+    )
+    path = grant_dir / f"{grant.grant_id}.grant"
+    write_grant_file(grant, path)
+    return path
+
+
+def _ledger_kinds(home: Path) -> list[str]:
+    ledger = home / ".cache" / "hapax" / "methodology-emergency-ledger.jsonl"
+    if not ledger.exists():
+        return []
+    return [
+        json.loads(line)["kind"]
+        for line in ledger.read_text().splitlines()
+        if line.strip() and "kind" in json.loads(line)
+    ]
+
+
+class TestEscapeGrant:
+    """A signed grant file converts a BLOCK → ALLOW, scoped to the gate, daemon-free."""
+
+    def test_valid_grant_unblocks_unclaimed_lane(self, tmp_path: Path) -> None:
+        # No claim file → would normally block with "no claimed task".
+        env = _grant_env(tmp_path)
+        _drop_grant(tmp_path, scope="cc-task-gate")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env=env,
+        )
+        assert result.returncode == 0, f"valid grant must unblock; stderr={result.stderr}"
+
+    def test_chaos_handwritten_grant_unblocks_with_no_daemon(self, tmp_path: Path) -> None:
+        # INV-4 chaos acceptance: there is no daemon in this subprocess at all, and
+        # the grant is written as a plain file (no RPC). A wildcard-scope grant is
+        # the operator's "kernel down" hand-written escape; it still unblocks.
+        env = _grant_env(tmp_path)
+        _drop_grant(tmp_path, scope="*")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env=env,
+        )
+        assert result.returncode == 0, (
+            f"hand-written grant must unblock with no daemon (INV-4); stderr={result.stderr}"
+        )
+
+    def test_wrong_scope_grant_does_not_unblock(self, tmp_path: Path) -> None:
+        env = _grant_env(tmp_path)
+        _drop_grant(tmp_path, scope="pr-release-gate")  # scoped to a different gate
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env=env,
+        )
+        assert result.returncode == 2, f"wrong-scope grant must NOT unblock; stderr={result.stderr}"
+
+    def test_expired_grant_does_not_unblock(self, tmp_path: Path) -> None:
+        env = _grant_env(tmp_path)
+        _drop_grant(tmp_path, scope="cc-task-gate", ttl_s=1.0, now=1000.0)  # long expired
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env=env,
+        )
+        assert result.returncode == 2, f"expired grant must NOT unblock; stderr={result.stderr}"
+
+    def test_wrong_key_grant_does_not_unblock(self, tmp_path: Path) -> None:
+        env = _grant_env(tmp_path)  # gate verifies against _GRANT_KEY
+        _drop_grant(tmp_path, scope="cc-task-gate", key=b"a-totally-different-key-zzzzzzzzzzzz")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env=env,
+        )
+        assert result.returncode == 2, (
+            f"wrong-key (forged) grant must NOT unblock; stderr={result.stderr}"
+        )
+
+    def test_no_grant_still_blocks(self, tmp_path: Path) -> None:
+        env = _grant_env(tmp_path)  # empty grant dir
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env=env,
+        )
+        assert result.returncode == 2
+
+    def test_no_grant_dir_configured_still_blocks(self, tmp_path: Path) -> None:
+        # With no grant env at all the gate must behave exactly as before (fail-closed).
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+
+    def test_grant_escapes_authority_block_too(self, tmp_path: Path) -> None:
+        # A grant escapes ANY block reason for the gate, not only missing-claim:
+        # a claimed task with no authority_case normally blocks on authority.
+        env = _grant_env(tmp_path)
+        _make_vault(tmp_path, status="in_progress", assigned="alpha", authority=False)
+        _write_claim(tmp_path, "alpha", "test-001")
+        _drop_grant(tmp_path, scope="cc-task-gate")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env=env,
+        )
+        assert result.returncode == 0, f"grant must escape authority block; stderr={result.stderr}"
+
+    def test_grant_honored_is_ledgered(self, tmp_path: Path) -> None:
+        env = _grant_env(tmp_path)
+        _drop_grant(tmp_path, scope="cc-task-gate")
+        _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env=env,
+        )
+        assert "escape_grant_honored" in _ledger_kinds(tmp_path), "grant use must be ledgered"
+
+
+class TestGateOffDeprecation:
+    """HAPAX_CC_TASK_GATE_OFF still works (incident-only) but is now LEDGERED + warned."""
+
+    def test_gate_off_still_allows(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env={"HAPAX_CC_TASK_GATE_OFF": "1"},
+        )
+        assert result.returncode == 0
+
+    def test_gate_off_is_ledgered(self, tmp_path: Path) -> None:
+        _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env={"HAPAX_CC_TASK_GATE_OFF": "1"},
+        )
+        # Previously this bypass logged NOTHING — the audit's core complaint.
+        assert "cc_task_gate_off_bypass" in _ledger_kinds(tmp_path)
+
+    def test_gate_off_emits_deprecation_warning(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env={"HAPAX_CC_TASK_GATE_OFF": "1"},
+        )
+        assert "deprecat" in result.stderr.lower()
+        assert "coord-grant-mint" in result.stderr
+
+
+class TestEmergencyRetroGrant:
+    """HAPAX_METHODOLOGY_EMERGENCY records a pending retro-grant obligation (1h)."""
+
+    def _obligations(self, home: Path) -> list[dict]:
+        path = home / ".cache" / "hapax" / "coord-retro-grant-obligations.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def test_emergency_still_allows(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env={"HAPAX_METHODOLOGY_EMERGENCY": "1"},
+        )
+        assert result.returncode == 0
+
+    def test_emergency_records_pending_obligation(self, tmp_path: Path) -> None:
+        _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env={"HAPAX_METHODOLOGY_EMERGENCY": "1"},
+        )
+        obs = self._obligations(tmp_path)
+        assert obs, "emergency bypass must record a retro-grant obligation"
+        ob = obs[-1]
+        assert ob["status"] == "pending"
+
+    def test_emergency_obligation_has_1h_deadline(self, tmp_path: Path) -> None:
+        _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env={"HAPAX_METHODOLOGY_EMERGENCY": "1"},
+        )
+        ob = self._obligations(tmp_path)[-1]
+        assert int(ob["deadline_s"]) - int(ob["ts_s"]) == 3600
+
+    def test_emergency_emits_deprecation_warning(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env={"HAPAX_METHODOLOGY_EMERGENCY": "1"},
+        )
+        assert "retro-grant" in result.stderr.lower()
 
 
 class TestGateDecisionLog:

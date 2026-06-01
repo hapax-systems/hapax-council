@@ -30,6 +30,23 @@
 # worktrees fixes both problems.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Daemon-independent escape grant (reform Phase 4, NEW-2/INV-4): a signed grant
+# covering "no-stale-branches" lets the operator deliberately override this gate
+# (e.g. repoint a stale worktree, reset a feature branch) without the deprecated
+# unconditional HAPAX_*_OFF. Verification is a pure file read — it works with the
+# coordination kernel down. Mint one: scripts/coord-grant-mint --scope no-stale-branches.
+if [[ -f "$SCRIPT_DIR/escape-grant.sh" ]]; then
+  # shellcheck source=escape-grant.sh
+  . "$SCRIPT_DIR/escape-grant.sh"
+fi
+_nsb_escape_or_block() {
+  if declare -F escape_grant_allows >/dev/null 2>&1 && escape_grant_allows "no-stale-branches"; then
+    echo "no-stale-branches: escape grant honored — allowed (logged, daemon-independent)." >&2
+    exit 0
+  fi
+}
+
 INPUT="$(cat)"
 TOOL="$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)" || exit 0
 
@@ -118,6 +135,7 @@ if [ "$is_destructive" = true ]; then
         if [ "$remote_gone" != true ]; then
           ahead=$(git rev-list --count "${default_branch}..HEAD" 2>/dev/null || echo 0)
           if [ "$ahead" -gt 0 ]; then
+            _nsb_escape_or_block
             echo "BLOCKED: Destructive git command on branch '${branch}' with ${ahead} commit(s) ahead of ${default_branch}." >&2
             echo "  Command: $(echo "$CMD" | head -c 120)" >&2
             echo "  This would discard work. Use 'git stash' or submit a PR first." >&2
@@ -127,6 +145,7 @@ if [ "$is_destructive" = true ]; then
       else
         ahead=$(git rev-list --count "${default_branch}..HEAD" 2>/dev/null || echo 0)
         if [ "$ahead" -gt 0 ]; then
+          _nsb_escape_or_block
           echo "BLOCKED: Destructive git command on branch '${branch}' with ${ahead} commit(s) ahead of ${default_branch}." >&2
           echo "  Command: $(echo "$CMD" | head -c 120)" >&2
           echo "  This would discard work. Use 'git stash' or submit a PR first." >&2
@@ -168,6 +187,7 @@ if echo "$CMD" | grep -qE '^\s*git\s+worktree\s+add\s'; then
     session_wt_cap=20
     session_wt_count=$(git worktree list 2>/dev/null | grep -Evc '/(\.cache|\.claude/worktrees|\.codex/worktrees)/' || true)
     if [ "$session_wt_count" -ge "$session_wt_cap" ]; then
+        _nsb_escape_or_block
         echo "BLOCKED: Max ${session_wt_cap} visible session worktrees. Clean up before adding another." >&2
         echo "  Current visible session worktrees (infrastructure under ~/.cache/, .claude/worktrees/, and .codex/worktrees/ excluded):" >&2
         git worktree list 2>/dev/null | grep -Ev '/(\.cache|\.claude/worktrees|\.codex/worktrees)/' | sed 's/^/    /' >&2
@@ -251,6 +271,7 @@ while IFS= read -r branch; do
 done < <(git for-each-ref --format='%(refname:short)' refs/remotes/origin/ 2>/dev/null)
 
 if [ -n "$stale_branches" ]; then
+    _nsb_escape_or_block
     echo "BLOCKED: Cannot create new branch — unmerged branches exist:" >&2
     printf '%b' "$stale_branches" >&2
     echo "" >&2
