@@ -9,12 +9,44 @@
 #
 # ADVISORY-WITH-LEDGER ONLY. A violation is ledgered to
 # ~/.cache/hapax/sdlc-invariant-findings.jsonl; INV-3/4/5 violations additionally
-# AUTO-MINT a signed escape grant into ~/.cache/hapax/escape-grants/ so a stuck
-# lane is unblocked rather than frozen. This evaluator NEVER blocks and always
-# exits 0 — a self-blocking proof gate would rebuild the freeze-blocks-thaw
-# catch-22 in the verification layer.
+# AUTO-MINT a signed escape grant into the canonical coord grants dir
+# (~/.cache/hapax/coord/grants, signed with ~/.cache/hapax/coord/grant-key) that
+# the live escape-grant.sh shim reads, so a stuck lane is unblocked rather than
+# frozen. This evaluator NEVER blocks and always exits 0 — a self-blocking proof
+# gate would rebuild the freeze-blocks-thaw catch-22 in the verification layer.
 set -euo pipefail
 
-REPO="${HAPAX_COUNCIL_REPO:-$HOME/projects/hapax-council}"
+# Resolve the repo from THIS script's own location — the stable deploy worktree
+# the unit's ExecStart points at — NOT a hardcoded ~/projects/hapax-council. A
+# lane may park the primary worktree on a feature branch where this script +
+# shared/sdlc_invariants.py do not exist, which crash-looped the unit 203/EXEC
+# (#3820 → reform-inv-trace-checker-activate). HAPAX_COUNCIL_REPO still wins when
+# the unit sets it explicitly.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${HAPAX_COUNCIL_REPO:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+
+# Resolve uv even under a minimal systemd-user PATH (the unit also sets PATH).
+UV="$(command -v uv 2>/dev/null || true)"
+[[ -n "$UV" ]] || UV="$HOME/.local/bin/uv"
+
+# Deploy-time / start-time --verify: assert the ExecStart target resolves to a
+# usable evaluator (the resolved repo carries the module AND uv is runnable) so a
+# misdeploy fails LOUDLY here — caught by the unit's ExecStartPre → OnFailure ntfy,
+# or skipped by its ConditionPathExists — instead of silently crash-looping
+# 203/EXEC. The deploy step (scripts/rebuild-service.sh) may also call this.
+if [[ "${1:-}" == "--verify" ]]; then
+  rc=0
+  if [[ ! -f "$REPO/shared/sdlc_invariants.py" ]]; then
+    printf 'hapax-sdlc-invariants: verify FAIL — missing %s/shared/sdlc_invariants.py\n' "$REPO" >&2
+    rc=1
+  fi
+  if [[ ! -x "$UV" ]] && ! command -v uv >/dev/null 2>&1; then
+    printf 'hapax-sdlc-invariants: verify FAIL — uv not executable (%s)\n' "$UV" >&2
+    rc=1
+  fi
+  [[ "$rc" -eq 0 ]] && printf 'hapax-sdlc-invariants: verify ok (repo=%s uv=%s)\n' "$REPO" "$UV"
+  exit "$rc"
+fi
+
 cd "$REPO"
-exec uv run python -m shared.sdlc_invariants --mint-escapes "$@"
+exec "$UV" run python -m shared.sdlc_invariants --mint-escapes "$@"
