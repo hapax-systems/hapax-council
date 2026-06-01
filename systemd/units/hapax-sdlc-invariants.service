@@ -1,0 +1,14 @@
+[Unit]
+Description=Hapax SDLC never-stuck invariant evaluator (INV-1..5, advisory-with-ledger)
+Documentation=file://%h/projects/hapax-council/docs/formal/sdlc-ladder.tla
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Advisory-with-ledger: evaluates INV-1..5 against the live authority-case ledger,
+# ledgers every violation, and AUTO-MINTS the relevant escape on INV-3/4/5 so a
+# stuck lane is unblocked, never frozen. The evaluator always exits 0 (never a gate).
+ExecStart=%h/projects/hapax-council/scripts/hapax-sdlc-invariants
+Environment=NTFY_URL=https://ntfy.sh
+Environment=NTFY_TOPIC=hapax-ops
+NoNewPrivileges=true

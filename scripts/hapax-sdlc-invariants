@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# hapax-sdlc-invariants — runtime evaluator for the SDLC never-stuck invariants.
+#
+# Coordination reform §4.5 (CASE-FORMAL-GOVERNANCE-001). The TLA+ invariants
+# INV-1..5 (docs/formal/sdlc-ladder.tla + shared/sdlc_invariants.py) ship as
+# RUNTIME trace checks the system evaluates continuously against the live
+# authority-case ledger. This wrapper is what the hapax-sdlc-invariants.timer
+# fires every ~5 minutes.
+#
+# ADVISORY-WITH-LEDGER ONLY. A violation is ledgered to
+# ~/.cache/hapax/sdlc-invariant-findings.jsonl; INV-3/4/5 violations additionally
+# AUTO-MINT a signed escape grant into ~/.cache/hapax/escape-grants/ so a stuck
+# lane is unblocked rather than frozen. This evaluator NEVER blocks and always
+# exits 0 — a self-blocking proof gate would rebuild the freeze-blocks-thaw
+# catch-22 in the verification layer.
+set -euo pipefail
+
+REPO="${HAPAX_COUNCIL_REPO:-$HOME/projects/hapax-council}"
+cd "$REPO"
+exec uv run python -m shared.sdlc_invariants --mint-escapes "$@"
