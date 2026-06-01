@@ -30,9 +30,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 from pydantic import ValidationError
 
@@ -134,6 +136,131 @@ def _emit_kept(receipt: RouteAuthorityReceipt, path: Path, *, json_output: bool)
         print(f"  reference: {reference}")
 
 
+ROUTE_AUTHORITY_UPKEEP_DIRNAME = "route-authority-upkeep"
+DEFAULT_NTFY_URL = "https://ntfy.sh"
+DEFAULT_NTFY_TOPIC = "hapax-ops"
+
+
+def _post_ntfy(
+    title: str, message: str, *, priority: str = "high", tags: list[str] | None = None
+) -> bool:
+    """Best-effort ntfy push (mobile). Never raises into the caller.
+
+    The timer-backed re-mint failure is suppressed by the global notify-failure
+    coalescer, so the minter pushes its OWN alert here when upkeep is failing.
+    Honours NTFY_URL / NTFY_TOPIC (set on the service unit); an empty topic
+    disables the push (test / opt-out).
+    """
+    topic = os.environ.get("NTFY_TOPIC", DEFAULT_NTFY_TOPIC)
+    if not topic:
+        return False
+    base = os.environ.get("NTFY_URL", DEFAULT_NTFY_URL).rstrip("/")
+    headers = {"Title": title, "Priority": priority}
+    if tags:
+        headers["Tags"] = ",".join(tags)
+    request = Request(
+        f"{base}/{topic}", data=message.encode("utf-8"), headers=headers, method="POST"
+    )
+    try:
+        with urlopen(request, timeout=5) as response:  # noqa: S310
+            return 200 <= getattr(response, "status", 200) < 300
+    except Exception:
+        return False
+
+
+def _upkeep_state_path(receipt_dir: Path, receipt_id: str) -> Path:
+    """Sidecar tracking consecutive re-mint failures.
+
+    Deliberately a SIBLING of the scanned ``route-authority/`` dir: the dispatch
+    read-path globs ``route-authority/*.json`` and RAISES on any file there that
+    is not a valid receipt, so the upkeep state must never land in it.
+    """
+    return receipt_dir / ROUTE_AUTHORITY_UPKEEP_DIRNAME / f"{receipt_id}.json"
+
+
+def _load_upkeep_state(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"consecutive_failures": 0}
+
+
+def _write_upkeep_state(path: Path, state: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _existing_receipt_remaining(target: Path, *, now: datetime) -> timedelta | None:
+    """Freshness remaining on the live receipt, or ``None`` if absent/unreadable."""
+    if not target.is_file():
+        return None
+    try:
+        existing = RouteAuthorityReceipt.model_validate(
+            json.loads(target.read_text(encoding="utf-8"))
+        )
+    except (OSError, json.JSONDecodeError, ValidationError, ValueError):
+        return None
+    return _parse_duration_spec(existing.stale_after) - (now - _coerce_utc(existing.issued_at))
+
+
+def _iso_z(moment: datetime) -> str:
+    return moment.isoformat().replace("+00:00", "Z")
+
+
+def _record_upkeep_success(upkeep_path: Path, now: datetime) -> None:
+    _write_upkeep_state(upkeep_path, {"consecutive_failures": 0, "last_success_at": _iso_z(now)})
+
+
+def _escalate_remint_failure(
+    *,
+    upkeep_path: Path,
+    target: Path,
+    exc: Exception,
+    now: datetime,
+    alert_within: timedelta,
+    alert_after_failures: int,
+    route_id: str,
+) -> None:
+    """Record a failed re-mint, then ntfy on N consecutive failures OR within T-alert of expiry.
+
+    This is the un-suppressed escalation path: the OnFailure handler coalesces
+    timer-backed failures into a log line, so a receipt that stops refreshing
+    would otherwise lapse silently and drop opus off its route authority.
+    """
+    state = _load_upkeep_state(upkeep_path)
+    consecutive = int(state.get("consecutive_failures", 0)) + 1
+    state["consecutive_failures"] = consecutive
+    state["last_failure_at"] = _iso_z(now)
+    state["last_error"] = str(exc)[:300]
+    _write_upkeep_state(upkeep_path, state)
+
+    remaining = _existing_receipt_remaining(target, now=now)
+    within_expiry = remaining is None or remaining <= alert_within
+    enough_failures = alert_after_failures > 0 and consecutive >= alert_after_failures
+    if not (within_expiry or enough_failures):
+        return
+
+    if remaining is None:
+        horizon = "no live receipt on disk"
+    else:
+        hours = remaining.total_seconds() / 3600.0
+        horizon = f"~{hours:.1f}h to expiry" if hours >= 0 else f"EXPIRED {abs(hours):.1f}h ago"
+    _post_ntfy(
+        "opus route-authority receipt NOT refreshing",
+        (
+            f"{route_id} re-mint FAILED ({consecutive} consecutive); {horizon}. "
+            "Opus dispatch loses route authority once the receipt lapses. "
+            f"Last error: {exc}. "
+            "Check: journalctl --user -u hapax-opus-route-authority-receipt.service -n 30"
+        ),
+        priority="urgent",
+        tags=["rotating_light", "key"],
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -199,6 +326,22 @@ def main(argv: list[str] | None = None) -> int:
         "this much freshness remaining (<int><s|m|h|d>, default: 8h).",
     )
     parser.add_argument(
+        "--alert-within",
+        default="2h",
+        metavar="DURATION",
+        help="With --ensure-fresh, fire an ntfy when a re-mint FAILS and the live "
+        "receipt has less than this much freshness remaining — the receipt is "
+        "about to lapse (<int><s|m|h|d>, default: 2h).",
+    )
+    parser.add_argument(
+        "--alert-after-failures",
+        type=int,
+        default=3,
+        metavar="N",
+        help="With --ensure-fresh, fire an ntfy after N consecutive re-mint "
+        "failures even before the expiry window (0 disables; default: 3).",
+    )
+    parser.add_argument(
         "--receipt-dir",
         type=Path,
         default=DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
@@ -220,6 +363,10 @@ def main(argv: list[str] | None = None) -> int:
     evidence_refs = args.evidence_refs or [f"operator-signed:{args.receipt_type}:{args.route_id}"]
 
     receipt_id = args.receipt_id
+    now_dt = _coerce_utc(_parse_now(args.now) or now_utc())
+    upkeep_path: Path | None = None
+    target: Path | None = None
+    alert_within: timedelta | None = None
     if args.ensure_fresh:
         if receipt_id is None:
             receipt_id = _stable_receipt_id(args.receipt_type, args.route_id)
@@ -231,16 +378,26 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+        try:
+            alert_within = _parse_duration_spec(args.alert_within)
+        except ValueError as exc:
+            print(
+                f"refused to mint route-authority receipt: invalid --alert-within: {exc}",
+                file=sys.stderr,
+            )
+            return 2
         target = args.receipt_dir / ROUTE_AUTHORITY_RECEIPT_DIRNAME / f"{receipt_id}.json"
+        upkeep_path = _upkeep_state_path(args.receipt_dir, receipt_id)
         kept = _fresh_enough_to_keep(
             target=target,
             receipt_type=args.receipt_type,
             route_id=args.route_id,
             stale_after=args.stale_after,
             refresh_within=refresh_within,
-            now=_coerce_utc(_parse_now(args.now) or now_utc()),
+            now=now_dt,
         )
         if kept is not None:
+            _record_upkeep_success(upkeep_path, now_dt)
             _emit_kept(kept, target, json_output=args.json)
             return 0
 
@@ -255,11 +412,28 @@ def main(argv: list[str] | None = None) -> int:
             quality_floors=args.quality_floors,
             issued_at=_parse_now(args.now),
         )
-    except (ValueError, ValidationError) as exc:
+        path = write_route_authority_receipt(receipt, receipt_dir=args.receipt_dir)
+    except (ValueError, ValidationError, OSError) as exc:
+        if (
+            args.ensure_fresh
+            and upkeep_path is not None
+            and target is not None
+            and alert_within is not None
+        ):
+            _escalate_remint_failure(
+                upkeep_path=upkeep_path,
+                target=target,
+                exc=exc,
+                now=now_dt,
+                alert_within=alert_within,
+                alert_after_failures=args.alert_after_failures,
+                route_id=args.route_id,
+            )
         print(f"refused to mint route-authority receipt: {exc}", file=sys.stderr)
         return 2
 
-    path = write_route_authority_receipt(receipt, receipt_dir=args.receipt_dir)
+    if args.ensure_fresh and upkeep_path is not None:
+        _record_upkeep_success(upkeep_path, now_dt)
     reference = route_authority_receipt_reference(receipt)
 
     if args.json:

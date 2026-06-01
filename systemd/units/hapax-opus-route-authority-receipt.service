@@ -1,6 +1,6 @@
 [Unit]
 Description=Maintain a fresh operator-signed opus route-authority receipt (standing OQ-5)
-Documentation=file://%h/projects/hapax-council/docs/routing-ontology-reference.md
+Documentation=file://%h/.cache/hapax/source-activation/worktree/docs/routing-ontology-reference.md
 OnFailure=notify-failure@%n.service
 
 [Service]
@@ -12,10 +12,22 @@ Type=oneshot
 # dispatch-from-a-stale-worktree hack. --ensure-fresh converges on a single
 # stable-id receipt and only re-signs once the 24h window drops below 8h
 # remaining (the paired .timer fires every 6h, so it never lapses).
-ExecStart=%h/projects/hapax-council/.venv/bin/python %h/projects/hapax-council/scripts/hapax-mint-route-authority-receipt --ensure-fresh --receipt-type opus_model_entitlement --route-id claude.headless.opus --stale-after 24h --refresh-within 8h
-WorkingDirectory=%h/projects/hapax-council
+#
+# Source worktree = the source-activation ACTIVE deploy symlink, NOT the primary
+# `projects/hapax-council` worktree. The primary lane parks on feature branches
+# (e.g. alpha/screwm-*) where this minter does not exist, which silently broke
+# upkeep (status=2 "No such file") until the receipt lapsed. The symlink always
+# resolves to the activated origin/main release (script + synced .venv present)
+# and its PATH is stable across deploys — only its target advances.
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/hapax-mint-route-authority-receipt --ensure-fresh --receipt-type opus_model_entitlement --route-id claude.headless.opus --stale-after 24h --refresh-within 8h --alert-within 2h --alert-after-failures 3
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
-Environment=PYTHONPATH=%h/projects/hapax-council
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+# A failed re-mint is suppressed by the notify-failure coalescer (timer-backed),
+# so the minter self-escalates an un-suppressed ntfy via these on N consecutive
+# failures or within --alert-within of expiry.
+Environment=NTFY_URL=https://ntfy.sh
+Environment=NTFY_TOPIC=hapax-ops
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hapax-opus-route-authority-receipt
