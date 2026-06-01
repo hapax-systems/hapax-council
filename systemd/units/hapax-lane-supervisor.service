@@ -1,11 +1,17 @@
 [Unit]
 Description=Hapax Lane Supervisor — FM-11 one_for_one re-spawn (dead lanes always auto-restart)
-Documentation=file:///home/hapax/projects/hapax-council/scripts/hapax-lane-supervisor
+Documentation=file:///home/hapax/.local/bin/hapax-lane-supervisor
 After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=%h/projects/hapax-council/scripts/hapax-lane-supervisor
+# Run via the deploy-maintained ~/.local/bin symlink, NOT the canonical
+# integrator worktree (%h/projects/hapax-council): that worktree floats across
+# feature branches and frequently lacks this script (it shipped in #3803), so a
+# canonical-worktree ExecStart would fail to start. The symlink tracks the
+# active source-activation release — the same convention the supervisor script
+# itself uses for its sibling launchers (hapax-claude-headless, hapax-codex…).
+ExecStart=%h/.local/bin/hapax-lane-supervisor
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
 StandardOutput=journal

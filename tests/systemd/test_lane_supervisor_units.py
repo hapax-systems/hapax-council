@@ -33,11 +33,40 @@ def test_supervisor_service_is_oneshot_running_the_supervisor() -> None:
     assert "TimeoutStartSec" in unit["Service"]
 
 
+def test_supervisor_service_execstart_is_branch_stable() -> None:
+    """A must-always-run supervisor cannot depend on the canonical integrator
+    worktree's transient branch — that worktree floats across feature branches
+    and frequently lacks the supervisor script (it shipped in #3803), so a
+    `%h/projects/hapax-council/scripts/...` ExecStart would fail to start.
+    Point it at the deploy-maintained `~/.local/bin` symlink, which is exactly
+    what the supervisor script itself assumes for its sibling launchers.
+    """
+    exec_start = _load(SUPERVISOR_SERVICE)["Service"]["ExecStart"]
+    assert exec_start.endswith("/.local/bin/hapax-lane-supervisor"), exec_start
+    assert "projects/hapax-council" not in exec_start, exec_start
+
+
 def test_supervisor_timer_ticks_every_60s() -> None:
     assert SUPERVISOR_TIMER.exists()
     unit = _load(SUPERVISOR_TIMER)
     assert unit["Timer"]["OnUnitActiveSec"] in {"60", "60s", "1min"}
     assert unit["Install"]["WantedBy"] == "timers.target"
+
+
+def test_supervisor_timer_is_marked_auto_enable() -> None:
+    """reform-improve-deploy-activation: the deploy auto-enables units that
+    carry a `# Hapax-Auto-Enable: true` marker, so a newly-merged supervisor
+    timer is `enable --now`'d instead of installed-but-sleeping (the FM-11
+    live gap). The marker is meaningless without an [Install] section.
+    """
+    markers = [
+        line.strip()
+        for line in SUPERVISOR_TIMER.read_text(encoding="utf-8").splitlines()
+        if line.lstrip().startswith("#") and "hapax-auto-enable" in line.lower()
+    ]
+    assert markers, "lane-supervisor.timer must carry a `# Hapax-Auto-Enable` marker"
+    assert any("true" in marker.lower() for marker in markers)
+    assert "Install" in _load(SUPERVISOR_TIMER)
 
 
 def test_claude_lane_unit_restarts_always_with_startlimit() -> None:
