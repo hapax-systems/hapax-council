@@ -1169,3 +1169,167 @@ def test_failed_recent_non_ready_merge_group_run_activates_storm_mode(
     assert failed[0]["run_id"] == 9001
     assert failed[0]["pr"] == 130
     assert "task_missing_route_metadata_schema_1" in failed[0]["reasons"]
+
+
+# ── release auto-arm: dispatch resilience to lane-death (CASE-CAPACITY-ROUTING-001) ──
+
+
+def _eligible_arm_extra() -> dict[str, object]:
+    return {
+        "implementation_authorized": True,
+        "release_authorized": False,
+        "risk_tier": "T2",
+        "stage": "S6_IMPLEMENTATION",
+    }
+
+
+def test_auto_arms_eligible_pr_open_task_then_merges(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-eligible",
+        status="pr_open",
+        pr=701,
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(701)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    # The note is armed in place: release authorized + advanced to S7.
+    armed = note.read_text(encoding="utf-8")
+    assert "release_authorized: true" in armed
+    assert "release_authorized: false" not in armed
+    assert "stage: S7_RELEASE" in armed
+    # And the PR is admitted to the merge queue.
+    assert ["gh", "pr", "merge", "701", "--repo", "owner/repo", "--merge"] in runner.calls
+    decision = next(d for d in report["decisions"] if d["pr"] == 701)
+    assert decision["auto_arm"] is True
+
+
+def test_does_not_auto_arm_governance_sensitive_task(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance",
+        status="pr_open",
+        pr=702,
+        tags=["governance"],
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(702)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    # Sensitive task stays manual: never armed, never merged.
+    untouched = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in untouched
+    assert "stage: S7_RELEASE" not in untouched
+    assert not any(call[:4] == ["gh", "pr", "merge", "702"] for call in runner.calls)
+    decision = next(d for d in report["decisions"] if d["pr"] == 702)
+    assert decision["action"] == "blocked"
+    assert any("release_auto_arm_ineligible" in reason for reason in decision["reasons"])
+
+
+def test_dry_run_reports_auto_arm_without_writing_note(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-dry",
+        status="pr_open",
+        pr=703,
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(703)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    assert "release_authorized: false" in note.read_text(encoding="utf-8")  # untouched
+    decision = next(d for d in report["decisions"] if d["pr"] == 703)
+    assert decision["auto_arm"] is True
+
+
+def test_auto_arm_writes_authority_case_ledger_record(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="stranded-ledger",
+        status="pr_open",
+        pr=704,
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(704)]
+    ledger = tmp_path / "ledger.jsonl"
+
+    autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=ledger,
+    )
+
+    records = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line]
+    assert any(
+        rec.get("kind") == "release_auto_arm" and rec.get("task_id") == "stranded-ledger"
+        for rec in records
+    )
+
+
+def test_already_release_authorized_task_is_not_rearmed(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="already-armed",
+        status="pr_open",
+        pr=705,
+        extra_frontmatter={
+            "implementation_authorized": True,
+            "release_authorized": True,
+            "risk_tier": "T2",
+            "stage": "S7_RELEASE",
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(705)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    # Already armed → merges normally, no auto-arm audit line appended.
+    assert "release auto-arm (system)" not in note.read_text(encoding="utf-8")
+    assert ["gh", "pr", "merge", "705", "--repo", "owner/repo", "--merge"] in runner.calls
+    decision = next(d for d in report["decisions"] if d["pr"] == 705)
+    assert decision.get("auto_arm", False) is False
