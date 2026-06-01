@@ -22,7 +22,7 @@ TimeoutStopSec=3s
 KillMode=control-group
 SendSIGKILL=yes
 MemoryMax=2G
-Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52
+Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video50
 Environment=HAPAX_DARKPLACES_DISPLAY=:82
 # Dedicated NVIDIA Xorg currently opens a 5060 Ti GL context but x11grab reads
 # a black framebuffer. Use the Xvfb route that produces observable frames until
