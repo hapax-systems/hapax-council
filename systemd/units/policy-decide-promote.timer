@@ -1,0 +1,14 @@
+[Unit]
+Description=Advance the policy_decide promotion ladder hourly when the shadow-week is clean (reform 3b auto-promoter)
+
+[Timer]
+# Hourly is ample: the ladder advances at most one rung per tick and the canary
+# dwell (24h) is the real rate limiter. First run trails the producer's 10min boot
+# replay so it evaluates fresh evidence.
+OnBootSec=20min
+OnUnitActiveSec=1h
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -30,6 +30,7 @@ import json
 import os
 import re
 import shlex
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -891,6 +892,288 @@ def evaluate_shadow_clean(
     }
 
 
+# --- The auto-promotion state machine (reform fix: kill the manual 3b cutover) -
+#
+# ``evaluate_shadow_clean`` answers "is the shadow-week clean?" but nothing acted on
+# a YES — ``3b-cutover`` was a MANUAL cliff a human had to step off by a deadline. A
+# clean predicate that never promotes itself is the same freeze-blocks-thaw bug one
+# layer up. This is the missing actuator: a reversible, version-stamped ladder
+#
+#   shadow ──clean──▶ canary ──clean ≥24h──▶ authoritative   (─not-clean──▶ shadow)
+#
+# that the promote timer advances one rung per clean tick and ROLLS BACK to shadow
+# the instant the predicate fails (master design §4.1: "advisory-canary, reversible,
+# never a hard cliff"). It only ever advances a recorded POSTURE — wiring that
+# posture into the live gate verdict remains a separate, gated step (§4.1: the canary
+# logs both decisions "before becoming the live verdict"). Per the permanent-canary
+# discipline, any change to ``policy_decide`` (a new ``POLICY_DECIDE_FN_VERSION``)
+# resets the ladder to shadow so the new logic must re-prove itself from scratch.
+
+PROMOTION_SHADOW = "shadow"
+PROMOTION_CANARY = "canary"
+PROMOTION_AUTHORITATIVE = "authoritative"
+_PROMOTION_STATES = frozenset({PROMOTION_SHADOW, PROMOTION_CANARY, PROMOTION_AUTHORITATIVE})
+
+#: The canary dwells in dual-decision mode this long before it may go authoritative.
+DEFAULT_CANARY_WINDOW_SECONDS = 24 * 3600
+
+#: Current promotion posture (a projection); the audit trail is the ledger beside it.
+DEFAULT_PROMOTION_STATE = Path(os.path.expanduser("~/.cache/hapax/policy-decide-promotion.json"))
+DEFAULT_PROMOTION_LEDGER = Path(os.path.expanduser("~/.cache/hapax/policy-decide-promotion.jsonl"))
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _iso(when: datetime) -> str:
+    return when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@dataclass(frozen=True)
+class PromotionState:
+    """The current promotion posture: which rung, stamped with the version that earned it."""
+
+    state: str
+    policy_version: str
+    entered_state_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class PromotionDecision:
+    """One transition verdict from ``decide_promotion`` — pure, carries its own version stamp."""
+
+    from_state: str
+    to_state: str
+    changed: bool
+    reason: str
+    clean: bool
+    policy_version: str
+    dwell_seconds: float
+    now: datetime
+
+    def next_state(self, current: PromotionState) -> PromotionState:
+        """The posture to persist after this decision (entry clock resets only on a change)."""
+        entered = self.now if self.changed else current.entered_state_at
+        return PromotionState(
+            state=self.to_state,
+            policy_version=self.policy_version,
+            entered_state_at=entered,
+            updated_at=self.now,
+        )
+
+
+def decide_promotion(
+    current: PromotionState,
+    verdict: dict[str, object],
+    *,
+    policy_version: str,
+    now: datetime,
+    canary_window_seconds: float = DEFAULT_CANARY_WINDOW_SECONDS,
+) -> PromotionDecision:
+    """Pure ladder transition. ``verdict`` is an ``evaluate_shadow_clean`` result.
+
+    Advances one rung per clean tick, requires a ``canary_window_seconds`` dwell before
+    canary→authoritative, and rolls back to shadow on any not-clean verdict or any
+    ``policy_version`` change (the permanent-canary reset). Never raises; never skips a
+    rung; never hard-cuts straight to authoritative.
+    """
+    clean = bool(verdict.get("clean"))
+    frm = current.state
+    dwell = max(0.0, (now - current.entered_state_at).total_seconds())
+
+    def decision(to_state: str, changed: bool, reason: str) -> PromotionDecision:
+        return PromotionDecision(
+            from_state=frm,
+            to_state=to_state,
+            changed=changed,
+            reason=reason,
+            clean=clean,
+            policy_version=policy_version,
+            dwell_seconds=dwell,
+            now=now,
+        )
+
+    # Permanent-canary discipline: a new policy_decide version must re-prove from shadow.
+    if current.policy_version != policy_version:
+        return decision(
+            PROMOTION_SHADOW,
+            True,
+            f"policy_version {current.policy_version}→{policy_version}: "
+            "re-entering shadow (permanent-canary discipline)",
+        )
+
+    if frm == PROMOTION_SHADOW:
+        if clean:
+            return decision(
+                PROMOTION_CANARY, True, "shadow-week clean → canary (dual-decision window opens)"
+            )
+        return decision(PROMOTION_SHADOW, False, _hold_reason(verdict))
+
+    if frm == PROMOTION_CANARY:
+        if not clean:
+            return decision(
+                PROMOTION_SHADOW,
+                True,
+                f"canary regression ({_hold_reason(verdict)}) → rollback to shadow",
+            )
+        if dwell >= canary_window_seconds:
+            return decision(
+                PROMOTION_AUTHORITATIVE,
+                True,
+                f"canary clean ≥{canary_window_seconds / 3600:.0f}h → authoritative-ready",
+            )
+        return decision(
+            PROMOTION_CANARY,
+            False,
+            f"canary clean, {dwell / 3600:.1f}h/{canary_window_seconds / 3600:.0f}h elapsed",
+        )
+
+    if frm == PROMOTION_AUTHORITATIVE:
+        if not clean:
+            return decision(
+                PROMOTION_SHADOW,
+                True,
+                f"authoritative regression ({_hold_reason(verdict)}) → rollback to shadow",
+            )
+        return decision(PROMOTION_AUTHORITATIVE, False, "authoritative steady (shadow-week clean)")
+
+    return decision(PROMOTION_SHADOW, True, f"unknown promotion state '{frm}' → reset to shadow")
+
+
+def _hold_reason(verdict: dict[str, object]) -> str:
+    reasons = verdict.get("reasons")
+    if isinstance(reasons, list) and reasons:
+        return "; ".join(str(r) for r in reasons)
+    return "shadow-week not clean"
+
+
+def load_promotion_state(
+    state_path: str | os.PathLike[str] = DEFAULT_PROMOTION_STATE,
+) -> PromotionState:
+    """Read the persisted posture; an absent/garbage file defaults to a fresh shadow rung."""
+    fresh = PromotionState(PROMOTION_SHADOW, POLICY_DECIDE_FN_VERSION, _EPOCH, _EPOCH)
+    try:
+        data = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, OSError):
+        return fresh
+    if not isinstance(data, dict):
+        return fresh
+    state = str(data.get("state") or PROMOTION_SHADOW)
+    if state not in _PROMOTION_STATES:
+        state = PROMOTION_SHADOW
+    entered = _parse_decision_ts(data.get("entered_state_at")) or _EPOCH
+    updated = _parse_decision_ts(data.get("updated_at")) or entered
+    return PromotionState(
+        state=state,
+        policy_version=str(data.get("policy_version") or POLICY_DECIDE_FN_VERSION),
+        entered_state_at=entered,
+        updated_at=updated,
+    )
+
+
+def save_promotion_state(
+    state: PromotionState, state_path: str | os.PathLike[str] = DEFAULT_PROMOTION_STATE
+) -> None:
+    """Persist the posture atomically (tmp + replace). Best-effort; never raises (advisory)."""
+    try:
+        path = Path(state_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".promote-tmp")
+        tmp.write_text(
+            json.dumps(
+                {
+                    "state": state.state,
+                    "policy_version": state.policy_version,
+                    "entered_state_at": _iso(state.entered_state_at),
+                    "updated_at": _iso(state.updated_at),
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
+def append_promotion_ledger(
+    decision: PromotionDecision,
+    next_state: PromotionState,
+    *,
+    ledger_path: str | os.PathLike[str] = DEFAULT_PROMOTION_LEDGER,
+) -> None:
+    """Append a transition row to the audit ledger. Best-effort; never raises (advisory)."""
+    try:
+        path = Path(ledger_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        row = {
+            "ts": _iso(decision.now),
+            "from_state": decision.from_state,
+            "to_state": decision.to_state,
+            "changed": decision.changed,
+            "reason": decision.reason,
+            "clean": decision.clean,
+            "policy_version": decision.policy_version,
+            "dwell_seconds": round(decision.dwell_seconds, 1),
+            "entered_state_at": _iso(next_state.entered_state_at),
+        }
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row) + "\n")
+    except OSError:
+        pass
+
+
+def run_promotion_cycle(
+    *,
+    decision_log_path: str | os.PathLike[str] = DEFAULT_DECISION_LOG,
+    shadow_ledger_path: str | os.PathLike[str] = DEFAULT_SHADOW_LEDGER,
+    state_path: str | os.PathLike[str] = DEFAULT_PROMOTION_STATE,
+    ledger_path: str | os.PathLike[str] = DEFAULT_PROMOTION_LEDGER,
+    now: datetime | None = None,
+    policy_version: str = POLICY_DECIDE_FN_VERSION,
+    canary_window_seconds: float = DEFAULT_CANARY_WINDOW_SECONDS,
+    min_days: float = 7.0,
+    min_decisions: int = 200,
+    replay: bool = False,
+) -> dict[str, object]:
+    """Evaluate the shadow-week and advance/roll-back the promotion ladder one rung.
+
+    Optionally refreshes the divergence ledger first (``replay=True``) so coverage and
+    asymmetry are read consistently. Persists the new posture every tick (so ``updated_at``
+    tracks liveness) and appends to the audit ledger only on an actual transition.
+    Advisory: it advances a posture, never the live gate verdict. Never raises.
+    """
+    now = now or datetime.now(UTC)
+    if replay:
+        replay_decision_log(decision_log_path, shadow_ledger_path)
+    verdict = evaluate_shadow_clean(
+        decision_log_path, shadow_ledger_path, min_days=min_days, min_decisions=min_decisions
+    )
+    current = load_promotion_state(state_path)
+    decision = decide_promotion(
+        current,
+        verdict,
+        policy_version=policy_version,
+        now=now,
+        canary_window_seconds=canary_window_seconds,
+    )
+    nxt = decision.next_state(current)
+    save_promotion_state(nxt, state_path)
+    if decision.changed:
+        append_promotion_ledger(decision, nxt, ledger_path=ledger_path)
+    return {
+        "ts": _iso(now),
+        "from_state": decision.from_state,
+        "to_state": decision.to_state,
+        "changed": decision.changed,
+        "reason": decision.reason,
+        "clean": decision.clean,
+        "policy_version": decision.policy_version,
+        "dwell_seconds": round(decision.dwell_seconds, 1),
+        "verdict": verdict,
+    }
+
+
 # --- Advisory shadow CLI ------------------------------------------------------
 
 
@@ -959,5 +1242,44 @@ def main(argv: list[str] | None = None) -> int:
     return 0  # advisory: never enforces during the shadow window
 
 
+def promote_main(argv: list[str] | None = None) -> int:
+    """Advance the promotion ladder one rung — the reform 3b AUTO-PROMOTER entrypoint.
+
+    Wired to ``policy-decide-promote.timer`` via ``python -m shared.policy_decide promote``.
+    Each tick evaluates the shadow-week and advances/rolls-back the reversible,
+    version-stamped posture — the missing actuator that turns a clean predicate into an
+    actual promotion instead of the manual 3b-cutover cliff. ``--replay`` refreshes the
+    divergence ledger from the decision log first so coverage + asymmetry read
+    consistently. ADVISORY ONLY: it moves a recorded POSTURE, never the live gate
+    verdict, and always exits 0.
+    """
+    parser = argparse.ArgumentParser(prog="policy_decide promote")
+    parser.add_argument("--decision-log", default=str(DEFAULT_DECISION_LOG))
+    parser.add_argument("--ledger", default=str(DEFAULT_SHADOW_LEDGER))
+    parser.add_argument("--state", default=str(DEFAULT_PROMOTION_STATE))
+    parser.add_argument("--promotion-ledger", default=str(DEFAULT_PROMOTION_LEDGER))
+    parser.add_argument("--min-days", type=float, default=7.0)
+    parser.add_argument("--min-decisions", type=int, default=200)
+    parser.add_argument(
+        "--replay",
+        action="store_true",
+        help="refresh the divergence ledger from the decision log before evaluating",
+    )
+    args = parser.parse_args(argv)
+    result = run_promotion_cycle(
+        decision_log_path=args.decision_log,
+        shadow_ledger_path=args.ledger,
+        state_path=args.state,
+        ledger_path=args.promotion_ledger,
+        min_days=args.min_days,
+        min_decisions=args.min_decisions,
+        replay=args.replay,
+    )
+    print(json.dumps(result, indent=2))
+    return 0  # advisory: advances a posture, never the live gate verdict
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "promote":
+        raise SystemExit(promote_main(sys.argv[2:]))
     raise SystemExit(main())

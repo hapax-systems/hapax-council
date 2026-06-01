@@ -1,0 +1,21 @@
+[Unit]
+Description=Reform 3b AUTO-PROMOTER — advance the policy_decide promotion ladder when the shadow-week is clean
+Documentation=file:///home/hapax/Documents/Personal/30-areas/hapax/reform-execution-manifest.yaml
+After=network.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+# Advisory auto-promoter: the missing actuator on top of the shadow producer +
+# evaluator. Each tick it refreshes the divergence ledger (--replay), evaluates the
+# shadow-week, and advances/rolls-back the reversible, version-stamped promotion
+# posture one rung (shadow→canary→authoritative). Runs from the canonical worktree
+# (the deploy target). Never enforces — it moves a recorded posture, exits 0.
+ExecStart=/home/hapax/.local/bin/uv run --directory /home/hapax/projects/hapax-council python -m shared.policy_decide promote --replay
+Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Nice=10
+MemoryMax=1G
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=policy-decide-promote
