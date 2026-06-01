@@ -1038,7 +1038,14 @@ class TestCcClaimSessionKeyed:
         assert not stale.exists()  # dead session's lease auto-expired (reaped)
 
 
-_SPAWNERS = ["hapax-claude", "hapax-codex", "hapax-gemini", "hapax-vibe", "hapax-antigrav"]
+_SPAWNERS = [
+    "hapax-claude",
+    "hapax-claude-headless",
+    "hapax-codex",
+    "hapax-gemini",
+    "hapax-vibe",
+    "hapax-antigrav",
+]
 
 
 class TestSpawnerSessionIdentity:
@@ -1063,7 +1070,8 @@ class TestSpawnerSessionIdentity:
         )
 
     @pytest.mark.parametrize(
-        "spawner", ["hapax-claude", "hapax-codex", "hapax-vibe", "hapax-antigrav"]
+        "spawner",
+        ["hapax-claude", "hapax-claude-headless", "hapax-codex", "hapax-vibe", "hapax-antigrav"],
     )
     def test_session_id_is_generated_before_cc_claim(self, spawner: str) -> None:
         src = (REPO_ROOT / "scripts" / spawner).read_text()

@@ -25,8 +25,10 @@ CheckId = Literal[
     "offered_stale",
     "refusal_dormancy",
     "spec_staleness",
+    "vault_link_integrity",
 ]
-"""The 8 check identifiers from research §2."""
+"""The 8 research §2 check identifiers, plus spec_staleness and the
+Phase-0 vault_link_integrity recurrence guard."""
 
 Severity = Literal["info", "warning", "violation"]
 """Event severity tier. ntfy alerts (PR5) gate on `violation`."""
@@ -151,6 +153,8 @@ class TaskNote(BaseModel):
     claimed_at: datetime | None = None
     branch: str | None = None
     pr: int | None = None
+    parent_request: str | None = None
+    """Upstream request id (e.g. ``REQ-…``) resolved against hapax-requests."""
     parent_plan: str | None = None
     parent_spec: str | None = None
     tags: list[str] = Field(default_factory=list)
