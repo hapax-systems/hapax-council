@@ -272,7 +272,7 @@ def test_obs_v4l2_source_reset_runs_from_activation_worktree_with_notify_watchdo
     assert "--reset-cooldown 60" in parser.get("Service", "ExecStart")
     assert "--device-id /dev/video50" in parser.get("Service", "ExecStart")
     assert "--resolution 1920x1080" in parser.get("Service", "ExecStart")
-    assert "--framerate 60" in parser.get("Service", "ExecStart")
+    assert "--framerate 30" in parser.get("Service", "ExecStart")
     assert "--pixelformat YUYV" in parser.get("Service", "ExecStart")
     assert "--disable-buffering" in parser.get("Service", "ExecStart")
     assert "--auto-reset-input" in parser.get("Service", "ExecStart")
