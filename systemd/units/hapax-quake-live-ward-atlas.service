@@ -1,6 +1,5 @@
 [Unit]
 Description=Hapax Quake in-world compositor ward atlas live texture source
-After=graphical-session.target
 PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service
 ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 

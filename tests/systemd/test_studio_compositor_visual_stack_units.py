@@ -15,6 +15,8 @@ OBS_SOURCE_RESET = UNITS_DIR / "hapax-obs-v4l2-source-reset.service"
 OBS_SOURCE_RESET_VIDEO52_DROPIN = (
     UNITS_DIR / "hapax-obs-v4l2-source-reset.service.d" / "zzzz-screwm-quake-video52.conf"
 )
+SCREWM_OBS_MEDIA_STREAM = UNITS_DIR / "hapax-darkplaces-obs-media-stream.service"
+SCREWM_OBS_LIVESTREAM = UNITS_DIR / "hapax-obs-screwm-livestream.service"
 LIVE_SURFACE_GUARD = UNITS_DIR / "hapax-live-surface-guard.service"
 RTSP_LOOPBACK_WATCHDOG = UNITS_DIR / "hapax-rtsp-loopback-watchdog.service"
 RTSP_LOOPBACK_WATCHDOG_TIMER = UNITS_DIR / "hapax-rtsp-loopback-watchdog.timer"
@@ -122,6 +124,9 @@ def test_screwm_quake_runtime_skips_legacy_studio_compositor() -> None:
     assert "hapax-obs-video50-yuyv-compat-bridge.service" not in (
         REPO_ROOT / "systemd" / "units" / "hapax-visual-stack.target"
     ).read_text(encoding="utf-8")
+    assert "hapax-darkplaces-obs-media-stream.service" in (
+        REPO_ROOT / "systemd" / "units" / "hapax-visual-stack.target"
+    ).read_text(encoding="utf-8")
 
 
 def test_screwm_quake_layout_keeps_ward_surface_inside_darkplaces() -> None:
@@ -177,6 +182,62 @@ def test_obs_video50_bridge_is_guarded_as_manual_fallback() -> None:
     assert "-vf fps=60" in exec_start
     assert "-pix_fmt yuyv422 -r 60 /dev/video50" in exec_start
     assert not parser.has_section("Install")
+
+
+def test_screwm_darkplaces_obs_media_stream_publishes_x11_as_udp_mpegts() -> None:
+    parser = _load_unit(SCREWM_OBS_MEDIA_STREAM)
+    lines = _active_unit_lines(SCREWM_OBS_MEDIA_STREAM)
+    script = REPO_ROOT / "scripts" / "darkplaces-obs-media-stream.sh"
+    script_text = script.read_text(encoding="utf-8")
+
+    assert parser.get("Unit", "After") == "hapax-darkplaces-v4l2.service"
+    assert parser.get("Unit", "Wants") == "hapax-darkplaces-v4l2.service"
+    assert parser.get("Unit", "PartOf") == (
+        "hapax-darkplaces-v4l2.service hapax-visual-stack.target"
+    )
+    assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in lines
+    assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
+    assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
+    assert parser.get("Service", "ExecStart").endswith("scripts/darkplaces-obs-media-stream.sh\"'")
+    assert "Environment=HAPAX_DARKPLACES_DISPLAY=:82" in lines
+    assert (
+        "Environment=HAPAX_DARKPLACES_OBS_MEDIA_OUTPUT_URL=udp://127.0.0.1:30552?pkt_size=1316"
+        in lines
+    )
+    assert "format=yuv420p" in script_text
+    assert "-c:v libx264" in script_text
+    assert "repeat-headers=1" in script_text
+    assert "-f mpegts" in script_text
+    assert script.exists()
+    assert script.stat().st_mode & 0o100
+
+
+def test_screwm_obs_livestream_uses_ffmpeg_media_source_instead_of_v4l2() -> None:
+    parser = _load_unit(SCREWM_OBS_LIVESTREAM)
+    lines = _active_unit_lines(SCREWM_OBS_LIVESTREAM)
+    exec_start_post = parser.get("Service", "ExecStartPost")
+
+    assert parser.get("Unit", "After") == (
+        "hapax-darkplaces-v4l2.service hapax-darkplaces-obs-media-stream.service"
+    )
+    assert parser.get("Unit", "Wants") == (
+        "hapax-darkplaces-v4l2.service hapax-darkplaces-obs-media-stream.service"
+    )
+    assert parser.get("Unit", "Conflicts") == "hapax-obs-livestream.service"
+    assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in lines
+    assert parser.get("Service", "ExecStart") == (
+        "/usr/bin/obs --profile LegomenaLive --collection Untitled --scene Scene --startstreaming"
+    )
+    assert "hapax-obs-ffmpeg-source-ensure" in parser.get("Service", "ExecStartPre")
+    assert "hapax-obs-ffmpeg-source-ensure" in exec_start_post
+    assert '--source-name "DarkPlaces Screwm Media"' in exec_start_post
+    assert (
+        '--input-url "udp://127.0.0.1:30552?fifo_size=1000000&overrun_nonfatal=1"'
+        in exec_start_post
+    )
+    assert '--disable-source "Video Capture Device (V4L2)"' in exec_start_post
+    assert "studio-compositor.service" not in parser.get("Unit", "After")
+    assert "hapax-v4l2-video42-format-guard" not in "\n".join(lines)
 
 
 def test_video42_format_guard_runs_from_activation_worktree() -> None:
@@ -293,24 +354,33 @@ def test_obs_v4l2_source_reset_runs_from_activation_worktree_with_notify_watchdo
     assert all("%h/projects/hapax-council" not in line for line in lines)
 
 
-def test_screwm_obs_v4l2_reset_dropin_pins_obs_to_direct_video50() -> None:
+def test_screwm_obs_v4l2_reset_dropin_pins_obs_to_direct_darkplaces_video52() -> None:
     lines = _active_unit_lines(OBS_SOURCE_RESET_VIDEO52_DROPIN)
     joined = "\n".join(lines)
 
+    assert "ConditionPathExists=!%h/.config/hapax/enable-darkplaces-runtime" in lines
     assert "ExecStart=" in lines
-    assert "--device-id /dev/video50" in joined
     assert "--poll-interval 15" in joined
     assert "--stall-threshold 60" in joined
+    assert "--device-id /dev/video52" in joined
+    assert "--framerate 30" in joined
     assert "--pixelformat YUYV" in joined
-    assert "--producer-service" not in joined
-    assert "--obs-log-v4l2-errors" in joined
+    assert "--producer-service hapax-darkplaces-v4l2.service" in joined
+    assert "--obs-log-v4l2-errors" not in joined
     assert "--ignore-static-screenshot-stalls" in joined
-    assert "--producer-restart-after-obs-resets" not in joined
-    assert "--max-static-ignore-seconds 75" in joined
+    assert "--producer-restart-after-obs-resets 0" in joined
+    assert "--max-static-ignore-seconds 0" in joined
+    assert "--recreate-input-on-reset" in joined
     assert "--screenshot-width 160" in joined
     assert "--screenshot-height 90" in joined
-    assert "--device-id /dev/video52" not in joined
+    assert "--device-id /dev/video50" not in joined
     assert "--pixelformat NV12" not in joined
+    assert "--obs-log-v4l2-errors" not in joined
+    assert "--recreate-input-on-reset" in joined
+    assert "--producer-service hapax-darkplaces-v4l2.service" in joined
+    assert "--producer-restart-after-obs-resets 0" in joined
+    assert "--max-static-ignore-seconds 0" in joined
+    assert "--ignore-static-screenshot-stalls" in joined
     assert "--prom-path %h/.local/share/node_exporter/textfile_collector/" in joined
 
 

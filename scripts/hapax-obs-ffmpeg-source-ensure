@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""Ensure OBS uses a live ffmpeg media source for the DarkPlaces renderer."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+DEFAULT_SOURCE_NAME = "DarkPlaces Screwm Media"
+DEFAULT_SCENE_NAME = "Scene"
+DEFAULT_INPUT_URL = "udp://127.0.0.1:30552?fifo_size=1000000&overrun_nonfatal=1"
+DEFAULT_DISABLE_SOURCES = ("Video Capture Device (V4L2)", "DarkPlaces Screwm")
+
+
+def _read_obs_websocket_config(config_path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _default_obs_config() -> dict[str, Any]:
+    return _read_obs_websocket_config(
+        Path.home() / ".config" / "obs-studio" / "plugin_config" / "obs-websocket" / "config.json"
+    )
+
+
+def _default_obs_password(config: dict[str, Any]) -> str:
+    if os.environ.get("HAPAX_OBS_WEBSOCKET_PASSWORD"):
+        return os.environ["HAPAX_OBS_WEBSOCKET_PASSWORD"]
+    if os.environ.get("OBS_WEBSOCKET_PASSWORD"):
+        return os.environ["OBS_WEBSOCKET_PASSWORD"]
+    if config.get("server_enabled") is False or config.get("auth_required") is False:
+        return ""
+    password = config.get("server_password")
+    return password if isinstance(password, str) else ""
+
+
+def ffmpeg_source_settings(
+    input_url: str,
+    input_format: str,
+    buffering_mb: int,
+    reconnect_delay_sec: int,
+) -> dict[str, Any]:
+    return {
+        "is_local_file": False,
+        "input": input_url,
+        "input_format": input_format,
+        "buffering_mb": buffering_mb,
+        "restart_on_activate": True,
+        "close_when_inactive": False,
+        "hw_decode": False,
+        "clear_on_media_end": False,
+        "reconnect_delay_sec": reconnect_delay_sec,
+        "log_changes": True,
+    }
+
+
+def full_canvas_transform(width: int, height: int) -> dict[str, Any]:
+    return {
+        "positionX": 0.0,
+        "positionY": 0.0,
+        "scaleX": 1.0,
+        "scaleY": 1.0,
+        "rotation": 0.0,
+        "alignment": 5,
+        "boundsType": "OBS_BOUNDS_STRETCH",
+        "boundsAlignment": 5,
+        "boundsWidth": float(width),
+        "boundsHeight": float(height),
+        "cropTop": 0,
+        "cropBottom": 0,
+        "cropLeft": 0,
+        "cropRight": 0,
+    }
+
+
+def _input_names(client: Any) -> set[str]:
+    return {
+        item["inputName"]
+        for item in client.get_input_list().inputs
+        if isinstance(item, dict) and isinstance(item.get("inputName"), str)
+    }
+
+
+def _scene_item_id(client: Any, scene_name: str, source_name: str) -> int | None:
+    try:
+        return int(client.get_scene_item_id(scene_name, source_name).scene_item_id)
+    except Exception:
+        return None
+
+
+def ensure_obs_ffmpeg_source(
+    client: Any,
+    *,
+    scene_name: str,
+    source_name: str,
+    settings: dict[str, Any],
+    width: int,
+    height: int,
+    disable_sources: tuple[str, ...],
+) -> dict[str, Any]:
+    action: str
+    if source_name in _input_names(client):
+        client.set_input_settings(source_name, settings, True)
+        action = "updated"
+    else:
+        client.create_input(scene_name, source_name, "ffmpeg_source", settings, True)
+        action = "created"
+
+    item_id = _scene_item_id(client, scene_name, source_name)
+    if item_id is None:
+        raise RuntimeError(f"source is not present in scene after {action}: {source_name}")
+
+    client.set_scene_item_enabled(scene_name, item_id, True)
+    client.set_scene_item_transform(scene_name, item_id, full_canvas_transform(width, height))
+
+    disabled: list[str] = []
+    for old_source in disable_sources:
+        if old_source == source_name:
+            continue
+        old_item_id = _scene_item_id(client, scene_name, old_source)
+        if old_item_id is None:
+            continue
+        client.set_scene_item_enabled(scene_name, old_item_id, False)
+        disabled.append(old_source)
+
+    return {
+        "action": action,
+        "scene": scene_name,
+        "source": source_name,
+        "disabled_sources": disabled,
+    }
+
+
+def _connect(host: str, port: int, password: str, request_timeout: float) -> Any:
+    import obsws_python
+
+    return obsws_python.ReqClient(
+        host=host,
+        port=port,
+        password=password,
+        timeout=request_timeout,
+    )
+
+
+def _connect_with_retry(args: argparse.Namespace, config: dict[str, Any]) -> Any:
+    password = args.password
+    if password is None:
+        password = _default_obs_password(config)
+
+    deadline = time.monotonic() + args.connect_timeout
+    last_error: Exception | None = None
+    while time.monotonic() <= deadline:
+        try:
+            return _connect(args.host, args.port, password, args.request_timeout)
+        except Exception as exc:
+            last_error = exc
+            time.sleep(args.retry_interval)
+    raise RuntimeError(f"could not connect to OBS websocket: {last_error}") from last_error
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    config = _default_obs_config()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default="localhost")
+    parser.add_argument("--port", type=int, default=int(config.get("server_port", 4455)))
+    parser.add_argument("--password", default=None)
+    parser.add_argument("--request-timeout", type=float, default=8.0)
+    parser.add_argument("--connect-timeout", type=float, default=60.0)
+    parser.add_argument("--retry-interval", type=float, default=1.0)
+    parser.add_argument("--scene-name", default=DEFAULT_SCENE_NAME)
+    parser.add_argument("--source-name", default=DEFAULT_SOURCE_NAME)
+    parser.add_argument("--input-url", default=DEFAULT_INPUT_URL)
+    parser.add_argument("--input-format", default="mpegts")
+    parser.add_argument("--buffering-mb", type=int, default=1)
+    parser.add_argument("--reconnect-delay-sec", type=int, default=1)
+    parser.add_argument("--width", type=int, default=1920)
+    parser.add_argument("--height", type=int, default=1080)
+    parser.add_argument(
+        "--disable-source",
+        action="append",
+        default=None,
+        help="Existing scene source to disable after the media source is live.",
+    )
+    args = parser.parse_args(argv)
+    if args.disable_source is None:
+        args.disable_source = list(DEFAULT_DISABLE_SOURCES)
+    else:
+        args.disable_source = list(dict.fromkeys(args.disable_source))
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(list(argv) if argv is not None else sys.argv[1:])
+    config = _default_obs_config()
+    client = _connect_with_retry(args, config)
+    result = ensure_obs_ffmpeg_source(
+        client,
+        scene_name=args.scene_name,
+        source_name=args.source_name,
+        settings=ffmpeg_source_settings(
+            args.input_url,
+            args.input_format,
+            args.buffering_mb,
+            args.reconnect_delay_sec,
+        ),
+        width=args.width,
+        height=args.height,
+        disable_sources=tuple(args.disable_source),
+    )
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

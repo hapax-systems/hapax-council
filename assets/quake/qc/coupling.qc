@@ -24,6 +24,7 @@ float coupling_effect_drift_slow_ratio;
 float coupling_effect_drift_kind_variance;
 float coupling_effect_drift_max_delta;
 float coupling_effect_drift_density;
+float coupling_effect_drift_density_currency;
 float coupling_effect_drift_region_count;
 float coupling_effect_drift_tonal;
 float coupling_effect_drift_atmospheric;
@@ -90,6 +91,7 @@ void() coupling_init =
     coupling_effect_drift_kind_variance = 0;
     coupling_effect_drift_max_delta = 0;
     coupling_effect_drift_density = 0;
+    coupling_effect_drift_density_currency = 0;
     coupling_effect_drift_region_count = 0;
     coupling_effect_drift_tonal = 0;
     coupling_effect_drift_atmospheric = 0;
@@ -339,6 +341,7 @@ void() coupling_read_effect_drift =
     coupling_effect_drift_kind_variance = coupling_read_float("data/effect-drift-kind-variance.txt", 0);
     coupling_effect_drift_max_delta = coupling_read_float("data/effect-drift-max-delta.txt", 0);
     coupling_effect_drift_density = coupling_read_float("data/effect-drift-density.txt", 0);
+    coupling_effect_drift_density_currency = coupling_read_float("data/effect-drift-density-currency.txt", 0);
     coupling_effect_drift_region_count = coupling_read_float("data/effect-drift-region-count.txt", 0);
     coupling_effect_drift_tonal = coupling_read_float("data/effect-drift-tonal.txt", 0);
     coupling_effect_drift_atmospheric = coupling_read_float("data/effect-drift-atmospheric.txt", 0);
@@ -406,8 +409,8 @@ void() coupling_apply_stimmung =
         return;
     }
 
-    float density_grounding = coupling_clamp_range(coupling_effect_drift_density * 1.6, 0, 0.24);
-    float drift_baseline = coupling_clamp_range(0.42 + coupling_effect_drift_active_ratio * 0.18 + coupling_effect_drift_active_effect_ratio * 0.20 + coupling_effect_drift_kind_variance * 0.24 + coupling_effect_drift_max_delta * 0.16 + density_grounding + coupling_visual_chain_param_pressure * 0.08, 0.36, 0.96);
+    float density_grounding = coupling_clamp_range(coupling_max2(coupling_effect_drift_density * 1.6, coupling_effect_drift_density_currency * 1.25), 0, 0.34);
+    float drift_baseline = coupling_clamp_range(0.42 + coupling_effect_drift_active_ratio * 0.18 + coupling_effect_drift_active_effect_ratio * 0.20 + coupling_effect_drift_kind_variance * 0.24 + coupling_effect_drift_max_delta * 0.16 + density_grounding + coupling_visual_chain_param_pressure * 0.08, 0.36, 1.00);
     float fast_jitter = 0.5 + sin(time * (1.55 + coupling_effect_drift_fast_ratio * 1.15) + coupling_effect_drift_region_count * 5.6) * 0.5;
     float slow_jitter = 0.5 + sin(time * (0.17 + coupling_effect_drift_slow_ratio * 0.18) + coupling_effect_drift_tonal * 3.1 + coupling_effect_drift_kind_variance * 2.4) * 0.5;
     float family_mutation = coupling_clamp_range(coupling_effect_drift_active_slot_ratio * 0.35 + coupling_effect_drift_kind_variance * 0.45 + coupling_effect_drift_fast_ratio * 0.20, 0, 1);
@@ -496,6 +499,122 @@ void() coupling_apply_stimmung =
     float thermal_val = coupling_clamp_range(coupling_reverie_thermal * 0.08 + coupling_audio_onset * 0.012 + coupling_effect_drift_tonal * 0.14 + drift_baseline * 0.035, 0, 0.26);
     if (mode_tonal > 0.56 && mode_tonal < 0.68)
         thermal_val = coupling_clamp_range(thermal_val + 0.12, 0, 0.38);
+
+    // Review presets 1-6 are additive expression floors for the AVSDLC matrix:
+    // they keep live SlotDrift coupling but force each named row to actually
+    // exercise its family instead of collapsing back to the generic drift field.
+    if (coupling_effect_review_preset >= 0.5 && coupling_effect_review_preset < 1.5)
+    {
+        if (vig < 0.055)
+            vig = 0.055;
+        if (ca < 1.85)
+            ca = 1.85;
+        if (scan_val < 0.46)
+            scan_val = 0.46;
+        if (edge_val < 1.32)
+            edge_val = 1.32;
+        if (warp_val < 0.035)
+            warp_val = 0.035;
+        if (noise_val < 0.070)
+            noise_val = 0.070;
+        if (sharpen_val < 0.10)
+            sharpen_val = 0.10;
+    }
+    else if (coupling_effect_review_preset >= 1.5 && coupling_effect_review_preset < 2.5)
+    {
+        if (ca < 3.35)
+            ca = 3.35;
+        if (temp_val < 0.05)
+            temp_val = 0.05;
+        if (scan_val < 1.05)
+            scan_val = 1.05;
+        if (edge_val < 2.10)
+            edge_val = 2.10;
+        if (warp_val < 0.050)
+            warp_val = 0.050;
+        if (noise_val < 0.090)
+            noise_val = 0.090;
+        if (invert_val < 0.03)
+            invert_val = 0.03;
+        if (sharpen_val < 0.14)
+            sharpen_val = 0.14;
+    }
+    else if (coupling_effect_review_preset >= 2.5 && coupling_effect_review_preset < 3.5)
+    {
+        if (vig < 0.065)
+            vig = 0.065;
+        if (ca < 2.30)
+            ca = 2.30;
+        if (grain_val < 0.055)
+            grain_val = 0.055;
+        if (scan_val < 0.85)
+            scan_val = 0.85;
+        if (edge_val < 1.60)
+            edge_val = 1.60;
+        if (warp_val < 0.075)
+            warp_val = 0.075;
+        if (noise_val < 0.160)
+            noise_val = 0.160;
+    }
+    else if (coupling_effect_review_preset >= 3.5 && coupling_effect_review_preset < 4.5)
+    {
+        if (ca < 2.00)
+            ca = 2.00;
+        if (scan_val < 0.80)
+            scan_val = 0.80;
+        if (edge_val < 1.55)
+            edge_val = 1.55;
+        if (poster_val < 7)
+            poster_val = 7;
+        if (halftone_val < 7)
+            halftone_val = 7;
+        if (noise_val < 0.090)
+            noise_val = 0.090;
+        if (threshold_val < 0.045)
+            threshold_val = 0.045;
+        if (sharpen_val < 0.12)
+            sharpen_val = 0.12;
+    }
+    else if (coupling_effect_review_preset >= 4.5 && coupling_effect_review_preset < 5.5)
+    {
+        if (ca < 2.10)
+            ca = 2.10;
+        if (temp_val < 0.12)
+            temp_val = 0.12;
+        if (scan_val < 0.70)
+            scan_val = 0.70;
+        if (edge_val < 1.95)
+            edge_val = 1.95;
+        if (noise_val < 0.090)
+            noise_val = 0.090;
+        if (emboss_val < 0.36)
+            emboss_val = 0.36;
+        if (aperture_val < 0.13)
+            aperture_val = 0.13;
+        if (thermal_val < 0.32)
+            thermal_val = 0.32;
+    }
+    else if (coupling_effect_review_preset >= 5.5 && coupling_effect_review_preset < 6.5)
+    {
+        if (ca < 1.85)
+            ca = 1.85;
+        if (scan_val < 0.65)
+            scan_val = 0.65;
+        if (edge_val < 1.55)
+            edge_val = 1.55;
+        if (warp_val < 0.040)
+            warp_val = 0.040;
+        if (noise_val < 0.120)
+            noise_val = 0.120;
+        if (threshold_val < 0.13)
+            threshold_val = 0.13;
+        if (invert_val < 0.20)
+            invert_val = 0.20;
+        if (aperture_val < 0.08)
+            aperture_val = 0.08;
+        if (thermal_val < 0.16)
+            thermal_val = 0.16;
+    }
 
     coupling_write_uservecs(
         vig, ca, temp_val, grain_val,

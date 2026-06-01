@@ -463,6 +463,27 @@ def _pov_lines(station: Station) -> dict[str, str]:
     }
 
 
+def _swept_station(station: Station, index: int, frame_count: int, sweep_units: float) -> Station:
+    """Return a slight lateral camera sweep for duration-bound hold frames."""
+    if sweep_units <= 0.0 or frame_count <= 1:
+        return station
+    label, origin, lookat = station
+    dx = lookat[0] - origin[0]
+    dy = lookat[1] - origin[1]
+    length = math.hypot(dx, dy) or 1.0
+    # Perpendicular to the look vector, centered on the nominal POV station.
+    nx = -dy / length
+    ny = dx / length
+    centered = (index / (frame_count - 1)) - 0.5
+    z_phase = math.sin(index * math.pi / max(1, frame_count - 1))
+    swept_origin = (
+        origin[0] + nx * sweep_units * centered,
+        origin[1] + ny * sweep_units * centered,
+        origin[2] + z_phase * min(16.0, sweep_units * 0.16),
+    )
+    return label, swept_origin, lookat
+
+
 def selected_stations(raw: str) -> list[Station]:
     by_label = {station[0]: station for station in POV_STATIONS}
     if raw == "all":
@@ -488,6 +509,7 @@ def _obs_capture(
     height: int = 1080,
     direct_display: str = ":82",
     timeout_s: float = 12.0,
+    require_obs_websocket: bool = False,
 ) -> dict[str, object]:
     """Save a clean 1080p OBS program-output frame via obs-websocket.
 
@@ -510,6 +532,8 @@ def _obs_capture(
         client.save_source_screenshot(scene, "png", str(out_path), width, height, -1)
         via = "obs-websocket"
     except Exception as exc:
+        if require_obs_websocket:
+            raise RuntimeError(f"OBS websocket capture failed for {scene}: {exc}") from exc
         via = f"x11-fallback:{type(exc).__name__}"
         subprocess.run(
             ["bash", "-lc", f"DISPLAY={direct_display} import -window root {str(out_path)!r}"],
@@ -563,11 +587,16 @@ def capture_hold_sequence(
     output_dir: Path,
     stem: str,
     *,
+    game_data: Path | None,
+    base_lines: dict[str, str] | None,
+    station: Station | None,
     scene: str,
     hold_s: float,
     interval_s: float,
     direct_display: str,
     timeout_s: float,
+    sweep_units: float,
+    require_obs_websocket: bool,
 ) -> dict[str, object]:
     """Capture a time sequence of OBS frames over a hold window (duration-bound).
 
@@ -581,8 +610,21 @@ def capture_hold_sequence(
     motions: list[float] = []
     prev_samples: list[int] | None = None
     for index in range(frame_count):
+        if game_data is not None and base_lines is not None and station is not None:
+            swept_station = _swept_station(station, index, frame_count, sweep_units)
+            _stabilize_lines(
+                game_data,
+                {**base_lines, **_pov_lines(swept_station)},
+                min(1.0, max(0.25, interval_s * 0.45)),
+            )
         path = output_dir / f"{stem}-t{index:02d}-obs.png"
-        cap = _obs_capture(path, scene=scene, direct_display=direct_display, timeout_s=timeout_s)
+        cap = _obs_capture(
+            path,
+            scene=scene,
+            direct_display=direct_display,
+            timeout_s=timeout_s,
+            require_obs_websocket=require_obs_websocket,
+        )
         luma, samples = _frame_stats(path)
         cap["t_index"] = index
         cap["luma"] = luma
@@ -614,6 +656,8 @@ def capture_pov_sweep(
     direct_display: str,
     hold_s: float = 0.0,
     hold_interval_s: float = 2.0,
+    hold_sweep_units: float = 80.0,
+    require_obs_websocket: bool = False,
 ) -> dict[str, object]:
     captures: dict[str, object] = {}
     for station in stations:
@@ -626,11 +670,16 @@ def capture_pov_sweep(
             entry["hold"] = capture_hold_sequence(
                 output_dir,
                 stem,
+                game_data=game_data,
+                base_lines=base_lines,
+                station=station,
                 scene=obs_scene,
                 hold_s=hold_s,
                 interval_s=hold_interval_s,
                 direct_display=direct_display,
                 timeout_s=timeout_s,
+                sweep_units=hold_sweep_units,
+                require_obs_websocket=require_obs_websocket,
             )
         else:
             entry["obs"] = _obs_capture(
@@ -638,6 +687,7 @@ def capture_pov_sweep(
                 scene=obs_scene,
                 direct_display=direct_display,
                 timeout_s=timeout_s,
+                require_obs_websocket=require_obs_websocket,
             )
         captures[label] = entry
     return captures
@@ -669,6 +719,9 @@ def run_matrix(args: argparse.Namespace) -> int:
         "started_at_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "game_data": str(args.game_data),
         "video_device": str(args.video_device),
+        "obs_capture_target": getattr(args, "obs_source", None) or args.obs_scene,
+        "obs_capture_target_kind": "source" if getattr(args, "obs_source", None) else "scene",
+        "obs_capture_requires_websocket": bool(getattr(args, "require_obs_websocket", False)),
         "rows": [],
     }
 
@@ -687,12 +740,14 @@ def run_matrix(args: argparse.Namespace) -> int:
                 game_data=args.game_data,
                 base_lines=lines,
                 stations=selected_stations(args.pov),
-                obs_scene=args.obs_scene,
+                obs_scene=getattr(args, "obs_source", None) or args.obs_scene,
                 settle_s=args.pov_settle_s,
                 timeout_s=args.capture_timeout_s,
                 direct_display=args.direct_display,
                 hold_s=args.hold_s,
                 hold_interval_s=args.hold_interval_s,
+                hold_sweep_units=args.hold_sweep_units,
+                require_obs_websocket=bool(getattr(args, "require_obs_websocket", False)),
             )
             _stabilize_lines(args.game_data, lines, 0.5)
         manifest["rows"].append(row_manifest)
@@ -725,6 +780,15 @@ def parse_args() -> argparse.Namespace:
         "--pov", default="default", help="all, default, or a comma list of POV station labels"
     )
     parser.add_argument("--obs-scene", default=DEFAULT_OBS_SCENE)
+    parser.add_argument(
+        "--obs-source",
+        help="OBS source to capture instead of the program scene; use for source-level witness",
+    )
+    parser.add_argument(
+        "--require-obs-websocket",
+        action="store_true",
+        help="fail witness capture instead of falling back to direct X11 when OBS is unavailable",
+    )
     parser.add_argument("--pov-settle-s", type=float, default=1.2)
     parser.add_argument(
         "--hold-s",
@@ -733,6 +797,12 @@ def parse_args() -> argparse.Namespace:
         help="duration-bound: hold each POV and capture a frame sequence over N seconds",
     )
     parser.add_argument("--hold-interval-s", type=float, default=2.0)
+    parser.add_argument(
+        "--hold-sweep-units",
+        type=float,
+        default=80.0,
+        help="duration-bound: lateral camera sweep distance during each hold; 0 disables",
+    )
     parser.add_argument("--no-restore-camera", dest="restore_camera", action="store_false")
     parser.set_defaults(restore_camera=True)
     return parser.parse_args()

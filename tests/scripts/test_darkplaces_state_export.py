@@ -851,6 +851,7 @@ def test_darkplaces_state_export_builds_visual_chain_and_effect_drift_scalars(
     lines = exporter.build_visual_chain_lines(
         visual_chain_state_file,
         effect_drift_state_file,
+        visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
         effect_drift_fallback_state_file=tmp_path / "missing-effect-drift-fallback.json",
     )
 
@@ -882,6 +883,70 @@ def test_darkplaces_state_export_builds_visual_chain_and_effect_drift_scalars(
     assert lines["visual-chain-source.txt"] == "canonical"
 
 
+def test_darkplaces_state_export_prefers_expressive_visual_chain_fallback(
+    tmp_path: Path,
+) -> None:
+    exporter = _load_exporter()
+    visual_chain_state_file = tmp_path / "visual-chain-state.json"
+    visual_chain_fallback_state_file = tmp_path / "screwm-visual-chain-state.json"
+    effect_drift_state_file = tmp_path / "effect-drift-state.json"
+    _write_json(
+        visual_chain_state_file,
+        {
+            "levels": {
+                "visual_chain.intensity": 0.9,
+                "visual_chain.coherence": 0.3,
+            },
+            "params": {
+                "noise.amplitude": 0.25,
+                "drift.amplitude": 0.0,
+                "drift.speed": 0.0,
+                "color.hue_rotate": 0.0,
+                "color.saturation": 0.0,
+                "color.brightness": 0.0,
+            },
+        },
+    )
+    _write_json(
+        visual_chain_fallback_state_file,
+        {
+            "levels": {
+                "visual_chain.intensity": 0.7,
+                "visual_chain.temporal_distortion": 0.6,
+                "visual_chain.spectral_color": 0.5,
+            },
+            "params": {
+                "drift.amplitude": 0.4,
+                "drift.speed": 0.25,
+                "color.hue_rotate": 35.0,
+                "color.saturation": 0.3,
+                "fb.decay": 0.075,
+            },
+        },
+    )
+    _write_json(
+        effect_drift_state_file,
+        {
+            "pass_count": 0,
+            "non_neutral_pass_count": 0,
+            "passes": [],
+        },
+    )
+
+    lines = exporter.build_visual_chain_lines(
+        visual_chain_state_file,
+        effect_drift_state_file,
+        visual_chain_fallback_state_file=visual_chain_fallback_state_file,
+        effect_drift_fallback_state_file=tmp_path / "missing-effect-drift-fallback.json",
+    )
+
+    assert lines["visual-chain-source.txt"] == "fallback-expressive"
+    assert lines["visual-chain-01.txt"] == "0.7000"
+    assert lines["visual-chain-drift.txt"] == "0.5000"
+    assert lines["visual-chain-color.txt"] == "0.5000"
+    assert lines["visual-chain-feedback.txt"] == "0.5000"
+
+
 def test_darkplaces_state_export_covers_all_effect_drift_families(tmp_path: Path) -> None:
     exporter = _load_exporter()
     visual_chain_state_file = tmp_path / "visual-chain-state.json"
@@ -906,6 +971,7 @@ def test_darkplaces_state_export_covers_all_effect_drift_families(tmp_path: Path
     lines = exporter.build_visual_chain_lines(
         visual_chain_state_file,
         effect_drift_state_file,
+        visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
         effect_drift_fallback_state_file=tmp_path / "missing-effect-drift-fallback.json",
     )
 
@@ -951,6 +1017,7 @@ def test_darkplaces_state_export_routes_real_slotdrift_through_full_family_vecto
     lines = exporter.build_visual_chain_lines(
         visual_chain_state_file,
         effect_drift_state_file,
+        visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
         effect_drift_fallback_state_file=tmp_path / "missing-effect-drift-fallback.json",
         now=15.0,
     )
@@ -1007,6 +1074,7 @@ def test_darkplaces_state_export_density_grounds_drift_currency(tmp_path: Path) 
         return exporter.build_visual_chain_lines(
             visual_chain_state_file,
             drift_file,
+            visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
             effect_drift_fallback_state_file=tmp_path / "missing-fallback.json",
             density_field_file=density_path,
             now=15.0,
@@ -1075,6 +1143,7 @@ def test_darkplaces_state_export_rejects_fail_closed_slotdrift(
     lines = exporter.build_visual_chain_lines(
         visual_chain_state_file,
         effect_drift_state_file,
+        visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
         effect_drift_fallback_state_file=fallback_effect_drift_state_file,
     )
 
@@ -1124,6 +1193,7 @@ def test_darkplaces_state_export_prefers_fresh_real_slotdrift_over_fallback(
     lines = exporter.build_visual_chain_lines(
         visual_chain_state_file,
         effect_drift_state_file,
+        visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
         effect_drift_fallback_state_file=fallback_effect_drift_state_file,
     )
 
@@ -1169,6 +1239,7 @@ def test_darkplaces_state_export_does_not_replace_recent_slotdrift_with_syntheti
     lines = exporter.build_visual_chain_lines(
         visual_chain_state_file,
         effect_drift_state_file,
+        visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
         effect_drift_fallback_state_file=fallback_effect_drift_state_file,
         now=220.0,
     )
@@ -1213,6 +1284,7 @@ def test_darkplaces_state_export_uses_named_synthetic_fallback_when_primary_is_n
     lines = exporter.build_visual_chain_lines(
         visual_chain_state_file,
         effect_drift_state_file,
+        visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
         effect_drift_fallback_state_file=fallback_effect_drift_state_file,
     )
 

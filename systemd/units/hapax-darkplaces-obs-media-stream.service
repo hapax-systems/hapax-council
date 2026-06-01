@@ -1,0 +1,27 @@
+[Unit]
+Description=Hapax DarkPlaces OBS media stream
+After=hapax-darkplaces-v4l2.service
+Wants=hapax-darkplaces-v4l2.service
+PartOf=hapax-darkplaces-v4l2.service hapax-visual-stack.target
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/darkplaces-obs-media-stream.sh
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/darkplaces-obs-media-stream.sh
+ExecStart=/usr/bin/bash -lc 'exec "$HOME/.cache/hapax/source-activation/worktree/scripts/darkplaces-obs-media-stream.sh"'
+Restart=always
+RestartSec=2s
+TimeoutStopSec=3s
+Environment=HAPAX_DARKPLACES_DISPLAY=:82
+Environment=DARKPLACES_WIDTH=1920
+Environment=DARKPLACES_HEIGHT=1080
+Environment=DARKPLACES_FPS=30
+Environment=HAPAX_DARKPLACES_OBS_MEDIA_OUTPUT_URL=udp://127.0.0.1:30552?pkt_size=1316
+Environment=HAPAX_DARKPLACES_OBS_MEDIA_BITRATE=12000k
+Environment=HAPAX_DARKPLACES_OBS_MEDIA_MAXRATE=16000k
+Environment=HAPAX_DARKPLACES_OBS_MEDIA_BUFSIZE=1000k
+
+[Install]
+WantedBy=default.target

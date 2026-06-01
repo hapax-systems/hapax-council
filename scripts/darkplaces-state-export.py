@@ -1578,6 +1578,21 @@ def _visual_chain_pressure(payload: dict[str, Any]) -> float:
     return max(level_pressure, min(param_pressure, 1.0))
 
 
+def _visual_chain_expressive_pressure(payload: dict[str, Any]) -> float:
+    params = payload.get("params")
+    params = params if isinstance(params, dict) else {}
+    return max(
+        _norm_abs_param(params, "drift.amplitude", 0.8),
+        _norm_abs_param(params, "drift.speed", 0.5),
+        _norm_abs_param(params, "color.hue_rotate", 70.0),
+        _norm_abs_param(params, "fb.hue_shift", 5.0),
+        _norm_abs_param(params, "color.saturation", 0.6),
+        _norm_abs_param(params, "color.brightness", 0.3),
+        _norm_abs_param(params, "fb.decay", 0.15),
+        _norm_abs_param(params, "post.sediment_strength", 0.08),
+    )
+
+
 def _select_visual_chain_state(
     primary_file: Path,
     fallback_file: Path,
@@ -1585,10 +1600,21 @@ def _select_visual_chain_state(
     now: float | None = None,
 ) -> tuple[dict[str, Any], str]:
     primary = _read_json(primary_file)
-    if primary and _state_file_fresh(primary_file, now=now) and _visual_chain_pressure(primary) > 0:
-        return primary, "canonical"
     fallback = _read_json(fallback_file)
-    if fallback and _state_file_fresh(fallback_file, now=now):
+    fallback_fresh = bool(fallback) and _state_file_fresh(fallback_file, now=now)
+    if primary and _state_file_fresh(primary_file, now=now):
+        if fallback_fresh:
+            primary_expressive = _visual_chain_expressive_pressure(primary)
+            fallback_expressive = _visual_chain_expressive_pressure(fallback)
+            if (
+                fallback_expressive >= 0.12
+                and fallback_expressive >= primary_expressive + 0.08
+                and (primary_expressive < 0.08 or fallback_expressive > primary_expressive * 1.4)
+            ):
+                return fallback, "fallback-expressive"
+        if _visual_chain_pressure(primary) > 0:
+            return primary, "canonical"
+    if fallback_fresh:
         return fallback, "fallback"
     if primary:
         return primary, "canonical-stale-or-neutral"

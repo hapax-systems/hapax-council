@@ -3,6 +3,8 @@ from __future__ import annotations
 import runpy
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "screwm-effect-drift-matrix-witness.py"
 
@@ -109,6 +111,20 @@ def test_row_selection_accepts_ordinals_and_labels() -> None:
     assert [row.label for row in selected] == ["prism-beta", "threshold-zeta"]
 
 
+def test_duration_sweep_perturbs_pov_between_hold_frames() -> None:
+    module = _load_script()
+    station = module["POV_STATIONS"][0]
+
+    first = module["_swept_station"](station, 0, 4, 80.0)
+    last = module["_swept_station"](station, 3, 4, 80.0)
+
+    assert first[0] == station[0]
+    assert last[0] == station[0]
+    assert first[1] != station[1]
+    assert last[1] != station[1]
+    assert first[1] != last[1]
+
+
 def test_matrix_restore_clears_camera_and_review_preset(tmp_path: Path) -> None:
     module = _load_script()
     game_data = tmp_path / "game-data"
@@ -126,12 +142,59 @@ def test_matrix_restore_clears_camera_and_review_preset(tmp_path: Path) -> None:
             "settle_s": 0.01,
             "capture": False,
             "restore_camera": True,
+            "obs_scene": "Scene",
+            "obs_source": None,
+            "require_obs_websocket": False,
         },
     )()
 
     assert module["run_matrix"](args) == 0
     assert (game_data / "camera-manual.txt").read_text(encoding="utf-8") == "0.0000\n"
     assert (game_data / "effect-review-preset.txt").read_text(encoding="utf-8") == "0\n"
+
+
+def test_matrix_manifest_records_obs_source_capture_target(tmp_path: Path) -> None:
+    module = _load_script()
+    game_data = tmp_path / "game-data"
+    output_dir = tmp_path / "out"
+    args = type(
+        "Args",
+        (),
+        {
+            "rows": "0",
+            "output_dir": output_dir,
+            "game_data": game_data,
+            "video_device": tmp_path / "media-source",
+            "direct_display": ":82",
+            "capture_timeout_s": 0.1,
+            "settle_s": 0.01,
+            "capture": False,
+            "restore_camera": False,
+            "obs_scene": "Scene",
+            "obs_source": "DarkPlaces Screwm Media",
+            "require_obs_websocket": True,
+        },
+    )()
+
+    assert module["run_matrix"](args) == 0
+    manifest = (output_dir / "manifest.json").read_text(encoding="utf-8")
+
+    assert '"obs_capture_target": "DarkPlaces Screwm Media"' in manifest
+    assert '"obs_capture_target_kind": "source"' in manifest
+    assert '"obs_capture_requires_websocket": true' in manifest
+
+
+def test_obs_capture_can_require_websocket_instead_of_silent_x11_fallback(tmp_path: Path) -> None:
+    module = _load_script()
+    module["OBS_WS_CONFIG"] = tmp_path / "missing-obs-websocket-config.json"
+
+    with pytest.raises(RuntimeError, match="OBS websocket capture failed"):
+        module["_obs_capture"](
+            tmp_path / "capture.png",
+            scene="DarkPlaces Screwm Media",
+            timeout_s=0.01,
+            require_obs_websocket=True,
+        )
 
 
 def test_new_slotdrift_scalars_vary_across_rows(tmp_path: Path) -> None:

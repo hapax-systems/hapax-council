@@ -177,6 +177,11 @@ def test_screwm_effect_modes_are_family_gated_before_reaching_shader() -> None:
 
     assert "if (coupling_apply_effect_review_preset())\n        return;" not in coupling
     assert "coupling_effect_review_preset >= 6.5" in coupling
+    assert "Review presets 1-6 are additive expression floors" in coupling
+    assert "coupling_effect_review_preset >= 3.5 && coupling_effect_review_preset < 4.5" in coupling
+    assert "halftone_val = 7;" in coupling
+    assert "emboss_val = 0.36;" in coupling
+    assert "threshold_val = 0.13;" in coupling
     assert "float mode_temporal = coupling_effect_mode_temporal;" in coupling
     assert "float mode_compositing = coupling_effect_mode_compositing;" in coupling
     assert "if (temporal_signal <= 0.01)" in coupling
@@ -189,8 +194,14 @@ def test_screwm_density_grounding_feeds_spatial_drift_baseline() -> None:
     coupling = (REPO_ROOT / "assets" / "quake" / "qc" / "coupling.qc").read_text(encoding="utf-8")
 
     assert "float coupling_effect_drift_density;" in coupling
+    assert "float coupling_effect_drift_density_currency;" in coupling
     assert 'coupling_read_float("data/effect-drift-density.txt", 0)' in coupling
+    assert 'coupling_read_float("data/effect-drift-density-currency.txt", 0)' in coupling
     assert "float density_grounding = coupling_clamp_range(" in coupling
+    assert (
+        "coupling_max2(coupling_effect_drift_density * 1.6, coupling_effect_drift_density_currency * 1.25)"
+        in coupling
+    )
     assert "+ density_grounding + coupling_visual_chain_param_pressure" in coupling
     assert "fog_density = 0.008 - coupling_energy" in coupling
     assert "coupling_effect_drift_density * fog_density" not in coupling

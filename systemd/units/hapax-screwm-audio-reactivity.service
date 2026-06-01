@@ -1,6 +1,6 @@
 [Unit]
 Description=Hapax screwm-native audio-reactivity producer (unified-reactivity.json @60Hz)
-After=graphical-session.target hapax-reverie.service
+After=hapax-reverie.service
 PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service
 ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 
