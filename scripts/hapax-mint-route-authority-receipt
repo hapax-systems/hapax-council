@@ -31,7 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -41,19 +41,97 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared.dispatcher_policy import (  # noqa: E402
+    ROUTE_AUTHORITY_RECEIPT_DIRNAME,
+    RouteAuthorityReceipt,
+    _coerce_utc,
+    _parse_duration_spec,
     build_route_authority_receipt,
+    now_utc,
     route_authority_receipt_reference,
     write_route_authority_receipt,
 )
 from shared.platform_capability_receipts import (  # noqa: E402
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
 )
+from shared.platform_capability_registry import normalize_route_id  # noqa: E402
 
 
 def _parse_now(value: str | None) -> datetime | None:
     if value is None:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _stable_receipt_id(receipt_type: str, route_id: str) -> str:
+    """Timestamp-free receipt id so --ensure-fresh re-mints overwrite one file.
+
+    The default minting id is timestamped (one file per run); timer-driven
+    upkeep must instead converge on a single stable artifact in the dir the
+    dispatch read-path scans, or stale receipts would accumulate forever.
+    """
+    return f"{receipt_type}-{normalize_route_id(route_id).replace('.', '-')}"
+
+
+def _fresh_enough_to_keep(
+    *,
+    target: Path,
+    receipt_type: str,
+    route_id: str,
+    stale_after: str,
+    refresh_within: timedelta,
+    now: datetime,
+) -> RouteAuthorityReceipt | None:
+    """Return the on-disk receipt iff it can be kept as-is (skip the re-mint).
+
+    Re-mint (return ``None``) when the receipt is absent, unreadable, fails
+    signature validation, targets a different type/route/stale_after, or has
+    less than ``refresh_within`` of freshness remaining. Fail toward re-minting:
+    a standing authorization is cheap to refresh and must never silently lapse.
+    """
+    if not target.is_file():
+        return None
+    try:
+        existing = RouteAuthorityReceipt.model_validate(
+            json.loads(target.read_text(encoding="utf-8"))
+        )
+    except (OSError, json.JSONDecodeError, ValidationError, ValueError):
+        return None
+    if existing.receipt_type != receipt_type:
+        return None
+    if normalize_route_id(existing.route_id) != normalize_route_id(route_id):
+        return None
+    if existing.stale_after != stale_after:
+        return None
+    remaining = _parse_duration_spec(existing.stale_after) - (now - _coerce_utc(existing.issued_at))
+    if remaining <= refresh_within:
+        return None
+    return existing
+
+
+def _emit_kept(receipt: RouteAuthorityReceipt, path: Path, *, json_output: bool) -> None:
+    reference = route_authority_receipt_reference(receipt)
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "kept": True,
+                    "receipt_path": str(path),
+                    "receipt_reference": reference,
+                    "receipt_id": receipt.receipt_id,
+                    "receipt_type": receipt.receipt_type,
+                    "route_id": receipt.route_id,
+                    "signed_by": receipt.signed_by,
+                    "stale_after": receipt.stale_after,
+                    "signed_payload_sha256": receipt.signed_payload_sha256,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+    else:
+        print(f"kept fresh {receipt.receipt_type} receipt for {receipt.route_id} (no re-mint)")
+        print(f"  path:      {path}")
+        print(f"  reference: {reference}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -107,6 +185,20 @@ def main(argv: list[str] | None = None) -> int:
         help="Explicit receipt id (default: derived from type, route, and timestamp).",
     )
     parser.add_argument(
+        "--ensure-fresh",
+        action="store_true",
+        help="Idempotent upkeep mode: converge on a stable receipt id and only "
+        "re-mint when the live receipt is missing or within --refresh-within of "
+        "going stale. Use from a timer to keep the standing authorization fresh.",
+    )
+    parser.add_argument(
+        "--refresh-within",
+        default="8h",
+        metavar="DURATION",
+        help="With --ensure-fresh, re-mint once the live receipt has less than "
+        "this much freshness remaining (<int><s|m|h|d>, default: 8h).",
+    )
+    parser.add_argument(
         "--receipt-dir",
         type=Path,
         default=DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
@@ -127,12 +219,37 @@ def main(argv: list[str] | None = None) -> int:
 
     evidence_refs = args.evidence_refs or [f"operator-signed:{args.receipt_type}:{args.route_id}"]
 
+    receipt_id = args.receipt_id
+    if args.ensure_fresh:
+        if receipt_id is None:
+            receipt_id = _stable_receipt_id(args.receipt_type, args.route_id)
+        try:
+            refresh_within = _parse_duration_spec(args.refresh_within)
+        except ValueError as exc:
+            print(
+                f"refused to mint route-authority receipt: invalid --refresh-within: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        target = args.receipt_dir / ROUTE_AUTHORITY_RECEIPT_DIRNAME / f"{receipt_id}.json"
+        kept = _fresh_enough_to_keep(
+            target=target,
+            receipt_type=args.receipt_type,
+            route_id=args.route_id,
+            stale_after=args.stale_after,
+            refresh_within=refresh_within,
+            now=_coerce_utc(_parse_now(args.now) or now_utc()),
+        )
+        if kept is not None:
+            _emit_kept(kept, target, json_output=args.json)
+            return 0
+
     try:
         receipt = build_route_authority_receipt(
             receipt_type=args.receipt_type,
             route_id=args.route_id,
             evidence_refs=evidence_refs,
-            receipt_id=args.receipt_id,
+            receipt_id=receipt_id,
             signed_by=args.signed_by,
             stale_after=args.stale_after,
             quality_floors=args.quality_floors,
@@ -149,6 +266,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
+                    "kept": False,
                     "receipt_path": str(path),
                     "receipt_reference": reference,
                     "receipt_id": receipt.receipt_id,

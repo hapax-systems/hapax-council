@@ -1,0 +1,25 @@
+[Unit]
+Description=Maintain a fresh operator-signed opus route-authority receipt (standing OQ-5)
+Documentation=file://%h/projects/hapax-council/docs/routing-ontology-reference.md
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+# OQ-5 made standing: re-sign the operator's opus model-entitlement so the live
+# dispatch read-path discovers a fresh route-authority receipt in the default
+# receipt dir (~/.cache/hapax/platform-capability-receipts/route-authority/) and
+# un-degrades claude.headless.opus to LAUNCH — no --policy-rollback, no
+# dispatch-from-a-stale-worktree hack. --ensure-fresh converges on a single
+# stable-id receipt and only re-signs once the 24h window drops below 8h
+# remaining (the paired .timer fires every 6h, so it never lapses).
+ExecStart=%h/projects/hapax-council/.venv/bin/python %h/projects/hapax-council/scripts/hapax-mint-route-authority-receipt --ensure-fresh --receipt-type opus_model_entitlement --route-id claude.headless.opus --stale-after 24h --refresh-within 8h
+WorkingDirectory=%h/projects/hapax-council
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/projects/hapax-council
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-opus-route-authority-receipt
+MemoryMax=256M
+TimeoutStartSec=60
+# Killswitch: `systemctl --user mask hapax-opus-route-authority-receipt.timer`
+# stops upkeep; the live receipt then lapses after --stale-after and opus HOLDs.
