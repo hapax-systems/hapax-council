@@ -9,10 +9,12 @@ spool file for later daemon ingestion.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
 import sqlite3
+import sys
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -707,6 +709,139 @@ def provision_coord_tree(
     )
 
 
+# --- daemon-writer CLI -------------------------------------------------------
+# The single canonical writer exposed as a subprocess entrypoint so the SBCL
+# coordination kernel (the daemon) can perform a real coord.* commit without a
+# second ledger-write implementation (master design §4.3; reform manifest unit
+# K — "collapse the Lisp/Python writer split"). Invoke as a MODULE from the
+# council root (``python -m shared.coord_event_log append ...``); a plain-script
+# invocation would put ``shared/`` on ``sys.path[0]`` where ``shared/operator.py``
+# shadows the stdlib ``operator`` module.
+
+
+def _coord_event_from_args(args: argparse.Namespace) -> CoordEvent:
+    payload: dict[str, Any] = {}
+    if args.payload:
+        parsed = json.loads(args.payload)
+        if not isinstance(parsed, dict):
+            raise ValueError("--payload must be a JSON object")
+        payload.update(parsed)
+    if args.origin:
+        payload["origin"] = args.origin
+    return CoordEvent(
+        event_id=args.event_id or f"coord-verb-{uuid.uuid4().hex}",
+        timestamp=args.timestamp or _now_iso(),
+        event_type=args.event_type,
+        actor=args.actor,
+        subject=args.subject,
+        authority_case=args.authority_case,
+        parent_spec=args.parent_spec,
+        payload=payload,
+    )
+
+
+def _event_log_from_args(args: argparse.Namespace) -> CoordEventLog:
+    if not (args.db_path or args.jsonl_path or args.spool_dir):
+        return default_event_log()
+    base = coord_base_dir()
+    return CoordEventLog(
+        db_path=Path(args.db_path) if args.db_path else base / "ledger.db",
+        jsonl_path=Path(args.jsonl_path) if args.jsonl_path else base / "ledger.jsonl",
+        spool_dir=Path(args.spool_dir) if args.spool_dir else base / "spool",
+    )
+
+
+def _cli_append(args: argparse.Namespace) -> int:
+    """Append one coord event as the daemon writer; emit the receipt as JSON.
+
+    Exit 0 on a durable canonical append (or an idempotent duplicate, or a
+    fail-open spool); non-zero on a hard failure so the caller can fall back to
+    its daemon-down path rather than claim a mutation it did not perform.
+    """
+    try:
+        event = _coord_event_from_args(args)
+    except ValueError as exc:
+        print(json.dumps({"error": f"invalid_event: {exc}"}), file=sys.stderr)
+        return 2
+    log = _event_log_from_args(args)
+    try:
+        receipt = log.append(
+            event, writer=CoordWriter.daemon(name=args.writer_name), fail_open=args.fail_open
+        )
+    except DuplicateEventError:
+        print(
+            json.dumps(
+                {
+                    "event_id": event.event_id,
+                    "appended": True,
+                    "spooled": False,
+                    "sequence": None,
+                    "duplicate": True,
+                    "db_path": str(log.db_path),
+                    "jsonl_path": str(log.jsonl_path),
+                    "spool_path": None,
+                    "errors": [],
+                }
+            )
+        )
+        return 0
+    except CoordEventLogError as exc:
+        print(
+            json.dumps({"error": f"append_failed: {exc}", "event_id": event.event_id}),
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        json.dumps(
+            {
+                "event_id": receipt.event_id,
+                "appended": receipt.appended,
+                "spooled": receipt.spooled,
+                "sequence": receipt.sequence,
+                "duplicate": False,
+                "db_path": str(receipt.db_path),
+                "jsonl_path": str(receipt.jsonl_path),
+                "spool_path": str(receipt.spool_path) if receipt.spool_path else None,
+                "errors": list(receipt.errors),
+            }
+        )
+    )
+    return 0
+
+
+def _build_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="coord_event_log",
+        description="Daemon-owned coordination ledger writer (single canonical writer).",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    ap = sub.add_parser("append", help="append one coord event as the daemon writer")
+    ap.add_argument("--event-type", required=True)
+    ap.add_argument("--actor", required=True)
+    ap.add_argument("--subject", required=True)
+    ap.add_argument("--authority-case", default=None)
+    ap.add_argument("--parent-spec", default=None)
+    ap.add_argument("--origin", default=None, help="stamped into payload['origin']")
+    ap.add_argument("--payload", default=None, help="JSON object merged into the event payload")
+    ap.add_argument("--writer-name", default="hapax-coord")
+    ap.add_argument("--event-id", default=None, help="explicit id for idempotent retries")
+    ap.add_argument("--timestamp", default=None)
+    ap.add_argument(
+        "--fail-open", action="store_true", help="spool the event if the canonical append fails"
+    )
+    ap.add_argument("--db-path", default=None)
+    ap.add_argument("--jsonl-path", default=None)
+    ap.add_argument("--spool-dir", default=None)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_cli_parser().parse_args(argv)
+    if args.command == "append":
+        return _cli_append(args)
+    return 2
+
+
 __all__ = [
     "AppendReceipt",
     "BootReconcileResult",
@@ -730,6 +865,7 @@ __all__ = [
     "default_event_log",
     "default_grant_dir",
     "default_grant_key",
+    "main",
     "provision_coord_tree",
 ]
 
@@ -742,3 +878,7 @@ _DYNAMIC_ENTRYPOINTS = (
     CoordEventLog.ingest_spool,
     CoordEventLog.boot_reconcile,
 )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
