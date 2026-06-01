@@ -24,26 +24,30 @@ jobs:
         run: |
           set -euo pipefail
 
-          case_id=""
-          slice_id=""
+          # SIGPIPE-safe id extraction (task reform-fix-authority-case-check-sigpipe).
+          # grep -m1 stops after the first matching line, so grep never keeps
+          # writing into a pipe that head/sed closed early. The old
+          # `grep -oiE ... | head -1` took SIGPIPE (exit 141) -> pipefail + set -e
+          # -> the step red-blocked any long PR body. `|| true` keeps a no-match
+          # (grep exit 1) from tripping set -e; the `%%$'\n'*` trim keeps only the
+          # first match when -o emits several on one line (preserving the old
+          # head -1 semantics without a pipe grep could be killed by). Guards read
+          # from a here-string -- no `echo |` -- for the same reason.
 
-          if echo "$PR_BODY" | grep -qiE 'CASE-[A-Z0-9-]+'; then
-            case_id=$(echo "$PR_BODY" | grep -oiE 'CASE-[A-Z0-9-]+' | head -1)
-          fi
+          case_id=$(grep -m1 -oiE 'CASE-[A-Z0-9-]+' <<<"$PR_BODY" || true)
+          case_id=${case_id%%$'\n'*}
 
-          if echo "$PR_BODY" | grep -qiE 'SLICE-[A-Z0-9-]+'; then
-            slice_id=$(echo "$PR_BODY" | grep -oiE 'SLICE-[A-Z0-9-]+' | head -1)
-          fi
+          slice_id=$(grep -m1 -oiE 'SLICE-[A-Z0-9-]+' <<<"$PR_BODY" || true)
+          slice_id=${slice_id%%$'\n'*}
 
           pre_methodology=false
-          if echo "$PR_BODY" | grep -qiE 'pre-methodology|pre_methodology'; then
+          if grep -qiE 'pre-methodology|pre_methodology' <<<"$PR_BODY"; then
             pre_methodology=true
           fi
 
-          cc_task=""
-          if echo "$PR_BODY" | grep -qiE 'cc-task:'; then
-            cc_task=$(echo "$PR_BODY" | grep -oiE 'cc-task:[[:space:]]*`?[a-z0-9-]+' | sed 's/cc-task:[[:space:]]*`\{0,1\}//' | head -1)
-          fi
+          cc_task=$(grep -m1 -oiE 'cc-task:[[:space:]]*`?[a-z0-9-]+' <<<"$PR_BODY" || true)
+          cc_task=${cc_task%%$'\n'*}
+          cc_task=$(sed 's/cc-task:[[:space:]]*`\{0,1\}//' <<<"$cc_task")
 
           {
             echo "case_id=$case_id"
