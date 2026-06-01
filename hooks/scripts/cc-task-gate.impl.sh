@@ -420,24 +420,92 @@ fi
 # a claim may create a new request or offered cc-task note, but only through a
 # path-scoped, content-validated Write event. Ordinary source/runtime/system
 # mutation and manual claim-file writes still fail closed below.
-set +e
-_bootstrap_output="$(
-  printf '%s' "$input" | python3 "$SCRIPT_DIR/cc-task-gate-bootstrap.py" 2>&1
-)"
-_bootstrap_rc=$?
-set -e
-case "$_bootstrap_rc" in
-  0)
-    [[ -n "$_bootstrap_output" ]] && printf '%s\n' "$_bootstrap_output" >&2
+#
+# FAIL-OPEN ON INFRA ERROR (reform — bootstrap-failopen-atomic-swap). This is the
+# roleless session's ONLY sanctioned write path, so it MUST mirror the shim's
+# INV-5 posture (master design §2.2 / FM-15 / NEW-2): when the validator helper
+# itself cannot run — unreadable, mid atomic-swap, or it crashes — a bootstrap
+# CANDIDATE write fails OPEN (advisory + ledger) instead of fail-closed-blocking,
+# and any other mutation falls through to the normal claim/authority gate. ONLY a
+# genuine BLOCKED verdict (rc==12) from a helper that actually ran blocks; python's
+# own "can't open file" rc==2 and every other non-{0,10} code are infra signals,
+# never a deny. Before this fix the case mapped EVERY non-{0,10} code to exit 2, so
+# a redeploy that briefly unlinked the helper fail-closed even a properly CLAIMED
+# session (the S2 incident).
+_bootstrap_helper="$SCRIPT_DIR/cc-task-gate-bootstrap.py"
+
+# _bootstrap_is_candidate_target — mirror the helper's candidate test in pure bash
+# so the fail-OPEN stays narrow: only a Write of a .md note under the governance
+# intake roots (hapax-requests/active or hapax-cc-tasks/active) fails open when the
+# helper can't run. Any other mutation falls through to the normal gate — an infra
+# error must never widen what a non-bootstrap mutation may do.
+_bootstrap_is_candidate_target() {
+  [[ "$tool_name" == "Write" ]] || return 1
+  local p="${edit_path/#\~/$HOME}"
+  [[ -n "$p" && "$p" == *.md ]] || return 1
+  case "$p" in
+    "$HOME"/Documents/Personal/20-projects/hapax-requests/active/*) return 0 ;;
+    "$HOME"/Documents/Personal/20-projects/hapax-cc-tasks/active/*) return 0 ;;
+  esac
+  return 1
+}
+
+# _bootstrap_infra_failopen — shared "the validator could not run" handler: emit a
+# loud ledger line + stderr advisory, then mirror INV-5 — fail OPEN (exit 0) for a
+# candidate, else return so the caller falls through to the normal claim gate.
+_bootstrap_infra_failopen() {
+  local reason="$1" detail="$2" is_cand="false"
+  if _bootstrap_is_candidate_target; then is_cand="true"; fi
+  local _bs_role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-unknown}}}"
+  local _bs_ledger="${HAPAX_METHODOLOGY_LEDGER:-$HOME/.cache/hapax/methodology-emergency-ledger.jsonl}"
+  mkdir -p "$(dirname "$_bs_ledger")" 2>/dev/null || true
+  printf '{"ts":"%s","kind":"bootstrap_helper_infra_failopen","reason":"%s","detail":"%s","role":"%s","tool":"%s","path":"%s","candidate":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason" "$detail" "$_bs_role" "$tool_name" "${edit_path:-}" "$is_cand" \
+    >> "$_bs_ledger" 2>/dev/null || true
+  if [[ "$is_cand" == "true" ]]; then
+    echo "cc-task-gate: bootstrap validator unavailable ($reason) — FAILING OPEN for governance-intake write (advisory, ledgered, INV-5): ${edit_path:-}" >&2
     exit 0
-    ;;
-  10)
-    ;;
-  *)
-    [[ -n "$_bootstrap_output" ]] && printf '%s\n' "$_bootstrap_output" >&2
-    exit 2
-    ;;
-esac
+  fi
+  echo "cc-task-gate: bootstrap validator unavailable ($reason) — non-candidate mutation falls through to the normal gate (advisory, ledgered)." >&2
+  return 0
+}
+
+if [[ ! -r "$_bootstrap_helper" ]]; then
+  # Absent/unreadable (e.g. a concurrent hooks-doctor redeploy briefly unlinked
+  # it). Don't exec python on it — that would surface as rc==2 and historically
+  # fail closed. Go straight to the INV-5 fail-open handler.
+  _bootstrap_infra_failopen "helper_unreadable" "$_bootstrap_helper"
+else
+  set +e
+  _bootstrap_output="$(
+    printf '%s' "$input" | python3 "$_bootstrap_helper" 2>&1
+  )"
+  _bootstrap_rc=$?
+  set -e
+  case "$_bootstrap_rc" in
+    0)
+      [[ -n "$_bootstrap_output" ]] && printf '%s\n' "$_bootstrap_output" >&2
+      exit 0
+      ;;
+    10)
+      # NOT_CANDIDATE — fall through to the normal claim/authority gate.
+      ;;
+    12)
+      # The ONLY blocking verdict: the helper ran and judged the bootstrap note
+      # invalid. A genuine deny.
+      [[ -n "$_bootstrap_output" ]] && printf '%s\n' "$_bootstrap_output" >&2
+      exit 2
+      ;;
+    *)
+      # Any other code (python rc 2 = can't open file, 1 = uncaught exception,
+      # 127 = python missing, …) is an INFRA signal, never a deny. Mirror INV-5:
+      # fail OPEN for a candidate, else fall through. Sanitize the captured output
+      # before it enters the JSONL ledger.
+      _bs_det="$(printf '%s' "${_bootstrap_output:-}" | tr '\n\r\t"\\' '     ' | cut -c1-160)"
+      _bootstrap_infra_failopen "helper_rc_${_bootstrap_rc}" "$_bs_det"
+      ;;
+  esac
+fi
 
 # --- 3c. Shadow decision log (reform 3b PRODUCER source) ---------------------
 # From here on every exit is a genuine GATED decision (the non-mutating / cognition
