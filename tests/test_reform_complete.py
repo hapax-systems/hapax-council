@@ -13,6 +13,8 @@ import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "hapax-reform-complete"
 
@@ -373,3 +375,134 @@ class TestCli:
         assert r.returncode == 0
         passed_ever = set(json.loads((tmp_path / "wm.json").read_text())["passed_ever"])
         assert set(mod.CHECK_IDS) <= passed_ever
+
+
+# ── shim resolution (integration: gatherers vs the post-#3832 split-shim) ──────
+
+
+class TestShimResolution:
+    """Drive the GATHERERS against a materialized shim+impl pair — the live boundary
+    the decider-only tests never exercised.
+
+    #3832 collapsed every worktree's ``cc-task-gate.sh`` to a thin HAPAX-GATE-SHIM
+    and moved ``is_cognition_path`` / ``escape_grant_allows`` /
+    ``_record_retro_grant_obligation`` / the ``DEPRECATED`` markers into the
+    co-located ``cc-task-gate.impl.sh`` (deployed canonical at
+    ``$HAPAX_CANONICAL_HOOKS``). A gatherer that greps only the shim therefore
+    false-negatives canonical-gate, escape-grant and off-deprecation forever — they
+    can never enter ``passed_ever``, blinding ``--regression-only``. These tests fail
+    if the gatherer reads only the shim.
+    """
+
+    _SHIM = (
+        "#!/usr/bin/env bash\n"
+        "# cc-task-gate.sh — STABLE-ABS-PATH SHIM\n"
+        "# HAPAX-GATE-SHIM v1\n"
+        'exec bash "$(dirname "${BASH_SOURCE[0]}")/cc-task-gate.impl.sh" "$@"\n'
+    )
+    # The markers the predicate greps for live ONLY here, never in the shim.
+    _IMPL = (
+        "#!/usr/bin/env bash\n"
+        "is_cognition_path() { return 1; }\n"
+        "escape_grant_allows() { return 1; }\n"
+        "_record_retro_grant_obligation() { :; }\n"
+        "# HAPAX_CC_TASK_GATE_OFF bypass used — this switch is DEPRECATED\n"
+    )
+
+    def _materialize(self, root: Path, *, with_impl: bool) -> Path:
+        hooks = root / "hooks" / "scripts"
+        hooks.mkdir(parents=True, exist_ok=True)
+        shim = hooks / "cc-task-gate.sh"
+        shim.write_text(self._SHIM, encoding="utf-8")
+        if with_impl:
+            (hooks / "cc-task-gate.impl.sh").write_text(self._IMPL, encoding="utf-8")
+        return shim
+
+    def _no_grant_substrate(self, tmp_path: Path) -> dict[str, str]:
+        # An empty grant substrate makes gather_escape_grant early-return right after
+        # computing gate_wired, so the test never mints a real grant.
+        return {
+            "grant_dir": str(tmp_path / "absent-dir"),
+            "grant_key": str(tmp_path / "absent-key"),
+            "ledger_db": "",
+            "jsonl": "",
+            "spool": "",
+        }
+
+    def test_resolve_shim_returns_impl_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HAPAX_CANONICAL_HOOKS", str(tmp_path / "no-canonical"))
+        shim = self._materialize(tmp_path, with_impl=True)
+        text = mod._resolve_gate_text(shim)
+        assert "is_cognition_path" in text
+        # Proves it resolved THROUGH the shim to the impl, not read the shim itself.
+        assert "HAPAX-GATE-SHIM" not in text
+
+    def test_resolve_plain_gate_returned_verbatim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A legacy monolith gate (no shim marker) is returned as-is — backward compatible.
+        monkeypatch.setenv("HAPAX_CANONICAL_HOOKS", str(tmp_path / "no-canonical"))
+        gate = tmp_path / "monolith.sh"
+        gate.write_text("#!/bin/bash\nis_cognition_path() { :; }\n", encoding="utf-8")
+        assert "is_cognition_path" in mod._resolve_gate_text(gate)
+
+    def test_canonical_preferred_over_colocated_impl(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Resolution mirrors the shim's own order: deployed canonical FIRST, co-located second.
+        canon = tmp_path / "canon"
+        canon.mkdir()
+        (canon / "cc-task-gate.sh").write_text(
+            "#!/bin/bash\nis_cognition_path() { :; } # FROM_CANONICAL\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HAPAX_CANONICAL_HOOKS", str(canon))
+        shim = self._materialize(tmp_path, with_impl=True)
+        assert "FROM_CANONICAL" in mod._resolve_gate_text(shim)
+
+    def test_has_inv5_true_through_shim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HAPAX_CANONICAL_HOOKS", str(tmp_path / "no-canonical"))
+        shim = self._materialize(tmp_path, with_impl=True)
+        assert mod._has_inv5(shim) is True
+
+    def test_has_inv5_false_when_shim_has_no_resolvable_impl(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Honest negative: a shim with no resolvable impl has no markers -> False, not masked.
+        monkeypatch.setenv("HAPAX_CANONICAL_HOOKS", str(tmp_path / "no-canonical"))
+        shim = self._materialize(tmp_path, with_impl=False)
+        assert mod._has_inv5(shim) is False
+
+    def test_gather_escape_grant_wired_through_shim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HAPAX_CANONICAL_HOOKS", str(tmp_path / "no-canonical"))
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        shim = self._materialize(tmp_path, with_impl=True)
+        monkeypatch.setattr(mod, "LIVE_GATE", shim)
+        monkeypatch.setattr(mod, "_coord_paths", lambda: self._no_grant_substrate(tmp_path))
+        # gate_wired is FALSE against current code (greps only the shim); the resolver fixes it.
+        assert mod.gather_escape_grant()["gate_wired"] is True
+
+    def test_gather_escape_grant_not_wired_when_shim_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HAPAX_CANONICAL_HOOKS", str(tmp_path / "no-canonical"))
+        shim = self._materialize(tmp_path, with_impl=False)
+        monkeypatch.setattr(mod, "LIVE_GATE", shim)
+        monkeypatch.setattr(mod, "_coord_paths", lambda: self._no_grant_substrate(tmp_path))
+        assert mod.gather_escape_grant()["gate_wired"] is False
+
+    def test_gather_off_deprecation_markers_through_shim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HAPAX_CANONICAL_HOOKS", str(tmp_path / "no-canonical"))
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        shim = self._materialize(tmp_path, with_impl=True)
+        monkeypatch.setattr(mod, "LIVE_GATE", shim)
+        obs = mod.gather_off_deprecation()
+        assert obs["obligation_marker"] is True
+        assert obs["off_deprecated"] is True
