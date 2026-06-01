@@ -57,7 +57,7 @@ def test_darkplaces_v4l2_service_remains_runtime_guarded_and_uses_visible_xvfb_r
     assert "Environment=HAPAX_DARKPLACES_JOY_INDEX=1" in body
     assert "Environment=DARKPLACES_WIDTH=1920" in body
     assert "Environment=DARKPLACES_HEIGHT=1080" in body
-    assert "Environment=DARKPLACES_FPS=60" in body
+    assert "Environment=DARKPLACES_FPS=30" in body
 
 
 def test_darkplaces_launchers_use_native_xbox_joystick_input() -> None:
@@ -304,6 +304,7 @@ def test_darkplaces_xvfb_launcher_disables_headless_screen_blanking() -> None:
     assert (
         'Xvfb "$DISPLAY_NUM" -screen 0 "${WIDTH}x${HEIGHT}x24" -nolisten tcp -s 0 -dpms &' in body
     )
+    assert 'v4l2-ctl -d "$DEVICE" --set-parm="$FPS"' in body
     for expected in (
         "+viewsize 120",
         "+scr_viewsize 120",

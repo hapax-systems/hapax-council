@@ -255,6 +255,7 @@ sleep 3
 
 v4l2-ctl -d "$DEVICE" --set-fmt-video="width=${WIDTH},height=${HEIGHT},pixelformat=YUYV" \
     >/dev/null 2>&1 || true
+v4l2-ctl -d "$DEVICE" --set-parm="$FPS" >/dev/null 2>&1 || true
 
 ffmpeg -hide_banner -loglevel warning -nostdin \
     -f x11grab \

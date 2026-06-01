@@ -161,8 +161,17 @@
           "path": "systemd/units/hapax-darkplaces-v4l2.service",
           "anchors": [
             "HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video50",
+            "DARKPLACES_FPS=30",
             "hapax-screwm-camera-gamepad.service",
             "hapax-darkplaces-bridge.service"
+          ]
+        },
+        {
+          "path": "scripts/darkplaces-v4l2-xvfb.sh",
+          "anchors": [
+            "v4l2-ctl -d \"$DEVICE\" --set-parm=\"$FPS\"",
+            "-framerate \"$FPS\"",
+            "-f v4l2"
           ]
         },
         {
@@ -170,6 +179,7 @@
           "anchors": [
             "--poll-interval 15",
             "--device-id /dev/video50",
+            "--framerate 30",
             "--obs-log-v4l2-errors",
             "Restart=no",
             "--max-static-ignore-seconds 75",
