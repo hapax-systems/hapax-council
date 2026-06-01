@@ -10,6 +10,7 @@ conventions (no shared conftest).
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -146,7 +147,12 @@ def test_deploy_canonical_lands_healthy_closure(tmp_path):
     body = deployed.read_text(encoding="utf-8")
     assert "is_cognition_path()" in body  # INV-5 present in canonical
     assert SHIM_MARKER not in body  # canonical holds the impl, not a shim
-    for sibling in ("agent-role.sh", "escape-grant.sh", "hooks-doctor.sh"):
+    for sibling in (
+        "agent-role.sh",
+        "escape-grant.sh",
+        "cc-task-gate-bootstrap.py",
+        "hooks-doctor.sh",
+    ):
         assert (canon / sibling).exists()
     assert (canon / "MANIFEST.sha256").exists()
     assert (bindir / "hapax-hooks-doctor").is_symlink()
@@ -166,6 +172,25 @@ def test_deploy_refuses_impl_without_cognition(tmp_path):
     )
     assert result.returncode == 1
     assert "REFUSING" in result.stderr
+
+
+def test_canonical_closure_covers_all_impl_dependencies(tmp_path):
+    # Regression guard for the cc-task-gate-bootstrap.py omission incident: EVERY
+    # file the impl resolves via $SCRIPT_DIR (sources OR invokes) must land in the
+    # deployed canonical closure. A missing one makes the gate exit 2 on every
+    # mutation. This test parses the impl directly, so a NEW impl dependency that
+    # is not added to the closure fails here instead of breaking the live fleet.
+    impl_text = IMPL.read_text(encoding="utf-8")
+    refs = set(re.findall(r"\$\{?SCRIPT_DIR\}?/([A-Za-z0-9._-]+)", impl_text))
+    assert "cc-task-gate-bootstrap.py" in refs, "expected the impl to invoke the bootstrap"
+    canon = tmp_path / "canon"
+    result = _run(
+        "--deploy-canonical",
+        env={"HAPAX_CANONICAL_HOOKS": str(canon), "HAPAX_LOCAL_BIN": str(tmp_path / "bin")},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    missing = sorted(ref for ref in refs if not (canon / ref).exists())
+    assert not missing, f"canonical closure is missing impl dependencies: {missing}"
 
 
 # --- fanout (the one-shot that fixes stale lanes) --------------------------
