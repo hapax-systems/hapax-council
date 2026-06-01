@@ -13,5 +13,18 @@ Restart=on-failure
 RestartSec=10
 MemoryMax=512M
 
+# Resource shielding (anti-kill scheme, 2026-06-01): the controller throttles the
+# SDLC fleet, so it must never starve while doing so. Two independent guarantees:
+#   1. CPUWeight=10000 — out-weighs the CPUWeight=idle (SCHED_IDLE) fleet on any
+#      shared core; a normal scheduling-class peer always preempts SCHED_IDLE.
+#   2. AllowedCPUs={6,7,14,15} — a cpuset the SDLC fleet is fenced OUT of (the
+#      fleet is confined to {0-5,8-13} by hapax-sdlc.slice). The coordinator is a
+#      near-idle 30s-tick triage daemon, so sharing the audio island with the
+#      SCHED_FIFO 88 data-loops is safe: realtime audio preempts the coordinator
+#      (audio integrity preserved) while the fleet can never reach it — making
+#      the scheduler-parity starvation that killed it on 2026-06-01 impossible.
+CPUWeight=10000
+AllowedCPUs=6 7 14 15
+
 [Install]
 WantedBy=default.target

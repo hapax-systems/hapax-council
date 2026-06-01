@@ -20,6 +20,8 @@ def _headless_env(home: Path, bin_dir: Path, pipe_dir: Path) -> dict[str, str]:
     env["HOME"] = str(home)
     env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
     env["HAPAX_CLAUDE_HEADLESS_ALLOW"] = "1"
+    # Don't re-exec into a real systemd scope from the test sandbox.
+    env["HAPAX_SDLC_SLICE_ATTACH"] = "0"
     env["HAPAX_CLAUDE_HEADLESS_PIPE_DIR"] = str(pipe_dir)
     # Fast loop so a respawn regression spins (and is caught by the timeout)
     # rather than waiting 30s between iterations.
@@ -98,6 +100,10 @@ def test_headless_refuses_without_task_or_existing_claim(tmp_path: Path) -> None
     env["HOME"] = str(home)
     env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
     env["HAPAX_CLAUDE_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_SDLC_SLICE_ATTACH"] = "0"
+    # Sandbox the launcher lock/pipe dir so a live beta lane on the host doesn't
+    # trip the duplicate-launcher guard (exit 16) before the no-task guard (15).
+    env["HAPAX_CLAUDE_HEADLESS_PIPE_DIR"] = str(tmp_path / "pipe")
 
     result = subprocess.run(
         [str(SCRIPT), "beta", "Task: fake\nAuthorityCase: fake\nParent spec: fake"],

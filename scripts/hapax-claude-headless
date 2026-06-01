@@ -7,6 +7,10 @@
 
 set -euo pipefail
 
+# Saved BEFORE arg parsing shifts "$@", so the L1 slice self-attach below can
+# re-exec with the full original argv.
+ORIG_ARGS=("$@")
+
 DISABLE_FILE="${HAPAX_CLAUDE_HEADLESS_DISABLE_FILE:-$HOME/.cache/hapax/disable-claude-headless}"
 ENABLE_FILE="${HAPAX_CLAUDE_HEADLESS_ENABLE_FILE:-$HOME/.cache/hapax/enable-claude-headless}"
 
@@ -51,6 +55,20 @@ fi
 if ! headless_allowed; then
   echo "hapax-claude-headless: disabled until governed enable exists at $ENABLE_FILE or HAPAX_CLAUDE_HEADLESS_ALLOW=1 is set" >&2
   exit 77
+fi
+
+# L1 attachment point (c): self-attach this lane + everything it spawns (claude +
+# its git/pytest/cargo grandchildren) into hapax-sdlc.slice so cpu.idle + the
+# audio-core cpuset fence inherit. Re-exec into a transient user scope with the
+# saved original argv. Skipped when methodology-dispatch already wrapped us
+# (HAPAX_SDLC_SLICE_ATTACHED=1), when opted out (HAPAX_SDLC_SLICE_ATTACH=0), or
+# when systemd-run/the slice can't be created — the lane must always launch.
+# The `-- true` preflight proves the scope is creatable before we commit `exec`.
+if [[ "${HAPAX_SDLC_SLICE_ATTACHED:-}" != "1" && "${HAPAX_SDLC_SLICE_ATTACH:-1}" != "0" ]] \
+  && command -v systemd-run >/dev/null 2>&1 \
+  && systemd-run --user --scope --quiet --slice=hapax-sdlc.slice -- true >/dev/null 2>&1; then
+  export HAPAX_SDLC_SLICE_ATTACHED=1
+  exec systemd-run --user --scope --quiet --slice=hapax-sdlc.slice -- "$0" "${ORIG_ARGS[@]}"
 fi
 
 export HAPAX_AGENT_INTERFACE="claude"

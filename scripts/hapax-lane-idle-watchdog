@@ -44,6 +44,28 @@ now=$(date +%s)
 
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) lane-idle: $*"; }
 
+# ─── L3/L4 SDLC pressure admission ────────────────────────────────────────────
+# The respawn FLOOR must yield under CPU pressure. When admission is 'closed'
+# this watchdog defers launching/reviving/nudging lanes — skipping a respawn
+# only DELAYS it (the cc-task stays claimed/offered; the next 2-min tick
+# relaunches once pressure clears), so no work is abandoned. Fail-open: any
+# error returns 'open' so the floor never wedges on the gate.
+sdlc_admission_state() {
+    [[ "${HAPAX_SDLC_PRESSURE_GATE_OFF:-}" == "1" ]] && { echo open; return; }
+    local repo state
+    repo="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
+    [[ -d "$repo/shared" ]] || repo="${HOME}/projects/hapax-council"
+    state="$(cd "$repo" 2>/dev/null && python3 -m shared.sdlc_pressure_gate --state 2>/dev/null || true)"
+    case "$state" in
+        open | paced | closed) echo "$state" ;;
+        *) echo open ;;
+    esac
+}
+SDLC_ADMISSION="$(sdlc_admission_state)"
+if [ "$SDLC_ADMISSION" = "closed" ]; then
+    log "sdlc-pressure CLOSED: respawn floor yields this tick (lanes stay as-is; cc-tasks unaffected)"
+fi
+
 # ─── Platform detection functions ────────────────────────────────────────────
 
 # Claude: idle when "❯" prompt visible in last few lines.
@@ -153,7 +175,8 @@ done
 launched_lanes=0
 revived_lanes=0
 
-if [ -x "$CLAUDE_LAUNCHER" ]; then
+# L4: the respawn floor yields under 'closed' — don't re-kick a paused lane.
+if [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CLAUDE_LAUNCHER" ]; then
     for role in $REQUIRED_CLAUDE_LANES; do
         session="hapax-claude-${role}"
         worktree="${HOME}/projects/hapax-council--${role}"
@@ -226,7 +249,8 @@ fi
 
 # ─── Ensure required Codex lanes are alive ─────────────────────────────────
 
-if [ -x "$CODEX_LAUNCHER" ]; then
+# L4: the respawn floor yields under 'closed' — don't re-kick a paused lane.
+if [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CODEX_LAUNCHER" ]; then
     for color in $REQUIRED_CODEX_LANES; do
         session="hapax-codex-${color}"
         worktree="${HOME}/projects/hapax-council--${color}"
@@ -361,6 +385,10 @@ find_claimed_task() {
 dispatched=0
 skipped_cooldown=0
 
+# L4: under 'closed' the floor yields — defer nudges (don't re-kick paused lanes).
+if [ "$SDLC_ADMISSION" = "closed" ]; then
+    log "sdlc-pressure closed: deferring idle nudges for $idle_count lane(s) this tick"
+else
 for session in "${!IDLE_LANES[@]}"; do
     idle_s="${IDLE_LANES[$session]}"
 
@@ -436,6 +464,7 @@ for session in "${!IDLE_LANES[@]}"; do
             "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
     fi
 done
+fi
 
 if [ "$dispatched" -eq 0 ] && [ "$skipped_cooldown" -gt 0 ]; then
     log "all $idle_count idle lanes in cooldown"

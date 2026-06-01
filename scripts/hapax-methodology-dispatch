@@ -9,6 +9,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -45,6 +46,12 @@ from shared.dispatcher_policy import (
 )
 from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
 from shared.route_metadata_schema import assess_route_metadata
+from shared.sdlc_pressure_gate import (
+    AdmissionDecision,
+    admission_state,
+    sdlc_slice_wrap,
+    wait_until_admitted,
+)
 
 MUTATION_TOKENS = {
     "build",
@@ -694,6 +701,72 @@ def slugify(value: str) -> str:
     return slug or "item"
 
 
+def _sliced_call(args: list[str], env: dict[str, str] | None = None) -> int:
+    """subprocess.call that drops the launched lane — and its git/pytest/cargo
+    grandchildren — into hapax-sdlc.slice (L1 attachment point b) when the fence
+    is available. cpu.idle + the cpuset inherit to every descendant. No-op + run
+    un-sliced when systemd-run/the slice is unavailable, so dispatch never fails
+    on the fence."""
+    base_env = dict(os.environ) if env is None else env
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return subprocess.call(list(args), env=base_env)  # don't probe/create scopes in tests
+    wrapped = sdlc_slice_wrap(args)
+    if wrapped != list(args):
+        base_env = {**base_env, "HAPAX_SDLC_SLICE_ATTACHED": "1"}
+    return subprocess.call(wrapped, env=base_env)
+
+
+def _write_delayed_receipt(args: argparse.Namespace, decision: AdmissionDecision) -> None:
+    """Record that a dispatch is QUEUED (not refused) under CPU pressure."""
+    try:
+        ledger = orchestration_ledger_dir()
+        ledger.mkdir(parents=True, exist_ok=True)
+        (ledger / f"delayed-{slugify(args.lane)}-{slugify(args.task)}.json").write_text(
+            json.dumps(
+                {
+                    "kind": "sdlc-pressure-delayed",
+                    "task_id": args.task,
+                    "lane": args.lane,
+                    "platform": args.platform,
+                    "mode": args.mode,
+                    "profile": args.profile,
+                    "admission_state": decision.state,
+                    "reasons": decision.reasons,
+                    "queued_not_dropped": True,
+                    "ts": now_utc(),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass  # a missing DELAYED receipt must never block the queued dispatch
+
+
+def _await_sdlc_admission(args: argparse.Namespace) -> None:
+    """L3 chokepoint: block-and-wait while CPU pressure has admission CLOSED.
+    The dispatch is QUEUED then RUN — never skipped. Slows the fleet, drops
+    nothing. Disabled via HAPAX_SDLC_PRESSURE_GATE_OFF; also never blocks a test
+    process on the real host's pressure (the wait logic is unit-tested directly
+    via wait_until_admitted)."""
+    if env_flag("HAPAX_SDLC_PRESSURE_GATE_OFF") or os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    if admission_state().state != "closed":
+        return
+    print(
+        f"sdlc-pressure CLOSED: queuing dispatch of {args.task} (resumes on clear)",
+        file=sys.stderr,
+    )
+    final = wait_until_admitted(
+        admission_state,
+        sleep=time.sleep,
+        on_delay=lambda decision: _write_delayed_receipt(args, decision),
+        poll_interval=float(os.environ.get("HAPAX_SDLC_PRESSURE_POLL_S", "10")),
+        max_wait_s=float(os.environ.get("HAPAX_SDLC_PRESSURE_MAX_WAIT_S", "1800")),
+    )
+    print(f"sdlc-pressure cleared ({final.state}): proceeding with {args.task}", file=sys.stderr)
+
+
 def launch_claude_headless(task_id: str, lane: str, prompt: str, route: PlatformPath) -> int:
     launcher = Path(
         os.environ.get(
@@ -705,7 +778,7 @@ def launch_claude_headless(task_id: str, lane: str, prompt: str, route: Platform
     if route.profile in {"opus", "sonnet"}:
         env["HAPAX_CLAUDE_MODEL"] = route.profile
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
-    return subprocess.call([str(launcher), "--task", task_id, lane, prompt], env=env)
+    return _sliced_call([str(launcher), "--task", task_id, lane, prompt], env)
 
 
 def launch_claude_interactive(task_id: str, lane: str, validation: Validation) -> int:
@@ -878,7 +951,7 @@ def launch_codex_headless(
         )
     env = os.environ.copy()
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
-    return subprocess.call(args, env=env)
+    return _sliced_call(args, env)
 
 
 def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Validation) -> int:
@@ -911,7 +984,7 @@ def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Valid
     ]
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
-    return subprocess.call(args)
+    return _sliced_call(args)
 
 
 def launch_gemini_headless(lane: str, prompt: str, route: PlatformPath) -> int:
@@ -934,7 +1007,7 @@ def launch_gemini_headless(lane: str, prompt: str, route: PlatformPath) -> int:
     env = os.environ.copy()
     if route.profile == "worker":
         env["HAPAX_GEMINI_APPROVAL_MODE"] = "auto_edit"
-    return subprocess.call(args, env=env)
+    return _sliced_call(args, env)
 
 
 def write_antigrav_inflection(task_id: str, lane: str, prompt: str) -> Path:
@@ -1313,6 +1386,11 @@ def main(argv: list[str] | None = None) -> int:
         print(prompt)
 
     if args.launch:
+        # L3 SDLC pressure admission gate — block-and-wait (QUEUE, never skip)
+        # while the box is under sustained CPU pressure, then proceed. The fleet
+        # slows; no dispatch is dropped.
+        _await_sdlc_admission(args)
+
         # Launchable (platform, mode) -> adapter call. Eligibility is decided by
         # the Executor capability registry (supports_route), NOT a hard if-ladder
         # (reform §6 P1) — adding a runtime/mode is a one-line table + registry edit.

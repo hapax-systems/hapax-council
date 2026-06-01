@@ -87,6 +87,9 @@ def _base_env(tmp_path: Path, *, session: str, pane: str) -> dict[str, str]:
             "HAPAX_IDLE_COOLDOWN_S": "0",
             "HAPAX_IDLE_STATE_DIR": str(state_dir),
             "HAPAX_IDLE_SKIP_LANES": "",
+            # This suite asserts nudge/relaunch behavior; pin the SDLC pressure
+            # gate OPEN so it stays deterministic regardless of host CPU load.
+            "HAPAX_SDLC_PRESSURE_GATE_OFF": "1",
             "HAPAX_LANE_WATCHDOG_COOLDOWN_DIR": str(tmp_path / "rate-state"),
             # Sandbox the headless runtime dir so the watchdog never reads the
             # host's real /run/user/<uid>/hapax-claude pipes/pidfiles.

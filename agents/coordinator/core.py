@@ -12,7 +12,27 @@ from pathlib import Path
 
 import yaml
 
+from shared.sdlc_pressure_gate import admission_state
+
 log = logging.getLogger(__name__)
+
+
+def pressure_dispatch_budget(
+    state: str, idle_count: int, base_cooldown: float
+) -> tuple[int, float]:
+    """Translate the SDLC pressure admission state into a per-tick dispatch budget.
+
+    'closed' dispatches nothing this tick (offered tasks stay on disk — queued,
+    not dropped); 'paced' caps to one dispatch and stretches the cooldown so the
+    fleet drains slowly; 'open' runs at full throughput. Slows the controller,
+    never abandons work.
+    """
+    if state == "closed":
+        return (0, base_cooldown)
+    if state == "paced":
+        return (1, base_cooldown * 2.0)
+    return (idle_count, base_cooldown)
+
 
 TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
 RELAY_DIR = Path.home() / ".cache/hapax/relay"
@@ -105,15 +125,30 @@ class Coordinator:
         idle_lanes = [l for l in lanes.values() if l.alive and l.idle and l.claimed_task is None]
         offered_sorted = sorted(offered, key=lambda t: t.wsjf, reverse=True)
 
+        # L3: pace the dispatch loop under CPU pressure. 'closed' dispatches
+        # nothing this tick (tasks stay offered — queued, not dropped); 'paced'
+        # caps throughput and stretches the cooldown so the fleet drains slowly.
+        admission = admission_state()
+        max_dispatches, cooldown_s = pressure_dispatch_budget(
+            admission.state, len(idle_lanes), DISPATCH_COOLDOWN_S
+        )
+        if admission.state != "open":
+            log.info(
+                "sdlc-pressure %s: dispatch budget=%d cooldown=%.0fs",
+                admission.state,
+                max_dispatches,
+                cooldown_s,
+            )
+
         for task in offered_sorted:
-            if not idle_lanes:
+            if not idle_lanes or dispatches >= max_dispatches:
                 break
             lane = self._pick_lane(task, idle_lanes)
             if lane is None:
                 continue
             now = time.monotonic()
             last = self._last_dispatch.get(lane.role, 0.0)
-            if now - last < DISPATCH_COOLDOWN_S:
+            if now - last < cooldown_s:
                 continue
             if self._dispatch(task, lane):
                 self._last_dispatch[lane.role] = now
