@@ -3,12 +3,14 @@
 
 The merge queue should not depend on a human/session remembering to run
 ``gh pr merge`` after a governed PR is ready. This reconciler scans open PRs,
-matches each PR to a cc-task in the local Obsidian vault, and queues or arms
-auto-merge only when Hapax governance and GitHub protection state both pass.
+matches each PR to a cc-task in the local Obsidian vault, and ARMS auto-merge
+only when Hapax governance and GitHub protection state both pass.
 
-GitHub's current CLI behavior for branches that require a merge queue is the
-primitive this script uses: ``gh pr merge`` adds a ready PR to the queue, and
-``gh pr merge --auto`` arms auto-merge until required checks/reviews pass.
+Arm-only (task reform-native-merge-queue): the sole positive GitHub mutation is
+one idempotent ``gh pr merge --auto --squash``. GitHub's native merge queue then
+owns batching, speculative ``gh-readonly-queue`` branches, auto-rebase, and
+bisect-on-failure — this script no longer issues a direct ``--merge`` or manages
+the queue itself, which previously raced GitHub's own batching and stranded PRs.
 
 Usage::
 
@@ -905,10 +907,15 @@ def merge_pr(
         ]
     else:
         cmd = ["gh", "pr", "merge", str(decision.pr.number), "--repo", repo]
-    if decision.action == "enable_auto_merge":
-        cmd.extend(["--auto", "--merge"])
-    elif decision.action == "queue":
-        cmd.append("--merge")
+    if decision.action in ("enable_auto_merge", "queue"):
+        # Arm-only (task reform-native-merge-queue): the local autoqueue's sole
+        # positive mutation is to ARM auto-merge with one idempotent command.
+        # GitHub's native merge queue then owns batching, speculative
+        # gh-readonly-queue branches, auto-rebase, and bisect-on-failure — we no
+        # longer issue a direct `--merge` (which raced the queue's own management).
+        # Re-arming an already-armed PR is a no-op; `--squash` matches the queue's
+        # configured merge method.
+        cmd.extend(["--auto", "--squash"])
     elif decision.action == "disable_auto_merge":
         cmd.append("--disable-auto")
     elif decision.action != "dequeue":

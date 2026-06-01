@@ -241,7 +241,7 @@ def test_queue_green_governed_pr(tmp_path: Path) -> None:
         and "state=success" in call
         for call in runner.calls
     )
-    assert ["gh", "pr", "merge", "42", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert ["gh", "pr", "merge", "42", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
 
 
 def test_does_not_queue_when_admission_status_write_fails(tmp_path: Path) -> None:
@@ -294,7 +294,7 @@ def test_enable_auto_merge_for_pending_governed_pr(tmp_path: Path) -> None:
     )
 
     assert report["counts"]["enable_auto_merge"] == 1
-    assert ["gh", "pr", "merge", "43", "--repo", "owner/repo", "--auto", "--merge"] in runner.calls
+    assert ["gh", "pr", "merge", "43", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
 
 
 def test_enable_auto_merge_for_unknown_pending_governed_pr(tmp_path: Path) -> None:
@@ -324,7 +324,7 @@ def test_enable_auto_merge_for_unknown_pending_governed_pr(tmp_path: Path) -> No
     )
 
     assert report["counts"]["enable_auto_merge"] == 1
-    assert ["gh", "pr", "merge", "44", "--repo", "owner/repo", "--auto", "--merge"] in runner.calls
+    assert ["gh", "pr", "merge", "44", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
 
 
 def test_blocks_unknown_merge_state_without_pending_checks(tmp_path: Path) -> None:
@@ -759,7 +759,7 @@ def test_queues_pr_with_multiple_ready_task_links(tmp_path: Path) -> None:
 
     assert report["counts"]["queue"] == 1
     assert report["decisions"][0]["task_ids"] == ["followup", "primary"]
-    assert ["gh", "pr", "merge", "74", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert ["gh", "pr", "merge", "74", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
 
 
 def test_dequeues_multiple_task_links_when_any_task_missing_metadata(tmp_path: Path) -> None:
@@ -935,7 +935,7 @@ def test_stabilization_holds_downstream_prs_while_ci_repair_is_active(
     assert decisions[90]["action"] == "queue"
     assert decisions[91]["action"] == "blocked"
     assert "admission_stabilization_hold:active_ci_repair:ci-repair" in decisions[91]["reasons"]
-    assert ["gh", "pr", "merge", "90", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert ["gh", "pr", "merge", "90", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
     assert not any(call[:4] == ["gh", "pr", "merge", "91"] for call in runner.calls)
 
 
@@ -1129,8 +1129,26 @@ def test_storm_allows_ci_repair_and_independent_admissions(tmp_path: Path) -> No
     assert decisions[120]["action"] == "blocked"
     assert decisions[121]["action"] == "queue"
     assert decisions[122]["action"] == "queue"
-    assert ["gh", "pr", "merge", "121", "--repo", "owner/repo", "--merge"] in runner.calls
-    assert ["gh", "pr", "merge", "122", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "121",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+    ] in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "122",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+    ] in runner.calls
     assert not any(call[:4] == ["gh", "pr", "merge", "120"] for call in runner.calls)
 
 
@@ -1211,7 +1229,16 @@ def test_auto_arms_eligible_pr_open_task_then_merges(tmp_path: Path) -> None:
     assert "release_authorized: false" not in armed
     assert "stage: S7_RELEASE" in armed
     # And the PR is admitted to the merge queue.
-    assert ["gh", "pr", "merge", "701", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "701",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+    ] in runner.calls
     decision = next(d for d in report["decisions"] if d["pr"] == 701)
     assert decision["auto_arm"] is True
 
@@ -1331,7 +1358,16 @@ def test_already_release_authorized_task_is_not_rearmed(tmp_path: Path) -> None:
 
     # Already armed → merges normally, no auto-arm audit line appended.
     assert "release auto-arm (system)" not in note.read_text(encoding="utf-8")
-    assert ["gh", "pr", "merge", "705", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "705",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+    ] in runner.calls
     decision = next(d for d in report["decisions"] if d["pr"] == 705)
     assert decision.get("auto_arm", False) is False
 
@@ -1603,7 +1639,16 @@ def test_shared_file_epic_lowest_pr_proceeds_across_lanes(tmp_path: Path) -> Non
         reason.startswith("shared_file_epic_affinity_hold:clog-dashboard-lisp:clog-c@eta")
         for reason in decisions[331]["reasons"]
     )
-    assert ["gh", "pr", "merge", "330", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "330",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+    ] in runner.calls
     assert not any(call[:4] == ["gh", "pr", "merge", "331"] for call in runner.calls)
 
 
