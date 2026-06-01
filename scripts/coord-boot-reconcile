@@ -8,10 +8,17 @@ in a process image. This is the boot entry point (systemd ExecStartPre or the
 daemon's own startup hook). Honors HAPAX_COORD_DIR for test/sandbox isolation.
 
 Usage:
-    coord-boot-reconcile [--json]
+    coord-boot-reconcile [--provision] [--json]
 
-Exit: 0 always (boot reconciliation is advisory; a degraded replay or a failed
-spool file is reported, never fatal — the daemon must still start).
+With ``--provision`` it FIRST materializes the coord SSOT tree + escape-grant key
+(``provision_coord_tree``) so the R2 event log and R3 escape grant are live, then
+reconciles. This is the daemon-independent boot path (a systemd oneshot, or the
+operator by hand) — it needs no kernel.
+
+Exit: 0 on success. Reconciliation itself is advisory (a degraded replay or a
+failed spool file is reported, never fatal — the daemon must still start), but
+``--provision`` exits 2 LOUDLY when the SSOT cannot be provisioned or is
+unwritable, so an inert R2/R3 is never silently swallowed.
 """
 
 from __future__ import annotations
@@ -24,15 +31,44 @@ from pathlib import Path
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="coord-boot-reconcile", description=__doc__)
-    parser.add_argument("--json", action="store_true", help="emit the reconcile receipt as JSON")
+    parser.add_argument("--json", action="store_true", help="emit the receipt(s) as JSON")
+    parser.add_argument(
+        "--provision",
+        action="store_true",
+        help="provision the coord SSOT tree + escape-grant key first; exit 2 (loud) if unwritable",
+    )
     args = parser.parse_args(argv)
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from shared.coord_event_log import default_event_log
+    from shared.coord_event_log import (
+        CoordEventLogError,
+        default_event_log,
+        provision_coord_tree,
+    )
+
+    provision_record: dict[str, object] | None = None
+    if args.provision:
+        try:
+            prov = provision_coord_tree()
+        except CoordEventLogError as exc:
+            # An unwritable SSOT is a real defect, not an advisory degradation:
+            # fail LOUD (stderr + non-zero) so the boot oneshot / deploy notices.
+            print(f"coord-boot-reconcile: PROVISION FAILED: {exc}", file=sys.stderr)
+            return 2
+        provision_record = prov.to_record()
+        if not args.json:
+            print(
+                "coord-boot-reconcile: provisioned "
+                f"base={prov.base_dir} grant_key={prov.grant_key} "
+                f"key_created={prov.key_created} created={list(prov.created)}"
+            )
 
     result = default_event_log().boot_reconcile()
     if args.json:
-        print(json.dumps(result.to_record(), sort_keys=True))
+        payload: dict[str, object] = result.to_record()
+        if provision_record is not None:
+            payload = {"provision": provision_record, "reconcile": result.to_record()}
+        print(json.dumps(payload, sort_keys=True))
     else:
         print(
             "coord-boot-reconcile: "
