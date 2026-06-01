@@ -73,6 +73,14 @@ DEFAULT_EFFECT_DRIFT_FALLBACK_STATE_FILE = Path(
         "/dev/shm/hapax-visual/screwm-effect-drift-fallback-state.json",
     )
 )
+EFFECT_REVIEW_PRESET_MANUAL_HOLD_S = float(
+    os.environ.get("HAPAX_SCREWM_EFFECT_REVIEW_PRESET_MANUAL_HOLD_S", "45.0")
+)
+EFFECT_REVIEW_PRESET_AUTOCYCLE_S = float(
+    os.environ.get("HAPAX_SCREWM_EFFECT_REVIEW_PRESET_AUTOCYCLE_S", "18.0")
+)
+EFFECT_REVIEW_PRESET_SEQUENCE = (1, 2, 3, 4, 5, 6)
+REVIEW_CAMERA_PERIOD_S = float(os.environ.get("HAPAX_SCREWM_REVIEW_CAMERA_PERIOD_S", "72.0"))
 
 WARD_ACTIVITY_EXPORTS: tuple[tuple[str, str], ...] = (
     ("01", "token_pole"),
@@ -1689,6 +1697,81 @@ def _select_effect_drift_state(
     return {}, "missing"
 
 
+def _effect_review_autocycle_enabled() -> bool:
+    raw = os.environ.get("HAPAX_SCREWM_EFFECT_REVIEW_AUTOCYCLE", "1")
+    return raw.strip().lower() not in {"0", "false", "off", "no", "disabled"}
+
+
+def _manual_effect_review_preset(game_dir: Path, *, now: float | None = None) -> int | None:
+    path = game_dir / "effect-review-preset.txt"
+    try:
+        age = (time.time() if now is None else now) - path.stat().st_mtime
+        raw = path.read_text(encoding="utf-8").strip()
+        value = float(raw)
+    except (OSError, ValueError):
+        return None
+    if age > EFFECT_REVIEW_PRESET_MANUAL_HOLD_S:
+        return None
+    if value < 0.5 or value > 7.0:
+        return None
+    return max(1, min(7, int(round(value))))
+
+
+def _effect_review_preset_from_state(
+    effect_state: dict[str, Any],
+    effect_source: str,
+    *,
+    now: float | None = None,
+) -> int:
+    if not _effect_review_autocycle_enabled():
+        return 0
+    if effect_source in {"missing", "primary-stale-or-noncanonical", "synthetic-fallback-stale"}:
+        return 0
+
+    passes = effect_state.get("passes")
+    passes = passes if isinstance(passes, list) else []
+    active_count = sum(
+        1
+        for pass_row in passes
+        if isinstance(pass_row, dict)
+        and (bool(pass_row.get("non_neutral")) or _effect_drift_pass_strength(pass_row) > 0.05)
+    )
+    if active_count <= 0:
+        return 0
+
+    dominant = str(effect_state.get("dominant_family") or "").strip().lower()
+    families = ("tonal", "atmospheric", "temporal", "texture", "edge", "compositing")
+    offset = families.index(dominant) if dominant in families else 0
+    cycle_s = max(3.0, EFFECT_REVIEW_PRESET_AUTOCYCLE_S)
+    tick = int((time.time() if now is None else now) // cycle_s)
+    return EFFECT_REVIEW_PRESET_SEQUENCE[(tick + offset) % len(EFFECT_REVIEW_PRESET_SEQUENCE)]
+
+
+def build_effect_review_preset_lines(
+    game_dir: Path,
+    effect_drift_state_file: Path = DEFAULT_EFFECT_DRIFT_STATE_FILE,
+    effect_drift_fallback_state_file: Path = DEFAULT_EFFECT_DRIFT_FALLBACK_STATE_FILE,
+    now: float | None = None,
+) -> dict[str, str]:
+    """Publish the live postprocess expression floor without overriding witnesses."""
+    manual = _manual_effect_review_preset(game_dir, now=now)
+    if manual is not None:
+        return {"effect-review-preset.txt": f"{manual:d}"}
+
+    effect_state, effect_source = _select_effect_drift_state(
+        effect_drift_state_file,
+        effect_drift_fallback_state_file,
+        now=now,
+    )
+    preset = _effect_review_preset_from_state(effect_state, effect_source, now=now)
+    return {"effect-review-preset.txt": f"{preset:d}"}
+
+
+def build_review_camera_lines() -> dict[str, str]:
+    period_s = max(48.0, min(720.0, REVIEW_CAMERA_PERIOD_S))
+    return {"camera-period.txt": f"{period_s:.4f}"}
+
+
 def build_visual_chain_lines(
     visual_chain_state_file: Path = DEFAULT_VISUAL_CHAIN_STATE_FILE,
     effect_drift_state_file: Path = DEFAULT_EFFECT_DRIFT_STATE_FILE,
@@ -1971,6 +2054,15 @@ def export_state(
         density_field_file,
         now,
     ).items():
+        _write_atomic(game_dir / filename, line)
+    for filename, line in build_effect_review_preset_lines(
+        game_dir,
+        effect_drift_state_file,
+        effect_drift_fallback_state_file,
+        now,
+    ).items():
+        _write_atomic(game_dir / filename, line)
+    for filename, line in build_review_camera_lines().items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_imagination_fragment_lines(imagination_current_file).items():
         _write_atomic(game_dir / filename, line)

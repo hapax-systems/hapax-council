@@ -8,7 +8,7 @@ ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 Type=simple
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/quake-live-reverie-source.py --require-file scripts/quake_media_drift.py
-ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/quake-live-reverie-source.py --fps 15 --width 960 --height 540 --input /dev/shm/hapax-sources/reverie.rgba --output /dev/shm/hapax-compositor/quake-live-reverie.bgra --meta /dev/shm/hapax-compositor/quake-live-reverie.json
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/quake-live-reverie-source.py --fps 4 --width 960 --height 540 --input /dev/shm/hapax-sources/reverie.rgba --output /dev/shm/hapax-compositor/quake-live-reverie.bgra --meta /dev/shm/hapax-compositor/quake-live-reverie.json
 Restart=always
 RestartSec=3
 

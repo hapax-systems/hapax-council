@@ -694,6 +694,80 @@ def test_darkplaces_state_export_builds_entity_local_effect_scalars(tmp_path: Pa
     assert lines["local-effect-route.txt"] == "ENTITY_LOCAL_SOURCE_PLANE"
 
 
+def test_darkplaces_state_export_autocycles_effect_review_preset(tmp_path: Path) -> None:
+    exporter = _load_exporter()
+    game_dir = tmp_path / "game"
+    effect_drift = tmp_path / "effect-drift-state.json"
+    _write_json(
+        effect_drift,
+        {
+            "source_presence": {},
+            "slotdrift_coverage": {},
+            "dominant_family": "texture",
+            "passes": [
+                {
+                    "node_id": "slot3_halftone",
+                    "effect_family": "texture",
+                    "non_neutral": True,
+                    "max_delta": 0.8,
+                }
+            ],
+        },
+    )
+
+    first = exporter.build_effect_review_preset_lines(
+        game_dir,
+        effect_drift,
+        effect_drift_fallback_state_file=tmp_path / "missing-fallback.json",
+        now=0.0,
+    )
+    second = exporter.build_effect_review_preset_lines(
+        game_dir,
+        effect_drift,
+        effect_drift_fallback_state_file=tmp_path / "missing-fallback.json",
+        now=18.0,
+    )
+
+    assert first["effect-review-preset.txt"] == "4"
+    assert second["effect-review-preset.txt"] == "5"
+
+
+def test_darkplaces_state_export_preserves_fresh_manual_effect_review_preset(
+    tmp_path: Path,
+) -> None:
+    exporter = _load_exporter()
+    game_dir = tmp_path / "game"
+    game_dir.mkdir()
+    preset = game_dir / "effect-review-preset.txt"
+    preset.write_text("2\n", encoding="utf-8")
+    os.utime(preset, (10.0, 10.0))
+    effect_drift = tmp_path / "effect-drift-state.json"
+    _write_json(
+        effect_drift,
+        {
+            "source_presence": {},
+            "slotdrift_coverage": {},
+            "dominant_family": "texture",
+            "passes": [{"effect_family": "texture", "non_neutral": True, "max_delta": 0.8}],
+        },
+    )
+
+    lines = exporter.build_effect_review_preset_lines(
+        game_dir,
+        effect_drift,
+        effect_drift_fallback_state_file=tmp_path / "missing-fallback.json",
+        now=20.0,
+    )
+
+    assert lines["effect-review-preset.txt"] == "2"
+
+
+def test_darkplaces_state_export_publishes_review_camera_period() -> None:
+    exporter = _load_exporter()
+
+    assert exporter.build_review_camera_lines()["camera-period.txt"] == "72.0000"
+
+
 def test_darkplaces_state_export_builds_ward_property_fishbowl_scalars(
     tmp_path: Path,
 ) -> None:

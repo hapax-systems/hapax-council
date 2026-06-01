@@ -58,6 +58,7 @@ def test_darkplaces_v4l2_service_remains_runtime_guarded_and_uses_visible_xvfb_r
     assert "Environment=DARKPLACES_WIDTH=1920" in body
     assert "Environment=DARKPLACES_HEIGHT=1080" in body
     assert "Environment=DARKPLACES_FPS=30" in body
+    assert "Environment=HAPAX_DARKPLACES_V4L2_ENABLE=0" in body
 
 
 def test_darkplaces_launchers_use_native_xbox_joystick_input() -> None:
@@ -175,7 +176,7 @@ def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() ->
     assert "scripts/quake-live-media-source.py --source youtube" in youtube
     assert "--url-file /dev/shm/hapax-compositor/youtube-video-id.txt" in youtube
     assert "--youtube-fallback canary" in youtube
-    assert "--fps 10 --width 2048 --height 1024 --projection sphere-front" in youtube
+    assert "--fps 3 --width 2048 --height 1024 --projection sphere-front" in youtube
     assert "--sphere-front-aspect 1.7777777778" in youtube
     assert "--mask none --mask-background 0c0b0d" in youtube
     assert "--freshness-overlay" not in youtube
@@ -189,6 +190,7 @@ def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() ->
     assert "config/quake-live-cameras/%i.env" in camera
     assert "scripts/quake-live-media-source.py --source camera" in camera
     assert "--camera-role %i" in camera
+    assert "--camera-fps ${HAPAX_QUAKE_LIVE_TEXTURE_INPUT_FPS}" in camera
     assert "--output ${HAPAX_QUAKE_LIVE_TEXTURE_OUTPUT}" in camera
     assert "--meta ${HAPAX_QUAKE_LIVE_TEXTURE_META}" in camera
     assert "Restart=always" in camera
@@ -198,7 +200,7 @@ def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() ->
     assert ".venv/bin/python %h/.cache/hapax/source-activation/worktree/" in atlas
     assert "scripts/quake-live-ward-atlas-source.py" in atlas
     assert "--width 2048 --height 2304 --columns 4" in atlas
-    assert "--fps 0.5" in atlas
+    assert "--fps 0.1" in atlas
     assert "--cell-width 512 --cell-height 256" in atlas
     assert "--drift on --drift-intensity 1.6" in atlas
     assert "--output /dev/shm/hapax-compositor/quake-live-ward-atlas.bgra" in atlas
@@ -209,7 +211,7 @@ def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() ->
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in reverie
     assert "--require-file scripts/quake-live-reverie-source.py" in reverie
     assert "--require-file scripts/quake_media_drift.py" in reverie
-    assert "scripts/quake-live-reverie-source.py --fps 15 --width 960 --height 540" in reverie
+    assert "scripts/quake-live-reverie-source.py --fps 4 --width 960 --height 540" in reverie
     assert "--input /dev/shm/hapax-sources/reverie.rgba" in reverie
     assert "--output /dev/shm/hapax-compositor/quake-live-reverie.bgra" in reverie
     assert "--meta /dev/shm/hapax-compositor/quake-live-reverie.json" in reverie
@@ -254,7 +256,8 @@ def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() ->
         assert "HAPAX_QUAKE_CAMERA_FPS=10" in env
         assert "HAPAX_QUAKE_LIVE_TEXTURE_WIDTH=1280" in env
         assert "HAPAX_QUAKE_LIVE_TEXTURE_HEIGHT=720" in env
-        assert "HAPAX_QUAKE_LIVE_TEXTURE_FPS=5" in env
+        assert "HAPAX_QUAKE_LIVE_TEXTURE_FPS=1" in env
+        assert "HAPAX_QUAKE_LIVE_TEXTURE_INPUT_FPS=2" in env
 
 
 def test_darkplaces_xorg_launcher_disables_headless_screen_blanking() -> None:
@@ -298,10 +301,13 @@ def test_darkplaces_xvfb_launcher_disables_headless_screen_blanking() -> None:
     body = (SCRIPTS_DIR / "darkplaces-v4l2-xvfb.sh").read_text(encoding="utf-8")
 
     assert "need_cmd systemd-notify" in body
+    assert 'V4L2_ENABLE="${HAPAX_DARKPLACES_V4L2_ENABLE:-1}"' in body
+    assert 'if [ "$V4L2_ENABLE" = "1" ]; then' in body
     assert "need_cmd gst-launch-1.0" in body
     assert "notify_systemd --ready" in body
     assert "WATCHDOG=1" in body
     assert "HAPAX_DARKPLACES_WATCHDOG_INTERVAL_SECONDS" in body
+    assert "DarkPlaces renderer running" in body
     assert (
         'Xvfb "$DISPLAY_NUM" -screen 0 "${WIDTH}x${HEIGHT}x24" -nolisten tcp -s 0 -dpms &' in body
     )

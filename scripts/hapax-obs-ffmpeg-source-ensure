@@ -47,6 +47,7 @@ def ffmpeg_source_settings(
     input_format: str,
     buffering_mb: int,
     reconnect_delay_sec: int,
+    hw_decode: bool,
 ) -> dict[str, Any]:
     return {
         "is_local_file": False,
@@ -55,7 +56,7 @@ def ffmpeg_source_settings(
         "buffering_mb": buffering_mb,
         "restart_on_activate": True,
         "close_when_inactive": False,
-        "hw_decode": False,
+        "hw_decode": hw_decode,
         "clear_on_media_end": False,
         "reconnect_delay_sec": reconnect_delay_sec,
         "log_changes": True,
@@ -179,8 +180,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--source-name", default=DEFAULT_SOURCE_NAME)
     parser.add_argument("--input-url", default=DEFAULT_INPUT_URL)
     parser.add_argument("--input-format", default="mpegts")
-    parser.add_argument("--buffering-mb", type=int, default=1)
+    parser.add_argument("--buffering-mb", type=int, default=0)
     parser.add_argument("--reconnect-delay-sec", type=int, default=1)
+    parser.add_argument("--no-hw-decode", dest="hw_decode", action="store_false")
+    parser.set_defaults(hw_decode=True)
     parser.add_argument("--width", type=int, default=1920)
     parser.add_argument("--height", type=int, default=1080)
     parser.add_argument(
@@ -210,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
             args.input_format,
             args.buffering_mb,
             args.reconnect_delay_sec,
+            args.hw_decode,
         ),
         width=args.width,
         height=args.height,

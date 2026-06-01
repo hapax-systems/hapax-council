@@ -461,7 +461,9 @@ def test_csqc_review_camera_overrides_render_view_for_obs_feedback() -> None:
     assert 'screwm_read_float("data/camera-yaw.txt"' in body
     assert "screwm_review_camera_fov_y = fov * 0.625;" in body
     assert 'cvar("screwm_csqc_review_path") > 0' in body
-    assert "cycle = time * 800 / screwm_review_camera_period;" in body
+    assert 'screwm_read_float("data/camera-period.txt", screwm_review_camera_period)' in body
+    assert "active_period = screwm_clamp(active_period, 48, 720);" in body
+    assert "cycle = time * 800 / active_period;" in body
     assert "while (cycle >= 800)" in body
     assert "origin_a = '0 -2360 190';" in body
     assert "origin_b = '-240 -2200 204';" in body
@@ -479,7 +481,7 @@ def test_csqc_review_camera_overrides_render_view_for_obs_feedback() -> None:
     assert "target_b = '0 -555 214';" in body
     assert "screwm_review_camera_fov = '92 57.5 0';" in body
     assert "s = u * u * (3 - 2 * u);" in body
-    assert "phase = time * screwm_review_camera_two_pi / screwm_review_camera_period;" in body
+    assert "phase = time * screwm_review_camera_two_pi / active_period;" in body
     assert "screwm_review_camera_origin = origin_a + (origin_b - origin_a) * s;" in body
     assert "target = target_a + (target_b - target_a) * s;" in body
     assert (

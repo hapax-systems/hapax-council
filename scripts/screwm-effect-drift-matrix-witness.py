@@ -9,12 +9,15 @@ without exploding into a cosmetic cross product.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import importlib.util
 import json
 import math
 import runpy
 import subprocess
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -519,6 +522,7 @@ def _obs_capture(
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
+    websocket_error: Exception | None = None
     try:
         import obsws_python as obs
 
@@ -532,17 +536,32 @@ def _obs_capture(
         client.save_source_screenshot(scene, "png", str(out_path), width, height, -1)
         via = "obs-websocket"
     except Exception as exc:
-        if require_obs_websocket:
-            raise RuntimeError(f"OBS websocket capture failed for {scene}: {exc}") from exc
-        via = f"x11-fallback:{type(exc).__name__}"
-        subprocess.run(
-            ["bash", "-lc", f"DISPLAY={direct_display} import -window root {str(out_path)!r}"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout_s,
-            check=False,
-        )
+        websocket_error = exc
+        try:
+            _save_obs_screenshot_raw_v5(
+                out_path,
+                scene=scene,
+                width=width,
+                height=height,
+                timeout_s=timeout_s,
+            )
+            via = f"obs-websocket-v5-raw:{type(exc).__name__}"
+        except Exception as raw_exc:
+            if require_obs_websocket:
+                raise RuntimeError(
+                    f"OBS websocket capture failed for {scene}: "
+                    f"{websocket_error}; raw v5 fallback failed: {raw_exc}"
+                ) from raw_exc
+            websocket_error = raw_exc
+            via = f"x11-fallback:{type(raw_exc).__name__}"
+            subprocess.run(
+                ["bash", "-lc", f"DISPLAY={direct_display} import -window root {str(out_path)!r}"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=timeout_s,
+                check=False,
+            )
     return {
         "path": str(out_path),
         "via": via,
@@ -566,6 +585,109 @@ def _frame_stats(path: Path) -> tuple[float | None, list[int] | None]:
         return sum(data) / (len(data) * 255.0), data
     except Exception:
         return None, None
+
+
+def _obs_v5_auth_response(password: str, salt: str, challenge: str) -> str:
+    secret = base64.b64encode(hashlib.sha256((password + salt).encode()).digest()).decode()
+    return base64.b64encode(hashlib.sha256((secret + challenge).encode()).digest()).decode()
+
+
+def _obs_recv_json(websocket: object) -> dict[str, object]:
+    raw = websocket.recv()
+    payload = json.loads(raw)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _obs_v5_request(
+    websocket: object,
+    request_type: str,
+    request_data: dict[str, object],
+) -> dict[str, object]:
+    request_id = str(uuid.uuid4())
+    websocket.send(
+        json.dumps(
+            {
+                "op": 6,
+                "d": {
+                    "requestType": request_type,
+                    "requestId": request_id,
+                    "requestData": request_data,
+                },
+            }
+        )
+    )
+    while True:
+        payload = _obs_recv_json(websocket)
+        if payload.get("op") != 7:
+            continue
+        data = payload.get("d")
+        if not isinstance(data, dict) or data.get("requestId") != request_id:
+            continue
+        status = data.get("requestStatus")
+        if not isinstance(status, dict) or not status.get("result"):
+            raise RuntimeError(
+                f"{request_type} failed: {status.get('code') if isinstance(status, dict) else '?'} "
+                f"{status.get('comment') if isinstance(status, dict) else ''}"
+            )
+        response = data.get("responseData")
+        return response if isinstance(response, dict) else {}
+
+
+def _save_obs_screenshot_raw_v5(
+    out_path: Path,
+    *,
+    scene: str,
+    width: int,
+    height: int,
+    timeout_s: float,
+) -> None:
+    """OBS WebSocket v5 screenshot path used when obsws_python is unavailable."""
+    import websocket
+
+    cfg = json.loads(OBS_WS_CONFIG.read_text(encoding="utf-8"))
+    socket = websocket.create_connection(
+        f"ws://localhost:{int(cfg.get('server_port', 4455))}",
+        timeout=timeout_s,
+    )
+    try:
+        hello = _obs_recv_json(socket)
+        if hello.get("op") != 0:
+            raise RuntimeError(f"expected OBS hello, got op={hello.get('op')}")
+        hello_data = hello.get("d")
+        if not isinstance(hello_data, dict):
+            raise RuntimeError("OBS hello missing payload")
+        identify: dict[str, object] = {"rpcVersion": int(hello_data.get("rpcVersion", 1))}
+        auth = hello_data.get("authentication")
+        if isinstance(auth, dict):
+            identify["authentication"] = _obs_v5_auth_response(
+                str(cfg.get("server_password", "")),
+                str(auth.get("salt", "")),
+                str(auth.get("challenge", "")),
+            )
+        socket.send(json.dumps({"op": 1, "d": identify}))
+        identified = _obs_recv_json(socket)
+        if identified.get("op") != 2:
+            raise RuntimeError(f"OBS identify failed: op={identified.get('op')}")
+        response = _obs_v5_request(
+            socket,
+            "GetSourceScreenshot",
+            {
+                "sourceName": scene,
+                "imageFormat": "png",
+                "imageWidth": width,
+                "imageHeight": height,
+                "imageCompressionQuality": -1,
+            },
+        )
+        image_data = str(response.get("imageData", ""))
+        if "," in image_data:
+            image_data = image_data.split(",", 1)[1]
+        out_path.write_bytes(base64.b64decode(image_data))
+    finally:
+        try:
+            socket.close()
+        except Exception:
+            pass
 
 
 def _temporal_metrics(lumas: list[float], motions: list[float]) -> dict[str, object]:

@@ -692,6 +692,7 @@ void() screwm_apply_review_camera =
     float native_move;
     float native_hold;
     float native_speed;
+    float active_period;
     vector angle_delta;
     vector origin_a;
     vector origin_b;
@@ -751,7 +752,9 @@ void() screwm_apply_review_camera =
     }
     else if (cvar("screwm_csqc_review_path") > 0)
     {
-        cycle = time * 800 / screwm_review_camera_period;
+        active_period = screwm_read_float("data/camera-period.txt", screwm_review_camera_period);
+        active_period = screwm_clamp(active_period, 48, 720);
+        cycle = time * 800 / active_period;
         while (cycle >= 800)
             cycle = cycle - 800;
 
@@ -824,7 +827,7 @@ void() screwm_apply_review_camera =
         }
 
         s = u * u * (3 - 2 * u);
-        phase = time * screwm_review_camera_two_pi / screwm_review_camera_period;
+        phase = time * screwm_review_camera_two_pi / active_period;
         screwm_review_camera_origin = origin_a + (origin_b - origin_a) * s;
         screwm_review_camera_origin_z = screwm_review_camera_origin_z + sin(phase * 2) * 3;
 

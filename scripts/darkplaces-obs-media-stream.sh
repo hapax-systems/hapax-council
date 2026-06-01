@@ -11,6 +11,7 @@ BITRATE="${HAPAX_DARKPLACES_OBS_MEDIA_BITRATE:-12000k}"
 MAXRATE="${HAPAX_DARKPLACES_OBS_MEDIA_MAXRATE:-16000k}"
 BUFSIZE="${HAPAX_DARKPLACES_OBS_MEDIA_BUFSIZE:-1000k}"
 PRESET="${HAPAX_DARKPLACES_OBS_MEDIA_PRESET:-ultrafast}"
+ENCODER="${HAPAX_DARKPLACES_OBS_MEDIA_ENCODER:-auto}"
 WAIT_SECONDS="${HAPAX_DARKPLACES_OBS_MEDIA_WAIT_SECONDS:-45}"
 
 need_cmd() {
@@ -43,13 +44,42 @@ wait_for_display() {
 need_cmd ffmpeg
 wait_for_display
 
-exec ffmpeg -hide_banner -loglevel warning -nostdin \
-    -f x11grab \
-    -draw_mouse 0 \
-    -video_size "${WIDTH}x${HEIGHT}" \
-    -framerate "$FPS" \
-    -i "${DISPLAY_NUM}.0+0,0" \
-    -vf "format=yuv420p" \
+if [ "$ENCODER" = "auto" ]; then
+    if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q ' h264_nvenc '; then
+        ENCODER="h264_nvenc"
+    else
+        ENCODER="libx264"
+    fi
+fi
+
+base_args=(
+    -hide_banner -loglevel warning -nostdin
+    -f x11grab
+    -draw_mouse 0
+    -video_size "${WIDTH}x${HEIGHT}"
+    -framerate "$FPS"
+    -i "${DISPLAY_NUM}.0+0,0"
+    -vf "format=yuv420p"
+)
+
+if [ "$ENCODER" = "h264_nvenc" ]; then
+    exec ffmpeg "${base_args[@]}" \
+        -c:v h264_nvenc \
+        -preset "${HAPAX_DARKPLACES_OBS_MEDIA_NVENC_PRESET:-p1}" \
+        -tune "${HAPAX_DARKPLACES_OBS_MEDIA_NVENC_TUNE:-ll}" \
+        -rc cbr \
+        -zerolatency 1 \
+        -delay 0 \
+        -g "$FPS" \
+        -bf 0 \
+        -b:v "$BITRATE" \
+        -maxrate "$MAXRATE" \
+        -bufsize "$BUFSIZE" \
+        -f mpegts \
+        "$OUTPUT_URL"
+fi
+
+exec ffmpeg "${base_args[@]}" \
     -c:v libx264 \
     -preset "$PRESET" \
     -tune zerolatency \

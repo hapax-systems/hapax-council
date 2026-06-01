@@ -8,7 +8,7 @@ ConditionPathExists=%h/.cache/hapax/source-activation/worktree/config/quake-live
 Type=simple
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 EnvironmentFile=%h/.cache/hapax/source-activation/worktree/config/quake-live-cameras/%i.env
-ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/quake-live-media-source.py --source camera --camera-role %i --fps ${HAPAX_QUAKE_LIVE_TEXTURE_FPS} --width ${HAPAX_QUAKE_LIVE_TEXTURE_WIDTH} --height ${HAPAX_QUAKE_LIVE_TEXTURE_HEIGHT} --output ${HAPAX_QUAKE_LIVE_TEXTURE_OUTPUT} --meta ${HAPAX_QUAKE_LIVE_TEXTURE_META}
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/quake-live-media-source.py --source camera --camera-role %i --fps ${HAPAX_QUAKE_LIVE_TEXTURE_FPS} --camera-fps ${HAPAX_QUAKE_LIVE_TEXTURE_INPUT_FPS} --width ${HAPAX_QUAKE_LIVE_TEXTURE_WIDTH} --height ${HAPAX_QUAKE_LIVE_TEXTURE_HEIGHT} --output ${HAPAX_QUAKE_LIVE_TEXTURE_OUTPUT} --meta ${HAPAX_QUAKE_LIVE_TEXTURE_META}
 Restart=always
 RestartSec=3
 

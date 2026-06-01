@@ -71,7 +71,7 @@ class FakeObsClient:
 def test_ensure_obs_ffmpeg_source_creates_media_input_and_disables_v4l2() -> None:
     mod = _load_module()
     client = FakeObsClient({"Video Capture Device (V4L2)", "DarkPlaces Screwm"})
-    settings = mod.ffmpeg_source_settings("udp://127.0.0.1:30552", "mpegts", 1, 1)
+    settings = mod.ffmpeg_source_settings("udp://127.0.0.1:30552", "mpegts", 0, 1, True)
 
     result = mod.ensure_obs_ffmpeg_source(
         client,
@@ -87,6 +87,8 @@ def test_ensure_obs_ffmpeg_source_creates_media_input_and_disables_v4l2() -> Non
     assert tuple(result["disabled_sources"]) == ("Video Capture Device (V4L2)", "DarkPlaces Screwm")
     assert client.calls[0][0] == "create_input"
     assert client.calls[0][1][2] == "ffmpeg_source"
+    assert client.calls[0][1][3]["buffering_mb"] == 0
+    assert client.calls[0][1][3]["hw_decode"] is True
     assert ("set_scene_item_enabled", ("Scene", 42, True)) in client.calls
     assert ("set_scene_item_enabled", ("Scene", 10, False)) in client.calls
     assert ("set_scene_item_enabled", ("Scene", 11, False)) in client.calls
@@ -100,7 +102,7 @@ def test_ensure_obs_ffmpeg_source_updates_existing_media_input() -> None:
     mod = _load_module()
     client = FakeObsClient({"DarkPlaces Screwm Media", "Video Capture Device (V4L2)"})
     client.item_ids["DarkPlaces Screwm Media"] = 42
-    settings = mod.ffmpeg_source_settings("udp://127.0.0.1:30552", "mpegts", 1, 1)
+    settings = mod.ffmpeg_source_settings("udp://127.0.0.1:30552", "mpegts", 0, 1, True)
 
     result = mod.ensure_obs_ffmpeg_source(
         client,

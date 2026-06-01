@@ -204,7 +204,11 @@ def test_screwm_darkplaces_obs_media_stream_publishes_x11_as_udp_mpegts() -> Non
         "Environment=HAPAX_DARKPLACES_OBS_MEDIA_OUTPUT_URL=udp://127.0.0.1:30552?pkt_size=1316"
         in lines
     )
+    assert "Environment=HAPAX_DARKPLACES_OBS_MEDIA_ENCODER=auto" in lines
     assert "format=yuv420p" in script_text
+    assert "HAPAX_DARKPLACES_OBS_MEDIA_ENCODER" in script_text
+    assert "-c:v h264_nvenc" in script_text
+    assert "-zerolatency 1" in script_text
     assert "-c:v libx264" in script_text
     assert "repeat-headers=1" in script_text
     assert "-f mpegts" in script_text
