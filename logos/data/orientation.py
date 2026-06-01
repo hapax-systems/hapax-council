@@ -14,7 +14,7 @@ from pathlib import Path
 import yaml
 
 from logos.data.session_inference import SessionContext, infer_session
-from logos.data.vault_goals import VaultGoal, collect_vault_goals
+from logos.data.vault_goals import VaultGoal, collect_vault_goals, read_goal_map
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,8 @@ class OrientationState:
     narrative: str | None = None
     narrative_generated_at: str | None = None
     stimmung_stance: str = "nominal"
+    # Goal ids blocked by an incomplete dependency, read from goal-map.canvas.
+    blocked_goal_ids: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +278,10 @@ def collect_orientation() -> OrientationState:
         }
     )
     all_goals = collect_vault_goals(sprint_measure_statuses=_sprint_measure_statuses())
+    # Consume the goal-map.canvas produced by vault_canvas_writer: surface which
+    # goals are blocked by an incomplete dependency.
+    goal_map = read_goal_map()
+    blocked_goal_ids = goal_map.blocked_node_ids() if goal_map else []
     sprint = _get_sprint_summary()
     stance = _get_stimmung_stance()
     briefing_headline, briefing_generated_at = _get_briefing()
@@ -355,4 +361,5 @@ def collect_orientation() -> OrientationState:
         narrative=narrative,
         narrative_generated_at=narrative_generated_at,
         stimmung_stance=stance,
+        blocked_goal_ids=blocked_goal_ids,
     )

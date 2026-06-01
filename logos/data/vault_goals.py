@@ -7,6 +7,7 @@ measure statuses. Deterministic, no LLM calls.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -29,6 +30,9 @@ DEFAULT_STALENESS_DAYS: dict[str, int] = {
 DEFAULT_VAULT_BASE = Path.home() / "Documents" / "Personal"
 DEFAULT_VAULT_NAME = "Personal"
 TEMPLATE_DIR_NAMES = {"50-templates"}
+
+# JSON Canvas goal-dependency map produced by ``agents.vault_canvas_writer``.
+DEFAULT_GOAL_MAP_CANVAS = DEFAULT_VAULT_BASE / "20-projects" / "hapax-goals" / "goal-map.canvas"
 
 
 @dataclass
@@ -209,3 +213,66 @@ def _str_or_none(val: object) -> str | None:
     if val is None:
         return None
     return str(val)
+
+
+# ---------------------------------------------------------------------------
+# Goal-map canvas reader (consumes agents.vault_canvas_writer output)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GoalMapEdge:
+    """A dependency edge: ``from_node`` must complete before ``to_node``."""
+
+    from_node: str
+    to_node: str
+
+
+@dataclass
+class GoalMap:
+    """The goal dependency graph read back from ``goal-map.canvas``."""
+
+    nodes: dict[str, str] = field(default_factory=dict)  # node id -> label text
+    edges: list[GoalMapEdge] = field(default_factory=list)
+
+    def dependencies_of(self, node_id: str) -> list[str]:
+        """Node ids ``node_id`` depends on (edges pointing into it)."""
+        return [e.from_node for e in self.edges if e.to_node == node_id]
+
+    def blocked_node_ids(self) -> list[str]:
+        """Nodes with at least one unmet dependency.
+
+        ``vault_canvas_writer`` emits a node only for active/paused goals and an edge
+        only when both endpoints are themselves nodes, so a completed prerequisite
+        drops out of the graph. Therefore any node that still has an incoming edge is
+        waiting on an incomplete (active) dependency — i.e. blocked.
+        """
+        return [nid for nid in self.nodes if self.dependencies_of(nid)]
+
+
+def read_goal_map(canvas_path: Path | None = None) -> GoalMap | None:
+    """Read the JSON Canvas goal map that ``agents.vault_canvas_writer`` produces.
+
+    Returns ``None`` when the canvas is absent or unparseable so the orientation
+    panel degrades to per-note ``depends_on`` fields rather than failing. Malformed
+    individual nodes/edges are skipped, not fatal.
+    """
+    path = canvas_path or DEFAULT_GOAL_MAP_CANVAS
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    nodes: dict[str, str] = {}
+    for node in data.get("nodes", []):
+        if isinstance(node, dict) and node.get("id") is not None:
+            nodes[str(node["id"])] = str(node.get("text", ""))
+
+    edges: list[GoalMapEdge] = []
+    for edge in data.get("edges", []):
+        if isinstance(edge, dict) and edge.get("fromNode") and edge.get("toNode"):
+            edges.append(GoalMapEdge(from_node=str(edge["fromNode"]), to_node=str(edge["toNode"])))
+
+    return GoalMap(nodes=nodes, edges=edges)
