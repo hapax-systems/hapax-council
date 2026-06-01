@@ -45,14 +45,19 @@ from shared.merge_queue_lineage import (  # noqa: E402
     FleetThrottlePolicy,
     ThrottleDecision,
     active_quarantined_pr_numbers,
+    bisection_plan_for_failed_runs,
     decide_fleet_throttle,
     read_jsonl_records,
     read_quarantine,
     recommend_max_entries_to_build,
+    reconcile_flake_quarantines,
+    write_quarantine,
 )
 from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_MERGE_READY_STATUSES,
+    apply_release_auto_arm,
+    assess_release_auto_arm,
     task_closure_validity,
 )
 
@@ -86,7 +91,12 @@ AUTOQUEUE_IGNORED_CHECK_CONTEXTS = {AUTOQUEUE_ADMISSION_CONTEXT, "pr-admission"}
 CI_REPAIR_KINDS = {"cicd-speedup", "ci-repair", "ci-speedup", "merge-queue-repair"}
 CI_REPAIR_TAGS = {"cicd", "ci", "autoqueue"}
 INDEPENDENT_QUEUE_ADMISSION = {"independent", "independent_route"}
-DEFAULT_STORM_OPEN_PR_THRESHOLD = 8
+# Open-PR COUNT is advisory-only — it raises a "busy" signal but NEVER freezes
+# admission (FM-3). The only freeze is failure-RATE based (decide_fleet_throttle).
+# The old ``*_STORM_OPEN_PR_THRESHOLD`` naming implied a count freeze that no
+# longer exists; the advisory name is canonical, the storm alias is deprecated.
+DEFAULT_ADVISORY_OPEN_PR_COUNT = 8
+DEFAULT_STORM_OPEN_PR_THRESHOLD = DEFAULT_ADVISORY_OPEN_PR_COUNT  # deprecated alias
 DEFAULT_STORM_FAILED_MERGE_GROUP_THRESHOLD = 1
 DEFAULT_STORM_RECENT_RUN_LIMIT = 20
 STORM_MAX_ENTRIES_TO_BUILD = 1
@@ -159,6 +169,7 @@ class Decision:
     task: TaskNote | None = None
     tasks: tuple[TaskNote, ...] = ()
     reasons: tuple[str, ...] = ()
+    auto_arm: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -176,6 +187,8 @@ class Decision:
             out["task_paths"] = [str(task.path) for task in self.tasks]
         if self.reasons:
             out["reasons"] = list(self.reasons)
+        if self.auto_arm:
+            out["auto_arm"] = True
         return out
 
 
@@ -193,6 +206,7 @@ class StormMode:
     failure_rate: float
     failure_rate_samples: int
     rate_frozen: bool
+    recommended_bisections: tuple[dict[str, Any], ...] = ()
 
     def as_dict(self, *, repo: str) -> dict[str, Any]:
         return {
@@ -205,6 +219,7 @@ class StormMode:
             "blocked_queued_prs": list(self.blocked_queued_prs),
             "failed_recent_merge_group_run_count": len(self.failed_recent_merge_group_runs),
             "failed_recent_merge_group_runs": list(self.failed_recent_merge_group_runs),
+            "recommended_bisections": list(self.recommended_bisections),
             "failure_rate": self.failure_rate,
             "failure_rate_samples": self.failure_rate_samples,
             "rate_frozen": self.rate_frozen,
@@ -681,6 +696,20 @@ def classify_pr(
     ):
         reasons.append("storm_admission_hold:" + ",".join(storm_reasons or ("admission_pressure",)))
 
+    # Dispatch resilience to lane-death (CASE-CAPACITY-ROUTING-001). A CLEAN,
+    # green PR whose single linked task is pr_open but never had its release
+    # authorized (the lane died after `gh pr create`) strands forever. Running
+    # as the system (FM-20), the autoqueue may auto-arm an eligible task; a
+    # governance/public/audio-egress-sensitive one is held so it stays manual.
+    auto_arm = False
+    if task is not None and not reasons:
+        arm = assess_release_auto_arm(task.frontmatter)
+        if arm.needs_arming:
+            if arm.eligible:
+                auto_arm = True
+            else:
+                reasons.append("release_auto_arm_ineligible:" + ",".join(arm.blockers))
+
     if queued:
         if reasons:
             return Decision(
@@ -722,7 +751,13 @@ def classify_pr(
         )
     if pr.check_summary.has_pending:
         if include_pending_auto:
-            return Decision(pr=pr, task=task, tasks=matched_tasks, action="enable_auto_merge")
+            return Decision(
+                pr=pr,
+                task=task,
+                tasks=matched_tasks,
+                action="enable_auto_merge",
+                auto_arm=auto_arm,
+            )
         return Decision(
             pr=pr,
             task=task,
@@ -730,7 +765,7 @@ def classify_pr(
             action="blocked",
             reasons=("pending_checks:" + ",".join(pr.check_summary.pending),),
         )
-    return Decision(pr=pr, task=task, tasks=matched_tasks, action="queue")
+    return Decision(pr=pr, task=task, tasks=matched_tasks, action="queue", auto_arm=auto_arm)
 
 
 def merge_pr(
@@ -777,6 +812,68 @@ def merge_pr(
     if proc.returncode != 0:
         return False, output or f"gh pr merge failed rc={proc.returncode}"
     return True, output
+
+
+RELEASE_AUTO_ARM_ROLE = "autoqueue-system"
+DEFAULT_AUTHORITY_CASE_LEDGER = Path.home() / ".cache" / "hapax" / "authority-case-ledger.jsonl"
+
+
+def default_authority_case_ledger() -> Path:
+    raw = os.environ.get("HAPAX_AUTHORITY_CASE_LEDGER")
+    return Path(raw).expanduser() if raw else DEFAULT_AUTHORITY_CASE_LEDGER
+
+
+def _append_release_auto_arm_ledger(
+    task: TaskNote, *, ledger_path: Path, now_iso: str, role: str
+) -> None:
+    """Append an audit record for a system release auto-arm. Best-effort."""
+    record = {
+        "ts": now_iso,
+        "kind": "release_auto_arm",
+        "tool": "cc-pr-autoqueue",
+        "role": role,
+        "task_id": task.task_id,
+        "authority_case": task.authority_case,
+        "pr": task.pr,
+        "note": str(task.path),
+    }
+    try:
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        with ledger_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError as exc:  # never undo a written arm over a ledger hiccup
+        LOG.warning("release auto-arm ledger append failed for %s: %s", task.task_id, exc)
+
+
+def arm_release_for_task(
+    task: TaskNote,
+    *,
+    ledger_path: Path | None = None,
+    now: datetime | None = None,
+    role: str = RELEASE_AUTO_ARM_ROLE,
+) -> tuple[bool, str]:
+    """Authorize release for a stranded task on behalf of a dead lane (system).
+
+    Writes ``release_authorized: true`` + ``stage: S7_RELEASE`` to the note and
+    appends an authority-case ledger record. Eligibility MUST already have been
+    confirmed by :func:`assess_release_auto_arm` (the caller gates on it).
+    """
+    ledger_path = ledger_path or default_authority_case_ledger()
+    now = now or datetime.now(UTC)
+    now_iso = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        text = task.path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return False, f"note_unreadable:{exc}"
+    armed = apply_release_auto_arm(text, now_iso=now_iso, role=role)
+    if armed == text:
+        return False, "note_unchanged"
+    try:
+        task.path.write_text(armed, encoding="utf-8")
+    except OSError as exc:
+        return False, f"note_write_failed:{exc}"
+    _append_release_auto_arm_ledger(task, ledger_path=ledger_path, now_iso=now_iso, role=role)
+    return True, f"release auto-armed {task.task_id}"
 
 
 def _status_description(text: str, *, limit: int = 140) -> str:
@@ -915,6 +1012,9 @@ def _build_storm_mode(
         failure_rate=throttle_decision.failure_rate,
         failure_rate_samples=throttle_decision.samples,
         rate_frozen=throttle_decision.frozen,
+        recommended_bisections=tuple(
+            bisection_plan_for_failed_runs(failed_recent_merge_group_runs)
+        ),
     )
 
 
@@ -929,10 +1029,12 @@ def run_reconciler(
     required_checks: tuple[str, ...] = DEFAULT_REQUIRED_CHECKS,
     limit: int = 100,
     lineage_ledger_path: Path | None = DEFAULT_LEDGER_PATH,
+    quarantine_path: Path = DEFAULT_QUARANTINE_PATH,
     storm_mode_enabled: bool = True,
-    storm_open_pr_threshold: int = DEFAULT_STORM_OPEN_PR_THRESHOLD,
+    advisory_open_pr_count: int = DEFAULT_ADVISORY_OPEN_PR_COUNT,
     storm_failed_merge_group_threshold: int = DEFAULT_STORM_FAILED_MERGE_GROUP_THRESHOLD,
     storm_recent_run_limit: int = DEFAULT_STORM_RECENT_RUN_LIMIT,
+    auto_arm_ledger_path: Path | None = None,
     runner: Any = None,
 ) -> dict[str, Any]:
     if any(os.environ.get(name) == "1" for name in KILLSWITCH_ENVS):
@@ -963,10 +1065,24 @@ def run_reconciler(
     ]
     now = datetime.now(UTC)
     lineage_records = read_jsonl_records(lineage_ledger_path) if lineage_ledger_path else []
-    quarantined_prs = active_quarantined_pr_numbers(
-        read_quarantine(DEFAULT_QUARANTINE_PATH), now=now
+    throttle_policy = FleetThrottlePolicy(advisory_open_pr_count=advisory_open_pr_count)
+    # Quarantine WRITE side (FM-3/FM-4 reversible quarantine): open quarantines for
+    # PRs over the failure threshold, lift expired ones, and persist (apply mode
+    # only). PRs already quarantined ON ENTRY are excluded from THIS tick's
+    # failure-rate signal; PRs newly quarantined this tick are persisted now and
+    # take effect next tick — isolating a flaky PR converges without a one-tick
+    # regression in fleet protection.
+    existing_quarantine = read_quarantine(quarantine_path)
+    quarantined_prs = active_quarantined_pr_numbers(existing_quarantine, now=now)
+    quarantine_reconciliation = reconcile_flake_quarantines(
+        existing_quarantine,
+        lineage_records,
+        candidate_prs={pr.number for pr in prs},
+        policy=throttle_policy,
+        now=now,
     )
-    throttle_policy = FleetThrottlePolicy(advisory_open_pr_count=storm_open_pr_threshold)
+    if apply and (quarantine_reconciliation.newly_quarantined or quarantine_reconciliation.lifted):
+        write_quarantine(quarantine_path, quarantine_reconciliation.records)
     throttle_decision = decide_fleet_throttle(
         lineage_records,
         open_pr_count=len(prs),
@@ -1065,6 +1181,19 @@ def run_reconciler(
                     }
                 )
                 continue
+            if decision.auto_arm and decision.task is not None:
+                armed_ok, armed_message = arm_release_for_task(
+                    decision.task, ledger_path=auto_arm_ledger_path, now=now
+                )
+                if not armed_ok:
+                    mutation_results.append(
+                        {
+                            **decision.as_dict(),
+                            "ok": False,
+                            "message": f"release auto-arm failed: {armed_message}",
+                        }
+                    )
+                    continue
             ok, message = merge_pr(decision, repo=repo, repo_root=repo_root, runner=runner)
             result = {
                 **decision.as_dict(),
@@ -1089,6 +1218,18 @@ def run_reconciler(
         "active_ci_repair_task_ids": list(active_ci_repair_task_ids),
         "storm_mode_enabled": storm_mode_enabled,
         "storm_mode": storm_mode.as_dict(repo=repo),
+        "flake_quarantine": {
+            "path": str(quarantine_path),
+            "active": quarantine_reconciliation.active,
+            "newly_quarantined": quarantine_reconciliation.newly_quarantined,
+            "lifted": quarantine_reconciliation.lifted,
+            "written": bool(
+                apply
+                and (
+                    quarantine_reconciliation.newly_quarantined or quarantine_reconciliation.lifted
+                )
+            ),
+        },
         "lineage_ledger_path": str(lineage_ledger_path) if lineage_ledger_path else None,
         "open_pr_count": len(prs),
         "queued_prs": sorted(queued_prs),
@@ -1157,10 +1298,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Report storm/admission pressure but do not add storm admission holds.",
     )
     parser.add_argument(
-        "--storm-open-pr-threshold",
+        "--advisory-open-pr-count",
+        "--storm-open-pr-threshold",  # deprecated alias
         type=int,
-        default=DEFAULT_STORM_OPEN_PR_THRESHOLD,
-        help="Open PR count at or above which storm admission pressure is active.",
+        dest="advisory_open_pr_count",
+        default=DEFAULT_ADVISORY_OPEN_PR_COUNT,
+        help=(
+            "Open PR count at or above which the queue reports an advisory 'busy' "
+            "signal. Advisory only — it never freezes admission (the only freeze is "
+            "failure-rate based). --storm-open-pr-threshold is a deprecated alias."
+        ),
     )
     parser.add_argument(
         "--storm-failed-merge-group-threshold",
@@ -1201,7 +1348,7 @@ def main(argv: list[str] | None = None) -> int:
         limit=args.limit,
         lineage_ledger_path=args.lineage_ledger_path,
         storm_mode_enabled=not args.disable_storm_mode,
-        storm_open_pr_threshold=args.storm_open_pr_threshold,
+        advisory_open_pr_count=args.advisory_open_pr_count,
         storm_failed_merge_group_threshold=args.storm_failed_merge_group_threshold,
         storm_recent_run_limit=args.storm_recent_run_limit,
     )

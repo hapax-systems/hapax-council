@@ -52,12 +52,12 @@ def test_darkplaces_v4l2_service_remains_runtime_guarded_and_uses_visible_xvfb_r
     assert "scripts/darkplaces-v4l2-xorg.sh" not in body
     assert "Environment=HAPAX_DARKPLACES_EXPECTED_GPU_INDEX=0" in body
     assert ('Environment="HAPAX_DARKPLACES_EXPECTED_GL_RENDERER=NVIDIA GeForce RTX 5090"') in body
-    assert "Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52" in body
+    assert "Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video50" in body
     assert "Environment=HAPAX_DARKPLACES_WATCHDOG_INTERVAL_SECONDS=10" in body
     assert "Environment=HAPAX_DARKPLACES_JOY_INDEX=1" in body
     assert "Environment=DARKPLACES_WIDTH=1920" in body
     assert "Environment=DARKPLACES_HEIGHT=1080" in body
-    assert "Environment=DARKPLACES_FPS=60" in body
+    assert "Environment=DARKPLACES_FPS=30" in body
 
 
 def test_darkplaces_launchers_use_native_xbox_joystick_input() -> None:
@@ -298,12 +298,16 @@ def test_darkplaces_xvfb_launcher_disables_headless_screen_blanking() -> None:
     body = (SCRIPTS_DIR / "darkplaces-v4l2-xvfb.sh").read_text(encoding="utf-8")
 
     assert "need_cmd systemd-notify" in body
+    assert "need_cmd gst-launch-1.0" in body
     assert "notify_systemd --ready" in body
     assert "WATCHDOG=1" in body
     assert "HAPAX_DARKPLACES_WATCHDOG_INTERVAL_SECONDS" in body
     assert (
         'Xvfb "$DISPLAY_NUM" -screen 0 "${WIDTH}x${HEIGHT}x24" -nolisten tcp -s 0 -dpms &' in body
     )
+    assert 'v4l2-ctl -d "$DEVICE" --set-parm="$FPS"' in body
+    assert 'ximagesrc display-name="$DISPLAY_NUM" use-damage=0 show-pointer=false' in body
+    assert '! v4l2sink device="$DEVICE" sync=false &' in body
     for expected in (
         "+viewsize 120",
         "+scr_viewsize 120",

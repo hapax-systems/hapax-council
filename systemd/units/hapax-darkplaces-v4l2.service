@@ -22,7 +22,7 @@ TimeoutStopSec=3s
 KillMode=control-group
 SendSIGKILL=yes
 MemoryMax=2G
-Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52
+Environment=HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video50
 Environment=HAPAX_DARKPLACES_DISPLAY=:82
 # Dedicated NVIDIA Xorg currently opens a 5060 Ti GL context but x11grab reads
 # a black framebuffer. Use the Xvfb route that produces observable frames until
@@ -31,7 +31,7 @@ Environment=HAPAX_DARKPLACES_EXPECTED_GPU_INDEX=0
 Environment="HAPAX_DARKPLACES_EXPECTED_GL_RENDERER=NVIDIA GeForce RTX 5090"
 Environment=DARKPLACES_WIDTH=1920
 Environment=DARKPLACES_HEIGHT=1080
-Environment=DARKPLACES_FPS=60
+Environment=DARKPLACES_FPS=30
 Environment=HAPAX_DARKPLACES_JOY_INDEX=1
 Environment=HAPAX_DARKPLACES_WATCHDOG_INTERVAL_SECONDS=10
 

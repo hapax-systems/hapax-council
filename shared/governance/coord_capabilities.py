@@ -29,6 +29,7 @@ import argparse
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import time
 from collections.abc import Mapping
@@ -305,6 +306,27 @@ def _load_key_file(path: str) -> bytes:
         return Path(path).read_bytes()
     except OSError:
         return b""
+
+
+def load_or_create_key(path: str | Path) -> bytes:
+    """Read the operator signing key; create it (0600) atomically on first use.
+
+    Created with ``O_EXCL`` + a restrictive mode from the start, so there is never
+    a window where the key is world-readable. Shared by ``coord-grant-mint`` and
+    the boot provisioner so the escape-grant key is minted exactly one way
+    (reform-improve coord SSOT provisioning).
+    """
+    path = Path(path)
+    if path.exists():
+        return path.read_bytes()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    key = secrets.token_bytes(32)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, key)
+    finally:
+        os.close(fd)
+    return key
 
 
 def main(argv: list[str] | None = None) -> int:

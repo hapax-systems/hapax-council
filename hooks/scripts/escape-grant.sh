@@ -24,9 +24,14 @@
 # escape — replacing the blunt, silent, unconditional HAPAX_*_OFF off-switch. It
 # is not adversarial isolation between the operator's own lanes.
 
-# Canonical, env-overridable locations (master design §4.4 / §G1).
-: "${HAPAX_COORD_GRANT_DIR:=/var/lib/hapax/coord/grants}"
-: "${HAPAX_COORD_GRANT_KEY:=/var/lib/hapax/coord/grant-key}"
+# Canonical, env-overridable locations (master design §4.4 / §G1). The base is a
+# user-writable cache tree: the former /var/lib/hapax/coord was root-owned and
+# unprovisionable by uid 1000, which left this escape INERT (reform-improve coord
+# SSOT provisioning). Precedence matches shared/coord_event_log.py so the bash
+# shim and the Python minter resolve identically — explicit grant override →
+# $HAPAX_COORD_DIR → $XDG_CACHE_HOME → ~/.cache:
+: "${HAPAX_COORD_GRANT_DIR:=${HAPAX_COORD_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hapax/coord}/grants}"
+: "${HAPAX_COORD_GRANT_KEY:=${HAPAX_COORD_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hapax/coord}/grant-key}"
 : "${HAPAX_METHODOLOGY_LEDGER:=${HOME}/.cache/hapax/methodology-emergency-ledger.jsonl}"
 
 # Repo root for `python3 -m shared.governance.coord_capabilities`. SCRIPT_DIR is

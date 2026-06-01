@@ -55,3 +55,12 @@ repos:
         language: system
         files: ^(config/pipewire/[^/]+\.conf|scripts/check-audio-conf-names\.py)$
         pass_filenames: false
+      - id: gate-manifest-check
+        name: Cross-runtime gate-manifest wiring check (incl. live claude settings)
+        # --require-claude-settings checks the live ~/.claude/settings.json (the
+        # most drift-prone wiring) against hooks/gate-manifest.yaml. Runs on the
+        # operator machine where the live settings exist; CI checks the rest.
+        entry: uv run python scripts/gate-manifest-check.py --require-claude-settings
+        language: system
+        files: ^(hooks/gate-manifest\.yaml|hooks/scripts/(codex|antigrav)-hook-adapter\.sh|scripts/hapax-(codex|antigrav|vibe|gemini)|config/codex/config\.toml|\.github/workflows/ci\.yml)$
+        pass_filenames: false

@@ -20,14 +20,56 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-DEFAULT_COORD_DIR = Path("/var/lib/hapax/coord")
+#: Env var redirecting the canonical coord tree for test isolation / sandboxed
+#: tools. Production leaves it unset; the default is a user-writable cache path.
+COORD_DIR_ENV = "HAPAX_COORD_DIR"
+#: Explicit per-surface overrides, honored ahead of ``HAPAX_COORD_DIR``.
+GRANT_DIR_ENV = "HAPAX_COORD_GRANT_DIR"
+GRANT_KEY_ENV = "HAPAX_COORD_GRANT_KEY"
+
+
+def _xdg_cache_home() -> Path:
+    xdg = os.environ.get("XDG_CACHE_HOME", "").strip()
+    return Path(xdg) if xdg else Path.home() / ".cache"
+
+
+def coord_base_dir() -> Path:
+    """Resolve the canonical coordination tree base directory.
+
+    Precedence: ``HAPAX_COORD_DIR`` (test/sandbox isolation) →
+    ``$XDG_CACHE_HOME/hapax/coord`` → ``~/.cache/hapax/coord``.
+
+    The default is a **user-writable cache path**, not the former root-owned
+    ``/var/lib/hapax/coord``: uid 1000 cannot ``mkdir`` into ``/var/lib/hapax``,
+    so that default left the R2 event log unmaterialized and the R3 escape grant
+    inert (reform-improve coord SSOT provisioning). ``~/.cache`` is still one
+    fixed location outside every git worktree (master design NEW-4), so the
+    single-writer / no-merge-conflict invariant holds.
+    """
+    override = os.environ.get(COORD_DIR_ENV, "").strip()
+    if override:
+        return Path(override)
+    return _xdg_cache_home() / "hapax" / "coord"
+
+
+def default_grant_dir() -> Path:
+    """Escape-grant directory: ``HAPAX_COORD_GRANT_DIR`` else ``<base>/grants``."""
+    explicit = os.environ.get(GRANT_DIR_ENV, "").strip()
+    return Path(explicit) if explicit else coord_base_dir() / "grants"
+
+
+def default_grant_key() -> Path:
+    """Escape signing key: ``HAPAX_COORD_GRANT_KEY`` else ``<base>/grant-key``."""
+    explicit = os.environ.get(GRANT_KEY_ENV, "").strip()
+    return Path(explicit) if explicit else coord_base_dir() / "grant-key"
+
+
+#: Import-time snapshot of the canonical tree with no override set. Call
+#: ``coord_base_dir`` / ``default_*`` for env-dynamic resolution.
+DEFAULT_COORD_DIR = coord_base_dir()
 DEFAULT_LEDGER_DB = DEFAULT_COORD_DIR / "ledger.db"
 DEFAULT_JSONL_MIRROR = DEFAULT_COORD_DIR / "ledger.jsonl"
 DEFAULT_SPOOL_DIR = DEFAULT_COORD_DIR / "spool"
-
-#: Env var redirecting the canonical coord log for test isolation / sandboxed
-#: tools. Production leaves it unset (the log lives outside every worktree).
-COORD_DIR_ENV = "HAPAX_COORD_DIR"
 
 _SCHEMA_VERSION = 1
 _WRITER_KINDS = {"daemon", "shim", "lane"}
@@ -561,17 +603,107 @@ def _safe_filename(value: str) -> str:
 def default_event_log() -> CoordEventLog:
     """Return the canonical coord log, honoring ``HAPAX_COORD_DIR`` for isolation.
 
-    Production uses ``/var/lib/hapax/coord`` (one log outside every worktree,
-    NEW-4). Tests and sandboxed CLIs set ``HAPAX_COORD_DIR`` to redirect the
-    SQLite DB, JSONL mirror, and spool under a temporary directory so a tool that
-    emits a coordination event never writes the production log during a test.
+    Production uses the user-writable ``~/.cache/hapax/coord`` tree (one log
+    outside every worktree, NEW-4 — see ``coord_base_dir``). Tests and sandboxed
+    CLIs set ``HAPAX_COORD_DIR`` to redirect the SQLite DB, JSONL mirror, and
+    spool under a temporary directory so a tool that emits a coordination event
+    never writes the production log during a test.
     """
 
-    base = Path(os.environ.get(COORD_DIR_ENV, str(DEFAULT_COORD_DIR)))
+    base = coord_base_dir()
     return CoordEventLog(
         db_path=base / "ledger.db",
         jsonl_path=base / "ledger.jsonl",
         spool_dir=base / "spool",
+    )
+
+
+@dataclass(frozen=True)
+class ProvisionResult:
+    """Outcome of provisioning the coord SSOT tree + escape-grant signing key."""
+
+    base_dir: Path
+    spool_dir: Path
+    grant_dir: Path
+    grant_key: Path
+    created: tuple[str, ...]
+    key_created: bool
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "base_dir": str(self.base_dir),
+            "spool_dir": str(self.spool_dir),
+            "grant_dir": str(self.grant_dir),
+            "grant_key": str(self.grant_key),
+            "created": list(self.created),
+            "key_created": self.key_created,
+        }
+
+
+def provision_coord_tree(
+    *,
+    base_dir: Path | str | None = None,
+    grant_dir: Path | str | None = None,
+    grant_key: Path | str | None = None,
+) -> ProvisionResult:
+    """Materialize the coord SSOT tree + escape signing key so R2/R3 are live.
+
+    Idempotently creates ``{base, base/spool, grant_dir}`` and the 0600 escape
+    signing key, then proves the base is writable with a probe file. This is the
+    daemon-independent provisioner (master design §4.3/§4.4): a boot oneshot — or
+    the operator by hand — runs it with no kernel present, so the R2 event log can
+    materialize and the R3 escape grant is no longer inert.
+
+    Raises ``CoordEventLogError`` **loudly** (never a silent swallow — the SSOT
+    provisioning acceptance criterion) when the tree cannot be created or the base
+    is not writable, e.g. the legacy root-owned ``/var/lib/hapax/coord`` default
+    that uid 1000 could never provision.
+    """
+    from shared.governance.coord_capabilities import load_or_create_key
+
+    base = Path(base_dir) if base_dir is not None else coord_base_dir()
+    gdir = Path(grant_dir) if grant_dir is not None else default_grant_dir()
+    gkey = Path(grant_key) if grant_key is not None else default_grant_key()
+    spool = base / "spool"
+
+    created: list[str] = []
+    for directory in (base, spool, gdir):
+        existed = directory.is_dir()
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise CoordEventLogError(
+                f"coord SSOT provisioning failed: cannot create {directory}: "
+                f"{type(exc).__name__}: {exc} "
+                f"(base {base} must be writable by uid {os.getuid()})"
+            ) from exc
+        if not existed:
+            created.append(str(directory))
+
+    probe = base / ".provision-probe"
+    try:
+        probe.write_text("ok\n", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        raise CoordEventLogError(
+            f"coord SSOT base {base} exists but is not writable: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    key_existed = gkey.exists()
+    try:
+        load_or_create_key(gkey)
+    except OSError as exc:
+        raise CoordEventLogError(
+            f"coord escape-grant key {gkey} could not be provisioned: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    return ProvisionResult(
+        base_dir=base,
+        spool_dir=spool,
+        grant_dir=gdir,
+        grant_key=gkey,
+        created=tuple(created),
+        key_created=not key_existed,
     )
 
 
@@ -589,9 +721,16 @@ __all__ = [
     "DEFAULT_SPOOL_DIR",
     "DirectLaneWriteError",
     "DuplicateEventError",
+    "GRANT_DIR_ENV",
+    "GRANT_KEY_ENV",
+    "ProvisionResult",
     "ReplayResult",
     "SpoolIngestResult",
+    "coord_base_dir",
     "default_event_log",
+    "default_grant_dir",
+    "default_grant_key",
+    "provision_coord_tree",
 ]
 
 # Public API consumed by the coordination daemon/shim through dynamic dispatch.

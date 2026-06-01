@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import yaml
@@ -243,3 +244,239 @@ def task_closure_validity(
         blockers=tuple(blockers),
         frontmatter=frontmatter,
     )
+
+
+# --- System release auto-arm (dispatch resilience to lane-death) -------------
+# CASE-CAPACITY-ROUTING-001. A headless lane exits after creating its PR. If it
+# dies after `gh pr create` but before flipping `release_authorized: true`, a
+# CLEAN, green, mergeable PR strands at `pr_open` forever and needs manual
+# re-dispatch. The autoqueue runs as the system (unclaimed — master design
+# FM-20: "auto-queue is the merge path (runs as system, unclaimed)"), so it can
+# authorize release on behalf of a dead lane — but ONLY for tasks whose release
+# was already authorized-in-principle by their ISAP (`implementation_authorized`)
+# and whose risk profile carries no governance/public/audio-egress veto.
+# Sensitive tasks stay manual.
+
+#: Risk flags whose presence (explicit or keyword-derived) vetoes auto-arming.
+SENSITIVE_RISK_FLAGS = (
+    "governance_sensitive",
+    "public_claim_sensitive",
+    "audio_or_live_egress_sensitive",
+    "privacy_or_secret_sensitive",
+    "provider_billing_sensitive",
+)
+
+#: Mutation surfaces too high-stakes for the system to auto-authorize release.
+AUTO_ARM_INELIGIBLE_MUTATION_SURFACES = frozenset({"public", "provider_spend"})
+
+#: Governance-protected / off-limits path fragments (mirrors the workspace
+#: off-limits set + CODEOWNERS-governed surfaces). A task whose mutation scope
+#: touches any of these must be released by a human, never the system.
+SENSITIVE_PATH_MARKERS = (
+    "axioms/",
+    "shared/governance/",
+    "agents/hapax_daimonion/",
+    "config/pipewire/",
+    "codeowners",
+    "claude.md",
+    "hapax-constitution",
+)
+
+_AUTO_ARM_TRUTHY = {"1", "true", "yes", "y", "required"}
+_STAGE_PREFIX_RE = re.compile(r"^s(\d{1,2})", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class ReleaseAutoArmAssessment:
+    """Whether a stranded ``pr_open`` task may be auto-armed by the system.
+
+    ``subject``      task participates in the release-authorization model
+                     (carries a ``release_authorized`` field).
+    ``armed``        ``release_authorized`` is already true.
+    ``needs_arming`` subject and not yet armed.
+    ``eligible``     needs arming and carries no governance/sensitivity veto.
+    ``blockers``     the reasons it is ineligible (empty iff eligible).
+    """
+
+    subject: bool
+    armed: bool
+    needs_arming: bool
+    eligible: bool
+    blockers: tuple[str, ...]
+
+
+def _auto_arm_truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in _AUTO_ARM_TRUTHY
+
+
+def _effective_sensitive_flags(frontmatter: Mapping[str, Any]) -> list[str]:
+    """Sensitive risk flags from explicit route metadata OR keyword derivation.
+
+    The derived (keyword) pass matters because an explicit-route-metadata task
+    can omit ``risk_flags`` entirely yet still be governance/audio/public by its
+    title or tags — those must not be auto-armed.
+    """
+
+    from shared.route_metadata_schema import _derive_risk_flags, assess_route_metadata
+
+    flags: set[str] = set()
+    derived = _derive_risk_flags(frontmatter)
+    for name in SENSITIVE_RISK_FLAGS:
+        if derived.get(name):
+            flags.add(name)
+    metadata = assess_route_metadata(frontmatter).metadata
+    if metadata is not None:
+        for name in SENSITIVE_RISK_FLAGS:
+            if getattr(metadata.risk_flags, name, False):
+                flags.add(name)
+    return sorted(flags)
+
+
+def _sensitive_paths_in_scope(frontmatter: Mapping[str, Any]) -> list[str]:
+    refs = frontmatter.get("mutation_scope_refs")
+    if isinstance(refs, (list, tuple)):
+        values = [str(ref) for ref in refs]
+    elif refs:
+        values = [str(refs)]
+    else:
+        values = []
+    hits: list[str] = []
+    for ref in values:
+        text = ref.strip()
+        if any(marker in text.lower() for marker in SENSITIVE_PATH_MARKERS):
+            hits.append(text)
+    return hits
+
+
+def _route_metadata_assessable(frontmatter: Mapping[str, Any]) -> bool:
+    from shared.route_metadata_schema import assess_route_metadata
+
+    return assess_route_metadata(frontmatter).metadata is not None
+
+
+def _release_auto_arm_blockers(
+    frontmatter: Mapping[str, Any], *, now: float | datetime | None
+) -> list[str]:
+    from shared.release_gate import evaluate_avsdlc_release_gate
+
+    blockers: list[str] = []
+    # ISAP authorization-in-principle precondition.
+    if not _auto_arm_truthy(frontmatter.get("implementation_authorized")):
+        blockers.append("not_implementation_authorized")
+    # Governance / sensitivity veto (explicit risk flags OR keyword-derived).
+    blockers.extend(f"risk_flag:{name}" for name in _effective_sensitive_flags(frontmatter))
+    # High-stakes mutation surfaces.
+    surface = str(frontmatter.get("mutation_surface") or "").strip().lower()
+    if surface in AUTO_ARM_INELIGIBLE_MUTATION_SURFACES:
+        blockers.append(f"mutation_surface:{surface}")
+    # Governance-protected / off-limits paths.
+    blockers.extend(f"sensitive_path:{path}" for path in _sensitive_paths_in_scope(frontmatter))
+    # Already a live public surface → human releases it.
+    if _auto_arm_truthy(frontmatter.get("public_current")):
+        blockers.append("public_current")
+    # Highest risk tier → human releases it.
+    if str(frontmatter.get("risk_tier") or "").strip().lower() == "t3":
+        blockers.append("risk_tier:t3")
+    # AVSDLC aesthetic/quality axes must permit (evidence present, or no axes).
+    gate = evaluate_avsdlc_release_gate(frontmatter, now=now)
+    blockers.extend(f"avsdlc:{blocker}" for blocker in gate.blockers)
+    # Fail-closed when the route metadata cannot be assessed at all.
+    if not _route_metadata_assessable(frontmatter):
+        blockers.append("route_metadata_unassessable")
+    return blockers
+
+
+def assess_release_auto_arm(
+    frontmatter: Mapping[str, Any],
+    *,
+    now: float | datetime | None = None,
+) -> ReleaseAutoArmAssessment:
+    """Assess whether the system may auto-arm (authorize release for) a task.
+
+    Only tasks that carry a ``release_authorized`` field participate (the
+    reform-era model marker); legacy tasks without it are not subject and keep
+    their prior autoqueue behavior. A subject task that is not yet armed
+    ``needs_arming``; it is ``eligible`` only when it carries no governance,
+    public, audio/live-egress, privacy, or provider-billing veto, its release
+    was authorized-in-principle (``implementation_authorized``), and its AVSDLC
+    quality axes permit.
+    """
+
+    subject = "release_authorized" in frontmatter
+    armed = _auto_arm_truthy(frontmatter.get("release_authorized"))
+    needs_arming = subject and not armed
+    if not needs_arming:
+        return ReleaseAutoArmAssessment(
+            subject=subject,
+            armed=armed,
+            needs_arming=False,
+            eligible=False,
+            blockers=(),
+        )
+    blockers = _release_auto_arm_blockers(frontmatter, now=now)
+    return ReleaseAutoArmAssessment(
+        subject=True,
+        armed=False,
+        needs_arming=True,
+        eligible=not blockers,
+        blockers=tuple(blockers),
+    )
+
+
+def _stage_below_s7(stage_value: str) -> bool:
+    match = _STAGE_PREFIX_RE.match(stage_value.strip().strip('"').strip("'"))
+    if not match:
+        return True
+    return int(match.group(1)) < 7
+
+
+def apply_release_auto_arm(
+    note_text: str,
+    *,
+    now_iso: str,
+    role: str = "autoqueue-system",
+) -> str:
+    """Return ``note_text`` with the system release-arming applied to frontmatter.
+
+    Sets ``release_authorized: true``, advances ``stage`` to ``S7_RELEASE`` when
+    it is below S7 or absent, refreshes ``updated_at``, and appends a single
+    audit line to the body. Pure text transform — file IO and the authority-case
+    ledger append are the caller's responsibility.
+    """
+
+    if not note_text.startswith("---"):
+        return note_text
+    end = note_text.find("\n---", 4)
+    if end < 0:
+        return note_text
+    front, body = note_text[: end + 1], note_text[end + 1 :]
+
+    if re.search(r"(?m)^release_authorized:", front):
+        front = re.sub(
+            r"(?m)^release_authorized:\s*.*$", "release_authorized: true", front, count=1
+        )
+    else:
+        front = front.rstrip("\n") + "\nrelease_authorized: true\n"
+
+    stage_match = re.search(r"(?m)^stage:\s*(.*)$", front)
+    if stage_match:
+        if _stage_below_s7(stage_match.group(1)):
+            front = re.sub(r"(?m)^stage:\s*.*$", "stage: S7_RELEASE", front, count=1)
+    else:
+        front = front.rstrip("\n") + "\nstage: S7_RELEASE\n"
+
+    if re.search(r"(?m)^updated_at:", front):
+        front = re.sub(r"(?m)^updated_at:\s*.*$", f"updated_at: {now_iso}", front, count=1)
+    else:
+        front = front.rstrip("\n") + f"\nupdated_at: {now_iso}\n"
+
+    log_line = (
+        f"- {now_iso} {role}: release auto-arm (system) — "
+        "release_authorized -> true, stage -> S7_RELEASE."
+    )
+    body = body.rstrip("\n") + "\n" + log_line + "\n"
+    return front + body

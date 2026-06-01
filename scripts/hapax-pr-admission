@@ -132,7 +132,7 @@ def current_throttle_decision(open_count: int | None = None):
     return decide_fleet_throttle(
         records,
         open_pr_count=prs_count,
-        policy=FleetThrottlePolicy(advisory_open_pr_count=AUTO_FREEZE_THRESHOLD),
+        policy=FleetThrottlePolicy(advisory_open_pr_count=ADVISORY_OPEN_PR_COUNT),
         now=datetime.now(UTC),
     )
 
@@ -340,9 +340,11 @@ def is_admission_allowed(branch: str | None) -> tuple[bool, str]:
     return False, f"mode is {state['mode']} and branch {branch!r} not in snapshot"
 
 
-# Admission throttle threshold used only as the advisory open-PR count in the
-# failure-rate policy. Open count alone is never a freeze.
-AUTO_FREEZE_THRESHOLD = 10
+# Advisory open-PR count fed to the failure-rate policy. Open count alone is
+# NEVER a freeze (FM-3) — the only freeze is failure-rate based. The old
+# ``AUTO_FREEZE_THRESHOLD`` name implied a count freeze that no longer exists.
+ADVISORY_OPEN_PR_COUNT = 10
+AUTO_FREEZE_THRESHOLD = ADVISORY_OPEN_PR_COUNT  # deprecated alias
 
 
 def cmd_auto(args: argparse.Namespace) -> int:

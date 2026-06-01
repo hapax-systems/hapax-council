@@ -63,7 +63,7 @@ DARKPLACES_BIN="$(resolve_darkplaces_bin)"
 
 need_cmd Xvfb
 need_cmd "$DARKPLACES_BIN"
-need_cmd ffmpeg
+need_cmd gst-launch-1.0
 need_cmd v4l2-ctl
 if [ -n "${NOTIFY_SOCKET:-}" ]; then
     need_cmd systemd-notify
@@ -76,7 +76,7 @@ fi
 
 xvfb_pid=""
 darkplaces_pid=""
-ffmpeg_pid=""
+producer_pid=""
 watchdog_pid=""
 
 notify_systemd() {
@@ -93,7 +93,7 @@ start_systemd_watchdog() {
         while true; do
             sleep "${HAPAX_DARKPLACES_WATCHDOG_INTERVAL_SECONDS:-10}"
             if [ -n "$darkplaces_pid" ] && kill -0 "$darkplaces_pid" 2>/dev/null &&
-                [ -n "$ffmpeg_pid" ] && kill -0 "$ffmpeg_pid" 2>/dev/null; then
+                [ -n "$producer_pid" ] && kill -0 "$producer_pid" 2>/dev/null; then
                 systemd-notify \
                     "WATCHDOG=1" \
                     "STATUS=DarkPlaces v4l2 feed alive: ${DISPLAY_NUM}.0 -> ${DEVICE}" \
@@ -107,7 +107,7 @@ start_systemd_watchdog() {
 }
 
 cleanup() {
-    for pid in "$watchdog_pid" "$ffmpeg_pid" "$darkplaces_pid" "$xvfb_pid"; do
+    for pid in "$watchdog_pid" "$producer_pid" "$darkplaces_pid" "$xvfb_pid"; do
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null || true
         fi
@@ -255,18 +255,17 @@ sleep 3
 
 v4l2-ctl -d "$DEVICE" --set-fmt-video="width=${WIDTH},height=${HEIGHT},pixelformat=YUYV" \
     >/dev/null 2>&1 || true
+v4l2-ctl -d "$DEVICE" --set-parm="$FPS" >/dev/null 2>&1 || true
 
-ffmpeg -hide_banner -loglevel warning -nostdin \
-    -f x11grab \
-    -video_size "${WIDTH}x${HEIGHT}" \
-    -framerate "$FPS" \
-    -i "${DISPLAY_NUM}.0+0,0" \
-    -vf "format=yuyv422" \
-    -f v4l2 \
-    "$DEVICE" &
-ffmpeg_pid="$!"
+gst-launch-1.0 -q \
+    ximagesrc display-name="$DISPLAY_NUM" use-damage=0 show-pointer=false \
+    ! "video/x-raw,framerate=${FPS}/1,width=${WIDTH},height=${HEIGHT}" \
+    ! videoconvert \
+    ! "video/x-raw,format=YUY2" \
+    ! v4l2sink device="$DEVICE" sync=false &
+producer_pid="$!"
 
 notify_systemd --ready --status="DarkPlaces v4l2 feed running: ${DISPLAY_NUM}.0 -> ${DEVICE}"
 start_systemd_watchdog
 
-wait -n "$darkplaces_pid" "$ffmpeg_pid"
+wait -n "$darkplaces_pid" "$producer_pid"
