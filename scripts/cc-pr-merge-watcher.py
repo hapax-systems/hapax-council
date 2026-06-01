@@ -368,6 +368,213 @@ def run_watcher(
     }
 
 
+_STATUS_OPEN_PATTERN = re.compile(r"^status:\s*(pr_open|merge_queue)\s*$", flags=re.MULTILINE)
+_PR_NUM_PATTERN = re.compile(r"^pr:\s*(\d+)\s*$", flags=re.MULTILINE)
+_PR_NULL_NULLISH = frozenset({"", "null", "none", "~"})
+
+
+def _task_id_from_note(note: Path, text: str) -> str:
+    m = re.search(r"^task_id:\s*(.+?)\s*$", text, flags=re.MULTILINE)
+    return m.group(1).strip() if m else note.stem
+
+
+def _query_pr_state(
+    pr_num: str,
+    *,
+    repo_root: Path,
+    runner: callable[..., subprocess.CompletedProcess],
+) -> str | None:
+    """Return the PR's current state (MERGED|CLOSED|OPEN) or None on lookup failure."""
+    try:
+        proc = runner(
+            ["gh", "pr", "view", pr_num, "--json", "state", "--jq", ".state"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip()
+
+
+def _list_prs_for_branch(
+    branch: str,
+    *,
+    repo_root: Path,
+    runner: callable[..., subprocess.CompletedProcess],
+) -> list[dict[str, Any]]:
+    """Re-derive PRs for a branch via ``gh pr list --head`` (newest first)."""
+    try:
+        proc = runner(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--head",
+                branch,
+                "--state",
+                "all",
+                "--json",
+                "number,state",
+                "--limit",
+                "1",
+            ],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+    try:
+        rows = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError:
+        return []
+    return rows if isinstance(rows, list) else []
+
+
+def _block_stale_note(note: Path, text: str, *, reason: str, dry_run: bool) -> bool:
+    """Transition a pr_open/merge_queue note to blocked with a reason. True if blocked."""
+    if dry_run:
+        LOG.info("[dry-run] would block task %s (%s)", note.stem, reason)
+        return True
+    new = _STATUS_OPEN_PATTERN.sub("status: blocked", text, count=1)
+    if re.search(r"^blocked_reason:", new, flags=re.MULTILINE):
+        new = re.sub(
+            r"^blocked_reason:.*$",
+            f"blocked_reason: {reason}",
+            new,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    else:
+        new = re.sub(
+            r"^(status: blocked)",
+            f"\\1\nblocked_reason: {reason}",
+            new,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    note.write_text(new, encoding="utf-8")
+    LOG.info("stale PR drain: %s -> blocked (%s)", note.stem, reason)
+    return True
+
+
+def _close_merged_note(
+    note: Path,
+    text: str,
+    pr_num: str,
+    *,
+    repo_root: Path,
+    dry_run: bool,
+    runner: callable[..., subprocess.CompletedProcess],
+) -> bool:
+    """cc-close a task whose PR is merged (the cursor loop missed it). True on close."""
+    task_id = _task_id_from_note(note, text)
+    if dry_run:
+        LOG.info("[dry-run] would cc-close task %s (PR #%s merged)", task_id, pr_num)
+        return True
+    ok = close_linked_task(
+        LinkedTask(task_id=task_id, note_path=note, pr_number=int(pr_num)),
+        repo_root=repo_root,
+        runner=runner,
+    )
+    if ok:
+        LOG.info("stale PR drain: %s -> closed (PR #%s merged)", note.stem, pr_num)
+    return ok
+
+
+def _apply_pr_state(
+    note: Path,
+    text: str,
+    pr_num: str,
+    pr_state: str,
+    *,
+    repo_root: Path,
+    dry_run: bool,
+    runner: callable[..., subprocess.CompletedProcess],
+    counts: dict[str, int],
+) -> None:
+    """Reconcile one note against its PR's current state."""
+    if pr_state == "MERGED":
+        if _close_merged_note(
+            note, text, pr_num, repo_root=repo_root, dry_run=dry_run, runner=runner
+        ):
+            counts["closed"] += 1
+    elif pr_state == "CLOSED":
+        if _block_stale_note(
+            note, text, reason=f"PR #{pr_num} closed without merge", dry_run=dry_run
+        ):
+            counts["stale"] += 1
+    # OPEN (or any other state): the PR is still in flight; leave the task alone.
+
+
+def _repair_pr_null_note(
+    note: Path,
+    text: str,
+    *,
+    repo_root: Path,
+    dry_run: bool,
+    runner: callable[..., subprocess.CompletedProcess],
+    counts: dict[str, int],
+) -> None:
+    """pr:null + pr_open/merge_queue: re-derive the PR from the task branch.
+
+    A ``pr: null`` note matches no PR lookup, so it would otherwise stay
+    pr_open forever. Re-derive via ``gh pr list --head <branch>``; on success
+    write the number back and reconcile its state, otherwise block with a
+    reason so the stuck task surfaces instead of silently lingering.
+    """
+    branch_m = re.search(r"^branch:\s*(\S+)\s*$", text, flags=re.MULTILINE)
+    branch = (branch_m.group(1).strip() if branch_m else "").strip("\"'")
+    if branch.lower() in _PR_NULL_NULLISH:
+        if _block_stale_note(
+            note, text, reason="pr_open but pr:null and no branch to re-derive", dry_run=dry_run
+        ):
+            counts["stale"] += 1
+        return
+    rows = _list_prs_for_branch(branch, repo_root=repo_root, runner=runner)
+    if not rows:
+        if _block_stale_note(
+            note,
+            text,
+            reason=f"pr_open but pr:null; no PR found for branch {branch}",
+            dry_run=dry_run,
+        ):
+            counts["stale"] += 1
+        return
+    pr_number = str(rows[0].get("number"))
+    pr_state = str(rows[0].get("state", "")).upper()
+    counts["repaired"] += 1
+    if dry_run:
+        LOG.info(
+            "[dry-run] would re-derive PR #%s for %s (branch %s)", pr_number, note.stem, branch
+        )
+        if pr_state == "MERGED":
+            counts["closed"] += 1
+        return
+    new_text = re.sub(r"^pr:\s*null\s*$", f"pr: {pr_number}", text, count=1, flags=re.MULTILINE)
+    note.write_text(new_text, encoding="utf-8")
+    LOG.info("stale PR drain: %s -> re-derived PR #%s from branch %s", note.stem, pr_number, branch)
+    _apply_pr_state(
+        note,
+        new_text,
+        pr_number,
+        pr_state,
+        repo_root=repo_root,
+        dry_run=dry_run,
+        runner=runner,
+        counts=counts,
+    )
+
+
 def reconcile_stale_pr_states(
     *,
     vault_root: Path = DEFAULT_VAULT_ROOT,
@@ -375,87 +582,60 @@ def reconcile_stale_pr_states(
     dry_run: bool = False,
     runner: callable[..., subprocess.CompletedProcess] | None = None,
 ) -> dict[str, int]:
-    """Find tasks with pr_open/merge_queue status whose PR is closed (not merged).
+    """Reconcile active pr_open/merge_queue tasks against live PR state.
 
-    Transitions those tasks to blocked with a reason explaining the PR state.
+    Cursor-window independent: scans EVERY active pr_open/merge_queue note and
+    reconciles it against the PR's *current* state, so a task self-heals even
+    when its PR merged outside the ``run_watcher`` cursor window (the bug that
+    stranded ``soundcloud`` #3740 and ``meeting-in-screwm`` #3751 for days):
+
+    - PR MERGED -> cc-close the task (the cursor loop missed it).
+    - PR CLOSED -> transition to blocked with a reason.
+    - PR OPEN   -> leave it (still in flight).
+    - pr: null  -> repair: re-derive the PR from the task branch via
+      ``gh pr list --head``; write it back and act on its state, or block.
     """
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
     active = vault_root / "active"
+    counts = {"scanned": 0, "stale": 0, "closed": 0, "repaired": 0}
     if not active.is_dir():
-        return {"scanned": 0, "stale": 0}
-
-    pr_pattern = re.compile(r"^pr:\s*(\d+)\s*$", flags=re.MULTILINE)
-    status_pattern = re.compile(r"^status:\s*(pr_open|merge_queue)\s*$", flags=re.MULTILINE)
-    scanned = 0
-    stale = 0
+        return counts
 
     for note in sorted(active.glob("*.md")):
         try:
             text = note.read_text(encoding="utf-8")
         except OSError:
             continue
-        status_m = status_pattern.search(text)
-        if not status_m:
+        if not _STATUS_OPEN_PATTERN.search(text):
             continue
-        pr_m = pr_pattern.search(text)
+        pr_m = _PR_NUM_PATTERN.search(text)
         if not pr_m:
-            continue
-        scanned += 1
-        pr_num = pr_m.group(1)
-        try:
-            proc = runner(
-                ["gh", "pr", "view", pr_num, "--json", "state", "--jq", ".state"],
-                cwd=str(repo_root),
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=15,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        if proc.returncode != 0:
-            continue
-        pr_state = proc.stdout.strip()
-        if pr_state == "CLOSED":
-            stale += 1
-            if dry_run:
-                LOG.info(
-                    "[dry-run] would block task %s (PR #%s closed without merge)",
-                    note.stem,
-                    pr_num,
-                )
-                continue
-            new = re.sub(
-                r"^status: (pr_open|merge_queue)",
-                "status: blocked",
+            _repair_pr_null_note(
+                note,
                 text,
-                count=1,
-                flags=re.MULTILINE,
+                repo_root=repo_root,
+                dry_run=dry_run,
+                runner=runner,
+                counts=counts,
             )
-            new = re.sub(
-                r"^blocked_reason: .+",
-                f"blocked_reason: PR #{pr_num} closed without merge",
-                new,
-                count=1,
-                flags=re.MULTILINE,
-            )
-            if "blocked_reason:" not in new:
-                new = re.sub(
-                    r"^(status: blocked)",
-                    f"\\1\nblocked_reason: PR #{pr_num} closed without merge",
-                    new,
-                    count=1,
-                    flags=re.MULTILINE,
-                )
-            note.write_text(new, encoding="utf-8")
-            LOG.info(
-                "stale PR drain: %s -> blocked (PR #%s closed without merge)",
-                note.stem,
-                pr_num,
-            )
+            continue
+        counts["scanned"] += 1
+        pr_state = _query_pr_state(pr_m.group(1), repo_root=repo_root, runner=runner)
+        if pr_state is None:
+            continue
+        _apply_pr_state(
+            note,
+            text,
+            pr_m.group(1),
+            pr_state,
+            repo_root=repo_root,
+            dry_run=dry_run,
+            runner=runner,
+            counts=counts,
+        )
 
-    return {"scanned": scanned, "stale": stale}
+    return counts
 
 
 def main(argv: list[str] | None = None) -> int:

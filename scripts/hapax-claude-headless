@@ -72,9 +72,28 @@ WORKDIR="$HOME/projects/hapax-council"
 
 export PATH="$WORKDIR/scripts:$PATH"
 
-PIPE_DIR="/run/user/$(id -u)/hapax-claude"
+PIPE_DIR="${HAPAX_CLAUDE_HEADLESS_PIPE_DIR:-/run/user/$(id -u)/hapax-claude}"
 LOG_DIR="$HOME/.cache/hapax/claude-headless/$ROLE"
 mkdir -p "$PIPE_DIR" "$LOG_DIR"
+
+# --- Dispatch idempotency (reform deadlane closeout) ---------------------------
+# Refuse a second live launcher for this lane. The reboot storm + naive
+# re-dispatch (and the lane-supervisor firing during a restart-backoff window)
+# otherwise stack zombie wrappers that fight over the lane-keyed $ROLE.stdin /
+# $ROLE.pid and re-inject restart prompts forever. A lane-keyed flock makes the
+# wrapper the single launcher per lane — the supervisor stays the sole
+# *legitimate* respawn authority. The lock auto-releases on process exit, so a
+# dead launcher needs no stale-pid reaping. Placed BEFORE the cleanup trap so a
+# refused duplicate never reaps the incumbent's pipe/pidfile.
+LAUNCHER_LOCK="$PIPE_DIR/$ROLE.launcher.lock"
+LAUNCHER_PIDFILE="$PIPE_DIR/$ROLE.launcher.pid"
+exec {LAUNCHER_LOCK_FD}>"$LAUNCHER_LOCK"
+if ! flock -n "$LAUNCHER_LOCK_FD"; then
+  existing="$(cat "$LAUNCHER_PIDFILE" 2>/dev/null || echo '?')"
+  echo "hapax-claude-headless: refusing duplicate launcher for lane '$ROLE' (live launcher pid=$existing holds $LAUNCHER_LOCK)" >&2
+  exit 16
+fi
+printf '%s\n' "$$" > "$LAUNCHER_PIDFILE"
 
 STDIN_PIPE="$PIPE_DIR/$ROLE.stdin"
 PID_FILE="$PIPE_DIR/$ROLE.pid"
@@ -85,7 +104,7 @@ mkfifo "$STDIN_PIPE"
 
 RELAY_RETIRE="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}/scripts/hapax-relay-retire"
 cleanup() {
-  rm -f "$STDIN_PIPE" "$PID_FILE"
+  rm -f "$STDIN_PIPE" "$PID_FILE" "$LAUNCHER_PIDFILE"
   "$RELAY_RETIRE" "$ROLE" --reason "clean exit (headless)" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -156,6 +175,54 @@ echo "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\
 
 cd "$WORKDIR"
 
+# --- Merge-aware teardown (reform deadlane closeout) ---------------------------
+# The respawn loop must terminate once the dispatched task is finished, instead
+# of re-injecting a generic restart prompt forever (which stranded merged work
+# and stacked zombies). task_is_terminal decides, before each respawn, whether
+# the task is closed (claim cleared / note left active/ / terminal status) or
+# its PR has merged.
+CC_TASK_ACTIVE="${HAPAX_CC_TASK_ROOT:-$HOME/Documents/Personal/20-projects/hapax-cc-tasks}/active"
+
+find_active_note() {
+  local task="$1" note=""
+  if [[ -f "$CC_TASK_ACTIVE/$task.md" ]]; then
+    note="$CC_TASK_ACTIVE/$task.md"
+  else
+    note="$(ls "$CC_TASK_ACTIVE/$task-"*.md 2>/dev/null | head -n1 || true)"
+  fi
+  printf '%s' "$note"
+}
+
+task_is_terminal() {
+  # 0 = terminal (stop the respawn loop); 1 = still live (keep the lane up).
+  local task="$1"
+  [[ -n "$task" ]] || return 1   # no task binding -> legacy always-on behavior
+  local claimed=""
+  if [[ -s "$CLAIM_FILE" ]]; then
+    claimed="$(head -n1 "$CLAIM_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
+  fi
+  # cc-close clears the claim file; a re-point means the lane moved on.
+  [[ "$claimed" == "$task" ]] || return 0
+  local note=""
+  note="$(find_active_note "$task")"
+  [[ -n "$note" ]] || return 0   # note left active/ (moved to closed/) -> closed
+  local status=""
+  status="$(grep -oP '^status:\s*\K\S+' "$note" 2>/dev/null | head -n1 || true)"
+  case "$status" in
+    done | completed | closed | withdrawn | superseded) return 0 ;;
+  esac
+  # PR merged but the note not yet closed (the dead-lane window): stop now; the
+  # merge-watcher closes the note shortly. Fail-open on any gh hiccup.
+  local pr=""
+  pr="$(grep -oP '^pr:\s*\K[0-9]+' "$note" 2>/dev/null | head -n1 || true)"
+  if [[ -n "$pr" ]]; then
+    local state=""
+    state="$(gh pr view "$pr" --json state --jq .state 2>/dev/null || true)"
+    [[ "$state" == "MERGED" ]] && return 0
+  fi
+  return 1
+}
+
 RESTART_COUNT=0
 MAX_RESTART_BACKOFF="${HAPAX_CLAUDE_HEADLESS_RESTART_BACKOFF_SECONDS:-30}"
 
@@ -180,6 +247,16 @@ while true; do
     EXIT_CODE=$?
   fi
   RESTART_COUNT=$((RESTART_COUNT + 1))
+
+  # Merge-aware teardown: stop respawning once the dispatched task is closed or
+  # its PR merged. The cleanup trap (EXIT) reaps the pipe + launcher lock; the
+  # lane-supervisor then brings the lane back read-only into idle-await on its
+  # next tick — not a forever-respawn zombie.
+  if task_is_terminal "$CLAUDE_TASK"; then
+    echo "hapax-claude-headless: task $CLAUDE_TASK closed/merged — stopping respawn loop"
+    break
+  fi
+
   echo "hapax-claude-headless: $ROLE exited (code=$EXIT_CODE), restarting in ${MAX_RESTART_BACKOFF}s..."
 
   if [[ -e "$DISABLE_FILE" ]]; then

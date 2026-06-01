@@ -439,3 +439,228 @@ class TestRunWatcher:
         assert not runner.cc_close_invocations  # but didn't invoke
         # Cursor not written in dry-run.
         assert watcher.read_cursor(cursor) == datetime(2026, 4, 26, 0, tzinfo=UTC)
+
+
+# ---------------------------------------------------------------------------
+# reconcile_stale_pr_states: cursor-window-INDEPENDENT self-heal
+#
+# The cursor loop (run_watcher) only sees PRs merged after the cursor. A task
+# whose PR merged outside that window (cursor advanced past it, or a restart
+# reset the window) never self-heals there. reconcile_stale_pr_states scans
+# EVERY active pr_open/merge_queue note and reconciles against the live PR
+# state — so a merged-but-missed PR auto-closes, a closed PR blocks, and a
+# pr:null note is repaired from its branch.
+# ---------------------------------------------------------------------------
+
+
+def _write_reconcile_note(
+    vault: Path,
+    *,
+    task_id: str,
+    status: str = "pr_open",
+    pr: int | None = None,
+    branch: str | None = None,
+) -> Path:
+    pr_line = f"pr: {pr}" if pr is not None else "pr: null"
+    branch_line = f"branch: {branch}" if branch is not None else "branch: null"
+    note = vault / "active" / f"{task_id}-test.md"
+    note.write_text(
+        f"""---
+type: cc-task
+task_id: {task_id}
+title: "x"
+status: {status}
+{branch_line}
+{pr_line}
+blocked_reason: null
+---
+
+# {task_id}
+
+## Session log
+- fixture
+"""
+    )
+    return note
+
+
+class _ReconcileRunner:
+    """Inject gh pr view (state) + gh pr list --head + cc-close responses."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.pr_states: dict[str, str] = {}  # pr_num -> OPEN|CLOSED|MERGED
+        self.pr_view_returncode = 0
+        self.head_prs: dict[str, list[dict[str, Any]]] = {}  # branch -> gh pr list rows
+        self.cc_close_returncodes: list[int] = []
+        self.cc_close_invocations: list[list[str]] = []
+
+    def __call__(
+        self,
+        cmd: list[str],
+        *,
+        cwd: str | None = None,
+        capture_output: bool = False,
+        text: bool = False,
+        check: bool = False,
+        timeout: int | None = None,
+        env: dict[str, str] | None = None,
+        **_: Any,
+    ) -> subprocess.CompletedProcess:
+        self.calls.append(list(cmd))
+        if cmd[:3] == ["gh", "pr", "view"]:
+            pr_num = cmd[3]
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=self.pr_view_returncode,
+                stdout=self.pr_states.get(pr_num, "OPEN"),
+                stderr="",
+            )
+        if cmd[:3] == ["gh", "pr", "list"]:
+            head = cmd[cmd.index("--head") + 1] if "--head" in cmd else ""
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=json.dumps(self.head_prs.get(head, [])),
+                stderr="",
+            )
+        # cc-close
+        self.cc_close_invocations.append(list(cmd))
+        rc = self.cc_close_returncodes.pop(0) if self.cc_close_returncodes else 0
+        return subprocess.CompletedProcess(args=cmd, returncode=rc, stdout="closed\n", stderr="")
+
+
+def _make_cc_close(tmp_path: Path) -> None:
+    cc_close = tmp_path / "scripts" / "cc-close"
+    cc_close.parent.mkdir(parents=True, exist_ok=True)
+    cc_close.write_text("#!/bin/sh\nexit 0\n")
+    cc_close.chmod(0o755)
+
+
+class TestReconcileMerged:
+    def test_merged_pr_auto_closes(self, tmp_path: Path) -> None:
+        """A pr_open task whose PR is MERGED (missed by the cursor) self-closes."""
+        vault = _make_vault(tmp_path)
+        _write_reconcile_note(vault, task_id="task-A", pr=100)
+        _make_cc_close(tmp_path)
+        runner = _ReconcileRunner()
+        runner.pr_states = {"100": "MERGED"}
+
+        counters = watcher.reconcile_stale_pr_states(
+            vault_root=vault, repo_root=tmp_path, runner=runner
+        )
+
+        assert counters["closed"] == 1
+        assert any(cmd[-2:] == ["--pr", "100"] for cmd in runner.cc_close_invocations), (
+            runner.cc_close_invocations
+        )
+
+    def test_merged_pr_close_failure_is_not_fatal(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        _write_reconcile_note(vault, task_id="task-A", pr=100)
+        _make_cc_close(tmp_path)
+        runner = _ReconcileRunner()
+        runner.pr_states = {"100": "MERGED"}
+        runner.cc_close_returncodes = [1]  # cc-close fails
+
+        counters = watcher.reconcile_stale_pr_states(
+            vault_root=vault, repo_root=tmp_path, runner=runner
+        )
+
+        assert counters["closed"] == 0  # failed close is not counted
+
+    def test_merged_dry_run_does_not_close(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        _write_reconcile_note(vault, task_id="task-A", pr=100)
+        _make_cc_close(tmp_path)
+        runner = _ReconcileRunner()
+        runner.pr_states = {"100": "MERGED"}
+
+        counters = watcher.reconcile_stale_pr_states(
+            vault_root=vault, repo_root=tmp_path, dry_run=True, runner=runner
+        )
+
+        assert counters["closed"] == 1  # counts the would-close
+        assert not runner.cc_close_invocations  # but never invokes it
+
+    def test_closed_pr_still_blocks(self, tmp_path: Path) -> None:
+        """Regression: a CLOSED (unmerged) PR continues to block the task."""
+        vault = _make_vault(tmp_path)
+        note = _write_reconcile_note(vault, task_id="task-A", pr=100)
+        runner = _ReconcileRunner()
+        runner.pr_states = {"100": "CLOSED"}
+
+        counters = watcher.reconcile_stale_pr_states(
+            vault_root=vault, repo_root=tmp_path, runner=runner
+        )
+
+        assert counters["stale"] == 1
+        assert counters["closed"] == 0
+        text = note.read_text()
+        assert "status: blocked" in text
+        assert "closed without merge" in text
+
+    def test_open_pr_is_left_alone(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_reconcile_note(vault, task_id="task-A", pr=100)
+        runner = _ReconcileRunner()
+        runner.pr_states = {"100": "OPEN"}
+
+        counters = watcher.reconcile_stale_pr_states(
+            vault_root=vault, repo_root=tmp_path, runner=runner
+        )
+
+        assert counters["closed"] == 0
+        assert counters["stale"] == 0
+        assert "status: pr_open" in note.read_text()
+
+
+class TestReconcilePrNullRepair:
+    def test_pr_null_with_branch_rederives_and_closes_merged(self, tmp_path: Path) -> None:
+        """pr:null + pr_open re-derives the PR from branch; a merged one closes."""
+        vault = _make_vault(tmp_path)
+        note = _write_reconcile_note(vault, task_id="task-A", pr=None, branch="epsilon/foo")
+        _make_cc_close(tmp_path)
+        runner = _ReconcileRunner()
+        runner.head_prs = {"epsilon/foo": [{"number": 207, "state": "MERGED"}]}
+
+        counters = watcher.reconcile_stale_pr_states(
+            vault_root=vault, repo_root=tmp_path, runner=runner
+        )
+
+        assert counters["repaired"] == 1
+        assert counters["closed"] == 1
+        # The re-derived PR number was written back into the note.
+        assert "pr: 207" in note.read_text()
+        assert any(cmd[-2:] == ["--pr", "207"] for cmd in runner.cc_close_invocations), (
+            runner.cc_close_invocations
+        )
+
+    def test_pr_null_with_branch_no_pr_blocks(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_reconcile_note(vault, task_id="task-A", pr=None, branch="epsilon/foo")
+        runner = _ReconcileRunner()
+        runner.head_prs = {"epsilon/foo": []}  # no PR for this branch
+
+        counters = watcher.reconcile_stale_pr_states(
+            vault_root=vault, repo_root=tmp_path, runner=runner
+        )
+
+        assert counters["stale"] == 1
+        text = note.read_text()
+        assert "status: blocked" in text
+        assert "epsilon/foo" in text
+
+    def test_pr_null_without_branch_blocks(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_reconcile_note(vault, task_id="task-A", pr=None, branch=None)
+        runner = _ReconcileRunner()
+
+        counters = watcher.reconcile_stale_pr_states(
+            vault_root=vault, repo_root=tmp_path, runner=runner
+        )
+
+        assert counters["stale"] == 1
+        assert "status: blocked" in note.read_text()
+        # Did not even attempt a gh lookup (no branch to look up).
+        assert not any(cmd[:3] == ["gh", "pr", "list"] for cmd in runner.calls)
