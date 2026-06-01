@@ -114,9 +114,15 @@ FAILED_MERGE_GROUP_CONCLUSIONS = {"failure", "timed_out", "startup_failure", "ca
 # concurrently in flight in a DIFFERENT lane (the actual hazard); same-lane serial
 # work is never held, and a deterministic lowest-PR tiebreak keeps two
 # different-lane epic PRs from dead-holding each other.
-SHARED_FILE_EPIC_PARENT_SPECS = {
-    # parent_spec basename -> serialized-epic id (the shared file it contends on)
-    "clog-frontend-elevation-design-2026-06-01.md": "clog-dashboard-lisp",
+SHARED_FILE_EPIC_PARENT_SPECS: dict[str, str] = {
+    # parent_spec basename -> serialized-epic id (the shared file it contends on).
+    #
+    # Emptied 2026-06-01 (task reform-native-merge-queue): the native GitHub merge
+    # queue serializes shared-file contention through its speculative
+    # gh-readonly-queue branches (auto-rebase + bisect-on-failure), so a
+    # pre-admission affinity hold is no longer needed to keep two different-lane
+    # epic PRs from merge-conflicting. Re-add an entry here only to re-enable the
+    # local pre-queue hold for a specific shared-file epic.
 }
 EPIC_INFLIGHT_STATUSES = frozenset(
     {"claimed", "in_progress", "pr_open", "in_review", "merge_queue", "ready_for_merge"}

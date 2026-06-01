@@ -1403,6 +1403,51 @@ def test_flake_quarantine_write_side_persists_and_excludes_next_tick(
 # different-lane epic PRs from dead-holding each other.
 
 _CLOG_SPEC = "clog-frontend-elevation-design-2026-06-01.md"
+# The CLOG epic was removed from SHARED_FILE_EPIC_PARENT_SPECS (task
+# reform-native-merge-queue) — the native merge queue now serializes shared-file
+# contention. The mechanism still works via the explicit ``epic_serialize`` field,
+# so these mechanism tests opt in via that field instead of the (now empty)
+# parent_spec registry. See test_clog_parent_spec_alone_no_longer_holds.
+_CLOG_EPIC = "clog-dashboard-lisp"
+
+
+def test_clog_parent_spec_alone_no_longer_holds(tmp_path: Path) -> None:
+    # Regression for task reform-native-merge-queue: the CLOG epic was removed from
+    # SHARED_FILE_EPIC_PARENT_SPECS, so a parent_spec match ALONE (no explicit
+    # epic_serialize field) must NOT trigger a pre-admission affinity hold — the
+    # native merge queue's speculative branches now serialize shared-file contention.
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="clog-c",
+        status="ready",
+        pr=350,
+        assigned_to="eta",
+        parent_spec=_CLOG_SPEC,
+    )
+    _write_task(
+        vault,
+        task_id="clog-b",
+        status="in_progress",
+        assigned_to="zeta",
+        parent_spec=_CLOG_SPEC,
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(350)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert not any(
+        reason.startswith("shared_file_epic_affinity_hold:")
+        for reason in report["decisions"][0].get("reasons", [])
+    )
+    assert report["counts"]["queue"] == 1
 
 
 def test_shared_file_epic_holds_pr_when_sibling_in_progress_in_other_lane(
@@ -1416,6 +1461,7 @@ def test_shared_file_epic_holds_pr_when_sibling_in_progress_in_other_lane(
         pr=300,
         assigned_to="eta",
         parent_spec=_CLOG_SPEC,
+        extra_frontmatter={"epic_serialize": _CLOG_EPIC},
     )
     # Sibling mid-edit in a different lane: in flight, no PR yet.
     _write_task(
@@ -1424,6 +1470,7 @@ def test_shared_file_epic_holds_pr_when_sibling_in_progress_in_other_lane(
         status="in_progress",
         assigned_to="zeta",
         parent_spec=_CLOG_SPEC,
+        extra_frontmatter={"epic_serialize": _CLOG_EPIC},
     )
     runner = _FakeRunner()
     runner.open_prs = [_pr(300)]
@@ -1454,6 +1501,7 @@ def test_shared_file_epic_allows_pr_when_sibling_same_lane(tmp_path: Path) -> No
         pr=310,
         assigned_to="eta",
         parent_spec=_CLOG_SPEC,
+        extra_frontmatter={"epic_serialize": _CLOG_EPIC},
     )
     _write_task(
         vault,
@@ -1461,6 +1509,7 @@ def test_shared_file_epic_allows_pr_when_sibling_same_lane(tmp_path: Path) -> No
         status="in_progress",
         assigned_to="eta",  # same lane: serial work, no hazard
         parent_spec=_CLOG_SPEC,
+        extra_frontmatter={"epic_serialize": _CLOG_EPIC},
     )
     runner = _FakeRunner()
     runner.open_prs = [_pr(310)]
@@ -1489,6 +1538,7 @@ def test_shared_file_epic_allows_pr_when_only_terminal_sibling(tmp_path: Path) -
         pr=320,
         assigned_to="eta",
         parent_spec=_CLOG_SPEC,
+        extra_frontmatter={"epic_serialize": _CLOG_EPIC},
     )
     # Predecessor merged+closed in another lane: not in flight, must not hold.
     _write_task(
@@ -1498,6 +1548,7 @@ def test_shared_file_epic_allows_pr_when_only_terminal_sibling(tmp_path: Path) -
         status="done",
         assigned_to="zeta",
         parent_spec=_CLOG_SPEC,
+        extra_frontmatter={"epic_serialize": _CLOG_EPIC},
     )
     runner = _FakeRunner()
     runner.open_prs = [_pr(320)]
@@ -1522,6 +1573,7 @@ def test_shared_file_epic_lowest_pr_proceeds_across_lanes(tmp_path: Path) -> Non
         pr=330,
         assigned_to="eta",
         parent_spec=_CLOG_SPEC,
+        extra_frontmatter={"epic_serialize": _CLOG_EPIC},
     )
     _write_task(
         vault,
@@ -1530,6 +1582,7 @@ def test_shared_file_epic_lowest_pr_proceeds_across_lanes(tmp_path: Path) -> Non
         pr=331,
         assigned_to="zeta",
         parent_spec=_CLOG_SPEC,
+        extra_frontmatter={"epic_serialize": _CLOG_EPIC},
     )
     runner = _FakeRunner()
     runner.open_prs = [_pr(330), _pr(331)]
