@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Evaluate "shadow-week-clean + asymmetric-divergence" — the reform 3b cutover gate.
+
+The ``3b-cutover`` manifest unit gates on this predicate. Phase 3b shipped it as an
+evidence-shaped predicate with NO evaluator, so even a full ledger could not unblock
+the gate. This is that missing evaluator.
+
+CLEAN (exit 0) iff BOTH:
+  * coverage  — the gate decision log spans >= --min-days AND carries
+    >= --min-decisions gated decisions (an empty/short log — i.e. no real producer
+    evidence — is NOT clean: that is the freeze-blocks-thaw bug this fix closes);
+  * asymmetry — every divergence is a LOOSENING (legacy blocked, policy_decide
+    allows: the FM-16 false-positive being fixed) and ZERO are TIGHTENING (legacy
+    allowed, policy_decide blocks). Zero tightening proves policy_decide is a strict
+    relaxation of the legacy gate — it only removes over-blocks, never adds one.
+
+Exit 0 = clean (cutover may proceed); exit 1 = NOT clean. A JSON verdict (with the
+unmet reasons) is printed to stdout either way.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+
+from shared.policy_decide import (
+    DEFAULT_DECISION_LOG,
+    DEFAULT_SHADOW_LEDGER,
+    evaluate_shadow_clean,
+)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="policy-decide-shadow-eval")
+    parser.add_argument("--decision-log", default=str(DEFAULT_DECISION_LOG))
+    parser.add_argument("--ledger", default=str(DEFAULT_SHADOW_LEDGER))
+    parser.add_argument(
+        "--min-days", type=float, default=7.0, help="minimum shadow-week span in days"
+    )
+    parser.add_argument(
+        "--min-decisions",
+        type=int,
+        default=200,
+        help="minimum gated decisions for the window to count as real evidence",
+    )
+    args = parser.parse_args(argv)
+    result = evaluate_shadow_clean(
+        args.decision_log,
+        args.ledger,
+        min_days=args.min_days,
+        min_decisions=args.min_decisions,
+    )
+    print(json.dumps(result, indent=2))
+    return 0 if result["clean"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

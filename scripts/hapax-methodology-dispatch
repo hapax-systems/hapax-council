@@ -1089,8 +1089,10 @@ def main(argv: list[str] | None = None) -> int:
         "--policy-rollback",
         action="store_true",
         help=(
-            "Use S5-4 rollback behavior: full-profile legacy routes may launch; "
-            "non-full routes hold."
+            "DEPRECATED — rollback is retired (#3792). This flag is a no-op alias "
+            "that now HOLDs all routes (policy_rollback_retired); a frontier route "
+            "un-degrades only with a signed route-authority receipt. Mint one with "
+            "scripts/hapax-mint-route-authority-receipt."
         ),
     )
     parser.add_argument(

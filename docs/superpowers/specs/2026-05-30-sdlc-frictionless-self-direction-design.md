@@ -261,7 +261,7 @@ Model-check the statechart + policy + capability model in TLA+ (`docs/formal/sdl
 
 4. **Persistent attention rail (Shneiderman overview→drilldown — operator-cited).** Fixed sidebar: pending operator-inbox decisions (badge), blocked tasks, **dead/stale lanes**, failed PRs. **Collapse the 57-row "Planning attention" wall** in `operator-now.md` into *one* "Planning backlog (N requests need a planning case)" overview row + ranked drilldown. Demote 14 read-only panels behind nav tabs.
 
-5. **`why-blocked` everywhere — remediation, not dead-ends.** Every disabled control renders its ordered unmet gates + the *next governed step* ("stage < S6 → accept ISAP", "MQ stale → re-send authority", "held opus → use rollback+opus"), with one-click remediation where safe.
+5. **`why-blocked` everywhere — remediation, not dead-ends.** Every disabled control renders its ordered unmet gates + the *next governed step* ("stage < S6 → accept ISAP", "MQ stale → re-send authority", "held opus → mint a signed opus_model_entitlement receipt"), with one-click remediation where safe.
 
 6. **Evidence-able + reachable (close agent-opacity + mobile gaps).** Add `coord.dashboard.snapshot` JSON + the `mcp-query-tools` read set (`coord.sources.list`, `coord.operator_state.get`, `coord.tasks.summary`, `coord.routing_readiness.get`) so curl/Playwright/agents read state instead of a blank CLOG shell. Add a Playwright smoke (real headless browser, waits for websocket render, screenshots). File the **mobile/Tailscale read-only network-exposure ISAP** (`mobile-readonly-inspection-mode`).
 

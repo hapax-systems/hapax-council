@@ -43,6 +43,8 @@ PROM_RESETS = "hapax_obs_v4l2_source_resets_total"
 PROM_ACTIVE = "hapax_obs_v4l2_source_reset_active"
 PROM_FAILURES = "hapax_obs_v4l2_source_reset_failures_total"
 PROM_PRODUCER_RESTARTS = "hapax_obs_v4l2_source_producer_restarts_total"
+OBS_LOG_V4L2_TIMEOUT_PREFIX = "obs_log_v4l2_timeout:"
+OBS_LOG_V4L2_SELF_RECOVERED_TIMEOUT_PREFIX = "obs_log_v4l2_timeout_self_recovered:"
 
 
 class SourceState(StrEnum):
@@ -87,6 +89,12 @@ class MonitorStatus:
     reason: str | None = None
     producer_restarts: int = 0
     last_producer_restart_at: str | None = None
+
+
+@dataclass(frozen=True)
+class ObsLogCursor:
+    path: Path | None = None
+    offset: int = 0
 
 
 logger = logging.getLogger(LOG_TAG)
@@ -511,6 +519,77 @@ def _restart_producer_service(service_name: str, *, timeout: float) -> bool:
     return _run_user_systemctl(["start", service_name], timeout=timeout)
 
 
+def _restart_producer_services(service_names: list[str], *, timeout: float) -> bool:
+    """Restart producer units in order.
+
+    Duplicate entries are intentional: the OBS bridge can need a pre-restart to
+    release /dev/video52 before DarkPlaces restarts and a post-restart to reopen
+    the fresh producer.
+    """
+
+    ok = True
+    for service_name in service_names:
+        ok = _restart_producer_service(service_name, timeout=timeout) and ok
+    return ok
+
+
+def _latest_obs_log_path(log_dir: Path) -> Path | None:
+    try:
+        candidates = [path for path in log_dir.glob("*.txt") if path.is_file()]
+    except OSError:
+        return None
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def _scan_obs_log_v4l2_errors(
+    cursor: ObsLogCursor,
+    *,
+    log_dir: Path,
+    device_id: str,
+    max_read_bytes: int = 1_000_000,
+) -> tuple[ObsLogCursor, str | None]:
+    path = _latest_obs_log_path(log_dir)
+    if path is None:
+        return cursor, None
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return cursor, None
+
+    if cursor.path != path:
+        # Existing log history is intake, not a fresh failure. New OBS logs are
+        # normally created empty; when they are not, start at EOF to avoid
+        # replaying yesterday's timeout storm into today's recovery loop.
+        return ObsLogCursor(path=path, offset=size), None
+
+    offset = cursor.offset
+    if offset > size:
+        offset = 0
+    read_from = offset
+    if size - read_from > max_read_bytes:
+        read_from = size - max_read_bytes
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            fh.seek(read_from)
+            chunk = fh.read()
+    except OSError:
+        return ObsLogCursor(path=path, offset=size), None
+
+    next_cursor = ObsLogCursor(path=path, offset=size)
+    if "v4l2-helpers: unable to start stream" in chunk:
+        return next_cursor, f"obs_log_v4l2_start_failed:{device_id}"
+    timeout_marker = f"v4l2-input: {device_id}: select timed out"
+    timeout_count = chunk.count(timeout_marker)
+    if timeout_count:
+        recovery_marker = f"v4l2-input: {device_id}: stream reset successful"
+        if timeout_count == 1 and recovery_marker in chunk:
+            return next_cursor, f"{OBS_LOG_V4L2_SELF_RECOVERED_TIMEOUT_PREFIX}{device_id}"
+        return next_cursor, f"{OBS_LOG_V4L2_TIMEOUT_PREFIX}{device_id}"
+    return next_cursor, None
+
+
 def _bool_sample(value: bool | None) -> str | None:
     if value is None:
         return None
@@ -635,9 +714,13 @@ def monitor_loop(
     metrics_path: Path | None,
     input_settings: dict[str, Any] | None = None,
     producer_service: str | None = None,
+    producer_services: list[str] | None = None,
     producer_restart_after_obs_resets: int = 1,
     producer_restart_cooldown: float = 300.0,
     producer_restart_timeout: float = 30.0,
+    obs_log_dir: Path | None = None,
+    obs_log_device_id: str | None = None,
+    ignore_static_screenshot_stalls: bool = False,
 ) -> None:
     client: Any = None
     reset_count = 0
@@ -652,6 +735,12 @@ def monitor_loop(
     stall_obs_resets_since_producer = 0
     last_producer_restart_at: str | None = None
     last_producer_restart_monotonic: float | None = None
+    producer_service_sequence = list(producer_services or [])
+    if producer_service:
+        producer_service_sequence.append(producer_service)
+    obs_log_cursor = ObsLogCursor()
+    self_recovered_obs_log_timeouts = 0
+    first_self_recovered_obs_log_timeout_monotonic: float | None = None
     _sd_notify("READY=1")
 
     while not _shutdown:
@@ -706,6 +795,60 @@ def monitor_loop(
             hash_stable_since=hash_stable_since,
             now=now,
         )
+        obs_log_reason: str | None = None
+        if obs_log_dir is not None and obs_log_device_id:
+            obs_log_cursor, obs_log_reason = _scan_obs_log_v4l2_errors(
+                obs_log_cursor,
+                log_dir=obs_log_dir,
+                device_id=obs_log_device_id,
+            )
+            if obs_log_reason is not None and obs_log_reason.startswith(
+                OBS_LOG_V4L2_SELF_RECOVERED_TIMEOUT_PREFIX
+            ):
+                if (
+                    first_self_recovered_obs_log_timeout_monotonic is None
+                    or now - first_self_recovered_obs_log_timeout_monotonic > reset_cooldown
+                ):
+                    first_self_recovered_obs_log_timeout_monotonic = now
+                    self_recovered_obs_log_timeouts = 1
+                    obs_log_reason = None
+                else:
+                    self_recovered_obs_log_timeouts += 1
+                    if self_recovered_obs_log_timeouts >= 2:
+                        device = obs_log_reason.removeprefix(
+                            OBS_LOG_V4L2_SELF_RECOVERED_TIMEOUT_PREFIX
+                        )
+                        obs_log_reason = f"{OBS_LOG_V4L2_TIMEOUT_PREFIX}{device}"
+                        first_self_recovered_obs_log_timeout_monotonic = None
+                        self_recovered_obs_log_timeouts = 0
+                    else:
+                        obs_log_reason = None
+            elif obs_log_reason is not None:
+                first_self_recovered_obs_log_timeout_monotonic = None
+                self_recovered_obs_log_timeouts = 0
+            if obs_log_reason is not None:
+                probe = ProbeResult(
+                    state=SourceState.STALLED,
+                    source_active=probe.source_active,
+                    screenshot_hash=probe.screenshot_hash,
+                    screenshot_available=probe.screenshot_available,
+                    stall_seconds=stall_threshold,
+                    reason=obs_log_reason,
+                )
+        if (
+            ignore_static_screenshot_stalls
+            and obs_log_reason is None
+            and probe.state is SourceState.STALLED
+            and probe.reason == "screenshot_hash_unchanged"
+        ):
+            probe = ProbeResult(
+                state=SourceState.HEALTHY,
+                source_active=probe.source_active,
+                screenshot_hash=probe.screenshot_hash,
+                screenshot_available=probe.screenshot_available,
+                stall_seconds=0.0,
+                reason="static_screenshot_ignored",
+            )
         if probe.state is SourceState.HEALTHY:
             prev_hash = probe.screenshot_hash
             hash_stable_since = now
@@ -752,7 +895,7 @@ def monitor_loop(
             reason = probe.reason or f"source '{source_name}' {probe.state.value}"
             logger.warning("RESET: %s", reason)
             producer_restart_allowed = bool(
-                producer_service
+                producer_service_sequence
                 and probe.state is SourceState.STALLED
                 and stall_obs_resets_since_producer >= producer_restart_after_obs_resets
                 and (
@@ -762,10 +905,10 @@ def monitor_loop(
             )
             producer_restarted = False
             if producer_restart_allowed:
-                producer_reason = f"producer_restart:{producer_service}:{reason}"
+                producer_reason = f"producer_restart:{','.join(producer_service_sequence)}:{reason}"
                 logger.warning("PRODUCER RESET: %s", producer_reason)
-                if _restart_producer_service(
-                    producer_service,
+                if _restart_producer_services(
+                    producer_service_sequence,
                     timeout=producer_restart_timeout,
                 ):
                     producer_restarts += 1
@@ -778,7 +921,10 @@ def monitor_loop(
                     prev_hash = None
                     hash_stable_since = now
                 else:
-                    logger.warning("producer restart failed for %s", producer_service)
+                    logger.warning(
+                        "producer restart failed for %s",
+                        ",".join(producer_service_sequence),
+                    )
             _apply_input_settings(client, source_name, input_settings)
             scene_item = _find_scene_item(client, source_name)
             if scene_item is not None:
@@ -915,6 +1061,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--producer-service",
+        action="append",
+        default=[],
         help="Optional systemd --user service that owns the v4l2 producer",
     )
     parser.add_argument(
@@ -938,6 +1086,22 @@ def main() -> None:
         default=30.0,
         help="Seconds to wait for systemctl producer restart/start commands (default: 30)",
     )
+    parser.add_argument(
+        "--obs-log-dir",
+        type=Path,
+        default=Path.home() / ".config" / "obs-studio" / "logs",
+        help="OBS log directory used by --obs-log-v4l2-errors",
+    )
+    parser.add_argument(
+        "--obs-log-v4l2-errors",
+        action="store_true",
+        help="Treat fresh OBS v4l2 timeout/start-failure log lines as source stalls",
+    )
+    parser.add_argument(
+        "--ignore-static-screenshot-stalls",
+        action="store_true",
+        help="Do not reset on unchanged screenshots without fresh OBS v4l2 log errors",
+    )
     args = parser.parse_args()
     input_settings = _build_input_settings(
         device_id=args.device_id,
@@ -957,7 +1121,7 @@ def main() -> None:
         args.source_name,
         args.poll_interval,
         args.stall_threshold,
-        args.producer_service or "disabled",
+        ",".join(args.producer_service) or "disabled",
     )
 
     monitor_loop(
@@ -969,10 +1133,13 @@ def main() -> None:
         reset_cooldown=args.reset_cooldown,
         metrics_path=args.prom_path,
         input_settings=input_settings,
-        producer_service=args.producer_service,
+        producer_services=args.producer_service,
         producer_restart_after_obs_resets=args.producer_restart_after_obs_resets,
         producer_restart_cooldown=args.producer_restart_cooldown,
         producer_restart_timeout=args.producer_restart_timeout,
+        obs_log_dir=args.obs_log_dir if args.obs_log_v4l2_errors else None,
+        obs_log_device_id=args.device_id,
+        ignore_static_screenshot_stalls=args.ignore_static_screenshot_stalls,
     )
 
 

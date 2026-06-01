@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Replay the gate decision log through policy_decide — the reform 3b shadow PRODUCER.
+
+``cc-task-gate.sh`` logs its REAL exit code + the resolved state it decided on to
+``~/.cache/hapax/cc-task-gate-decisions.jsonl``. This script (run by
+``policy-decide-shadow-replay.timer``) replays that log through
+``shared.policy_decide`` and rebuilds the divergence ledger
+``~/.cache/hapax/policy-decide-shadow.jsonl`` — the cutover evidence. The legacy
+verdict is the gate's own exit code, never an ``_LEGACY_*_RE`` re-derivation, so
+the classifier drift the 3b-cutover unit flags is eliminated.
+
+Advisory only: it enforces nothing and always exits 0. The bash gate stays
+authoritative through the shadow window.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+
+from shared.policy_decide import (
+    DEFAULT_DECISION_LOG,
+    DEFAULT_SHADOW_LEDGER,
+    replay_decision_log,
+)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="policy-decide-shadow-replay")
+    parser.add_argument("--decision-log", default=str(DEFAULT_DECISION_LOG))
+    parser.add_argument("--ledger", default=str(DEFAULT_SHADOW_LEDGER))
+    args = parser.parse_args(argv)
+    summary = replay_decision_log(args.decision_log, args.ledger)
+    print(json.dumps(summary))
+    return 0  # advisory: never enforces during the shadow window
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

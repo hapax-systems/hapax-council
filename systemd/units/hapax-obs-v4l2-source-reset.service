@@ -1,7 +1,7 @@
 [Unit]
 Description=Hapax OBS v4l2 capture source auto-reset monitor
-After=pipewire.service hapax-darkplaces-v4l2.service hapax-obs-livestream.service
-Wants=hapax-darkplaces-v4l2.service
+After=pipewire.service hapax-darkplaces-v4l2.service hapax-obs-video50-yuyv-compat-bridge.service hapax-obs-livestream.service
+Wants=hapax-darkplaces-v4l2.service hapax-obs-video50-yuyv-compat-bridge.service
 PartOf=hapax-visual-stack.target
 ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-obs-v4l2-source-reset
 
@@ -10,7 +10,7 @@ Type=notify
 NotifyAccess=main
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/hapax-obs-v4l2-source-reset
-ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-obs-v4l2-source-reset --source-name "Video Capture Device (V4L2)" --stall-threshold 60 --reset-cooldown 60 --device-id /dev/video52 --resolution 1920x1080 --framerate 60 --pixelformat YUYV --disable-buffering --auto-reset-input --producer-service hapax-darkplaces-v4l2.service --producer-restart-after-obs-resets 1 --producer-restart-cooldown 300 --producer-restart-timeout 30
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-obs-v4l2-source-reset --source-name "Video Capture Device (V4L2)" --stall-threshold 60 --reset-cooldown 60 --device-id /dev/video50 --resolution 1920x1080 --framerate 60 --pixelformat YUYV --disable-buffering --auto-reset-input --producer-service hapax-obs-video50-yuyv-compat-bridge.service --producer-service hapax-darkplaces-v4l2.service --producer-service hapax-obs-video50-yuyv-compat-bridge.service --producer-restart-after-obs-resets 1 --producer-restart-cooldown 120 --producer-restart-timeout 30 --obs-log-v4l2-errors --ignore-static-screenshot-stalls
 Restart=on-failure
 RestartSec=15
 WatchdogSec=120

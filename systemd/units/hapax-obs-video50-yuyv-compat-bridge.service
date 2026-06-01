@@ -1,7 +1,6 @@
 [Unit]
-Description=Optional OBS-compatible NV12 bridge from DarkPlaces /dev/video52 to /dev/video50
+Description=OBS-compatible YUYV bridge from DarkPlaces /dev/video52 to /dev/video50
 After=hapax-darkplaces-v4l2.service
-Wants=hapax-darkplaces-v4l2.service
 PartOf=hapax-darkplaces-v4l2.service
 Conflicts=studio-fx-output.service
 ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
@@ -11,10 +10,15 @@ ConditionPathExists=/usr/bin/ffmpeg
 
 [Service]
 Type=simple
-Restart=no
+Restart=on-failure
 RestartSec=2s
+TimeoutStopSec=10s
+KillMode=control-group
+SendSIGKILL=yes
 ExecStartPre=-/usr/bin/v4l2-ctl -d /dev/video50 -c keep_format=0
-ExecStartPre=-/usr/bin/v4l2-ctl -d /dev/video50 --set-fmt-video=width=1920,height=1080,pixelformat=NV12
+ExecStartPre=-/usr/bin/v4l2-ctl -d /dev/video50 --set-fmt-video=width=1920,height=1080,pixelformat=YUYV
 ExecStartPre=-/usr/bin/v4l2-ctl -d /dev/video50 --set-parm=60
+ExecStartPre=-/usr/bin/v4l2-ctl -d /dev/video52 -c sustain_framerate=1
+ExecStartPre=-/usr/bin/v4l2-ctl -d /dev/video50 -c sustain_framerate=1
 ExecStartPre=/usr/bin/bash -lc 'for i in {1..40}; do /usr/bin/v4l2-ctl -d /dev/video52 --get-fmt-video >/dev/null 2>&1 && exit 0; sleep 0.25; done; exit 1'
-ExecStart=/usr/bin/ffmpeg -hide_banner -loglevel warning -nostdin -f v4l2 -input_format yuyv422 -video_size 1920x1080 -framerate 60 -i /dev/video52 -vf format=nv12,fps=60 -f v4l2 -pix_fmt nv12 -r 60 /dev/video50
+ExecStart=/usr/bin/ffmpeg -hide_banner -loglevel warning -nostdin -f v4l2 -input_format yuyv422 -video_size 1920x1080 -framerate 60 -i /dev/video52 -vf fps=60 -f v4l2 -pix_fmt yuyv422 -r 60 /dev/video50

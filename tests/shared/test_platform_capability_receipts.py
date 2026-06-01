@@ -9,6 +9,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from shared.dispatcher_policy import (
     DispatchAction,
@@ -18,6 +19,7 @@ from shared.dispatcher_policy import (
     route_authority_receipt_payload_hash,
     route_decision_receipt_payload,
 )
+from shared.platform_capability_receipts import PLATFORM_CAPABILITY_RECEIPT_DIR_ENV
 from shared.platform_capability_registry import load_platform_capability_registry
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -426,3 +428,150 @@ def test_route_authority_receipt_signature_mismatch_fails_closed(tmp_path: Path)
     assert sources.registry is None
     assert sources.registry_error is not None
     assert "signed payload hash mismatch" in sources.registry_error
+
+
+MINT_SCRIPT = REPO_ROOT / "scripts" / "hapax-mint-route-authority-receipt"
+
+
+def _mint_route_authority_receipt(
+    receipt_dir: Path,
+    *,
+    receipt_type: str,
+    route_id: str,
+    quality_floors: list[str] | None = None,
+    now: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    args = [
+        sys.executable,
+        str(MINT_SCRIPT),
+        "--receipt-type",
+        receipt_type,
+        "--route-id",
+        route_id,
+        "--receipt-dir",
+        str(receipt_dir),
+        "--json",
+    ]
+    for floor in quality_floors or []:
+        args += ["--quality-floor", floor]
+    if now:
+        args += ["--now", now]
+    return subprocess.run(args, text=True, capture_output=True, check=False)
+
+
+def _fresh_claude_platform_receipt(tmp_path: Path) -> None:
+    """Write a fresh claude platform-capability receipt (clears quota/freshness)."""
+
+    bin_dir = tmp_path / "bin"
+    home_dir = tmp_path / "home"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "claude", "claude-cli 2.1.143")
+    _fake_wrapper(home_dir, ".local/bin/hapax-claude-headless")
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
+        now=_current_iso_z(),
+        platform="claude",
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _opus_dispatch_request(sources):  # type: ignore[no-untyped-def]
+    task_fields = {
+        "status": "claimed",
+        "assigned_to": "eta",
+        "authority_case": "CASE-CAPACITY-ROUTING-001",
+        "authority_item": "OPUS-REACHABILITY",
+        "priority": "p0",
+        "wsjf": 38,
+        "route_metadata_schema": 1,
+        "quality_floor": "frontier_required",
+        "authority_level": "authoritative",
+        "mutation_surface": "source",
+        "mutation_scope_refs": ["shared/dispatcher_policy.py"],
+    }
+    return build_dispatch_request(
+        task_id="opus-reachability-minted",
+        lane="eta",
+        platform="claude",
+        mode="headless",
+        profile="opus",
+        task_fields=task_fields,
+        registry=sources.registry,
+        registry_error=sources.registry_error,
+        quota_ledger=sources.quota_ledger,
+        quota_error=sources.quota_error,
+    )
+
+
+def test_minted_opus_receipt_undegrades_route_to_launch_via_cli(tmp_path: Path) -> None:
+    """The mint CLI produces a receipt that drives opus to LAUNCH end-to-end.
+
+    Mirrors the live dispatch policy read-path (hapax-methodology-dispatch
+    lines ~1229-1248): load_dispatch_policy_sources -> build_dispatch_request
+    -> evaluate_dispatch_policy.
+    """
+    _fresh_claude_platform_receipt(tmp_path)
+
+    mint = _mint_route_authority_receipt(
+        tmp_path,
+        receipt_type="opus_model_entitlement",
+        route_id="claude.headless.opus",
+        now=_current_iso_z(),
+    )
+    assert mint.returncode == 0, mint.stderr
+    minted = json.loads(mint.stdout)
+    assert Path(minted["receipt_path"]).exists()
+    assert minted["receipt_path"].endswith(".json")
+    assert minted["receipt_reference"].startswith(
+        "route-authority-receipt:opus_model_entitlement:claude.headless.opus:"
+    )
+
+    sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
+    request = _opus_dispatch_request(sources)
+    decision = evaluate_dispatch_policy(request)
+
+    assert request.capability is not None
+    assert any(
+        record.startswith("route-authority-receipt:opus_model_entitlement:")
+        for record in request.capability.explicit_equivalence_records
+    )
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.route_policy_green is True
+    assert "policy_launch" in decision.reason_codes
+
+
+def test_minted_opus_receipt_unreachable_without_receipt(tmp_path: Path) -> None:
+    """Guard: without the minted receipt, the opus route stays HELD/REFUSED."""
+
+    _fresh_claude_platform_receipt(tmp_path)
+
+    sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
+    request = _opus_dispatch_request(sources)
+    decision = evaluate_dispatch_policy(request)
+
+    assert decision.action is not DispatchAction.LAUNCH
+
+
+def test_live_read_path_defaults_receipt_dir_to_env_for_opus(tmp_path: Path) -> None:
+    """The live read-path (no explicit receipt_dir) picks up receipts via env.
+
+    Proves the dispatch CLI call site — which passes no receipt_dir — un-degrades
+    opus once HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR points at the minted dir.
+    """
+    _fresh_claude_platform_receipt(tmp_path)
+    mint = _mint_route_authority_receipt(
+        tmp_path,
+        receipt_type="opus_model_entitlement",
+        route_id="claude.headless.opus",
+        now=_current_iso_z(),
+    )
+    assert mint.returncode == 0, mint.stderr
+
+    with patch.dict(os.environ, {PLATFORM_CAPABILITY_RECEIPT_DIR_ENV: str(tmp_path)}):
+        sources = load_dispatch_policy_sources(registry_path=REGISTRY)
+    request = _opus_dispatch_request(sources)
+    decision = evaluate_dispatch_policy(request)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert "policy_launch" in decision.reason_codes

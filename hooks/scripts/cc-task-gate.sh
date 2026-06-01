@@ -253,6 +253,52 @@ case "$_bootstrap_rc" in
     ;;
 esac
 
+# --- 3c. Shadow decision log (reform 3b PRODUCER source) ---------------------
+# From here on every exit is a genuine GATED decision (the non-mutating / cognition
+# / bypass / bootstrap early-outs above are NOT logged). Append this gate's REAL
+# exit code + the resolved state it decided on to a cache JSONL so
+# scripts/policy-decide-shadow-replay can diff it against shared.policy_decide.
+# The legacy verdict recorded here is THIS gate's own exit code — never a
+# re-derivation via _LEGACY_*_RE, which is exactly the drift the 3b-cutover unit
+# must eliminate. Advisory only: `set +e` in the trap guarantees the logging can
+# never change the verdict, and HAPAX_GATE_DECISION_LOG_OFF=1 kills it outright.
+_shadow_decision_log="${HAPAX_GATE_DECISION_LOG:-$HOME/.cache/hapax/cc-task-gate-decisions.jsonl}"
+_emit_gate_decision() {
+  local rc=$?
+  trap - EXIT
+  set +e
+  if [[ "${HAPAX_GATE_DECISION_LOG_OFF:-0}" == "1" ]]; then
+    return 0
+  fi
+  if command -v jq >/dev/null 2>&1; then
+    mkdir -p "$(dirname "$_shadow_decision_log")" 2>/dev/null
+    jq -cn \
+      --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --argjson legacy_exit "$rc" \
+      --arg role "${role:-}" \
+      --arg session_id "${session_id:-}" \
+      --arg task_id "${task_id:-}" \
+      --arg tool_name "${tool_name:-}" \
+      --arg command "${bash_cmd:-}" \
+      --arg file_path "${edit_path:-}" \
+      --arg mutation_surface "${mutation_surface_hint:-source}" \
+      --arg status "${status:-}" \
+      --arg assigned_to "${assigned:-}" \
+      --arg authority_case "${authority_case:-}" \
+      --arg parent_spec "${parent_spec:-}" \
+      --arg stage "${case_stage:-}" \
+      --arg implementation_authorized "${impl_authorized:-}" \
+      --arg source_mutation_authorized "${src_authorized:-}" \
+      --arg docs_mutation_authorized "${docs_authorized:-}" \
+      --arg runtime_mutation_authorized "${runtime_authorized:-}" \
+      --arg mutation_scope_refs "${mutation_scope_refs:-}" \
+      '{ts:$ts, legacy_exit:$legacy_exit, role:$role, session_id:$session_id, task_id:$task_id, tool_name:$tool_name, command:$command, file_path:$file_path, mutation_surface:$mutation_surface, status:$status, assigned_to:$assigned_to, authority_case:$authority_case, parent_spec:$parent_spec, stage:$stage, implementation_authorized:$implementation_authorized, source_mutation_authorized:$source_mutation_authorized, docs_mutation_authorized:$docs_mutation_authorized, runtime_mutation_authorized:$runtime_mutation_authorized, mutation_scope_refs:$mutation_scope_refs}' \
+      >> "$_shadow_decision_log" 2>/dev/null
+  fi
+  return 0
+}
+trap '_emit_gate_decision' EXIT
+
 # --- 4. Determine session identity (coordination reform Phase 1, cluster 6) ---
 # Single source of truth in agent-role.sh (sourced above): explicit env →
 # agent-role recovery → relay presence → role-less-but-claimable fallback
