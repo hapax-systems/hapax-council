@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import base64
 import importlib
 import json
 import sys
 import types
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from PIL import Image, PngImagePlugin
 
 
 @pytest.fixture()
@@ -25,6 +28,15 @@ def reset_mod(tmp_path: Path) -> types.ModuleType:
 
 
 class TestScreenshotHash:
+    def _png_data_uri(self, color: tuple[int, int, int], *, metadata: str) -> str:
+        image = Image.new("RGB", (32, 18), color)
+        pnginfo = PngImagePlugin.PngInfo()
+        pnginfo.add_text("metadata", metadata)
+        buffer = BytesIO()
+        image.save(buffer, format="PNG", pnginfo=pnginfo)
+        encoded = base64.b64encode(buffer.getvalue()).decode()
+        return f"data:image/png;base64,{encoded}"
+
     def test_returns_hex_digest(self, reset_mod: types.ModuleType) -> None:
         client = MagicMock()
         client.get_source_screenshot.return_value = MagicMock(image_data="AAAA")
@@ -45,6 +57,26 @@ class TestScreenshotHash:
         client.get_source_screenshot.return_value = MagicMock(image_data="BBBB")
         h2 = reset_mod._get_screenshot_hash(client, "TestSource")
         assert h1 != h2
+
+    def test_hashes_decoded_pixels_not_png_container_metadata(
+        self, reset_mod: types.ModuleType
+    ) -> None:
+        client = MagicMock()
+        client.get_source_screenshot.return_value = MagicMock(
+            image_data=self._png_data_uri((10, 20, 30), metadata="first")
+        )
+        h1 = reset_mod._get_screenshot_hash(client, "TestSource")
+        client.get_source_screenshot.return_value = MagicMock(
+            image_data=self._png_data_uri((10, 20, 30), metadata="second")
+        )
+        h2 = reset_mod._get_screenshot_hash(client, "TestSource")
+        client.get_source_screenshot.return_value = MagicMock(
+            image_data=self._png_data_uri((10, 21, 30), metadata="second")
+        )
+        h3 = reset_mod._get_screenshot_hash(client, "TestSource")
+
+        assert h1 == h2
+        assert h2 != h3
 
 
 class TestSourceActive:
@@ -317,7 +349,11 @@ class TestObswsCompatibility:
             ):
                 assert source_name == "Video Capture Device (V4L2)"
                 assert image_format == "png"
-                assert (image_width, image_height, quality) == (8, 8, 50)
+                assert (image_width, image_height, quality) == (
+                    reset_mod.SCREENSHOT_WIDTH,
+                    reset_mod.SCREENSHOT_HEIGHT,
+                    reset_mod.SCREENSHOT_QUALITY,
+                )
                 return MagicMock(image_data="frame")
 
         probe = reset_mod._probe_source(
@@ -840,6 +876,95 @@ class TestMonitorLoop:
         assert restart_calls == [("hapax-darkplaces-v4l2.service", 30.0)]
         assert client.set_scene_item_enabled.call_count == 4
         assert "hapax_obs_v4l2_source_producer_restarts_total 1" in prom_path.read_text()
+
+    def test_zero_stall_resets_escalates_to_producer_restart_immediately(
+        self,
+        reset_mod: types.ModuleType,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client = MagicMock()
+        client.get_source_active.return_value = MagicMock(video_active=True)
+        client.get_source_screenshot.return_value = MagicMock(image_data="same-frame")
+        client.get_current_program_scene.return_value = MagicMock(scene_name="Scene")
+        client.get_scene_item_list.return_value = MagicMock(
+            scene_items=[{"sourceName": "StudioCompositor", "sceneItemId": 7}]
+        )
+        prom_path = tmp_path / "reset.prom"
+        status_path = tmp_path / "status.json"
+        restart_calls: list[tuple[str, float]] = []
+        sleep_calls = 0
+        real_time = reset_mod.time
+        monotonic_values = iter([100.0, 170.0])
+        monkeypatch.setattr(reset_mod, "_connect", lambda _host, _port: client)
+        monkeypatch.setattr(reset_mod, "_send_ntfy", lambda _reason: None)
+        monkeypatch.setattr(reset_mod, "STATUS_PATH", status_path)
+        monkeypatch.setattr(reset_mod, "STATUS_DIR", tmp_path)
+        monkeypatch.setattr(reset_mod, "_shutdown", False)
+
+        def fake_monotonic() -> float:
+            return next(monotonic_values)
+
+        def fake_toggle(toggle_client, scene_name: str, item_id: int) -> bool:
+            toggle_client.set_scene_item_enabled(
+                scene_name=scene_name,
+                scene_item_id=item_id,
+                scene_item_enabled=False,
+            )
+            toggle_client.set_scene_item_enabled(
+                scene_name=scene_name,
+                scene_item_id=item_id,
+                scene_item_enabled=True,
+            )
+            return True
+
+        def fake_restart(service_name: str, *, timeout: float) -> bool:
+            restart_calls.append((service_name, timeout))
+            return True
+
+        monkeypatch.setattr(reset_mod, "_toggle_visibility", fake_toggle)
+        monkeypatch.setattr(reset_mod, "_restart_producer_service", fake_restart)
+
+        def stop_after_two_loop_sleeps(_seconds: float) -> None:
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls >= 2:
+                monkeypatch.setattr(reset_mod, "_shutdown", True)
+
+        monkeypatch.setattr(
+            reset_mod,
+            "time",
+            types.SimpleNamespace(
+                monotonic=fake_monotonic,
+                sleep=stop_after_two_loop_sleeps,
+                strftime=real_time.strftime,
+                gmtime=real_time.gmtime,
+            ),
+        )
+
+        try:
+            reset_mod.monitor_loop(
+                host="localhost",
+                port=4455,
+                source_name="StudioCompositor",
+                poll_interval=0.01,
+                stall_threshold=60.0,
+                reset_cooldown=60.0,
+                metrics_path=prom_path,
+                producer_service="hapax-darkplaces-v4l2.service",
+                producer_restart_after_obs_resets=0,
+                producer_restart_cooldown=300.0,
+                producer_restart_timeout=30.0,
+            )
+        finally:
+            monkeypatch.setattr(reset_mod, "_shutdown", False)
+
+        status = json.loads(status_path.read_text())
+        assert status["state"] == "reconnected"
+        assert status["reset_count"] == 1
+        assert status["producer_restarts"] == 1
+        assert restart_calls == [("hapax-darkplaces-v4l2.service", 30.0)]
+        assert client.set_scene_item_enabled.call_count == 2
 
     def test_static_screenshot_can_be_ignored_when_log_errors_are_authority(
         self,

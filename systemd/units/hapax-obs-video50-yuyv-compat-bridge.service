@@ -12,7 +12,7 @@ ConditionPathExists=/usr/bin/ffmpeg
 Type=simple
 Restart=on-failure
 RestartSec=2s
-TimeoutStopSec=10s
+TimeoutStopSec=3s
 KillMode=control-group
 SendSIGKILL=yes
 ExecStartPre=-/usr/bin/v4l2-ctl -d /dev/video50 -c keep_format=0
