@@ -39,12 +39,26 @@ REFUSED = 2
 ERROR = 3
 
 VAULT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+# Derived advisory feed for the sdlc_invariants monitor — NOT the SSOT. The
+# coordination event log (shared/coord_event_log.py, via _emit_coord_event) is
+# the source of truth for stage transitions (coordination reform §4.3).
 LEDGER = Path(
     os.environ.get(
         "HAPAX_AUTHORITY_CASE_LEDGER",
         str(Path.home() / ".cache" / "hapax" / "authority-case-ledger.jsonl"),
     )
 ).expanduser()
+
+#: The six no-go booleans snapshotted into each stage_transition coord event.
+NO_GO_FIELDS = (
+    "source_mutation_authorized",
+    "docs_mutation_authorized",
+    "implementation_authorized",
+    "release_authorized",
+    "public_current",
+    "axiom_mutation_authorized",
+)
 
 _STAGE_RE = re.compile(r"^S(\d{1,2})(?:_[A-Z][A-Z0-9_]*)?$")
 _CASE_RE = re.compile(r"^CASE-[A-Z0-9-]+$")
@@ -84,6 +98,50 @@ def _refuse(msg: str) -> int:
     return REFUSED
 
 
+def _no_go_snapshot(front: str) -> dict[str, bool]:
+    """Read the six no-go booleans from frontmatter (absent → False)."""
+    return {key: _scalar(front, key).lower() == "true" for key in NO_GO_FIELDS}
+
+
+def _emit_coord_event(
+    task_id: str,
+    from_stage: str,
+    new_stage: str,
+    authority_case: str,
+    parent_spec: str | None,
+    no_go: dict[str, bool],
+    now: str,
+) -> None:
+    """Record the stage transition in the coord SSOT log (coordination reform §4.3).
+
+    ``fail_open`` routes a daemon-down append to the spool for boot
+    reconciliation; a hard failure is warned, never fatal — the stage advance and
+    its advisory cache-ledger record have already succeeded.
+    """
+    try:
+        if str(REPO_ROOT) not in sys.path:
+            sys.path.insert(0, str(REPO_ROOT))
+        from shared.coord_event_log import default_event_log
+        from shared.coord_projection import emit_stage_transition
+
+        emit_stage_transition(
+            event_log=default_event_log(),
+            task_id=task_id,
+            from_stage=from_stage,
+            to_stage=new_stage,
+            authority_case=authority_case,
+            actor=_role(),
+            no_go_snapshot=no_go,
+            parent_spec=parent_spec,
+            timestamp=now,
+            evidence_type="stage_advance",
+            evidence_summary=f"{from_stage} -> {new_stage}",
+            origin="cli",
+        )
+    except Exception as exc:  # noqa: BLE001 — coord emit must not fail the advance.
+        print(f"cc-stage-advance: WARNING coord event emit failed: {exc}", file=sys.stderr)
+
+
 def advance(task_id: str, new_stage: str, allow_backward: bool) -> int:
     if _stage_num(new_stage) is None:
         return _refuse(f"'{new_stage}' is not a valid stage (expected S0..S11[_LABEL])")
@@ -112,6 +170,8 @@ def advance(task_id: str, new_stage: str, allow_backward: bool) -> int:
     if from_stage == new_stage:
         print(f"cc-stage-advance: '{task_id}' already at {new_stage}", file=sys.stderr)
         return OK
+    parent_spec = _scalar(front, "parent_spec") or None
+    no_go = _no_go_snapshot(front)
     from_num = _stage_num(from_stage)
     to_num = _stage_num(new_stage)
     if from_num is not None and to_num is not None and to_num < from_num and not allow_backward:
@@ -150,6 +210,7 @@ def advance(task_id: str, new_stage: str, allow_backward: bool) -> int:
             )
             + "\n"
         )
+    _emit_coord_event(task_id, from_stage, new_stage, authority_case, parent_spec, no_go, now)
     print(f"cc-stage-advance: {task_id} stage {from_stage} -> {new_stage} (ledgered)")
     return OK
 

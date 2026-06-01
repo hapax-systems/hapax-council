@@ -47,6 +47,10 @@ output/demos/
 # Wake word training data (large, generated)
 data/wake-word-training/
 .hypothesis/
+
+# pytest tmp_path base (repo-resident; holds throwaway fixtures incl. fake
+# worktree ledger trees that must never be tracked — protects the NEW-4 guard)
+.pytest-tmp/
 plugins/gst-temporalfx/target/
 
 # Model weights (large binaries, download on demand)
@@ -76,3 +80,11 @@ gst-plugin-glfeedback/target/
 .compositor-inspect/
 assets/quake/maps/*.log
 assets/quake/csqc/*.lno
+
+# Coordination reform (CASE-SDLC-REFORM-001, NEW-4): the per-worktree
+# authority-case ledger is removed from git. The SSOT is the single
+# daemon-owned coord event log outside every worktree, so a stray `git add -A`
+# must never re-track a worktree-local ledger copy (and the canonical log path
+# is never inside the repo).
+evidence/authority-case-ledger.jsonl
+/var/lib/hapax/coord/

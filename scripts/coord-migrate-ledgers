@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""coord-migrate-ledgers — backfill legacy per-worktree ledgers into the SSOT.
+
+Coordination reform Phase 4 (CASE-SDLC-REFORM-001, NEW-4/NEW-6): the per-worktree
+``evidence/authority-case-ledger.jsonl`` copies are migrated into the single
+daemon-owned coord event log under a one-time, scoped, auto-expiring migration
+capability before the files are dropped from git. Rows dedupe by content, so the
+migration is idempotent and safe to re-run across overlapping worktree copies.
+Honors HAPAX_COORD_DIR for the destination log.
+
+Usage:
+    coord-migrate-ledgers [--grantor NAME] [--root DIR] [--dry-run] [LEDGER ...]
+
+With no LEDGER paths, discovers every authority-case-ledger.jsonl under the
+worktree root (default: the parent of this repo).
+
+Exit: 0 success; 1 no ledgers found.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+
+def _discover(root: Path) -> list[Path]:
+    return sorted(root.glob("hapax-council*/evidence/authority-case-ledger.jsonl"))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="coord-migrate-ledgers", description=__doc__)
+    parser.add_argument("ledgers", nargs="*", type=Path, help="explicit ledger JSONL paths")
+    parser.add_argument(
+        "--grantor", default="operator", help="capability grantor (default: operator)"
+    )
+    parser.add_argument("--root", type=Path, default=None, help="worktree root for discovery")
+    parser.add_argument("--dry-run", action="store_true", help="list ledgers without migrating")
+    args = parser.parse_args(argv)
+
+    repo_root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(repo_root))
+    from shared.case_migration import backfill_from_ledger, mint_capability
+
+    root = args.root or repo_root.parent
+    ledgers = list(args.ledgers) or _discover(root)
+    if not ledgers:
+        print(f"coord-migrate-ledgers: no ledgers found under {root}", file=sys.stderr)
+        return 1
+
+    if args.dry_run:
+        for ledger in ledgers:
+            print(f"[dry-run] would migrate {ledger}")
+        print(f"coord-migrate-ledgers: [dry-run] {len(ledgers)} ledger(s)")
+        return 0
+
+    capability = mint_capability(grantor=args.grantor)
+    total = 0
+    for ledger in ledgers:
+        appended = backfill_from_ledger(ledger, capability=capability)
+        total += appended
+        print(f"coord-migrate-ledgers: {ledger}: +{appended} events")
+    print(f"coord-migrate-ledgers: migrated {total} events from {len(ledgers)} ledger(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

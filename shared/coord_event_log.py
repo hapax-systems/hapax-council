@@ -10,17 +10,24 @@ spool file for later daemon ingestion.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-DEFAULT_LEDGER_DB = Path("/var/lib/hapax/coord/ledger.db")
-DEFAULT_JSONL_MIRROR = Path("/var/lib/hapax/coord/ledger.jsonl")
-DEFAULT_SPOOL_DIR = Path("/var/lib/hapax/coord/spool")
+DEFAULT_COORD_DIR = Path("/var/lib/hapax/coord")
+DEFAULT_LEDGER_DB = DEFAULT_COORD_DIR / "ledger.db"
+DEFAULT_JSONL_MIRROR = DEFAULT_COORD_DIR / "ledger.jsonl"
+DEFAULT_SPOOL_DIR = DEFAULT_COORD_DIR / "spool"
+
+#: Env var redirecting the canonical coord log for test isolation / sandboxed
+#: tools. Production leaves it unset (the log lives outside every worktree).
+COORD_DIR_ENV = "HAPAX_COORD_DIR"
 
 _SCHEMA_VERSION = 1
 _WRITER_KINDS = {"daemon", "shim", "lane"}
@@ -162,6 +169,41 @@ class ReplayResult:
     errors: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class SpoolIngestResult:
+    """Result of draining fail-open spool intents into the canonical log."""
+
+    ingested: int
+    duplicates: int
+    failed: int
+    removed: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class BootReconcileResult:
+    """Result of the daemon boot path: replay + spool ingestion."""
+
+    replayed: int
+    spool_ingested: int
+    spool_duplicates: int
+    spool_failed: int
+    degraded: bool = False
+    replay_source: Literal["sqlite", "jsonl_mirror"] = "sqlite"
+    errors: tuple[str, ...] = ()
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "replayed": self.replayed,
+            "degraded": self.degraded,
+            "replay_source": self.replay_source,
+            "spool_ingested": self.spool_ingested,
+            "spool_duplicates": self.spool_duplicates,
+            "spool_failed": self.spool_failed,
+            "errors": list(self.errors),
+        }
+
+
 class CoordEventLog:
     """SQLite + JSONL coordination event log."""
 
@@ -277,6 +319,86 @@ class CoordEventLog:
                 errors=(error, *mirror_errors),
             )
 
+    def ingest_spool(self) -> SpoolIngestResult:
+        """Drain fail-open spool intents into the canonical log (daemon boot path).
+
+        Each spool file holds one intent written by a shim while the daemon was
+        down. The daemon (the single writer) appends each to the canonical log
+        and removes the consumed file. A duplicate (event already canonical) is
+        idempotent success — the file is still removed. A file that fails to parse
+        or append is LEFT in place and recorded, so a transient fault never loses
+        a spooled authorization (master design §4.3).
+        """
+
+        if not self.spool_dir.is_dir():
+            return SpoolIngestResult(ingested=0, duplicates=0, failed=0)
+
+        ingested = 0
+        duplicates = 0
+        failed = 0
+        removed: list[str] = []
+        errors: list[str] = []
+        for spool_path in sorted(self.spool_dir.glob("*.jsonl")):
+            try:
+                event = self._read_spool_event(spool_path)
+            except Exception as exc:
+                failed += 1
+                errors.append(f"{spool_path.name}: parse_failed:{type(exc).__name__}:{exc}")
+                continue
+
+            consumed = False
+            try:
+                self.append(event, writer=CoordWriter.daemon())
+                ingested += 1
+                consumed = True
+            except DuplicateEventError:
+                duplicates += 1
+                consumed = True
+            except Exception as exc:
+                failed += 1
+                errors.append(f"{spool_path.name}: append_failed:{type(exc).__name__}:{exc}")
+
+            if consumed:
+                try:
+                    spool_path.unlink()
+                    removed.append(spool_path.name)
+                except OSError as exc:
+                    errors.append(f"{spool_path.name}: unlink_failed:{type(exc).__name__}:{exc}")
+
+        return SpoolIngestResult(
+            ingested=ingested,
+            duplicates=duplicates,
+            failed=failed,
+            removed=tuple(removed),
+            errors=tuple(errors),
+        )
+
+    def boot_reconcile(self, *, fail_open: bool = True) -> BootReconcileResult:
+        """Replay the canonical log then ingest fail-open spool intents.
+
+        Realizes "the heap is DERIVED" (master design §2.2/NEW-5): on boot the
+        daemon rebuilds in-memory state from the canonical log and folds in any
+        intents spooled while it was down, so no authorization survives only in a
+        process image.
+        """
+
+        replay = self.replay(fail_open=fail_open)
+        ingest = self.ingest_spool()
+        return BootReconcileResult(
+            replayed=len(replay.events),
+            spool_ingested=ingest.ingested,
+            spool_duplicates=ingest.duplicates,
+            spool_failed=ingest.failed,
+            degraded=replay.degraded,
+            replay_source=replay.source,
+            errors=(*replay.errors, *ingest.errors),
+        )
+
+    def _read_spool_event(self, spool_path: Path) -> CoordEvent:
+        line = spool_path.read_text(encoding="utf-8").splitlines()[0]
+        record = json.loads(line)
+        return CoordEvent.from_record(record["event"])
+
     def _append_sqlite(self, event: CoordEvent) -> int:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         payload_json = _canonical_json(event.payload)
@@ -365,8 +487,14 @@ class CoordEventLog:
 
     def _write_spool(self, event: CoordEvent, *, writer: CoordWriter, reason: str) -> Path:
         self.spool_dir.mkdir(parents=True, exist_ok=True)
+        # A uuid4 nonce keeps two intents with an identical timestamp+event_id from
+        # clobbering each other on disk: each spooled fail-open intent must survive
+        # until the daemon ingests it on boot, so a lost file is a lost authorization
+        # (coordination reform Phase 4 §4.3 — the spool is the daemon-down write path).
+        nonce = uuid.uuid4().hex[:8]
         path = (
-            self.spool_dir / f"{_safe_filename(_now_iso())}-{_safe_filename(event.event_id)}.jsonl"
+            self.spool_dir
+            / f"{_safe_filename(_now_iso())}-{_safe_filename(event.event_id)}-{nonce}.jsonl"
         )
         record = {
             "schema_version": _SCHEMA_VERSION,
@@ -430,18 +558,40 @@ def _safe_filename(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "coord-event"
 
 
+def default_event_log() -> CoordEventLog:
+    """Return the canonical coord log, honoring ``HAPAX_COORD_DIR`` for isolation.
+
+    Production uses ``/var/lib/hapax/coord`` (one log outside every worktree,
+    NEW-4). Tests and sandboxed CLIs set ``HAPAX_COORD_DIR`` to redirect the
+    SQLite DB, JSONL mirror, and spool under a temporary directory so a tool that
+    emits a coordination event never writes the production log during a test.
+    """
+
+    base = Path(os.environ.get(COORD_DIR_ENV, str(DEFAULT_COORD_DIR)))
+    return CoordEventLog(
+        db_path=base / "ledger.db",
+        jsonl_path=base / "ledger.jsonl",
+        spool_dir=base / "spool",
+    )
+
+
 __all__ = [
     "AppendReceipt",
+    "BootReconcileResult",
+    "COORD_DIR_ENV",
     "CoordEvent",
     "CoordEventLog",
     "CoordEventLogError",
     "CoordWriter",
+    "DEFAULT_COORD_DIR",
     "DEFAULT_JSONL_MIRROR",
     "DEFAULT_LEDGER_DB",
     "DEFAULT_SPOOL_DIR",
     "DirectLaneWriteError",
     "DuplicateEventError",
     "ReplayResult",
+    "SpoolIngestResult",
+    "default_event_log",
 ]
 
 # Public API consumed by the coordination daemon/shim through dynamic dispatch.
@@ -450,4 +600,6 @@ _DYNAMIC_ENTRYPOINTS = (
     CoordWriter.shim,
     CoordEventLog.replay,
     CoordEventLog.spool_fail_open,
+    CoordEventLog.ingest_spool,
+    CoordEventLog.boot_reconcile,
 )
