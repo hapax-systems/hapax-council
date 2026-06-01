@@ -13,10 +13,10 @@ pending obligation each time the switch is used; this watcher closes the loop:
 So the blunt off-switch can never be used silently and then forgotten. Run it
 periodically (e.g. a systemd timer) or on demand. Prints a JSON summary.
 
-Paths (env-overridable):
+Paths (env-overridable; grant defaults match coord-grant-mint / shared.coord_event_log):
   obligations  $HAPAX_COORD_RETRO_OBLIGATIONS  (~/.cache/hapax/coord-retro-grant-obligations.jsonl)
-  grants       $HAPAX_COORD_GRANT_DIR          (/var/lib/hapax/coord/grants)
-  key          $HAPAX_COORD_GRANT_KEY          (/var/lib/hapax/coord/grant-key)
+  grants       $HAPAX_COORD_GRANT_DIR          (~/.cache/hapax/coord/grants)
+  key          $HAPAX_COORD_GRANT_KEY          (~/.cache/hapax/coord/grant-key)
 """
 
 from __future__ import annotations
@@ -32,14 +32,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.coord_event_log import default_grant_dir, default_grant_key  # noqa: E402
 from shared.governance.coord_capabilities import (  # noqa: E402
     read_grant_file,
     verify_escape_grant,
 )
 
 DEFAULT_OBLIGATIONS = Path.home() / ".cache" / "hapax" / "coord-retro-grant-obligations.jsonl"
-DEFAULT_GRANT_DIR = "/var/lib/hapax/coord/grants"
-DEFAULT_GRANT_KEY = "/var/lib/hapax/coord/grant-key"
 
 
 def _load_key(path: Path) -> bytes:
@@ -142,8 +141,11 @@ def main(argv: list[str] | None = None) -> int:
         args.obligations
         or os.environ.get("HAPAX_COORD_RETRO_OBLIGATIONS", str(DEFAULT_OBLIGATIONS))
     )
-    grant_dir = Path(args.grant_dir or os.environ.get("HAPAX_COORD_GRANT_DIR", DEFAULT_GRANT_DIR))
-    key_path = Path(args.key_file or os.environ.get("HAPAX_COORD_GRANT_KEY", DEFAULT_GRANT_KEY))
+    # Defer to the shared resolvers (which honor HAPAX_COORD_GRANT_DIR/KEY then fall
+    # back to coord_base_dir()) so this reader and coord-grant-mint's writer always
+    # agree on ~/.cache/hapax/coord/{grants,grant-key} — never a dead /var/lib split.
+    grant_dir = Path(args.grant_dir) if args.grant_dir else default_grant_dir()
+    key_path = Path(args.key_file) if args.key_file else default_grant_key()
     now = args.now if args.now is not None else time.time()
 
     if not obligations.exists():
