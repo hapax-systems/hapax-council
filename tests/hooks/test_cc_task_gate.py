@@ -29,7 +29,11 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-HOOK = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.sh"
+# cc-task-gate.sh is now a thin stable-abs-path shim → canonical impl (reform
+# FM-6). The gate LOGIC lives in cc-task-gate.impl.sh; exec it directly so these
+# matrix tests are hermetic regardless of any deployed canonical. Shim resolution
+# is covered by tests/hooks/test_cc_task_gate_shim.py.
+HOOK = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
 ROLE_HELPER = REPO_ROOT / "hooks" / "scripts" / "agent-role.sh"
 CC_CLAIM = REPO_ROOT / "scripts" / "cc-claim"
 

@@ -40,6 +40,14 @@
 #   systemd/logrotate.d/*          → logrotate configs; require sudo install
 #   systemd/system/**              → system-scoped configs; require sudo install
 #   scripts/hapax-*                → ensure ~/.local/bin/ symlink
+#   hooks/scripts/{cc-task-gate.impl.sh,agent-role.sh,escape-grant.sh,
+#                  hooks-doctor.sh,cc-task-gate.sh}
+#                                  → redeploy the ONE canonical gate closure to
+#                                    ~/.local/lib/hapax/hooks via hooks-doctor
+#                                    --deploy-canonical (reform FM-6: every
+#                                    worktree's cc-task-gate.sh is a shim that
+#                                    resolves here, so "update the gate" is a
+#                                    one-file change, not a 26-worktree fan-out)
 #
 # Usage:
 #   hapax-post-merge-deploy <commit-sha>
@@ -315,6 +323,7 @@ else
 fi
 
 PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=()
+GATE_CLOSURE=()
 SYSTEMD_UNCLASSIFIED=()
 AUDIO_SAFE_RESTARTS=()
 DID_ANYTHING=0
@@ -444,6 +453,8 @@ while IFS= read -r f; do
         systemd/udev/*.rules)             ;; # udev rules; require sudo install + udevadm reload (operator action)
         systemd/logrotate.d/*)            ;; # logrotate configs; require sudo install
         systemd/system/*)                 ;; # system-scoped configs; require sudo install
+        hooks/scripts/cc-task-gate.impl.sh|hooks/scripts/agent-role.sh|hooks/scripts/escape-grant.sh|hooks/scripts/hooks-doctor.sh|hooks/scripts/cc-task-gate.sh)
+            GATE_CLOSURE+=("$f") ;;
         scripts/hapax-*)                  SCRIPTS+=("$f") ;;
         scripts/*.py|scripts/*.sh)        SCRIPT_PY+=("$f") ;;
         systemd/expected-timers.yaml)     ;; # frozen-baseline doc, not deployable
@@ -744,6 +755,35 @@ if [ "${#SCRIPT_PY[@]}" -gt 0 ]; then
             fi
         done
     done
+fi
+
+# --- canonical gate closure (reform FM-6 shim collapse) ---
+# When the gate impl or its sourced siblings change, redeploy the ONE canonical
+# copy that every worktree's cc-task-gate.sh shim resolves to. Materialize the
+# closure from $SHA (commit-time content, decoupled from the working tree like
+# every other deploy here), then hand it to hooks-doctor --deploy-canonical, which
+# renames the impl to cc-task-gate.sh, writes a sha256 MANIFEST, symlinks
+# ~/.local/bin/hapax-hooks-doctor, and REFUSES any impl missing the INV-5
+# is_cognition_path carve-out (so a bad gate never lands fleet-wide).
+if [ "${#GATE_CLOSURE[@]}" -gt 0 ]; then
+    echo "gate closure changed (${#GATE_CLOSURE[@]}): redeploying canonical gate"
+    GATE_STAGE="$(mktemp -d)"
+    mkdir -p "$GATE_STAGE/hooks/scripts"
+    for f in hooks/scripts/cc-task-gate.impl.sh hooks/scripts/agent-role.sh \
+             hooks/scripts/escape-grant.sh hooks/scripts/hooks-doctor.sh; do
+        if git cat-file -e "$SHA:$f" 2>/dev/null; then
+            git show "$SHA:$f" > "$GATE_STAGE/$f"
+            chmod +x "$GATE_STAGE/$f" 2>/dev/null || true
+        fi
+    done
+    if [ -x "$GATE_STAGE/hooks/scripts/hooks-doctor.sh" ]; then
+        bash "$GATE_STAGE/hooks/scripts/hooks-doctor.sh" --deploy-canonical --from "$GATE_STAGE" \
+            || echo "warning: canonical gate deploy failed" >&2
+    else
+        echo "warning: hooks-doctor.sh absent at $SHA; skipping canonical gate deploy" >&2
+    fi
+    rm -rf "$GATE_STAGE" 2>/dev/null || true
+    DID_ANYTHING=1
 fi
 
 if [ "$DID_ANYTHING" -eq 0 ]; then

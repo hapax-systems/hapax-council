@@ -18,7 +18,8 @@ import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-HOOK = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.sh"
+# Gate logic lives in the impl behind the shim (reform FM-6); exec it directly.
+HOOK = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
 VALIDATOR = REPO_ROOT / "hooks" / "scripts" / "authorization-packet-validator.sh"
 
 

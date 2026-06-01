@@ -29,7 +29,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ADAPTER = REPO_ROOT / "hooks" / "scripts" / "antigrav-hook-adapter.sh"
-GATE = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.sh"
+# In production the adapter is wired to cc-task-gate.sh (the shim); here we drive
+# it against the impl directly so the enforcement witness is hermetic regardless
+# of any deployed canonical (reform FM-6). Shim resolution: test_cc_task_gate_shim.
+GATE = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
 
 
 def _run_chain(
