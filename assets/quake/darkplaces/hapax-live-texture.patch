@@ -563,7 +563,7 @@ index 7fbcd0b3..8ec3075c 100644
  extern rtexture_t *r_texture_notexture;
  extern rtexture_t *r_texture_whitecube;
 diff --git a/shader_glsl.h b/shader_glsl.h
-index dc56d085..172fe383 100644
+index dc56d085..b611e46f 100644
 --- a/shader_glsl.h
 +++ b/shader_glsl.h
 @@ -773,6 +773,7 @@
@@ -592,30 +592,28 @@ index dc56d085..172fe383 100644
  "void main(void)\n",
  "{\n",
  "#ifdef USEOFFSETMAPPING\n",
-@@ -1797,6 +1802,28 @@
+@@ -1797,6 +1802,26 @@
  "   color.rgb *= clamp(float(visiblepixels) / float(allpixels), 0.0, 1.0);\n",
  "#endif\n",
  "\n",
 +"#ifdef USEHAPAXDRIFT\n",
 +"	{\n",
 +"		float hpx_luma = dot(color.rgb, vec3(0.299, 0.587, 0.114));\n",
-+"		// DRIFT = luma-preserving HUE ROTATION (synthwave shift), NOT a brightness\n",
-+"		// wobble. The angle transits over ClientTime + world position + the evolving\n",
-+"		// daemon field, so the wire continuously shifts hue (cyan->teal->blue->violet)\n",
-+"		// spatially-incoherently. Brightness is a FIXED emissive floor, RESTORED after\n",
-+"		// the rotation => ONLY hue/chroma transit, never a flash (anti_visualizer).\n",
++"		// DRIFT = luma-preserving HUE ROTATION (synthwave transit). Works for BOTH the\n",
++"		// dim wire (lifted to a faint cool floor) and bright surfaces like the AoA\n",
++"		// (passed through via max(), NOT blown out by a multiply+floor). Luma is\n",
++"		// RESTORED after the rotation so only hue/chroma transit (anti_visualizer).\n",
 +"		float hpx_field = dp_texture2D(Texture_HapaxDriftField, fract(HapaxModelPos.xy * 0.0078125)).r;\n",
 +"		float hpx_wpos = HapaxModelPos.x*0.018 + HapaxModelPos.y*0.012 + HapaxModelPos.z*0.015;\n",
-+"		vec3 hpx_wire = mix(color.rgb, vec3(hpx_luma), 0.78) * 1.28 + vec3(0.10, 0.13, 0.18);\n",
-+"		float hpx_wl = dot(hpx_wire, vec3(0.299, 0.587, 0.114));\n",
-+"		float hpx_accent = smoothstep(0.18, 0.55, hpx_wl);\n",
-+"		vec3 hpx_seed = hpx_wire + vec3(0.24, 0.06, 0.22) * (0.35 + 0.65*hpx_accent);\n",
++"		vec3 hpx_desat = mix(color.rgb, vec3(hpx_luma), 0.55);\n",
++"		vec3 hpx_lifted = max(hpx_desat, vec3(0.12, 0.13, 0.17));\n",
++"		float hpx_ll = dot(hpx_lifted, vec3(0.299, 0.587, 0.114));\n",
 +"		float hpx_ang = ClientTime*0.32 + hpx_wpos*6.2831853 + (hpx_field - 0.5)*7.0;\n",
 +"		vec3 hpx_k = vec3(0.5773503);\n",
 +"		float hpx_ca = cos(hpx_ang);\n",
 +"		float hpx_sa = sin(hpx_ang);\n",
-+"		vec3 hpx_rot = hpx_seed*hpx_ca + cross(hpx_k, hpx_seed)*hpx_sa + hpx_k*dot(hpx_k, hpx_seed)*(1.0 - hpx_ca);\n",
-+"		color.rgb = max(hpx_rot * (hpx_wl / max(dot(hpx_rot, vec3(0.299, 0.587, 0.114)), 0.001)), vec3(0.0));\n",
++"		vec3 hpx_rot = hpx_lifted*hpx_ca + cross(hpx_k, hpx_lifted)*hpx_sa + hpx_k*dot(hpx_k, hpx_lifted)*(1.0 - hpx_ca);\n",
++"		color.rgb = max(hpx_rot * (hpx_ll / max(dot(hpx_rot, vec3(0.299, 0.587, 0.114)), 0.001)), vec3(0.0));\n",
 +"	}\n",
 +"#endif\n",
  "	dp_FragColor = vec4(color);\n",
