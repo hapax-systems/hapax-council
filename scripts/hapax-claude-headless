@@ -267,6 +267,31 @@ MAX_RESTART_BACKOFF="${HAPAX_CLAUDE_HEADLESS_RESTART_BACKOFF_SECONDS:-30}"
 # bare `wait` would block forever — see the watchdog in the loop below).
 TERMINAL_POLL_S="${HAPAX_CLAUDE_HEADLESS_TERMINAL_POLL_SECONDS:-60}"
 
+# ── G2 dispatch-host preflight (appendix migration) ─────────────────────────
+# HAPAX_DISPATCH_HOST set → the inner `claude` exec runs on the Workshop
+# (appendix); the launcher itself (FIFO @209, PID/lock/relay, cc-claim @189,
+# restart loop) stays podium-local so the cockpit, send/steer, and reaper keep
+# working unchanged. Fail-open: if the host can't actually run a lane (offline,
+# no claude, no gh auth, worktree not provisioned), fall back to LOCAL — a
+# Workshop hiccup must never block dispatch.
+DISPATCH_HOST="${HAPAX_DISPATCH_HOST:-}"
+# G8: the lane's hapax MCP (stdio) connects to logos-api; on the Workshop that
+# must be podium's LAN address, not appendix localhost. Injected into the hop env
+# below (hapax-mcp prefers LOGOS_BASE_URL over the config's COCKPIT_BASE_URL).
+DISPATCH_LOGOS_URL="${HAPAX_DISPATCH_LOGOS_URL:-http://192.168.68.85:8051/api}"
+if [[ -n "$DISPATCH_HOST" ]]; then
+  if [[ "$DISPATCH_HOST" == "local" || "$DISPATCH_HOST" == "localhost" || "$DISPATCH_HOST" == "$(hostname)" ]]; then
+    DISPATCH_HOST=""
+  elif ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
+         -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST" \
+         "sh -c 'command -v claude >/dev/null && test -d $WORKDIR && gh auth status >/dev/null 2>&1'" 2>/dev/null; then
+    echo "hapax-claude-headless: dispatch → $DISPATCH_HOST (claude on Workshop; launcher podium-local)"
+  else
+    echo "hapax-claude-headless: dispatch_host_unready ($DISPATCH_HOST) — running LOCAL" >&2
+    DISPATCH_HOST=""
+  fi
+fi
+
 while true; do
   if [[ -e "$DISABLE_FILE" ]]; then
     echo "hapax-claude-headless: disabled by $DISABLE_FILE" >&2
@@ -277,7 +302,20 @@ while true; do
     exit 77
   fi
 
-  "$CLAUDE_BIN" "${CLAUDE_ARGS[@]}" <&3 >> "$LOG_FILE" 2>&1 &
+  if [[ -n "$DISPATCH_HOST" ]]; then
+    # G2 inner exec on the Workshop: cd the lane's appendix-local worktree and
+    # run THAT host's PATH `claude`. fd 3 (the podium FIFO) feeds the ssh child's
+    # stdin exactly as it feeds a local claude — no pty (-tt would corrupt the
+    # stream-json), dedicated connection (ControlPath=none, kept alive) so an
+    # idle lane isn't dropped by the shared master's ControlPersist. On drop the
+    # remote claude EOFs its stdin and the loop below re-execs it.
+    ssh -o BatchMode=yes -o RequestTTY=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
+        -o ControlPath=none -i "$HOME/.ssh/id_ed25519" "$DISPATCH_HOST" \
+        "sh -c 'cd $WORKDIR && LOGOS_BASE_URL=$DISPATCH_LOGOS_URL exec claude ${CLAUDE_ARGS[*]}'" \
+        <&3 >> "$LOG_FILE" 2>&1 &
+  else
+    "$CLAUDE_BIN" "${CLAUDE_ARGS[@]}" <&3 >> "$LOG_FILE" 2>&1 &
+  fi
   CLAUDE_PID=$!
   echo "$CLAUDE_PID" > "$PID_FILE"
   echo "hapax-claude-headless: pid=$CLAUDE_PID (restart #$RESTART_COUNT)"
