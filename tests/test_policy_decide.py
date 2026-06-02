@@ -1038,3 +1038,102 @@ class TestReadOnlyRuntimeNotMutation:
         d = policy_decide(_bash(cmd), _authorized_task(runtime_mutation_authorized=False), "theta")
         assert d.blocked
         assert d.gate == "authority:runtime"
+
+
+class TestCatRedirectClassification:
+    """fix-cc-gate-fps Fix 1 mirror: ``cat … 2>/dev/null`` / ``cat … 2>&1`` redirect
+    only stderr/an fd and are NOT stdout-to-file writes, so they are neither mutating
+    nor source-scope-bound; a real ``cat … > out`` IS (the bash gate's lines 268/298
+    fix, mirrored in ``_bash_is_source_scope`` / ``_bash_is_mutating``)."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat shared/policy_decide.py 2>/dev/null",
+            "cat shared/policy_decide.py 2>&1 | head",
+            "cat shared/policy_decide.py 2>&1",
+            "cat /etc/hosts",
+            "cat shared/x.py &>/dev/null",
+        ],
+    )
+    def test_stderr_or_fd_redirect_cat_is_not_source_or_mutating(self, cmd):
+        from shared.policy_decide import _bash_is_mutating, _bash_is_source_scope
+
+        assert _bash_is_source_scope(cmd) is False, f"{cmd!r} wrongly source-scoped"
+        assert _bash_is_mutating(cmd) is False, f"{cmd!r} wrongly flagged mutating"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat shared/x.py > out.txt",
+            "cat shared/x.py >out.txt",
+            "cat shared/x.py >> out.txt",
+            "cat a.py b.py 1> merged.py",
+        ],
+    )
+    def test_stdout_redirect_cat_is_source_and_mutating(self, cmd):
+        from shared.policy_decide import _bash_is_mutating, _bash_is_source_scope
+
+        assert _bash_is_source_scope(cmd) is True, f"{cmd!r} missed as source write"
+        assert _bash_is_mutating(cmd) is True, f"{cmd!r} missed as mutating"
+
+    def test_cat_stdout_redirect_decision_blocks_at_scope_command(self):
+        # End-to-end: a real `cat > out` on an authorized task blocks at scope:command
+        # (a shell source mutation with no scope-verifiable path).
+        d = policy_decide(_bash("cat shared/x.py > out.txt"), _authorized_task(), "theta")
+        assert d.blocked
+        assert d.gate == "scope:command"
+
+    def test_cat_stderr_redirect_decision_allows(self):
+        # End-to-end: a read-only `cat … 2>/dev/null` is non-mutating → always allowed.
+        d = policy_decide(
+            _bash("cat shared/policy_decide.py 2>/dev/null"), _authorized_task(), "theta"
+        )
+        assert d.allowed
+        assert d.gate == "non-mutating"
+
+
+class TestVaultRelativeScopeAnchoring:
+    """fix-cc-gate-fps Fix 2 mirror: a RELATIVE vault scope ref (`20-projects/
+    hapax-cc-tasks/`) must resolve against the personal vault root, so an absolute
+    vault target under it is in scope. ``_scope_forms`` previously normalized only the
+    `/projects/` and `/scratch/` worktree anchors, never the vault — so a vault-relative
+    ref never matched an absolute vault note path (a false ``scope:denied``)."""
+
+    def test_vault_relative_dir_ref_matches_absolute_vault_target(self):
+        home = os.path.expanduser("~")
+        target = f"{home}/Documents/Personal/20-projects/hapax-cc-tasks/_dashboard/cc-offered.md"
+        d = policy_decide(
+            ToolCall(tool_name="Write", file_path=target),
+            _authorized_task(
+                mutation_scope_refs=("20-projects/hapax-cc-tasks/",),
+                docs_mutation_authorized=True,
+            ),
+            "theta",
+        )
+        assert d.allowed, d.gate
+
+    def test_vault_relative_file_ref_matches_absolute_vault_target(self):
+        home = os.path.expanduser("~")
+        target = f"{home}/Documents/Personal/40-resources/notes/x.md"
+        d = policy_decide(
+            ToolCall(tool_name="Write", file_path=target),
+            _authorized_task(
+                mutation_scope_refs=("40-resources/notes/x.md",),
+                docs_mutation_authorized=True,
+            ),
+            "theta",
+        )
+        assert d.allowed, d.gate
+
+    def test_non_vault_relative_ref_still_denies_vault_target(self):
+        # No over-broadening: a repo-relative ref must NOT match a vault target.
+        home = os.path.expanduser("~")
+        target = f"{home}/Documents/Personal/20-projects/hapax-cc-tasks/_dashboard/x.md"
+        d = policy_decide(
+            ToolCall(tool_name="Write", file_path=target),
+            _authorized_task(mutation_scope_refs=("shared/",), docs_mutation_authorized=True),
+            "theta",
+        )
+        assert d.blocked
+        assert d.gate == "scope:denied"

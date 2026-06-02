@@ -230,6 +230,22 @@ _py_writes() {
   return 1
 }
 
+# True iff a `cat` SEGMENT redirects its STDOUT to a file (`> f` / `>> f` / `1> f`)
+# — a real write. A '>' inside a stderr/fd redirection (`2>&1`, `2>/dev/null`, `&>`)
+# is NOT a stdout-to-file write, so those redirect tokens are stripped before the
+# `*">"*` test; otherwise a read-only `cat file 2>/dev/null` is misread as a writer
+# and source-blocked, locking a roleless lane out of its own diagnostics
+# (fix-cc-gate-fps Fix 1). The segment is already quote-stripped. Mirrors
+# shared/policy_decide._cat_writes_to_file.
+_cat_writes_file() {
+  local seg="$1"
+  # Drop fd-dup (N>&M / >&M / N>&-), both-streams (&> / &>>), and stderr-or-higher-fd
+  # to-file (2>, 2>>, 3>, …) redirections; what remains carries a '>' only on a real
+  # stdout-to-file redirect (bare `>`/`>>`/`1>` keep their '>').
+  seg="$(printf '%s' "$seg" | sed -E 's/[0-9]*>&[0-9-]+/ /g; s/&>>?/ /g; s/[2-9][0-9]*>>?/ /g')"
+  [[ "$seg" == *">"* ]]
+}
+
 # Runtime/system-state mutations (need runtime_mutation_authorized): package
 # installs, remote shells, process signals, container/service lifecycle. systemctl
 # and docker are subcommand-gated; journalctl only on --vacuum.
@@ -265,7 +281,7 @@ bash_is_mutating() {
       npm | pnpm | yarn) return 0 ;;
       tee | cp | install | touch | truncate | chmod | chown | mkdir | rm | mv | dd) return 0 ;;
       sed | perl) _seg_has_inplace "$_HEAD" "$seg" && return 0 ;;
-      cat) [[ "$seg" == *">"* ]] && return 0 ;;
+      cat) _cat_writes_file "$seg" && return 0 ;;
       git)
         case "${_ARGS[0]:-}" in
           branch) _git_branch_mutates "${_ARGS[@]:1}" && return 0 ;;
@@ -295,7 +311,7 @@ bash_source_mutation_requires_scope() {
     case "$_HEAD" in
       tee | cp | install | touch | truncate | chmod | chown | mkdir | rm | mv | dd) return 0 ;;
       sed | perl) _seg_has_inplace "$_HEAD" "$seg" && return 0 ;;
-      cat) [[ "$seg" == *">"* ]] && return 0 ;;
+      cat) _cat_writes_file "$seg" && return 0 ;;
       git) case "${_ARGS[0]:-}" in apply | reset | merge | rebase | restore) return 0 ;; esac ;;
       python*) _py_writes "$cmd" && return 0 ;;
     esac
@@ -663,6 +679,23 @@ cc-task-gate: BLOCKED — claimed task '$task_id' not found in vault.
     cc-claim <task_id>
 EOF
   exit 2
+fi
+
+# --- 6b. Own claimed-task note: always editable by its claimer (fix-cc-gate-fps
+# Fix 2). A session's OWN claimed cc-task note is governance bookkeeping (session
+# log, AC checkboxes, stage) and is rarely listed in its own mutation_scope_refs, so
+# the fully-authorized owner was scope-DENIED editing it. Allow it here, matched
+# against the RESOLVED note_path for THIS claimed task only — a DIFFERENT task's note
+# stays fully gated. Mirrors policy_decide's _is_own_task_note allow (section 5b) and
+# precedes status/authority/scope so a claimer can maintain its own note even across
+# a reconciler-unassign race or a terminal status.
+if [[ -n "$edit_path" ]]; then
+  _edit_real="$(realpath -m -- "$edit_path" 2>/dev/null || echo "$edit_path")"
+  _note_real="$(realpath -m -- "$note_path" 2>/dev/null || echo "$note_path")"
+  if [[ "$_edit_real" == "$_note_real" ]]; then
+    echo "cc-task-gate: own claimed-task note — allowed (governance bookkeeping): $edit_path" >&2
+    exit 0
+  fi
 fi
 
 # --- 7. Parse frontmatter via python (jq doesn't do YAML) ---
@@ -1067,50 +1100,78 @@ EOF
 fi
 
 if [[ -n "$edit_path" ]]; then
-  scope_check="$(python3 - "$edit_path" "$mutation_scope_refs" <<'PYEOF'
+  # Anchor RELATIVE scope refs/targets to the git repo toplevel AND the personal
+  # vault root (in addition to the live cwd), so a vault cc-task's own
+  # `20-projects/hapax-cc-tasks/` scope resolves to the absolute note path and a bare
+  # repo-relative ref resolves even from a repo subdirectory (fix-cc-gate-fps Fix 2).
+  # git toplevel is computed from the hook's cwd (the session worktree); a non-repo
+  # cwd yields "" and only cwd + vault anchor.
+  _scope_repo_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  _scope_vault_root="$HOME/Documents/Personal"
+  scope_check="$(python3 - "$edit_path" "$mutation_scope_refs" "$_scope_repo_top" "$_scope_vault_root" <<'PYEOF'
 import os
 import sys
 from pathlib import Path
 
-target_raw, scope_blob = sys.argv[1], sys.argv[2]
+target_raw = sys.argv[1]
+scope_blob = sys.argv[2]
+repo_top = sys.argv[3] if len(sys.argv) > 3 else ""
+vault_root = sys.argv[4] if len(sys.argv) > 4 else ""
 if not scope_blob.strip():
     print("missing")
     sys.exit(0)
 
-target = Path(target_raw)
-if not target.is_absolute():
-    target = Path.cwd() / target
-try:
-    target_resolved = target.resolve(strict=False)
-except Exception:
-    target_resolved = target.absolute()
+# Candidate anchor roots for a RELATIVE path: the live cwd (legacy behavior), the git
+# repo toplevel (so a bare `shared/x` / `tests/` ref resolves even when the session
+# cwd is a subdirectory), and the personal vault root (so a vault cc-task's own
+# `20-projects/hapax-cc-tasks/` scope resolves to the absolute note path, not a
+# nonexistent repo-relative path). Absolute paths ignore the anchors.
+anchor_roots = [Path.cwd()]
+for _root in (repo_top, vault_root):
+    if _root:
+        anchor_roots.append(Path(_root))
+
+
+def _resolved_candidates(raw):
+    p = Path(os.path.expanduser(raw))
+    raws = [p] if p.is_absolute() else [root / p for root in anchor_roots]
+    out = []
+    for cand in raws:
+        try:
+            out.append(cand.resolve(strict=False))
+        except Exception:
+            out.append(cand.absolute())
+    return out
+
+
+target_candidates = _resolved_candidates(target_raw)
 
 allowed = False
 for raw in scope_blob.split("\x1f"):
     item = raw.strip()
     if not item or item.startswith(("cc-task:", "request:")):
         continue
-    scope = Path(os.path.expanduser(item))
-    if not scope.is_absolute():
-        scope = Path.cwd() / scope
-    try:
-        scope_resolved = scope.resolve(strict=False)
-    except Exception:
-        scope_resolved = scope.absolute()
-    if str(scope_resolved).endswith(os.sep):
-        if str(target_resolved).startswith(str(scope_resolved)):
-            allowed = True
+    dir_suffix = item.endswith("/") or item.endswith(os.sep)
+    for scope_resolved in _resolved_candidates(item):
+        prefix = str(scope_resolved).rstrip(os.sep) + os.sep
+        for target_resolved in target_candidates:
+            if target_resolved == scope_resolved:
+                allowed = True
+                break
+            if dir_suffix and str(target_resolved).startswith(prefix):
+                allowed = True
+                break
+            if scope_resolved.is_dir():
+                try:
+                    target_resolved.relative_to(scope_resolved)
+                    allowed = True
+                    break
+                except ValueError:
+                    pass
+        if allowed:
             break
-    if target_resolved == scope_resolved:
-        allowed = True
+    if allowed:
         break
-    if scope.exists() and scope.is_dir():
-        try:
-            target_resolved.relative_to(scope_resolved)
-            allowed = True
-            break
-        except ValueError:
-            pass
 
 print("allowed" if allowed else "denied")
 PYEOF

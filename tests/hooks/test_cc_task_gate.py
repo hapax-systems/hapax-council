@@ -1698,3 +1698,133 @@ class TestBashClassifierQuoteAndPipeParity:
         )
         assert result.returncode == 2
         assert "mutation_scope_refs" in result.stderr
+
+
+class TestCatRedirectFalsePositive:
+    """fix-cc-gate-fps Fix 1: the ``cat) [[ "$seg" == *">"* ]]`` heuristic matched the
+    '>' inside a stderr/fd redirection (``2>&1``, ``2>/dev/null``, ``&>``), so a
+    read-only ``cat file 2>/dev/null`` was misread as a stdout-to-file write and
+    source-blocked — locking a roleless integrator out of its own diagnostics. A real
+    stdout redirect (``> out`` / ``>> out``) must still block."""
+
+    def test_cat_with_stderr_to_devnull_is_not_source_blocked(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "cat shared/config.py 2>/dev/null"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"read-only cat blocked: {result.stderr}"
+
+    def test_cat_with_stderr_dup_piped_is_not_source_blocked(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "cat shared/config.py 2>&1 | head"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"read-only cat blocked: {result.stderr}"
+
+    def test_roleless_cat_stderr_redirect_allowed(self, tmp_path: Path) -> None:
+        # A blocked/roleless lane must be able to run read-only ``cat … 2>/dev/null``
+        # to inspect and report state (the non-mutating early-out fires before the
+        # role gate — proving the command is no longer classified as a write).
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "cat /etc/hostname 2>/dev/null"}},
+            role=None,
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"roleless read-only cat blocked: {result.stderr}"
+
+    def test_cat_real_stdout_redirect_still_source_blocked(self, tmp_path: Path) -> None:
+        # The complement: a genuine ``cat > out`` (stdout to a file) is a shell source
+        # mutation with no scope-verifiable path and still blocks (no over-relax).
+        _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Bash", "tool_input": {"command": "cat shared/config.py > out.txt"}},
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+        assert "mutation_scope_refs" in result.stderr
+
+
+class TestVaultScopeAnchoringAndOwnNote:
+    """fix-cc-gate-fps Fix 2: relative ``mutation_scope_refs`` were anchored to the
+    session cwd only — never the git repo toplevel or the personal vault root — so a
+    vault cc-task's own ``20-projects/hapax-cc-tasks/`` scope resolved to a nonexistent
+    repo-relative path and the fully-authorized owner was scope-denied. A claimer must
+    always be able to edit its own claimed note, and a vault-/repo-relative ref must
+    resolve against the vault / repo toplevel."""
+
+    def test_claimer_can_edit_its_own_claimed_note_when_not_in_scope_refs(
+        self, tmp_path: Path
+    ) -> None:
+        # Default scope is /tmp/x (does NOT cover the note); editing the OWN claimed
+        # note must still be allowed (governance bookkeeping — session log, AC boxes).
+        _, note = _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        _write_claim(tmp_path, "alpha", "test-001")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": str(note)}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"own-note edit blocked: {result.stderr}"
+
+    def test_vault_relative_scope_ref_resolves_against_vault_root(self, tmp_path: Path) -> None:
+        # A vault-relative scope ref (`20-projects/hapax-cc-tasks/`) must resolve
+        # against ~/Documents/Personal so a DIFFERENT vault note under it is in scope
+        # (NOT the own-note carve-out — a sibling note exercising pure anchoring).
+        vault_root, note = _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        note.write_text(
+            note.read_text().replace(
+                "mutation_scope_refs:\n  - /tmp/x",
+                "mutation_scope_refs:\n  - 20-projects/hapax-cc-tasks/",
+            )
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+        sibling = vault_root / "active" / "test-001-sibling-note.md"
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": str(sibling)}},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, f"vault-anchored scope denied: {result.stderr}"
+
+    def test_repo_relative_scope_ref_resolves_against_repo_toplevel(self, tmp_path: Path) -> None:
+        # Anchor to ``git rev-parse --show-toplevel`` even when the session cwd is a
+        # repo SUBDIRECTORY: a bare `tests/` ref + an absolute repo target match only
+        # via the toplevel anchor (cwd-anchored `<repo>/docs/tests/` does not exist).
+        # cwd is a .py-free subdir (docs/) so the gate's inline `python3 -` is not
+        # broken by a cwd module shadowing a stdlib name (e.g. shared/operator.py).
+        _, note = _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        note.write_text(
+            note.read_text().replace(
+                "mutation_scope_refs:\n  - /tmp/x",
+                "mutation_scope_refs:\n  - tests/",
+            )
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+        target = REPO_ROOT / "tests" / "test_policy_decide.py"
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": str(target)}},
+            home=tmp_path,
+            cwd=REPO_ROOT / "docs",
+        )
+        assert result.returncode == 0, f"repo-toplevel-anchored scope denied: {result.stderr}"
+
+    def test_out_of_scope_vault_target_still_denied(self, tmp_path: Path) -> None:
+        # No over-broadening: a vault target under NO ref (and not the own note) denies.
+        vault_root, note = _make_vault(tmp_path, status="in_progress", assigned="alpha")
+        note.write_text(
+            note.read_text().replace(
+                "mutation_scope_refs:\n  - /tmp/x",
+                "mutation_scope_refs:\n  - shared/",
+            )
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+        other = vault_root / "active" / "some-other-note.md"
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": str(other)}},
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+        assert "mutation_scope_refs" in result.stderr
