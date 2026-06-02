@@ -43,6 +43,7 @@ from shared.jsonl_append import append_jsonl_lines
 from shared.policy_decide import ToolCall, policy_decide
 from shared.policy_decision import Decision, FailMode, Verdict
 from shared.policy_floor import evaluate_floor
+from shared.sdlc_lifecycle import stage_token as _stage_token
 
 #: Authority-case stage-transition ledger this monitor reads (the trace input).
 DEFAULT_AUTHORITY_LEDGER = Path(os.path.expanduser("~/.cache/hapax/authority-case-ledger.jsonl"))
@@ -519,12 +520,6 @@ def _load_ledger_trace(path: Path) -> list[dict[str, object]]:
             }
         )
     return trace
-
-
-def _stage_token(raw: str) -> str:
-    """Normalize 'S6_IMPLEMENTATION' / 'S3.5' to the ladder's stage token (S6 / S3_5)."""
-    token = raw.strip().replace(".", "_")
-    return token.split("_")[0] if (token[:1] == "S" and "_" in token and token != "S3_5") else token
 
 
 def main(argv: list[str] | None = None) -> int:

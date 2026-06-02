@@ -66,6 +66,36 @@ if [ "$SDLC_ADMISSION" = "closed" ]; then
     log "sdlc-pressure CLOSED: respawn floor yields this tick (lanes stay as-is; cc-tasks unaffected)"
 fi
 
+# ─── RecoveryGovernor admission for the load-injecting relaunch ───────────────
+# bb-control-stability: each lane relaunch (~1.5 cores for 60-180s) passes
+# through the shared governor (per-target AIMD backoff × global token-bucket ×
+# PSI throttle × in-flight concurrency cap) so N stale lanes can no longer fire
+# N simultaneous relaunches. In shadow mode the CLI exits 0 (this floor acts as
+# today, gated by the fixed cooldown below); under enforce the grant is binding.
+# Fail-open: any non-{0,75,2} exit (import error, traceback) is treated as PERMIT
+# so the governor can never wedge the respawn floor (NEVER-FREEZE).
+_governor_repo() {
+    local repo
+    repo="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
+    [[ -d "$repo/shared" ]] || repo="${HOME}/projects/hapax-council"
+    echo "$repo"
+}
+governor_permit() {
+    [[ "${HAPAX_RECOVERY_GOVERNOR_OFF:-}" == "1" ]] && return 0
+    local target="$1" rc
+    (cd "$(_governor_repo)" 2>/dev/null && python3 -m shared.recovery_governor --permit "$target" >/dev/null 2>&1)
+    rc=$?
+    case "$rc" in
+        0) return 0 ;;      # permit
+        75 | 2) return 1 ;; # backoff / closed → defer this tick (retried next tick)
+        *) return 0 ;;      # error → fail-open PERMIT, never a deny-sink
+    esac
+}
+governor_record() {
+    [[ "${HAPAX_RECOVERY_GOVERNOR_OFF:-}" == "1" ]] && return 0
+    (cd "$(_governor_repo)" 2>/dev/null && python3 -m shared.recovery_governor --record "$1" "$2" >/dev/null 2>&1) || true
+}
+
 # ─── Platform detection functions ────────────────────────────────────────────
 
 # Claude: idle when "❯" prompt visible in last few lines.
@@ -194,17 +224,23 @@ if [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CLAUDE_LAUNCHER" ]; then
         if ! tmux has-session -t "$session" 2>/dev/null; then
             # Session doesn't exist — launch it
             if [ -d "$worktree" ]; then
+                if ! governor_permit "lane:$role"; then
+                    log "RecoveryGovernor deferred launch of $role (backoff/pressure); retry next tick"
+                    continue
+                fi
                 log "LAUNCHING missing lane: $role"
                 echo "$now" > "$cooldown_file"
                 launch_err="$STATE_DIR/${session}.launch.err"
                 if "$CLAUDE_LAUNCHER" --role "$role" --terminal tmux --readonly >"$launch_err" 2>&1; then
                     launched_lanes=$((launched_lanes + 1))
+                    governor_record "lane:$role" ok
                     curl -sf -d "Lane idle watchdog: launched $role (session missing)" \
                         -H "Title: Lane auto-launched" \
                         -H "Priority: default" \
                         -H "Tags: rocket" \
                         "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
                 else
+                    governor_record "lane:$role" fail
                     launch_reason="$(tr '\n' ' ' <"$launch_err" 2>/dev/null | head -c 240 || true)"
                     log "FAILED to launch lane $role: ${launch_reason:-unknown launcher failure}"
                 fi
@@ -230,10 +266,13 @@ if [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CLAUDE_LAUNCHER" ]; then
                 *)
                     if [ "$claude_tui" = true ]; then
                         : # Claude runs as node child of fish — TUI visible, not dead
+                    elif ! governor_permit "lane:$role"; then
+                        log "RecoveryGovernor deferred revive of $role (backoff/pressure); retry next tick"
                     else
                         log "REVIVING dead Claude in $session (pane_cmd=$pane_cmd)"
                         echo "$now" > "$cooldown_file"
                         tmux send-keys -t "$session" "$CLAUDE_LAUNCHER --role $role --readonly" Enter 2>/dev/null || true
+                        governor_record "lane:$role" ok
                         revived_lanes=$((revived_lanes + 1))
                         curl -sf -d "Lane idle watchdog: revived $role (Claude had exited, pane was $pane_cmd)" \
                             -H "Title: Lane revived" \
