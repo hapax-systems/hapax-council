@@ -440,7 +440,22 @@ restart_user_unit() {
             echo "hapax-post-merge-deploy: audio-safe restart rolled back $unit successfully" >&2
             return 0
         fi
-        return "$safe_rc"
+        # safe_rc >= 2: the audio-safe restart failed AND its rollback did not
+        # cleanly succeed. This is the expected outcome when the audio golden
+        # chain is INTENTIONALLY down (dev): the broadcast-clean verify can't
+        # pass, so every deploy would otherwise abort here (set -e on the
+        # caller) and never install unrelated units — e.g. #3850's SDLC
+        # cpu.idle slice. Decouple the deploy from the audio precondition:
+        #   - LIVE broadcast on the line (studio-compositor active): keep
+        #     aborting — breaking the audio chain mid-stream is critical.
+        #   - no live broadcast: DEFER the audio restart (it is retried next
+        #     deploy cycle) and let the deploy finish installing everything else.
+        if systemctl --user is-active --quiet studio-compositor.service; then
+            echo "hapax-post-merge-deploy: audio-safe restart of $unit failed (rc=$safe_rc) during a LIVE broadcast (studio-compositor active); aborting deploy to avoid a mid-stream audio break" >&2
+            return "$safe_rc"
+        fi
+        echo "hapax-post-merge-deploy: audio-safe restart of $unit failed (rc=$safe_rc) but no live broadcast (studio-compositor inactive): DEFERRING the audio restart and continuing the deploy; will retry next cycle" >&2
+        return 0
     fi
 
     systemctl --user restart "$unit"
