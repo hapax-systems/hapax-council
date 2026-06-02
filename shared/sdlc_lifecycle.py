@@ -56,6 +56,12 @@ TASK_TERMINAL_STATUSES = TASK_CLOSED_STATUSES | frozenset({"refused"})
 #: A fresh, unheld task may be claimed only from `offered`.
 TASK_CLAIMABLE_STATUSES = frozenset({"offered"})
 
+#: Statuses ``hapax-methodology-dispatch`` accepts for (re)dispatch: a fresh
+#: claimable task plus the two actively-owned working states. Replaces the literal
+#: ``{"offered", "claimed", "in_progress"}`` the dispatcher used to hardcode at its
+#: dispatchability check (pinned by tests/shared/test_sdlc_lifecycle.py).
+TASK_DISPATCHABLE_STATUSES = TASK_CLAIMABLE_STATUSES | frozenset({"claimed", "in_progress"})
+
 #: Ready-family — implementation done / under review / awaiting merge. Distinct
 #: labels accumulated historically; treated as one concept everywhere.
 TASK_READY_FAMILY_STATUSES = frozenset(

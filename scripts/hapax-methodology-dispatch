@@ -46,6 +46,7 @@ from shared.dispatcher_policy import (
 )
 from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
 from shared.route_metadata_schema import assess_route_metadata
+from shared.sdlc_lifecycle import TASK_DISPATCHABLE_STATUSES
 from shared.sdlc_pressure_gate import (
     AdmissionDecision,
     admission_state,
@@ -508,7 +509,7 @@ def validate_task(
     fields = task.fields
     status = strip_scalar(str(fields.get("status", "")))
     assigned_to = strip_scalar(str(fields.get("assigned_to", "")))
-    if status not in {"offered", "claimed", "in_progress"}:
+    if status not in TASK_DISPATCHABLE_STATUSES:
         return Validation(False, f"task status {status!r} is not dispatchable", task)
     if status == "offered" and not (
         is_nullish(fields.get("assigned_to")) or assigned_to == "unassigned"

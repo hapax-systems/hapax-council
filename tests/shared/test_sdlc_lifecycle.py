@@ -14,7 +14,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from shared.sdlc_lifecycle import PR_ACTIONS
+from shared.sdlc_lifecycle import (
+    PR_ACTIONS,
+    TASK_CLAIMABLE_STATUSES,
+    TASK_DISPATCHABLE_STATUSES,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -67,4 +71,34 @@ class TestPrActions:
         assert emitted, "no action= literals found in classify_pr (parser drift)"
         assert emitted <= PR_ACTIONS, (
             f"classify_pr emits actions outside PR_ACTIONS: {emitted - PR_ACTIONS}"
+        )
+
+
+class TestTaskDispatchableStatuses:
+    def test_dispatchable_statuses_is_offered_claimed_in_progress(self) -> None:
+        assert frozenset({"offered", "claimed", "in_progress"}) == TASK_DISPATCHABLE_STATUSES
+
+    def test_dispatchable_statuses_derives_from_claimable_plus_active_work(self) -> None:
+        # The dispatch admit-set is exactly the claimable set plus the two
+        # actively-owned working states — the identity hapax-methodology-dispatch
+        # used to hardcode at the dispatchability check.
+        assert TASK_CLAIMABLE_STATUSES | {"claimed", "in_progress"} == TASK_DISPATCHABLE_STATUSES
+
+    def test_dispatch_consumes_the_ssot_not_a_hardcoded_literal(self) -> None:
+        """Pin the de-hardcode: hapax-methodology-dispatch references the SSOT set
+        and no longer carries the literal {"offered","claimed","in_progress"}."""
+
+        src = (REPO_ROOT / "scripts" / "hapax-methodology-dispatch").read_text(encoding="utf-8")
+        assert "TASK_DISPATCHABLE_STATUSES" in src, "dispatch must reference the SSOT set"
+        set_literals = [
+            frozenset(
+                el.value
+                for el in node.elts
+                if isinstance(el, ast.Constant) and isinstance(el.value, str)
+            )
+            for node in ast.walk(ast.parse(src))
+            if isinstance(node, ast.Set)
+        ]
+        assert frozenset({"offered", "claimed", "in_progress"}) not in set_literals, (
+            "dispatch still hardcodes the dispatchable-status set literal"
         )
