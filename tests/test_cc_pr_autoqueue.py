@@ -179,6 +179,9 @@ class _FakeRunner:
         self.open_prs: list[dict[str, Any]] = []
         self.queued_prs: set[int] = set()
         self.calls: list[list[str]] = []
+        # head_sha -> existing commit statuses (most-recent-first), for the G3
+        # read-before-write idempotency check in set_autoqueue_admission_status.
+        self.head_statuses: dict[str, list[dict[str, Any]]] = {}
 
     def __call__(
         self,
@@ -216,6 +219,16 @@ class _FakeRunner:
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
         if cmd[:3] == ["gh", "pr", "merge"]:
             return subprocess.CompletedProcess(cmd, 0, f"merged {cmd[3]}\n", "")
+        if (
+            cmd[:2] == ["gh", "api"]
+            and len(cmd) == 3
+            and "/commits/" in cmd[2]
+            and cmd[2].endswith("/statuses")
+        ):
+            sha = cmd[2].split("/commits/", 1)[1].rsplit("/statuses", 1)[0]
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps(self.head_statuses.get(sha, [])), ""
+            )
         return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
 
 
@@ -1724,3 +1737,78 @@ def test_non_epic_pr_not_held_by_unrelated_in_progress_task(tmp_path: Path) -> N
         reason.startswith("shared_file_epic_affinity_hold:")
         for reason in report["decisions"][0].get("reasons", [])
     )
+
+
+# --- G3: idempotent admission writes (kill the 422 self-DoS) -----------------
+
+
+def _admission_decision(number: int = 50, action: str = "queue") -> Any:
+    pr = autoqueue._parse_pr(_pr(number))
+    assert pr is not None
+    return autoqueue.Decision(pr=pr, action=action)
+
+
+def _admission_posts(runner: _FakeRunner) -> list[list[str]]:
+    return [call for call in runner.calls if call[:4] == ["gh", "api", "-X", "POST"]]
+
+
+def _existing_status(state: str, description: str, created_at: str) -> dict[str, Any]:
+    return {
+        "context": autoqueue.AUTOQUEUE_ADMISSION_CONTEXT,
+        "state": state,
+        "description": description,
+        "created_at": created_at,
+    }
+
+
+def test_admission_status_posts_when_no_current_status(tmp_path: Path) -> None:
+    decision = _admission_decision()
+    runner = _FakeRunner()  # no existing status on the head SHA
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner
+    )
+    assert result is not None and result[0]
+    assert len(_admission_posts(runner)) == 1
+
+
+def test_admission_status_idempotent_when_unchanged_and_fresh(tmp_path: Path) -> None:
+    decision = _admission_decision()
+    state, description = autoqueue._admission_status_for(decision)
+    runner = _FakeRunner()
+    runner.head_statuses["sha-50"] = [_existing_status(state, description, "2026-06-02T00:00:00Z")]
+    # 5 minutes later: well within TTL/2 (15 min) -> skip the redundant POST.
+    now = datetime(2026, 6, 2, 0, 5, tzinfo=UTC)
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner, now=now
+    )
+    assert result == (True, "unchanged")
+    assert _admission_posts(runner) == []
+
+
+def test_admission_status_reposts_when_stale(tmp_path: Path) -> None:
+    decision = _admission_decision()
+    state, description = autoqueue._admission_status_for(decision)
+    runner = _FakeRunner()
+    runner.head_statuses["sha-50"] = [_existing_status(state, description, "2026-06-02T00:00:00Z")]
+    # 20 minutes later: older than TTL/2 (15 min) -> re-post to stay fresh.
+    now = datetime(2026, 6, 2, 0, 20, tzinfo=UTC)
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner, now=now
+    )
+    assert result is not None and result[0]
+    assert len(_admission_posts(runner)) == 1
+
+
+def test_admission_status_posts_when_verdict_changed(tmp_path: Path) -> None:
+    decision = _admission_decision()  # success verdict
+    runner = _FakeRunner()
+    runner.head_statuses["sha-50"] = [
+        _existing_status("failure", "cc-pr-autoqueue blocked: stale", "2026-06-02T00:00:00Z")
+    ]
+    # Fresh, but the verdict flipped failure -> success: must POST.
+    now = datetime(2026, 6, 2, 0, 1, tzinfo=UTC)
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner, now=now
+    )
+    assert result is not None and result[0]
+    assert len(_admission_posts(runner)) == 1

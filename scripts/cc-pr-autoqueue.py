@@ -31,7 +31,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +90,10 @@ HOLD_LABEL_RE = re.compile(
 DEFAULT_REQUIRED_CHECKS = ("lint", "test", "typecheck", "web-build", "vscode-build")
 AUTOQUEUE_ADMISSION_CONTEXT = "hapax/autoqueue-admission"
 AUTOQUEUE_IGNORED_CHECK_CONTEXTS = {AUTOQUEUE_ADMISSION_CONTEXT, "pr-admission"}
+# Mirrors queue-admission-proof-check.py DEFAULT_TTL_SECONDS. The reconciler
+# re-posts the admission proof once it is older than half this window so the
+# server-side proof never goes stale (G3 idempotent writes).
+AUTOQUEUE_ADMISSION_TTL_SECONDS = 30 * 60
 CI_REPAIR_KINDS = {"cicd-speedup", "ci-repair", "ci-speedup", "merge-queue-repair"}
 CI_REPAIR_TAGS = {"cicd", "ci", "autoqueue"}
 INDEPENDENT_QUEUE_ADMISSION = {"independent", "independent_route"}
@@ -1017,22 +1021,84 @@ def _admission_status_for(decision: Decision) -> tuple[str, str] | None:
     return None
 
 
+def _parse_status_created_at(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _latest_admission_status(
+    head_sha: str,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> tuple[str, str, datetime | None] | None:
+    """The most recent autoqueue-admission (state, description, created_at) on
+    ``head_sha``, or None when absent/unreadable. Read-before-write lets the
+    reconciler POST a fresh status only when it actually changed or is about to
+    go stale: GitHub caps statuses at 1000 per SHA+context, and the old
+    unconditional POST burned that cap into a 422 self-DoS that made the apply
+    loop skip the queue mutation."""
+    cmd = ["gh", "api", f"repos/{repo}/commits/{head_sha}/statuses"]
+    proc = runner(cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60)
+    if getattr(proc, "returncode", 1) != 0:
+        return None
+    try:
+        items = json.loads(proc.stdout or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(items, list):
+        return None
+    for item in items:  # the statuses API returns most-recent-first
+        if isinstance(item, dict) and item.get("context") == AUTOQUEUE_ADMISSION_CONTEXT:
+            return (
+                str(item.get("state") or ""),
+                str(item.get("description") or ""),
+                _parse_status_created_at(item.get("created_at")),
+            )
+    return None
+
+
 def set_autoqueue_admission_status(
     decision: Decision,
     *,
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
+    now: datetime | None = None,
 ) -> tuple[bool, str] | None:
-    """Write the server-visible autoqueue admission proof for a PR head SHA."""
+    """Write the server-visible autoqueue admission proof for a PR head SHA.
+
+    Idempotent (G3): reads the current status first and POSTs only when the
+    (state, description) changed OR the existing status is older than half the
+    proof TTL. GitHub caps statuses at 1000 per SHA+context; the old
+    unconditional POST burned that cap into a 422 self-DoS that made the apply
+    loop skip the queue mutation."""
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
+    now = now or datetime.now(UTC)
     status = _admission_status_for(decision)
     if status is None:
         return None
     if not decision.pr.head_sha:
         return False, "missing_head_sha"
     state, description = status
+    current = _latest_admission_status(
+        decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
+    )
+    if current is not None:
+        cur_state, cur_description, cur_created = current
+        unchanged = cur_state == state and cur_description == description
+        fresh = cur_created is not None and (now - cur_created) < timedelta(
+            seconds=AUTOQUEUE_ADMISSION_TTL_SECONDS / 2
+        )
+        if unchanged and fresh:
+            return True, "unchanged"
     cmd = [
         "gh",
         "api",
@@ -1263,7 +1329,7 @@ def run_reconciler(
     if apply:
         for decision in decisions:
             status_result = set_autoqueue_admission_status(
-                decision, repo=repo, repo_root=repo_root, runner=runner
+                decision, repo=repo, repo_root=repo_root, runner=runner, now=now
             )
             if decision.action not in {
                 "queue",
