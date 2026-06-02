@@ -1,0 +1,39 @@
+# hapax-sdlc.slice — the elastic, yield-to-everything home for the SDLC fleet.
+#
+# The fleet = every Claude/Codex/Gemini/Vibe lane plus its git/pytest/cargo
+# grandchildren. On 2026-06-01 a 98-agent audit + 6 build-lanes ran in the same
+# --user cgroup as the production daemons with ZERO scheduler shielding; podium
+# (8c/16t) hit load 30+ and STARVED the coordinator to death — not OOM, scheduler
+# PARITY. This slice fixes that by SLOWING the fleet, never DEGRADING it: every
+# lane, test, and build still completes — just last, and only when the box has
+# spare cycles.
+#
+# Attachment (lanes are born three ways, all funnel here):
+#   (a) Slice= on hapax-claude-lane@.service  [template-born lanes]
+#   (b) systemd-run --scope --slice= in hapax-methodology-dispatch  [codex/vibe/gemini]
+#   (c) self-attach re-exec in hapax-claude-headless  [tmux/foot + direct claude]
+# cgroup inheritance pushes cpu.idle onto every grandchild automatically.
+[Unit]
+Description=Hapax SDLC fleet — elastic cpu.idle slice (yields to all non-idle peers, always completes)
+Documentation=file:%h/projects/hapax-council/Documents/Personal/30-areas/hapax/coordination-reform-master-design-2026-05-30.md
+
+[Slice]
+# CPUWeight=idle → cgroup cpu.idle=1 → SCHED_IDLE for the whole subtree. Any
+# non-idle peer (the coordinator, audio, the operator's interactive work)
+# preempts the fleet globally. Chosen over CPUWeight=20 because a low weight in a
+# sibling subtree does NOT reliably yield across the cgroup tree — cpu.idle does.
+CPUWeight=idle
+
+# Hard cpuset fence: the audio data-loops (pipewire/wireplumber, SCHED_FIFO 88)
+# own logical cores {6,7,14,15}. No pytest/cargo/git worker may EVER land there
+# and contend the realtime audio path. The fleet lives on the other 12 threads.
+AllowedCPUs=0 1 2 3 4 5 8 9 10 11 12 13
+
+# Reclaim-throttle, NOT a kill ceiling. Under memory pressure the kernel throttles
+# allocation + reclaims against this soft limit; it never SIGKILLs. MemoryMax here
+# would kill a lane mid-task — that is exactly the degradation this scheme forbids.
+MemoryHigh=48G
+
+# Let the slice own its subtree so cpu.idle + the cpuset inherit to scoped
+# grandchildren (systemd-run --scope children create their own leaf cgroups).
+Delegate=yes

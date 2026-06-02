@@ -325,6 +325,24 @@ from shared.sdlc_invariants import decide_with_escape as _decide_with_escape
 
 _decide_with_escape
 
+# sdlc_pressure_gate: the SDLC resource-shielding admission helpers are invoked
+# across the no-.py-script boundary vulture can't see — sdlc_slice_wrap and
+# wait_until_admitted by scripts/hapax-methodology-dispatch, and run_in_waves is
+# the public wave-governor primitive for gated Python fan-out callers.
+from shared.sdlc_pressure_gate import (
+    run_in_waves as _run_in_waves,
+)
+from shared.sdlc_pressure_gate import (
+    sdlc_slice_wrap as _sdlc_slice_wrap,
+)
+from shared.sdlc_pressure_gate import (
+    wait_until_admitted as _wait_until_admitted,
+)
+
+_run_in_waves
+_sdlc_slice_wrap
+_wait_until_admitted
+
 # Audio reactivity runtime witness fixture validators are invoked by Pydantic
 # model validation when loading the fixture packet.
 _RuntimeAudioLedgerRowFixture._validate_active_source_evidence

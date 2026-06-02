@@ -156,7 +156,7 @@ for retired_unit in "${DECOMMISSIONED_UNITS[@]}"; do
     fi
 done
 
-for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REPO_DIR"/*.path; do
+for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REPO_DIR"/*.path "$REPO_DIR"/*.slice; do
     [ -f "$unit" ] || continue
     name="$(basename "$unit")"
     dest="$DEST_DIR/$name"

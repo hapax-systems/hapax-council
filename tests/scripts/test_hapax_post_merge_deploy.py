@@ -165,6 +165,15 @@ def test_systemd_coverage_includes_dropins_presets_and_source_overrides() -> Non
     assert "ok: all systemd/** paths" in result.stdout
 
 
+def test_systemd_coverage_includes_slice_units() -> None:
+    # hapax-sdlc.slice (the SDLC resource-shielding slice) must be deploy-covered;
+    # a .slice falling outside the case-globs is the absence-class deploy bug.
+    result = _coverage(["systemd/units/hapax-sdlc.slice"])
+
+    assert result.returncode == 0, result.stderr
+    assert "ok: all systemd/** paths" in result.stdout
+
+
 def test_systemd_coverage_still_flags_unknown_systemd_paths() -> None:
     result = _coverage(["systemd/uncovered/example.conf"])
 
