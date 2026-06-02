@@ -77,6 +77,25 @@ TASK_MERGE_READY_STATUSES = frozenset({"pr_open", "merge_queue"}) | TASK_READY_F
 #: A lane may RESUME (re-claim) an owned task in these states — not a fresh claim.
 TASK_RESUMABLE_STATUSES = TASK_MERGE_READY_STATUSES
 
+# --- Dispatch-plane vocabulary: PR control actions (NOT statuses, NOT stages) -
+#: The autoqueue's ``classify_pr`` (scripts/cc-pr-autoqueue.py) emits a small,
+#: closed set of *control actions* deciding what to DO with a PR. This is a
+#: third, distinct vocabulary from the task-plane status frozensets above and
+#: the proof-plane ladder stages — naming it here gives the three planes one
+#: import surface. Pinned total by tests/shared/test_sdlc_lifecycle.py: every
+#: action ``classify_pr`` can emit is a member of this set.
+PR_ACTIONS = frozenset(
+    {
+        "queue",
+        "enable_auto_merge",
+        "disable_auto_merge",
+        "dequeue",
+        "already_queued",
+        "already_auto_merge_enabled",
+        "blocked",
+    }
+)
+
 REQUEST_TERMINAL_SKIP_STATUSES = frozenset(
     {"rejected", "deferred", "superseded", "withdrawn", "closed"}
 )
