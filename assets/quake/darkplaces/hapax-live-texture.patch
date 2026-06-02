@@ -406,18 +406,27 @@ index 7fbcd0b3..3a4d970e 100644
  
  // 1.0f / N table
 diff --git a/shader_glsl.h b/shader_glsl.h
-index dc56d085..f451e47a 100644
+index dc56d085..f40dc643 100644
 --- a/shader_glsl.h
 +++ b/shader_glsl.h
-@@ -1797,6 +1797,22 @@
+@@ -1797,6 +1797,31 @@
  "   color.rgb *= clamp(float(visiblepixels) / float(allpixels), 0.0, 1.0);\n",
  "#endif\n",
  "\n",
 +"#ifdef USEHAPAXDRIFT\n",
 +"	{\n",
 +"		float hpx_luma = dot(color.rgb, vec3(0.299, 0.587, 0.114));\n",
-+"		float hpx_fizz = (sin(TexCoord.x*40.0 + ClientTime*1.8)*sin(TexCoord.y*37.0 - ClientTime*1.1) + 0.55*sin(TexCoord.x*13.0 - TexCoord.y*17.0 + ClientTime*0.7)) * 0.34 + 0.5;\n",
-+"		float hpx_breath = 0.5 + 0.5*sin(ClientTime*0.6 + TexCoord.x*2.0 + TexCoord.y*1.3);\n",
++"		// Effervescent multi-octave shimmer: incommensurate (irrational-ratio)\n",
++"		// cadences so the wire never exactly repeats => endless temporal variety.\n",
++"		// Spatially incoherent (TexCoord-varying) so it is NEVER a global flash\n",
++"		// envelope (anti_visualizer). Brightness stays bounded; only a gentle\n",
++"		// per-texel shimmer + slow macro breath transit.\n",
++"		float hpx_o1 = sin(TexCoord.x*40.0 + ClientTime*1.8)*sin(TexCoord.y*37.0 - ClientTime*1.1);\n",
++"		float hpx_o2 = sin(TexCoord.x*13.0 - TexCoord.y*17.0 + ClientTime*0.7);\n",
++"		float hpx_o3 = sin((TexCoord.x*2.0 + TexCoord.y*3.0)*23.0 - ClientTime*2.71);\n",
++"		float hpx_o4 = sin(TexCoord.y*9.0 + TexCoord.x*5.0 + ClientTime*0.37);\n",
++"		float hpx_fizz = (hpx_o1*0.46 + hpx_o2*0.28 + hpx_o3*0.16 + hpx_o4*0.10) * 0.34 + 0.5;\n",
++"		float hpx_breath = 0.5 + 0.5*sin(ClientTime*0.26 + TexCoord.x*2.0 + TexCoord.y*1.3);\n",
 +"		vec3 hpx_tint = mix(vec3(0.58, 0.72, 0.96), vec3(0.72, 0.78, 1.02), hpx_breath);\n",
 +"		vec3 hpx_desat = mix(color.rgb, vec3(hpx_luma), 0.86) * hpx_tint;\n",
 +"		// Sparse luminous wireframe: flagged grid/stipple geometry self-glows as a\n",
