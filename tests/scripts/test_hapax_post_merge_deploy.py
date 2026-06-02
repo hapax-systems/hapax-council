@@ -103,6 +103,36 @@ def _fake_audio_safe_restart(
     return fake, calls
 
 
+def _fake_systemctl_with_compositor_state(
+    tmp_path: Path, *, compositor_active: bool
+) -> tuple[Path, Path]:
+    """A fake ``systemctl`` whose ``is-active --quiet studio-compositor.service``
+    reports the configured liveness; every other call exits 0.
+
+    This lets the deploy reach the audio-safe restart for a changed audio unit
+    (the changed unit's own ``is-active`` probe returns 0 → active → restart)
+    while the test independently chooses whether a *live broadcast* is on the
+    line — i.e. whether ``studio-compositor.service`` is active.
+    """
+    calls = tmp_path / "systemctl-calls.txt"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "systemctl"
+    # systemctl is-active exits 0 when active, 3 when inactive/dead.
+    compositor_rc = 0 if compositor_active else 3
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$HAPAX_SYSTEMCTL_CALLS"\n'
+        'case "$*" in\n'
+        f"    *is-active*studio-compositor.service*) exit {compositor_rc} ;;\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return bin_dir, calls
+
+
 def test_dry_run_writes_bounded_post_merge_trace(tmp_path: Path) -> None:
     repo, sha = _repo_with_merge_commit(tmp_path)
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
@@ -589,3 +619,108 @@ def test_real_deploy_with_no_smoke_script_is_a_no_op(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert trace_path.exists()
+
+
+def _music_player_unit_body() -> str:
+    return (
+        "[Unit]\n"
+        "Description=Music player\n"
+        "\n"
+        "[Service]\n"
+        "ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python "
+        "-m agents.local_music_player\n"
+    )
+
+
+def test_audio_safe_failure_defers_deploy_when_no_live_broadcast(tmp_path: Path) -> None:
+    """A hard audio-safe-restart failure (rc>=2 — e.g. audio is intentionally
+    down so its broadcast-clean verify can't pass) must NOT abort the whole
+    deploy when there is no live broadcast on the line. The deploy DEFERS the
+    audio restart (retried next cycle) and still completes (exit 0) so unrelated
+    units — e.g. #3850's SDLC ``cpu.idle`` slice — still install.
+
+    Regression for the reform deploy-decouple: previously the bare
+    ``return "$safe_rc"`` propagated rc=2 under ``set -e`` and aborted every
+    deploy for as long as audio stayed down.
+    """
+    unit_path = "systemd/units/hapax-music-player.service"
+    repo, sha = _repo_with_linear_commit(tmp_path, {unit_path: _music_player_unit_body()})
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl_with_compositor_state(
+        tmp_path, compositor_active=False
+    )
+    audio_safe_bin, audio_safe_calls = _fake_audio_safe_restart(bin_dir, tmp_path, exit_code=2)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_AUDIO_SAFE_RESTART_BIN": str(audio_safe_bin),
+        "HAPAX_AUDIO_SAFE_RESTART_CALLS": str(audio_safe_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    # the audio-safe restart was actually attempted (and failed, rc=2)
+    assert audio_safe_calls.read_text(encoding="utf-8").splitlines() == [
+        "hapax-music-player.service"
+    ]
+    # it probed for a live broadcast and, finding none, deferred rather than aborted
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "--user is-active --quiet studio-compositor.service" in calls
+    assert "DEFERRING" in result.stderr
+    # the deploy still ran to completion despite the deferred audio restart
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["status"] == "completed"
+
+
+def test_audio_safe_failure_aborts_deploy_during_live_broadcast(tmp_path: Path) -> None:
+    """If a live broadcast IS on the line (``studio-compositor.service`` active),
+    a hard audio-safe-restart failure must still ABORT the deploy (exit 2):
+    breaking the audio chain mid-stream is more critical than deferring a unit
+    install. This pins the broadcast-protecting half of the decouple.
+    """
+    unit_path = "systemd/units/hapax-music-player.service"
+    repo, sha = _repo_with_linear_commit(tmp_path, {unit_path: _music_player_unit_body()})
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl_with_compositor_state(
+        tmp_path, compositor_active=True
+    )
+    audio_safe_bin, audio_safe_calls = _fake_audio_safe_restart(bin_dir, tmp_path, exit_code=2)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_AUDIO_SAFE_RESTART_BIN": str(audio_safe_bin),
+        "HAPAX_AUDIO_SAFE_RESTART_CALLS": str(audio_safe_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 2, (result.returncode, result.stderr)
+    assert audio_safe_calls.read_text(encoding="utf-8").splitlines() == [
+        "hapax-music-player.service"
+    ]
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "--user is-active --quiet studio-compositor.service" in calls
+    assert "LIVE" in result.stderr or "live broadcast" in result.stderr.lower()
