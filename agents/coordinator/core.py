@@ -5,14 +5,19 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
 
+from shared.jsonl_append import append_jsonl
+from shared.notify import send_notification
 from shared.recovery_governor import converge_action_cap
+from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
 from shared.sdlc_pressure_gate import admission_state
 
 log = logging.getLogger(__name__)
@@ -36,10 +41,17 @@ def pressure_dispatch_budget(
 
 
 TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
-RELAY_DIR = Path.home() / ".cache/hapax/relay"
+CACHE_DIR = Path.home() / ".cache/hapax"
+RELAY_DIR = CACHE_DIR / "relay"
 PID_DIR = Path(f"/run/user/{os.getuid()}/hapax-claude")
 SHM_DIR = Path("/dev/shm/hapax-coordinator")
 SHM_FILE = SHM_DIR / "state.json"
+
+# The same authority-case ledger cc-stage-advance writes — one SSOT for transitions.
+# Honor the same env override so both producers target the same inode.
+REOFFER_LEDGER = Path(
+    os.environ.get("HAPAX_AUTHORITY_CASE_LEDGER", str(CACHE_DIR / "authority-case-ledger.jsonl"))
+).expanduser()
 
 FALLBACK_LANE_ROLES = ("alpha", "beta", "gamma", "delta", "epsilon", "zeta")
 LANE_ROLES = FALLBACK_LANE_ROLES
@@ -49,6 +61,14 @@ SESSION_PREFIXES = (
     ("hapax-gemini-", "gemini"),
 )
 DISPATCH_COOLDOWN_S = 120.0
+
+# A lane that owns a non-terminal task but has emitted no progress signal for this
+# long (or whose supervising launcher PID is gone) is projected `stalled` and its
+# held task reoffered. 15 min of zero progress on a held task is a real stall, not
+# normal think-time (lanes ship in minutes-to-an-hour per velocity calibration).
+STALL_OUTPUT_GRACE_S = 900.0
+MAX_REOFFERS_PER_TICK = 1  # bound the controller per tick; never thrash the queue
+MAX_REOFFERS_PER_TASK = 3  # per-lifetime cap: after N, escalate (block + ntfy), don't loop
 
 
 @dataclass(frozen=True)
@@ -87,6 +107,8 @@ class LaneState:
     relay_age_s: float = float("inf")
     claimed_task: str | None = None
     idle: bool = True
+    output_age_s: float = float("inf")  # age of the freshest progress signal
+    stalled: bool = False  # ground-truth projection, re-derived each tick
 
 
 @dataclass
@@ -100,6 +122,8 @@ class CoordinatorState:
     lanes_idle: int = 0
     lanes_total: int = len(LANE_ROLES)
     dispatches_this_tick: int = 0
+    lanes_stalled: int = 0
+    reoffers_this_tick: int = 0
     lanes: dict[str, dict] = field(default_factory=dict)
 
 
@@ -108,6 +132,9 @@ class Coordinator:
 
     def __init__(self) -> None:
         self._last_dispatch: dict[str, float] = {}
+        # per-task-lifetime reoffer counter (process-local); caps the
+        # offered→claim→stall→offered loop and escalates to `blocked` past the cap.
+        self._reoffer_counts: dict[str, int] = {}
 
     def tick(self) -> None:
         tasks = self._scan_tasks()
@@ -144,6 +171,26 @@ class Coordinator:
                 max_dispatches,
                 cooldown_s,
             )
+
+        # Project ground-truth `stalled` for every lane, then reoffer held tasks off
+        # stalled lanes — bounded, and gated on the SAME #3850 admission read. 'closed'
+        # reoffers nothing (the held task stays offered — queued, never dropped). Runs
+        # before the dispatch loop so a just-freed lane re-enters the pool next tick.
+        non_terminal_ids = frozenset(
+            t.task_id for t in tasks if t.status not in TASK_TERMINAL_STATUSES
+        )
+        for lane in lanes.values():
+            lane.stalled = project_stalled(lane, non_terminal_task_ids=non_terminal_ids)
+        state.lanes_stalled = sum(1 for lane in lanes.values() if lane.stalled)
+
+        reoffer_budget = 0 if admission.state == "closed" else MAX_REOFFERS_PER_TICK
+        reoffered = 0
+        for lane in lanes.values():
+            if reoffered >= reoffer_budget:
+                break
+            if lane.stalled and lane.claimed_task and self._reoffer_stalled(lane):
+                reoffered += 1
+        state.reoffers_this_tick = reoffered
 
         for task in offered_sorted:
             if not idle_lanes or dispatches >= max_dispatches:
@@ -241,6 +288,121 @@ class Coordinator:
         log.info("Dispatched task %s to lane %s", task.task_id, lane.role)
         return True
 
+    def _reoffer_stalled(self, lane: LaneState) -> bool:
+        """Release a stalled lane's held task back to `offered`/`unassigned`, clear the
+        stale claim signal, and emit a ground-truth ledger record. Idempotent: once the
+        note is already `offered` a second call is a no-op. Past the per-task reoffer cap
+        it escalates to `blocked` (+ntfy) instead of looping. NEVER kills a process."""
+        claim = lane.claimed_task
+        if not claim:
+            return False
+        path, match_count = _resolve_task_note(claim)
+        if path is None:
+            if match_count > 1:
+                # ambiguous prefix collision — refuse to guess; emit a visible record
+                self._emit_reoffer_ledger(
+                    lane, claim, kind="lane_stalled_reoffer_ambiguous", to_stage="error"
+                )
+                log.error(
+                    "reoffer: %d notes match claim %s (prefix collision) — aborting",
+                    match_count,
+                    claim,
+                )
+            return False
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+
+        if self._reoffer_counts.get(claim, 0) >= MAX_REOFFERS_PER_TASK:
+            return self._escalate_stalled(lane, claim, path, text)
+
+        new = re.sub(
+            r"^status: (?:claimed|in_progress)\b", "status: offered", text, count=1, flags=re.M
+        )
+        new = re.sub(r"^assigned_to: .*$", "assigned_to: unassigned", new, count=1, flags=re.M)
+        if new == text:
+            return False  # already offered / nothing to release — idempotent no-op
+        _atomic_write(path, new)
+        self._clear_claim_signal(lane)
+        self._reoffer_counts[claim] = self._reoffer_counts.get(claim, 0) + 1
+        self._emit_reoffer_ledger(lane, claim, kind="lane_stalled_reoffer", to_stage="offered")
+        log.warning(
+            "reoffer: lane %s stalled on %s -> offered (output_age=%.0fs, reoffer #%d)",
+            lane.role,
+            claim,
+            lane.output_age_s,
+            self._reoffer_counts[claim],
+        )
+        return True
+
+    def _escalate_stalled(self, lane: LaneState, claim: str, path: Path, text: str) -> bool:
+        """Past the per-task reoffer cap: block the task and ntfy the operator instead of
+        looping offered→claim→stall→offered forever. Bounded escalation, never a kill."""
+        new = re.sub(
+            r"^status: (?:claimed|in_progress|offered)\b",
+            "status: blocked",
+            text,
+            count=1,
+            flags=re.M,
+        )
+        new = re.sub(r"^assigned_to: .*$", "assigned_to: unassigned", new, count=1, flags=re.M)
+        if new != text:
+            _atomic_write(path, new)
+        self._clear_claim_signal(lane)
+        self._emit_reoffer_ledger(lane, claim, kind="lane_stalled_escalated", to_stage="blocked")
+        reoffers = self._reoffer_counts.get(claim, 0)
+        log.error(
+            "reoffer cap exceeded: %s reoffered %dx without progress -> blocked (lane %s)",
+            claim,
+            reoffers,
+            lane.role,
+        )
+        try:
+            send_notification(
+                "SDLC: task stuck, blocked",
+                f"{claim} stalled and was reoffered {reoffers}x without progress; set to blocked.",
+                priority="high",
+                tags=["sdlc", "stalled"],
+            )
+        except Exception:  # noqa: BLE001 — ntfy is best-effort; never block the tick.
+            log.exception("stall-escalation ntfy failed (continuing)")
+        return True
+
+    def _clear_claim_signal(self, lane: LaneState) -> None:
+        """Remove the per-lane cc-active-task signal so the next tick sees the lane idle."""
+        for signal in _active_task_candidates(lane.role, lane.session):
+            try:
+                signal.unlink()
+            except OSError:
+                pass
+
+    def _emit_reoffer_ledger(
+        self, lane: LaneState, task_id: str, *, kind: str, to_stage: str
+    ) -> None:
+        """Append a `ts`-keyed record to the SAME ledger cc-stage-advance writes, so the
+        real stuck case is finally visible to INV-2. `ts` is an ISO-8601 STRING matching the
+        producer byte-for-byte — a float epoch would `fromisoformat`-fail to ~56yr-stale and
+        self-generate the exact false 'stuck' finding this projection exists to cure."""
+        append_jsonl(
+            REOFFER_LEDGER,
+            {
+                "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "kind": kind,
+                "tool": "coordinator",
+                "role": lane.role,
+                "task_id": task_id,
+                "to_stage": to_stage,
+                "reason": "launcher_pid_gone"
+                if not _launcher_pid_present(lane.role)
+                else "output_stale",
+                "output_age_s": round(lane.output_age_s, 1)
+                if lane.output_age_s != float("inf")
+                else None,
+            },
+            sort_keys=True,
+        )
+
     def _write_state(self, state: CoordinatorState) -> None:
         SHM_DIR.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -251,6 +413,8 @@ class Coordinator:
             "lanes_idle": state.lanes_idle,
             "lanes_total": state.lanes_total,
             "dispatches_this_tick": state.dispatches_this_tick,
+            "lanes_stalled": state.lanes_stalled,
+            "reoffers_this_tick": state.reoffers_this_tick,
             "lanes": state.lanes,
         }
         tmp = SHM_FILE.with_suffix(".tmp")
@@ -395,10 +559,10 @@ def _relay_status_is_idle(value: object) -> bool | None:
 
 def _active_task_candidates(role: str, session: str = "") -> list[Path]:
     candidates = [
-        Path.home() / f".cache/hapax/cc-active-task-{role}",
+        CACHE_DIR / f"cc-active-task-{role}",
     ]
     if session:
-        candidates.append(Path.home() / f".cache/hapax/cc-active-task-{session}")
+        candidates.append(CACHE_DIR / f"cc-active-task-{session}")
     return list(dict.fromkeys(candidates))
 
 
@@ -449,7 +613,74 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
             state.idle = False
             break
 
+    # freshest progress signal: cc-active-task mtime ∪ relay mtime (relay alone is
+    # unreliable per grounding — its mtime can run tens of minutes stale on a live lane).
+    progress_mtimes: list[float] = []
+    if relay_mtime is not None:
+        progress_mtimes.append(relay_mtime)
+    for active_task_file in _active_task_candidates(descriptor.role, descriptor.session):
+        try:
+            progress_mtimes.append(active_task_file.stat().st_mtime)
+        except OSError:
+            continue
+    if progress_mtimes:
+        state.output_age_s = time.time() - max(progress_mtimes)
+
     return state
+
+
+def _launcher_pid_present(role: str) -> bool:
+    """True iff the supervising launcher PID for this lane is alive. Uses os.kill(pid, 0) —
+    a liveness probe only (signal 0 delivers nothing); NEVER os.killpg or a real signal."""
+    try:
+        pid = int((PID_DIR / f"{role}.launcher.pid").read_text().strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def project_stalled(
+    lane: LaneState,
+    *,
+    non_terminal_task_ids: frozenset[str],
+    output_grace_s: float = STALL_OUTPUT_GRACE_S,
+) -> bool:
+    """PURE projection, re-derived every tick from ground truth (never a persisted edge).
+
+    A lane is stalled iff it owns a non-terminal task AND it has stopped: either its
+    supervising launcher PID is gone, or its progress signal is stale past `output_grace_s`.
+    """
+    claim = lane.claimed_task
+    if not claim or claim not in non_terminal_task_ids:
+        return False  # idle, or the claim is already terminal → not stalled
+    if not _launcher_pid_present(lane.role):
+        return True  # owner process gone, task still non-terminal
+    return lane.output_age_s > output_grace_s
+
+
+def _resolve_task_note(task_id: str) -> tuple[Path | None, int]:
+    """Locate the single cc-task note for `task_id`, mirroring cc-stage-advance `_find_note`:
+    exact `{id}.md` wins, else `{id}-*.md`. Returns (path, match_count). A match_count > 1 is
+    a prefix collision the caller MUST refuse to act on — never silently take matches[0]."""
+    exact = TASKS_DIR / f"{task_id}.md"
+    if exact.exists():
+        return exact, 1
+    matches = sorted(TASKS_DIR.glob(f"{task_id}-*.md"))
+    if len(matches) == 1:
+        return matches[0], 1
+    return None, len(matches)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write via temp file + atomic replace — same discipline as _write_state, so a
+    concurrent reader never sees a half-written note."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
 
 
 def _lane_to_dict(lane: LaneState) -> dict:
@@ -462,4 +693,6 @@ def _lane_to_dict(lane: LaneState) -> dict:
         "relay_age_s": round(lane.relay_age_s, 1) if lane.relay_age_s != float("inf") else None,
         "claimed_task": lane.claimed_task,
         "idle": lane.idle,
+        "stalled": lane.stalled,
+        "output_age_s": round(lane.output_age_s, 1) if lane.output_age_s != float("inf") else None,
     }
