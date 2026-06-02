@@ -39,6 +39,7 @@ from shared.governance.coord_capabilities import (
     verify_escape_grant,
     write_grant_file,
 )
+from shared.jsonl_append import append_jsonl_lines
 from shared.policy_decide import ToolCall, policy_decide
 from shared.policy_decision import Decision, FailMode, Verdict
 from shared.policy_floor import evaluate_floor
@@ -294,23 +295,22 @@ def record_invariant_findings(
         rows = [r for r in results if not r.holds]
         if not rows:
             return
-        path = Path(ledger_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            for result in rows:
-                handle.write(
-                    json.dumps(
-                        {
-                            "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            "invariant": result.invariant,
-                            "name": result.name,
-                            "holds": result.holds,
-                            "violations": list(result.violations),
-                            "advisory": result.advisory,
-                        }
-                    )
-                    + "\n"
-                )
+        # One flock acquisition for the whole batch (multi-row interleave risk
+        # eliminated); bare-json.dumps bytes preserved exactly (dn-ledger-flock).
+        append_jsonl_lines(
+            (
+                {
+                    "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "invariant": result.invariant,
+                    "name": result.name,
+                    "holds": result.holds,
+                    "violations": list(result.violations),
+                    "advisory": result.advisory,
+                }
+                for result in rows
+            ),
+            ledger_path,
+        )
     except Exception:  # noqa: BLE001 — advisory ledger; a write failure must not block.
         pass
 

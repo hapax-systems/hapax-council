@@ -28,7 +28,6 @@ Coordination reform Phase 4 (CASE-SDLC-REFORM-001; master design section 8).
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from datetime import UTC, datetime
@@ -160,23 +159,25 @@ def widen(task_id: str, additions: list[str], removals: list[str] | None = None)
 
     added = [a for a in additions if a not in existing]
     removed = [e for e in existing if e in removal_set]
-    LEDGER.parent.mkdir(parents=True, exist_ok=True)
-    with LEDGER.open("a", encoding="utf-8") as handle:
-        handle.write(
-            json.dumps(
-                {
-                    "ts": now,
-                    "kind": "scope_widen",
-                    "tool": "cc-scope-widen",
-                    "role": _role(),
-                    "task_id": task_id,
-                    "added": added,
-                    "removed": removed,
-                },
-                sort_keys=True,
-            )
-            + "\n"
-        )
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from shared.jsonl_append import append_jsonl
+
+    # Single-writer-safe advisory ledger append (flock + O_APPEND); fail-open
+    # (dn-ledger-flock).
+    append_jsonl(
+        LEDGER,
+        {
+            "ts": now,
+            "kind": "scope_widen",
+            "tool": "cc-scope-widen",
+            "role": _role(),
+            "task_id": task_id,
+            "added": added,
+            "removed": removed,
+        },
+        sort_keys=True,
+    )
     print(
         f"cc-scope-widen: {task_id} mutation_scope_refs added={added} removed={removed} (ledgered)"
     )
