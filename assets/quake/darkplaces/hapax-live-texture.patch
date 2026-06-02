@@ -406,10 +406,10 @@ index 7fbcd0b3..3a4d970e 100644
  
  // 1.0f / N table
 diff --git a/shader_glsl.h b/shader_glsl.h
-index dc56d085..fc395105 100644
+index dc56d085..24dff216 100644
 --- a/shader_glsl.h
 +++ b/shader_glsl.h
-@@ -1797,6 +1797,17 @@
+@@ -1797,6 +1797,16 @@
  "   color.rgb *= clamp(float(visiblepixels) / float(allpixels), 0.0, 1.0);\n",
  "#endif\n",
  "\n",
@@ -418,10 +418,9 @@ index dc56d085..fc395105 100644
 +"		float hpx_luma = dot(color.rgb, vec3(0.299, 0.587, 0.114));\n",
 +"		float hpx_fizz = (sin(TexCoord.x*40.0 + ClientTime*1.8)*sin(TexCoord.y*37.0 - ClientTime*1.1) + 0.55*sin(TexCoord.x*13.0 - TexCoord.y*17.0 + ClientTime*0.7)) * 0.34 + 0.5;\n",
 +"		float hpx_breath = 0.5 + 0.5*sin(ClientTime*0.6 + TexCoord.x*2.0 + TexCoord.y*1.3);\n",
-+"		vec3 hpx_desat = mix(color.rgb, vec3(hpx_luma), 0.45);\n",
-+"		hpx_desat *= mix(vec3(0.72, 0.86, 1.05), vec3(0.95, 0.74, 1.05), hpx_breath);\n",
-+"		color.rgb = hpx_desat * (0.82 + 0.42*hpx_fizz);\n",
-+"		color.rgb += (color.rgb - vec3(dot(color.rgb, vec3(0.299, 0.587, 0.114)))) * smoothstep(0.82, 1.0, hpx_fizz) * 0.85;\n",
++"		vec3 hpx_desat = mix(color.rgb, vec3(hpx_luma), 0.80);\n",
++"		hpx_desat *= mix(vec3(0.52, 0.64, 0.85), vec3(0.68, 0.58, 0.86), hpx_breath);\n",
++"		color.rgb = hpx_desat * (0.32 + 0.15*hpx_fizz);\n",
 +"	}\n",
 +"#endif\n",
  "	dp_FragColor = vec4(color);\n",

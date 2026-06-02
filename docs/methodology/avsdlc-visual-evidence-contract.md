@@ -268,3 +268,26 @@ REQ-20260508190834 (parent request)
    identified Chatterbox-Turbo and Qwen3-TTS as candidates, should the
    evidence contract specify which dimensions are most critical for A/B
    comparison?
+
+---
+
+## Tactical Witness Procedure (MANDATORY for visual / audiovisual evidence)
+
+A single ad-hoc frame is **not** valid visual evidence and has repeatedly produced false "looks fixed" claims (e.g. desaturated-vs-bright lines misread from one frame; broad beams invisible from one POV). Witnessing MUST be tactical and strategic: **maximize coverage, target points of interest, and capture duration-sensitive phenomena at multiple time scales — against the actual broadcast, not just the engine display.**
+
+### Tool
+`scripts/screwm-effect-drift-matrix-witness.py --capture` is the canonical witness harness. It writes the CSQC review-camera POV state (`data/camera-*.txt`), holds each station for a duration-bound frame sequence (with an optional lateral parallax sweep), and captures the **OBS program output** (the real broadcast) via obs-websocket, falling back to a clean `:82` X11 grab. Never hand-roll single `ffmpeg -frames:v 1` grabs as release evidence.
+
+### Coverage — POV stations (mandatory ≥3; prefer `--pov all`)
+The 8 tactical stations (`POV_STATIONS`) cover entry, thresholds, the AoA, both media windows, borrowed views, and the far-garden overview. A single fixed POV hides defects — the OARB sphere reads fine head-on but is a dark eclipse from `far-garden-view`. Always sweep ≥3 stations; `--pov all` for release-grade. Requires `screwm_csqc_native_controller > 0` for the manual camera to engage (set it for the witness, restore after).
+
+### Duration scales — capture EACH (different phenomena live at different scales)
+- **Fast (sub-second → ~1s):** effervescent shimmer/fizz (~1–2 Hz). `--hold-s 1 --hold-interval-s 0.2` (or an 8–10 fps burst). Catches per-frame flicker, strobe, anti-visualizer violations.
+- **Mid (5–15s):** slow synthwave breath/drift transit (period ~10s) + motion liveness. `--hold-s 12 --hold-interval-s 3`. Confirms alive-but-not-flashing (mean-frame-luma flat, local variance present).
+- **Parallax (world-bound check):** `--hold-sweep-units 80` lateral sweep confirms drift/structure is welded to geometry (does NOT swim with the camera) — the decisive not-fourth-wall test.
+
+### Points of interest — per-POV region quantification (not eyeballing)
+Per station, quantify named regions: floor/grid (beam **brightest-percentile** brightness/width/saturation — the region *mean* is dominated by void and is useless), AoA lattice, OARB sphere (legible body vs dark eclipse), wards/media (recessed vs placard), negative space (true void vs lit). The harness's `_aesthetic_gate_failures` / `_aesthetic_substrate_gate_failures` encode region-coverage gates; extend with: saturation ceiling, hard-edge/beam-width detector, mean-frame-luma flatness (no global flash), sky/HUD drift-exclusion, OARB-vs-fractal occlusion.
+
+### Release gate
+Screwm visual/audiovisual evidence MUST include a `--pov all` capture at all three duration scales + per-region metrics + passing aesthetic gates (`--require-aesthetic-strength`), witnessed against the OBS program output (`--require-obs-websocket` for release-grade). Store the manifest + frames in the dossier.
