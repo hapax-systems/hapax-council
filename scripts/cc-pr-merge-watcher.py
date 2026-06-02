@@ -33,6 +33,7 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 LOG = logging.getLogger("cc-pr-merge-watcher")
 
@@ -47,6 +48,12 @@ REFORM_AUTO_DISPATCH_ENV = "HAPAX_REFORM_AUTO_DISPATCH"
 
 # RFC3339 / ISO-8601 timestamp shape gh emits on `mergedAt`.
 _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+
+# G5 stuck-PR alerter. The owning repo for the merge-queue graphql probe; the
+# autoqueue likewise hardcodes the council repo. Overridable for tests/forks.
+DEFAULT_REPO = os.environ.get("HAPAX_CC_PR_REPO", "hapax-systems/hapax-council")
+# Branch-protection required contexts (mirrors cc-pr-autoqueue DEFAULT_REQUIRED_CHECKS).
+REQUIRED_QUEUE_CHECKS = ("lint", "test", "typecheck", "web-build", "vscode-build")
 
 
 def default_repo_root() -> Path:
@@ -638,6 +645,158 @@ def reconcile_stale_pr_states(
     return counts
 
 
+# --- G5: stuck-PR alerter ---------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StuckPR:
+    number: int
+    head_branch: str
+    reason: str
+
+
+def _stuck_gh_json(
+    args: list[str],
+    *,
+    repo_root: Path,
+    runner: callable[..., subprocess.CompletedProcess],
+) -> Any:
+    try:
+        proc = runner(
+            args, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=30
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if getattr(proc, "returncode", 1) != 0:
+        return None
+    try:
+        return json.loads(proc.stdout or "null")
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def fetch_merge_queue_numbers(
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> set[int]:
+    """PR numbers currently in the native merge queue (graphql)."""
+    owner, _, name = repo.partition("/")
+    query = (
+        "query($o:String!,$n:String!){repository(owner:$o,name:$n)"
+        "{mergeQueue{entries(first:50){nodes{pullRequest{number}}}}}}"
+    )
+    data = _stuck_gh_json(
+        ["gh", "api", "graphql", "-f", f"query={query}", "-F", f"o={owner}", "-F", f"n={name}"],
+        repo_root=repo_root,
+        runner=runner,
+    )
+    if not isinstance(data, dict):
+        return set()
+    queue = (((data.get("data") or {}).get("repository") or {}).get("mergeQueue")) or {}
+    nodes = (queue.get("entries") or {}).get("nodes") or []
+    numbers: set[int] = set()
+    for node in nodes:
+        pr = (node or {}).get("pullRequest") or {}
+        if isinstance(pr.get("number"), int):
+            numbers.add(pr["number"])
+    return numbers
+
+
+def _required_checks_green(rollup: list[dict[str, Any]], required: tuple[str, ...]) -> bool:
+    observed: dict[str, str] = {}
+    for item in rollup or []:
+        name = item.get("name") or item.get("context")
+        if name:
+            observed[name] = (item.get("conclusion") or item.get("state") or "").upper()
+    return all(observed.get(check) == "SUCCESS" for check in required)
+
+
+def detect_stuck_prs(
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: callable[..., subprocess.CompletedProcess] = subprocess.run,
+    required_checks: tuple[str, ...] = REQUIRED_QUEUE_CHECKS,
+) -> list[StuckPR]:
+    """Armed (auto-merge enabled) + all required checks green, yet NOT in the
+    merge queue: an ejected-while-green PR that strands silently — the exact
+    failure mode this task addresses (G5). A single snapshot suffices because
+    GitHub enqueues an armed+green PR within seconds, so absence from the queue
+    is a real ejection rather than a transient."""
+    prs = _stuck_gh_json(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--limit",
+            "100",
+            "--json",
+            "number,headRefName,autoMergeRequest,statusCheckRollup,isDraft",
+        ],
+        repo_root=repo_root,
+        runner=runner,
+    )
+    if not isinstance(prs, list):
+        return []
+    queued = fetch_merge_queue_numbers(repo=repo, repo_root=repo_root, runner=runner)
+    stuck: list[StuckPR] = []
+    for pr in prs:
+        if not isinstance(pr, dict) or pr.get("isDraft"):
+            continue
+        if pr.get("autoMergeRequest") is None:
+            continue  # not armed
+        if not _required_checks_green(pr.get("statusCheckRollup") or [], required_checks):
+            continue  # required checks not all green (still running or failed)
+        number = pr.get("number")
+        if not isinstance(number, int) or number in queued:
+            continue  # actually enqueued → fine
+        stuck.append(StuckPR(number, pr.get("headRefName") or "", "armed+green but not enqueued"))
+    return stuck
+
+
+def alert_stuck_prs(
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: callable[..., subprocess.CompletedProcess] = subprocess.run,
+    dry_run: bool = False,
+) -> int:
+    """Detect ejected-while-green PRs and ntfy the operator; returns the count.
+    Fail-open: a probe or ntfy error never breaks the watcher cycle."""
+    try:
+        stuck = detect_stuck_prs(repo=repo, repo_root=repo_root, runner=runner)
+    except Exception as exc:  # noqa: BLE001 — a probe failure must not wedge the cycle
+        LOG.warning("stuck-PR detection failed: %s", exc)
+        return 0
+    if not stuck:
+        return 0
+    detail = "\n".join(f"#{item.number} {item.head_branch}: {item.reason}" for item in stuck)
+    message = (
+        f"{len(stuck)} armed+green PR(s) not draining via the native merge queue "
+        f"(ejected-while-green):\n{detail}"
+    )
+    LOG.warning("stuck-PR alert:\n%s", message)
+    if not dry_run:
+        try:
+            from shared.notify import send_notification
+
+            send_notification(
+                title="Merge queue: stuck PR(s)",
+                message=message,
+                priority="high",
+                tags=["rotating_light"],
+            )
+        except Exception as exc:  # noqa: BLE001 — ntfy is best-effort
+            LOG.warning("stuck-PR ntfy failed: %s", exc)
+    return len(stuck)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -699,6 +858,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     if stale_counters["stale"]:
         LOG.info("stale PR drain: %s", stale_counters)
+
+    # G5: alert the operator about armed+green PRs that the native queue ejected
+    # without merging (the exact stranding this task fixes). Runs every watcher
+    # cycle; send_notification dedups repeats. Fail-open.
+    stuck_count = alert_stuck_prs(repo_root=args.repo_root, dry_run=args.dry_run)
+    if stuck_count:
+        LOG.warning("stuck-PR alert fired for %d PR(s)", stuck_count)
     return 0
 
 

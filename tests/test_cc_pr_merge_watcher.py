@@ -664,3 +664,98 @@ class TestReconcilePrNullRepair:
         assert "status: blocked" in note.read_text()
         # Did not even attempt a gh lookup (no branch to look up).
         assert not any(cmd[:3] == ["gh", "pr", "list"] for cmd in runner.calls)
+
+
+# ---------------------------------------------------------------------------
+# G5 stuck-PR alerter
+# ---------------------------------------------------------------------------
+
+
+class _StuckRunner:
+    """Canned gh responses for the G5 probe: `gh pr list` -> open PRs,
+    `gh api graphql` -> merge-queue entries."""
+
+    def __init__(self, open_prs: list[dict[str, Any]], queued: tuple[int, ...] = ()) -> None:
+        self.open_prs = open_prs
+        self.queued = list(queued)
+        self.calls: list[list[str]] = []
+
+    def __call__(
+        self,
+        cmd: list[str],
+        *,
+        cwd: str | None = None,
+        capture_output: bool = False,
+        text: bool = False,
+        check: bool = False,
+        timeout: int | None = None,
+        env: dict[str, str] | None = None,
+        **_: Any,
+    ) -> subprocess.CompletedProcess:
+        self.calls.append(list(cmd))
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(self.open_prs), "")
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            nodes = [{"pullRequest": {"number": n}} for n in self.queued]
+            payload = {"data": {"repository": {"mergeQueue": {"entries": {"nodes": nodes}}}}}
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+
+def _open_pr(
+    number: int,
+    *,
+    armed: bool = True,
+    checks: list[dict[str, Any]] | None = None,
+    draft: bool = False,
+    branch: str | None = None,
+) -> dict[str, Any]:
+    rollup = (
+        checks
+        if checks is not None
+        else [{"name": c, "conclusion": "SUCCESS"} for c in watcher.REQUIRED_QUEUE_CHECKS]
+    )
+    return {
+        "number": number,
+        "headRefName": branch or f"feat/{number}",
+        "isDraft": draft,
+        "autoMergeRequest": {"enabledAt": "now"} if armed else None,
+        "statusCheckRollup": rollup,
+    }
+
+
+class TestStuckPRAlerter:
+    def test_armed_green_not_queued_is_stuck(self, tmp_path: Path) -> None:
+        runner = _StuckRunner([_open_pr(70)], queued=())
+        stuck = watcher.detect_stuck_prs(repo="o/r", repo_root=tmp_path, runner=runner)
+        assert [s.number for s in stuck] == [70]
+        assert stuck[0].head_branch == "feat/70"
+
+    def test_queued_pr_is_not_stuck(self, tmp_path: Path) -> None:
+        runner = _StuckRunner([_open_pr(71)], queued=(71,))
+        assert watcher.detect_stuck_prs(repo="o/r", repo_root=tmp_path, runner=runner) == []
+
+    def test_unarmed_pr_is_not_stuck(self, tmp_path: Path) -> None:
+        runner = _StuckRunner([_open_pr(72, armed=False)], queued=())
+        assert watcher.detect_stuck_prs(repo="o/r", repo_root=tmp_path, runner=runner) == []
+
+    def test_pending_required_check_is_not_stuck(self, tmp_path: Path) -> None:
+        checks = [{"name": c, "conclusion": "SUCCESS"} for c in watcher.REQUIRED_QUEUE_CHECKS[:-1]]
+        checks.append({"name": watcher.REQUIRED_QUEUE_CHECKS[-1], "conclusion": None})
+        runner = _StuckRunner([_open_pr(73, checks=checks)], queued=())
+        assert watcher.detect_stuck_prs(repo="o/r", repo_root=tmp_path, runner=runner) == []
+
+    def test_failed_required_check_is_not_stuck(self, tmp_path: Path) -> None:
+        checks = [{"name": c, "conclusion": "SUCCESS"} for c in watcher.REQUIRED_QUEUE_CHECKS[:-1]]
+        checks.append({"name": watcher.REQUIRED_QUEUE_CHECKS[-1], "conclusion": "FAILURE"})
+        runner = _StuckRunner([_open_pr(74, checks=checks)], queued=())
+        assert watcher.detect_stuck_prs(repo="o/r", repo_root=tmp_path, runner=runner) == []
+
+    def test_draft_pr_is_skipped(self, tmp_path: Path) -> None:
+        runner = _StuckRunner([_open_pr(75, draft=True)], queued=())
+        assert watcher.detect_stuck_prs(repo="o/r", repo_root=tmp_path, runner=runner) == []
+
+    def test_alert_dry_run_counts_without_notifying(self, tmp_path: Path) -> None:
+        runner = _StuckRunner([_open_pr(76)], queued=())
+        count = watcher.alert_stuck_prs(repo="o/r", repo_root=tmp_path, runner=runner, dry_run=True)
+        assert count == 1
