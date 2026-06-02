@@ -1738,14 +1738,16 @@ void() screwm_add_expression_surface_lights =
 
 void() screwm_add_shadow_budget_lights =
 {
-    screwm_add_scroom_baseline_lights();
-    screwm_add_hex_grid_drift_lights();
-    screwm_add_entry_substrate_drift_lights();
-    screwm_add_expression_surface_lights();
+    // A SMALL, CONSTANT, dim key/rim/fill for the dark enclosure — replaces the ~90
+    // huge pulsing dynamic lights that washed the room, fluctuated the brightness, and
+    // threw a stray vertical beam (diagnosis #2/#3/#7). No pulsing => stable; dim +
+    // desaturated => the void reads dark and the drifting luminous grid is the
+    // structure. Media-source signal lights are kept (they pick out the live placards).
+    adddynamiclight('0 -1500 470', 820, '0.20 0.24 0.30');   // key  (front-above, cool)
+    adddynamiclight('0 -350 600', 700, '0.15 0.19 0.25');    // rim  (far-high, cool)
+    adddynamiclight('0 -1150 150', 980, '0.13 0.14 0.16');   // fill (low, near-neutral)
+    adddynamiclight('0 -2250 210', 640, '0.15 0.17 0.20');   // entry fill
     screwm_add_media_source_signal_lights();
-    screwm_add_aoa_pane_signal_lights();
-    screwm_add_shadow_budget_edge_lights();
-    screwm_add_aoa_drift_lights();
 };
 
 void(vector a, vector b, vector c, vector d, vector color, float alpha) screwm_draw_geometry_quad =
