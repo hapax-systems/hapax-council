@@ -218,7 +218,13 @@ ack_setup() {
     ACK_TOKEN="ack-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
   fi
   if [ -z "$ACK_FILE" ]; then
-    ACK_FILE="${XDG_RUNTIME_DIR:-/tmp}/hapax-codex-acks/$SESSION-$ACK_TOKEN"
+    # G3: mirror of hapax-claude-send — a Workshop-hopped lane writes its ACK on
+    # appendix; relocate to the shared cache (NFS) so podium's poller sees it.
+    if [ -n "${HAPAX_DISPATCH_HOST:-}" ]; then
+      ACK_FILE="$HOME/.cache/hapax/codex-acks/$SESSION-$ACK_TOKEN"
+    else
+      ACK_FILE="${XDG_RUNTIME_DIR:-/tmp}/hapax-codex-acks/$SESSION-$ACK_TOKEN"
+    fi
   fi
   mkdir -p "$(dirname "$ACK_FILE")"
   rm -f "$ACK_FILE"

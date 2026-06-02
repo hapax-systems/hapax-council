@@ -901,6 +901,8 @@ def write_receipt(
         record["route_decision_receipt_path"] = (
             str(route_decision_receipt_path) if route_decision_receipt_path else None
         )
+    # G2: record where the lane's claude actually ran (Workshop hop vs podium-local).
+    record["dispatch_host"] = os.environ.get("HAPAX_DISPATCH_HOST", "local")
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, sort_keys=True) + "\n")
     return path
