@@ -502,7 +502,10 @@ def _load_ledger_trace(path: Path) -> list[dict[str, object]]:
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
-        ts_raw = record.get("timestamp", "")
+        # The producer (cc-stage-advance) keys the ISO timestamp "ts"; tolerate the
+        # legacy "timestamp" key too. Reading the wrong key silently fell back to 0.0,
+        # making every record look ~56 years stale (INV-2 false-positive — fixed here).
+        ts_raw = record.get("ts") or record.get("timestamp") or ""
         ts = 0.0
         try:
             ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00")).timestamp()

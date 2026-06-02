@@ -336,6 +336,28 @@ def _effective_sensitive_flags(frontmatter: Mapping[str, Any]) -> list[str]:
     return sorted(flags)
 
 
+def _path_matches_sensitive_marker(ref: str, marker: str) -> bool:
+    """Path-segment match of a governance-sensitive marker against a ref.
+
+    Directory markers (e.g. ``axioms/``, ``shared/governance/``) match a
+    consecutive run of path segments; bare-file markers (``codeowners``,
+    ``claude.md``, ``hapax-constitution``) match a whole path segment. This
+    replaces a raw substring test that false-vetoed refs which merely contain a
+    marker as a substring — e.g. ``scripts/sync-codeowners.py`` (not the
+    CODEOWNERS file) or ``research/meta-axioms/notes.md`` (not axioms/).
+    """
+
+    segments = [seg for seg in ref.strip().lower().replace("\\", "/").split("/") if seg]
+    marker_segments = [seg for seg in marker.strip().lower().strip("/").split("/") if seg]
+    if not segments or not marker_segments:
+        return False
+    window = len(marker_segments)
+    return any(
+        segments[start : start + window] == marker_segments
+        for start in range(len(segments) - window + 1)
+    )
+
+
 def _sensitive_paths_in_scope(frontmatter: Mapping[str, Any]) -> list[str]:
     refs = frontmatter.get("mutation_scope_refs")
     if isinstance(refs, (list, tuple)):
@@ -347,7 +369,7 @@ def _sensitive_paths_in_scope(frontmatter: Mapping[str, Any]) -> list[str]:
     hits: list[str] = []
     for ref in values:
         text = ref.strip()
-        if any(marker in text.lower() for marker in SENSITIVE_PATH_MARKERS):
+        if any(_path_matches_sensitive_marker(text, marker) for marker in SENSITIVE_PATH_MARKERS):
             hits.append(text)
     return hits
 

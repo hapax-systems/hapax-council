@@ -3,12 +3,14 @@
 
 The merge queue should not depend on a human/session remembering to run
 ``gh pr merge`` after a governed PR is ready. This reconciler scans open PRs,
-matches each PR to a cc-task in the local Obsidian vault, and queues or arms
-auto-merge only when Hapax governance and GitHub protection state both pass.
+matches each PR to a cc-task in the local Obsidian vault, and ARMS auto-merge
+only when Hapax governance and GitHub protection state both pass.
 
-GitHub's current CLI behavior for branches that require a merge queue is the
-primitive this script uses: ``gh pr merge`` adds a ready PR to the queue, and
-``gh pr merge --auto`` arms auto-merge until required checks/reviews pass.
+Arm-only (task reform-native-merge-queue): the sole positive GitHub mutation is
+one idempotent ``gh pr merge --auto --squash``. GitHub's native merge queue then
+owns batching, speculative ``gh-readonly-queue`` branches, auto-rebase, and
+bisect-on-failure — this script no longer issues a direct ``--merge`` or manages
+the queue itself, which previously raced GitHub's own batching and stranded PRs.
 
 Usage::
 
@@ -114,9 +116,15 @@ FAILED_MERGE_GROUP_CONCLUSIONS = {"failure", "timed_out", "startup_failure", "ca
 # concurrently in flight in a DIFFERENT lane (the actual hazard); same-lane serial
 # work is never held, and a deterministic lowest-PR tiebreak keeps two
 # different-lane epic PRs from dead-holding each other.
-SHARED_FILE_EPIC_PARENT_SPECS = {
-    # parent_spec basename -> serialized-epic id (the shared file it contends on)
-    "clog-frontend-elevation-design-2026-06-01.md": "clog-dashboard-lisp",
+SHARED_FILE_EPIC_PARENT_SPECS: dict[str, str] = {
+    # parent_spec basename -> serialized-epic id (the shared file it contends on).
+    #
+    # Emptied 2026-06-01 (task reform-native-merge-queue): the native GitHub merge
+    # queue serializes shared-file contention through its speculative
+    # gh-readonly-queue branches (auto-rebase + bisect-on-failure), so a
+    # pre-admission affinity hold is no longer needed to keep two different-lane
+    # epic PRs from merge-conflicting. Re-add an entry here only to re-enable the
+    # local pre-queue hold for a specific shared-file epic.
 }
 EPIC_INFLIGHT_STATUSES = frozenset(
     {"claimed", "in_progress", "pr_open", "in_review", "merge_queue", "ready_for_merge"}
@@ -899,10 +907,15 @@ def merge_pr(
         ]
     else:
         cmd = ["gh", "pr", "merge", str(decision.pr.number), "--repo", repo]
-    if decision.action == "enable_auto_merge":
-        cmd.extend(["--auto", "--merge"])
-    elif decision.action == "queue":
-        cmd.append("--merge")
+    if decision.action in ("enable_auto_merge", "queue"):
+        # Arm-only (task reform-native-merge-queue): the local autoqueue's sole
+        # positive mutation is to ARM auto-merge with one idempotent command.
+        # GitHub's native merge queue then owns batching, speculative
+        # gh-readonly-queue branches, auto-rebase, and bisect-on-failure — we no
+        # longer issue a direct `--merge` (which raced the queue's own management).
+        # Re-arming an already-armed PR is a no-op; `--squash` matches the queue's
+        # configured merge method.
+        cmd.extend(["--auto", "--squash"])
     elif decision.action == "disable_auto_merge":
         cmd.append("--disable-auto")
     elif decision.action != "dequeue":

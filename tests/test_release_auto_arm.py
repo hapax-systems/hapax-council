@@ -130,6 +130,37 @@ def test_ineligible_when_governance_protected_path_in_scope() -> None:
     assert any("sensitive_path" in blocker for blocker in assessment.blockers)
 
 
+def test_sensitive_path_does_not_false_match_substring_in_segment() -> None:
+    # 'codeowners' is a marker, but 'scripts/sync-codeowners.py' only CONTAINS
+    # it as a substring of a filename — it does not modify CODEOWNERS. The raw
+    # substring match false-vetoed such tasks from system auto-arm.
+    fm = _eligible_frontmatter(mutation_scope_refs=["scripts/sync-codeowners.py"])
+    assessment = assess_release_auto_arm(fm)
+    assert not any("sensitive_path" in blocker for blocker in assessment.blockers)
+    assert assessment.eligible is True
+
+
+def test_sensitive_path_does_not_false_match_dir_marker_substring() -> None:
+    # Marker 'axioms/' must match the governed axioms/ directory, not a
+    # segment that merely ends in '...axioms'.
+    fm = _eligible_frontmatter(mutation_scope_refs=["research/meta-axioms/notes.md"])
+    assessment = assess_release_auto_arm(fm)
+    assert not any("sensitive_path" in blocker for blocker in assessment.blockers)
+    assert assessment.eligible is True
+
+
+def test_sensitive_path_matches_codeowners_as_path_segment() -> None:
+    fm = _eligible_frontmatter(mutation_scope_refs=[".github/CODEOWNERS"])
+    assessment = assess_release_auto_arm(fm)
+    assert any("sensitive_path" in blocker for blocker in assessment.blockers)
+
+
+def test_sensitive_path_matches_claude_md_file_segment() -> None:
+    fm = _eligible_frontmatter(mutation_scope_refs=["hapax-council/CLAUDE.md"])
+    assessment = assess_release_auto_arm(fm)
+    assert any("sensitive_path" in blocker for blocker in assessment.blockers)
+
+
 def test_ineligible_when_public_current_already_true() -> None:
     assessment = assess_release_auto_arm(_eligible_frontmatter(public_current=True))
     assert assessment.eligible is False
