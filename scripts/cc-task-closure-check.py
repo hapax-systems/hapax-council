@@ -33,6 +33,7 @@ cases — a broken gate must not brick closures.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -104,6 +105,33 @@ def gate(path: Path) -> tuple[int, str]:
     return 2, "\n".join(lines)
 
 
+def shadow_observe(path: Path) -> None:
+    """Acceptance-oracle SHADOW probe — opt-in, advisory-only, never affects closure.
+
+    OFF by default: only runs when ``HAPAX_ACCEPTANCE_ORACLE_SHADOW=1``, so the
+    closure gate's behavior is byte-identical without the env var. When on, it spawns
+    ``scripts/hapax-acceptance-oracle`` *detached* to ledger a verdict for this
+    permitted closure (the divergence-detection point: the checkbox gate said OK — does
+    the oracle agree?). The oracle is itself load-gated and fail-OPEN, so this can never
+    block, slow, or crash a closure. Phase P0 of the acceptance-oracle pilot; see
+    ``docs/superpowers/specs/2026-06-02-acceptance-oracle-design.md``.
+    """
+    if os.environ.get("HAPAX_ACCEPTANCE_ORACLE_SHADOW") != "1":
+        return
+    oracle = REPO_ROOT / "scripts" / "hapax-acceptance-oracle"
+    if not oracle.is_file():
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, str(oracle), "--note", str(path), "--json"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        pass  # advisory-only: a failed spawn must never affect closure
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         print("usage: cc-task-closure-check.py <path-to-cc-task.md>", file=sys.stderr)
@@ -112,6 +140,10 @@ def main(argv: list[str]) -> int:
     code, msg = gate(path)
     if code != 0:
         print(msg, file=sys.stderr)
+    else:
+        # Closure permitted by the checkbox gate — let the acceptance oracle observe
+        # it in shadow (opt-in, never alters this return value).
+        shadow_observe(path)
     return code
 
 
