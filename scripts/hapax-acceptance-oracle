@@ -1,0 +1,485 @@
+#!/usr/bin/env python3
+"""hapax-acceptance-oracle — machine-checkable definition-of-done (kind=build pilot).
+
+A predicate ``oracle(task) ∈ {PASS, FAIL, INDETERMINATE}`` computed from GROUND
+TRUTH — the task's note-authored acceptance tests, run in a clean tree the lane
+did not touch — rather than the self-checked ``[x]`` boxes that ``cc-task-closure
+-check.py`` verifies only syntactically. It catches the two failure modes the
+checkbox gate cannot see: a lane that edited the very tests it had to satisfy
+(EvilGenie, arXiv 2511.21654), and a closure where the claimed-done work does not
+actually pass its declared tests.
+
+Modeled line-for-line on ``scripts/hapax-reform-complete`` (impure ``gather`` split
+from pure ``decide``, with an ``--observations`` hook for deterministic tests) and
+``scripts/cc-task-closure-check.py`` (fail-OPEN on infra error, single bypass env).
+
+Contract (mirrors the design ``docs/superpowers/specs/2026-06-02-acceptance-oracle-design.md``):
+    exit 0 = PASS, 2 = FAIL (+reasons[]), 3 = INDETERMINATE (fail-OPEN-with-ledger).
+    INDETERMINATE NEVER blocks; only a concrete reproducible FAIL blocks (once a
+    future phase promotes the oracle from shadow to enforce). It NEVER fails-stuck.
+
+Scope (HARD): kind ∈ {build, hardening} AND mutation_surface ∈ {source, runtime}.
+Every other task class is out of scope → INDETERMINATE("out-of-scope-class") and
+keeps today's checkbox gate unchanged.
+
+Anti-reward-hack: tests run from an ephemeral ``git worktree`` of the task's
+committed SHA (the lane cannot mutate what the oracle reads), and a static check
+diffs the declared test files against the task's base SHA — editing them without
+``authorizes_test_changes: true`` is a FAIL.
+
+This task ships the SHADOW pilot only. Enforce, the decomposer test-mandate, the
+L2/L3 layers, signed receipts, and the liveness ``oracle_distance`` wire-in (into
+PR #3852's Python progress-watchdog, never the bash ``hapax-lane-supervisor``) are
+deferred to follow-ups. Bypass: ``HAPAX_ACCEPTANCE_ORACLE_OFF=1``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+FINDINGS_PATH = Path.home() / ".cache" / "hapax" / "acceptance-oracle-findings.jsonl"
+CC_TASKS = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+
+IN_SCOPE_KINDS = {"build", "hardening"}
+IN_SCOPE_SURFACES = {"source", "runtime"}
+
+PASS, FAIL, INDETERMINATE = "PASS", "FAIL", "INDETERMINATE"
+EXIT = {PASS: 0, FAIL: 2, INDETERMINATE: 3}
+
+# Tokens like ``tests/foo/test_bar.py`` or ``tests/foo/test_bar.py::test_x`` in a
+# declared command — the diff target for the test-file-tamper static check.
+_TEST_PATH_RE = re.compile(r"(?:^|\s)(tests/[\w./-]+(?:\.py)?)(?:::[\w:./-]+)?")
+
+_TEST_TIMEOUT_S = int(os.environ.get("HAPAX_ACCEPTANCE_ORACLE_TEST_TIMEOUT", "900"))
+_GIT_TIMEOUT_S = 120
+
+
+def now_iso() -> str:
+    """Current UTC instant as an ISO-8601 ``...Z`` string (NEVER a float).
+
+    The findings ledger keys time as an ISO string to match the authority-case
+    ledger's ``ts`` convention — a ``time.time()`` float here would reproduce the
+    exact 56-year false-stuck bug this oracle's design warns about.
+    """
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@dataclass(frozen=True)
+class Verdict:
+    verdict: str
+    reasons: tuple[str, ...] = ()
+
+    @property
+    def exit_code(self) -> int:
+        return EXIT[self.verdict]
+
+
+@dataclass(frozen=True)
+class Observation:
+    """The gathered facts about a task that fully determine ``decide``."""
+
+    task_id: str
+    kind: str | None = None
+    mutation_surface: str | None = None
+    deterministic_tests: tuple[str, ...] = ()
+    checkbox_complete: bool = False
+    oracle_off: bool = False
+    load_ok: bool = True
+    clean_tree_sha: str | None = None
+    authorizes_test_changes: bool = False
+    tampered_test_paths: tuple[str, ...] = ()
+    test_failures: tuple[str, ...] = ()
+    n_tests_run: int = 0
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Observation:
+        def _tup(key: str) -> tuple[str, ...]:
+            value = data.get(key) or []
+            if isinstance(value, str):
+                value = [value]
+            return tuple(str(v) for v in value)
+
+        return cls(
+            task_id=str(data.get("task_id", "")),
+            kind=data.get("kind"),
+            mutation_surface=data.get("mutation_surface"),
+            deterministic_tests=_tup("deterministic_tests"),
+            checkbox_complete=bool(data.get("checkbox_complete", False)),
+            oracle_off=bool(data.get("oracle_off", False)),
+            load_ok=bool(data.get("load_ok", True)),
+            clean_tree_sha=data.get("clean_tree_sha"),
+            authorizes_test_changes=bool(data.get("authorizes_test_changes", False)),
+            tampered_test_paths=_tup("tampered_test_paths"),
+            test_failures=_tup("test_failures"),
+            n_tests_run=int(data.get("n_tests_run", 0)),
+        )
+
+
+def decide(obs: Observation) -> Verdict:
+    """Pure decision logic. INDETERMINATE short-circuits ALWAYS precede any FAIL,
+    so a task the oracle cannot judge is never blocked — only a concrete,
+    reproducible FAIL (tamper or a failing declared test) returns FAIL."""
+    if obs.oracle_off:
+        return Verdict(INDETERMINATE, ("bypassed:HAPAX_ACCEPTANCE_ORACLE_OFF=1",))
+    if obs.kind not in IN_SCOPE_KINDS or obs.mutation_surface not in IN_SCOPE_SURFACES:
+        return Verdict(
+            INDETERMINATE,
+            (f"out-of-scope-class:kind={obs.kind},surface={obs.mutation_surface}",),
+        )
+    if not obs.load_ok:
+        return Verdict(INDETERMINATE, ("deferred-high-load",))
+    if obs.clean_tree_sha is None:
+        return Verdict(INDETERMINATE, ("no-clean-tree:post-commit-only",))
+    if not obs.deterministic_tests:
+        return Verdict(INDETERMINATE, ("no-declared-tests:coverage-gap",))
+    if obs.tampered_test_paths and not obs.authorizes_test_changes:
+        return Verdict(FAIL, tuple(f"test-file-tamper:{p}" for p in obs.tampered_test_paths))
+    if obs.test_failures:
+        return Verdict(FAIL, tuple(f"test-failed:{c}" for c in obs.test_failures))
+    return Verdict(PASS, ())
+
+
+def divergence(verdict: str, checkbox_complete: bool) -> str:
+    """Label the oracle verdict against the self-attested checkbox state. The
+    headline experiment metric is ``oracle-fail-checkbox-pass`` — a closure the
+    checkbox gate would have passed that the oracle catches as not-actually-done."""
+    if verdict == FAIL and checkbox_complete:
+        return "oracle-fail-checkbox-pass"
+    if verdict == PASS and not checkbox_complete:
+        return "oracle-pass-checkbox-incomplete"
+    return "aligned"
+
+
+def finding_record(obs: Observation, verdict: Verdict, ts: str) -> dict:
+    return {
+        "ts": ts,
+        "task_id": obs.task_id,
+        "kind": obs.kind,
+        "mutation_surface": obs.mutation_surface,
+        "verdict": verdict.verdict,
+        "reasons": list(verdict.reasons),
+        "checkbox_complete": obs.checkbox_complete,
+        "divergence": divergence(verdict.verdict, obs.checkbox_complete),
+        "clean_tree_sha": obs.clean_tree_sha,
+        "n_tests": obs.n_tests_run,
+        "mode": "shadow",
+    }
+
+
+def extract_test_paths(commands: list[str]) -> list[str]:
+    """The ``tests/...`` file path args across declared commands (``::node`` stripped)."""
+    paths: set[str] = set()
+    for command in commands:
+        for match in _TEST_PATH_RE.findall(command):
+            paths.add(match)
+    return sorted(paths)
+
+
+# --- impure gather (host probing) -------------------------------------------
+
+
+def _git(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd or REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=_GIT_TIMEOUT_S,
+    )
+
+
+def _load_ok() -> bool:
+    # Conservative interim gate (superseded by sdlc_pressure_gate.admission_state once
+    # PR #3850's slice lands): defer when 1-min load exceeds ~1.5x core count, so the
+    # oracle never adds a test-suite run to an already-saturated fleet box (Doctrine #7).
+    default_ceil = 1.5 * (os.cpu_count() or 4)
+    ceil = float(os.environ.get("HAPAX_ACCEPTANCE_ORACLE_LOAD_CEIL", str(default_ceil)))
+    try:
+        return os.getloadavg()[0] <= ceil
+    except OSError:
+        return True
+
+
+def resolve_clean_sha(frontmatter: dict) -> str | None:
+    """A committed SHA for the task, preferring the local remote-tracking branch,
+    falling back to the PR head (still resolvable after a squash-merge)."""
+    branch = frontmatter.get("branch")
+    if isinstance(branch, str) and branch:
+        result = _git(["rev-parse", f"origin/{branch}"])
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    pr = frontmatter.get("pr")
+    if pr:
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "view", str(pr), "--json", "headRefOid", "-q", ".headRefOid"],
+                capture_output=True,
+                text=True,
+                timeout=_GIT_TIMEOUT_S,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return None
+    return None
+
+
+def _run_clean_tree(
+    sha: str, commands: list[str], test_paths: list[str]
+) -> tuple[list[str], list[str]]:
+    """Run declared commands in an ephemeral worktree of ``sha`` and diff the test
+    files vs the merge-base. Returns ``(failing_commands, tampered_paths)``. The
+    worktree is always removed."""
+    base = _git(["merge-base", sha, "origin/main"])
+    base_sha = base.stdout.strip() if base.returncode == 0 else None
+
+    tampered: list[str] = []
+    if base_sha and test_paths:
+        diff = _git(["diff", "--name-only", f"{base_sha}..{sha}", "--", *test_paths])
+        if diff.returncode == 0:
+            tampered = [line for line in diff.stdout.split() if line]
+
+    failures: list[str] = []
+    tmp = Path(tempfile.mkdtemp(prefix="acceptance-oracle-"))
+    worktree = tmp / "wt"
+    try:
+        add = _git(["worktree", "add", "--detach", str(worktree), sha])
+        if add.returncode != 0:
+            raise RuntimeError(f"worktree add failed: {add.stderr.strip()}")
+        for command in commands:
+            proc = subprocess.run(
+                command,
+                shell=True,
+                cwd=str(worktree),
+                capture_output=True,
+                text=True,
+                timeout=_TEST_TIMEOUT_S,
+            )
+            if proc.returncode != 0:
+                failures.append(command)
+    finally:
+        _git(["worktree", "remove", "--force", str(worktree)])
+        shutil.rmtree(tmp, ignore_errors=True)
+    return failures, tampered
+
+
+def _frontmatter_and_text(note_path: Path) -> tuple[dict, str]:
+    from shared.sdlc_lifecycle import frontmatter_from_text
+
+    text = note_path.read_text(encoding="utf-8")
+    return frontmatter_from_text(text), text
+
+
+def _declared_tests(frontmatter: dict) -> list[str]:
+    surface = frontmatter.get("verification_surface")
+    if isinstance(surface, dict):
+        tests = surface.get("deterministic_tests")
+        if tests:
+            return [str(t) for t in tests]
+    top = frontmatter.get("deterministic_tests")
+    if top:
+        return [str(t) for t in top]
+    return []
+
+
+def gather(note_path: Path, task_id: str) -> Observation:
+    """Probe the host and build an Observation. Runs the (expensive) clean-tree
+    test pass ONLY when the cheap pre-checks would not already short-circuit to
+    INDETERMINATE — so an out-of-scope, high-load, or pre-commit task costs nothing."""
+    from shared.sdlc_lifecycle import acceptance_criteria_state
+
+    frontmatter, text = _frontmatter_and_text(note_path)
+    kind = frontmatter.get("kind")
+    surface = frontmatter.get("mutation_surface")
+    declared = _declared_tests(frontmatter)
+    checkbox_complete = acceptance_criteria_state(text).complete
+    authorizes = bool(frontmatter.get("authorizes_test_changes", False))
+    oracle_off = os.environ.get("HAPAX_ACCEPTANCE_ORACLE_OFF") == "1"
+    load_ok = _load_ok()
+
+    in_scope = kind in IN_SCOPE_KINDS and surface in IN_SCOPE_SURFACES
+    clean_sha = (
+        resolve_clean_sha(frontmatter) if (in_scope and load_ok and not oracle_off) else None
+    )
+
+    failures: list[str] = []
+    tampered: list[str] = []
+    n_run = 0
+    if in_scope and load_ok and not oracle_off and clean_sha and declared:
+        failures, tampered = _run_clean_tree(clean_sha, declared, extract_test_paths(declared))
+        n_run = len(declared)
+
+    return Observation(
+        task_id=task_id,
+        kind=kind,
+        mutation_surface=surface,
+        deterministic_tests=tuple(declared),
+        checkbox_complete=checkbox_complete,
+        oracle_off=oracle_off,
+        load_ok=load_ok,
+        clean_tree_sha=clean_sha,
+        authorizes_test_changes=authorizes,
+        tampered_test_paths=tuple(tampered),
+        test_failures=tuple(failures),
+        n_tests_run=n_run,
+    )
+
+
+def _resolve_note(task_or_path: str) -> Path | None:
+    candidate = Path(task_or_path)
+    if candidate.is_file():
+        return candidate
+    task_id = candidate.stem if candidate.suffix == ".md" else task_or_path
+    for sub in ("active", "closed"):
+        note = CC_TASKS / sub / f"{task_id}.md"
+        if note.is_file():
+            return note
+    return None
+
+
+def _ledger(record: dict) -> None:
+    try:
+        FINDINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with FINDINGS_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass  # fail-OPEN: a broken ledger must never block or crash the oracle
+
+
+def _evaluate(note_path: Path, task_id: str) -> tuple[Observation, Verdict]:
+    """gather + decide, fail-OPEN: any infra error becomes INDETERMINATE, never a
+    crash and never a FAIL (so a broken oracle cannot brick a closure)."""
+    try:
+        obs = gather(note_path, task_id)
+    except Exception as exc:  # noqa: BLE001 — fail-OPEN by contract
+        obs = Observation(task_id=task_id)
+        return obs, Verdict(INDETERMINATE, (f"infra-error:{type(exc).__name__}:{exc}",))
+    return obs, decide(obs)
+
+
+def _sweep(limit: int, ledger: bool) -> int:
+    closed = CC_TASKS / "closed"
+    notes = sorted(closed.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+    tally = {PASS: 0, FAIL: 0, INDETERMINATE: 0}
+    false_closures = 0
+    examined = 0
+    for note in notes:
+        if examined >= limit:
+            break
+        try:
+            frontmatter, _ = _frontmatter_and_text(note)
+        except OSError:
+            continue
+        if frontmatter.get("kind") not in IN_SCOPE_KINDS:
+            continue
+        if frontmatter.get("mutation_surface") not in IN_SCOPE_SURFACES:
+            continue
+        examined += 1
+        obs, verdict = _evaluate(note, note.stem)
+        tally[verdict.verdict] += 1
+        if divergence(verdict.verdict, obs.checkbox_complete) == "oracle-fail-checkbox-pass":
+            false_closures += 1
+        if ledger:
+            _ledger(finding_record(obs, verdict, now_iso()))
+    print(
+        json.dumps(
+            {
+                "mode": "sweep",
+                "examined_in_scope": examined,
+                "pass": tally[PASS],
+                "fail": tally[FAIL],
+                "indeterminate": tally[INDETERMINATE],
+                "false_closures_caught": false_closures,
+                "false_closure_rate": (false_closures / examined) if examined else 0.0,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Acceptance oracle — kind=build pilot (shadow).")
+    parser.add_argument("task", nargs="?", help="cc-task id or path to a cc-task .md note")
+    parser.add_argument("--note", help="explicit path to a cc-task .md note")
+    parser.add_argument(
+        "--observations", help="JSON observation map; skips all live probing (testing hook)"
+    )
+    parser.add_argument(
+        "--sweep", action="store_true", help="shadow sweep over recent closed in-scope tasks"
+    )
+    parser.add_argument(
+        "--limit", type=int, default=50, help="max in-scope notes to examine in --sweep"
+    )
+    parser.add_argument("--json", action="store_true", help="print the verdict record as JSON")
+    parser.add_argument(
+        "--no-ledger", action="store_true", help="do not append to the findings ledger"
+    )
+    args = parser.parse_args(argv[1:])
+
+    ledger = not args.no_ledger
+
+    if args.observations:
+        obs = Observation.from_dict(json.loads(Path(args.observations).read_text(encoding="utf-8")))
+        verdict = decide(obs)
+        record = finding_record(obs, verdict, now_iso())
+        if ledger:
+            _ledger(record)
+        if args.json:
+            print(json.dumps(record))
+        elif verdict.verdict != PASS:
+            print(f"{verdict.verdict}: {'; '.join(verdict.reasons)}", file=sys.stderr)
+        return verdict.exit_code
+
+    if args.sweep:
+        return _sweep(args.limit, ledger)
+
+    target = args.note or args.task
+    if not target:
+        parser.print_usage(sys.stderr)
+        return 64
+    note_path = _resolve_note(target)
+    if note_path is None:
+        # fail-OPEN: an unresolvable note is INDETERMINATE, never a block.
+        record = {
+            "ts": now_iso(),
+            "task_id": target,
+            "verdict": INDETERMINATE,
+            "reasons": ["note-not-found"],
+            "mode": "shadow",
+        }
+        if ledger:
+            _ledger(record)
+        if args.json:
+            print(json.dumps(record))
+        else:
+            print(f"INDETERMINATE: note-not-found ({target})", file=sys.stderr)
+        return EXIT[INDETERMINATE]
+
+    obs, verdict = _evaluate(note_path, _resolve_note(target).stem)
+    record = finding_record(obs, verdict, now_iso())
+    if ledger:
+        _ledger(record)
+    if args.json:
+        print(json.dumps(record))
+    elif verdict.verdict != PASS:
+        print(f"{verdict.verdict}: {'; '.join(verdict.reasons)}", file=sys.stderr)
+    return verdict.exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
