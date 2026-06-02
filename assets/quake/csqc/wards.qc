@@ -303,10 +303,15 @@ float screwm_governance_follow_active;
 float screwm_governance_follow_confidence;
 float screwm_governance_follow_fresh;
 
-vector screwm_cyan = '0.45 0.95 0.88';
-vector screwm_amber = '1.00 0.62 0.23';
-vector screwm_rose = '1.00 0.35 0.55';
-vector screwm_green = '0.55 0.85 0.42';
+// Desaturated baseline lighting (Moksha palette law): the void is lit by a
+// dim, low-chroma key/rim/fill, NOT saturated neon. These are additive dlight
+// colors — magnitude IS intensity, so low+near-neutral values dim AND desaturate
+// the wash that was reading as colored "beams". Standing-neon is reserved for
+// flagged accents only (see screwm_accent_*), never the baseline flood.
+vector screwm_cyan = '0.26 0.34 0.38';
+vector screwm_amber = '0.38 0.32 0.26';
+vector screwm_rose = '0.36 0.28 0.32';
+vector screwm_green = '0.30 0.36 0.28';
 vector screwm_dim = '0.10 0.13 0.14';
 vector screwm_review_camera_origin;
 vector screwm_review_camera_angles;
@@ -361,10 +366,14 @@ vector(float phase) screwm_synthwave_color =
 {
     vector color;
 
+    // Desaturated, near-neutral roaming color with only a FAINT slow hue/sat
+    // transit (anti_visualizer: brightness ~frozen, channels kept close so the
+    // result is cool-grey "always-transiting shallows", not a saturated synthwave
+    // disco sweep). Small sin amplitudes => low chroma; convergent means => grey.
     color = '0 0 0';
-    color_x = screwm_clamp(0.48 + 0.34 * sin(phase), 0.08, 0.86);
-    color_y = screwm_clamp(0.26 + 0.24 * sin(phase + 2.094), 0.06, 0.58);
-    color_z = screwm_clamp(0.60 + 0.36 * sin(phase + 4.188), 0.22, 0.98);
+    color_x = screwm_clamp(0.34 + 0.09 * sin(phase), 0.20, 0.50);
+    color_y = screwm_clamp(0.38 + 0.07 * sin(phase + 2.094), 0.24, 0.52);
+    color_z = screwm_clamp(0.42 + 0.09 * sin(phase + 4.188), 0.26, 0.56);
     return color;
 };
 

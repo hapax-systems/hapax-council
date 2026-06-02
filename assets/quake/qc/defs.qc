@@ -96,7 +96,10 @@ vector AOA_SPHERE_CENTER = '0 -555 224';
 vector CAMERA_REVIEW_POS = '0 -2380 164';
 vector CAMERA_REVIEW_TARGET = '0 -555 224';
 float AOA_MODEL_SCALE = 1.0;
-float AOA_SPHERE_MODEL_SCALE = 1.0;
+// OARB nests INSIDE the AoA central void (rim-lit eclipse), not eclipsing the
+// fractal core. Sphere shares AOA center but is scaled down so the surrounding
+// tetrix lattice stays visible around it.
+float AOA_SPHERE_MODEL_SCALE = 0.45;
 
 float CAMERA_PERIOD;
 float CAMERA_ORBIT_PERIOD;

@@ -30,8 +30,11 @@ void() spawn_aoa =
     setmodel(aoa_entity, "progs/aoa.mdl");
     aoa_entity.scale = AOA_MODEL_SCALE;
     aoa_entity.alpha = 0.16;
-    aoa_entity.colormod = '1.08 0.64 0.88';
-    aoa_entity.glowmod = '0.80 0.40 0.58';
+    // Cool near-neutral tint (was saturated pink) so the AoA reads as a
+    // desaturated luminous-edge body, not a magenta fill. Per-facet hue now comes
+    // (subtly) from the desaturated atlas fill, not a global pink colormod.
+    aoa_entity.colormod = '0.86 0.92 1.02';
+    aoa_entity.glowmod = '0.60 0.66 0.76';
     aoa_entity.glow_color = 236;
     aoa_entity.glow_size = 0;
     aoa_entity.glow_trail = 0;

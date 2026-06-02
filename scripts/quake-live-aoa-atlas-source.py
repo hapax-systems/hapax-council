@@ -213,6 +213,14 @@ def _face_color(face_index: int, now: float, scalars: dict[str, float]) -> tuple
         rgb = (0.76 + wave_b * 0.20, 0.36 + wave_c * 0.36, 0.72 + wave_a * 0.24)
     else:
         rgb = (0.92 + wave_c * 0.08, 0.58 + wave_b * 0.32, 0.24 + wave_a * 0.44)
+    # Desaturated baseline (Moksha law): pull the facet FILL toward luminance with
+    # a faint cool tint, keeping only subtle per-facet hue. The bright facet edges
+    # (edge_gain, painted separately in _paint_face_cell) survive this, giving the
+    # required "desaturated body, luminous edges" read instead of rainbow fill.
+    lum = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+    desat = 0.80
+    cool = (0.93, 0.99, 1.07)
+    rgb = tuple((c * (1.0 - desat) + lum * desat) * cool[i] for i, c in enumerate(rgb))
     return tuple(max(18, min(255, int(channel * 255 * gain))) for channel in rgb)
 
 
