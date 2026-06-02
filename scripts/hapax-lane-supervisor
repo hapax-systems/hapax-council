@@ -49,6 +49,31 @@ CLAUDE_BIN="${HAPAX_CLAUDE_BIN:-$HOME/.local/bin/hapax-claude}"
 CODEX_BIN="${HAPAX_CODEX_BIN:-$HOME/.local/bin/hapax-codex}"
 ANTIGRAV_BIN="${HAPAX_ANTIGRAV_BIN:-$HOME/.local/bin/hapax-antigrav}"
 
+# ── progress-watchdog (the stalled-mid-build recovery leg) ────────────────────
+# A lane can be process-alive yet make no PROGRESS: the turn ended, nothing
+# drives a continuation, so output.jsonl freezes while the slot stays occupied
+# in_progress and no PR opens. claude_alive() (the dead-path liveness check) says
+# "fine" and skips it — that is the gap this leg fills.
+CLAUDE_LOG_DIR="${HAPAX_SUPERVISOR_CLAUDE_LOG_DIR:-$HOME/.cache/hapax/claude-headless}"
+STALL_T="${HAPAX_SUPERVISOR_STALL_T:-900}"               # output-silence -> stalled (>any quiet build)
+RESUME_MAX_ATTEMPTS="${HAPAX_SUPERVISOR_RESUME_MAX_ATTEMPTS:-3}"
+RESUME_WINDOW_S="${HAPAX_SUPERVISOR_RESUME_WINDOW_S:-3600}"
+RESUME_COOLDOWN_S="${HAPAX_SUPERVISOR_RESUME_COOLDOWN_S:-600}"  # let a resumed lane produce before re-judging
+PROGRESS_OFF="${HAPAX_SUPERVISOR_PROGRESS_OFF:-0}"
+# Admission state command (DI seam; default is the resource-shielding L3 gate).
+ADMISSION_CMD="${HAPAX_SUPERVISOR_ADMISSION_CMD:-python3 -m shared.sdlc_pressure_gate --state}"
+METRICS_FILE="${HAPAX_SUPERVISOR_METRICS_FILE:-$HOME/.local/var/lib/node_exporter/textfile_collector/hapax-lane-supervisor.prom}"
+NTFY_URL="${HAPAX_NTFY_URL:-http://localhost:8092}"
+NTFY_TOPIC="${HAPAX_NTFY_TOPIC:-hapax}"
+
+# Repo root for `python3 -m shared.…`. Resolve $0 through the deploy symlink
+# (~/.local/bin/…) so REPO_DIR is the release dir that actually ships shared/;
+# fall back to the integrator worktree. admission_state fails open regardless.
+REPO_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." 2>/dev/null && pwd || true)"
+[ -n "$REPO_DIR" ] && [ -d "$REPO_DIR/shared" ] || REPO_DIR="$HOME/projects/hapax-council"
+
+PROGRESS_STALLED_TICK=0  # per-tick gauge: lanes found output-stalled this sweep
+
 mkdir -p "$STATE_DIR"
 
 log() { printf '%s lane-supervisor: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
@@ -151,7 +176,7 @@ guard() {
   [ -d "$worktree" ] || { log "$lane ($kind): no worktree at $worktree — skipping"; return 0; }
 
   case "$kind" in
-    claude)   claude_alive "$lane" && return 0 ;;
+    claude)   if claude_alive "$lane"; then progress_guard "$lane"; return 0; fi ;;
     codex)    tmux_session_alive "hapax-codex-$lane" && return 0 ;;
     antigrav) tmux_session_alive "hapax-antigrav-$lane" && return 0 ;;
   esac
@@ -210,10 +235,258 @@ guard() {
   record_restart "$lane"
 }
 
+# ── progress-watchdog (alive-but-output-stalled recovery) ─────────────────────
+
+# A launcher (hapax-claude-headless) holds a lifetime flock + names its pid at
+# $RUNTIME_DIR/<lane>.launcher.pid. "live launcher" = that pid is alive. The
+# supervisor's claude_alive() keys on the *claude* pid instead, so a lane whose
+# launcher died (orphaned claude) — or whose launcher is alive but wedged after a
+# completed turn — slips through. Recovery splits on launcher liveness:
+#   dead  -> re-launch headless (flock-free, fresh, resumes from worktree)
+#   alive -> nudge the live launcher's stdin fifo (its own injection mechanism;
+#            a re-launch would flock-fail). Both resume the SAME task.
+launcher_alive() {
+  local lpf="$RUNTIME_DIR/$1.launcher.pid" pid=""
+  [ -f "$lpf" ] || return 1
+  pid="$(cat "$lpf" 2>/dev/null || true)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+# Seconds since output.jsonl was last written; returns 1 (no echo) if absent
+# (interactive/tmux lanes have none — naturally excluded).
+output_age() {
+  local oj="$CLAUDE_LOG_DIR/$1/output.jsonl" mt=""
+  [ -f "$oj" ] || return 1
+  mt="$(stat -c %Y "$oj" 2>/dev/null || true)"
+  [ -n "$mt" ] || return 1
+  echo $(( now - mt ))
+}
+
+# Admission state via the resource-shielding L3 gate (fail-open to "open" so the
+# floor never wedges on the gate). 'closed' -> defer (queue, never drop).
+admission_state() {
+  [ "${HAPAX_SDLC_PRESSURE_GATE_OFF:-}" = "1" ] && { echo open; return; }
+  local out=""
+  out="$( cd "$REPO_DIR" 2>/dev/null; bash -c "$ADMISSION_CMD" 2>/dev/null || true )"
+  case "$out" in
+    open|paced|closed) echo "$out" ;;
+    *) echo open ;;
+  esac
+}
+
+# task_id<TAB>status<TAB>title for the lane's active claim (any status), else
+# empty. The claim names the task; the vault note is authority for status.
+resolve_task_meta() {
+  python3 - "$VAULT_ROOT" "$1" "$HOME/.cache/hapax/cc-active-task-$1" <<'PY' 2>/dev/null || true
+import re
+import sys
+from pathlib import Path
+
+vault_root, lane, claim_file = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+if not claim_file.is_file():
+    sys.exit(0)
+lines = [ln.strip() for ln in claim_file.read_text(errors="replace").splitlines() if ln.strip()]
+if not lines:
+    sys.exit(0)
+task_id = lines[0]
+
+active = vault_root / "active"
+note = active / f"{task_id}.md"
+if not note.is_file():
+    note = next(iter(sorted(active.glob(f"{task_id}-*.md"))), None) if active.is_dir() else None
+if note is None or not note.is_file():
+    sys.exit(0)
+
+text = note.read_text(errors="replace")
+
+
+def field(name: str) -> str:
+    m = re.search(rf"^{name}:\s*(.+?)\s*$", text, re.MULTILINE)
+    return m.group(1).strip().strip('"').strip("'") if m else ""
+
+
+if field("assigned_to") == lane:
+    print(f"{task_id}\t{field('status')}\t{field('title')}")
+PY
+}
+
+# Per-(lane,task) attempt accounting in a sliding window + a post-resume cooldown
+# (so a freshly-resumed lane is given time to produce output before re-judging).
+_resume_log() { printf '%s/%s.%s.resume-log' "$STATE_DIR" "$1" "${2//\//_}"; }
+
+progress_attempts_count() {
+  local logf cutoff count=0 ts
+  logf="$(_resume_log "$1" "$2")"
+  [ -f "$logf" ] || { echo 0; return; }
+  cutoff=$(( now - RESUME_WINDOW_S ))
+  while read -r ts; do
+    [ -n "$ts" ] || continue
+    if [ "$ts" -ge "$cutoff" ]; then count=$(( count + 1 )); fi
+  done < "$logf"
+  echo "$count"
+}
+
+record_progress_attempt() { echo "$now" >> "$(_resume_log "$1" "$2")"; }
+reset_progress_attempts() { rm -f "$(_resume_log "$1" "$2")" 2>/dev/null || true; }
+
+progress_within_cooldown() {
+  local marker="$STATE_DIR/$1.last-resume" last elapsed
+  [ -f "$marker" ] || return 1
+  last="$(cat "$marker" 2>/dev/null || echo 0)"
+  elapsed=$(( now - last ))
+  [ "$elapsed" -lt "$RESUME_COOLDOWN_S" ]
+}
+record_progress_resume() { echo "$now" > "$STATE_DIR/$1.last-resume"; }
+
+bump_counter() {
+  local f="$STATE_DIR/$1" n
+  n="$(cat "$f" 2>/dev/null || echo 0)"
+  echo $(( n + 1 )) > "$f"
+}
+
+progress_resume_prompt() {
+  printf 'Resume %s — you went silent and stalled; continue from your worktree (commit incrementally so progress is never lost); if a sub-part blocks, log it and ship the tractable part to a landed PR.' "$1"
+}
+
+# Inject a stream-json user message into a live launcher's stdin fifo (exactly
+# what the launcher itself does to restart a turn). Timeout-bounded so a missing
+# reader never wedges the oneshot; non-zero -> caller retries next tick.
+fifo_nudge() {
+  local fifo="$RUNTIME_DIR/$1.stdin" json
+  [ -p "$fifo" ] || { log "$1: no stdin fifo at $fifo — cannot nudge live launcher"; return 1; }
+  json="$(progress_resume_prompt "$2" | python3 -c 'import sys, json; print(json.dumps({"type":"user","message":{"role":"user","content":[{"type":"text","text":sys.stdin.read()}]}}, separators=(",", ":")))' 2>/dev/null || true)"
+  [ -n "$json" ] || return 1
+  timeout 5 bash -c 'printf "%s\n" "$1" > "$2"' _ "$json" "$fifo"
+}
+
+# Exhaustion path: revert the task to offered+unassigned (re-dispatchable
+# elsewhere) and clear the lane's claim slot so the lane stands down.
+reoffer_task() {
+  python3 - "$VAULT_ROOT" "$2" <<'PY' 2>/dev/null || true
+import re
+import sys
+from pathlib import Path
+
+vault, task = Path(sys.argv[1]), sys.argv[2]
+active = vault / "active"
+note = active / f"{task}.md"
+if not note.is_file():
+    cands = sorted(active.glob(f"{task}-*.md")) if active.is_dir() else []
+    note = cands[0] if cands else None
+if note is not None and note.is_file():
+    t = note.read_text(errors="replace")
+    t = re.sub(r"^status:.*$", "status: offered", t, count=1, flags=re.MULTILINE)
+    t = re.sub(r"^assigned_to:.*$", "assigned_to: unassigned", t, count=1, flags=re.MULTILINE)
+    note.write_text(t)
+PY
+  : > "$HOME/.cache/hapax/cc-active-task-$1" 2>/dev/null || true
+}
+
+progress_ntfy() {
+  curl -sf -d "Lane progress watchdog: lane $1 stalled on $2 — $3" \
+    -H "Title: Lane resume exhausted" -H "Priority: high" -H "Tags: warning,robot" \
+    "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+}
+
+emit_progress_metrics() {
+  [ -n "$METRICS_FILE" ] || return 0
+  local resumed exhausted dir
+  resumed="$(cat "$STATE_DIR/lanes_resumed_total" 2>/dev/null || echo 0)"
+  exhausted="$(cat "$STATE_DIR/resume_exhausted_total" 2>/dev/null || echo 0)"
+  dir="$(dirname "$METRICS_FILE")"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  {
+    printf '# HELP hapax_lane_supervisor_lanes_stalled Lanes detected output-stalled this tick\n'
+    printf '# TYPE hapax_lane_supervisor_lanes_stalled gauge\n'
+    printf 'hapax_lane_supervisor_lanes_stalled %s\n' "$PROGRESS_STALLED_TICK"
+    printf '# HELP hapax_lane_supervisor_lanes_resumed_total Cumulative lane progress resumes\n'
+    printf '# TYPE hapax_lane_supervisor_lanes_resumed_total counter\n'
+    printf 'hapax_lane_supervisor_lanes_resumed_total %s\n' "$resumed"
+    printf '# HELP hapax_lane_supervisor_resume_exhausted_total Cumulative resume-exhaustion reoffers\n'
+    printf '# TYPE hapax_lane_supervisor_resume_exhausted_total counter\n'
+    printf 'hapax_lane_supervisor_resume_exhausted_total %s\n' "$exhausted"
+  } > "$METRICS_FILE.tmp" 2>/dev/null && mv "$METRICS_FILE.tmp" "$METRICS_FILE" 2>/dev/null || true
+}
+
+# progress_guard <lane>: for an ALIVE claude lane, detect output-stall and resume
+# it on its same task. Bounded by attempts + cooldown + pressure; reoffers + ntfys
+# on exhaustion. No-op for fresh/idle/non-in_progress lanes (AC2).
+progress_guard() {
+  local lane="$1"
+  [ "$PROGRESS_OFF" = "1" ] && return 0
+
+  local age
+  age="$(output_age "$lane")" || return 0      # no output.jsonl -> not a progress-stall
+  [ "$age" -gt "$STALL_T" ] || return 0         # fresh output -> genuinely working (AC2)
+
+  local meta task status title
+  meta="$(resolve_task_meta "$lane")"
+  [ -n "$meta" ] || return 0
+  task="$(printf '%s' "$meta" | cut -f1)"
+  status="$(printf '%s' "$meta" | cut -f2)"
+  title="$(printf '%s' "$meta" | cut -f3)"
+  # Only mid-build (in_progress) stalls; pr_open/claimed/merge_queue are not it.
+  [ "$status" = "in_progress" ] || return 0
+
+  PROGRESS_STALLED_TICK=$(( PROGRESS_STALLED_TICK + 1 ))
+  log "$lane: PROGRESS-STALL — task $task in_progress, output stale ${age}s (>${STALL_T}s)"
+
+  local adm
+  adm="$(admission_state)"
+  if [ "$adm" = "closed" ]; then
+    log "$lane: sdlc-pressure CLOSED — deferring resume (queued; retries next tick, never dropped)"
+    return 0
+  fi
+
+  if progress_within_cooldown "$lane"; then
+    log "$lane: within resume cooldown (${RESUME_COOLDOWN_S}s) — letting the prior resume settle"
+    return 0
+  fi
+
+  local attempts
+  attempts="$(progress_attempts_count "$lane" "$task")"
+  if [ "$attempts" -ge "$RESUME_MAX_ATTEMPTS" ]; then
+    if [ "$DRY_RUN" = "1" ]; then
+      log "$lane: resume EXHAUSTED ($attempts/$RESUME_MAX_ATTEMPTS) — WOULD reoffer $task + ntfy [dry-run]"
+      return 0
+    fi
+    log "$lane: resume EXHAUSTED ($attempts/$RESUME_MAX_ATTEMPTS) — reoffering $task (offered+unassigned) + ntfy"
+    reoffer_task "$lane" "$task"
+    progress_ntfy "$lane" "$task" "auto-resume exhausted after $attempts attempts; reverted to offered+unassigned"
+    reset_progress_attempts "$lane" "$task"
+    bump_counter resume_exhausted_total
+    return 0
+  fi
+
+  if [ "$DRY_RUN" = "1" ]; then
+    if launcher_alive "$lane"; then
+      log "$lane: WOULD nudge live launcher to resume $task ($title) [dry-run]"
+    else
+      log "$lane: WOULD re-launch headless to resume $task ($title) [dry-run]"
+    fi
+    return 0
+  fi
+
+  record_progress_attempt "$lane" "$task"
+  record_progress_resume "$lane"
+  if launcher_alive "$lane"; then
+    log "$lane: live launcher stalled — nudging stdin fifo to resume $task"
+    fifo_nudge "$lane" "$task" || log "$lane: fifo nudge failed (no reader?) — retrying next tick"
+  else
+    log "$lane: no live launcher — re-launching headless (resume $task from worktree)"
+    setsid "$CLAUDE_HEADLESS_BIN" --task "$task" "$lane" "$(progress_resume_prompt "$task")" \
+      >"/tmp/hapax-supervisor-progress-$lane.log" 2>&1 &
+    disown
+  fi
+  bump_counter lanes_resumed_total
+}
+
 # ── sweep ─────────────────────────────────────────────────────────────────────
 
 for lane in $CLAUDE_LANES;   do guard "$lane" claude;   done
 for lane in $CODEX_LANES;    do guard "$lane" codex;     done
 for lane in $ANTIGRAV_LANES; do guard "$lane" antigrav;  done
+
+emit_progress_metrics
 
 exit 0
