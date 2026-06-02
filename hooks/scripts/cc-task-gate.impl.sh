@@ -524,9 +524,18 @@ _emit_gate_decision() {
   if [[ "${HAPAX_GATE_DECISION_LOG_OFF:-0}" == "1" ]]; then
     return 0
   fi
-  if command -v jq >/dev/null 2>&1; then
+  if command -v jq >/dev/null 2>&1 && command -v flock >/dev/null 2>&1; then
     mkdir -p "$(dirname "$_shadow_decision_log")" 2>/dev/null
-    jq -cn \
+    # Single-writer-safe append: capture the record, then write it under an
+    # exclusive flock on the SAME sidecar Python uses (<name>.lock). flock(1) and
+    # fcntl.flock(2) both take a kernel LOCK_EX on the inode, so this bash writer
+    # and the Python writers never interleave — the decision log carries records
+    # >PIPE_BUF (max ~9KB live). flock is hard-required (no raw >> fallback); the
+    # sidecar is pre-created 0600 to match shared.jsonl_append._lock_path
+    # (dn-ledger-flock).
+    _decision_lock="${_shadow_decision_log}.lock"
+    (umask 077; : >>"$_decision_lock") 2>/dev/null
+    _decision_rec="$(jq -cn \
       --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       --argjson legacy_exit "$rc" \
       --arg role "${role:-}" \
@@ -546,8 +555,11 @@ _emit_gate_decision() {
       --arg docs_mutation_authorized "${docs_authorized:-}" \
       --arg runtime_mutation_authorized "${runtime_authorized:-}" \
       --arg mutation_scope_refs "${mutation_scope_refs:-}" \
-      '{ts:$ts, legacy_exit:$legacy_exit, role:$role, session_id:$session_id, task_id:$task_id, tool_name:$tool_name, command:$command, file_path:$file_path, mutation_surface:$mutation_surface, status:$status, assigned_to:$assigned_to, authority_case:$authority_case, parent_spec:$parent_spec, stage:$stage, implementation_authorized:$implementation_authorized, source_mutation_authorized:$source_mutation_authorized, docs_mutation_authorized:$docs_mutation_authorized, runtime_mutation_authorized:$runtime_mutation_authorized, mutation_scope_refs:$mutation_scope_refs}' \
-      >> "$_shadow_decision_log" 2>/dev/null
+      '{ts:$ts, legacy_exit:$legacy_exit, role:$role, session_id:$session_id, task_id:$task_id, tool_name:$tool_name, command:$command, file_path:$file_path, mutation_surface:$mutation_surface, status:$status, assigned_to:$assigned_to, authority_case:$authority_case, parent_spec:$parent_spec, stage:$stage, implementation_authorized:$implementation_authorized, source_mutation_authorized:$source_mutation_authorized, docs_mutation_authorized:$docs_mutation_authorized, runtime_mutation_authorized:$runtime_mutation_authorized, mutation_scope_refs:$mutation_scope_refs}' 2>/dev/null)"
+    if [ -n "$_decision_rec" ]; then
+      printf '%s\n' "$_decision_rec" \
+        | flock "$_decision_lock" tee -a "$_shadow_decision_log" >/dev/null 2>&1
+    fi
   fi
   return 0
 }

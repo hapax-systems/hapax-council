@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from shared.jsonl_append import append_jsonl
+
 #: Env var redirecting the canonical coord tree for test isolation / sandboxed
 #: tools. Production leaves it unset; the default is a user-writable cache path.
 COORD_DIR_ENV = "HAPAX_COORD_DIR"
@@ -489,10 +491,13 @@ class CoordEventLog:
             return sequence
 
     def _append_jsonl_mirror(self, event: CoordEvent) -> tuple[str, ...]:
+        # Single-writer-safe append (flock + O_APPEND) reproducing the canonical
+        # bytes exactly; ``raising=True`` preserves the rich OSError diagnostic the
+        # SSOT consumer surfaces (dn-ledger-flock).
         try:
-            self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-            with self.jsonl_path.open("a", encoding="utf-8") as handle:
-                handle.write(_canonical_json(event.to_record()) + "\n")
+            append_jsonl(
+                self.jsonl_path, event.to_record(), serialize=_canonical_json, raising=True
+            )
         except OSError as exc:
             return (f"jsonl_mirror_failed:{type(exc).__name__}:{exc}",)
         return ()
@@ -547,8 +552,10 @@ class CoordEventLog:
             "reason": reason,
             "event": event.to_record(),
         }
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(_canonical_json(record) + "\n")
+        # Single-writer-safe append reproducing the canonical bytes; ``raising=True``
+        # keeps the existing raise-on-failure contract (a lost spool file is a lost
+        # authorization, so the caller must see an IO failure).
+        append_jsonl(path, record, serialize=_canonical_json, raising=True)
         return path
 
 
