@@ -15,7 +15,10 @@ from shared.coord_event_log import (
     CoordEventLog,
     CoordWriter,
     DirectLaneWriteError,
+    Snapshot,
+    snapshot_id_for,
 )
+from shared.coord_projection import CoordProjection
 
 
 def _event(event_id: str = "evt-1") -> CoordEvent:
@@ -272,3 +275,157 @@ def test_legacy_authority_case_ledger_is_not_git_tracked() -> None:
     )
 
     assert result.returncode != 0
+
+
+# --- snapshot compaction (event-sourcing checkpoint primitives) ---------------
+# Snapshot-ONLY slice (bb-event-sourced-substrate): a checkpoint of the folded
+# projection so a read can resume from a serialized state + the tail instead of
+# always re-folding from sequence zero. Purely additive — NO event is ever deleted
+# (prune is a separate, deliberately deferred operation). Generalizes the proven
+# replay_decision_log fold (shared/policy_decide.py) into the coord substrate.
+
+
+def _canon(record: object) -> str:
+    """The canonical JSON byte-form the snapshot equality is asserted against."""
+    return json.dumps(record, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+
+
+def _stage_event(eid: str, subject: str, to_stage: str, no_go: dict | None = None) -> CoordEvent:
+    return CoordEvent(
+        event_id=eid,
+        timestamp="2026-06-02T12:00:00Z",
+        event_type="sdlc.stage_transition",
+        actor="beta",
+        subject=subject,
+        authority_case="CASE-SDLC-REFORM-001",
+        payload={"to_stage": to_stage, "no_go_snapshot": no_go or {}},
+    )
+
+
+def test_snapshot_id_for_is_deterministic_and_distinct() -> None:
+    assert snapshot_id_for(7) == snapshot_id_for(7)  # stable across calls
+    assert snapshot_id_for(7) != snapshot_id_for(8)  # keyed by through_sequence
+    assert snapshot_id_for(7).startswith("coord-snap-")
+
+
+def test_write_snapshot_persists_and_latest_snapshot_reads_it_back(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    log.append(_event(), writer=CoordWriter.daemon())
+
+    snap = log.write_snapshot('{"tasks":{}}', through_sequence=1, writer=CoordWriter.daemon())
+
+    assert isinstance(snap, Snapshot)
+    assert snap.through_sequence == 1
+    assert snap.snapshot_id == snapshot_id_for(1)
+    assert log.latest_snapshot() == snap
+
+
+def test_latest_snapshot_is_none_without_a_snapshot(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    log.append(_event(), writer=CoordWriter.daemon())
+    assert log.latest_snapshot() is None
+
+
+def test_latest_snapshot_returns_the_highest_through_sequence(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    log.write_snapshot('{"tasks":{}}', through_sequence=1, writer=CoordWriter.daemon())
+    log.write_snapshot('{"tasks":{}}', through_sequence=3, writer=CoordWriter.daemon())
+    log.write_snapshot('{"tasks":{}}', through_sequence=2, writer=CoordWriter.daemon())
+
+    latest = log.latest_snapshot()
+    assert latest is not None
+    assert latest.through_sequence == 3
+
+
+def test_write_snapshot_is_idempotent_on_the_same_sequence(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    log.write_snapshot('{"tasks":{}}', through_sequence=2, writer=CoordWriter.daemon())
+    log.write_snapshot('{"tasks":{}}', through_sequence=2, writer=CoordWriter.daemon())
+
+    with sqlite3.connect(log.db_path) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM coord_snapshots").fetchone()[0]
+    assert count == 1  # deterministic snapshot_id → one row per (through_sequence, schema)
+
+
+def test_lane_writer_cannot_write_a_snapshot(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    with pytest.raises(DirectLaneWriteError):
+        log.write_snapshot('{"tasks":{}}', through_sequence=1, writer=CoordWriter.lane("beta"))
+
+
+def test_replay_since_sequence_returns_only_the_tail(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    log.append(_stage_event("e1", "task-1", "S6"), writer=CoordWriter.daemon())
+    log.append(_stage_event("e2", "task-1", "S7"), writer=CoordWriter.daemon())
+    log.append(_stage_event("e3", "task-2", "S6"), writer=CoordWriter.daemon())
+
+    tail = log.replay(since_sequence=2)
+
+    assert [event.event_id for event in tail.events] == ["e3"]
+
+
+def test_replay_default_still_returns_full_history(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    log.append(_stage_event("e1", "task-1", "S6"), writer=CoordWriter.daemon())
+    log.append(_stage_event("e2", "task-1", "S7"), writer=CoordWriter.daemon())
+
+    assert [event.event_id for event in log.replay().events] == ["e1", "e2"]
+
+
+def test_snapshot_does_not_delete_any_events(tmp_path: Path) -> None:
+    # SNAPSHOT-ONLY guarantee: snapshotting is purely additive; the event log is
+    # never truncated (prune is a separate, deliberately deferred operation).
+    log = _log(tmp_path)
+    log.append(_stage_event("e1", "task-1", "S6"), writer=CoordWriter.daemon())
+    log.append(_stage_event("e2", "task-1", "S7"), writer=CoordWriter.daemon())
+
+    log.snapshot(CoordProjection)
+
+    assert [event.event_id for event in log.replay().events] == ["e1", "e2"]
+
+
+def test_snapshot_then_replay_projection_is_byte_identical_to_full_replay(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    log.append(
+        _stage_event("e1", "task-1", "S6", {"release_authorized": False}),
+        writer=CoordWriter.daemon(),
+    )
+    log.append(_stage_event("e2", "task-1", "S7"), writer=CoordWriter.daemon())
+
+    snap = log.snapshot(CoordProjection)
+    assert snap.through_sequence == 2
+
+    # Events that land AFTER the checkpoint must be folded from the tail.
+    log.append(
+        CoordEvent(
+            event_id="e3",
+            timestamp="2026-06-02T12:01:00Z",
+            event_type="sdlc.authorization_flip",
+            actor="beta",
+            subject="task-1",
+            authority_case="CASE-SDLC-REFORM-001",
+            payload={"field": "release_authorized", "old": False, "new": True},
+        ),
+        writer=CoordWriter.daemon(),
+    )
+    log.append(_stage_event("e4", "task-2", "S6"), writer=CoordWriter.daemon())
+
+    from_zero = CoordProjection.from_replay(log.replay())
+    from_snap = log.replay_projection(CoordProjection, from_snapshot=True)
+
+    assert _canon(from_snap.to_record()) == _canon(from_zero.to_record())
+    # The tail genuinely contributed (post-snapshot flip + a brand-new task).
+    assert from_snap.tasks["task-1"].stage == "S7"
+    assert from_snap.tasks["task-1"].no_go["release_authorized"] is True
+    assert "task-2" in from_snap.tasks
+
+
+def test_replay_projection_without_a_snapshot_matches_full_replay(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    log.append(_stage_event("e1", "task-1", "S6"), writer=CoordWriter.daemon())
+    log.append(_stage_event("e2", "task-1", "S7"), writer=CoordWriter.daemon())
+
+    from_zero = CoordProjection.from_replay(log.replay())
+    from_driver = log.replay_projection(CoordProjection, from_snapshot=True)  # no snapshot yet
+
+    assert _canon(from_driver.to_record()) == _canon(from_zero.to_record())

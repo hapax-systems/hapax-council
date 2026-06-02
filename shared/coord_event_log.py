@@ -10,6 +10,7 @@ spool file for later daemon ingestion.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -20,7 +21,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, Self, TypeVar
 
 from shared.jsonl_append import append_jsonl
 
@@ -250,6 +251,68 @@ class BootReconcileResult:
         }
 
 
+def snapshot_id_for(through_sequence: int, schema_version: int = _SCHEMA_VERSION) -> str:
+    """Deterministic id for the fold checkpoint covering events <= ``through_sequence``.
+
+    Keyed only by (through_sequence, schema_version): because the fold is
+    deterministic, the same sequence always folds to the same state, so a re-snapshot
+    of the same sequence is an idempotent upsert rather than a duplicate row.
+    """
+    digest = hashlib.blake2b(
+        f"{through_sequence}\x1f{schema_version}".encode(), digest_size=8
+    ).hexdigest()
+    return f"coord-snap-{digest}"
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    """A serialized checkpoint of a fold over events with ``sequence <= through_sequence``.
+
+    Stored in the ``coord_snapshots`` SQLite table (no JSONL mirror — a snapshot is
+    derived, rebuildable state, not an event). ``state_json`` is the canonical
+    serialization of the projection (e.g. ``CoordProjection.to_record``).
+    """
+
+    snapshot_id: str
+    through_sequence: int
+    created_at: str
+    schema_version: int
+    state_json: str
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "snapshot_id": self.snapshot_id,
+            "through_sequence": self.through_sequence,
+            "created_at": self.created_at,
+            "schema_version": self.schema_version,
+            "state_json": self.state_json,
+        }
+
+
+class Foldable(Protocol):
+    """A pure fold over the coord event stream that can be checkpointed.
+
+    Generalizes the proven ``replay_decision_log`` fold (shared/policy_decide.py): a
+    derived projection rebuilt from an append-only log, now resumable from a
+    serialized checkpoint instead of always re-folding from sequence zero. Any fold
+    implementing this protocol (``CoordProjection`` today) plugs into
+    :meth:`CoordEventLog.snapshot` / :meth:`CoordEventLog.replay_projection`.
+    """
+
+    @classmethod
+    def from_replay(cls, replay: ReplayResult) -> Self: ...
+
+    @classmethod
+    def from_record(cls, record: Mapping[str, Any]) -> Self: ...
+
+    def to_record(self) -> dict[str, Any]: ...
+
+    def fold_event(self, event: CoordEvent) -> None: ...
+
+
+P = TypeVar("P", bound=Foldable)
+
+
 class CoordEventLog:
     """SQLite + JSONL coordination event log."""
 
@@ -344,19 +407,23 @@ class CoordEventLog:
             spool_path=spool_path,
         )
 
-    def replay(self, *, fail_open: bool = False) -> ReplayResult:
+    def replay(self, *, fail_open: bool = False, since_sequence: int = 0) -> ReplayResult:
         """Replay the canonical log.
 
-        When SQLite is corrupt or unavailable, ``fail_open=True`` falls back to
-        the JSONL mirror and skips malformed mirror lines.
+        ``since_sequence`` (default 0) replays only events with ``sequence >
+        since_sequence`` — the snapshot tail fast-path; 0 replays the full history
+        unchanged. When SQLite is corrupt or unavailable, ``fail_open=True`` falls
+        back to the JSONL mirror and skips malformed mirror lines.
         """
 
         try:
-            return ReplayResult(events=tuple(self._replay_sqlite()), source="sqlite")
+            return ReplayResult(
+                events=tuple(self._replay_sqlite(since_sequence=since_sequence)), source="sqlite"
+            )
         except Exception as exc:
             if not fail_open:
                 raise CoordEventLogError(f"coord replay failed: {exc}") from exc
-            events, mirror_errors = self._replay_jsonl_mirror()
+            events, mirror_errors = self._replay_jsonl_mirror(since_sequence=since_sequence)
             error = f"sqlite_replay_failed:{type(exc).__name__}:{exc}"
             return ReplayResult(
                 events=tuple(events),
@@ -440,6 +507,119 @@ class CoordEventLog:
             errors=(*replay.errors, *ingest.errors),
         )
 
+    # --- snapshot compaction (the replay_decision_log fold, generalized) ------
+    def write_snapshot(
+        self,
+        state_json: str,
+        *,
+        through_sequence: int,
+        writer: CoordWriter,
+        schema_version: int = _SCHEMA_VERSION,
+        created_at: str | None = None,
+    ) -> Snapshot:
+        """Persist a fold checkpoint covering events with ``sequence <= through_sequence``.
+
+        Daemon-only (the single-writer discipline the event log enforces). Idempotent:
+        keyed on a deterministic ``snapshot_id``, a re-snapshot of the same sequence
+        upserts rather than duplicating. NEVER touches ``coord_events`` — snapshotting
+        is purely additive (prune is a separate, deliberately deferred operation).
+        """
+        if writer.kind != "daemon":
+            raise DirectLaneWriteError(
+                f"{writer.kind} writer {writer.name!r} cannot write a coord snapshot"
+            )
+        snapshot = Snapshot(
+            snapshot_id=snapshot_id_for(through_sequence, schema_version),
+            through_sequence=through_sequence,
+            created_at=created_at or _now_iso(),
+            schema_version=schema_version,
+            state_json=state_json,
+        )
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            _ensure_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO coord_snapshots
+                    (snapshot_id, through_sequence, created_at, schema_version, state_json)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(snapshot_id) DO UPDATE SET
+                    through_sequence = excluded.through_sequence,
+                    created_at       = excluded.created_at,
+                    schema_version   = excluded.schema_version,
+                    state_json       = excluded.state_json
+                """,
+                (
+                    snapshot.snapshot_id,
+                    snapshot.through_sequence,
+                    snapshot.created_at,
+                    snapshot.schema_version,
+                    snapshot.state_json,
+                ),
+            )
+            conn.commit()
+        return snapshot
+
+    def latest_snapshot(self) -> Snapshot | None:
+        """The checkpoint with the highest ``through_sequence``, or ``None`` if none exist."""
+        if not self.db_path.exists():
+            return None
+        with sqlite3.connect(self.db_path) as conn:
+            _ensure_schema(conn)
+            row = conn.execute(
+                "SELECT snapshot_id, through_sequence, created_at, schema_version, state_json "
+                "FROM coord_snapshots ORDER BY through_sequence DESC, snapshot_id LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return None
+        return Snapshot(
+            snapshot_id=str(row[0]),
+            through_sequence=int(row[1]),
+            created_at=str(row[2]),
+            schema_version=int(row[3]),
+            state_json=str(row[4]),
+        )
+
+    def snapshot(self, projection_cls: type[P], *, writer: CoordWriter | None = None) -> Snapshot:
+        """Fold the whole log and persist a checkpoint of the derived projection.
+
+        Generic over any :class:`Foldable` (the ``replay_decision_log`` fold,
+        generalized): replay -> fold -> canonical serialize -> store. The checkpoint
+        covers exactly the events folded, so a later :meth:`replay_projection` from it
+        plus the tail is identical to a full from-zero replay.
+        """
+        replay = self.replay()
+        state = projection_cls.from_replay(replay)
+        last = replay.events[-1].sequence if replay.events else 0
+        through = last if last is not None else 0
+        return self.write_snapshot(
+            _canonical_json(state.to_record()),
+            through_sequence=through,
+            writer=writer or CoordWriter.daemon(),
+        )
+
+    def replay_projection(
+        self, projection_cls: type[P], *, from_snapshot: bool = True, fail_open: bool = False
+    ) -> P:
+        """Rebuild the projection, resuming from the latest checkpoint when present.
+
+        The read fast-path: seed from the serialized checkpoint and fold only events
+        after ``through_sequence``. Mathematically identical to a full from-zero
+        replay (pinned byte-for-byte by the snapshot-equality test). Falls back to a
+        full replay when ``from_snapshot`` is false or no checkpoint exists.
+        """
+        if from_snapshot:
+            snap = self.latest_snapshot()
+            if snap is not None:
+                state = projection_cls.from_record(json.loads(snap.state_json))
+                tail = self.replay(since_sequence=snap.through_sequence, fail_open=fail_open)
+                for event in tail.events:
+                    state.fold_event(event)
+                return state
+        return projection_cls.from_replay(self.replay(fail_open=fail_open))
+
     def _read_spool_event(self, spool_path: Path) -> CoordEvent:
         line = spool_path.read_text(encoding="utf-8").splitlines()[0]
         record = json.loads(line)
@@ -502,13 +682,20 @@ class CoordEventLog:
             return (f"jsonl_mirror_failed:{type(exc).__name__}:{exc}",)
         return ()
 
-    def _replay_sqlite(self) -> list[CoordEvent]:
+    def _replay_sqlite(self, *, since_sequence: int = 0) -> list[CoordEvent]:
         if not self.db_path.exists():
             return []
         with sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT sequence, canonical_json FROM coord_events ORDER BY sequence"
-            ).fetchall()
+            if since_sequence > 0:
+                rows = conn.execute(
+                    "SELECT sequence, canonical_json FROM coord_events "
+                    "WHERE sequence > ? ORDER BY sequence",
+                    (since_sequence,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT sequence, canonical_json FROM coord_events ORDER BY sequence"
+                ).fetchall()
         events: list[CoordEvent] = []
         for sequence, canonical_json in rows:
             record = json.loads(str(canonical_json))
@@ -516,7 +703,9 @@ class CoordEventLog:
             events.append(CoordEvent.from_record(record))
         return events
 
-    def _replay_jsonl_mirror(self) -> tuple[list[CoordEvent], tuple[str, ...]]:
+    def _replay_jsonl_mirror(
+        self, *, since_sequence: int = 0
+    ) -> tuple[list[CoordEvent], tuple[str, ...]]:
         events: list[CoordEvent] = []
         errors: list[str] = []
         try:
@@ -528,10 +717,17 @@ class CoordEventLog:
             if not line.strip():
                 continue
             try:
-                record = json.loads(line)
-                events.append(CoordEvent.from_record(record))
+                event = CoordEvent.from_record(json.loads(line))
             except Exception as exc:
                 errors.append(f"{self.jsonl_path}: line {lineno}: {type(exc).__name__}: {exc}")
+                continue
+            if (
+                since_sequence > 0
+                and event.sequence is not None
+                and event.sequence <= since_sequence
+            ):
+                continue
+            events.append(event)
         return events, tuple(errors)
 
     def _write_spool(self, event: CoordEvent, *, writer: CoordWriter, reason: str) -> Path:
@@ -583,6 +779,24 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_coord_events_type_sequence "
         "ON coord_events(event_type, sequence)"
+    )
+    # Derived fold checkpoints (snapshot compaction). Additive: events are never
+    # deleted here — a snapshot only banks a serialized fold so replay can resume
+    # from a checkpoint + tail instead of re-folding from sequence zero.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS coord_snapshots (
+            snapshot_id      TEXT PRIMARY KEY,
+            through_sequence INTEGER NOT NULL,
+            created_at       TEXT NOT NULL,
+            schema_version   INTEGER NOT NULL,
+            state_json       TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_coord_snapshots_through "
+        "ON coord_snapshots(through_sequence)"
     )
 
 
@@ -863,10 +1077,12 @@ __all__ = [
     "DEFAULT_SPOOL_DIR",
     "DirectLaneWriteError",
     "DuplicateEventError",
+    "Foldable",
     "GRANT_DIR_ENV",
     "GRANT_KEY_ENV",
     "ProvisionResult",
     "ReplayResult",
+    "Snapshot",
     "SpoolIngestResult",
     "coord_base_dir",
     "default_event_log",
@@ -874,9 +1090,13 @@ __all__ = [
     "default_grant_key",
     "main",
     "provision_coord_tree",
+    "snapshot_id_for",
 ]
 
 # Public API consumed by the coordination daemon/shim through dynamic dispatch.
+# The snapshot primitives are invoked by the (deferred) coord-compact daemon; they
+# are marked here so the unused-function scanner does not flag the still-unwired
+# substrate that this snapshot-only slice deliberately lands before its scheduler.
 _DYNAMIC_ENTRYPOINTS = (
     CoordWriter.daemon,
     CoordWriter.shim,
@@ -884,6 +1104,10 @@ _DYNAMIC_ENTRYPOINTS = (
     CoordEventLog.spool_fail_open,
     CoordEventLog.ingest_spool,
     CoordEventLog.boot_reconcile,
+    CoordEventLog.snapshot,
+    CoordEventLog.replay_projection,
+    CoordEventLog.write_snapshot,
+    CoordEventLog.latest_snapshot,
 )
 
 
