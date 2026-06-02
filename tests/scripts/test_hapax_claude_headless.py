@@ -4,6 +4,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-claude-headless"
 VISIBLE = REPO_ROOT / "scripts" / "hapax-claude"
@@ -305,3 +307,173 @@ def test_headless_stops_respawning_when_pr_merged(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "stopping respawn loop" in result.stdout
     assert counter.read_text().count("x") == 1
+
+
+# ---------------------------------------------------------------------------
+# Out-of-band self-reap (the zombie-launcher bug): the launcher holds the FIFO
+# write-end open (exec 3<>), so a persistent stream-json claude NEVER sees EOF,
+# `wait` never returns, and the post-turn task_is_terminal teardown is dead code.
+# The fix is an out-of-band watchdog that polls task terminality WHILE claude is
+# alive and SIGTERMs the child when the task closes/merges — independent of EOF.
+# ---------------------------------------------------------------------------
+
+
+def test_headless_source_has_out_of_band_self_reap() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "self-reaping" in text
+    assert "TERMINAL_POLL" in text or "HAPAX_CLAUDE_HEADLESS_TERMINAL_POLL_SECONDS" in text
+
+
+def test_headless_self_reaps_terminal_task_while_claude_persists(tmp_path: Path) -> None:
+    """The core fix: with a PERSISTENT claude (never exits → `wait` would block
+    forever), the launcher must still tear down when the task goes terminal,
+    driven by the out-of-band poll rather than the (unreachable) EOF path.
+
+    If the watchdog were absent the launcher would hang on `wait` for the full
+    `sleep 600` and the 20s subprocess timeout would fail the test.
+    """
+    home = tmp_path / "home"
+    (home / "projects" / "hapax-council--beta").mkdir(parents=True)
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-beta").write_text("task-x\n")  # claim stays
+    vault = tmp_path / "vault"
+    (vault / "active").mkdir(parents=True)
+    # Terminal status from the start: the first out-of-band poll detects it.
+    (vault / "active" / "task-x-test.md").write_text("---\ntask_id: task-x\nstatus: done\n---\n")
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # claude that NEVER exits on its own (the production behavior the bug needs):
+    # it must be SIGTERM'd by the out-of-band watchdog.
+    _stub_bin(bin_dir, "claude", "exec sleep 600\n")
+    env = _headless_env(home, bin_dir, pipe_dir)
+    env["HAPAX_CC_TASK_ROOT"] = str(vault)
+    env["HAPAX_CLAUDE_HEADLESS_TERMINAL_POLL_SECONDS"] = "0.3"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "self-reaping" in result.stdout
+    assert "stopping respawn loop" in result.stdout
+
+
+def test_headless_self_reap_keeps_persistent_claude_alive_while_task_live(tmp_path: Path) -> None:
+    """The watchdog must NOT reap a persistent claude while the task is still
+    live — it only acts once the task is terminal. With a live task the launcher
+    blocks (claude never exits), so we assert it TIMES OUT (no premature reap)."""
+    home = tmp_path / "home"
+    (home / "projects" / "hapax-council--beta").mkdir(parents=True)
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-beta").write_text("task-x\n")
+    vault = tmp_path / "vault"
+    (vault / "active").mkdir(parents=True)
+    (vault / "active" / "task-x-test.md").write_text(
+        "---\ntask_id: task-x\nstatus: in_progress\n---\n"
+    )
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _stub_bin(bin_dir, "claude", "exec sleep 600\n")
+    env = _headless_env(home, bin_dir, pipe_dir)
+    env["HAPAX_CC_TASK_ROOT"] = str(vault)
+    env["HAPAX_CLAUDE_HEADLESS_TERMINAL_POLL_SECONDS"] = "0.3"
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        subprocess.run(
+            [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=4,
+        )
+    # Reap the still-running launcher + its sleep child (own session) so the
+    # sandbox doesn't leak processes.
+    subprocess.run(["pkill", "-TERM", "-f", "sleep 600"], check=False)
+
+
+# ---------------------------------------------------------------------------
+# Stale-lock handling on startup: a SIGKILL'd launcher skips its EXIT trap,
+# stranding the pidfile. The OFD flock still releases on death, so a free lock
+# is reacquired normally; but a genuinely-held lock must never be stolen just
+# because the recorded pid looks stale.
+# ---------------------------------------------------------------------------
+
+
+def test_headless_source_has_stale_lock_handling() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "stale" in text.lower()
+    # On flock failure the incumbent's liveness is verified before refusing.
+    assert "kill -0" in text
+
+
+def test_headless_refuses_when_lock_held_even_with_stale_pidfile(tmp_path: Path) -> None:
+    """A live holder of the lock must still be refused (no false steal) even when
+    the recorded launcher pid is dead/stale."""
+    home = tmp_path / "home"
+    (home / "projects" / "hapax-council--beta").mkdir(parents=True)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _stub_bin(bin_dir, "claude", "exit 0\n")
+    env = _headless_env(home, bin_dir, pipe_dir)
+
+    # A dead/stale pid in the pidfile (pid 2^31-1 is never live).
+    (pipe_dir / "beta.launcher.pid").write_text("2147483647\n")
+    # A LIVE incumbent holds the lock (Python fd held for the subprocess lifetime).
+    lock_path = pipe_dir / "beta.launcher.lock"
+    lock_fd = open(lock_path, "w")  # noqa: SIM115
+    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        result = subprocess.run(
+            [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=20,
+        )
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+
+    assert result.returncode == 16, result.stderr
+    assert "refusing duplicate launcher" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Drift check (AC3): the committed launcher is the authoritative source — the
+# incident was the committed launcher REGRESSING below the deployed runtime (a
+# 190-line strip that dropped flock + teardown while the deployed copy had the
+# 292-line fix). source-activation only ever deploys FROM git, so pinning the
+# committed launcher's fix markers (+ a line-count floor) in CI keeps committed
+# and deployed from diverging in the dangerous direction. A byte-equality test
+# vs the deployed symlink is intentionally NOT used: it false-fails for the whole
+# merged-not-yet-deployed window (the pinned release copy lags main).
+# ---------------------------------------------------------------------------
+
+
+def test_committed_launcher_pins_zombie_reap_fix_markers() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+    # flock idempotency + named launcher pidfile
+    assert "flock -n" in text
+    assert "LAUNCHER_PIDFILE" in text
+    # merge-aware terminal detection + out-of-band self-reap
+    assert "task_is_terminal" in text
+    assert "self-reaping" in text
+    assert "stopping respawn loop" in text
+    # Line-count floor: the regression stripped the launcher to ~190 lines. The
+    # full launcher (flock + teardown + out-of-band self-reap) is well over 250.
+    assert len(text.splitlines()) >= 250, "launcher appears stripped — regression risk"

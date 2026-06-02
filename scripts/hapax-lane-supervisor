@@ -91,6 +91,19 @@ METRICS_FILE="${HAPAX_SUPERVISOR_METRICS_FILE:-$HOME/.local/var/lib/node_exporte
 PROGRESS_NTFY_URL="${HAPAX_NTFY_URL:-http://localhost:8092}"
 PROGRESS_NTFY_TOPIC="${HAPAX_NTFY_TOPIC:-hapax}"
 
+# ── zombie-launcher reaper ────────────────────────────────────────────────────
+# A headless launcher can outlive its task: claude reads its stdin from a FIFO
+# whose write-end the launcher holds open, so claude never EOFs, the launcher's
+# `wait` never returns, and its own task_is_terminal teardown is unreachable. The
+# launcher then pins the lane (lifetime flock) and blocks re-dispatch. The
+# launcher now self-reaps out-of-band, but (a) launchers deployed before that fix
+# and (b) any future wedge need a supervisor-side backstop. This leg SIGTERMs the
+# EXACT launcher pid (single positive pid — NEVER a process group, the pinned
+# exit-144 cascade) when the lane's task is terminal (gated on admission_state)
+# or the launcher exceeds a hard lifetime ceiling (escalate + reap).
+REAP_OFF="${HAPAX_SUPERVISOR_REAP_OFF:-0}"
+LAUNCHER_MAX_LIFETIME_S="${HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S:-21600}"  # 6h
+
 # Repo root for `python3 -m shared.…`. Resolve $0 through the deploy symlink
 # (~/.local/bin/…) so REPO_DIR is the release dir that actually ships shared/;
 # fall back to the integrator worktree. admission_state fails open regardless.
@@ -285,7 +298,7 @@ guard() {
   clear_streak "$lane" no-worktree
 
   case "$kind" in
-    claude)   if claude_alive "$lane"; then progress_guard "$lane"; return 0; fi ;;
+    claude)   reap_guard "$lane"; if claude_alive "$lane"; then progress_guard "$lane"; return 0; fi ;;
     codex)    tmux_session_alive "hapax-codex-$lane" && return 0 ;;
     antigrav) tmux_session_alive "hapax-antigrav-$lane" && return 0 ;;
   esac
@@ -523,9 +536,10 @@ progress_ntfy() {
 
 emit_progress_metrics() {
   [ -n "$METRICS_FILE" ] || return 0
-  local resumed exhausted dir
+  local resumed exhausted reaped dir
   resumed="$(cat "$STATE_DIR/lanes_resumed_total" 2>/dev/null || echo 0)"
   exhausted="$(cat "$STATE_DIR/resume_exhausted_total" 2>/dev/null || echo 0)"
+  reaped="$(cat "$STATE_DIR/launchers_reaped_total" 2>/dev/null || echo 0)"
   dir="$(dirname "$METRICS_FILE")"
   mkdir -p "$dir" 2>/dev/null || return 0
   {
@@ -538,6 +552,9 @@ emit_progress_metrics() {
     printf '# HELP hapax_lane_supervisor_resume_exhausted_total Cumulative resume-exhaustion reoffers\n'
     printf '# TYPE hapax_lane_supervisor_resume_exhausted_total counter\n'
     printf 'hapax_lane_supervisor_resume_exhausted_total %s\n' "$exhausted"
+    printf '# HELP hapax_lane_supervisor_launchers_reaped_total Cumulative zombie launchers reaped\n'
+    printf '# TYPE hapax_lane_supervisor_launchers_reaped_total counter\n'
+    printf 'hapax_lane_supervisor_launchers_reaped_total %s\n' "$reaped"
   } > "$METRICS_FILE.tmp" 2>/dev/null && mv "$METRICS_FILE.tmp" "$METRICS_FILE" 2>/dev/null || true
 }
 
@@ -612,6 +629,131 @@ progress_guard() {
     disown
   fi
   bump_counter lanes_resumed_total
+}
+
+# ── zombie-launcher reaper (terminal-task + lifetime ceiling) ─────────────────
+
+# launcher_pid <lane>: echo the lane's LIVE launcher pid, or return 1 if there is
+# no live launcher. (launcher_alive returns only a boolean; the reaper needs the
+# pid value to target the SIGTERM.)
+launcher_pid() {
+  local lpf="$RUNTIME_DIR/$1.launcher.pid" pid=""
+  [ -f "$lpf" ] || return 1
+  pid="$(cat "$lpf" 2>/dev/null || true)"
+  case "$pid" in '' | *[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null || return 1
+  printf '%s\n' "$pid"
+}
+
+# launcher_etimes <pid>: elapsed seconds since the launcher started, or return 1
+# if unknowable.
+launcher_etimes() {
+  local et=""
+  et="$(ps -o etimes= -p "$1" 2>/dev/null | tr -d ' ' || true)"
+  case "$et" in '' | *[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$et"
+}
+
+# launcher_task_terminal <lane>: 0 if the lane's claimed task is terminal (note
+# left active/, terminal status, or its PR merged), 1 if still live or no claim.
+# Mirrors the launcher's own task_is_terminal so supervisor and launcher agree on
+# when a headless lane should stop.
+launcher_task_terminal() {
+  python3 - "$VAULT_ROOT" "$1" "$HOME/.cache/hapax/cc-active-task-$1" 2>/dev/null <<'PY'
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+vault_root, lane, claim_file = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+# No claim -> not terminal on task grounds (the lifetime ceiling covers a
+# claimless launcher); mirror the launcher's "no task binding -> live".
+if not claim_file.is_file():
+    sys.exit(1)
+lines = [ln.strip() for ln in claim_file.read_text(errors="replace").splitlines() if ln.strip()]
+if not lines:
+    sys.exit(1)
+task_id = lines[0]
+active = vault_root / "active"
+note = active / f"{task_id}.md"
+if not note.is_file():
+    cands = sorted(active.glob(f"{task_id}-*.md")) if active.is_dir() else []
+    note = cands[0] if cands else None
+# Claim names a task but its note is no longer in active/ -> closed -> terminal.
+if note is None or not note.is_file():
+    sys.exit(0)
+text = note.read_text(errors="replace")
+
+
+def field(name: str) -> str:
+    m = re.search(rf"^{name}:\s*(.+?)\s*$", text, re.MULTILINE)
+    return m.group(1).strip().strip('"').strip("'") if m else ""
+
+
+if field("status") in {"done", "completed", "closed", "withdrawn", "superseded"}:
+    sys.exit(0)
+pr = field("pr")
+if pr.isdigit():
+    try:
+        out = subprocess.run(
+            ["gh", "pr", "view", pr, "--json", "state", "--jq", ".state"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        if out == "MERGED":
+            sys.exit(0)
+    except Exception:
+        pass
+sys.exit(1)
+PY
+}
+
+# reap_launcher <lane> <pid> <reason>: SIGTERM the EXACT launcher pid. A single
+# POSITIVE pid only — NEVER a process group / negative pid (`kill -- -PGID`): the
+# exit-144 group-kill cascade that took down sibling lanes is pinned here. The
+# launcher's own EXIT trap reaps its fifo + lock; closing its FIFO write-end EOFs
+# the claude child, which exits. The next sweep brings the lane back read-only
+# into idle-await.
+reap_launcher() {
+  local lane="$1" pid="$2" reason="$3"
+  if [ "$DRY_RUN" = "1" ]; then
+    log "$lane: WOULD reap launcher pid=$pid ($reason) [dry-run]"
+    return 0
+  fi
+  log "$lane: reaping launcher pid=$pid ($reason) — SIGTERM (single pid)"
+  kill -TERM "$pid" 2>/dev/null || log "$lane: SIGTERM pid=$pid failed (already gone?)"
+  bump_counter launchers_reaped_total
+}
+
+# reap_guard <lane>: reap a zombie headless launcher that has outlived its task.
+# Two triggers: (1) the claimed task is terminal (closed/merged) — gated on
+# admission_state so a pressure-closed window defers (queued, retried next tick);
+# (2) a hard lifetime ceiling — pathological regardless of task, escalate + reap.
+reap_guard() {
+  local lane="$1"
+  [ "$REAP_OFF" = "1" ] && return 0
+  local pid
+  pid="$(launcher_pid "$lane")" || return 0   # no live launcher -> nothing to reap
+
+  local age
+  if age="$(launcher_etimes "$pid")" && [ "$age" -ge "$LAUNCHER_MAX_LIFETIME_S" ]; then
+    escalate "$lane" launcher-lifetime \
+      "Hapax lane-supervisor: $lane launcher over lifetime ceiling" \
+      "Headless launcher pid=$pid for lane '$lane' has run ${age}s (>=${LAUNCHER_MAX_LIFETIME_S}s) — reaping (SIGTERM, single pid)."
+    reap_launcher "$lane" "$pid" "lifetime-ceiling ${age}s"
+    return 0
+  fi
+
+  launcher_task_terminal "$lane" || return 0  # task still live -> keep the launcher
+
+  local adm
+  adm="$(admission_state)"
+  if [ "$adm" = "closed" ]; then
+    log "$lane: terminal-task launcher pid=$pid — sdlc-pressure CLOSED, deferring reap (retries next tick)"
+    return 0
+  fi
+  reap_launcher "$lane" "$pid" "terminal-task"
 }
 
 # ── sweep ─────────────────────────────────────────────────────────────────────

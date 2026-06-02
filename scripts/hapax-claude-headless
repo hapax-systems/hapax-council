@@ -107,14 +107,33 @@ LAUNCHER_LOCK="$PIPE_DIR/$ROLE.launcher.lock"
 LAUNCHER_PIDFILE="$PIPE_DIR/$ROLE.launcher.pid"
 exec {LAUNCHER_LOCK_FD}>"$LAUNCHER_LOCK"
 if ! flock -n "$LAUNCHER_LOCK_FD"; then
-  existing="$(cat "$LAUNCHER_PIDFILE" 2>/dev/null || echo '?')"
-  echo "hapax-claude-headless: refusing duplicate launcher for lane '$ROLE' (live launcher pid=$existing holds $LAUNCHER_LOCK)" >&2
-  exit 16
+  # Stale-lock handling. An OFD flock releases when its holder dies, so a free
+  # lock is normally re-acquired on the first attempt above. A failure here means
+  # someone holds it — but verify they are actually ALIVE before refusing: a
+  # SIGKILL'd launcher skips its EXIT-trap cleanup, stranding the pidfile, and a
+  # brief exit-race can have us read a pid that is already gone. If the recorded
+  # pid is absent / non-numeric / dead (a stale "no-pid" lock), clear the stale
+  # pidfile and retry the lock once; if that wins, the lane was genuinely free.
+  # Only a verified-live holder is refused as a duplicate.
+  existing="$(cat "$LAUNCHER_PIDFILE" 2>/dev/null || true)"
+  if [[ -z "$existing" || ! "$existing" =~ ^[0-9]+$ ]] || ! kill -0 "$existing" 2>/dev/null; then
+    rm -f "$LAUNCHER_PIDFILE" 2>/dev/null || true
+    if flock -n "$LAUNCHER_LOCK_FD"; then
+      echo "hapax-claude-headless: cleared stale launcher lock for lane '$ROLE' (no live pid: ${existing:-none})" >&2
+    else
+      echo "hapax-claude-headless: refusing duplicate launcher for lane '$ROLE' (lock held, no live pid recorded — incumbent exiting) at $LAUNCHER_LOCK" >&2
+      exit 16
+    fi
+  else
+    echo "hapax-claude-headless: refusing duplicate launcher for lane '$ROLE' (live launcher pid=$existing holds $LAUNCHER_LOCK)" >&2
+    exit 16
+  fi
 fi
 printf '%s\n' "$$" > "$LAUNCHER_PIDFILE"
 
 STDIN_PIPE="$PIPE_DIR/$ROLE.stdin"
 PID_FILE="$PIPE_DIR/$ROLE.pid"
+SELF_REAP_FLAG="$PIPE_DIR/$ROLE.self-reap"
 LOG_FILE="$LOG_DIR/output.jsonl"
 
 [[ -p "$STDIN_PIPE" ]] && rm -f "$STDIN_PIPE"
@@ -122,7 +141,7 @@ mkfifo "$STDIN_PIPE"
 
 RELAY_RETIRE="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}/scripts/hapax-relay-retire"
 cleanup() {
-  rm -f "$STDIN_PIPE" "$PID_FILE" "$LAUNCHER_PIDFILE"
+  rm -f "$STDIN_PIPE" "$PID_FILE" "$LAUNCHER_PIDFILE" "$SELF_REAP_FLAG"
   "$RELAY_RETIRE" "$ROLE" --reason "clean exit (headless)" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -243,6 +262,10 @@ task_is_terminal() {
 
 RESTART_COUNT=0
 MAX_RESTART_BACKOFF="${HAPAX_CLAUDE_HEADLESS_RESTART_BACKOFF_SECONDS:-30}"
+# Out-of-band self-reap poll cadence: how often the teardown watchdog re-checks
+# task terminality while claude is alive (claude never EOFs the held FIFO, so a
+# bare `wait` would block forever — see the watchdog in the loop below).
+TERMINAL_POLL_S="${HAPAX_CLAUDE_HEADLESS_TERMINAL_POLL_SECONDS:-60}"
 
 while true; do
   if [[ -e "$DISABLE_FILE" ]]; then
@@ -259,10 +282,49 @@ while true; do
   echo "$CLAUDE_PID" > "$PID_FILE"
   echo "hapax-claude-headless: pid=$CLAUDE_PID (restart #$RESTART_COUNT)"
 
+  # Out-of-band teardown watchdog. claude reads its stdin from the FIFO whose
+  # write-end THIS launcher holds open (exec 3<> above), so claude never sees
+  # EOF; a bare `wait` would then block forever and the post-turn
+  # task_is_terminal check below would be unreachable dead code — the
+  # zombie-launcher bug that pinned dozens of lanes on closed/merged tasks. So
+  # run a background poller that, while claude is alive, re-checks task
+  # terminality every $TERMINAL_POLL_S and SIGTERMs the EXACT child pid (a single
+  # positive pid, never a process group) once the task is closed/merged. The main
+  # thread still `wait`s on claude directly, so a claude that exits on its own is
+  # handled immediately below and the watchdog is torn down — the fast-exit path
+  # is unchanged. The watchdog polls AFTER an initial sleep so a fresh turn is
+  # never reaped before it starts. It signals a self-reap via a marker file (not
+  # by echoing) and runs with its std streams detached to /dev/null: a poll
+  # `sleep` that gets orphaned when the watchdog is killed must NOT inherit the
+  # launcher's stdout, or it would hold the pipe open past exit and wedge readers.
+  rm -f "$SELF_REAP_FLAG"
+  (
+    exec 3>&-
+    while kill -0 "$CLAUDE_PID" 2>/dev/null; do
+      sleep "$TERMINAL_POLL_S"
+      kill -0 "$CLAUDE_PID" 2>/dev/null || break
+      if task_is_terminal "$CLAUDE_TASK"; then
+        : > "$SELF_REAP_FLAG"
+        kill -TERM "$CLAUDE_PID" 2>/dev/null || true
+        break
+      fi
+    done
+  ) >/dev/null 2>&1 &
+  TEARDOWN_WATCHDOG_PID=$!
+
   if wait "$CLAUDE_PID"; then
     EXIT_CODE=0
   else
     EXIT_CODE=$?
+  fi
+  # claude has exited (on its own or via the watchdog's SIGTERM). Stop the
+  # watchdog subshell and reap it so it leaves no zombie. (Any poll `sleep` it
+  # orphaned is detached to /dev/null and harmless — it is not waited on here.)
+  kill "$TEARDOWN_WATCHDOG_PID" 2>/dev/null || true
+  wait "$TEARDOWN_WATCHDOG_PID" 2>/dev/null || true
+  if [[ -e "$SELF_REAP_FLAG" ]]; then
+    echo "hapax-claude-headless: task $CLAUDE_TASK closed/merged — self-reaping live claude (SIGTERM pid=$CLAUDE_PID)"
+    rm -f "$SELF_REAP_FLAG"
   fi
   RESTART_COUNT=$((RESTART_COUNT + 1))
 
