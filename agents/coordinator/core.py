@@ -14,6 +14,13 @@ from pathlib import Path
 
 import yaml
 
+from shared.dispatch_service_time import (
+    AGE_NORM_S,
+    QueueLane,
+    QueueTask,
+    parse_ts,
+    plan_dispatches,
+)
 from shared.jsonl_append import append_jsonl
 from shared.notify import send_notification
 from shared.recovery_governor import converge_action_cap
@@ -70,6 +77,16 @@ STALL_OUTPUT_GRACE_S = 900.0
 MAX_REOFFERS_PER_TICK = 1  # bound the controller per tick; never thrash the queue
 MAX_REOFFERS_PER_TASK = 3  # per-lifetime cap: after N, escalate (block + ntfy), don't loop
 
+# bb-dispatch-scheduler: the measured per-lineage service-time cache the reaper and
+# idle-watchdog also read. When present, it replaces the THREE divergent fixed stall
+# timeouts (this 900s, the reaper's 1800s, the idle-watchdog's 600s) with one measured
+# tau(lineage); when absent the in-process reoffer falls back to STALL_OUTPUT_GRACE_S
+# (reoffer is non-destructive, so an aggressive blind grace is safe — unlike the reaper,
+# which KILLS and therefore falls back to the conservative ceiling).
+DISPATCH_SERVICE_TIME_CACHE_NAME = "dispatch-service-time.json"
+# Revert env: restore the exact prior fixed-T, raw-WSJF greedy-global behavior.
+SCHEDULER_LEGACY_ENV = "HAPAX_DISPATCH_SCHEDULER_LEGACY"
+
 
 @dataclass(frozen=True)
 class Task:
@@ -84,6 +101,7 @@ class Task:
     platform_suitability: tuple[str, ...]
     quality_floor: str
     path: Path
+    created_at: float | None = None  # epoch; drives WSJF aging (None -> no aging)
 
 
 @dataclass
@@ -151,7 +169,6 @@ class Coordinator:
 
         dispatches = 0
         idle_lanes = [l for l in lanes.values() if l.alive and l.idle and l.claimed_task is None]
-        offered_sorted = sorted(offered, key=lambda t: t.wsjf, reverse=True)
 
         # L3: pace the dispatch loop under CPU pressure. 'closed' dispatches
         # nothing this tick (tasks stay offered — queued, not dropped); 'paced'
@@ -172,15 +189,26 @@ class Coordinator:
                 cooldown_s,
             )
 
+        # bb-dispatch-scheduler: load the measured per-lineage service-time cache once.
+        # `legacy` restores the prior fixed-T / raw-WSJF behavior exactly (revert env).
+        legacy = os.environ.get(SCHEDULER_LEGACY_ENV) == "1"
+        cache = None if legacy else _load_dispatch_cache()
+
         # Project ground-truth `stalled` for every lane, then reoffer held tasks off
         # stalled lanes — bounded, and gated on the SAME #3850 admission read. 'closed'
         # reoffers nothing (the held task stays offered — queued, never dropped). Runs
         # before the dispatch loop so a just-freed lane re-enters the pool next tick.
+        # The stall grace is now the MEASURED tau(lineage) when the cache is present
+        # (one timeout, not three divergent fixed numbers); 900s fallback when blind.
         non_terminal_ids = frozenset(
             t.task_id for t in tasks if t.status not in TASK_TERMINAL_STATUSES
         )
         for lane in lanes.values():
-            lane.stalled = project_stalled(lane, non_terminal_task_ids=non_terminal_ids)
+            lane.stalled = project_stalled(
+                lane,
+                non_terminal_task_ids=non_terminal_ids,
+                output_grace_s=_stall_grace_for(lane.role, cache),
+            )
         state.lanes_stalled = sum(1 for lane in lanes.values() if lane.stalled)
 
         reoffer_budget = 0 if admission.state == "closed" else MAX_REOFFERS_PER_TICK
@@ -192,19 +220,46 @@ class Coordinator:
                 reoffered += 1
         state.reoffers_this_tick = reoffered
 
-        for task in offered_sorted:
-            if not idle_lanes or dispatches >= max_dispatches:
-                break
-            lane = self._pick_lane(task, idle_lanes)
-            if lane is None:
-                continue
-            now = time.monotonic()
-            last = self._last_dispatch.get(lane.role, 0.0)
-            if now - last < cooldown_s:
+        # bb-dispatch-scheduler: per-lineage virtual queues + WSJF aging. Iterate idle
+        # lanes (lane-outer) so a busy/cooled lineage can never head-of-line-block a
+        # routable task from a free lane, and let a starved low-WSJF task overtake fresh
+        # high-WSJF arrivals (bounded). `legacy` reverts to the prior raw-WSJF task-outer
+        # loop. The converge ceiling (max_dispatches) and cooldown are unchanged.
+        now_mono = time.monotonic()
+        age_norm_s = _age_norm_s(cache)
+        queue_tasks = [
+            QueueTask(
+                task_id=t.task_id,
+                wsjf=t.wsjf,
+                platform_suitability=t.platform_suitability,
+                age_s=max(0.0, state.timestamp - t.created_at) if t.created_at else 0.0,
+            )
+            for t in offered
+        ]
+        queue_lanes = [
+            QueueLane(
+                role=l.role,
+                platform=l.platform,
+                cooldown_remaining_s=cooldown_s - (now_mono - self._last_dispatch.get(l.role, 0.0)),
+            )
+            for l in idle_lanes
+        ]
+        plan = plan_dispatches(
+            queue_tasks,
+            queue_lanes,
+            max_dispatches=max_dispatches,
+            age_norm_s=age_norm_s,
+            legacy=legacy,
+        )
+        task_by_id = {t.task_id: t for t in offered}
+        lane_by_role = {l.role: l for l in idle_lanes}
+        for task_id, role in plan:
+            task = task_by_id.get(task_id)
+            lane = lane_by_role.get(role)
+            if task is None or lane is None:
                 continue
             if self._dispatch(task, lane):
-                self._last_dispatch[lane.role] = now
-                idle_lanes.remove(lane)
+                self._last_dispatch[role] = now_mono
                 dispatches += 1
 
         state.dispatches_this_tick = dispatches
@@ -454,7 +509,20 @@ def _parse_task(path: Path) -> Task | None:
         platform_suitability=tuple(platforms),
         quality_floor=meta.get("quality_floor", "deterministic_ok"),
         path=path,
+        created_at=_created_at_epoch(meta.get("created_at") or meta.get("updated_at")),
     )
+
+
+def _created_at_epoch(value: object) -> float | None:
+    """Frontmatter ``created_at`` -> epoch. YAML may parse an ISO timestamp into a
+    ``datetime`` OR leave it a string; both fold to epoch (None on anything else)."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.timestamp()
+    if isinstance(value, str):
+        return parse_ts(value)
+    return None
 
 
 def _lane_from_tmux_session(session: str) -> LaneDescriptor | None:
@@ -641,6 +709,45 @@ def _launcher_pid_present(role: str) -> bool:
     except OSError:
         return False
     return True
+
+
+def _load_dispatch_cache() -> dict | None:
+    """The measured service-time cache (`dispatch_service_time --recompute`). None when
+    absent/corrupt — callers fall back to the fixed defaults. Path resolves through
+    CACHE_DIR at call-time so tests that patch CACHE_DIR stay isolated."""
+    try:
+        data = json.loads(
+            (CACHE_DIR / DISPATCH_SERVICE_TIME_CACHE_NAME).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _stall_grace_for(role: str, cache: dict | None) -> float:
+    """Per-lineage stall grace = measured tau(role) when the cache is present, else the
+    fixed STALL_OUTPUT_GRACE_S. Reoffer is non-destructive, so the blind fallback stays
+    aggressive (unlike the reaper's conservative ceiling fallback when it cannot measure)."""
+    if not cache:
+        return STALL_OUTPUT_GRACE_S
+    per_lineage = cache.get("per_lineage")
+    if isinstance(per_lineage, dict):
+        entry = per_lineage.get(role)
+        if isinstance(entry, dict) and isinstance(entry.get("tau_s"), int | float):
+            return float(entry["tau_s"])
+    glob = cache.get("global")
+    if isinstance(glob, dict) and isinstance(glob.get("tau_s"), int | float):
+        return float(glob["tau_s"])
+    return STALL_OUTPUT_GRACE_S
+
+
+def _age_norm_s(cache: dict | None) -> float:
+    """One service-epoch for WSJF aging — the measured p90 service span when known."""
+    if cache:
+        value = cache.get("age_norm_s")
+        if isinstance(value, int | float) and value > 0:
+            return float(value)
+    return AGE_NORM_S
 
 
 def project_stalled(

@@ -36,8 +36,12 @@ def test_reaper_permits_and_records_the_kill() -> None:
     text = REAPER.read_text()
     assert "recovery_governor --permit" in text
     assert "recovery_governor --record" in text
-    # the gate wraps the kill-session path
-    assert re.search(r"governor_permit[^\n]*\n[^\n]*tmux kill-session", text)
+    # bb-dispatch-scheduler MUST-FIX: the reap is a bounded PID-targeted os.kill,
+    # NOT tmux kill-session (whole-session teardown = the pane-tree HUP hazard).
+    assert "tmux kill-session" not in text
+    assert "os.kill(" in text
+    # the governor gate still wraps the (now PID-targeted) kill action
+    assert re.search(r"governor_permit[^\n]*\n[^\n]*reap_kill", text)
 
 
 def test_both_scripts_fail_open_on_governor_error() -> None:

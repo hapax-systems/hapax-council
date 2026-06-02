@@ -19,8 +19,22 @@
 # Nudges ALL idle lanes per tick. Cooldown: 120s per lane between kicks.
 set -euo pipefail
 
+# bb-dispatch-scheduler: source the idle threshold from the SAME measured tau the
+# reaper + coordinator read, so the fleet stops hardcoding divergent stall constants
+# (this 600, the reaper's 1800, the coordinator's 900). The env override always wins;
+# a missing cache falls back to the prior 600 (10 min).
+_idle_threshold_default() {
+    local cache="${HAPAX_DISPATCH_SERVICE_TIME_CACHE:-$HOME/.cache/hapax/dispatch-service-time.json}"
+    [[ -f "$cache" ]] || { echo 600; return; }
+    local repo
+    repo="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
+    [[ -d "$repo/shared" ]] || repo="${HOME}/projects/hapax-council"
+    (cd "$repo" 2>/dev/null && python3 -m shared.dispatch_service_time \
+        --tau --lineage "" --cache "$cache" 2>/dev/null) || echo 600
+}
+
 # ─── Configuration ───────────────────────────────────────────────────────────
-IDLE_THRESHOLD_S="${HAPAX_IDLE_THRESHOLD_S:-600}"       # 10 minutes
+IDLE_THRESHOLD_S="${HAPAX_IDLE_THRESHOLD_S:-$(_idle_threshold_default)}"  # measured tau; 600 fallback
 COOLDOWN_S="${HAPAX_IDLE_COOLDOWN_S:-120}"              # 2 min between kicks
 STATE_DIR="${HAPAX_IDLE_STATE_DIR:-/tmp/hapax-lane-idle-state}"
 TASK_ROOT="${HOME}/Documents/Personal/20-projects/hapax-cc-tasks/active"
