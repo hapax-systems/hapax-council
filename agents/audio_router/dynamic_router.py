@@ -502,16 +502,14 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    # Open Evil Pet MIDI lane via the existing daimonion wrapper —
-    # falls back to no-op when the port is missing (router still ticks
-    # and policy layer's `evilpet_midi_unreachable` clamp engages).
-    try:
-        from agents.hapax_daimonion.midi_output import MidiOutput
-
-        evilpet = MidiOutput("MIDI Dispatch")
-    except Exception:
-        log.warning("evil-pet MidiOutput init failed — router will run without it")
-        evilpet = None
+    # Evil Pet hardware FX processor DECOMMISSIONED 2026-06 (operator: "no more
+    # evil pet"). The router no longer opens the "MIDI Dispatch" lane and never
+    # emits Evil Pet preset CC — emitting stray CC to the Erica MIDI Dispatch
+    # router after the device's removal could drive unrelated gear. The Torso S-4
+    # (analog FX insert via the MOTU UltraLite mk5: dry out mk5 3/4 → S-4 →
+    # wet in mk5 3/4) is now the sole voice-FX engine; S-4 scene control below
+    # (emit_program_change) is unaffected and remains the active automation lane.
+    evilpet = None
 
     s4_port = s4_midi.find_s4_midi_output()
     if s4_port is None:

@@ -833,8 +833,21 @@ def _decompose_wireplumber_conf(
                     pref_m = _WP_PREFERRED_TARGET_RE.search(block)
                     intended_m = _WP_INTENDED_ROLES_RE.search(block)
                     vol_m = _WP_NODE_VOLUME_RE.search(block)
-                    if not name_m or not pri_m:
+                    if not name_m:
                         continue
+                    priority_val = 0
+                    if pri_m:
+                        priority_val = int(pri_m.group(1))
+                    else:
+                        node_name = name_m.group(1)
+                        if "assistant" in node_name:
+                            priority_val = 30
+                        elif "broadcast" in node_name:
+                            priority_val = 20
+                        elif "multimedia" in node_name:
+                            priority_val = 10
+                        elif "notification" in node_name:
+                            priority_val = 40
                     intended = []
                     if intended_m:
                         intended = [
@@ -848,7 +861,7 @@ def _decompose_wireplumber_conf(
                             role=role,
                             loopback_node_name=name_m.group(1),
                             description=desc_m.group(1) if desc_m else "",
-                            priority=int(pri_m.group(1)),
+                            priority=priority_val,
                             intended_roles=intended,
                             preferred_target=(pref_m.group(1) if pref_m else None),
                             node_volume=float(vol_m.group(1)) if vol_m else 1.0,

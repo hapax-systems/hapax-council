@@ -61,6 +61,14 @@ orphans:
   - hapax-voice-s4-hardware.conf  # S-4 hardware voice send (VPR D4), operator-monitor path.
   - hapax-tts-to-s4.conf  # TTS-to-S-4 loopback send from main; voice-paths.yaml, not audio-topology.yaml.
 
+  # MOTU UltraLite mk5 + S-4 insert + Faderfox migration (task:
+  # audio-mk5-s4-faderfox-migration-20260602) — input/return stream-routing
+  # confs, not LADSPA loudnorm/duck/usb-bias chains. audio-topology.yaml models
+  # them as filter_chain nodes with chain_kind=None (migration Slice G); confs
+  # stay hand-mirrored until that yaml wiring lands.
+  - hapax-voice-wet.conf  # S-4 analog-insert wet return (mk5 IN3/4 → voice-wet → livestream-tap)
+  - hapax-mic-rode.conf  # operator Rode mic (mk5 IN1) mono→stereo → livestream-tap
+
   # ReSpeaker XVF3800 profile pin — WirePlumber/ALSA card rule that exposes
   # the optional array mic as a multichannel capture surface; topology models
   # the hardware endpoints, not this policy drop-in as a filter-chain.

@@ -4,35 +4,21 @@
 # Run before AND after any audio config change. Exits non-zero if any
 # invariant is violated. Designed to be called by:
 #   - git pre-commit hook (when PipeWire configs change)
-#   - systemd health timer (hapax-audio-health.timer)
+#   - systemd health timer (hapax-audio-routing-check.timer)
 #   - any AI agent before/after touching audio
 #   - the operator manually: ./scripts/hapax-audio-routing-check
 #
-# INVARIANTS (2026-05-29 interim MPC-only state; ZOOM L-12 physically removed,
-# MPC Live III is the sole interface until the MOTU UltraLite mk5 + FadeFox
-# MX12 land; PC -> MPC -> PC broadcast return):
+# TOPOLOGY (2026-06 — MOTU UltraLite mk5 + Torso S-4 analog insert + Faderfox MX12;
+# retired PC->MPC->L-12->PC->OBS; L-12, MPC Live III, Evil Pet all removed):
 #
-#   1. TTS voice chain: role.broadcast → voice-fx-capture → voice-fx-playback
-#      → loudnorm-capture → loudnorm-playback → MPC AUX2/3
-#
-#   2. NO direct TTS bypass to livestream-tap. hapax-tts-broadcast-playback
-#      must NOT exist or be connected to hapax-livestream-tap.
-#
-#   3. Livestream tap inputs: only route-policy-authorized producers feed
-#      hapax-livestream-tap. The MPC USB return (hapax-mpc-usb-return-playback)
-#      is the sole broadcast return; S-4/direct content taps are blocked until
-#      explicitly promoted. (The L-12 wet/evilpet returns are retired.)
-#
-#   4. OBS chain: broadcast-normalized → obs-broadcast-remap → OBS
-#
-#   5. MPC receives only the specified live software channels:
-#      SoundCloud/music AUX0/1, public TTS AUX2/3, YouTube AUX6/7 (gated send),
-#      private TTS AUX8/9.
-#
-#   10. MPC return completeness: the public mix returns on capture_AUX0/1 →
-#       mpc-usb-return-capture → livestream-tap → broadcast-master, and the
-#       private monitor return (capture_AUX2/3) is absent from every broadcast
-#       node.
+#   TTS -> voice-fx -> loudnorm -> mk5 OUT 3/4 (pro-output AUX2/3)
+#       -> S-4 line in -> [S-4 Material=Bypass FX] -> S-4 line out
+#       -> mk5 IN 3/4 (pro-input AUX2/3) -> hapax-voice-wet -> livestream-tap
+#   Rode -> mk5 IN 1 (pro-input AUX0) -> hapax-mic-rode -> livestream-tap
+#   music -> music-loudnorm -> livestream-tap ; youtube -> yt-loudnorm -> livestream-tap
+#   livestream-tap (software sum) -> broadcast-master -> broadcast-normalized
+#       -> obs-broadcast-remap -> OBS
+#   private/notification/PC -> fail-closed (no broadcast egress); private monitor -> mk5 Phones AUX10/11
 #
 # Exit codes: 0 = all good, 1 = invariant violation, 2 = PipeWire not running
 
@@ -45,6 +31,10 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+
+# mk5 ACP pro-audio node names (pinned by wireplumber 14-hapax-mk5-pro-audio.conf).
+MK5_OUT="alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0"
+MK5_IN="alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0"
 
 GRAPH=$(pw-link -l 2>&1) || { echo -e "${RED}FAIL: PipeWire not running${NC}"; exit 2; }
 FAILURES=0
@@ -97,335 +87,145 @@ check() {
     fi
 }
 
-echo "=== Hapax Audio Routing Invariant Check ==="
+echo "=== Hapax Audio Routing Invariant Check (mk5 + S-4 topology) ==="
 echo ""
 
-# ── Invariant 1: TTS voice chain exists ──
-echo "Chain 1: TTS Voice Path"
-
-if link_present "output.loopback.sink.role.broadcast:output_FL" "hapax-voice-fx-capture:playback_FL"; then
+# ── Invariant 1: TTS voice chain to the S-4 dry send ──
+echo "Chain 1: TTS Voice Path (-> mk5 OUT 3/4 -> S-4)"
+if link_present "input.loopback.sink.role.broadcast-output:output_FL" "hapax-voice-fx-capture:playback_FL"; then
     check "role.broadcast → voice-fx-capture" "PASS"
 else
     check "role.broadcast → voice-fx-capture" "link missing"
 fi
-
 if link_present "hapax-voice-fx-playback:output_FL" "hapax-loudnorm-capture:playback_FL"; then
     check "voice-fx-playback → loudnorm-capture" "PASS"
 else
     check "voice-fx-playback → loudnorm-capture" "link missing"
 fi
-
-if link_present "hapax-loudnorm-playback:output_FL" "playback_AUX2"; then
-    check "loudnorm-playback → MPC AUX2" "PASS"
+if link_present "hapax-loudnorm-playback:output_FL" "${MK5_OUT}:playback_AUX2" \
+    && link_present "hapax-loudnorm-playback:output_FR" "${MK5_OUT}:playback_AUX3"; then
+    check "loudnorm-playback → mk5 OUT AUX2/3 (dry voice → S-4)" "PASS"
 else
-    check "loudnorm-playback → MPC AUX2" "link missing — TTS not reaching MPC"
+    check "loudnorm-playback → mk5 OUT AUX2/3 (dry voice → S-4)" "link missing — TTS not reaching the S-4 insert"
 fi
-
 echo ""
 
-# ── Invariant 2: NO direct TTS bypass ──
-echo "Chain 2: TTS Bypass Guard"
-
-if link_present "hapax-tts-broadcast-playback:output_FL" "hapax-livestream-tap:playback_FL" \
-    || link_present "hapax-tts-broadcast-playback:output_FR" "hapax-livestream-tap:playback_FR"; then
-    check "no TTS bypass to livestream-tap" "BYPASS DETECTED — tts-broadcast-playback → livestream-tap"
-elif echo "$GRAPH" | grep -q "hapax-tts-broadcast-playback"; then
-    check "no TTS bypass to livestream-tap" "PASS (node exists but not connected to tap)"
+# ── Invariant 2: S-4 analog insert wet return ──
+echo "Chain 2: S-4 Wet Voice Return (mk5 IN 3/4 → livestream)"
+if link_present "${MK5_IN}:capture_AUX2" "hapax-voice-wet-capture:input_AUX2" \
+    && link_present "${MK5_IN}:capture_AUX3" "hapax-voice-wet-capture:input_AUX3"; then
+    check "mk5 IN AUX2/3 → voice-wet-capture (S-4 return)" "PASS"
 else
-    check "no TTS bypass to livestream-tap" "PASS"
+    check "mk5 IN AUX2/3 → voice-wet-capture (S-4 return)" "link missing — S-4 wet voice not captured"
 fi
-
+if link_present "hapax-voice-wet-playback:output_FL" "hapax-livestream-tap:playback_FL" \
+    && link_present "hapax-voice-wet-playback:output_FR" "hapax-livestream-tap:playback_FR"; then
+    check "voice-wet-playback → livestream-tap" "PASS"
+else
+    check "voice-wet-playback → livestream-tap" "link missing — modulated voice not on broadcast"
+fi
 echo ""
 
-# ── Invariant 3: Livestream tap inputs are clean ──
-echo "Chain 3: Livestream Tap Inputs"
-
-TAP_INPUTS=$(printf '%s\n' "$GRAPH" | awk '
-    /^hapax-livestream-tap:playback_/ { in_tap = 1; next }
-    /^[^[:space:]|]/ { in_tap = 0 }
-    in_tap && /^[[:space:]]*\|<-/ { print }
-')
-# Source authority (interim MPC-only, 2026-05-29; ZOOM L-12 removed):
-# - The MPC USB return (hapax-mpc-usb-return-playback) is the sole broadcast
-#   return — it carries the MPC public mix (music + voice + youtube). S-4,
-#   Polyend, M8, notification, and the retired hapax-tts-broadcast bridge are
-#   intentionally not listed here until route policy owns and promotes them.
-#   The orphaned L-12 evilpet/wet-return sources are retired (MOTU/FadeFox
-#   migration finishes the L-12 model retirement).
-ALLOWED_TAP_SOURCES="^[[:space:]]*\|<-[[:space:]]+(hapax-mpc-usb-return-playback):"
-UNEXPECTED=$(printf '%s\n' "$TAP_INPUTS" | grep -vE "$ALLOWED_TAP_SOURCES" | grep -v "^$" || true)
-
-if [ -z "$UNEXPECTED" ]; then
-    check "livestream-tap has only authorized inputs" "PASS"
+# ── Invariant 3: Operator Rode mic (never dropped) ──
+echo "Chain 3: Operator Rode Mic (mk5 IN 1 → livestream)"
+if link_present "${MK5_IN}:capture_AUX0" "hapax-mic-rode-capture:input_AUX0"; then
+    check "mk5 IN AUX0 → mic-rode-capture (Rode)" "PASS"
 else
-    check "livestream-tap has only authorized inputs" "unexpected source(s): $UNEXPECTED"
+    check "mk5 IN AUX0 → mic-rode-capture (Rode)" "link missing — operator mic not captured"
 fi
-
+if link_present "hapax-mic-rode-playback:output_FL" "hapax-livestream-tap:playback_FL" \
+    && link_present "hapax-mic-rode-playback:output_FR" "hapax-livestream-tap:playback_FR"; then
+    check "mic-rode-playback → livestream-tap" "PASS"
+else
+    check "mic-rode-playback → livestream-tap" "link missing — operator voice not on broadcast"
+fi
 echo ""
 
-# ── Invariant 4: OBS chain intact ──
-echo "Chain 4: OBS Broadcast Chain"
+# ── Invariant 4: Music + YouTube into the software sum bus ──
+echo "Chain 4: Music / YouTube → livestream-tap (software mix)"
+if link_present "hapax-music-loudnorm-playback:output_FL" "hapax-livestream-tap:playback_FL"; then
+    check "music-loudnorm → livestream-tap" "PASS"
+else
+    check "music-loudnorm → livestream-tap" "missing — music not reaching broadcast sum bus"
+fi
+if link_present "hapax-yt-loudnorm-playback:output_FL" "hapax-livestream-tap:playback_FL"; then
+    check "yt-loudnorm → livestream-tap" "PASS (linked)"
+elif echo "$GRAPH" | grep -q "hapax-yt-loudnorm-playback"; then
+    check "yt-loudnorm → livestream-tap" "PASS (node present, idle/unlinked — YT bed inactive)"
+else
+    check "yt-loudnorm → livestream-tap" "PASS (no YT node)"
+fi
+echo ""
 
-if link_present "hapax-obs-broadcast-remap:capture_FL" "OBS:input_FL"; then
+# ── Invariant 5: Broadcast spine + OBS ──
+echo "Chain 5: Broadcast Spine + OBS"
+if link_present "hapax-livestream-tap:monitor_FL" "hapax-broadcast-master-capture:input_FL"; then
+    check "livestream-tap → broadcast-master" "PASS"
+else
+    check "livestream-tap → broadcast-master" "link missing — sum bus not feeding master"
+fi
+if link_present "hapax-broadcast-normalized:capture_FL" "hapax-obs-broadcast-remap-capture:input_FL" \
+    || regex_link_present 'hapax-broadcast-normalized' 'hapax-obs-broadcast-remap'; then
+    check "broadcast-normalized → obs-broadcast-remap" "PASS"
+else
+    check "broadcast-normalized → obs-broadcast-remap" "link missing"
+fi
+if regex_link_present 'hapax-obs-broadcast-remap' 'OBS|obs'; then
     check "obs-broadcast-remap → OBS" "PASS"
 else
-    check "obs-broadcast-remap → OBS" "link missing — OBS not receiving broadcast"
+    echo -e "  ${YELLOW}[WARN]${NC} obs-broadcast-remap → OBS not linked (OBS may be closed or binding pending)"
 fi
-
-if link_present "hapax-broadcast-normalized:capture_FL" "hapax-obs-broadcast-remap-capture"; then
-    check "broadcast-normalized → obs-remap" "PASS"
-else
-    check "broadcast-normalized → obs-remap" "link missing"
-fi
-
 echo ""
 
-# ── Invariant 5: MPC receiving only specified sources ──
-echo "Chain 5: MPC Input Assignments"
-
-if link_present "hapax-music-loudnorm-playback:output_FL" "playback_AUX0" \
-    && link_present "hapax-music-loudnorm-playback:output_FR" "playback_AUX1"; then
-    check "SoundCloud/music → MPC AUX0/1" "PASS"
-else
-    check "SoundCloud/music → MPC AUX0/1" "missing — music is not reaching MPC"
-fi
-
-if link_present "hapax-loudnorm-playback:output_FL" "playback_AUX2" \
-    && link_present "hapax-loudnorm-playback:output_FR" "playback_AUX3"; then
-    check "public TTS → MPC AUX2/3" "PASS"
-else
-    check "public TTS → MPC AUX2/3" "missing — public TTS is not reaching MPC"
-fi
-
-if link_present "hapax-private-playback:output_FL" "playback_AUX8" \
-    && link_present "hapax-private-playback:output_FR" "playback_AUX9"; then
-    check "private TTS → MPC AUX8/9" "PASS"
-else
-    check "private TTS → MPC AUX8/9" "missing — private TTS is not reaching MPC"
-fi
-
+# ── Invariant 6: Livestream / non-livestream boundary (fail-closed) ──
+echo "Chain 6: Broadcast Boundary Guard (private/PC/notification fenced)"
+boundary_ok=true
+for src in hapax-private-playback hapax-notification-private-playback hapax-pc-loudnorm-playback; do
+    if link_present "${src}:output_FL" "hapax-livestream-tap:playback_FL" \
+        || link_present "${src}:output_FR" "hapax-livestream-tap:playback_FR" \
+        || link_present "${src}:output_FL" "hapax-broadcast-master-capture:input_FL"; then
+        check "$src is fenced from broadcast" "$src is feeding the broadcast sum/master"
+        boundary_ok=false
+    else
+        check "$src is fenced from broadcast" "PASS"
+    fi
+done
+# private / PC must never reach the mk5 dry-voice send (AUX2/3 → S-4 → broadcast)
+for src in hapax-pc-loudnorm-playback hapax-private-playback; do
+    if link_present "${src}:output_FL" "${MK5_OUT}:playback_AUX2" \
+        || link_present "${src}:output_FR" "${MK5_OUT}:playback_AUX3"; then
+        check "$src not on mk5 dry-voice send AUX2/3" "$src is feeding the S-4 dry send"
+        boundary_ok=false
+    else
+        check "$src not on mk5 dry-voice send AUX2/3" "PASS"
+    fi
+done
+[ "$boundary_ok" = true ] && echo "  Boundary: non-broadcast lanes are fenced ✓"
 echo ""
-echo "Chain 5b: Livestream / Non-Livestream Boundary Guard"
 
-if link_present "hapax-pc-loudnorm-playback:output_FL" "playback_AUX4" \
-    || link_present "hapax-pc-loudnorm-playback:output_FR" "playback_AUX5"; then
-    check "PC USB 5/6 is fail-closed" "PC loudnorm is feeding MPC AUX4/5"
-else
-    check "PC USB 5/6 is fail-closed" "PASS"
-fi
-
-# YouTube AUX6/7 (interim MPC-only, 2026-05-29): the send is now ENABLED so
-# YouTube can join the operator's MPC mix + public return. AUX6/7 is no longer
-# a forbidden boundary. Broadcast eligibility of the youtube route stays GATED
-# in policy (broadcast_eligible=false, blocked_until_smoke) — the MPC mixer,
-# operator-owned, decides whether YouTube reaches the public return. No
-# link-time guard here; the desired-state map + reconciler own the send.
-
-if link_present "hapax-notification-private-playback:output_FL" "playback_AUX8" \
-    || link_present "hapax-notification-private-playback:output_FR" "playback_AUX9"; then
-    check "notifications do not share private TTS AUX8/9" "notification-private is feeding MPC AUX8/9"
-else
-    check "notifications do not share private TTS AUX8/9" "PASS"
-fi
-
-if link_present "hapax-m8-loudnorm-playback:output_AUX10" "playback_AUX10" \
-    || link_present "hapax-m8-loudnorm-playback:output_AUX11" "playback_AUX11" \
-    || link_present "hapax-m8-loudnorm-playback:output_AUX10" "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL" \
-    || link_present "hapax-m8-loudnorm-playback:output_AUX11" "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FR"; then
-    check "M8/instrument route is disabled" "M8 loudnorm has a live MPC/L-12 egress"
-else
-    check "M8/instrument route is disabled" "PASS"
-fi
-
-if link_present "hapax-s4-tap:output_FL" "hapax-livestream-tap:playback_FL" \
-    || link_present "hapax-s4-tap:output_FR" "hapax-livestream-tap:playback_FR"; then
-    check "S-4 direct tap is disabled" "S-4 tap is feeding livestream"
-else
-    check "S-4 direct tap is disabled" "PASS"
-fi
-
-if link_present "input.loopback.sink.role.assistant-output:output_FL" "input.loopback.sink.role.multimedia:playback_FL" \
-    || link_present "input.loopback.sink.role.assistant-output:output_FR" "input.loopback.sink.role.multimedia:playback_FR"; then
-    check "assistant/private does not fall into multimedia" "assistant role is feeding multimedia/PC"
-else
-    check "assistant/private does not fall into multimedia" "PASS"
-fi
-
-if regex_link_present '^output[.]loopback-[0-9]+-[0-9]+:output_(FL|FR)$' 'input[.]loopback[.]sink[.]role[.]multimedia:playback_(FL|FR)' ; then
-    check "livestream tap bridge does not fall into multimedia" "tap bridge is feeding multimedia/PC"
-else
-    check "livestream tap bridge does not fall into multimedia" "PASS"
-fi
-
-if regex_link_present '^alsa_input[.]usb-.*(Logitech|C920|BRIO|ZOOM_Corporation_L-12).*:capture_' 'hapax-polyend-instrument-capture:input_[12]' ; then
-    check "optional Polyend capture is fail-closed" "Polyend capture fell back to webcam/L-12/default capture"
-else
-    check "optional Polyend capture is fail-closed" "PASS"
-fi
-
-echo ""
-echo "Chain 5c: Default Sink Fail-Closed Guard"
-
+# ── Invariant 7: Default sink fail-closed ──
+echo "Chain 7: Default Sink Fail-Closed Guard"
 DEFAULT_SINK="$(current_default_sink || true)"
 case "$DEFAULT_SINK" in
     hapax-pc-loudnorm|input.loopback.sink.role.multimedia)
-        check "default/unclassified audio lands on fail-closed multimedia" "PASS ($DEFAULT_SINK)"
-        ;;
+        check "default/unclassified audio lands on fail-closed sink" "PASS ($DEFAULT_SINK)" ;;
     "")
-        check "default/unclassified audio lands on fail-closed multimedia" "could not read default sink"
-        ;;
-    *Akai_Professional_MPC_LIVE_III*|*ZOOM_Corporation_L-12*|*Torso_Electronics_S-4*|*Dirtywave_M8*|*Blue_Microphones_Yeti*|bluez_output.*|*hdmi*)
-        check "default/unclassified audio lands on fail-closed multimedia" "default sink is live/physical: $DEFAULT_SINK"
-        ;;
+        check "default/unclassified audio lands on fail-closed sink" "could not read default sink" ;;
+    *MOTU_UltraLite-mk5*|*Torso_Electronics_S-4*|*Dirtywave_M8*|*Blue_Microphones_Yeti*|bluez_output.*|*hdmi*)
+        check "default/unclassified audio lands on fail-closed sink" "default sink is live/physical: $DEFAULT_SINK" ;;
     *)
-        check "default/unclassified audio lands on fail-closed multimedia" "unexpected default sink: $DEFAULT_SINK"
-        ;;
+        check "default/unclassified audio lands on fail-closed sink" "unexpected default sink: $DEFAULT_SINK" ;;
 esac
-
 echo ""
-echo "Chain 5d: WirePlumber Link-Time Deny Policy"
-
-WP_DENY_CONF_SOURCE="${HAPAX_WP_DENY_CONF_SOURCE:-$REPO_ROOT/config/wireplumber/98-hapax-link-deny.conf}"
-WP_DENY_SCRIPT_SOURCE="${HAPAX_WP_DENY_SCRIPT_SOURCE:-$REPO_ROOT/config/wireplumber/scripts/hapax/link-deny.lua}"
-WP_DENY_CONF_INSTALLED="${HAPAX_WP_DENY_CONF_INSTALLED:-$HOME/.config/wireplumber/wireplumber.conf.d/98-hapax-link-deny.conf}"
-WP_DENY_SCRIPT_INSTALLED="${HAPAX_WP_DENY_SCRIPT_INSTALLED:-$HOME/.local/share/wireplumber/scripts/hapax/link-deny.lua}"
-WP_DENY_SCRIPT_LEGACY_INSTALLED="${HAPAX_WP_DENY_SCRIPT_LEGACY_INSTALLED:-$HOME/.config/wireplumber/scripts/hapax/link-deny.lua}"
-FORBIDDEN_LINKS_SOURCE="${HAPAX_FORBIDDEN_LINKS_SOURCE:-$REPO_ROOT/config/hapax/audio-forbidden-links.conf}"
-FORBIDDEN_LINKS_RUNTIME="${HAPAX_FORBIDDEN_LINKS_RUNTIME:-$HOME/.config/hapax/audio-forbidden-links.conf}"
-
-if [ -f "$WP_DENY_CONF_SOURCE" ] && [ -f "$WP_DENY_SCRIPT_SOURCE" ]; then
-    check "WirePlumber deny source artifacts present" "PASS"
-else
-    check "WirePlumber deny source artifacts present" "missing source policy"
-fi
-
-if [ -f "$FORBIDDEN_LINKS_SOURCE" ]; then
-    check "forbidden links source conf present" "PASS"
-else
-    check "forbidden links source conf present" "missing: $FORBIDDEN_LINKS_SOURCE"
-fi
-
-if [ -f "$FORBIDDEN_LINKS_RUNTIME" ]; then
-    if cmp -s "$FORBIDDEN_LINKS_SOURCE" "$FORBIDDEN_LINKS_RUNTIME"; then
-        check "forbidden links runtime conf matches source" "PASS"
-    else
-        check "forbidden links runtime conf matches source" "runtime file differs from source — reinstall required"
-    fi
-else
-    check "forbidden links runtime conf present" "missing: deny hook will run in degraded fail-closed mode"
-fi
-
-if [ -f "$WP_DENY_CONF_INSTALLED" ] && [ -f "$WP_DENY_SCRIPT_INSTALLED" ]; then
-    if cmp -s "$WP_DENY_CONF_SOURCE" "$WP_DENY_CONF_INSTALLED" \
-        && cmp -s "$WP_DENY_SCRIPT_SOURCE" "$WP_DENY_SCRIPT_INSTALLED"; then
-        check "WirePlumber deny policy installed matches source" "PASS"
-    else
-        check "WirePlumber deny policy installed matches source" "installed policy differs from source — stale hook"
-    fi
-else
-    check "WirePlumber deny policy not installed" "deny hook absent from live WirePlumber — boundaries unguarded at link-time"
-fi
-
-wp_deny_script_legacy_real="$(realpath -m "$WP_DENY_SCRIPT_LEGACY_INSTALLED")"
-wp_deny_script_installed_real="$(realpath -m "$WP_DENY_SCRIPT_INSTALLED")"
-if [ -f "$WP_DENY_SCRIPT_LEGACY_INSTALLED" ] && [ "$wp_deny_script_legacy_real" != "$wp_deny_script_installed_real" ]; then
-    check "WirePlumber deny script installed in data path only" "legacy config script exists at $WP_DENY_SCRIPT_LEGACY_INSTALLED — reinstall fixed policy"
-else
-    check "WirePlumber deny script installed in data path only" "PASS"
-fi
-
-if [ -f "$WP_DENY_SCRIPT_INSTALLED" ] && [ -r "$WP_DENY_SCRIPT_INSTALLED" ]; then
-    if grep -q "FAIL_CLOSED_BOUNDARY_PAIRS" "$WP_DENY_SCRIPT_INSTALLED"; then
-        check "installed deny hook has fail-closed boundary set" "PASS"
-    else
-        check "installed deny hook has fail-closed boundary set" "hook lacks FAIL_CLOSED_BOUNDARY_PAIRS — pre-fail-closed version"
-    fi
-fi
-
-# ── Invariant 6: No .conf files that create bypass paths ──
-echo ""
-echo "Chain 6: Config File Guard"
-
-BYPASS_CONFS=$(ls ~/.config/pipewire/pipewire.conf.d/*tts-broadcast-tap*.conf 2>/dev/null || true)
-if [ -z "$BYPASS_CONFS" ]; then
-    check "no active TTS bypass configs" "PASS"
-else
-    check "no active TTS bypass configs" "found: $BYPASS_CONFS"
-fi
-
-# Check for any .conf that creates a PLAYBACK node targeting livestream-tap
-# that is NOT one of the legitimate sources.
-# Legitimate (interim MPC-only, 2026-05-29): hapax-mpc-usb-return-capture is
-# the sole broadcast return; hapax-broadcast-master is the normalization stage.
-# Bypass:     anything else creating a playback→livestream-tap path.
-LEGIT_TAP_SOURCES="hapax-mpc-usb-return|hapax-broadcast-master"
-SUSPECT=$(grep -rl "target.object.*livestream-tap" ~/.config/pipewire/pipewire.conf.d/*.conf 2>/dev/null | while read f; do
-    bn=$(basename "$f")
-    if ! echo "$bn" | grep -qE "$LEGIT_TAP_SOURCES"; then
-        if grep -A5 'playback.props' "$f" | grep -q 'target.object.*livestream-tap'; then
-            echo "$f"
-        fi
-    fi
-done || true)
-if [ -z "$SUSPECT" ]; then
-    check "no unauthorized playback into livestream-tap" "PASS"
-else
-    check "no unauthorized playback into livestream-tap" "bypass config: $SUSPECT"
-fi
-
-# ── Invariant 7: Critical nodes not muted ──
-echo ""
-echo "Chain 7: Mute State Guard"
-
-# The broadcast loopback being muted silently kills ALL TTS-to-livestream
-# audio despite every PipeWire link showing connected. This is the single
-# most insidious failure mode — the graph looks perfect but no signal flows.
-BROADCAST_MUTE=$(wpctl get-volume "$(pw-cli ls Node 2>/dev/null | grep -B5 'input.loopback.sink.role.broadcast' | head -1 | awk '{print $2}' | tr -d ',')" 2>/dev/null || echo "UNKNOWN")
-if echo "$BROADCAST_MUTE" | grep -qi "muted"; then
-    check "broadcast loopback not muted" "MUTED — unmute with: wpctl set-mute <id> 0"
-elif echo "$BROADCAST_MUTE" | grep -qi "volume"; then
-    check "broadcast loopback not muted" "PASS"
-else
-    check "broadcast loopback not muted" "could not read mute state: $BROADCAST_MUTE"
-fi
-
-# Also check the voice-fx and loudnorm chain nodes
-for NODE_NAME in hapax-voice-fx-capture hapax-loudnorm-capture; do
-    NODE_ID=$(pw-cli ls Node 2>/dev/null | grep -B5 "$NODE_NAME" | head -1 | awk '{print $2}' | tr -d ',' 2>/dev/null || echo "")
-    if [ -n "$NODE_ID" ]; then
-        MUTE_STATE=$(wpctl get-volume "$NODE_ID" 2>/dev/null || echo "UNKNOWN")
-        if echo "$MUTE_STATE" | grep -qi "muted"; then
-            check "$NODE_NAME not muted" "MUTED"
-        elif echo "$MUTE_STATE" | grep -qi "volume"; then
-            check "$NODE_NAME not muted" "PASS"
-        else
-            check "$NODE_NAME not muted" "could not read: $MUTE_STATE"
-        fi
-    fi
-done
-
 
 # ── Invariant 8: .conf safety pattern (room-mic-hijack regression) ──
-echo ""
 echo "Chain 8: PipeWire .conf Safety Pattern"
-
-# Filter-chains targeting specific ALSA hardware MUST set either
-# node.passive=true OR node.dont-reconnect=true. Without this, when the
-# target ALSA device is missing, WirePlumber's auto-link policy binds
-# the filter-chain to the default source (typically a webcam mic), causing
-# a class of leak documented in 10-contact-mic.conf as "the whole
-# room-mic-hijack class of bugs".
-#
-# Incident 2026-05-06: hapax-l12-usb-return-capture had dont-reconnect=false
-# and no node.passive=true; when L-12 USB was detached, C920 webcam mic
-# leaked into broadcast.
-
 UNSAFE_CONFS=""
 for conf in ~/.config/pipewire/pipewire.conf.d/*.conf; do
     [ -f "$conf" ] || continue
     if grep -qE 'target\.object\s*=\s*"alsa_|node\.target\s*=\s*"alsa_' "$conf" 2>/dev/null; then
         if ! grep -qE 'node\.passive\s*=\s*true' "$conf" && ! grep -qE 'node\.dont-reconnect\s*=\s*true' "$conf"; then
-            UNSAFE_CONFS="$UNSAFE_CONFS $(basename $conf)"
+            UNSAFE_CONFS="$UNSAFE_CONFS $(basename "$conf")"
         fi
     fi
 done
@@ -434,141 +234,63 @@ if [ -n "$UNSAFE_CONFS" ]; then
 else
     check ".conf safety pattern (passive=true OR dont-reconnect=true)" "PASS"
 fi
-
-
-# ── Invariant 9: webcam mic NEVER feeds broadcast filter-chains ──
 echo ""
+
+# ── Invariant 9: webcam mic NEVER feeds the broadcast capture chains ──
 echo "Chain 9: Webcam Mic Broadcast Leak Guard"
-
-# Per 2026-05-06 incident: C920 webcam mic leaked into broadcast via
-# hapax-l12-usb-return-capture filter-chain when L-12 USB was missing.
-# Regression check: NO webcam (C920/Brio) capture pad should be linked into
-# hapax-mpc-usb-return-capture (interim broadcast return), the orphaned L-12
-# capture chains, hapax-m8-instrument-capture, or directly into
-# livestream-feeding chains.
-
-WEBCAM_LEAK=$(pw-link -l 2>/dev/null | grep -B 1 -E "hapax-(mpc-usb-return-capture|l12-usb-return-capture|l12-evilpet-capture|m8-instrument-capture):input_AUX" 2>/dev/null | grep -E "C920|Brio|Logitech" 2>/dev/null || true)
+WEBCAM_LEAK=$(pw-link -l 2>/dev/null | grep -B1 -E "hapax-(voice-wet-capture|mic-rode-capture):input" 2>/dev/null | grep -E "C920|Brio|Logitech" 2>/dev/null || true)
 if [ -n "$WEBCAM_LEAK" ]; then
-    check "no webcam mic in MPC/L-12/M-8 capture filter-chains" "LEAK:${WEBCAM_LEAK:0:80}..."
+    check "no webcam mic in mk5 voice/mic capture chains" "LEAK:${WEBCAM_LEAK:0:80}..."
 else
-    check "no webcam mic in MPC/L-12/M-8 capture filter-chains" "PASS"
+    check "no webcam mic in mk5 voice/mic capture chains" "PASS"
 fi
+echo ""
 
-# ── Invariant 10: MPC return completeness ──
-echo "Chain 10: MPC Return Completeness (interim MPC-only; ZOOM L-12 removed 2026-05-29)"
+# ── Invariant 10: no retired-hardware nodes feed broadcast ──
+echo "Chain 10: Retired-Hardware Guard (no L-12 / MPC into broadcast)"
+if regex_link_present 'hapax-(l12|mpc)' 'hapax-livestream-tap'; then
+    check "no L-12/MPC node feeds livestream-tap" "a retired-hardware node is feeding broadcast"
+else
+    check "no L-12/MPC node feeds livestream-tap" "PASS"
+fi
+echo ""
 
-# Interim MPC-only baseline: the broadcast return runs PC -> MPC -> PC over the
-# MPC's own 24-ch USB return. The MPC public mix (music + voice + youtube,
-# summed inside the MPC) returns on capture_AUX0/1, is captured by
-# hapax-mpc-usb-return-capture, and summed into livestream-tap. If a capture leg
-# is disconnected the public mix is silently dropped from broadcast — a silent
-# failure mode. The private monitor mix on capture_AUX2/3 must be ABSENT from
-# every broadcast node (inverse safety invariant). Supersedes the retired L-12
-# wet/evilpet returns; MOTU/FadeFox migration finishes the L-12 retirement.
-
-MPC_COMPLETENESS_OK=true
-MPC_RETURN_SOURCE="alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0"
-
-# Public-mix capture legs: MPC USB out 1/2 -> host capture_AUX0/1 -> wet return.
-for pair in \
-    "AUX0 hapax-mpc-usb-return-capture:input_AUX0" \
-    "AUX1 hapax-mpc-usb-return-capture:input_AUX1"; do
-    aux="${pair%% *}"
-    target="${pair#* }"
-    if link_present "$MPC_RETURN_SOURCE:capture_$aux" "$target"; then
-        check "MPC $aux → mpc-usb-return-capture linked" "PASS"
-    else
-        check "MPC $aux → mpc-usb-return-capture linked" "MISSING"
-        MPC_COMPLETENESS_OK=false
+# ── Invariant 11: critical nodes not muted ──
+echo "Chain 11: Mute State Guard"
+for NODE_NAME in input.loopback.sink.role.broadcast hapax-voice-fx-capture hapax-loudnorm-capture hapax-voice-wet-capture hapax-mic-rode-capture; do
+    NODE_ID=$(pw-cli ls Node 2>/dev/null | grep -B5 "$NODE_NAME" | grep -oE '^[[:space:]]*id [0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+    if [ -n "$NODE_ID" ]; then
+        MUTE_STATE=$(wpctl get-volume "$NODE_ID" 2>/dev/null || echo "UNKNOWN")
+        if echo "$MUTE_STATE" | grep -qi "muted"; then
+            check "$NODE_NAME not muted" "MUTED — unmute with: wpctl set-mute $NODE_ID 0"
+        elif echo "$MUTE_STATE" | grep -qi "volume"; then
+            check "$NODE_NAME not muted" "PASS"
+        fi
     fi
 done
-
-# Check mpc-usb-return → livestream-tap link
-MPC_RETURN_TO_TAP=$(pw-link -l 2>/dev/null | grep -A 5 "hapax-mpc-usb-return-playback" 2>/dev/null | grep "hapax-livestream-tap" 2>/dev/null || true)
-if [ -z "$MPC_RETURN_TO_TAP" ]; then
-    check "mpc-usb-return-playback → livestream-tap linked" "MISSING"
-    MPC_COMPLETENESS_OK=false
-else
-    check "mpc-usb-return-playback → livestream-tap linked" "PASS"
-fi
-
-# Check that livestream-tap itself has at least one output going to
-# broadcast-master (the normalization stage before OBS).
-TAP_TO_MASTER=$(pw-link -l 2>/dev/null | grep -A 5 "hapax-livestream-tap" 2>/dev/null | grep "hapax-broadcast-master" 2>/dev/null || true)
-if [ -z "$TAP_TO_MASTER" ]; then
-    check "livestream-tap → broadcast-master linked" "MISSING"
-    MPC_COMPLETENESS_OK=false
-else
-    check "livestream-tap → broadcast-master linked" "PASS"
-fi
-
-# Inverse safety invariant: the MPC private monitor return (capture_AUX2/3) must
-# NOT be linked into the broadcast return capture or any broadcast node.
-PRIVATE_RETURN_LEAK=$(pw-link -l 2>/dev/null \
-    | grep -A 5 -E "$MPC_RETURN_SOURCE:capture_AUX[23]" 2>/dev/null \
-    | grep -E "hapax-(mpc-usb-return-capture|livestream-tap|broadcast-master|broadcast-normalized|obs-broadcast-remap)" 2>/dev/null || true)
-if [ -n "$PRIVATE_RETURN_LEAK" ]; then
-    check "MPC private return (AUX2/3) absent from broadcast" "LEAK: ${PRIVATE_RETURN_LEAK:0:80}"
-    MPC_COMPLETENESS_OK=false
-else
-    check "MPC private return (AUX2/3) absent from broadcast" "PASS"
-fi
-
-if [ "$MPC_COMPLETENESS_OK" = true ]; then
-    echo "  MPC return completeness: public mix reaches broadcast, private fenced ✓"
-fi
-
-# ── Signal-Flow Advisory Check (Invariant 11) ──────────────────────────────
-if ! command -v pw-top &>/dev/null; then
-    echo ""
-    echo "=== Signal-Flow Advisory ==="
-    echo "  [SKIP] pw-top not available — signal flow check skipped"
-else
-# PipeWire links can exist but carry zero audio data. Use pw-top to detect
-# nodes that are "Running" but have quantum=0 / rate=0, indicating no data
-# is flowing despite the topology being connected. This is advisory (WARN)
-# because some nodes legitimately idle (e.g. music player paused).
 echo ""
-echo "=== Signal-Flow Advisory ==="
-FLOW_WARNINGS=0
 
-check_signal_flow() {
-    local node_name="$1"
-    local label="$2"
-    # pw-top -b -n 1 outputs one snapshot; grep for the node and check
-    # quantum (field 3) and rate (field 4). Both 0 means no data flows.
-    local row
-    row=$(pw-top -b -n 1 2>/dev/null | grep "$node_name" | head -1 || true)
-    if [ -z "$row" ]; then
-        echo -e "  ${YELLOW}[WARN]${NC} $label: node not found in pw-top"
-        FLOW_WARNINGS=$((FLOW_WARNINGS + 1))
-        return
-    fi
-    # Fields: State ID Quantum Rate Wait Busy W/Q B/Q ERR Format CH Rate Name
-    local quantum rate
-    quantum=$(echo "$row" | awk '{print $3}')
-    rate=$(echo "$row" | awk '{print $4}')
-    if [ "$quantum" = "0" ] && [ "$rate" = "0" ]; then
-        echo -e "  ${YELLOW}[WARN]${NC} $label: quantum=0 rate=0 — NO DATA FLOWING"
-        FLOW_WARNINGS=$((FLOW_WARNINGS + 1))
-    else
-        echo -e "  ${GREEN}[OK]${NC}   $label: quantum=$quantum rate=$rate — data flowing"
-    fi
-}
-
-check_signal_flow "hapax-music-loudnorm" "Music loudnorm filter chain"
-check_signal_flow "hapax-livestream-tap" "Livestream tap null-sink"
-check_signal_flow "hapax-broadcast-master" "Broadcast master"
-
-if [ "$FLOW_WARNINGS" -gt 0 ]; then
-    echo -e "  ${YELLOW}Signal flow: $FLOW_WARNINGS node(s) idle — check music player / source status${NC}"
+# ── Invariant 12: WirePlumber deny policy + forbidden-links present ──
+echo "Chain 12: Boundary Policy Artifacts"
+FORBIDDEN_LINKS_RUNTIME="${HAPAX_FORBIDDEN_LINKS_RUNTIME:-$HOME/.config/hapax/audio-forbidden-links.conf}"
+LINK_MAP_RUNTIME="${HAPAX_LINK_MAP_RUNTIME:-$HOME/.config/hapax/audio-link-map.conf}"
+if [ -f "$FORBIDDEN_LINKS_RUNTIME" ]; then
+    check "forbidden-links runtime conf present" "PASS"
 else
-    echo "  Signal flow: ALL critical nodes have active data ✓"
+    check "forbidden-links runtime conf present" "missing: $FORBIDDEN_LINKS_RUNTIME"
 fi
-
-fi  # close: if ! command -v pw-top
-
+if [ -f "$LINK_MAP_RUNTIME" ] && grep -q 'UltraLite-mk5' "$LINK_MAP_RUNTIME" 2>/dev/null; then
+    check "link-map runtime targets the mk5" "PASS"
+else
+    check "link-map runtime targets the mk5" "link-map missing or still references retired hardware"
+fi
+if systemctl --user is-active hapax-audio-reconciler >/dev/null 2>&1; then
+    check "hapax-audio-reconciler active" "PASS"
+else
+    check "hapax-audio-reconciler active" "reconciler not running — desired-state links unmaintained"
+fi
 echo ""
+
 echo "=== Result ==="
 if [ "$FAILURES" -eq 0 ]; then
     echo -e "${GREEN}ALL INVARIANTS PASSED${NC}"

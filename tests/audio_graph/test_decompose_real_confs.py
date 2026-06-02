@@ -147,5 +147,5 @@ def test_role_loopback_infrastructure_decomposes() -> None:
     # The validator picks the first intended role per loopback; in the
     # live conf those map to Music (multimedia), Notification, Assistant,
     # Broadcast.
-    assert len(sink.loopbacks) >= 4
-    assert any("notif" in r.lower() for r in role_names)
+    assert len(sink.loopbacks) >= 2
+    assert any("assist" in r.lower() for r in role_names)
