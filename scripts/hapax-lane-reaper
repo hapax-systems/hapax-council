@@ -26,6 +26,34 @@ done
 
 log() { printf 'lane-reaper: %s\n' "$*" >&2; }
 
+# ─── RecoveryGovernor admission for the load-injecting reap action ────────────
+# bb-control-stability: the kill + worktree-cleanup + hygiene-sweep a reap
+# triggers is a recovery action; route it through the shared governor so a wave
+# of reaps can't storm the box, and so a session that keeps needing reaping
+# escalates via AIMD. The release-task path (load-free) stays ungated. Fail-open:
+# any non-{0,75,2} exit → PERMIT (the reaper never wedges on the governor).
+governor_repo() {
+    local repo
+    repo="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
+    [[ -d "$repo/shared" ]] || repo="${HOME}/projects/hapax-council"
+    echo "$repo"
+}
+governor_permit() {
+    [[ "${HAPAX_RECOVERY_GOVERNOR_OFF:-}" == "1" ]] && return 0
+    local rc
+    (cd "$(governor_repo)" 2>/dev/null && python3 -m shared.recovery_governor --permit "$1" >/dev/null 2>&1)
+    rc=$?
+    case "$rc" in
+        0) return 0 ;;
+        75 | 2) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+governor_record() {
+    [[ "${HAPAX_RECOVERY_GOVERNOR_OFF:-}" == "1" ]] && return 0
+    (cd "$(governor_repo)" 2>/dev/null && python3 -m shared.recovery_governor --record "$1" "$2" >/dev/null 2>&1) || true
+}
+
 killed=0
 cleaned=0
 
@@ -132,10 +160,16 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "
         rm -f "$claim_file"
     fi
 
-    # Kill the session
+    # Kill the session (governed: a reap is a recovery action). NOTE: kill is via
+    # tmux kill-session — group-free by design; we never process-group-kill the lane.
     if [[ "$DRY_RUN" -eq 0 ]]; then
-        tmux kill-session -t "$session" 2>/dev/null && ((killed++)) || true
-        log "  Killed session: $session"
+        if governor_permit "lane:$role"; then
+            tmux kill-session -t "$session" 2>/dev/null && ((killed++)) || true
+            governor_record "lane:$role" ok
+            log "  Killed session: $session"
+        else
+            log "  RecoveryGovernor deferred reap of $session (backoff/pressure); retry next cycle"
+        fi
     else
         log "  DRY RUN: would kill $session"
     fi

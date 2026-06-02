@@ -12,6 +12,7 @@ from pathlib import Path
 
 import yaml
 
+from shared.recovery_governor import converge_action_cap
 from shared.sdlc_pressure_gate import admission_state
 
 log = logging.getLogger(__name__)
@@ -129,9 +130,13 @@ class Coordinator:
         # nothing this tick (tasks stay offered — queued, not dropped); 'paced'
         # caps throughput and stretches the cooldown so the fleet drains slowly.
         admission = admission_state()
-        max_dispatches, cooldown_s = pressure_dispatch_budget(
+        _, cooldown_s = pressure_dispatch_budget(
             admission.state, len(idle_lanes), DISPATCH_COOLDOWN_S
         )
+        # bb-control-stability: the RecoveryGovernor's per-tick converge ceiling
+        # ({open:6, paced:2, closed:0}) bounds how many dispatches the controller
+        # may inject per tick — it cannot become the storm it governs.
+        max_dispatches = min(len(idle_lanes), converge_action_cap(admission.state))
         if admission.state != "open":
             log.info(
                 "sdlc-pressure %s: dispatch budget=%d cooldown=%.0fs",
