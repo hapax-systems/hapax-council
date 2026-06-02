@@ -1340,9 +1340,9 @@ mod family_classification_tests {
 
     fn valid_root_binding() -> AoaPaneBindingMetadata {
         AoaPaneBindingMetadata {
-            pane_id: "aoa:pane:v1:r:abd".to_string(),
+            pane_id: "aoa:pane:v1:a.a.a.a:abd".to_string(),
             route: "aoa_pane".to_string(),
-            mode: AoaPaneBindingMode::TriTextureMasked,
+            mode: AoaPaneBindingMode::DataGlyph,
             clip_policy: Default::default(),
             effect_scope: Default::default(),
             privacy_posture: AoaPanePrivacyPosture::PublicReviewRequired,
@@ -1426,9 +1426,9 @@ mod family_classification_tests {
                 "width": 64,
                 "height": 64,
                 "pane_binding": {
-                    "pane_id": "aoa:pane:v1:r:abd",
+                    "pane_id": "aoa:pane:v1:a.a.a.a:abd",
                     "route": "aoa_pane",
-                    "mode": "tri_texture_masked",
+                    "mode": "data_glyph",
                     "privacy_posture": "public_review_required",
                     "privacy_gate_refs": ["fixture:public-review"],
                     "source_posture": "system_ward"
@@ -1438,13 +1438,13 @@ mod family_classification_tests {
         .unwrap();
 
         let binding = parsed.pane_binding.as_ref().unwrap();
-        assert_eq!(binding.pane_id, "aoa:pane:v1:r:abd");
+        assert_eq!(binding.pane_id, "aoa:pane:v1:a.a.a.a:abd");
         assert_eq!(binding.source_posture, AoaPaneSourcePosture::SystemWard);
 
         let validated = validate_aoa_pane_binding(binding).unwrap();
-        assert_eq!(validated.pane_id, "aoa:pane:v1:r:abd");
+        assert_eq!(validated.pane_id, "aoa:pane:v1:a.a.a.a:abd");
         assert_eq!(validated.pane_ordinal, 0);
-        assert_eq!(validated.mode, AoaPaneBindingMode::TriTextureMasked);
+        assert_eq!(validated.mode, AoaPaneBindingMode::DataGlyph);
     }
 
     #[test]
@@ -1456,9 +1456,9 @@ mod family_classification_tests {
                 "width": 64,
                 "height": 64,
                 "pane_binding": {
-                    "pane_id": "aoa:pane:v1:r:abd",
+                    "pane_id": "aoa:pane:v1:a.a.a.a:abd",
                     "route": "aoa_pane",
-                    "mode": "tri_texture_masked",
+                    "mode": "data_glyph",
                     "source_posture": "system_ward"
                 }
             }"#,

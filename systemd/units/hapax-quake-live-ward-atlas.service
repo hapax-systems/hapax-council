@@ -6,6 +6,7 @@ ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 [Service]
 Type=simple
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=HAPAX_QUAKE_WARD_ATLAS_GPU_DRIFT=1
 ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/quake-live-ward-atlas-source.py --require-file scripts/quake_media_drift.py
 ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/quake-live-ward-atlas-source.py --fps 0.1 --width 2048 --height 2304 --columns 4 --cell-width 512 --cell-height 256 --drift on --drift-intensity 1.6 --output /dev/shm/hapax-compositor/quake-live-ward-atlas.bgra --meta /dev/shm/hapax-compositor/quake-live-ward-atlas.json
 Restart=always

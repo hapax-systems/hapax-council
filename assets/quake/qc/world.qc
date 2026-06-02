@@ -19,7 +19,7 @@ void(entity ent) aoa_common_visuals =
     ent.think = aoa_think;
     ent.nextthink = time + 0.1;
     ent.screwm_spin_y = 0;
-    ent.effects = EF_FULLBRIGHT + EF_NOSHADOW + EF_DOUBLESIDED + EF_DYNAMICMODELLIGHT;
+    ent.effects = EF_DOUBLESIDED + EF_DYNAMICMODELLIGHT;
 };
 
 void() spawn_aoa =
@@ -29,7 +29,7 @@ void() spawn_aoa =
     aoa_common_visuals(aoa_entity);
     setmodel(aoa_entity, "progs/aoa.mdl");
     aoa_entity.scale = AOA_MODEL_SCALE;
-    aoa_entity.alpha = 0.20;
+    aoa_entity.alpha = 0.16;
     aoa_entity.colormod = '1.08 0.64 0.88';
     aoa_entity.glowmod = '0.80 0.40 0.58';
     aoa_entity.glow_color = 236;
@@ -40,6 +40,7 @@ void() spawn_aoa =
     aoa_sphere_entity = spawn();
     aoa_sphere_entity.classname = "aoa_media_sphere";
     aoa_common_visuals(aoa_sphere_entity);
+    setorigin(aoa_sphere_entity, AOA_SPHERE_CENTER);
     setmodel(aoa_sphere_entity, "progs/aoa_sphere.mdl");
     aoa_sphere_entity.scale = AOA_SPHERE_MODEL_SCALE;
     aoa_sphere_entity.alpha = 1.0;

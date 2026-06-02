@@ -158,13 +158,36 @@ witness tactics requirement above.
    - **Live vs frozen.** A CPU-bound renderer can sit at its normal ~90% CPU with an
      unreliable internal frame counter; `mean_consecutive_motion > 0` over a hold is
      the reliable proof the broadcast is advancing. (2026-05-29: a "frozen" reading
-     from the engine frame-counter was a false alarm; the motion metric correctly
-     showed the render live, preventing an unnecessary revert.)
-   - **No-blink / no-global-flash.** A global flash or hard blink shows up as a large
-     whole-frame luma delta between consecutive hold frames; the duration metrics
-     make the violation measurable instead of relying on a lucky single capture.
+	 from the engine frame-counter was a false alarm; the motion metric correctly
+	 showed the render live, preventing an unnecessary revert.)
+	   - **No-blink / no-global-flash.** A global flash or hard blink shows up as a large
+	     whole-frame luma delta between consecutive hold frames; the duration metrics
+	     make the violation measurable instead of relying on a lucky single capture.
 
-4. **Perf is part of the visual evidence.** For live render surfaces under a
+4. **Aesthetic-strength evidence — motion is not expression.** For work that
+   claims visual quality, expressive drift, spatial inhabitation, audiovisual
+   disorientation, receiver density, lighting/shadow participation, or
+   anti-parasocial obscuring, liveness metrics are necessary but not sufficient.
+   Capture duration holds from multiple POVs and record baseline-relative,
+   region-aware image metrics: wall/floor/ceiling/entity/negative-space
+   participation, active-region coverage, max-region dominance, edge change,
+   negative-space temporal variance, and family-signature evidence when a family
+   vector is declared. A tiny moving patch, camera sweep, or weak full-frame
+   postprocess shimmer must fail an expressive-drift claim even if hashes and
+   mean frame motion prove that frames are fresh.
+
+   Screwm witnesses use `scripts/screwm-effect-drift-matrix-witness.py` region
+   metrics and `--require-aesthetic-strength` for release-grade active rows.
+   Failure predicates include: fewer than the declared minimum region coverage,
+   one region dominating the measured change, missing duration hold metrics,
+   effect deltas that correlate primarily with screen coordinates rather than
+   scene regions, or declared light/shadow fields that do not measurably alter
+   floor/wall/ceiling/entity regions.
+   DarkPlaces `r_glsl_postprocess` / `effect-review-preset` output is diagnostic
+   only for Screwm: a capture may record it as a shader-canary, but it cannot
+   satisfy an expressive-drift or geometry-bound quality claim.
+
+5. **Perf is part of the visual evidence.** For live render surfaces under a
    frame-budget invariant (Screwm: 1080p60), pair every visual capture with a
    GPU-utilization + VRAM + renderer-CPU sample, so a change that quietly broke the
    frame budget is caught with the frame, not hours later. Headless fps is not
@@ -186,6 +209,9 @@ witness tactics requirement above.
 9. OBS or another broadcast egress path is stale while an upstream render path is
    still moving, because the witness trusted one POV and did not run long enough
    to cross a reset/watchdog boundary.
+10. A visually anemic scene passes because one patch or a camera sweep moved,
+    while walls, floor, ceiling, negative space, entities, light, and shadow
+    remained inert.
 
 ---
 

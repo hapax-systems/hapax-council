@@ -1,5 +1,5 @@
 diff --git a/gl_rmain.c b/gl_rmain.c
-index f9007caf..0dab4417 100644
+index f9007caf..7a6d0644 100644
 --- a/gl_rmain.c
 +++ b/gl_rmain.c
 @@ -28,6 +28,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
@@ -15,11 +15,11 @@ index f9007caf..0dab4417 100644
  #ifdef WIN32
  // Enable NVIDIA High Performance Graphics while using Integrated Graphics.
  #ifdef __cplusplus
-@@ -110,6 +116,83 @@ cvar_t r_cullentities_trace_eyejitter = {CF_CLIENT, "r_cullentities_trace_eyejit
+@@ -110,6 +116,88 @@ cvar_t r_cullentities_trace_eyejitter = {CF_CLIENT, "r_cullentities_trace_eyejit
  cvar_t r_sortentities = {CF_CLIENT, "r_sortentities", "0", "sort entities before drawing (might be faster)"};
  cvar_t r_speeds = {CF_CLIENT, "r_speeds","0", "displays rendering statistics and per-subsystem timings"};
  cvar_t r_fullbright = {CF_CLIENT, "r_fullbright","0", "makes map very bright and renders faster"};
-+#define HAPAX_LIVE_TEXTURE_SLOT_COUNT 13
++#define HAPAX_LIVE_TEXTURE_SLOT_COUNT 14
 +
 +cvar_t hapax_live_texture_enable[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_enable", "0", "enable Hapax raw BGRA live texture upload slot 1"},
@@ -35,6 +35,7 @@ index f9007caf..0dab4417 100644
 +	{CF_CLIENT, "hapax_live_texture11_enable", "0", "enable Hapax raw BGRA live texture upload slot 11"},
 +	{CF_CLIENT, "hapax_live_texture12_enable", "0", "enable Hapax raw BGRA live texture upload slot 12"},
 +	{CF_CLIENT, "hapax_live_texture13_enable", "0", "enable Hapax raw BGRA live texture upload slot 13"},
++	{CF_CLIENT, "hapax_live_texture14_enable", "0", "enable Hapax raw BGRA live texture upload slot 14"},
 +};
 +cvar_t hapax_live_texture_name[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_name", "progs/aoa_sphere.mdl_0", "skinframe/BSP texture basename to update from Hapax live texture slot 1"},
@@ -50,6 +51,7 @@ index f9007caf..0dab4417 100644
 +	{CF_CLIENT, "hapax_live_texture11_name", "w27", "skinframe/BSP texture basename to update from Hapax live texture slot 11"},
 +	{CF_CLIENT, "hapax_live_texture12_name", "w05", "skinframe/BSP texture basename to update from Hapax live texture slot 12"},
 +	{CF_CLIENT, "hapax_live_texture13_name", "speech_wave", "skinframe/BSP texture basename to update from Hapax live texture slot 13"},
++	{CF_CLIENT, "hapax_live_texture14_name", "progs/aoa.mdl_0", "skinframe/BSP texture basename to update from Hapax live texture slot 14"},
 +};
 +cvar_t hapax_live_texture_path[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_path", "/dev/shm/hapax-compositor/quake-live-yt.bgra", "raw BGRA frame path for Hapax live texture slot 1"},
@@ -65,6 +67,7 @@ index f9007caf..0dab4417 100644
 +	{CF_CLIENT, "hapax_live_texture11_path", "/dev/shm/hapax-compositor/quake-live-ticker-chronicle.bgra", "raw BGRA frame path for Hapax live texture slot 11"},
 +	{CF_CLIENT, "hapax_live_texture12_path", "/dev/shm/hapax-compositor/quake-live-reverie.bgra", "raw BGRA frame path for Hapax live texture slot 12"},
 +	{CF_CLIENT, "hapax_live_texture13_path", "/dev/shm/hapax-compositor/quake-live-speech-wave.bgra", "raw BGRA frame path for Hapax live texture slot 13"},
++	{CF_CLIENT, "hapax_live_texture14_path", "/dev/shm/hapax-compositor/quake-live-aoa-atlas.bgra", "raw BGRA frame path for Hapax live texture slot 14"},
 +};
 +cvar_t hapax_live_texture_width[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_width", "2048", "raw BGRA frame width for Hapax live texture slot 1"},
@@ -80,6 +83,7 @@ index f9007caf..0dab4417 100644
 +	{CF_CLIENT, "hapax_live_texture11_width", "1344", "raw BGRA frame width for Hapax live texture slot 11"},
 +	{CF_CLIENT, "hapax_live_texture12_width", "960", "raw BGRA frame width for Hapax live texture slot 12"},
 +	{CF_CLIENT, "hapax_live_texture13_width", "512", "raw BGRA frame width for Hapax live texture slot 13"},
++	{CF_CLIENT, "hapax_live_texture14_width", "2048", "raw BGRA frame width for Hapax live texture slot 14"},
 +};
 +cvar_t hapax_live_texture_height[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_height", "1024", "raw BGRA frame height for Hapax live texture slot 1"},
@@ -95,11 +99,53 @@ index f9007caf..0dab4417 100644
 +	{CF_CLIENT, "hapax_live_texture11_height", "176", "raw BGRA frame height for Hapax live texture slot 11"},
 +	{CF_CLIENT, "hapax_live_texture12_height", "540", "raw BGRA frame height for Hapax live texture slot 12"},
 +	{CF_CLIENT, "hapax_live_texture13_height", "128", "raw BGRA frame height for Hapax live texture slot 13"},
++	{CF_CLIENT, "hapax_live_texture14_height", "2048", "raw BGRA frame height for Hapax live texture slot 14"},
 +};
  
  cvar_t r_fullbright_directed = {CF_CLIENT, "r_fullbright_directed", "0", "render fullbright things (unlit worldmodel and EF_FULLBRIGHT entities, but not fullbright shaders) using a constant light direction instead to add more depth while keeping uniform brightness"};
  cvar_t r_fullbright_directed_ambient = {CF_CLIENT, "r_fullbright_directed_ambient", "0.5", "ambient light multiplier for directed fullbright"};
-@@ -2746,6 +2824,205 @@ static void R_SkinFrame_GenerateTexturesFromQPixels(skinframe_t *skinframe, qboo
+@@ -178,6 +266,7 @@ cvar_t r_glsl_offsetmapping_scale = {CF_CLIENT | CF_ARCHIVE, "r_glsl_offsetmappi
+ cvar_t r_glsl_offsetmapping_lod = {CF_CLIENT | CF_ARCHIVE, "r_glsl_offsetmapping_lod", "0", "apply distance-based level-of-detail correction to number of offsetmappig steps, effectively making it render faster on large open-area maps"};
+ cvar_t r_glsl_offsetmapping_lod_distance = {CF_CLIENT | CF_ARCHIVE, "r_glsl_offsetmapping_lod_distance", "32", "first LOD level distance, second level (-50% steps) is 2x of this, third (33%) - 3x etc."};
+ cvar_t r_glsl_postprocess = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess", "0", "use a GLSL postprocessing shader"};
++cvar_t hapax_drift_enable = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_enable", "1", "(hapax) enable GPU world-surface drift permutation (HAPAX_DRIFT) on drift_* surfaces"};
+ cvar_t r_glsl_postprocess_uservec1 = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec1", "0 0 0 0", "a 4-component vector to pass as uservec1 to the postprocessing shader (only useful if default.glsl has been customized)"};
+ cvar_t r_glsl_postprocess_uservec2 = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec2", "0 0 0 0", "a 4-component vector to pass as uservec2 to the postprocessing shader (only useful if default.glsl has been customized)"};
+ cvar_t r_glsl_postprocess_uservec3 = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec3", "0 0 0 0", "a 4-component vector to pass as uservec3 to the postprocessing shader (only useful if default.glsl has been customized)"};
+@@ -655,7 +744,8 @@ shaderpermutationinfo_t shaderpermutationinfo[SHADERPERMUTATION_COUNT] =
+ 	{"#define USEDEPTHRGB\n", " depthrgb"},
+ 	{"#define USEALPHAGENVERTEX\n", " alphagenvertex"},
+ 	{"#define USESKELETAL\n", " skeletal"},
+-	{"#define USEOCCLUDE\n", " occlude"}
++	{"#define USEOCCLUDE\n", " occlude"},
++	{"#define USEHAPAXDRIFT\n", " hapaxdrift"}
+ };
+ 
+ // NOTE: MUST MATCH ORDER OF SHADERMODE_* ENUMS!
+@@ -1032,9 +1122,9 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+ 	int vertstrings_count = 0;
+ 	int geomstrings_count = 0;
+ 	int fragstrings_count = 0;
+-	const char *vertstrings_list[32+5+SHADERSTATICPARMS_COUNT+1];
+-	const char *geomstrings_list[32+5+SHADERSTATICPARMS_COUNT+1];
+-	const char *fragstrings_list[32+5+SHADERSTATICPARMS_COUNT+1];
++	const char *vertstrings_list[33+5+SHADERSTATICPARMS_COUNT+1];
++	const char *geomstrings_list[33+5+SHADERSTATICPARMS_COUNT+1];
++	const char *fragstrings_list[33+5+SHADERSTATICPARMS_COUNT+1];
+ 
+ 	if (p->compiled)
+ 		return;
+@@ -1575,6 +1665,9 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
+ 	r_waterstate_waterplane_t *waterplane = (r_waterstate_waterplane_t *)surfacewaterplane;
+ 	if (r_trippy.integer && !notrippy)
+ 		permutation |= SHADERPERMUTATION_TRIPPY;
++	// (hapax) GPU world-surface drift: flag drift_* surfaces for the HAPAX_DRIFT permutation.
++	if (hapax_drift_enable.integer && t->name[0] && (!strncmp(t->name, "drift_", 6) || !strncmp(t->name, "hex_", 4) || !strncmp(t->name, "stipple_", 8) || !strncmp(t->name, "geometry", 8)))
++		permutation |= SHADERPERMUTATION_HAPAXDRIFT;
+ 	if (t->currentmaterialflags & MATERIALFLAG_ALPHATEST)
+ 		permutation |= SHADERPERMUTATION_ALPHAKILL;
+ 	if (t->currentmaterialflags & MATERIALFLAG_OCCLUDE)
+@@ -2746,6 +2839,214 @@ static void R_SkinFrame_GenerateTexturesFromQPixels(skinframe_t *skinframe, qboo
  	}
  }
  
@@ -119,7 +165,8 @@ index f9007caf..0dab4417 100644
 +{
 +	FILE *file;
 +
-+	if ((r_textureframe % 120) != 0)
++	if ((r_textureframe % 120) != 0 &&
++		(!name || strcmp(name, "progs/aoa.mdl_0") || (stage && !strcmp(stage, "slot-active"))))
 +		return;
 +
 +	file = fopen("/tmp/hapax-live-texture-debug.log", "a");
@@ -198,7 +245,10 @@ index f9007caf..0dab4417 100644
 +	char identifier[MAX_QPATH];
 +
 +	if (!enable->integer || cls.state == ca_dedicated)
++	{
++		R_HapaxLiveTexture_Debug("disabled", name_cvar->string, path_cvar->string, width_cvar->integer, height_cvar->integer, enable->integer, cls.state);
 +		return;
++	}
 +
 +	name = name_cvar->string;
 +	path = path_cvar->string;
@@ -209,6 +259,8 @@ index f9007caf..0dab4417 100644
 +		R_HapaxLiveTexture_Debug("invalid", name, path, width, height, -1, -1);
 +		return;
 +	}
++	if (slot == HAPAX_LIVE_TEXTURE_SLOT_COUNT - 1)
++		R_HapaxLiveTexture_Debug("slot-active", name, path, width, height, enable->integer, slot + 1);
 +
 +	size = (size_t)width * (size_t)height * 4;
 +	if (stat(path, &st) != 0)
@@ -234,7 +286,10 @@ index f9007caf..0dab4417 100644
 +		state->pixels_size = size;
 +	}
 +	if (!state->pixels)
++	{
++		R_HapaxLiveTexture_Debug("alloc-failed", name, path, width, height, -1, -1);
 +		return;
++	}
 +	if (!R_HapaxLiveTexture_ReadFrame(path, state->pixels, size))
 +	{
 +		R_HapaxLiveTexture_Debug("read-failed", name, path, width, height, -1, -1);
@@ -305,7 +360,7 @@ index f9007caf..0dab4417 100644
  skinframe_t *R_SkinFrame_LoadInternal8bit(const char *name, int textureflags, const unsigned char *skindata, int width, int height, const unsigned int *palette, const unsigned int *alphapalette)
  {
  	int i;
-@@ -3288,6 +3565,14 @@ void GL_Main_Init(void)
+@@ -3288,6 +3589,14 @@ void GL_Main_Init(void)
  	Cvar_RegisterVariable(&r_sortentities);
  	Cvar_RegisterVariable(&r_drawviewmodel);
  	Cvar_RegisterVariable(&r_drawexteriormodel);
@@ -320,7 +375,15 @@ index f9007caf..0dab4417 100644
  	Cvar_RegisterVariable(&r_speeds);
  	Cvar_RegisterVariable(&r_fullbrights);
  	Cvar_RegisterVariable(&r_wateralpha);
-@@ -5649,6 +5934,7 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
+@@ -3341,6 +3650,7 @@ void GL_Main_Init(void)
+ 	Cvar_RegisterVariable(&r_glsl_offsetmapping_lod);
+ 	Cvar_RegisterVariable(&r_glsl_offsetmapping_lod_distance);
+ 	Cvar_RegisterVariable(&r_glsl_postprocess);
++	Cvar_RegisterVariable(&hapax_drift_enable);
+ 	Cvar_RegisterVariable(&r_glsl_postprocess_uservec1);
+ 	Cvar_RegisterVariable(&r_glsl_postprocess_uservec2);
+ 	Cvar_RegisterVariable(&r_glsl_postprocess_uservec3);
+@@ -5649,6 +5959,7 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
  	if (r_timereport_active)
  		R_TimeReport("start");
  	r_textureframe++; // used only by R_GetCurrentTexture
@@ -328,3 +391,39 @@ index f9007caf..0dab4417 100644
  	rsurface.entity = NULL; // used only by R_GetCurrentTexture and RSurf_ActiveModelEntity
  
  	if(R_CompileShader_CheckStaticParms())
+diff --git a/render.h b/render.h
+index 7fbcd0b3..3a4d970e 100644
+--- a/render.h
++++ b/render.h
+@@ -102,7 +102,8 @@ shadermode_t;
+ #define SHADERPERMUTATION_ALPHAGEN_VERTEX (1u<<29) ///< alphaGen vertex
+ #define SHADERPERMUTATION_SKELETAL (1u<<30) ///< (skeletal models) use skeletal matrices to deform vertices (gpu-skinning)
+ #define SHADERPERMUTATION_OCCLUDE (1u<<31) ///< use occlusion buffer for corona
+-#define SHADERPERMUTATION_COUNT 32u ///< size of shaderpermutationinfo array
++#define SHADERPERMUTATION_HAPAXDRIFT (1ull<<32) ///< (hapax) GPU world-surface drift/effects stage; permutation is uint64_t so bit 32 is valid
++#define SHADERPERMUTATION_COUNT 33u ///< size of shaderpermutationinfo array
+ // UBSan: unsigned literals because left shifting by 31 causes signed overflow, although it works as expected on x86.
+ 
+ // 1.0f / N table
+diff --git a/shader_glsl.h b/shader_glsl.h
+index dc56d085..fc395105 100644
+--- a/shader_glsl.h
++++ b/shader_glsl.h
+@@ -1797,6 +1797,17 @@
+ "   color.rgb *= clamp(float(visiblepixels) / float(allpixels), 0.0, 1.0);\n",
+ "#endif\n",
+ "\n",
++"#ifdef USEHAPAXDRIFT\n",
++"	{\n",
++"		float hpx_luma = dot(color.rgb, vec3(0.299, 0.587, 0.114));\n",
++"		float hpx_fizz = (sin(TexCoord.x*40.0 + ClientTime*1.8)*sin(TexCoord.y*37.0 - ClientTime*1.1) + 0.55*sin(TexCoord.x*13.0 - TexCoord.y*17.0 + ClientTime*0.7)) * 0.34 + 0.5;\n",
++"		float hpx_breath = 0.5 + 0.5*sin(ClientTime*0.6 + TexCoord.x*2.0 + TexCoord.y*1.3);\n",
++"		vec3 hpx_desat = mix(color.rgb, vec3(hpx_luma), 0.45);\n",
++"		hpx_desat *= mix(vec3(0.72, 0.86, 1.05), vec3(0.95, 0.74, 1.05), hpx_breath);\n",
++"		color.rgb = hpx_desat * (0.82 + 0.42*hpx_fizz);\n",
++"		color.rgb += (color.rgb - vec3(dot(color.rgb, vec3(0.299, 0.587, 0.114)))) * smoothstep(0.82, 1.0, hpx_fizz) * 0.85;\n",
++"	}\n",
++"#endif\n",
+ "	dp_FragColor = vec4(color);\n",
+ "}\n",
+ "#endif // FRAGMENT_SHADER\n",

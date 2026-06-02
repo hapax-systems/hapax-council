@@ -69,10 +69,11 @@ if [ "$PCT" -ge 90 ]; then
         done
     fi
 
-    # Kill rogue GPU processes — anything not in the allowlist
-    # Allowlist: hapax_daimonion, studio_compositor, video_processor, ollama_llama_server,
-    # plus OBS (operator's broadcast application — MUST NOT be killed while streaming)
-    ALLOWLIST="hapax_daimonion|studio_compositor|video_processor|ollama_llama_server|tabbyAPI|hapax-imagination|hapax-council|^obs$|obs-browser"
+    # Kill rogue GPU processes — anything not in the allowlist.
+    # Keep the render/compositor route alive while under pressure: OBS, DarkPlaces,
+    # Screwm GPU drift, source-activation producers, local inference, and the
+    # NVENC media bridge are live-output infrastructure.
+    ALLOWLIST="hapax_daimonion|studio_compositor|video_processor|ollama_llama_server|(^|/)ollama$|tabbyAPI|hapax-imagination|hapax-council|(^|/)obs$|obs-browser|darkplaces-sdl|screwm-media-drift|screwm_media_drift|screwm-ward-atlas|screwm_ward_atlas|(^|/)ffmpeg$|source-activation/worktree/.venv/bin/python|projects/hapax-council/.venv/bin/python"
     while IFS=, read -r pid name; do
         pid=$(echo "$pid" | tr -d ' ')
         name=$(echo "$name" | tr -d ' ')

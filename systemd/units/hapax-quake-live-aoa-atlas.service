@@ -1,0 +1,16 @@
+[Unit]
+Description=Hapax Quake AoA fractal face atlas live texture source
+PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=HAPAX_QUAKE_AOA_ATLAS_GPU_DRIFT=1
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/quake-live-aoa-atlas-source.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/quake-live-aoa-atlas-source.py --fps 4 --width 2048 --height 2048 --columns 32 --cell-size 64 --output /dev/shm/hapax-compositor/quake-live-aoa-atlas.bgra --meta /dev/shm/hapax-compositor/quake-live-aoa-atlas.json --controls /dev/shm/hapax-compositor/aoa-face-controls.json
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=hapax-visual-stack.target hapax-darkplaces-v4l2.service

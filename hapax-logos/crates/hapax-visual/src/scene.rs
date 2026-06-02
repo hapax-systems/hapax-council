@@ -106,8 +106,8 @@ impl SceneNodeShader {
     pub fn vertex_count(self) -> u32 {
         match self {
             SceneNodeShader::Textured => 6,
-            // Parent tetrahedron plus depth-1, depth-2, and depth-3 children:
-            // 85 tetrahedra * 4 triangular panes * 3 vertices.
+            // Active AoA renders the finite depth-4 leaf surface:
+            // 256 leaf tetrahedra * 4 triangular faces * 3 vertices.
             SceneNodeShader::ApertureOfApertures => {
                 aoa_raw_triangular_pane_count(AOA_TETRIX_RENDER_DEPTH) as u32 * 3
             }
@@ -1065,7 +1065,7 @@ mod tests {
         AoaPaneBindingMetadata {
             pane_id: pane_id.to_string(),
             route: "aoa_pane".to_string(),
-            mode: AoaPaneBindingMode::TriTextureMasked,
+            mode: AoaPaneBindingMode::EdgeAccent,
             clip_policy: Default::default(),
             effect_scope: Default::default(),
             privacy_posture: AoaPanePrivacyPosture::PublicReviewRequired,
@@ -1085,7 +1085,7 @@ mod tests {
     }
 
     fn root_pane_binding() -> AoaPaneBindingMetadata {
-        root_pane_binding_for("aoa:pane:v1:r:abd")
+        root_pane_binding_for("aoa:pane:v1:a.a.a.a:abd")
     }
 
     fn pane_record_for(pane_id: &str) -> AoaPaneRecord {
@@ -1297,11 +1297,11 @@ mod tests {
 
     #[test]
     fn aoa_tetrix_geometry_counts_are_pinned() {
-        assert_eq!(AOA_TETRIX_RENDER_DEPTH, 3);
-        assert_eq!(aoa_leaf_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 64);
-        assert_eq!(aoa_total_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 85);
-        assert_eq!(aoa_raw_edge_segment_count(AOA_TETRIX_RENDER_DEPTH), 510);
-        assert_eq!(aoa_raw_triangular_pane_count(AOA_TETRIX_RENDER_DEPTH), 340);
+        assert_eq!(AOA_TETRIX_RENDER_DEPTH, 4);
+        assert_eq!(aoa_leaf_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 256);
+        assert_eq!(aoa_total_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 341);
+        assert_eq!(aoa_raw_edge_segment_count(AOA_TETRIX_RENDER_DEPTH), 1536);
+        assert_eq!(aoa_raw_triangular_pane_count(AOA_TETRIX_RENDER_DEPTH), 1024);
     }
 
     #[test]
@@ -1318,10 +1318,10 @@ mod tests {
             "AoA mesh shader entry points should remain explicit"
         );
         assert!(
-            shader.contains("AOA_INNER_PANE_COUNT_DEPTH_3")
+            shader.contains("AOA_LEAF_PANE_COUNT_DEPTH_4")
                 && shader.contains("aoa_pane_depth")
                 && shader.contains("aoa_neon_palette"),
-            "AoA shader must carry the depth-3 pane layer and temporary per-volume color differentiation"
+            "AoA shader must carry the depth-4 leaf pane layer and temporary per-volume color differentiation"
         );
     }
 
@@ -1350,13 +1350,12 @@ mod tests {
     fn aoa_shader_declares_usable_triangular_pane_topology() {
         let shader = include_str!("shaders/scene_quad.wgsl");
         for required in [
-            "AOA_OUTER_PANE_COUNT",
-            "AOA_INNER_PANE_COUNT_DEPTH_1",
-            "AOA_INNER_PANE_COUNT_DEPTH_2",
-            "AOA_DEPTH_2_PANES_PER_CHILD",
+            "AOA_RENDER_DEPTH",
+            "AOA_LEAF_TETRA_COUNT_DEPTH_4",
+            "AOA_LEAF_PANE_COUNT_DEPTH_4",
+            "aoa_leaf_child_index",
             "aoa_vertex",
             "aoa_face_vertex",
-            "grandchild_idx",
             "triangle_barycentric",
             "triangle_inside_mask_from_barycentric",
             "pane_information_uv_from_barycentric",
@@ -1551,12 +1550,12 @@ mod tests {
     }
 
     #[test]
-    fn four_root_panes_can_receive_distinct_source_bound_payloads() {
+    fn four_leaf_faces_can_receive_distinct_source_bound_payloads() {
         let root_panes = [
-            ("pane-abd", "aoa:pane:v1:r:abd", 0u32),
-            ("pane-bcd", "aoa:pane:v1:r:bcd", 1u32),
-            ("pane-cad", "aoa:pane:v1:r:cad", 2u32),
-            ("pane-acb", "aoa:pane:v1:r:acb", 3u32),
+            ("pane-abd", "aoa:pane:v1:a.a.a.a:abd", 0u32),
+            ("pane-bcd", "aoa:pane:v1:a.a.a.a:bcd", 1u32),
+            ("pane-cad", "aoa:pane:v1:a.a.a.a:cad", 2u32),
+            ("pane-acb", "aoa:pane:v1:a.a.a.a:acb", 3u32),
         ];
         let records = root_panes
             .iter()
@@ -1589,7 +1588,7 @@ mod tests {
                 .nodes
                 .iter()
                 .find(|node| node.aoa_payload_pane_ordinal == Some(ordinal))
-                .expect("each root pane should have a payload node");
+                .expect("each leaf face should have a payload node");
             assert_eq!(payload.content_source_id.as_deref(), Some(source_id));
             assert_eq!(payload.shader, SceneNodeShader::ApertureOfApertures);
         }
@@ -1606,7 +1605,7 @@ mod tests {
 
     #[test]
     fn inner_pane_payload_is_consumed_but_rejected_until_lod_gate_permits_it() {
-        let inner_pane_id = "aoa:pane:v1:a.d:bcd";
+        let inner_pane_id = "aoa:pane:v1:a.d.a.b:bcd";
         let records = vec![
             ActiveContentSourceInfo::new("inner-accent", 0.9, 9, 320, 180).with_pane_binding(
                 pane_binding_for(inner_pane_id, AoaPaneBindingMode::EdgeAccent),
@@ -1673,65 +1672,57 @@ mod tests {
     }
 
     #[test]
-    fn normal_parent_and_child_payloads_are_mutually_exclusive() {
-        let root_id = "aoa:pane:v1:r:abd";
-        let child_id = "aoa:pane:v1:a:abd";
+    fn duplicate_normal_leaf_payloads_are_mutually_exclusive() {
+        let leaf_id = "aoa:pane:v1:a.a.a.a:abd";
         let records = vec![
-            ActiveContentSourceInfo::new("root-full", 0.9, 9, 640, 360).with_pane_binding(
-                pane_binding_for(root_id, AoaPaneBindingMode::TriTextureMasked),
+            ActiveContentSourceInfo::new("leaf-data", 0.9, 9, 640, 360).with_pane_binding(
+                pane_binding_for(leaf_id, AoaPaneBindingMode::DataGlyph),
             ),
-            ActiveContentSourceInfo::new("child-data", 0.9, 9, 320, 180)
-                .with_pane_binding(pane_binding_for(child_id, AoaPaneBindingMode::DataGlyph)),
+            ActiveContentSourceInfo::new("leaf-glyph", 0.9, 9, 320, 180)
+                .with_pane_binding(pane_binding_for(leaf_id, AoaPaneBindingMode::SignalGlyph)),
         ];
 
         let built = build_scene_from_source_records_for_stream_posture_with_observations(
             &records,
             0.0,
             AoaPaneStreamPosture::Public,
-            &[
-                pane_observation_for(root_id, AoaPaneLodClass::Text),
-                pane_observation_for(child_id, AoaPaneLodClass::CompactData),
-            ],
+            &[pane_observation_for(leaf_id, AoaPaneLodClass::CompactData)],
         );
 
         assert_eq!(built.aoa_pane_sources.len(), 1);
-        assert_eq!(built.aoa_pane_sources[0].source_id, "child-data");
+        assert_eq!(built.aoa_pane_sources[0].source_id, "leaf-data");
         assert_eq!(
             built.rejected_pane_sources[0].reason,
             AoaPaneBindingRejectionReason::PaneSubtreeConflict {
-                pane_id: root_id.to_string(),
-                selected_pane_id: child_id.to_string(),
+                pane_id: leaf_id.to_string(),
+                selected_pane_id: leaf_id.to_string(),
             }
         );
         assert!(
             built
                 .nodes
                 .iter()
-                .all(|node| node.content_source_id.as_deref() != Some("root-full")),
-            "excluded parent payload must not leak back as a residual surface"
+                .all(|node| node.content_source_id.as_deref() != Some("leaf-glyph")),
+            "excluded duplicate payload must not leak back as a residual surface"
         );
     }
 
     #[test]
-    fn low_alpha_child_accents_can_coexist_with_parent_payloads() {
-        let root_id = "aoa:pane:v1:r:abd";
-        let child_id = "aoa:pane:v1:a.d:abd";
+    fn low_alpha_leaf_accents_can_coexist_with_normal_payloads() {
+        let leaf_id = "aoa:pane:v1:a.a.a.a:abd";
         let records = vec![
-            ActiveContentSourceInfo::new("root-full", 0.9, 9, 640, 360).with_pane_binding(
-                pane_binding_for(root_id, AoaPaneBindingMode::TriTextureMasked),
+            ActiveContentSourceInfo::new("leaf-data", 0.9, 9, 640, 360).with_pane_binding(
+                pane_binding_for(leaf_id, AoaPaneBindingMode::DataGlyph),
             ),
-            ActiveContentSourceInfo::new("child-accent", 0.9, 9, 320, 180)
-                .with_pane_binding(pane_binding_for(child_id, AoaPaneBindingMode::EdgeAccent)),
+            ActiveContentSourceInfo::new("leaf-accent", 0.9, 9, 320, 180)
+                .with_pane_binding(pane_binding_for(leaf_id, AoaPaneBindingMode::EdgeAccent)),
         ];
 
         let built = build_scene_from_source_records_for_stream_posture_with_observations(
             &records,
             0.0,
             AoaPaneStreamPosture::Public,
-            &[
-                pane_observation_for(root_id, AoaPaneLodClass::Text),
-                pane_observation_for(child_id, AoaPaneLodClass::Accent),
-            ],
+            &[pane_observation_for(leaf_id, AoaPaneLodClass::CompactData)],
         );
         let payload_sources = built
             .nodes
@@ -1740,17 +1731,17 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(built.rejected_pane_sources.is_empty());
-        assert!(payload_sources.contains(&"root-full"));
-        assert!(payload_sources.contains(&"child-accent"));
+        assert!(payload_sources.contains(&"leaf-data"));
+        assert!(payload_sources.contains(&"leaf-accent"));
         assert!(
             built
                 .nodes
                 .iter()
-                .find(|node| node.content_source_id.as_deref() == Some("child-accent"))
+                .find(|node| node.content_source_id.as_deref() == Some("leaf-accent"))
                 .unwrap()
                 .opacity
                 < 0.28,
-            "child accent exception must remain a low-alpha accent"
+            "leaf accent exception must remain a low-alpha accent"
         );
     }
 

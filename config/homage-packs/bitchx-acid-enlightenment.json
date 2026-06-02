@@ -45,6 +45,26 @@
         "inspection_affordance": "OARB reads as the fitted object-of-attention inside the AoA"
       }
     },
+    "regular-tetrix-face-control-atlas": {
+      "homage_role": "aoa-fractal-face-control-surface",
+      "visual_sources": ["ACiD indexed color discipline", "Sierpinski geometric recursion"],
+      "license_boundary": "procedural per-face control surface; no external assets embedded",
+      "mount_expression": {
+        "geometry": "regular-tetrix-fractal-face-skinframe-v1",
+        "layers": [
+          "independent_fractal_face_cells",
+          "source-bound-drift-field",
+          "edge-reactive-face-light",
+          "state-light-reception"
+        ],
+        "drift_interaction": {
+          "mode": "per-face-geometry-expression",
+          "families": ["colorgrade", "chromatic_aberration", "feedback", "edge-reactive-face-jitter"],
+          "shape_role": "each rendered AoA facet receives its own compositor/color cell; drift remains bound to the tetrahedral face geometry"
+        },
+        "inspection_affordance": "AoA facets read as independently addressable information surfaces, not a screen-space overlay"
+      }
+    },
     "live-authority-ticker-field": {
       "homage_role": "synthwave-grounding-ticker",
       "visual_sources": ["BitchX status ticker cadence", "ACiD CP437 glyph density"],
@@ -150,14 +170,15 @@
       "visual_sources": ["ACiD vector-grid rooms", "BitchX terminal darkness", "Enlightenment metallic bevel contrast"],
       "license_boundary": "procedural spatial material; no source media embedded",
       "surface_expression": {
-        "geometry": "walkable-dark-grid-field-v1",
-        "layers": ["dark_substrate", "drift_grid", "path_luminance", "speckle_noise"],
+        "geometry": "walkable-generated-hex-stipple-field-v2",
+        "layers": ["hidden_collision_shell", "generated_hex_edges", "sparse_geometric_stipple", "world_light_reactivity"],
         "chrome_textures": {
-          "substrate": "cmp_floor",
-          "accent": "drift_c",
-          "secondary": "drift_r"
+          "substrate": "skip",
+          "accent": "hex_floor",
+          "stipple": "stipple_floor",
+          "secondary": "drift_light_only"
         },
-        "inspection_affordance": "floor reads as a walkable compositor/drift field, not Quake stone"
+        "inspection_affordance": "floor reads as generated world geometry and drift-reactive light, not a filled or tiled texture surface"
       }
     },
     "room-ceiling-compositor-field": {
@@ -165,14 +186,15 @@
       "visual_sources": ["ACiD wire lattice", "Scroom truss canopy", "Enlightenment specular dark chrome"],
       "license_boundary": "procedural spatial material; no source media embedded",
       "surface_expression": {
-        "geometry": "overhead-dark-truss-field-v1",
-        "layers": ["dark_substrate", "colored_truss_grid", "borrowed_depth_nodes", "volumetric_beam_receivers"],
+        "geometry": "overhead-generated-hex-stipple-field-v2",
+        "layers": ["hidden_occlusion_shell", "generated_hex_edges", "sparse_geometric_stipple", "world_light_reactivity"],
         "chrome_textures": {
-          "substrate": "cmp_ceil",
-          "accent": "drift_a",
-          "secondary": "drift_g"
+          "substrate": "skip",
+          "accent": "hex_ceil",
+          "stipple": "stipple_ceil",
+          "secondary": "drift_light_only"
         },
-        "inspection_affordance": "ceiling reads as an orienting canopy and depth field"
+        "inspection_affordance": "ceiling reads as generated world geometry and drift-reactive light, not a filled or tiled texture surface"
       }
     },
     "room-wall-compositor-field": {
@@ -181,13 +203,14 @@
       "license_boundary": "procedural spatial material; no source media embedded",
       "surface_expression": {
         "geometry": "boundary-dark-grid-field-v1",
-        "layers": ["dark_substrate", "ward_alignment_grid", "terminal_nodes", "low_contrast_depth_lines"],
+        "layers": ["hidden_void_shell", "ward_alignment_light_grid", "sparse_stipple_points", "drift_reactive_light_reception"],
         "chrome_textures": {
-          "substrate": "cmp_wall",
-          "accent": "drift_c",
-          "secondary": "drift_a"
+          "substrate": "skip",
+          "accent": "hex_wall",
+          "stipple": "stipple_wall",
+          "secondary": "drift_light_only"
         },
-        "inspection_affordance": "wall reads as a neutral ward/support field rather than scenic texture"
+        "inspection_affordance": "wall reads as visual absence punctuated by generated light-grid/stipple behavior, never as filled wall material"
       }
     }
   },

@@ -268,7 +268,12 @@ DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 "$DARKPLACES_BIN" \
     +hapax_live_texture13_name speech_wave \
     +hapax_live_texture13_path /dev/shm/hapax-compositor/quake-live-speech-wave.bgra \
     +hapax_live_texture13_width 512 \
-    +hapax_live_texture13_height 128 &
+    +hapax_live_texture13_height 128 \
+    +hapax_live_texture14_enable 1 \
+    +hapax_live_texture14_name progs/aoa.mdl_0 \
+    +hapax_live_texture14_path /dev/shm/hapax-compositor/quake-live-aoa-atlas.bgra \
+    +hapax_live_texture14_width 2048 \
+    +hapax_live_texture14_height 2048 &
 darkplaces_pid="$!"
 
 sleep 3

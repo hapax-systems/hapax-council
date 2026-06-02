@@ -217,6 +217,17 @@ void(float u1x, float u1y, float u1z, float u1w, float u2x, float u2y, float u2z
     cvar_set("r_glsl_postprocess_uservec4", vec);
 };
 
+void() coupling_clear_screen_postprocess =
+{
+    cvar_set("r_glsl_postprocess", "0");
+    coupling_write_uservecs(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+};
+
+float() coupling_screen_postprocess_enabled =
+{
+    return cvar("screwm_qc_screen_postprocess") > 0;
+};
+
 float(float value, float floor_value, float ceil_value) coupling_clamp_range =
 {
     if (value < floor_value)
@@ -387,13 +398,45 @@ void() coupling_apply_stimmung =
 {
     coupling_effect_review_preset = coupling_read_effect_review_preset();
 
-    // AoA rotation speed: faster with voice activity
+    // AoA is a drift receiver, not a passive prop. Screen-space drift may be
+    // disabled, so the model itself carries rotation, opacity, color, and glow.
+    float aoa_drift_pressure = coupling_clamp_range(
+        0.08
+        + coupling_effect_drift_active_ratio * 0.70
+        + coupling_effect_drift_active_effect_ratio * 0.45
+        + coupling_effect_drift_edge * 0.34
+        + coupling_effect_drift_texture * 0.24
+        + coupling_effect_drift_compositing * 0.18
+        + coupling_visual_chain_drift * 0.24
+        + coupling_local_drift * 0.34,
+        0.06,
+        1.8
+    );
+    float aoa_pulse = 0.5 + 0.5 * sin(
+        time * (0.52 + coupling_effect_drift_fast_ratio * 0.38)
+        + coupling_effect_drift_kind_variance * 3.1
+        + coupling_effect_drift_region_count * 0.11
+    );
+    float aoa_spin_boost = aoa_drift_pressure * (4.0 + 18.0 * aoa_pulse);
+    aoa_spin_boost = aoa_spin_boost + coupling_effect_drift_fast_ratio * 8.0;
     if (aoa_entity)
     {
         float base_rot = 0.0;
         float voice_boost = coupling_voice_active * 1.5;
         float audio_boost = coupling_audio_rms * 0.8 + coupling_audio_onset * 1.2;
-        aoa_entity.screwm_spin_y = base_rot + voice_boost + audio_boost;
+        aoa_entity.screwm_spin_y = base_rot + voice_boost + audio_boost + aoa_spin_boost;
+        aoa_entity.alpha = coupling_clamp_range(0.16 + aoa_drift_pressure * 0.06 + aoa_pulse * 0.04, 0.12, 0.30);
+        aoa_entity.colormod = '1.06 0.58 0.80' + '0.10 0.20 0.18' * aoa_drift_pressure + '0.06 0.02 0.16' * aoa_pulse;
+        aoa_entity.glowmod = '0.62 0.32 0.48' + '0.28 0.26 0.22' * aoa_drift_pressure + '0.06 0.02 0.14' * aoa_pulse;
+        aoa_entity.glow_size = coupling_clamp_range(6 + aoa_drift_pressure * 26 + aoa_pulse * 16, 0, 68);
+    }
+    if (aoa_sphere_entity)
+    {
+        aoa_sphere_entity.screwm_spin_y = coupling_clamp_range(0.6 + aoa_drift_pressure * 7.5 + aoa_pulse * 2.0, 0.4, 18.0);
+        aoa_sphere_entity.alpha = coupling_clamp_range(0.84 + aoa_drift_pressure * 0.08 + aoa_pulse * 0.04, 0.78, 1.0);
+        aoa_sphere_entity.colormod = '0.92 0.92 1.00' + '0.10 0.16 0.08' * aoa_drift_pressure + '0.06 0.02 0.12' * aoa_pulse;
+        aoa_sphere_entity.glowmod = '0.28 0.20 0.12' + '0.20 0.16 0.10' * aoa_drift_pressure;
+        aoa_sphere_entity.glow_size = coupling_clamp_range(4 + aoa_drift_pressure * 18 + aoa_pulse * 8, 0, 44);
     }
 
     // Fog is only a depth cue here. Drift must shape entities/surfaces rather
@@ -401,8 +444,16 @@ void() coupling_apply_stimmung =
     float fog_density = 0.008 - coupling_energy * 0.004 + coupling_audio_rms * 0.002;
     localcmd(strcat(strcat("fog ", ftos(fog_density)), " 0.025 0.018 0.032\n"));
 
-    // Post-processing modulation from cognitive state. These are spatial
-    // scroom fields, not fourth-wall camera filters.
+    // DarkPlaces GLSL postprocess is screen-space over the final camera frame.
+    // Keep it as an explicit diagnostic only; release-grade Screwm expression
+    // must bind to world geometry through CSQC receivers/lights.
+    if (!coupling_screen_postprocess_enabled())
+    {
+        coupling_clear_screen_postprocess();
+        return;
+    }
+    cvar_set("r_glsl_postprocess", "1");
+
     if (coupling_effect_review_preset >= 6.5)
     {
         coupling_apply_effect_review_preset();
@@ -500,9 +551,8 @@ void() coupling_apply_stimmung =
     if (mode_tonal > 0.56 && mode_tonal < 0.68)
         thermal_val = coupling_clamp_range(thermal_val + 0.12, 0, 0.38);
 
-    // Review presets 1-6 are additive expression floors for the AVSDLC matrix:
-    // they keep live SlotDrift coupling but force each named row to actually
-    // exercise its family instead of collapsing back to the generic drift field.
+    // Review presets 1-6 are diagnostic screen-shader floors. They are only
+    // reachable when screwm_qc_screen_postprocess is deliberately enabled.
     if (coupling_effect_review_preset >= 0.5 && coupling_effect_review_preset < 1.5)
     {
         if (vig < 0.055)

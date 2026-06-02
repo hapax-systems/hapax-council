@@ -7,6 +7,9 @@ ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 [Service]
 Type=simple
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=HAPAX_QUAKE_GPU_DRIFT=1
+Environment=HAPAX_QUAKE_GPU_PROJECTION=1
+Environment=HAPAX_QUAKE_YOUTUBE_GPU_DECODE=1
 ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/quake-live-media-source.py --source youtube --url-file /dev/shm/hapax-compositor/youtube-video-id.txt --youtube-fallback canary --fps 3 --width 2048 --height 1024 --projection sphere-front --sphere-front-aspect 1.7777777778 --mask none --mask-background 0c0b0d --output /dev/shm/hapax-compositor/quake-live-yt.bgra --meta /dev/shm/hapax-compositor/quake-live-yt.json
 Restart=always
 RestartSec=3

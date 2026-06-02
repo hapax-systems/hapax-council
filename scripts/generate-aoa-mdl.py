@@ -14,19 +14,19 @@ import math
 import struct
 from pathlib import Path
 
-AOA_GEOMETRY_REVISION = "aoa-tetrix-v3-live-sphere"
-DEPTH = 3
-SCALE = 104
-ATTENDANT_SPHERE_RADIUS = 0.46
-AOA_SPHERE_MODEL_SCALE = 1.92
-# The OARB is meant to read as the "O" held inside the AoA, not as a loose
-# payload behind it. Keep only enough clearance to avoid model quantization and
-# depth-sorting artifacts.
-ATTENDANT_SPHERE_CLEARANCE_RATIO = 1.04
+AOA_GEOMETRY_REVISION = "aoa-regular-tetrix-v4-perfect-fit-oarb"
+DEPTH = 4
+AOA_LEAF_FACE_EDGE_UNITS = 48
+SCALE = AOA_LEAF_FACE_EDGE_UNITS * (2**DEPTH)
+ATTENDANT_SPHERE_RADIUS = math.sqrt(6.0) / 12.0
+AOA_SPHERE_MODEL_SCALE = 1.0
+ATTENDANT_SPHERE_CLEARANCE_RATIO = 1.0
 MEDIA_SPHERE_SEGMENTS = 64
 MEDIA_SPHERE_RINGS = 32
-AOA_SKIN_W = 16
-AOA_SKIN_H = 16
+AOA_FACE_ATLAS_COLUMNS = 32
+AOA_FACE_ATLAS_CELL_SIZE = 64
+AOA_SKIN_W = AOA_FACE_ATLAS_COLUMNS * AOA_FACE_ATLAS_CELL_SIZE
+AOA_SKIN_H = AOA_FACE_ATLAS_COLUMNS * AOA_FACE_ATLAS_CELL_SIZE
 MEDIA_SPHERE_SKIN_W = 2048
 MEDIA_SPHERE_SKIN_H = 1024
 
@@ -52,12 +52,17 @@ AOA_INNER_VOID_FACES = [
     (4, 2, 0),
 ]
 
-# Mirrors hapax-logos/crates/hapax-visual/src/aoa_panes.rs::AOA_ROOT_MODEL_VERTICES.
+ROOT_EDGE = 1.0
+ROOT_INRADIUS = ROOT_EDGE * math.sqrt(6.0) / 12.0
+ROOT_BASE_RADIUS = ROOT_EDGE / math.sqrt(3.0)
+
+# Regular tetrahedron in Quake axes, centered on its incenter. This is the
+# exact pyramid used for the finite Sierpinski/tetrix approximation.
 AOA_ROOT_MODEL_VERTICES = [
-    [-0.58, -0.44, 0.34],
-    [0.58, -0.44, 0.34],
-    [0.0, 0.60, 0.34],
-    [0.0, -0.095, -0.62],
+    [-0.5, -ROOT_BASE_RADIUS / 2.0, -ROOT_INRADIUS],
+    [0.5, -ROOT_BASE_RADIUS / 2.0, -ROOT_INRADIUS],
+    [0.0, ROOT_BASE_RADIUS, -ROOT_INRADIUS],
+    [0.0, 0.0, ROOT_INRADIUS * 3.0],
 ]
 
 # Quake's 162-entry anorms table (subset — full table from r_shared.c)
@@ -264,15 +269,8 @@ def tetrix_tetrahedra(depth: int, corners=None):
 
 
 def source_to_quake(v):
-    """Map hapax-visual model axes into Quake axes.
-
-    The current authored AoA root uses source Z as its vertical/depth-of-form
-    axis: the three base vertices share source Z, while the apex moves in
-    source -Z. Quake also uses Z as vertical, so source Z must map onto Quake Z
-    rather than being swapped into Quake Y. The sign inversion makes the apex
-    stand upward like a pyramid while preserving source Y as room depth.
-    """
-    return [v[0], v[1], -v[2]]
+    """Return Quake-space coordinates for the authored regular tetrix root."""
+    return list(v)
 
 
 def triangle_area(a, b, c):
@@ -291,7 +289,7 @@ def tetrahedron_incenter(corners):
 
     The OARB is the AoA's inner object of attention, so the lattice origin is
     the incenter rather than an arbitrary model centroid. This lets the media
-    sphere remain centered while the AoA shell scales around it.
+    sphere remain perfectly inscribed in the first central octahedral void.
     """
     weights = []
     for idx in range(4):
@@ -376,6 +374,44 @@ def flatten_mesh(parts):
     return all_verts, all_faces
 
 
+def aoa_face_count(depth: int = DEPTH) -> int:
+    return 4 * (4**depth)
+
+
+def aoa_face_atlas_rows(face_count: int) -> int:
+    return math.ceil(face_count / AOA_FACE_ATLAS_COLUMNS)
+
+
+def aoa_face_cell_uvs(face_index: int):
+    col = face_index % AOA_FACE_ATLAS_COLUMNS
+    row = face_index // AOA_FACE_ATLAS_COLUMNS
+    pad = 0.18
+    return [
+        ((col + 0.50) / AOA_FACE_ATLAS_COLUMNS, (row + pad) / AOA_FACE_ATLAS_COLUMNS),
+        ((col + pad) / AOA_FACE_ATLAS_COLUMNS, (row + 1.0 - pad) / AOA_FACE_ATLAS_COLUMNS),
+        (
+            (col + 1.0 - pad) / AOA_FACE_ATLAS_COLUMNS,
+            (row + 1.0 - pad) / AOA_FACE_ATLAS_COLUMNS,
+        ),
+    ]
+
+
+def flatten_aoa_surface_mesh(parts):
+    """Duplicate vertices per face so every fractal face owns an atlas cell."""
+    all_verts = []
+    all_faces = []
+    all_uvs = []
+    face_index = 0
+    for verts, faces in parts:
+        for face in faces:
+            offset = len(all_verts)
+            all_verts.extend([list(verts[face[0]]), list(verts[face[1]]), list(verts[face[2]])])
+            all_faces.append((offset, offset + 1, offset + 2))
+            all_uvs.extend(aoa_face_cell_uvs(face_index))
+            face_index += 1
+    return all_verts, all_faces, all_uvs
+
+
 def face_normal(v0, v1, v2):
     e1 = [v1[i] - v0[i] for i in range(3)]
     e2 = [v2[i] - v0[i] for i in range(3)]
@@ -417,18 +453,34 @@ def derived_aoa_model_scale():
 
 
 def aoa_skin_pixels(width: int, height: int) -> bytes:
+    if width != AOA_SKIN_W or height != AOA_SKIN_H:
+        raise ValueError("AoA skin dimensions must match the per-face atlas contract")
+
     pixels = bytearray()
+    face_count = aoa_face_count()
+    rows = aoa_face_atlas_rows(face_count)
     for y in range(height):
         for x in range(width):
-            edge = x in (0, width - 1) or y in (0, height - 1)
-            diagonal = x == y or x + y == width - 1
-            lattice = x % 5 == 0 or y % 5 == 0
-            if edge or diagonal:
+            col = x // AOA_FACE_ATLAS_CELL_SIZE
+            row = y // AOA_FACE_ATLAS_CELL_SIZE
+            face_index = row * AOA_FACE_ATLAS_COLUMNS + col
+            local_x = x % AOA_FACE_ATLAS_CELL_SIZE
+            local_y = y % AOA_FACE_ATLAS_CELL_SIZE
+            edge = (
+                local_x in (0, AOA_FACE_ATLAS_CELL_SIZE - 1)
+                or local_y in (0, AOA_FACE_ATLAS_CELL_SIZE - 1)
+            )
+            bary_line = (
+                abs(local_x - AOA_FACE_ATLAS_CELL_SIZE // 2) < 2
+                or abs(local_y - AOA_FACE_ATLAS_CELL_SIZE + local_x) < 2
+                or abs(local_y - local_x) < 2
+            )
+            if face_index >= face_count or row >= rows:
+                bright = 0
+            elif edge or bary_line:
                 bright = 238
-            elif lattice:
-                bright = 178
             else:
-                bright = 38 + ((x * 3 + y * 5) % 5) * 4
+                bright = 168 + ((face_index * 13 + local_x * 3 + local_y * 5) % 62)
             pixels.append(min(255, bright))
     return bytes(pixels)
 
@@ -550,7 +602,7 @@ def write_mdl(
 
 def main():
     parts = compose_aoa_parts(DEPTH)
-    verts, faces = flatten_mesh(parts)
+    verts, faces, uvs = flatten_aoa_surface_mesh(parts)
     verts = transform_vertices(verts)
     sphere_verts, sphere_faces, sphere_uvs = media_sphere_mesh(
         ATTENDANT_SPHERE_RADIUS,
@@ -575,6 +627,7 @@ def main():
         skin_width=AOA_SKIN_W,
         skin_height=AOA_SKIN_H,
         skin_pixels=aoa_skin_pixels(AOA_SKIN_W, AOA_SKIN_H),
+        uvs=uvs,
     )
     write_mdl(
         sphere_verts,

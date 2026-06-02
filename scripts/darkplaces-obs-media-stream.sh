@@ -59,7 +59,6 @@ base_args=(
     -video_size "${WIDTH}x${HEIGHT}"
     -framerate "$FPS"
     -i "${DISPLAY_NUM}.0+0,0"
-    -vf "format=yuv420p"
 )
 
 if [ "$ENCODER" = "h264_nvenc" ]; then

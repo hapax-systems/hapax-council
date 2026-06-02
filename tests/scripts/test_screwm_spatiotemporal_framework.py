@@ -55,8 +55,13 @@ def test_spatiotemporal_framework_is_operative_and_complete() -> None:
     assert framework["media_constraints"]["camera_capture_fps_min"] == 10
     assert framework["media_constraints"]["preferred_camera_capture_fps_min"] == 15
     assert framework["media_constraints"]["camera_capture_contract_required"] is True
-    assert framework["media_constraints"]["minimum_aoa_inner_void_clearance_ratio"] == 1.04
-    assert framework["media_constraints"]["maximum_aoa_oarb_inner_void_radius_fill_ratio"] == 0.98
+    assert framework["media_constraints"]["minimum_aoa_inner_void_clearance_ratio"] == 1.0
+    assert framework["media_constraints"]["required_aoa_oarb_inner_void_radius_fill_ratio"] == 1.0
+    assert framework["media_constraints"]["maximum_aoa_oarb_inner_void_radius_fill_ratio"] == 1.0
+    assert framework["media_constraints"]["minimum_aoa_fractal_depth"] == 4
+    assert framework["media_constraints"]["minimum_aoa_fractal_face_count"] == 1024
+    assert framework["media_constraints"]["minimum_aoa_leaf_face_edge_units"] == 48
+    assert framework["media_constraints"]["maximum_aoa_lattice_occluding_alpha"] == 0.30
     assert set(framework["media_constraints"]["required_hybrid_contract_fields"]) == {
         "quake_binding",
         "producer_binding",
@@ -71,6 +76,12 @@ def test_spatiotemporal_framework_is_operative_and_complete() -> None:
         "fit_basis",
         "enclosure_clearance_ratio",
         "inner_void_radius_fill_ratio",
+        "fractal_depth",
+        "leaf_face_edge_units",
+        "aoa_parent_edge_units",
+        "fractal_face_count",
+        "per_face_surface_atlas",
+        "occlusion_policy",
     }
     assert set(framework["media_constraints"]["required_camera_mount_fields"]) == {
         "capture_format",
@@ -142,6 +153,7 @@ def test_screwm_generator_satisfies_framework_gates() -> None:
     assert room_width_m >= spatial["minimum_room_width_m"]
     assert room_depth_m >= spatial["minimum_room_depth_m"]
     assert room_height_m >= spatial["minimum_room_height_m"]
+    assert room_height_m == 57.0
     assert len(module["GARDEN_CAMERA_STATIONS"]) >= spatial["target_primary_loop_station_count"]
 
     camera_mounts = [
@@ -209,8 +221,13 @@ def test_screwm_generator_satisfies_framework_gates() -> None:
     assert aoa_mount["projection"] == "sphere-front"
     assert aoa_mount["name"] == "OARB"
     assert aoa_mount["mount_kind"] == "live-object-of-attention-sphere"
-    assert aoa_mount["enclosure_clearance_ratio"] == 1.3023
-    assert aoa_mount["inner_void_radius_fill_ratio"] == 0.7678722257
+    assert aoa_mount["enclosure_clearance_ratio"] == 1.0
+    assert aoa_mount["inner_void_radius_fill_ratio"] == media["required_aoa_oarb_inner_void_radius_fill_ratio"]
+    assert aoa_mount["origin"] == [0, -555, 224]
+    assert aoa_mount["fractal_depth"] >= media["minimum_aoa_fractal_depth"]
+    assert aoa_mount["fractal_face_count"] >= media["minimum_aoa_fractal_face_count"]
+    assert aoa_mount["leaf_face_edge_units"] >= media["minimum_aoa_leaf_face_edge_units"]
+    assert "depth-veil" in aoa_mount["occlusion_policy"]
     assert aoa_mount["projection_contract"] == "oarb_sphere_front_aspect_v2"
     assert aoa_mount["material_profile"] == "spherical-attention-live-media"
     assert aoa_mount["target_visual_angle_deg"] >= media["minimum_inspection_visual_angle_deg"]

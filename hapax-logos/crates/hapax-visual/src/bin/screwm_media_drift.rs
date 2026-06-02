@@ -7,15 +7,19 @@
 //! live `DriftState`, and write the *drifted* BGRA back to the slot path the
 //! DarkPlaces engine blits — replacing the producers' Python numpy drift.
 //!
-//! Config (env `HAPAX_SCREWM_DRIFT_SLOTS`, comma list): `name:WxH[:intensity]`,
-//! e.g. `ward-atlas:2048x2304,cam-brio-operator:1280x720`. Paths derive from the
-//! name: in = `quake-live-<name>.raw.bgra`, out = `quake-live-<name>.bgra`.
+//! Config (env `HAPAX_SCREWM_DRIFT_SLOTS`, comma list):
+//! `name:WxH[:intensity][:projection[:rawWxH[:RRGGBB]]]`, e.g.
+//! `ward-atlas:2048x2304,yt:2048x1024:1.6:sphere-front:1820x1024:0c0b0d`.
+//! Paths derive from the name: in = `quake-live-<name>.raw.bgra`, out =
+//! `quake-live-<name>.bgra`.
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use blake2::digest::{Update, VariableOutput};
+use blake2::Blake2sVar;
 use hapax_visual::media_drift::{load_drift_state, DriftUniforms, ReceiverClass};
 use serde::{Deserialize, Serialize};
 
@@ -25,9 +29,48 @@ const SHADER_SRC: &str = include_str!(concat!(
 ));
 const SHM_DIR: &str = "/dev/shm/hapax-compositor";
 const TEX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
+const DEFAULT_PROJECTION_BACKGROUND_RGB: [f32; 3] = [
+    0x0c as f32 / 255.0,
+    0x0b as f32 / 255.0,
+    0x0d as f32 / 255.0,
+];
 
 fn align_up(v: u32, a: u32) -> u32 {
     (v + a - 1) & !(a - 1)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ProjectionKind {
+    Flat,
+    SphereFront,
+}
+
+impl ProjectionKind {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "flat" => Ok(Self::Flat),
+            "sphere-front" => Ok(Self::SphereFront),
+            other => Err(format!("unknown projection kind {other:?}")),
+        }
+    }
+
+    fn as_u32(&self) -> u32 {
+        match self {
+            Self::Flat => 0,
+            Self::SphereFront => 1,
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Flat => "flat",
+            Self::SphereFront => "sphere-front",
+        }
+    }
+
+    fn requires_raw_dims(&self) -> bool {
+        matches!(self, Self::SphereFront)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,55 +80,65 @@ struct SlotConfig {
     out_path: PathBuf,
     width: u32,
     height: u32,
+    raw_width: u32,
+    raw_height: u32,
     class: ReceiverClass,
     intensity: f32,
+    projection: ProjectionKind,
+    projection_background_rgb: [f32; 3],
 }
 
 impl SlotConfig {
     /// Parse one `name:WxH[:intensity]` spec.
     fn parse(spec: &str) -> Result<Self, String> {
-        let mut parts = spec.split(':');
-        let name = parts
-            .next()
-            .ok_or_else(|| format!("slot spec {spec:?} is empty"))?
-            .trim()
-            .to_ascii_lowercase();
+        let fields: Vec<&str> = spec.split(':').map(str::trim).collect();
+        if fields.is_empty() {
+            return Err(format!("slot spec {spec:?} is empty"));
+        }
+        let name = fields[0].to_ascii_lowercase();
         if name.is_empty() {
             return Err(format!("slot spec {spec:?} has an empty name"));
         }
-        let (w, h) = {
-            let dims = parts
-                .next()
-                .ok_or_else(|| format!("slot {name:?} must include WxH dimensions"))?;
-            let (ws, hs) = dims
-                .split_once('x')
-                .ok_or_else(|| format!("slot {name:?} dimensions must use WxH"))?;
-            let width: u32 = ws
-                .trim()
-                .parse()
-                .map_err(|_| format!("slot {name:?} width must be an integer"))?;
-            let height: u32 = hs
-                .trim()
-                .parse()
-                .map_err(|_| format!("slot {name:?} height must be an integer"))?;
-            if width == 0 || height == 0 {
-                return Err(format!("slot {name:?} dimensions must be positive"));
+        if fields.len() < 2 {
+            return Err(format!("slot {name:?} must include WxH dimensions"));
+        }
+        let (w, h) = parse_dims(&name, fields[1], "output")?;
+        let mut raw_width = w;
+        let mut raw_height = h;
+        let mut intensity = 1.0;
+        let mut projection = ProjectionKind::Flat;
+        let mut projection_background_rgb = DEFAULT_PROJECTION_BACKGROUND_RGB;
+        let mut idx = 2;
+
+        if idx < fields.len() {
+            match fields[idx].parse::<f32>() {
+                Ok(parsed_intensity) => {
+                    intensity = parsed_intensity;
+                    idx += 1;
+                }
+                Err(_) => {}
             }
-            (width, height)
-        };
-        let intensity = parts
-            .next()
-            .map(|s| {
-                s.trim()
-                    .parse::<f32>()
-                    .map_err(|_| format!("slot {name:?} intensity must be numeric"))
-            })
-            .transpose()?
-            .unwrap_or(1.0);
+        }
         if !intensity.is_finite() || intensity <= 0.0 {
             return Err(format!("slot {name:?} intensity must be positive"));
         }
-        if parts.next().is_some() {
+
+        if idx < fields.len() {
+            projection = ProjectionKind::parse(fields[idx])?;
+            idx += 1;
+            if projection.requires_raw_dims() {
+                let raw_dims = fields
+                    .get(idx)
+                    .ok_or_else(|| format!("slot {name:?} projection requires raw WxH"))?;
+                (raw_width, raw_height) = parse_dims(&name, raw_dims, "raw")?;
+                idx += 1;
+                if let Some(background) = fields.get(idx) {
+                    projection_background_rgb = parse_hex_rgb(&name, background)?;
+                    idx += 1;
+                }
+            }
+        }
+        if idx != fields.len() {
             return Err(format!("slot {name:?} has too many ':' fields"));
         }
         Ok(Self {
@@ -95,9 +148,48 @@ impl SlotConfig {
             name,
             width: w,
             height: h,
+            raw_width,
+            raw_height,
             intensity,
+            projection,
+            projection_background_rgb,
         })
     }
+}
+
+fn parse_dims(slot_name: &str, dims: &str, label: &str) -> Result<(u32, u32), String> {
+    let (ws, hs) = dims
+        .split_once('x')
+        .ok_or_else(|| format!("slot {slot_name:?} {label} dimensions must use WxH"))?;
+    let width: u32 = ws
+        .trim()
+        .parse()
+        .map_err(|_| format!("slot {slot_name:?} {label} width must be an integer"))?;
+    let height: u32 = hs
+        .trim()
+        .parse()
+        .map_err(|_| format!("slot {slot_name:?} {label} height must be an integer"))?;
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "slot {slot_name:?} {label} dimensions must be positive"
+        ));
+    }
+    Ok((width, height))
+}
+
+fn parse_hex_rgb(slot_name: &str, value: &str) -> Result<[f32; 3], String> {
+    let text = value.trim().trim_start_matches('#');
+    if text.len() != 6 || !text.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(format!(
+            "slot {slot_name:?} projection background must be 6-digit RGB"
+        ));
+    }
+    let parse_pair = |range: std::ops::Range<usize>| -> Result<f32, String> {
+        u8::from_str_radix(&text[range], 16)
+            .map(|value| value as f32 / 255.0)
+            .map_err(|_| format!("slot {slot_name:?} projection background is invalid RGB"))
+    };
+    Ok([parse_pair(0..2)?, parse_pair(2..4)?, parse_pair(4..6)?])
 }
 
 fn parse_slot_configs(spec: &str) -> Result<Vec<SlotConfig>, String> {
@@ -129,12 +221,13 @@ fn receiver_class_name(class: ReceiverClass) -> &'static str {
 }
 
 fn stable_short_hash(bytes: &[u8]) -> String {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{hash:016x}")
+    let mut hasher = Blake2sVar::new(8).expect("blake2s supports 8-byte output");
+    hasher.update(bytes);
+    let mut digest = [0u8; 8];
+    hasher
+        .finalize_variable(&mut digest)
+        .expect("digest buffer has requested length");
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn unix_ms_now() -> u128 {
@@ -160,6 +253,29 @@ fn read_complete_frame(path: &Path, expected_bytes: usize) -> Option<Vec<u8>> {
         Ok(bytes) if bytes.len() == expected_bytes => Some(bytes),
         _ => None,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RawSignature {
+    len: u64,
+    modified_ns: u128,
+}
+
+fn raw_signature(path: &Path, expected_bytes: usize) -> Option<RawSignature> {
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() != expected_bytes as u64 {
+        return None;
+    }
+    let modified_ns = meta
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    Some(RawSignature {
+        len: meta.len(),
+        modified_ns,
+    })
 }
 
 fn producer_sidecar_path_for(raw_path: &Path) -> PathBuf {
@@ -303,10 +419,15 @@ struct SlotMetadata {
     slot: String,
     w: u32,
     h: u32,
+    raw_w: u32,
+    raw_h: u32,
     stride: u32,
+    raw_stride: u32,
     frame_id: u64,
     receiver_class: &'static str,
     receiver_class_code: u32,
+    projection: &'static str,
+    projection_code: u32,
     raw_path: String,
     output_path: String,
     meta_path: String,
@@ -314,6 +435,8 @@ struct SlotMetadata {
     drift_state_intensity: f32,
     input_hash: String,
     output_hash: String,
+    hash_full: bool,
+    hash_every_frames: u64,
     drift_changed: bool,
     observed_at_unix_ms: u128,
     #[serde(flatten)]
@@ -327,14 +450,22 @@ struct SlotGpu {
     in_tex: wgpu::Texture,
     out_tex: wgpu::Texture,
     out_view: wgpu::TextureView,
+    prev_tex: wgpu::Texture,
+    prev_view: wgpu::TextureView,
     uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     staging: wgpu::Buffer,
+    raw_bytes_per_row: u32,
     bytes_per_row: u32,
     padded_bytes_per_row: u32,
     expected_bytes: usize,
+    output_expected_bytes: usize,
+    hash_every_frames: u64,
     frame: u64,
+    last_raw_signature: Option<RawSignature>,
     last_input_hash: String,
+    last_output_hash: String,
+    last_hash_full: bool,
     last_drift_state_intensity: f32,
     last_producer_sidecar_path: PathBuf,
     last_producer_sidecar: Option<ProducerRawSidecar>,
@@ -346,15 +477,21 @@ impl SlotGpu {
         bgl: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
         cfg: SlotConfig,
+        hash_every_frames: u64,
     ) -> Self {
-        let size = wgpu::Extent3d {
+        let raw_size = wgpu::Extent3d {
+            width: cfg.raw_width,
+            height: cfg.raw_height,
+            depth_or_array_layers: 1,
+        };
+        let out_size = wgpu::Extent3d {
             width: cfg.width,
             height: cfg.height,
             depth_or_array_layers: 1,
         };
         let in_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("media-drift in"),
-            size,
+            size: raw_size,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -364,7 +501,7 @@ impl SlotGpu {
         });
         let out_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("media-drift out"),
-            size,
+            size: out_size,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -372,7 +509,20 @@ impl SlotGpu {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
+        let prev_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("media-drift previous"),
+            size: out_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: TEX_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
         let out_view = out_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let prev_view = prev_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let in_view = in_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("media-drift uniform"),
@@ -396,8 +546,13 @@ impl SlotGpu {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&prev_view),
+                },
             ],
         });
+        let raw_bytes_per_row = cfg.raw_width * 4;
         let bytes_per_row = cfg.width * 4;
         let padded_bytes_per_row = align_up(bytes_per_row, 256);
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
@@ -408,18 +563,26 @@ impl SlotGpu {
         });
         let producer_sidecar_path = producer_sidecar_path_for(&cfg.raw_path);
         Self {
-            expected_bytes: (cfg.width * cfg.height * 4) as usize,
+            expected_bytes: (cfg.raw_width * cfg.raw_height * 4) as usize,
+            output_expected_bytes: (cfg.width * cfg.height * 4) as usize,
+            hash_every_frames,
             cfg,
             in_tex,
             out_tex,
             out_view,
+            prev_tex,
+            prev_view,
             uniform,
             bind_group,
             staging,
+            raw_bytes_per_row,
             bytes_per_row,
             padded_bytes_per_row,
             frame: 0,
+            last_raw_signature: None,
             last_input_hash: String::new(),
+            last_output_hash: String::new(),
+            last_hash_full: false,
             last_drift_state_intensity: 0.0,
             last_producer_sidecar_path: producer_sidecar_path,
             last_producer_sidecar: None,
@@ -439,10 +602,20 @@ impl SlotGpu {
         state: &hapax_visual::media_drift::DriftState,
         now: f32,
     ) -> Option<wgpu::CommandBuffer> {
+        let signature = raw_signature(&self.cfg.raw_path, self.expected_bytes)?;
+        if self.last_raw_signature == Some(signature) {
+            return None;
+        }
         let raw = read_complete_frame(&self.cfg.raw_path, self.expected_bytes)?;
-        self.last_input_hash = stable_short_hash(&raw);
+        self.last_raw_signature = Some(signature);
+        let next_frame = self.frame + 1;
+        self.last_hash_full = next_frame == 1
+            || self.hash_every_frames <= 1
+            || next_frame % self.hash_every_frames == 0;
+        if self.last_hash_full {
+            self.last_input_hash = stable_short_hash(&raw);
+        }
         self.last_drift_state_intensity = state.intensity();
-        self.last_producer_sidecar = read_producer_raw_sidecar(&self.last_producer_sidecar_path);
 
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -454,12 +627,12 @@ impl SlotGpu {
             &raw,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(self.bytes_per_row),
-                rows_per_image: Some(self.cfg.height),
+                bytes_per_row: Some(self.raw_bytes_per_row),
+                rows_per_image: Some(self.cfg.raw_height),
             },
             wgpu::Extent3d {
-                width: self.cfg.width,
-                height: self.cfg.height,
+                width: self.cfg.raw_width,
+                height: self.cfg.raw_height,
                 depth_or_array_layers: 1,
             },
         );
@@ -472,12 +645,32 @@ impl SlotGpu {
             self.cfg.intensity,
             self.cfg.width,
             self.cfg.height,
+            self.cfg.projection.as_u32(),
+            self.cfg.raw_width,
+            self.cfg.raw_height,
+            self.cfg.projection_background_rgb,
         );
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&u));
 
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("media-drift enc"),
         });
+        if self.frame == 0 {
+            let _clear_prev = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("media-drift clear previous"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.prev_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("media-drift pass"),
@@ -518,14 +711,33 @@ impl SlotGpu {
                 depth_or_array_layers: 1,
             },
         );
+        enc.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.out_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.prev_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: self.cfg.width,
+                height: self.cfg.height,
+                depth_or_array_layers: 1,
+            },
+        );
         Some(enc.finish())
     }
 
     fn finish_readback(&mut self) -> bool {
         let mapped = self.staging.slice(..).get_mapped_range();
-        let mut out = Vec::with_capacity(self.expected_bytes);
+        let mut out = Vec::with_capacity(self.output_expected_bytes);
         if self.padded_bytes_per_row == self.bytes_per_row {
-            out.extend_from_slice(&mapped[..self.expected_bytes]);
+            out.extend_from_slice(&mapped[..self.output_expected_bytes]);
         } else {
             for row in 0..self.cfg.height {
                 let s = (row * self.padded_bytes_per_row) as usize;
@@ -535,11 +747,19 @@ impl SlotGpu {
         drop(mapped);
         self.staging.unmap();
 
-        let output_hash = stable_short_hash(&out);
+        let output_hash = if self.last_hash_full {
+            stable_short_hash(&out)
+        } else {
+            self.last_output_hash.clone()
+        };
         if atomic_write(&self.cfg.out_path, &out).is_err() {
             return false;
         }
+        if self.last_hash_full {
+            self.last_output_hash = output_hash.clone();
+        }
 
+        self.last_producer_sidecar = read_producer_raw_sidecar(&self.last_producer_sidecar_path);
         let frame_id = self.frame + 1;
         let meta_path = self.cfg.out_path.with_extension("json");
         let producer = ProducerSidecarMetadata::from_sidecar(
@@ -553,10 +773,15 @@ impl SlotGpu {
             slot: self.cfg.name.clone(),
             w: self.cfg.width,
             h: self.cfg.height,
+            raw_w: self.cfg.raw_width,
+            raw_h: self.cfg.raw_height,
             stride: self.bytes_per_row,
+            raw_stride: self.cfg.raw_width * 4,
             frame_id,
             receiver_class: receiver_class_name(self.cfg.class),
             receiver_class_code: self.cfg.class.as_u32(),
+            projection: self.cfg.projection.as_str(),
+            projection_code: self.cfg.projection.as_u32(),
             raw_path: self.cfg.raw_path.display().to_string(),
             output_path: self.cfg.out_path.display().to_string(),
             meta_path: meta_path.display().to_string(),
@@ -564,7 +789,13 @@ impl SlotGpu {
             drift_state_intensity: self.last_drift_state_intensity,
             input_hash: self.last_input_hash.clone(),
             output_hash: output_hash.clone(),
-            drift_changed: self.last_input_hash != output_hash,
+            hash_full: self.last_hash_full,
+            hash_every_frames: self.hash_every_frames,
+            drift_changed: if self.last_hash_full {
+                self.last_input_hash != output_hash
+            } else {
+                true
+            },
             observed_at_unix_ms: unix_ms_now(),
             producer,
         };
@@ -622,6 +853,11 @@ async fn run() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(20.0);
+    let hash_every_frames: u64 = std::env::var("HAPAX_SCREWM_DRIFT_FULL_HASH_EVERY_N")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(10);
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN,
@@ -674,6 +910,16 @@ async fn run() {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -723,12 +969,13 @@ async fn run() {
         .join(", ");
     let mut gpus: Vec<SlotGpu> = slots
         .into_iter()
-        .map(|c| SlotGpu::new(&device, &bgl, &sampler, c))
+        .map(|c| SlotGpu::new(&device, &bgl, &sampler, c, hash_every_frames))
         .collect();
     log::info!(
-        "media-drift live: {} slot(s) [{}] @ {fps}fps, game_data={}",
+        "media-drift live: {} slot(s) [{}] @ {fps}fps, full_hash_every={} frame(s), game_data={}",
         gpus.len(),
         slot_names,
+        hash_every_frames,
         game_data.display()
     );
 
@@ -790,11 +1037,28 @@ mod tests {
 
     #[test]
     fn slot_config_parse_derives_paths_and_receiver_class() {
-        let slots =
-            parse_slot_configs(" ward-atlas:2048x2304:1.3, ticker-grounding:1344x176 ").unwrap();
-        assert_eq!(slots.len(), 2);
+        let slots = parse_slot_configs(
+            " yt:2048x1024:1.6:sphere-front:1820x1024:0c0b0d, ward-atlas:2048x2304:1.3, ticker-grounding:1344x176 ",
+        )
+        .unwrap();
+        assert_eq!(slots.len(), 3);
 
         let atlas = &slots[0];
+        assert_eq!(atlas.name, "yt");
+        assert_eq!(atlas.width, 2048);
+        assert_eq!(atlas.height, 1024);
+        assert_eq!(atlas.raw_width, 1820);
+        assert_eq!(atlas.raw_height, 1024);
+        assert_eq!(atlas.class, ReceiverClass::Oarb);
+        assert_eq!(atlas.intensity, 1.6);
+        assert_eq!(atlas.projection, ProjectionKind::SphereFront);
+        assert_eq!(atlas.projection.as_u32(), 1);
+        assert_eq!(
+            atlas.projection_background_rgb,
+            DEFAULT_PROJECTION_BACKGROUND_RGB
+        );
+
+        let atlas = &slots[1];
         assert_eq!(atlas.name, "ward-atlas");
         assert_eq!(
             atlas.raw_path,
@@ -806,10 +1070,13 @@ mod tests {
         );
         assert_eq!(atlas.width, 2048);
         assert_eq!(atlas.height, 2304);
+        assert_eq!(atlas.raw_width, 2048);
+        assert_eq!(atlas.raw_height, 2304);
         assert_eq!(atlas.class, ReceiverClass::Atlas);
         assert_eq!(atlas.intensity, 1.3);
+        assert_eq!(atlas.projection, ProjectionKind::Flat);
 
-        let ticker = &slots[1];
+        let ticker = &slots[2];
         assert_eq!(ticker.name, "ticker-grounding");
         assert_eq!(
             ticker.raw_path,
@@ -833,6 +1100,9 @@ mod tests {
             "ward-atlas:2048x2304:0",
             "ward-atlas:2048x2304:nan",
             "ward-atlas:2048x2304:1.0:extra",
+            "yt:2048x1024:sphere-front",
+            "yt:2048x1024:sphere-front:0x1024",
+            "yt:2048x1024:sphere-front:1820x1024:not-rgb",
             "ward-atlas:2048x2304, ward-atlas:2048x2304",
         ] {
             assert!(
@@ -853,6 +1123,26 @@ mod tests {
 
         fs::write(&frame, vec![2u8; 16]).unwrap();
         assert_eq!(read_complete_frame(&frame, 16).unwrap(), vec![2u8; 16]);
+    }
+
+    #[test]
+    fn raw_signature_tracks_complete_frame_rewrites() {
+        let dir = tempdir().unwrap();
+        let frame = dir.path().join("slot.raw.bgra");
+
+        assert!(raw_signature(&frame, 16).is_none());
+        fs::write(&frame, vec![1u8; 15]).unwrap();
+        assert!(raw_signature(&frame, 16).is_none());
+
+        fs::write(&frame, vec![2u8; 16]).unwrap();
+        let first = raw_signature(&frame, 16).unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        fs::write(&frame, vec![3u8; 16]).unwrap();
+        let second = raw_signature(&frame, 16).unwrap();
+
+        assert_eq!(first.len, 16);
+        assert_eq!(second.len, 16);
+        assert_ne!(first, second);
     }
 
     #[test]
@@ -977,7 +1267,7 @@ mod tests {
 
     #[test]
     fn stable_hash_and_atomic_write_are_deterministic() {
-        assert_eq!(stable_short_hash(b"abc"), "e71fa2190541574b");
+        assert_eq!(stable_short_hash(b"abc"), "972e9d2cd6de6402");
         assert_eq!(stable_short_hash(b"abc"), stable_short_hash(b"abc"));
         assert_ne!(stable_short_hash(b"abc"), stable_short_hash(b"abcd"));
 
@@ -1013,10 +1303,15 @@ mod tests {
             slot: "ward-atlas".to_string(),
             w: 2048,
             h: 2304,
+            raw_w: 2048,
+            raw_h: 2304,
             stride: 8192,
+            raw_stride: 8192,
             frame_id: 9,
             receiver_class: receiver_class_name(ReceiverClass::Atlas),
             receiver_class_code: ReceiverClass::Atlas.as_u32(),
+            projection: ProjectionKind::Flat.as_str(),
+            projection_code: ProjectionKind::Flat.as_u32(),
             raw_path: "/tmp/quake-live-ward-atlas.raw.bgra".to_string(),
             output_path: "/tmp/quake-live-ward-atlas.bgra".to_string(),
             meta_path: "/tmp/quake-live-ward-atlas.json".to_string(),
@@ -1024,6 +1319,8 @@ mod tests {
             drift_state_intensity: 0.52,
             input_hash: "input".to_string(),
             output_hash: "output".to_string(),
+            hash_full: true,
+            hash_every_frames: 10,
             drift_changed: true,
             observed_at_unix_ms: 123,
             producer: ProducerSidecarMetadata::from_sidecar(
@@ -1038,16 +1335,23 @@ mod tests {
         assert_eq!(value["slot"], "ward-atlas");
         assert_eq!(value["w"], 2048);
         assert_eq!(value["h"], 2304);
+        assert_eq!(value["raw_w"], 2048);
+        assert_eq!(value["raw_h"], 2304);
         assert_eq!(value["stride"], 8192);
+        assert_eq!(value["raw_stride"], 8192);
         assert_eq!(value["frame_id"], 9);
         assert_eq!(value["receiver_class"], "atlas");
         assert_eq!(value["receiver_class_code"], ReceiverClass::Atlas.as_u32());
+        assert_eq!(value["projection"], "flat");
+        assert_eq!(value["projection_code"], 0);
         assert_eq!(value["raw_path"], "/tmp/quake-live-ward-atlas.raw.bgra");
         assert_eq!(value["output_path"], "/tmp/quake-live-ward-atlas.bgra");
         assert_eq!(value["meta_path"], "/tmp/quake-live-ward-atlas.json");
         assert_eq!(value["drift_state_intensity"], 0.52);
         assert_eq!(value["input_hash"], "input");
         assert_eq!(value["output_hash"], "output");
+        assert_eq!(value["hash_full"], true);
+        assert_eq!(value["hash_every_frames"], 10);
         assert_eq!(value["drift_changed"], true);
         assert_eq!(
             value["producer_sidecar_path"],

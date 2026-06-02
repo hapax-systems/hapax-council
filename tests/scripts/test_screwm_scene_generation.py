@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import runpy
 from pathlib import Path
 
@@ -37,7 +38,37 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert content.count("// ward-light ") == 0
     assert content.count("// review-fill-light ") == 8
     assert content.count("// ward-garden-light ") == len(module["ACTIVE_WARD_INDICES"])
-    assert content.count("// ward-garden-pane ") == len(module["ACTIVE_WARD_INDICES"])
+    rectangular_ward_indices = {
+        idx
+        for idx in module["ACTIVE_WARD_INDICES"]
+        if module["ward_mount_is_inherently_rectangular"](
+            module["ward_live_mount_contract"](idx, module["WARD_ANCHORS"][idx - 1])
+        )
+    }
+    glyph_ward_indices = module["ACTIVE_WARD_INDICES"] - rectangular_ward_indices
+    receiver_w, receiver_h, _u_scale, _v_scale, thickness = module[
+        "ward_homage_receiver_metrics"
+    ](*module["ward_pane_dimensions"](2))
+    assert receiver_w >= module["WARD_PURPOSE_RECEIVER_MIN_WIDTH"] >= 180
+    assert receiver_h >= module["WARD_PURPOSE_RECEIVER_MIN_HEIGHT"] >= 96
+    assert thickness >= 18
+    assert module["WARD_PURPOSE_RECEIVER_THICKNESS_RATIO"] >= 0.18
+    assert content.count("// ward-garden-pane ") == len(rectangular_ward_indices)
+    assert all(f"// ward-homage-glyph {idx:02d}." in content for idx in glyph_ward_indices)
+    assert all(
+        module["ward_live_mount_contract"](idx, module["WARD_ANCHORS"][idx - 1])["texture"]
+        in _comment_block(
+            content, f"// ward-homage-glyph {idx:02d}.1"
+        )
+        for idx in glyph_ward_indices
+    )
+    assert all(f"// ward-homage-accent {idx:02d}." in content for idx in glyph_ward_indices)
+    assert all(
+        module["DOMAIN_GLOW_TEX"][module["ward_domain"](idx)] in _comment_block(
+            content, f"// ward-homage-accent {idx:02d}.1"
+        )
+        for idx in glyph_ward_indices
+    )
     assert content.count("// ward-garden-pane-frame ") == 0
     assert content.count("// ward-state-lamp ") == 0
     assert content.count("// ward-garden-pane-mount-") == 0
@@ -91,12 +122,14 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert "// ward-garden-pane 22: precedent_ticker w22" in content
     assert "// ward-garden-pane 27: chronicle_ticker w27" in content
     assert "w35" not in content
-    assert "// ward-garden-pane 02: album ward_atlas" in content
-    assert "ward_atlas" in content
-    assert "// ward-garden-pane 01: token_pole" in content
-    assert "// ward-garden-pane 35: m8_oscilloscope" in content
-    assert "drift_c" not in content
-    assert "drift_r" not in content
+    assert "// ward-homage-glyph 02.1: album music slash-pair ward_atlas" in content
+    assert "// ward-garden-pane 02: album ward_atlas" not in content
+    assert "// ward-homage-glyph 01.1: token_pole token spine ward_atlas" in content
+    assert "// ward-homage-glyph 35.1: m8_oscilloscope music slash-pair ward_atlas" in content
+    before_receivers, receiver_tail = content.split("// section: scroom-drift-receiver-strips")
+    _receivers, after_receivers = receiver_tail.split("// section: scroom-local-effect-lenses")
+    non_receiver_content = before_receivers + after_receivers
+    assert "// drift-receiver-strip:" not in non_receiver_content
     assert "// section: ward-garden-clumps" in content
     assert "// section: ward-garden-drift-stones" in content
     assert "// section: legacy-sierpinski-scrim" not in content
@@ -132,7 +165,7 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert module["ward_atlas_cell"](1) == (0, 0)
     assert module["ward_atlas_cell"](9) == (0, 2)
     assert module["ward_atlas_texture_transform"](9)["v_offset_px"] == 512
-    assert module["static_ward_surface_texture"]("cognition") == "drift_c"
+    assert module["static_ward_surface_texture"]("cognition") == "scroom"
     assert (
         module["static_ward_mount_contract"](1, "token_pole", "drift_c")["material_profile"]
         == "state-ward-instrument"
@@ -150,7 +183,7 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert module["pane_light_origin"](-1040, 980, 300, "y", 18) == (-1040, 962, 300)
     assert "aoa-attendant-sphere 01: yt-media-face-strip yt_sphere" not in content
     assert "aoa-attendant-sphere-cross 01: yt-media-face-side yt_sphere" not in content
-    assert '"origin" "0 -555 176"' in content
+    assert '"origin" "0 -555 224"' in content
 
 
 def test_screwm_drift_graph_physically_touches_every_ward_anchor() -> None:
@@ -178,12 +211,70 @@ def test_screwm_map_keeps_open_scroom_geometry_in_regenerated_bsp() -> None:
     assert content.count("ground1_6") == 0
     assert content.count("sky4") == 0
     assert content.count("city4_2") == 0
-    assert content.count("cmp_floor") > 1
-    assert content.count("cmp_ceil") > 1
-    assert content.count("cmp_wall") > 1
-    assert "cmp_floor 0 0 0 12 12" in content
-    assert "cmp_ceil 0 0 0 14 14" in content
-    assert "cmp_wall 0 0 0 12 12" in content
+    assert content.count("void_floor") == 0
+    assert content.count("void_ceil") == 0
+    assert content.count("void_wall") == 0
+    assert content.count("skip 0 0 0 16 16") > 1
+    assert content.count("cmp_wall") == 0
+    assert "cmp_floor" not in content
+    assert "cmp_ceil" not in content
+
+
+def test_screwm_map_embeds_hex_alignment_substrate_without_filled_receiver_strips() -> None:
+    module = _load_script("scripts/generate-screwm-map.py")
+    content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
+
+    assert "// section: scroom-hex-alignment-substrate" in content
+    assert module["HEX_GRID_RADIUS"] == 384
+    assert module["HEX_GRID_LINE_WIDTH"] <= 6
+    assert module["WALL_GRID_LINE_WIDTH"] <= 4
+    assert module["clip_segment_to_scroom_bounds"](
+        -9999,
+        module["AOA_Y"],
+        9999,
+        module["AOA_Y"],
+    ) == (
+        module["SCROOM_GRID_BOUNDS"][0],
+        module["AOA_Y"],
+        module["SCROOM_GRID_BOUNDS"][1],
+        module["AOA_Y"],
+    )
+    assert content.count("// scroom-hex-floor-line ") > 20
+    assert content.count("// scroom-hex-floor-line ") == content.count("// scroom-hex-ceiling-line ")
+    assert content.count("// scroom-stipple-floor-dot ") > 20
+    assert content.count("// scroom-stipple-floor-dot ") == content.count(
+        "// scroom-stipple-ceiling-dot "
+    )
+    assert content.count("// scroom-wall-beam-") == 0
+    assert content.count("// scroom-wall-grid-") > 20
+    assert content.count("// scroom-wall-stipple-") > 20
+    assert "// scroom-hex-floor-line 001" in content
+    assert "// scroom-hex-ceiling-line 001" in content
+    assert "hex_floor 0 0 0 8 8" in content
+    assert "hex_ceil 0 0 0 8 8" in content
+    assert "hex_wall 0 0 0 8 8" in content
+    assert "stipple_floor 0 0 0 8 8" in content
+    assert "stipple_ceil 0 0 0 8 8" in content
+    assert "stipple_wall 0 0 0 8 8" in content
+    assert "// section: scroom-drift-receiver-strips" in content
+    assert content.count("// drift-receiver-strip:") == 0
+    assert "entry-floor-center" not in content
+    assert "entry-ceiling-center" not in content
+    hex_section = content.split("// section: scroom-hex-alignment-substrate", 1)[1]
+    hex_section = hex_section.split("// section: scroom-drift-receiver-strips", 1)[0]
+    assert "hex_floor 0 0 0 8 8" in hex_section
+    assert "hex_ceil 0 0 0 8 8" in hex_section
+    assert "hex_wall 0 0 0 8 8" in hex_section
+    assert "stipple_floor 0 0 0 8 8" in hex_section
+    assert "stipple_ceil 0 0 0 8 8" in hex_section
+    assert "stipple_wall 0 0 0 8 8" in hex_section
+    assert "// scroom-wall-grid-left-h " in hex_section
+    assert "// scroom-wall-grid-right-v " in hex_section
+    assert "// scroom-wall-stipple-entry " in hex_section
+    assert "drift_a" not in hex_section
+    assert "drift_c" not in hex_section
+    assert "drift_g" not in hex_section
+    assert "drift_r" not in hex_section
 
 
 def test_screwm_room_textures_are_information_surfaces_not_identifiable_materials() -> None:
@@ -209,9 +300,17 @@ def test_screwm_room_textures_are_information_surfaces_not_identifiable_material
         "sky4",
         "metal5_2",
         "scroom",
-        "cmp_floor",
-        "cmp_ceil",
-        "cmp_wall",
+        "void_floor",
+        "void_ceil",
+        "void_wall",
+        "skip",
+        "geom_mark",
+        "hex_floor",
+        "hex_ceil",
+        "hex_wall",
+        "stipple_floor",
+        "stipple_ceil",
+        "stipple_wall",
         "r_percep",
         "r_cognit",
         "r_comm",
@@ -228,30 +327,63 @@ def test_screwm_room_textures_are_information_surfaces_not_identifiable_material
     assert not {params["pattern"] for params in room_textures.values()} & forbidden_patterns
     assert {params.get("palette") for params in room_textures.values()} == {"scroom"}
     assert all(int(params.get("size", 0)) >= 128 for params in room_textures.values())
-    assert room_textures["cmp_floor"]["pattern"] == "compositor_floor"
-    assert room_textures["cmp_ceil"]["pattern"] == "compositor_ceiling"
-    assert room_textures["cmp_wall"]["pattern"] == "compositor_wall"
+    assert "cmp_floor" not in wad_module["TEXTURES"]
+    assert "cmp_ceil" not in wad_module["TEXTURES"]
+    assert room_textures["void_floor"]["pattern"] == "hidden_void_shell"
+    assert room_textures["void_ceil"]["pattern"] == "hidden_void_shell"
+    assert room_textures["void_wall"]["pattern"] == "hidden_void_shell"
+    assert room_textures["skip"]["pattern"] == "hidden_void_shell"
+    assert room_textures["geom_mark"]["pattern"] == "geometry_signal_mark"
+    assert room_textures["hex_floor"]["pattern"] == "geometry_signal_mark"
+    assert room_textures["hex_ceil"]["pattern"] == "geometry_signal_mark"
+    assert room_textures["hex_wall"]["pattern"] == "geometry_signal_mark"
+    assert room_textures["stipple_floor"]["pattern"] == "geometry_signal_mark"
+    assert room_textures["stipple_ceil"]["pattern"] == "geometry_signal_mark"
+    assert room_textures["stipple_wall"]["pattern"] == "geometry_signal_mark"
     assert wad_module["build_scroom_palette"]()[:3] == b"\x00\x00\x00"
-    for pattern in ("compositor_floor", "compositor_ceiling", "compositor_wall"):
-        pixels, _palette = wad_module["generate_pixel_data"](
-            (4, 4, 6),
-            0,
-            256,
-            256,
-            seed=7,
-            pattern=pattern,
-            palette_mode="scroom",
-        )
-        assert min(pixels) >= 42
-        assert max(pixels) <= 204
-        assert len(set(pixels)) >= 2
+    hidden_pixels, _palette = wad_module["generate_pixel_data"](
+        (0, 0, 0),
+        0,
+        128,
+        128,
+        seed=7,
+        pattern="hidden_void_shell",
+        palette_mode="scroom",
+    )
+    assert set(hidden_pixels) == {0}
+    mark_pixels, _palette = wad_module["generate_pixel_data"](
+        (4, 4, 6),
+        0,
+        128,
+        128,
+        seed=7,
+        pattern="geometry_signal_mark",
+        palette_mode="scroom",
+    )
+    mark_set = set(mark_pixels)
+    assert len(mark_set) > 3
+    assert 214 in mark_set
+    assert 245 not in mark_set
+    pixels, _palette = wad_module["generate_pixel_data"](
+        (4, 4, 6),
+        0,
+        256,
+        256,
+        seed=7,
+        pattern="hidden_void_shell",
+        palette_mode="scroom",
+    )
+    assert set(pixels) == {0}
     assert "clean_room_homage_chrome" in info_contract["admissible_texture_types"]
     assert "quake_scenic_material" in info_contract["forbidden_material_semantics"]
     assert "A room texture can be named as a real-world material" in " ".join(
         info_contract["failure_predicates"]
     )
     for surface in surface_contracts["surfaces"]:
-        assert surface["texture"] in {"cmp_floor", "cmp_ceil", "cmp_wall"}
+        assert surface["texture"] == "skip"
+        assert surface["collision_texture"] == "skip"
+        assert len(surface["visible_substrate_textures"]) == 2
+        assert all(tex.startswith(("hex_", "stipple_")) for tex in surface["visible_substrate_textures"])
         assert min(surface["texture_scale"]) >= 3
         assert "material" not in surface["surface_kind"]
 
@@ -265,6 +397,9 @@ def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
     assert "REVIEW_ALCOVE_Y_MIN" in source
     assert "WARD_GARDEN_LAYOUT" in source
     assert "AOA_Y = -555" in source
+    assert "AOA_HEIGHT_M = 7.0" in source
+    assert "AOA_RUNTIME_SCALE = 1.0" in source
+    assert "TOWER_CEIL_M = TOWER_FLOOR_M + (BASE_TOWER_CEIL_M - TOWER_FLOOR_M) * 2.0" in source
     assert "REVIEW_DRIFT_Y = AOA_Y - 45" in source
     assert "WARD_FRAME_PAD = 6" in source
     assert "WARD_FRAME_T = 4" in source
@@ -275,6 +410,9 @@ def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
     assert "scroom_material_field" in source
     assert "scroom_local_effect_lenses" in source
     assert "scroom_room_grid" in source
+    assert "scroom_hex_grid_and_stipple" in source
+    assert "scroom_drift_receiver_strips" in source
+    assert "Disabled: drift receiver evidence must be carried by the shell/grid geometry" in source
     assert "inward_x_normal" in source
     assert "inward_y_normal" in source
     assert "offset_span" in source
@@ -378,7 +516,7 @@ def test_screwm_map_embeds_camera_source_constellation() -> None:
     assert module["MEDIA_MOUNTS_BY_ID"]["chronicle-ticker"]["texture"] == "w27"
 
 
-def test_screwm_live_media_panes_are_double_sided_without_visible_backing() -> None:
+def test_screwm_live_media_panes_have_one_truth_bearing_face_without_visible_backing() -> None:
     module = _load_script("scripts/generate-screwm-map.py")
     content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
 
@@ -387,19 +525,19 @@ def test_screwm_live_media_panes_are_double_sided_without_visible_backing() -> N
         tex = source["texture"]
         source_pane = _comment_block(content, f"// source-garden-anchor {idx:02d}: {role} {tex}")
 
-        assert source_pane.count(tex) == 7
-        assert source_pane.count(module["MEDIA_RECEIVER_EDGE_TEX"]) == 0
+        assert source_pane.count(tex) == 2
+        assert source_pane.count(module["MEDIA_RECEIVER_EDGE_TEX"]) == 5
 
     speech_pane = _comment_block(content, "// speech-waveform 01: hapax-speech speech_wave")
-    assert speech_pane.count("speech_wave") == 7
-    assert speech_pane.count(module["MEDIA_RECEIVER_EDGE_TEX"]) == 0
+    assert speech_pane.count("speech_wave") == 2
+    assert speech_pane.count(module["MEDIA_RECEIVER_EDGE_TEX"]) == 5
 
     for idx, tex in ((9, "w09"), (22, "w22"), (27, "w27")):
         name = module["WARD_ANCHORS"][idx - 1]
         ticker_pane = _comment_block(content, f"// ward-garden-pane {idx:02d}: {name} {tex}")
 
-        assert ticker_pane.count(tex) == 7
-        assert ticker_pane.count(module["MEDIA_RECEIVER_EDGE_TEX"]) == 0
+        assert ticker_pane.count(tex) == 2
+        assert ticker_pane.count(module["MEDIA_RECEIVER_EDGE_TEX"]) == 5
 
     assert content.count("// ward-garden-pane-mount-") == 0
     assert content.count("// source-garden-anchor-mount-") == 0
@@ -528,17 +666,32 @@ def test_aoa_model_transform_stands_pyramid_upright_and_centers_media_front() ->
     )
     inner_void_inradius = module["aoa_inner_void_inradius"]()
     derived_scale = module["derived_aoa_model_scale"]()
-    # The QC scale is derived from the central tetrix void, not the outer hull.
-    # OARB remains the fixed media object; the AoA shell scales around it.
+    edge_lengths = [
+        math.dist(transformed_root[i], transformed_root[j])
+        for i in range(4)
+        for j in range(i + 1, 4)
+    ]
+    assert max(edge_lengths) - min(edge_lengths) < 0.000001
+    assert module["DEPTH"] == 4
+    assert module["AOA_LEAF_FACE_EDGE_UNITS"] == 48
+    assert module["SCALE"] == 768
+    assert module["aoa_face_count"]() == 1024
+
+    parts = module["compose_aoa_parts"](module["DEPTH"])
+    surface_verts, surface_faces, surface_uvs = module["flatten_aoa_surface_mesh"](parts)
+    assert len(parts) == 4**module["DEPTH"]
+    assert len(surface_faces) == module["aoa_face_count"]()
+    assert len(surface_verts) == len(surface_uvs) == module["aoa_face_count"]() * 3
+    assert module["AOA_SKIN_W"] == module["AOA_SKIN_H"] == 2048
+
+    # The OARB is a perfect insphere of the first central octahedral void.
     world_inradius = inner_void_inradius * module["SCALE"] * derived_scale
     world_sphere_radius = (
         module["ATTENDANT_SPHERE_RADIUS"] * module["SCALE"] * module["AOA_SPHERE_MODEL_SCALE"]
     )
-    assert abs(round(derived_scale, 2) - 3.87) < 0.001
-    assert (
-        abs(world_inradius - world_sphere_radius * module["ATTENDANT_SPHERE_CLEARANCE_RATIO"])
-        < 0.001
-    )
+    assert derived_scale == 1.0
+    assert abs(world_inradius - world_sphere_radius) < 0.001
+    assert module["ATTENDANT_SPHERE_CLEARANCE_RATIO"] == 1.0
     assert inner_void_inradius <= root_inradius
 
     sphere_vertices, _sphere_faces, sphere_uvs = module["media_sphere_mesh"](1.0, 4, 4)
@@ -608,15 +761,41 @@ def test_screwm_wad_defines_only_declared_live_ward_receiver_textures() -> None:
     assert len(module["WARD_ACCENT_INDICES"]) >= 4
     assert textures["drift_c"]["pattern"] == "drift_line"
     assert textures["drift_r"]["drift"] == 186
-    assert textures["cmp_floor"]["pattern"] == "compositor_floor"
-    assert textures["cmp_ceil"]["pattern"] == "compositor_ceiling"
-    assert textures["cmp_wall"]["pattern"] == "compositor_wall"
-    assert textures["cmp_floor"]["size"] == 256
-    assert textures["cmp_ceil"]["size"] == 256
-    assert textures["cmp_wall"]["size"] == 256
-    assert textures["cmp_floor"]["palette"] == "scroom"
-    assert textures["cmp_ceil"]["palette"] == "scroom"
-    assert textures["cmp_wall"]["palette"] == "scroom"
+    assert "cmp_floor" not in textures
+    assert "cmp_ceil" not in textures
+    assert textures["void_floor"]["pattern"] == "hidden_void_shell"
+    assert textures["void_ceil"]["pattern"] == "hidden_void_shell"
+    assert textures["void_wall"]["pattern"] == "hidden_void_shell"
+    assert textures["skip"]["pattern"] == "hidden_void_shell"
+    assert textures["geom_mark"]["pattern"] == "geometry_signal_mark"
+    assert textures["hex_floor"]["pattern"] == "geometry_signal_mark"
+    assert textures["hex_ceil"]["pattern"] == "geometry_signal_mark"
+    assert textures["hex_wall"]["pattern"] == "geometry_signal_mark"
+    assert textures["stipple_floor"]["pattern"] == "geometry_signal_mark"
+    assert textures["stipple_ceil"]["pattern"] == "geometry_signal_mark"
+    assert textures["stipple_wall"]["pattern"] == "geometry_signal_mark"
+    assert textures["void_floor"]["size"] == 128
+    assert textures["void_ceil"]["size"] == 128
+    assert textures["void_wall"]["size"] == 128
+    assert textures["skip"]["size"] == 128
+    assert textures["geom_mark"]["size"] == 128
+    assert textures["hex_floor"]["size"] == 128
+    assert textures["hex_ceil"]["size"] == 128
+    assert textures["hex_wall"]["size"] == 128
+    assert textures["stipple_floor"]["size"] == 128
+    assert textures["stipple_ceil"]["size"] == 128
+    assert textures["stipple_wall"]["size"] == 128
+    assert textures["void_floor"]["palette"] == "scroom"
+    assert textures["void_ceil"]["palette"] == "scroom"
+    assert textures["void_wall"]["palette"] == "scroom"
+    assert textures["skip"]["palette"] == "scroom"
+    assert textures["geom_mark"]["palette"] == "scroom"
+    assert textures["hex_floor"]["palette"] == "scroom"
+    assert textures["hex_ceil"]["palette"] == "scroom"
+    assert textures["hex_wall"]["palette"] == "scroom"
+    assert textures["stipple_floor"]["palette"] == "scroom"
+    assert textures["stipple_ceil"]["palette"] == "scroom"
+    assert textures["stipple_wall"]["palette"] == "scroom"
     identifiable_material_patterns = {
         "stone_blocks",
         "worn_stone",
@@ -633,9 +812,17 @@ def test_screwm_wad_defines_only_declared_live_ward_receiver_textures() -> None:
         "sky4",
         "metal5_2",
         "scroom",
-        "cmp_floor",
-        "cmp_ceil",
-        "cmp_wall",
+        "void_floor",
+        "void_ceil",
+        "void_wall",
+        "skip",
+        "geom_mark",
+        "hex_floor",
+        "hex_ceil",
+        "hex_wall",
+        "stipple_floor",
+        "stipple_ceil",
+        "stipple_wall",
         "r_percep",
         "r_cognit",
         "r_comm",

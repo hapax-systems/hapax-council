@@ -205,7 +205,7 @@ def test_screwm_darkplaces_obs_media_stream_publishes_x11_as_udp_mpegts() -> Non
         in lines
     )
     assert "Environment=HAPAX_DARKPLACES_OBS_MEDIA_ENCODER=auto" in lines
-    assert "format=yuv420p" in script_text
+    assert "format=yuv420p" not in script_text
     assert "HAPAX_DARKPLACES_OBS_MEDIA_ENCODER" in script_text
     assert "-c:v h264_nvenc" in script_text
     assert '-tune "${HAPAX_DARKPLACES_OBS_MEDIA_NVENC_TUNE:-ull}"' in script_text
@@ -402,7 +402,7 @@ def test_live_surface_guard_runs_from_activation_worktree() -> None:
     assert "--require-hls" not in parser.get("Service", "ExecStart")
     assert "--require-obs-decoder" in parser.get("Service", "ExecStart")
     assert "--poll-interval 5" in parser.get("Service", "ExecStart")
-    assert '--obs-source-name "Video Capture Device (V4L2)"' in parser.get(
+    assert '--obs-source-name "DarkPlaces Screwm Media"' in parser.get(
         "Service",
         "ExecStart",
     )
