@@ -310,6 +310,24 @@ SENSITIVE_PATH_MARKERS = (
 _AUTO_ARM_TRUTHY = {"1", "true", "yes", "y", "required"}
 _STAGE_PREFIX_RE = re.compile(r"^s(\d{1,2})", re.IGNORECASE)
 
+# --- Canonical stage-shape vocabulary (proof-plane: the S0..S11 ladder) -------
+# Three matchers with deliberately different jobs (do NOT collapse into one):
+#  * STAGE_RE — strict full-shape validator "S<n>[_LABEL]"; cc-stage-advance pins
+#    its local _STAGE_RE to this (case-sensitive, <=2 digits, uppercase label).
+#  * stage_token — normalizes a labeled/branch stage to its ladder token
+#    ("S6_IMPLEMENTATION"->"S6", "S3.5"->"S3_5"); the naming-drift bridge the
+#    invariants monitor reuses (shared.sdlc_invariants._stage_token).
+#  * _STAGE_PREFIX_RE (above) — lenient case-insensitive numeric *prefix* used
+#    only by the release-arm _stage_below_s7 check; intentionally distinct from
+#    STAGE_RE (it must tolerate stray case/suffixes on a release-gate read).
+STAGE_RE = re.compile(r"^S(\d{1,2})(?:_[A-Z][A-Z0-9_]*)?$")
+
+
+def stage_token(raw: str) -> str:
+    """Normalize 'S6_IMPLEMENTATION' / 'S3.5' to the ladder token (S6 / S3_5)."""
+    token = raw.strip().replace(".", "_")
+    return token.split("_")[0] if (token[:1] == "S" and "_" in token and token != "S3_5") else token
+
 
 @dataclass(frozen=True)
 class ReleaseAutoArmAssessment:
