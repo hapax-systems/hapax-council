@@ -56,6 +56,12 @@ TASK_TERMINAL_STATUSES = TASK_CLOSED_STATUSES | frozenset({"refused"})
 #: A fresh, unheld task may be claimed only from `offered`.
 TASK_CLAIMABLE_STATUSES = frozenset({"offered"})
 
+#: Statuses ``hapax-methodology-dispatch`` accepts for (re)dispatch: a fresh
+#: claimable task plus the two actively-owned working states. Replaces the literal
+#: ``{"offered", "claimed", "in_progress"}`` the dispatcher used to hardcode at its
+#: dispatchability check (pinned by tests/shared/test_sdlc_lifecycle.py).
+TASK_DISPATCHABLE_STATUSES = TASK_CLAIMABLE_STATUSES | frozenset({"claimed", "in_progress"})
+
 #: Ready-family — implementation done / under review / awaiting merge. Distinct
 #: labels accumulated historically; treated as one concept everywhere.
 TASK_READY_FAMILY_STATUSES = frozenset(
@@ -76,6 +82,25 @@ TASK_MERGE_READY_STATUSES = frozenset({"pr_open", "merge_queue"}) | TASK_READY_F
 
 #: A lane may RESUME (re-claim) an owned task in these states — not a fresh claim.
 TASK_RESUMABLE_STATUSES = TASK_MERGE_READY_STATUSES
+
+# --- Dispatch-plane vocabulary: PR control actions (NOT statuses, NOT stages) -
+#: The autoqueue's ``classify_pr`` (scripts/cc-pr-autoqueue.py) emits a small,
+#: closed set of *control actions* deciding what to DO with a PR. This is a
+#: third, distinct vocabulary from the task-plane status frozensets above and
+#: the proof-plane ladder stages — naming it here gives the three planes one
+#: import surface. Pinned total by tests/shared/test_sdlc_lifecycle.py: every
+#: action ``classify_pr`` can emit is a member of this set.
+PR_ACTIONS = frozenset(
+    {
+        "queue",
+        "enable_auto_merge",
+        "disable_auto_merge",
+        "dequeue",
+        "already_queued",
+        "already_auto_merge_enabled",
+        "blocked",
+    }
+)
 
 REQUEST_TERMINAL_SKIP_STATUSES = frozenset(
     {"rejected", "deferred", "superseded", "withdrawn", "closed"}
@@ -284,6 +309,24 @@ SENSITIVE_PATH_MARKERS = (
 
 _AUTO_ARM_TRUTHY = {"1", "true", "yes", "y", "required"}
 _STAGE_PREFIX_RE = re.compile(r"^s(\d{1,2})", re.IGNORECASE)
+
+# --- Canonical stage-shape vocabulary (proof-plane: the S0..S11 ladder) -------
+# Three matchers with deliberately different jobs (do NOT collapse into one):
+#  * STAGE_RE — strict full-shape validator "S<n>[_LABEL]"; cc-stage-advance pins
+#    its local _STAGE_RE to this (case-sensitive, <=2 digits, uppercase label).
+#  * stage_token — normalizes a labeled/branch stage to its ladder token
+#    ("S6_IMPLEMENTATION"->"S6", "S3.5"->"S3_5"); the naming-drift bridge the
+#    invariants monitor reuses (shared.sdlc_invariants._stage_token).
+#  * _STAGE_PREFIX_RE (above) — lenient case-insensitive numeric *prefix* used
+#    only by the release-arm _stage_below_s7 check; intentionally distinct from
+#    STAGE_RE (it must tolerate stray case/suffixes on a release-gate read).
+STAGE_RE = re.compile(r"^S(\d{1,2})(?:_[A-Z][A-Z0-9_]*)?$")
+
+
+def stage_token(raw: str) -> str:
+    """Normalize 'S6_IMPLEMENTATION' / 'S3.5' to the ladder token (S6 / S3_5)."""
+    token = raw.strip().replace(".", "_")
+    return token.split("_")[0] if (token[:1] == "S" and "_" in token and token != "S3_5") else token
 
 
 @dataclass(frozen=True)
