@@ -256,6 +256,10 @@ def _paint_face_cell(
     edge_width = (1.8 + scalars["edge"] * 2.4) * max(0.4, min(2.5, edge_gain))
     stripe_period = 7 + (face_index % 5)
     pulse = 0.5 + 0.5 * math.sin(now * 0.9 + face_index * 0.19)
+    # Distinct per-facet CONTENT (the locked "distinct per-facet AoA" fork): each
+    # facet draws one of 6 pattern regimes (combined with its period/color/phase the
+    # 1024 facets read as independent breathing cells, not one repeated motif).
+    regime = face_index % 6
 
     for ly in range(cell_size):
         if ly < top_y or ly > bottom_y:
@@ -269,8 +273,26 @@ def _paint_face_cell(
         for lx in range(x0, x1 + 1):
             edge_distance = min(abs(lx - lx0), abs(lx - lx1), abs(ly - bottom_y))
             edge = edge_distance <= edge_width
-            stripe = ((lx + ly + face_index + int(now * 9.0)) % stripe_period) == 0
-            stipple = ((lx * 3 + ly * 5 + face_index * 7 + int(now * 11.0)) % 37) == 0
+            anim = int(now * 9.0)
+            if regime == 0:
+                stripe = ((lx + ly + anim) % stripe_period) == 0  # diagonal
+            elif regime == 1:
+                stripe = ((ly + anim) % stripe_period) == 0  # horizontal bands
+            elif regime == 2:
+                stripe = ((lx - anim) % stripe_period) == 0  # vertical bands
+            elif regime == 3:
+                stripe = ((lx + anim) % stripe_period == 0) or (
+                    (ly + anim) % stripe_period == 0
+                )  # grid / cross-hatch
+            elif regime == 4:
+                stripe = ((lx - ly + anim) % stripe_period) == 0  # anti-diagonal
+            else:
+                dxc = abs(lx - center_x)
+                dyc = abs(ly - cell_size * 0.5)
+                stripe = ((int(dxc + dyc) + anim) % stripe_period) == 0  # concentric diamonds
+            stipple = (
+                (lx * 3 + ly * 5 + face_index * 7 + int(now * 11.0)) % (29 + regime * 4)
+            ) == 0
             if not (edge or stripe or stipple):
                 scale = (0.16 + pulse * 0.08) * intensity
             elif edge:
