@@ -49,7 +49,12 @@ from shared.sdlc_lifecycle import (
 #: scratch-worktree normalization, /tmp + relay cognition, own-task-note bookkeeping,
 #: argument-aware python/cp write detection): a strict relaxation that drives the
 #: replayed tightenings toward 0. Re-enters the promotion ladder at shadow.
-POLICY_DECIDE_FN_VERSION = "0.2.0"
+#: 0.3.0 — fix-cc-gate-fps: cat stdout-vs-stderr-redirect classification (a real
+#: `cat > f` is a source write; `cat … 2>/dev/null` / `2>&1` / `&>` are NOT, so a
+#: read-only cat is no longer misclassified) + vault-root anchoring of relative scope
+#: refs in `_scope_forms`. Matches the live gate's lines 268/298 + scope-anchor fix;
+#: any decision-logic change re-enters the promotion ladder at shadow.
+POLICY_DECIDE_FN_VERSION = "0.3.0"
 
 #: Where the shadow canary records legacy-vs-new divergences by default. A cache
 #: path (not git-tracked); the real single daemon-owned log lands in Phase 4.
@@ -299,13 +304,32 @@ def _unconditional_writes_in_tree(head: str, tokens: list[str]) -> bool:
     return any(not is_cognition_path(t) for t in targets)
 
 
+#: Redirections whose '>' does NOT send cat's stdout to a file: fd duplications
+#: (``2>&1``, ``>&2``, ``2>&-``), the both-streams operator (``&>`` / ``&>>``), and
+#: stderr-or-higher-fd to a file (``2>``, ``2>>``, ``3>``, …). Stripped before testing
+#: for a real stdout redirect, so a read-only ``cat … 2>/dev/null`` is not misread as a
+#: write (fix-cc-gate-fps Fix 1; mirrors cc-task-gate.impl.sh ``_cat_writes_file``).
+_NON_STDOUT_REDIRECT_RE = re.compile(r"[0-9]*>&[0-9-]+|&>>?|[2-9][0-9]*>>?")
+
+
+def _cat_writes_to_file(command: str) -> bool:
+    """True iff a ``cat`` command redirects its STDOUT to a file (``> f`` / ``>> f`` /
+    ``1> f``) — a real write. Only the FIRST simple command's redirections count
+    (``_head_tokens`` splits off a pipe/separator and shlex-tokenizes, so a quoted '>'
+    in a later arg cannot trip it); stderr/fd redirections are stripped first. A bare
+    ``>`` / ``>>`` / ``1>`` keeps its '>' and is the only thing that returns True."""
+    cleaned = _NON_STDOUT_REDIRECT_RE.sub(" ", " ".join(_head_tokens(command)))
+    return ">" in cleaned
+
+
 def _bash_is_source_scope(command: str) -> bool:
     """Argument-aware: does the command HEAD write source that must be scope-checked?
 
     Unlike the legacy substring classifier this does NOT flag ``git checkout``/
     ``switch``/``branch`` (ref ops that write no source) — the FM-16 fix — nor a
     write whose sole target is ephemeral scratch/cognition (``/tmp``, vault, relay),
-    nor a read-only python payload (a bare ``open(x)`` is not a write).
+    nor a read-only python payload (a bare ``open(x)`` is not a write), nor a ``cat``
+    whose only redirection is stderr/an fd (``2>/dev/null``, ``2>&1``, ``&>``).
     """
     tokens = _head_tokens(command)
     if not tokens:
@@ -313,6 +337,8 @@ def _bash_is_source_scope(command: str) -> bool:
     head = tokens[0]
     if head in _UNCONDITIONAL_SOURCE_CMDS:
         return _unconditional_writes_in_tree(head, tokens)
+    if head == "cat":
+        return _cat_writes_to_file(command)
     if head in {"sed", "perl"}:
         return any(t == "-i" or t.startswith("-i") or re.match(r"^-p?i$", t) for t in tokens[1:])
     if head == "git" and len(tokens) > 1 and tokens[1] in _GIT_SOURCE_SUBCMDS:
@@ -352,6 +378,8 @@ def _bash_is_mutating(command: str) -> bool:
         return True
     if head in {"sed", "perl"}:
         return _bash_is_source_scope(command)
+    if head == "cat":
+        return _cat_writes_to_file(command)
     if _bash_is_runtime(command):
         return True
     if head == "git" and len(tokens) > 1:
@@ -485,27 +513,39 @@ def _scope_forms(path: str) -> tuple[str, ...]:
       worktree) matches.
 
     The ``/projects/`` anchor is the FIRST occurrence (a repo may carry an inner
-    ``projects/`` dir). Any other path (a vault note, ``/tmp`` scratch, an
-    already-relative ref) yields its single normalized form. Cwd-independent: the
-    replay diffs decisions from many worktrees in one process with no recorded cwd.
+    ``projects/`` dir). A path under the personal vault (``~/Documents/Personal/``)
+    additionally yields its vault-root-relative form, so a vault cc-task's relative
+    ``20-projects/hapax-cc-tasks/`` scope ref matches the absolute note path
+    (fix-cc-gate-fps Fix 2). Any other path (``/tmp`` scratch, an already-relative ref)
+    yields its single normalized form. Cwd-independent: the replay diffs decisions from
+    many worktrees in one process with no recorded cwd.
     """
     p = os.path.expanduser(path.strip())
     while p.startswith("./"):
         p = p[2:]
-    if p.startswith("/"):
-        # The EARLIEST anchor wins, so an inner ``scratch/`` under a ``~/projects/``
-        # worktree still anchors on the workspace root rather than the inner dir.
-        anchor, alen = -1, 0
-        for marker in _WORKTREE_ANCHORS:
-            i = p.find(marker)
-            if i != -1 and (anchor == -1 or i < anchor):
-                anchor, alen = i, len(marker)
-        if anchor != -1:
-            tail = p[anchor + alen :]  # '<wt>/<rest>'
-            slash = tail.find("/")
-            rest = tail[slash + 1 :] if slash != -1 else ""
-            return tuple(dict.fromkeys(f for f in (tail, rest) if f))
-    return (p,) if p else ()
+    if not p:
+        return ()
+    if not p.startswith("/"):
+        return (p,)
+    forms = [p]
+    # Vault-relative form: the vault root is a FIXED absolute prefix (unlike the
+    # mid-path worktree markers below), so strip it to yield the vault-relative form.
+    vault = os.path.expanduser("~/Documents/Personal/")
+    if p.startswith(vault):
+        forms.append(p[len(vault) :])
+    # The EARLIEST worktree anchor wins, so an inner ``scratch/`` under a ``~/projects/``
+    # worktree still anchors on the workspace root rather than the inner dir.
+    anchor, alen = -1, 0
+    for marker in _WORKTREE_ANCHORS:
+        i = p.find(marker)
+        if i != -1 and (anchor == -1 or i < anchor):
+            anchor, alen = i, len(marker)
+    if anchor != -1:
+        tail = p[anchor + alen :]  # '<wt>/<rest>'
+        slash = tail.find("/")
+        rest = tail[slash + 1 :] if slash != -1 else ""
+        forms.extend(f for f in (tail, rest) if f)
+    return tuple(dict.fromkeys(forms))
 
 
 def _scope_result(path: str, scope_refs: tuple[str, ...]) -> str:
