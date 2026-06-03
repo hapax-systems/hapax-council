@@ -102,7 +102,9 @@ def _source_aspect(mount: dict[str, Any] | None) -> float:
     return 16.0 / 9.0
 
 
-def sphere_front_raw_dimensions(width: int, height: int, mount: dict[str, Any] | None) -> tuple[int, int]:
+def sphere_front_raw_dimensions(
+    width: int, height: int, mount: dict[str, Any] | None
+) -> tuple[int, int]:
     ratio = 1.0
     if mount:
         try:
@@ -116,7 +118,9 @@ def sphere_front_raw_dimensions(width: int, height: int, mount: dict[str, Any] |
     return frame_width - (frame_width % 2), frame_height
 
 
-def drift_slot_spec(slot_name: str, live_slot: LiveTextureSlot, mount: dict[str, Any] | None) -> str:
+def drift_slot_spec(
+    slot_name: str, live_slot: LiveTextureSlot, mount: dict[str, Any] | None
+) -> str:
     projection = str(mount.get("projection", "")) if mount else ""
     intensity = 1.0
     if mount and "gpu_drift_intensity" in mount:

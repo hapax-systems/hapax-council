@@ -46,9 +46,9 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
         )
     }
     glyph_ward_indices = module["ACTIVE_WARD_INDICES"] - rectangular_ward_indices
-    receiver_w, receiver_h, _u_scale, _v_scale, thickness = module[
-        "ward_homage_receiver_metrics"
-    ](*module["ward_pane_dimensions"](2))
+    receiver_w, receiver_h, _u_scale, _v_scale, thickness = module["ward_homage_receiver_metrics"](
+        *module["ward_pane_dimensions"](2)
+    )
     assert receiver_w >= module["WARD_PURPOSE_RECEIVER_MIN_WIDTH"] >= 180
     assert receiver_h >= module["WARD_PURPOSE_RECEIVER_MIN_HEIGHT"] >= 96
     assert thickness >= 18
@@ -57,16 +57,13 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert all(f"// ward-homage-glyph {idx:02d}." in content for idx in glyph_ward_indices)
     assert all(
         module["ward_live_mount_contract"](idx, module["WARD_ANCHORS"][idx - 1])["texture"]
-        in _comment_block(
-            content, f"// ward-homage-glyph {idx:02d}.1"
-        )
+        in _comment_block(content, f"// ward-homage-glyph {idx:02d}.1")
         for idx in glyph_ward_indices
     )
     assert all(f"// ward-homage-accent {idx:02d}." in content for idx in glyph_ward_indices)
     assert all(
-        module["DOMAIN_GLOW_TEX"][module["ward_domain"](idx)] in _comment_block(
-            content, f"// ward-homage-accent {idx:02d}.1"
-        )
+        module["DOMAIN_GLOW_TEX"][module["ward_domain"](idx)]
+        in _comment_block(content, f"// ward-homage-accent {idx:02d}.1")
         for idx in glyph_ward_indices
     )
     assert content.count("// ward-garden-pane-frame ") == 0
@@ -240,7 +237,9 @@ def test_screwm_map_embeds_hex_alignment_substrate_without_filled_receiver_strip
         module["AOA_Y"],
     )
     assert content.count("// scroom-hex-floor-line ") > 20
-    assert content.count("// scroom-hex-floor-line ") == content.count("// scroom-hex-ceiling-line ")
+    assert content.count("// scroom-hex-floor-line ") == content.count(
+        "// scroom-hex-ceiling-line "
+    )
     assert content.count("// scroom-stipple-floor-dot ") > 20
     assert content.count("// scroom-stipple-floor-dot ") == content.count(
         "// scroom-stipple-ceiling-dot "
@@ -383,7 +382,9 @@ def test_screwm_room_textures_are_information_surfaces_not_identifiable_material
         assert surface["texture"] == "skip"
         assert surface["collision_texture"] == "skip"
         assert len(surface["visible_substrate_textures"]) == 2
-        assert all(tex.startswith(("hex_", "stipple_")) for tex in surface["visible_substrate_textures"])
+        assert all(
+            tex.startswith(("hex_", "stipple_")) for tex in surface["visible_substrate_textures"]
+        )
         assert min(surface["texture_scale"]) >= 3
         assert "material" not in surface["surface_kind"]
 
@@ -679,7 +680,7 @@ def test_aoa_model_transform_stands_pyramid_upright_and_centers_media_front() ->
 
     parts = module["compose_aoa_parts"](module["DEPTH"])
     surface_verts, surface_faces, surface_uvs = module["flatten_aoa_surface_mesh"](parts)
-    assert len(parts) == 4**module["DEPTH"]
+    assert len(parts) == 4 ** module["DEPTH"]
     assert len(surface_faces) == module["aoa_face_count"]()
     assert len(surface_verts) == len(surface_uvs) == module["aoa_face_count"]() * 3
     assert module["AOA_SKIN_W"] == module["AOA_SKIN_H"] == 2048

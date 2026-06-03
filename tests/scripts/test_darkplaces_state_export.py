@@ -702,7 +702,9 @@ def test_darkplaces_state_export_derives_local_effect_proxy_from_slotdrift(
     effect_drift = tmp_path / "effect-drift-state.json"
     density = tmp_path / "density.json"
     missing_fallback = tmp_path / "missing-effect-drift-fallback.json"
-    _write_json(empty_entity_local, {"schema": "entity-local-effect-state-v1", "active_effects": []})
+    _write_json(
+        empty_entity_local, {"schema": "entity-local-effect-state-v1", "active_effects": []}
+    )
     _write_json(
         effect_drift,
         {
@@ -854,7 +856,9 @@ def test_darkplaces_state_export_merges_sparse_entity_local_with_slotdrift_proxy
         now=1.0,
     )
 
-    assert lines["local-effect-route.txt"] == "ENTITY_LOCAL_SOURCE_PLANE_PLUS_SLOTDRIFT_SPATIAL_PROXY"
+    assert (
+        lines["local-effect-route.txt"] == "ENTITY_LOCAL_SOURCE_PLANE_PLUS_SLOTDRIFT_SPATIAL_PROXY"
+    )
     assert float(lines["local-effect-count.txt"]) >= 8.0
     assert lines["local-effect-02.txt"] == "0.9200"
     assert lines["local-effect-11.txt"] == "0.7600"

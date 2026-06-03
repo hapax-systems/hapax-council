@@ -364,9 +364,13 @@ def test_csqc_scene_quad_local_effects_live_on_scroom_lenses() -> None:
     assert "screwm_shader_plan_pass_count * 78" in body
     assert "screwm_shader_plan_feedback * 112" in body
     assert "screwm_shader_plan_temporal_ratio * 126" in body
-    assert "screwm_add_local_effect_light('-980 -1780 214', 1, screwm_cyan, screwm_effect_01)" in body
+    assert (
+        "screwm_add_local_effect_light('-980 -1780 214', 1, screwm_cyan, screwm_effect_01)" in body
+    )
     assert "screwm_add_local_effect_light('0 -1320 512', 2, screwm_rose, screwm_effect_02)" in body
-    assert "screwm_add_local_effect_light('1040 -1420 64', 6, screwm_rose, screwm_effect_06)" in body
+    assert (
+        "screwm_add_local_effect_light('1040 -1420 64', 6, screwm_rose, screwm_effect_06)" in body
+    )
     assert (
         "screwm_add_local_effect_light('760 720 148', 11, screwm_amber, screwm_effect_11)" in body
     )
@@ -459,7 +463,10 @@ def test_csqc_surface_drift_is_geometry_lit_not_post_render_projected() -> None:
     assert "drawline(width, pa, pb, color" not in body
     assert "void() screwm_draw_geometry_edge_pulses" in body
     assert "void() screwm_draw_hex_alignment_light_grid" in body
-    assert "void(float z, float phase, float width, float alpha, float phase_bias) screwm_draw_hex_light_grid_plane" in body
+    assert (
+        "void(float z, float phase, float width, float alpha, float phase_bias) screwm_draw_hex_light_grid_plane"
+        in body
+    )
     assert "void(float phase, float width, float alpha) screwm_draw_wall_light_grid_planes" in body
     assert "void() screwm_draw_media_receiver_drift_fields" in body
     assert "void() screwm_draw_substrate_drift_pulses" in body
@@ -469,10 +476,14 @@ def test_csqc_surface_drift_is_geometry_lit_not_post_render_projected() -> None:
     assert 'precache_pic("geom_mark");' in body
     assert 'precache_pic("drift_c");' in body
     assert 'precache_pic("textures/screwm/ground1_6");' not in body
-    assert "void(float y, float cx, float cz, float length, float width, float angle, vector color, float alpha) screwm_draw_yz_wall_ribbon" in body
+    assert (
+        "void(float y, float cx, float cz, float length, float width, float angle, vector color, float alpha) screwm_draw_yz_wall_ribbon"
+        in body
+    )
     pulse_body = body[
-        body.index("void(vector a, vector b, vector c, vector d, vector color, float alpha) screwm_draw_geometry_quad")
-        : body.index("void() screwm_add_shader_plan_lights")
+        body.index(
+            "void(vector a, vector b, vector c, vector d, vector color, float alpha) screwm_draw_geometry_quad"
+        ) : body.index("void() screwm_add_shader_plan_lights")
     ]
     assert "cs_project" not in pulse_body
     assert "drawfill" not in pulse_body
@@ -498,7 +509,9 @@ def test_csqc_surface_drift_is_geometry_lit_not_post_render_projected() -> None:
     assert "screwm_effect_drift_edge * 0.90" in body
     assert body.index("screwm_add_dynamic_lights();") < body.index("renderscene();")
     assert body.index("screwm_draw_hex_alignment_light_grid();") < body.index("renderscene();")
-    update_view = body[body.index("void(float vid_width"): body.index('if (cvar("screwm_csqc_overlay")')]
+    update_view = body[
+        body.index("void(float vid_width") : body.index('if (cvar("screwm_csqc_overlay")')
+    ]
     assert "if (screwm_roaming_surface_pulses_enabled())" in update_view
     assert update_view.index("screwm_draw_hex_alignment_light_grid();") < update_view.index(
         "if (screwm_roaming_surface_pulses_enabled())"

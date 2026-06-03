@@ -122,9 +122,7 @@ def _youtube_video_url_with_fallback(args: argparse.Namespace, *, height: int) -
         try:
             return _youtube_video_url(args.resolved_url, height=height)
         except (RuntimeError, subprocess.CalledProcessError) as fallback_exc:
-            args.fallback_reason = (
-                f"youtube_canary_resolve_failed:{type(fallback_exc).__name__}"
-            )
+            args.fallback_reason = f"youtube_canary_resolve_failed:{type(fallback_exc).__name__}"
             return None
 
 
@@ -628,10 +626,7 @@ def _youtube_cuda_filter(
     return ",".join(
         [
             f"fps={args.fps}",
-            (
-                f"scale_cuda=w={frame_width}:h={frame_height}:"
-                "interp_algo=lanczos:format=yuv420p"
-            ),
+            (f"scale_cuda=w={frame_width}:h={frame_height}:interp_algo=lanczos:format=yuv420p"),
             "hwdownload",
             "format=yuv420p",
             "format=bgra",

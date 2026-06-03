@@ -618,7 +618,9 @@ def _stddev(values: list[float]) -> float:
     return math.sqrt(sum((value - mean) * (value - mean) for value in values) / len(values))
 
 
-def _roi_bounds(width: int, height: int, roi: tuple[float, float, float, float]) -> tuple[int, int, int, int]:
+def _roi_bounds(
+    width: int, height: int, roi: tuple[float, float, float, float]
+) -> tuple[int, int, int, int]:
     x0 = max(0, min(width - 1, int(width * roi[0])))
     y0 = max(0, min(height - 1, int(height * roi[1])))
     x1 = max(x0 + 1, min(width, int(width * roi[2])))
@@ -665,11 +667,7 @@ def _frame_aesthetic_stats(path: Path) -> dict[str, object] | None:
     for name, roi in AESTHETIC_REGIONS.items():
         bounds = _roi_bounds(width, height, roi)
         x0, y0, x1, y1 = bounds
-        samples = [
-            data[y * width + x]
-            for y in range(y0, y1)
-            for x in range(x0, x1)
-        ]
+        samples = [data[y * width + x] for y in range(y0, y1) for x in range(x0, x1)]
         if not samples:
             continue
         regions[name] = {
@@ -704,7 +702,9 @@ def _aesthetic_strength_metrics(frames: list[dict[str, object]]) -> dict[str, ob
         if len(lumas) >= 2:
             region_motion[region] = max(abs(lumas[i + 1] - lumas[i]) for i in range(len(lumas) - 1))
         if len(edges) >= 2:
-            region_edge_delta[region] = max(abs(edges[i + 1] - edges[i]) for i in range(len(edges) - 1))
+            region_edge_delta[region] = max(
+                abs(edges[i + 1] - edges[i]) for i in range(len(edges) - 1)
+            )
 
     active_regions = [
         region
@@ -713,7 +713,9 @@ def _aesthetic_strength_metrics(frames: list[dict[str, object]]) -> dict[str, ob
         or region_edge_delta.get(region, 0.0) >= AESTHETIC_EDGE_DELTA_FLOOR
     ]
     total_motion = sum(region_motion.values())
-    max_region_dominance = max(region_motion.values(), default=0.0) / total_motion if total_motion else 1.0
+    max_region_dominance = (
+        max(region_motion.values(), default=0.0) / total_motion if total_motion else 1.0
+    )
     coverage_ratio = len(active_regions) / max(1, len(AESTHETIC_REGIONS))
     negative_space_lumas = [
         float(frame["regions"]["negative_space"]["luma"])
@@ -732,7 +734,9 @@ def _aesthetic_strength_metrics(frames: list[dict[str, object]]) -> dict[str, ob
         "coverage_ratio": round(coverage_ratio, 5),
         "max_region_dominance": round(max_region_dominance, 5),
         "region_motion": {region: round(value, 5) for region, value in region_motion.items()},
-        "region_edge_delta": {region: round(value, 5) for region, value in region_edge_delta.items()},
+        "region_edge_delta": {
+            region: round(value, 5) for region, value in region_edge_delta.items()
+        },
         "negative_space_temporal_std": round(_stddev(negative_space_lumas), 5),
         "thresholds": {
             "region_motion_floor": AESTHETIC_REGION_MOTION_FLOOR,
@@ -1106,8 +1110,12 @@ def run_matrix(args: argparse.Namespace) -> int:
         "obs_capture_target": getattr(args, "obs_source", None) or args.obs_scene,
         "obs_capture_target_kind": "source" if getattr(args, "obs_source", None) else "scene",
         "obs_capture_requires_websocket": bool(getattr(args, "require_obs_websocket", False)),
-        "aesthetic_strength_gate_required": bool(getattr(args, "require_aesthetic_strength", False)),
-        "aesthetic_substrate_gate_required": bool(getattr(args, "require_aesthetic_strength", False)),
+        "aesthetic_strength_gate_required": bool(
+            getattr(args, "require_aesthetic_strength", False)
+        ),
+        "aesthetic_substrate_gate_required": bool(
+            getattr(args, "require_aesthetic_strength", False)
+        ),
         "screen_postprocess_forbidden": True,
         "rows": [],
     }
@@ -1151,10 +1159,7 @@ def run_matrix(args: argparse.Namespace) -> int:
             _stabilize_lines(args.game_data, lines, 0.5)
         manifest["rows"].append(row_manifest)
         _json_write(output_dir / "manifest.json", manifest)
-        print(
-            f"{row.ordinal:02d} {row.label}: screen_preset={row.preset} "
-            f"bank={row.bank_label}"
-        )
+        print(f"{row.ordinal:02d} {row.label}: screen_preset={row.preset} bank={row.bank_label}")
 
     if args.restore_camera:
         _write_lines(

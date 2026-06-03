@@ -124,8 +124,8 @@ def test_gpu_owned_sphere_front_projection_omits_cpu_hflip() -> None:
 
 def test_youtube_gpu_decode_uses_cuda_scale_when_projection_is_gpu_owned() -> None:
     module = _load_module()
-    module["_ffmpeg_command"].__globals__["_run_checked"] = (
-        lambda _args: "https://media.invalid/1024.mp4\n"
+    module["_ffmpeg_command"].__globals__["_run_checked"] = lambda _args: (
+        "https://media.invalid/1024.mp4\n"
     )
     args = Namespace(
         source="youtube",
@@ -163,9 +163,7 @@ def test_youtube_private_url_falls_back_to_canary_stream() -> None:
     def fake_run_checked(args: list[str]) -> str:
         calls.append(args)
         if len(calls) == 1:
-            raise subprocess.CalledProcessError(
-                1, args, output="", stderr="Private video"
-            )
+            raise subprocess.CalledProcessError(1, args, output="", stderr="Private video")
         return "https://media.invalid/canary.mp4\n"
 
     module["_ffmpeg_command"].__globals__["_run_checked"] = fake_run_checked

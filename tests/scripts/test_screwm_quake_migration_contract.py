@@ -355,9 +355,9 @@ def test_screwm_media_drift_batches_slot_readback() -> None:
     assert "fn finish_readback(" in source
     assert "queue.submit(commands)" in source
     assert "prev_tex: wgpu::Texture" in source
-    assert "label: Some(\"media-drift previous\")" in source
+    assert 'label: Some("media-drift previous")' in source
     assert "binding: 3" in source
-    assert "label: Some(\"media-drift clear previous\")" in source
+    assert 'label: Some("media-drift clear previous")' in source
     assert "enc.copy_texture_to_texture(" in source
     assert ".map_async(wgpu::MapMode::Read" in source
     assert "device.poll(wgpu::Maintain::Wait)" in source
@@ -445,8 +445,7 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
     assert mounts["aoa-media-sphere"]["physical_radius"] == 157
     assert mounts["aoa-media-sphere"]["enclosure"] == "aoa-tetrix-inner-volume"
     assert (
-        mounts["aoa-media-sphere"]["fit_contract"]
-        == "regular-tetrix-central-void-perfect-insphere"
+        mounts["aoa-media-sphere"]["fit_contract"] == "regular-tetrix-central-void-perfect-insphere"
     )
     assert mounts["aoa-media-sphere"]["fit_basis"] == (
         "regular-level4-sierpinski-pyramid-central-octahedral-void-insphere"
@@ -458,7 +457,10 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
     assert mounts["aoa-media-sphere"]["leaf_face_edge_units"] == 48
     assert mounts["aoa-media-sphere"]["aoa_parent_edge_units"] == 768
     assert mounts["aoa-media-sphere"]["fractal_face_count"] == 1024
-    assert "one triangular fractal face per atlas cell" in mounts["aoa-media-sphere"]["per_face_surface_atlas"]
+    assert (
+        "one triangular fractal face per atlas cell"
+        in mounts["aoa-media-sphere"]["per_face_surface_atlas"]
+    )
     assert "depth-veil" in mounts["aoa-media-sphere"]["occlusion_policy"]
     assert mounts["aoa-media-sphere"]["freshness"] == "live-producer-heartbeat"
     assert mounts["aoa-media-sphere"]["consent_or_license"]
@@ -645,7 +647,9 @@ def test_screwm_live_camera_texture_dimensions_match_all_runtime_declarations() 
         assert slots[slot]["path"] == speech["producer_output"]
         assert patch_dims[slot] == {"width": width, "height": height}
 
-    aoa_atlas = next(mount for mount in contract["mounts"] if mount["id"] == "aoa-fractal-face-atlas")
+    aoa_atlas = next(
+        mount for mount in contract["mounts"] if mount["id"] == "aoa-fractal-face-atlas"
+    )
     width, height = aoa_atlas["texture_size"]
     assert aoa_atlas["native_resolution"] == [width, height]
     for slots in (autoexec_slots, launcher_slots):

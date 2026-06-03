@@ -466,9 +466,9 @@ def aoa_skin_pixels(width: int, height: int) -> bytes:
             face_index = row * AOA_FACE_ATLAS_COLUMNS + col
             local_x = x % AOA_FACE_ATLAS_CELL_SIZE
             local_y = y % AOA_FACE_ATLAS_CELL_SIZE
-            edge = (
-                local_x in (0, AOA_FACE_ATLAS_CELL_SIZE - 1)
-                or local_y in (0, AOA_FACE_ATLAS_CELL_SIZE - 1)
+            edge = local_x in (0, AOA_FACE_ATLAS_CELL_SIZE - 1) or local_y in (
+                0,
+                AOA_FACE_ATLAS_CELL_SIZE - 1,
             )
             bary_line = (
                 abs(local_x - AOA_FACE_ATLAS_CELL_SIZE // 2) < 2

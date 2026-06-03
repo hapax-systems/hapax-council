@@ -222,7 +222,10 @@ def test_screwm_generator_satisfies_framework_gates() -> None:
     assert aoa_mount["name"] == "OARB"
     assert aoa_mount["mount_kind"] == "live-object-of-attention-sphere"
     assert aoa_mount["enclosure_clearance_ratio"] == 1.0
-    assert aoa_mount["inner_void_radius_fill_ratio"] == media["required_aoa_oarb_inner_void_radius_fill_ratio"]
+    assert (
+        aoa_mount["inner_void_radius_fill_ratio"]
+        == media["required_aoa_oarb_inner_void_radius_fill_ratio"]
+    )
     assert aoa_mount["origin"] == [0, -555, 224]
     assert aoa_mount["fractal_depth"] >= media["minimum_aoa_fractal_depth"]
     assert aoa_mount["fractal_face_count"] >= media["minimum_aoa_fractal_face_count"]

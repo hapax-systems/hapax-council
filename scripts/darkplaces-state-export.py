@@ -1186,7 +1186,9 @@ def _slotdrift_local_effect_proxy_mix(
     )
     mix_by_effect["fisheye"] = max(
         mix_by_effect["fisheye"],
-        _clamp01(atmo * 0.30 + active_slot_ratio * 0.24 + density_currency * 0.24 + expression * 0.14),
+        _clamp01(
+            atmo * 0.30 + active_slot_ratio * 0.24 + density_currency * 0.24 + expression * 0.14
+        ),
     )
     mix_by_effect["transform"] = max(
         mix_by_effect["transform"],
@@ -1206,7 +1208,9 @@ def _slotdrift_local_effect_proxy_mix(
     )
     mix_by_effect["tile"] = max(
         mix_by_effect["tile"],
-        _clamp01(texture * 0.32 + kind_variance * 0.24 + region_pressure * 0.18 + expression * 0.18),
+        _clamp01(
+            texture * 0.32 + kind_variance * 0.24 + region_pressure * 0.18 + expression * 0.18
+        ),
     )
     mix_by_effect["drift"] = max(
         mix_by_effect["drift"],
@@ -1249,7 +1253,11 @@ def build_entity_local_effect_lines(
             effect_drift_fallback_state_file,
             now=now,
         )
-        if drift_source not in {"missing", "synthetic-fallback-stale", "primary-stale-or-noncanonical"}:
+        if drift_source not in {
+            "missing",
+            "synthetic-fallback-stale",
+            "primary-stale-or-noncanonical",
+        }:
             density_currency = 0.0
             if density_field_file is not None:
                 density, _density_zone = _read_density_field(density_field_file, now=now)

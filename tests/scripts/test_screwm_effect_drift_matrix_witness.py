@@ -79,7 +79,9 @@ def test_matrix_row_keeps_screen_preset_off_and_writes_effect_drift_scalars(
     )
 
     assert lines["effect-review-preset.txt"] == "0"
-    assert lines["local-effect-route.txt"] == "ENTITY_LOCAL_SOURCE_PLANE_PLUS_SLOTDRIFT_SPATIAL_PROXY"
+    assert (
+        lines["local-effect-route.txt"] == "ENTITY_LOCAL_SOURCE_PLANE_PLUS_SLOTDRIFT_SPATIAL_PROXY"
+    )
     assert float(lines["local-effect-count.txt"]) >= 8.0
     assert lines["shader-plan-route.txt"] == "IN_SCROOM_SHADER_PASS_PLAN"
     assert lines["effect-drift-route.txt"] == "IN_SCROOM_EFFECT_DRIFT_STATE"
@@ -155,10 +157,7 @@ def test_aesthetic_strength_metrics_reject_single_patch_motion() -> None:
     regions = tuple(module["AESTHETIC_REGIONS"])
     frames = []
     for index in range(3):
-        frame_regions = {
-            region: {"luma": 0.10, "edge_energy": 0.02}
-            for region in regions
-        }
+        frame_regions = {region: {"luma": 0.10, "edge_energy": 0.02} for region in regions}
         frame_regions["entity_core"] = {
             "luma": 0.10 + index * 0.02,
             "edge_energy": 0.02 + index * 0.01,

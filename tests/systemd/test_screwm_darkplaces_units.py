@@ -421,7 +421,10 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     assert "float base_rot = 0.0;" in coupling
     assert "coupling_voice_active * 1.5" in coupling
     assert "float aoa_drift_pressure = coupling_clamp_range(" in coupling
-    assert "aoa_entity.screwm_spin_y = base_rot + voice_boost + audio_boost + aoa_spin_boost;" in coupling
+    assert (
+        "aoa_entity.screwm_spin_y = base_rot + voice_boost + audio_boost + aoa_spin_boost;"
+        in coupling
+    )
     assert "aoa_entity.alpha = coupling_clamp_range" in coupling
     assert "aoa_entity.glow_size = coupling_clamp_range" in coupling
     assert "aoa_sphere_entity.screwm_spin_y = coupling_clamp_range" in coupling
