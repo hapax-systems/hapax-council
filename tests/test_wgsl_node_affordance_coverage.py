@@ -25,6 +25,7 @@ nodes bumps ``MIN_REGISTERED_NODES`` to lock the new floor.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -116,6 +117,91 @@ class TestCoverageVisibility:
         if unregistered:
             print(f"unregistered: {sorted(unregistered)}")
         assert True  # informational only
+
+
+# --- Phase 1 unified-fx: domain/stage/host_arity manifest invariants ---------
+# (cc-task 20260603-screwm-unified-fx-phase1)
+
+VALID_STAGES = {"vertex", "fragment"}
+VALID_DOMAINS = {"content", "geometry", "both"}
+VALID_COST = {"cheap", "medium", "high"}
+VALID_HOST_KEYS = {"wgpu", "dp_postprocess"}
+# DarkPlaces MODE_POSTPROCESS exposes 4 uservecs = 16 floats; content effects
+# running in-engine cannot exceed it.
+DP_POSTPROCESS_FLOAT_CEILING = 16
+PATCH_PATH = REPO_ROOT / "assets" / "quake" / "darkplaces" / "hapax-live-texture.patch"
+
+
+def _node_manifests() -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for p in WGSL_NODE_DIR.glob("*.json"):
+        try:
+            out[p.stem] = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return out
+
+
+class TestDomainStageHostArityFields:
+    """Pin the well-formedness of the unified-fx metadata on every node that
+    declares it. Untagged nodes are surfaced as a visibility gap (xfail-free) —
+    the long tail is Phase-2+ operator-paced, like the affordance coverage."""
+
+    def test_declared_unified_fx_fields_are_well_formed(self, capsys) -> None:
+        manifests = _node_manifests()
+        tagged: list[str] = []
+        for stem, m in sorted(manifests.items()):
+            if "domains" not in m and "stage" not in m:
+                continue
+            tagged.append(stem)
+            assert m.get("stage") in VALID_STAGES, f"{stem}: stage {m.get('stage')!r}"
+            domains = m.get("domains")
+            assert isinstance(domains, list) and domains, f"{stem}: domains must be non-empty list"
+            assert set(domains) <= VALID_DOMAINS, f"{stem}: domains {domains}"
+            assert m.get("cost_class") in VALID_COST, f"{stem}: cost_class {m.get('cost_class')!r}"
+            host = m.get("host_arity", {})
+            assert set(host) <= VALID_HOST_KEYS, f"{stem}: host_arity keys {set(host)}"
+            if "dp_postprocess" in host:
+                assert host["dp_postprocess"] <= DP_POSTPROCESS_FLOAT_CEILING, (
+                    f"{stem}: dp_postprocess arity {host['dp_postprocess']} exceeds the "
+                    f"DarkPlaces 4-uservec/16-float ceiling"
+                )
+            if set(domains) & {"geometry", "both"}:
+                assert m.get("displacement", {}).get("kernel"), (
+                    f"{stem}: geometry-capable node must declare displacement.kernel"
+                )
+        print(f"\nunified-fx tagged nodes: {len(tagged)}/{len(manifests)} -> {sorted(tagged)}")
+
+
+class TestBothBasesGeometryContentCoverage:
+    """Every geometry/both node must have a real content fragment (strict), and
+    its displacement kernel must reach the engine patch. The geometry-operator
+    presence is a visibility gap (xfail-free) until the engine increment lands
+    the operator — closing that gap IS the engine STEP."""
+
+    def test_both_bases_are_covered(self, capsys) -> None:
+        manifests = _node_manifests()
+        patch_text = PATCH_PATH.read_text(errors="ignore") if PATCH_PATH.exists() else ""
+        geometry_gaps: list[tuple[str, str]] = []
+        for stem, m in sorted(manifests.items()):
+            domains = set(m.get("domains", []))
+            if not domains:
+                continue
+            if domains & {"content", "both"}:
+                frag = m.get("glsl_fragment")
+                assert frag, f"{stem}: content-capable node must declare glsl_fragment"
+                assert (WGSL_NODE_DIR / frag).exists(), f"{stem}: glsl_fragment {frag} missing"
+            if domains & {"geometry", "both"}:
+                kernel = m.get("displacement", {}).get("kernel", "")
+                assert kernel, f"{stem}: geometry-capable node must declare displacement.kernel"
+                if kernel not in patch_text:
+                    geometry_gaps.append((stem, kernel))
+        # xfail-free: the geometry-operator gap IS the pending engine work.
+        if geometry_gaps:
+            print(
+                f"\ngeometry operators not yet in the engine patch "
+                f"(pending engine increment): {geometry_gaps}"
+            )
 
 
 @pytest.mark.parametrize(
