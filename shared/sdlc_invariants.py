@@ -125,6 +125,17 @@ SDLC_LADDER = Ladder(
 )
 
 
+#: INV-2 *operational* terminals — deliberately distinct from the proof-plane ladder
+#: terminal (``SDLC_LADDER.terminal == {S11}``). INV-2 reads the OPERATIONAL
+#: authority-case ledger, where a task's done-state is ``S7_RELEASE`` (token ``S7``):
+#: merged and released, hence done — not stuck — even though the S0..S11 proof
+#: vocabulary marks only S11 terminal. Kept SEPARATE from the shared ladder on
+#: purpose: widening ``SDLC_LADDER.terminal`` would perturb INV-1 (deadlock-freedom
+#: permits only a terminal stage to lack a successor). S11 stays terminal here too,
+#: so a fully proof-closed task is live as well.
+LIVENESS_TERMINAL = frozenset({"S7", "S11"})
+
+
 @dataclass(frozen=True)
 class InvariantResult:
     """One advisory invariant evaluation. ``holds`` False is ledgered, never blocks."""
@@ -186,7 +197,9 @@ def check_inv2_liveness(
 
     A runtime approximation of the temporal liveness property: a task violates if
     its latest observed stage is unknown, or non-terminal and stale beyond
-    ``stale_after_s`` (no progress) — i.e. effectively stuck.
+    ``stale_after_s`` (no progress) — i.e. effectively stuck. "Terminal" here is the
+    OPERATIONAL ``LIVENESS_TERMINAL`` ({S7 release, S11}), not the proof-plane ladder
+    terminal: a released task (``S7_RELEASE`` → token ``S7``) is done, not stuck.
     """
     violations: list[str] = []
     try:
@@ -204,7 +217,7 @@ def check_inv2_liveness(
         for task_id, (stage, ts) in latest.items():
             if stage not in ladder.stages:
                 violations.append(f"{task_id}:unknown_stage:{stage or '<blank>'}")
-            elif stage in ladder.terminal:
+            elif stage in LIVENESS_TERMINAL:
                 continue
             elif (now - ts) > stale_after_s:
                 violations.append(f"{task_id}:stuck:{stage}:{int(now - ts)}s")
