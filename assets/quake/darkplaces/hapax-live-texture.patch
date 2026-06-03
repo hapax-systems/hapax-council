@@ -699,7 +699,7 @@ index 7fbcd0b3..0bd77491 100644
  extern rtexture_t *r_texture_notexture;
  extern rtexture_t *r_texture_whitecube;
 diff --git a/shader_glsl.h b/shader_glsl.h
-index dc56d085..0715dfa2 100644
+index dc56d085..392634a8 100644
 --- a/shader_glsl.h
 +++ b/shader_glsl.h
 @@ -178,6 +178,62 @@
@@ -779,7 +779,50 @@ index dc56d085..0715dfa2 100644
  "#ifdef USETRIPPY\n",
  "	gl_Position = TrippyVertex(gl_Position);\n",
  "#endif\n",
-@@ -773,6 +835,8 @@
+@@ -254,7 +316,9 @@
+ "//uncomment these if you want to use them:\n",
+ "uniform mediump vec4 UserVec1;\n",
+ "uniform mediump vec4 UserVec2;\n",
+-"// uniform mediump vec4 UserVec3;\n",
++"#ifdef USERUTT_ETRA\n",
++"uniform mediump vec4 UserVec3;\n",
++"#endif\n",
+ "// uniform mediump vec4 UserVec4;\n",
+ "uniform mediump float ColorFringe;\n",
+ "// uniform highp float ClientTime;\n",
+@@ -307,6 +371,13 @@
+ "}\n",
+ "#endif\n",
+ "\n",
++"#ifdef USERUTT_ETRA\n",
++"// opRuttEtra_luma_height: rutt_etra dual-domain displacement kernel (C1-safe).\n",
++"// Content lineage (the MODE_POSTPROCESS pass in main) reads frame luma -> Y height.\n",
++"// Geometry lineage would use an hpxVNoise proxy (vertex has no sampler) -> Phase 2.\n",
++"vec3 opRuttEtra_luma_height(vec3 p, float lum, float u){ return vec3(0.0, lum*u*0.01, 0.0); }\n",
++"#endif\n",
++"\n",
+ "void main(void)\n",
+ "{\n",
+ "#ifdef USECOLORFRINGE\n",
+@@ -360,6 +431,17 @@
+ "	dp_FragColor /= (1.0 + 5.0 * UserVec1.y);\n",
+ "	dp_FragColor.rgb = dp_FragColor.rgb * (1.0 + UserVec2.x) + vec3(max(0.0, sobel - UserVec2.z))*UserVec2.y;\n",
+ "#endif\n",
++"#ifdef USERUTT_ETRA\n",
++"	// rutt_etra content pass (unified-fx dual-domain proof): luma-height UV displacement.\n",
++"	// UserVec3: x=displacement, y=line_density, z=line_width, w=color_mode (Phase 1 fixed).\n",
++"	{\n",
++"		vec2 ruv = TexCoord1.xy;\n",
++"		float lum = dot(dp_texture2D(Texture_First, ruv).rgb, vec3(0.299, 0.587, 0.114));\n",
++"		vec3 d = opRuttEtra_luma_height(vec3(ruv, 0.0), lum, UserVec3.x);\n",
++"		ruv += d.xy * UserVec3.y;\n",
++"		dp_FragColor.rgb = dp_texture2D(Texture_First, ruv).rgb;\n",
++"	}\n",
++"#endif\n",
+ "#endif\n",
+ "\n",
+ "#ifdef USEBLOOM\n",
+@@ -773,6 +855,8 @@
  "#ifdef MODE_DEFERREDGEOMETRY\n",
  "dp_varying highp float Depth;\n",
  "#endif\n",
@@ -788,7 +831,7 @@ index dc56d085..0715dfa2 100644
  "\n",
  "\n",
  "\n",
-@@ -1327,6 +1391,35 @@
+@@ -1327,6 +1411,35 @@
  "#define Attrib_TexCoord3 SkeletalNormal\n",
  "#endif\n",
  "\n",
@@ -824,7 +867,7 @@ index dc56d085..0715dfa2 100644
  "#if defined(MODE_VERTEXCOLOR) || defined(USEVERTEXTEXTUREBLEND) || defined(MODE_LIGHTDIRECTIONMAP_FORCED_VERTEXCOLOR) || defined(USEALPHAGENVERTEX)\n",
  "	VertexColor = Attrib_Color;\n",
  "#endif\n",
-@@ -1404,6 +1497,8 @@
+@@ -1404,6 +1517,8 @@
  "#endif\n",
  "\n",
  "	// transform vertex to clipspace (post-projection, but before perspective divide by W occurs)\n",
@@ -833,7 +876,7 @@ index dc56d085..0715dfa2 100644
  "	gl_Position = ModelViewProjectionMatrix * Attrib_Position;\n",
  "\n",
  "#ifdef USESHADOWMAPORTHO\n",
-@@ -1466,6 +1561,9 @@
+@@ -1466,6 +1581,9 @@
  "    uint allpixels;\n",
  "};\n",
  "#endif\n",
@@ -843,7 +886,7 @@ index dc56d085..0715dfa2 100644
  "void main(void)\n",
  "{\n",
  "#ifdef USEOFFSETMAPPING\n",
-@@ -1797,6 +1895,47 @@
+@@ -1797,6 +1915,47 @@
  "   color.rgb *= clamp(float(visiblepixels) / float(allpixels), 0.0, 1.0);\n",
  "#endif\n",
  "\n",
