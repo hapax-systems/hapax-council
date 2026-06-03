@@ -42,4 +42,19 @@ increment, the evidence is verified absence-of-change.
   manifest + OperationalProperties, serialized through both Qdrant writers). No rendered output;
   nothing consumes `domain` yet. Round-trip test pins both serialization paths. 57 affordance
   tests green. **Visual witness: N/A (no rendering touched).**
+- **STEP 7 (CI visibility) — landed `6a3158776`:** test-only + ci.yml — the port-owner gate joins
+  the PR-admission slice; manifest invariants stay in the merge-queue suite. No source/runtime/render
+  change. **Visual witness: N/A.**
+- **STEP 0a (CRC guard) — landed `75590e9cf`:** new repo-side gate script enforcing the canary
+  prime directive pre-build. No engine edit, no render change. **Visual witness: N/A.**
+- **Engine Commit 1 (CRC-safe gl_rmain.c):** geo cvar `CF_SERVER` reflag, `USERUTT_ETRA`
+  SHADERSTATICPARM plumbing (inert until the shader references it; default-off cvar),
+  `R_BlendView_N` with a `NULL,0` caller (≡ `R_BlendView`, pixel-identical), `r_blendview_pass_t`
+  typedef. Re-exported into the deploy patch. **Verified:** compiles clean (`darkplaces-sdl`
+  links); the `shader_glsl.h` patch section is **byte-identical to pre-edit** (CRC-safe — canaries
+  unaffected, `check-shader-crc-override.sh` OK); migration-contract + port-owner tests green.
+  **Visual witness: behavior-preserving by construction** (NULL/0≡R_BlendView; the static-parm
+  emits a no-op string until the shader pass references `USERUTT_ETRA`). Offscreen frame-parity
+  deferred — the default-driven path is provably unchanged and the live device is shared with the
+  running screwm.
 - (subsequent increments append their parity captures here before the draft → ready transition)
