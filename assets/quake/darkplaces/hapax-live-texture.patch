@@ -563,7 +563,7 @@ index 7fbcd0b3..8ec3075c 100644
  extern rtexture_t *r_texture_notexture;
  extern rtexture_t *r_texture_whitecube;
 diff --git a/shader_glsl.h b/shader_glsl.h
-index dc56d085..0cf75cfb 100644
+index dc56d085..28cef92d 100644
 --- a/shader_glsl.h
 +++ b/shader_glsl.h
 @@ -773,6 +773,7 @@
@@ -574,15 +574,37 @@ index dc56d085..0cf75cfb 100644
  "\n",
  "\n",
  "\n",
-@@ -1404,6 +1405,7 @@
+@@ -1302,6 +1303,9 @@
+ "#ifdef USEBOUNCEGRID\n",
+ "uniform highp mat4 BounceGridMatrix;\n",
+ "#endif\n",
++"#ifdef USEHAPAXDRIFT\n",
++"uniform highp float ClientTime;\n",
++"#endif\n",
+ "void main(void)\n",
+ "{\n",
+ "#ifdef USESKELETAL\n",
+@@ -1404,7 +1408,19 @@
  "#endif\n",
  "\n",
  "	// transform vertex to clipspace (post-projection, but before perspective divide by W occurs)\n",
 +"	HapaxModelPos = Attrib_Position.xyz;\n",
++"#ifdef USEHAPAXDRIFT\n",
++"	// geometry motion: small world-seeded, time-animated displacement so flagged\n",
++"	// grid/stipple silhouettes BREATHE (the strongest world-is-alive cue). +/- a few\n",
++"	// units, slow, spatially incoherent (worldpos-phased) => not a global pulse.\n",
++"	{\n",
++"		float hpx_vp = HapaxModelPos.x*0.011 + HapaxModelPos.y*0.013 + HapaxModelPos.z*0.017;\n",
++"		vec3 hpx_doff = vec3(sin(hpx_vp*1.7 + ClientTime*0.6), sin(hpx_vp*2.3 + ClientTime*0.5 + 2.1), sin(hpx_vp*1.3 + ClientTime*0.7 + 4.2)) * 2.6;\n",
++"		gl_Position = ModelViewProjectionMatrix * (Attrib_Position + vec4(hpx_doff, 0.0));\n",
++"	}\n",
++"#else\n",
  "	gl_Position = ModelViewProjectionMatrix * Attrib_Position;\n",
++"#endif\n",
  "\n",
  "#ifdef USESHADOWMAPORTHO\n",
-@@ -1466,6 +1468,9 @@
+ "	ShadowMapTC = vec3(ShadowMapMatrix * gl_Position);\n",
+@@ -1466,6 +1482,9 @@
  "    uint allpixels;\n",
  "};\n",
  "#endif\n",
@@ -592,7 +614,7 @@ index dc56d085..0cf75cfb 100644
  "void main(void)\n",
  "{\n",
  "#ifdef USEOFFSETMAPPING\n",
-@@ -1797,6 +1802,31 @@
+@@ -1797,6 +1816,31 @@
  "   color.rgb *= clamp(float(visiblepixels) / float(allpixels), 0.0, 1.0);\n",
  "#endif\n",
  "\n",
@@ -603,7 +625,7 @@ index dc56d085..0cf75cfb 100644
 +"		float hpx_wpos = HapaxModelPos.x*0.018 + HapaxModelPos.y*0.012 + HapaxModelPos.z*0.015;\n",
 +"		// dark-preserving brightness (void/unlit stays dark; only the wire gets a faint floor)\n",
 +"		vec3 hpx_desat = mix(color.rgb, vec3(hpx_luma), 0.50);\n",
-+"		vec3 hpx_lifted = max(hpx_desat, vec3(0.11, 0.12, 0.15));\n",
++"		vec3 hpx_lifted = max(hpx_desat, vec3(0.24, 0.26, 0.32));\n",
 +"		float hpx_wl = dot(hpx_lifted, vec3(0.299, 0.587, 0.114));\n",
 +"		// (1) INHERENT colour dynamics (grid/stipple OWN colour life, apart from drift):\n",
 +"		// per-zone cosine synthwave palette on its own slow clock; luma-normalised so it\n",
