@@ -1,5 +1,5 @@
 diff --git a/gl_rmain.c b/gl_rmain.c
-index f9007caf..f7a54ef9 100644
+index f9007caf..f9103c2b 100644
 --- a/gl_rmain.c
 +++ b/gl_rmain.c
 @@ -28,6 +28,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
@@ -109,15 +109,21 @@ index f9007caf..f7a54ef9 100644
  
  cvar_t r_fullbright_directed = {CF_CLIENT, "r_fullbright_directed", "0", "render fullbright things (unlit worldmodel and EF_FULLBRIGHT entities, but not fullbright shaders) using a constant light direction instead to add more depth while keeping uniform brightness"};
  cvar_t r_fullbright_directed_ambient = {CF_CLIENT, "r_fullbright_directed_ambient", "0.5", "ambient light multiplier for directed fullbright"};
-@@ -178,6 +271,7 @@ cvar_t r_glsl_offsetmapping_scale = {CF_CLIENT | CF_ARCHIVE, "r_glsl_offsetmappi
+@@ -178,6 +271,13 @@ cvar_t r_glsl_offsetmapping_scale = {CF_CLIENT | CF_ARCHIVE, "r_glsl_offsetmappi
  cvar_t r_glsl_offsetmapping_lod = {CF_CLIENT | CF_ARCHIVE, "r_glsl_offsetmapping_lod", "0", "apply distance-based level-of-detail correction to number of offsetmappig steps, effectively making it render faster on large open-area maps"};
  cvar_t r_glsl_offsetmapping_lod_distance = {CF_CLIENT | CF_ARCHIVE, "r_glsl_offsetmapping_lod_distance", "32", "first LOD level distance, second level (-50% steps) is 2x of this, third (33%) - 3x etc."};
  cvar_t r_glsl_postprocess = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess", "0", "use a GLSL postprocessing shader"};
 +cvar_t hapax_drift_enable = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_enable", "1", "(hapax) enable GPU world-surface drift permutation (HAPAX_DRIFT) on drift_* surfaces"};
++cvar_t hapax_drift_geo_amp     = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_amp", "24", "(hapax) geometric drift displacement amplitude (units) for container geometry"};
++cvar_t hapax_drift_geo_ampmax  = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_ampmax", "36", "(hapax) geometric drift hard displacement clamp (units)"};
++cvar_t hapax_drift_geo_freq    = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_freq", "0.015", "(hapax) geometric drift spatial frequency"};
++cvar_t hapax_drift_geo_speed   = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_speed", "0.25", "(hapax) geometric drift temporal evolution speed"};
++cvar_t hapax_drift_geo_swirl   = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_swirl", "1.0", "(hapax) geometric drift curl-swirl operator weight"};
++cvar_t hapax_drift_geo_content = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_content", "5", "(hapax) geometric drift ABSOLUTE displacement amplitude (units) for content (entity/model) geometry, independent of container amp"};
  cvar_t r_glsl_postprocess_uservec1 = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec1", "0 0 0 0", "a 4-component vector to pass as uservec1 to the postprocessing shader (only useful if default.glsl has been customized)"};
  cvar_t r_glsl_postprocess_uservec2 = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec2", "0 0 0 0", "a 4-component vector to pass as uservec2 to the postprocessing shader (only useful if default.glsl has been customized)"};
  cvar_t r_glsl_postprocess_uservec3 = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec3", "0 0 0 0", "a 4-component vector to pass as uservec3 to the postprocessing shader (only useful if default.glsl has been customized)"};
-@@ -275,6 +369,7 @@ rtexture_t *r_texture_grey128;
+@@ -275,6 +375,7 @@ rtexture_t *r_texture_grey128;
  rtexture_t *r_texture_black;
  rtexture_t *r_texture_notexture;
  rtexture_t *r_texture_whitecube;
@@ -125,7 +131,7 @@ index f9007caf..f7a54ef9 100644
  rtexture_t *r_texture_normalizationcube;
  rtexture_t *r_texture_fogattenuation;
  rtexture_t *r_texture_fogheighttexture;
-@@ -655,7 +750,8 @@ shaderpermutationinfo_t shaderpermutationinfo[SHADERPERMUTATION_COUNT] =
+@@ -655,7 +756,8 @@ shaderpermutationinfo_t shaderpermutationinfo[SHADERPERMUTATION_COUNT] =
  	{"#define USEDEPTHRGB\n", " depthrgb"},
  	{"#define USEALPHAGENVERTEX\n", " alphagenvertex"},
  	{"#define USESKELETAL\n", " skeletal"},
@@ -135,7 +141,7 @@ index f9007caf..f7a54ef9 100644
  };
  
  // NOTE: MUST MATCH ORDER OF SHADERMODE_* ENUMS!
-@@ -726,6 +822,7 @@ typedef struct r_glsl_permutation_s
+@@ -726,6 +828,7 @@ typedef struct r_glsl_permutation_s
  	int tex_Texture_ReflectMask;
  	int tex_Texture_ReflectCube;
  	int tex_Texture_BounceGrid;
@@ -143,7 +149,7 @@ index f9007caf..f7a54ef9 100644
  	/// locations of detected uniforms in program object, or -1 if not found
  	int loc_Texture_First;
  	int loc_Texture_Second;
-@@ -757,9 +854,11 @@ typedef struct r_glsl_permutation_s
+@@ -757,9 +860,17 @@ typedef struct r_glsl_permutation_s
  	int loc_Texture_ReflectMask;
  	int loc_Texture_ReflectCube;
  	int loc_Texture_BounceGrid;
@@ -152,10 +158,16 @@ index f9007caf..f7a54ef9 100644
  	int loc_BloomBlur_Parameters;
  	int loc_ClientTime;
 +	int loc_HapaxDrift_ContainerContent;
++	int loc_HapaxDrift_Amp;
++	int loc_HapaxDrift_AmpMax;
++	int loc_HapaxDrift_Freq;
++	int loc_HapaxDrift_Speed;
++	int loc_HapaxDrift_Swirl;
++	int loc_HapaxDrift_Content;
  	int loc_Color_Ambient;
  	int loc_Color_Diffuse;
  	int loc_Color_Specular;
-@@ -1032,9 +1131,9 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+@@ -1032,9 +1143,9 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
  	int vertstrings_count = 0;
  	int geomstrings_count = 0;
  	int fragstrings_count = 0;
@@ -168,7 +180,7 @@ index f9007caf..f7a54ef9 100644
  
  	if (p->compiled)
  		return;
-@@ -1196,9 +1295,11 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+@@ -1196,9 +1307,17 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
  		p->loc_Texture_ReflectMask        = qglGetUniformLocation(p->program, "Texture_ReflectMask");
  		p->loc_Texture_ReflectCube        = qglGetUniformLocation(p->program, "Texture_ReflectCube");
  		p->loc_Texture_BounceGrid         = qglGetUniformLocation(p->program, "Texture_BounceGrid");
@@ -177,10 +189,16 @@ index f9007caf..f7a54ef9 100644
  		p->loc_BloomBlur_Parameters       = qglGetUniformLocation(p->program, "BloomBlur_Parameters");
  		p->loc_ClientTime                 = qglGetUniformLocation(p->program, "ClientTime");
 +		p->loc_HapaxDrift_ContainerContent = qglGetUniformLocation(p->program, "HapaxDrift_ContainerContent");
++		p->loc_HapaxDrift_Amp             = qglGetUniformLocation(p->program, "HapaxDrift_Amp");
++		p->loc_HapaxDrift_AmpMax          = qglGetUniformLocation(p->program, "HapaxDrift_AmpMax");
++		p->loc_HapaxDrift_Freq            = qglGetUniformLocation(p->program, "HapaxDrift_Freq");
++		p->loc_HapaxDrift_Speed           = qglGetUniformLocation(p->program, "HapaxDrift_Speed");
++		p->loc_HapaxDrift_Swirl           = qglGetUniformLocation(p->program, "HapaxDrift_Swirl");
++		p->loc_HapaxDrift_Content         = qglGetUniformLocation(p->program, "HapaxDrift_Content");
  		p->loc_Color_Ambient              = qglGetUniformLocation(p->program, "Color_Ambient");
  		p->loc_Color_Diffuse              = qglGetUniformLocation(p->program, "Color_Diffuse");
  		p->loc_Color_Specular             = qglGetUniformLocation(p->program, "Color_Specular");
-@@ -1287,6 +1388,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+@@ -1287,6 +1406,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
  		p->tex_Texture_ReflectMask = -1;
  		p->tex_Texture_ReflectCube = -1;
  		p->tex_Texture_BounceGrid = -1;
@@ -188,7 +206,7 @@ index f9007caf..f7a54ef9 100644
  		// bind the texture samplers in use
  		sampler = 0;
  		if (p->loc_Texture_First           >= 0) {p->tex_Texture_First            = sampler;qglUniform1i(p->loc_Texture_First           , sampler);sampler++;}
-@@ -1319,6 +1421,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+@@ -1319,6 +1439,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
  		if (p->loc_Texture_ReflectMask     >= 0) {p->tex_Texture_ReflectMask      = sampler;qglUniform1i(p->loc_Texture_ReflectMask     , sampler);sampler++;}
  		if (p->loc_Texture_ReflectCube     >= 0) {p->tex_Texture_ReflectCube      = sampler;qglUniform1i(p->loc_Texture_ReflectCube     , sampler);sampler++;}
  		if (p->loc_Texture_BounceGrid      >= 0) {p->tex_Texture_BounceGrid       = sampler;qglUniform1i(p->loc_Texture_BounceGrid      , sampler);sampler++;}
@@ -196,7 +214,22 @@ index f9007caf..f7a54ef9 100644
  		// get the uniform block indices so we can bind them
  		p->ubiloc_Skeletal_Transform12_UniformBlock = -1;
  #ifndef USE_GLES2 /* FIXME: GLES3 only */
-@@ -1575,6 +1678,11 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
+@@ -1388,6 +1509,14 @@ static void R_SetupShader_SetPermutationGLSL(unsigned int mode, uint64_t permuta
+ 	if (r_glsl_permutation->loc_ModelViewProjectionMatrix >= 0) qglUniformMatrix4fv(r_glsl_permutation->loc_ModelViewProjectionMatrix, 1, false, gl_modelviewprojection16f);
+ 	if (r_glsl_permutation->loc_ModelViewMatrix >= 0) qglUniformMatrix4fv(r_glsl_permutation->loc_ModelViewMatrix, 1, false, gl_modelview16f);
+ 	if (r_glsl_permutation->loc_ClientTime >= 0) qglUniform1f(r_glsl_permutation->loc_ClientTime, cl.time);
++	// (hapax) geometric-drift scene-global params — pushed per program activation so they reach
++	// the lit AND depth/shadow programs identically (deform + shadow stay coupled).
++	if (r_glsl_permutation->loc_HapaxDrift_Amp     >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_Amp,     hapax_drift_geo_amp.value);
++	if (r_glsl_permutation->loc_HapaxDrift_AmpMax  >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_AmpMax,  hapax_drift_geo_ampmax.value);
++	if (r_glsl_permutation->loc_HapaxDrift_Freq    >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_Freq,    hapax_drift_geo_freq.value);
++	if (r_glsl_permutation->loc_HapaxDrift_Speed   >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_Speed,   hapax_drift_geo_speed.value);
++	if (r_glsl_permutation->loc_HapaxDrift_Swirl   >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_Swirl,   hapax_drift_geo_swirl.value);
++	if (r_glsl_permutation->loc_HapaxDrift_Content >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_Content, hapax_drift_geo_content.value);
+ 	CHECKGLERROR
+ }
+ 
+@@ -1575,6 +1704,11 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
  	r_waterstate_waterplane_t *waterplane = (r_waterstate_waterplane_t *)surfacewaterplane;
  	if (r_trippy.integer && !notrippy)
  		permutation |= SHADERPERMUTATION_TRIPPY;
@@ -208,7 +241,7 @@ index f9007caf..f7a54ef9 100644
  	if (t->currentmaterialflags & MATERIALFLAG_ALPHATEST)
  		permutation |= SHADERPERMUTATION_ALPHAKILL;
  	if (t->currentmaterialflags & MATERIALFLAG_OCCLUDE)
-@@ -2083,6 +2191,10 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
+@@ -2083,6 +2217,10 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
  		}
  		if (r_glsl_permutation->tex_Texture_BounceGrid  >= 0) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_BounceGrid, r_shadow_bouncegrid_state.texture);
  		if (r_glsl_permutation->tex_Texture_LightGrid   >= 0 && r_refdef.scene.worldmodel) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_LightGrid, r_refdef.scene.worldmodel->brushq3.lightgridtexture);
@@ -219,7 +252,7 @@ index f9007caf..f7a54ef9 100644
  		CHECKGLERROR
  		break;
  	}
-@@ -2746,6 +2858,297 @@ static void R_SkinFrame_GenerateTexturesFromQPixels(skinframe_t *skinframe, qboo
+@@ -2746,6 +2884,297 @@ static void R_SkinFrame_GenerateTexturesFromQPixels(skinframe_t *skinframe, qboo
  	}
  }
  
@@ -517,7 +550,7 @@ index f9007caf..f7a54ef9 100644
  skinframe_t *R_SkinFrame_LoadInternal8bit(const char *name, int textureflags, const unsigned char *skindata, int width, int height, const unsigned int *palette, const unsigned int *alphapalette)
  {
  	int i;
-@@ -3288,6 +3691,18 @@ void GL_Main_Init(void)
+@@ -3288,6 +3717,18 @@ void GL_Main_Init(void)
  	Cvar_RegisterVariable(&r_sortentities);
  	Cvar_RegisterVariable(&r_drawviewmodel);
  	Cvar_RegisterVariable(&r_drawexteriormodel);
@@ -536,15 +569,21 @@ index f9007caf..f7a54ef9 100644
  	Cvar_RegisterVariable(&r_speeds);
  	Cvar_RegisterVariable(&r_fullbrights);
  	Cvar_RegisterVariable(&r_wateralpha);
-@@ -3341,6 +3756,7 @@ void GL_Main_Init(void)
+@@ -3341,6 +3782,13 @@ void GL_Main_Init(void)
  	Cvar_RegisterVariable(&r_glsl_offsetmapping_lod);
  	Cvar_RegisterVariable(&r_glsl_offsetmapping_lod_distance);
  	Cvar_RegisterVariable(&r_glsl_postprocess);
 +	Cvar_RegisterVariable(&hapax_drift_enable);
++	Cvar_RegisterVariable(&hapax_drift_geo_amp);
++	Cvar_RegisterVariable(&hapax_drift_geo_ampmax);
++	Cvar_RegisterVariable(&hapax_drift_geo_freq);
++	Cvar_RegisterVariable(&hapax_drift_geo_speed);
++	Cvar_RegisterVariable(&hapax_drift_geo_swirl);
++	Cvar_RegisterVariable(&hapax_drift_geo_content);
  	Cvar_RegisterVariable(&r_glsl_postprocess_uservec1);
  	Cvar_RegisterVariable(&r_glsl_postprocess_uservec2);
  	Cvar_RegisterVariable(&r_glsl_postprocess_uservec3);
-@@ -5649,6 +6065,8 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
+@@ -5649,6 +6097,8 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
  	if (r_timereport_active)
  		R_TimeReport("start");
  	r_textureframe++; // used only by R_GetCurrentTexture
@@ -576,10 +615,10 @@ index 7fbcd0b3..8ec3075c 100644
  extern rtexture_t *r_texture_notexture;
  extern rtexture_t *r_texture_whitecube;
 diff --git a/shader_glsl.h b/shader_glsl.h
-index dc56d085..88f9eba7 100644
+index dc56d085..0715dfa2 100644
 --- a/shader_glsl.h
 +++ b/shader_glsl.h
-@@ -178,6 +178,43 @@
+@@ -178,6 +178,62 @@
  "	return position;\n",
  "}\n",
  "#endif\n",
@@ -592,11 +631,12 @@ index dc56d085..88f9eba7 100644
 +"uniform highp float ClientTime;\n",
 +"#endif\n",
 +"uniform highp float HapaxDrift_ContainerContent;\n",
-+"#define HPX_FREQ 0.015\n",
-+"#define HPX_SPEED 0.25\n",
-+"#define HPX_AMP 20.0\n",
-+"#define HPX_AMPMAX 30.0\n",
-+"#define HPX_CONTENT 0.13\n",
++"uniform highp float HapaxDrift_Amp;\n",
++"uniform highp float HapaxDrift_AmpMax;\n",
++"uniform highp float HapaxDrift_Freq;\n",
++"uniform highp float HapaxDrift_Speed;\n",
++"uniform highp float HapaxDrift_Swirl;\n",
++"uniform highp float HapaxDrift_Content;\n",
 +"float hpxHash(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }\n",
 +"float hpxVNoise(vec3 p){\n",
 +"	vec3 i = floor(p); vec3 f = fract(p); f = f*f*(3.0 - 2.0*f);\n",
@@ -611,33 +651,51 @@ index dc56d085..88f9eba7 100644
 +"	return mix(mix(mix(n000,n100,f.x), mix(n010,n110,f.x), f.y), mix(mix(n001,n101,f.x), mix(n011,n111,f.x), f.y), f.z);\n",
 +"}\n",
 +"vec3 hpxNoise3(vec3 p){ return vec3(hpxVNoise(p), hpxVNoise(p + vec3(31.4,17.1,5.2)), hpxVNoise(p + vec3(7.7,41.3,23.9))); }\n",
-+"// hpxD: model-space displacement. drive in [0,1] gates amplitude (currency later).\n",
-+"vec3 hpxD(vec3 p, float drive){\n",
-+"	vec3 n = hpxNoise3(p*HPX_FREQ + vec3(ClientTime*HPX_SPEED)) - vec3(0.5);\n",
-+"	vec3 disp = (HPX_AMP*2.0) * drive * n;\n",
++"// curl of the value-noise field => divergence-free rotational flow (C1, seam-safe swirl).\n",
++"vec3 hpxCurl(vec3 p){\n",
++"	const float e = 0.5;\n",
++"	vec3 dx = vec3(e,0.0,0.0), dy = vec3(0.0,e,0.0), dz = vec3(0.0,0.0,e);\n",
++"	float x = (hpxVNoise(p+dy+vec3(19.1,0.0,0.0)) - hpxVNoise(p-dy+vec3(19.1,0.0,0.0))) - (hpxVNoise(p+dz+vec3(0.0,0.0,43.7)) - hpxVNoise(p-dz+vec3(0.0,0.0,43.7)));\n",
++"	float y = (hpxVNoise(p+dz+vec3(0.0,7.3,0.0)) - hpxVNoise(p-dz+vec3(0.0,7.3,0.0))) - (hpxVNoise(p+dx+vec3(91.2,0.0,0.0)) - hpxVNoise(p-dx+vec3(91.2,0.0,0.0)));\n",
++"	float z = (hpxVNoise(p+dx+vec3(2.9,0.0,0.0)) - hpxVNoise(p-dx+vec3(2.9,0.0,0.0))) - (hpxVNoise(p+dy+vec3(0.0,57.4,0.0)) - hpxVNoise(p-dy+vec3(0.0,57.4,0.0)));\n",
++"	return vec3(x,y,z)/(2.0*e);\n",
++"}\n",
++"// hpxDisp: the composable deformer STACK (each op C1). Smooth low-freq region weights\n",
++"// blend value-noise displacement vs curl swirl => different zones drift with different\n",
++"// character, slowly evolving => endless variety. Returns a ~unit-scale displacement.\n",
++"vec3 hpxDisp(vec3 p, float t){\n",
++"	vec3 base  = hpxNoise3(p*HapaxDrift_Freq + vec3(t*HapaxDrift_Speed)) - vec3(0.5);\n",
++"	vec3 swirl = hpxCurl(p*HapaxDrift_Freq*0.8 + vec3(t*HapaxDrift_Speed*0.6)) * HapaxDrift_Swirl;\n",
++"	float w = 0.5 + 0.5*hpxVNoise(p*HapaxDrift_Freq*0.3 + vec3(t*0.05));\n",
++"	return mix(base, swirl, w);\n",
++"}\n",
++"// hpxD: model-space deform. amp is the ABSOLUTE displacement amplitude (units), chosen\n",
++"// per-surface = container amp vs content amp, so the two are independently tunable.\n",
++"vec3 hpxD(vec3 p, float amp){\n",
++"	vec3 disp = (amp*2.0) * hpxDisp(p, ClientTime);\n",
 +"	float m = length(disp);\n",
-+"	if (m > HPX_AMPMAX) disp *= HPX_AMPMAX / m;\n",
++"	if (m > HapaxDrift_AmpMax) disp *= HapaxDrift_AmpMax / m;\n",
 +"	return p + disp;\n",
 +"}\n",
 +"#endif\n",
  "#endif\n",
  "\n",
  "#ifdef MODE_DEPTH_OR_SHADOW\n",
-@@ -196,7 +233,13 @@
+@@ -196,7 +252,13 @@
  "	vec4 SkeletalVertex = Attrib_Position * SkeletalMatrix;\n",
  "#define Attrib_Position SkeletalVertex\n",
  "#endif\n",
 +"#ifdef USEHAPAXDRIFT\n",
 +"	// shadow/depth pass: deform position with the SAME hpxD as the lit pass so the\n",
 +"	// cast shadow + silhouette track the morphed surface (no rest-pose shadow detach).\n",
-+"	gl_Position = ModelViewProjectionMatrix * vec4(hpxD(Attrib_Position.xyz, mix(1.0, HPX_CONTENT, HapaxDrift_ContainerContent)), 1.0);\n",
++"	gl_Position = ModelViewProjectionMatrix * vec4(hpxD(Attrib_Position.xyz, mix(HapaxDrift_Amp, HapaxDrift_Content, HapaxDrift_ContainerContent)), 1.0);\n",
 +"#else\n",
  "	gl_Position = ModelViewProjectionMatrix * Attrib_Position;\n",
 +"#endif\n",
  "#ifdef USETRIPPY\n",
  "	gl_Position = TrippyVertex(gl_Position);\n",
  "#endif\n",
-@@ -773,6 +816,8 @@
+@@ -773,6 +835,8 @@
  "#ifdef MODE_DEFERREDGEOMETRY\n",
  "dp_varying highp float Depth;\n",
  "#endif\n",
@@ -646,7 +704,7 @@ index dc56d085..88f9eba7 100644
  "\n",
  "\n",
  "\n",
-@@ -1327,6 +1372,35 @@
+@@ -1327,6 +1391,35 @@
  "#define Attrib_TexCoord3 SkeletalNormal\n",
  "#endif\n",
  "\n",
@@ -657,12 +715,12 @@ index dc56d085..88f9eba7 100644
 +"	// geometry. Normal recomputed by finite-difference of hpxD along the tangents so\n",
 +"	// shading tracks the new surface (no flat-lit ripples).\n",
 +"	vec3 hpx_P0 = Attrib_Position.xyz;\n",
-+"	float hpx_drv = mix(1.0, HPX_CONTENT, HapaxDrift_ContainerContent);\n",
-+"	vec3 hpx_Pd = hpxD(hpx_P0, hpx_drv);\n",
++"	float hpx_amp = mix(HapaxDrift_Amp, HapaxDrift_Content, HapaxDrift_ContainerContent);\n",
++"	vec3 hpx_Pd = hpxD(hpx_P0, hpx_amp);\n",
 +"	vec3 hpx_S  = Attrib_TexCoord1.xyz;\n",
 +"	vec3 hpx_T  = Attrib_TexCoord2.xyz;\n",
-+"	vec3 hpx_dS = hpxD(hpx_P0 + hpx_S, hpx_drv) - hpx_Pd;\n",
-+"	vec3 hpx_dT = hpxD(hpx_P0 + hpx_T, hpx_drv) - hpx_Pd;\n",
++"	vec3 hpx_dS = hpxD(hpx_P0 + hpx_S, hpx_amp) - hpx_Pd;\n",
++"	vec3 hpx_dT = hpxD(hpx_P0 + hpx_T, hpx_amp) - hpx_Pd;\n",
 +"	vec3 hpx_Nd = normalize(cross(hpx_dS, hpx_dT));\n",
 +"	if (dot(hpx_Nd, Attrib_TexCoord3.xyz) < 0.0) hpx_Nd = -hpx_Nd;\n",
 +"	vec4 HapaxDrift_Vtx  = vec4(hpx_Pd, 1.0);\n",
@@ -682,7 +740,7 @@ index dc56d085..88f9eba7 100644
  "#if defined(MODE_VERTEXCOLOR) || defined(USEVERTEXTEXTUREBLEND) || defined(MODE_LIGHTDIRECTIONMAP_FORCED_VERTEXCOLOR) || defined(USEALPHAGENVERTEX)\n",
  "	VertexColor = Attrib_Color;\n",
  "#endif\n",
-@@ -1404,6 +1478,8 @@
+@@ -1404,6 +1497,8 @@
  "#endif\n",
  "\n",
  "	// transform vertex to clipspace (post-projection, but before perspective divide by W occurs)\n",
@@ -691,7 +749,7 @@ index dc56d085..88f9eba7 100644
  "	gl_Position = ModelViewProjectionMatrix * Attrib_Position;\n",
  "\n",
  "#ifdef USESHADOWMAPORTHO\n",
-@@ -1466,6 +1542,9 @@
+@@ -1466,6 +1561,9 @@
  "    uint allpixels;\n",
  "};\n",
  "#endif\n",
@@ -701,7 +759,7 @@ index dc56d085..88f9eba7 100644
  "void main(void)\n",
  "{\n",
  "#ifdef USEOFFSETMAPPING\n",
-@@ -1797,6 +1876,47 @@
+@@ -1797,6 +1895,47 @@
  "   color.rgb *= clamp(float(visiblepixels) / float(allpixels), 0.0, 1.0);\n",
  "#endif\n",
  "\n",
