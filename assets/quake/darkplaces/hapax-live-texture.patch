@@ -1,5 +1,5 @@
 diff --git a/gl_rmain.c b/gl_rmain.c
-index f9007caf..f9103c2b 100644
+index f9007caf..31b7c283 100644
 --- a/gl_rmain.c
 +++ b/gl_rmain.c
 @@ -28,6 +28,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
@@ -214,7 +214,7 @@ index f9007caf..f9103c2b 100644
  		// get the uniform block indices so we can bind them
  		p->ubiloc_Skeletal_Transform12_UniformBlock = -1;
  #ifndef USE_GLES2 /* FIXME: GLES3 only */
-@@ -1388,6 +1509,14 @@ static void R_SetupShader_SetPermutationGLSL(unsigned int mode, uint64_t permuta
+@@ -1388,6 +1509,19 @@ static void R_SetupShader_SetPermutationGLSL(unsigned int mode, uint64_t permuta
  	if (r_glsl_permutation->loc_ModelViewProjectionMatrix >= 0) qglUniformMatrix4fv(r_glsl_permutation->loc_ModelViewProjectionMatrix, 1, false, gl_modelviewprojection16f);
  	if (r_glsl_permutation->loc_ModelViewMatrix >= 0) qglUniformMatrix4fv(r_glsl_permutation->loc_ModelViewMatrix, 1, false, gl_modelview16f);
  	if (r_glsl_permutation->loc_ClientTime >= 0) qglUniform1f(r_glsl_permutation->loc_ClientTime, cl.time);
@@ -226,10 +226,15 @@ index f9007caf..f9103c2b 100644
 +	if (r_glsl_permutation->loc_HapaxDrift_Speed   >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_Speed,   hapax_drift_geo_speed.value);
 +	if (r_glsl_permutation->loc_HapaxDrift_Swirl   >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_Swirl,   hapax_drift_geo_swirl.value);
 +	if (r_glsl_permutation->loc_HapaxDrift_Content >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_Content, hapax_drift_geo_content.value);
++	// (hapax) per-surface container(0)/content(1) selector — pushed HERE (per activation = per
++	// batch, after the program-change guard) so it reaches BOTH the lit and depth/shadow programs.
++	// Without this in the shadow pass, content geometry cast shadows at container amplitude
++	// (silhouette-detach: entity shadows deforming far more than their lit bodies).
++	if (r_glsl_permutation->loc_HapaxDrift_ContainerContent >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_ContainerContent, (rsurface.entity && rsurface.entity != r_refdef.scene.worldentity) ? 1.0f : 0.0f);
  	CHECKGLERROR
  }
  
-@@ -1575,6 +1704,11 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
+@@ -1575,6 +1709,11 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
  	r_waterstate_waterplane_t *waterplane = (r_waterstate_waterplane_t *)surfacewaterplane;
  	if (r_trippy.integer && !notrippy)
  		permutation |= SHADERPERMUTATION_TRIPPY;
@@ -241,18 +246,17 @@ index f9007caf..f9103c2b 100644
  	if (t->currentmaterialflags & MATERIALFLAG_ALPHATEST)
  		permutation |= SHADERPERMUTATION_ALPHAKILL;
  	if (t->currentmaterialflags & MATERIALFLAG_OCCLUDE)
-@@ -2083,6 +2217,10 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
+@@ -2083,6 +2222,9 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
  		}
  		if (r_glsl_permutation->tex_Texture_BounceGrid  >= 0) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_BounceGrid, r_shadow_bouncegrid_state.texture);
  		if (r_glsl_permutation->tex_Texture_LightGrid   >= 0 && r_refdef.scene.worldmodel) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_LightGrid, r_refdef.scene.worldmodel->brushq3.lightgridtexture);
 +		if (r_glsl_permutation->tex_Texture_HapaxDriftField >= 0) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_HapaxDriftField, r_hapax_driftfield_texture ? r_hapax_driftfield_texture : r_texture_grey128);
-+		// (hapax) per-surface container(0)/content(1) selector so the deform amplitude can
-+		// differ between huge coarse world brushes and small dense entity models (the AoA).
-+		if (r_glsl_permutation->loc_HapaxDrift_ContainerContent >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_ContainerContent, (rsurface.entity && rsurface.entity != r_refdef.scene.worldentity) ? 1.0f : 0.0f);
++		// (hapax) ContainerContent now pushed in R_SetupShader_SetPermutationGLSL so it reaches
++		// the depth/shadow program too (fixes entity silhouette-detach); no per-surface push here.
  		CHECKGLERROR
  		break;
  	}
-@@ -2746,6 +2884,297 @@ static void R_SkinFrame_GenerateTexturesFromQPixels(skinframe_t *skinframe, qboo
+@@ -2746,6 +2888,297 @@ static void R_SkinFrame_GenerateTexturesFromQPixels(skinframe_t *skinframe, qboo
  	}
  }
  
@@ -550,7 +554,7 @@ index f9007caf..f9103c2b 100644
  skinframe_t *R_SkinFrame_LoadInternal8bit(const char *name, int textureflags, const unsigned char *skindata, int width, int height, const unsigned int *palette, const unsigned int *alphapalette)
  {
  	int i;
-@@ -3288,6 +3717,18 @@ void GL_Main_Init(void)
+@@ -3288,6 +3721,18 @@ void GL_Main_Init(void)
  	Cvar_RegisterVariable(&r_sortentities);
  	Cvar_RegisterVariable(&r_drawviewmodel);
  	Cvar_RegisterVariable(&r_drawexteriormodel);
@@ -569,7 +573,7 @@ index f9007caf..f9103c2b 100644
  	Cvar_RegisterVariable(&r_speeds);
  	Cvar_RegisterVariable(&r_fullbrights);
  	Cvar_RegisterVariable(&r_wateralpha);
-@@ -3341,6 +3782,13 @@ void GL_Main_Init(void)
+@@ -3341,6 +3786,13 @@ void GL_Main_Init(void)
  	Cvar_RegisterVariable(&r_glsl_offsetmapping_lod);
  	Cvar_RegisterVariable(&r_glsl_offsetmapping_lod_distance);
  	Cvar_RegisterVariable(&r_glsl_postprocess);
@@ -583,7 +587,7 @@ index f9007caf..f9103c2b 100644
  	Cvar_RegisterVariable(&r_glsl_postprocess_uservec1);
  	Cvar_RegisterVariable(&r_glsl_postprocess_uservec2);
  	Cvar_RegisterVariable(&r_glsl_postprocess_uservec3);
-@@ -5649,6 +6097,8 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
+@@ -5649,6 +6101,8 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
  	if (r_timereport_active)
  		R_TimeReport("start");
  	r_textureframe++; // used only by R_GetCurrentTexture
