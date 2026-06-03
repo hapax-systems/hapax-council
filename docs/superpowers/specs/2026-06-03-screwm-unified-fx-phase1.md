@@ -40,7 +40,20 @@ contract tests run ONLY in `test-full-shard` (merge_group) — invisible on PR p
 - **3a-pre (NOW — the invisible work)** USERUTT_ETRA needs full SHADERSTATICPARM plumbing: (1) `SHADERSTATICPARM_POSTPROCESS_RUTTETRA=15` in the enum (gl_rmain.c:~962); (2) bump `SHADERSTATICPARMS_COUNT` 15→16; (3) `r_glsl_postprocess_ruttetra_enable` cvar (~:288) + register (~:3795); (4) detect clause in `R_CompileShader_CheckStaticParms` (~:998); (5) `R_COMPILESHADER_STATICPARM_EMIT(...,"USERUTT_ETRA")` (~:1029). Without all 5 the `#ifdef` is dead code.
 - **3a (NOW)** generalize `R_BlendView` (gl_rmain.c:5769, single call site :6245) → `R_BlendView_N(passes, n)`; KEEP old. Per-pass: `R_RenderTarget_Get` scratch (bloom precedent :5581-5624), bind prev as Texture_First, set UserVecs, draw, cycle; final→screen. **Phase 1 caller passes `NULL,0` → pixel-identical (backward-compat proof).**
 - **3b (NOW)** rutt_etra content fragment — **inside USEPOSTPROCESSING (before USEBLOOM @427), NOT after USEGAMMARAMPS** (else samples gamma-corrected buffer). UV normalized [0,1]; `viewport_height=1.0/PixelSize.y`; map 4 params into UserVec3.
-- **⚠ CRC GATE:** this shader edit changes the builtin CRC → run 0a; **regenerate** crc59807+crc27804 to the new CRC filename byte-identical to what `test_screwm_shader_effects_are_diagnostic_screen_space_only` asserts (both equal; gl_FragCoord absent). Re-run `test_screwm_quake_migration_contract.py` locally (NOT in PR suite).
+- **⚠ CRC GATE — CORRECTED (2026-06-03 ground-truth, supersedes the original byte-identical-regen instruction):**
+  this shader edit changes the builtin CRC (measured **9143 → 36975** via the engine's exact
+  `CRC_Block` = CRC-16-CCITT poly 0x1021/init 0xffff, reproduced offline through the real C
+  preprocessor; self-test `123456789`→0x29B1). **Do NOT regenerate a byte-identical
+  `combined_crc<NEW>.glsl`.** VALIDATED across 18 build clones that the canary stopped loading on
+  2026-06-03 15:18 when the #3837 deploy moved the builtin CRC **59807 → 9143** with no matching
+  override — the deployed engine already uses the geometry-bound builtin, not the canary. A
+  byte-identical copy at the new CRC would make the engine load the **stale pre-#3837 59807-era
+  screen-space suite** (a regression). Correct, behavior-preserving action: leave
+  `combined_crc59807/27804.glsl` byte-frozen, let the builtin run; `check-shader-crc-override.sh`
+  stays green (it pins canary *file* identity, not loading). Re-ran the contract + guard locally —
+  green. **Follow-ups (need `r_glsl_dumpshader`, offscreen xvfb — no device conflict):** re-arm the
+  tripwire from the *current* builtin; add an orphaning-detection gate (the file-content contract
+  test missed the silent orphan). Full evidence: the AVSDLC dossier.
 
 ### STEP 4 — Drive wire (IMPLEMENTABLE NOW)
 - **4a** `darkplaces-state-export.py` near `_slotdrift_local_effect_proxy_mix`(:1100)+`is_live`(:2081) — emit `data/drift-geo-{amp,ampmax,freq,speed,swirl,content}.txt` from the same `spatial_pressure` (is_live-gated). Additive.
@@ -79,9 +92,12 @@ recruiter populates passes (Phase 2); geo wire only fires under `is_live`; geome
 stubbed-not-activated; canaries stay byte-identical. Ships the unified abstraction end-to-end
 (content live, geometry declared+proxied) without changing live visual output until Phase 2 drives it.
 
-## Commit sequencing (one branch, verifiable chunks)
-1. **Schema + serialization safeguard** (STEP 1) — DONE.
-2. CI visibility + port-owner contract registration (STEP 7 + 8).
-3. Engine (STEP 0, 2a, 3) with the CRC regen gate.
-4. Drive wire + perf gate + deploy path (STEP 4, 6, 9).
-5. Legibility-floor design docs (STEP 5) recorded in the contract.
+## Commit sequencing (one branch, verifiable chunks) — status 2026-06-03
+1. **Schema + serialization safeguard** (STEP 1) — ✅ DONE (`e3b5ab0f2`).
+2. **CI visibility + port-owner** (STEP 7) — ✅ DONE (`6a3158776`); **STEP 0a CRC guard** — ✅ DONE (`75590e9cf`).
+3. **Engine** — ✅ DONE: Commit 1 `1feabd35a` (geo cvar CF_SERVER reflag, `R_BlendView_N` NULL/0≡R_BlendView, USERUTT_ETRA SHADERSTATICPARM plumbing, `r_blendview_pass_t`); Commit 2 `cd4b4ac7b` (`opRuttEtra_luma_height` + USERUTT_ETRA MODE_POSTPROCESS content pass + UserVec3, default-off). **CRC-regen gate REMOVED** — ground-truth showed the canary is already orphaned (corrected STEP 3b); no regen.
+4. **Drive wire + perf gate + deploy path** (STEP 4, 6, 9) — PENDING. STEP 4 mutates the LIVE `coupling.qc` (722 ln) + `darkplaces-state-export.py` (2416 ln) → deserves a fresh focused session (drives live geometry); STEP 6/9 need offscreen engine runs.
+5. **Legibility-floor** (STEP 5) — design recorded above (5f/5g); the conservative geo defaults (amp=24 ≤ ampmax=36, content=5 — below the floor) are pinned in `test_screwm_quake_migration_contract.py` so any increase is a conscious decision that requires implementing 5f/5g first.
+
+**PR #3870 (draft):** chunks 1–3 landed, CI-green, behavior-preserving by construction. Marking
+ready needs real offscreen frame-parity evidence (chunk 4 perf/deploy harness) + the canary re-arm.

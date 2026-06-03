@@ -1117,3 +1117,27 @@ def test_screwm_quake_systemd_watchdog_gate_is_documented() -> None:
     assert "ExecStart=/usr/bin/bash -lc 'exec " in unit
     assert "scripts/darkplaces-v4l2-xvfb.sh" in unit
     assert "WatchdogSec=30s" in unit
+
+
+def test_screwm_geo_drift_defaults_stay_within_legibility_floor() -> None:
+    """Geo drift amplitudes ship at conservative defaults until the legibility floor
+    (spec 2026-06-03 STEP 5 — 5f cull-bbox<->ampmax `AMPMAX_SAFE=min(bbox)*(1-CULL_MARGIN)`,
+    5g rest-pose metric `0.4*IoU + 0.3*(1-max_disp/AMPMAX_SAFE) + 0.3*edge_corr >= 0.70`) is
+    implemented and measured. Pinning the defaults makes any increase a conscious decision that
+    must first land the floor — closing the gap that let prior shader changes drift unreviewed."""
+    patch = (REPO_ROOT / "assets" / "quake" / "darkplaces" / "hapax-live-texture.patch").read_text(
+        encoding="utf-8"
+    )
+    expected = {
+        "hapax_drift_geo_amp": 24,
+        "hapax_drift_geo_ampmax": 36,
+        "hapax_drift_geo_content": 5,
+    }
+    for name, want in expected.items():
+        match = re.search(rf'"{name}",\s*"(\d+)"', patch)
+        assert match is not None, f"geo cvar {name} default missing from patch"
+        assert int(match.group(1)) == want, (
+            f"{name} default changed from {want}; STEP 5 legibility floor (5f/5g) must land first"
+        )
+    # Container amplitude must never exceed the hard displacement clamp.
+    assert expected["hapax_drift_geo_amp"] <= expected["hapax_drift_geo_ampmax"]
