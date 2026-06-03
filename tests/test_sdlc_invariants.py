@@ -130,6 +130,26 @@ class TestInv2Liveness:
         r = check_inv2_liveness([], now=1_000_000.0, stale_after_s=3600)
         assert r.holds
 
+    def test_s7_release_is_operational_terminal_not_stuck(self):
+        # S7_RELEASE (token "S7") is the OPERATIONAL terminal: a released/merged task
+        # is done, not stuck — even when its last ledger stamp is long past. This is
+        # the false positive INV-2 fired on ~47 released tasks (the bug this fixes).
+        trace = [{"task_id": "released", "to_stage": "S7", "timestamp": 100.0}]
+        r = check_inv2_liveness(trace, now=1_000_000.0, stale_after_s=3600)
+        assert r.holds, r.violations
+
+    def test_stale_s6_stuck_while_released_s7_is_live(self):
+        # Discrimination: a stale mid-implementation S6 IS stuck (a real signal), but
+        # a stale released S7 is NOT — recognizing S7 must not silence a genuine S6.
+        trace = [
+            {"task_id": "mid", "to_stage": "S6", "timestamp": 100.0},
+            {"task_id": "released", "to_stage": "S7", "timestamp": 100.0},
+        ]
+        r = check_inv2_liveness(trace, now=1_000_000.0, stale_after_s=3600)
+        assert not r.holds
+        assert any("mid:stuck:S6" in v for v in r.violations)
+        assert not any(v.startswith("released") for v in r.violations)
+
 
 # --- INV-2 ledger parsing: the producer/consumer field contract (regression) --
 
@@ -182,6 +202,20 @@ class TestLoadLedgerTrace:
         finally:
             path.unlink(missing_ok=True)
         assert abs(float(trace[0]["timestamp"]) - expected) < 1.0
+
+    def test_released_s7_release_record_is_live_via_loader(self):
+        # End-to-end: the live ledger writes the full token "S7_RELEASE"; the loader
+        # tokenizes it to "S7", which INV-2 must read as the operational terminal
+        # (done, not stuck) even for a release stamped days ago.
+        iso = "2026-05-25T00:00:00Z"
+        ref = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+        path = self._write([{"ts": iso, "task_id": "released", "to_stage": "S7_RELEASE"}])
+        try:
+            trace = _load_ledger_trace(path)
+            r = check_inv2_liveness(trace, now=ref + 7 * 86400.0, stale_after_s=86400.0)
+        finally:
+            path.unlink(missing_ok=True)
+        assert r.holds, r.violations
 
 
 # --- INV-4 / INV-5 build on Phase 3b policy_decide ----------------------------
