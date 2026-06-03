@@ -1,5 +1,5 @@
 diff --git a/gl_rmain.c b/gl_rmain.c
-index f9007caf..c4fc1ca8 100644
+index f9007caf..f7a54ef9 100644
 --- a/gl_rmain.c
 +++ b/gl_rmain.c
 @@ -28,6 +28,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
@@ -143,7 +143,7 @@ index f9007caf..c4fc1ca8 100644
  	/// locations of detected uniforms in program object, or -1 if not found
  	int loc_Texture_First;
  	int loc_Texture_Second;
-@@ -757,6 +854,7 @@ typedef struct r_glsl_permutation_s
+@@ -757,9 +854,11 @@ typedef struct r_glsl_permutation_s
  	int loc_Texture_ReflectMask;
  	int loc_Texture_ReflectCube;
  	int loc_Texture_BounceGrid;
@@ -151,7 +151,11 @@ index f9007caf..c4fc1ca8 100644
  	int loc_Alpha;
  	int loc_BloomBlur_Parameters;
  	int loc_ClientTime;
-@@ -1032,9 +1130,9 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
++	int loc_HapaxDrift_ContainerContent;
+ 	int loc_Color_Ambient;
+ 	int loc_Color_Diffuse;
+ 	int loc_Color_Specular;
+@@ -1032,9 +1131,9 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
  	int vertstrings_count = 0;
  	int geomstrings_count = 0;
  	int fragstrings_count = 0;
@@ -164,7 +168,7 @@ index f9007caf..c4fc1ca8 100644
  
  	if (p->compiled)
  		return;
-@@ -1196,6 +1294,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+@@ -1196,9 +1295,11 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
  		p->loc_Texture_ReflectMask        = qglGetUniformLocation(p->program, "Texture_ReflectMask");
  		p->loc_Texture_ReflectCube        = qglGetUniformLocation(p->program, "Texture_ReflectCube");
  		p->loc_Texture_BounceGrid         = qglGetUniformLocation(p->program, "Texture_BounceGrid");
@@ -172,7 +176,11 @@ index f9007caf..c4fc1ca8 100644
  		p->loc_Alpha                      = qglGetUniformLocation(p->program, "Alpha");
  		p->loc_BloomBlur_Parameters       = qglGetUniformLocation(p->program, "BloomBlur_Parameters");
  		p->loc_ClientTime                 = qglGetUniformLocation(p->program, "ClientTime");
-@@ -1287,6 +1386,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
++		p->loc_HapaxDrift_ContainerContent = qglGetUniformLocation(p->program, "HapaxDrift_ContainerContent");
+ 		p->loc_Color_Ambient              = qglGetUniformLocation(p->program, "Color_Ambient");
+ 		p->loc_Color_Diffuse              = qglGetUniformLocation(p->program, "Color_Diffuse");
+ 		p->loc_Color_Specular             = qglGetUniformLocation(p->program, "Color_Specular");
+@@ -1287,6 +1388,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
  		p->tex_Texture_ReflectMask = -1;
  		p->tex_Texture_ReflectCube = -1;
  		p->tex_Texture_BounceGrid = -1;
@@ -180,7 +188,7 @@ index f9007caf..c4fc1ca8 100644
  		// bind the texture samplers in use
  		sampler = 0;
  		if (p->loc_Texture_First           >= 0) {p->tex_Texture_First            = sampler;qglUniform1i(p->loc_Texture_First           , sampler);sampler++;}
-@@ -1319,6 +1419,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+@@ -1319,6 +1421,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
  		if (p->loc_Texture_ReflectMask     >= 0) {p->tex_Texture_ReflectMask      = sampler;qglUniform1i(p->loc_Texture_ReflectMask     , sampler);sampler++;}
  		if (p->loc_Texture_ReflectCube     >= 0) {p->tex_Texture_ReflectCube      = sampler;qglUniform1i(p->loc_Texture_ReflectCube     , sampler);sampler++;}
  		if (p->loc_Texture_BounceGrid      >= 0) {p->tex_Texture_BounceGrid       = sampler;qglUniform1i(p->loc_Texture_BounceGrid      , sampler);sampler++;}
@@ -188,25 +196,30 @@ index f9007caf..c4fc1ca8 100644
  		// get the uniform block indices so we can bind them
  		p->ubiloc_Skeletal_Transform12_UniformBlock = -1;
  #ifndef USE_GLES2 /* FIXME: GLES3 only */
-@@ -1575,6 +1676,9 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
+@@ -1575,6 +1678,11 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
  	r_waterstate_waterplane_t *waterplane = (r_waterstate_waterplane_t *)surfacewaterplane;
  	if (r_trippy.integer && !notrippy)
  		permutation |= SHADERPERMUTATION_TRIPPY;
 +	// (hapax) GPU world-surface drift: flag drift_* surfaces for the HAPAX_DRIFT permutation.
 +	if (hapax_drift_enable.integer && t->name[0] && (!strncmp(t->name, "drift_", 6) || !strncmp(t->name, "hex_", 4) || !strncmp(t->name, "stipple_", 8) || !strncmp(t->name, "geometry", 8)))
 +		permutation |= SHADERPERMUTATION_HAPAXDRIFT;
++	else if (hapax_drift_enable.integer && rsurface.entity && rsurface.entity != r_refdef.scene.worldentity)
++		permutation |= SHADERPERMUTATION_HAPAXDRIFT; // (hapax) content geometry (alias models / entities) drifts too
  	if (t->currentmaterialflags & MATERIALFLAG_ALPHATEST)
  		permutation |= SHADERPERMUTATION_ALPHAKILL;
  	if (t->currentmaterialflags & MATERIALFLAG_OCCLUDE)
-@@ -2083,6 +2187,7 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
+@@ -2083,6 +2191,10 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
  		}
  		if (r_glsl_permutation->tex_Texture_BounceGrid  >= 0) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_BounceGrid, r_shadow_bouncegrid_state.texture);
  		if (r_glsl_permutation->tex_Texture_LightGrid   >= 0 && r_refdef.scene.worldmodel) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_LightGrid, r_refdef.scene.worldmodel->brushq3.lightgridtexture);
 +		if (r_glsl_permutation->tex_Texture_HapaxDriftField >= 0) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_HapaxDriftField, r_hapax_driftfield_texture ? r_hapax_driftfield_texture : r_texture_grey128);
++		// (hapax) per-surface container(0)/content(1) selector so the deform amplitude can
++		// differ between huge coarse world brushes and small dense entity models (the AoA).
++		if (r_glsl_permutation->loc_HapaxDrift_ContainerContent >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_ContainerContent, (rsurface.entity && rsurface.entity != r_refdef.scene.worldentity) ? 1.0f : 0.0f);
  		CHECKGLERROR
  		break;
  	}
-@@ -2746,6 +2851,297 @@ static void R_SkinFrame_GenerateTexturesFromQPixels(skinframe_t *skinframe, qboo
+@@ -2746,6 +2858,297 @@ static void R_SkinFrame_GenerateTexturesFromQPixels(skinframe_t *skinframe, qboo
  	}
  }
  
@@ -504,7 +517,7 @@ index f9007caf..c4fc1ca8 100644
  skinframe_t *R_SkinFrame_LoadInternal8bit(const char *name, int textureflags, const unsigned char *skindata, int width, int height, const unsigned int *palette, const unsigned int *alphapalette)
  {
  	int i;
-@@ -3288,6 +3684,18 @@ void GL_Main_Init(void)
+@@ -3288,6 +3691,18 @@ void GL_Main_Init(void)
  	Cvar_RegisterVariable(&r_sortentities);
  	Cvar_RegisterVariable(&r_drawviewmodel);
  	Cvar_RegisterVariable(&r_drawexteriormodel);
@@ -523,7 +536,7 @@ index f9007caf..c4fc1ca8 100644
  	Cvar_RegisterVariable(&r_speeds);
  	Cvar_RegisterVariable(&r_fullbrights);
  	Cvar_RegisterVariable(&r_wateralpha);
-@@ -3341,6 +3749,7 @@ void GL_Main_Init(void)
+@@ -3341,6 +3756,7 @@ void GL_Main_Init(void)
  	Cvar_RegisterVariable(&r_glsl_offsetmapping_lod);
  	Cvar_RegisterVariable(&r_glsl_offsetmapping_lod_distance);
  	Cvar_RegisterVariable(&r_glsl_postprocess);
@@ -531,7 +544,7 @@ index f9007caf..c4fc1ca8 100644
  	Cvar_RegisterVariable(&r_glsl_postprocess_uservec1);
  	Cvar_RegisterVariable(&r_glsl_postprocess_uservec2);
  	Cvar_RegisterVariable(&r_glsl_postprocess_uservec3);
-@@ -5649,6 +6058,8 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
+@@ -5649,6 +6065,8 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
  	if (r_timereport_active)
  		R_TimeReport("start");
  	r_textureframe++; // used only by R_GetCurrentTexture
@@ -563,10 +576,10 @@ index 7fbcd0b3..8ec3075c 100644
  extern rtexture_t *r_texture_notexture;
  extern rtexture_t *r_texture_whitecube;
 diff --git a/shader_glsl.h b/shader_glsl.h
-index dc56d085..5283d4d8 100644
+index dc56d085..88f9eba7 100644
 --- a/shader_glsl.h
 +++ b/shader_glsl.h
-@@ -178,6 +178,41 @@
+@@ -178,6 +178,43 @@
  "	return position;\n",
  "}\n",
  "#endif\n",
@@ -578,10 +591,12 @@ index dc56d085..5283d4d8 100644
 +"#ifndef USETRIPPY\n",
 +"uniform highp float ClientTime;\n",
 +"#endif\n",
++"uniform highp float HapaxDrift_ContainerContent;\n",
 +"#define HPX_FREQ 0.015\n",
 +"#define HPX_SPEED 0.25\n",
 +"#define HPX_AMP 20.0\n",
 +"#define HPX_AMPMAX 30.0\n",
++"#define HPX_CONTENT 0.13\n",
 +"float hpxHash(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }\n",
 +"float hpxVNoise(vec3 p){\n",
 +"	vec3 i = floor(p); vec3 f = fract(p); f = f*f*(3.0 - 2.0*f);\n",
@@ -608,21 +623,21 @@ index dc56d085..5283d4d8 100644
  "#endif\n",
  "\n",
  "#ifdef MODE_DEPTH_OR_SHADOW\n",
-@@ -196,7 +231,13 @@
+@@ -196,7 +233,13 @@
  "	vec4 SkeletalVertex = Attrib_Position * SkeletalMatrix;\n",
  "#define Attrib_Position SkeletalVertex\n",
  "#endif\n",
 +"#ifdef USEHAPAXDRIFT\n",
 +"	// shadow/depth pass: deform position with the SAME hpxD as the lit pass so the\n",
 +"	// cast shadow + silhouette track the morphed surface (no rest-pose shadow detach).\n",
-+"	gl_Position = ModelViewProjectionMatrix * vec4(hpxD(Attrib_Position.xyz, 1.0), 1.0);\n",
++"	gl_Position = ModelViewProjectionMatrix * vec4(hpxD(Attrib_Position.xyz, mix(1.0, HPX_CONTENT, HapaxDrift_ContainerContent)), 1.0);\n",
 +"#else\n",
  "	gl_Position = ModelViewProjectionMatrix * Attrib_Position;\n",
 +"#endif\n",
  "#ifdef USETRIPPY\n",
  "	gl_Position = TrippyVertex(gl_Position);\n",
  "#endif\n",
-@@ -773,6 +814,8 @@
+@@ -773,6 +816,8 @@
  "#ifdef MODE_DEFERREDGEOMETRY\n",
  "dp_varying highp float Depth;\n",
  "#endif\n",
@@ -631,7 +646,7 @@ index dc56d085..5283d4d8 100644
  "\n",
  "\n",
  "\n",
-@@ -1327,6 +1370,34 @@
+@@ -1327,6 +1372,35 @@
  "#define Attrib_TexCoord3 SkeletalNormal\n",
  "#endif\n",
  "\n",
@@ -642,11 +657,12 @@ index dc56d085..5283d4d8 100644
 +"	// geometry. Normal recomputed by finite-difference of hpxD along the tangents so\n",
 +"	// shading tracks the new surface (no flat-lit ripples).\n",
 +"	vec3 hpx_P0 = Attrib_Position.xyz;\n",
-+"	vec3 hpx_Pd = hpxD(hpx_P0, 1.0);\n",
++"	float hpx_drv = mix(1.0, HPX_CONTENT, HapaxDrift_ContainerContent);\n",
++"	vec3 hpx_Pd = hpxD(hpx_P0, hpx_drv);\n",
 +"	vec3 hpx_S  = Attrib_TexCoord1.xyz;\n",
 +"	vec3 hpx_T  = Attrib_TexCoord2.xyz;\n",
-+"	vec3 hpx_dS = hpxD(hpx_P0 + hpx_S, 1.0) - hpx_Pd;\n",
-+"	vec3 hpx_dT = hpxD(hpx_P0 + hpx_T, 1.0) - hpx_Pd;\n",
++"	vec3 hpx_dS = hpxD(hpx_P0 + hpx_S, hpx_drv) - hpx_Pd;\n",
++"	vec3 hpx_dT = hpxD(hpx_P0 + hpx_T, hpx_drv) - hpx_Pd;\n",
 +"	vec3 hpx_Nd = normalize(cross(hpx_dS, hpx_dT));\n",
 +"	if (dot(hpx_Nd, Attrib_TexCoord3.xyz) < 0.0) hpx_Nd = -hpx_Nd;\n",
 +"	vec4 HapaxDrift_Vtx  = vec4(hpx_Pd, 1.0);\n",
@@ -666,7 +682,7 @@ index dc56d085..5283d4d8 100644
  "#if defined(MODE_VERTEXCOLOR) || defined(USEVERTEXTEXTUREBLEND) || defined(MODE_LIGHTDIRECTIONMAP_FORCED_VERTEXCOLOR) || defined(USEALPHAGENVERTEX)\n",
  "	VertexColor = Attrib_Color;\n",
  "#endif\n",
-@@ -1404,6 +1475,8 @@
+@@ -1404,6 +1478,8 @@
  "#endif\n",
  "\n",
  "	// transform vertex to clipspace (post-projection, but before perspective divide by W occurs)\n",
@@ -675,7 +691,7 @@ index dc56d085..5283d4d8 100644
  "	gl_Position = ModelViewProjectionMatrix * Attrib_Position;\n",
  "\n",
  "#ifdef USESHADOWMAPORTHO\n",
-@@ -1466,6 +1539,9 @@
+@@ -1466,6 +1542,9 @@
  "    uint allpixels;\n",
  "};\n",
  "#endif\n",
@@ -685,7 +701,7 @@ index dc56d085..5283d4d8 100644
  "void main(void)\n",
  "{\n",
  "#ifdef USEOFFSETMAPPING\n",
-@@ -1797,6 +1873,47 @@
+@@ -1797,6 +1876,47 @@
  "   color.rgb *= clamp(float(visiblepixels) / float(allpixels), 0.0, 1.0);\n",
  "#endif\n",
  "\n",
