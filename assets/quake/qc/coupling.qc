@@ -32,9 +32,6 @@ float coupling_effect_drift_temporal;
 float coupling_effect_drift_texture;
 float coupling_effect_drift_edge;
 float coupling_effect_drift_compositing;
-float coupling_geo_drift_ema;
-float coupling_geo_exc;
-float coupling_geo_amp_out;
 float coupling_effect_mode_tonal;
 float coupling_effect_mode_atmospheric;
 float coupling_effect_mode_temporal;
@@ -721,23 +718,5 @@ void() coupling_tick =
     coupling_read_effect_drift();
     coupling_read_local_effects();
     coupling_apply_stimmung();
-    // (hapax) self-driving geometric drift: slot-engine aggregates (already 0..1) drive the geo
-    // deform within LEGIBLE bounds (no knobs; the bounds ARE the structural legibility floor — the
-    // amp stays in [22,32], never destroyed). EMA at the ~1Hz poll = the slow geo envelope.
-    coupling_geo_drift_ema = coupling_geo_drift_ema * 0.7 + (0.20 + coupling_effect_drift_active_slot_ratio * 0.35 + coupling_effect_drift_max_delta * 0.45) * 0.3;
-    if (coupling_geo_drift_ema < 0.0) coupling_geo_drift_ema = 0.0;
-    if (coupling_geo_drift_ema > 1.0) coupling_geo_drift_ema = 1.0;
-    // OU-like excursion latent (deterministic quasi-random; no random() builtin here): a mean-
-    // reverting positive walk that produces rare MOMENTARY peaks which then return to baseline.
-    coupling_geo_exc = coupling_geo_exc * 0.88 + (sin(time * 0.41) * sin(time * 0.97 + 2.1) * sin(time * 0.23 + 0.7) + 0.10) * 0.22;
-    if (coupling_geo_exc < 0.0) coupling_geo_exc = 0.0;
-    if (coupling_geo_exc > 1.0) coupling_geo_exc = 1.0;
-    // amp = legible baseline [22,32] + exc^2 momentary excursion toward illegibility; HARD FLOOR 44
-    // = never destroyed beyond recognition (the legibility envelope; exc^2 makes peaks rare+sharp).
-    coupling_geo_amp_out = 22.0 + coupling_geo_drift_ema * 10.0 + coupling_geo_exc * coupling_geo_exc * 12.0;
-    if (coupling_geo_amp_out > 44.0) coupling_geo_amp_out = 44.0;
-    cvar_set("hapax_drift_geo_amp", ftos(coupling_geo_amp_out));
-    cvar_set("hapax_drift_geo_swirl", ftos(0.6 + coupling_geo_drift_ema * 0.8));
-    cvar_set("hapax_drift_geo_speed", ftos(0.16 + coupling_effect_drift_fast_ratio * 0.22));
     coupling_check_working_mode();
 };
