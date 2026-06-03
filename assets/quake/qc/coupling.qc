@@ -32,6 +32,7 @@ float coupling_effect_drift_temporal;
 float coupling_effect_drift_texture;
 float coupling_effect_drift_edge;
 float coupling_effect_drift_compositing;
+float coupling_geo_drift_ema;
 float coupling_effect_mode_tonal;
 float coupling_effect_mode_atmospheric;
 float coupling_effect_mode_temporal;
@@ -718,5 +719,14 @@ void() coupling_tick =
     coupling_read_effect_drift();
     coupling_read_local_effects();
     coupling_apply_stimmung();
+    // (hapax) self-driving geometric drift: slot-engine aggregates (already 0..1) drive the geo
+    // deform within LEGIBLE bounds (no knobs; the bounds ARE the structural legibility floor — the
+    // amp stays in [22,32], never destroyed). EMA at the ~1Hz poll = the slow geo envelope.
+    coupling_geo_drift_ema = coupling_geo_drift_ema * 0.7 + (0.20 + coupling_effect_drift_active_slot_ratio * 0.35 + coupling_effect_drift_max_delta * 0.45) * 0.3;
+    if (coupling_geo_drift_ema < 0.0) coupling_geo_drift_ema = 0.0;
+    if (coupling_geo_drift_ema > 1.0) coupling_geo_drift_ema = 1.0;
+    cvar_set("hapax_drift_geo_amp", ftos(22.0 + coupling_geo_drift_ema * 10.0));
+    cvar_set("hapax_drift_geo_swirl", ftos(0.6 + coupling_geo_drift_ema * 0.8));
+    cvar_set("hapax_drift_geo_speed", ftos(0.16 + coupling_effect_drift_fast_ratio * 0.22));
     coupling_check_working_mode();
 };
