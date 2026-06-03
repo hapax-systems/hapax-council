@@ -1356,6 +1356,15 @@ async fn run() {
         wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
     );
     let drift_view = drift_tex.create_view(&Default::default());
+    let drift_prev_tex = mk(
+        AW,
+        AH,
+        TEX,
+        wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST,
+    );
+    let drift_prev_view = drift_prev_tex.create_view(&Default::default());
 
     let lin = device.create_sampler(&wgpu::SamplerDescriptor {
         mag_filter: wgpu::FilterMode::Linear,
@@ -1585,6 +1594,16 @@ async fn run() {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     });
     let drift_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1632,6 +1651,10 @@ async fn run() {
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: wgpu::BindingResource::Sampler(&lin),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&drift_prev_view),
             },
         ],
     });
@@ -1693,6 +1716,10 @@ async fn run() {
                 drift_intensity,
                 AW,
                 AH,
+                0,
+                AW,
+                AH,
+                [0.0, 0.0, 0.0],
             );
             queue.write_buffer(&drift_uniform, 0, bytemuck::bytes_of(&uniform));
         }
@@ -1741,6 +1768,22 @@ async fn run() {
             p.set_vertex_buffer(0, inst_buf.slice(..));
             p.draw(0..4, 0..instances.len() as u32);
         }
+        if inline_drift && frame_id == 1 {
+            let _clear_prev = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ward-atlas clear media-drift previous"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &drift_prev_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
         if inline_drift {
             let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ward-atlas inline media-drift pass"),
@@ -1761,6 +1804,27 @@ async fn run() {
             p.draw(0..3, 0..1);
         }
         let readback_tex = if inline_drift { &drift_tex } else { &out_tex };
+        if inline_drift {
+            enc.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &drift_tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &drift_prev_tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: AW,
+                    height: AH,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
         enc.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: readback_tex,

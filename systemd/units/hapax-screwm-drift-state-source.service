@@ -1,6 +1,6 @@
 [Unit]
 Description=Hapax Screwm drift state source for DarkPlaces hybrid runtime
-After=graphical-session.target hapax-reverie.service
+After=hapax-reverie.service
 PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service
 ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
 

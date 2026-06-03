@@ -73,6 +73,14 @@ DEFAULT_EFFECT_DRIFT_FALLBACK_STATE_FILE = Path(
         "/dev/shm/hapax-visual/screwm-effect-drift-fallback-state.json",
     )
 )
+EFFECT_REVIEW_PRESET_MANUAL_HOLD_S = float(
+    os.environ.get("HAPAX_SCREWM_EFFECT_REVIEW_PRESET_MANUAL_HOLD_S", "12.0")
+)
+EFFECT_REVIEW_PRESET_AUTOCYCLE_S = float(
+    os.environ.get("HAPAX_SCREWM_EFFECT_REVIEW_PRESET_AUTOCYCLE_S", "6.0")
+)
+EFFECT_REVIEW_PRESET_SEQUENCE = (1, 2, 3, 4, 5, 6)
+REVIEW_CAMERA_PERIOD_S = float(os.environ.get("HAPAX_SCREWM_REVIEW_CAMERA_PERIOD_S", "24.0"))
 
 WARD_ACTIVITY_EXPORTS: tuple[tuple[str, str], ...] = (
     ("01", "token_pole"),
@@ -1077,7 +1085,151 @@ def build_aoa_pane_lines(
     }
 
 
-def build_entity_local_effect_lines(effect_state_file: Path) -> dict[str, str]:
+def _local_effect_lines_from_mix(mix_by_effect: dict[str, float], route: str) -> dict[str, str]:
+    lines = {
+        f"local-effect-{ordinal}.txt": f"{_clamp01(mix_by_effect[effect]):.4f}"
+        for ordinal, effect in LOCAL_EFFECT_EXPORTS
+    }
+    lines["local-effect-count.txt"] = (
+        f"{sum(1 for mix in mix_by_effect.values() if mix > 0.001):.4f}"
+    )
+    lines["local-effect-route.txt"] = route
+    return lines
+
+
+def _slotdrift_local_effect_proxy_mix(
+    effect_state: dict[str, Any],
+    *,
+    density_currency: float = 0.0,
+) -> dict[str, float]:
+    """Derive spatial local-effect pressure from live SlotDrift when entity-local is silent."""
+    mix_by_effect = {effect: 0.0 for _ordinal, effect in LOCAL_EFFECT_EXPORTS}
+    passes = effect_state.get("passes")
+    passes = passes if isinstance(passes, list) else []
+    pass_count = max(1.0, _entry_float(effect_state, "pass_count", float(len(passes))))
+    family_strengths = {family: 0.0 for family in EFFECT_DRIFT_FAMILIES}
+    active_effect_names: set[str] = set()
+    active_slot_indices: set[str] = set()
+    active_strength_sum = 0.0
+    active_pass_count = 0
+    active_fast_count = 0
+    active_slow_count = 0
+    max_delta = 0.0
+    region_count = 0
+
+    for pass_row in passes:
+        if not isinstance(pass_row, dict):
+            continue
+        effect = _effect_drift_effect_name(pass_row)
+        family = _effect_drift_family(pass_row)
+        strength = _effect_drift_pass_strength(pass_row)
+        max_delta = max(max_delta, abs(_entry_float(pass_row, "max_delta")))
+        regions = pass_row.get("parameter_regions")
+        if isinstance(regions, list):
+            region_count += len(regions)
+        if strength > 0:
+            active_pass_count += 1
+            active_strength_sum += strength
+            active_effect_names.add(effect)
+            active_slot_indices.add(_effect_drift_slot_index(pass_row))
+            cadence = str(pass_row.get("eviction_cadence") or "").strip().lower()
+            if cadence == "fast":
+                active_fast_count += 1
+            elif cadence == "slow":
+                active_slow_count += 1
+        if family in family_strengths:
+            family_strengths[family] = max(family_strengths[family], strength)
+        if effect in mix_by_effect:
+            mix_by_effect[effect] = max(mix_by_effect[effect], strength)
+
+    if active_pass_count <= 0:
+        return mix_by_effect
+
+    active_mean = active_strength_sum / max(1.0, float(active_pass_count))
+    active_ratio = _clamp01(active_pass_count / pass_count)
+    active_slot_ratio = _clamp01(len(active_slot_indices) / 5.0)
+    kind_variance = _clamp01(len(active_effect_names) / pass_count)
+    fast_ratio = _clamp01(active_fast_count / max(1.0, float(active_pass_count)))
+    slow_ratio = _clamp01(active_slow_count / max(1.0, float(active_pass_count)))
+    max_delta_norm = _clamp01(max_delta / 10.0)
+    region_pressure = _clamp01(region_count / 12.0)
+    density_currency = _clamp01(density_currency)
+
+    tonal = family_strengths["tonal"]
+    atmo = family_strengths["atmospheric"]
+    temporal = family_strengths["temporal"]
+    texture = family_strengths["texture"]
+    edge = family_strengths["edge"]
+    compositing = family_strengths["compositing"]
+    expression = _clamp01(
+        0.18
+        + active_mean * 0.30
+        + active_ratio * 0.16
+        + kind_variance * 0.18
+        + density_currency * 0.26
+    )
+
+    # These are spatial proxies, not claims that the blocked WGSL effects have
+    # become entity-local. They give CSQC real room/receiver pressure from the
+    # full SlotDrift inventory until the entity-local shader route exists.
+    mix_by_effect["mirror"] = max(
+        mix_by_effect["mirror"],
+        _clamp01(compositing * 0.42 + edge * 0.22 + fast_ratio * 0.16 + expression * 0.18),
+    )
+    mix_by_effect["kaleidoscope"] = max(
+        mix_by_effect["kaleidoscope"],
+        _clamp01(atmo * 0.34 + kind_variance * 0.32 + fast_ratio * 0.20 + expression * 0.18),
+    )
+    mix_by_effect["warp"] = max(
+        mix_by_effect["warp"],
+        _clamp01(atmo * 0.36 + temporal * 0.20 + max_delta_norm * 0.18 + expression * 0.24),
+    )
+    mix_by_effect["fisheye"] = max(
+        mix_by_effect["fisheye"],
+        _clamp01(
+            atmo * 0.30 + active_slot_ratio * 0.24 + density_currency * 0.24 + expression * 0.14
+        ),
+    )
+    mix_by_effect["transform"] = max(
+        mix_by_effect["transform"],
+        _clamp01(active_ratio * 0.26 + tonal * 0.16 + temporal * 0.18 + expression * 0.22),
+    )
+    mix_by_effect["displacement_map"] = max(
+        mix_by_effect["displacement_map"],
+        _clamp01(texture * 0.34 + edge * 0.26 + region_pressure * 0.22 + expression * 0.18),
+    )
+    mix_by_effect["droste"] = max(
+        mix_by_effect["droste"],
+        _clamp01(temporal * 0.30 + compositing * 0.22 + slow_ratio * 0.24 + expression * 0.14),
+    )
+    mix_by_effect["tunnel"] = max(
+        mix_by_effect["tunnel"],
+        _clamp01(compositing * 0.28 + atmo * 0.22 + active_slot_ratio * 0.24 + expression * 0.18),
+    )
+    mix_by_effect["tile"] = max(
+        mix_by_effect["tile"],
+        _clamp01(
+            texture * 0.32 + kind_variance * 0.24 + region_pressure * 0.18 + expression * 0.18
+        ),
+    )
+    mix_by_effect["drift"] = max(
+        mix_by_effect["drift"],
+        _clamp01(atmo * 0.30 + active_mean * 0.26 + density_currency * 0.28 + expression * 0.22),
+    )
+    mix_by_effect["breathing"] = max(
+        mix_by_effect["breathing"],
+        _clamp01(slow_ratio * 0.34 + temporal * 0.24 + density_currency * 0.22 + expression * 0.16),
+    )
+    return mix_by_effect
+
+
+def build_entity_local_effect_lines(
+    effect_state_file: Path,
+    effect_drift_state_file: Path | None = None,
+    effect_drift_fallback_state_file: Path | None = None,
+    density_field_file: Path | None = None,
+    now: float | None = None,
+) -> dict[str, str]:
     """Export scene_quad.wgsl entity-local spatial effect activity."""
     effect_state = _read_json(effect_state_file)
     active_effects = effect_state.get("active_effects")
@@ -1092,13 +1244,44 @@ def build_entity_local_effect_lines(effect_state_file: Path) -> dict[str, str]:
             continue
         mix_by_effect[effect] = max(mix_by_effect[effect], _float01(item, "mix"))
 
-    lines = {
-        f"local-effect-{ordinal}.txt": f"{mix_by_effect[effect]:.4f}"
-        for ordinal, effect in LOCAL_EFFECT_EXPORTS
-    }
-    lines["local-effect-count.txt"] = f"{sum(1 for mix in mix_by_effect.values() if mix > 0):.4f}"
-    lines["local-effect-route.txt"] = "ENTITY_LOCAL_SOURCE_PLANE"
-    return lines
+    explicit_count = sum(1 for mix in mix_by_effect.values() if mix > 0.001)
+    proxy_mix: dict[str, float] | None = None
+
+    if effect_drift_state_file is not None and effect_drift_fallback_state_file is not None:
+        drift_state, drift_source = _select_effect_drift_state(
+            effect_drift_state_file,
+            effect_drift_fallback_state_file,
+            now=now,
+        )
+        if drift_source not in {
+            "missing",
+            "synthetic-fallback-stale",
+            "primary-stale-or-noncanonical",
+        }:
+            density_currency = 0.0
+            if density_field_file is not None:
+                density, _density_zone = _read_density_field(density_field_file, now=now)
+                density_currency = _clamp01(density * 2.5)
+            proxy_mix = _slotdrift_local_effect_proxy_mix(
+                drift_state, density_currency=density_currency
+            )
+            if any(mix > 0.001 for mix in proxy_mix.values()):
+                if explicit_count > 0:
+                    for effect, mix in proxy_mix.items():
+                        mix_by_effect[effect] = max(mix_by_effect.get(effect, 0.0), mix)
+                    return _local_effect_lines_from_mix(
+                        mix_by_effect,
+                        "ENTITY_LOCAL_SOURCE_PLANE_PLUS_SLOTDRIFT_SPATIAL_PROXY",
+                    )
+                return _local_effect_lines_from_mix(
+                    proxy_mix,
+                    "SLOTDRIFT_SPATIAL_PROXY_FROM_IN_SCROOM_EFFECT_DRIFT",
+                )
+
+    if explicit_count > 0:
+        return _local_effect_lines_from_mix(mix_by_effect, "ENTITY_LOCAL_SOURCE_PLANE")
+
+    return _local_effect_lines_from_mix(mix_by_effect, "ENTITY_LOCAL_SOURCE_PLANE")
 
 
 def _shader_plan_passes(plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1578,6 +1761,21 @@ def _visual_chain_pressure(payload: dict[str, Any]) -> float:
     return max(level_pressure, min(param_pressure, 1.0))
 
 
+def _visual_chain_expressive_pressure(payload: dict[str, Any]) -> float:
+    params = payload.get("params")
+    params = params if isinstance(params, dict) else {}
+    return max(
+        _norm_abs_param(params, "drift.amplitude", 0.8),
+        _norm_abs_param(params, "drift.speed", 0.5),
+        _norm_abs_param(params, "color.hue_rotate", 70.0),
+        _norm_abs_param(params, "fb.hue_shift", 5.0),
+        _norm_abs_param(params, "color.saturation", 0.6),
+        _norm_abs_param(params, "color.brightness", 0.3),
+        _norm_abs_param(params, "fb.decay", 0.15),
+        _norm_abs_param(params, "post.sediment_strength", 0.08),
+    )
+
+
 def _select_visual_chain_state(
     primary_file: Path,
     fallback_file: Path,
@@ -1585,10 +1783,21 @@ def _select_visual_chain_state(
     now: float | None = None,
 ) -> tuple[dict[str, Any], str]:
     primary = _read_json(primary_file)
-    if primary and _state_file_fresh(primary_file, now=now) and _visual_chain_pressure(primary) > 0:
-        return primary, "canonical"
     fallback = _read_json(fallback_file)
-    if fallback and _state_file_fresh(fallback_file, now=now):
+    fallback_fresh = bool(fallback) and _state_file_fresh(fallback_file, now=now)
+    if primary and _state_file_fresh(primary_file, now=now):
+        if fallback_fresh:
+            primary_expressive = _visual_chain_expressive_pressure(primary)
+            fallback_expressive = _visual_chain_expressive_pressure(fallback)
+            if (
+                fallback_expressive >= 0.12
+                and fallback_expressive >= primary_expressive + 0.08
+                and (primary_expressive < 0.08 or fallback_expressive > primary_expressive * 1.4)
+            ):
+                return fallback, "fallback-expressive"
+        if _visual_chain_pressure(primary) > 0:
+            return primary, "canonical"
+    if fallback_fresh:
         return fallback, "fallback"
     if primary:
         return primary, "canonical-stale-or-neutral"
@@ -1661,6 +1870,81 @@ def _select_effect_drift_state(
     if fallback:
         return fallback, "synthetic-fallback-stale"
     return {}, "missing"
+
+
+def _effect_review_autocycle_enabled() -> bool:
+    raw = os.environ.get("HAPAX_SCREWM_EFFECT_REVIEW_AUTOCYCLE", "0")
+    return raw.strip().lower() not in {"0", "false", "off", "no", "disabled"}
+
+
+def _manual_effect_review_preset(game_dir: Path, *, now: float | None = None) -> int | None:
+    path = game_dir / "effect-review-preset.txt"
+    try:
+        age = (time.time() if now is None else now) - path.stat().st_mtime
+        raw = path.read_text(encoding="utf-8").strip()
+        value = float(raw)
+    except (OSError, ValueError):
+        return None
+    if age > EFFECT_REVIEW_PRESET_MANUAL_HOLD_S:
+        return None
+    if value < 0.5 or value > 7.0:
+        return None
+    return max(1, min(7, int(round(value))))
+
+
+def _effect_review_preset_from_state(
+    effect_state: dict[str, Any],
+    effect_source: str,
+    *,
+    now: float | None = None,
+) -> int:
+    if not _effect_review_autocycle_enabled():
+        return 0
+    if effect_source in {"missing", "primary-stale-or-noncanonical", "synthetic-fallback-stale"}:
+        return 0
+
+    passes = effect_state.get("passes")
+    passes = passes if isinstance(passes, list) else []
+    active_count = sum(
+        1
+        for pass_row in passes
+        if isinstance(pass_row, dict)
+        and (bool(pass_row.get("non_neutral")) or _effect_drift_pass_strength(pass_row) > 0.05)
+    )
+    if active_count <= 0:
+        return 0
+
+    dominant = str(effect_state.get("dominant_family") or "").strip().lower()
+    families = ("tonal", "atmospheric", "temporal", "texture", "edge", "compositing")
+    offset = families.index(dominant) if dominant in families else 0
+    cycle_s = max(3.0, EFFECT_REVIEW_PRESET_AUTOCYCLE_S)
+    tick = int((time.time() if now is None else now) // cycle_s)
+    return EFFECT_REVIEW_PRESET_SEQUENCE[(tick + offset) % len(EFFECT_REVIEW_PRESET_SEQUENCE)]
+
+
+def build_effect_review_preset_lines(
+    game_dir: Path,
+    effect_drift_state_file: Path = DEFAULT_EFFECT_DRIFT_STATE_FILE,
+    effect_drift_fallback_state_file: Path = DEFAULT_EFFECT_DRIFT_FALLBACK_STATE_FILE,
+    now: float | None = None,
+) -> dict[str, str]:
+    """Publish diagnostic postprocess preset state without enabling it by default."""
+    manual = _manual_effect_review_preset(game_dir, now=now)
+    if manual is not None:
+        return {"effect-review-preset.txt": f"{manual:d}"}
+
+    effect_state, effect_source = _select_effect_drift_state(
+        effect_drift_state_file,
+        effect_drift_fallback_state_file,
+        now=now,
+    )
+    preset = _effect_review_preset_from_state(effect_state, effect_source, now=now)
+    return {"effect-review-preset.txt": f"{preset:d}"}
+
+
+def build_review_camera_lines() -> dict[str, str]:
+    period_s = max(24.0, min(720.0, REVIEW_CAMERA_PERIOD_S))
+    return {"camera-period.txt": f"{period_s:.4f}"}
 
 
 def build_visual_chain_lines(
@@ -1803,6 +2087,65 @@ def build_visual_chain_lines(
     kind_variance = _clamp01(kind_variance + density_currency * 0.22)
     active_effect_ratio = _clamp01(active_effect_ratio + density_currency * 0.14)
 
+    if is_live > 0.0:
+        # SlotDrift can be intensely active while a particular sampled pass set
+        # has no literal edge/compositing node. For Screwm, that still must
+        # produce room-bound edge/material pressure: the live effect stack is the
+        # source of surface drift, not a passive report of named nodes.
+        spatial_pressure = _clamp01(
+            0.24
+            + active_strength_mean * 0.34
+            + active_ratio * 0.18
+            + active_effect_ratio * 0.20
+            + kind_variance * 0.22
+            + drift_strength_peak * 0.22
+            + density_currency * 0.16
+        )
+        family_strengths["edge"] = max(
+            family_strengths["edge"],
+            _clamp01(
+                family_strengths["texture"] * 0.44
+                + family_strengths["atmospheric"] * 0.24
+                + family_strengths["temporal"] * 0.14
+                + spatial_pressure * 0.54
+            ),
+        )
+        family_strengths["compositing"] = max(
+            family_strengths["compositing"],
+            _clamp01(
+                family_strengths["texture"] * 0.26
+                + family_strengths["temporal"] * 0.24
+                + active_slot_ratio * 0.20
+                + spatial_pressure * 0.42
+            ),
+        )
+        family_modes["edge"] = max(family_modes["edge"], 0.95)
+        family_modes["compositing"] = max(family_modes["compositing"], 0.70)
+        drift_pressure = max(
+            drift_pressure,
+            _clamp01(
+                family_strengths["atmospheric"] * 0.42
+                + family_strengths["texture"] * 0.28
+                + family_strengths["edge"] * 0.28
+                + active_ratio * 0.20
+                + fast_ratio * 0.12
+                + spatial_pressure * 0.26
+            ),
+        )
+        feedback_pressure = max(
+            feedback_pressure,
+            _clamp01(
+                family_strengths["temporal"] * 0.36
+                + family_strengths["compositing"] * 0.30
+                + slow_ratio * 0.14
+                + spatial_pressure * 0.20
+            ),
+        )
+        aperture_pressure = max(
+            aperture_pressure,
+            _clamp01(family_strengths["edge"] * 0.48 + spatial_pressure * 0.22),
+        )
+
     lines.update(
         {
             "visual-chain-noise.txt": f"{noise_pressure:.4f}",
@@ -1915,7 +2258,13 @@ def export_state(
         shm_dir, uniforms_file, imagination_sources_dir
     ).items():
         _write_atomic(game_dir / filename, line)
-    for filename, line in build_entity_local_effect_lines(entity_local_effect_state_file).items():
+    for filename, line in build_entity_local_effect_lines(
+        entity_local_effect_state_file,
+        effect_drift_state_file,
+        effect_drift_fallback_state_file,
+        density_field_file,
+        now,
+    ).items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_shader_plan_lines(shader_plan_file).items():
         _write_atomic(game_dir / filename, line)
@@ -1945,6 +2294,15 @@ def export_state(
         density_field_file,
         now,
     ).items():
+        _write_atomic(game_dir / filename, line)
+    for filename, line in build_effect_review_preset_lines(
+        game_dir,
+        effect_drift_state_file,
+        effect_drift_fallback_state_file,
+        now,
+    ).items():
+        _write_atomic(game_dir / filename, line)
+    for filename, line in build_review_camera_lines().items():
         _write_atomic(game_dir / filename, line)
     for filename, line in build_imagination_fragment_lines(imagination_current_file).items():
         _write_atomic(game_dir / filename, line)

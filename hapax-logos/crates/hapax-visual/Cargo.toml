@@ -13,6 +13,7 @@ wgpu = "24"
 naga = "24"
 winit = "0.30"
 bytemuck = { version = "1", features = ["derive"] }
+blake2 = "0.10"
 glam = "0.29"
 notify = "7"
 pollster = "0.4"

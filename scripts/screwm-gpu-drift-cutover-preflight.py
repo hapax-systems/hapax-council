@@ -89,6 +89,58 @@ def final_sidecar_for(final_output: str) -> str:
     return str(Path(final_output).with_suffix(".json"))
 
 
+def _source_aspect(mount: dict[str, Any] | None) -> float:
+    if not mount:
+        return 16.0 / 9.0
+    source_aspect = mount.get("source_aspect")
+    if (
+        isinstance(source_aspect, list)
+        and len(source_aspect) == 2
+        and float(source_aspect[1] or 0) > 0
+    ):
+        return float(source_aspect[0]) / float(source_aspect[1])
+    return 16.0 / 9.0
+
+
+def sphere_front_raw_dimensions(
+    width: int, height: int, mount: dict[str, Any] | None
+) -> tuple[int, int]:
+    ratio = 1.0
+    if mount:
+        try:
+            ratio = float(mount.get("projection_front_height_ratio", 1.0))
+        except (TypeError, ValueError):
+            ratio = 1.0
+    front_height = int(height * max(0.0, min(1.0, ratio)))
+    media_aspect = _source_aspect(mount)
+    frame_width = min(width, int(round(front_height * media_aspect)))
+    frame_height = min(front_height, int(round(frame_width / media_aspect)))
+    return frame_width - (frame_width % 2), frame_height
+
+
+def drift_slot_spec(
+    slot_name: str, live_slot: LiveTextureSlot, mount: dict[str, Any] | None
+) -> str:
+    projection = str(mount.get("projection", "")) if mount else ""
+    intensity = 1.0
+    if mount and "gpu_drift_intensity" in mount:
+        try:
+            intensity = float(mount["gpu_drift_intensity"])
+        except (TypeError, ValueError):
+            intensity = 1.0
+    if slot_name == "yt" and projection == "sphere-front":
+        raw_w, raw_h = sphere_front_raw_dimensions(live_slot.width, live_slot.height, mount)
+        intensity_segment = f":{intensity:g}" if intensity != 1.0 else ""
+        return (
+            f"{slot_name}:{live_slot.width}x{live_slot.height}{intensity_segment}"
+            f":sphere-front:{raw_w}x{raw_h}:0c0b0d"
+        )
+    spec = f"{slot_name}:{live_slot.width}x{live_slot.height}"
+    if intensity != 1.0:
+        spec = f"{spec}:{intensity:g}"
+    return spec
+
+
 def _load_mounts(repo_root: Path) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     payload = json.loads((repo_root / "config" / "screwm-quake-media-mounts.json").read_text())
     by_output: dict[str, dict[str, Any]] = {}
@@ -138,6 +190,12 @@ def producer_support_for(slot_name: str) -> ProducerSupport | None:
             service="hapax-quake-live-reverie.service",
             producer_env_flag="HAPAX_QUAKE_REVERIE_GPU_DRIFT",
         )
+    if slot_name == "aoa-atlas":
+        return ProducerSupport(
+            producer_class="live-aoa-face-atlas",
+            service="hapax-quake-live-aoa-atlas.service",
+            producer_env_flag="HAPAX_QUAKE_AOA_ATLAS_GPU_DRIFT",
+        )
     return None
 
 
@@ -179,9 +237,10 @@ def build_manifest(repo_root: Path = REPO_ROOT, slots: set[str] | None = None) -
             continue
 
         raw_output = raw_output_for(live_slot.final_output)
+        slot_spec = drift_slot_spec(slot_name, live_slot, mount)
         entry = {
             "slot": slot_name,
-            "slot_spec": f"{slot_name}:{live_slot.width}x{live_slot.height}",
+            "slot_spec": slot_spec,
             "texture_slot": live_slot.slot_number,
             "texture_name": live_slot.texture_name,
             "width": live_slot.width,

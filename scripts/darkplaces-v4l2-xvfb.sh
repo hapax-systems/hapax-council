@@ -7,6 +7,7 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$REPO_DIR/scripts/darkplaces-runtime-guard.sh"
 
 DEVICE="${HAPAX_DARKPLACES_V4L2_DEVICE:-${DARKPLACES_V4L2_DEVICE:-/dev/video52}}"
+V4L2_ENABLE="${HAPAX_DARKPLACES_V4L2_ENABLE:-1}"
 WIDTH="${DARKPLACES_WIDTH:-1920}"
 HEIGHT="${DARKPLACES_HEIGHT:-1080}"
 FPS="${DARKPLACES_FPS:-60}"
@@ -23,6 +24,11 @@ Usage: scripts/darkplaces-v4l2-xvfb.sh [--probe-only]
 Starts an Xvfb display, validates the DarkPlaces GL renderer on that display,
 then launches DarkPlaces and x11grab -> v4l2. This fallback avoids root Xorg
 and desktop DRM hotplug churn. It is not the GPU-pinned production route.
+
+Set HAPAX_DARKPLACES_V4L2_ENABLE=0 to run only the DarkPlaces renderer on Xvfb.
+This is the OBS-media path: OBS consumes the display through
+hapax-darkplaces-obs-media-stream.service, and a broken v4l2 producer must not
+kill the renderer.
 EOF
 }
 
@@ -63,13 +69,15 @@ DARKPLACES_BIN="$(resolve_darkplaces_bin)"
 
 need_cmd Xvfb
 need_cmd "$DARKPLACES_BIN"
-need_cmd gst-launch-1.0
-need_cmd v4l2-ctl
+if [ "$V4L2_ENABLE" = "1" ]; then
+    need_cmd gst-launch-1.0
+    need_cmd v4l2-ctl
+fi
 if [ -n "${NOTIFY_SOCKET:-}" ]; then
     need_cmd systemd-notify
 fi
 
-if [ "$PROBE_ONLY" -ne 1 ] && [ ! -e "$DEVICE" ]; then
+if [ "$PROBE_ONLY" -ne 1 ] && [ "$V4L2_ENABLE" = "1" ] && [ ! -e "$DEVICE" ]; then
     echo "DarkPlaces v4l2loopback device not found: $DEVICE" >&2
     exit 1
 fi
@@ -92,11 +100,23 @@ start_systemd_watchdog() {
     (
         while true; do
             sleep "${HAPAX_DARKPLACES_WATCHDOG_INTERVAL_SECONDS:-10}"
+            producer_ok=1
+            if [ "$V4L2_ENABLE" = "1" ]; then
+                producer_ok=0
+                if [ -n "$producer_pid" ] && kill -0 "$producer_pid" 2>/dev/null; then
+                    producer_ok=1
+                fi
+            fi
             if [ -n "$darkplaces_pid" ] && kill -0 "$darkplaces_pid" 2>/dev/null &&
-                [ -n "$producer_pid" ] && kill -0 "$producer_pid" 2>/dev/null; then
+                [ "$producer_ok" = "1" ]; then
+                if [ "$V4L2_ENABLE" = "1" ]; then
+                    status="DarkPlaces v4l2 feed alive: ${DISPLAY_NUM}.0 -> ${DEVICE}"
+                else
+                    status="DarkPlaces renderer alive: ${DISPLAY_NUM}.0 (v4l2 disabled)"
+                fi
                 systemd-notify \
                     "WATCHDOG=1" \
-                    "STATUS=DarkPlaces v4l2 feed alive: ${DISPLAY_NUM}.0 -> ${DEVICE}" \
+                    "STATUS=$status" \
                     >/dev/null 2>&1 || true
             else
                 break
@@ -248,24 +268,37 @@ DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 "$DARKPLACES_BIN" \
     +hapax_live_texture13_name speech_wave \
     +hapax_live_texture13_path /dev/shm/hapax-compositor/quake-live-speech-wave.bgra \
     +hapax_live_texture13_width 512 \
-    +hapax_live_texture13_height 128 &
+    +hapax_live_texture13_height 128 \
+    +hapax_live_texture14_enable 1 \
+    +hapax_live_texture14_name progs/aoa.mdl_0 \
+    +hapax_live_texture14_path /dev/shm/hapax-compositor/quake-live-aoa-atlas.bgra \
+    +hapax_live_texture14_width 2048 \
+    +hapax_live_texture14_height 2048 &
 darkplaces_pid="$!"
 
 sleep 3
 
-v4l2-ctl -d "$DEVICE" --set-fmt-video="width=${WIDTH},height=${HEIGHT},pixelformat=YUYV" \
-    >/dev/null 2>&1 || true
-v4l2-ctl -d "$DEVICE" --set-parm="$FPS" >/dev/null 2>&1 || true
+if [ "$V4L2_ENABLE" = "1" ]; then
+    v4l2-ctl -d "$DEVICE" --set-fmt-video="width=${WIDTH},height=${HEIGHT},pixelformat=YUYV" \
+        >/dev/null 2>&1 || true
+    v4l2-ctl -d "$DEVICE" --set-parm="$FPS" >/dev/null 2>&1 || true
 
-gst-launch-1.0 -q \
-    ximagesrc display-name="$DISPLAY_NUM" use-damage=0 show-pointer=false \
-    ! "video/x-raw,framerate=${FPS}/1,width=${WIDTH},height=${HEIGHT}" \
-    ! videoconvert \
-    ! "video/x-raw,format=YUY2" \
-    ! v4l2sink device="$DEVICE" sync=false &
-producer_pid="$!"
+    gst-launch-1.0 -q \
+        ximagesrc display-name="$DISPLAY_NUM" use-damage=0 show-pointer=false \
+        ! "video/x-raw,framerate=${FPS}/1,width=${WIDTH},height=${HEIGHT}" \
+        ! videoconvert \
+        ! "video/x-raw,format=YUY2" \
+        ! v4l2sink device="$DEVICE" sync=false &
+    producer_pid="$!"
 
-notify_systemd --ready --status="DarkPlaces v4l2 feed running: ${DISPLAY_NUM}.0 -> ${DEVICE}"
+    notify_systemd --ready --status="DarkPlaces v4l2 feed running: ${DISPLAY_NUM}.0 -> ${DEVICE}"
+else
+    notify_systemd --ready --status="DarkPlaces renderer running: ${DISPLAY_NUM}.0 (v4l2 disabled)"
+fi
 start_systemd_watchdog
 
-wait -n "$darkplaces_pid" "$producer_pid"
+if [ "$V4L2_ENABLE" = "1" ]; then
+    wait -n "$darkplaces_pid" "$producer_pid"
+else
+    wait "$darkplaces_pid"
+fi

@@ -21,6 +21,7 @@ Transparent background = a floating waveform, not a solid panel.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import struct
@@ -42,6 +43,11 @@ DEFAULT_OUTPUT = Path(
         "SCREWM_SPEECH_WAVE_OUTPUT", "/dev/shm/hapax-compositor/quake-live-speech-wave.bgra"
     )
 )
+DEFAULT_META = Path(
+    os.environ.get(
+        "SCREWM_SPEECH_WAVE_META", "/dev/shm/hapax-compositor/quake-live-speech-wave.json"
+    )
+)
 FPS = float(os.environ.get("SCREWM_SPEECH_WAVE_FPS", "60"))
 
 # m8 oscilloscope ring format (matches tts_envelope_publisher._WAVE_*).
@@ -54,6 +60,8 @@ LINE_WIDTH = 2.0
 LINE_WIDTH_AMP_SCALE = 3.0
 ACTIVE_ALPHA = 1.0
 ALPHA_FLOOR = 0.22
+IDLE_ALPHA = 0.10
+IDLE_LINE_WIDTH = 1.0
 SILENCE_FADE_AFTER_S = 1.0
 SILENCE_FADE_DURATION_S = 0.5
 # Bounded-amplitude clamp (operator 2026-05-06: reactivity must be TIGHT) — no
@@ -130,16 +138,58 @@ def _surface_bgra(surface: cairo.ImageSurface) -> bytes:
     return b"".join(data[y * stride : y * stride + WIDTH * 4] for y in range(HEIGHT))
 
 
-def _render(accent: tuple[float, float, float], now: float) -> bytes:
+def _draw_midline(
+    cr: cairo.Context,
+    accent: tuple[float, float, float],
+    *,
+    alpha: float = IDLE_ALPHA,
+    width: float = IDLE_LINE_WIDTH,
+) -> None:
+    r, g, b = accent
+    cr.set_line_width(width)
+    cr.set_source_rgba(r, g, b, alpha)
+    y_mid = HEIGHT / 2.0
+    cr.move_to(0.0, y_mid)
+    cr.line_to(float(WIDTH), y_mid)
+    cr.stroke()
+
+
+def _render(accent: tuple[float, float, float], now: float) -> tuple[bytes, dict[str, object]]:
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, WIDTH, HEIGHT)
     cr = cairo.Context(surface)  # transparent background by default
     ring = _read_ring(DEFAULT_RING)
+    meta: dict[str, object] = {
+        "schema": "screwm-speech-wave-v1",
+        "timestamp_unix_ms": int(now * 1000),
+        "ring_path": str(DEFAULT_RING),
+        "output_path": str(DEFAULT_OUTPUT),
+        "width": WIDTH,
+        "height": HEIGHT,
+        "frame_size_bytes": FRAME_SIZE,
+        "ring_present": False,
+        "ring_age_s": None,
+        "sample_count": 0,
+        "amplitude": 0.0,
+        "alpha": IDLE_ALPHA,
+        "state": "missing-ring-idle-midline",
+    }
     if ring is not None:
         samples, mtime = ring
+        ring_age_s = max(0.0, now - mtime)
         base_alpha = _silence_alpha(mtime, now)
+        amplitude = min(_amplitude(samples), AMP_BURST_CLAMP)
+        meta.update(
+            {
+                "ring_present": True,
+                "ring_age_s": ring_age_s,
+                "sample_count": len(samples),
+                "amplitude": amplitude,
+            }
+        )
         if samples and base_alpha > 0.0:
-            amplitude = min(_amplitude(samples), AMP_BURST_CLAMP)
             alpha = base_alpha * (ALPHA_FLOOR + (1.0 - ALPHA_FLOOR) * amplitude)
+            meta["alpha"] = alpha
+            meta["state"] = "active-waveform" if base_alpha >= ACTIVE_ALPHA else "fading-waveform"
             r, g, b = accent
             cr.set_line_width(LINE_WIDTH + amplitude * LINE_WIDTH_AMP_SCALE)
             cr.set_source_rgba(r, g, b, alpha)
@@ -154,7 +204,12 @@ def _render(accent: tuple[float, float, float], now: float) -> bytes:
                 else:
                     cr.line_to(x, y)
             cr.stroke()
-    return _surface_bgra(surface)
+        else:
+            meta["state"] = "stale-idle-midline" if samples else "empty-idle-midline"
+            _draw_midline(cr, accent)
+    else:
+        _draw_midline(cr, accent)
+    return _surface_bgra(surface), meta
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
@@ -163,22 +218,40 @@ def _atomic_write(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
+def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
+    tmp = path.with_suffix(path.suffix + f".tmp-{os.getpid()}")
+    tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def main() -> int:
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
     DEFAULT_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    DEFAULT_META.parent.mkdir(parents=True, exist_ok=True)
     accent = _resolve_accent()
     interval = 1.0 / max(FPS, 1.0)
     blank = bytes(FRAME_SIZE)
     while not _STOP:
         try:
-            frame = _render(accent, time.time())
+            frame, meta = _render(accent, time.time())
             if len(frame) != FRAME_SIZE:
                 frame = blank
+                meta["state"] = "invalid-frame-size-blank"
             _atomic_write(DEFAULT_OUTPUT, frame)
+            _atomic_write_json(DEFAULT_META, meta)
         except Exception:  # noqa: BLE001 — never crash; keep feeding the slot
             try:
                 _atomic_write(DEFAULT_OUTPUT, blank)
+                _atomic_write_json(
+                    DEFAULT_META,
+                    {
+                        "schema": "screwm-speech-wave-v1",
+                        "timestamp_unix_ms": int(time.time() * 1000),
+                        "frame_size_bytes": FRAME_SIZE,
+                        "state": "producer-error-blank",
+                    },
+                )
             except OSError:
                 pass
         time.sleep(interval)

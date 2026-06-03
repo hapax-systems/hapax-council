@@ -1,5 +1,5 @@
 diff --git a/gl_rmain.c b/gl_rmain.c
-index f9007caf..0dab4417 100644
+index f9007caf..31b7c283 100644
 --- a/gl_rmain.c
 +++ b/gl_rmain.c
 @@ -28,6 +28,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
@@ -15,11 +15,11 @@ index f9007caf..0dab4417 100644
  #ifdef WIN32
  // Enable NVIDIA High Performance Graphics while using Integrated Graphics.
  #ifdef __cplusplus
-@@ -110,6 +116,83 @@ cvar_t r_cullentities_trace_eyejitter = {CF_CLIENT, "r_cullentities_trace_eyejit
+@@ -110,6 +116,93 @@ cvar_t r_cullentities_trace_eyejitter = {CF_CLIENT, "r_cullentities_trace_eyejit
  cvar_t r_sortentities = {CF_CLIENT, "r_sortentities", "0", "sort entities before drawing (might be faster)"};
  cvar_t r_speeds = {CF_CLIENT, "r_speeds","0", "displays rendering statistics and per-subsystem timings"};
  cvar_t r_fullbright = {CF_CLIENT, "r_fullbright","0", "makes map very bright and renders faster"};
-+#define HAPAX_LIVE_TEXTURE_SLOT_COUNT 13
++#define HAPAX_LIVE_TEXTURE_SLOT_COUNT 14
 +
 +cvar_t hapax_live_texture_enable[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_enable", "0", "enable Hapax raw BGRA live texture upload slot 1"},
@@ -35,6 +35,7 @@ index f9007caf..0dab4417 100644
 +	{CF_CLIENT, "hapax_live_texture11_enable", "0", "enable Hapax raw BGRA live texture upload slot 11"},
 +	{CF_CLIENT, "hapax_live_texture12_enable", "0", "enable Hapax raw BGRA live texture upload slot 12"},
 +	{CF_CLIENT, "hapax_live_texture13_enable", "0", "enable Hapax raw BGRA live texture upload slot 13"},
++	{CF_CLIENT, "hapax_live_texture14_enable", "0", "enable Hapax raw BGRA live texture upload slot 14"},
 +};
 +cvar_t hapax_live_texture_name[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_name", "progs/aoa_sphere.mdl_0", "skinframe/BSP texture basename to update from Hapax live texture slot 1"},
@@ -50,6 +51,7 @@ index f9007caf..0dab4417 100644
 +	{CF_CLIENT, "hapax_live_texture11_name", "w27", "skinframe/BSP texture basename to update from Hapax live texture slot 11"},
 +	{CF_CLIENT, "hapax_live_texture12_name", "w05", "skinframe/BSP texture basename to update from Hapax live texture slot 12"},
 +	{CF_CLIENT, "hapax_live_texture13_name", "speech_wave", "skinframe/BSP texture basename to update from Hapax live texture slot 13"},
++	{CF_CLIENT, "hapax_live_texture14_name", "progs/aoa.mdl_0", "skinframe/BSP texture basename to update from Hapax live texture slot 14"},
 +};
 +cvar_t hapax_live_texture_path[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_path", "/dev/shm/hapax-compositor/quake-live-yt.bgra", "raw BGRA frame path for Hapax live texture slot 1"},
@@ -65,6 +67,7 @@ index f9007caf..0dab4417 100644
 +	{CF_CLIENT, "hapax_live_texture11_path", "/dev/shm/hapax-compositor/quake-live-ticker-chronicle.bgra", "raw BGRA frame path for Hapax live texture slot 11"},
 +	{CF_CLIENT, "hapax_live_texture12_path", "/dev/shm/hapax-compositor/quake-live-reverie.bgra", "raw BGRA frame path for Hapax live texture slot 12"},
 +	{CF_CLIENT, "hapax_live_texture13_path", "/dev/shm/hapax-compositor/quake-live-speech-wave.bgra", "raw BGRA frame path for Hapax live texture slot 13"},
++	{CF_CLIENT, "hapax_live_texture14_path", "/dev/shm/hapax-compositor/quake-live-aoa-atlas.bgra", "raw BGRA frame path for Hapax live texture slot 14"},
 +};
 +cvar_t hapax_live_texture_width[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_width", "2048", "raw BGRA frame width for Hapax live texture slot 1"},
@@ -80,6 +83,7 @@ index f9007caf..0dab4417 100644
 +	{CF_CLIENT, "hapax_live_texture11_width", "1344", "raw BGRA frame width for Hapax live texture slot 11"},
 +	{CF_CLIENT, "hapax_live_texture12_width", "960", "raw BGRA frame width for Hapax live texture slot 12"},
 +	{CF_CLIENT, "hapax_live_texture13_width", "512", "raw BGRA frame width for Hapax live texture slot 13"},
++	{CF_CLIENT, "hapax_live_texture14_width", "2048", "raw BGRA frame width for Hapax live texture slot 14"},
 +};
 +cvar_t hapax_live_texture_height[HAPAX_LIVE_TEXTURE_SLOT_COUNT] = {
 +	{CF_CLIENT, "hapax_live_texture_height", "1024", "raw BGRA frame height for Hapax live texture slot 1"},
@@ -95,11 +99,164 @@ index f9007caf..0dab4417 100644
 +	{CF_CLIENT, "hapax_live_texture11_height", "176", "raw BGRA frame height for Hapax live texture slot 11"},
 +	{CF_CLIENT, "hapax_live_texture12_height", "540", "raw BGRA frame height for Hapax live texture slot 12"},
 +	{CF_CLIENT, "hapax_live_texture13_height", "128", "raw BGRA frame height for Hapax live texture slot 13"},
++	{CF_CLIENT, "hapax_live_texture14_height", "2048", "raw BGRA frame height for Hapax live texture slot 14"},
 +};
++
++cvar_t hapax_driftfield_enable = {CF_CLIENT, "hapax_driftfield_enable", "0", "enable Hapax drift field standalone BGRA sampler upload"};
++cvar_t hapax_driftfield_path = {CF_CLIENT, "hapax_driftfield_path", "/dev/shm/hapax-compositor/quake-drift-field.bgra", "raw BGRA frame path for Hapax drift field sampler"};
++cvar_t hapax_driftfield_width = {CF_CLIENT, "hapax_driftfield_width", "256", "raw BGRA frame width for Hapax drift field sampler"};
++cvar_t hapax_driftfield_height = {CF_CLIENT, "hapax_driftfield_height", "256", "raw BGRA frame height for Hapax drift field sampler"};
  
  cvar_t r_fullbright_directed = {CF_CLIENT, "r_fullbright_directed", "0", "render fullbright things (unlit worldmodel and EF_FULLBRIGHT entities, but not fullbright shaders) using a constant light direction instead to add more depth while keeping uniform brightness"};
  cvar_t r_fullbright_directed_ambient = {CF_CLIENT, "r_fullbright_directed_ambient", "0.5", "ambient light multiplier for directed fullbright"};
-@@ -2746,6 +2824,205 @@ static void R_SkinFrame_GenerateTexturesFromQPixels(skinframe_t *skinframe, qboo
+@@ -178,6 +271,13 @@ cvar_t r_glsl_offsetmapping_scale = {CF_CLIENT | CF_ARCHIVE, "r_glsl_offsetmappi
+ cvar_t r_glsl_offsetmapping_lod = {CF_CLIENT | CF_ARCHIVE, "r_glsl_offsetmapping_lod", "0", "apply distance-based level-of-detail correction to number of offsetmappig steps, effectively making it render faster on large open-area maps"};
+ cvar_t r_glsl_offsetmapping_lod_distance = {CF_CLIENT | CF_ARCHIVE, "r_glsl_offsetmapping_lod_distance", "32", "first LOD level distance, second level (-50% steps) is 2x of this, third (33%) - 3x etc."};
+ cvar_t r_glsl_postprocess = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess", "0", "use a GLSL postprocessing shader"};
++cvar_t hapax_drift_enable = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_enable", "1", "(hapax) enable GPU world-surface drift permutation (HAPAX_DRIFT) on drift_* surfaces"};
++cvar_t hapax_drift_geo_amp     = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_amp", "24", "(hapax) geometric drift displacement amplitude (units) for container geometry"};
++cvar_t hapax_drift_geo_ampmax  = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_ampmax", "36", "(hapax) geometric drift hard displacement clamp (units)"};
++cvar_t hapax_drift_geo_freq    = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_freq", "0.015", "(hapax) geometric drift spatial frequency"};
++cvar_t hapax_drift_geo_speed   = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_speed", "0.25", "(hapax) geometric drift temporal evolution speed"};
++cvar_t hapax_drift_geo_swirl   = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_swirl", "1.0", "(hapax) geometric drift curl-swirl operator weight"};
++cvar_t hapax_drift_geo_content = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_content", "5", "(hapax) geometric drift ABSOLUTE displacement amplitude (units) for content (entity/model) geometry, independent of container amp"};
+ cvar_t r_glsl_postprocess_uservec1 = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec1", "0 0 0 0", "a 4-component vector to pass as uservec1 to the postprocessing shader (only useful if default.glsl has been customized)"};
+ cvar_t r_glsl_postprocess_uservec2 = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec2", "0 0 0 0", "a 4-component vector to pass as uservec2 to the postprocessing shader (only useful if default.glsl has been customized)"};
+ cvar_t r_glsl_postprocess_uservec3 = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec3", "0 0 0 0", "a 4-component vector to pass as uservec3 to the postprocessing shader (only useful if default.glsl has been customized)"};
+@@ -275,6 +375,7 @@ rtexture_t *r_texture_grey128;
+ rtexture_t *r_texture_black;
+ rtexture_t *r_texture_notexture;
+ rtexture_t *r_texture_whitecube;
++rtexture_t *r_hapax_driftfield_texture; // Hapax drift field - standalone sampler, not surface-bound
+ rtexture_t *r_texture_normalizationcube;
+ rtexture_t *r_texture_fogattenuation;
+ rtexture_t *r_texture_fogheighttexture;
+@@ -655,7 +756,8 @@ shaderpermutationinfo_t shaderpermutationinfo[SHADERPERMUTATION_COUNT] =
+ 	{"#define USEDEPTHRGB\n", " depthrgb"},
+ 	{"#define USEALPHAGENVERTEX\n", " alphagenvertex"},
+ 	{"#define USESKELETAL\n", " skeletal"},
+-	{"#define USEOCCLUDE\n", " occlude"}
++	{"#define USEOCCLUDE\n", " occlude"},
++	{"#define USEHAPAXDRIFT\n", " hapaxdrift"}
+ };
+ 
+ // NOTE: MUST MATCH ORDER OF SHADERMODE_* ENUMS!
+@@ -726,6 +828,7 @@ typedef struct r_glsl_permutation_s
+ 	int tex_Texture_ReflectMask;
+ 	int tex_Texture_ReflectCube;
+ 	int tex_Texture_BounceGrid;
++	int tex_Texture_HapaxDriftField;
+ 	/// locations of detected uniforms in program object, or -1 if not found
+ 	int loc_Texture_First;
+ 	int loc_Texture_Second;
+@@ -757,9 +860,17 @@ typedef struct r_glsl_permutation_s
+ 	int loc_Texture_ReflectMask;
+ 	int loc_Texture_ReflectCube;
+ 	int loc_Texture_BounceGrid;
++	int loc_Texture_HapaxDriftField;
+ 	int loc_Alpha;
+ 	int loc_BloomBlur_Parameters;
+ 	int loc_ClientTime;
++	int loc_HapaxDrift_ContainerContent;
++	int loc_HapaxDrift_Amp;
++	int loc_HapaxDrift_AmpMax;
++	int loc_HapaxDrift_Freq;
++	int loc_HapaxDrift_Speed;
++	int loc_HapaxDrift_Swirl;
++	int loc_HapaxDrift_Content;
+ 	int loc_Color_Ambient;
+ 	int loc_Color_Diffuse;
+ 	int loc_Color_Specular;
+@@ -1032,9 +1143,9 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+ 	int vertstrings_count = 0;
+ 	int geomstrings_count = 0;
+ 	int fragstrings_count = 0;
+-	const char *vertstrings_list[32+5+SHADERSTATICPARMS_COUNT+1];
+-	const char *geomstrings_list[32+5+SHADERSTATICPARMS_COUNT+1];
+-	const char *fragstrings_list[32+5+SHADERSTATICPARMS_COUNT+1];
++	const char *vertstrings_list[33+5+SHADERSTATICPARMS_COUNT+1];
++	const char *geomstrings_list[33+5+SHADERSTATICPARMS_COUNT+1];
++	const char *fragstrings_list[33+5+SHADERSTATICPARMS_COUNT+1];
+ 
+ 	if (p->compiled)
+ 		return;
+@@ -1196,9 +1307,17 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+ 		p->loc_Texture_ReflectMask        = qglGetUniformLocation(p->program, "Texture_ReflectMask");
+ 		p->loc_Texture_ReflectCube        = qglGetUniformLocation(p->program, "Texture_ReflectCube");
+ 		p->loc_Texture_BounceGrid         = qglGetUniformLocation(p->program, "Texture_BounceGrid");
++		p->loc_Texture_HapaxDriftField    = qglGetUniformLocation(p->program, "Texture_HapaxDriftField");
+ 		p->loc_Alpha                      = qglGetUniformLocation(p->program, "Alpha");
+ 		p->loc_BloomBlur_Parameters       = qglGetUniformLocation(p->program, "BloomBlur_Parameters");
+ 		p->loc_ClientTime                 = qglGetUniformLocation(p->program, "ClientTime");
++		p->loc_HapaxDrift_ContainerContent = qglGetUniformLocation(p->program, "HapaxDrift_ContainerContent");
++		p->loc_HapaxDrift_Amp             = qglGetUniformLocation(p->program, "HapaxDrift_Amp");
++		p->loc_HapaxDrift_AmpMax          = qglGetUniformLocation(p->program, "HapaxDrift_AmpMax");
++		p->loc_HapaxDrift_Freq            = qglGetUniformLocation(p->program, "HapaxDrift_Freq");
++		p->loc_HapaxDrift_Speed           = qglGetUniformLocation(p->program, "HapaxDrift_Speed");
++		p->loc_HapaxDrift_Swirl           = qglGetUniformLocation(p->program, "HapaxDrift_Swirl");
++		p->loc_HapaxDrift_Content         = qglGetUniformLocation(p->program, "HapaxDrift_Content");
+ 		p->loc_Color_Ambient              = qglGetUniformLocation(p->program, "Color_Ambient");
+ 		p->loc_Color_Diffuse              = qglGetUniformLocation(p->program, "Color_Diffuse");
+ 		p->loc_Color_Specular             = qglGetUniformLocation(p->program, "Color_Specular");
+@@ -1287,6 +1406,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+ 		p->tex_Texture_ReflectMask = -1;
+ 		p->tex_Texture_ReflectCube = -1;
+ 		p->tex_Texture_BounceGrid = -1;
++		p->tex_Texture_HapaxDriftField = -1;
+ 		// bind the texture samplers in use
+ 		sampler = 0;
+ 		if (p->loc_Texture_First           >= 0) {p->tex_Texture_First            = sampler;qglUniform1i(p->loc_Texture_First           , sampler);sampler++;}
+@@ -1319,6 +1439,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+ 		if (p->loc_Texture_ReflectMask     >= 0) {p->tex_Texture_ReflectMask      = sampler;qglUniform1i(p->loc_Texture_ReflectMask     , sampler);sampler++;}
+ 		if (p->loc_Texture_ReflectCube     >= 0) {p->tex_Texture_ReflectCube      = sampler;qglUniform1i(p->loc_Texture_ReflectCube     , sampler);sampler++;}
+ 		if (p->loc_Texture_BounceGrid      >= 0) {p->tex_Texture_BounceGrid       = sampler;qglUniform1i(p->loc_Texture_BounceGrid      , sampler);sampler++;}
++		if (p->loc_Texture_HapaxDriftField >= 0) {p->tex_Texture_HapaxDriftField  = sampler;qglUniform1i(p->loc_Texture_HapaxDriftField , sampler);sampler++;}
+ 		// get the uniform block indices so we can bind them
+ 		p->ubiloc_Skeletal_Transform12_UniformBlock = -1;
+ #ifndef USE_GLES2 /* FIXME: GLES3 only */
+@@ -1388,6 +1509,19 @@ static void R_SetupShader_SetPermutationGLSL(unsigned int mode, uint64_t permuta
+ 	if (r_glsl_permutation->loc_ModelViewProjectionMatrix >= 0) qglUniformMatrix4fv(r_glsl_permutation->loc_ModelViewProjectionMatrix, 1, false, gl_modelviewprojection16f);
+ 	if (r_glsl_permutation->loc_ModelViewMatrix >= 0) qglUniformMatrix4fv(r_glsl_permutation->loc_ModelViewMatrix, 1, false, gl_modelview16f);
+ 	if (r_glsl_permutation->loc_ClientTime >= 0) qglUniform1f(r_glsl_permutation->loc_ClientTime, cl.time);
++	// (hapax) geometric-drift scene-global params — pushed per program activation so they reach
++	// the lit AND depth/shadow programs identically (deform + shadow stay coupled).
++	if (r_glsl_permutation->loc_HapaxDrift_Amp     >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_Amp,     hapax_drift_geo_amp.value);
++	if (r_glsl_permutation->loc_HapaxDrift_AmpMax  >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_AmpMax,  hapax_drift_geo_ampmax.value);
++	if (r_glsl_permutation->loc_HapaxDrift_Freq    >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_Freq,    hapax_drift_geo_freq.value);
++	if (r_glsl_permutation->loc_HapaxDrift_Speed   >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_Speed,   hapax_drift_geo_speed.value);
++	if (r_glsl_permutation->loc_HapaxDrift_Swirl   >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_Swirl,   hapax_drift_geo_swirl.value);
++	if (r_glsl_permutation->loc_HapaxDrift_Content >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_Content, hapax_drift_geo_content.value);
++	// (hapax) per-surface container(0)/content(1) selector — pushed HERE (per activation = per
++	// batch, after the program-change guard) so it reaches BOTH the lit and depth/shadow programs.
++	// Without this in the shadow pass, content geometry cast shadows at container amplitude
++	// (silhouette-detach: entity shadows deforming far more than their lit bodies).
++	if (r_glsl_permutation->loc_HapaxDrift_ContainerContent >= 0) qglUniform1f(r_glsl_permutation->loc_HapaxDrift_ContainerContent, (rsurface.entity && rsurface.entity != r_refdef.scene.worldentity) ? 1.0f : 0.0f);
+ 	CHECKGLERROR
+ }
+ 
+@@ -1575,6 +1709,11 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
+ 	r_waterstate_waterplane_t *waterplane = (r_waterstate_waterplane_t *)surfacewaterplane;
+ 	if (r_trippy.integer && !notrippy)
+ 		permutation |= SHADERPERMUTATION_TRIPPY;
++	// (hapax) GPU world-surface drift: flag drift_* surfaces for the HAPAX_DRIFT permutation.
++	if (hapax_drift_enable.integer && t->name[0] && (!strncmp(t->name, "drift_", 6) || !strncmp(t->name, "hex_", 4) || !strncmp(t->name, "stipple_", 8) || !strncmp(t->name, "geometry", 8)))
++		permutation |= SHADERPERMUTATION_HAPAXDRIFT;
++	else if (hapax_drift_enable.integer && rsurface.entity && rsurface.entity != r_refdef.scene.worldentity)
++		permutation |= SHADERPERMUTATION_HAPAXDRIFT; // (hapax) content geometry (alias models / entities) drifts too
+ 	if (t->currentmaterialflags & MATERIALFLAG_ALPHATEST)
+ 		permutation |= SHADERPERMUTATION_ALPHAKILL;
+ 	if (t->currentmaterialflags & MATERIALFLAG_OCCLUDE)
+@@ -2083,6 +2222,9 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
+ 		}
+ 		if (r_glsl_permutation->tex_Texture_BounceGrid  >= 0) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_BounceGrid, r_shadow_bouncegrid_state.texture);
+ 		if (r_glsl_permutation->tex_Texture_LightGrid   >= 0 && r_refdef.scene.worldmodel) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_LightGrid, r_refdef.scene.worldmodel->brushq3.lightgridtexture);
++		if (r_glsl_permutation->tex_Texture_HapaxDriftField >= 0) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_HapaxDriftField, r_hapax_driftfield_texture ? r_hapax_driftfield_texture : r_texture_grey128);
++		// (hapax) ContainerContent now pushed in R_SetupShader_SetPermutationGLSL so it reaches
++		// the depth/shadow program too (fixes entity silhouette-detach); no per-surface push here.
+ 		CHECKGLERROR
+ 		break;
+ 	}
+@@ -2746,6 +2888,297 @@ static void R_SkinFrame_GenerateTexturesFromQPixels(skinframe_t *skinframe, qboo
  	}
  }
  
@@ -119,7 +276,8 @@ index f9007caf..0dab4417 100644
 +{
 +	FILE *file;
 +
-+	if ((r_textureframe % 120) != 0)
++	if ((r_textureframe % 120) != 0 &&
++		(!name || strcmp(name, "progs/aoa.mdl_0") || (stage && !strcmp(stage, "slot-active"))))
 +		return;
 +
 +	file = fopen("/tmp/hapax-live-texture-debug.log", "a");
@@ -198,7 +356,10 @@ index f9007caf..0dab4417 100644
 +	char identifier[MAX_QPATH];
 +
 +	if (!enable->integer || cls.state == ca_dedicated)
++	{
++		R_HapaxLiveTexture_Debug("disabled", name_cvar->string, path_cvar->string, width_cvar->integer, height_cvar->integer, enable->integer, cls.state);
 +		return;
++	}
 +
 +	name = name_cvar->string;
 +	path = path_cvar->string;
@@ -209,6 +370,8 @@ index f9007caf..0dab4417 100644
 +		R_HapaxLiveTexture_Debug("invalid", name, path, width, height, -1, -1);
 +		return;
 +	}
++	if (slot == HAPAX_LIVE_TEXTURE_SLOT_COUNT - 1)
++		R_HapaxLiveTexture_Debug("slot-active", name, path, width, height, enable->integer, slot + 1);
 +
 +	size = (size_t)width * (size_t)height * 4;
 +	if (stat(path, &st) != 0)
@@ -234,7 +397,10 @@ index f9007caf..0dab4417 100644
 +		state->pixels_size = size;
 +	}
 +	if (!state->pixels)
++	{
++		R_HapaxLiveTexture_Debug("alloc-failed", name, path, width, height, -1, -1);
 +		return;
++	}
 +	if (!R_HapaxLiveTexture_ReadFrame(path, state->pixels, size))
 +	{
 +		R_HapaxLiveTexture_Debug("read-failed", name, path, width, height, -1, -1);
@@ -302,10 +468,93 @@ index f9007caf..0dab4417 100644
 +		R_HapaxLiveTexture_UpdateSlot(slot, &hapax_live_texture_enable[slot], &hapax_live_texture_name[slot], &hapax_live_texture_path[slot], &hapax_live_texture_width[slot], &hapax_live_texture_height[slot]);
 +}
 +
++typedef struct hapax_driftfield_state_s
++{
++	unsigned char *pixels;
++	size_t pixels_size;
++	time_t mtime_sec;
++	long mtime_nsec;
++	off_t file_size;
++	int width;
++	int height;
++	qbool uploaded;
++}
++hapax_driftfield_state_t;
++static hapax_driftfield_state_t hapax_driftfield_state;
++
++static void R_HapaxDriftField_Update(void)
++{
++	const char *path;
++	int width;
++	int height;
++	size_t size;
++	struct stat st;
++	time_t mtime_sec;
++	long mtime_nsec;
++	hapax_driftfield_state_t *state = &hapax_driftfield_state;
++
++	if (!hapax_driftfield_enable.integer || cls.state == ca_dedicated)
++		return;
++
++	path = hapax_driftfield_path.string;
++	width = hapax_driftfield_width.integer;
++	height = hapax_driftfield_height.integer;
++	if (!path[0] || width <= 0 || height <= 0 || width > 4096 || height > 4096)
++		return;
++
++	size = (size_t)width * (size_t)height * 4;
++	if (stat(path, &st) != 0)
++		return;
++	if ((size_t)st.st_size != size) // torn-frame/size reject: must be exactly w*h*4
++		return;
++	mtime_sec = st.st_mtim.tv_sec;
++	mtime_nsec = st.st_mtim.tv_nsec;
++	if (state->uploaded && r_hapax_driftfield_texture &&
++		state->file_size == st.st_size && state->mtime_sec == mtime_sec && state->mtime_nsec == mtime_nsec)
++		return;
++	if (state->pixels_size != size || !state->pixels)
++	{
++		if (state->pixels)
++			Mem_Free(state->pixels);
++		state->pixels = (unsigned char *)Mem_Alloc(r_main_mempool, size);
++		state->pixels_size = size;
++	}
++	if (!state->pixels)
++		return;
++	if (!R_HapaxLiveTexture_ReadFrame(path, state->pixels, size)) // second torn-frame guard (short read)
++		return;
++
++	if (!r_hapax_driftfield_texture || state->width != width || state->height != height)
++	{
++		r_hapax_driftfield_texture = R_LoadTexture2D(
++			r_main_texturepool,
++			"hapax_driftfield",
++			width,
++			height,
++			state->pixels,
++			TEXTYPE_BGRA,
++			TEXF_FORCELINEAR | TEXF_CLAMP | TEXF_PERSISTENT | TEXF_ALLOWUPDATES,
++			-1,
++			NULL);
++		state->width = width;
++		state->height = height;
++		if (!r_hapax_driftfield_texture)
++			return;
++	}
++	else
++		R_UpdateTexture(r_hapax_driftfield_texture, state->pixels, 0, 0, 0, width, height, 1, 0);
++
++	state->file_size = st.st_size;
++	state->mtime_sec = mtime_sec;
++	state->mtime_nsec = mtime_nsec;
++	state->uploaded = true;
++}
++
++
  skinframe_t *R_SkinFrame_LoadInternal8bit(const char *name, int textureflags, const unsigned char *skindata, int width, int height, const unsigned int *palette, const unsigned int *alphapalette)
  {
  	int i;
-@@ -3288,6 +3565,14 @@ void GL_Main_Init(void)
+@@ -3288,6 +3721,18 @@ void GL_Main_Init(void)
  	Cvar_RegisterVariable(&r_sortentities);
  	Cvar_RegisterVariable(&r_drawviewmodel);
  	Cvar_RegisterVariable(&r_drawexteriormodel);
@@ -317,14 +566,248 @@ index f9007caf..0dab4417 100644
 +		Cvar_RegisterVariable(&hapax_live_texture_width[i]);
 +		Cvar_RegisterVariable(&hapax_live_texture_height[i]);
 +	}
++	Cvar_RegisterVariable(&hapax_driftfield_enable);
++	Cvar_RegisterVariable(&hapax_driftfield_path);
++	Cvar_RegisterVariable(&hapax_driftfield_width);
++	Cvar_RegisterVariable(&hapax_driftfield_height);
  	Cvar_RegisterVariable(&r_speeds);
  	Cvar_RegisterVariable(&r_fullbrights);
  	Cvar_RegisterVariable(&r_wateralpha);
-@@ -5649,6 +5934,7 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
+@@ -3341,6 +3786,13 @@ void GL_Main_Init(void)
+ 	Cvar_RegisterVariable(&r_glsl_offsetmapping_lod);
+ 	Cvar_RegisterVariable(&r_glsl_offsetmapping_lod_distance);
+ 	Cvar_RegisterVariable(&r_glsl_postprocess);
++	Cvar_RegisterVariable(&hapax_drift_enable);
++	Cvar_RegisterVariable(&hapax_drift_geo_amp);
++	Cvar_RegisterVariable(&hapax_drift_geo_ampmax);
++	Cvar_RegisterVariable(&hapax_drift_geo_freq);
++	Cvar_RegisterVariable(&hapax_drift_geo_speed);
++	Cvar_RegisterVariable(&hapax_drift_geo_swirl);
++	Cvar_RegisterVariable(&hapax_drift_geo_content);
+ 	Cvar_RegisterVariable(&r_glsl_postprocess_uservec1);
+ 	Cvar_RegisterVariable(&r_glsl_postprocess_uservec2);
+ 	Cvar_RegisterVariable(&r_glsl_postprocess_uservec3);
+@@ -5649,6 +6101,8 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
  	if (r_timereport_active)
  		R_TimeReport("start");
  	r_textureframe++; // used only by R_GetCurrentTexture
 +	R_HapaxLiveTexture_Update();
++	R_HapaxDriftField_Update();
  	rsurface.entity = NULL; // used only by R_GetCurrentTexture and RSurf_ActiveModelEntity
  
  	if(R_CompileShader_CheckStaticParms())
+diff --git a/render.h b/render.h
+index 7fbcd0b3..8ec3075c 100644
+--- a/render.h
++++ b/render.h
+@@ -102,7 +102,8 @@ shadermode_t;
+ #define SHADERPERMUTATION_ALPHAGEN_VERTEX (1u<<29) ///< alphaGen vertex
+ #define SHADERPERMUTATION_SKELETAL (1u<<30) ///< (skeletal models) use skeletal matrices to deform vertices (gpu-skinning)
+ #define SHADERPERMUTATION_OCCLUDE (1u<<31) ///< use occlusion buffer for corona
+-#define SHADERPERMUTATION_COUNT 32u ///< size of shaderpermutationinfo array
++#define SHADERPERMUTATION_HAPAXDRIFT (1ull<<32) ///< (hapax) GPU world-surface drift/effects stage; permutation is uint64_t so bit 32 is valid
++#define SHADERPERMUTATION_COUNT 33u ///< size of shaderpermutationinfo array
+ // UBSan: unsigned literals because left shifting by 31 causes signed overflow, although it works as expected on x86.
+ 
+ // 1.0f / N table
+@@ -570,6 +571,7 @@ extern cvar_t r_test;
+ extern rtexture_t *r_texture_blanknormalmap;
+ extern rtexture_t *r_texture_white;
+ extern rtexture_t *r_texture_grey128;
++extern rtexture_t *r_hapax_driftfield_texture;
+ extern rtexture_t *r_texture_black;
+ extern rtexture_t *r_texture_notexture;
+ extern rtexture_t *r_texture_whitecube;
+diff --git a/shader_glsl.h b/shader_glsl.h
+index dc56d085..0715dfa2 100644
+--- a/shader_glsl.h
++++ b/shader_glsl.h
+@@ -178,6 +178,62 @@
+ "	return position;\n",
+ "}\n",
+ "#endif\n",
++"#ifdef USEHAPAXDRIFT\n",
++"// ===== HAPAX GEOMETRIC DRIFT — shared vertex deformation library (MODEL space) =====\n",
++"// One pure function hpxD(p) morphs the SHAPE of any flagged geometry (container OR\n",
++"// content). C1 value-noise displacement => continuous in world/model space, so shared\n",
++"// BSP surface edges displace identically and stay welded (no seam cracks).\n",
++"#ifndef USETRIPPY\n",
++"uniform highp float ClientTime;\n",
++"#endif\n",
++"uniform highp float HapaxDrift_ContainerContent;\n",
++"uniform highp float HapaxDrift_Amp;\n",
++"uniform highp float HapaxDrift_AmpMax;\n",
++"uniform highp float HapaxDrift_Freq;\n",
++"uniform highp float HapaxDrift_Speed;\n",
++"uniform highp float HapaxDrift_Swirl;\n",
++"uniform highp float HapaxDrift_Content;\n",
++"float hpxHash(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }\n",
++"float hpxVNoise(vec3 p){\n",
++"	vec3 i = floor(p); vec3 f = fract(p); f = f*f*(3.0 - 2.0*f);\n",
++"	float n000 = hpxHash(i + vec3(0.0,0.0,0.0));\n",
++"	float n100 = hpxHash(i + vec3(1.0,0.0,0.0));\n",
++"	float n010 = hpxHash(i + vec3(0.0,1.0,0.0));\n",
++"	float n110 = hpxHash(i + vec3(1.0,1.0,0.0));\n",
++"	float n001 = hpxHash(i + vec3(0.0,0.0,1.0));\n",
++"	float n101 = hpxHash(i + vec3(1.0,0.0,1.0));\n",
++"	float n011 = hpxHash(i + vec3(0.0,1.0,1.0));\n",
++"	float n111 = hpxHash(i + vec3(1.0,1.0,1.0));\n",
++"	return mix(mix(mix(n000,n100,f.x), mix(n010,n110,f.x), f.y), mix(mix(n001,n101,f.x), mix(n011,n111,f.x), f.y), f.z);\n",
++"}\n",
++"vec3 hpxNoise3(vec3 p){ return vec3(hpxVNoise(p), hpxVNoise(p + vec3(31.4,17.1,5.2)), hpxVNoise(p + vec3(7.7,41.3,23.9))); }\n",
++"// curl of the value-noise field => divergence-free rotational flow (C1, seam-safe swirl).\n",
++"vec3 hpxCurl(vec3 p){\n",
++"	const float e = 0.5;\n",
++"	vec3 dx = vec3(e,0.0,0.0), dy = vec3(0.0,e,0.0), dz = vec3(0.0,0.0,e);\n",
++"	float x = (hpxVNoise(p+dy+vec3(19.1,0.0,0.0)) - hpxVNoise(p-dy+vec3(19.1,0.0,0.0))) - (hpxVNoise(p+dz+vec3(0.0,0.0,43.7)) - hpxVNoise(p-dz+vec3(0.0,0.0,43.7)));\n",
++"	float y = (hpxVNoise(p+dz+vec3(0.0,7.3,0.0)) - hpxVNoise(p-dz+vec3(0.0,7.3,0.0))) - (hpxVNoise(p+dx+vec3(91.2,0.0,0.0)) - hpxVNoise(p-dx+vec3(91.2,0.0,0.0)));\n",
++"	float z = (hpxVNoise(p+dx+vec3(2.9,0.0,0.0)) - hpxVNoise(p-dx+vec3(2.9,0.0,0.0))) - (hpxVNoise(p+dy+vec3(0.0,57.4,0.0)) - hpxVNoise(p-dy+vec3(0.0,57.4,0.0)));\n",
++"	return vec3(x,y,z)/(2.0*e);\n",
++"}\n",
++"// hpxDisp: the composable deformer STACK (each op C1). Smooth low-freq region weights\n",
++"// blend value-noise displacement vs curl swirl => different zones drift with different\n",
++"// character, slowly evolving => endless variety. Returns a ~unit-scale displacement.\n",
++"vec3 hpxDisp(vec3 p, float t){\n",
++"	vec3 base  = hpxNoise3(p*HapaxDrift_Freq + vec3(t*HapaxDrift_Speed)) - vec3(0.5);\n",
++"	vec3 swirl = hpxCurl(p*HapaxDrift_Freq*0.8 + vec3(t*HapaxDrift_Speed*0.6)) * HapaxDrift_Swirl;\n",
++"	float w = 0.5 + 0.5*hpxVNoise(p*HapaxDrift_Freq*0.3 + vec3(t*0.05));\n",
++"	return mix(base, swirl, w);\n",
++"}\n",
++"// hpxD: model-space deform. amp is the ABSOLUTE displacement amplitude (units), chosen\n",
++"// per-surface = container amp vs content amp, so the two are independently tunable.\n",
++"vec3 hpxD(vec3 p, float amp){\n",
++"	vec3 disp = (amp*2.0) * hpxDisp(p, ClientTime);\n",
++"	float m = length(disp);\n",
++"	if (m > HapaxDrift_AmpMax) disp *= HapaxDrift_AmpMax / m;\n",
++"	return p + disp;\n",
++"}\n",
++"#endif\n",
+ "#endif\n",
+ "\n",
+ "#ifdef MODE_DEPTH_OR_SHADOW\n",
+@@ -196,7 +252,13 @@
+ "	vec4 SkeletalVertex = Attrib_Position * SkeletalMatrix;\n",
+ "#define Attrib_Position SkeletalVertex\n",
+ "#endif\n",
++"#ifdef USEHAPAXDRIFT\n",
++"	// shadow/depth pass: deform position with the SAME hpxD as the lit pass so the\n",
++"	// cast shadow + silhouette track the morphed surface (no rest-pose shadow detach).\n",
++"	gl_Position = ModelViewProjectionMatrix * vec4(hpxD(Attrib_Position.xyz, mix(HapaxDrift_Amp, HapaxDrift_Content, HapaxDrift_ContainerContent)), 1.0);\n",
++"#else\n",
+ "	gl_Position = ModelViewProjectionMatrix * Attrib_Position;\n",
++"#endif\n",
+ "#ifdef USETRIPPY\n",
+ "	gl_Position = TrippyVertex(gl_Position);\n",
+ "#endif\n",
+@@ -773,6 +835,8 @@
+ "#ifdef MODE_DEFERREDGEOMETRY\n",
+ "dp_varying highp float Depth;\n",
+ "#endif\n",
++"dp_varying highp vec3 HapaxModelPos;\n",
++"dp_varying highp vec3 HapaxModelNorm;\n",
+ "\n",
+ "\n",
+ "\n",
+@@ -1327,6 +1391,35 @@
+ "#define Attrib_TexCoord3 SkeletalNormal\n",
+ "#endif\n",
+ "\n",
++"#ifdef USEHAPAXDRIFT\n",
++"	// === HAPAX GEOMETRIC DRIFT (model space) — morph the SHAPE before lighting ===\n",
++"	// Composes after skeletal; redefines Attrib_Position + the TBN frame (the exact\n",
++"	// USESKELETAL idiom) so all downstream lighting + clip transforms see the deformed\n",
++"	// geometry. Normal recomputed by finite-difference of hpxD along the tangents so\n",
++"	// shading tracks the new surface (no flat-lit ripples).\n",
++"	vec3 hpx_P0 = Attrib_Position.xyz;\n",
++"	float hpx_amp = mix(HapaxDrift_Amp, HapaxDrift_Content, HapaxDrift_ContainerContent);\n",
++"	vec3 hpx_Pd = hpxD(hpx_P0, hpx_amp);\n",
++"	vec3 hpx_S  = Attrib_TexCoord1.xyz;\n",
++"	vec3 hpx_T  = Attrib_TexCoord2.xyz;\n",
++"	vec3 hpx_dS = hpxD(hpx_P0 + hpx_S, hpx_amp) - hpx_Pd;\n",
++"	vec3 hpx_dT = hpxD(hpx_P0 + hpx_T, hpx_amp) - hpx_Pd;\n",
++"	vec3 hpx_Nd = normalize(cross(hpx_dS, hpx_dT));\n",
++"	if (dot(hpx_Nd, Attrib_TexCoord3.xyz) < 0.0) hpx_Nd = -hpx_Nd;\n",
++"	vec4 HapaxDrift_Vtx  = vec4(hpx_Pd, 1.0);\n",
++"	vec3 HapaxDrift_SVec = normalize(hpx_dS);\n",
++"	vec3 HapaxDrift_TVec = normalize(hpx_dT);\n",
++"	vec3 HapaxDrift_Nrm  = hpx_Nd;\n",
++"#undef Attrib_Position\n",
++"#undef Attrib_TexCoord1\n",
++"#undef Attrib_TexCoord2\n",
++"#undef Attrib_TexCoord3\n",
++"#define Attrib_Position HapaxDrift_Vtx\n",
++"#define Attrib_TexCoord1 HapaxDrift_SVec\n",
++"#define Attrib_TexCoord2 HapaxDrift_TVec\n",
++"#define Attrib_TexCoord3 HapaxDrift_Nrm\n",
++"#endif\n",
++"\n",
+ "#if defined(MODE_VERTEXCOLOR) || defined(USEVERTEXTEXTUREBLEND) || defined(MODE_LIGHTDIRECTIONMAP_FORCED_VERTEXCOLOR) || defined(USEALPHAGENVERTEX)\n",
+ "	VertexColor = Attrib_Color;\n",
+ "#endif\n",
+@@ -1404,6 +1497,8 @@
+ "#endif\n",
+ "\n",
+ "	// transform vertex to clipspace (post-projection, but before perspective divide by W occurs)\n",
++"	HapaxModelPos = Attrib_Position.xyz;\n",
++"	HapaxModelNorm = Attrib_TexCoord3.xyz;\n",
+ "	gl_Position = ModelViewProjectionMatrix * Attrib_Position;\n",
+ "\n",
+ "#ifdef USESHADOWMAPORTHO\n",
+@@ -1466,6 +1561,9 @@
+ "    uint allpixels;\n",
+ "};\n",
+ "#endif\n",
++"#ifdef USEHAPAXDRIFT\n",
++"uniform sampler2D Texture_HapaxDriftField;\n",
++"#endif\n",
+ "void main(void)\n",
+ "{\n",
+ "#ifdef USEOFFSETMAPPING\n",
+@@ -1797,6 +1895,47 @@
+ "   color.rgb *= clamp(float(visiblepixels) / float(allpixels), 0.0, 1.0);\n",
+ "#endif\n",
+ "\n",
++"#ifdef USEHAPAXDRIFT\n",
++"	{\n",
++"		float hpx_luma = dot(color.rgb, vec3(0.299, 0.587, 0.114));\n",
++"		float hpx_field = dp_texture2D(Texture_HapaxDriftField, fract(HapaxModelPos.xy * 0.0078125)).r;\n",
++"		float hpx_wpos = HapaxModelPos.x*0.018 + HapaxModelPos.y*0.012 + HapaxModelPos.z*0.015;\n",
++"		// dark-preserving brightness (void/unlit stays dark; only the wire gets a faint floor)\n",
++"		vec3 hpx_desat = mix(color.rgb, vec3(hpx_luma), 0.50);\n",
++"		vec3 hpx_lifted = max(hpx_desat, vec3(0.24, 0.26, 0.32));\n",
++"		float hpx_wl = dot(hpx_lifted, vec3(0.299, 0.587, 0.114));\n",
++"		// (1) INHERENT colour dynamics (grid/stipple OWN colour life, apart from drift):\n",
++"		// per-zone cosine synthwave palette on its own slow clock; luma-normalised so it\n",
++"		// only sets HUE, never brightness (no wash, anti_visualizer).\n",
++"		float hpx_inh = HapaxModelPos.x*0.0023 + HapaxModelPos.y*0.0017 + HapaxModelPos.z*0.0029 + ClientTime*0.05;\n",
++"		vec3 hpx_pal = vec3(0.55, 0.45, 0.62) + vec3(0.45, 0.40, 0.40)*cos(6.2831853*(hpx_inh + vec3(0.0, 0.22, 0.52)));\n",
++"		vec3 hpx_paln = hpx_pal / max(dot(hpx_pal, vec3(0.299, 0.587, 0.114)), 0.05);\n",
++"		vec3 hpx_wire = hpx_paln * hpx_wl;\n",
++"		// (2) DRIFT layer: additional luma-preserving HUE ROTATION (field + time)\n",
++"		float hpx_ang = ClientTime*0.28 + hpx_wpos*6.2831853 + (hpx_field - 0.5)*6.5;\n",
++"		vec3 hpx_k = vec3(0.5773503);\n",
++"		float hpx_ca = cos(hpx_ang);\n",
++"		float hpx_sa = sin(hpx_ang);\n",
++"		vec3 hpx_rot = hpx_wire*hpx_ca + cross(hpx_k, hpx_wire)*hpx_sa + hpx_k*dot(hpx_k, hpx_wire)*(1.0 - hpx_ca);\n",
++"		color.rgb = max(hpx_rot * (hpx_wl / max(dot(hpx_rot, vec3(0.299, 0.587, 0.114)), 0.001)), vec3(0.0));\n",
++"		// (3) STIPPLE — light, sparse procedural dots on WALLS+CEILINGS (not the hex floor);\n",
++"		// own inherent colour life apart from grid/drift. Triplanar surface UV (dots sit ON\n",
++"		// the surface, no streaking); hashed sparse lattice; anti-aliased round dots.\n",
++"		vec3 hpx_nn = normalize(HapaxModelNorm);\n",
++"		float hpx_wc = 1.0 - step(0.5, hpx_nn.z);\n",
++"		vec3 hpx_an = abs(hpx_nn);\n",
++"		vec2 hpx_suv = (hpx_an.z > max(hpx_an.x, hpx_an.y)) ? HapaxModelPos.xy : ((hpx_an.x > hpx_an.y) ? HapaxModelPos.yz : HapaxModelPos.xz);\n",
++"		hpx_suv *= 0.10;\n",
++"		vec2 hpx_sf = fract(hpx_suv) - 0.5;\n",
++"		float hpx_shash = fract(sin(dot(floor(hpx_suv), vec2(127.1, 311.7))) * 43758.5453);\n",
++"		float hpx_dot = step(0.80, hpx_shash) * smoothstep(0.20, 0.07, length(hpx_sf));\n",
++"		// stipple inherent colour: own cosine palette on a DIFFERENT clock/phase than the grid\n",
++"		vec3 hpx_scol = 0.5 + 0.5*cos(6.2831853*(hpx_shash*3.1 + ClientTime*0.08 + hpx_field*1.3 + vec3(0.0, 0.33, 0.67)));\n",
++"		// live reverie currency drives the stipple too (brightness shimmer), so EVERY drift\n",
++"		// element responds to the currency, not just the grid hue-rotation.\n",
++"		color.rgb += hpx_wc * hpx_dot * hpx_scol * 0.42 * (0.65 + 0.7*hpx_field);\n",
++"	}\n",
++"#endif\n",
+ "	dp_FragColor = vec4(color);\n",
+ "}\n",
+ "#endif // FRAGMENT_SHADER\n",

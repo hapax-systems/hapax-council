@@ -43,16 +43,32 @@ def test_csqc_text_overlay_is_not_the_default_ward_surface() -> None:
     assert "set screwm_csqc_effect_lightfield 1" in autoexec
     assert "set screwm_review_fill_light 1" in autoexec
     assert "set screwm_csqc_material_field 1" in autoexec
-    assert "set screwm_csqc_theatre_spots 1" in autoexec
-    assert "r_ambient 22" in autoexec
+    assert "set screwm_csqc_theatre_spots 0" in autoexec
+    assert "set screwm_csqc_surface_grid_overlay 0" in autoexec
+    assert "set screwm_csqc_roaming_surface_pulses 0" in autoexec
+    assert "r_ambient 8" in autoexec
+    assert "r_fullbright_directed 1" in autoexec
+    assert "r_shadow_realtime_dlightshadows 1" in autoexec
+    assert "set screwm_csqc_full_expression_field 1" in autoexec
+    assert "set screwm_csqc_shadow_budget 1" in autoexec
     assert "Ward identity belongs to the scroom geometry" in autoexec
     assert "screwm_effect_lightfield_enabled" in body
+    assert "screwm_shadow_budget_enabled" in body
     assert 'cvar("screwm_csqc_effect_lightfield") > 0' in body
     assert 'cvar("screwm_review_fill_light") > 0' in body
-    assert "adddynamiclight('0 -555 196'" in body
+    assert "adddynamiclight('0 -555 250'" in body
     assert "92 + screwm_energy * 34" in body
     assert "screwm_add_ward_light('-900 -2360 130'" in body
     assert "screwm_add_ward_light('-1180 -600 330'" in body
+
+
+def test_aoa_entities_can_participate_in_shadowed_lightfield() -> None:
+    body = (QC_DIR / "world.qc").read_text(encoding="utf-8")
+
+    assert "EF_DYNAMICMODELLIGHT" in body
+    assert "ent.effects = EF_DOUBLESIDED + EF_DYNAMICMODELLIGHT;" in body
+    assert "EF_FULLBRIGHT +" not in body
+    assert "EF_NOSHADOW" not in body
 
 
 def test_csqc_dynamic_lights_cover_all_physical_ward_panes() -> None:
@@ -67,7 +83,7 @@ def test_csqc_dynamic_lights_cover_all_physical_ward_panes() -> None:
     assert "activity = screwm_clamp(active + presence * 0.70" in body
     assert "screwm_clamp(radius, 28, 158)" in body
     assert 'screwm_read_norm("data/audio-rms.txt")' in body
-    assert "screwm_audio_onset * 20" in body
+    assert "screwm_audio_onset * 26" in body
     assert 'screwm_read_norm("data/homage-quake-active.txt")' in body
     assert "homage_boost = screwm_homage_quake" in body
     assert 'cvar("screwm_csqc_lightfield") < 0' in body
@@ -140,6 +156,7 @@ def test_csqc_content_source_manifests_live_on_source_planes() -> None:
     )
     assert "fresh * 78 + opacity * 46 + area * 42" in body
     assert "screwm_content_source_count * 16" in body
+    assert "void() screwm_add_media_source_signal_lights" in body
     assert "screwm_add_content_source_light('-1580 -2140 290', 1" in body
     assert "screwm_add_content_source_light('1580 -500 300', 6" in body
 
@@ -150,6 +167,8 @@ def test_csqc_aoa_panes_and_scroom_scene_graph_carry_live_lightfields() -> None:
 
     assert body.count('screwm_read_norm("data/aoa-pane-signal-') == 10
     assert body.count("screwm_add_aoa_pane_light('") == len(map_module["AOA_PAYLOAD_PANES"])
+    assert "void() screwm_add_aoa_pane_signal_lights" in body
+    assert body.count("screwm_add_aoa_pane_signal_lights();") == 2
     assert "signal * 92" in body
     assert "screwm_homage_transition * 20" in body
 
@@ -258,6 +277,17 @@ def test_csqc_visual_chain_and_effect_drift_live_in_scroom_lightfield() -> None:
         "texture",
         "edge",
         "compositing",
+        "density",
+        "density-currency",
+    ):
+        assert f"data/effect-drift-{name}.txt" in body
+    for name in (
+        "mode-tonal",
+        "mode-atmospheric",
+        "mode-temporal",
+        "mode-texture",
+        "mode-edge",
+        "mode-compositing",
     ):
         assert f"data/effect-drift-{name}.txt" in body
 
@@ -271,6 +301,9 @@ def test_csqc_visual_chain_and_effect_drift_live_in_scroom_lightfield() -> None:
     assert "screwm_chain_drift * 104 + screwm_effect_drift_atmospheric * 56" in body
     assert "screwm_effect_drift_region_count * 34" in body
     assert "screwm_effect_drift_compositing * 104" in body
+    assert "void() screwm_add_expression_surface_lights" in body
+    assert "screwm_effect_drift_density_currency * 0.32" in body
+    assert "screwm_add_expression_surface_lights();" in body
     assert "screwm_add_visual_chain_light('-300 -526 74', 1" in body
     assert "screwm_add_visual_chain_light('300 -526 74', 9" in body
     assert "screwm_add_visual_chain_lights();" in body
@@ -312,19 +345,252 @@ def test_csqc_scene_quad_local_effects_live_on_scroom_lenses() -> None:
         in body
     )
     assert "void() screwm_add_local_effect_lights" in body
-    assert "screwm_reverie_temporal * 16" in body
-    assert "screwm_reverie_material * 18" in body
+    assert "screwm_reverie_temporal * 20" in body
+    assert "screwm_reverie_material * 24" in body
+    assert "void() screwm_add_shadow_budget_lights" in body
+    assert "screwm_add_shadow_budget_lights();" in body
+    shadow_body = body[body.index("void() screwm_add_shadow_budget_lights") :]
+    shadow_body = shadow_body[: shadow_body.index("void() screwm_add_shader_plan_lights")]
+    assert "screwm_add_scroom_baseline_lights();" in shadow_body
+    assert "screwm_add_hex_grid_drift_lights();" in shadow_body
+    assert "screwm_add_entry_substrate_drift_lights();" in shadow_body
+    assert "screwm_add_expression_surface_lights();" in shadow_body
+    assert "screwm_add_shadow_budget_edge_lights();" in shadow_body
+    assert "screwm_add_aoa_drift_lights();" in shadow_body
+    assert "screwm_add_world_edge_lattice_lights();" not in shadow_body
+    assert "screwm_add_local_effect_lights();" not in shadow_body
     assert 'screwm_read_norm("data/shader-plan-pass-count.txt")' in body
     assert "void() screwm_add_shader_plan_lights" in body
     assert "screwm_shader_plan_pass_count * 78" in body
     assert "screwm_shader_plan_feedback * 112" in body
     assert "screwm_shader_plan_temporal_ratio * 126" in body
-    assert "screwm_add_local_effect_light('-250 -546 28', 1, screwm_cyan, screwm_effect_01)" in body
     assert (
-        "screwm_add_local_effect_light('250 -546 28', 11, screwm_amber, screwm_effect_11)" in body
+        "screwm_add_local_effect_light('-980 -1780 214', 1, screwm_cyan, screwm_effect_01)" in body
+    )
+    assert "screwm_add_local_effect_light('0 -1320 512', 2, screwm_rose, screwm_effect_02)" in body
+    assert (
+        "screwm_add_local_effect_light('1040 -1420 64', 6, screwm_rose, screwm_effect_06)" in body
+    )
+    assert (
+        "screwm_add_local_effect_light('760 720 148', 11, screwm_amber, screwm_effect_11)" in body
     )
     assert "screwm_add_local_effect_lights();" in body
     assert "screwm_add_shader_plan_lights();" in body
+
+
+def test_csqc_effect_drift_targets_all_shell_geometry_and_edges() -> None:
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    assert (
+        "void(vector org, float idx, vector color, float signal, vector axis) screwm_add_world_edge_light"
+        in body
+    )
+    assert "void() screwm_add_world_edge_lattice_lights" in body
+    assert "void() screwm_add_shadow_budget_edge_lights" in body
+    assert "screwm_effect_drift_edge * 1.20" in body
+    assert "screwm_effect_mode_edge * 0.70" in body
+    assert "screwm_effect_drift_density_currency * 0.55" in body
+    assert "pulse * (86 + signal * 78" in body
+    assert body.count("screwm_add_world_edge_light('") == 22
+    assert "screwm_add_world_edge_lattice_lights();" in body
+    assert "screwm_add_shadow_budget_edge_lights();" in body
+
+    for anchor in (
+        "screwm_add_world_edge_light('0 -2230 42'",
+        "screwm_add_world_edge_light('-1620 -2450 58'",
+        "screwm_add_world_edge_light('1620 -2450 58'",
+        "screwm_add_world_edge_light('-1988 -1780 92'",
+        "screwm_add_world_edge_light('1988 -1780 92'",
+        "screwm_add_world_edge_light('0 -2070 1710'",
+        "screwm_add_world_edge_light('-1560 -2220 1710'",
+        "screwm_add_world_edge_light('1560 -2220 1710'",
+        "screwm_add_world_edge_light('-1988 -1480 1710'",
+        "screwm_add_world_edge_light('1988 -1480 1710'",
+        "screwm_add_world_edge_light('-1990 -760 420'",
+        "screwm_add_world_edge_light('1990 -760 420'",
+        "screwm_add_world_edge_light('0 -2520 420'",
+        "screwm_add_world_edge_light('0 1330 420'",
+        "screwm_add_world_edge_light('-1420 1330 1710'",
+        "screwm_add_world_edge_light('1420 1330 92'",
+        "screwm_add_world_edge_light('-760 -590 124'",
+        "screwm_add_world_edge_light('760 -590 124'",
+        "screwm_add_world_edge_light('0 -590 446'",
+        "screwm_add_world_edge_light('0 -590 70'",
+        "screwm_add_world_edge_light('-1100 580 330'",
+        "screwm_add_world_edge_light('1100 580 330'",
+    ):
+        assert anchor in body
+
+
+def test_csqc_entry_substrate_drift_targets_floor_ceiling_entity_and_negative_space() -> None:
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    assert "void() screwm_add_entry_substrate_drift_lights" in body
+    assert "screwm_effect_drift_active_ratio <= 0.01" in body
+    assert "screwm_effect_drift_active_ratio * 0.86" in body
+    assert "screwm_effect_drift_active_effect_ratio * 0.56" in body
+    assert "screwm_effect_drift_edge * 0.82" in body
+    assert "screwm_effect_drift_texture * 0.48" in body
+    assert "screwm_effect_drift_temporal * 0.42" in body
+    assert "adddynamiclight('0 -2240 34'" in body
+    assert "adddynamiclight('0 -2140 1718'" in body
+    assert "adddynamiclight('0 -590 224'" in body
+    assert "adddynamiclight('-1480 -2290 1614'" in body
+    assert body.count("screwm_add_entry_substrate_drift_lights();") == 2
+    assert "adddynamiclight('0 -2380 52'" in body
+    assert "adddynamiclight('0 -2380 1710'" in body
+    assert "adddynamiclight('920 -1020 1692'" in body
+    assert body.index("screwm_add_entry_substrate_drift_lights();") < body.index(
+        "screwm_add_aoa_drift_lights();"
+    )
+    assert body.rindex("screwm_add_entry_substrate_drift_lights();") < body.index(
+        "screwm_add_world_edge_lattice_lights();"
+    )
+
+
+def test_csqc_surface_drift_is_geometry_lit_not_post_render_projected() -> None:
+    body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
+
+    assert "void() screwm_add_scroom_baseline_lights" in body
+    assert "void() screwm_add_aoa_drift_lights" in body
+    assert "void() screwm_add_hex_grid_drift_lights" in body
+    assert "screwm_add_surface_drift_receivers" not in body
+    assert "screwm_draw_surface_drift_edges" not in body
+    assert "screwm_draw_surface_edge_line" not in body
+    assert "drawfill(p + '-20 -11 0'" not in body
+    assert "drawfill(p + '-34 8 0'" not in body
+    assert 'R_BeginPolygon("textures/screwm/ground1_6", DRAWFLAG_ADDITIVE, 0);' not in body
+    assert "drawline(width, pa, pb, color" not in body
+    assert "void() screwm_draw_geometry_edge_pulses" in body
+    assert "void() screwm_draw_hex_alignment_light_grid" in body
+    assert (
+        "void(float z, float phase, float width, float alpha, float phase_bias) screwm_draw_hex_light_grid_plane"
+        in body
+    )
+    assert "void(float phase, float width, float alpha) screwm_draw_wall_light_grid_planes" in body
+    assert "void() screwm_draw_media_receiver_drift_fields" in body
+    assert "void() screwm_draw_substrate_drift_pulses" in body
+    assert "void() screwm_draw_entry_threshold_substrate_pulses" in body
+    assert 'R_BeginPolygon("geom_mark", DRAWFLAG_ADDITIVE, 0);' in body
+    assert 'R_BeginPolygon("drift_c", DRAWFLAG_ADDITIVE, 0);' in body
+    assert 'precache_pic("geom_mark");' in body
+    assert 'precache_pic("drift_c");' in body
+    assert 'precache_pic("textures/screwm/ground1_6");' not in body
+    assert (
+        "void(float y, float cx, float cz, float length, float width, float angle, vector color, float alpha) screwm_draw_yz_wall_ribbon"
+        in body
+    )
+    pulse_body = body[
+        body.index(
+            "void(vector a, vector b, vector c, vector d, vector color, float alpha) screwm_draw_geometry_quad"
+        ) : body.index("void() screwm_add_shader_plan_lights")
+    ]
+    assert "cs_project" not in pulse_body
+    assert "drawfill" not in pulse_body
+    assert "drawline" not in pulse_body
+    assert body.count("screwm_add_scroom_baseline_lights();") == 2
+    assert body.count("screwm_add_aoa_drift_lights();") == 2
+    assert body.count("screwm_add_hex_grid_drift_lights();") == 2
+    assert body.count("screwm_add_entry_substrate_drift_lights();") == 2
+    assert body.count("screwm_add_expression_surface_lights();") == 2
+    assert body.count("screwm_add_shadow_budget_edge_lights();") == 1
+    assert body.count("screwm_add_media_source_signal_lights();") == 2
+    assert body.count("screwm_draw_hex_alignment_light_grid();") == 1
+    assert body.count("screwm_draw_media_receiver_drift_fields();") == 1
+    assert "screwm_roaming_surface_pulses_enabled" in body
+    assert "screwm_surface_grid_overlay_enabled" in body
+    assert 'cvar("screwm_csqc_surface_grid_overlay") > 0' in body
+    assert 'cvar("screwm_csqc_roaming_surface_pulses") > 0' in body
+    assert "adddynamiclight('0 -555 42'" in body
+    assert "adddynamiclight('0 -555 1716'" in body
+    assert "adddynamiclight('-1980 -555 430'" in body
+    assert "adddynamiclight('1980 -555 430'" in body
+    assert "adddynamiclight('0 -590 224'" in body
+    assert "screwm_effect_drift_edge * 0.90" in body
+    assert body.index("screwm_add_dynamic_lights();") < body.index("renderscene();")
+    assert body.index("screwm_draw_hex_alignment_light_grid();") < body.index("renderscene();")
+    update_view = body[
+        body.index("void(float vid_width") : body.index('if (cvar("screwm_csqc_overlay")')
+    ]
+    assert "if (screwm_roaming_surface_pulses_enabled())" in update_view
+    assert update_view.index("screwm_draw_hex_alignment_light_grid();") < update_view.index(
+        "if (screwm_roaming_surface_pulses_enabled())"
+    )
+    assert update_view.index("screwm_draw_hex_alignment_light_grid();") > update_view.index(
+        "if (screwm_surface_grid_overlay_enabled())"
+    )
+    assert update_view.index("screwm_draw_media_receiver_drift_fields();") > update_view.index(
+        "if (screwm_roaming_surface_pulses_enabled())"
+    )
+    assert update_view.index("screwm_draw_geometry_edge_pulses();") > update_view.index(
+        "if (screwm_roaming_surface_pulses_enabled())"
+    )
+    assert update_view.index("screwm_draw_substrate_drift_pulses();") > update_view.index(
+        "if (screwm_roaming_surface_pulses_enabled())"
+    )
+    assert "screwm_draw_xy_ribbon(0, -2260, -52" in body
+    assert "screwm_draw_xy_ribbon(0, -2260, 1754" in body
+    assert "ceiling_trace_width = screwm_clamp(18 + screwm_effect_drift_edge * 14" in body
+    assert "ceiling_stipple_alpha = screwm_clamp(0.74 + pulse_b * 0.26" in body
+    assert "ceiling_z = 1758;" in body
+    assert "kinetic_alpha = screwm_clamp(0.82 + pulse_c * 0.18" in body
+    assert "ceiling_knot_alpha = screwm_clamp(0.90 + pulse_a * 0.10" in body
+    assert "ceiling_knot_width = screwm_clamp(34 + screwm_effect_drift_edge * 12" in body
+    assert "right_wall_alpha = screwm_clamp(0.78 + pulse_a * 0.22" in body
+    assert "right_wall_width = screwm_clamp(24 + screwm_effect_drift_edge * 10" in body
+    assert "screwm_draw_drift_xy_ribbon(0, -2380, ceiling_z" in body
+    assert "screwm_draw_drift_xy_ribbon(sin(phase * 0.31) * 120, -2300, ceiling_z - 1" in body
+    assert "screwm_draw_drift_xy_ribbon(cos(phase * 0.33) * 120, -2240, ceiling_z - 2" in body
+    assert "screwm_draw_drift_xy_ribbon(sin(phase * 0.91) * 420, -2620, ceiling_z" in body
+    assert "screwm_draw_drift_xy_ribbon(-1760 + sin(phase * 1.03) * 260, -2480, ceiling_z" in body
+    assert "screwm_draw_drift_xy_ribbon(1760 + cos(phase * 1.01) * 260, -2480, ceiling_z" in body
+    assert "screwm_draw_drift_xy_ribbon(-1120 + sin(phase * 1.23) * 220" in body
+    assert "screwm_draw_drift_xy_ribbon(0 + sin(phase * 1.31) * 240" in body
+    assert "screwm_draw_drift_xy_ribbon(1480 + sin(phase * 1.11) * 260" in body
+    assert "screwm_draw_xy_ribbon(sin(phase * 1.09) * 520, -2500, ceiling_z" in body
+    assert "screwm_draw_xy_ribbon(cos(phase * 1.03) * 520, -2260, ceiling_z" in body
+    assert "screwm_draw_drift_xy_ribbon(-1180 + sin(phase * 1.53) * 180" in body
+    assert "screwm_draw_drift_xy_ribbon(-220 + sin(phase * 1.61) * 190" in body
+    assert "screwm_draw_drift_xy_ribbon(0 + sin(phase * 1.71) * 210" in body
+    assert "screwm_draw_xy_ribbon(1180 + sin(phase * 1.75) * 150" in body
+    assert "screwm_draw_drift_xy_ribbon(-1260 + sin(phase * 2.11) * 130" in body
+    assert "screwm_draw_drift_xy_ribbon(80 + cos(phase * 2.23) * 142" in body
+    assert "screwm_draw_xy_ribbon(1040 + sin(phase * 2.33) * 118" in body
+    assert "screwm_draw_xy_ribbon(sin(phase * 1.12) * 520, -2380, -49" in body
+    assert "screwm_draw_yz_wall_ribbon(1422, sin(phase * 1.21) * 1280" in body
+    assert "screwm_draw_drift_xz_wall_ribbon(2050, -1320 + sin(phase * 1.45) * 220" in body
+    assert "screwm_draw_drift_xz_wall_ribbon(2048, -1640 + sin(phase * 1.51) * 240" in body
+    assert "screwm_draw_xz_wall_ribbon(2051, -1210 + cos(phase * 1.59) * 200" in body
+    assert "screwm_draw_drift_xy_ribbon(-1660 + sin(phase * 0.41) * 120, -2320, 1718" in body
+    assert "screwm_draw_drift_xy_ribbon(0, -2330, 1718" in body
+    assert "screwm_draw_drift_xy_ribbon(1480 + cos(phase * 0.43) * 120, -2310, 1718" in body
+    assert "screwm_draw_xy_ribbon(-1320 + sin(phase * 0.93) * 260, -2300, 1754" in body
+    assert "screwm_draw_xy_ribbon(1320 + cos(phase * 0.89) * 260, -2300, 1754" in body
+    assert "screwm_draw_xz_wall_ribbon(2054, -1720, 420" in body
+    assert "screwm_draw_xz_wall_ribbon(2051, -2260 + sin(phase * 0.83) * 260" in body
+    assert "screwm_draw_drift_xz_wall_ribbon(1988, -2260, 540" in body
+    assert "screwm_draw_drift_yz_wall_ribbon(1418, 0, 760" in body
+    assert "screwm_draw_drift_yz_wall_ribbon(1418, 1480 + cos(phase * 0.39) * 120, 720" in body
+    assert "signal = screwm_clamp(\n        0.56 + pressure * 1.02" in body
+    assert "width = screwm_clamp(5 + screwm_effect_drift_edge * 6" in body
+    assert "alpha = screwm_clamp(0.10 + signal * 0.035" in body
+    assert "screwm_draw_wall_light_grid_planes(phase, width, alpha * 0.96);" in body
+    assert "screwm_draw_drift_xz_wall_ribbon(-1580, -1320 + sin(phase * 1.21) * 86" in body
+    assert "screwm_draw_drift_xz_wall_ribbon(1580, -1320 + cos(phase * 1.19) * 86" in body
+    assert "flash_a = 0.50 + 0.50 * sin(phase * 2.37" in body
+    assert "source_alpha = screwm_clamp(0.26 + signal * 0.12 + flash_a * 0.54" in body
+    assert "screwm_draw_xz_wall_ribbon(-1578, -1320 + cos(phase * 1.89) * 260" in body
+    assert "screwm_draw_xz_wall_ribbon(1578, -1320 + sin(phase * 1.87) * 260" in body
+    assert "screwm_draw_drift_xy_ribbon(-1040 + sin(phase * 0.59) * 120, -1480, -48" in body
+    assert "screwm_draw_xy_ribbon(-1040 + sin(phase * 1.93) * 560" in body
+    assert "screwm_draw_xy_ribbon(1040 + cos(phase * 1.91) * 560" in body
+    assert "screwm_draw_xy_ribbon(-1120 + cos(phase * 1.83) * 580" in body
+    assert "screwm_draw_xy_ribbon(1120 + sin(phase * 1.81) * 580" in body
+    assert "screwm_draw_drift_xy_ribbon(0, -555 + sin(phase * 0.47) * 96, -47" in body
+    assert "screwm_draw_drift_yz_wall_ribbon(-596, sin(phase * 0.73) * 180" in body
+    assert "screwm_draw_xz_wall_ribbon(-2054, -1720, 420" in body
+    assert "screwm_draw_yz_wall_ribbon(1422, 0, 430" in body
+    assert body.index("renderscene();") < body.index('if (cvar("screwm_csqc_overlay")')
 
 
 def test_csqc_gem_recruitment_mural_lives_in_scroom_lightfield() -> None:
@@ -447,6 +713,10 @@ def test_csqc_review_camera_overrides_render_view_for_obs_feedback() -> None:
     assert "const float VF_ORIGIN = 11;" in defs
     assert "const float VF_ANGLES = 15;" in defs
     assert "const float VF_CL_VIEWANGLES = 33;" in defs
+    assert "R_BeginPolygon = #306;" in defs
+    assert "R_PolygonVertex = #307;" in defs
+    assert "R_EndPolygon = #308;" in defs
+    assert "precache_pic = #317;" in defs
     assert "void(vector ang) makevectors = #1;" in defs
     assert "vector(vector v) vectoangles = #51;" in defs
     assert "void() screwm_apply_review_camera" in body
@@ -461,7 +731,9 @@ def test_csqc_review_camera_overrides_render_view_for_obs_feedback() -> None:
     assert 'screwm_read_float("data/camera-yaw.txt"' in body
     assert "screwm_review_camera_fov_y = fov * 0.625;" in body
     assert 'cvar("screwm_csqc_review_path") > 0' in body
-    assert "cycle = time * 800 / screwm_review_camera_period;" in body
+    assert 'screwm_read_float("data/camera-period.txt", screwm_review_camera_period)' in body
+    assert "active_period = screwm_clamp(active_period, 24, 720);" in body
+    assert "cycle = time * 800 / active_period;" in body
     assert "while (cycle >= 800)" in body
     assert "origin_a = '0 -2360 190';" in body
     assert "origin_b = '-240 -2200 204';" in body
@@ -471,15 +743,15 @@ def test_csqc_review_camera_overrides_render_view_for_obs_feedback() -> None:
     assert "origin_b = '720 -1460 230';" in body
     assert "origin_b = '560 -1880 218';" in body
     assert "origin_b = '0 -2360 190';" in body
-    assert "target_a = '0 -555 206';" in body
+    assert "target_a = '0 -555 254';" in body
     assert "target_b = '-420 -1160 230';" not in body
     assert "target_b = '-1180 -1320 245';" not in body
     assert "target_b = '1180 -1320 245';" not in body
     assert "target_b = '420 -1160 230';" not in body
-    assert "target_b = '0 -555 214';" in body
+    assert "target_b = '0 -555 262';" in body
     assert "screwm_review_camera_fov = '92 57.5 0';" in body
     assert "s = u * u * (3 - 2 * u);" in body
-    assert "phase = time * screwm_review_camera_two_pi / screwm_review_camera_period;" in body
+    assert "phase = time * screwm_review_camera_two_pi / active_period;" in body
     assert "screwm_review_camera_origin = origin_a + (origin_b - origin_a) * s;" in body
     assert "target = target_a + (target_b - target_a) * s;" in body
     assert (
@@ -491,7 +763,7 @@ def test_csqc_review_camera_overrides_render_view_for_obs_feedback() -> None:
     assert "setproperty(VF_FOV, screwm_review_camera_fov);" in body
     assert "screwm_review_camera_origin = '0 -2360 190';" in body
     assert (
-        "screwm_review_camera_angles = vectoangles('0 -555 206' - screwm_review_camera_origin);"
+        "screwm_review_camera_angles = vectoangles('0 -555 254' - screwm_review_camera_origin);"
         in body
     )
     assert "screwm_review_camera_fov = '92 57.5 0';" in body

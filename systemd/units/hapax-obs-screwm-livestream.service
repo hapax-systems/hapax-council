@@ -1,0 +1,23 @@
+[Unit]
+Description=Hapax OBS Screwm livestream consumer
+After=hapax-darkplaces-v4l2.service hapax-darkplaces-obs-media-stream.service
+Wants=hapax-darkplaces-v4l2.service hapax-darkplaces-obs-media-stream.service
+Conflicts=hapax-obs-livestream.service
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/hapax-obs-ffmpeg-source-ensure
+ExecStart=/usr/bin/obs --profile LegomenaLive --collection Untitled --scene Scene --startstreaming
+ExecStartPost=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/hapax-obs-ffmpeg-source-ensure --scene-name Scene --source-name "DarkPlaces Screwm Media" --input-url "udp://127.0.0.1:30552?fifo_size=1000000&overrun_nonfatal=1" --input-format mpegts --width 1920 --height 1080 --disable-source "Video Capture Device (V4L2)" --disable-source "DarkPlaces Screwm" --connect-timeout 90
+Restart=on-failure
+RestartSec=5s
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+SyslogIdentifier=hapax-obs-screwm-livestream
+
+[Install]
+WantedBy=default.target

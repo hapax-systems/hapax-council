@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import runpy
+import subprocess
 from argparse import Namespace
 from pathlib import Path
 
@@ -98,6 +99,104 @@ def test_sphere_front_ffmpeg_filter_uses_hflip_before_bgra() -> None:
     assert "crop=1820:1024,hflip,format=bgra" in command_text
     assert "-threads 1" in command_text
     assert "-filter_threads 1" in command_text
+
+
+def test_gpu_owned_sphere_front_projection_omits_cpu_hflip() -> None:
+    module = _load_module()
+    args = Namespace(
+        source="test",
+        fps=15,
+        width=2048,
+        height=1024,
+        projection="sphere-front",
+        mask="none",
+        mask_background="0c0b0d",
+        fallback_reason="",
+        gpu_projection_kind="sphere-front",
+    )
+
+    command = module["_ffmpeg_command"](args, 1820, 1024)
+    command_text = " ".join(command)
+
+    assert "crop=1820:1024,format=bgra" in command_text
+    assert "hflip" not in command_text
+
+
+def test_youtube_gpu_decode_uses_cuda_scale_when_projection_is_gpu_owned() -> None:
+    module = _load_module()
+    module["_ffmpeg_command"].__globals__["_run_checked"] = lambda _args: (
+        "https://media.invalid/1024.mp4\n"
+    )
+    args = Namespace(
+        source="youtube",
+        url="https://www.youtube.com/watch?v=abc123def45",
+        configured_url="https://www.youtube.com/watch?v=abc123def45",
+        url_file=None,
+        youtube_fallback="canary",
+        youtube_player_attr_files=(),
+        youtube_gpu_decode=True,
+        fps=3,
+        width=2048,
+        height=1024,
+        projection="sphere-front",
+        mask="none",
+        mask_background="0c0b0d",
+        fallback_reason="",
+        gpu_projection_kind="sphere-front",
+    )
+
+    command = module["_ffmpeg_command"](args, 1820, 1024)
+    command_text = " ".join(command)
+
+    assert "-hwaccel cuda" in command_text
+    assert "-hwaccel_output_format cuda" in command_text
+    assert "scale_cuda=w=1820:h=1024:interp_algo=lanczos:format=yuv420p" in command_text
+    assert "hwdownload,format=yuv420p,format=bgra" in command_text
+    assert "hflip" not in command_text
+    assert args.youtube_gpu_decode_active is True
+
+
+def test_youtube_private_url_falls_back_to_canary_stream() -> None:
+    module = _load_module()
+    calls: list[list[str]] = []
+
+    def fake_run_checked(args: list[str]) -> str:
+        calls.append(args)
+        if len(calls) == 1:
+            raise subprocess.CalledProcessError(1, args, output="", stderr="Private video")
+        return "https://media.invalid/canary.mp4\n"
+
+    module["_ffmpeg_command"].__globals__["_run_checked"] = fake_run_checked
+    args = Namespace(
+        source="youtube",
+        url="https://www.youtube.com/watch?v=private12345",
+        configured_url="https://www.youtube.com/watch?v=private12345",
+        url_file=None,
+        youtube_fallback="canary",
+        youtube_player_attr_files=(),
+        youtube_gpu_decode=False,
+        youtube_gpu_decode_active=False,
+        youtube_gpu_decode_runtime_disabled=False,
+        fps=3,
+        width=2048,
+        height=1024,
+        projection="sphere-front",
+        sphere_front_aspect=16 / 9,
+        mask="none",
+        mask_background="0c0b0d",
+        freshness_overlay="none",
+        fallback_reason="",
+        gpu_projection_kind="sphere-front",
+    )
+
+    command = module["_ffmpeg_command"](args, 1820, 1024)
+
+    assert calls[0][-1] == "https://www.youtube.com/watch?v=private12345"
+    assert calls[1][-1] == module["DEFAULT_YOUTUBE_URL"]
+    assert "https://media.invalid/canary.mp4" in command
+    assert args.resolved_url == module["DEFAULT_YOUTUBE_URL"]
+    assert args.url_source == "fallback-canary"
+    assert args.fallback_reason.startswith("youtube_url_resolve_failed:canary:")
 
 
 def test_exact_size_camera_filter_skips_scale_and_pad(tmp_path: Path) -> None:
@@ -275,6 +374,7 @@ def test_metadata_records_oarb_sphere_fill(tmp_path: Path) -> None:
         mask="none",
         mask_background="0c0b0d",
         freshness_overlay="seam-pulse",
+        gpu_projection_kind="",
         fallback_reason="",
     )
     meta = tmp_path / "meta.json"
@@ -291,6 +391,8 @@ def test_metadata_records_oarb_sphere_fill(tmp_path: Path) -> None:
     assert payload["configured_url"] == "https://example.invalid/video"
     assert payload["url_source"] == "unit-test"
     assert payload["freshness_overlay"] == "seam-pulse"
+    assert payload["gpu_projection"] is False
+    assert payload["gpu_projection_kind"] == ""
 
 
 def test_gpu_drift_metadata_uses_raw_sidecar_and_final_output_owner(tmp_path: Path) -> None:
@@ -324,6 +426,7 @@ def test_gpu_drift_metadata_uses_raw_sidecar_and_final_output_owner(tmp_path: Pa
         fallback_reason="",
         gpu_drift=True,
         gpu_drift_raw_output=raw_output,
+        gpu_projection_kind="",
     )
 
     module["_write_meta"](raw_meta, args, 3)
@@ -338,3 +441,56 @@ def test_gpu_drift_metadata_uses_raw_sidecar_and_final_output_owner(tmp_path: Pa
     assert payload["drift_enabled"] is False
     assert payload["drift_input_hash"] == "abc123"
     assert payload["drift_output_hash"] == ""
+    assert payload["gpu_projection"] is False
+
+
+def test_gpu_projection_metadata_marks_screwm_media_drift_as_projection_owner(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    output = tmp_path / "quake-live-yt.bgra"
+    raw_output, raw_meta = module["_gpu_drift_paths"](output)
+    args = Namespace(
+        source="youtube",
+        url="",
+        configured_url="",
+        resolved_url="",
+        url_source="unit-test",
+        url_file=tmp_path / "youtube-video-id.txt",
+        camera_role="",
+        camera_device="",
+        output=output,
+        meta=tmp_path / "quake-live-yt.json",
+        fps=3,
+        width=2048,
+        height=1024,
+        source_frame_width=1820,
+        source_frame_height=1024,
+        projection="sphere-front",
+        mask="none",
+        mask_background="0c0b0d",
+        freshness_overlay="none",
+        drift="on",
+        drift_receiver="oarb-youtube",
+        drift_game_data=tmp_path / "data",
+        drift_intensity=1.0,
+        drift_input_hash="raw-hash",
+        drift_output_hash="",
+        drift_changed=False,
+        fallback_reason="",
+        gpu_drift=True,
+        gpu_drift_raw_output=raw_output,
+        gpu_projection_kind="sphere-front",
+    )
+
+    module["_write_meta"](raw_meta, args, 1)
+    payload = json.loads(raw_meta.read_text(encoding="utf-8"))
+
+    assert payload["width"] == 2048
+    assert payload["height"] == 1024
+    assert payload["source_frame_width"] == 1820
+    assert payload["source_frame_height"] == 1024
+    assert payload["gpu_projection"] is True
+    assert payload["gpu_projection_kind"] == "sphere-front"
+    assert payload["gpu_projection_output_owner"] == "screwm_media_drift"
+    assert payload["gpu_drift_raw_output"] == str(raw_output)

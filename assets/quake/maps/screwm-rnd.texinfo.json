@@ -1,1248 +1,638 @@
 {
-	"0" :
+	"0" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"1" :
+	"1" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"10" :
+	"10" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"100" :
+	"11" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"101" :
+	"12" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"102" :
+	"13" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"103" :
+	"14" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"104" :
+	"15" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"105" :
+	"16" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"106" :
+	"17" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"107" :
+	"18" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"108" :
+	"19" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"109" :
+	"2" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"11" :
+	"20" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"110" :
+	"21" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"111" :
+	"22" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"112" :
+	"23" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"113" :
+	"24" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"114" :
+	"25" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"115" :
+	"26" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"116" :
+	"27" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"117" :
+	"28" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"118" :
+	"29" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"119" :
+	"3" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"12" :
+	"30" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"120" :
+	"31" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"121" :
+	"32" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"122" :
+	"33" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"123" :
+	"34" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"124" :
+	"35" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"13" :
+	"36" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"14" :
+	"37" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"15" :
+	"38" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"16" :
+	"39" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"17" :
+	"4" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"18" :
+	"40" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"19" :
+	"41" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"2" :
+	"42" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"20" :
+	"43" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"21" :
+	"44" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"22" :
+	"45" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"23" :
+	"46" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"24" :
+	"47" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"25" :
+	"48" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"26" :
+	"49" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"27" :
+	"5" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"28" :
+	"50" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"29" :
+	"51" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"3" :
+	"52" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"30" :
+	"53" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"31" :
+	"54" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"32" :
+	"55" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"33" :
+	"56" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"34" :
+	"57" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"35" :
+	"58" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"36" :
+	"59" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"37" :
+	"6" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"38" :
+	"60" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"39" :
+	"61" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"4" :
+	"62" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"40" :
+	"63" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"41" :
+	"7" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"42" :
+	"8" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,
 			45
 		]
 	},
-	"43" :
+	"9" : 
 	{
 		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"44" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"45" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"46" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"47" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"48" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"49" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"5" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"50" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"51" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"52" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"53" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"54" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"55" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"56" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"57" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"58" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"59" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"6" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"60" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"61" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"62" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"63" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"64" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"65" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"66" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"67" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"68" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"69" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"7" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"70" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"71" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"72" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"73" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"74" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"75" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"76" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"77" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"78" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"79" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"8" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"80" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"81" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"82" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"83" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"84" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"85" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"86" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"87" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"88" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"89" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"9" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"90" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"91" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"92" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"93" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"94" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"95" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"96" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"97" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"98" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
-		[
-			30,
-			35,
-			45
-		]
-	},
-	"99" :
-	{
-		"minlight" : 16.0,
-		"minlight_color" :
+		"minlight_color" : 
 		[
 			30,
 			35,

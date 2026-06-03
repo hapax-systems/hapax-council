@@ -2,7 +2,8 @@
 Description=Screwm media-drift GPU service — per-slot raw BGRA -> drift (5060 Ti) -> BGRA the engine blits
 Documentation=file://%h/projects/hapax-council/docs/superpowers/specs/2026-05-30-screwm-gpu-drift-port-design.md
 ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
-After=hapax-secrets.service hapax-darkplaces-v4l2.service
+After=hapax-secrets.service
+Before=hapax-darkplaces-v4l2.service
 
 [Service]
 Type=simple
@@ -10,14 +11,14 @@ Environment=RUST_LOG=info
 # Pin the drift work to the 5060 Ti (matched by adapter name); the 5090 stays
 # for the render + TabbyAPI.
 Environment=HAPAX_SCREWM_DRIFT_GPU=5060
-# Comma list of GPU-drifted slots: name:WxH[:intensity]. EMPTY = clean no-op exit
-# (Restart=on-failure, so an empty list stops the unit rather than crash-looping).
-# Cutover sets this AND the matching producers' HAPAX_QUAKE_GPU_DRIFT=1.
-Environment=HAPAX_SCREWM_DRIFT_SLOTS=
+# Comma list of GPU-drifted slots: name:WxH[:intensity]. Matching producer
+# units run in raw-output mode and leave these final BGRA files to this GPU owner.
+Environment=HAPAX_SCREWM_DRIFT_SLOTS=yt:2048x1024:1.6:sphere-front:1820x1024:0c0b0d,cam-brio-operator:1280x720,cam-brio-room:1280x720,cam-brio-synths:1280x720,cam-c920-desk:1280x720,cam-c920-room:1280x720,cam-c920-overhead:1280x720,ward-atlas:2048x2304,ticker-grounding:1344x176,ticker-precedent:1344x176,ticker-chronicle:1344x176,reverie:960x540,aoa-atlas:2048x2048:2.25
 Environment=HAPAX_SCREWM_DRIFT_GAME_DATA=%h/.darkplaces/screwm/data
 Environment=HAPAX_SCREWM_DRIFT_FPS=20
+Environment=HAPAX_SCREWM_DRIFT_FULL_HASH_EVERY_N=10
 ExecStart=%h/.local/bin/screwm-media-drift
-Restart=on-failure
+Restart=always
 RestartSec=5s
 
 [Install]

@@ -1,0 +1,18 @@
+[Unit]
+Description=Screwm reverie-derived drift-field GPU producer (256x256 BGRA -> quake-drift-field.bgra, 5060 Ti)
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+After=hapax-secrets.service
+Before=hapax-darkplaces-v4l2.service
+
+[Service]
+Type=simple
+Environment=RUST_LOG=info
+Environment=HAPAX_SCREWM_DRIFT_GPU=5060
+Environment=HAPAX_DRIFT_FIELD_SIZE=256
+Environment=HAPAX_DRIFT_FIELD_FPS=20
+ExecStart=%h/.local/bin/screwm-drift-field
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

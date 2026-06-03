@@ -694,6 +694,291 @@ def test_darkplaces_state_export_builds_entity_local_effect_scalars(tmp_path: Pa
     assert lines["local-effect-route.txt"] == "ENTITY_LOCAL_SOURCE_PLANE"
 
 
+def test_darkplaces_state_export_derives_local_effect_proxy_from_slotdrift(
+    tmp_path: Path,
+) -> None:
+    exporter = _load_exporter()
+    empty_entity_local = tmp_path / "entity-local-effect-state.json"
+    effect_drift = tmp_path / "effect-drift-state.json"
+    density = tmp_path / "density.json"
+    missing_fallback = tmp_path / "missing-effect-drift-fallback.json"
+    _write_json(
+        empty_entity_local, {"schema": "entity-local-effect-state-v1", "active_effects": []}
+    )
+    _write_json(
+        effect_drift,
+        {
+            "source_presence": {
+                "visible_source_count": 39,
+                "minimum_effect_source_count": 4,
+                "fail_closed": False,
+            },
+            "slotdrift_coverage": {"covered_effect_count": 57},
+            "pass_count": 5,
+            "passes": [
+                {
+                    "node_id": "slot1_1_colorgrade",
+                    "effect_family": "tonal",
+                    "slot_intensity": 0.70,
+                    "max_delta": 40.0,
+                    "non_neutral": True,
+                    "eviction_cadence": "slow",
+                    "parameter_regions": [{"param": "hue", "region": "high"}],
+                },
+                {
+                    "node_id": "slot2_1_glitch_block",
+                    "effect_family": "texture",
+                    "slot_intensity": 0.62,
+                    "max_delta": 46.0,
+                    "non_neutral": True,
+                    "eviction_cadence": "fast",
+                    "parameter_regions": [{"param": "cell", "region": "jitter"}],
+                },
+                {
+                    "node_id": "slot3_1_edge_detect",
+                    "effect_family": "edge",
+                    "slot_intensity": 0.80,
+                    "max_delta": 52.0,
+                    "non_neutral": True,
+                    "eviction_cadence": "fast",
+                    "parameter_regions": [{"param": "edge", "region": "bright"}],
+                },
+                {
+                    "node_id": "slot4_1_trail",
+                    "effect_family": "temporal",
+                    "slot_intensity": 0.55,
+                    "max_delta": 35.0,
+                    "non_neutral": True,
+                    "eviction_cadence": "slow",
+                },
+                {
+                    "node_id": "slot5_1_blend",
+                    "effect_family": "compositing",
+                    "slot_intensity": 0.66,
+                    "max_delta": 38.0,
+                    "non_neutral": True,
+                    "eviction_cadence": "slow",
+                },
+            ],
+        },
+    )
+    _write_json(density, {"aggregate_density": 0.28, "dominant_zone": "visual"})
+
+    lines = exporter.build_entity_local_effect_lines(
+        empty_entity_local,
+        effect_drift,
+        missing_fallback,
+        density,
+        now=1.0,
+    )
+
+    assert lines["local-effect-route.txt"] == "SLOTDRIFT_SPATIAL_PROXY_FROM_IN_SCROOM_EFFECT_DRIFT"
+    assert float(lines["local-effect-count.txt"]) >= 8.0
+    assert float(lines["local-effect-03.txt"]) > 0.30  # warp
+    assert float(lines["local-effect-06.txt"]) > 0.30  # displacement_map
+    assert float(lines["local-effect-10.txt"]) > 0.30  # drift
+    assert float(lines["local-effect-11.txt"]) > 0.25  # breathing
+
+
+def test_darkplaces_state_export_merges_sparse_entity_local_with_slotdrift_proxy(
+    tmp_path: Path,
+) -> None:
+    exporter = _load_exporter()
+    effect_state = tmp_path / "entity-local-effect-state.json"
+    effect_drift = tmp_path / "effect-drift-state.json"
+    density = tmp_path / "density.json"
+    missing_fallback = tmp_path / "missing-effect-drift-fallback.json"
+    _write_json(
+        effect_state,
+        {
+            "schema": "entity-local-effect-state-v1",
+            "active_effects": [
+                {"effect": "kaleidoscope", "mix": 0.92},
+                {"effect": "breathing", "mix": 0.76},
+            ],
+        },
+    )
+    _write_json(
+        effect_drift,
+        {
+            "source_presence": {
+                "visible_source_count": 34,
+                "minimum_effect_source_count": 4,
+                "fail_closed": False,
+            },
+            "slotdrift_coverage": {"covered_effect_count": 57},
+            "pass_count": 4,
+            "passes": [
+                {
+                    "node_id": "slot1_1_warp",
+                    "effect_family": "atmospheric",
+                    "slot_intensity": 0.82,
+                    "max_delta": 48.0,
+                    "non_neutral": True,
+                    "eviction_cadence": "fast",
+                    "parameter_regions": [{"param": "warp", "region": "high"}],
+                },
+                {
+                    "node_id": "slot2_1_displacement",
+                    "effect_family": "texture",
+                    "slot_intensity": 0.76,
+                    "max_delta": 44.0,
+                    "non_neutral": True,
+                    "eviction_cadence": "fast",
+                    "parameter_regions": [{"param": "displace", "region": "jitter"}],
+                },
+                {
+                    "node_id": "slot3_1_edge",
+                    "effect_family": "edge",
+                    "slot_intensity": 0.68,
+                    "max_delta": 39.0,
+                    "non_neutral": True,
+                    "eviction_cadence": "slow",
+                },
+                {
+                    "node_id": "slot4_1_blend",
+                    "effect_family": "compositing",
+                    "slot_intensity": 0.64,
+                    "max_delta": 36.0,
+                    "non_neutral": True,
+                    "eviction_cadence": "slow",
+                },
+            ],
+        },
+    )
+    _write_json(density, {"aggregate_density": 0.20, "dominant_zone": "visual"})
+
+    lines = exporter.build_entity_local_effect_lines(
+        effect_state,
+        effect_drift,
+        missing_fallback,
+        density,
+        now=1.0,
+    )
+
+    assert (
+        lines["local-effect-route.txt"] == "ENTITY_LOCAL_SOURCE_PLANE_PLUS_SLOTDRIFT_SPATIAL_PROXY"
+    )
+    assert float(lines["local-effect-count.txt"]) >= 8.0
+    assert lines["local-effect-02.txt"] == "0.9200"
+    assert lines["local-effect-11.txt"] == "0.7600"
+    assert float(lines["local-effect-03.txt"]) > 0.30
+    assert float(lines["local-effect-06.txt"]) > 0.30
+
+
+def test_darkplaces_state_export_effect_review_autocycle_is_disabled_by_default(
+    tmp_path: Path,
+) -> None:
+    old_env = os.environ.pop("HAPAX_SCREWM_EFFECT_REVIEW_AUTOCYCLE", None)
+    try:
+        exporter = _load_exporter()
+        game_dir = tmp_path / "game"
+        effect_drift = tmp_path / "effect-drift-state.json"
+        _write_json(
+            effect_drift,
+            {
+                "source_presence": {},
+                "slotdrift_coverage": {},
+                "dominant_family": "texture",
+                "passes": [{"effect_family": "texture", "non_neutral": True, "max_delta": 0.8}],
+            },
+        )
+
+        lines = exporter.build_effect_review_preset_lines(
+            game_dir,
+            effect_drift,
+            effect_drift_fallback_state_file=tmp_path / "missing-fallback.json",
+            now=0.0,
+        )
+    finally:
+        if old_env is not None:
+            os.environ["HAPAX_SCREWM_EFFECT_REVIEW_AUTOCYCLE"] = old_env
+
+    assert lines["effect-review-preset.txt"] == "0"
+
+
+def test_darkplaces_state_export_autocycles_effect_review_preset(tmp_path: Path) -> None:
+    old_env = os.environ.get("HAPAX_SCREWM_EFFECT_REVIEW_AUTOCYCLE")
+    os.environ["HAPAX_SCREWM_EFFECT_REVIEW_AUTOCYCLE"] = "1"
+    try:
+        exporter = _load_exporter()
+        game_dir = tmp_path / "game"
+        effect_drift = tmp_path / "effect-drift-state.json"
+        _write_json(
+            effect_drift,
+            {
+                "source_presence": {},
+                "slotdrift_coverage": {},
+                "dominant_family": "texture",
+                "passes": [
+                    {
+                        "node_id": "slot3_halftone",
+                        "effect_family": "texture",
+                        "non_neutral": True,
+                        "max_delta": 0.8,
+                    }
+                ],
+            },
+        )
+
+        first = exporter.build_effect_review_preset_lines(
+            game_dir,
+            effect_drift,
+            effect_drift_fallback_state_file=tmp_path / "missing-fallback.json",
+            now=0.0,
+        )
+        second = exporter.build_effect_review_preset_lines(
+            game_dir,
+            effect_drift,
+            effect_drift_fallback_state_file=tmp_path / "missing-fallback.json",
+            now=6.0,
+        )
+    finally:
+        if old_env is None:
+            os.environ.pop("HAPAX_SCREWM_EFFECT_REVIEW_AUTOCYCLE", None)
+        else:
+            os.environ["HAPAX_SCREWM_EFFECT_REVIEW_AUTOCYCLE"] = old_env
+
+    assert first["effect-review-preset.txt"] == "4"
+    assert second["effect-review-preset.txt"] == "5"
+
+
+def test_darkplaces_state_export_preserves_fresh_manual_effect_review_preset(
+    tmp_path: Path,
+) -> None:
+    exporter = _load_exporter()
+    game_dir = tmp_path / "game"
+    game_dir.mkdir()
+    preset = game_dir / "effect-review-preset.txt"
+    preset.write_text("2\n", encoding="utf-8")
+    os.utime(preset, (10.0, 10.0))
+    effect_drift = tmp_path / "effect-drift-state.json"
+    _write_json(
+        effect_drift,
+        {
+            "source_presence": {},
+            "slotdrift_coverage": {},
+            "dominant_family": "texture",
+            "passes": [{"effect_family": "texture", "non_neutral": True, "max_delta": 0.8}],
+        },
+    )
+
+    lines = exporter.build_effect_review_preset_lines(
+        game_dir,
+        effect_drift,
+        effect_drift_fallback_state_file=tmp_path / "missing-fallback.json",
+        now=20.0,
+    )
+
+    assert lines["effect-review-preset.txt"] == "2"
+
+
+def test_darkplaces_state_export_publishes_review_camera_period() -> None:
+    exporter = _load_exporter()
+
+    assert exporter.build_review_camera_lines()["camera-period.txt"] == "24.0000"
+
+
 def test_darkplaces_state_export_builds_ward_property_fishbowl_scalars(
     tmp_path: Path,
 ) -> None:
@@ -851,6 +1136,7 @@ def test_darkplaces_state_export_builds_visual_chain_and_effect_drift_scalars(
     lines = exporter.build_visual_chain_lines(
         visual_chain_state_file,
         effect_drift_state_file,
+        visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
         effect_drift_fallback_state_file=tmp_path / "missing-effect-drift-fallback.json",
     )
 
@@ -882,6 +1168,70 @@ def test_darkplaces_state_export_builds_visual_chain_and_effect_drift_scalars(
     assert lines["visual-chain-source.txt"] == "canonical"
 
 
+def test_darkplaces_state_export_prefers_expressive_visual_chain_fallback(
+    tmp_path: Path,
+) -> None:
+    exporter = _load_exporter()
+    visual_chain_state_file = tmp_path / "visual-chain-state.json"
+    visual_chain_fallback_state_file = tmp_path / "screwm-visual-chain-state.json"
+    effect_drift_state_file = tmp_path / "effect-drift-state.json"
+    _write_json(
+        visual_chain_state_file,
+        {
+            "levels": {
+                "visual_chain.intensity": 0.9,
+                "visual_chain.coherence": 0.3,
+            },
+            "params": {
+                "noise.amplitude": 0.25,
+                "drift.amplitude": 0.0,
+                "drift.speed": 0.0,
+                "color.hue_rotate": 0.0,
+                "color.saturation": 0.0,
+                "color.brightness": 0.0,
+            },
+        },
+    )
+    _write_json(
+        visual_chain_fallback_state_file,
+        {
+            "levels": {
+                "visual_chain.intensity": 0.7,
+                "visual_chain.temporal_distortion": 0.6,
+                "visual_chain.spectral_color": 0.5,
+            },
+            "params": {
+                "drift.amplitude": 0.4,
+                "drift.speed": 0.25,
+                "color.hue_rotate": 35.0,
+                "color.saturation": 0.3,
+                "fb.decay": 0.075,
+            },
+        },
+    )
+    _write_json(
+        effect_drift_state_file,
+        {
+            "pass_count": 0,
+            "non_neutral_pass_count": 0,
+            "passes": [],
+        },
+    )
+
+    lines = exporter.build_visual_chain_lines(
+        visual_chain_state_file,
+        effect_drift_state_file,
+        visual_chain_fallback_state_file=visual_chain_fallback_state_file,
+        effect_drift_fallback_state_file=tmp_path / "missing-effect-drift-fallback.json",
+    )
+
+    assert lines["visual-chain-source.txt"] == "fallback-expressive"
+    assert lines["visual-chain-01.txt"] == "0.7000"
+    assert lines["visual-chain-drift.txt"] == "0.5000"
+    assert lines["visual-chain-color.txt"] == "0.5000"
+    assert lines["visual-chain-feedback.txt"] == "0.5000"
+
+
 def test_darkplaces_state_export_covers_all_effect_drift_families(tmp_path: Path) -> None:
     exporter = _load_exporter()
     visual_chain_state_file = tmp_path / "visual-chain-state.json"
@@ -906,6 +1256,7 @@ def test_darkplaces_state_export_covers_all_effect_drift_families(tmp_path: Path
     lines = exporter.build_visual_chain_lines(
         visual_chain_state_file,
         effect_drift_state_file,
+        visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
         effect_drift_fallback_state_file=tmp_path / "missing-effect-drift-fallback.json",
     )
 
@@ -951,6 +1302,7 @@ def test_darkplaces_state_export_routes_real_slotdrift_through_full_family_vecto
     lines = exporter.build_visual_chain_lines(
         visual_chain_state_file,
         effect_drift_state_file,
+        visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
         effect_drift_fallback_state_file=tmp_path / "missing-effect-drift-fallback.json",
         now=15.0,
     )
@@ -958,8 +1310,11 @@ def test_darkplaces_state_export_routes_real_slotdrift_through_full_family_vecto
     assert lines["effect-drift-source.txt"] == "slotdrift"
     assert lines["effect-drift-active-ratio.txt"] == "0.6480"
     assert lines["effect-drift-texture.txt"] == "0.4000"
-    assert lines["effect-drift-edge.txt"] == "0.3000"
-    assert lines["effect-drift-compositing.txt"] == "0.2000"
+    # Live SlotDrift grounds edge/compositing from whole-stack spatial pressure
+    # (room-bound surface drift), not just literal edge/compositing nodes — so
+    # these exceed the bare edge_detect/blend max_delta routing.
+    assert lines["effect-drift-edge.txt"] == "0.9300"
+    assert lines["effect-drift-compositing.txt"] == "0.8440"
     assert lines["effect-drift-tonal.txt"] == "0.7000"
     assert lines["effect-drift-atmospheric.txt"] == "0.6000"
     assert lines["effect-drift-temporal.txt"] == "0.5000"
@@ -1007,6 +1362,7 @@ def test_darkplaces_state_export_density_grounds_drift_currency(tmp_path: Path) 
         return exporter.build_visual_chain_lines(
             visual_chain_state_file,
             drift_file,
+            visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
             effect_drift_fallback_state_file=tmp_path / "missing-fallback.json",
             density_field_file=density_path,
             now=15.0,
@@ -1075,6 +1431,7 @@ def test_darkplaces_state_export_rejects_fail_closed_slotdrift(
     lines = exporter.build_visual_chain_lines(
         visual_chain_state_file,
         effect_drift_state_file,
+        visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
         effect_drift_fallback_state_file=fallback_effect_drift_state_file,
     )
 
@@ -1124,13 +1481,15 @@ def test_darkplaces_state_export_prefers_fresh_real_slotdrift_over_fallback(
     lines = exporter.build_visual_chain_lines(
         visual_chain_state_file,
         effect_drift_state_file,
+        visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
         effect_drift_fallback_state_file=fallback_effect_drift_state_file,
     )
 
     assert lines["effect-drift-source.txt"] == "slotdrift"
     assert lines["effect-drift-real-source.txt"] == "1.0000"
     assert lines["effect-drift-compositing.txt"] == "0.7000"
-    assert lines["effect-drift-mode-compositing.txt"] == "0.2000"
+    # Live SlotDrift floors compositing mode pressure (room-bound surface drift).
+    assert lines["effect-drift-mode-compositing.txt"] == "0.7000"
     assert lines["effect-drift-texture.txt"] == "0.0000"
 
 
@@ -1169,6 +1528,7 @@ def test_darkplaces_state_export_does_not_replace_recent_slotdrift_with_syntheti
     lines = exporter.build_visual_chain_lines(
         visual_chain_state_file,
         effect_drift_state_file,
+        visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
         effect_drift_fallback_state_file=fallback_effect_drift_state_file,
         now=220.0,
     )
@@ -1176,7 +1536,8 @@ def test_darkplaces_state_export_does_not_replace_recent_slotdrift_with_syntheti
     assert lines["effect-drift-source.txt"] == "slotdrift"
     assert lines["effect-drift-real-source.txt"] == "1.0000"
     assert lines["effect-drift-compositing.txt"] == "0.6000"
-    assert lines["effect-drift-mode-compositing.txt"] == "0.2000"
+    # Live SlotDrift floors compositing mode pressure (room-bound surface drift).
+    assert lines["effect-drift-mode-compositing.txt"] == "0.7000"
     assert lines["effect-drift-texture.txt"] == "0.0000"
 
 
@@ -1213,6 +1574,7 @@ def test_darkplaces_state_export_uses_named_synthetic_fallback_when_primary_is_n
     lines = exporter.build_visual_chain_lines(
         visual_chain_state_file,
         effect_drift_state_file,
+        visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
         effect_drift_fallback_state_file=fallback_effect_drift_state_file,
     )
 

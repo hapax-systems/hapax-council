@@ -51,6 +51,8 @@ from shared.audio_reactivity import AudioSignals, get_bus  # noqa: E402
 PUBLISH_HZ = 60.0
 PERIOD_S = 1.0 / PUBLISH_HZ
 ACTIVITY_FLOOR_RMS = 0.01
+ACTIVITY_FLOOR_BAND = 0.03
+ACTIVITY_FLOOR_ONSET = 0.05
 
 
 class MixerMasterSource:
@@ -95,7 +97,16 @@ class MixerMasterSource:
         )
 
     def is_active(self) -> bool:
-        return self._snap.get("mixer_energy", 0.0) > ACTIVITY_FLOOR_RMS
+        return (
+            self._snap.get("mixer_energy", 0.0) > ACTIVITY_FLOOR_RMS
+            or self._snap.get("beat_pulse", 0.0) > ACTIVITY_FLOOR_ONSET
+            or self._snap.get("onset_kick", 0.0) > ACTIVITY_FLOOR_ONSET
+            or self._snap.get("onset_snare", 0.0) > ACTIVITY_FLOOR_ONSET
+            or self._snap.get("onset_hat", 0.0) > ACTIVITY_FLOOR_ONSET
+            or self._snap.get("mixer_bass", 0.0) > ACTIVITY_FLOOR_BAND
+            or self._snap.get("mixer_mid", 0.0) > ACTIVITY_FLOOR_BAND
+            or self._snap.get("mixer_high", 0.0) > ACTIVITY_FLOOR_BAND
+        )
 
 
 def main() -> int:

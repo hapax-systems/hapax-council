@@ -138,11 +138,11 @@ pub enum ReceiverClass {
 
 impl ReceiverClass {
     /// Classify by receiver name (case-insensitive substring), matching the
-    /// Python helpers' precedence (oarb/youtube → ticker → atlas/ward →
+    /// Python helpers' precedence (oarb/youtube/yt → ticker → atlas/ward →
     /// reverie → camera/cam).
     pub fn from_name(name: &str) -> Self {
         let n = name.to_lowercase();
-        if n.contains("oarb") || n.contains("youtube") {
+        if n == "yt" || n.contains("oarb") || n.contains("youtube") {
             Self::Oarb
         } else if n.contains("ticker") {
             Self::Ticker
@@ -160,11 +160,11 @@ impl ReceiverClass {
     /// Drift gain (`_receiver_gain`).
     pub fn gain(self) -> f32 {
         match self {
-            Self::Oarb => 1.38,
+            Self::Oarb => 1.52,
             Self::Ticker => 1.62,
-            Self::Atlas => 1.42,
+            Self::Atlas => 1.66,
             Self::Reverie => 1.46,
-            Self::Camera => 1.12,
+            Self::Camera => 1.26,
             Self::Other => 1.0,
         }
     }
@@ -173,9 +173,9 @@ impl ReceiverClass {
     pub fn min_chroma_px(self) -> u32 {
         match self {
             Self::Ticker => 6,
-            Self::Camera => 14,
-            Self::Oarb => 18,
-            Self::Atlas | Self::Reverie => 16,
+            Self::Camera => 16,
+            Self::Oarb => 22,
+            Self::Atlas | Self::Reverie => 18,
             Self::Other => 10,
         }
     }
@@ -202,7 +202,7 @@ impl ReceiverClass {
 }
 
 /// GPU uniform mirroring `media_drift.wgsl`'s `DriftUniforms` (vec4-packed for
-/// std140-safe 16-byte alignment; 144 bytes). The shader recomputes the derived
+/// std140-safe 16-byte alignment; 176 bytes). The shader recomputes the derived
 /// per-frame params (intensity, phase, chroma_px, …) from these raw scalars.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -214,6 +214,10 @@ pub struct DriftUniforms {
     pub frame_meta: [f32; 4],
     /// `(receiver_class, width, height, _pad)`.
     pub slot_dims: [u32; 4],
+    /// `(projection_code, raw_width, raw_height, _pad)`.
+    pub projection: [u32; 4],
+    /// `(background_r, background_g, background_b, _pad)`.
+    pub projection_color: [f32; 4],
 }
 
 impl DriftUniforms {
@@ -226,17 +230,39 @@ impl DriftUniforms {
         intensity_scale: f32,
         width: u32,
         height: u32,
+        projection_code: u32,
+        raw_width: u32,
+        raw_height: u32,
+        projection_background_rgb: [f32; 3],
     ) -> Self {
         // Field order MUST match the WGSL `I_*` constants and `DriftState`.
         let flat = [
-            state.real_source, state.active_ratio, state.active_slot_ratio,
-            state.active_effect_ratio, state.fast_ratio, state.slow_ratio,
-            state.kind_variance, state.max_delta, state.region_count, state.tonal,
-            state.atmospheric, state.temporal, state.texture, state.edge,
-            state.compositing, state.visual_noise, state.visual_drift,
-            state.visual_color, state.visual_feedback, state.visual_aperture,
-            state.visual_param_pressure, state.mode_tonal, state.mode_atmospheric,
-            state.mode_temporal, state.mode_texture, state.mode_edge,
+            state.real_source,
+            state.active_ratio,
+            state.active_slot_ratio,
+            state.active_effect_ratio,
+            state.fast_ratio,
+            state.slow_ratio,
+            state.kind_variance,
+            state.max_delta,
+            state.region_count,
+            state.tonal,
+            state.atmospheric,
+            state.temporal,
+            state.texture,
+            state.edge,
+            state.compositing,
+            state.visual_noise,
+            state.visual_drift,
+            state.visual_color,
+            state.visual_feedback,
+            state.visual_aperture,
+            state.visual_param_pressure,
+            state.mode_tonal,
+            state.mode_atmospheric,
+            state.mode_temporal,
+            state.mode_texture,
+            state.mode_edge,
             state.mode_compositing,
         ];
         let mut scalars = [[0.0f32; 4]; 7];
@@ -247,6 +273,13 @@ impl DriftUniforms {
             scalars,
             frame_meta: [now, frame, intensity_scale, rc.min_chroma_px() as f32],
             slot_dims: [rc.as_u32(), width, height, 0],
+            projection: [projection_code, raw_width, raw_height, 0],
+            projection_color: [
+                projection_background_rgb[0],
+                projection_background_rgb[1],
+                projection_background_rgb[2],
+                0.0,
+            ],
         }
     }
 }
@@ -264,7 +297,7 @@ mod tests {
         fs::write(p.join("effect-drift-fast-ratio.txt"), "0.5").unwrap();
         fs::write(p.join("effect-drift-edge.txt"), "1.7").unwrap(); // clamps to 1.0
         fs::write(p.join("visual-chain-noise.txt"), "garbage").unwrap(); // -> 0.0
-        // effect-drift-tonal.txt absent -> fallback 0.0
+                                                                         // effect-drift-tonal.txt absent -> fallback 0.0
         let s = load_drift_state(p);
         assert_eq!(s.fast_ratio, 0.5);
         assert_eq!(s.edge, 1.0);
@@ -277,38 +310,62 @@ mod tests {
         // All-zero state -> the 0.34 floor.
         assert!((DriftState::default().intensity() - 0.34).abs() < 1e-6);
         // active_ratio drives it up by 0.20.
-        let s = DriftState { active_ratio: 1.0, ..Default::default() };
+        let s = DriftState {
+            active_ratio: 1.0,
+            ..Default::default()
+        };
         assert!((s.intensity() - 0.54).abs() < 1e-6);
     }
 
     #[test]
     fn receiver_class_matches_python_precedence() {
         assert_eq!(ReceiverClass::from_name("oarb_sphere"), ReceiverClass::Oarb);
+        assert_eq!(ReceiverClass::from_name("yt"), ReceiverClass::Oarb);
         assert_eq!(ReceiverClass::from_name("cam_bop"), ReceiverClass::Camera);
         assert_eq!(ReceiverClass::from_name("ward_atlas"), ReceiverClass::Atlas);
-        assert_eq!(ReceiverClass::from_name("ticker-grounding"), ReceiverClass::Ticker);
+        assert_eq!(
+            ReceiverClass::from_name("ticker-grounding"),
+            ReceiverClass::Ticker
+        );
         assert_eq!(ReceiverClass::from_name("reverie"), ReceiverClass::Reverie);
         assert!(ReceiverClass::Camera.is_camera());
-        assert_eq!(ReceiverClass::Oarb.gain(), 1.38);
+        assert_eq!(ReceiverClass::Oarb.gain(), 1.52);
     }
 
     #[test]
     fn drift_uniforms_layout_matches_wgsl_indices() {
-        assert_eq!(std::mem::size_of::<DriftUniforms>(), 144);
+        assert_eq!(std::mem::size_of::<DriftUniforms>(), 176);
         let st = DriftState {
             real_source: 0.1,
             fast_ratio: 0.5,
             mode_compositing: 0.9,
             ..Default::default()
         };
-        let u = DriftUniforms::new(&st, ReceiverClass::Atlas, 2.0, 7.0, 1.0, 1280, 720);
+        let u = DriftUniforms::new(
+            &st,
+            ReceiverClass::Atlas,
+            2.0,
+            7.0,
+            1.0,
+            1280,
+            720,
+            1,
+            960,
+            540,
+            [0.1, 0.2, 0.3],
+        );
         // I_REAL_SOURCE=0 -> scalars[0][0]; I_FAST_RATIO=4 -> scalars[1][0];
         // I_MODE_COMPOSITING=26 -> scalars[6][2].
         assert_eq!(u.scalars[0][0], 0.1);
         assert_eq!(u.scalars[1][0], 0.5);
         assert_eq!(u.scalars[6][2], 0.9);
-        assert_eq!(u.frame_meta, [2.0, 7.0, 1.0, ReceiverClass::Atlas.min_chroma_px() as f32]);
+        assert_eq!(
+            u.frame_meta,
+            [2.0, 7.0, 1.0, ReceiverClass::Atlas.min_chroma_px() as f32]
+        );
         assert_eq!(u.slot_dims, [ReceiverClass::Atlas.as_u32(), 1280, 720, 0]);
+        assert_eq!(u.projection, [1, 960, 540, 0]);
+        assert_eq!(u.projection_color, [0.1, 0.2, 0.3, 0.0]);
     }
 
     /// Static-validate the drift shader (catches WGSL syntax/type errors without

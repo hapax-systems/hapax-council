@@ -9,10 +9,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 pub const AOA_OBJECT_ID: &str = "aperture-of-apertures";
-pub const AOA_GEOMETRY_REVISION: &str = "aoa-tetrix-v2";
+pub const AOA_GEOMETRY_REVISION: &str = "aoa-regular-tetrix-v4-perfect-fit-oarb";
 pub const AOA_PANE_SCHEMA_VERSION: u32 = 1;
 pub const AOA_PANE_ID_VERSION: &str = "v1";
-pub const AOA_TETRIX_RENDER_DEPTH: u32 = 3;
+pub const AOA_TETRIX_RENDER_DEPTH: u32 = 4;
+pub const AOA_LEAF_FACE_EDGE_UNITS: u32 = 48;
+pub const AOA_PARENT_EDGE_UNITS: u32 = AOA_LEAF_FACE_EDGE_UNITS * (1 << AOA_TETRIX_RENDER_DEPTH);
+pub const AOA_OARB_INNER_VOID_RADIUS_FILL_RATIO: f32 = 1.0;
 pub const AOA_PANE_CLIP_TOLERANCE: f32 = 0.001;
 pub const AOA_PANE_MIN_VISIBLE_EDGE_PX: f32 = 4.0;
 pub const AOA_PANE_MIN_FRONT_FACING_DOT: f32 = 0.02;
@@ -34,11 +37,15 @@ pub const AOA_PANE_ACCENT_MIN_EDGE_PX: f32 = 10.0;
 const AOA_CLIP_W_EPSILON: f32 = 0.000_001;
 const AOA_PANE_CLIPPED_UNKNOWN_VISIBLE_FRACTION: f32 = 0.5;
 
+pub const AOA_ROOT_EDGE: f32 = 1.0;
+pub const AOA_ROOT_INRADIUS: f32 = 0.204_124_15;
+pub const AOA_ROOT_BASE_RADIUS: f32 = 0.577_350_26;
+
 pub const AOA_ROOT_MODEL_VERTICES: [[f32; 3]; 4] = [
-    [-0.58, -0.44, 0.34],
-    [0.58, -0.44, 0.34],
-    [0.0, 0.60, 0.34],
-    [0.0, -0.095, -0.62],
+    [-0.5, -AOA_ROOT_INRADIUS, -AOA_ROOT_BASE_RADIUS / 2.0],
+    [0.5, -AOA_ROOT_INRADIUS, -AOA_ROOT_BASE_RADIUS / 2.0],
+    [0.0, -AOA_ROOT_INRADIUS, AOA_ROOT_BASE_RADIUS],
+    [0.0, AOA_ROOT_INRADIUS * 3.0, 0.0],
 ];
 
 pub const AOA_ROOT_BARY4_VERTICES: [[f32; 4]; 4] = [
@@ -375,15 +382,16 @@ pub fn aoa_total_tetrahedron_count(depth: u32) -> usize {
 }
 
 pub fn aoa_raw_edge_segment_count(depth: u32) -> usize {
-    aoa_total_tetrahedron_count(depth) * 6
+    aoa_leaf_tetrahedron_count(depth) * 6
 }
 
 pub fn aoa_raw_triangular_pane_count(depth: u32) -> usize {
-    aoa_total_tetrahedron_count(depth) * 4
+    aoa_leaf_tetrahedron_count(depth) * 4
 }
 
 pub fn aoa_pane_start_ordinal(depth: u32) -> u32 {
-    4 * (4u32.pow(depth) - 1) / 3
+    let _ = depth;
+    0
 }
 
 pub fn aoa_tetra_index(lineage: &[AoaChild]) -> u32 {
@@ -664,13 +672,11 @@ impl AoaPaneBindingMode {
 
 pub fn aoa_pane_records(render_depth: u32) -> Vec<AoaPaneRecord> {
     let mut records = Vec::with_capacity(aoa_raw_triangular_pane_count(render_depth));
-    for depth in 0..=render_depth {
-        for tetra_index in 0..aoa_leaf_tetrahedron_count(depth) as u32 {
-            let lineage = aoa_lineage_from_tetra_index(depth, tetra_index);
-            for face_index in 0..4 {
-                let face_key = AoaFaceKey::from_index(face_index).expect("face index is 0..4");
-                records.push(aoa_pane_record(&lineage, face_key));
-            }
+    for tetra_index in 0..aoa_leaf_tetrahedron_count(render_depth) as u32 {
+        let lineage = aoa_lineage_from_tetra_index(render_depth, tetra_index);
+        for face_index in 0..4 {
+            let face_key = AoaFaceKey::from_index(face_index).expect("face index is 0..4");
+            records.push(aoa_pane_record(&lineage, face_key));
         }
     }
     records
@@ -747,11 +753,11 @@ fn ancestor_pane_ids(lineage: &[AoaChild], face_key: AoaFaceKey) -> Vec<String> 
 }
 
 fn content_eligibility(depth: u32, boundary_role: AoaBoundaryRole) -> AoaContentEligibility {
-    let max_density = match (depth, boundary_role) {
-        (0, _) => AoaMaxDensity::Text,
-        (1, AoaBoundaryRole::HullSubface) => AoaMaxDensity::CompactData,
-        (1, _) => AoaMaxDensity::Glyph,
-        _ => AoaMaxDensity::Accent,
+    let max_density = match boundary_role {
+        AoaBoundaryRole::RootHull => AoaMaxDensity::Text,
+        AoaBoundaryRole::HullSubface => AoaMaxDensity::CompactData,
+        AoaBoundaryRole::VoidWall if depth >= AOA_TETRIX_RENDER_DEPTH => AoaMaxDensity::Glyph,
+        AoaBoundaryRole::VoidWall => AoaMaxDensity::Accent,
     };
     let allowed_modes = match max_density {
         AoaMaxDensity::Text => vec![
@@ -1244,22 +1250,44 @@ mod tests {
 
     #[test]
     fn tetrix_count_formulas_match_active_shader_depth() {
-        assert_eq!(AOA_TETRIX_RENDER_DEPTH, 3);
+        assert_eq!(AOA_GEOMETRY_REVISION, "aoa-regular-tetrix-v4-perfect-fit-oarb");
+        assert_eq!(AOA_TETRIX_RENDER_DEPTH, 4);
+        assert_eq!(AOA_LEAF_FACE_EDGE_UNITS, 48);
+        assert_eq!(AOA_PARENT_EDGE_UNITS, 768);
+        assert_eq!(AOA_OARB_INNER_VOID_RADIUS_FILL_RATIO, 1.0);
         assert_eq!(aoa_leaf_tetrahedron_count(0), 1);
         assert_eq!(aoa_leaf_tetrahedron_count(1), 4);
         assert_eq!(aoa_leaf_tetrahedron_count(2), 16);
         assert_eq!(aoa_leaf_tetrahedron_count(3), 64);
-        assert_eq!(aoa_total_tetrahedron_count(3), 85);
-        assert_eq!(aoa_raw_edge_segment_count(3), 510);
-        assert_eq!(aoa_raw_triangular_pane_count(3), 340);
+        assert_eq!(aoa_leaf_tetrahedron_count(4), 256);
+        assert_eq!(aoa_total_tetrahedron_count(4), 341);
+        assert_eq!(aoa_raw_edge_segment_count(4), 1536);
+        assert_eq!(aoa_raw_triangular_pane_count(4), 1024);
+    }
+
+    #[test]
+    fn root_model_vertices_form_regular_incentered_pyramid() {
+        let center = Vec3::ZERO;
+        let vertices = AOA_ROOT_MODEL_VERTICES.map(Vec3::from_array);
+        let mut edges = Vec::new();
+        for (a, b) in [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
+            edges.push(vertices[a].distance(vertices[b]));
+        }
+        for edge in edges {
+            assert!((edge - AOA_ROOT_EDGE).abs() < 0.000_01);
+        }
+        assert!(vertices[0].y < center.y);
+        assert!(vertices[1].y < center.y);
+        assert!(vertices[2].y < center.y);
+        assert!(vertices[3].y > center.y);
     }
 
     #[test]
     fn lineage_and_ordinal_formula_match_shader_order() {
         let lineage = vec![AoaChild::A, AoaChild::D];
         assert_eq!(aoa_tetra_index(&lineage), 3);
-        assert_eq!(aoa_pane_start_ordinal(2), 20);
-        assert_eq!(aoa_pane_ordinal(&lineage, AoaFaceKey::Bcd), 33);
+        assert_eq!(aoa_pane_start_ordinal(2), 0);
+        assert_eq!(aoa_pane_ordinal(&lineage, AoaFaceKey::Bcd), 13);
         assert_eq!(
             aoa_pane_id(&lineage, AoaFaceKey::Bcd),
             "aoa:pane:v1:a.d:bcd"
@@ -1268,11 +1296,12 @@ mod tests {
     }
 
     #[test]
-    fn active_manifest_has_all_depth_three_panes_with_unique_identity() {
+    fn active_manifest_has_all_depth_four_leaf_panes_with_unique_identity() {
         let manifest = aoa_active_pane_manifest();
         assert_eq!(manifest.render_depth, AOA_TETRIX_RENDER_DEPTH);
-        assert_eq!(manifest.pane_count, 340);
-        assert_eq!(manifest.panes.len(), 340);
+        assert_eq!(manifest.pane_count, 1024);
+        assert_eq!(manifest.panes.len(), 1024);
+        assert!(manifest.panes.iter().all(|pane| pane.depth == AOA_TETRIX_RENDER_DEPTH));
         assert!(aoa_manifest_has_unique_identity(&manifest));
     }
 
@@ -1321,7 +1350,7 @@ mod tests {
         let base_model = Mat4::from_translation(Vec3::new(0.0, -0.08, -1.85))
             * Mat4::from_scale(Vec3::splat(2.0));
         let frame = default_observation_frame(base_model);
-        let back_facing = aoa_observe_pane(&root_pane(AoaFaceKey::Acb), frame);
+        let back_facing = aoa_observe_pane(&root_pane(AoaFaceKey::Bcd), frame);
         assert_eq!(back_facing.lod_class, AoaPaneLodClass::Culled);
         assert!(back_facing
             .gate_reasons
@@ -1614,7 +1643,7 @@ mod tests {
             .find(|pane| pane.pane_id == "aoa:pane:v1:a.d:bcd")
             .expect("depth-2 pane should exist");
 
-        assert_eq!(pane.pane_ordinal, 33);
+        assert_eq!(pane.pane_ordinal, 13);
         assert_eq!(pane.depth, 2);
         assert_eq!(pane.lineage_digits, vec![0, 3]);
         assert_eq!(pane.tetra_id, "aoa:tetra:v1:a.d");
@@ -1781,8 +1810,8 @@ mod tests {
     fn manifest_records_are_json_serializable() {
         let manifest = aoa_pane_manifest(1);
         let json = serde_json::to_string(&manifest).expect("manifest should serialize");
-        assert!(json.contains("aoa:pane:v1:r:abd"));
-        assert!(json.contains("aoa-tetrix-v2"));
+        assert!(json.contains("aoa:pane:v1:a:abd"));
+        assert!(json.contains("aoa-regular-tetrix-v4-perfect-fit-oarb"));
         assert!(json.contains("aperture-of-apertures"));
     }
 }

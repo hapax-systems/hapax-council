@@ -24,6 +24,7 @@ float coupling_effect_drift_slow_ratio;
 float coupling_effect_drift_kind_variance;
 float coupling_effect_drift_max_delta;
 float coupling_effect_drift_density;
+float coupling_effect_drift_density_currency;
 float coupling_effect_drift_region_count;
 float coupling_effect_drift_tonal;
 float coupling_effect_drift_atmospheric;
@@ -90,6 +91,7 @@ void() coupling_init =
     coupling_effect_drift_kind_variance = 0;
     coupling_effect_drift_max_delta = 0;
     coupling_effect_drift_density = 0;
+    coupling_effect_drift_density_currency = 0;
     coupling_effect_drift_region_count = 0;
     coupling_effect_drift_tonal = 0;
     coupling_effect_drift_atmospheric = 0;
@@ -213,6 +215,17 @@ void(float u1x, float u1y, float u1z, float u1w, float u2x, float u2y, float u2z
     vec = strcat(vec, " ");
     vec = strcat(vec, ftos(u4w));
     cvar_set("r_glsl_postprocess_uservec4", vec);
+};
+
+void() coupling_clear_screen_postprocess =
+{
+    cvar_set("r_glsl_postprocess", "0");
+    coupling_write_uservecs(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+};
+
+float() coupling_screen_postprocess_enabled =
+{
+    return cvar("screwm_qc_screen_postprocess") > 0;
 };
 
 float(float value, float floor_value, float ceil_value) coupling_clamp_range =
@@ -339,6 +352,7 @@ void() coupling_read_effect_drift =
     coupling_effect_drift_kind_variance = coupling_read_float("data/effect-drift-kind-variance.txt", 0);
     coupling_effect_drift_max_delta = coupling_read_float("data/effect-drift-max-delta.txt", 0);
     coupling_effect_drift_density = coupling_read_float("data/effect-drift-density.txt", 0);
+    coupling_effect_drift_density_currency = coupling_read_float("data/effect-drift-density-currency.txt", 0);
     coupling_effect_drift_region_count = coupling_read_float("data/effect-drift-region-count.txt", 0);
     coupling_effect_drift_tonal = coupling_read_float("data/effect-drift-tonal.txt", 0);
     coupling_effect_drift_atmospheric = coupling_read_float("data/effect-drift-atmospheric.txt", 0);
@@ -384,13 +398,45 @@ void() coupling_apply_stimmung =
 {
     coupling_effect_review_preset = coupling_read_effect_review_preset();
 
-    // AoA rotation speed: faster with voice activity
+    // AoA is a drift receiver, not a passive prop. Screen-space drift may be
+    // disabled, so the model itself carries rotation, opacity, color, and glow.
+    float aoa_drift_pressure = coupling_clamp_range(
+        0.08
+        + coupling_effect_drift_active_ratio * 0.70
+        + coupling_effect_drift_active_effect_ratio * 0.45
+        + coupling_effect_drift_edge * 0.34
+        + coupling_effect_drift_texture * 0.24
+        + coupling_effect_drift_compositing * 0.18
+        + coupling_visual_chain_drift * 0.24
+        + coupling_local_drift * 0.34,
+        0.06,
+        1.8
+    );
+    float aoa_pulse = 0.5 + 0.5 * sin(
+        time * (0.52 + coupling_effect_drift_fast_ratio * 0.38)
+        + coupling_effect_drift_kind_variance * 3.1
+        + coupling_effect_drift_region_count * 0.11
+    );
+    float aoa_spin_boost = aoa_drift_pressure * (4.0 + 18.0 * aoa_pulse);
+    aoa_spin_boost = aoa_spin_boost + coupling_effect_drift_fast_ratio * 8.0;
     if (aoa_entity)
     {
         float base_rot = 0.0;
         float voice_boost = coupling_voice_active * 1.5;
         float audio_boost = coupling_audio_rms * 0.8 + coupling_audio_onset * 1.2;
-        aoa_entity.screwm_spin_y = base_rot + voice_boost + audio_boost;
+        aoa_entity.screwm_spin_y = base_rot + voice_boost + audio_boost + aoa_spin_boost;
+        aoa_entity.alpha = coupling_clamp_range(0.16 + aoa_drift_pressure * 0.06 + aoa_pulse * 0.04, 0.12, 0.30);
+        aoa_entity.colormod = '1.06 0.58 0.80' + '0.10 0.20 0.18' * aoa_drift_pressure + '0.06 0.02 0.16' * aoa_pulse;
+        aoa_entity.glowmod = '0.62 0.32 0.48' + '0.28 0.26 0.22' * aoa_drift_pressure + '0.06 0.02 0.14' * aoa_pulse;
+        aoa_entity.glow_size = coupling_clamp_range(6 + aoa_drift_pressure * 26 + aoa_pulse * 16, 0, 68);
+    }
+    if (aoa_sphere_entity)
+    {
+        aoa_sphere_entity.screwm_spin_y = coupling_clamp_range(0.6 + aoa_drift_pressure * 7.5 + aoa_pulse * 2.0, 0.4, 18.0);
+        aoa_sphere_entity.alpha = coupling_clamp_range(0.84 + aoa_drift_pressure * 0.08 + aoa_pulse * 0.04, 0.78, 1.0);
+        aoa_sphere_entity.colormod = '0.92 0.92 1.00' + '0.10 0.16 0.08' * aoa_drift_pressure + '0.06 0.02 0.12' * aoa_pulse;
+        aoa_sphere_entity.glowmod = '0.28 0.20 0.12' + '0.20 0.16 0.10' * aoa_drift_pressure;
+        aoa_sphere_entity.glow_size = coupling_clamp_range(4 + aoa_drift_pressure * 18 + aoa_pulse * 8, 0, 44);
     }
 
     // Fog is only a depth cue here. Drift must shape entities/surfaces rather
@@ -398,16 +444,24 @@ void() coupling_apply_stimmung =
     float fog_density = 0.008 - coupling_energy * 0.004 + coupling_audio_rms * 0.002;
     localcmd(strcat(strcat("fog ", ftos(fog_density)), " 0.025 0.018 0.032\n"));
 
-    // Post-processing modulation from cognitive state. These are spatial
-    // scroom fields, not fourth-wall camera filters.
+    // DarkPlaces GLSL postprocess is screen-space over the final camera frame.
+    // Keep it as an explicit diagnostic only; release-grade Screwm expression
+    // must bind to world geometry through CSQC receivers/lights.
+    if (!coupling_screen_postprocess_enabled())
+    {
+        coupling_clear_screen_postprocess();
+        return;
+    }
+    cvar_set("r_glsl_postprocess", "1");
+
     if (coupling_effect_review_preset >= 6.5)
     {
         coupling_apply_effect_review_preset();
         return;
     }
 
-    float density_grounding = coupling_clamp_range(coupling_effect_drift_density * 1.6, 0, 0.24);
-    float drift_baseline = coupling_clamp_range(0.42 + coupling_effect_drift_active_ratio * 0.18 + coupling_effect_drift_active_effect_ratio * 0.20 + coupling_effect_drift_kind_variance * 0.24 + coupling_effect_drift_max_delta * 0.16 + density_grounding + coupling_visual_chain_param_pressure * 0.08, 0.36, 0.96);
+    float density_grounding = coupling_clamp_range(coupling_max2(coupling_effect_drift_density * 1.6, coupling_effect_drift_density_currency * 1.25), 0, 0.34);
+    float drift_baseline = coupling_clamp_range(0.42 + coupling_effect_drift_active_ratio * 0.18 + coupling_effect_drift_active_effect_ratio * 0.20 + coupling_effect_drift_kind_variance * 0.24 + coupling_effect_drift_max_delta * 0.16 + density_grounding + coupling_visual_chain_param_pressure * 0.08, 0.36, 1.00);
     float fast_jitter = 0.5 + sin(time * (1.55 + coupling_effect_drift_fast_ratio * 1.15) + coupling_effect_drift_region_count * 5.6) * 0.5;
     float slow_jitter = 0.5 + sin(time * (0.17 + coupling_effect_drift_slow_ratio * 0.18) + coupling_effect_drift_tonal * 3.1 + coupling_effect_drift_kind_variance * 2.4) * 0.5;
     float family_mutation = coupling_clamp_range(coupling_effect_drift_active_slot_ratio * 0.35 + coupling_effect_drift_kind_variance * 0.45 + coupling_effect_drift_fast_ratio * 0.20, 0, 1);
@@ -496,6 +550,121 @@ void() coupling_apply_stimmung =
     float thermal_val = coupling_clamp_range(coupling_reverie_thermal * 0.08 + coupling_audio_onset * 0.012 + coupling_effect_drift_tonal * 0.14 + drift_baseline * 0.035, 0, 0.26);
     if (mode_tonal > 0.56 && mode_tonal < 0.68)
         thermal_val = coupling_clamp_range(thermal_val + 0.12, 0, 0.38);
+
+    // Review presets 1-6 are diagnostic screen-shader floors. They are only
+    // reachable when screwm_qc_screen_postprocess is deliberately enabled.
+    if (coupling_effect_review_preset >= 0.5 && coupling_effect_review_preset < 1.5)
+    {
+        if (vig < 0.055)
+            vig = 0.055;
+        if (ca < 1.85)
+            ca = 1.85;
+        if (scan_val < 0.46)
+            scan_val = 0.46;
+        if (edge_val < 1.32)
+            edge_val = 1.32;
+        if (warp_val < 0.035)
+            warp_val = 0.035;
+        if (noise_val < 0.070)
+            noise_val = 0.070;
+        if (sharpen_val < 0.10)
+            sharpen_val = 0.10;
+    }
+    else if (coupling_effect_review_preset >= 1.5 && coupling_effect_review_preset < 2.5)
+    {
+        if (ca < 3.35)
+            ca = 3.35;
+        if (temp_val < 0.05)
+            temp_val = 0.05;
+        if (scan_val < 1.05)
+            scan_val = 1.05;
+        if (edge_val < 2.10)
+            edge_val = 2.10;
+        if (warp_val < 0.050)
+            warp_val = 0.050;
+        if (noise_val < 0.090)
+            noise_val = 0.090;
+        if (invert_val < 0.03)
+            invert_val = 0.03;
+        if (sharpen_val < 0.14)
+            sharpen_val = 0.14;
+    }
+    else if (coupling_effect_review_preset >= 2.5 && coupling_effect_review_preset < 3.5)
+    {
+        if (vig < 0.065)
+            vig = 0.065;
+        if (ca < 2.30)
+            ca = 2.30;
+        if (grain_val < 0.055)
+            grain_val = 0.055;
+        if (scan_val < 0.85)
+            scan_val = 0.85;
+        if (edge_val < 1.60)
+            edge_val = 1.60;
+        if (warp_val < 0.075)
+            warp_val = 0.075;
+        if (noise_val < 0.160)
+            noise_val = 0.160;
+    }
+    else if (coupling_effect_review_preset >= 3.5 && coupling_effect_review_preset < 4.5)
+    {
+        if (ca < 2.00)
+            ca = 2.00;
+        if (scan_val < 0.80)
+            scan_val = 0.80;
+        if (edge_val < 1.55)
+            edge_val = 1.55;
+        if (poster_val < 7)
+            poster_val = 7;
+        if (halftone_val < 7)
+            halftone_val = 7;
+        if (noise_val < 0.090)
+            noise_val = 0.090;
+        if (threshold_val < 0.045)
+            threshold_val = 0.045;
+        if (sharpen_val < 0.12)
+            sharpen_val = 0.12;
+    }
+    else if (coupling_effect_review_preset >= 4.5 && coupling_effect_review_preset < 5.5)
+    {
+        if (ca < 2.10)
+            ca = 2.10;
+        if (temp_val < 0.12)
+            temp_val = 0.12;
+        if (scan_val < 0.70)
+            scan_val = 0.70;
+        if (edge_val < 1.95)
+            edge_val = 1.95;
+        if (noise_val < 0.090)
+            noise_val = 0.090;
+        if (emboss_val < 0.36)
+            emboss_val = 0.36;
+        if (aperture_val < 0.13)
+            aperture_val = 0.13;
+        if (thermal_val < 0.32)
+            thermal_val = 0.32;
+    }
+    else if (coupling_effect_review_preset >= 5.5 && coupling_effect_review_preset < 6.5)
+    {
+        if (ca < 1.85)
+            ca = 1.85;
+        if (scan_val < 0.65)
+            scan_val = 0.65;
+        if (edge_val < 1.55)
+            edge_val = 1.55;
+        if (warp_val < 0.040)
+            warp_val = 0.040;
+        if (noise_val < 0.120)
+            noise_val = 0.120;
+        if (threshold_val < 0.13)
+            threshold_val = 0.13;
+        if (invert_val < 0.20)
+            invert_val = 0.20;
+        if (aperture_val < 0.08)
+            aperture_val = 0.08;
+        if (thermal_val < 0.16)
+            thermal_val = 0.16;
+    }
 
     coupling_write_uservecs(
         vig, ca, temp_val, grain_val,

@@ -276,6 +276,71 @@ def _set_input_settings(client: Any, source_name: str, settings: dict[str, Any])
         return client.set_input_settings(source_name, settings, True)
 
 
+def _get_current_program_scene_name(client: Any) -> str | None:
+    try:
+        current = client.get_current_program_scene()
+    except Exception:
+        return None
+    for attr in ("current_program_scene_name", "scene_name"):
+        value = getattr(current, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _get_scene_item_transform_response(client: Any, scene_name: str, item_id: int) -> Any:
+    try:
+        return client.get_scene_item_transform(
+            scene_name=scene_name,
+            scene_item_id=item_id,
+        )
+    except TypeError:
+        return client.get_scene_item_transform(scene_name, item_id)
+
+
+def _set_scene_item_transform(
+    client: Any,
+    scene_name: str,
+    item_id: int,
+    transform: dict[str, Any],
+) -> Any:
+    try:
+        return client.set_scene_item_transform(
+            scene_name=scene_name,
+            scene_item_id=item_id,
+            scene_item_transform=transform,
+        )
+    except TypeError:
+        return client.set_scene_item_transform(scene_name, item_id, transform)
+
+
+def _remove_input(client: Any, source_name: str) -> Any:
+    try:
+        return client.remove_input(input_name=source_name)
+    except TypeError:
+        return client.remove_input(source_name)
+
+
+def _create_input(
+    client: Any,
+    *,
+    scene_name: str,
+    source_name: str,
+    input_kind: str,
+    input_settings: dict[str, Any],
+) -> Any:
+    try:
+        return client.create_input(
+            scene_name=scene_name,
+            input_name=source_name,
+            input_kind=input_kind,
+            input_settings=input_settings,
+            scene_item_enabled=True,
+        )
+    except TypeError:
+        return client.create_input(scene_name, source_name, input_kind, input_settings, True)
+
+
 def _obs_fourcc(value: str) -> int:
     encoded = value.encode("ascii")
     if len(encoded) != 4:
@@ -362,6 +427,109 @@ def _apply_input_settings(
         return True
     except Exception as exc:
         logger.warning("input settings apply failed for '%s': %s", source_name, exc)
+        return False
+
+
+def _resolution_dimensions_from_settings(settings: dict[str, Any] | None) -> tuple[int, int] | None:
+    if not settings:
+        return None
+    value = settings.get("resolution")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    width = value >> 32
+    height = value & 0xFFFFFFFF
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
+def _source_dimensions_zero(client: Any, source_name: str) -> bool:
+    scene_item = _find_scene_item(client, source_name)
+    if scene_item is None:
+        return False
+    scene_name, item_id = scene_item
+    try:
+        transform = _get_scene_item_transform_response(
+            client,
+            scene_name,
+            item_id,
+        ).scene_item_transform
+    except Exception:
+        return False
+    source_width = transform.get("sourceWidth")
+    source_height = transform.get("sourceHeight")
+    try:
+        return float(source_width) <= 0 or float(source_height) <= 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _full_canvas_transform(input_settings: dict[str, Any] | None) -> dict[str, Any]:
+    dimensions = _resolution_dimensions_from_settings(input_settings) or (1920, 1080)
+    width, height = dimensions
+    return {
+        "alignment": 5,
+        "boundsAlignment": 0,
+        "boundsHeight": float(height),
+        "boundsType": "OBS_BOUNDS_STRETCH",
+        "boundsWidth": float(width),
+        "cropBottom": 0,
+        "cropLeft": 0,
+        "cropRight": 0,
+        "cropTop": 0,
+        "positionX": 0.0,
+        "positionY": 0.0,
+        "rotation": 0.0,
+        "scaleX": 1.0,
+        "scaleY": 1.0,
+    }
+
+
+def _recreate_input(
+    client: Any,
+    source_name: str,
+    *,
+    input_kind: str,
+    input_settings: dict[str, Any] | None,
+) -> bool:
+    if not input_settings:
+        return False
+    scene_name = _get_current_program_scene_name(client)
+    if scene_name is None:
+        logger.warning("input recreate failed: current program scene unavailable")
+        return False
+    try:
+        _remove_input(client, source_name)
+        time.sleep(0.5)
+    except Exception as exc:
+        if "not found" not in str(exc).lower() and "no source" not in str(exc).lower():
+            logger.info("input remove before recreate returned: %s", exc)
+    try:
+        response = _create_input(
+            client,
+            scene_name=scene_name,
+            source_name=source_name,
+            input_kind=input_kind,
+            input_settings=input_settings,
+        )
+        item_id = getattr(response, "scene_item_id", None)
+        if item_id is None:
+            item_id = getattr(response, "sceneItemId", None)
+        if item_id is None:
+            scene_item = _find_scene_item(client, source_name)
+            if scene_item is not None:
+                _scene_name, item_id = scene_item
+        if item_id is not None:
+            _set_scene_item_transform(
+                client,
+                scene_name,
+                int(item_id),
+                _full_canvas_transform(input_settings),
+            )
+        time.sleep(1.0)
+        return True
+    except Exception as exc:
+        logger.warning("input recreate failed for '%s': %s", source_name, exc)
         return False
 
 
@@ -506,6 +674,16 @@ def _probe_source(
             reason=f"source '{source_name}' inactive",
         )
 
+    if _source_dimensions_zero(client, source_name):
+        return ProbeResult(
+            state=SourceState.STALLED,
+            source_active=True,
+            screenshot_hash=previous_hash,
+            screenshot_available=False,
+            stall_seconds=now - hash_stable_since,
+            reason="source_dimensions_zero",
+        )
+
     try:
         resp = _get_source_screenshot_response(
             client,
@@ -551,10 +729,8 @@ def _probe_source(
 
 def _find_scene_item(client: Any, source_name: str) -> tuple[str, int] | None:
     """Find the scene and scene_item_id for the named source."""
-    try:
-        current = client.get_current_program_scene()
-        scene_name = current.scene_name
-    except Exception:
+    scene_name = _get_current_program_scene_name(client)
+    if scene_name is None:
         return None
 
     try:
@@ -839,6 +1015,8 @@ def monitor_loop(
     producer_restart_timeout: float = 30.0,
     obs_log_dir: Path | None = None,
     obs_log_device_id: str | None = None,
+    recreate_input_on_reset: bool = False,
+    input_kind: str = "v4l2_input",
     ignore_static_screenshot_stalls: bool = False,
     max_static_ignore_seconds: float = 0.0,
     screenshot_width: int = SCREENSHOT_WIDTH,
@@ -877,17 +1055,27 @@ def monitor_loop(
                 if initial_reacquire_pending:
                     settings_applied = _apply_input_settings(client, source_name, input_settings)
                 if settings_applied and input_settings and initial_reacquire_pending:
-                    scene_item = _find_scene_item(client, source_name)
-                    if scene_item is not None:
-                        scene_name, item_id = scene_item
-                        if _toggle_visibility(client, scene_name, item_id):
-                            logger.info("initial source reacquire after applying input settings")
-                            reset_count += 1
-                            now = time.monotonic()
-                            last_reset_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                            last_reset_monotonic = now
-                            prev_hash = None
-                            hash_stable_since = now
+                    initial_reacquired = False
+                    if recreate_input_on_reset:
+                        initial_reacquired = _recreate_input(
+                            client,
+                            source_name,
+                            input_kind=input_kind,
+                            input_settings=input_settings,
+                        )
+                    if not initial_reacquired:
+                        scene_item = _find_scene_item(client, source_name)
+                        if scene_item is not None:
+                            scene_name, item_id = scene_item
+                            initial_reacquired = _toggle_visibility(client, scene_name, item_id)
+                    if initial_reacquired:
+                        logger.info("initial source reacquire after applying input settings")
+                        reset_count += 1
+                        now = time.monotonic()
+                        last_reset_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                        last_reset_monotonic = now
+                        prev_hash = None
+                        hash_stable_since = now
                     initial_reacquire_pending = False
             except Exception as exc:
                 logger.debug("OBS connection failed: %s", exc)
@@ -956,6 +1144,22 @@ def monitor_loop(
             elif obs_log_reason is not None:
                 first_self_recovered_obs_log_timeout_monotonic = None
                 self_recovered_obs_log_timeouts = 0
+            if obs_log_reason is not None and probe.state is SourceState.HEALTHY:
+                # OBS can emit v4l2 timeout/reset chatter while the source is
+                # still yielding fresh pixels. Visual liveness wins over log
+                # intake so the watchdog does not churn a healthy witness path.
+                obs_log_reason = None
+            elif (
+                obs_log_reason is not None
+                and probe.state is SourceState.STALLED
+                and probe.reason == "screenshot_hash_unchanged"
+                and probe.screenshot_available
+                and probe.stall_seconds < stall_threshold
+            ):
+                # A single unchanged screenshot sample is not a transport
+                # failure. Preserve the normal visual stall threshold instead
+                # of letting OBS log chatter force an early reset.
+                obs_log_reason = None
             if obs_log_reason is not None:
                 probe = ProbeResult(
                     state=SourceState.STALLED,
@@ -1075,42 +1279,52 @@ def monitor_loop(
                         "producer restart failed for %s",
                         ",".join(producer_service_sequence),
                     )
-            _apply_input_settings(client, source_name, input_settings)
-            scene_item = _find_scene_item(client, source_name)
-            if scene_item is not None:
+            success = False
+            if recreate_input_on_reset and input_settings:
+                success = _recreate_input(
+                    client,
+                    source_name,
+                    input_kind=input_kind,
+                    input_settings=input_settings,
+                )
+            if not success:
+                _apply_input_settings(client, source_name, input_settings)
+                scene_item = _find_scene_item(client, source_name)
+            else:
+                scene_item = _find_scene_item(client, source_name)
+            if not success and scene_item is not None:
                 scene_name, item_id = scene_item
                 success = _toggle_visibility(client, scene_name, item_id)
-                if success:
-                    reset_count += 1
-                    last_reset_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                    last_reset_monotonic = now
-                    if probe.state is SourceState.STALLED and not producer_restarted:
-                        stall_obs_resets_since_producer += 1
-                    _send_ntfy(reason)
-                    # Reset stall tracking after toggle
-                    prev_hash = None
-                    hash_stable_since = now
-                    consecutive_failures = 0
-                    probe = ProbeResult(
-                        state=SourceState.RECONNECTED,
-                        source_active=probe.source_active,
-                        screenshot_hash=None,
-                        screenshot_available=probe.screenshot_available,
-                        stall_seconds=0.0,
-                        reason=reason,
-                    )
-                else:
-                    reset_failures += 1
-                    consecutive_failures += 1
-                    probe = ProbeResult(
-                        state=SourceState.RECONNECT_FAILED,
-                        source_active=probe.source_active,
-                        screenshot_hash=probe.screenshot_hash,
-                        screenshot_available=probe.screenshot_available,
-                        stall_seconds=probe.stall_seconds,
-                        reason=reason,
-                    )
-                    client = None
+            if success:
+                reset_count += 1
+                last_reset_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                last_reset_monotonic = now
+                if probe.state is SourceState.STALLED and not producer_restarted:
+                    stall_obs_resets_since_producer += 1
+                _send_ntfy(reason)
+                prev_hash = None
+                hash_stable_since = now
+                consecutive_failures = 0
+                probe = ProbeResult(
+                    state=SourceState.RECONNECTED,
+                    source_active=probe.source_active,
+                    screenshot_hash=None,
+                    screenshot_available=probe.screenshot_available,
+                    stall_seconds=0.0,
+                    reason=reason,
+                )
+            elif scene_item is not None:
+                reset_failures += 1
+                consecutive_failures += 1
+                probe = ProbeResult(
+                    state=SourceState.RECONNECT_FAILED,
+                    source_active=probe.source_active,
+                    screenshot_hash=probe.screenshot_hash,
+                    screenshot_available=probe.screenshot_available,
+                    stall_seconds=probe.stall_seconds,
+                    reason=reason,
+                )
+                client = None
             else:
                 logger.warning("source '%s' not found in current scene", source_name)
                 reset_failures += 1
@@ -1248,6 +1462,16 @@ def main() -> None:
         help="Treat fresh OBS v4l2 timeout/start-failure log lines as source stalls",
     )
     parser.add_argument(
+        "--recreate-input-on-reset",
+        action="store_true",
+        help="Remove and recreate the OBS input instead of only toggling visibility",
+    )
+    parser.add_argument(
+        "--input-kind",
+        default="v4l2_input",
+        help="OBS input kind to use with --recreate-input-on-reset (default: v4l2_input)",
+    )
+    parser.add_argument(
         "--ignore-static-screenshot-stalls",
         action="store_true",
         help="Do not reset on unchanged screenshots without fresh OBS v4l2 log errors",
@@ -1316,6 +1540,8 @@ def main() -> None:
         producer_restart_timeout=args.producer_restart_timeout,
         obs_log_dir=args.obs_log_dir if args.obs_log_v4l2_errors else None,
         obs_log_device_id=args.device_id,
+        recreate_input_on_reset=args.recreate_input_on_reset,
+        input_kind=args.input_kind,
         ignore_static_screenshot_stalls=args.ignore_static_screenshot_stalls,
         max_static_ignore_seconds=args.max_static_ignore_seconds,
         screenshot_width=args.screenshot_width,

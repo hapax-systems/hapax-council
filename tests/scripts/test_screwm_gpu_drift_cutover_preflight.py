@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -37,7 +38,7 @@ def test_live_texture_parser_matches_launcher_and_autoexec_slots() -> None:
         for slot in autoexec_slots
     ]
     assert launcher_signature == autoexec_signature
-    assert len(launcher_signature) == 13
+    assert len(launcher_signature) == 14
     assert launcher_signature[0] == (
         1,
         "progs/aoa_sphere.mdl_0",
@@ -45,12 +46,19 @@ def test_live_texture_parser_matches_launcher_and_autoexec_slots() -> None:
         2048,
         1024,
     )
-    assert launcher_signature[-1] == (
+    assert launcher_signature[12] == (
         13,
         "speech_wave",
         "/dev/shm/hapax-compositor/quake-live-speech-wave.bgra",
         512,
         128,
+    )
+    assert launcher_signature[-1] == (
+        14,
+        "progs/aoa.mdl_0",
+        "/dev/shm/hapax-compositor/quake-live-aoa-atlas.bgra",
+        2048,
+        2048,
     )
 
 
@@ -62,12 +70,12 @@ def test_manifest_derives_supported_gpu_drift_candidates() -> None:
     assert manifest["version"] == "screwm-gpu-drift-cutover-preflight-v1"
     assert manifest["source"] == "scripts/darkplaces-v4l2-xvfb.sh"
     assert manifest["runtime_actions_performed"] is False
-    assert len(candidates) == 12
+    assert len(candidates) == 13
     assert "speech-wave" not in candidates
     assert any(warning["slot"] == "speech-wave" for warning in manifest["warnings"])
 
     yt = candidates["yt"]
-    assert yt["slot_spec"] == "yt:2048x1024"
+    assert yt["slot_spec"] == "yt:2048x1024:1.6:sphere-front:1820x1024:0c0b0d"
     assert yt["mount_id"] == "aoa-media-sphere"
     assert yt["producer_class"] == "live-media-youtube"
     assert yt["service"] == "hapax-quake-live-youtube.service"
@@ -95,8 +103,21 @@ def test_manifest_derives_supported_gpu_drift_candidates() -> None:
     assert reverie["producer_env_flag"] == "HAPAX_QUAKE_REVERIE_GPU_DRIFT"
     assert reverie["slot_spec"] == "reverie:960x540"
 
+    aoa = candidates["aoa-atlas"]
+    assert aoa["mount_id"] == "aoa-fractal-face-atlas"
+    assert aoa["producer_class"] == "live-aoa-face-atlas"
+    assert aoa["service"] == "hapax-quake-live-aoa-atlas.service"
+    assert aoa["producer_env_flag"] == "HAPAX_QUAKE_AOA_ATLAS_GPU_DRIFT"
+    assert aoa["texture_name"] == "progs/aoa.mdl_0"
+    assert aoa["slot_spec"] == "aoa-atlas:2048x2048:2.25"
+    assert aoa["raw_output"] == "/dev/shm/hapax-compositor/quake-live-aoa-atlas.raw.bgra"
+    assert aoa["final_sidecar"] == "/dev/shm/hapax-compositor/quake-live-aoa-atlas.json"
+
     assert "speech-wave" not in manifest["drift_slots_env"]
-    assert manifest["drift_slots_env"].split(",")[0] == "yt:2048x1024"
+    assert "aoa-atlas:2048x2048:2.25" in manifest["drift_slots_env"]
+    assert manifest["drift_slots_env"].split(",")[0] == (
+        "yt:2048x1024:1.6:sphere-front:1820x1024:0c0b0d"
+    )
 
 
 def test_manifest_slot_filter_is_deterministic_and_warns_on_missing_slot() -> None:
@@ -106,3 +127,15 @@ def test_manifest_slot_filter_is_deterministic_and_warns_on_missing_slot() -> No
     assert [entry["slot"] for entry in manifest["candidates"]] == ["ward-atlas", "reverie"]
     assert manifest["drift_slots_env"] == "ward-atlas:2048x2304,reverie:960x540"
     assert {"slot": "missing", "reason": "requested_slot_not_declared"} in manifest["warnings"]
+
+
+def test_manifest_matches_media_drift_service_slot_env() -> None:
+    module = _load_module()
+    manifest = module.build_manifest(REPO_ROOT)
+    service = (REPO_ROOT / "systemd" / "units" / "hapax-screwm-media-drift.service").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r"^Environment=HAPAX_SCREWM_DRIFT_SLOTS=(.+)$", service, re.MULTILINE)
+
+    assert match is not None
+    assert manifest["drift_slots_env"] == match.group(1)

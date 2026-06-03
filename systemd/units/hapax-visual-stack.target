@@ -4,7 +4,8 @@ Description=Hapax Visual Stack - production visual surface services
 # content, VLA bridges perception, and studio-compositor feeds OBS/V4L2.
 # The Tauri/WebKit hapax-logos preview is decommissioned and must not be
 # pulled in by this target.
-Wants=hapax-imagination.service hapax-imagination-loop.service hapax-dmn.service hapax-reverie.service hapax-content-resolver.service visual-layer-aggregator.service studio-compositor.service hapax-darkplaces-v4l2.service hapax-darkplaces-bridge.service hapax-quake-live-reverie.service hapax-quake-live-ward-atlas.service hapax-screwm-drift-state-source.service hapax-screwm-speech-wave-producer.service
+Wants=hapax-imagination.service hapax-imagination-loop.service hapax-dmn.service hapax-reverie.service hapax-content-resolver.service visual-layer-aggregator.service studio-compositor.service hapax-darkplaces-v4l2.service hapax-darkplaces-obs-media-stream.service hapax-darkplaces-bridge.service hapax-screwm-media-drift.service hapax-quake-live-reverie.service hapax-quake-live-ward-atlas.service hapax-quake-live-aoa-atlas.service hapax-screwm-drift-state-source.service hapax-screwm-speech-wave-producer.service
+Wants=hapax-quake-live-ticker@grounding.service hapax-quake-live-ticker@precedent.service hapax-quake-live-ticker@chronicle.service
 After=logos-api.service hapax-daimonion.service
 
 [Install]

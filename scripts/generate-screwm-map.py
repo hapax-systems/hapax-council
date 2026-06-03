@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Generate Quake .map files for the Screwm migration scene.
 
-Sealed BSP substrate with Screwm/AoA composition anchors. Uses only
-axis-aligned box brushes to guarantee qbsp seals the map (no vis leaks).
+Sealed BSP substrate with Screwm/AoA composition anchors. The room shell stays
+axis-aligned; floor/ceiling alignment marks use thin convex line prisms.
 
 Supports two working modes per hapax design language §2:
   --mode rnd       Gruvbox Hard Dark (warm brown, amber lights)
@@ -26,9 +26,11 @@ DEFAULT_COMPOSITOR_LAYOUT_PATH = REPO_ROOT / "config" / "compositor-layouts" / "
 UNITS_PER_METER = 32
 TOWER_RADIUS_M = 16.5
 TOWER_FLOOR_M = -2.0
-TOWER_CEIL_M = 26.5
+BASE_TOWER_CEIL_M = 26.5
+TOWER_CEIL_M = TOWER_FLOOR_M + (BASE_TOWER_CEIL_M - TOWER_FLOOR_M) * 2.0
 WALL_THICK = 16
-AOA_HEIGHT_M = 5.5
+AOA_HEIGHT_M = 7.0
+AOA_RUNTIME_SCALE = 1.0
 WARD_PANEL_COUNT = 36
 
 TR = int(TOWER_RADIUS_M * UNITS_PER_METER)
@@ -41,6 +43,27 @@ ROOM_X_EXT = 2080
 ROOM_Y_MIN = -2550
 ROOM_Y_MAX = 1440
 EXT = ROOM_X_EXT
+HEX_GRID_RADIUS = 384
+HEX_GRID_LINE_WIDTH = 6
+HEX_GRID_LINE_DEPTH = 2
+HEX_GRID_FLOOR_TEX = "hex_floor"
+HEX_GRID_CEIL_TEX = "hex_ceil"
+HEX_GRID_WALL_TEX = "hex_wall"
+STIPPLE_FLOOR_TEX = "stipple_floor"
+STIPPLE_CEIL_TEX = "stipple_ceil"
+STIPPLE_WALL_TEX = "stipple_wall"
+STIPPLE_DOT_SIZE = 12
+WALL_GRID_LINE_WIDTH = 4
+WALL_GRID_LINE_DEPTH = 2
+WALL_STIPPLE_DOT_SIZE = 6
+NO_DRAW_SHELL_TEX = "skip"
+SCROOM_GRID_MARGIN = WALL_THICK + HEX_GRID_LINE_WIDTH
+SCROOM_GRID_BOUNDS = (
+    -EXT + SCROOM_GRID_MARGIN,
+    EXT - SCROOM_GRID_MARGIN,
+    ROOM_Y_MIN + SCROOM_GRID_MARGIN,
+    ROOM_Y_MAX - SCROOM_GRID_MARGIN,
+)
 REVIEW_ALCOVE_Y_MIN = ROOM_Y_MIN
 REVIEW_WARD_Y = AOA_Y
 REVIEW_DRIFT_Y = AOA_Y - 45
@@ -181,6 +204,22 @@ DOMAIN_LIGHT_COLOR = {
     "perception": (0.58, 0.88, 0.34),
 }
 
+WARD_GLYPH_STYLES = {
+    "communication": "chevron",
+    "presence": "bracket",
+    "token": "spine",
+    "music": "slash-pair",
+    "cognition": "angle",
+    "director": "axis",
+    "perception": "diamond",
+}
+WARD_RECTANGULAR_MOUNT_KINDS = {
+    "live-camera-instrument",
+    "live-text-instrument",
+    "live-speech-waveform",
+    "live-reverie-substrate",
+}
+
 WARD_COLUMNS = 7
 WARD_PANE_W = 86
 WARD_PANE_H = 54
@@ -192,6 +231,11 @@ WARD_Y_TOP = 62
 WARD_Y_STEP = -36
 WARD_TOP_Z = FLOOR_Z + 344
 WARD_GLOW_TEX = ["drift_c", "drift_a", "drift_r", "drift_g"]
+WARD_PURPOSE_RECEIVER_MIN_WIDTH = 180
+WARD_PURPOSE_RECEIVER_MIN_HEIGHT = 96
+WARD_PURPOSE_RECEIVER_BASE_U = 64
+WARD_PURPOSE_RECEIVER_BASE_V = 56
+WARD_PURPOSE_RECEIVER_THICKNESS_RATIO = 0.20
 MEDIA_RECEIVER_EDGE_TEX = "scroom"
 SYNTHWAVE_TICKER_WARDS = {9, 22, 27}
 SPECIAL_WARD_POSITIONS = {
@@ -590,13 +634,23 @@ def validate_spatiotemporal_framework():
                 failures.append(
                     f"media mount {mount.get('id', '<unknown>')} target visual angle below inspection minimum"
                 )
-            if target_angle > media["target_hero_media_visual_angle_deg_max"]:
+            target_angle_max = float(
+                mount.get(
+                    "target_visual_angle_deg_max",
+                    media["target_hero_media_visual_angle_deg_max"],
+                )
+            )
+            if target_angle > target_angle_max:
                 failures.append(
                     f"media mount {mount.get('id', '<unknown>')} target visual angle exceeds hero maximum"
                 )
             if isinstance(native, list) and len(native) == 2:
                 px_per_degree = native[0] / target_angle
-                px_per_degree_floor = media["minimum_media_px_per_degree"]
+                px_per_degree_floor = float(
+                    mount.get(
+                        "legibility_px_per_degree_floor", media["minimum_media_px_per_degree"]
+                    )
+                )
                 if mount.get("mount_kind") == "live-speech-waveform":
                     px_per_degree_floor = float(
                         mount.get("signal_legibility_px_per_degree_floor", px_per_degree_floor)
@@ -649,6 +703,7 @@ def validate_spatiotemporal_framework():
                 failures.append(
                     f"sphere media mount {mount.get('id', '<unknown>')} missing {missing_sphere}"
                 )
+            fit_contract = str(mount.get("fit_contract", ""))
             clearance_ratio = float(mount.get("enclosure_clearance_ratio", 0))
             fill_ratio = float(mount.get("inner_void_radius_fill_ratio", 0))
             if clearance_ratio < media.get("minimum_aoa_inner_void_clearance_ratio", 0):
@@ -665,6 +720,42 @@ def validate_spatiotemporal_framework():
                 failures.append(
                     f"sphere media mount {mount.get('id', '<unknown>')} fill does not invert clearance"
                 )
+            if "perfect-insphere" in fit_contract:
+                required_fill = float(
+                    media.get("required_aoa_oarb_inner_void_radius_fill_ratio", 1.0)
+                )
+                if abs(fill_ratio - required_fill) > 0.0001:
+                    failures.append(
+                        f"sphere media mount {mount.get('id', '<unknown>')} is not perfectly fitted"
+                    )
+                if int(mount.get("fractal_depth", 0)) < int(
+                    media.get("minimum_aoa_fractal_depth", 0)
+                ):
+                    failures.append(
+                        f"sphere media mount {mount.get('id', '<unknown>')} below AoA depth"
+                    )
+                if int(mount.get("fractal_face_count", 0)) < int(
+                    media.get("minimum_aoa_fractal_face_count", 0)
+                ):
+                    failures.append(
+                        f"sphere media mount {mount.get('id', '<unknown>')} lacks fractal faces"
+                    )
+                if float(mount.get("leaf_face_edge_units", 0)) < float(
+                    media.get("minimum_aoa_leaf_face_edge_units", 0)
+                ):
+                    failures.append(
+                        f"sphere media mount {mount.get('id', '<unknown>')} has illegible leaf faces"
+                    )
+                if "depth-veil" not in str(mount.get("occlusion_policy", "")):
+                    failures.append(
+                        f"sphere media mount {mount.get('id', '<unknown>')} lacks occlusion policy"
+                    )
+                if "one triangular fractal face per atlas cell" not in str(
+                    mount.get("per_face_surface_atlas", "")
+                ):
+                    failures.append(
+                        f"sphere media mount {mount.get('id', '<unknown>')} lacks face atlas"
+                    )
             physical_width = float(mount.get("physical_radius", 0)) * 2
             if computed_width > 0 and abs(physical_width - computed_width) > max(
                 4.0, computed_width * 0.025
@@ -859,14 +950,14 @@ validate_surface_contracts()
 
 MODE_PRESETS = {
     "rnd": {
-        "wall_tex": "cmp_wall",
-        "floor_tex": "cmp_floor",
-        "ceil_tex": "cmp_ceil",
+        "wall_tex": NO_DRAW_SHELL_TEX,
+        "floor_tex": NO_DRAW_SHELL_TEX,
+        "ceil_tex": NO_DRAW_SHELL_TEX,
         "ramp_tex": "metal5_2",
-        "level_wall_tex": ["cmp_wall", "cmp_wall", "cmp_wall", "cmp_wall", "cmp_wall"],
-        "level_ledge_tex": ["cmp_wall", "cmp_wall", "cmp_wall", "cmp_wall", "cmp_wall"],
+        "level_wall_tex": [NO_DRAW_SHELL_TEX] * 5,
+        "level_ledge_tex": [NO_DRAW_SHELL_TEX] * 5,
         "pedestal_tex": "drift_a",
-        "fog": "0.015 0.10 0.075 0.055",
+        "fog": "0.05 0.04 0.045 0.08",
         "level_light": 285,
         "wall_light": 105,
         "aoa_light_value": 290,
@@ -881,14 +972,14 @@ MODE_PRESETS = {
         "message": "The Screwm [R&D]",
     },
     "research": {
-        "wall_tex": "cmp_wall",
-        "floor_tex": "cmp_floor",
-        "ceil_tex": "cmp_ceil",
+        "wall_tex": NO_DRAW_SHELL_TEX,
+        "floor_tex": NO_DRAW_SHELL_TEX,
+        "ceil_tex": NO_DRAW_SHELL_TEX,
         "ramp_tex": "metal5_2",
-        "level_wall_tex": ["cmp_wall", "cmp_wall", "cmp_wall", "cmp_wall", "cmp_wall"],
-        "level_ledge_tex": ["cmp_wall", "cmp_wall", "cmp_wall", "cmp_wall", "cmp_wall"],
+        "level_wall_tex": [NO_DRAW_SHELL_TEX] * 5,
+        "level_ledge_tex": [NO_DRAW_SHELL_TEX] * 5,
         "pedestal_tex": "drift_c",
-        "fog": "0.014 0.035 0.07 0.10",
+        "fog": "0.05 0.03 0.04 0.07",
         "level_light": 255,
         "wall_light": 90,
         "aoa_light_value": 250,
@@ -1008,6 +1099,122 @@ def box_brush(
     return "{\n" + "\n".join(planes) + "\n}"
 
 
+def line_prism_brush(
+    x1,
+    y1,
+    x2,
+    y2,
+    z1,
+    z2,
+    tex,
+    width=HEX_GRID_LINE_WIDTH,
+    texture_scale=(4, 4),
+    display_face=None,
+):
+    dx = x2 - x1
+    dy = y2 - y1
+    length = math.sqrt(dx * dx + dy * dy)
+    if length < 1:
+        return None
+    nx = -dy / length * (width / 2)
+    ny = dx / length * (width / 2)
+    a = (x1 + nx, y1 + ny)
+    b = (x2 + nx, y2 + ny)
+    c = (x2 - nx, y2 - ny)
+    d = (x1 - nx, y1 - ny)
+
+    def pt(p, z):
+        return (round(p[0], 3), round(p[1], 3), z)
+
+    # face order: [0]=bottom(z1), [1]=top(z2), [2..5]=sides. Per-face texturing so only
+    # the visible display face is luminous; side/back faces skip → the line reads as a
+    # thin luminous edge, never a broad side-ribbon ("beam").
+    skip = NO_DRAW_SHELL_TEX
+    if display_face == "top":
+        ft = [skip, tex, skip, skip, skip, skip]
+    elif display_face == "bottom":
+        ft = [tex, skip, skip, skip, skip, skip]
+    else:
+        ft = [tex, tex, tex, tex, tex, tex]
+    planes = [
+        fmt_plane(pt(a, z1), pt(d, z1), pt(b, z1), ft[0], texture_scale),
+        fmt_plane(pt(a, z2), pt(b, z2), pt(d, z2), ft[1], texture_scale),
+        fmt_plane(pt(a, z1), pt(b, z1), pt(a, z2), ft[2], texture_scale),
+        fmt_plane(pt(b, z1), pt(c, z1), pt(b, z2), ft[3], texture_scale),
+        fmt_plane(pt(c, z1), pt(d, z1), pt(c, z2), ft[4], texture_scale),
+        fmt_plane(pt(d, z1), pt(a, z1), pt(d, z2), ft[5], texture_scale),
+    ]
+    return "{\n" + "\n".join(planes) + "\n}"
+
+
+def ward_glyph_bar(
+    x,
+    y,
+    z,
+    facing,
+    u1,
+    v1,
+    u2,
+    v2,
+    tex,
+    thickness=5,
+    texture_scale=(4, 4),
+    texture_rotation=0,
+    texture_shift=(0, 0),
+    normal_near=1,
+    normal_far=5,
+    edge_tex=MEDIA_RECEIVER_EDGE_TEX,
+):
+    if facing == "x":
+        x0, x1 = offset_span(x, inward_x_normal(x), normal_near, normal_far)
+        y0, y1 = sorted((y + u1, y + u2))
+        z0, z1 = sorted((z + v1, z + v2))
+        if y1 - y0 < thickness:
+            mid = (y0 + y1) / 2
+            y0, y1 = mid - thickness / 2, mid + thickness / 2
+        if z1 - z0 < thickness:
+            mid = (z0 + z1) / 2
+            z0, z1 = mid - thickness / 2, mid + thickness / 2
+        return media_pane_brush(
+            x0,
+            y0,
+            z0,
+            x1,
+            y1,
+            z1,
+            tex,
+            edge_tex,
+            "x_max" if inward_x_normal(x) > 0 else "x_min",
+            texture_scale=texture_scale,
+            texture_rotation=texture_rotation,
+            texture_shift=texture_shift,
+        )
+
+    y0, y1 = offset_span(y, inward_y_normal(y), normal_near, normal_far)
+    x0, x1 = sorted((x + u1, x + u2))
+    z0, z1 = sorted((z + v1, z + v2))
+    if x1 - x0 < thickness:
+        mid = (x0 + x1) / 2
+        x0, x1 = mid - thickness / 2, mid + thickness / 2
+    if z1 - z0 < thickness:
+        mid = (z0 + z1) / 2
+        z0, z1 = mid - thickness / 2, mid + thickness / 2
+    return media_pane_brush(
+        x0,
+        y0,
+        z0,
+        x1,
+        y1,
+        z1,
+        tex,
+        edge_tex,
+        "y_max" if inward_y_normal(y) > 0 else "y_min",
+        texture_scale=texture_scale,
+        texture_rotation=texture_rotation,
+        texture_shift=texture_shift,
+    )
+
+
 def media_pane_brush(
     x1,
     y1,
@@ -1067,18 +1274,9 @@ def media_pane_brush(
         ),
     ]
 
-    opposite_face = {
-        "x_min": "x_max",
-        "x_max": "x_min",
-        "y_min": "y_max",
-        "y_max": "y_min",
-        "z_min": "z_max",
-        "z_max": "z_min",
-    }[front_face]
-
     planes = []
     for face, p1, p2, p3 in plane_defs:
-        if face in (front_face, opposite_face):
+        if face == front_face:
             planes.append(
                 fmt_plane(
                     p1,
@@ -1091,12 +1289,7 @@ def media_pane_brush(
                 )
             )
         else:
-            # Side faces are only Quake's finite brush thickness. Mapping the
-            # same live receiver texture prevents them reading as a separate
-            # physical frame around the ward.
-            planes.append(
-                fmt_plane(p1, p2, p3, live_tex, texture_scale, texture_rotation, texture_shift)
-            )
+            planes.append(fmt_plane(p1, p2, p3, edge_tex, (8, 8), 0, (0, 0)))
     return "{\n" + "\n".join(planes) + "\n}"
 
 
@@ -1521,20 +1714,379 @@ def static_ward_mount_contract(idx, anchor, texture):
 
 def static_ward_surface_texture(domain):
     """Return a neutral geometric surface material for non-media wards."""
-    return DOMAIN_GLOW_TEX.get(domain, "scroom")
+    return "scroom"
+
+
+def ward_mount_is_inherently_rectangular(mount):
+    if not mount:
+        return False
+    return mount.get("mount_kind") in WARD_RECTANGULAR_MOUNT_KINDS
+
+
+def ward_homage_receiver_metrics(w=None, h=None):
+    receiver_w = max(WARD_PURPOSE_RECEIVER_MIN_WIDTH, int(w or WARD_PANE_W))
+    receiver_h = max(WARD_PURPOSE_RECEIVER_MIN_HEIGHT, int(h or WARD_PANE_H))
+    u_scale = receiver_w / WARD_PURPOSE_RECEIVER_BASE_U
+    v_scale = receiver_h / WARD_PURPOSE_RECEIVER_BASE_V
+    thickness = max(
+        18,
+        int(round(min(receiver_w, receiver_h) * WARD_PURPOSE_RECEIVER_THICKNESS_RATIO)),
+    )
+    return receiver_w, receiver_h, u_scale, v_scale, thickness
+
+
+def ward_homage_glyph(idx, anchor, domain, x, y, z, facing, mount=None, w=None, h=None):
+    """Open, purpose-shaped ward receiver derived from ward purpose/domain."""
+    style = WARD_GLYPH_STYLES[domain]
+    segments_by_style = {
+        "spine": [(0, -22, 0, 22), (-12, -2, 12, 2)],
+        "slash-pair": [(-18, -20, -4, 20), (6, -20, 20, 20)],
+        "chevron": [(-20, -18, 0, 0), (0, 0, -20, 18), (8, -18, 26, 0), (26, 0, 8, 18)],
+        "bracket": [(-20, -20, -20, 20), (-20, 20, -6, 20), (6, -20, 20, -20), (20, -20, 20, 20)],
+        "angle": [(-22, -18, 20, 0), (-22, 18, 20, 0), (-10, -8, -10, 8)],
+        "axis": [(-26, 0, 26, 0), (0, -24, 0, 24)],
+        "diamond": [(0, -24, 24, 0), (24, 0, 0, 24), (0, 24, -24, 0), (-24, 0, 0, -24)],
+    }
+    brushes = []
+    glyph_tex = (mount or {}).get("texture") or DOMAIN_GLOW_TEX[domain]
+    texture_transform = (mount or {}).get("texture_transform")
+    texture_size = (mount or {}).get("texture_size")
+    _receiver_w, _receiver_h, u_scale, v_scale, thickness = ward_homage_receiver_metrics(w, h)
+    if glyph_tex == "ward_atlas" and w and h and texture_size:
+        texture_scale = pane_texture_scale(w, h, tuple(texture_size), texture_transform)
+        texture_rotation = pane_texture_rotation(texture_transform)
+        texture_shift = pane_texture_shift(x, y, z, w, h, facing, texture_scale, texture_transform)
+    else:
+        texture_scale = (4, 4)
+        texture_rotation = 0
+        texture_shift = (0, 0)
+
+    for part, (u1, v1, u2, v2) in enumerate(segments_by_style[style], start=1):
+        su1, sv1 = u1 * u_scale, v1 * v_scale
+        su2, sv2 = u2 * u_scale, v2 * v_scale
+        brush = ward_glyph_bar(
+            x,
+            y,
+            z,
+            facing,
+            su1,
+            sv1,
+            su2,
+            sv2,
+            glyph_tex,
+            thickness=thickness,
+            texture_scale=texture_scale,
+            texture_rotation=texture_rotation,
+            texture_shift=texture_shift,
+            normal_near=1,
+            normal_far=5,
+        )
+        if brush:
+            brushes.append(
+                f"// ward-homage-glyph {idx:02d}.{part}: {anchor} {domain} {style} {glyph_tex}\n{brush}"
+            )
+        accent_tex = DOMAIN_GLOW_TEX[domain]
+        accent = ward_glyph_bar(
+            x,
+            y,
+            z,
+            facing,
+            su1,
+            sv1,
+            su2,
+            sv2,
+            accent_tex,
+            thickness=max(6, int(round(thickness * 0.34))),
+            normal_near=6,
+            normal_far=8,
+        )
+        if accent:
+            brushes.append(
+                f"// ward-homage-accent {idx:02d}.{part}: {anchor} {domain} {style} {accent_tex}\n{accent}"
+            )
+    return brushes
+
+
+def hex_vertices(cx, cy, radius):
+    return [
+        (
+            cx + radius * math.cos(math.radians(60 * i)),
+            cy + radius * math.sin(math.radians(60 * i)),
+        )
+        for i in range(6)
+    ]
+
+
+def clip_segment_to_scroom_bounds(x1, y1, x2, y2):
+    """Clip an XY line segment to the visible interior shell bounds."""
+    xmin, xmax, ymin, ymax = SCROOM_GRID_BOUNDS
+    dx = x2 - x1
+    dy = y2 - y1
+    u1 = 0.0
+    u2 = 1.0
+    for p, q in (
+        (-dx, x1 - xmin),
+        (dx, xmax - x1),
+        (-dy, y1 - ymin),
+        (dy, ymax - y1),
+    ):
+        if p == 0:
+            if q < 0:
+                return None
+            continue
+        t = q / p
+        if p < 0:
+            if t > u2:
+                return None
+            u1 = max(u1, t)
+        else:
+            if t < u1:
+                return None
+            u2 = min(u2, t)
+
+    clipped = (x1 + u1 * dx, y1 + u1 * dy, x1 + u2 * dx, y1 + u2 * dy)
+    clipped_dx = clipped[2] - clipped[0]
+    clipped_dy = clipped[3] - clipped[1]
+    if math.sqrt(clipped_dx * clipped_dx + clipped_dy * clipped_dy) < HEX_GRID_LINE_WIDTH * 2:
+        return None
+    return tuple(round(value, 3) for value in clipped)
+
+
+def append_wall_grid_and_stipple(brushes):
+    """Sparse wall grid/stipple carriers, kept wall-bound and visually light."""
+    side_y_min = ROOM_Y_MIN + WALL_THICK + 170
+    side_y_max = ROOM_Y_MAX - WALL_THICK - 170
+    end_x_min = -EXT + WALL_THICK + 190
+    end_x_max = EXT - WALL_THICK - 190
+    z_min = FLOOR_Z + 190
+    z_max = CEIL_Z - 190
+    left_x1 = -EXT + WALL_THICK + 1
+    left_x2 = left_x1 + WALL_GRID_LINE_DEPTH
+    right_x2 = EXT - WALL_THICK - 1
+    right_x1 = right_x2 - WALL_GRID_LINE_DEPTH
+    front_y1 = ROOM_Y_MIN + WALL_THICK + 1
+    front_y2 = front_y1 + WALL_GRID_LINE_DEPTH
+    back_y2 = ROOM_Y_MAX - WALL_THICK - 1
+    back_y1 = back_y2 - WALL_GRID_LINE_DEPTH
+    horizontal_z = []
+    z = FLOOR_Z + HEX_GRID_RADIUS
+    while z < CEIL_Z - HEX_GRID_RADIUS * 0.45:
+        horizontal_z.append(int(z))
+        z += HEX_GRID_RADIUS
+    side_y_lines = [
+        ROOM_Y_MIN + 520,
+        AOA_Y - HEX_GRID_RADIUS,
+        AOA_Y,
+        AOA_Y + HEX_GRID_RADIUS,
+        ROOM_Y_MAX - 520,
+    ]
+    end_x_lines = [-1536, -768, 0, 768, 1536]
+    count = 0
+
+    for z in horizontal_z:
+        for label, x1, x2 in (("left", left_x1, left_x2), ("right", right_x1, right_x2)):
+            beam = box_brush(
+                x1,
+                side_y_min,
+                z - WALL_GRID_LINE_WIDTH // 2,
+                x2,
+                side_y_max,
+                z + WALL_GRID_LINE_WIDTH // 2,
+                HEX_GRID_WALL_TEX,
+                texture_scale=(8, 8),
+            )
+            if beam:
+                count += 1
+                brushes.append(f"// scroom-wall-grid-{label}-h {count:03d}\n{beam}")
+        for label, y1, y2 in (("entry", front_y1, front_y2), ("far", back_y1, back_y2)):
+            beam = box_brush(
+                end_x_min,
+                y1,
+                z - WALL_GRID_LINE_WIDTH // 2,
+                end_x_max,
+                y2,
+                z + WALL_GRID_LINE_WIDTH // 2,
+                HEX_GRID_WALL_TEX,
+                texture_scale=(8, 8),
+            )
+            if beam:
+                count += 1
+                brushes.append(f"// scroom-wall-grid-{label}-h {count:03d}\n{beam}")
+
+    for y in side_y_lines:
+        for label, x1, x2 in (("left", left_x1, left_x2), ("right", right_x1, right_x2)):
+            beam = box_brush(
+                x1,
+                y - WALL_GRID_LINE_WIDTH // 2,
+                z_min,
+                x2,
+                y + WALL_GRID_LINE_WIDTH // 2,
+                z_max,
+                HEX_GRID_WALL_TEX,
+                texture_scale=(8, 8),
+            )
+            if beam:
+                count += 1
+                brushes.append(f"// scroom-wall-grid-{label}-v {count:03d}\n{beam}")
+
+    for x in end_x_lines:
+        for label, y1, y2 in (("entry", front_y1, front_y2), ("far", back_y1, back_y2)):
+            beam = box_brush(
+                x - WALL_GRID_LINE_WIDTH // 2,
+                y1,
+                z_min,
+                x + WALL_GRID_LINE_WIDTH // 2,
+                y2,
+                z_max,
+                HEX_GRID_WALL_TEX,
+                texture_scale=(8, 8),
+            )
+            if beam:
+                count += 1
+                brushes.append(f"// scroom-wall-grid-{label}-v {count:03d}\n{beam}")
+
+    for idx in range(24):
+        z = FLOOR_Z + 180 + (idx * 241) % max(1, CEIL_Z - FLOOR_Z - 360)
+        y = side_y_min + (idx * 421) % max(1, side_y_max - side_y_min)
+        for label, x1, x2 in (("left", left_x1, left_x2), ("right", right_x1, right_x2)):
+            dot = box_brush(
+                x1,
+                y - WALL_STIPPLE_DOT_SIZE,
+                z - WALL_STIPPLE_DOT_SIZE,
+                x2,
+                y + WALL_STIPPLE_DOT_SIZE,
+                z + WALL_STIPPLE_DOT_SIZE,
+                STIPPLE_WALL_TEX,
+                texture_scale=(8, 8),
+            )
+            if dot:
+                brushes.append(f"// scroom-wall-stipple-{label} {idx:02d}\n{dot}")
+
+        x = end_x_min + (idx * 557) % max(1, end_x_max - end_x_min)
+        for label, y1, y2 in (("entry", front_y1, front_y2), ("far", back_y1, back_y2)):
+            dot = box_brush(
+                x - WALL_STIPPLE_DOT_SIZE,
+                y1,
+                z - WALL_STIPPLE_DOT_SIZE,
+                x + WALL_STIPPLE_DOT_SIZE,
+                y2,
+                z + WALL_STIPPLE_DOT_SIZE,
+                STIPPLE_WALL_TEX,
+                texture_scale=(8, 8),
+            )
+            if dot:
+                brushes.append(f"// scroom-wall-stipple-{label} {idx:02d}\n{dot}")
+
+
+def scroom_hex_grid_and_stipple(_preset):
+    """Floor/ceiling alignment substrate: low-opacity hex grid plus sparse stipple."""
+    brushes = []
+    seen_edges = set()
+    row = 0
+    hex_height = math.sqrt(3) * HEX_GRID_RADIUS
+    x_spacing = 1.5 * HEX_GRID_RADIUS
+    y_spacing = hex_height
+    min_col = -4
+    max_col = 4
+    min_row = -4
+    max_row = 4
+
+    for q in range(min_col, max_col + 1):
+        for r in range(min_row, max_row + 1):
+            cx = AOA_X + q * x_spacing
+            cy = AOA_Y + (r + q * 0.5) * y_spacing
+            if cx < -EXT - HEX_GRID_RADIUS or cx > EXT + HEX_GRID_RADIUS:
+                continue
+            if cy < ROOM_Y_MIN - HEX_GRID_RADIUS or cy > ROOM_Y_MAX + HEX_GRID_RADIUS:
+                continue
+            verts = hex_vertices(cx, cy, HEX_GRID_RADIUS)
+            for a, b in zip(verts, verts[1:] + verts[:1], strict=True):
+                key = tuple(
+                    sorted(
+                        (
+                            (round(a[0], 1), round(a[1], 1)),
+                            (round(b[0], 1), round(b[1], 1)),
+                        )
+                    )
+                )
+                if key in seen_edges:
+                    continue
+                clipped = clip_segment_to_scroom_bounds(a[0], a[1], b[0], b[1])
+                if not clipped:
+                    continue
+                seen_edges.add(key)
+                x1, y1, x2, y2 = clipped
+                floor_line = line_prism_brush(
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    FLOOR_Z + 1,
+                    FLOOR_Z + 1 + HEX_GRID_LINE_DEPTH,
+                    HEX_GRID_FLOOR_TEX,
+                    width=HEX_GRID_LINE_WIDTH,
+                    texture_scale=(8, 8),
+                    display_face="top",
+                )
+                ceil_line = line_prism_brush(
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    CEIL_Z - 1 - HEX_GRID_LINE_DEPTH,
+                    CEIL_Z - 1,
+                    HEX_GRID_CEIL_TEX,
+                    width=HEX_GRID_LINE_WIDTH,
+                    texture_scale=(8, 8),
+                    display_face="bottom",
+                )
+                if floor_line:
+                    brushes.append(f"// scroom-hex-floor-line {len(seen_edges):03d}\n{floor_line}")
+                if ceil_line:
+                    brushes.append(f"// scroom-hex-ceiling-line {len(seen_edges):03d}\n{ceil_line}")
+            row += 1
+
+    stipple_points = []
+    for i in range(34):
+        x = -1800 + (i * 397) % 3600
+        y = ROOM_Y_MIN + 240 + (i * 593) % (ROOM_Y_MAX - ROOM_Y_MIN - 480)
+        if abs(x - AOA_X) < HEX_GRID_RADIUS * 0.48 and abs(y - AOA_Y) < HEX_GRID_RADIUS * 0.48:
+            continue
+        stipple_points.append((x, y))
+    for idx, (x, y) in enumerate(stipple_points, start=1):
+        floor_dot = box_brush(
+            x - STIPPLE_DOT_SIZE,
+            y - STIPPLE_DOT_SIZE,
+            FLOOR_Z + 1,
+            x + STIPPLE_DOT_SIZE,
+            y + STIPPLE_DOT_SIZE,
+            FLOOR_Z + 3,
+            STIPPLE_FLOOR_TEX,
+            texture_scale=(8, 8),
+        )
+        ceil_dot = box_brush(
+            x - STIPPLE_DOT_SIZE,
+            y - STIPPLE_DOT_SIZE,
+            CEIL_Z - 3,
+            x + STIPPLE_DOT_SIZE,
+            y + STIPPLE_DOT_SIZE,
+            CEIL_Z - 1,
+            STIPPLE_CEIL_TEX,
+            texture_scale=(8, 8),
+        )
+        if floor_dot:
+            brushes.append(f"// scroom-stipple-floor-dot {idx:02d}\n{floor_dot}")
+        if ceil_dot:
+            brushes.append(f"// scroom-stipple-ceiling-dot {idx:02d}\n{ceil_dot}")
+
+    append_wall_grid_and_stipple(brushes)
+    return brushes
 
 
 def sealed_room(preset):
     brushes = []
-    floor_contract = SURFACE_CONTRACTS_BY_ROLE["floor"]
-    ceiling_contract = SURFACE_CONTRACTS_BY_ROLE["ceiling"]
-    wall_contract = SURFACE_CONTRACTS_BY_ROLE["wall"]
-    ft = floor_contract["texture"]
-    ct = ceiling_contract["texture"]
-    wt = wall_contract["texture"]
-    floor_scale = tuple(floor_contract.get("texture_scale", [4, 4]))
-    ceiling_scale = tuple(ceiling_contract.get("texture_scale", [4, 4]))
-    wall_scale = tuple(wall_contract.get("texture_scale", [4, 4]))
+    ft = ct = wt = NO_DRAW_SHELL_TEX
+    floor_scale = ceiling_scale = wall_scale = (16, 16)
     brushes.append(
         box_brush(
             -EXT,
@@ -1642,28 +2194,30 @@ def ward_review_panes(_preset):
         facing = ward_garden_facing(idx)
         domain = ward_domain(idx)
         glow_tex = DOMAIN_GLOW_TEX[domain]
-        tex = mount["texture"] if mount else static_ward_surface_texture(domain)
-        texture_size = tuple(int(v) for v in mount["texture_size"]) if mount else (64, 64)
-        texture_transform = mount.get("texture_transform") if mount else None
-        mount_contract = mount or static_ward_mount_contract(idx, anchor, tex)
-        brushes.extend(
-            framed_garden_pane(
-                "ward-garden-pane",
-                idx,
-                anchor,
-                tex,
-                glow_tex,
-                x,
-                y,
-                z,
-                w,
-                h,
-                facing,
-                texture_size,
-                texture_transform,
-                mount_contract,
+        if ward_mount_is_inherently_rectangular(mount):
+            tex = mount["texture"]
+            texture_size = tuple(int(v) for v in mount["texture_size"])
+            texture_transform = mount.get("texture_transform")
+            brushes.extend(
+                framed_garden_pane(
+                    "ward-garden-pane",
+                    idx,
+                    anchor,
+                    tex,
+                    glow_tex,
+                    x,
+                    y,
+                    z,
+                    w,
+                    h,
+                    facing,
+                    texture_size,
+                    texture_transform,
+                    mount,
+                )
             )
-        )
+        else:
+            brushes.extend(ward_homage_glyph(idx, anchor, domain, x, y, z, facing, mount, w, h))
         brushes.extend(ward_state_lamp(idx, anchor, glow_tex, x, y, z, w, h, facing))
 
     return brushes
@@ -1691,6 +2245,11 @@ def scroom_material_field(_preset):
 
 def scroom_room_grid(_preset):
     """No room-grid backing behind wards in the clean receiver baseline."""
+    return []
+
+
+def scroom_drift_receiver_strips(_preset):
+    """Disabled: drift receiver evidence must be carried by the shell/grid geometry."""
     return []
 
 
@@ -1890,6 +2449,28 @@ def lights(preset):
             f'"_color" "{ar} {ag} {ab}"\n'
             "}"
         )
+
+    scroom_keys = [
+        ("scroom-key-light-entry", (0, ROOM_Y_MIN + 330, 520), 720, (0.68, 0.78, 1.00)),
+        ("scroom-key-light-aoa-core", (AOA_X, AOA_Y - 42, AOA_Z + 38), 620, (1.00, 0.72, 0.42)),
+        ("scroom-rim-light-aoa-left", (-620, AOA_Y - 110, 360), 420, (0.45, 0.95, 0.95)),
+        ("scroom-rim-light-aoa-right", (620, AOA_Y - 110, 360), 420, (1.00, 0.44, 0.70)),
+        ("scroom-grid-floor-graze", (0, AOA_Y - 760, FLOOR_Z + 58), 520, (0.86, 0.70, 0.42)),
+        ("scroom-grid-ceiling-graze", (0, AOA_Y - 760, CEIL_Z - 84), 520, (0.52, 0.86, 1.00)),
+        ("scroom-left-wall-wash", (-EXT + 180, AOA_Y - 360, 412), 420, (0.40, 0.86, 1.00)),
+        ("scroom-right-wall-wash", (EXT - 180, AOA_Y - 360, 412), 420, (1.00, 0.44, 0.70)),
+        ("scroom-back-wall-return", (0, ROOM_Y_MAX - 360, 420), 360, (0.56, 0.92, 0.46)),
+    ]
+    for name, (x, y, z), value, (r, g, b) in scroom_keys:
+        entities.append(
+            f"// {name}\n"
+            "{\n"
+            '"classname" "light"\n'
+            f'"origin" "{x} {y} {z}"\n'
+            f'"light" "{value}"\n'
+            f'"_color" "{r} {g} {b}"\n'
+            "}"
+        )
     return entities
 
 
@@ -2027,6 +2608,8 @@ def generate_map(preset):
         + sectioned_brushes("scroom-scene-graph-bands", scroom_scene_graph_bands(preset))
         + sectioned_brushes("scroom-material-field", scroom_material_field(preset))
         + sectioned_brushes("scroom-room-grid", scroom_room_grid(preset))
+        + sectioned_brushes("scroom-hex-alignment-substrate", scroom_hex_grid_and_stipple(preset))
+        + sectioned_brushes("scroom-drift-receiver-strips", scroom_drift_receiver_strips(preset))
         + sectioned_brushes("scroom-local-effect-lenses", scroom_local_effect_lenses(preset))
         + sectioned_brushes("ward-depth-echo-planes", ward_depth_echo_panes(preset))
         + sectioned_brushes("ward-garden-clumps", ward_review_panes(preset))

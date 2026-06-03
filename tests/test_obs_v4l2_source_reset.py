@@ -847,6 +847,128 @@ class TestMonitorLoop:
         assert [call.kwargs["scene_item_enabled"] for call in calls] == [False, True]
         assert 'hapax_obs_v4l2_source_health{state="reconnected"} 1' in prom_path.read_text()
 
+    def test_obs_log_timeout_does_not_reset_while_screenshots_are_live(
+        self,
+        reset_mod: types.ModuleType,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client = MagicMock()
+        client.get_source_active.return_value = MagicMock(video_active=True)
+        client.get_source_screenshot.return_value = MagicMock(image_data="fresh-frame")
+        client.get_current_program_scene.return_value = MagicMock(scene_name="Scene")
+        client.get_scene_item_list.return_value = MagicMock(
+            scene_items=[{"sourceName": "Video Capture Device (V4L2)", "sceneItemId": 52}]
+        )
+        prom_path = tmp_path / "reset.prom"
+        status_path = tmp_path / "status.json"
+        monkeypatch.setattr(reset_mod, "_connect", lambda _host, _port: client)
+        monkeypatch.setattr(reset_mod, "_send_ntfy", lambda _reason: None)
+        monkeypatch.setattr(reset_mod, "STATUS_PATH", status_path)
+        monkeypatch.setattr(reset_mod, "STATUS_DIR", tmp_path)
+        monkeypatch.setattr(reset_mod, "_shutdown", False)
+        monkeypatch.setattr(reset_mod.time, "monotonic", lambda: 100.0)
+        monkeypatch.setattr(
+            reset_mod,
+            "_scan_obs_log_v4l2_errors",
+            lambda cursor, **_kwargs: (
+                cursor,
+                f"{reset_mod.OBS_LOG_V4L2_TIMEOUT_PREFIX}/dev/video52",
+            ),
+        )
+
+        def stop_after_sleep(_seconds: float) -> None:
+            monkeypatch.setattr(reset_mod, "_shutdown", True)
+
+        monkeypatch.setattr(reset_mod.time, "sleep", stop_after_sleep)
+
+        try:
+            reset_mod.monitor_loop(
+                host="localhost",
+                port=4455,
+                source_name="Video Capture Device (V4L2)",
+                poll_interval=0.01,
+                stall_threshold=30.0,
+                reset_cooldown=60.0,
+                metrics_path=prom_path,
+                obs_log_dir=tmp_path,
+                obs_log_device_id="/dev/video52",
+            )
+        finally:
+            monkeypatch.setattr(reset_mod, "_shutdown", False)
+
+        status = json.loads(status_path.read_text())
+        assert status["state"] == "healthy"
+        assert status["reset_count"] == 0
+        assert status["reason"] is None
+        client.set_scene_item_enabled.assert_not_called()
+
+    def test_obs_log_timeout_does_not_bypass_visual_stall_threshold(
+        self,
+        reset_mod: types.ModuleType,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client = MagicMock()
+        client.get_current_program_scene.return_value = MagicMock(scene_name="Scene")
+        client.get_scene_item_list.return_value = MagicMock(
+            scene_items=[{"sourceName": "Video Capture Device (V4L2)", "sceneItemId": 52}]
+        )
+        prom_path = tmp_path / "reset.prom"
+        status_path = tmp_path / "status.json"
+        monkeypatch.setattr(reset_mod, "_connect", lambda _host, _port: client)
+        monkeypatch.setattr(reset_mod, "_send_ntfy", lambda _reason: None)
+        monkeypatch.setattr(reset_mod, "STATUS_PATH", status_path)
+        monkeypatch.setattr(reset_mod, "STATUS_DIR", tmp_path)
+        monkeypatch.setattr(reset_mod, "_shutdown", False)
+        monkeypatch.setattr(reset_mod.time, "monotonic", lambda: 100.0)
+        monkeypatch.setattr(
+            reset_mod,
+            "_probe_source",
+            lambda *_args, **_kwargs: reset_mod.ProbeResult(
+                state=reset_mod.SourceState.STALLED,
+                source_active=True,
+                screenshot_hash="unchanged",
+                screenshot_available=True,
+                stall_seconds=10.0,
+                reason="screenshot_hash_unchanged",
+            ),
+        )
+        monkeypatch.setattr(
+            reset_mod,
+            "_scan_obs_log_v4l2_errors",
+            lambda cursor, **_kwargs: (
+                cursor,
+                f"{reset_mod.OBS_LOG_V4L2_TIMEOUT_PREFIX}/dev/video52",
+            ),
+        )
+
+        def stop_after_sleep(_seconds: float) -> None:
+            monkeypatch.setattr(reset_mod, "_shutdown", True)
+
+        monkeypatch.setattr(reset_mod.time, "sleep", stop_after_sleep)
+
+        try:
+            reset_mod.monitor_loop(
+                host="localhost",
+                port=4455,
+                source_name="Video Capture Device (V4L2)",
+                poll_interval=0.01,
+                stall_threshold=30.0,
+                reset_cooldown=60.0,
+                metrics_path=prom_path,
+                obs_log_dir=tmp_path,
+                obs_log_device_id="/dev/video52",
+            )
+        finally:
+            monkeypatch.setattr(reset_mod, "_shutdown", False)
+
+        status = json.loads(status_path.read_text())
+        assert status["state"] == "healthy"
+        assert status["reset_count"] == 0
+        assert status["reason"] == "screenshot_hash_unchanged"
+        client.set_scene_item_enabled.assert_not_called()
+
     def test_reset_cooldown_blocks_second_reconnect(
         self,
         reset_mod: types.ModuleType,
@@ -1326,7 +1448,7 @@ class TestMonitorLoop:
         calls = client.set_scene_item_enabled.call_args_list
         assert [call.kwargs["scene_item_enabled"] for call in calls] == [False, True]
 
-    def test_repeated_self_recovered_log_timeouts_reset_across_polls(
+    def test_repeated_self_recovered_log_timeouts_do_not_reset_live_screenshots(
         self,
         reset_mod: types.ModuleType,
         tmp_path: Path,
@@ -1334,7 +1456,10 @@ class TestMonitorLoop:
     ) -> None:
         client = MagicMock()
         client.get_source_active.return_value = MagicMock(video_active=True)
-        client.get_source_screenshot.return_value = MagicMock(image_data="same-frame")
+        client.get_source_screenshot.side_effect = [
+            MagicMock(image_data="frame-a"),
+            MagicMock(image_data="frame-b"),
+        ]
         client.get_current_program_scene.return_value = MagicMock(scene_name="Scene")
         client.get_scene_item_list.return_value = MagicMock(
             scene_items=[{"sourceName": "Video Capture Device (V4L2)", "sceneItemId": 366}]
@@ -1415,8 +1540,7 @@ class TestMonitorLoop:
             monkeypatch.setattr(reset_mod, "_shutdown", False)
 
         status = json.loads(status_path.read_text())
-        assert status["state"] == "reconnected"
-        assert status["reason"] == "obs_log_v4l2_timeout:/dev/video50"
-        assert status["reset_count"] == 1
-        calls = client.set_scene_item_enabled.call_args_list
-        assert [call.kwargs["scene_item_enabled"] for call in calls] == [False, True]
+        assert status["state"] == "healthy"
+        assert status["reason"] is None
+        assert status["reset_count"] == 0
+        client.set_scene_item_enabled.assert_not_called()

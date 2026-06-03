@@ -375,12 +375,13 @@ void main(void)
 #endif
 
 #ifdef USEPOSTPROCESSING
-// Screwm/Scroom post-processing — entity-local drift/compositing field.
+	// Screwm/Scroom diagnostic post-processing — screen-space shader canary.
+	// Release-grade expression is geometry-bound in CSQC; this path is opt-in.
 // UserVec1: x=room_absorption, y=prismatic_drift, z=temperature_bias, w=dust
 // UserVec2: x=signal_aura, y=edge_glow, z=posterize_levels, w=sharpen
 // UserVec3: x=spatial_warp, y=signal_noise, z=halftone_size, w=threshold
 // UserVec4: x=surface_emboss/kaleidoscope, y=invert_mix, z=circular_mask_r, w=thermal_mix
-// Effects run unconditionally — UserVec uniforms always available
+	// Effects run when r_glsl_postprocess is explicitly enabled.
 	vec2 uv = TexCoord1.xy;
 	vec2 px = PixelSize;
 
@@ -423,9 +424,8 @@ void main(void)
 	float signal_luma = dot(color, vec3(0.299, 0.587, 0.114));
 	float signal_presence = smoothstep(0.01, 0.12, signal_luma);
 
-	// Entity-field chroma drift. This is the DarkPlaces side of the aggregate:
-	// a subtle compositor-like separation that binds BSP, MDL, and live media
-	// into one field instead of leaving Quake textures visually sovereign.
+		// Diagnostic chroma drift over the rendered frame. Keep disabled for
+		// normal Screwm witnesses; geometry receivers carry live expression.
 	float drift_phase = ClientTime * 0.11;
 	vec2 drift_dir = normalize(vec2(sin(drift_phase + uv.y * 4.0), cos(drift_phase + uv.x * 3.0)));
 	float drift_amt = clamp(UserVec1.y * 0.0048 + UserVec3.y * 0.014, 0.0, 0.018);
@@ -447,11 +447,8 @@ void main(void)
 	vec3 feedback_tint = feedback_a * vec3(0.60, 1.02, 1.18) + feedback_b * vec3(1.10, 0.54, 0.92);
 	color = mix(color, max(color, feedback_tint * 0.68), feedback_str);
 
-	// All effects operate on the WORLD, not the camera.
-	// Lens-origin effects reframed as spatial phenomena.
-
-	// 1. Entity absorption. No camera vignette or fourth-wall fog: absorption
-	// binds only to nonblack world/media signal.
+		// 1. Signal absorption. This remains screen-space, so it must not be
+		// used as release evidence even when signal-bound.
 	float atmo_str = UserVec1.x;
 	vec3 absorption_tint = mix(vec3(0.80, 0.92, 1.04), vec3(1.04, 0.78, 1.02), smoothstep(0.05, 0.95, uv.x));
 	color = mix(color, color * absorption_tint, clamp(atmo_str * 0.20 * signal_presence, 0.0, 0.18));
@@ -2182,7 +2179,26 @@ SHADESPECULAR(SpecularPower * glosstex.a)
    color.rgb *= clamp(float(visiblepixels) / float(allpixels), 0.0, 1.0);
 #endif
 
-	dp_FragColor = vec4(color);
+#ifdef USEHAPAXDRIFT
+	// (hapax) GPU world-surface drift stage — luma-preserving chroma rotation
+	// anchored to the surface UV (TexCoord), so it is welded to geometry and does
+	// NOT swim with the camera (never a fourth-wall overlay). P1 smoke proof is a
+	// static UV hue; time-transit follows via the HapaxDrift_Currency uniform.
+	{
+		float hpx_luma = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+		float hpx_phase = TexCoord.x * 6.2831853 + TexCoord.y * 4.1;
+		vec3 hpx_chroma = color.rgb - vec3(hpx_luma);
+		float hpx_c = cos(hpx_phase);
+		float hpx_s = sin(hpx_phase) * 0.57735;
+		vec3 hpx_rot = vec3(
+			hpx_chroma.r * hpx_c + (hpx_chroma.g - hpx_chroma.b) * hpx_s,
+			hpx_chroma.g * hpx_c + (hpx_chroma.b - hpx_chroma.r) * hpx_s,
+			hpx_chroma.b * hpx_c + (hpx_chroma.r - hpx_chroma.g) * hpx_s);
+		color.rgb = mix(vec3(0.05, 0.9, 0.35), vec3(0.95, 0.15, 0.85), abs(step(0.5, fract(TexCoord.x * 8.0)) - step(0.5, fract(TexCoord.y * 8.0)))); // DEBUG P1: stark UV checker to confirm activation+anchoring
+	}
+#endif
+
+	dp_FragColor = vec4(0.0, 1.0, 0.0, color.a); // DEBUG: unconditional green — tests whether this override is loaded at all (CRC match)
 }
 #endif // FRAGMENT_SHADER
 

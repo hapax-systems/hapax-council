@@ -42,6 +42,13 @@ def _assert_unified_patch_hunk_counts(patch_text: str) -> None:
             old_count = 0
             new_count = 0
             continue
+        if line.startswith("diff --git "):
+            # File boundary in a multi-file patch: finalize the previous file's
+            # last hunk and stop counting so the following index/---/+++ headers
+            # are not mistaken for hunk body lines.
+            assert_current_hunk()
+            current_header = ""
+            continue
         if not current_header:
             continue
         if line.startswith("\\"):
@@ -124,20 +131,22 @@ def test_screwm_quake_homage_package_is_registered_and_exported_to_engine() -> N
     assert "### D9: QuakeHomage Package [COMPLETE]" in spec
 
 
-def test_screwm_shader_effects_are_unconditional_scroom_fields() -> None:
+def test_screwm_shader_effects_are_diagnostic_screen_space_only() -> None:
     shader_path = REPO_ROOT / "assets" / "quake" / "glsl" / "combined_crc59807.glsl"
     crc_shader_path = REPO_ROOT / "assets" / "quake" / "glsl" / "combined_crc27804.glsl"
     assert crc_shader_path.read_text(encoding="utf-8") == shader_path.read_text(encoding="utf-8")
     shader = shader_path.read_text(encoding="utf-8")
-    start = shader.index("Screwm/Scroom post-processing")
+    start = shader.index("Screwm/Scroom diagnostic post-processing")
     end = shader.index("#ifdef USEBLOOM", start)
     postprocess_block = shader[start:end]
 
     assert "#if defined(USERVEC" not in postprocess_block
-    assert "Screwm/Scroom post-processing" in postprocess_block
-    assert "Effects run unconditionally" in postprocess_block
-    assert "All effects operate on the WORLD" in postprocess_block
-    assert "entity-local drift/compositing field" in postprocess_block
+    assert "Screwm/Scroom diagnostic post-processing" in postprocess_block
+    assert "screen-space shader canary" in postprocess_block
+    assert "Release-grade expression is geometry-bound" in postprocess_block
+    assert "Effects run when r_glsl_postprocess is explicitly enabled" in postprocess_block
+    assert "All effects operate on the WORLD" not in postprocess_block
+    assert "entity-local drift/compositing field" not in postprocess_block
     assert "Signal-bound aura" in postprocess_block
     assert "signal_presence" in postprocess_block
     assert "gl_FragCoord" not in postprocess_block
@@ -176,7 +185,15 @@ def test_screwm_effect_modes_are_family_gated_before_reaching_shader() -> None:
     coupling = (REPO_ROOT / "assets" / "quake" / "qc" / "coupling.qc").read_text(encoding="utf-8")
 
     assert "if (coupling_apply_effect_review_preset())\n        return;" not in coupling
+    assert "coupling_screen_postprocess_enabled" in coupling
+    assert "coupling_clear_screen_postprocess" in coupling
+    assert 'cvar_set("r_glsl_postprocess", "0")' in coupling
     assert "coupling_effect_review_preset >= 6.5" in coupling
+    assert "release-grade Screwm expression" in coupling
+    assert "coupling_effect_review_preset >= 3.5 && coupling_effect_review_preset < 4.5" in coupling
+    assert "halftone_val = 7;" in coupling
+    assert "emboss_val = 0.36;" in coupling
+    assert "threshold_val = 0.13;" in coupling
     assert "float mode_temporal = coupling_effect_mode_temporal;" in coupling
     assert "float mode_compositing = coupling_effect_mode_compositing;" in coupling
     assert "if (temporal_signal <= 0.01)" in coupling
@@ -189,8 +206,14 @@ def test_screwm_density_grounding_feeds_spatial_drift_baseline() -> None:
     coupling = (REPO_ROOT / "assets" / "quake" / "qc" / "coupling.qc").read_text(encoding="utf-8")
 
     assert "float coupling_effect_drift_density;" in coupling
+    assert "float coupling_effect_drift_density_currency;" in coupling
     assert 'coupling_read_float("data/effect-drift-density.txt", 0)' in coupling
+    assert 'coupling_read_float("data/effect-drift-density-currency.txt", 0)' in coupling
     assert "float density_grounding = coupling_clamp_range(" in coupling
+    assert (
+        "coupling_max2(coupling_effect_drift_density * 1.6, coupling_effect_drift_density_currency * 1.25)"
+        in coupling
+    )
     assert "+ density_grounding + coupling_visual_chain_param_pressure" in coupling
     assert "fog_density = 0.008 - coupling_energy" in coupling
     assert "coupling_effect_drift_density * fog_density" not in coupling
@@ -216,10 +239,11 @@ def test_darkplaces_fork_patch_uploads_live_media_into_world_textures() -> None:
     )
 
     _assert_unified_patch_hunk_counts(patch)
-    assert "HAPAX_LIVE_TEXTURE_SLOT_COUNT 13" in patch
+    assert "HAPAX_LIVE_TEXTURE_SLOT_COUNT 14" in patch
     assert "hapax_live_texture_name" in patch
     assert "hapax_live_texture7_name" in patch
     assert '"progs/aoa_sphere.mdl_0"' in patch
+    assert '"progs/aoa.mdl_0"' in patch
     assert '"2048"' in patch
     assert '"1024"' in patch
     assert '"1280"' in patch
@@ -238,6 +262,7 @@ def test_darkplaces_fork_patch_uploads_live_media_into_world_textures() -> None:
     assert '"speech_wave"' in patch
     assert "quake-live-reverie.bgra" in patch
     assert "quake-live-speech-wave.bgra" in patch
+    assert "quake-live-aoa-atlas.bgra" in patch
     assert "quake-live-ticker-grounding.bgra" in patch
     assert "quake-live-ticker-precedent.bgra" in patch
     assert "quake-live-ticker-chronicle.bgra" in patch
@@ -256,6 +281,10 @@ def test_darkplaces_fork_patch_uploads_live_media_into_world_textures() -> None:
     assert "stat(path, &st)" in patch
     assert "st.st_mtim.tv_nsec" in patch
     assert "state->uploaded && state->file_size == st.st_size" in patch
+    assert 'R_HapaxLiveTexture_Debug("disabled"' in patch
+    assert 'R_HapaxLiveTexture_Debug("slot-active"' in patch
+    assert 'R_HapaxLiveTexture_Debug("alloc-failed"' in patch
+    assert 'strcmp(name, "progs/aoa.mdl_0")' in patch
     assert "R_HapaxLiveTexture_ApplyGain" not in patch
     assert "0.36f" not in patch
     assert "R_UpdateTexture(texture, state->pixels" in patch
@@ -332,6 +361,11 @@ def test_screwm_media_drift_batches_slot_readback() -> None:
     assert "read_producer_raw_sidecar(&self.last_producer_sidecar_path)" in source
     assert "fn finish_readback(" in source
     assert "queue.submit(commands)" in source
+    assert "prev_tex: wgpu::Texture" in source
+    assert 'label: Some("media-drift previous")' in source
+    assert "binding: 3" in source
+    assert 'label: Some("media-drift clear previous")' in source
+    assert "enc.copy_texture_to_texture(" in source
     assert ".map_async(wgpu::MapMode::Read" in source
     assert "device.poll(wgpu::Maintain::Wait)" in source
     assert source.count("device.poll(wgpu::Maintain::Wait)") == 1
@@ -371,6 +405,9 @@ def test_screwm_ward_atlas_reuses_media_drift_inline_without_runtime_flip() -> N
     assert "inline_drift" in source
     assert "drift_state_intensity" in source
     assert "ward-atlas inline media-drift pass" in source
+    assert "drift_prev_tex" in source
+    assert "ward-atlas clear media-drift previous" in source
+    assert "TextureView(&drift_prev_view)" in source
     assert "HAPAX_WARD_ATLAS_ACTIVE_SLOTS=ward-atlas" not in source
     assert "systemctl" not in source
 
@@ -400,25 +437,77 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
     assert mounts["aoa-media-sphere"]["name"] == "OARB"
     assert mounts["aoa-media-sphere"]["expanded_name"] == "Ocular Attention Representation Ball"
     assert mounts["aoa-media-sphere"]["projection"] == "sphere-front"
+    assert mounts["aoa-media-sphere"]["gpu_drift_intensity"] == 1.6
     assert mounts["aoa-media-sphere"]["projection_contract"] == "oarb_sphere_front_aspect_v2"
     assert mounts["aoa-media-sphere"]["texture_size"] == [2048, 1024]
     assert mounts["aoa-media-sphere"]["native_resolution"] == [2048, 1024]
     assert mounts["aoa-media-sphere"]["liveness_class"] == "live-public-media"
     assert mounts["aoa-media-sphere"]["mount_kind"] == "live-object-of-attention-sphere"
     assert mounts["aoa-media-sphere"]["hybrid_contract"]["memory_format"] == "BGRA8888"
-    assert mounts["aoa-media-sphere"]["target_visual_angle_deg"] == 24.0
-    assert mounts["aoa-media-sphere"]["physical_radius"] == 92
+    assert mounts["aoa-media-sphere"]["target_visual_angle_deg"] == 39.9
+    assert mounts["aoa-media-sphere"]["target_visual_angle_deg_max"] == 41.0
+    assert mounts["aoa-media-sphere"]["legibility_px_per_degree_floor"] == 40.0
+    assert mounts["aoa-media-sphere"]["computed_mount_width"] == 314
+    assert mounts["aoa-media-sphere"]["runtime_scale"] == 1.0
+    assert mounts["aoa-media-sphere"]["physical_radius"] == 157
     assert mounts["aoa-media-sphere"]["enclosure"] == "aoa-tetrix-inner-volume"
-    assert mounts["aoa-media-sphere"]["fit_contract"] == "central-void-near-inscribed-sphere"
-    assert mounts["aoa-media-sphere"]["fit_basis"] == (
-        "aoa-first-generation-central-octahedral-void-minimum-face-distance"
+    assert (
+        mounts["aoa-media-sphere"]["fit_contract"] == "regular-tetrix-central-void-perfect-insphere"
     )
-    assert mounts["aoa-media-sphere"]["enclosure_clearance_ratio"] == 1.3023
-    assert mounts["aoa-media-sphere"]["inner_void_radius_fill_ratio"] == 0.7678722257
+    assert mounts["aoa-media-sphere"]["fit_basis"] == (
+        "regular-level4-sierpinski-pyramid-central-octahedral-void-insphere"
+    )
+    assert mounts["aoa-media-sphere"]["enclosure_clearance_ratio"] == 1.0
+    assert mounts["aoa-media-sphere"]["inner_void_radius_fill_ratio"] == 1.0
+    assert mounts["aoa-media-sphere"]["origin"] == [0, -555, 224]
+    assert mounts["aoa-media-sphere"]["fractal_depth"] == 4
+    assert mounts["aoa-media-sphere"]["leaf_face_edge_units"] == 48
+    assert mounts["aoa-media-sphere"]["aoa_parent_edge_units"] == 768
+    assert mounts["aoa-media-sphere"]["fractal_face_count"] == 1024
+    assert (
+        "one triangular fractal face per atlas cell"
+        in mounts["aoa-media-sphere"]["per_face_surface_atlas"]
+    )
+    assert "depth-veil" in mounts["aoa-media-sphere"]["occlusion_policy"]
     assert mounts["aoa-media-sphere"]["freshness"] == "live-producer-heartbeat"
     assert mounts["aoa-media-sphere"]["consent_or_license"]
     assert "object-of-attention" in mounts["aoa-media-sphere"]["purpose"]
     assert mounts["aoa-media-sphere"]["material_profile"] == "spherical-attention-live-media"
+
+    aoa_atlas = mounts["aoa-fractal-face-atlas"]
+    assert aoa_atlas["role"] == "aoa-face-atlas"
+    assert aoa_atlas["texture"] == "progs/aoa.mdl_0"
+    assert aoa_atlas["producer_kind"] == "live-aoa-face-atlas"
+    assert aoa_atlas["producer_output"] == "/dev/shm/hapax-compositor/quake-live-aoa-atlas.bgra"
+    assert aoa_atlas["control_input"] == "/dev/shm/hapax-compositor/aoa-face-controls.json"
+    assert aoa_atlas["native_resolution"] == [2048, 2048]
+    assert aoa_atlas["texture_size"] == [2048, 2048]
+    assert aoa_atlas["liveness_class"] == "live-compositor-fractal-face-control"
+    assert aoa_atlas["projection"] == "regular-tetrix-skinframe"
+    assert aoa_atlas["source_aspect"] == [1, 1]
+    assert aoa_atlas["gpu_drift_intensity"] == 2.25
+    assert aoa_atlas["target_visual_angle_deg"] == 83.1
+    assert aoa_atlas["target_visual_angle_deg_max"] == 85.0
+    assert aoa_atlas["computed_mount_width"] == 768
+    assert aoa_atlas["legibility_px_per_degree_floor"] == 20.0
+    assert aoa_atlas["runtime_scale"] == 1.0
+    assert aoa_atlas["geometry_revision"] == "aoa-regular-tetrix-v4-perfect-fit-oarb"
+    assert aoa_atlas["fit_contract"] == "regular-tetrix-central-void-perfect-insphere"
+    assert aoa_atlas["fractal_depth"] == 4
+    assert aoa_atlas["leaf_face_edge_units"] == 48
+    assert aoa_atlas["aoa_parent_edge_units"] == 768
+    assert aoa_atlas["fractal_face_count"] == 1024
+    assert aoa_atlas["atlas_contract"] == "one-live-control-cell-per-rendered-fractal-face"
+    assert aoa_atlas["face_operability_contract"] == (
+        "stable-independent-control-per-rendered-fractal-face"
+    )
+    assert "face_index-addressed JSON controls" in aoa_atlas["face_control_schema"]
+    assert "non-aggregate" in aoa_atlas["face_control_scope"]
+    assert aoa_atlas["atlas_columns"] == 32
+    assert aoa_atlas["atlas_cell_size"] == 64
+    assert aoa_atlas["hybrid_contract"]["memory_format"] == "BGRA8888"
+    assert "slot 14" in aoa_atlas["hybrid_contract"]["update_semantics"]
+    assert "not as a fourth-wall overlay" in aoa_atlas["drift_interaction"]["principle"]
 
     reverie = mounts["reverie-field"]
     assert reverie["texture"] == "w05"
@@ -565,6 +654,19 @@ def test_screwm_live_camera_texture_dimensions_match_all_runtime_declarations() 
         assert slots[slot]["path"] == speech["producer_output"]
         assert patch_dims[slot] == {"width": width, "height": height}
 
+    aoa_atlas = next(
+        mount for mount in contract["mounts"] if mount["id"] == "aoa-fractal-face-atlas"
+    )
+    width, height = aoa_atlas["texture_size"]
+    assert aoa_atlas["native_resolution"] == [width, height]
+    for slots in (autoexec_slots, launcher_slots):
+        slot = _slot_for_texture(slots, aoa_atlas["texture"])
+        assert slot == 14
+        assert int(slots[slot]["width"]) == width
+        assert int(slots[slot]["height"]) == height
+        assert slots[slot]["path"] == aoa_atlas["producer_output"]
+        assert patch_dims[slot] == {"width": width, "height": height}
+
 
 def test_screwm_media_mount_contract_keeps_homage_out_of_portable_surface() -> None:
     contract = json.loads(
@@ -609,6 +711,8 @@ def test_screwm_quake_reads_reverie_effect_signals_in_engine() -> None:
     assert "data/reverie-material.txt" in coupling
     assert "data/effect-review-preset.txt" in coupling
     assert "coupling_apply_effect_review_preset" in coupling
+    assert "coupling_screen_postprocess_enabled" in coupling
+    assert "coupling_clear_screen_postprocess" in coupling
     assert "reference/readability baseline" in coupling
     assert "threshold/inversion stress" in coupling
     assert "coupling_read_effect_drift" in coupling
@@ -712,8 +816,9 @@ def test_screwm_quake_embodies_entity_local_spatial_effects() -> None:
     assert 'screwm_read_norm("data/shader-plan-pass-count.txt")' in wards
     assert "screwm_add_local_effect_lights" in wards
     assert "screwm_add_shader_plan_lights" in wards
-    assert "screwm_add_local_effect_light('-250 -546 28'" in wards
-    assert "screwm_add_local_effect_light('250 -546 28'" in wards
+    assert "screwm_add_local_effect_light('-980 -1780 214'" in wards
+    assert "screwm_add_local_effect_light('0 -1320 512'" in wards
+    assert "screwm_add_local_effect_light('760 720 148'" in wards
 
 
 def test_screwm_quake_embodies_visual_layer_stimmung_state() -> None:
@@ -934,7 +1039,7 @@ def test_screwm_quake_review_baseline_has_no_clocked_light_pulses() -> None:
     assert "radius = radius + 5 * sin(time" not in wards
     assert "radius = radius + 6 * sin(time" not in wards
     assert "pulse = pulse + 18 * sin(time" not in wards
-    assert "adddynamiclight('0 -555 176', pulse + voice_radius" in wards
+    assert "adddynamiclight('0 -555 224', pulse + voice_radius" in wards
 
 
 def test_screwm_quake_contract_matches_current_camera_aoa_and_sound_foundation() -> None:
@@ -951,8 +1056,9 @@ def test_screwm_quake_contract_matches_current_camera_aoa_and_sound_foundation()
     assert "The gamepad bridge fails" in spec
     assert "`--device`/`--allow-any-joystick`" in spec
     assert "MOVETYPE_NOCLIP" in defs
-    assert "float AOA_MODEL_SCALE = 4.85;" in defs
-    assert "float AOA_SPHERE_MODEL_SCALE = 1.92;" in defs
+    assert "float AOA_MODEL_SCALE = 1.0;" in defs
+    assert "vector AOA_SPHERE_CENTER = '0 -555 224';" in defs
+    assert "float AOA_SPHERE_MODEL_SCALE = 0.45;" in defs
     assert "screwm_free_view_body(self);" in world
     assert "spawn_aoa();" in world
     assert "self.angles_y = self.angles_y + frametime * self.screwm_spin_y" in world

@@ -106,6 +106,26 @@ def _youtube_video_url(page_url: str, *, height: int) -> str:
     return urls[0]
 
 
+def _youtube_video_url_with_fallback(args: argparse.Namespace, *, height: int) -> str | None:
+    try:
+        return _youtube_video_url(args.resolved_url, height=height)
+    except (RuntimeError, subprocess.CalledProcessError) as exc:
+        if getattr(args, "youtube_fallback", "canary") != "canary":
+            raise
+        failed_url = args.resolved_url
+        if failed_url == DEFAULT_YOUTUBE_URL:
+            args.fallback_reason = f"youtube_url_resolve_failed:{type(exc).__name__}"
+            return None
+        args.fallback_reason = f"youtube_url_resolve_failed:canary:{type(exc).__name__}"
+        args.resolved_url = DEFAULT_YOUTUBE_URL
+        args.url_source = "fallback-canary"
+        try:
+            return _youtube_video_url(args.resolved_url, height=height)
+        except (RuntimeError, subprocess.CalledProcessError) as fallback_exc:
+            args.fallback_reason = f"youtube_canary_resolve_failed:{type(fallback_exc).__name__}"
+            return None
+
+
 def _youtube_page_url_from_text(value: str) -> str:
     text = value.strip()
     if not text:
@@ -177,14 +197,20 @@ def _parse_size(value: str | None) -> tuple[int, int] | None:
 
 def _ffmpeg_command(args: argparse.Namespace, frame_width: int, frame_height: int) -> list[str]:
     args.fallback_reason = ""
+    args.youtube_gpu_decode_active = False
     if args.projection == "sphere-front":
-        vf = (
-            f"fps={args.fps},"
-            f"scale=w={frame_width}:h={frame_height}:force_original_aspect_ratio=increase:flags=lanczos,"
-            f"crop={frame_width}:{frame_height},"
-            "hflip,"
-            "format=bgra"
-        )
+        filters = [
+            f"fps={args.fps}",
+            f"scale=w={frame_width}:h={frame_height}:force_original_aspect_ratio=increase:flags=lanczos",
+            f"crop={frame_width}:{frame_height}",
+        ]
+        # The historical CPU projection path mirrors before seam wrapping. When
+        # GPU projection owns sphere-front, the shader mirrors during projection
+        # so FFmpeg does not spend CPU on a separate full-frame hflip.
+        if not _gpu_owns_projection(args):
+            filters.append("hflip")
+        filters.append("format=bgra")
+        vf = ",".join(filters)
     elif args.source == "camera" and _parse_size(args.camera_size) == (frame_width, frame_height):
         vf = f"fps={args.fps},format=bgra"
     else:
@@ -210,7 +236,29 @@ def _ffmpeg_command(args: argparse.Namespace, frame_width: int, frame_height: in
         if not args.resolved_url:
             args.fallback_reason = "youtube_source_unbound"
             return _youtube_offline_command(args, frame_width, frame_height)
-        video_url = _youtube_video_url(args.resolved_url, height=args.height)
+        video_url = _youtube_video_url_with_fallback(args, height=args.height)
+        if not video_url:
+            return _youtube_offline_command(args, frame_width, frame_height)
+        cuda_vf = _youtube_cuda_filter(args, frame_width, frame_height)
+        if cuda_vf:
+            args.youtube_gpu_decode_active = True
+            return base + [
+                "-hwaccel",
+                "cuda",
+                "-hwaccel_output_format",
+                "cuda",
+                "-re",
+                "-i",
+                video_url,
+                "-an",
+                "-vf",
+                cuda_vf,
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "bgra",
+                "-",
+            ]
         return base + [
             "-re",
             "-i",
@@ -485,6 +533,7 @@ def _write_atomic(path: Path, data: bytes) -> None:
 
 def _write_meta(path: Path, args: argparse.Namespace, frames: int) -> None:
     gpu_drift = bool(getattr(args, "gpu_drift", False))
+    gpu_projection_kind = str(getattr(args, "gpu_projection_kind", "") or "")
     payload = {
         "source": args.source,
         "url": getattr(args, "resolved_url", args.url) if args.source == "youtube" else "",
@@ -511,6 +560,14 @@ def _write_meta(path: Path, args: argparse.Namespace, frames: int) -> None:
         "gpu_drift_raw_output": str(getattr(args, "gpu_drift_raw_output", "")),
         "gpu_drift_final_output": str(getattr(args, "output", "")),
         "gpu_drift_output_owner": "screwm_media_drift" if gpu_drift else "producer",
+        "gpu_projection": bool(gpu_projection_kind),
+        "gpu_projection_kind": gpu_projection_kind,
+        "gpu_projection_output_owner": "screwm_media_drift" if gpu_projection_kind else "producer",
+        "youtube_gpu_decode_requested": bool(getattr(args, "youtube_gpu_decode", False)),
+        "youtube_gpu_decode_active": bool(getattr(args, "youtube_gpu_decode_active", False)),
+        "youtube_gpu_decode_runtime_disabled": bool(
+            getattr(args, "youtube_gpu_decode_runtime_disabled", False)
+        ),
         "drift_renderer": "quake-media-drift-v1",
         "drift_enabled": _truthy(getattr(args, "drift", "on")) and not gpu_drift,
         "drift_receiver": _drift_receiver(args),
@@ -528,6 +585,53 @@ def _write_meta(path: Path, args: argparse.Namespace, frames: int) -> None:
 
 def _truthy(value: object) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _gpu_projection_default() -> bool:
+    return _truthy(os.environ.get("HAPAX_QUAKE_GPU_PROJECTION", ""))
+
+
+def _gpu_projection_kind(args: argparse.Namespace) -> str:
+    if not bool(getattr(args, "gpu_projection", False)):
+        return ""
+    if not bool(getattr(args, "gpu_drift", False)):
+        return ""
+    if args.projection != "sphere-front":
+        return ""
+    if args.mask != "none":
+        raise ValueError("GPU sphere-front projection requires --mask none")
+    if getattr(args, "freshness_overlay", "none") != "none":
+        raise ValueError("GPU sphere-front projection requires --freshness-overlay none")
+    return "sphere-front"
+
+
+def _gpu_owns_projection(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "gpu_projection_kind", ""))
+
+
+def _youtube_gpu_decode_default() -> bool:
+    return _truthy(os.environ.get("HAPAX_QUAKE_YOUTUBE_GPU_DECODE", ""))
+
+
+def _youtube_cuda_filter(
+    args: argparse.Namespace, frame_width: int, frame_height: int
+) -> str | None:
+    if args.source != "youtube" or not bool(getattr(args, "youtube_gpu_decode", False)):
+        return None
+    if bool(getattr(args, "youtube_gpu_decode_runtime_disabled", False)):
+        return None
+    if args.projection == "sphere-front" and not _gpu_owns_projection(args):
+        # CPU-owned sphere-front still needs the CPU hflip/projection path.
+        return None
+    return ",".join(
+        [
+            f"fps={args.fps}",
+            (f"scale_cuda=w={frame_width}:h={frame_height}:interp_algo=lanczos:format=yuv420p"),
+            "hwdownload",
+            "format=yuv420p",
+            "format=bgra",
+        ]
+    )
 
 
 def _drift_receiver(args: argparse.Namespace) -> str:
@@ -555,10 +659,13 @@ def stream_frames(args: argparse.Namespace) -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     raw_output, raw_meta = _gpu_drift_paths(args.output) if args.gpu_drift else (None, None)
     args.gpu_drift_raw_output = raw_output or ""
+    args.gpu_projection_kind = ""
     frame_width, frame_height = _decode_dimensions(args)
     args.source_frame_width = frame_width
     args.source_frame_height = frame_height
     frame_size = frame_width * frame_height * 4
+    if raw_output is not None:
+        args.gpu_projection_kind = _gpu_projection_kind(args)
     drift_renderer = MediaDriftRenderer(
         game_data=getattr(args, "drift_game_data", DEFAULT_GAME_DATA),
         enabled=_truthy(getattr(args, "drift", "on")),
@@ -577,16 +684,19 @@ def stream_frames(args: argparse.Namespace) -> int:
 
     while not stop:
         command = _ffmpeg_command(args, frame_width, frame_height)
+        loop_frames = 0
         with subprocess.Popen(command, stdout=subprocess.PIPE) as proc:
             assert proc.stdout is not None
             while not stop:
                 data = proc.stdout.read(frame_size)
                 if len(data) != frame_size:
                     break
+                loop_frames += 1
                 frames += 1
-                data = _project_frame(data, args, frame_width, frame_height, frames)
                 should_write_meta = frames == 1 or frames % max(1, args.fps * 5) == 0
                 if raw_output is not None:
+                    if not args.gpu_projection_kind:
+                        data = _project_frame(data, args, frame_width, frame_height, frames)
                     # GPU media-drift cutover: emit the undrifted frame for the
                     # screwm_media_drift service (it writes the drifted args.output).
                     if should_write_meta:
@@ -597,6 +707,7 @@ def stream_frames(args: argparse.Namespace) -> int:
                     if should_write_meta and raw_meta is not None:
                         _write_meta(raw_meta, args, frames)
                     continue
+                data = _project_frame(data, args, frame_width, frame_height, frames)
                 drift_input_hash = _short_hash(data) if should_write_meta else ""
                 data = drift_renderer.apply(
                     data,
@@ -619,6 +730,15 @@ def stream_frames(args: argparse.Namespace) -> int:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=3)
+        if (
+            args.source == "youtube"
+            and bool(getattr(args, "youtube_gpu_decode_active", False))
+            and loop_frames == 0
+            and not stop
+        ):
+            args.youtube_gpu_decode_runtime_disabled = True
+            args.youtube_gpu_decode_active = False
+            args.fallback_reason = "youtube_gpu_decode_failed"
         if not stop:
             time.sleep(args.restart_delay)
     _write_meta(raw_meta if raw_meta is not None else args.meta, args, frames)
@@ -717,6 +837,24 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="GPU media-drift cutover: write the undrifted frame to "
         "<output>.raw.bgra and skip the Python drift; the screwm_media_drift "
         "GPU service applies drift and writes <output> (which the engine blits).",
+    )
+    parser.add_argument(
+        "--gpu-projection",
+        action="store_true",
+        default=_gpu_projection_default(),
+        help=(
+            "With --gpu-drift and --projection sphere-front, write the raw media frame "
+            "and leave OARB seam projection/background composition to screwm_media_drift."
+        ),
+    )
+    parser.add_argument(
+        "--youtube-gpu-decode",
+        action="store_true",
+        default=_youtube_gpu_decode_default(),
+        help=(
+            "For YouTube sources, request CUDA hardware frames and scale on GPU before "
+            "the unavoidable BGRA download for the DarkPlaces live-texture ABI."
+        ),
     )
     parser.add_argument("--restart-delay", type=float, default=2.0)
     parser.add_argument("--camera-role", default=os.environ.get("HAPAX_QUAKE_CAMERA_ROLE", ""))

@@ -9,10 +9,8 @@
 // RGBA in the sampler), so all math here is RGB 0..1; the Python's 0..255
 // additive coefficients are scaled by 1/255 (K8 below).
 //
-// v1 (this file): intensity gate, reverie tonemap, chroma-roll, edge, saturation,
-//                 hash-noise, scanlines, tonal-pulse.
-// v2 (TODO): feedback-trails + glitch-blocks — both need the per-slot previous
-//            frame (ping-pong). Wire when the service holds a prev texture.
+// v2: intensity gate, reverie tonemap, chroma-roll, source-bound feedback
+//     trails, edge, glitch blocks, saturation, hash-noise, scanlines, tonal-pulse.
 
 const K8: f32 = 0.003921569; // 1/255 — scale Python 0..255 additive terms to 0..1
 
@@ -47,17 +45,25 @@ const I_MODE_COMPOSITING: u32 = 26u;
 
 // receiver_class codes (ReceiverClass::as_u32)
 const RC_CAMERA: u32 = 0u;
+const RC_OARB: u32 = 1u;
+const RC_TICKER: u32 = 2u;
+const RC_ATLAS: u32 = 3u;
 const RC_REVERIE: u32 = 4u;
+const PROJ_FLAT: u32 = 0u;
+const PROJ_SPHERE_FRONT: u32 = 1u;
 
 struct DriftUniforms {
     scalars: array<vec4<f32>, 7>, // 28 slots; [0..27) = DriftState, [27] unused
     frame_meta: vec4<f32>,        // (now, frame, intensity_scale, min_chroma_px)
     slot_dims: vec4<u32>,         // (receiver_class, width, height, _pad)
+    projection: vec4<u32>,        // (projection_code, raw_width, raw_height, _pad)
+    projection_color: vec4<f32>,  // (background_r, background_g, background_b, _pad)
 };
 
 @group(0) @binding(0) var<uniform> U: DriftUniforms;
 @group(0) @binding(1) var src_tex: texture_2d<f32>;
 @group(0) @binding(2) var src_samp: sampler;
+@group(0) @binding(3) var prev_tex: texture_2d<f32>;
 
 fn S(i: u32) -> f32 { return U.scalars[i / 4u][i % 4u]; }
 fn clamp01(v: f32) -> f32 { return clamp(v, 0.0, 1.0); }
@@ -84,10 +90,10 @@ fn base_intensity() -> f32 {
 // passed implicitly via the class. We re-derive it here to keep the uniform lean.
 fn receiver_gain(rc: u32) -> f32 {
     switch rc {
-        case 0u: { return 1.12; } // camera
-        case 1u: { return 1.38; } // oarb
+        case 0u: { return 1.26; } // camera
+        case 1u: { return 1.52; } // oarb
         case 2u: { return 1.62; } // ticker
-        case 3u: { return 1.42; } // atlas
+        case 3u: { return 1.66; } // atlas
         case 4u: { return 1.46; } // reverie
         default: { return 1.0; }  // other
     }
@@ -112,6 +118,68 @@ fn reverie_tonemap(rgb: vec3<f32>, intensity: f32) -> vec3<f32> {
     toned = (toned - pivot) * contrast + lift;
     toned *= vec3<f32>(1.08, 0.68, 1.12);
     return clamp(toned, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn sphere_background(uv: vec2<f32>) -> vec3<f32> {
+    let out_w = f32(U.slot_dims.y);
+    let out_h = f32(U.slot_dims.z);
+    let y = clamp(uv.y, 0.0, 1.0);
+    let shade = 0.54 + 0.30 * (1.0 - abs(y - 0.5) * 2.0);
+    let x_px = floor(clamp(uv.x, 0.0, 0.999999) * out_w);
+    let y_px = floor(y * out_h);
+    let guide_period = max(8.0, floor(out_w / 16.0));
+    let guide_rem = x_px - floor(x_px / guide_period) * guide_period;
+    let guide = guide_rem < 1.0 || abs(y_px - floor(out_h * 0.5)) <= 1.0;
+    let boost = select(1.0, 1.26, guide);
+    return clamp(U.projection_color.rgb * shade * boost, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn sample_projected(uv: vec2<f32>) -> vec4<f32> {
+    let projection_code = U.projection.x;
+    if (projection_code == PROJ_FLAT) {
+        return textureSample(src_tex, src_samp, uv);
+    }
+    if (projection_code != PROJ_SPHERE_FRONT) {
+        return textureSample(src_tex, src_samp, uv);
+    }
+
+    let out_w = f32(U.slot_dims.y);
+    let out_h = f32(U.slot_dims.z);
+    let raw_w = f32(U.projection.y);
+    let raw_h = f32(U.projection.z);
+    let bg = vec4<f32>(sphere_background(uv), 1.0);
+    if (raw_w <= 0.0 || raw_h <= 0.0) {
+        return bg;
+    }
+    if (uv.x < 0.0 || uv.x >= 1.0 || uv.y < 0.0 || uv.y >= 1.0) {
+        return bg;
+    }
+
+    let px = floor(uv.x * out_w);
+    let py = floor(uv.y * out_h);
+    let offset_y = floor((out_h - raw_h) * 0.5);
+    if (py < offset_y || py >= offset_y + raw_h) {
+        return bg;
+    }
+
+    let seam_left_width = floor(raw_w * 0.5);
+    let seam_right_width = raw_w - seam_left_width;
+    let right_edge_x = out_w - seam_left_width;
+    var sx = -1.0;
+    if (px < seam_right_width) {
+        sx = seam_left_width + px;
+    } else if (px >= right_edge_x) {
+        sx = px - right_edge_x;
+    }
+    if (sx < 0.0 || sx >= raw_w) {
+        return bg;
+    }
+
+    let sy = py - offset_y;
+    // Preserve the old CPU path's mirror+seam orientation without an FFmpeg hflip.
+    // The producer now sends the raw media frame; sphere-front owns the mirror here.
+    let mirrored_sx = raw_w - sx - 1.0;
+    return textureSample(src_tex, src_samp, vec2<f32>((mirrored_sx + 0.5) / raw_w, (sy + 0.5) / raw_h));
 }
 
 struct VsOut {
@@ -141,10 +209,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let intensity_scale = U.frame_meta.z;
     let min_chroma_px = U.frame_meta.w;
     let is_camera = rc == RC_CAMERA;
+    let is_oarb = rc == RC_OARB;
+    let is_atlas = rc == RC_ATLAS;
+    let is_ticker = rc == RC_TICKER;
     let texel = vec2<f32>(1.0 / w, 1.0 / h);
     let min_dim = max(1.0, min(w, h));
 
-    let src = textureSample(src_tex, src_samp, in.uv);
+    let src = sample_projected(in.uv);
     var rgb = src.rgb;
 
     // ── intensity (cadence-gated) ────────────────────────────────────────────
@@ -166,48 +237,104 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
               + frame * (0.017 + S(I_KIND_VARIANCE) * 0.011);
 
     // ── chroma roll (R/B opposed shift) ──────────────────────────────────────
-    let chroma_cap = select(72.0, 34.0, is_camera);
+    var chroma_cap = select(96.0, 38.0, is_camera);
+    if (is_oarb || is_atlas) { chroma_cap = 112.0; }
     var chroma_px = round(min_dim * (0.0040 + 0.0100 * intensity + 0.0065 * S(I_COMPOSITING)
         + 0.0045 * S(I_ACTIVE_SLOT_RATIO) + 0.0050 * mutation_pressure + 0.0035 * S(I_MODE_ATMOSPHERIC)));
     chroma_px = max(min_chroma_px, min(chroma_cap, chroma_px));
     let dx = round(sin(phase) * chroma_px);
     let dy = round(cos(phase * 0.73) * max(1.0, chroma_px * 0.5));
-    let red = textureSample(src_tex, src_samp, in.uv + vec2<f32>(dx, dy) * texel).r;
-    let blue = textureSample(src_tex, src_samp, in.uv - vec2<f32>(dx, dy) * texel).b;
+    let red = sample_projected(in.uv + vec2<f32>(dx, dy) * texel).r;
+    let blue = sample_projected(in.uv - vec2<f32>(dx, dy) * texel).b;
     var chroma_mix = min(0.88, 0.30 + S(I_VISUAL_COLOR) * 0.20 + S(I_COMPOSITING) * 0.22
         + S(I_MODE_COMPOSITING) * 0.14 + S(I_MODE_ATMOSPHERIC) * 0.10 + intensity * 0.24);
-    if (is_camera) { chroma_mix = min(chroma_mix, 0.52); }
+    if (is_camera) { chroma_mix = min(chroma_mix, 0.60); }
     rgb.r = rgb.r * (1.0 - chroma_mix) + red * chroma_mix;
     rgb.b = rgb.b * (1.0 - chroma_mix) + blue * chroma_mix;
 
-    // TODO v2: feedback-trails (needs per-slot previous frame, ping-pong).
+    // -- source-bound feedback trails ---------------------------------------
+    // Previous-frame feedback is part of the media receiver vocabulary, not a
+    // scene-wide glass pane. Keep it non-camera and brighten-biased so it cannot
+    // become a global dim/fade over the fourth wall.
+    let feedback_pressure = clamp01(S(I_VISUAL_FEEDBACK) * 0.46
+        + S(I_TEMPORAL) * 0.24
+        + S(I_MODE_TEMPORAL) * 0.24
+        + S(I_COMPOSITING) * 0.16
+        + intensity * 0.20);
+    if (!is_camera && feedback_pressure > 0.03 && frame > 1.0) {
+        let trail_px = round(min_dim * (0.004 + feedback_pressure * 0.030 + S(I_SLOW_RATIO) * 0.014));
+        let trail_a = vec2<f32>(sin(phase * 0.83), cos(phase * 0.61)) * trail_px * texel;
+        let trail_b = vec2<f32>(cos(phase * 0.47), sin(phase * 0.97)) * trail_px * 0.48 * texel;
+        let prev_a = textureSample(prev_tex, src_samp, clamp(in.uv - trail_a, vec2<f32>(0.0), vec2<f32>(1.0))).rgb;
+        let prev_b = textureSample(prev_tex, src_samp, clamp(in.uv + trail_b, vec2<f32>(0.0), vec2<f32>(1.0))).rgb;
+        let feedback_rgb = max(prev_a * vec3<f32>(1.08, 0.92, 1.16), prev_b * vec3<f32>(0.92, 1.05, 1.12));
+        let feedback_cap = select(0.48, 0.30, is_camera);
+        let feedback_mix = min(feedback_cap, 0.060 + feedback_pressure * 0.32 + S(I_MODE_TEMPORAL) * 0.10);
+        rgb = mix(rgb, max(rgb, feedback_rgb), vec3<f32>(feedback_mix));
+    }
 
     // ── saturation ───────────────────────────────────────────────────────────
     var luma = rgb.r * 0.299 + rgb.g * 0.587 + rgb.b * 0.114;
     var saturation = 1.0 + intensity * (0.18 + S(I_TONAL) * 0.16 + S(I_VISUAL_COLOR) * 0.14 + S(I_MODE_TONAL) * 0.14);
-    if (is_camera) { saturation = min(saturation, 1.34); }
+    if (is_camera) { saturation = min(saturation, 1.42); }
     rgb = vec3<f32>(luma) + (rgb - vec3<f32>(luma)) * saturation;
 
     // ── edge accent (luma gradient → R/B) ────────────────────────────────────
     luma = rgb.r * 0.299 + rgb.g * 0.587 + rgb.b * 0.114;
-    let lx = textureSample(src_tex, src_samp, in.uv + vec2<f32>(texel.x, 0.0));
-    let ly = textureSample(src_tex, src_samp, in.uv + vec2<f32>(0.0, texel.y));
+    let lx = sample_projected(in.uv + vec2<f32>(texel.x, 0.0));
+    let ly = sample_projected(in.uv + vec2<f32>(0.0, texel.y));
     let lumx = lx.r * 0.299 + lx.g * 0.587 + lx.b * 0.114;
     let lumy = ly.r * 0.299 + ly.g * 0.587 + ly.b * 0.114;
-    let edge_gain = select(1.0, 0.58, is_camera);
-    let edge_cap = select(48.0, 28.0, is_camera) * K8;
+    var edge_gain = select(1.18, 0.72, is_camera);
+    if (is_oarb || is_atlas) { edge_gain = 1.34; }
+    var edge_cap = select(64.0, 34.0, is_camera) * K8;
+    if (is_oarb || is_atlas) { edge_cap = 76.0 * K8; }
     let edge = clamp((abs(lumx - luma) + abs(lumy - luma)) * edge_gain
-        * (0.012 + S(I_EDGE) * 0.021 + S(I_MODE_EDGE) * 0.016 + intensity * 0.012), 0.0, edge_cap);
+        * (0.018 + S(I_EDGE) * 0.029 + S(I_MODE_EDGE) * 0.022 + intensity * 0.018), 0.0, edge_cap);
     rgb.r += edge * (1.8 + S(I_VISUAL_DRIFT));
     rgb.b += edge * (1.1 + S(I_TONAL));
 
-    // TODO v2: glitch-blocks (hash-seeded block displacement).
+    // -- glitch blocks -------------------------------------------------------
+    // Block displacement is receiver-local and hash-gated by drift pressure.
+    // Cameras are damped; atlas/ticker/OARB get the fuller mutation vocabulary.
+    let glitch_pressure = clamp01(S(I_TEXTURE) * 0.30
+        + S(I_MODE_TEXTURE) * 0.28
+        + S(I_COMPOSITING) * 0.20
+        + S(I_MODE_COMPOSITING) * 0.20
+        + S(I_FAST_RATIO) * 0.12
+        + intensity * 0.18);
+    if (glitch_pressure > 0.04) {
+        let block_px = max(8.0, round(min_dim / (18.0 + S(I_REGION_COUNT) * 22.0 + glitch_pressure * 24.0)));
+        let pixel = in.uv * vec2<f32>(w, h);
+        let block = floor(pixel / block_px);
+        let gate = hash21(block, frame + floor(phase * 5.0));
+        let gate_floor = select(0.34, 0.14, is_camera);
+        let gate_span = select(0.34, 0.20, is_camera);
+        if (gate < gate_floor + glitch_pressure * gate_span) {
+            let offset_seed = hash21(block + vec2<f32>(17.0, 29.0), frame);
+            let offset_px = round((offset_seed - 0.5) * min(56.0, 10.0 + glitch_pressure * 72.0));
+            let vertical_seed = hash21(block + vec2<f32>(41.0, 7.0), frame + 11.0);
+            let vertical_px = round((vertical_seed - 0.5) * min(24.0, 4.0 + S(I_MODE_TEXTURE) * 38.0));
+            let shifted_uv = clamp(in.uv + vec2<f32>(offset_px, vertical_px) * texel, vec2<f32>(0.0), vec2<f32>(1.0));
+            let split_uv = clamp(in.uv - vec2<f32>(offset_px * 0.48, 0.0) * texel, vec2<f32>(0.0), vec2<f32>(1.0));
+            let displaced = sample_projected(shifted_uv).rgb;
+            let split = sample_projected(split_uv).rgb;
+            let glitch_rgb = vec3<f32>(
+                max(displaced.r, split.b * 0.82),
+                displaced.g * (0.82 + S(I_TONAL) * 0.16),
+                max(split.b, displaced.r * 0.58)
+            );
+            let glitch_mix = min(select(0.58, 0.24, is_camera), 0.10 + glitch_pressure * 0.44);
+            rgb = mix(rgb, glitch_rgb, vec3<f32>(glitch_mix));
+        }
+    }
 
     // ── noise ────────────────────────────────────────────────────────────────
     if (S(I_VISUAL_NOISE) > 0.02 || S(I_TEXTURE) > 0.02 || S(I_MODE_TEXTURE) > 0.02) {
         var noise_amp = 2.0 + 14.0 * min(1.0, S(I_VISUAL_NOISE) * 0.55 + S(I_TEXTURE) * 0.45);
         noise_amp += 8.0 * S(I_MODE_TEXTURE) + 4.0 * fast_wave * S(I_FAST_RATIO);
-        if (is_camera) { noise_amp *= 0.28; }
+        if (is_oarb || is_atlas || is_ticker) { noise_amp *= 1.24; }
+        if (is_camera) { noise_amp *= 0.40; }
         let n = (hash21(in.uv * vec2<f32>(w, h), frame) - 0.5) * 2.0 * noise_amp * K8;
         rgb.r += n * 0.72;
         rgb.g += n * 0.32;
@@ -222,7 +349,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let yrow = floor(in.uv.y * h);
         if (((yrow + offset) % period) < thickness) {
             var line_strength = (4.0 + 28.0 * intensity * (0.45 + S(I_TEXTURE) + S(I_MODE_TEXTURE))) * K8;
-            if (is_camera) { line_strength *= 0.35; }
+            if (is_oarb || is_atlas || is_ticker) { line_strength *= 1.28; }
+            if (is_camera) { line_strength *= 0.50; }
             rgb.r += line_strength * 0.72;
             rgb.g += line_strength * 0.18;
             rgb.b -= line_strength * 0.36;
