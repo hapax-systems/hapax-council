@@ -1220,9 +1220,7 @@ def generate_pixel_data(
                     base = mid_idx if (x + y + seed) % 3 == 0 else dim_idx
                 elif thread_a <= 1 or thread_b <= 1:
                     base = accent_idx if shimmer < 4 else mid_idx
-                elif thread_a <= 2 or thread_b <= 2:
-                    base = mid_idx
-                elif shimmer <= 1:
+                elif thread_a <= 2 or thread_b <= 2 or shimmer <= 1:
                     base = mid_idx
                 elif (x * 11 + y * 7 + seed) % 263 == 0:
                     base = accent_idx

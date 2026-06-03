@@ -2000,7 +2000,7 @@ def scroom_hex_grid_and_stipple(_preset):
             if cy < ROOM_Y_MIN - HEX_GRID_RADIUS or cy > ROOM_Y_MAX + HEX_GRID_RADIUS:
                 continue
             verts = hex_vertices(cx, cy, HEX_GRID_RADIUS)
-            for idx, (a, b) in enumerate(zip(verts, verts[1:] + verts[:1], strict=True), start=1):
+            for a, b in zip(verts, verts[1:] + verts[:1], strict=True):
                 key = tuple(
                     sorted(
                         (
