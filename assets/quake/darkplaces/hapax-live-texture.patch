@@ -563,18 +563,19 @@ index 7fbcd0b3..8ec3075c 100644
  extern rtexture_t *r_texture_notexture;
  extern rtexture_t *r_texture_whitecube;
 diff --git a/shader_glsl.h b/shader_glsl.h
-index dc56d085..28cef92d 100644
+index dc56d085..a189451f 100644
 --- a/shader_glsl.h
 +++ b/shader_glsl.h
-@@ -773,6 +773,7 @@
+@@ -773,6 +773,8 @@
  "#ifdef MODE_DEFERREDGEOMETRY\n",
  "dp_varying highp float Depth;\n",
  "#endif\n",
 +"dp_varying highp vec3 HapaxModelPos;\n",
++"dp_varying highp vec3 HapaxModelNorm;\n",
  "\n",
  "\n",
  "\n",
-@@ -1302,6 +1303,9 @@
+@@ -1302,6 +1304,9 @@
  "#ifdef USEBOUNCEGRID\n",
  "uniform highp mat4 BounceGridMatrix;\n",
  "#endif\n",
@@ -584,11 +585,12 @@ index dc56d085..28cef92d 100644
  "void main(void)\n",
  "{\n",
  "#ifdef USESKELETAL\n",
-@@ -1404,7 +1408,19 @@
+@@ -1404,7 +1409,20 @@
  "#endif\n",
  "\n",
  "	// transform vertex to clipspace (post-projection, but before perspective divide by W occurs)\n",
 +"	HapaxModelPos = Attrib_Position.xyz;\n",
++"	HapaxModelNorm = Attrib_TexCoord3.xyz;\n",
 +"#ifdef USEHAPAXDRIFT\n",
 +"	// geometry motion: small world-seeded, time-animated displacement so flagged\n",
 +"	// grid/stipple silhouettes BREATHE (the strongest world-is-alive cue). +/- a few\n",
@@ -604,7 +606,7 @@ index dc56d085..28cef92d 100644
  "\n",
  "#ifdef USESHADOWMAPORTHO\n",
  "	ShadowMapTC = vec3(ShadowMapMatrix * gl_Position);\n",
-@@ -1466,6 +1482,9 @@
+@@ -1466,6 +1484,9 @@
  "    uint allpixels;\n",
  "};\n",
  "#endif\n",
@@ -614,7 +616,7 @@ index dc56d085..28cef92d 100644
  "void main(void)\n",
  "{\n",
  "#ifdef USEOFFSETMAPPING\n",
-@@ -1797,6 +1816,31 @@
+@@ -1797,6 +1818,45 @@
  "   color.rgb *= clamp(float(visiblepixels) / float(allpixels), 0.0, 1.0);\n",
  "#endif\n",
  "\n",
@@ -641,6 +643,20 @@ index dc56d085..28cef92d 100644
 +"		float hpx_sa = sin(hpx_ang);\n",
 +"		vec3 hpx_rot = hpx_wire*hpx_ca + cross(hpx_k, hpx_wire)*hpx_sa + hpx_k*dot(hpx_k, hpx_wire)*(1.0 - hpx_ca);\n",
 +"		color.rgb = max(hpx_rot * (hpx_wl / max(dot(hpx_rot, vec3(0.299, 0.587, 0.114)), 0.001)), vec3(0.0));\n",
++"		// (3) STIPPLE — light, sparse procedural dots on WALLS+CEILINGS (not the hex floor);\n",
++"		// own inherent colour life apart from grid/drift. Triplanar surface UV (dots sit ON\n",
++"		// the surface, no streaking); hashed sparse lattice; anti-aliased round dots.\n",
++"		vec3 hpx_nn = normalize(HapaxModelNorm);\n",
++"		float hpx_wc = 1.0 - step(0.5, hpx_nn.z);\n",
++"		vec3 hpx_an = abs(hpx_nn);\n",
++"		vec2 hpx_suv = (hpx_an.z > max(hpx_an.x, hpx_an.y)) ? HapaxModelPos.xy : ((hpx_an.x > hpx_an.y) ? HapaxModelPos.yz : HapaxModelPos.xz);\n",
++"		hpx_suv *= 0.10;\n",
++"		vec2 hpx_sf = fract(hpx_suv) - 0.5;\n",
++"		float hpx_shash = fract(sin(dot(floor(hpx_suv), vec2(127.1, 311.7))) * 43758.5453);\n",
++"		float hpx_dot = step(0.80, hpx_shash) * smoothstep(0.20, 0.07, length(hpx_sf));\n",
++"		// stipple inherent colour: own cosine palette on a DIFFERENT clock/phase than the grid\n",
++"		vec3 hpx_scol = 0.5 + 0.5*cos(6.2831853*(hpx_shash*3.1 + ClientTime*0.08 + vec3(0.0, 0.33, 0.67)));\n",
++"		color.rgb += hpx_wc * hpx_dot * hpx_scol * 0.42;\n",
 +"	}\n",
 +"#endif\n",
  "	dp_FragColor = vec4(color);\n",
