@@ -395,7 +395,7 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     assert "float EF_DOUBLESIDED = 32768;" in defs
     assert "float EF_ADDITIVE = 32;" in defs
     assert "float AOA_MODEL_SCALE = 1.0;" in defs
-    assert "float AOA_SPHERE_MODEL_SCALE = 1.0;" in defs
+    assert "float AOA_SPHERE_MODEL_SCALE = 0.45;" in defs
     assert "vector(vector v) vectoangles = #51;" in defs
     assert "ang = vectoangles(target - pos);" in camera
     assert 'if (cvar("screwm_camera_orbit") > 0)' in camera
@@ -445,7 +445,7 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     assert 'setmodel(aoa_sphere_entity, "progs/aoa_sphere.mdl");' in world
     assert "setorigin(aoa_sphere_entity, AOA_SPHERE_CENTER);" in world
     assert "aoa_entity.alpha = 0.16;" in world
-    assert "aoa_entity.colormod = '1.08 0.64 0.88';" in world
+    assert "aoa_entity.colormod = '0.86 0.92 1.02';" in world
     assert "aoa_entity.effects = aoa_entity.effects + EF_ADDITIVE;" in world
     assert "aoa_sphere_entity.screwm_spin_y = 0;" in world
     assert "screwm_player_noclip_body(self);" in world

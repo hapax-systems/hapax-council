@@ -42,6 +42,13 @@ def _assert_unified_patch_hunk_counts(patch_text: str) -> None:
             old_count = 0
             new_count = 0
             continue
+        if line.startswith("diff --git "):
+            # File boundary in a multi-file patch: finalize the previous file's
+            # last hunk and stop counting so the following index/---/+++ headers
+            # are not mistaken for hunk body lines.
+            assert_current_hunk()
+            current_header = ""
+            continue
         if not current_header:
             continue
         if line.startswith("\\"):
@@ -1051,7 +1058,7 @@ def test_screwm_quake_contract_matches_current_camera_aoa_and_sound_foundation()
     assert "MOVETYPE_NOCLIP" in defs
     assert "float AOA_MODEL_SCALE = 1.0;" in defs
     assert "vector AOA_SPHERE_CENTER = '0 -555 224';" in defs
-    assert "float AOA_SPHERE_MODEL_SCALE = 1.0;" in defs
+    assert "float AOA_SPHERE_MODEL_SCALE = 0.45;" in defs
     assert "screwm_free_view_body(self);" in world
     assert "spawn_aoa();" in world
     assert "self.angles_y = self.angles_y + frametime * self.screwm_spin_y" in world

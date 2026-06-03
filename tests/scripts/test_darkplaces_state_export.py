@@ -1310,8 +1310,11 @@ def test_darkplaces_state_export_routes_real_slotdrift_through_full_family_vecto
     assert lines["effect-drift-source.txt"] == "slotdrift"
     assert lines["effect-drift-active-ratio.txt"] == "0.6480"
     assert lines["effect-drift-texture.txt"] == "0.4000"
-    assert lines["effect-drift-edge.txt"] == "0.3000"
-    assert lines["effect-drift-compositing.txt"] == "0.2000"
+    # Live SlotDrift grounds edge/compositing from whole-stack spatial pressure
+    # (room-bound surface drift), not just literal edge/compositing nodes — so
+    # these exceed the bare edge_detect/blend max_delta routing.
+    assert lines["effect-drift-edge.txt"] == "0.9300"
+    assert lines["effect-drift-compositing.txt"] == "0.8440"
     assert lines["effect-drift-tonal.txt"] == "0.7000"
     assert lines["effect-drift-atmospheric.txt"] == "0.6000"
     assert lines["effect-drift-temporal.txt"] == "0.5000"
@@ -1485,7 +1488,8 @@ def test_darkplaces_state_export_prefers_fresh_real_slotdrift_over_fallback(
     assert lines["effect-drift-source.txt"] == "slotdrift"
     assert lines["effect-drift-real-source.txt"] == "1.0000"
     assert lines["effect-drift-compositing.txt"] == "0.7000"
-    assert lines["effect-drift-mode-compositing.txt"] == "0.2000"
+    # Live SlotDrift floors compositing mode pressure (room-bound surface drift).
+    assert lines["effect-drift-mode-compositing.txt"] == "0.7000"
     assert lines["effect-drift-texture.txt"] == "0.0000"
 
 
@@ -1532,7 +1536,8 @@ def test_darkplaces_state_export_does_not_replace_recent_slotdrift_with_syntheti
     assert lines["effect-drift-source.txt"] == "slotdrift"
     assert lines["effect-drift-real-source.txt"] == "1.0000"
     assert lines["effect-drift-compositing.txt"] == "0.6000"
-    assert lines["effect-drift-mode-compositing.txt"] == "0.2000"
+    # Live SlotDrift floors compositing mode pressure (room-bound surface drift).
+    assert lines["effect-drift-mode-compositing.txt"] == "0.7000"
     assert lines["effect-drift-texture.txt"] == "0.0000"
 
 

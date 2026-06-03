@@ -160,7 +160,7 @@
         {
           "path": "systemd/units/hapax-darkplaces-v4l2.service",
           "anchors": [
-            "HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video50",
+            "HAPAX_DARKPLACES_V4L2_DEVICE=/dev/video52",
             "DARKPLACES_FPS=30",
             "hapax-screwm-camera-gamepad.service",
             "hapax-darkplaces-bridge.service"
@@ -253,8 +253,8 @@
         {
           "path": "assets/quake/glsl/combined_crc59807.glsl",
           "anchors": [
-            "Screwm/Scroom post-processing",
-            "entity-local drift/compositing field",
+            "Screwm/Scroom diagnostic post-processing",
+            "Release-grade expression is geometry-bound",
             "UserVec2: x=signal_aura"
           ]
         }
@@ -294,7 +294,7 @@
         {
           "path": "tests/scripts/test_screwm_quake_migration_contract.py",
           "anchors": [
-            "test_screwm_shader_effects_are_unconditional_scroom_fields",
+            "test_screwm_shader_effects_are_diagnostic_screen_space_only",
             "max(signal_presence"
           ]
         }
