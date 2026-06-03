@@ -66,6 +66,7 @@ STATE_DIR="$HAPAX_REBUILD_STATE_DIR"
 SHA_FILE="$STATE_DIR/last-${SHA_KEY}-sha"
 OUTCOME_FILE="$STATE_DIR/last-${SHA_KEY}-outcome.json"
 OUTCOME_HISTORY_FILE="$STATE_DIR/rebuild-service-outcomes.jsonl"
+PRESSURE_SKIP_COUNT_FILE="$STATE_DIR/pressure-skip-count-${SHA_KEY}"
 LOG_TAG="hapax-rebuild-${SHA_KEY}"
 NTFY_URL="${NTFY_BASE_URL:-http://localhost:8090}/hapax-build"
 
@@ -169,6 +170,55 @@ PY
 
 write_sha() {
     echo "$CURRENT_SHA" > "$SHA_FILE"
+}
+
+# --- post-merge-deploy staleness alarm (reform-deploy-chain-repair) ---
+# Detect a STALLED deploy chain: when the post-merge-deploy receipt
+# (last-deployed-sha) lags origin/main beyond a time threshold, the
+# systemd-units / pipewire-confs / scripts side of merges is not landing
+# (the "merged but never realized" failure this task fixes). Runs only in the
+# council managed-worktree context. Cheap (rev-parse + file reads); the
+# lag-since state makes the per-service repetition idempotent and the ntfy is
+# throttled per stalled SHA so the operator is told once, not per tick.
+check_post_merge_deploy_staleness() {
+    local origin_main="$1"
+    [ -n "$origin_main" ] || return 0
+    : "${HAPAX_REBUILD_DEPLOY_STALENESS_SEC:=7200}"
+    local last_deployed_path="${HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH:-$HOME/.cache/hapax/post-merge-traces/last-deployed-sha}"
+    local lag_since_file="$STATE_DIR/post-merge-deploy-lag-since"
+    local lag_notified_file="$STATE_DIR/post-merge-deploy-lag-notified-sha"
+    local last_deployed
+    last_deployed="$(tr -d '[:space:]' < "$last_deployed_path" 2>/dev/null || true)"
+    if [ -n "$last_deployed" ] && [ "$last_deployed" = "$origin_main" ]; then
+        # Caught up — clear the lag state so the next divergence starts fresh.
+        rm -f "$lag_since_file" "$lag_notified_file" 2>/dev/null || true
+        return 0
+    fi
+    local now lag_since age
+    now="$(date +%s)"
+    lag_since="$(tr -d '[:space:]' < "$lag_since_file" 2>/dev/null || true)"
+    if ! [[ "$lag_since" =~ ^[0-9]+$ ]]; then
+        lag_since="$now"
+        echo "$lag_since" > "$lag_since_file"
+    fi
+    age=$((now - lag_since))
+    if [ "$age" -ge "$HAPAX_REBUILD_DEPLOY_STALENESS_SEC" ]; then
+        local notified
+        notified="$(tr -d '[:space:]' < "$lag_notified_file" 2>/dev/null || true)"
+        if [ "$notified" != "$origin_main" ]; then
+            local short_last="none" behind
+            [ -n "$last_deployed" ] && short_last="${last_deployed:0:8}"
+            if [ -n "$last_deployed" ]; then
+                behind="$(git -C "$REPO" rev-list --count "$last_deployed..$origin_main" 2>/dev/null || echo '?')"
+            else
+                behind="(never deployed)"
+            fi
+            ntfy "post-merge-deploy STALE" \
+                "last-deployed ${short_last} lags origin/main ${origin_main:0:8} by ${behind} commits for $((age / 60))min (>= $((HAPAX_REBUILD_DEPLOY_STALENESS_SEC / 60))min). systemd-units/pipewire/scripts may be uninstalled — check hapax-post-merge-deploy.path/.service + hapax-source-activate.timer." \
+                "high" "rotating_light"
+            echo "$origin_main" > "$lag_notified_file"
+        fi
+    fi
 }
 
 read_service_state() {
@@ -288,6 +338,30 @@ if [ "$REPO" = "$HAPAX_REBUILD_WORKTREE" ]; then
         echo "[WARN] rebuild-service: rebuild worktree at $REPO not fast-forwardable — skipping ${SHA_KEY}" >&2
         exit 0
     fi
+
+    # Advance the canonical local main ref so the post-merge-deploy .path unit
+    # (which watches refs/heads/main) fires and the systemd-units / pipewire /
+    # scripts side of the deploy runs. The operator's interactive worktree sits
+    # on a feature branch, so NOTHING else advances local main — without this the
+    # watched ref is frozen + packed-only (no loose file) and the trigger is dead
+    # (reform-deploy-chain-repair root cause). refs/heads/ is shared across
+    # worktrees, so update-ref here moves the ref the .path watches in the
+    # canonical .git. Loop-safe: only advance on an actual change (no mtime churn
+    # → no spurious re-fires across the ~23 per-tick managed invocations), and
+    # hapax-post-merge-deploy never writes .git so a fire cannot re-trigger itself.
+    rebuild_origin_main="$(git -C "$REPO" rev-parse --verify --quiet origin/main 2>/dev/null || true)"
+    rebuild_local_main="$(git -C "$HAPAX_REBUILD_CANONICAL_REPO" rev-parse --verify --quiet refs/heads/main 2>/dev/null || true)"
+    if [ -n "$rebuild_origin_main" ] && [ "$rebuild_local_main" != "$rebuild_origin_main" ]; then
+        if git -C "$REPO" update-ref refs/heads/main "$rebuild_origin_main" 2>/dev/null; then
+            logger -t "$LOG_TAG" "advanced refs/heads/main → ${rebuild_origin_main:0:8} (post-merge-deploy .path trigger)"
+        else
+            logger -t "$LOG_TAG" "failed to advance refs/heads/main to ${rebuild_origin_main:0:8}"
+        fi
+    fi
+
+    # Alarm if the post-merge-deploy chain has stalled (receipt lags origin/main
+    # beyond the staleness threshold). Throttled + idempotent across per-tick calls.
+    check_post_merge_deploy_staleness "$rebuild_origin_main"
 fi
 
 # --- Fetch latest main ---
@@ -405,23 +479,48 @@ if [ "$HAPAX_REBUILD_SKIP_GUARD" != "1" ]; then
 fi
 
 if [ -n "$PRESSURE_REASON" ]; then
-    # System too stressed for a safe restart. Skip without advancing
-    # SHA_FILE so we retry next cycle. Throttled ntfy per distinct SHA
-    # so the operator isn't spammed while pressure persists.
-    PRESSURE_NOTIFIED_FILE="$STATE_DIR/last-pressure-skip-${SHA_KEY}-sha"
-    LAST_PRESSURE_NOTIFIED=$(cat "$PRESSURE_NOTIFIED_FILE" 2>/dev/null || echo "none")
-    skip_msg="$SERVICE restart SKIPPED under pressure — $PRESSURE_REASON — retrying next cycle"
-    echo "[WARN] rebuild-service: $skip_msg" >&2
-    logger -t "$LOG_TAG" -p user.warning "$skip_msg"
-    if [ "$CURRENT_SHA" != "$LAST_PRESSURE_NOTIFIED" ]; then
-        ntfy "$SERVICE restart deferred (pressure)" \
-            "$PRESSURE_REASON. Deploy ${CURRENT_SHA:0:8} waits for system to settle. HAPAX_REBUILD_SKIP_GUARD=1 to force." \
-            "default" "hourglass"
-        echo "$CURRENT_SHA" > "$PRESSURE_NOTIFIED_FILE"
+    # Consecutive-pressure-skip counter. A permanently-loaded host would skip
+    # forever and NEVER deploy; after N consecutive skips we FORCE this restart
+    # through (a stuck deploy is worse than one restart under load) and escalate
+    # (high-priority ntfy) so the operator knows the guard was overridden.
+    : "${HAPAX_REBUILD_PRESSURE_SKIP_MAX:=5}"
+    pressure_skips=$(cat "$PRESSURE_SKIP_COUNT_FILE" 2>/dev/null || echo 0)
+    [[ "$pressure_skips" =~ ^[0-9]+$ ]] || pressure_skips=0
+    pressure_skips=$((pressure_skips + 1))
+    if [ "$pressure_skips" -ge "$HAPAX_REBUILD_PRESSURE_SKIP_MAX" ]; then
+        echo "0" > "$PRESSURE_SKIP_COUNT_FILE"
+        force_msg="$SERVICE forcing restart after ${pressure_skips} consecutive pressure-skips — $PRESSURE_REASON"
+        echo "[WARN] rebuild-service: $force_msg" >&2
+        logger -t "$LOG_TAG" -p user.warning "$force_msg"
+        ntfy "$SERVICE restart FORCED (pressure-skip cap)" \
+            "${pressure_skips} consecutive skips >= ${HAPAX_REBUILD_PRESSURE_SKIP_MAX}; forcing ${CURRENT_SHA:0:8} despite $PRESSURE_REASON" \
+            "high" "warning"
+        # Fall through to the restart path with PRESSURE_REASON no longer gating.
+    else
+        # System too stressed for a safe restart. Skip without advancing
+        # SHA_FILE so we retry next cycle. Throttled ntfy per distinct SHA
+        # so the operator isn't spammed while pressure persists.
+        echo "$pressure_skips" > "$PRESSURE_SKIP_COUNT_FILE"
+        PRESSURE_NOTIFIED_FILE="$STATE_DIR/last-pressure-skip-${SHA_KEY}-sha"
+        LAST_PRESSURE_NOTIFIED=$(cat "$PRESSURE_NOTIFIED_FILE" 2>/dev/null || echo "none")
+        skip_msg="$SERVICE restart SKIPPED under pressure — $PRESSURE_REASON — retrying next cycle (skip ${pressure_skips}/${HAPAX_REBUILD_PRESSURE_SKIP_MAX})"
+        echo "[WARN] rebuild-service: $skip_msg" >&2
+        logger -t "$LOG_TAG" -p user.warning "$skip_msg"
+        if [ "$CURRENT_SHA" != "$LAST_PRESSURE_NOTIFIED" ]; then
+            ntfy "$SERVICE restart deferred (pressure)" \
+                "$PRESSURE_REASON. Deploy ${CURRENT_SHA:0:8} waits for system to settle (skip ${pressure_skips}/${HAPAX_REBUILD_PRESSURE_SKIP_MAX}). HAPAX_REBUILD_SKIP_GUARD=1 to force." \
+                "default" "hourglass"
+            echo "$CURRENT_SHA" > "$PRESSURE_NOTIFIED_FILE"
+        fi
+        write_outcome "deferred_pressure" "0" "false" "" "0" "0" "$skip_msg"
+        exit 0
     fi
-    write_outcome "deferred_pressure" "0" "false" "" "0" "0" "$skip_msg"
-    exit 0
 fi
+
+# Reached the restart path (not pressure-skipping) → reset the consecutive
+# pressure-skip counter so the force-after-N cap only counts *consecutive*
+# skips, never a lifetime total.
+rm -f "$PRESSURE_SKIP_COUNT_FILE" 2>/dev/null || true
 
 ntfy "$SERVICE restarting" "${LAST_SHA:0:8} → ${CURRENT_SHA:0:8}" "low" "hammer_and_wrench"
 

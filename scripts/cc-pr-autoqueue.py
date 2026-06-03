@@ -3,12 +3,14 @@
 
 The merge queue should not depend on a human/session remembering to run
 ``gh pr merge`` after a governed PR is ready. This reconciler scans open PRs,
-matches each PR to a cc-task in the local Obsidian vault, and queues or arms
-auto-merge only when Hapax governance and GitHub protection state both pass.
+matches each PR to a cc-task in the local Obsidian vault, and ARMS auto-merge
+only when Hapax governance and GitHub protection state both pass.
 
-GitHub's current CLI behavior for branches that require a merge queue is the
-primitive this script uses: ``gh pr merge`` adds a ready PR to the queue, and
-``gh pr merge --auto`` arms auto-merge until required checks/reviews pass.
+Arm-only (task reform-native-merge-queue): the sole positive GitHub mutation is
+one idempotent ``gh pr merge --auto --squash``. GitHub's native merge queue then
+owns batching, speculative ``gh-readonly-queue`` branches, auto-rebase, and
+bisect-on-failure — this script no longer issues a direct ``--merge`` or manages
+the queue itself, which previously raced GitHub's own batching and stranded PRs.
 
 Usage::
 
@@ -29,7 +31,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +90,10 @@ HOLD_LABEL_RE = re.compile(
 DEFAULT_REQUIRED_CHECKS = ("lint", "test", "typecheck", "web-build", "vscode-build")
 AUTOQUEUE_ADMISSION_CONTEXT = "hapax/autoqueue-admission"
 AUTOQUEUE_IGNORED_CHECK_CONTEXTS = {AUTOQUEUE_ADMISSION_CONTEXT, "pr-admission"}
+# Mirrors queue-admission-proof-check.py DEFAULT_TTL_SECONDS. The reconciler
+# re-posts the admission proof once it is older than half this window so the
+# server-side proof never goes stale (G3 idempotent writes).
+AUTOQUEUE_ADMISSION_TTL_SECONDS = 30 * 60
 CI_REPAIR_KINDS = {"cicd-speedup", "ci-repair", "ci-speedup", "merge-queue-repair"}
 CI_REPAIR_TAGS = {"cicd", "ci", "autoqueue"}
 INDEPENDENT_QUEUE_ADMISSION = {"independent", "independent_route"}
@@ -102,6 +108,32 @@ DEFAULT_STORM_RECENT_RUN_LIMIT = 20
 STORM_MAX_ENTRIES_TO_BUILD = 1
 STEADY_MAX_ENTRIES_TO_BUILD = 6
 FAILED_MERGE_GROUP_CONCLUSIONS = {"failure", "timed_out", "startup_failure", "cancelled"}
+
+# Shared-file epic serialization — single-lane affinity (CASE-SBCL-CLOG-COORD-001).
+# The CLOG/Trainyard cockpit epic is a parallel dependency DAG whose branches all
+# mutate one shared file (src/dashboard.lisp); two lanes editing it concurrently
+# merge-conflict by construction (dependency closure alone does not serialize the
+# siblings). A task joins a serialized epic via an explicit ``epic_serialize``
+# frontmatter field OR by its ``parent_spec`` basename matching the registry
+# below — so an existing epic is covered without editing every member note. The
+# autoqueue then holds admission of an epic PR while a sibling epic task is
+# concurrently in flight in a DIFFERENT lane (the actual hazard); same-lane serial
+# work is never held, and a deterministic lowest-PR tiebreak keeps two
+# different-lane epic PRs from dead-holding each other.
+SHARED_FILE_EPIC_PARENT_SPECS: dict[str, str] = {
+    # parent_spec basename -> serialized-epic id (the shared file it contends on).
+    #
+    # Emptied 2026-06-01 (task reform-native-merge-queue): the native GitHub merge
+    # queue serializes shared-file contention through its speculative
+    # gh-readonly-queue branches (auto-rebase + bisect-on-failure), so a
+    # pre-admission affinity hold is no longer needed to keep two different-lane
+    # epic PRs from merge-conflicting. Re-add an entry here only to re-enable the
+    # local pre-queue hold for a specific shared-file epic.
+}
+EPIC_INFLIGHT_STATUSES = frozenset(
+    {"claimed", "in_progress", "pr_open", "in_review", "merge_queue", "ready_for_merge"}
+)
+EPIC_UNASSIGNED_LANES = {"unassigned", "null", "none", "~", ""}
 
 
 def default_repo_root() -> Path:
@@ -159,6 +191,9 @@ class TaskNote:
     kind: str | None
     tags: tuple[str, ...] = ()
     queue_admission: str | None = None
+    assigned_to: str | None = None
+    lane_affinity: str | None = None
+    epic_serialize: str | None = None
     frontmatter: dict[str, Any] = field(default_factory=dict)
 
 
@@ -522,6 +557,9 @@ def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
                     kind=(_scalar(fm.get("kind")) or "").lower() or None,
                     tags=tuple(tag.lower() for tag in _string_tuple(fm.get("tags"))),
                     queue_admission=((_scalar(fm.get("queue_admission")) or "").lower() or None),
+                    assigned_to=_scalar(fm.get("assigned_to")),
+                    lane_affinity=_scalar(fm.get("lane_affinity")),
+                    epic_serialize=_scalar(fm.get("epic_serialize")),
                     frontmatter=dict(fm),
                 )
             )
@@ -616,6 +654,85 @@ def unchecked_blocking_checkboxes(body: str) -> list[str]:
     return blockers
 
 
+def _epic_serialize_key(task: TaskNote) -> str | None:
+    """The serialized shared-file epic a task belongs to, or ``None``.
+
+    An explicit ``epic_serialize`` frontmatter value wins; otherwise the task's
+    ``parent_spec`` basename is matched against :data:`SHARED_FILE_EPIC_PARENT_SPECS`
+    so every member of a known epic is covered without editing each note.
+    """
+    if task.epic_serialize:
+        return task.epic_serialize
+    if task.parent_spec:
+        return SHARED_FILE_EPIC_PARENT_SPECS.get(Path(task.parent_spec).name)
+    return None
+
+
+def _task_lane(task: TaskNote) -> str | None:
+    """The lane a task is worked in: the live assignee, else declared affinity."""
+    for candidate in (task.assigned_to, task.lane_affinity):
+        lane = (candidate or "").strip().lower()
+        if lane and lane not in EPIC_UNASSIGNED_LANES:
+            return lane
+    return None
+
+
+def _epic_sibling_in_flight(task: TaskNote) -> bool:
+    """Whether an epic sibling is actively contending for the shared file.
+
+    In flight = active (not terminal) and either carrying an in-flight status or
+    an open PR. Merged/closed predecessors and not-yet-started (offered/ready
+    without a PR) siblings never contend.
+    """
+    if task.folder != "active" or task.status in CLOSED_READY_STATUSES:
+        return False
+    return task.status in EPIC_INFLIGHT_STATUSES or task.pr is not None
+
+
+def shared_file_epic_affinity_blockers(
+    matched_tasks: tuple[TaskNote, ...],
+    all_tasks: list[TaskNote],
+    *,
+    pr_number: int | None,
+) -> list[str]:
+    """Single-lane-affinity holds for shared-file epic PRs (CASE-SBCL-CLOG-COORD-001).
+
+    Hold this PR when a sibling in the same serialized epic is concurrently in
+    flight in a DIFFERENT lane and is "ahead" — mid-edit with no PR yet, or
+    carrying an earlier (lower-numbered) PR. Same-lane work, lane-ambiguous
+    siblings, and terminal siblings never hold; the lowest-PR rule keeps two
+    different-lane epic PRs from dead-holding each other.
+    """
+    blockers: list[str] = []
+    seen: set[str] = set()
+    for task in matched_tasks:
+        epic = _epic_serialize_key(task)
+        if epic is None:
+            continue
+        task_lane = _task_lane(task)
+        if task_lane is None:
+            continue
+        for sibling in all_tasks:
+            if sibling.task_id == task.task_id or _epic_serialize_key(sibling) != epic:
+                continue
+            if not _epic_sibling_in_flight(sibling):
+                continue
+            sibling_lane = _task_lane(sibling)
+            if sibling_lane is None or sibling_lane == task_lane:
+                continue  # same lane (serial) or lane unknown — not the hazard
+            ahead = sibling.pr is None or (pr_number is not None and sibling.pr < pr_number)
+            if not ahead:
+                continue
+            reason = (
+                f"shared_file_epic_affinity_hold:{epic}:"
+                f"{sibling.task_id}@{sibling_lane}:{sibling.status or 'unknown'}"
+            )
+            if reason not in seen:
+                seen.add(reason)
+                blockers.append(reason)
+    return blockers
+
+
 def classify_pr(
     pr: PullRequest,
     *,
@@ -675,6 +792,8 @@ def classify_pr(
                 reasons.extend(
                     f"task_blocker:{matched_task.task_id}:{blocker}" for blocker in blockers
                 )
+
+    reasons.extend(shared_file_epic_affinity_blockers(matched_tasks, tasks, pr_number=pr.number))
 
     if (
         active_ci_repair_task_ids
@@ -792,10 +911,15 @@ def merge_pr(
         ]
     else:
         cmd = ["gh", "pr", "merge", str(decision.pr.number), "--repo", repo]
-    if decision.action == "enable_auto_merge":
-        cmd.extend(["--auto", "--merge"])
-    elif decision.action == "queue":
-        cmd.append("--merge")
+    if decision.action in ("enable_auto_merge", "queue"):
+        # Arm-only (task reform-native-merge-queue): the local autoqueue's sole
+        # positive mutation is to ARM auto-merge with one idempotent command.
+        # GitHub's native merge queue then owns batching, speculative
+        # gh-readonly-queue branches, auto-rebase, and bisect-on-failure — we no
+        # longer issue a direct `--merge` (which raced the queue's own management).
+        # Re-arming an already-armed PR is a no-op; `--squash` matches the queue's
+        # configured merge method.
+        cmd.extend(["--auto", "--squash"])
     elif decision.action == "disable_auto_merge":
         cmd.append("--disable-auto")
     elif decision.action != "dequeue":
@@ -897,22 +1021,84 @@ def _admission_status_for(decision: Decision) -> tuple[str, str] | None:
     return None
 
 
+def _parse_status_created_at(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _latest_admission_status(
+    head_sha: str,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> tuple[str, str, datetime | None] | None:
+    """The most recent autoqueue-admission (state, description, created_at) on
+    ``head_sha``, or None when absent/unreadable. Read-before-write lets the
+    reconciler POST a fresh status only when it actually changed or is about to
+    go stale: GitHub caps statuses at 1000 per SHA+context, and the old
+    unconditional POST burned that cap into a 422 self-DoS that made the apply
+    loop skip the queue mutation."""
+    cmd = ["gh", "api", f"repos/{repo}/commits/{head_sha}/statuses"]
+    proc = runner(cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60)
+    if getattr(proc, "returncode", 1) != 0:
+        return None
+    try:
+        items = json.loads(proc.stdout or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(items, list):
+        return None
+    for item in items:  # the statuses API returns most-recent-first
+        if isinstance(item, dict) and item.get("context") == AUTOQUEUE_ADMISSION_CONTEXT:
+            return (
+                str(item.get("state") or ""),
+                str(item.get("description") or ""),
+                _parse_status_created_at(item.get("created_at")),
+            )
+    return None
+
+
 def set_autoqueue_admission_status(
     decision: Decision,
     *,
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
+    now: datetime | None = None,
 ) -> tuple[bool, str] | None:
-    """Write the server-visible autoqueue admission proof for a PR head SHA."""
+    """Write the server-visible autoqueue admission proof for a PR head SHA.
+
+    Idempotent (G3): reads the current status first and POSTs only when the
+    (state, description) changed OR the existing status is older than half the
+    proof TTL. GitHub caps statuses at 1000 per SHA+context; the old
+    unconditional POST burned that cap into a 422 self-DoS that made the apply
+    loop skip the queue mutation."""
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
+    now = now or datetime.now(UTC)
     status = _admission_status_for(decision)
     if status is None:
         return None
     if not decision.pr.head_sha:
         return False, "missing_head_sha"
     state, description = status
+    current = _latest_admission_status(
+        decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
+    )
+    if current is not None:
+        cur_state, cur_description, cur_created = current
+        unchanged = cur_state == state and cur_description == description
+        fresh = cur_created is not None and (now - cur_created) < timedelta(
+            seconds=AUTOQUEUE_ADMISSION_TTL_SECONDS / 2
+        )
+        if unchanged and fresh:
+            return True, "unchanged"
     cmd = [
         "gh",
         "api",
@@ -1143,7 +1329,7 @@ def run_reconciler(
     if apply:
         for decision in decisions:
             status_result = set_autoqueue_admission_status(
-                decision, repo=repo, repo_root=repo_root, runner=runner
+                decision, repo=repo, repo_root=repo_root, runner=runner, now=now
             )
             if decision.action not in {
                 "queue",

@@ -45,7 +45,16 @@ from shared.sdlc_lifecycle import (
 
 #: Bumped independently of the floor whenever this decision logic changes, so a
 #: fleet-wide regression can be bisected to the exact policy_decide version.
-POLICY_DECIDE_FN_VERSION = "0.1.0"
+#: 0.2.0 — scope convergence to the legacy allow-set (expanduser + sister-repo +
+#: scratch-worktree normalization, /tmp + relay cognition, own-task-note bookkeeping,
+#: argument-aware python/cp write detection): a strict relaxation that drives the
+#: replayed tightenings toward 0. Re-enters the promotion ladder at shadow.
+#: 0.3.0 — fix-cc-gate-fps: cat stdout-vs-stderr-redirect classification (a real
+#: `cat > f` is a source write; `cat … 2>/dev/null` / `2>&1` / `&>` are NOT, so a
+#: read-only cat is no longer misclassified) + vault-root anchoring of relative scope
+#: refs in `_scope_forms`. Matches the live gate's lines 268/298 + scope-anchor fix;
+#: any decision-logic change re-enters the promotion ladder at shadow.
+POLICY_DECIDE_FN_VERSION = "0.3.0"
 
 #: Where the shadow canary records legacy-vs-new divergences by default. A cache
 #: path (not git-tracked); the real single daemon-owned log lands in Phase 4.
@@ -97,26 +106,116 @@ _UNCONDITIONAL_SOURCE_CMDS = frozenset(
 #: git subcommands that mutate the WORKING TREE (need scope), vs ref/index/remote ops.
 _GIT_SOURCE_SUBCMDS = frozenset({"apply", "reset", "merge", "rebase", "restore"})
 #: git subcommands that mutate git state but write no source (so are NOT scope-bound).
+#: ``branch`` is argument-aware (see ``_git_branch_mutates``): list/show forms read.
 _GIT_MUTATING_SUBCMDS = _GIT_SOURCE_SUBCMDS | frozenset(
-    {"commit", "push", "checkout", "switch", "branch", "tag", "add", "stash", "rm", "mv"}
+    {"commit", "push", "checkout", "switch", "tag", "add", "stash", "rm", "mv"}
 )
-#: Command heads that mutate runtime/system state (need runtime authorization).
-_RUNTIME_CMDS = frozenset(
+#: ``git branch`` flags that mutate (delete/rename/copy/force/upstream); any other
+#: form (list/show/--contains/…) is a read.
+_GIT_BRANCH_MUTATING_FLAGS = frozenset(
     {
-        "systemctl",
-        "ssh",
-        "scp",
-        "rsync",
+        "-d",
+        "-D",
+        "--delete",
+        "-m",
+        "-M",
+        "--move",
+        "-c",
+        "-C",
+        "--copy",
+        "-f",
+        "--force",
+        "--edit-description",
+        "-u",
+        "--set-upstream-to",
+        "--unset-upstream",
+    }
+)
+#: ``git branch`` flags whose following positional is a VALUE, not a new branch name.
+_GIT_BRANCH_READ_VALUE_FLAGS = frozenset(
+    {
+        "--contains",
+        "--no-contains",
+        "--merged",
+        "--no-merged",
+        "--points-at",
+        "--sort",
+        "--format",
+        "--list",
+        "--column",
+    }
+)
+#: Command heads that ALWAYS mutate runtime/system state. systemctl/docker/
+#: journalctl are subcommand-gated separately (a read like ``systemctl is-active``
+#: or ``docker ps`` is NOT a mutation) — the FM-16 argument-aware fix.
+_RUNTIME_CMDS = frozenset(
+    {"ssh", "scp", "rsync", "kill", "pkill", "pacman", "paru", "apt", "dnf", "npm", "pnpm", "yarn"}
+)
+#: systemctl subcommands that mutate runtime state (mirror journalctl's --vacuum-
+#: only rule: every other subcommand — is-active/status/show/list-*/… — is a read).
+_SYSTEMCTL_MUTATING_SUBCMDS = frozenset(
+    {
+        "start",
+        "stop",
+        "restart",
+        "try-restart",
+        "reload",
+        "reload-or-restart",
+        "force-reload",
+        "enable",
+        "disable",
+        "reenable",
+        "preset",
+        "preset-all",
+        "mask",
+        "unmask",
+        "link",
+        "revert",
+        "set-property",
+        "set-default",
+        "isolate",
         "kill",
-        "pkill",
-        "docker",
-        "pacman",
-        "paru",
-        "apt",
-        "dnf",
-        "npm",
-        "pnpm",
-        "yarn",
+        "clean",
+        "freeze",
+        "thaw",
+        "daemon-reload",
+        "daemon-reexec",
+        "edit",
+        "switch-root",
+        "default",
+        "reboot",
+        "poweroff",
+        "halt",
+        "kexec",
+        "suspend",
+        "hibernate",
+        "hybrid-sleep",
+        "emergency",
+        "rescue",
+    }
+)
+#: docker subcommands that mutate container/image/runtime state (ps/logs/inspect
+#: stay reads); also matches ``docker compose <verb>``.
+_DOCKER_MUTATING_SUBCMDS = frozenset(
+    {
+        "up",
+        "down",
+        "start",
+        "stop",
+        "restart",
+        "kill",
+        "rm",
+        "rmi",
+        "run",
+        "exec",
+        "create",
+        "build",
+        "pull",
+        "push",
+        "load",
+        "import",
+        "prune",
+        "compose",
     }
 )
 _GH_MUTATING_SUBCMDS = frozenset({"api", "repo", "release"})
@@ -143,6 +242,15 @@ def _bash_is_runtime(command: str) -> bool:
     if not tokens:
         return False
     head = tokens[0]
+    rest = tokens[1:]
+    # Subcommand-gated runtime heads: a read (systemctl is-active, docker ps,
+    # journalctl -n) is NOT a runtime mutation — only the mutating subcommands are.
+    if head == "systemctl":
+        return any(t in _SYSTEMCTL_MUTATING_SUBCMDS for t in rest)
+    if head == "docker":
+        return any(t in _DOCKER_MUTATING_SUBCMDS for t in rest)
+    if head == "journalctl":
+        return any(t.startswith("--vacuum") for t in rest)
     if head in _RUNTIME_CMDS:
         return True
     if head == "uv" and "pip" in tokens and "install" in tokens:
@@ -150,24 +258,114 @@ def _bash_is_runtime(command: str) -> bool:
     return head in {"pip", "pip3"} and "install" in tokens
 
 
+#: A genuine source WRITE inside a python payload: a write/append/create ``open()``
+#: mode, a ``Path.write_*`` sink, a ``shutil`` copy/move, or an ``os`` path-mutating
+#: call. A bare ``open(x)`` (read) or a string-building heredoc is NOT a source write
+#: — the over-block the legacy substring ``open\(`` produced (it counted every open).
+_PYTHON_WRITE_RE = re.compile(
+    r"\.write_text\(|\.write_bytes\("
+    r"|\bshutil\.(?:copy|copy2|copyfile|copytree|move)\("
+    r"|\bos\.(?:remove|unlink|rename|replace|rmdir|removedirs|makedirs|mkdir)\("
+    r"|\bopen\([^)]*,\s*['\"][^'\"]*[wax+]"
+)
+#: A quoted path-like literal (a no-whitespace token carrying a ``/``) — used to tell
+#: whether a write targets ONLY ephemeral scratch/cognition (``/tmp``, vault, relay).
+_PATH_LITERAL_RE = re.compile(r"""['"]([^'"\s]*/[^'"\s]*)['"]""")
+
+
+def _python_writes_in_tree(command: str) -> bool:
+    """A python payload is a scope-bound source write only when it has a write sink AND
+    that write is not solely to ephemeral scratch/cognition (``/tmp``, vault,
+    ``~/.cache/hapax/relay``). A read-only or string-building payload is never one."""
+    if not _PYTHON_WRITE_RE.search(command):
+        return False
+    literals = _PATH_LITERAL_RE.findall(command)
+    # A write whose every path literal is scratch/cognition is not an in-tree write.
+    return not (literals and all(is_cognition_path(p) for p in literals))
+
+
+def _unconditional_targets(head: str, tokens: list[str]) -> list[str]:
+    """Best-effort filesystem targets an unconditional-source command writes."""
+    positionals = [t for t in tokens[1:] if not t.startswith("-")]
+    if not positionals:
+        return []
+    if head in {"cp", "mv", "install"}:
+        return positionals[-1:]  # the destination is the trailing positional
+    return positionals  # tee/touch/truncate/chmod/chown/mkdir/rm/dd: every positional
+
+
+def _unconditional_writes_in_tree(head: str, tokens: list[str]) -> bool:
+    """An unconditional-source command is a scope-bound source write only when SOME
+    target is NOT ephemeral scratch/cognition; writing solely to ``/tmp`` (etc.) is
+    not an in-tree source mutation (legacy-gate recorded-allow parity)."""
+    targets = _unconditional_targets(head, tokens)
+    if not targets:
+        return True  # cannot see a target → fail safe (scope-bound)
+    return any(not is_cognition_path(t) for t in targets)
+
+
+#: Redirections whose '>' does NOT send cat's stdout to a file: fd duplications
+#: (``2>&1``, ``>&2``, ``2>&-``), the both-streams operator (``&>`` / ``&>>``), and
+#: stderr-or-higher-fd to a file (``2>``, ``2>>``, ``3>``, …). Stripped before testing
+#: for a real stdout redirect, so a read-only ``cat … 2>/dev/null`` is not misread as a
+#: write (fix-cc-gate-fps Fix 1; mirrors cc-task-gate.impl.sh ``_cat_writes_file``).
+_NON_STDOUT_REDIRECT_RE = re.compile(r"[0-9]*>&[0-9-]+|&>>?|[2-9][0-9]*>>?")
+
+
+def _cat_writes_to_file(command: str) -> bool:
+    """True iff a ``cat`` command redirects its STDOUT to a file (``> f`` / ``>> f`` /
+    ``1> f``) — a real write. Only the FIRST simple command's redirections count
+    (``_head_tokens`` splits off a pipe/separator and shlex-tokenizes, so a quoted '>'
+    in a later arg cannot trip it); stderr/fd redirections are stripped first. A bare
+    ``>`` / ``>>`` / ``1>`` keeps its '>' and is the only thing that returns True."""
+    cleaned = _NON_STDOUT_REDIRECT_RE.sub(" ", " ".join(_head_tokens(command)))
+    return ">" in cleaned
+
+
 def _bash_is_source_scope(command: str) -> bool:
     """Argument-aware: does the command HEAD write source that must be scope-checked?
 
     Unlike the legacy substring classifier this does NOT flag ``git checkout``/
-    ``switch``/``branch`` (ref ops that write no source) — the FM-16 fix.
+    ``switch``/``branch`` (ref ops that write no source) — the FM-16 fix — nor a
+    write whose sole target is ephemeral scratch/cognition (``/tmp``, vault, relay),
+    nor a read-only python payload (a bare ``open(x)`` is not a write), nor a ``cat``
+    whose only redirection is stderr/an fd (``2>/dev/null``, ``2>&1``, ``&>``).
     """
     tokens = _head_tokens(command)
     if not tokens:
         return False
     head = tokens[0]
     if head in _UNCONDITIONAL_SOURCE_CMDS:
-        return True
+        return _unconditional_writes_in_tree(head, tokens)
+    if head == "cat":
+        return _cat_writes_to_file(command)
     if head in {"sed", "perl"}:
         return any(t == "-i" or t.startswith("-i") or re.match(r"^-p?i$", t) for t in tokens[1:])
     if head == "git" and len(tokens) > 1 and tokens[1] in _GIT_SOURCE_SUBCMDS:
         return True
     if head.startswith("python"):
-        return any(marker in command for marker in (".write_text", ".write_bytes", "open("))
+        return _python_writes_in_tree(command)
+    return False
+
+
+def _git_branch_mutates(args: list[str]) -> bool:
+    """``git branch`` mutates only on delete/rename/copy/force/upstream or a positional
+    (new) branch name; list/show forms (-a/-v/--show-current/--contains X/…) are reads.
+    The FM-16 reader whitelist — branch creation is also gated by no-stale-branches."""
+    prev_value_flag = False
+    for arg in args:
+        if arg in _GIT_BRANCH_MUTATING_FLAGS or arg.startswith("--set-upstream-to="):
+            return True
+        if arg in _GIT_BRANCH_READ_VALUE_FLAGS:
+            prev_value_flag = True
+            continue
+        if arg.startswith("-"):
+            prev_value_flag = False
+            continue
+        if prev_value_flag:  # the value of a read flag (e.g. --contains HEAD), not a name
+            prev_value_flag = False
+            continue
+        return True  # a positional → a (new) branch name to create/operate on
     return False
 
 
@@ -180,10 +378,15 @@ def _bash_is_mutating(command: str) -> bool:
         return True
     if head in {"sed", "perl"}:
         return _bash_is_source_scope(command)
+    if head == "cat":
+        return _cat_writes_to_file(command)
     if _bash_is_runtime(command):
         return True
-    if head == "git" and len(tokens) > 1 and tokens[1] in _GIT_MUTATING_SUBCMDS:
-        return True
+    if head == "git" and len(tokens) > 1:
+        if tokens[1] == "branch":
+            return _git_branch_mutates(tokens[2:])
+        if tokens[1] in _GIT_MUTATING_SUBCMDS:
+            return True
     if head == "gh" and len(tokens) > 1:
         sub = tokens[1]
         if sub in _GH_MUTATING_SUBCMDS:
@@ -216,9 +419,11 @@ _DOCS_PATH_RE = re.compile(r"(?:^|/)docs/|(?:^|/)(?:CLAUDE|README)\.md$|\.md$")
 
 
 def is_cognition_path(path: str) -> bool:
-    """Memory / personal vault notes / ephemeral scratch — always writable, ungated."""
+    """Memory / personal vault notes / coordination receipts / ephemeral scratch —
+    always writable, ungated (a blocked lane must still think and report state)."""
     if not path:
         return False
+    path = os.path.expanduser(path)
     home = os.path.expanduser("~")
     if path.startswith(home + "/.claude/") and ("/memory/" in path or path.endswith("/memory")):
         return True
@@ -230,9 +435,35 @@ def is_cognition_path(path: str) -> bool:
         return False
     if path.startswith(personal + "/"):
         return True
+    # Inter-session relay receipts: status a blocked lane writes to report state. The
+    # governance-sensitive cc-active-task-* claim files share ~/.cache/hapax/ and are
+    # deliberately NOT carved out (only the relay/ subtree is).
+    if path.startswith(home + "/.cache/hapax/relay/"):
+        return True
     if path.startswith("/dev/shm/"):
         return True
-    return path.startswith("/tmp/hapax-") or path.startswith("/tmp/hapax/")
+    # Ephemeral /tmp scratch (verify scripts, PR bodies, commit-message files) — the
+    # master design's "bare /tmp", broader than the legacy gate's /tmp/hapax-* only.
+    return path.startswith("/tmp/")
+
+
+#: The vault roots holding the governance SSOT notes (cc-task + request notes).
+_TASK_NOTE_ROOTS = ("/20-projects/hapax-cc-tasks/", "/20-projects/hapax-requests/")
+
+
+def _is_own_task_note(path: str, task_id: str) -> bool:
+    """True iff ``path`` is the governance note for THIS claimed task (``<task_id>.md``).
+
+    The note basename must be exactly ``<task_id>.md`` under the cc-task/request vault
+    roots — so a session may keep its own note (session log, stage, AC boxes) but not
+    forge or edit another task's note through this carve-out.
+    """
+    if not task_id or not path:
+        return False
+    p = os.path.expanduser(path)
+    if not any(root in p for root in _TASK_NOTE_ROOTS):
+        return False
+    return p.rsplit("/", 1)[-1] == f"{task_id}.md"
 
 
 def _is_docs_path(path: str) -> bool:
@@ -255,59 +486,90 @@ def _stage_num(stage: str | None) -> int | None:
     return int(match.group(1)) if match else None
 
 
-#: The workspace root that contains every interface-qualified worktree
-#: (``~/projects/hapax-council--<lane>/``, ``~/projects/hapax-coord/`` …). The
-#: shadow REPLAY diffs decisions logged from MANY worktrees in ONE process and the
-#: decision rows record no cwd, so scope resolution must be cwd-INDEPENDENT: it
-#: cannot mirror the live gate's ``Path.cwd()``-anchored ``resolve`` because the
-#: replay's cwd is not the decision's worktree. Reducing BOTH sides to repo-
-#: relative form yields the same verdict the live gate returned in that worktree.
-_WORKTREE_ANCHOR = "/projects/"
+#: The workspace roots that contain a worktree's checkout: ``~/projects/<wt>/`` (the
+#: interface-qualified lanes + sister repos) and ``…/scratch/<name>/`` (transient
+#: scratch clones under the cache, e.g. ``/data/cache/hapax/scratch/nmq/``). The shadow
+#: REPLAY diffs decisions logged from MANY worktrees in ONE process and the decision
+#: rows record no cwd, so scope resolution must be cwd-INDEPENDENT: it cannot mirror the
+#: live gate's ``Path.cwd()``-anchored ``resolve`` (the replay's cwd is not the
+#: decision's worktree). Reducing BOTH sides to repo-relative form yields the same
+#: verdict the live gate returned in that worktree. ``/projects/`` is tried first so a
+#: repo carrying its OWN inner ``scratch/`` dir still anchors on the workspace root.
+_WORKTREE_ANCHORS = ("/projects/", "/scratch/")
 
 
-def _repo_relative(path: str) -> str:
-    """Reduce a path to cwd-independent repo-relative form.
+def _scope_forms(path: str) -> tuple[str, ...]:
+    """The cwd-independent normalized forms a path presents for scope comparison.
 
-    An ABSOLUTE worktree path ``<home>/projects/<worktree>/<rel>`` collapses to
-    ``<rel>`` by cutting at the workspace ``/projects/`` anchor (its FIRST
-    occurrence — a repo may carry its own inner ``projects/`` dir) and dropping the
-    single worktree-directory segment that follows. A RELATIVE path is only
-    ``./``-stripped, so a relative ``shared/projects/x`` is never mis-anchored.
+    ``os.path.expanduser`` first (legacy-gate ``os.path.expanduser`` parity,
+    cc-task-gate.impl.sh:838 — so a ``~/projects/<repo>/…`` or ``~/Documents/…`` ref
+    matches the absolute target), then ``./``-strip. An ABSOLUTE workspace path
+    ``<home>/projects/<wt>/<rest>`` yields BOTH:
+
+    * the worktree-relative ``<wt>/<rest>`` — so a ref that names the sibling repo
+      dir explicitly (``hapax-coord/src/x``, from a cross-repo task whose cwd was
+      ``~/projects/``) matches; and
+    * the repo-relative ``<rest>`` — so a bare ``shared/x`` ref (cwd was the
+      worktree) matches.
+
+    The ``/projects/`` anchor is the FIRST occurrence (a repo may carry an inner
+    ``projects/`` dir). A path under the personal vault (``~/Documents/Personal/``)
+    additionally yields its vault-root-relative form, so a vault cc-task's relative
+    ``20-projects/hapax-cc-tasks/`` scope ref matches the absolute note path
+    (fix-cc-gate-fps Fix 2). Any other path (``/tmp`` scratch, an already-relative ref)
+    yields its single normalized form. Cwd-independent: the replay diffs decisions from
+    many worktrees in one process with no recorded cwd.
     """
-    p = path.strip()
+    p = os.path.expanduser(path.strip())
     while p.startswith("./"):
         p = p[2:]
-    if p.startswith("/"):
-        anchor = p.find(_WORKTREE_ANCHOR)
-        if anchor != -1:
-            tail = p[anchor + len(_WORKTREE_ANCHOR) :]  # '<worktree>/<rel>'
-            slash = tail.find("/")
-            return tail[slash + 1 :] if slash != -1 else ""
-    return p
+    if not p:
+        return ()
+    if not p.startswith("/"):
+        return (p,)
+    forms = [p]
+    # Vault-relative form: the vault root is a FIXED absolute prefix (unlike the
+    # mid-path worktree markers below), so strip it to yield the vault-relative form.
+    vault = os.path.expanduser("~/Documents/Personal/")
+    if p.startswith(vault):
+        forms.append(p[len(vault) :])
+    # The EARLIEST worktree anchor wins, so an inner ``scratch/`` under a ``~/projects/``
+    # worktree still anchors on the workspace root rather than the inner dir.
+    anchor, alen = -1, 0
+    for marker in _WORKTREE_ANCHORS:
+        i = p.find(marker)
+        if i != -1 and (anchor == -1 or i < anchor):
+            anchor, alen = i, len(marker)
+    if anchor != -1:
+        tail = p[anchor + alen :]  # '<wt>/<rest>'
+        slash = tail.find("/")
+        rest = tail[slash + 1 :] if slash != -1 else ""
+        forms.extend(f for f in (tail, rest) if f)
+    return tuple(dict.fromkeys(forms))
 
 
 def _scope_result(path: str, scope_refs: tuple[str, ...]) -> str:
     """One of 'allowed' / 'denied' / 'missing'.
 
-    Reduces BOTH the target and each scope-ref to cwd-independent repo-relative
-    form (``_repo_relative``) before comparing, so an absolute worktree
-    ``file_path`` matches a repo-relative ref exactly as the live (cwd-anchored)
+    Compares the cwd-independent normalized forms (``_scope_forms``) of the target
+    and each ref — both ``expanduser``'d and reduced to worktree-/repo-relative form
+    — so an absolute worktree or sister-repo ``file_path`` matches a ``~``-prefixed,
+    repo-dir-prefixed, or bare repo-relative ref exactly as the live (cwd-anchored)
     gate did when it ran inside that worktree.
     """
     real_refs = [r for r in scope_refs if r and not r.startswith(("cc-task:", "request:"))]
     if not real_refs:
         return "missing"
-    target = _repo_relative(path)
+    targets = _scope_forms(path)
     for ref in real_refs:
-        rn = _repo_relative(ref)
-        if not rn:
-            continue
-        if target == rn:
-            return "allowed"
-        if rn.endswith("/") and target.startswith(rn):
-            return "allowed"
-        if not rn.endswith("/") and target.startswith(rn + "/"):
-            return "allowed"
+        for rn in _scope_forms(ref):
+            for target in targets:
+                if target == rn:
+                    return "allowed"
+                if rn.endswith("/") and target.startswith(rn):
+                    return "allowed"
+                if not rn.endswith("/") and target.startswith(rn + "/"):
+                    return "allowed"
     return "denied"
 
 
@@ -419,6 +681,18 @@ def _decide(
             "claim", "no claimed task for this session", remediation_verb="cc-claim <task_id>"
         )
 
+    # 5b. The session's OWN claimed cc-task / request note (``<task_id>.md``) is
+    #     governance bookkeeping — session log, stage transitions, AC checkboxes —
+    #     allowed regardless of assignment/scope, the way the legacy content-validated
+    #     bootstrap allows it (the note is rarely listed in its own
+    #     mutation_scope_refs). A DIFFERENT task's note stays fully gated. This also
+    #     survives a reconciler-unassign race (the note's assigned_to flips to
+    #     'unassigned' mid-session while the session still holds the claim).
+    if path and _is_own_task_note(path, task.task_id):
+        return _allow(
+            "own-task-note", "session's own claimed cc-task note — governance bookkeeping"
+        )
+
     # 6. Assignment.
     if task.assigned_to != role:
         return _block(
@@ -493,18 +767,14 @@ def _decide(
         )
 
     # 13. Shell source mutations carry no scope-verifiable path. Argument-aware
-    #     (FM-16): only true working-tree writers block here — a branch op does not.
-    #     Strip quoted spans + comments first, mirroring the legacy gate
-    #     (cc-task-gate.sh:791), so a mutation marker that appears ONLY inside a
-    #     quoted payload — e.g. ``python3 -c "...open(...)..."`` — does not
-    #     false-block. (This is the lone residual TIGHTENING the scope-fix task
-    #     triaged: a genuine regression from not mirroring the gate's pre-scope strip.)
-    if (
-        name in _BASH_TOOLS
-        and not path
-        and not is_runtime
-        and _bash_is_source_scope(_strip_quotes_and_comments(command))
-    ):
+    #     (FM-16): only a TRUE working-tree source write blocks here. ``_bash_is_source_scope``
+    #     now inspects the payload precisely — a read-only python (a bare ``open(x)``),
+    #     a write whose sole target is scratch/cognition (``/tmp``, vault, relay), and a
+    #     branch op are NOT source writes — so the crude pre-strip the legacy gate used
+    #     (cc-task-gate.sh:791) is superseded: it mangled the very mode/target tokens this
+    #     check reads (e.g. it deleted the ``'w'`` from ``open('x','w')``). The raw command
+    #     is classified instead; the legacy strip lives on only in ``legacy_bash_scope_block``.
+    if name in _BASH_TOOLS and not path and not is_runtime and _bash_is_source_scope(command):
         return _block(
             "scope:command",
             "shell source mutation cannot be scope-verified",
@@ -530,10 +800,16 @@ def _decide(
 
 # --- The legacy bash classifier (the FM-16 locus — ported verbatim) -----------
 #
-# These two regexes are copied byte-for-semantics from the LIVE cc-task-gate.sh
-# (bash_is_mutating + bash_source_mutation_requires_scope) so the shadow harness
-# can compute exactly the legacy verdict and diff it against policy_decide. They
-# are deliberately the over-broad substring classifiers policy_decide replaces.
+# These regexes are the PRE-FM-16 over-broad substring classifier — the snapshot
+# the shadow harness diffs against to produce cutover evidence, and the example the
+# divergence demo (TestShadowCompare) pins. They are deliberately NOT converged onto
+# the now argument-aware classifier above: the live gate already shipped the FM-16
+# fix (argument-aware systemctl/git/quoted-arg handling), so the production shadow's
+# legacy baseline is the gate's REAL exit code (see cc-task-gate.impl.sh §3c), not a
+# re-derivation here. The remaining legacy→modern convergence (retiring these REs)
+# is owned by reform-policy-decide-converge-20260601. Cutover stays verdict-stable
+# because the ACTIVE classifier (_bash_is_mutating/_bash_is_runtime) matches the new
+# bash gate on the read-only corpus — pinned by the parity test in tests/hooks/.
 
 _LEGACY_MUTATING_RE = re.compile(
     r"(^|[;&|()\s])((git\s+(commit|push|apply|reset|checkout|switch|branch|merge|rebase|tag))"
@@ -798,7 +1074,12 @@ def replay_decision_log(
                 summary["loosening"] += 1
             elif not legacy_blocked and record.new_decision.blocked:
                 summary["tightening"] += 1
-            out_lines.append(json.dumps(record.to_row()))
+            ledger_row = record.to_row()
+            # Carry the ORIGINAL gate-decision ts (the ledger's own ``ts`` is the
+            # replay time) so the evaluator can window divergences by when the gate
+            # actually decided — the window-restart boundary reads this field.
+            ledger_row["decision_ts"] = str(row.get("ts") or "")
+            out_lines.append(json.dumps(ledger_row))
     _atomic_write_lines(shadow_ledger_path, out_lines)
     return summary
 
@@ -821,6 +1102,7 @@ def evaluate_shadow_clean(
     *,
     min_days: float = 7.0,
     min_decisions: int = 200,
+    window_start: datetime | None = None,
 ) -> dict[str, object]:
     """Compute "shadow-week-clean + asymmetric-divergence" for the 3b-cutover gate.
 
@@ -837,11 +1119,26 @@ def evaluate_shadow_clean(
       policy_decide is a strict relaxation of the legacy gate — it only removes
       over-blocks, never adds a new block that would regress live work at cutover.
 
+    When ``window_start`` is set, only decisions whose REAL gate-decision time is at or
+    after it are counted (the non-destructive window-restart boundary) — coverage reads
+    the decision log's ``ts`` and asymmetry reads each ledger row's ``decision_ts``. The
+    full log is preserved as evidence; the boundary simply scopes the clean window so
+    pre-convergence historical drift cannot poison a fresh accrual.
+
     Returns a structured verdict (never raises). The caller decides exit status.
     """
+
+    def _after_window(value: object) -> bool:
+        if window_start is None:
+            return True
+        ts = _parse_decision_ts(value)
+        return ts is not None and ts >= window_start
+
     total = 0
     timestamps: list[datetime] = []
     for row in _iter_jsonl(Path(decision_log_path)):
+        if not _after_window(row.get("ts")):
+            continue
         total += 1
         ts = _parse_decision_ts(row.get("ts"))
         if ts is not None:
@@ -854,6 +1151,10 @@ def evaluate_shadow_clean(
     divergences = loosening = tightening = 0
     for row in _iter_jsonl(Path(shadow_ledger_path)):
         if not row.get("diverged"):
+            continue
+        # Window by the original decision time (falls back to the ledger ts for rows
+        # written before decision_ts was stamped).
+        if not _after_window(row.get("decision_ts") or row.get("ts")):
             continue
         divergences += 1
         legacy_blocked = bool(row.get("legacy_blocked"))
@@ -888,8 +1189,101 @@ def evaluate_shadow_clean(
         "tightening": tightening,
         "min_days": min_days,
         "min_decisions": min_decisions,
+        "window_start": _iso(window_start) if window_start is not None else None,
         "reasons": reasons,
     }
+
+
+# --- The window-restart boundary + the cutover-eligibility receipt --------------
+#
+# Converging policy_decide removes the SYSTEMATIC over-blocks, but the historical
+# decision log still carries a few genuinely-permissive-legacy decisions (a roleless
+# merge, a scratch worktree, an out-of-scope test edit) policy_decide correctly blocks.
+# Those are not relaxation regressions, so rather than DESTRUCTIVELY rotate the log
+# (losing the evidence), the operator stamps a window-start boundary: a fresh 7-day
+# window accrues clean from current decisions while the full log is preserved. The
+# receipt makes eligibility (and the countdown to it) a durable, readable artifact so a
+# cutover is neither forgotten nor forced on the calendar alone.
+
+#: The non-destructive window-restart boundary (an ISO instant); absent ⇒ full history.
+DEFAULT_WINDOW_START = Path(os.path.expanduser("~/.cache/hapax/policy-decide-window-start"))
+#: The durable cutover-eligibility receipt (span/asymmetry/eligible/countdown).
+DEFAULT_CUTOVER_RECEIPT = Path(
+    os.path.expanduser("~/.cache/hapax/policy-decide-cutover-receipt.json")
+)
+
+
+def load_window_start(
+    path: str | os.PathLike[str] = DEFAULT_WINDOW_START,
+) -> datetime | None:
+    """Read the window-restart boundary; an absent/garbage file means no boundary."""
+    try:
+        text = Path(path).read_text(encoding="utf-8").strip()
+    except (FileNotFoundError, OSError):
+        return None
+    return _parse_decision_ts(text)
+
+
+def restart_window(
+    path: str | os.PathLike[str] = DEFAULT_WINDOW_START, *, now: datetime | None = None
+) -> datetime:
+    """Stamp the window-restart boundary at ``now`` (atomically) and return it.
+
+    Non-destructive: the decision log and ledger are untouched — only decisions at or
+    after this instant count toward the next clean window.
+    """
+    now = now or datetime.now(UTC)
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(p.suffix + ".restart-tmp")
+        tmp.write_text(_iso(now) + "\n", encoding="utf-8")
+        tmp.replace(p)
+    except OSError:
+        pass
+    return now
+
+
+def build_cutover_receipt(verdict: dict[str, object], *, now: datetime | None = None) -> dict:
+    """Project an ``evaluate_shadow_clean`` verdict into a durable cutover receipt.
+
+    ``cutover_eligible`` is the verdict's ``clean`` (coverage AND zero-tightening);
+    ``countdown_days`` is the days of clean window still to accrue (0 once eligible).
+    """
+    now = now or datetime.now(UTC)
+    span = float(verdict.get("span_days") or 0.0)
+    min_days = float(verdict.get("min_days") or 7.0)
+    eligible = bool(verdict.get("clean"))
+    countdown = 0.0 if eligible else round(max(0.0, min_days - span), 2)
+    return {
+        "generated_at": _iso(now),
+        "window_start": verdict.get("window_start"),
+        "cutover_eligible": eligible,
+        "asymmetric_ok": bool(verdict.get("asymmetric_ok")),
+        "coverage_ok": bool(verdict.get("coverage_ok")),
+        "span_days": span,
+        "min_days": min_days,
+        "countdown_days": countdown,
+        "total_decisions": verdict.get("total_decisions"),
+        "tightening": verdict.get("tightening"),
+        "loosening": verdict.get("loosening"),
+        "policy_version": POLICY_DECIDE_FN_VERSION,
+        "reasons": verdict.get("reasons") or [],
+    }
+
+
+def write_cutover_receipt(
+    receipt: dict, *, path: str | os.PathLike[str] = DEFAULT_CUTOVER_RECEIPT
+) -> None:
+    """Persist the cutover receipt atomically (tmp + replace). Best-effort; never raises."""
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(p.suffix + ".receipt-tmp")
+        tmp.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(p)
+    except OSError:
+        pass
 
 
 # --- The auto-promotion state machine (reform fix: kill the manual 3b cutover) -
@@ -1279,7 +1673,67 @@ def promote_main(argv: list[str] | None = None) -> int:
     return 0  # advisory: advances a posture, never the live gate verdict
 
 
+def shadow_eval_main(argv: list[str] | None = None) -> int:
+    """Evaluate "shadow-week-clean + asymmetric-divergence" — the 3b-cutover gate.
+
+    The backing entrypoint for ``scripts/policy-decide-shadow-eval``. A non-destructive
+    window-restart boundary scopes the clean window (``--restart-window`` stamps it at
+    now; otherwise an already-stamped ``--window-start-file`` is honored) so pre
+    -convergence historical drift cannot poison a fresh accrual while the full log/ledger
+    are preserved. ``--receipt`` additionally writes a durable cutover-eligibility
+    receipt. Exit 0 iff clean (cutover may proceed), 1 otherwise.
+    """
+    parser = argparse.ArgumentParser(prog="policy-decide-shadow-eval")
+    parser.add_argument("--decision-log", default=str(DEFAULT_DECISION_LOG))
+    parser.add_argument("--ledger", default=str(DEFAULT_SHADOW_LEDGER))
+    parser.add_argument("--min-days", type=float, default=7.0, help="minimum window span in days")
+    parser.add_argument(
+        "--min-decisions",
+        type=int,
+        default=200,
+        help="minimum gated decisions for the window to count as real evidence",
+    )
+    parser.add_argument(
+        "--window-start-file",
+        default=str(DEFAULT_WINDOW_START),
+        help="non-destructive restart boundary: only decisions at/after it count (if stamped)",
+    )
+    parser.add_argument(
+        "--restart-window",
+        action="store_true",
+        help="stamp the window-restart boundary at now, then evaluate the fresh window",
+    )
+    parser.add_argument(
+        "--receipt",
+        nargs="?",
+        const=str(DEFAULT_CUTOVER_RECEIPT),
+        default=None,
+        help="also write a durable cutover-eligibility receipt (optional PATH; default cache path)",
+    )
+    args = parser.parse_args(argv)
+
+    # The boundary scopes the clean window without destroying the full log/ledger.
+    window_start = (
+        restart_window(args.window_start_file)
+        if args.restart_window
+        else load_window_start(args.window_start_file)
+    )
+    result = evaluate_shadow_clean(
+        args.decision_log,
+        args.ledger,
+        min_days=args.min_days,
+        min_decisions=args.min_decisions,
+        window_start=window_start,
+    )
+    print(json.dumps(result, indent=2))
+    if args.receipt is not None:
+        write_cutover_receipt(build_cutover_receipt(result), path=args.receipt)
+    return 0 if result["clean"] else 1
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "promote":
         raise SystemExit(promote_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "shadow-eval":
+        raise SystemExit(shadow_eval_main(sys.argv[2:]))
     raise SystemExit(main())

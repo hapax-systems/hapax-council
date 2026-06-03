@@ -11,13 +11,26 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
+HOOKS = REPO_ROOT / "hooks" / "scripts"
 DOCTOR = REPO_ROOT / "hooks" / "scripts" / "hooks-doctor.sh"
 SHIM = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.sh"
 IMPL = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
+# The closure siblings hooks-doctor deploys alongside the impl (cc-task-gate.sh).
+CLOSURE_SIBLINGS = (
+    "agent-role.sh",
+    "escape-grant.sh",
+    "cc-task-gate-bootstrap.py",
+    "hooks-doctor.sh",
+)
 
 SHIM_MARKER = "HAPAX-GATE-SHIM"
 STALE_GATE = "#!/usr/bin/env bash\n# old 427-line gate, no cognition carve-out\nexit 2\n"
@@ -224,3 +237,174 @@ def test_fanout_shims_stale_lane_worktree(tmp_path):
 
     again = _run("--fanout", "--root", str(repo))
     assert "0 gate(s) updated" in again.stdout
+
+
+# --- atomic deploy (reform — bootstrap-failopen-atomic-swap) ----------------
+# The old deploy installed the impl FIRST and each closure file via `install`
+# (unlinkat+create), so during a redeploy a sibling was briefly absent and the
+# new impl could go live before its closure — a concurrent PreToolUse exec then
+# sourced a half-written sibling / opened an absent helper and fail-closed. The
+# fix stages the whole closure into a temp dir on the same filesystem and
+# rename(2)s each file into place, publishing the impl LAST.
+
+
+def _seed_incomplete_source(tmp_path: Path) -> Path:
+    """A --from source whose impl DIFFERS from the deployed one but is missing a
+    closure sibling (escape-grant.sh) — so an impl-first install would be visibly
+    detectable, while a staged deploy must refuse without touching the canonical."""
+    src = tmp_path / "src" / "hooks" / "scripts"
+    src.mkdir(parents=True)
+    _write(src / "cc-task-gate.impl.sh", IMPL.read_text(encoding="utf-8") + "\n# v2 divergence\n")
+    for sib in ("agent-role.sh", "cc-task-gate-bootstrap.py", "hooks-doctor.sh"):
+        _write(src / sib, (HOOKS / sib).read_text(encoding="utf-8"))
+    # escape-grant.sh deliberately OMITTED → incomplete closure.
+    return tmp_path / "src"
+
+
+def test_deploy_from_incomplete_source_leaves_canonical_untouched(tmp_path):
+    # Land a healthy v1 from the real repo, snapshot it, then attempt a deploy from
+    # an incomplete (different-impl, missing-sibling) source. The refused deploy must
+    # be a NO-OP on the live canonical — not a half-swapped closure.
+    canon = tmp_path / "canon"
+    bindir = tmp_path / "bin"
+    env = {"HAPAX_CANONICAL_HOOKS": str(canon), "HAPAX_LOCAL_BIN": str(bindir)}
+    r1 = _run("--deploy-canonical", env=env)
+    assert r1.returncode == 0, r1.stdout + r1.stderr
+    before = {p.name: p.read_bytes() for p in canon.iterdir() if p.is_file()}
+    assert "cc-task-gate.sh" in before
+
+    src_root = _seed_incomplete_source(tmp_path)
+    r2 = _run("--deploy-canonical", "--from", str(src_root), env=env)
+    assert r2.returncode == 1
+    assert "REFUSING" in r2.stderr
+
+    after = {p.name: p.read_bytes() for p in canon.iterdir() if p.is_file()}
+    assert after == before, (
+        "an incomplete-source deploy must not mutate the live canonical "
+        "(staging + up-front refusal), not a half-swapped closure"
+    )
+
+
+def test_deploy_publishes_via_atomic_rename_impl_last(tmp_path):
+    # strace evidence (the AC's named method): every closure file is published via a
+    # rename(2) (atomic, no absent window) and the impl (cc-task-gate.sh) is renamed
+    # LAST, after every sibling, from a staging temp dir.
+    strace = shutil.which("strace")
+    if strace is None:
+        pytest.skip("strace unavailable")
+    canon = tmp_path / "canon"
+    bindir = tmp_path / "bin"
+    env = {**os.environ, "HAPAX_CANONICAL_HOOKS": str(canon), "HAPAX_LOCAL_BIN": str(bindir)}
+    # Pre-deploy v1 so the traced deploy REPLACES existing files (the redeploy case).
+    r0 = _run(
+        "--deploy-canonical",
+        env={"HAPAX_CANONICAL_HOOKS": str(canon), "HAPAX_LOCAL_BIN": str(bindir)},
+    )
+    assert r0.returncode == 0, r0.stdout + r0.stderr
+
+    trace = tmp_path / "trace.log"
+    proc = subprocess.run(
+        [
+            strace,
+            "-f",
+            "-s",
+            "4096",
+            "-e",
+            "trace=rename,renameat,renameat2",
+            "-o",
+            str(trace),
+            "bash",
+            str(DOCTOR),
+            "--deploy-canonical",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=120,
+        check=False,
+    )
+    if proc.returncode != 0 and "ptrace" in (proc.stderr or "").lower():
+        pytest.skip("strace cannot ptrace in this sandbox")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    lines = [
+        ln
+        for ln in trace.read_text(encoding="utf-8", errors="replace").splitlines()
+        if "= 0" in ln and "rename" in ln
+    ]
+    if not lines:
+        pytest.skip("strace captured no rename syscalls (restricted)")
+
+    def dest_idx(name: str) -> int:
+        needle = f'"{canon / name}"'  # the DEST appears as a fully-quoted abs path
+        for i, ln in enumerate(lines):
+            if needle in ln:
+                return i
+        return -1
+
+    impl_idx = dest_idx("cc-task-gate.sh")
+    sib_idxs = {name: dest_idx(name) for name in CLOSURE_SIBLINGS}
+    assert impl_idx >= 0, f"impl must be published via rename; renames={lines}"
+    for name, idx in sib_idxs.items():
+        assert idx >= 0, f"sibling {name} must be published via rename; renames={lines}"
+    assert impl_idx > max(sib_idxs.values()), (
+        "the impl (cc-task-gate.sh) must be renamed into place LAST, after every "
+        "sibling, so a concurrent gate exec never sees a new impl ahead of its closure"
+    )
+    assert ".deploy.tmp" in lines[impl_idx], (
+        f"impl must be published FROM a staging temp dir (atomic): {lines[impl_idx]}"
+    )
+
+
+def test_concurrent_redeploy_never_exposes_incomplete_closure(tmp_path):
+    # AC4: under concurrent redeploy stress, the canonical must never present an impl
+    # without its full, non-empty closure (the window that made the gate open an
+    # absent bootstrap helper and fail closed). rename(2) never removes a file, so a
+    # sibling is never momentarily absent; impl-last keeps the impl behind its closure.
+    canon = tmp_path / "canon"
+    env = {"HAPAX_CANONICAL_HOOKS": str(canon), "HAPAX_LOCAL_BIN": str(tmp_path / "bin")}
+    r0 = _run("--deploy-canonical", env=env)
+    assert r0.returncode == 0, r0.stdout + r0.stderr
+
+    closure = ("cc-task-gate.sh", *CLOSURE_SIBLINGS)
+    violations: list[str] = []
+    stop = threading.Event()
+    run_env = {**os.environ, **env}
+
+    def redeployer() -> None:
+        for _ in range(30):
+            if stop.is_set():
+                break
+            subprocess.run(
+                ["bash", str(DOCTOR), "--deploy-canonical"],
+                capture_output=True,
+                text=True,
+                env=run_env,
+                check=False,
+            )
+
+    worker = threading.Thread(target=redeployer)
+    worker.start()
+    probes = 0
+    try:
+        deadline = time.monotonic() + 10.0
+        while worker.is_alive() and time.monotonic() < deadline:
+            if (canon / "cc-task-gate.sh").exists():
+                for name in closure:
+                    try:
+                        size = (canon / name).stat().st_size
+                    except FileNotFoundError:
+                        # The TOCTOU window itself: a sibling vanished mid-deploy
+                        # while the impl was present (old install-based unlinkat).
+                        violations.append(f"missing {name} while impl present")
+                        continue
+                    if size == 0:
+                        violations.append(f"empty {name} while impl present")
+            probes += 1
+    finally:
+        stop.set()
+        worker.join(timeout=60)
+
+    assert probes > 0
+    assert not violations, (
+        f"closure was incomplete during redeploy ({len(violations)} probes): {violations[:5]}"
+    )

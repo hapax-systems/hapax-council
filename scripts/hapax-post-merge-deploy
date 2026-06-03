@@ -24,6 +24,7 @@
 #                                            + restart wireplumber
 #   systemd/*.service|timer|path   → cp + daemon-reload + restart
 #   systemd/units/*.service|timer|path|target → cp + daemon-reload + restart
+#   systemd/units/*.slice            → cp + daemon-reload (members activate it; no enable/restart)
 #       unless the unit has `# Hapax-Install-Scope: system`, in which case
 #       it is system/root-scoped and must be installed by its dedicated
 #       installer rather than copied into the user unit directory.
@@ -76,12 +77,23 @@ DRY_RUN=0
 REPORT_COVERAGE=0
 COVERAGE_FROM_STDIN=0
 VERIFY_AUTO_ENABLE=0
+SINCE=""
 TRACE_READY=0
 TRACE_WRITTEN=0
 SHA=""
 if [ "${1:-}" = "--dry-run" ]; then
     DRY_RUN=1
     shift
+fi
+# --since <sha>: deploy the CUMULATIVE union diff <since>..<commit> instead of
+# the single-merge first-parent diff. One deploy then realizes a multi-merge
+# backlog — the systemd-units / pipewire-confs / scripts files that get skipped
+# when origin/main jumps several merges between deploy cycles (the root of the
+# "merged but never installed" recurrence). Used by the one-time backfill, the
+# source-activation cumulative path, and the .service edge-trigger.
+if [ "${1:-}" = "--since" ]; then
+    SINCE="${2:?commit SHA required after --since}"
+    shift 2
 fi
 if [ "${1:-}" = "--report-coverage" ]; then
     REPORT_COVERAGE=1
@@ -107,6 +119,13 @@ SYSTEMD_USER_PRESET_DIR="$HOME/.config/systemd/user-preset"
 LOCAL_BIN="$HOME/.local/bin"
 TRACE_PATH="${HAPAX_POST_MERGE_TRACE_PATH:-$HOME/.cache/hapax/post-merge-traces/post-merge-traces.jsonl}"
 TRACE_MAX_RECORDS="${HAPAX_POST_MERGE_TRACE_MAX_RECORDS:-200}"
+# Receipt of the last SHA a real deploy cycle ran against (completed or
+# no_changes). The rebuild-service.sh staleness alarm and the acceptance check
+# `git rev-list <last-deployed-sha>..origin/main` read this, and the .service
+# edge-trigger reads it to compute the cumulative --since range. Sibling of the
+# trace file by default so a test override of HAPAX_POST_MERGE_TRACE_PATH
+# isolates it automatically.
+LAST_DEPLOYED_SHA_PATH="${HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH:-$(dirname "$TRACE_PATH")/last-deployed-sha}"
 
 # --- auto-enable marker (reform-improve-deploy-activation-20260601) ---
 # A systemd unit may declare it wants to be enabled+started on deploy by
@@ -297,6 +316,17 @@ trace_on_exit() {
 
 trap trace_on_exit EXIT
 
+# Record the SHA this deploy cycle ran against (real-deploy modes only). The
+# staleness alarm + the AC `rev-list <last-deployed-sha>..origin/main` read it;
+# the .service edge-trigger reads it to compute the cumulative --since range.
+record_last_deployed_sha() {
+    [ "$DRY_RUN" = "1" ] && return 0
+    [ "$REPORT_COVERAGE" = "1" ] && return 0
+    [ -n "$SHA" ] || return 0
+    mkdir -p "$(dirname "$LAST_DEPLOYED_SHA_PATH")" 2>/dev/null || true
+    printf '%s\n' "$SHA" > "$LAST_DEPLOYED_SHA_PATH"
+}
+
 cd "$REPO"
 # Ensure the commit's objects are available locally even if main hasn't been
 # pulled yet; diffing an unfetched SHA would fail and falsely signal
@@ -316,6 +346,13 @@ fi
 
 if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
     FILES="$(cat)"
+elif [ -n "$SINCE" ]; then
+    # Cumulative range deploy: union of every file changed across <since>..<SHA>.
+    if ! git rev-parse --verify --quiet "$SINCE^{commit}" >/dev/null; then
+        echo "hapax-post-merge-deploy: --since '$SINCE' is not a valid commit" >&2
+        exit 2
+    fi
+    FILES="$(git diff --name-only "$SINCE" "$SHA" | sort -u)"
 elif FIRST_PARENT="$(git rev-parse --verify --quiet "$SHA^1")"; then
     FILES="$(git diff --name-only "$FIRST_PARENT" "$SHA" | sort -u)"
 else
@@ -403,7 +440,22 @@ restart_user_unit() {
             echo "hapax-post-merge-deploy: audio-safe restart rolled back $unit successfully" >&2
             return 0
         fi
-        return "$safe_rc"
+        # safe_rc >= 2: the audio-safe restart failed AND its rollback did not
+        # cleanly succeed. This is the expected outcome when the audio golden
+        # chain is INTENTIONALLY down (dev): the broadcast-clean verify can't
+        # pass, so every deploy would otherwise abort here (set -e on the
+        # caller) and never install unrelated units — e.g. #3850's SDLC
+        # cpu.idle slice. Decouple the deploy from the audio precondition:
+        #   - LIVE broadcast on the line (studio-compositor active): keep
+        #     aborting — breaking the audio chain mid-stream is critical.
+        #   - no live broadcast: DEFER the audio restart (it is retried next
+        #     deploy cycle) and let the deploy finish installing everything else.
+        if systemctl --user is-active --quiet studio-compositor.service; then
+            echo "hapax-post-merge-deploy: audio-safe restart of $unit failed (rc=$safe_rc) during a LIVE broadcast (studio-compositor active); aborting deploy to avoid a mid-stream audio break" >&2
+            return "$safe_rc"
+        fi
+        echo "hapax-post-merge-deploy: audio-safe restart of $unit failed (rc=$safe_rc) but no live broadcast (studio-compositor inactive): DEFERRING the audio restart and continuing the deploy; will retry next cycle" >&2
+        return 0
     fi
 
     systemctl --user restart "$unit"
@@ -421,6 +473,7 @@ if [ -z "$FILES" ]; then
         if record_post_merge_trace "no_changes" "0"; then
             TRACE_WRITTEN=1
         fi
+        record_last_deployed_sha
     fi
     echo "no files changed in $SHA"
     exit 0
@@ -438,7 +491,7 @@ while IFS= read -r f; do
         config/hapax/*.conf)              HAPAX_CONF+=("$f") ;;
         config/wireplumber/scripts/hapax/*.lua) WP_LUA+=("$f") ;;
         config/wireplumber/*.conf)        WP+=("$f") ;;
-        systemd/units/*.service|systemd/units/*.timer|systemd/units/*.path|systemd/units/*.target)
+        systemd/units/*.service|systemd/units/*.timer|systemd/units/*.path|systemd/units/*.target|systemd/units/*.slice)
             if [ "$(unit_install_scope "$f")" = "system" ]; then
                 SYSTEMD_SYSTEM+=("$f")
             else
@@ -814,3 +867,4 @@ if record_post_merge_trace "completed" "0"; then
 else
     echo "warning: failed to write post-merge deploy trace to $TRACE_PATH" >&2
 fi
+record_last_deployed_sha

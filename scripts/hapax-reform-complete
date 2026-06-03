@@ -243,11 +243,48 @@ def gather_lane_supervisor() -> dict[str, Any]:
     return {"timer_enabled": enabled, "timer_active": active}
 
 
-def _has_inv5(path: Path) -> bool:
+SHIM_MARKER = "HAPAX-GATE-SHIM"
+
+
+def _canonical_hooks_dir() -> Path:
+    """Deployed-canonical hooks dir the shim resolves first (read at call time)."""
+    env = os.environ.get("HAPAX_CANONICAL_HOOKS")
+    return Path(env) if env else (Path.home() / ".local" / "lib" / "hapax" / "hooks")
+
+
+def _resolve_gate_text(path: Path) -> str:
+    """Read a gate file, transparently resolving a HAPAX-GATE-SHIM to its real impl.
+
+    #3832 collapsed every worktree's ``cc-task-gate.sh`` to a thin shim that ``exec``s
+    the real gate, moving the INV-5 / escape-grant / off-deprecation logic into
+    ``cc-task-gate.impl.sh`` (deployed canonical at ``$HAPAX_CANONICAL_HOOKS``). Grepping
+    the shim directly therefore false-negatives every moved marker. To inspect the SAME
+    bytes the live PreToolUse hook actually runs, mirror the shim's own resolution order
+    — deployed canonical first, then the co-located impl — skipping a candidate that is
+    itself a shim (the shim's ``-ef`` self-exec guard). Returns the shim text verbatim if
+    no impl resolves, so a truly-missing impl stays an honest failure, never masked.
+    """
     try:
-        return "is_cognition_path" in path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return False
+        return ""
+    if SHIM_MARKER not in text:
+        return text  # already the real impl / legacy monolith
+    for candidate in (
+        _canonical_hooks_dir() / "cc-task-gate.sh",
+        path.parent / "cc-task-gate.impl.sh",
+    ):
+        try:
+            ctext = candidate.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if SHIM_MARKER not in ctext:
+            return ctext
+    return text
+
+
+def _has_inv5(path: Path) -> bool:
+    return "is_cognition_path" in _resolve_gate_text(path)
 
 
 def _sha256(path: Path) -> str | None:
@@ -278,9 +315,7 @@ def gather_escape_grant() -> dict[str, Any]:
     grant_dir = Path(paths["grant_dir"])
     grant_key = Path(paths["grant_key"])
     shim = REPO_ROOT / "hooks" / "scripts" / "escape-grant.sh"
-    gate_wired = "escape_grant_allows" in (
-        LIVE_GATE.read_text(encoding="utf-8", errors="replace") if LIVE_GATE.is_file() else ""
-    )
+    gate_wired = "escape_grant_allows" in _resolve_gate_text(LIVE_GATE)
     obs: dict[str, Any] = {
         "grant_dir_exists": grant_dir.is_dir(),
         "key_present": grant_key.is_file(),
@@ -397,6 +432,11 @@ def gather_shadow_cutover() -> dict[str, Any]:
             reachable = rc in (0, 1) and "clean" in json.loads(out)
         except json.JSONDecodeError:
             reachable = False
+    # Deliberately the RAW gate, NOT _resolve_gate_text: the only `policy_decide` token
+    # in the impl is a non-enforcing comment (a shadow-replay pointer), so resolving
+    # would false-positive `cutover_enforced` on the genuinely-incomplete 3b cutover
+    # (tracked in its own cluster). shadow-cutover stays honest, passing instead on
+    # predicate_reachable while the cutover is still shadow-only.
     gate_text = (
         LIVE_GATE.read_text(encoding="utf-8", errors="replace") if LIVE_GATE.is_file() else ""
     )
@@ -408,9 +448,7 @@ def gather_shadow_cutover() -> dict[str, Any]:
 
 
 def gather_off_deprecation() -> dict[str, Any]:
-    gate_text = (
-        LIVE_GATE.read_text(encoding="utf-8", errors="replace") if LIVE_GATE.is_file() else ""
-    )
+    gate_text = _resolve_gate_text(LIVE_GATE)
     retro_watch = REPO_ROOT / "scripts" / "coord-retro-grant-watch"
     pid_dir = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "hapax-claude"
     zombies = []

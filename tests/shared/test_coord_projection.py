@@ -8,7 +8,13 @@ from unittest import mock
 import pytest
 
 from shared import coord_projection as cp
-from shared.coord_event_log import CoordEvent, CoordEventLog, CoordWriter, DuplicateEventError
+from shared.coord_event_log import (
+    CoordEvent,
+    CoordEventLog,
+    CoordWriter,
+    DuplicateEventError,
+    ReplayResult,
+)
 
 
 def _log(tmp_path: Path) -> CoordEventLog:
@@ -325,3 +331,130 @@ def test_projection_ignores_unrelated_event_types(tmp_path: Path) -> None:
     )
     projection = cp.CoordProjection.from_replay(log.replay())
     assert "task-1" not in projection.tasks  # dispatch events are not coordination state
+
+
+# --- snapshot serialization (event-sourcing checkpoint round-trip) ------------
+# The fold serialized to a record and restored, so the coord log can checkpoint
+# its derived state (bb-event-sourced-substrate, snapshot-only slice). The
+# round-trip must be lossless and the restored state must keep folding correctly,
+# because the snapshot tail-fold seeds from exactly this record.
+
+
+def _canon(record: object) -> str:
+    import json
+
+    return json.dumps(record, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+
+
+def test_task_state_record_round_trips() -> None:
+    state = cp.TaskState(
+        task_id="task-1",
+        stage="S7",
+        authority_case="CASE-X",
+        no_go={"release_authorized": True, "implementation_authorized": False},
+    )
+    assert cp.TaskState.from_record(state.to_record()) == state
+
+
+def test_projection_record_round_trips_losslessly(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    log.append(
+        _event(
+            cp.CANON_STAGE_TRANSITION,
+            "task-1",
+            {"to_stage": "S7", "no_go_snapshot": {"release_authorized": False}},
+            eid="e1",
+        ),
+        writer=CoordWriter.daemon(),
+    )
+    log.append(
+        _event(
+            cp.CANON_AUTHZ_FLIP,
+            "task-1",
+            {"field": "release_authorized", "old": False, "new": True},
+            eid="e2",
+        ),
+        writer=CoordWriter.daemon(),
+    )
+    projection = cp.CoordProjection.from_replay(log.replay())
+
+    restored = cp.CoordProjection.from_record(projection.to_record())
+
+    assert restored.tasks == projection.tasks
+    assert restored.tasks["task-1"].no_go["release_authorized"] is True
+
+
+def test_projection_record_is_canonically_order_independent() -> None:
+    # Two projections with the same logical content but tasks inserted in different
+    # orders must serialize to byte-identical canonical JSON — the property the
+    # snapshot-vs-full-replay equality rests on.
+    a = cp.CoordProjection()
+    a.tasks["task-2"] = cp.TaskState(task_id="task-2", stage="S6")
+    a.tasks["task-1"] = cp.TaskState(task_id="task-1", stage="S7")
+    b = cp.CoordProjection()
+    b.tasks["task-1"] = cp.TaskState(task_id="task-1", stage="S7")
+    b.tasks["task-2"] = cp.TaskState(task_id="task-2", stage="S6")
+
+    assert _canon(a.to_record()) == _canon(b.to_record())
+
+
+def test_fold_event_is_the_public_incremental_fold(tmp_path: Path) -> None:
+    # fold_event folds one event in place; folding the stream one-by-one must equal
+    # from_replay — the snapshot tail-fold depends on this equivalence.
+    log = _log(tmp_path)
+    log.append(
+        _event(cp.CANON_STAGE_TRANSITION, "task-1", {"to_stage": "S6"}, eid="e1"),
+        writer=CoordWriter.daemon(),
+    )
+    log.append(
+        _event(cp.CANON_STAGE_TRANSITION, "task-1", {"to_stage": "S7"}, eid="e2"),
+        writer=CoordWriter.daemon(),
+    )
+    replay = log.replay()
+
+    incremental = cp.CoordProjection()
+    for event in replay.events:
+        incremental.fold_event(event)
+
+    assert incremental.tasks == cp.CoordProjection.from_replay(replay).tasks
+
+
+def test_seeded_projection_plus_tail_equals_full_fold(tmp_path: Path) -> None:
+    # The determinism guarantee the snapshot rests on: serialize a projection of the
+    # head events, restore it, fold the tail into the restored state, and the result
+    # equals folding the whole stream from sequence zero.
+    log = _log(tmp_path)
+    log.append(
+        _event(
+            cp.CANON_STAGE_TRANSITION,
+            "task-1",
+            {"to_stage": "S6", "no_go_snapshot": {"release_authorized": False}},
+            eid="e1",
+        ),
+        writer=CoordWriter.daemon(),
+    )
+    log.append(
+        _event(cp.CANON_STAGE_TRANSITION, "task-1", {"to_stage": "S7"}, eid="e2"),
+        writer=CoordWriter.daemon(),
+    )
+    log.append(
+        _event(
+            cp.CANON_AUTHZ_FLIP,
+            "task-1",
+            {"field": "release_authorized", "old": False, "new": True},
+            eid="e3",
+        ),
+        writer=CoordWriter.daemon(),
+    )
+    events = log.replay().events
+
+    head_record = cp.CoordProjection.from_replay(
+        ReplayResult(events=tuple(events[:2]), source="sqlite")
+    ).to_record()
+    seeded = cp.CoordProjection.from_record(head_record)
+    for event in events[2:]:
+        seeded.fold_event(event)
+
+    full = cp.CoordProjection.from_replay(log.replay())
+    assert seeded.tasks == full.tasks
+    assert seeded.tasks["task-1"].no_go["release_authorized"] is True

@@ -9,6 +9,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,7 +34,7 @@ from shared.coord_dispatch import (
     DispatchLaunchResult,
     run_atomic_dispatch_launch,
 )
-from shared.coord_event_log import CoordEventLog
+from shared.coord_event_log import CoordEventLog, coord_base_dir
 from shared.dispatcher_policy import (
     DispatchAction,
     RouteDecision,
@@ -45,6 +46,13 @@ from shared.dispatcher_policy import (
 )
 from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
 from shared.route_metadata_schema import assess_route_metadata
+from shared.sdlc_lifecycle import TASK_DISPATCHABLE_STATUSES
+from shared.sdlc_pressure_gate import (
+    AdmissionDecision,
+    admission_state,
+    sdlc_slice_wrap,
+    wait_until_admitted,
+)
 
 MUTATION_TOKENS = {
     "build",
@@ -333,6 +341,95 @@ def lane_worktree(lane: str, platform: str) -> Path:
     return root / "hapax-council"
 
 
+# --- capability-gated SYSTEM drain of an orphaned dead-lane task --------------
+# (dn-validate-task-relax; CASE-SDLC-REFORM-001). A narrow, ADDITIVE admit edge:
+# the reserved __system__ actor may advance an orphaned pr_open/claimed/in_progress
+# task IFF its owning lane is VERIFIABLY dead and a single-use capability consumes.
+# A LIVE lane is never drainable — that guard is the whole point.
+
+#: Reserved sentinel actor for a system drain. NOT a launchable lane.
+SYSTEM_DRAIN_LANE = "__system__"
+
+#: Statuses a system drain may advance. ``pr_open`` is the motivating case (a RED
+#: PR orphaned by a dead lane); ``claimed``/``in_progress`` cover a lane that died
+#: mid-work. ``offered`` is intentionally excluded (no owner that could be dead).
+DRAINABLE_STATUSES = frozenset({"pr_open", "claimed", "in_progress"})
+
+#: Lanes whose live-session PID is published at ``<pid-dir>/<lane>.pid`` by
+#: scripts/hapax-claude-headless (grounding: beta/delta/epsilon/eta/theta/zeta
+#: confirmed live on this substrate). The drain only acts where it can PROVE
+#: liveness; any other lane (codex/vibe/gemini use a different substrate, not
+#: verified here) is refused fail-closed (reviewer must-fix #6).
+KNOWN_CLAUDE_LANES = frozenset(
+    {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
+)
+
+
+def _lane_pid_dir() -> Path:
+    """Directory where the headless launcher publishes ``<lane>.pid``. Injectable
+    via ``HAPAX_LANE_PID_DIR`` so liveness tests never touch a real lane's pid file
+    (reviewer must-fix #7)."""
+    override = os.environ.get("HAPAX_LANE_PID_DIR")
+    if override:
+        return Path(override).expanduser()
+    return Path(f"/run/user/{os.getuid()}/hapax-claude")
+
+
+def normalize_lane_name(lane: str) -> str:
+    """Bare launcher ROLE for a possibly platform-qualified ``assigned_to``.
+
+    The pid file is named by the bare role (``delta.pid``), so a qualified
+    ``claude/delta`` MUST reduce to ``delta`` before the liveness probe — otherwise
+    it would look up a nonexistent ``claude/delta.pid``, read absent, and could
+    drain a LIVE lane (reviewer must-fix #6).
+    """
+    lane = strip_scalar(str(lane)).strip()
+    if "/" in lane:
+        lane = lane.rsplit("/", 1)[-1]
+    return lane
+
+
+def lane_process_absent(lane: str) -> tuple[bool, str]:
+    """``(True, why)`` iff lane ``lane``'s claude session is verifiably NOT running.
+
+    Mirrors scripts/hapax-claude-headless: the live session PID is written to
+    ``<pid-dir>/<lane>.pid`` and removed by its EXIT trap. Absent file => retired/
+    dead. Present file + dead PID => crashed (stale). Present file + live PID =>
+    ALIVE, and draining it is forbidden. Fail-CLOSED: any ambiguity (unreadable,
+    foreign-owned, alive) returns ``absent=False`` so the drain is refused. Uses
+    ``os.kill(pid, 0)`` as a liveness probe ONLY — signal 0 never terminates a
+    process, and this never sends a process-group or otherwise terminating signal.
+    """
+    pid_file = _lane_pid_dir() / f"{lane}.pid"
+    try:
+        raw = pid_file.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return True, f"lane {lane!r} pid file absent (retired/dead)"
+    except OSError as exc:
+        return False, f"lane {lane!r} pid file unreadable: {exc!r}; refusing drain"
+    if not raw.isdigit():
+        return True, f"lane {lane!r} pid file malformed ({raw!r}); treating as dead"
+    pid = int(raw)
+    try:
+        os.kill(pid, 0)  # liveness probe ONLY; signal 0 never terminates a process
+    except ProcessLookupError:
+        return True, f"lane {lane!r} pid {pid} not running (crashed; stale pid file)"
+    except PermissionError:
+        return False, f"lane {lane!r} pid {pid} owned by another user; refusing drain"
+    return False, f"lane {lane!r} pid {pid} is ALIVE; refusing to drain a live lane"
+
+
+def lane_active_task_lease(lane: str) -> str | None:
+    """The task id lane ``lane`` currently claims (``cc-active-task-<lane>``), or
+    None. The mutation-moment cross-check (not the bare pid) for the TOCTOU guard."""
+    claims_dir = Path(os.environ.get("HAPAX_CC_CLAIMS_DIR", str(Path.home() / ".cache" / "hapax")))
+    try:
+        text = (claims_dir / f"cc-active-task-{lane}").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return text or None
+
+
 def check_worktree_claim_guard(worktree: Path) -> tuple[bool, str]:
     script = worktree / "scripts" / "cc-claim"
     if not script.is_file():
@@ -486,6 +583,109 @@ def check_durable_dispatch_binding(
     return DurableDispatchBinding(False, True, fallback_reason)
 
 
+def _system_drain_audit_path() -> Path:
+    override = os.environ.get("HAPAX_SYSTEM_DRAIN_AUDIT")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".cache" / "hapax" / "validate-task-system-drain.jsonl"
+
+
+def _write_system_drain_audit(
+    *, task_id: str, drained_from_lane: str, capability_id: str, liveness: str, prior_status: str
+) -> None:
+    """Append-only audit of every admitted system drain. Best-effort: an IO error
+    never blocks a verified drain (the consume + audit chain is the authority trail)."""
+    rec = {
+        "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "task_id": task_id,
+        "drained_from_lane": drained_from_lane,
+        "prior_status": prior_status,
+        "capability_id": capability_id,
+        "liveness_verdict": liveness,
+        "actor": SYSTEM_DRAIN_LANE,
+    }
+    path = _system_drain_audit_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except OSError:
+        pass
+
+
+def _validate_system_drain(
+    *,
+    task: TaskNote,
+    task_id: str,
+    status: str,
+    assigned_to: str,
+    capability_path: Path | None,
+) -> Validation:
+    """Admit an orphaned task for SYSTEM drain IFF its owning lane is verifiably
+    dead AND a single-use ``(task_id, __system__)`` capability verifies and consumes.
+
+    Fail-closed at every step: a non-drainable status, no assigned lane, an
+    unverifiable substrate lane, a LIVE lane, or an invalid/replayed capability all
+    refuse the drain. Authority is auditable-single-use: the operator-provisioned
+    0600 grant-key is the root of trust and the mint+consume+audit chain is the
+    trail (see the task's open question on mint-authority separation, reviewer
+    must-fix #4).
+    """
+    from shared.coord_event_log import default_grant_key
+    from shared.governance.coord_capabilities import (
+        DEFAULT_CONSUMPTION_LEDGER,
+        CapabilityConsumptionLedger,
+        read_capability_file,
+        verify_dispatch_capability,
+    )
+
+    if status not in DRAINABLE_STATUSES:
+        return Validation(False, f"system drain refused: status {status!r} not drainable", task)
+    if is_nullish(assigned_to) or assigned_to == "unassigned":
+        return Validation(False, "system drain refused: task has no assigned lane to verify", task)
+
+    lane_name = normalize_lane_name(assigned_to)
+    if lane_name not in KNOWN_CLAUDE_LANES:
+        return Validation(
+            False,
+            f"system drain refused: assigned lane {assigned_to!r} is not a known "
+            "claude-substrate lane; liveness unverifiable",
+            task,
+        )
+
+    absent, why = lane_process_absent(lane_name)
+    if not absent:
+        return Validation(False, f"system drain refused: {why}", task)
+
+    if capability_path is None:
+        return Validation(False, "system drain requires --dispatch-capability <file>", task)
+    cap = read_capability_file(capability_path)
+    now = datetime.now(UTC).timestamp()
+    try:
+        key = default_grant_key().read_bytes()
+    except OSError:
+        return Validation(False, "system drain refused: signing key unavailable", task)
+    if not verify_dispatch_capability(
+        cap, key=key, now=now, task_id=task_id, lane=SYSTEM_DRAIN_LANE
+    ):
+        return Validation(
+            False, "system drain refused: dispatch capability invalid/expired/mismatched", task
+        )
+    assert cap is not None  # verify_dispatch_capability returns False for None
+    ledger_path = os.environ.get("HAPAX_COORD_CONSUMPTION_LEDGER") or DEFAULT_CONSUMPTION_LEDGER
+    if not CapabilityConsumptionLedger(ledger_path).consume(cap.capability_id):
+        return Validation(False, "system drain refused: capability already consumed (replay)", task)
+
+    _write_system_drain_audit(
+        task_id=task_id,
+        drained_from_lane=lane_name,
+        capability_id=cap.capability_id,
+        liveness=why,
+        prior_status=status,
+    )
+    return Validation(True, f"system-drain eligible ({why})", task, None, exempt_read_only=True)
+
+
 def validate_task(
     *,
     task_id: str,
@@ -493,6 +693,7 @@ def validate_task(
     platform: str,
     task_root: Path,
     strict_worktree: bool,
+    dispatch_capability_path: Path | None = None,
 ) -> Validation:
     task = read_task(task_root, task_id)
     if task is None:
@@ -501,7 +702,21 @@ def validate_task(
     fields = task.fields
     status = strip_scalar(str(fields.get("status", "")))
     assigned_to = strip_scalar(str(fields.get("assigned_to", "")))
-    if status not in {"offered", "claimed", "in_progress"}:
+
+    # Capability-gated SYSTEM drain (dn-validate-task-relax). A narrow, additive
+    # admit edge for the reserved __system__ actor; it short-circuits BEFORE the
+    # legacy status gate, so every normal-lane decision stays byte-for-byte
+    # unchanged (a normal lane attempting a pr_open task still gets the reject).
+    if lane == SYSTEM_DRAIN_LANE:
+        return _validate_system_drain(
+            task=task,
+            task_id=task_id,
+            status=status,
+            assigned_to=assigned_to,
+            capability_path=dispatch_capability_path,
+        )
+
+    if status not in TASK_DISPATCHABLE_STATUSES:
         return Validation(False, f"task status {status!r} is not dispatchable", task)
     if status == "offered" and not (
         is_nullish(fields.get("assigned_to")) or assigned_to == "unassigned"
@@ -572,6 +787,11 @@ def build_prompt(
     validation: Validation,
     route: PlatformPath,
 ) -> str:
+    if lane == SYSTEM_DRAIN_LANE:
+        raise ValueError(
+            "__system__ is the drain sentinel, not a launchable lane; a system drain "
+            "advances an orphaned task via cc-stage-advance, never a lane launch"
+        )
     assert validation.task is not None
     fields = validation.task.fields
     authority_case = fields.get("authority_case")
@@ -681,6 +901,8 @@ def write_receipt(
         record["route_decision_receipt_path"] = (
             str(route_decision_receipt_path) if route_decision_receipt_path else None
         )
+    # G2: record where the lane's claude actually ran (Workshop hop vs podium-local).
+    record["dispatch_host"] = os.environ.get("HAPAX_DISPATCH_HOST", "local")
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, sort_keys=True) + "\n")
     return path
@@ -694,6 +916,72 @@ def slugify(value: str) -> str:
     return slug or "item"
 
 
+def _sliced_call(args: list[str], env: dict[str, str] | None = None) -> int:
+    """subprocess.call that drops the launched lane — and its git/pytest/cargo
+    grandchildren — into hapax-sdlc.slice (L1 attachment point b) when the fence
+    is available. cpu.idle + the cpuset inherit to every descendant. No-op + run
+    un-sliced when systemd-run/the slice is unavailable, so dispatch never fails
+    on the fence."""
+    base_env = dict(os.environ) if env is None else env
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return subprocess.call(list(args), env=base_env)  # don't probe/create scopes in tests
+    wrapped = sdlc_slice_wrap(args)
+    if wrapped != list(args):
+        base_env = {**base_env, "HAPAX_SDLC_SLICE_ATTACHED": "1"}
+    return subprocess.call(wrapped, env=base_env)
+
+
+def _write_delayed_receipt(args: argparse.Namespace, decision: AdmissionDecision) -> None:
+    """Record that a dispatch is QUEUED (not refused) under CPU pressure."""
+    try:
+        ledger = orchestration_ledger_dir()
+        ledger.mkdir(parents=True, exist_ok=True)
+        (ledger / f"delayed-{slugify(args.lane)}-{slugify(args.task)}.json").write_text(
+            json.dumps(
+                {
+                    "kind": "sdlc-pressure-delayed",
+                    "task_id": args.task,
+                    "lane": args.lane,
+                    "platform": args.platform,
+                    "mode": args.mode,
+                    "profile": args.profile,
+                    "admission_state": decision.state,
+                    "reasons": decision.reasons,
+                    "queued_not_dropped": True,
+                    "ts": now_utc(),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass  # a missing DELAYED receipt must never block the queued dispatch
+
+
+def _await_sdlc_admission(args: argparse.Namespace) -> None:
+    """L3 chokepoint: block-and-wait while CPU pressure has admission CLOSED.
+    The dispatch is QUEUED then RUN — never skipped. Slows the fleet, drops
+    nothing. Disabled via HAPAX_SDLC_PRESSURE_GATE_OFF; also never blocks a test
+    process on the real host's pressure (the wait logic is unit-tested directly
+    via wait_until_admitted)."""
+    if env_flag("HAPAX_SDLC_PRESSURE_GATE_OFF") or os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    if admission_state().state != "closed":
+        return
+    print(
+        f"sdlc-pressure CLOSED: queuing dispatch of {args.task} (resumes on clear)",
+        file=sys.stderr,
+    )
+    final = wait_until_admitted(
+        admission_state,
+        sleep=time.sleep,
+        on_delay=lambda decision: _write_delayed_receipt(args, decision),
+        poll_interval=float(os.environ.get("HAPAX_SDLC_PRESSURE_POLL_S", "10")),
+        max_wait_s=float(os.environ.get("HAPAX_SDLC_PRESSURE_MAX_WAIT_S", "1800")),
+    )
+    print(f"sdlc-pressure cleared ({final.state}): proceeding with {args.task}", file=sys.stderr)
+
+
 def launch_claude_headless(task_id: str, lane: str, prompt: str, route: PlatformPath) -> int:
     launcher = Path(
         os.environ.get(
@@ -705,7 +993,7 @@ def launch_claude_headless(task_id: str, lane: str, prompt: str, route: Platform
     if route.profile in {"opus", "sonnet"}:
         env["HAPAX_CLAUDE_MODEL"] = route.profile
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
-    return subprocess.call([str(launcher), "--task", task_id, lane, prompt], env=env)
+    return _sliced_call([str(launcher), "--task", task_id, lane, prompt], env)
 
 
 def launch_claude_interactive(task_id: str, lane: str, validation: Validation) -> int:
@@ -809,19 +1097,15 @@ def dispatch_message_id(cli_value: str | None) -> str | None:
 
 
 def coord_event_log_from_env() -> CoordEventLog:
+    # Per-surface overrides still win (test isolation sets them explicitly); the
+    # bare default is the single user-writable coord SSOT (coord_base_dir() →
+    # ~/.cache/hapax/coord), NOT the dead root-owned /var/lib tree that uid 1000
+    # could never mkdir — that default HARD-BLOCKED the launch coord write.
+    base = coord_base_dir()
     return CoordEventLog(
-        db_path=os.environ.get(
-            "HAPAX_COORD_LEDGER_DB",
-            "/var/lib/hapax/coord/ledger.db",
-        ),
-        jsonl_path=os.environ.get(
-            "HAPAX_COORD_JSONL_MIRROR",
-            "/var/lib/hapax/coord/ledger.jsonl",
-        ),
-        spool_dir=os.environ.get(
-            "HAPAX_COORD_SPOOL_DIR",
-            "/var/lib/hapax/coord/spool",
-        ),
+        db_path=os.environ.get("HAPAX_COORD_LEDGER_DB", str(base / "ledger.db")),
+        jsonl_path=os.environ.get("HAPAX_COORD_JSONL_MIRROR", str(base / "ledger.jsonl")),
+        spool_dir=os.environ.get("HAPAX_COORD_SPOOL_DIR", str(base / "spool")),
     )
 
 
@@ -882,7 +1166,7 @@ def launch_codex_headless(
         )
     env = os.environ.copy()
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
-    return subprocess.call(args, env=env)
+    return _sliced_call(args, env)
 
 
 def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Validation) -> int:
@@ -915,7 +1199,7 @@ def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Valid
     ]
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
-    return subprocess.call(args)
+    return _sliced_call(args)
 
 
 def launch_gemini_headless(lane: str, prompt: str, route: PlatformPath) -> int:
@@ -938,7 +1222,7 @@ def launch_gemini_headless(lane: str, prompt: str, route: PlatformPath) -> int:
     env = os.environ.copy()
     if route.profile == "worker":
         env["HAPAX_GEMINI_APPROVAL_MODE"] = "auto_edit"
-    return subprocess.call(args, env=env)
+    return _sliced_call(args, env)
 
 
 def write_antigrav_inflection(task_id: str, lane: str, prompt: str) -> Path:
@@ -1014,6 +1298,119 @@ def launch_antigrav_interactive(
     return subprocess.call(args)
 
 
+def advance_task_stage(task_id: str, stage: str) -> int:
+    """Perform the drain mutation: advance the orphan's stage via the canonical
+    governed setter (scripts/cc-stage-advance). Returns its exit code (0 advanced /
+    already-there; 2 refused; 3 not-found/IO). Forward-only — no --allow-backward."""
+    script = Path(__file__).resolve().parent / "cc-stage-advance"
+    return subprocess.call([sys.executable, str(script), task_id, stage])
+
+
+def reverify_lane_dead_for_drain(lane: str, task_id: str) -> tuple[bool, str]:
+    """Mutation-moment re-verification (TOCTOU / pid-reuse guard, reviewer must-fix #5).
+
+    Liveness is re-read at the instant before the mutation and cross-checked against
+    the active-task lease — not the bare pid captured at admission. A lane that
+    respawned (a new live pid now in the file) or re-claimed a *different* task
+    between admission and here is treated as live and the drain aborts. A recycled
+    pid reads alive too, so it also aborts (fail-safe). Only a still-dead lane whose
+    lease has not moved to other work proceeds.
+    """
+    absent, why = lane_process_absent(lane)
+    if not absent:
+        return False, f"lane respawned before mutation: {why}"
+    lease = lane_active_task_lease(lane)
+    if lease is not None and lease != task_id:
+        return False, (
+            f"lane {lane!r} re-claimed a different task {lease!r} before mutation; "
+            "treating as live, drain aborted"
+        )
+    return True, why
+
+
+def run_system_drain(args: argparse.Namespace, task_root: Path) -> int:
+    """Capability-gated SYSTEM drain of an orphaned task whose owning lane is
+    verifiably dead. This path NEVER reaches the normal launch ladder (reviewer
+    must-fix #3): the ``__system__`` sentinel is not a launchable lane, so a phantom
+    worktree can never be built. The actual drain is a real mutation — it advances
+    the orphan's stage via cc-stage-advance once liveness + capability pass and a
+    mutation-moment liveness re-check confirms the lane is still dead."""
+    if not args.dispatch_capability:
+        print("BLOCKED: system drain requires --dispatch-capability <file>", file=sys.stderr)
+        return 10
+    if not args.drain_to_stage:
+        print("BLOCKED: system drain requires --drain-to-stage <stage>", file=sys.stderr)
+        return 10
+
+    validation = validate_task(
+        task_id=args.task,
+        lane=SYSTEM_DRAIN_LANE,
+        platform=args.platform,
+        task_root=task_root,
+        strict_worktree=False,
+        dispatch_capability_path=Path(args.dispatch_capability).expanduser(),
+    )
+
+    def _blocked_receipt(reason: str, *, rc: int | None = None) -> None:
+        if args.no_receipt:
+            return
+        write_receipt(
+            task_id=args.task,
+            lane=SYSTEM_DRAIN_LANE,
+            platform=args.platform,
+            mode=args.mode,
+            profile=args.profile,
+            route=None,
+            validation=Validation(
+                False,
+                reason,
+                validation.task,
+                validation.parent_spec_path,
+                validation.exempt_read_only,
+            ),
+            prompt=None,
+            launched=False,
+            launch_returncode=rc,
+        )
+
+    if not validation.ok:
+        _blocked_receipt(validation.reason)
+        print(f"BLOCKED: {validation.reason}", file=sys.stderr)
+        return 10
+
+    assert validation.task is not None
+    drained_lane = normalize_lane_name(str(validation.task.fields.get("assigned_to", "")))
+    safe, why = reverify_lane_dead_for_drain(drained_lane, args.task)
+    if not safe:
+        reason = f"system drain aborted at mutation: {why}"
+        _blocked_receipt(reason)
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        return 10
+
+    rc = advance_task_stage(args.task, args.drain_to_stage)
+    if rc != 0:
+        reason = f"system drain cc-stage-advance failed (rc={rc})"
+        _blocked_receipt(reason, rc=rc)
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        return 10
+
+    if not args.no_receipt:
+        write_receipt(
+            task_id=args.task,
+            lane=SYSTEM_DRAIN_LANE,
+            platform=args.platform,
+            mode=args.mode,
+            profile=args.profile,
+            route=None,
+            validation=validation,
+            prompt=None,
+            launched=True,
+            launch_returncode=rc,
+        )
+    print(f"system-drained: {args.task} ({drained_lane} dead) -> stage {args.drain_to_stage}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", help="Explicit cc-task id to dispatch")
@@ -1074,6 +1471,16 @@ def main(argv: list[str] | None = None) -> int:
         "--idempotency-key",
         help="Stable idempotency key for atomic bind/consume/launch replay",
     )
+    parser.add_argument(
+        "--dispatch-capability",
+        help="Path to a single-use DispatchCapability file authorizing a SYSTEM drain "
+        "(--lane __system__) of an orphaned task whose owning lane is verifiably dead.",
+    )
+    parser.add_argument(
+        "--drain-to-stage",
+        help="Target stage for a SYSTEM drain (--lane __system__); the orphaned task's "
+        "stage is advanced here via cc-stage-advance once liveness + capability pass.",
+    )
     args = parser.parse_args(argv)
     args.profile = normalize_profile(args.platform, args.profile)
 
@@ -1096,6 +1503,14 @@ def main(argv: list[str] | None = None) -> int:
             str(Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"),
         )
     )
+
+    # SYSTEM drain is a distinct, capability-gated mutation path — it advances an
+    # orphaned dead-lane task via cc-stage-advance and returns. It must intercept
+    # BEFORE route_for/build_prompt/the launch ladder so the __system__ sentinel can
+    # never resolve to a phantom lane worktree (reviewer must-fix #3).
+    if strip_scalar(args.lane) == SYSTEM_DRAIN_LANE:
+        return run_system_drain(args, task_root)
+
     validation = validate_task(
         task_id=args.task,
         lane=args.lane,
@@ -1317,6 +1732,11 @@ def main(argv: list[str] | None = None) -> int:
         print(prompt)
 
     if args.launch:
+        # L3 SDLC pressure admission gate — block-and-wait (QUEUE, never skip)
+        # while the box is under sustained CPU pressure, then proceed. The fleet
+        # slows; no dispatch is dropped.
+        _await_sdlc_admission(args)
+
         # Launchable (platform, mode) -> adapter call. Eligibility is decided by
         # the Executor capability registry (supports_route), NOT a hard if-ladder
         # (reform §6 P1) — adding a runtime/mode is a one-line table + registry edit.

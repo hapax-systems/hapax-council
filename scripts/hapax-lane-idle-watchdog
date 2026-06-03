@@ -19,8 +19,22 @@
 # Nudges ALL idle lanes per tick. Cooldown: 120s per lane between kicks.
 set -euo pipefail
 
+# bb-dispatch-scheduler: source the idle threshold from the SAME measured tau the
+# reaper + coordinator read, so the fleet stops hardcoding divergent stall constants
+# (this 600, the reaper's 1800, the coordinator's 900). The env override always wins;
+# a missing cache falls back to the prior 600 (10 min).
+_idle_threshold_default() {
+    local cache="${HAPAX_DISPATCH_SERVICE_TIME_CACHE:-$HOME/.cache/hapax/dispatch-service-time.json}"
+    [[ -f "$cache" ]] || { echo 600; return; }
+    local repo
+    repo="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
+    [[ -d "$repo/shared" ]] || repo="${HOME}/projects/hapax-council"
+    (cd "$repo" 2>/dev/null && python3 -m shared.dispatch_service_time \
+        --tau --lineage "" --cache "$cache" 2>/dev/null) || echo 600
+}
+
 # ─── Configuration ───────────────────────────────────────────────────────────
-IDLE_THRESHOLD_S="${HAPAX_IDLE_THRESHOLD_S:-600}"       # 10 minutes
+IDLE_THRESHOLD_S="${HAPAX_IDLE_THRESHOLD_S:-$(_idle_threshold_default)}"  # measured tau; 600 fallback
 COOLDOWN_S="${HAPAX_IDLE_COOLDOWN_S:-120}"              # 2 min between kicks
 STATE_DIR="${HAPAX_IDLE_STATE_DIR:-/tmp/hapax-lane-idle-state}"
 TASK_ROOT="${HOME}/Documents/Personal/20-projects/hapax-cc-tasks/active"
@@ -43,6 +57,58 @@ mkdir -p "$STATE_DIR"
 now=$(date +%s)
 
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) lane-idle: $*"; }
+
+# ─── L3/L4 SDLC pressure admission ────────────────────────────────────────────
+# The respawn FLOOR must yield under CPU pressure. When admission is 'closed'
+# this watchdog defers launching/reviving/nudging lanes — skipping a respawn
+# only DELAYS it (the cc-task stays claimed/offered; the next 2-min tick
+# relaunches once pressure clears), so no work is abandoned. Fail-open: any
+# error returns 'open' so the floor never wedges on the gate.
+sdlc_admission_state() {
+    [[ "${HAPAX_SDLC_PRESSURE_GATE_OFF:-}" == "1" ]] && { echo open; return; }
+    local repo state
+    repo="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
+    [[ -d "$repo/shared" ]] || repo="${HOME}/projects/hapax-council"
+    state="$(cd "$repo" 2>/dev/null && python3 -m shared.sdlc_pressure_gate --state 2>/dev/null || true)"
+    case "$state" in
+        open | paced | closed) echo "$state" ;;
+        *) echo open ;;
+    esac
+}
+SDLC_ADMISSION="$(sdlc_admission_state)"
+if [ "$SDLC_ADMISSION" = "closed" ]; then
+    log "sdlc-pressure CLOSED: respawn floor yields this tick (lanes stay as-is; cc-tasks unaffected)"
+fi
+
+# ─── RecoveryGovernor admission for the load-injecting relaunch ───────────────
+# bb-control-stability: each lane relaunch (~1.5 cores for 60-180s) passes
+# through the shared governor (per-target AIMD backoff × global token-bucket ×
+# PSI throttle × in-flight concurrency cap) so N stale lanes can no longer fire
+# N simultaneous relaunches. In shadow mode the CLI exits 0 (this floor acts as
+# today, gated by the fixed cooldown below); under enforce the grant is binding.
+# Fail-open: any non-{0,75,2} exit (import error, traceback) is treated as PERMIT
+# so the governor can never wedge the respawn floor (NEVER-FREEZE).
+_governor_repo() {
+    local repo
+    repo="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
+    [[ -d "$repo/shared" ]] || repo="${HOME}/projects/hapax-council"
+    echo "$repo"
+}
+governor_permit() {
+    [[ "${HAPAX_RECOVERY_GOVERNOR_OFF:-}" == "1" ]] && return 0
+    local target="$1" rc
+    (cd "$(_governor_repo)" 2>/dev/null && python3 -m shared.recovery_governor --permit "$target" >/dev/null 2>&1)
+    rc=$?
+    case "$rc" in
+        0) return 0 ;;      # permit
+        75 | 2) return 1 ;; # backoff / closed → defer this tick (retried next tick)
+        *) return 0 ;;      # error → fail-open PERMIT, never a deny-sink
+    esac
+}
+governor_record() {
+    [[ "${HAPAX_RECOVERY_GOVERNOR_OFF:-}" == "1" ]] && return 0
+    (cd "$(_governor_repo)" 2>/dev/null && python3 -m shared.recovery_governor --record "$1" "$2" >/dev/null 2>&1) || true
+}
 
 # ─── Platform detection functions ────────────────────────────────────────────
 
@@ -153,7 +219,8 @@ done
 launched_lanes=0
 revived_lanes=0
 
-if [ -x "$CLAUDE_LAUNCHER" ]; then
+# L4: the respawn floor yields under 'closed' — don't re-kick a paused lane.
+if [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CLAUDE_LAUNCHER" ]; then
     for role in $REQUIRED_CLAUDE_LANES; do
         session="hapax-claude-${role}"
         worktree="${HOME}/projects/hapax-council--${role}"
@@ -171,17 +238,23 @@ if [ -x "$CLAUDE_LAUNCHER" ]; then
         if ! tmux has-session -t "$session" 2>/dev/null; then
             # Session doesn't exist — launch it
             if [ -d "$worktree" ]; then
+                if ! governor_permit "lane:$role"; then
+                    log "RecoveryGovernor deferred launch of $role (backoff/pressure); retry next tick"
+                    continue
+                fi
                 log "LAUNCHING missing lane: $role"
                 echo "$now" > "$cooldown_file"
                 launch_err="$STATE_DIR/${session}.launch.err"
                 if "$CLAUDE_LAUNCHER" --role "$role" --terminal tmux --readonly >"$launch_err" 2>&1; then
                     launched_lanes=$((launched_lanes + 1))
+                    governor_record "lane:$role" ok
                     curl -sf -d "Lane idle watchdog: launched $role (session missing)" \
                         -H "Title: Lane auto-launched" \
                         -H "Priority: default" \
                         -H "Tags: rocket" \
                         "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
                 else
+                    governor_record "lane:$role" fail
                     launch_reason="$(tr '\n' ' ' <"$launch_err" 2>/dev/null | head -c 240 || true)"
                     log "FAILED to launch lane $role: ${launch_reason:-unknown launcher failure}"
                 fi
@@ -207,10 +280,13 @@ if [ -x "$CLAUDE_LAUNCHER" ]; then
                 *)
                     if [ "$claude_tui" = true ]; then
                         : # Claude runs as node child of fish — TUI visible, not dead
+                    elif ! governor_permit "lane:$role"; then
+                        log "RecoveryGovernor deferred revive of $role (backoff/pressure); retry next tick"
                     else
                         log "REVIVING dead Claude in $session (pane_cmd=$pane_cmd)"
                         echo "$now" > "$cooldown_file"
                         tmux send-keys -t "$session" "$CLAUDE_LAUNCHER --role $role --readonly" Enter 2>/dev/null || true
+                        governor_record "lane:$role" ok
                         revived_lanes=$((revived_lanes + 1))
                         curl -sf -d "Lane idle watchdog: revived $role (Claude had exited, pane was $pane_cmd)" \
                             -H "Title: Lane revived" \
@@ -226,7 +302,8 @@ fi
 
 # ─── Ensure required Codex lanes are alive ─────────────────────────────────
 
-if [ -x "$CODEX_LAUNCHER" ]; then
+# L4: the respawn floor yields under 'closed' — don't re-kick a paused lane.
+if [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CODEX_LAUNCHER" ]; then
     for color in $REQUIRED_CODEX_LANES; do
         session="hapax-codex-${color}"
         worktree="${HOME}/projects/hapax-council--${color}"
@@ -361,6 +438,10 @@ find_claimed_task() {
 dispatched=0
 skipped_cooldown=0
 
+# L4: under 'closed' the floor yields — defer nudges (don't re-kick paused lanes).
+if [ "$SDLC_ADMISSION" = "closed" ]; then
+    log "sdlc-pressure closed: deferring idle nudges for $idle_count lane(s) this tick"
+else
 for session in "${!IDLE_LANES[@]}"; do
     idle_s="${IDLE_LANES[$session]}"
 
@@ -436,6 +517,7 @@ for session in "${!IDLE_LANES[@]}"; do
             "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
     fi
 done
+fi
 
 if [ "$dispatched" -eq 0 ] && [ "$skipped_cooldown" -gt 0 ]; then
     log "all $idle_count idle lanes in cooldown"

@@ -89,6 +89,49 @@ def test_conservative_derivation_from_existing_task_fields() -> None:
     assert assessment.metadata.risk_flags.governance_sensitive is True
 
 
+def _derived_risk_flags(title: str, tags: list[str] | None = None):
+    assessment = assess_route_metadata(
+        {
+            "type": "cc-task",
+            "task_id": "risk-flag-token-task",
+            "title": title,
+            "kind": "implementation",
+            "risk_tier": "T1",
+            "authority_case": "CASE-TEST-001",
+            "parent_spec": "/tmp/spec.md",
+            "tags": tags or [],
+        }
+    )
+    assert assessment.metadata is not None
+    return assessment.metadata.risk_flags
+
+
+def test_risk_flag_derivation_matches_whole_words_not_substrings() -> None:
+    # 'egress' is a substring of 'regression' and 'live' of 'deliver'. A raw
+    # substring match false-flags routine titles as audio/live/egress
+    # sensitive, vetoing system auto-arm and stranding their green PRs.
+    flags = _derived_risk_flags("fix regression in deliver path")
+    assert flags.audio_or_live_egress_sensitive is False
+
+
+def test_risk_flag_derivation_still_flags_genuine_tokens() -> None:
+    flags = _derived_risk_flags("live egress stream", tags=["audio"])
+    assert flags.audio_or_live_egress_sensitive is True
+
+
+def test_risk_flag_derivation_matches_token_inside_hyphenated_tag() -> None:
+    # Hyphens delimit tokens, so a marker word inside a compound tag still
+    # counts (audio-egress -> {'audio', 'egress'}).
+    flags = _derived_risk_flags("routine task", tags=["audio-egress"])
+    assert flags.audio_or_live_egress_sensitive is True
+
+
+def test_risk_flag_derivation_governance_substring_does_not_false_trip() -> None:
+    # 'policy' must not match inside an unrelated compound like 'policyholder'.
+    flags = _derived_risk_flags("policyholder records cleanup")
+    assert flags.governance_sensitive is False
+
+
 def test_missing_quality_floor_is_hold_not_permissive() -> None:
     assessment = assess_route_metadata(
         {

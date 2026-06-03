@@ -605,6 +605,37 @@ class TestScopeAbsoluteWorktreePaths:
         )
         assert d.allowed, d.gate
 
+    def test_scratch_worktree_outside_projects_resolves_repo_relative(self):
+        # A task working in a /data/cache/hapax/scratch/<name>/ clone (not under
+        # ~/projects/) still resolves repo-relative: the gate ran with that scratch
+        # root as cwd, so a 'tests/' ref matched. The worktree anchor is not
+        # ~/projects-only.
+        d = policy_decide(
+            _edit("/data/cache/hapax/scratch/nmq/tests/shared/test_route.py"),
+            _authorized_task(mutation_scope_refs=("shared/route.py", "tests/")),
+            "theta",
+        )
+        assert d.allowed, d.gate
+
+    def test_scratch_worktree_out_of_scope_still_denies(self):
+        d = policy_decide(
+            _edit("/data/cache/hapax/scratch/nmq/agents/other.py"),
+            _authorized_task(mutation_scope_refs=("shared/route.py", "tests/")),
+            "theta",
+        )
+        assert d.blocked
+        assert d.gate == "scope:denied"
+
+    def test_repo_with_own_scratch_dir_anchors_on_projects_first(self):
+        # A repo that has its OWN scratch/ dir must anchor on the workspace projects/
+        # (earliest), not the inner scratch/ — so the ref still resolves repo-relative.
+        d = policy_decide(
+            _edit(f"{_WT}/hapax-council--zeta/scratch/build.py"),
+            _authorized_task(mutation_scope_refs=("scratch/",)),
+            "theta",
+        )
+        assert d.allowed, d.gate
+
     def test_inner_projects_segment_does_not_mis_anchor(self):
         # A repo that legitimately has a 'projects' dir of its own must anchor on the
         # workspace 'projects' (first occurrence), not the inner one.
@@ -734,3 +765,375 @@ class TestScopeCommandQuoteStripParity:
         d = policy_decide(_bash(cmd), _authorized_task(), "theta")
         assert d.blocked
         assert d.gate == "scope:command"
+
+
+# --- reform converge fix: NEW tightening patterns accrued AFTER #3828 ----------
+#
+# #3828 (_repo_relative + quote-strip) drove the replayed tightenings to 0. The
+# shadow window then accrued NEW decision shapes the repo-relative reduction does
+# not cover, re-opening ~120 TIGHTENINGS that again make the cutover gate
+# (asymmetric_ok = tightening==0) unreachable. Each class below is a genuine
+# OVER-block in policy_decide vs the legacy gate's REAL recorded allow (exit 0),
+# so converging is a strict relaxation (never a new block), exactly as the reform
+# design requires. Root-caused from ~/.cache/hapax/cc-task-gate-decisions.jsonl.
+
+
+class TestScopeTildeAndSisterRepoConvergence:
+    """Cross-repo + tilde-prefixed scope refs. The legacy gate ``os.path.expanduser``s
+    every ref (cc-task-gate.impl.sh:838) and resolves it against the session cwd, so a
+    ``~/projects/<repo>/…`` or a repo-dir-prefixed ``<repo>/src/x`` ref matched the
+    absolute target. policy_decide compared the raw ``~`` literal and a worktree-stripped
+    target, so neither matched → false ``scope:denied`` tightenings."""
+
+    def test_tilde_dir_ref_expands_and_matches_absolute_target(self):
+        d = policy_decide(
+            _edit(f"{_WT}/hapax-coord/src/dashboard.lisp"),
+            _authorized_task(mutation_scope_refs=("~/projects/hapax-coord/src/",)),
+            "theta",
+        )
+        assert d.allowed, d.gate
+
+    def test_tilde_exact_file_ref_expands_and_matches(self):
+        d = policy_decide(
+            _edit(f"{_WT}/hapax-coord/src/model.lisp"),
+            _authorized_task(mutation_scope_refs=("~/projects/hapax-coord/src/model.lisp",)),
+            "theta",
+        )
+        assert d.allowed, d.gate
+
+    def test_sister_repo_ref_with_repo_dir_prefix_matches(self):
+        # The cross-repo task shape: cwd was ~/projects/, so a bare 'hapax-coord/src/
+        # model.lisp' ref resolved to the absolute target. The worktree-relative form
+        # (keeps the repo dir) must match it.
+        d = policy_decide(
+            _edit(f"{_WT}/hapax-coord/src/model.lisp"),
+            _authorized_task(mutation_scope_refs=("hapax-coord/src/model.lisp",)),
+            "theta",
+        )
+        assert d.allowed, d.gate
+
+    def test_tilde_vault_note_ref_matches_absolute_note_target(self):
+        home = os.path.expanduser("~")
+        note = f"{home}/Documents/Personal/20-projects/hapax-cc-tasks/active/reform-x-20260601.md"
+        ref = "~/Documents/Personal/20-projects/hapax-cc-tasks/active/reform-x-20260601.md"
+        d = policy_decide(
+            ToolCall(tool_name="Write", file_path=note),
+            _authorized_task(mutation_scope_refs=(ref,), docs_mutation_authorized=True),
+            "theta",
+        )
+        assert d.allowed, d.gate
+
+    def test_sister_repo_out_of_scope_still_denies(self):
+        # Convergence must not over-broaden: a sibling-repo path under NO ref denies.
+        d = policy_decide(
+            _edit(f"{_WT}/hapax-coord/src/secret.lisp"),
+            _authorized_task(mutation_scope_refs=("hapax-coord/src/model.lisp",)),
+            "theta",
+        )
+        assert d.blocked
+        assert d.gate == "scope:denied"
+
+
+class TestScratchTmpCognition:
+    """/tmp scratch is ephemeral cognition (the master design's 'bare /tmp'): verify
+    scripts, PR bodies, commit-message files. policy_decide carved out only
+    /tmp/hapax-* and so blocked the /tmp scratch the real gate allowed (exit 0)."""
+
+    def test_tmp_scratch_write_is_cognition_even_without_claim(self):
+        d = policy_decide(ToolCall(tool_name="Write", file_path="/tmp/verify-clog.sh"), None, None)
+        assert d.allowed
+        assert d.gate == "cognition"
+
+    def test_tmp_scratch_write_allows_under_claimed_task_out_of_scope(self):
+        d = policy_decide(
+            ToolCall(tool_name="Write", file_path="/tmp/pr-body.md"),
+            _authorized_task(mutation_scope_refs=("src/",)),
+            "theta",
+        )
+        assert d.allowed
+        assert d.gate == "cognition"
+
+    def test_non_tmp_out_of_scope_still_denies(self):
+        # The broadened scratch carve-out stays /tmp-only — a real out-of-tree path denies.
+        d = policy_decide(
+            _edit("/etc/cron.d/evil"),
+            _authorized_task(mutation_scope_refs=("src/",)),
+            "theta",
+        )
+        assert d.blocked
+
+
+_HOME = os.path.expanduser("~")
+
+
+class TestRelayReceiptCognition:
+    """Relay receipts under ~/.cache/hapax/relay/ are status-reporting a blocked lane
+    must still emit ('a blocked lane must report state'); the real gate allowed them
+    (exit 0) but policy_decide blocked at claim. The governance-sensitive
+    cc-active-task-* claim files share ~/.cache/hapax/ and must STAY gated."""
+
+    def test_relay_receipt_write_is_cognition_without_claim(self):
+        d = policy_decide(
+            ToolCall(tool_name="Write", file_path=f"{_HOME}/.cache/hapax/relay/2026-06-01-zeta.md"),
+            None,
+            None,
+        )
+        assert d.allowed
+        assert d.gate == "cognition"
+
+    def test_claim_file_under_cache_is_not_cognition(self):
+        # The claim-file SSOT must never be hand-writable through the cognition carve-out.
+        d = policy_decide(
+            ToolCall(tool_name="Write", file_path=f"{_HOME}/.cache/hapax/cc-active-task-zeta"),
+            None,
+            "zeta",
+        )
+        assert d.blocked
+
+
+class TestScopeCommandScratchAndReadConvergence:
+    """scope:command over-blocks the real gate allowed (exit 0): a python heredoc that
+    only READS or builds a string (no write sink), and cp/mkdir whose target is /tmp
+    scratch. Argument-aware write detection keeps the real in-tree writer blocked."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            'python3 - <<\'PY\'\nmsg = """feat: a commit message\nbody line\n"""\nprint(msg)\nPY',
+            "python3 - <<'PY'\nimport json\nd = [json.loads(l) for l in open('/tmp/x.jsonl')]\nPY",
+            "python3 -c \"import json; print(json.load(open('/tmp/rc2.json')))\"",
+            "python3 - <<'PY'\nfrom pathlib import Path\nPath('/tmp/snap.txt').write_text('x')\nPY",
+        ],
+    )
+    def test_readonly_or_scratch_python_heredoc_allows(self, cmd):
+        d = policy_decide(_bash(cmd), _authorized_task(), "theta")
+        assert d.allowed, d.gate
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"cp {_HOME}/.cache/hapax/watermark.json /tmp/snapshot.json",
+            "mkdir -p /tmp/scratch-dir",
+            "cp shared/x.py /tmp/backup.py",
+        ],
+    )
+    def test_unconditional_source_cmd_to_scratch_allows(self, cmd):
+        d = policy_decide(_bash(cmd), _authorized_task(), "theta")
+        assert d.allowed, d.gate
+
+    def test_python_heredoc_writing_in_tree_source_still_blocks(self):
+        # Fail-closed: a heredoc body writing a RELATIVE (in-tree) source file blocks.
+        cmd = "python3 - <<'PY'\nopen('shared/x.py','w').write('mutated')\nPY"
+        d = policy_decide(_bash(cmd), _authorized_task(), "theta")
+        assert d.blocked
+        assert d.gate == "scope:command"
+
+    def test_cp_into_tree_source_still_blocks(self):
+        # Fail-closed: copying FROM scratch INTO an in-tree path is a source mutation.
+        cmd = "cp /tmp/payload.py shared/policy_decide.py"
+        d = policy_decide(_bash(cmd), _authorized_task(), "theta")
+        assert d.blocked
+        assert d.gate == "scope:command"
+
+
+class TestOwnTaskNoteBookkeeping:
+    """A session's OWN claimed cc-task note (``<task_id>.md``) is governance bookkeeping
+    (session log, stage, AC checks) the legacy content-validated bootstrap allows
+    regardless of scope/assignment. policy_decide blocked it at scope:denied (the note
+    is rarely listed in its own mutation_scope_refs) — the single largest residual
+    tightening class in the replayed decision log."""
+
+    def _note(self, task_id):
+        return f"{_HOME}/Documents/Personal/20-projects/hapax-cc-tasks/active/{task_id}.md"
+
+    def test_own_note_write_allows_when_not_in_scope_refs(self):
+        tid = "reform-coord-eventlog-path-unify-20260601"
+        task = _authorized_task(
+            task_id=tid,
+            mutation_scope_refs=("shared/coord_event_log.py", "tests/"),
+            docs_mutation_authorized=True,
+        )
+        d = policy_decide(ToolCall(tool_name="Edit", file_path=self._note(tid)), task, "theta")
+        assert d.allowed, d.gate
+        assert d.gate == "own-task-note"
+
+    def test_own_note_write_allows_even_when_reconciler_unassigned(self):
+        # reconciler-unassign race: the note's assigned_to flipped to 'unassigned'
+        # mid-session but the session still holds the claim and updates its own note.
+        tid = "reform-clog-dispatch-hardening-20260601"
+        task = _authorized_task(
+            task_id=tid,
+            assigned_to="unassigned",
+            mutation_scope_refs=("scripts/cc-pr-autoqueue.py",),
+            docs_mutation_authorized=True,
+        )
+        d = policy_decide(ToolCall(tool_name="Edit", file_path=self._note(tid)), task, "epsilon")
+        assert d.allowed, d.gate
+        assert d.gate == "own-task-note"
+
+    def test_other_task_note_out_of_scope_still_blocks(self):
+        # A DIFFERENT task's note (not the claimed one) stays fully gated by scope.
+        task = _authorized_task(
+            task_id="reform-coord-eventlog-path-unify-20260601",
+            mutation_scope_refs=("shared/coord_event_log.py",),
+            docs_mutation_authorized=True,
+        )
+        d = policy_decide(
+            ToolCall(tool_name="Edit", file_path=self._note("some-other-task-20260601")),
+            task,
+            "theta",
+        )
+        assert d.blocked
+        assert d.gate == "scope:denied"
+
+    def test_no_claimed_task_does_not_enable_note_bypass(self):
+        # Without a claimed task there is no 'own' note — the claim gate still fires.
+        d = policy_decide(
+            ToolCall(tool_name="Edit", file_path=self._note("anything-20260601")),
+            None,
+            "theta",
+        )
+        assert d.blocked
+        assert d.gate == "claim"
+
+
+class TestReadOnlyRuntimeNotMutation:
+    """Read-only systemctl introspection (status/cat/show/is-*/list-*) is not a runtime
+    mutation. The legacy substring classifier flagged any 'systemctl' as runtime, but
+    the real gate (recorded exit 0) allowed these reads; policy_decide blocked them at
+    claim/identity. Argument-aware classification — the module's stated FM-16 mission."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "systemctl --user status hapax-sdlc-invariants.service",
+            "systemctl --user cat hapax-sdlc-invariants.service --no-pager",
+            "systemctl --user is-active hapax-sdlc-invariants.service",
+            "systemctl --user is-enabled hapax-sdlc-invariants.timer",
+            "systemctl --user list-timers --all",
+            "systemctl --user list-units --all",
+            "systemctl --user list-unit-files",
+            "systemctl --user show hapax-post-merge-deploy.path --property=ActiveState",
+            "systemctl --user",
+        ],
+    )
+    def test_read_only_systemctl_allows_without_claim(self, cmd):
+        d = policy_decide(_bash(cmd), None, "theta")
+        assert d.allowed, d.gate
+        assert d.gate == "non-mutating"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "systemctl --user restart hapax-logos",
+            "systemctl --user stop hapax-logos",
+            "systemctl --user start hapax-logos",
+            "systemctl --user enable hapax-logos.timer",
+            "systemctl --user disable hapax-logos.timer",
+            "systemctl --user daemon-reload",
+            "systemctl --user kill hapax-logos",
+        ],
+    )
+    def test_mutating_systemctl_still_requires_runtime_auth(self, cmd):
+        d = policy_decide(_bash(cmd), _authorized_task(runtime_mutation_authorized=False), "theta")
+        assert d.blocked
+        assert d.gate == "authority:runtime"
+
+
+class TestCatRedirectClassification:
+    """fix-cc-gate-fps Fix 1 mirror: ``cat … 2>/dev/null`` / ``cat … 2>&1`` redirect
+    only stderr/an fd and are NOT stdout-to-file writes, so they are neither mutating
+    nor source-scope-bound; a real ``cat … > out`` IS (the bash gate's lines 268/298
+    fix, mirrored in ``_bash_is_source_scope`` / ``_bash_is_mutating``)."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat shared/policy_decide.py 2>/dev/null",
+            "cat shared/policy_decide.py 2>&1 | head",
+            "cat shared/policy_decide.py 2>&1",
+            "cat /etc/hosts",
+            "cat shared/x.py &>/dev/null",
+        ],
+    )
+    def test_stderr_or_fd_redirect_cat_is_not_source_or_mutating(self, cmd):
+        from shared.policy_decide import _bash_is_mutating, _bash_is_source_scope
+
+        assert _bash_is_source_scope(cmd) is False, f"{cmd!r} wrongly source-scoped"
+        assert _bash_is_mutating(cmd) is False, f"{cmd!r} wrongly flagged mutating"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat shared/x.py > out.txt",
+            "cat shared/x.py >out.txt",
+            "cat shared/x.py >> out.txt",
+            "cat a.py b.py 1> merged.py",
+        ],
+    )
+    def test_stdout_redirect_cat_is_source_and_mutating(self, cmd):
+        from shared.policy_decide import _bash_is_mutating, _bash_is_source_scope
+
+        assert _bash_is_source_scope(cmd) is True, f"{cmd!r} missed as source write"
+        assert _bash_is_mutating(cmd) is True, f"{cmd!r} missed as mutating"
+
+    def test_cat_stdout_redirect_decision_blocks_at_scope_command(self):
+        # End-to-end: a real `cat > out` on an authorized task blocks at scope:command
+        # (a shell source mutation with no scope-verifiable path).
+        d = policy_decide(_bash("cat shared/x.py > out.txt"), _authorized_task(), "theta")
+        assert d.blocked
+        assert d.gate == "scope:command"
+
+    def test_cat_stderr_redirect_decision_allows(self):
+        # End-to-end: a read-only `cat … 2>/dev/null` is non-mutating → always allowed.
+        d = policy_decide(
+            _bash("cat shared/policy_decide.py 2>/dev/null"), _authorized_task(), "theta"
+        )
+        assert d.allowed
+        assert d.gate == "non-mutating"
+
+
+class TestVaultRelativeScopeAnchoring:
+    """fix-cc-gate-fps Fix 2 mirror: a RELATIVE vault scope ref (`20-projects/
+    hapax-cc-tasks/`) must resolve against the personal vault root, so an absolute
+    vault target under it is in scope. ``_scope_forms`` previously normalized only the
+    `/projects/` and `/scratch/` worktree anchors, never the vault — so a vault-relative
+    ref never matched an absolute vault note path (a false ``scope:denied``)."""
+
+    def test_vault_relative_dir_ref_matches_absolute_vault_target(self):
+        home = os.path.expanduser("~")
+        target = f"{home}/Documents/Personal/20-projects/hapax-cc-tasks/_dashboard/cc-offered.md"
+        d = policy_decide(
+            ToolCall(tool_name="Write", file_path=target),
+            _authorized_task(
+                mutation_scope_refs=("20-projects/hapax-cc-tasks/",),
+                docs_mutation_authorized=True,
+            ),
+            "theta",
+        )
+        assert d.allowed, d.gate
+
+    def test_vault_relative_file_ref_matches_absolute_vault_target(self):
+        home = os.path.expanduser("~")
+        target = f"{home}/Documents/Personal/40-resources/notes/x.md"
+        d = policy_decide(
+            ToolCall(tool_name="Write", file_path=target),
+            _authorized_task(
+                mutation_scope_refs=("40-resources/notes/x.md",),
+                docs_mutation_authorized=True,
+            ),
+            "theta",
+        )
+        assert d.allowed, d.gate
+
+    def test_non_vault_relative_ref_still_denies_vault_target(self):
+        # No over-broadening: a repo-relative ref must NOT match a vault target.
+        home = os.path.expanduser("~")
+        target = f"{home}/Documents/Personal/20-projects/hapax-cc-tasks/_dashboard/x.md"
+        d = policy_decide(
+            ToolCall(tool_name="Write", file_path=target),
+            _authorized_task(mutation_scope_refs=("shared/",), docs_mutation_authorized=True),
+            "theta",
+        )
+        assert d.blocked
+        assert d.gate == "scope:denied"

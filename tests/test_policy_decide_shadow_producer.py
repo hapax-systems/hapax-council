@@ -15,8 +15,15 @@ producer*. This module pins the two halves of the fix:
 """
 
 import json
+from datetime import UTC, datetime
 
-from shared.policy_decide import evaluate_shadow_clean, replay_decision_log
+from shared.policy_decide import (
+    build_cutover_receipt,
+    evaluate_shadow_clean,
+    load_window_start,
+    replay_decision_log,
+    restart_window,
+)
 
 # --- A gate decision-log row: the gate's REAL verdict + the state it decided on -
 
@@ -250,3 +257,85 @@ class TestEvaluatorCleanPredicate:
         result = evaluate_shadow_clean(log, ledger, min_days=7, min_decisions=10)
         assert result["clean"] is False
         assert result["coverage_ok"] is False
+
+
+# --- window restart: exclude pre-restart historical drift from the clean window ---
+#
+# Converging policy_decide removes the SYSTEMATIC over-blocks, but the historical
+# decision log still carries a handful of genuinely-permissive-legacy decisions
+# (roleless merges, a scratch worktree, an out-of-scope test edit) that policy_decide
+# correctly blocks. Those are not a relaxation regression — so a non-destructive
+# window-start boundary lets a fresh 7-day window accrue clean while PRESERVING the
+# full log as evidence (vs destructively rotating it). "Restart" = stamp the boundary.
+
+
+class TestWindowStartFilter:
+    def test_replay_stamps_original_decision_ts_in_ledger(self, tmp_path):
+        log = tmp_path / "d.jsonl"
+        ledger = tmp_path / "s.jsonl"
+        _write_log(log, [_row(ts="2026-05-20T00:00:00Z", legacy_exit=0, authority_case="")])
+        replay_decision_log(log, ledger)
+        rows = [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
+        assert rows and rows[0]["decision_ts"] == "2026-05-20T00:00:00Z"
+
+    def test_tightening_before_window_start_is_excluded(self, tmp_path):
+        log = tmp_path / "d.jsonl"
+        ledger = tmp_path / "s.jsonl"
+        old_tighten = _row(ts="2026-05-01T00:00:00Z", legacy_exit=0, authority_case="")
+        fresh = [_row(ts=f"2026-05-{d:02d}T12:00:00Z") for d in range(20, 28)] * 3
+        _write_log(log, [old_tighten, *fresh])
+        replay_decision_log(log, ledger)
+        ws = datetime(2026, 5, 15, tzinfo=UTC)
+        full = evaluate_shadow_clean(log, ledger, min_days=7, min_decisions=10)
+        windowed = evaluate_shadow_clean(log, ledger, min_days=7, min_decisions=10, window_start=ws)
+        assert full["tightening"] >= 1  # the pre-restart drift counts over the full history
+        assert windowed["tightening"] == 0  # excluded after the restart boundary
+        assert windowed["clean"] is True
+        assert str(windowed["window_start"]).startswith("2026-05-15")
+
+    def test_window_start_file_roundtrip(self, tmp_path):
+        f = tmp_path / "window-start"
+        assert load_window_start(f) is None
+        now = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
+        restart_window(f, now=now)
+        assert load_window_start(f) == now
+
+
+class TestCutoverReceipt:
+    def test_receipt_records_span_and_asymmetry_with_countdown(self):
+        verdict = {
+            "clean": False,
+            "coverage_ok": False,
+            "asymmetric_ok": True,
+            "span_days": 2.5,
+            "tightening": 0,
+            "loosening": 4,
+            "min_days": 7.0,
+            "total_decisions": 50,
+            "reasons": ["short window: 2.5d span < 7.0d shadow week"],
+            "window_start": "2026-05-30T00:00:00Z",
+        }
+        receipt = build_cutover_receipt(verdict, now=datetime(2026, 6, 1, tzinfo=UTC))
+        assert receipt["span_days"] == 2.5
+        assert receipt["asymmetric_ok"] is True
+        assert receipt["cutover_eligible"] is False
+        assert receipt["countdown_days"] == 4.5
+        assert receipt["window_start"] == "2026-05-30T00:00:00Z"
+        assert str(receipt["generated_at"]).startswith("2026-06-01")
+
+    def test_receipt_eligible_when_clean_zero_countdown(self):
+        verdict = {
+            "clean": True,
+            "coverage_ok": True,
+            "asymmetric_ok": True,
+            "span_days": 8.0,
+            "tightening": 0,
+            "loosening": 3,
+            "min_days": 7.0,
+            "total_decisions": 300,
+            "reasons": [],
+            "window_start": None,
+        }
+        receipt = build_cutover_receipt(verdict, now=datetime(2026, 6, 10, tzinfo=UTC))
+        assert receipt["cutover_eligible"] is True
+        assert receipt["countdown_days"] == 0.0

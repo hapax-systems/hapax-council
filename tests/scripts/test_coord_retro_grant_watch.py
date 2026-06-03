@@ -17,6 +17,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "coord-retro-grant-watch"
+MINT_SCRIPT = REPO_ROOT / "scripts" / "coord-grant-mint"
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -146,3 +147,57 @@ class TestRetroGrantWatch:
         key.write_bytes(KEY)
         r = _run(obligations, grant_dir, key, now=10_000)
         assert r.returncode == 0, f"stderr={r.stderr}"
+
+    def test_reader_writer_parity_via_coord_base_dir(self, tmp_path: Path) -> None:
+        """The watcher reads the SAME grants dir + key coord-grant-mint writes when
+        only the canonical base (HAPAX_COORD_DIR) is set — both scripts resolve
+        through shared.coord_event_log, not divergent /var/lib defaults.
+
+        Before the path-unify fix the watcher's bare default was
+        ``/var/lib/hapax/coord/grants`` while the mint wrote to ``<base>/grants``,
+        so a freshly minted covering grant never fulfilled the obligation.
+        """
+        base = tmp_path / "coord"
+        obligations = tmp_path / "obligations.jsonl"
+        # Overdue obligation: absent a covering grant the watcher escalates.
+        _write_obligation(obligations, gate="cc-task-gate", ts_s=1, deadline_s=1)
+
+        env = os.environ.copy()
+        # Only the canonical base is set — NO per-surface grant overrides — so both
+        # scripts must derive <base>/grants and <base>/grant-key from it.
+        for var in ("HAPAX_COORD_GRANT_DIR", "HAPAX_COORD_GRANT_KEY"):
+            env.pop(var, None)
+        env["HAPAX_COORD_DIR"] = str(base)
+
+        # Writer: mint a covering grant (auto-creates the signing key under <base>).
+        mint = subprocess.run(
+            [
+                sys.executable,
+                str(MINT_SCRIPT),
+                "--scope",
+                "cc-task-gate",
+                "--reason",
+                "parity",
+                "--grantor",
+                "operator",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+        assert mint.returncode == 0, f"mint stderr={mint.stderr}"
+
+        # Reader: the watcher must find that grant via the same base resolution.
+        env["HAPAX_COORD_RETRO_OBLIGATIONS"] = str(obligations)
+        watch = subprocess.run(
+            [sys.executable, str(SCRIPT), "--dry-run"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+        assert watch.returncode == 0, f"watch stderr={watch.stderr}"
+        summary = json.loads(watch.stdout)
+        assert summary["fulfilled"] == 1, summary
+        assert summary["escalated"] == 0, summary

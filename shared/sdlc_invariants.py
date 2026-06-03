@@ -32,34 +32,34 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from shared.coord_event_log import default_grant_dir, default_grant_key
 from shared.governance.coord_capabilities import (
     EscapeGrant,
     mint_escape_grant,
     verify_escape_grant,
     write_grant_file,
 )
+from shared.jsonl_append import append_jsonl_lines
 from shared.policy_decide import ToolCall, policy_decide
 from shared.policy_decision import Decision, FailMode, Verdict
 from shared.policy_floor import evaluate_floor
+from shared.sdlc_lifecycle import stage_token as _stage_token
 
 #: Authority-case stage-transition ledger this monitor reads (the trace input).
 DEFAULT_AUTHORITY_LEDGER = Path(os.path.expanduser("~/.cache/hapax/authority-case-ledger.jsonl"))
 #: Advisory findings ledger this monitor writes (violations only).
 DEFAULT_INVARIANT_LEDGER = Path(os.path.expanduser("~/.cache/hapax/sdlc-invariant-findings.jsonl"))
-#: HMAC key the auto-mint signs escape grants with. The monitor is the first
-#: runtime minter, so it CREATES this key (0600) if absent; the daemon-independent
-#: shim (which honors grants kernel-down) reads the SAME path. Override via
-#: ``--key-file`` / ``HAPAX_COORD_GRANT_KEY_FILE``.
-DEFAULT_GRANT_KEY_FILE = Path(
-    os.environ.get(
-        "HAPAX_COORD_GRANT_KEY_FILE", os.path.expanduser("~/.config/hapax/coord-capability.key")
-    )
-)
-#: Directory the auto-minted escape grant FILES land in. The shim reads grants
-#: directly from disk here — no RPC, so a grant is honored with the kernel dead.
-DEFAULT_ESCAPE_GRANT_DIR = Path(
-    os.environ.get("HAPAX_ESCAPE_GRANT_DIR", os.path.expanduser("~/.cache/hapax/escape-grants"))
-)
+#: The auto-mint writes signed grant FILES the daemon-independent shim reads
+#: directly off disk (a pure file read, no RPC). Their directory and signing key
+#: MUST resolve identically to ``hooks/scripts/escape-grant.sh`` and
+#: ``scripts/coord-grant-mint`` — otherwise a minted grant is invisible (wrong
+#: dir/extension) or unverifiable (wrong key) to the live shim and the escape is
+#: inert. So BOTH are resolved at CALL TIME through the single canonical SSOT,
+#: ``shared.coord_event_log`` (``default_grant_dir`` → ``<coord>/grants``,
+#: ``default_grant_key`` → ``<coord>/grant-key``; ``HAPAX_COORD_DIR`` redirects the
+#: whole tree for tests). There is deliberately NO module-level path constant: an
+#: import-time snapshot of a divergent path is exactly the regression this monitor
+#: exists to prevent (reform-inv-trace-checker-activate).
 #: Only the escape-class invariants auto-mint a grant on violation (§4.5). INV-1/2
 #: are statechart/liveness properties — they ledger an advisory alert, never mint.
 AUTO_MINT_INVARIANTS = frozenset({"INV-3", "INV-4", "INV-5"})
@@ -125,6 +125,17 @@ SDLC_LADDER = Ladder(
 )
 
 
+#: INV-2 *operational* terminals — deliberately distinct from the proof-plane ladder
+#: terminal (``SDLC_LADDER.terminal == {S11}``). INV-2 reads the OPERATIONAL
+#: authority-case ledger, where a task's done-state is ``S7_RELEASE`` (token ``S7``):
+#: merged and released, hence done — not stuck — even though the S0..S11 proof
+#: vocabulary marks only S11 terminal. Kept SEPARATE from the shared ladder on
+#: purpose: widening ``SDLC_LADDER.terminal`` would perturb INV-1 (deadlock-freedom
+#: permits only a terminal stage to lack a successor). S11 stays terminal here too,
+#: so a fully proof-closed task is live as well.
+LIVENESS_TERMINAL = frozenset({"S7", "S11"})
+
+
 @dataclass(frozen=True)
 class InvariantResult:
     """One advisory invariant evaluation. ``holds`` False is ledgered, never blocks."""
@@ -186,7 +197,9 @@ def check_inv2_liveness(
 
     A runtime approximation of the temporal liveness property: a task violates if
     its latest observed stage is unknown, or non-terminal and stale beyond
-    ``stale_after_s`` (no progress) — i.e. effectively stuck.
+    ``stale_after_s`` (no progress) — i.e. effectively stuck. "Terminal" here is the
+    OPERATIONAL ``LIVENESS_TERMINAL`` ({S7 release, S11}), not the proof-plane ladder
+    terminal: a released task (``S7_RELEASE`` → token ``S7``) is done, not stuck.
     """
     violations: list[str] = []
     try:
@@ -204,7 +217,7 @@ def check_inv2_liveness(
         for task_id, (stage, ts) in latest.items():
             if stage not in ladder.stages:
                 violations.append(f"{task_id}:unknown_stage:{stage or '<blank>'}")
-            elif stage in ladder.terminal:
+            elif stage in LIVENESS_TERMINAL:
                 continue
             elif (now - ts) > stale_after_s:
                 violations.append(f"{task_id}:stuck:{stage}:{int(now - ts)}s")
@@ -296,23 +309,22 @@ def record_invariant_findings(
         rows = [r for r in results if not r.holds]
         if not rows:
             return
-        path = Path(ledger_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            for result in rows:
-                handle.write(
-                    json.dumps(
-                        {
-                            "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            "invariant": result.invariant,
-                            "name": result.name,
-                            "holds": result.holds,
-                            "violations": list(result.violations),
-                            "advisory": result.advisory,
-                        }
-                    )
-                    + "\n"
-                )
+        # One flock acquisition for the whole batch (multi-row interleave risk
+        # eliminated); bare-json.dumps bytes preserved exactly (dn-ledger-flock).
+        append_jsonl_lines(
+            (
+                {
+                    "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "invariant": result.invariant,
+                    "name": result.name,
+                    "holds": result.holds,
+                    "violations": list(result.violations),
+                    "advisory": result.advisory,
+                }
+                for result in rows
+            ),
+            ledger_path,
+        )
     except Exception:  # noqa: BLE001 — advisory ledger; a write failure must not block.
         pass
 
@@ -327,15 +339,18 @@ def record_invariant_findings(
 # unblocks a lane regardless of daemon liveness (INV-4).
 
 
-def load_or_create_grant_key(path: str | os.PathLike[str] = DEFAULT_GRANT_KEY_FILE) -> bytes:
+def load_or_create_grant_key(path: str | os.PathLike[str] | None = None) -> bytes:
     """Load the coord-capability HMAC key, creating a fresh 32-byte key (mode 0600) if absent.
 
-    The monitor is the first runtime minter, so it establishes the key the
-    daemon-independent shim later reads from the SAME path. Returns ``b""`` only if
+    ``path`` defaults to the canonical coord signing key
+    (``shared.coord_event_log.default_grant_key`` — the SAME key
+    ``hooks/scripts/escape-grant.sh`` and ``scripts/coord-grant-mint`` use), so an
+    auto-minted grant verifies against the live shim. The monitor may be the first
+    runtime minter, so it establishes that key if absent. Returns ``b""`` only if
     the key can neither be read nor persisted — the caller then degrades to
     ledger-only (no verifiable grant can be signed). Never raises.
     """
-    target = Path(path)
+    target = Path(path) if path is not None else default_grant_key()
     try:
         return target.read_bytes()
     except OSError:
@@ -388,7 +403,7 @@ def mint_escape_for_violation(
     result: InvariantResult,
     *,
     key: bytes,
-    grant_dir: str | os.PathLike[str] = DEFAULT_ESCAPE_GRANT_DIR,
+    grant_dir: str | os.PathLike[str] | None = None,
     now: float,
     ttl_s: float = ESCAPE_GRANT_TTL_S,
 ) -> EscapeGrant | None:
@@ -396,9 +411,11 @@ def mint_escape_for_violation(
 
     INV-3/4/5 violations all mean the escape machinery itself may be compromised, so
     the never-freeze response is a broad daemon-independent escape (the triggering
-    invariant is stamped in the grant ``reason`` for legibility). Returns the minted
-    grant written to ``grant_dir``, or ``None`` when the invariant holds, is not an
-    auto-mint class, or no signing key is available. Never raises — advisory.
+    invariant is stamped in the grant ``reason`` for legibility). The grant is
+    written as ``<grant_id>.grant`` — the extension the shim globs — into
+    ``grant_dir`` (default: the canonical ``default_grant_dir()``, the SAME dir the
+    shim reads). Returns the minted grant, or ``None`` when the invariant holds, is
+    not an auto-mint class, or no signing key is available. Never raises — advisory.
     """
     if result.holds or result.invariant not in AUTO_MINT_INVARIANTS or not key:
         return None
@@ -414,8 +431,8 @@ def mint_escape_for_violation(
             key=key,
             now=now,
         )
-        slug = result.invariant.lower().replace("-", "")
-        write_grant_file(grant, Path(grant_dir) / f"{slug}-{grant.grant_id}.json")
+        target_dir = Path(grant_dir) if grant_dir is not None else default_grant_dir()
+        write_grant_file(grant, target_dir / f"{grant.grant_id}.grant")
         return grant
     except Exception:  # noqa: BLE001 — auto-mint is advisory; a mint/IO failure must not block.
         return None
@@ -457,7 +474,7 @@ def run_evaluator(
     stale_after_s: float = 86400.0,
     ladder: Ladder = SDLC_LADDER,
     findings_path: str | os.PathLike[str] = DEFAULT_INVARIANT_LEDGER,
-    grant_dir: str | os.PathLike[str] = DEFAULT_ESCAPE_GRANT_DIR,
+    grant_dir: str | os.PathLike[str] | None = None,
     key: bytes = b"",
     alert: bool = True,
 ) -> EvaluationReport:
@@ -499,7 +516,10 @@ def _load_ledger_trace(path: Path) -> list[dict[str, object]]:
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
-        ts_raw = record.get("timestamp", "")
+        # The producer (cc-stage-advance) keys the ISO timestamp "ts"; tolerate the
+        # legacy "timestamp" key too. Reading the wrong key silently fell back to 0.0,
+        # making every record look ~56 years stale (INV-2 false-positive — fixed here).
+        ts_raw = record.get("ts") or record.get("timestamp") or ""
         ts = 0.0
         try:
             ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00")).timestamp()
@@ -513,12 +533,6 @@ def _load_ledger_trace(path: Path) -> list[dict[str, object]]:
             }
         )
     return trace
-
-
-def _stage_token(raw: str) -> str:
-    """Normalize 'S6_IMPLEMENTATION' / 'S3.5' to the ladder's stage token (S6 / S3_5)."""
-    token = raw.strip().replace(".", "_")
-    return token.split("_")[0] if (token[:1] == "S" and "_" in token and token != "S3_5") else token
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -541,8 +555,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="auto-mint the relevant escape grant on each INV-3/4/5 violation (§4.5)",
     )
-    parser.add_argument("--grant-dir", default=str(DEFAULT_ESCAPE_GRANT_DIR))
-    parser.add_argument("--key-file", dest="key_file", default=str(DEFAULT_GRANT_KEY_FILE))
+    parser.add_argument(
+        "--grant-dir",
+        default=None,
+        help="override the escape-grant directory (default: the canonical coord grants dir)",
+    )
+    parser.add_argument(
+        "--key-file",
+        dest="key_file",
+        default=None,
+        help="override the signing key path (default: the canonical coord grant key)",
+    )
     parser.add_argument(
         "--no-alert", dest="alert", action="store_false", help="suppress the operator notification"
     )

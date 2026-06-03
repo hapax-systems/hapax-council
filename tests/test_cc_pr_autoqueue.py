@@ -62,6 +62,7 @@ def _write_task(
     authority_level: str | None = "authoritative",
     priority: str = "p2",
     kind: str = "implementation",
+    assigned_to: str = "alpha",
     tags: list[str] | None = None,
     queue_admission: str | None = None,
     extra_frontmatter: dict[str, object] | None = None,
@@ -108,7 +109,7 @@ type: cc-task
 task_id: {task_id}
 title: "{task_id}"
 status: {status}
-assigned_to: alpha
+assigned_to: {assigned_to}
 priority: {priority}
 kind: {kind}
 {pr_line}
@@ -178,6 +179,9 @@ class _FakeRunner:
         self.open_prs: list[dict[str, Any]] = []
         self.queued_prs: set[int] = set()
         self.calls: list[list[str]] = []
+        # head_sha -> existing commit statuses (most-recent-first), for the G3
+        # read-before-write idempotency check in set_autoqueue_admission_status.
+        self.head_statuses: dict[str, list[dict[str, Any]]] = {}
 
     def __call__(
         self,
@@ -215,6 +219,16 @@ class _FakeRunner:
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
         if cmd[:3] == ["gh", "pr", "merge"]:
             return subprocess.CompletedProcess(cmd, 0, f"merged {cmd[3]}\n", "")
+        if (
+            cmd[:2] == ["gh", "api"]
+            and len(cmd) == 3
+            and "/commits/" in cmd[2]
+            and cmd[2].endswith("/statuses")
+        ):
+            sha = cmd[2].split("/commits/", 1)[1].rsplit("/statuses", 1)[0]
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps(self.head_statuses.get(sha, [])), ""
+            )
         return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
 
 
@@ -240,7 +254,7 @@ def test_queue_green_governed_pr(tmp_path: Path) -> None:
         and "state=success" in call
         for call in runner.calls
     )
-    assert ["gh", "pr", "merge", "42", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert ["gh", "pr", "merge", "42", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
 
 
 def test_does_not_queue_when_admission_status_write_fails(tmp_path: Path) -> None:
@@ -293,7 +307,7 @@ def test_enable_auto_merge_for_pending_governed_pr(tmp_path: Path) -> None:
     )
 
     assert report["counts"]["enable_auto_merge"] == 1
-    assert ["gh", "pr", "merge", "43", "--repo", "owner/repo", "--auto", "--merge"] in runner.calls
+    assert ["gh", "pr", "merge", "43", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
 
 
 def test_enable_auto_merge_for_unknown_pending_governed_pr(tmp_path: Path) -> None:
@@ -323,7 +337,7 @@ def test_enable_auto_merge_for_unknown_pending_governed_pr(tmp_path: Path) -> No
     )
 
     assert report["counts"]["enable_auto_merge"] == 1
-    assert ["gh", "pr", "merge", "44", "--repo", "owner/repo", "--auto", "--merge"] in runner.calls
+    assert ["gh", "pr", "merge", "44", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
 
 
 def test_blocks_unknown_merge_state_without_pending_checks(tmp_path: Path) -> None:
@@ -758,7 +772,7 @@ def test_queues_pr_with_multiple_ready_task_links(tmp_path: Path) -> None:
 
     assert report["counts"]["queue"] == 1
     assert report["decisions"][0]["task_ids"] == ["followup", "primary"]
-    assert ["gh", "pr", "merge", "74", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert ["gh", "pr", "merge", "74", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
 
 
 def test_dequeues_multiple_task_links_when_any_task_missing_metadata(tmp_path: Path) -> None:
@@ -934,7 +948,7 @@ def test_stabilization_holds_downstream_prs_while_ci_repair_is_active(
     assert decisions[90]["action"] == "queue"
     assert decisions[91]["action"] == "blocked"
     assert "admission_stabilization_hold:active_ci_repair:ci-repair" in decisions[91]["reasons"]
-    assert ["gh", "pr", "merge", "90", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert ["gh", "pr", "merge", "90", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
     assert not any(call[:4] == ["gh", "pr", "merge", "91"] for call in runner.calls)
 
 
@@ -1128,8 +1142,26 @@ def test_storm_allows_ci_repair_and_independent_admissions(tmp_path: Path) -> No
     assert decisions[120]["action"] == "blocked"
     assert decisions[121]["action"] == "queue"
     assert decisions[122]["action"] == "queue"
-    assert ["gh", "pr", "merge", "121", "--repo", "owner/repo", "--merge"] in runner.calls
-    assert ["gh", "pr", "merge", "122", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "121",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+    ] in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "122",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+    ] in runner.calls
     assert not any(call[:4] == ["gh", "pr", "merge", "120"] for call in runner.calls)
 
 
@@ -1210,7 +1242,16 @@ def test_auto_arms_eligible_pr_open_task_then_merges(tmp_path: Path) -> None:
     assert "release_authorized: false" not in armed
     assert "stage: S7_RELEASE" in armed
     # And the PR is admitted to the merge queue.
-    assert ["gh", "pr", "merge", "701", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "701",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+    ] in runner.calls
     decision = next(d for d in report["decisions"] if d["pr"] == 701)
     assert decision["auto_arm"] is True
 
@@ -1330,7 +1371,16 @@ def test_already_release_authorized_task_is_not_rearmed(tmp_path: Path) -> None:
 
     # Already armed → merges normally, no auto-arm audit line appended.
     assert "release auto-arm (system)" not in note.read_text(encoding="utf-8")
-    assert ["gh", "pr", "merge", "705", "--repo", "owner/repo", "--merge"] in runner.calls
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "705",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+    ] in runner.calls
     decision = next(d for d in report["decisions"] if d["pr"] == 705)
     assert decision.get("auto_arm", False) is False
 
@@ -1391,3 +1441,374 @@ def test_flake_quarantine_write_side_persists_and_excludes_next_tick(
     assert 140 in report2["flake_quarantine"]["active"]
     assert report2["flake_quarantine"]["newly_quarantined"] == []
     assert report2["storm_mode"]["rate_frozen"] is False
+
+
+# ── shared-file epic serialization: single-lane affinity (CASE-SBCL-CLOG-COORD-001) ──
+# The CLOG/Trainyard cockpit epic is a parallel DAG whose branches all mutate one
+# shared file (src/dashboard.lisp). Two lanes editing it concurrently merge-conflict
+# by construction. The autoqueue holds admission of an epic PR while a sibling epic
+# task is concurrently in flight in a DIFFERENT lane (the real hazard); same-lane
+# serial work is never held, and a deterministic lowest-PR tiebreak prevents two
+# different-lane epic PRs from dead-holding each other.
+
+_CLOG_SPEC = "clog-frontend-elevation-design-2026-06-01.md"
+# The CLOG epic was removed from SHARED_FILE_EPIC_PARENT_SPECS (task
+# reform-native-merge-queue) — the native merge queue now serializes shared-file
+# contention. The mechanism still works via the explicit ``epic_serialize`` field,
+# so these mechanism tests opt in via that field instead of the (now empty)
+# parent_spec registry. See test_clog_parent_spec_alone_no_longer_holds.
+_CLOG_EPIC = "clog-dashboard-lisp"
+
+
+def test_clog_parent_spec_alone_no_longer_holds(tmp_path: Path) -> None:
+    # Regression for task reform-native-merge-queue: the CLOG epic was removed from
+    # SHARED_FILE_EPIC_PARENT_SPECS, so a parent_spec match ALONE (no explicit
+    # epic_serialize field) must NOT trigger a pre-admission affinity hold — the
+    # native merge queue's speculative branches now serialize shared-file contention.
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="clog-c",
+        status="ready",
+        pr=350,
+        assigned_to="eta",
+        parent_spec=_CLOG_SPEC,
+    )
+    _write_task(
+        vault,
+        task_id="clog-b",
+        status="in_progress",
+        assigned_to="zeta",
+        parent_spec=_CLOG_SPEC,
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(350)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert not any(
+        reason.startswith("shared_file_epic_affinity_hold:")
+        for reason in report["decisions"][0].get("reasons", [])
+    )
+    assert report["counts"]["queue"] == 1
+
+
+def test_shared_file_epic_holds_pr_when_sibling_in_progress_in_other_lane(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="clog-c",
+        status="ready",
+        pr=300,
+        assigned_to="eta",
+        parent_spec=_CLOG_SPEC,
+        extra_frontmatter={"epic_serialize": _CLOG_EPIC},
+    )
+    # Sibling mid-edit in a different lane: in flight, no PR yet.
+    _write_task(
+        vault,
+        task_id="clog-b",
+        status="in_progress",
+        assigned_to="zeta",
+        parent_spec=_CLOG_SPEC,
+        extra_frontmatter={"epic_serialize": _CLOG_EPIC},
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(300)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    reasons = report["decisions"][0]["reasons"]
+    assert any(
+        reason.startswith("shared_file_epic_affinity_hold:clog-dashboard-lisp:clog-b@zeta")
+        for reason in reasons
+    )
+    assert not any(call[:4] == ["gh", "pr", "merge", "300"] for call in runner.calls)
+
+
+def test_shared_file_epic_allows_pr_when_sibling_same_lane(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="clog-c",
+        status="ready",
+        pr=310,
+        assigned_to="eta",
+        parent_spec=_CLOG_SPEC,
+        extra_frontmatter={"epic_serialize": _CLOG_EPIC},
+    )
+    _write_task(
+        vault,
+        task_id="clog-d",
+        status="in_progress",
+        assigned_to="eta",  # same lane: serial work, no hazard
+        parent_spec=_CLOG_SPEC,
+        extra_frontmatter={"epic_serialize": _CLOG_EPIC},
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(310)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert not any(
+        reason.startswith("shared_file_epic_affinity_hold:")
+        for reason in report["decisions"][0].get("reasons", [])
+    )
+
+
+def test_shared_file_epic_allows_pr_when_only_terminal_sibling(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="clog-c",
+        status="ready",
+        pr=320,
+        assigned_to="eta",
+        parent_spec=_CLOG_SPEC,
+        extra_frontmatter={"epic_serialize": _CLOG_EPIC},
+    )
+    # Predecessor merged+closed in another lane: not in flight, must not hold.
+    _write_task(
+        vault,
+        task_id="clog-a",
+        folder="closed",
+        status="done",
+        assigned_to="zeta",
+        parent_spec=_CLOG_SPEC,
+        extra_frontmatter={"epic_serialize": _CLOG_EPIC},
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(320)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+
+
+def test_shared_file_epic_lowest_pr_proceeds_across_lanes(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="clog-c",
+        status="ready",
+        pr=330,
+        assigned_to="eta",
+        parent_spec=_CLOG_SPEC,
+        extra_frontmatter={"epic_serialize": _CLOG_EPIC},
+    )
+    _write_task(
+        vault,
+        task_id="clog-e",
+        status="ready",
+        pr=331,
+        assigned_to="zeta",
+        parent_spec=_CLOG_SPEC,
+        extra_frontmatter={"epic_serialize": _CLOG_EPIC},
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(330), _pr(331)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decisions = {item["pr"]: item for item in report["decisions"]}
+    # Lower PR (opened first) proceeds; higher PR holds — deterministic, no deadlock.
+    assert decisions[330]["action"] == "queue"
+    assert decisions[331]["action"] == "blocked"
+    assert any(
+        reason.startswith("shared_file_epic_affinity_hold:clog-dashboard-lisp:clog-c@eta")
+        for reason in decisions[331]["reasons"]
+    )
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "330",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+    ] in runner.calls
+    assert not any(call[:4] == ["gh", "pr", "merge", "331"] for call in runner.calls)
+
+
+def test_shared_file_epic_detected_via_explicit_epic_serialize_field(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    # parent_spec NOT in the registry — membership comes from the explicit field.
+    _write_task(
+        vault,
+        task_id="x-consumer",
+        status="ready",
+        pr=340,
+        assigned_to="eta",
+        parent_spec="docs/other.md",
+        extra_frontmatter={"epic_serialize": "my-shared-file-epic"},
+    )
+    _write_task(
+        vault,
+        task_id="x-producer",
+        status="in_progress",
+        assigned_to="zeta",
+        parent_spec="docs/other.md",
+        extra_frontmatter={"epic_serialize": "my-shared-file-epic"},
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(340)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    assert any(
+        reason.startswith("shared_file_epic_affinity_hold:my-shared-file-epic:x-producer@zeta")
+        for reason in report["decisions"][0]["reasons"]
+    )
+
+
+def test_non_epic_pr_not_held_by_unrelated_in_progress_task(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="plain",
+        status="ready",
+        pr=350,
+        assigned_to="eta",
+        parent_spec="docs/spec.md",
+    )
+    _write_task(
+        vault,
+        task_id="other",
+        status="in_progress",
+        assigned_to="zeta",
+        parent_spec="docs/spec.md",
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(350)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    # No shared-file epic → no affinity hold; ordinary PR queues.
+    assert report["counts"]["queue"] == 1
+    assert not any(
+        reason.startswith("shared_file_epic_affinity_hold:")
+        for reason in report["decisions"][0].get("reasons", [])
+    )
+
+
+# --- G3: idempotent admission writes (kill the 422 self-DoS) -----------------
+
+
+def _admission_decision(number: int = 50, action: str = "queue") -> Any:
+    pr = autoqueue._parse_pr(_pr(number))
+    assert pr is not None
+    return autoqueue.Decision(pr=pr, action=action)
+
+
+def _admission_posts(runner: _FakeRunner) -> list[list[str]]:
+    return [call for call in runner.calls if call[:4] == ["gh", "api", "-X", "POST"]]
+
+
+def _existing_status(state: str, description: str, created_at: str) -> dict[str, Any]:
+    return {
+        "context": autoqueue.AUTOQUEUE_ADMISSION_CONTEXT,
+        "state": state,
+        "description": description,
+        "created_at": created_at,
+    }
+
+
+def test_admission_status_posts_when_no_current_status(tmp_path: Path) -> None:
+    decision = _admission_decision()
+    runner = _FakeRunner()  # no existing status on the head SHA
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner
+    )
+    assert result is not None and result[0]
+    assert len(_admission_posts(runner)) == 1
+
+
+def test_admission_status_idempotent_when_unchanged_and_fresh(tmp_path: Path) -> None:
+    decision = _admission_decision()
+    state, description = autoqueue._admission_status_for(decision)
+    runner = _FakeRunner()
+    runner.head_statuses["sha-50"] = [_existing_status(state, description, "2026-06-02T00:00:00Z")]
+    # 5 minutes later: well within TTL/2 (15 min) -> skip the redundant POST.
+    now = datetime(2026, 6, 2, 0, 5, tzinfo=UTC)
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner, now=now
+    )
+    assert result == (True, "unchanged")
+    assert _admission_posts(runner) == []
+
+
+def test_admission_status_reposts_when_stale(tmp_path: Path) -> None:
+    decision = _admission_decision()
+    state, description = autoqueue._admission_status_for(decision)
+    runner = _FakeRunner()
+    runner.head_statuses["sha-50"] = [_existing_status(state, description, "2026-06-02T00:00:00Z")]
+    # 20 minutes later: older than TTL/2 (15 min) -> re-post to stay fresh.
+    now = datetime(2026, 6, 2, 0, 20, tzinfo=UTC)
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner, now=now
+    )
+    assert result is not None and result[0]
+    assert len(_admission_posts(runner)) == 1
+
+
+def test_admission_status_posts_when_verdict_changed(tmp_path: Path) -> None:
+    decision = _admission_decision()  # success verdict
+    runner = _FakeRunner()
+    runner.head_statuses["sha-50"] = [
+        _existing_status("failure", "cc-pr-autoqueue blocked: stale", "2026-06-02T00:00:00Z")
+    ]
+    # Fresh, but the verdict flipped failure -> success: must POST.
+    now = datetime(2026, 6, 2, 0, 1, tzinfo=UTC)
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner, now=now
+    )
+    assert result is not None and result[0]
+    assert len(_admission_posts(runner)) == 1

@@ -27,7 +27,6 @@ Exit: 0 advanced (or already at stage), 2 refused (bad stage / no authority_case
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import sys
@@ -191,25 +190,27 @@ def advance(task_id: str, new_stage: str, allow_backward: bool) -> int:
     body = body.rstrip("\n") + "\n" + log + "\n"
     note.write_text(front + body, encoding="utf-8")
 
-    LEDGER.parent.mkdir(parents=True, exist_ok=True)
-    with LEDGER.open("a", encoding="utf-8") as h:
-        h.write(
-            json.dumps(
-                {
-                    "ts": now,
-                    "kind": "stage_transition",
-                    "tool": "cc-stage-advance",
-                    "role": _role(),
-                    "task_id": task_id,
-                    "authority_case": authority_case,
-                    "from_stage": from_stage,
-                    "to_stage": new_stage,
-                    "note": str(note),
-                },
-                sort_keys=True,
-            )
-            + "\n"
-        )
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from shared.jsonl_append import append_jsonl
+
+    # Single-writer-safe advisory ledger append (flock + O_APPEND); fail-open —
+    # the SSOT is the coord event log emitted below (dn-ledger-flock).
+    append_jsonl(
+        LEDGER,
+        {
+            "ts": now,
+            "kind": "stage_transition",
+            "tool": "cc-stage-advance",
+            "role": _role(),
+            "task_id": task_id,
+            "authority_case": authority_case,
+            "from_stage": from_stage,
+            "to_stage": new_stage,
+            "note": str(note),
+        },
+        sort_keys=True,
+    )
     _emit_coord_event(task_id, from_stage, new_stage, authority_case, parent_spec, no_go, now)
     print(f"cc-stage-advance: {task_id} stage {from_stage} -> {new_stage} (ledgered)")
     return OK

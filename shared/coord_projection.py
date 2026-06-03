@@ -83,6 +83,13 @@ def _digest(*parts: object) -> str:
     return hashlib.blake2b(payload.encode("utf-8"), digest_size=8).hexdigest()
 
 
+def _optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text or None
+
+
 # --- deterministic event-id builders -----------------------------------------
 # Same load-bearing inputs -> same id, so an idempotent retry collapses to one
 # durable event; a changed field (e.g. a different to_stage) yields a new id.
@@ -344,6 +351,24 @@ class TaskState:
     authority_case: str | None = None
     no_go: dict[str, bool] = field(default_factory=dict)
 
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "stage": self.stage,
+            "authority_case": self.authority_case,
+            "no_go": dict(self.no_go),
+        }
+
+    @classmethod
+    def from_record(cls, record: Mapping[str, Any]) -> TaskState:
+        no_go = record.get("no_go") or {}
+        return cls(
+            task_id=str(record["task_id"]),
+            stage=_optional_str(record.get("stage")),
+            authority_case=_optional_str(record.get("authority_case")),
+            no_go={str(k): bool(v) for k, v in dict(no_go).items()},
+        )
+
 
 @dataclass
 class CoordProjection:
@@ -355,10 +380,33 @@ class CoordProjection:
     def from_replay(cls, replay: ReplayResult) -> CoordProjection:
         projection = cls()
         for event in replay.events:
-            projection._fold(event)
+            projection.fold_event(event)
         return projection
 
-    def _fold(self, event: CoordEvent) -> None:
+    @classmethod
+    def from_record(cls, record: Mapping[str, Any]) -> CoordProjection:
+        """Restore a projection from its serialized checkpoint (see :meth:`to_record`)."""
+        projection = cls()
+        tasks = record.get("tasks") or {}
+        for task_id, task_record in dict(tasks).items():
+            projection.tasks[str(task_id)] = TaskState.from_record(task_record)
+        return projection
+
+    def to_record(self) -> dict[str, Any]:
+        """Canonical, lossless serialization of the fold — the snapshot ``state_json``.
+
+        Keys are stable and per-task records are plain JSON, so
+        ``_canonical_json(to_record())`` is byte-identical for equal folds regardless
+        of task insertion order (the snapshot-vs-full-replay equality rests on this).
+        """
+        return {"tasks": {task_id: state.to_record() for task_id, state in self.tasks.items()}}
+
+    def fold_event(self, event: CoordEvent) -> None:
+        """Fold one event into the projection in place (latest-write-wins per field).
+
+        The public incremental fold the snapshot tail-replay seeds from: folding the
+        stream one event at a time is identical to :meth:`from_replay`.
+        """
         if event.event_type == CANON_STAGE_TRANSITION:
             state = self.tasks.setdefault(event.subject, TaskState(task_id=event.subject))
             to_stage = event.payload.get("to_stage")
@@ -467,4 +515,13 @@ __all__ = [
 # CoordProjection.from_replay is consumed by scripts/coord-drift-check — an
 # extensionless CLI the unused-function scanner does not parse — so reference it
 # here to mark it used (mirrors shared/coord_event_log.py's _DYNAMIC_ENTRYPOINTS).
-_DYNAMIC_ENTRYPOINTS = (CoordProjection.from_replay,)
+# The snapshot (de)serializers are consumed cross-module by CoordEventLog.snapshot /
+# replay_projection via the Foldable protocol, which the scanner also cannot trace.
+_DYNAMIC_ENTRYPOINTS = (
+    CoordProjection.from_replay,
+    CoordProjection.from_record,
+    CoordProjection.to_record,
+    CoordProjection.fold_event,
+    TaskState.from_record,
+    TaskState.to_record,
+)

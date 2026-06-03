@@ -163,3 +163,129 @@ def test_invalid_refresh_within_is_refused(capsys, tmp_path: Path) -> None:
     assert rc == 2
     assert "refresh-within" in capsys.readouterr().err
     assert not (tmp_path / "route-authority").exists()
+
+
+# ── Re-mint failure escalation (reform-opus-receipt-remint-repoint-20260601) ──
+# The timer-backed re-mint failure is SILENTLY suppressed by the global
+# notify-failure coalescer ("Timer-backed ... failed (suppressed — timer
+# retries)"), so a receipt that stops refreshing lapses with no operator-visible
+# alert and opus dispatch loses route authority. The minter therefore
+# self-escalates an ntfy when, in --ensure-fresh upkeep, a re-mint FAILS and
+# either (a) N consecutive failures have accrued or (b) the live receipt is
+# within --alert-within of expiry.
+
+
+def _boom(*_args, **_kwargs):
+    raise OSError("simulated write failure")
+
+
+def _record_ntfy(monkeypatch) -> list[dict]:
+    calls: list[dict] = []
+
+    def _fake(title: str, message: str, **kwargs) -> bool:
+        calls.append({"title": title, "message": message, **kwargs})
+        return True
+
+    monkeypatch.setattr(MINT, "_post_ntfy", _fake, raising=False)
+    return calls
+
+
+def test_remint_failure_within_expiry_window_fires_ntfy(
+    capsys, monkeypatch, tmp_path: Path
+) -> None:
+    # Seed a receipt issued at 00:00 (24h window -> expires 24:00).
+    _run_json(capsys, _ensure_args(tmp_path, now="2026-06-01T00:00:00Z"))
+    calls = _record_ntfy(monkeypatch)
+    monkeypatch.setattr(MINT, "write_route_authority_receipt", _boom)
+
+    # 23:30: remaining 0.5h (< 8h refresh window -> re-mint attempted; < 2h
+    # alert window -> a failed re-mint must alert even on the first failure).
+    rc = MINT.main(_ensure_args(tmp_path, now="2026-06-01T23:30:00Z"))
+
+    assert rc == 2
+    assert calls, "a re-mint failure within T-2h of expiry must fire an ntfy"
+    assert calls[0].get("priority") in {"high", "urgent"}
+
+
+def test_remint_failure_alerts_only_after_n_consecutive(
+    capsys, monkeypatch, tmp_path: Path
+) -> None:
+    _run_json(capsys, _ensure_args(tmp_path, now="2026-06-01T00:00:00Z"))
+    calls = _record_ntfy(monkeypatch)
+    monkeypatch.setattr(MINT, "write_route_authority_receipt", _boom)
+
+    # 20:00: remaining 4h -> re-mint attempted, but outside the 2h alert window,
+    # so only the consecutive-failure threshold (default N=3) can trip the alert.
+    args = _ensure_args(tmp_path, now="2026-06-01T20:00:00Z")
+    assert MINT.main(args) == 2
+    assert MINT.main(args) == 2
+    assert not calls, "must not alert before N consecutive re-mint failures"
+    assert MINT.main(args) == 2
+    assert calls, "must alert on the Nth consecutive re-mint failure"
+
+
+def test_successful_remint_resets_failure_counter(capsys, monkeypatch, tmp_path: Path) -> None:
+    _run_json(capsys, _ensure_args(tmp_path, now="2026-06-01T00:00:00Z"))
+    real_write = MINT.write_route_authority_receipt
+    monkeypatch.setattr(MINT, "write_route_authority_receipt", _boom)
+    args = _ensure_args(tmp_path, now="2026-06-01T20:00:00Z")
+    assert MINT.main(args) == 2
+    assert MINT.main(args) == 2
+
+    # A successful re-mint clears the streak and does not alert.
+    monkeypatch.setattr(MINT, "write_route_authority_receipt", real_write)
+    calls = _record_ntfy(monkeypatch)
+    rc = MINT.main(args)
+
+    assert rc == 0
+    assert not calls
+    state = json.loads(MINT._upkeep_state_path(tmp_path, STABLE_ID).read_text(encoding="utf-8"))
+    assert state["consecutive_failures"] == 0
+
+
+def test_upkeep_sidecar_never_pollutes_scanned_receipt_dir(
+    capsys, monkeypatch, tmp_path: Path
+) -> None:
+    # The dispatch read-path globs <dir>/route-authority/*.json and RAISES on any
+    # file that is not a valid receipt, so the upkeep state must live elsewhere.
+    _run_json(capsys, _ensure_args(tmp_path, now="2026-06-01T00:00:00Z"))
+    _record_ntfy(monkeypatch)
+    monkeypatch.setattr(MINT, "write_route_authority_receipt", _boom)
+
+    MINT.main(_ensure_args(tmp_path, now="2026-06-01T23:30:00Z"))
+
+    scanned = sorted((tmp_path / "route-authority").glob("*.json"))
+    assert [p.name for p in scanned] == [f"{STABLE_ID}.json"]
+    sidecar = MINT._upkeep_state_path(tmp_path, STABLE_ID)
+    assert sidecar.is_file()
+    assert sidecar.parent.name != "route-authority"
+
+
+def test_post_ntfy_is_best_effort_on_network_error(monkeypatch) -> None:
+    def _explode(*_args, **_kwargs):
+        raise OSError("ntfy unreachable")
+
+    monkeypatch.setattr(MINT, "urlopen", _explode, raising=False)
+    # Never raises into the caller — upkeep alerting must not crash the minter.
+    assert MINT._post_ntfy("title", "body", priority="high") is False
+
+
+SERVICE_UNIT = REPO_ROOT / "systemd" / "units" / "hapax-opus-route-authority-receipt.service"
+
+
+def test_service_unit_runs_from_active_deploy_worktree_not_primary() -> None:
+    unit = SERVICE_UNIT.read_text(encoding="utf-8")
+    exec_lines = [line for line in unit.splitlines() if line.startswith("ExecStart=")]
+    assert exec_lines, "service unit must define an ExecStart"
+    exec_line = exec_lines[0]
+    # Antipattern: running the minter from the primary worktree, which parks on
+    # feature branches where this minter does not exist (status=2 -> lapse).
+    assert "/projects/hapax-council/" not in exec_line, (
+        "ExecStart must not run the minter from the primary worktree"
+    )
+    assert "/.cache/hapax/source-activation/worktree/" in exec_line, (
+        "ExecStart must resolve the minter from the stable active deploy symlink"
+    )
+    assert "--ensure-fresh" in exec_line
+    # The minter self-escalates an ntfy on failure, so a topic must be configured.
+    assert "NTFY_TOPIC=" in unit

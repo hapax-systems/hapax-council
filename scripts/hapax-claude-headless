@@ -7,6 +7,10 @@
 
 set -euo pipefail
 
+# Saved BEFORE arg parsing shifts "$@", so the L1 slice self-attach below can
+# re-exec with the full original argv.
+ORIG_ARGS=("$@")
+
 DISABLE_FILE="${HAPAX_CLAUDE_HEADLESS_DISABLE_FILE:-$HOME/.cache/hapax/disable-claude-headless}"
 ENABLE_FILE="${HAPAX_CLAUDE_HEADLESS_ENABLE_FILE:-$HOME/.cache/hapax/enable-claude-headless}"
 
@@ -53,6 +57,20 @@ if ! headless_allowed; then
   exit 77
 fi
 
+# L1 attachment point (c): self-attach this lane + everything it spawns (claude +
+# its git/pytest/cargo grandchildren) into hapax-sdlc.slice so cpu.idle + the
+# audio-core cpuset fence inherit. Re-exec into a transient user scope with the
+# saved original argv. Skipped when methodology-dispatch already wrapped us
+# (HAPAX_SDLC_SLICE_ATTACHED=1), when opted out (HAPAX_SDLC_SLICE_ATTACH=0), or
+# when systemd-run/the slice can't be created — the lane must always launch.
+# The `-- true` preflight proves the scope is creatable before we commit `exec`.
+if [[ "${HAPAX_SDLC_SLICE_ATTACHED:-}" != "1" && "${HAPAX_SDLC_SLICE_ATTACH:-1}" != "0" ]] \
+  && command -v systemd-run >/dev/null 2>&1 \
+  && systemd-run --user --scope --quiet --slice=hapax-sdlc.slice -- true >/dev/null 2>&1; then
+  export HAPAX_SDLC_SLICE_ATTACHED=1
+  exec systemd-run --user --scope --quiet --slice=hapax-sdlc.slice -- "$0" "${ORIG_ARGS[@]}"
+fi
+
 export HAPAX_AGENT_INTERFACE="claude"
 export HAPAX_AGENT_NAME="$ROLE"
 export CLAUDE_ROLE="$ROLE"
@@ -89,14 +107,33 @@ LAUNCHER_LOCK="$PIPE_DIR/$ROLE.launcher.lock"
 LAUNCHER_PIDFILE="$PIPE_DIR/$ROLE.launcher.pid"
 exec {LAUNCHER_LOCK_FD}>"$LAUNCHER_LOCK"
 if ! flock -n "$LAUNCHER_LOCK_FD"; then
-  existing="$(cat "$LAUNCHER_PIDFILE" 2>/dev/null || echo '?')"
-  echo "hapax-claude-headless: refusing duplicate launcher for lane '$ROLE' (live launcher pid=$existing holds $LAUNCHER_LOCK)" >&2
-  exit 16
+  # Stale-lock handling. An OFD flock releases when its holder dies, so a free
+  # lock is normally re-acquired on the first attempt above. A failure here means
+  # someone holds it — but verify they are actually ALIVE before refusing: a
+  # SIGKILL'd launcher skips its EXIT-trap cleanup, stranding the pidfile, and a
+  # brief exit-race can have us read a pid that is already gone. If the recorded
+  # pid is absent / non-numeric / dead (a stale "no-pid" lock), clear the stale
+  # pidfile and retry the lock once; if that wins, the lane was genuinely free.
+  # Only a verified-live holder is refused as a duplicate.
+  existing="$(cat "$LAUNCHER_PIDFILE" 2>/dev/null || true)"
+  if [[ -z "$existing" || ! "$existing" =~ ^[0-9]+$ ]] || ! kill -0 "$existing" 2>/dev/null; then
+    rm -f "$LAUNCHER_PIDFILE" 2>/dev/null || true
+    if flock -n "$LAUNCHER_LOCK_FD"; then
+      echo "hapax-claude-headless: cleared stale launcher lock for lane '$ROLE' (no live pid: ${existing:-none})" >&2
+    else
+      echo "hapax-claude-headless: refusing duplicate launcher for lane '$ROLE' (lock held, no live pid recorded — incumbent exiting) at $LAUNCHER_LOCK" >&2
+      exit 16
+    fi
+  else
+    echo "hapax-claude-headless: refusing duplicate launcher for lane '$ROLE' (live launcher pid=$existing holds $LAUNCHER_LOCK)" >&2
+    exit 16
+  fi
 fi
 printf '%s\n' "$$" > "$LAUNCHER_PIDFILE"
 
 STDIN_PIPE="$PIPE_DIR/$ROLE.stdin"
 PID_FILE="$PIPE_DIR/$ROLE.pid"
+SELF_REAP_FLAG="$PIPE_DIR/$ROLE.self-reap"
 LOG_FILE="$LOG_DIR/output.jsonl"
 
 [[ -p "$STDIN_PIPE" ]] && rm -f "$STDIN_PIPE"
@@ -104,7 +141,7 @@ mkfifo "$STDIN_PIPE"
 
 RELAY_RETIRE="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}/scripts/hapax-relay-retire"
 cleanup() {
-  rm -f "$STDIN_PIPE" "$PID_FILE" "$LAUNCHER_PIDFILE"
+  rm -f "$STDIN_PIPE" "$PID_FILE" "$LAUNCHER_PIDFILE" "$SELF_REAP_FLAG"
   "$RELAY_RETIRE" "$ROLE" --reason "clean exit (headless)" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -225,6 +262,35 @@ task_is_terminal() {
 
 RESTART_COUNT=0
 MAX_RESTART_BACKOFF="${HAPAX_CLAUDE_HEADLESS_RESTART_BACKOFF_SECONDS:-30}"
+# Out-of-band self-reap poll cadence: how often the teardown watchdog re-checks
+# task terminality while claude is alive (claude never EOFs the held FIFO, so a
+# bare `wait` would block forever — see the watchdog in the loop below).
+TERMINAL_POLL_S="${HAPAX_CLAUDE_HEADLESS_TERMINAL_POLL_SECONDS:-60}"
+
+# ── G2 dispatch-host preflight (appendix migration) ─────────────────────────
+# HAPAX_DISPATCH_HOST set → the inner `claude` exec runs on the Workshop
+# (appendix); the launcher itself (FIFO @209, PID/lock/relay, cc-claim @189,
+# restart loop) stays podium-local so the cockpit, send/steer, and reaper keep
+# working unchanged. Fail-open: if the host can't actually run a lane (offline,
+# no claude, no gh auth, worktree not provisioned), fall back to LOCAL — a
+# Workshop hiccup must never block dispatch.
+DISPATCH_HOST="${HAPAX_DISPATCH_HOST:-}"
+# G8: the lane's hapax MCP (stdio) connects to logos-api; on the Workshop that
+# must be podium's LAN address, not appendix localhost. Injected into the hop env
+# below (hapax-mcp prefers LOGOS_BASE_URL over the config's COCKPIT_BASE_URL).
+DISPATCH_LOGOS_URL="${HAPAX_DISPATCH_LOGOS_URL:-http://192.168.68.85:8051/api}"
+if [[ -n "$DISPATCH_HOST" ]]; then
+  if [[ "$DISPATCH_HOST" == "local" || "$DISPATCH_HOST" == "localhost" || "$DISPATCH_HOST" == "$(hostname)" ]]; then
+    DISPATCH_HOST=""
+  elif ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
+         -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST" \
+         "sh -c 'command -v claude >/dev/null && test -d $WORKDIR && gh auth status >/dev/null 2>&1'" 2>/dev/null; then
+    echo "hapax-claude-headless: dispatch → $DISPATCH_HOST (claude on Workshop; launcher podium-local)"
+  else
+    echo "hapax-claude-headless: dispatch_host_unready ($DISPATCH_HOST) — running LOCAL" >&2
+    DISPATCH_HOST=""
+  fi
+fi
 
 while true; do
   if [[ -e "$DISABLE_FILE" ]]; then
@@ -236,15 +302,67 @@ while true; do
     exit 77
   fi
 
-  "$CLAUDE_BIN" "${CLAUDE_ARGS[@]}" <&3 >> "$LOG_FILE" 2>&1 &
+  if [[ -n "$DISPATCH_HOST" ]]; then
+    # G2 inner exec on the Workshop: cd the lane's appendix-local worktree and
+    # run THAT host's PATH `claude`. fd 3 (the podium FIFO) feeds the ssh child's
+    # stdin exactly as it feeds a local claude — no pty (-tt would corrupt the
+    # stream-json), dedicated connection (ControlPath=none, kept alive) so an
+    # idle lane isn't dropped by the shared master's ControlPersist. On drop the
+    # remote claude EOFs its stdin and the loop below re-execs it.
+    ssh -o BatchMode=yes -o RequestTTY=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
+        -o ControlPath=none -i "$HOME/.ssh/id_ed25519" "$DISPATCH_HOST" \
+        "sh -c 'cd $WORKDIR && LOGOS_BASE_URL=$DISPATCH_LOGOS_URL exec claude ${CLAUDE_ARGS[*]}'" \
+        <&3 >> "$LOG_FILE" 2>&1 &
+  else
+    "$CLAUDE_BIN" "${CLAUDE_ARGS[@]}" <&3 >> "$LOG_FILE" 2>&1 &
+  fi
   CLAUDE_PID=$!
   echo "$CLAUDE_PID" > "$PID_FILE"
   echo "hapax-claude-headless: pid=$CLAUDE_PID (restart #$RESTART_COUNT)"
+
+  # Out-of-band teardown watchdog. claude reads its stdin from the FIFO whose
+  # write-end THIS launcher holds open (exec 3<> above), so claude never sees
+  # EOF; a bare `wait` would then block forever and the post-turn
+  # task_is_terminal check below would be unreachable dead code — the
+  # zombie-launcher bug that pinned dozens of lanes on closed/merged tasks. So
+  # run a background poller that, while claude is alive, re-checks task
+  # terminality every $TERMINAL_POLL_S and SIGTERMs the EXACT child pid (a single
+  # positive pid, never a process group) once the task is closed/merged. The main
+  # thread still `wait`s on claude directly, so a claude that exits on its own is
+  # handled immediately below and the watchdog is torn down — the fast-exit path
+  # is unchanged. The watchdog polls AFTER an initial sleep so a fresh turn is
+  # never reaped before it starts. It signals a self-reap via a marker file (not
+  # by echoing) and runs with its std streams detached to /dev/null: a poll
+  # `sleep` that gets orphaned when the watchdog is killed must NOT inherit the
+  # launcher's stdout, or it would hold the pipe open past exit and wedge readers.
+  rm -f "$SELF_REAP_FLAG"
+  (
+    exec 3>&-
+    while kill -0 "$CLAUDE_PID" 2>/dev/null; do
+      sleep "$TERMINAL_POLL_S"
+      kill -0 "$CLAUDE_PID" 2>/dev/null || break
+      if task_is_terminal "$CLAUDE_TASK"; then
+        : > "$SELF_REAP_FLAG"
+        kill -TERM "$CLAUDE_PID" 2>/dev/null || true
+        break
+      fi
+    done
+  ) >/dev/null 2>&1 &
+  TEARDOWN_WATCHDOG_PID=$!
 
   if wait "$CLAUDE_PID"; then
     EXIT_CODE=0
   else
     EXIT_CODE=$?
+  fi
+  # claude has exited (on its own or via the watchdog's SIGTERM). Stop the
+  # watchdog subshell and reap it so it leaves no zombie. (Any poll `sleep` it
+  # orphaned is detached to /dev/null and harmless — it is not waited on here.)
+  kill "$TEARDOWN_WATCHDOG_PID" 2>/dev/null || true
+  wait "$TEARDOWN_WATCHDOG_PID" 2>/dev/null || true
+  if [[ -e "$SELF_REAP_FLAG" ]]; then
+    echo "hapax-claude-headless: task $CLAUDE_TASK closed/merged — self-reaping live claude (SIGTERM pid=$CLAUDE_PID)"
+    rm -f "$SELF_REAP_FLAG"
   fi
   RESTART_COUNT=$((RESTART_COUNT + 1))
 

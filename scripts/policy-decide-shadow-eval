@@ -14,45 +14,19 @@ CLEAN (exit 0) iff BOTH:
     allowed, policy_decide blocks). Zero tightening proves policy_decide is a strict
     relaxation of the legacy gate — it only removes over-blocks, never adds one.
 
+A non-destructive window-restart boundary (``--restart-window`` to stamp it,
+``--window-start-file`` to point at it) scopes the clean window so pre-convergence
+historical drift cannot poison a fresh accrual; ``--receipt`` writes a durable
+cutover-eligibility receipt. The logic lives in ``shared.policy_decide.shadow_eval_main``
+(same module/script split as the promote entrypoint); this is the thin wrapper.
+
 Exit 0 = clean (cutover may proceed); exit 1 = NOT clean. A JSON verdict (with the
 unmet reasons) is printed to stdout either way.
 """
 
 from __future__ import annotations
 
-import argparse
-import json
-
-from shared.policy_decide import (
-    DEFAULT_DECISION_LOG,
-    DEFAULT_SHADOW_LEDGER,
-    evaluate_shadow_clean,
-)
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="policy-decide-shadow-eval")
-    parser.add_argument("--decision-log", default=str(DEFAULT_DECISION_LOG))
-    parser.add_argument("--ledger", default=str(DEFAULT_SHADOW_LEDGER))
-    parser.add_argument(
-        "--min-days", type=float, default=7.0, help="minimum shadow-week span in days"
-    )
-    parser.add_argument(
-        "--min-decisions",
-        type=int,
-        default=200,
-        help="minimum gated decisions for the window to count as real evidence",
-    )
-    args = parser.parse_args(argv)
-    result = evaluate_shadow_clean(
-        args.decision_log,
-        args.ledger,
-        min_days=args.min_days,
-        min_decisions=args.min_decisions,
-    )
-    print(json.dumps(result, indent=2))
-    return 0 if result["clean"] else 1
-
+from shared.policy_decide import shadow_eval_main
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(shadow_eval_main())

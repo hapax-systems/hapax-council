@@ -179,29 +179,77 @@ deploy_canonical() {
     echo "deploy: REFUSING to deploy an impl that lacks INV-5 is_cognition_path: $src/cc-task-gate.impl.sh" >&2
     return 1
   fi
-  if [[ "$DRY" = 1 ]]; then
-    echo "[dry-run] would deploy gate closure: $src -> $CANONICAL_DIR"
-    return 0
-  fi
-  mkdir -p "$CANONICAL_DIR"
-  # impl deploys AS cc-task-gate.sh (the name shims + settings.json resolve to).
-  install -m 0755 "$src/cc-task-gate.impl.sh" "$CANONICAL_DIR/cc-task-gate.sh"
-  # REFUSE an incomplete closure: a missing sibling would make the deployed gate
-  # exit 2 on every mutation (the cc-task-gate-bootstrap.py omission incident).
+  # REFUSE an incomplete closure UP FRONT, before touching the live canonical: a
+  # missing sibling would make the deployed gate exit 2 on every mutation (the
+  # cc-task-gate-bootstrap.py omission incident). The OLD code installed the impl
+  # first and only THEN discovered a missing sibling, leaving a half-swapped
+  # closure live; checking + staging first makes a refused deploy a clean no-op.
   local s
   for s in "${CLOSURE_SIBLINGS[@]}"; do
     if [[ ! -r "$src/$s" ]]; then
       echo "deploy: REFUSING incomplete closure — source missing $src/$s" >&2
       return 1
     fi
-    install -m 0755 "$src/$s" "$CANONICAL_DIR/$s"
   done
-  ( cd "$CANONICAL_DIR" && sha256sum cc-task-gate.sh "${CLOSURE_SIBLINGS[@]}" 2>/dev/null ) \
-    > "$CANONICAL_DIR/MANIFEST.sha256" 2>/dev/null || true
+  if [[ "$DRY" = 1 ]]; then
+    echo "[dry-run] would atomically deploy gate closure: $src -> $CANONICAL_DIR"
+    return 0
+  fi
+
+  mkdir -p "$CANONICAL_DIR"
+
+  # ATOMIC DEPLOY (reform — bootstrap-failopen-atomic-swap). The old path used
+  # `install` (unlinkat+create) per file with the impl deployed FIRST, so during a
+  # redeploy every file was briefly ABSENT and a concurrent PreToolUse exec could
+  # run the new impl while its siblings (agent-role.sh / escape-grant.sh /
+  # cc-task-gate-bootstrap.py) were missing → fail-closed. We instead stage the
+  # whole closure + MANIFEST into a temp dir on the SAME filesystem, then rename(2)
+  # each file into place. rename(2) atomically replaces the destination (POSIX: no
+  # point at which a reader finds it missing), and we publish the impl
+  # (cc-task-gate.sh) LAST so a concurrent gate exec always sees a complete sibling
+  # set before the new impl becomes live.
+  local stage rc=0
+  stage="$(mktemp -d "$CANONICAL_DIR/.deploy.tmp.XXXXXX")" || {
+    echo "deploy: could not create staging dir under $CANONICAL_DIR" >&2
+    return 1
+  }
+
+  # Stage the impl (as cc-task-gate.sh) + every sibling into the temp dir.
+  if ! install -m 0755 "$src/cc-task-gate.impl.sh" "$stage/cc-task-gate.sh"; then
+    rm -rf "$stage" 2>/dev/null || true
+    echo "deploy: staging impl failed" >&2
+    return 1
+  fi
+  for s in "${CLOSURE_SIBLINGS[@]}"; do
+    if ! install -m 0755 "$src/$s" "$stage/$s"; then
+      rm -rf "$stage" 2>/dev/null || true
+      echo "deploy: staging sibling $s failed" >&2
+      return 1
+    fi
+  done
+  ( cd "$stage" && sha256sum cc-task-gate.sh "${CLOSURE_SIBLINGS[@]}" 2>/dev/null ) \
+    > "$stage/MANIFEST.sha256" 2>/dev/null || true
+
+  # Publish: siblings + MANIFEST FIRST, the impl LAST. Each mv is an atomic
+  # rename(2) within $CANONICAL_DIR (same filesystem as the staging dir) — no file
+  # is ever observed absent, and the impl never goes live ahead of its closure.
+  for s in "${CLOSURE_SIBLINGS[@]}"; do
+    mv -f "$stage/$s" "$CANONICAL_DIR/$s" || rc=1
+  done
+  if [[ -f "$stage/MANIFEST.sha256" ]]; then
+    mv -f "$stage/MANIFEST.sha256" "$CANONICAL_DIR/MANIFEST.sha256" || rc=1
+  fi
+  mv -f "$stage/cc-task-gate.sh" "$CANONICAL_DIR/cc-task-gate.sh" || rc=1
+  rm -rf "$stage" 2>/dev/null || true
+  if [[ "$rc" != 0 ]]; then
+    echo "deploy: FAILED publishing staged closure to $CANONICAL_DIR" >&2
+    return 1
+  fi
+
   local bindir="${HAPAX_LOCAL_BIN:-$HOME/.local/bin}"
   mkdir -p "$bindir"
   ln -sf "$CANONICAL_DIR/hooks-doctor.sh" "$bindir/hapax-hooks-doctor"
-  echo "deployed gate closure -> $CANONICAL_DIR (from $src)"
+  echo "deployed gate closure -> $CANONICAL_DIR (from $src, atomic)"
   check_canonical
 }
 

@@ -44,7 +44,14 @@ def _make_repos(tmp_path: Path) -> tuple[Path, Path, str]:
         textwrap.dedent(
             """\
             #!/usr/bin/env bash
-            printf '%s\\n' "$1" >> "$HAPAX_FAKE_DEPLOY_RECORD"
+            # Record the deploy TARGET (last positional arg) so assertions stay
+            # stable whether invoked as `<sha>` or `--since <from> <to>`. The
+            # full argv goes to HAPAX_FAKE_DEPLOY_ARGS_RECORD when requested, so
+            # the cumulative-range test can assert the --since flag is passed.
+            printf '%s\\n' "${@: -1}" >> "$HAPAX_FAKE_DEPLOY_RECORD"
+            if [ -n "${HAPAX_FAKE_DEPLOY_ARGS_RECORD:-}" ]; then
+                printf '%s\\n' "$*" >> "$HAPAX_FAKE_DEPLOY_ARGS_RECORD"
+            fi
             exit "${HAPAX_FAKE_DEPLOY_EXIT:-0}"
             """
         ),
@@ -449,3 +456,74 @@ def test_activation_records_configured_frame_freshness_probe(tmp_path: Path) -> 
     receipt = _current_receipt(tmp_path)
     assert receipt["health_probes"]["status"] == "success"
     assert f"frame={frame}" in receipt["health_probes"]["message"]
+
+
+# ----------------------------------------------------------------------
+# reform-deploy-chain-repair-20260601: liveness-probe defer (timer re-arm
+# safety) + cumulative --since deploy.
+# ----------------------------------------------------------------------
+
+
+def test_http_health_probe_failure_defers_and_exits_zero(tmp_path: Path) -> None:
+    """A failing liveness HTTP probe must NOT exit non-zero (which risked
+    wedging the re-arming timer — the "died ~09:10 on a health-probe exit-1 and
+    never re-armed" failure). It writes a deferred receipt and exits 0; the
+    active source is left untouched (no promote, no deploy) and retried next
+    cycle."""
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+    probe_bin = tmp_path / "probebin"
+    probe_bin.mkdir()
+    fake_curl = probe_bin / "curl"
+    fake_curl.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    fake_curl.chmod(0o755)
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{probe_bin}:{os.environ['PATH']}",
+            "HAPAX_SOURCE_ACTIVATE_HTTP_PROBES": "http://127.0.0.1:1/health",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "deferred" in result.stderr.lower()
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "held"
+    assert receipt["deploy_status"] == "skipped_health_probe"
+    assert receipt["health_probes"]["status"] == "deferred"
+    assert not (tmp_path / "deploy-record.txt").exists(), "deferred activation must not deploy"
+    assert not (tmp_path / "state" / "last-success-sha").exists()
+
+
+def test_cumulative_since_passed_when_previous_success_is_ancestor(tmp_path: Path) -> None:
+    """The second activation after origin/main advances must deploy the
+    CUMULATIVE `--since <previous_success> <origin>` range so intermediate
+    merges are not skipped — while the first (no prior success) deploys the
+    single tip SHA."""
+    canonical, origin, sha1 = _make_repos(tmp_path)
+    args_record = tmp_path / "deploy-args.txt"
+
+    first = _run_activate(
+        tmp_path, canonical, env_overrides={"HAPAX_FAKE_DEPLOY_ARGS_RECORD": str(args_record)}
+    )
+    assert first.returncode == 0, first.stderr
+
+    sha2 = _advance_origin(tmp_path, origin, "advance for cumulative")
+    assert sha2 != sha1
+
+    second = _run_activate(
+        tmp_path, canonical, env_overrides={"HAPAX_FAKE_DEPLOY_ARGS_RECORD": str(args_record)}
+    )
+    assert second.returncode == 0, second.stderr
+
+    arg_lines = args_record.read_text(encoding="utf-8").splitlines()
+    assert arg_lines[0] == sha1, "first activation deploys the single tip SHA"
+    assert arg_lines[1] == f"--since {sha1} {sha2}", (
+        "second activation deploys the cumulative range"
+    )
+    # The recorded deploy *target* (last positional arg) stays the plain SHAs.
+    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [sha1, sha2]
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "completed"
+    assert receipt["origin_main_sha"] == sha2

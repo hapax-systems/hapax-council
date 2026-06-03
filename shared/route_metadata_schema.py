@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -1046,8 +1047,16 @@ def _lower_strings(value: object) -> set[str]:
     return {item.lower() for item in _coerce_string_list(value)}
 
 
+#: Alphanumeric token boundary for risk-flag keyword matching. Tokenizing
+#: (rather than raw substring) prevents 'egress' matching inside 'regression'
+#: or 'live' inside 'deliver' — false positives that wrongly mark routine
+#: tasks audio/live/egress sensitive and veto their system auto-arm.
+_RISK_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
 def _contains_any(value: str, needles: tuple[str, ...]) -> bool:
-    return any(needle in value for needle in needles)
+    tokens = set(_RISK_TOKEN_RE.findall(value.lower()))
+    return any(needle in tokens for needle in needles)
 
 
 def _optional_frontmatter_string(value: object) -> str | None:

@@ -103,29 +103,220 @@ tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || e
 bash_cmd=""
 mutation_surface_hint="source"
 
-bash_is_mutating() {
-  local cmd="$1"
-  # Match known write/runtime/release families. Read-only shell remains
-  # available without a claim so blocked lanes can inspect and report state.
-  printf '%s' "$cmd" | grep -Eiq \
-    '(^|[;&|()[:space:]])((git[[:space:]]+(commit|push|apply|reset|checkout|switch|branch|merge|rebase|tag))|(gh[[:space:]]+(api|pr[[:space:]]+(create|merge|edit|close|reopen)|repo|release))|(python[0-9.]*[[:space:]]*<<)|(python[0-9.]*[[:space:]].*(-c|--command).*([.]write_text|[.]write_bytes|open\(|shutil[.]|os[.](remove|unlink|rename|replace)|Path\())|(sed[[:space:]].*-i)|(perl[[:space:]].*-p?i)|(tee([[:space:]]|$))|(cat[[:space:]].*>[[:space:]])|(cp|install|touch|truncate|chmod|chown|mkdir|rm|mv)([[:space:]]|$)|(uv[[:space:]]+pip[[:space:]]+install)|(pip3?[[:space:]]+install)|(pacman|paru|apt|dnf|npm|pnpm|yarn)([[:space:]]|$)|(systemctl|journalctl[[:space:]].*--vacuum|ssh|scp|rsync|docker[[:space:]]+(compose[[:space:]])?(up|down|restart|rm|run|exec)|kill|pkill)([[:space:]]|$))'
+# --- Argument-aware bash classifier (FM-16) -----------------------------------
+# The legacy classifier grep-scanned the WHOLE command line, so a mutation verb
+# that appeared only inside a quoted ARGUMENT (e.g. a `grep -E 'git reset|x'`
+# pattern — whose interior `|` was even read as a command separator) or a purely
+# read-only `systemctl is-active` was misclassified as a mutation, blocking the
+# very inspection a blocked/roleless lane needs to report state (the gate's own
+# comment promised "read-only shell remains available" — FM-16 broke that).
+#
+# These helpers classify the EXECUTED COMMAND HEAD of each simple command: quoted
+# spans + comments are stripped (so verbs/separators inside them are inert), the
+# line is split on shell separators (; | & ( )), and each segment's leading
+# command word is matched against known families. Pure readers (grep/cat/ls/find/
+# awk, git log/show/diff/status/rev-list/ls-tree/branch/merge-base, systemctl
+# is-active/status/show/list-*, journalctl without --vacuum) match nothing and
+# pass. This mirrors the argument-aware classifier in shared/policy_decide.py
+# (`_bash_is_mutating`/`_bash_is_runtime`/`_bash_is_source_scope`) so the Phase-3b
+# shadow→cutover is verdict-stable on this corpus.
+
+# systemctl subcommands that mutate runtime state. Mirrors journalctl's
+# --vacuum-only pattern: everything else (is-active/is-enabled/is-failed/status/
+# show/cat/list-*/get-default/…) is a read and stays available without a claim.
+_systemctl_subcmd_mutates() {
+  case "$1" in
+    start|stop|restart|try-restart|reload|reload-or-restart|force-reload \
+      | enable|disable|reenable|preset|preset-all|mask|unmask|link|revert \
+      | set-property|set-default|isolate|kill|clean|freeze|thaw \
+      | daemon-reload|daemon-reexec|edit|switch-root|default \
+      | reboot|poweroff|halt|kexec|suspend|hibernate|hybrid-sleep|emergency|rescue) return 0 ;;
+  esac
+  return 1
 }
 
+# docker subcommands that mutate container/image/runtime state (docker ps/logs/
+# inspect/images/version remain reads). Covers `docker compose <verb>` too.
+_docker_subcmd_mutates() {
+  case "$1" in
+    up|down|start|stop|restart|kill|rm|rmi|run|exec|create|build|pull|push|load|import|prune|compose) return 0 ;;
+  esac
+  return 1
+}
+
+# `git branch` lists/shows by default (a read); it mutates only when it deletes,
+# renames, copies, force-updates, (re)sets upstream, or names a (new) branch to
+# create. Plain `git branch [-a|-r|-v|--show-current|--list|--contains X]` stays
+# readable. (FM-16 reader whitelist — branch creation is also governed by the
+# dedicated no-stale-branches hook.)
+_git_branch_mutates() { # args AFTER the `branch` subcommand
+  local a prev_value_flag=0
+  for a in "$@"; do
+    case "$a" in
+      -d | -D | --delete | -m | -M | --move | -c | -C | --copy | -f | --force \
+        | --edit-description | -u | --set-upstream-to | --set-upstream-to=* | --unset-upstream) return 0 ;;
+      --contains | --no-contains | --merged | --no-merged | --points-at | --sort | --format | --list | --column)
+        prev_value_flag=1 ;;
+      -*) prev_value_flag=0 ;;
+      *)
+        [[ "$prev_value_flag" == 1 ]] && { prev_value_flag=0; continue; }
+        return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# Emit each simple command (one per line) with quoted spans + comments removed.
+# Mirrors the proven strip at the source-scope call site (sed -z spans newlines,
+# so multi-line "$(cat <<'EOF'…)" payloads collapse) and additionally splits on
+# the shell command separators ; | & ( ) so a verb inside a quoted arg can no
+# longer read as its own command. `||`/`&&` collapse to blank segments (skipped).
+_bash_segments() {
+  # Trailing newline is REQUIRED: `while read` skips a final line with no newline,
+  # which would drop the (sole) segment of every un-piped command.
+  printf '%s\n' "$1" \
+    | sed -zE "s/'[^']*'//g; s/\"[^\"]*\"//g; s/(^|[[:space:]])#[^\n]*//g" \
+    | tr ';|&()' '\n'
+}
+
+# Resolve a segment's executed command HEAD into _HEAD, with the remaining tokens
+# in _ARGS. Skips leading VAR=val assignments and wrapper words (sudo/env/nohup/…)
+# so `sudo systemctl restart x` still classifies on `systemctl`. _HEAD is "" when
+# the segment has no command word.
+_bash_seg_head() {
+  _HEAD=""
+  _ARGS=()
+  local -a _toks=()
+  # `read` hits EOF on the here-string and returns 1; tolerate under `set -e`.
+  read -r -a _toks <<<"$1" || true
+  local i=0 n=${#_toks[@]}
+  while ((i < n)); do
+    case "${_toks[i]}" in
+      *=* | sudo | doas | env | command | builtin | nohup | time | exec | nice | ionice | stdbuf | setsid) i=$((i + 1)) ;;
+      -*) i=$((i + 1)) ;;
+      *) break ;;
+    esac
+  done
+  if ((i < n)); then
+    _HEAD="${_toks[i]}"
+    _ARGS=("${_toks[@]:i+1}")
+  fi
+}
+
+# True if a sed/perl segment carries an in-place-edit flag (the only mutating
+# form). The segment is already quote-stripped, so an `i`/`-i` inside a quoted
+# script/pattern cannot trip this — only a real `-i`/`--in-place`/`-pi` flag does.
+_seg_has_inplace() {
+  local head="$1" seg="$2"
+  case "$head" in
+    sed) [[ "$seg" =~ (^|[[:space:]])(-i|--in-place) ]] && return 0 ;;
+    perl) [[ "$seg" =~ (^|[[:space:]])-[[:alpha:]]*i ]] && return 0 ;;
+  esac
+  return 1
+}
+
+# True if a python command line writes the filesystem. `cmd` is passed verbatim
+# from the caller (RAW for is_mutating, pre-stripped for the scope check) so the
+# raw-vs-stripped asymmetry holds: `python3 -c "open(...)"` is a claim-gated
+# mutation (raw has the marker) but is NOT source-scope-blocked (the stripped
+# form drops the quoted payload), while a bare heredoc writer still blocks.
+_py_writes() {
+  local cmd="$1"
+  [[ "$cmd" == *"<<"* ]] && return 0
+  case "$cmd" in
+    *.write_text* | *.write_bytes* | *"open("* | *"shutil."* \
+      | *"os.remove"* | *"os.unlink"* | *"os.rename"* | *"os.replace"* | *"Path("*) return 0 ;;
+  esac
+  return 1
+}
+
+# True iff a `cat` SEGMENT redirects its STDOUT to a file (`> f` / `>> f` / `1> f`)
+# — a real write. A '>' inside a stderr/fd redirection (`2>&1`, `2>/dev/null`, `&>`)
+# is NOT a stdout-to-file write, so those redirect tokens are stripped before the
+# `*">"*` test; otherwise a read-only `cat file 2>/dev/null` is misread as a writer
+# and source-blocked, locking a roleless lane out of its own diagnostics
+# (fix-cc-gate-fps Fix 1). The segment is already quote-stripped. Mirrors
+# shared/policy_decide._cat_writes_to_file.
+_cat_writes_file() {
+  local seg="$1"
+  # Drop fd-dup (N>&M / >&M / N>&-), both-streams (&> / &>>), and stderr-or-higher-fd
+  # to-file (2>, 2>>, 3>, …) redirections; what remains carries a '>' only on a real
+  # stdout-to-file redirect (bare `>`/`>>`/`1>` keep their '>').
+  seg="$(printf '%s' "$seg" | sed -E 's/[0-9]*>&[0-9-]+/ /g; s/&>>?/ /g; s/[2-9][0-9]*>>?/ /g')"
+  [[ "$seg" == *">"* ]]
+}
+
+# Runtime/system-state mutations (need runtime_mutation_authorized): package
+# installs, remote shells, process signals, container/service lifecycle. systemctl
+# and docker are subcommand-gated; journalctl only on --vacuum.
 bash_is_runtime_mutation() {
-  local cmd="$1"
-  printf '%s' "$cmd" | grep -Eiq \
-    '(^|[;&|()[:space:]])((systemctl)|(ssh|scp|rsync)([[:space:]]|$)|(uv[[:space:]]+pip[[:space:]]+install)|(pip3?[[:space:]]+install)|(pacman|paru|apt|dnf)([[:space:]]|$)|(docker[[:space:]]+(compose[[:space:]])?(up|down|restart|rm|run|exec))|(kill|pkill)([[:space:]]|$))'
+  local cmd="$1" seg a
+  while IFS= read -r seg; do
+    [[ -z "${seg// /}" ]] && continue
+    _bash_seg_head "$seg"
+    [[ -z "$_HEAD" ]] && continue
+    case "$_HEAD" in
+      ssh | scp | rsync | kill | pkill | pacman | paru | apt | dnf) return 0 ;;
+      systemctl) for a in "${_ARGS[@]}"; do _systemctl_subcmd_mutates "$a" && return 0; done ;;
+      docker) for a in "${_ARGS[@]}"; do _docker_subcmd_mutates "$a" && return 0; done ;;
+      journalctl) for a in "${_ARGS[@]}"; do [[ "$a" == --vacuum* ]] && return 0; done ;;
+      uv) [[ " ${_ARGS[*]} " == *" pip "* && " ${_ARGS[*]} " == *" install "* ]] && return 0 ;;
+      pip | pip3) [[ " ${_ARGS[*]} " == *" install "* ]] && return 0 ;;
+    esac
+  done < <(_bash_segments "$cmd")
+  return 1
 }
 
+# True for any claim-gated mutation: a runtime mutation OR a source/VCS write.
+# npm/pnpm/yarn stay claim-gated-but-not-runtime (matching the legacy gate, so a
+# claimed `pnpm tauri build` is not newly forced to carry runtime authorization).
+bash_is_mutating() {
+  local cmd="$1" seg
+  bash_is_runtime_mutation "$cmd" && return 0
+  while IFS= read -r seg; do
+    [[ -z "${seg// /}" ]] && continue
+    _bash_seg_head "$seg"
+    [[ -z "$_HEAD" ]] && continue
+    case "$_HEAD" in
+      npm | pnpm | yarn) return 0 ;;
+      tee | cp | install | touch | truncate | chmod | chown | mkdir | rm | mv | dd) return 0 ;;
+      sed | perl) _seg_has_inplace "$_HEAD" "$seg" && return 0 ;;
+      cat) _cat_writes_file "$seg" && return 0 ;;
+      git)
+        case "${_ARGS[0]:-}" in
+          branch) _git_branch_mutates "${_ARGS[@]:1}" && return 0 ;;
+          apply | reset | merge | rebase | restore | commit | push | checkout | switch | tag | add | stash | rm | mv) return 0 ;;
+        esac ;;
+      gh)
+        case "${_ARGS[0]:-}" in
+          api | repo | release) return 0 ;;
+          pr) case "${_ARGS[1]:-}" in create | merge | edit | close | reopen) return 0 ;; esac ;;
+        esac ;;
+      python*) _py_writes "$cmd" && return 0 ;;
+    esac
+  done < <(_bash_segments "$cmd")
+  return 1
+}
+
+# True for source-tree writes that must fall inside the task's mutation_scope_refs.
+# Excludes git ref ops (checkout/switch/branch write no source — the FM-16 fix,
+# matching policy_decide's _GIT_SOURCE_SUBCMDS); per-segment splitting means a
+# `sed -i` cannot borrow its flag from a downstream piped command.
 bash_source_mutation_requires_scope() {
-  local cmd="$1"
-  # The sed/perl/cat sub-patterns are anchored with [^|;&]* (not greedy .*) so the
-  # mutating flag/redirect must belong to the sed/perl/cat invocation itself and
-  # cannot be borrowed from a downstream command across a pipe or separator. This
-  # kills the `sed 's/x/y/' f | grep -iE p` false positive (the `-i` there is grep's)
-  # while keeping a real `sed -i …` / `cat … > f` blocked. (FR-BASH-MUTATION-FALSE-POSITIVES)
-  printf '%s' "$cmd" | grep -Eiq \
-    '(^|[;&|()[:space:]])((git[[:space:]]+(apply|reset|checkout|switch|merge|rebase))|(python[0-9.]*[[:space:]]*<<)|(python[0-9.]*[[:space:]].*(-c|--command).*([.]write_text|[.]write_bytes|open\(|shutil[.]|os[.](remove|unlink|rename|replace)|Path\())|(sed[[:space:]][^|;&]*-i)|(perl[[:space:]][^|;&]*-p?i)|(tee([[:space:]]|$))|(cat[[:space:]][^|;&]*>[[:space:]])|(cp|install|touch|truncate|chmod|chown|mkdir|rm|mv)([[:space:]]|$))'
+  local cmd="$1" seg
+  while IFS= read -r seg; do
+    [[ -z "${seg// /}" ]] && continue
+    _bash_seg_head "$seg"
+    [[ -z "$_HEAD" ]] && continue
+    case "$_HEAD" in
+      tee | cp | install | touch | truncate | chmod | chown | mkdir | rm | mv | dd) return 0 ;;
+      sed | perl) _seg_has_inplace "$_HEAD" "$seg" && return 0 ;;
+      cat) _cat_writes_file "$seg" && return 0 ;;
+      git) case "${_ARGS[0]:-}" in apply | reset | merge | rebase | restore) return 0 ;; esac ;;
+      python*) _py_writes "$cmd" && return 0 ;;
+    esac
+  done < <(_bash_segments "$cmd")
+  return 1
 }
 
 github_tool_is_mutating() {
@@ -245,24 +436,92 @@ fi
 # a claim may create a new request or offered cc-task note, but only through a
 # path-scoped, content-validated Write event. Ordinary source/runtime/system
 # mutation and manual claim-file writes still fail closed below.
-set +e
-_bootstrap_output="$(
-  printf '%s' "$input" | python3 "$SCRIPT_DIR/cc-task-gate-bootstrap.py" 2>&1
-)"
-_bootstrap_rc=$?
-set -e
-case "$_bootstrap_rc" in
-  0)
-    [[ -n "$_bootstrap_output" ]] && printf '%s\n' "$_bootstrap_output" >&2
+#
+# FAIL-OPEN ON INFRA ERROR (reform — bootstrap-failopen-atomic-swap). This is the
+# roleless session's ONLY sanctioned write path, so it MUST mirror the shim's
+# INV-5 posture (master design §2.2 / FM-15 / NEW-2): when the validator helper
+# itself cannot run — unreadable, mid atomic-swap, or it crashes — a bootstrap
+# CANDIDATE write fails OPEN (advisory + ledger) instead of fail-closed-blocking,
+# and any other mutation falls through to the normal claim/authority gate. ONLY a
+# genuine BLOCKED verdict (rc==12) from a helper that actually ran blocks; python's
+# own "can't open file" rc==2 and every other non-{0,10} code are infra signals,
+# never a deny. Before this fix the case mapped EVERY non-{0,10} code to exit 2, so
+# a redeploy that briefly unlinked the helper fail-closed even a properly CLAIMED
+# session (the S2 incident).
+_bootstrap_helper="$SCRIPT_DIR/cc-task-gate-bootstrap.py"
+
+# _bootstrap_is_candidate_target — mirror the helper's candidate test in pure bash
+# so the fail-OPEN stays narrow: only a Write of a .md note under the governance
+# intake roots (hapax-requests/active or hapax-cc-tasks/active) fails open when the
+# helper can't run. Any other mutation falls through to the normal gate — an infra
+# error must never widen what a non-bootstrap mutation may do.
+_bootstrap_is_candidate_target() {
+  [[ "$tool_name" == "Write" ]] || return 1
+  local p="${edit_path/#\~/$HOME}"
+  [[ -n "$p" && "$p" == *.md ]] || return 1
+  case "$p" in
+    "$HOME"/Documents/Personal/20-projects/hapax-requests/active/*) return 0 ;;
+    "$HOME"/Documents/Personal/20-projects/hapax-cc-tasks/active/*) return 0 ;;
+  esac
+  return 1
+}
+
+# _bootstrap_infra_failopen — shared "the validator could not run" handler: emit a
+# loud ledger line + stderr advisory, then mirror INV-5 — fail OPEN (exit 0) for a
+# candidate, else return so the caller falls through to the normal claim gate.
+_bootstrap_infra_failopen() {
+  local reason="$1" detail="$2" is_cand="false"
+  if _bootstrap_is_candidate_target; then is_cand="true"; fi
+  local _bs_role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-unknown}}}"
+  local _bs_ledger="${HAPAX_METHODOLOGY_LEDGER:-$HOME/.cache/hapax/methodology-emergency-ledger.jsonl}"
+  mkdir -p "$(dirname "$_bs_ledger")" 2>/dev/null || true
+  printf '{"ts":"%s","kind":"bootstrap_helper_infra_failopen","reason":"%s","detail":"%s","role":"%s","tool":"%s","path":"%s","candidate":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason" "$detail" "$_bs_role" "$tool_name" "${edit_path:-}" "$is_cand" \
+    >> "$_bs_ledger" 2>/dev/null || true
+  if [[ "$is_cand" == "true" ]]; then
+    echo "cc-task-gate: bootstrap validator unavailable ($reason) — FAILING OPEN for governance-intake write (advisory, ledgered, INV-5): ${edit_path:-}" >&2
     exit 0
-    ;;
-  10)
-    ;;
-  *)
-    [[ -n "$_bootstrap_output" ]] && printf '%s\n' "$_bootstrap_output" >&2
-    exit 2
-    ;;
-esac
+  fi
+  echo "cc-task-gate: bootstrap validator unavailable ($reason) — non-candidate mutation falls through to the normal gate (advisory, ledgered)." >&2
+  return 0
+}
+
+if [[ ! -r "$_bootstrap_helper" ]]; then
+  # Absent/unreadable (e.g. a concurrent hooks-doctor redeploy briefly unlinked
+  # it). Don't exec python on it — that would surface as rc==2 and historically
+  # fail closed. Go straight to the INV-5 fail-open handler.
+  _bootstrap_infra_failopen "helper_unreadable" "$_bootstrap_helper"
+else
+  set +e
+  _bootstrap_output="$(
+    printf '%s' "$input" | python3 "$_bootstrap_helper" 2>&1
+  )"
+  _bootstrap_rc=$?
+  set -e
+  case "$_bootstrap_rc" in
+    0)
+      [[ -n "$_bootstrap_output" ]] && printf '%s\n' "$_bootstrap_output" >&2
+      exit 0
+      ;;
+    10)
+      # NOT_CANDIDATE — fall through to the normal claim/authority gate.
+      ;;
+    12)
+      # The ONLY blocking verdict: the helper ran and judged the bootstrap note
+      # invalid. A genuine deny.
+      [[ -n "$_bootstrap_output" ]] && printf '%s\n' "$_bootstrap_output" >&2
+      exit 2
+      ;;
+    *)
+      # Any other code (python rc 2 = can't open file, 1 = uncaught exception,
+      # 127 = python missing, …) is an INFRA signal, never a deny. Mirror INV-5:
+      # fail OPEN for a candidate, else fall through. Sanitize the captured output
+      # before it enters the JSONL ledger.
+      _bs_det="$(printf '%s' "${_bootstrap_output:-}" | tr '\n\r\t"\\' '     ' | cut -c1-160)"
+      _bootstrap_infra_failopen "helper_rc_${_bootstrap_rc}" "$_bs_det"
+      ;;
+  esac
+fi
 
 # --- 3c. Shadow decision log (reform 3b PRODUCER source) ---------------------
 # From here on every exit is a genuine GATED decision (the non-mutating / cognition
@@ -281,9 +540,18 @@ _emit_gate_decision() {
   if [[ "${HAPAX_GATE_DECISION_LOG_OFF:-0}" == "1" ]]; then
     return 0
   fi
-  if command -v jq >/dev/null 2>&1; then
+  if command -v jq >/dev/null 2>&1 && command -v flock >/dev/null 2>&1; then
     mkdir -p "$(dirname "$_shadow_decision_log")" 2>/dev/null
-    jq -cn \
+    # Single-writer-safe append: capture the record, then write it under an
+    # exclusive flock on the SAME sidecar Python uses (<name>.lock). flock(1) and
+    # fcntl.flock(2) both take a kernel LOCK_EX on the inode, so this bash writer
+    # and the Python writers never interleave — the decision log carries records
+    # >PIPE_BUF (max ~9KB live). flock is hard-required (no raw >> fallback); the
+    # sidecar is pre-created 0600 to match shared.jsonl_append._lock_path
+    # (dn-ledger-flock).
+    _decision_lock="${_shadow_decision_log}.lock"
+    (umask 077; : >>"$_decision_lock") 2>/dev/null
+    _decision_rec="$(jq -cn \
       --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       --argjson legacy_exit "$rc" \
       --arg role "${role:-}" \
@@ -303,8 +571,11 @@ _emit_gate_decision() {
       --arg docs_mutation_authorized "${docs_authorized:-}" \
       --arg runtime_mutation_authorized "${runtime_authorized:-}" \
       --arg mutation_scope_refs "${mutation_scope_refs:-}" \
-      '{ts:$ts, legacy_exit:$legacy_exit, role:$role, session_id:$session_id, task_id:$task_id, tool_name:$tool_name, command:$command, file_path:$file_path, mutation_surface:$mutation_surface, status:$status, assigned_to:$assigned_to, authority_case:$authority_case, parent_spec:$parent_spec, stage:$stage, implementation_authorized:$implementation_authorized, source_mutation_authorized:$source_mutation_authorized, docs_mutation_authorized:$docs_mutation_authorized, runtime_mutation_authorized:$runtime_mutation_authorized, mutation_scope_refs:$mutation_scope_refs}' \
-      >> "$_shadow_decision_log" 2>/dev/null
+      '{ts:$ts, legacy_exit:$legacy_exit, role:$role, session_id:$session_id, task_id:$task_id, tool_name:$tool_name, command:$command, file_path:$file_path, mutation_surface:$mutation_surface, status:$status, assigned_to:$assigned_to, authority_case:$authority_case, parent_spec:$parent_spec, stage:$stage, implementation_authorized:$implementation_authorized, source_mutation_authorized:$source_mutation_authorized, docs_mutation_authorized:$docs_mutation_authorized, runtime_mutation_authorized:$runtime_mutation_authorized, mutation_scope_refs:$mutation_scope_refs}' 2>/dev/null)"
+    if [ -n "$_decision_rec" ]; then
+      printf '%s\n' "$_decision_rec" \
+        | flock "$_decision_lock" tee -a "$_shadow_decision_log" >/dev/null 2>&1
+    fi
   fi
   return 0
 }
@@ -408,6 +679,23 @@ cc-task-gate: BLOCKED — claimed task '$task_id' not found in vault.
     cc-claim <task_id>
 EOF
   exit 2
+fi
+
+# --- 6b. Own claimed-task note: always editable by its claimer (fix-cc-gate-fps
+# Fix 2). A session's OWN claimed cc-task note is governance bookkeeping (session
+# log, AC checkboxes, stage) and is rarely listed in its own mutation_scope_refs, so
+# the fully-authorized owner was scope-DENIED editing it. Allow it here, matched
+# against the RESOLVED note_path for THIS claimed task only — a DIFFERENT task's note
+# stays fully gated. Mirrors policy_decide's _is_own_task_note allow (section 5b) and
+# precedes status/authority/scope so a claimer can maintain its own note even across
+# a reconciler-unassign race or a terminal status.
+if [[ -n "$edit_path" ]]; then
+  _edit_real="$(realpath -m -- "$edit_path" 2>/dev/null || echo "$edit_path")"
+  _note_real="$(realpath -m -- "$note_path" 2>/dev/null || echo "$note_path")"
+  if [[ "$_edit_real" == "$_note_real" ]]; then
+    echo "cc-task-gate: own claimed-task note — allowed (governance bookkeeping): $edit_path" >&2
+    exit 0
+  fi
 fi
 
 # --- 7. Parse frontmatter via python (jq doesn't do YAML) ---
@@ -812,50 +1100,78 @@ EOF
 fi
 
 if [[ -n "$edit_path" ]]; then
-  scope_check="$(python3 - "$edit_path" "$mutation_scope_refs" <<'PYEOF'
+  # Anchor RELATIVE scope refs/targets to the git repo toplevel AND the personal
+  # vault root (in addition to the live cwd), so a vault cc-task's own
+  # `20-projects/hapax-cc-tasks/` scope resolves to the absolute note path and a bare
+  # repo-relative ref resolves even from a repo subdirectory (fix-cc-gate-fps Fix 2).
+  # git toplevel is computed from the hook's cwd (the session worktree); a non-repo
+  # cwd yields "" and only cwd + vault anchor.
+  _scope_repo_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  _scope_vault_root="$HOME/Documents/Personal"
+  scope_check="$(python3 - "$edit_path" "$mutation_scope_refs" "$_scope_repo_top" "$_scope_vault_root" <<'PYEOF'
 import os
 import sys
 from pathlib import Path
 
-target_raw, scope_blob = sys.argv[1], sys.argv[2]
+target_raw = sys.argv[1]
+scope_blob = sys.argv[2]
+repo_top = sys.argv[3] if len(sys.argv) > 3 else ""
+vault_root = sys.argv[4] if len(sys.argv) > 4 else ""
 if not scope_blob.strip():
     print("missing")
     sys.exit(0)
 
-target = Path(target_raw)
-if not target.is_absolute():
-    target = Path.cwd() / target
-try:
-    target_resolved = target.resolve(strict=False)
-except Exception:
-    target_resolved = target.absolute()
+# Candidate anchor roots for a RELATIVE path: the live cwd (legacy behavior), the git
+# repo toplevel (so a bare `shared/x` / `tests/` ref resolves even when the session
+# cwd is a subdirectory), and the personal vault root (so a vault cc-task's own
+# `20-projects/hapax-cc-tasks/` scope resolves to the absolute note path, not a
+# nonexistent repo-relative path). Absolute paths ignore the anchors.
+anchor_roots = [Path.cwd()]
+for _root in (repo_top, vault_root):
+    if _root:
+        anchor_roots.append(Path(_root))
+
+
+def _resolved_candidates(raw):
+    p = Path(os.path.expanduser(raw))
+    raws = [p] if p.is_absolute() else [root / p for root in anchor_roots]
+    out = []
+    for cand in raws:
+        try:
+            out.append(cand.resolve(strict=False))
+        except Exception:
+            out.append(cand.absolute())
+    return out
+
+
+target_candidates = _resolved_candidates(target_raw)
 
 allowed = False
 for raw in scope_blob.split("\x1f"):
     item = raw.strip()
     if not item or item.startswith(("cc-task:", "request:")):
         continue
-    scope = Path(os.path.expanduser(item))
-    if not scope.is_absolute():
-        scope = Path.cwd() / scope
-    try:
-        scope_resolved = scope.resolve(strict=False)
-    except Exception:
-        scope_resolved = scope.absolute()
-    if str(scope_resolved).endswith(os.sep):
-        if str(target_resolved).startswith(str(scope_resolved)):
-            allowed = True
+    dir_suffix = item.endswith("/") or item.endswith(os.sep)
+    for scope_resolved in _resolved_candidates(item):
+        prefix = str(scope_resolved).rstrip(os.sep) + os.sep
+        for target_resolved in target_candidates:
+            if target_resolved == scope_resolved:
+                allowed = True
+                break
+            if dir_suffix and str(target_resolved).startswith(prefix):
+                allowed = True
+                break
+            if scope_resolved.is_dir():
+                try:
+                    target_resolved.relative_to(scope_resolved)
+                    allowed = True
+                    break
+                except ValueError:
+                    pass
+        if allowed:
             break
-    if target_resolved == scope_resolved:
-        allowed = True
+    if allowed:
         break
-    if scope.exists() and scope.is_dir():
-        try:
-            target_resolved.relative_to(scope_resolved)
-            allowed = True
-            break
-        except ValueError:
-            pass
 
 print("allowed" if allowed else "denied")
 PYEOF

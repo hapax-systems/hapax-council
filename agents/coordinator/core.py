@@ -5,20 +5,60 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
 
+from shared.dispatch_service_time import (
+    AGE_NORM_S,
+    QueueLane,
+    QueueTask,
+    parse_ts,
+    plan_dispatches,
+)
+from shared.jsonl_append import append_jsonl
+from shared.notify import send_notification
+from shared.recovery_governor import converge_action_cap
+from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
+from shared.sdlc_pressure_gate import admission_state
+
 log = logging.getLogger(__name__)
 
+
+def pressure_dispatch_budget(
+    state: str, idle_count: int, base_cooldown: float
+) -> tuple[int, float]:
+    """Translate the SDLC pressure admission state into a per-tick dispatch budget.
+
+    'closed' dispatches nothing this tick (offered tasks stay on disk — queued,
+    not dropped); 'paced' caps to one dispatch and stretches the cooldown so the
+    fleet drains slowly; 'open' runs at full throughput. Slows the controller,
+    never abandons work.
+    """
+    if state == "closed":
+        return (0, base_cooldown)
+    if state == "paced":
+        return (1, base_cooldown * 2.0)
+    return (idle_count, base_cooldown)
+
+
 TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
-RELAY_DIR = Path.home() / ".cache/hapax/relay"
+CACHE_DIR = Path.home() / ".cache/hapax"
+RELAY_DIR = CACHE_DIR / "relay"
 PID_DIR = Path(f"/run/user/{os.getuid()}/hapax-claude")
 SHM_DIR = Path("/dev/shm/hapax-coordinator")
 SHM_FILE = SHM_DIR / "state.json"
+
+# The same authority-case ledger cc-stage-advance writes — one SSOT for transitions.
+# Honor the same env override so both producers target the same inode.
+REOFFER_LEDGER = Path(
+    os.environ.get("HAPAX_AUTHORITY_CASE_LEDGER", str(CACHE_DIR / "authority-case-ledger.jsonl"))
+).expanduser()
 
 FALLBACK_LANE_ROLES = ("alpha", "beta", "gamma", "delta", "epsilon", "zeta")
 LANE_ROLES = FALLBACK_LANE_ROLES
@@ -28,6 +68,24 @@ SESSION_PREFIXES = (
     ("hapax-gemini-", "gemini"),
 )
 DISPATCH_COOLDOWN_S = 120.0
+
+# A lane that owns a non-terminal task but has emitted no progress signal for this
+# long (or whose supervising launcher PID is gone) is projected `stalled` and its
+# held task reoffered. 15 min of zero progress on a held task is a real stall, not
+# normal think-time (lanes ship in minutes-to-an-hour per velocity calibration).
+STALL_OUTPUT_GRACE_S = 900.0
+MAX_REOFFERS_PER_TICK = 1  # bound the controller per tick; never thrash the queue
+MAX_REOFFERS_PER_TASK = 3  # per-lifetime cap: after N, escalate (block + ntfy), don't loop
+
+# bb-dispatch-scheduler: the measured per-lineage service-time cache the reaper and
+# idle-watchdog also read. When present, it replaces the THREE divergent fixed stall
+# timeouts (this 900s, the reaper's 1800s, the idle-watchdog's 600s) with one measured
+# tau(lineage); when absent the in-process reoffer falls back to STALL_OUTPUT_GRACE_S
+# (reoffer is non-destructive, so an aggressive blind grace is safe — unlike the reaper,
+# which KILLS and therefore falls back to the conservative ceiling).
+DISPATCH_SERVICE_TIME_CACHE_NAME = "dispatch-service-time.json"
+# Revert env: restore the exact prior fixed-T, raw-WSJF greedy-global behavior.
+SCHEDULER_LEGACY_ENV = "HAPAX_DISPATCH_SCHEDULER_LEGACY"
 
 
 @dataclass(frozen=True)
@@ -43,6 +101,7 @@ class Task:
     platform_suitability: tuple[str, ...]
     quality_floor: str
     path: Path
+    created_at: float | None = None  # epoch; drives WSJF aging (None -> no aging)
 
 
 @dataclass
@@ -66,6 +125,8 @@ class LaneState:
     relay_age_s: float = float("inf")
     claimed_task: str | None = None
     idle: bool = True
+    output_age_s: float = float("inf")  # age of the freshest progress signal
+    stalled: bool = False  # ground-truth projection, re-derived each tick
 
 
 @dataclass
@@ -79,6 +140,8 @@ class CoordinatorState:
     lanes_idle: int = 0
     lanes_total: int = len(LANE_ROLES)
     dispatches_this_tick: int = 0
+    lanes_stalled: int = 0
+    reoffers_this_tick: int = 0
     lanes: dict[str, dict] = field(default_factory=dict)
 
 
@@ -87,6 +150,9 @@ class Coordinator:
 
     def __init__(self) -> None:
         self._last_dispatch: dict[str, float] = {}
+        # per-task-lifetime reoffer counter (process-local); caps the
+        # offered→claim→stall→offered loop and escalates to `blocked` past the cap.
+        self._reoffer_counts: dict[str, int] = {}
 
     def tick(self) -> None:
         tasks = self._scan_tasks()
@@ -103,21 +169,97 @@ class Coordinator:
 
         dispatches = 0
         idle_lanes = [l for l in lanes.values() if l.alive and l.idle and l.claimed_task is None]
-        offered_sorted = sorted(offered, key=lambda t: t.wsjf, reverse=True)
 
-        for task in offered_sorted:
-            if not idle_lanes:
+        # L3: pace the dispatch loop under CPU pressure. 'closed' dispatches
+        # nothing this tick (tasks stay offered — queued, not dropped); 'paced'
+        # caps throughput and stretches the cooldown so the fleet drains slowly.
+        admission = admission_state()
+        _, cooldown_s = pressure_dispatch_budget(
+            admission.state, len(idle_lanes), DISPATCH_COOLDOWN_S
+        )
+        # bb-control-stability: the RecoveryGovernor's per-tick converge ceiling
+        # ({open:6, paced:2, closed:0}) bounds how many dispatches the controller
+        # may inject per tick — it cannot become the storm it governs.
+        max_dispatches = min(len(idle_lanes), converge_action_cap(admission.state))
+        if admission.state != "open":
+            log.info(
+                "sdlc-pressure %s: dispatch budget=%d cooldown=%.0fs",
+                admission.state,
+                max_dispatches,
+                cooldown_s,
+            )
+
+        # bb-dispatch-scheduler: load the measured per-lineage service-time cache once.
+        # `legacy` restores the prior fixed-T / raw-WSJF behavior exactly (revert env).
+        legacy = os.environ.get(SCHEDULER_LEGACY_ENV) == "1"
+        cache = None if legacy else _load_dispatch_cache()
+
+        # Project ground-truth `stalled` for every lane, then reoffer held tasks off
+        # stalled lanes — bounded, and gated on the SAME #3850 admission read. 'closed'
+        # reoffers nothing (the held task stays offered — queued, never dropped). Runs
+        # before the dispatch loop so a just-freed lane re-enters the pool next tick.
+        # The stall grace is now the MEASURED tau(lineage) when the cache is present
+        # (one timeout, not three divergent fixed numbers); 900s fallback when blind.
+        non_terminal_ids = frozenset(
+            t.task_id for t in tasks if t.status not in TASK_TERMINAL_STATUSES
+        )
+        for lane in lanes.values():
+            lane.stalled = project_stalled(
+                lane,
+                non_terminal_task_ids=non_terminal_ids,
+                output_grace_s=_stall_grace_for(lane.role, cache),
+            )
+        state.lanes_stalled = sum(1 for lane in lanes.values() if lane.stalled)
+
+        reoffer_budget = 0 if admission.state == "closed" else MAX_REOFFERS_PER_TICK
+        reoffered = 0
+        for lane in lanes.values():
+            if reoffered >= reoffer_budget:
                 break
-            lane = self._pick_lane(task, idle_lanes)
-            if lane is None:
-                continue
-            now = time.monotonic()
-            last = self._last_dispatch.get(lane.role, 0.0)
-            if now - last < DISPATCH_COOLDOWN_S:
+            if lane.stalled and lane.claimed_task and self._reoffer_stalled(lane):
+                reoffered += 1
+        state.reoffers_this_tick = reoffered
+
+        # bb-dispatch-scheduler: per-lineage virtual queues + WSJF aging. Iterate idle
+        # lanes (lane-outer) so a busy/cooled lineage can never head-of-line-block a
+        # routable task from a free lane, and let a starved low-WSJF task overtake fresh
+        # high-WSJF arrivals (bounded). `legacy` reverts to the prior raw-WSJF task-outer
+        # loop. The converge ceiling (max_dispatches) and cooldown are unchanged.
+        now_mono = time.monotonic()
+        age_norm_s = _age_norm_s(cache)
+        queue_tasks = [
+            QueueTask(
+                task_id=t.task_id,
+                wsjf=t.wsjf,
+                platform_suitability=t.platform_suitability,
+                age_s=max(0.0, state.timestamp - t.created_at) if t.created_at else 0.0,
+            )
+            for t in offered
+        ]
+        queue_lanes = [
+            QueueLane(
+                role=l.role,
+                platform=l.platform,
+                cooldown_remaining_s=cooldown_s - (now_mono - self._last_dispatch.get(l.role, 0.0)),
+            )
+            for l in idle_lanes
+        ]
+        plan = plan_dispatches(
+            queue_tasks,
+            queue_lanes,
+            max_dispatches=max_dispatches,
+            age_norm_s=age_norm_s,
+            legacy=legacy,
+        )
+        task_by_id = {t.task_id: t for t in offered}
+        lane_by_role = {l.role: l for l in idle_lanes}
+        for task_id, role in plan:
+            task = task_by_id.get(task_id)
+            lane = lane_by_role.get(role)
+            if task is None or lane is None:
                 continue
             if self._dispatch(task, lane):
-                self._last_dispatch[lane.role] = now
-                idle_lanes.remove(lane)
+                self._last_dispatch[role] = now_mono
                 dispatches += 1
 
         state.dispatches_this_tick = dispatches
@@ -201,6 +343,121 @@ class Coordinator:
         log.info("Dispatched task %s to lane %s", task.task_id, lane.role)
         return True
 
+    def _reoffer_stalled(self, lane: LaneState) -> bool:
+        """Release a stalled lane's held task back to `offered`/`unassigned`, clear the
+        stale claim signal, and emit a ground-truth ledger record. Idempotent: once the
+        note is already `offered` a second call is a no-op. Past the per-task reoffer cap
+        it escalates to `blocked` (+ntfy) instead of looping. NEVER kills a process."""
+        claim = lane.claimed_task
+        if not claim:
+            return False
+        path, match_count = _resolve_task_note(claim)
+        if path is None:
+            if match_count > 1:
+                # ambiguous prefix collision — refuse to guess; emit a visible record
+                self._emit_reoffer_ledger(
+                    lane, claim, kind="lane_stalled_reoffer_ambiguous", to_stage="error"
+                )
+                log.error(
+                    "reoffer: %d notes match claim %s (prefix collision) — aborting",
+                    match_count,
+                    claim,
+                )
+            return False
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+
+        if self._reoffer_counts.get(claim, 0) >= MAX_REOFFERS_PER_TASK:
+            return self._escalate_stalled(lane, claim, path, text)
+
+        new = re.sub(
+            r"^status: (?:claimed|in_progress)\b", "status: offered", text, count=1, flags=re.M
+        )
+        new = re.sub(r"^assigned_to: .*$", "assigned_to: unassigned", new, count=1, flags=re.M)
+        if new == text:
+            return False  # already offered / nothing to release — idempotent no-op
+        _atomic_write(path, new)
+        self._clear_claim_signal(lane)
+        self._reoffer_counts[claim] = self._reoffer_counts.get(claim, 0) + 1
+        self._emit_reoffer_ledger(lane, claim, kind="lane_stalled_reoffer", to_stage="offered")
+        log.warning(
+            "reoffer: lane %s stalled on %s -> offered (output_age=%.0fs, reoffer #%d)",
+            lane.role,
+            claim,
+            lane.output_age_s,
+            self._reoffer_counts[claim],
+        )
+        return True
+
+    def _escalate_stalled(self, lane: LaneState, claim: str, path: Path, text: str) -> bool:
+        """Past the per-task reoffer cap: block the task and ntfy the operator instead of
+        looping offered→claim→stall→offered forever. Bounded escalation, never a kill."""
+        new = re.sub(
+            r"^status: (?:claimed|in_progress|offered)\b",
+            "status: blocked",
+            text,
+            count=1,
+            flags=re.M,
+        )
+        new = re.sub(r"^assigned_to: .*$", "assigned_to: unassigned", new, count=1, flags=re.M)
+        if new != text:
+            _atomic_write(path, new)
+        self._clear_claim_signal(lane)
+        self._emit_reoffer_ledger(lane, claim, kind="lane_stalled_escalated", to_stage="blocked")
+        reoffers = self._reoffer_counts.get(claim, 0)
+        log.error(
+            "reoffer cap exceeded: %s reoffered %dx without progress -> blocked (lane %s)",
+            claim,
+            reoffers,
+            lane.role,
+        )
+        try:
+            send_notification(
+                "SDLC: task stuck, blocked",
+                f"{claim} stalled and was reoffered {reoffers}x without progress; set to blocked.",
+                priority="high",
+                tags=["sdlc", "stalled"],
+            )
+        except Exception:  # noqa: BLE001 — ntfy is best-effort; never block the tick.
+            log.exception("stall-escalation ntfy failed (continuing)")
+        return True
+
+    def _clear_claim_signal(self, lane: LaneState) -> None:
+        """Remove the per-lane cc-active-task signal so the next tick sees the lane idle."""
+        for signal in _active_task_candidates(lane.role, lane.session):
+            try:
+                signal.unlink()
+            except OSError:
+                pass
+
+    def _emit_reoffer_ledger(
+        self, lane: LaneState, task_id: str, *, kind: str, to_stage: str
+    ) -> None:
+        """Append a `ts`-keyed record to the SAME ledger cc-stage-advance writes, so the
+        real stuck case is finally visible to INV-2. `ts` is an ISO-8601 STRING matching the
+        producer byte-for-byte — a float epoch would `fromisoformat`-fail to ~56yr-stale and
+        self-generate the exact false 'stuck' finding this projection exists to cure."""
+        append_jsonl(
+            REOFFER_LEDGER,
+            {
+                "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "kind": kind,
+                "tool": "coordinator",
+                "role": lane.role,
+                "task_id": task_id,
+                "to_stage": to_stage,
+                "reason": "launcher_pid_gone"
+                if not _launcher_pid_present(lane.role)
+                else "output_stale",
+                "output_age_s": round(lane.output_age_s, 1)
+                if lane.output_age_s != float("inf")
+                else None,
+            },
+            sort_keys=True,
+        )
+
     def _write_state(self, state: CoordinatorState) -> None:
         SHM_DIR.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -211,6 +468,8 @@ class Coordinator:
             "lanes_idle": state.lanes_idle,
             "lanes_total": state.lanes_total,
             "dispatches_this_tick": state.dispatches_this_tick,
+            "lanes_stalled": state.lanes_stalled,
+            "reoffers_this_tick": state.reoffers_this_tick,
             "lanes": state.lanes,
         }
         tmp = SHM_FILE.with_suffix(".tmp")
@@ -250,7 +509,20 @@ def _parse_task(path: Path) -> Task | None:
         platform_suitability=tuple(platforms),
         quality_floor=meta.get("quality_floor", "deterministic_ok"),
         path=path,
+        created_at=_created_at_epoch(meta.get("created_at") or meta.get("updated_at")),
     )
+
+
+def _created_at_epoch(value: object) -> float | None:
+    """Frontmatter ``created_at`` -> epoch. YAML may parse an ISO timestamp into a
+    ``datetime`` OR leave it a string; both fold to epoch (None on anything else)."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.timestamp()
+    if isinstance(value, str):
+        return parse_ts(value)
+    return None
 
 
 def _lane_from_tmux_session(session: str) -> LaneDescriptor | None:
@@ -355,10 +627,10 @@ def _relay_status_is_idle(value: object) -> bool | None:
 
 def _active_task_candidates(role: str, session: str = "") -> list[Path]:
     candidates = [
-        Path.home() / f".cache/hapax/cc-active-task-{role}",
+        CACHE_DIR / f"cc-active-task-{role}",
     ]
     if session:
-        candidates.append(Path.home() / f".cache/hapax/cc-active-task-{session}")
+        candidates.append(CACHE_DIR / f"cc-active-task-{session}")
     return list(dict.fromkeys(candidates))
 
 
@@ -409,7 +681,113 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
             state.idle = False
             break
 
+    # freshest progress signal: cc-active-task mtime ∪ relay mtime (relay alone is
+    # unreliable per grounding — its mtime can run tens of minutes stale on a live lane).
+    progress_mtimes: list[float] = []
+    if relay_mtime is not None:
+        progress_mtimes.append(relay_mtime)
+    for active_task_file in _active_task_candidates(descriptor.role, descriptor.session):
+        try:
+            progress_mtimes.append(active_task_file.stat().st_mtime)
+        except OSError:
+            continue
+    if progress_mtimes:
+        state.output_age_s = time.time() - max(progress_mtimes)
+
     return state
+
+
+def _launcher_pid_present(role: str) -> bool:
+    """True iff the supervising launcher PID for this lane is alive. Uses os.kill(pid, 0) —
+    a liveness probe only (signal 0 delivers nothing); NEVER os.killpg or a real signal."""
+    try:
+        pid = int((PID_DIR / f"{role}.launcher.pid").read_text().strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _load_dispatch_cache() -> dict | None:
+    """The measured service-time cache (`dispatch_service_time --recompute`). None when
+    absent/corrupt — callers fall back to the fixed defaults. Path resolves through
+    CACHE_DIR at call-time so tests that patch CACHE_DIR stay isolated."""
+    try:
+        data = json.loads(
+            (CACHE_DIR / DISPATCH_SERVICE_TIME_CACHE_NAME).read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _stall_grace_for(role: str, cache: dict | None) -> float:
+    """Per-lineage stall grace = measured tau(role) when the cache is present, else the
+    fixed STALL_OUTPUT_GRACE_S. Reoffer is non-destructive, so the blind fallback stays
+    aggressive (unlike the reaper's conservative ceiling fallback when it cannot measure)."""
+    if not cache:
+        return STALL_OUTPUT_GRACE_S
+    per_lineage = cache.get("per_lineage")
+    if isinstance(per_lineage, dict):
+        entry = per_lineage.get(role)
+        if isinstance(entry, dict) and isinstance(entry.get("tau_s"), int | float):
+            return float(entry["tau_s"])
+    glob = cache.get("global")
+    if isinstance(glob, dict) and isinstance(glob.get("tau_s"), int | float):
+        return float(glob["tau_s"])
+    return STALL_OUTPUT_GRACE_S
+
+
+def _age_norm_s(cache: dict | None) -> float:
+    """One service-epoch for WSJF aging — the measured p90 service span when known."""
+    if cache:
+        value = cache.get("age_norm_s")
+        if isinstance(value, int | float) and value > 0:
+            return float(value)
+    return AGE_NORM_S
+
+
+def project_stalled(
+    lane: LaneState,
+    *,
+    non_terminal_task_ids: frozenset[str],
+    output_grace_s: float = STALL_OUTPUT_GRACE_S,
+) -> bool:
+    """PURE projection, re-derived every tick from ground truth (never a persisted edge).
+
+    A lane is stalled iff it owns a non-terminal task AND it has stopped: either its
+    supervising launcher PID is gone, or its progress signal is stale past `output_grace_s`.
+    """
+    claim = lane.claimed_task
+    if not claim or claim not in non_terminal_task_ids:
+        return False  # idle, or the claim is already terminal → not stalled
+    if not _launcher_pid_present(lane.role):
+        return True  # owner process gone, task still non-terminal
+    return lane.output_age_s > output_grace_s
+
+
+def _resolve_task_note(task_id: str) -> tuple[Path | None, int]:
+    """Locate the single cc-task note for `task_id`, mirroring cc-stage-advance `_find_note`:
+    exact `{id}.md` wins, else `{id}-*.md`. Returns (path, match_count). A match_count > 1 is
+    a prefix collision the caller MUST refuse to act on — never silently take matches[0]."""
+    exact = TASKS_DIR / f"{task_id}.md"
+    if exact.exists():
+        return exact, 1
+    matches = sorted(TASKS_DIR.glob(f"{task_id}-*.md"))
+    if len(matches) == 1:
+        return matches[0], 1
+    return None, len(matches)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write via temp file + atomic replace — same discipline as _write_state, so a
+    concurrent reader never sees a half-written note."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
 
 
 def _lane_to_dict(lane: LaneState) -> dict:
@@ -422,4 +800,6 @@ def _lane_to_dict(lane: LaneState) -> dict:
         "relay_age_s": round(lane.relay_age_s, 1) if lane.relay_age_s != float("inf") else None,
         "claimed_task": lane.claimed_task,
         "idle": lane.idle,
+        "stalled": lane.stalled,
+        "output_age_s": round(lane.output_age_s, 1) if lane.output_age_s != float("inf") else None,
     }

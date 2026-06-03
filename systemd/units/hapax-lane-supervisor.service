@@ -2,6 +2,10 @@
 Description=Hapax Lane Supervisor — FM-11 one_for_one re-spawn (dead lanes always auto-restart)
 Documentation=file:///home/hapax/.local/bin/hapax-lane-supervisor
 After=network.target
+# The sweep exits 0 even when a lane is down (so one dead lane can't wedge the
+# oneshot) and escalates chronic failures itself via ntfy. This OnFailure is the
+# belt-and-suspenders surface for the supervisor *script* itself failing.
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
@@ -12,7 +16,11 @@ Type=oneshot
 # active source-activation release — the same convention the supervisor script
 # itself uses for its sibling launchers (hapax-claude-headless, hapax-codex…).
 ExecStart=%h/.local/bin/hapax-lane-supervisor
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# ~/.npm-global/bin is where `npm i -g @openai/codex` installs the codex
+# launcher; without it the codex respawn path exits rc=4 "codex not found in
+# PATH" every cycle (FM-11 chronic crash-loop). Keep it first so it shadows
+# nothing important but is always reachable from the oneshot's thin env.
+Environment=PATH=%h/.npm-global/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
 StandardOutput=journal
 StandardError=journal

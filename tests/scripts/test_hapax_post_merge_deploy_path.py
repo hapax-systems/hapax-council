@@ -85,6 +85,13 @@ def test_service_unit_invokes_deploy_script_with_resolved_sha() -> None:
         f"ExecStart must compute SHA via git rev-parse, got: {exec_start!r}"
     )
     assert "main" in exec_start, f"ExecStart must reference 'main' branch, got: {exec_start!r}"
+    # Must resolve origin/main (the true merged HEAD), NOT the local `main` ref:
+    # the canonical worktree sits on a feature branch so local refs/heads/main is
+    # frozen tens of commits behind. Resolving origin/main is the deploy-chain-
+    # repair fix (reform-deploy-chain-repair-20260601).
+    assert "origin/main" in exec_start, (
+        f"ExecStart must resolve origin/main, not stale local main, got: {exec_start!r}"
+    )
     # And the resolved SHA must be quoted/expanded into the script call.
     assert '"$sha"' in exec_start or "${sha}" in exec_start or "$sha" in exec_start, (
         "ExecStart must pass the resolved SHA to the deploy script"
