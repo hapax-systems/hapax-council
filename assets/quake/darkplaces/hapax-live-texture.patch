@@ -563,7 +563,7 @@ index 7fbcd0b3..8ec3075c 100644
  extern rtexture_t *r_texture_notexture;
  extern rtexture_t *r_texture_whitecube;
 diff --git a/shader_glsl.h b/shader_glsl.h
-index dc56d085..a189451f 100644
+index dc56d085..45944795 100644
 --- a/shader_glsl.h
 +++ b/shader_glsl.h
 @@ -773,6 +773,8 @@
@@ -616,7 +616,7 @@ index dc56d085..a189451f 100644
  "void main(void)\n",
  "{\n",
  "#ifdef USEOFFSETMAPPING\n",
-@@ -1797,6 +1818,45 @@
+@@ -1797,6 +1818,47 @@
  "   color.rgb *= clamp(float(visiblepixels) / float(allpixels), 0.0, 1.0);\n",
  "#endif\n",
  "\n",
@@ -655,8 +655,10 @@ index dc56d085..a189451f 100644
 +"		float hpx_shash = fract(sin(dot(floor(hpx_suv), vec2(127.1, 311.7))) * 43758.5453);\n",
 +"		float hpx_dot = step(0.80, hpx_shash) * smoothstep(0.20, 0.07, length(hpx_sf));\n",
 +"		// stipple inherent colour: own cosine palette on a DIFFERENT clock/phase than the grid\n",
-+"		vec3 hpx_scol = 0.5 + 0.5*cos(6.2831853*(hpx_shash*3.1 + ClientTime*0.08 + vec3(0.0, 0.33, 0.67)));\n",
-+"		color.rgb += hpx_wc * hpx_dot * hpx_scol * 0.42;\n",
++"		vec3 hpx_scol = 0.5 + 0.5*cos(6.2831853*(hpx_shash*3.1 + ClientTime*0.08 + hpx_field*1.3 + vec3(0.0, 0.33, 0.67)));\n",
++"		// live reverie currency drives the stipple too (brightness shimmer), so EVERY drift\n",
++"		// element responds to the currency, not just the grid hue-rotation.\n",
++"		color.rgb += hpx_wc * hpx_dot * hpx_scol * 0.42 * (0.65 + 0.7*hpx_field);\n",
 +"	}\n",
 +"#endif\n",
  "	dp_FragColor = vec4(color);\n",
