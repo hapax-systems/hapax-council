@@ -25,6 +25,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -42,6 +43,12 @@ if str(REPO_ROOT) not in sys.path:
 from shared.governance.coord_capabilities import (  # noqa: E402
     mint_escape_grant,
     write_grant_file,
+)
+from shared.policy_decide import (  # noqa: E402
+    COGNITION_CARVEOUT_PARITY_CORPUS,
+    cognition_carveout_parity_ok,
+    evaluate_shadow_clean,
+    is_cognition_path,
 )
 from shared.sdlc_lifecycle import TASK_MUTABLE_STATUSES  # noqa: E402
 
@@ -1828,3 +1835,139 @@ class TestVaultScopeAnchoringAndOwnNote:
         )
         assert result.returncode == 2
         assert "mutation_scope_refs" in result.stderr
+
+
+def _extract_bash_func(name: str, text: str) -> str:
+    """Lift a top-level bash function (``name() { ... }`` with a column-0 closing ``}``)
+    out of a script so it can be sourced in isolation — the gate impl EXECUTES on
+    source, so the cross-language parity probe extracts JUST the function under test."""
+    out: list[str] = []
+    capturing = False
+    for line in text.splitlines():
+        if line.startswith(f"{name}() {{"):
+            capturing = True
+        if capturing:
+            out.append(line)
+            if line == "}":
+                break
+    return "\n".join(out)
+
+
+class TestCognitionPathCrossLanguageParity:
+    """INV-5 — the cognition carve-out predicate is hand-maintained in two languages:
+    bash ``is_cognition_path`` (cc-task-gate.impl.sh) and Python
+    ``shared.policy_decide.is_cognition_path``. Because the shadow->cutover makes
+    policy_decide authoritative, the two MUST return identical verdicts on the
+    cognition-carve-out corpus (the surfaces that decide Edit/Write always-allow) or the
+    cutover would silently flip enforcement at the most load-bearing boundary. Both are
+    pinned against the SINGLE shared spec ``COGNITION_CARVEOUT_PARITY_CORPUS``.
+    (reform-cognition-path-parity-20260601)
+    """
+
+    # NON-/tmp fixture HOME: policy_decide.is_cognition_path treats ANY ``/tmp/*`` as
+    # cognition (its command-target scratch breadth doubles the carve-out predicate), so
+    # a /tmp-rooted HOME would mask every HOME-relative case. A real session HOME is
+    # never under /tmp; is_cognition_path resolves ``~`` to $HOME, so both sides are
+    # driven with the SAME pinned HOME and the paths need not exist (pure string logic).
+    HOME = "/home/cog-parity-fixture"
+
+    def _bash_cognition(self, path: str) -> bool:
+        func = _extract_bash_func("is_cognition_path", HOOK.read_text(encoding="utf-8"))
+        assert func.startswith("is_cognition_path() {") and func.endswith("\n}"), (
+            "failed to extract bash is_cognition_path from the gate impl"
+        )
+        expr = f'{func}\nif is_cognition_path "$1"; then echo Y; else echo N; fi'
+        proc = subprocess.run(
+            ["bash", "-c", expr, "bash", path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={"HOME": self.HOME, "PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+        )
+        assert proc.returncode == 0 and proc.stdout.strip() in {"Y", "N"}, (
+            f"bash is_cognition_path probe failed for {path!r}: "
+            f"rc={proc.returncode} out={proc.stdout!r} err={proc.stderr!r}"
+        )
+        return proc.stdout.strip() == "Y"
+
+    def _py_cognition(self, path: str) -> bool:
+        with mock.patch.dict(os.environ, {"HOME": self.HOME}):
+            return is_cognition_path(path)
+
+    @pytest.mark.parametrize("template,expected", COGNITION_CARVEOUT_PARITY_CORPUS)
+    def test_both_implementations_match_canonical_corpus(
+        self, template: str, expected: bool
+    ) -> None:
+        path = template.replace("{HOME}", self.HOME)
+        assert self._py_cognition(path) is expected, (
+            f"policy_decide.is_cognition_path({path!r}) != canonical {expected}"
+        )
+        assert self._bash_cognition(path) is expected, (
+            f"bash is_cognition_path({path!r}) != canonical {expected}"
+        )
+
+    def test_bash_and_python_agree_across_corpus(self) -> None:
+        # Direct cross-language identity, independent of the canonical expected column.
+        for template, _expected in COGNITION_CARVEOUT_PARITY_CORPUS:
+            path = template.replace("{HOME}", self.HOME)
+            assert self._bash_cognition(path) == self._py_cognition(path), (
+                f"cross-language is_cognition_path divergence at {path!r}"
+            )
+
+    def test_intentional_helper_breadth_divergences_are_pinned(self) -> None:
+        # policy_decide.is_cognition_path is BROADER than the gate on exactly two
+        # surfaces BY DESIGN: it doubles as the command-target scratch classifier
+        # (_unconditional_writes_in_tree / _is_python_write_in_tree), so bare /tmp and
+        # relay receipts read as cognition there. These are NOT Edit/Write carve-out
+        # surfaces (the gate's narrow set governs that) and are pinned in
+        # tests/test_policy_decide.py. Pinned here too so a future convergence in either
+        # direction is a CONSCIOUS, reviewed change rather than silent drift.
+        for path in ("/tmp/plain.txt", f"{self.HOME}/.cache/hapax/relay/status.md"):
+            assert self._py_cognition(path) is True, f"expected py-broad cognition: {path!r}"
+            assert self._bash_cognition(path) is False, f"expected gate-narrow deny: {path!r}"
+
+
+class TestCognitionCarveoutParityGatesCutover:
+    """The policy_decide cutover gate (``evaluate_shadow_clean``) must REFUSE when the
+    cognition-carve-out parity breaks, so a divergence cannot silently flip Edit/Write
+    enforcement at autonomous cutover. (reform-cognition-path-parity-20260601)
+    """
+
+    def _clean_window(self, tmp_path: Path) -> tuple[Path, Path]:
+        """A decision log + ledger that, on coverage+asymmetry alone, ARE clean."""
+        log = tmp_path / "decisions.jsonl"
+        ledger = tmp_path / "shadow.jsonl"
+        log.write_text(
+            '{"ts":"2026-06-01T00:00:00Z"}\n{"ts":"2026-06-03T00:00:00Z"}\n',
+            encoding="utf-8",
+        )
+        ledger.write_text("", encoding="utf-8")  # zero divergences -> asymmetric_ok
+        return log, ledger
+
+    def test_parity_ok_true_on_current_implementations(self) -> None:
+        # Pin a NON-/tmp HOME so the check is deterministic regardless of the runner's
+        # ambient HOME (is_cognition_path's /tmp breadth would otherwise skew it).
+        with mock.patch.dict(os.environ, {"HOME": "/home/cog-parity-fixture"}):
+            assert cognition_carveout_parity_ok() is True
+
+    def test_clean_window_is_eligible_when_parity_holds(self, tmp_path: Path) -> None:
+        log, ledger = self._clean_window(tmp_path)
+        with mock.patch.dict(os.environ, {"HOME": "/home/cog-parity-fixture"}):
+            verdict = evaluate_shadow_clean(log, ledger, min_days=1.0, min_decisions=2)
+        assert verdict["coverage_ok"] is True
+        assert verdict["asymmetric_ok"] is True
+        assert verdict["parity_ok"] is True
+        assert verdict["clean"] is True
+
+    def test_clean_window_is_blocked_when_carveout_parity_breaks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        log, ledger = self._clean_window(tmp_path)
+        # Force is_cognition_path to diverge from the canonical corpus.
+        monkeypatch.setattr("shared.policy_decide.is_cognition_path", lambda _p: False)
+        verdict = evaluate_shadow_clean(log, ledger, min_days=1.0, min_decisions=2)
+        assert verdict["coverage_ok"] is True  # coverage/asymmetry are unaffected
+        assert verdict["asymmetric_ok"] is True
+        assert verdict["parity_ok"] is False  # the new cutover-gate term
+        assert verdict["clean"] is False  # cutover BLOCKED on the parity break
+        assert any("parity" in str(r).lower() for r in verdict["reasons"])
