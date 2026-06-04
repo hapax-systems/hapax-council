@@ -77,6 +77,7 @@ DRY_RUN=0
 REPORT_COVERAGE=0
 COVERAGE_FROM_STDIN=0
 VERIFY_AUTO_ENABLE=0
+CHECK_SYMLINK_DRIFT=0
 SINCE=""
 TRACE_READY=0
 TRACE_WRITTEN=0
@@ -103,6 +104,8 @@ elif [ "${1:-}" = "--report-coverage-stdin" ]; then
     COVERAGE_FROM_STDIN=1
 elif [ "${1:-}" = "--verify-auto-enable" ]; then
     VERIFY_AUTO_ENABLE=1
+elif [ "${1:-}" = "--check-symlink-drift" ]; then
+    CHECK_SYMLINK_DRIFT=1
 else
     SHA="${1:?commit SHA required}"
 fi
@@ -185,6 +188,122 @@ if [ "$VERIFY_AUTO_ENABLE" = "1" ]; then
         echo "verify-auto-enable: all $marked_count marked unit(s) enabled/active"
     fi
     exit "$verify_rc"
+fi
+
+# --- deploy symlink drift assertion (fix-deploy-symlink-skew-20260602) ---
+# Assert every ~/.local/bin/hapax-* deploy symlink resolves to the canonical
+# origin/main-tracking deploy tree — NOT a dangling target (a deleted worktree
+# or a leaked test tmpdir) nor a stale/foreign worktree checkout. This is the
+# complement of rebuild-service.sh's check_post_merge_deploy_staleness: that
+# alarm catches a STOPPED deploy chain (the last-deployed-sha receipt lags
+# origin/main); this catches the failure the skew P0 actually hit — the
+# symlinks silently point at a worktree that no longer carries the merged
+# fixes, so the .service ran a script lacking --since and exited 2 while the
+# receipt still looked healthy. ntfy (throttled per distinct drift signature)
+# so the skew can't recur silently. Returns 1 on drift, 0 when intact.
+#
+# Only deploy-installed `scripts/hapax-*` symlinks are in scope: their target
+# is `<root>/scripts/<name>`. Symlinks to non-worktree install dirs (e.g.
+# hapax-hooks-doctor -> ~/.local/lib/hapax/hooks/...) are not deploy-tree
+# symlinks and are intentionally ignored. Env overrides isolate it for tests:
+# HAPAX_LOCAL_BIN, HAPAX_DEPLOY_SYMLINK_ROOTS, HAPAX_DRIFT_STATE_DIR,
+# HAPAX_DRIFT_NTFY (set 0 to suppress curl).
+check_symlink_drift() {
+    local bin="${HAPAX_LOCAL_BIN:-$LOCAL_BIN}"
+    local state_dir="${HAPAX_DRIFT_STATE_DIR:-$HOME/.cache/hapax/deploy-symlink-drift}"
+    # $REPO is canonical too: a deploy installs scripts/hapax-* symlinks pointing
+    # at $REPO/scripts, so the tree this very deploy runs from is by definition a
+    # valid target. In production $REPO is the source-activation/rebuild worktree
+    # (already listed); in tests it isolates to the tmp repo so the deploy-end
+    # self-check stays quiet instead of false-flagging the just-installed links.
+    local roots="${HAPAX_DEPLOY_SYMLINK_ROOTS:-$REPO $HOME/.cache/hapax/source-activation/worktree $HOME/.cache/hapax/rebuild/worktree}"
+    local origin_main
+    origin_main="$(git -C "$REPO" rev-parse --verify --quiet origin/main 2>/dev/null || true)"
+
+    local -a dangling=() offtree=()
+    local link base target root ok r
+    for link in "$bin"/hapax-*; do
+        # A literal (no-match) glob is not a symlink, so this also covers the
+        # empty-dir case without nullglob.
+        [ -L "$link" ] || continue
+        base="$(basename "$link")"
+        target="$(readlink "$link")"
+        if [ ! -e "$link" ]; then
+            dangling+=("$base -> $target")
+            continue
+        fi
+        case "$target" in
+            */scripts/*)
+                root="${target%/scripts/*}"
+                ok=0
+                for r in $roots; do
+                    if [ "$root" = "$r" ]; then
+                        ok=1
+                        break
+                    fi
+                done
+                if [ "$ok" -eq 0 ]; then
+                    offtree+=("$base -> $target")
+                fi
+                ;;
+        esac
+    done
+
+    # Informational SHA drift: the canonical deployed tree HEAD vs origin/main.
+    # Persistent lag is the receipt alarm's domain (throttled there); we only
+    # annotate the alert so the operator sees how far behind the tree is.
+    local sa sa_head behind=""
+    sa="$HOME/.cache/hapax/source-activation/worktree"
+    sa_head="$(git -C "$sa" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
+    if [ -n "$origin_main" ] && [ -n "$sa_head" ] && [ "$sa_head" != "$origin_main" ] \
+        && git -C "$REPO" merge-base --is-ancestor "$sa_head" "$origin_main" 2>/dev/null; then
+        behind="$(git -C "$REPO" rev-list --count "$sa_head..$origin_main" 2>/dev/null || echo '?')"
+    fi
+
+    if [ "${#dangling[@]}" -eq 0 ] && [ "${#offtree[@]}" -eq 0 ]; then
+        return 0
+    fi
+
+    local msg="deploy symlink drift in $bin:"
+    if [ "${#dangling[@]}" -gt 0 ]; then
+        msg="$msg ${#dangling[@]} dangling (${dangling[*]})"
+    fi
+    if [ "${#offtree[@]}" -gt 0 ]; then
+        msg="$msg ${#offtree[@]} off-tree (${offtree[*]})"
+    fi
+    if [ -n "$behind" ]; then
+        msg="$msg [deployed tree ${sa_head:0:8} is ${behind} behind origin/main ${origin_main:0:8}]"
+    fi
+    echo "hapax-post-merge-deploy: $msg" >&2
+
+    # ntfy once per distinct drift signature so the operator is told once, not
+    # every deploy cycle, until the set of broken symlinks changes.
+    if [ "${HAPAX_DRIFT_NTFY:-1}" = "1" ]; then
+        local sig notified_file
+        sig="$(printf '%s\n' "${dangling[@]}" "${offtree[@]}" | sort | sha256sum | cut -d' ' -f1)"
+        notified_file="$state_dir/drift-notified-sig"
+        if [ "$(cat "$notified_file" 2>/dev/null || true)" != "$sig" ]; then
+            curl -s -o /dev/null \
+                -H "Title: deploy symlink drift" \
+                -H "Priority: high" \
+                -H "Tags: rotating_light" \
+                -d "$msg — repoint via the fix-deploy-symlink-skew runbook: re-run systemd/scripts/install-units.sh + hapax-post-merge-deploy from the canonical origin/main worktree." \
+                "${NTFY_BASE_URL:-http://localhost:8090}/hapax-build" 2>/dev/null || true
+            mkdir -p "$state_dir" 2>/dev/null || true
+            printf '%s\n' "$sig" > "$notified_file" 2>/dev/null || true
+        fi
+    fi
+    return 1
+}
+
+# --check-symlink-drift: standalone drift assertion (no commit SHA needed).
+# Exits 1 on drift so a timer/.service or smoke run surfaces it; 0 when intact.
+if [ "$CHECK_SYMLINK_DRIFT" = "1" ]; then
+    if check_symlink_drift; then
+        echo "check-symlink-drift: all hapax-* deploy symlinks resolve to the canonical tree"
+        exit 0
+    fi
+    exit 1
 fi
 
 _trace_join() {
@@ -861,6 +980,12 @@ SMOKE_SCRIPT="$REPO/scripts/hapax-post-merge-smoke"
 if [ -x "$SMOKE_SCRIPT" ]; then
     "$SMOKE_SCRIPT" "$SHA" || true
 fi
+
+# Self-verify the deploy symlinks resolve to the canonical tree (advisory:
+# ntfy's on drift but never fails the deploy that just succeeded). This is the
+# "live" half of the drift assertion — it runs every real deploy cycle so a
+# dangling/foreign ~/.local/bin/hapax-* symlink can't sit unnoticed.
+check_symlink_drift || true
 
 if record_post_merge_trace "completed" "0"; then
     TRACE_WRITTEN=1

@@ -541,8 +541,12 @@ def test_real_deploy_invokes_smoke_runner_with_sha(tmp_path: Path) -> None:
     )
     smoke_stub.chmod(0o755)
 
+    # HOME isolated so the real deploy's scripts/hapax-demo symlink lands under
+    # tmp, not the operator's ~/.local/bin (fix-deploy-symlink-skew leak).
+    home = tmp_path / "home"
     env = {
         **os.environ,
+        "HOME": str(home),
         "REPO": str(repo),
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
     }
@@ -572,8 +576,12 @@ def test_real_deploy_smoke_failure_does_not_block_trace(tmp_path: Path) -> None:
     smoke_stub.write_text("#!/bin/sh\necho smoke-broken >&2\nexit 1\n", encoding="utf-8")
     smoke_stub.chmod(0o755)
 
+    # HOME isolated so the real deploy's scripts/hapax-demo symlink lands under
+    # tmp, not the operator's ~/.local/bin (fix-deploy-symlink-skew leak).
+    home = tmp_path / "home"
     env = {
         **os.environ,
+        "HOME": str(home),
         "REPO": str(repo),
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
     }
@@ -598,6 +606,12 @@ def test_real_deploy_with_no_smoke_script_is_a_no_op(tmp_path: Path) -> None:
     silently skips smoke and completes normally — backward-compatible
     with the pre-#2148 deploy chain."""
     repo, sha = _repo_with_merge_commit(tmp_path)
+    # HOME MUST be isolated: the deploy computes LOCAL_BIN=$HOME/.local/bin and
+    # symlinks the fixture's scripts/hapax-demo into it. Without this override a
+    # *real* deploy leaks ~/.local/bin/hapax-demo into the operator's PATH that
+    # dangles the moment pytest cleans tmp_path (the fix-deploy-symlink-skew
+    # leak — every other test here already isolates HOME for the same reason).
+    home = tmp_path / "home"
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
 
     smoke_stub = repo / "scripts" / "hapax-post-merge-smoke"
@@ -605,6 +619,7 @@ def test_real_deploy_with_no_smoke_script_is_a_no_op(tmp_path: Path) -> None:
 
     env = {
         **os.environ,
+        "HOME": str(home),
         "REPO": str(repo),
         "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
     }
@@ -724,3 +739,183 @@ def test_audio_safe_failure_aborts_deploy_during_live_broadcast(tmp_path: Path) 
     calls = systemctl_calls.read_text(encoding="utf-8")
     assert "--user is-active --quiet studio-compositor.service" in calls
     assert "LIVE" in result.stderr or "live broadcast" in result.stderr.lower()
+
+
+# --- deploy-symlink-skew regressions (fix-deploy-symlink-skew-20260602) ---
+
+
+def test_real_deploy_installs_symlinks_under_isolated_home(tmp_path: Path) -> None:
+    """A real deploy MUST install ``scripts/hapax-*`` symlinks under the
+    overridden ``$HOME/.local/bin`` — never the operator's real one. Pins the
+    isolation contract whose violation leaked a dangling ``~/.local/bin/hapax-demo``
+    pointing into a cleaned pytest tmpdir (the skew P0's recurring symptom).
+    """
+    repo, sha = _repo_with_merge_commit(tmp_path)
+    home = tmp_path / "home"
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "REPO": str(repo),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+        "HAPAX_DRIFT_NTFY": "0",
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha], text=True, capture_output=True, check=False, env=env
+    )
+
+    assert result.returncode == 0, result.stderr
+    leaked = home / ".local" / "bin" / "hapax-demo"
+    assert leaked.is_symlink(), "demo script should install under the isolated home"
+    assert os.readlink(leaked) == str(repo / "scripts" / "hapax-demo")
+    # The deploy-end self-check must stay quiet: the just-installed symlink
+    # points at $REPO/scripts (canonical for the deploying tree), so it must NOT
+    # be mistaken for drift — else every real deploy would ntfy a false alarm.
+    assert "drift" not in result.stderr.lower(), result.stderr
+
+
+def test_since_invocation_form_is_accepted(tmp_path: Path) -> None:
+    """The post-merge-deploy ``.service`` edge-trigger invokes the script as
+    ``hapax-post-merge-deploy --since <since> <sha>`` to realize a multi-merge
+    backlog in one cumulative deploy. Pin that the script's argument parser
+    accepts that exact form and exits 0.
+
+    Regression for fix-deploy-symlink-skew: a ``~/.local/bin`` symlink pointing
+    at a STALE worktree (one predating ``--since`` support) made every
+    ``.service`` deploy exit 2/INVALIDARGUMENT, silently stranding 9 merged
+    commits. This fails loudly if the script ever loses ``--since``.
+    """
+    repo, sha = _repo_with_merge_commit(tmp_path)
+    since = _git(repo, "rev-parse", f"{sha}^1")
+    home = tmp_path / "home"
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "REPO": str(repo),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), "--since", since, sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, (result.returncode, result.stderr)
+
+
+def test_service_unit_since_contract_matches_script() -> None:
+    """Static parity guard: if the ``.service`` ExecStart passes ``--since`` the
+    script MUST have a ``--since`` handler. This is the precise contract whose
+    violation — the wrapper passing a flag the (stale, symlinked) script didn't
+    support — stranded the merged-but-undeployed commits.
+    """
+    unit = (REPO_ROOT / "systemd" / "units" / "hapax-post-merge-deploy.service").read_text(
+        encoding="utf-8"
+    )
+    script_src = SCRIPT.read_text(encoding="utf-8")
+    if "--since" in unit:
+        assert '"--since"' in script_src, (
+            "hapax-post-merge-deploy.service passes --since but the script has no "
+            "--since handler — the deploy-symlink-skew arg-contract break."
+        )
+
+
+def _drift_env(tmp_path: Path, bin_dir: Path, **overrides: str) -> dict[str, str]:
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path / "home"),
+        "REPO": str(REPO_ROOT),
+        "HAPAX_LOCAL_BIN": str(bin_dir),
+        "HAPAX_DRIFT_NTFY": "0",
+        "HAPAX_DRIFT_STATE_DIR": str(tmp_path / "state"),
+    }
+    env.update(overrides)
+    return env
+
+
+def _link(bin_dir: Path, name: str, target: Path) -> None:
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    (bin_dir / name).symlink_to(target)
+
+
+def _check_drift(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(SCRIPT), "--check-symlink-drift"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+
+def test_check_symlink_drift_passes_when_canonical(tmp_path: Path) -> None:
+    """No drift when every ``hapax-*`` symlink resolves under a canonical root."""
+    root = tmp_path / "worktree"
+    (root / "scripts").mkdir(parents=True)
+    demo = root / "scripts" / "hapax-demo"
+    demo.write_text("#!/bin/sh\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    _link(bin_dir, "hapax-demo", demo)
+
+    result = _check_drift(_drift_env(tmp_path, bin_dir, HAPAX_DEPLOY_SYMLINK_ROOTS=str(root)))
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_check_symlink_drift_flags_dangling(tmp_path: Path) -> None:
+    """A ``hapax-*`` symlink whose target was removed (deleted worktree / cleaned
+    test tmpdir — the skew P0's ``hapax-demo``) is reported as drift, exit 1.
+    """
+    bin_dir = tmp_path / "bin"
+    _link(bin_dir, "hapax-demo", tmp_path / "gone" / "scripts" / "hapax-demo")
+
+    result = _check_drift(_drift_env(tmp_path, bin_dir))
+
+    assert result.returncode == 1, result.stdout
+    assert "dangling" in result.stderr
+    assert "hapax-demo" in result.stderr
+
+
+def test_check_symlink_drift_flags_offtree(tmp_path: Path) -> None:
+    """A ``hapax-*`` symlink resolving to a ``scripts/`` dir OUTSIDE the canonical
+    roots (a stale lane worktree, or a live pytest tmpdir — the exact recurring
+    leak) is drift even though the target currently exists.
+    """
+    foreign = tmp_path / "foreign" / "scripts"
+    foreign.mkdir(parents=True)
+    demo = foreign / "hapax-demo"
+    demo.write_text("#!/bin/sh\n", encoding="utf-8")
+    canonical = tmp_path / "worktree"
+    (canonical / "scripts").mkdir(parents=True)
+    bin_dir = tmp_path / "bin"
+    _link(bin_dir, "hapax-demo", demo)
+
+    result = _check_drift(_drift_env(tmp_path, bin_dir, HAPAX_DEPLOY_SYMLINK_ROOTS=str(canonical)))
+
+    assert result.returncode == 1, result.stdout
+    assert "off-tree" in result.stderr
+
+
+def test_check_symlink_drift_ignores_non_script_install_symlinks(tmp_path: Path) -> None:
+    """``hapax-hooks-doctor -> ~/.local/lib/hapax/hooks/hooks-doctor.sh`` is a
+    manifest-installed hook, not a deploy-tree symlink — its target is not under
+    ``*/scripts/*`` so it must NOT be flagged, or the assertion false-positives
+    on a healthy system.
+    """
+    lib = tmp_path / "lib" / "hapax" / "hooks"
+    lib.mkdir(parents=True)
+    doctor = lib / "hooks-doctor.sh"
+    doctor.write_text("#!/bin/sh\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    _link(bin_dir, "hapax-hooks-doctor", doctor)
+
+    result = _check_drift(
+        _drift_env(tmp_path, bin_dir, HAPAX_DEPLOY_SYMLINK_ROOTS=str(tmp_path / "wt"))
+    )
+
+    assert result.returncode == 0, result.stderr
