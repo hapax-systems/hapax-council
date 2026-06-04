@@ -56,7 +56,31 @@ Source: `shared/quota_spend_ledger.py`
 Tracks cumulative spend per platform per billing period. The dispatcher reads
 the ledger to compute remaining headroom before routing high-cost tasks.
 
-### 3.3 Route Decision Receipts
+### 3.3 Provider Gateway Maintenance
+
+Provider model-gateway changes, such as LiteLLM route refreshes, use the
+`api.headless.provider_gateway` route-authority packet before any live config
+or service mutation. The route is not a general worker lane and does not launch
+provider execution directly. It only becomes eligible when the platform
+capability registry has fresh gateway evidence and the quota/spend ledger has a
+matching active budget for the declared paid provider/profile.
+
+The SOP is two-step:
+
+1. Source-governance change or receipt packet establishes route authority and
+   paid-budget eligibility. Operators refresh gateway evidence with
+   `scripts/hapax-platform-capability-receipts --platform api`; this records CLI,
+   wrapper, config-path existence, tool, provider-doc, and unobservable local
+   quota state without reading or persisting secret values. A stale or missing
+   quota/spend ledger remains a hard dispatch refusal
+   (`paid_route_ledger_stale` or `paid_route_ledger_unavailable`).
+2. A separate `mutation_surface: provider_spend` or `runtime` task performs the
+   live gateway edit, restart, and smoke checks under that route decision.
+
+Ordinary subscription worker routes stay non-mutable for `provider_spend` and
+`runtime` unless their route row explicitly authorizes those surfaces.
+
+### 3.4 Route Decision Receipts
 
 Source: `shared/platform_capability_receipts.py`
 

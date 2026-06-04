@@ -233,6 +233,40 @@ def test_cloud_burst_api_route_is_blocked_dry_run_paid_surface() -> None:
     assert "cloud_burst_release_gate_absent" in route.blocked_reasons
 
 
+def test_provider_gateway_route_is_explicit_fail_closed_paid_runtime_surface() -> None:
+    registry = load_platform_capability_registry()
+    route = registry.require("api.headless.provider_gateway")
+
+    assert route.route_state is RouteState.BLOCKED
+    assert route.capacity_pool.value == "api_paid_spend"
+    assert route.paid_provider == "google"
+    assert route.paid_profile == "frontier-fast"
+    assert route.mutability.source is False
+    assert route.mutability.runtime is True
+    assert route.mutability.provider_spend is True
+    assert route.tool_access.filesystem.value == "read_write"
+    assert route.tool_access.shell.value == "full"
+    assert "provider_gateway_evidence_absent" in route.blocked_reasons
+    assert "provider_budget_receipt_absent" in route.blocked_reasons
+
+    ordinary_routes = [
+        candidate
+        for candidate in registry.routes
+        if candidate.route_id != "api.headless.provider_gateway"
+    ]
+    assert all(candidate.mutability.provider_spend is False for candidate in ordinary_routes)
+
+
+def test_provider_spend_mutability_requires_paid_capacity_pool() -> None:
+    registry = load_platform_capability_registry()
+    codex = registry.require("codex.headless.full")
+
+    payload = codex.model_dump(mode="json")
+    payload["mutability"]["provider_spend"] = True
+    with pytest.raises(ValidationError, match="provider-spend mutation requires"):
+        PlatformCapabilityRoute.model_validate(payload)
+
+
 def test_risky_auto_approval_routes_cannot_be_unrestricted_authoritative() -> None:
     registry = load_platform_capability_registry()
     vibe = registry.require("vibe.headless.full")
@@ -367,6 +401,52 @@ def _make_receipt(*, observed_at: datetime, stale_after: str = "24h") -> Platfor
     )
 
 
+def _make_api_receipt(
+    *, observed_at: datetime, stale_after: str = "24h"
+) -> PlatformCapabilityReceipt:
+    return PlatformCapabilityReceipt(
+        receipt_id="test-api-receipt",
+        platform="api",
+        routes=["api.headless.api_frontier", "api.headless.provider_gateway"],
+        observed_at=observed_at,
+        stale_after=stale_after,
+        cli=CliEvidence(binary="python3", available=True, version="Python 3.12.3"),
+        wrapper=WrapperEvidence(
+            path="scripts/hapax-methodology-dispatch",
+            exists=True,
+            executable=True,
+            sha256="abc123",
+        ),
+        capability=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="24h",
+            evidence_refs=["test:api:cap"],
+        ),
+        resource=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="5m",
+            evidence_refs=["test:api:res"],
+        ),
+        quota=SurfaceEvidence(
+            status=EvidenceStatus.UNOBSERVABLE,
+            source="test",
+            observed_at=observed_at,
+            stale_after="15m",
+            evidence_refs=["test:api:quota"],
+            reason_codes=["account_live_quota_receipt_absent"],
+        ),
+        provider_docs=ProviderDocsEvidence(
+            refs=["test:api:docs"],
+            fetched_at=observed_at,
+            stale_after="30d",
+        ),
+    )
+
+
 def test_subscription_quota_nonblocking_uses_receipt_stale_after() -> None:
     """Regression: unobservable subscription quota must not go stale at 15m."""
     payload = _payload()
@@ -388,3 +468,45 @@ def test_subscription_quota_nonblocking_uses_receipt_stale_after() -> None:
 
     quota_errors = [e for e in result.routes[0].errors if "quota" in e]
     assert not quota_errors, f"quota should not be stale after 1h: {quota_errors}"
+
+
+def test_provider_gateway_receipt_clears_gateway_evidence_blockers() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "api.headless.provider_gateway")
+
+    receipt_time = datetime(2026, 6, 4, 16, 0, tzinfo=UTC)
+    _apply_receipt_to_route_payload(route, _make_api_receipt(observed_at=receipt_time))
+
+    assert route["route_state"] == "active"
+    assert "provider_gateway_evidence_absent" not in route["blocked_reasons"]
+    assert "provider_budget_receipt_absent" not in route["blocked_reasons"]
+    assert (
+        "gateway_resource_receipt_absent"
+        not in route["freshness"]["evidence"]["resource"]["blocked_reasons"]
+    )
+    assert route["freshness"]["quota_stale_after"] == "24h"
+
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    result = check_registry_freshness(
+        registry,
+        route_ids=["api.headless.provider_gateway"],
+        now=datetime(2026, 6, 4, 16, 1, tzinfo=UTC),
+    )
+
+    assert result.ok is True
+
+
+def test_api_receipt_does_not_open_cloud_burst_release_gate() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "api.headless.api_frontier")
+
+    receipt_time = datetime(2026, 6, 4, 16, 0, tzinfo=UTC)
+    _apply_receipt_to_route_payload(route, _make_api_receipt(observed_at=receipt_time))
+
+    assert route["route_state"] == "blocked"
+    assert "cloud_burst_release_gate_absent" in route["blocked_reasons"]
+    assert "no_secret_egress_receipt_absent" in route["blocked_reasons"]
+    assert (
+        "cloud_runner_resource_receipt_absent"
+        in route["freshness"]["evidence"]["resource"]["blocked_reasons"]
+    )

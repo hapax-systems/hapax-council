@@ -1674,6 +1674,7 @@ def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     assert "gemini/headless/worker" in result.stdout
     assert "antigrav/interactive/full" in result.stdout
     assert "api/headless/api_frontier" in result.stdout
+    assert "api/headless/provider_gateway" in result.stdout
 
 
 def test_antigrav_lane_worktree_tracks_requested_lane(monkeypatch, tmp_path: Path) -> None:

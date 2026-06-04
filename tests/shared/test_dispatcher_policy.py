@@ -343,6 +343,81 @@ def test_paid_route_without_active_budget_refuses() -> None:
     assert "refused_expired_budget" in decision.reason_codes
 
 
+def test_ordinary_subscription_route_still_refuses_provider_spend_mutation() -> None:
+    request = _request(mutation_surface="provider_spend")
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "route_not_mutable_for_provider_spend" in decision.reason_codes
+
+
+def test_provider_gateway_route_requires_active_paid_budget() -> None:
+    request = _request(
+        platform="api",
+        profile="provider_gateway",
+        route_id="api.headless.provider_gateway",
+        mutation_surface="provider_spend",
+        capability=_capability(
+            route_id="api.headless.provider_gateway",
+            capacity_pool="api_paid_spend",
+            paid_provider="google",
+            paid_profile="frontier-fast",
+            mutability={
+                "vault_docs": False,
+                "source": False,
+                "runtime": True,
+                "public": False,
+                "provider_spend": True,
+            },
+        ),
+        quota=_quota(
+            paid_api_budget_state="expired",
+            paid_route_eligibility_state="refused_expired_budget",
+            paid_route_eligibility_reasons=("matching TransitionBudget expired",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "paid_route_without_active_budget" in decision.reason_codes
+    assert "refused_expired_budget" in decision.reason_codes
+
+
+def test_provider_gateway_route_launches_with_paid_budget_and_mutability() -> None:
+    request = _request(
+        platform="api",
+        profile="provider_gateway",
+        route_id="api.headless.provider_gateway",
+        mutation_surface="provider_spend",
+        capability=_capability(
+            route_id="api.headless.provider_gateway",
+            capacity_pool="api_paid_spend",
+            paid_provider="google",
+            paid_profile="frontier-fast",
+            mutability={
+                "vault_docs": False,
+                "source": False,
+                "runtime": True,
+                "public": False,
+                "provider_spend": True,
+            },
+        ),
+        quota=_quota(
+            paid_api_budget_state="active",
+            paid_route_eligibility_state="eligible_active_budget",
+            evidence_refs=("tb-20260510-anthropic-api-steady-state",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.route_policy_green is True
+    assert "policy_launch" in decision.reason_codes
+
+
 def test_spike_workload_refuses_local_fleet_and_points_to_cloud_burst() -> None:
     request = _request(
         cloud_burst={
