@@ -217,16 +217,7 @@ async def run_cctv() -> None:
     from agents.deliberative_council.rubrics import DisconfirmationRubric
 
     rubric = DisconfirmationRubric()
-    config = CouncilConfig(
-        model_aliases=(
-            "claude-opus",
-            "claude-sonnet",
-            "gemini-pro",
-            "local-fast",
-            "web-research",
-            "mistral-large",
-        ),
-    )
+    config = CouncilConfig()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

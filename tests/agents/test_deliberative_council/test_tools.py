@@ -4,8 +4,18 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic_ai.messages import CachePoint, UserPromptPart
 
-from agents.deliberative_council.members import MODEL_TOOL_LEVELS, ToolLevel, build_member
+from agents.deliberative_council.members import (
+    MODEL_TOOL_LEVELS,
+    CCTVLiteLLMChatModel,
+    ToolLevel,
+    build_member,
+    cache_control_ttl_for_alias,
+    cache_policy_for_alias,
+    model_settings_for_alias,
+    normalize_model_alias,
+)
 from agents.deliberative_council.tools import (
     FULL_TOOLS,
     RESTRICTED_TOOLS,
@@ -138,6 +148,66 @@ class TestBuildMember:
 
     def test_tool_counts(self) -> None:
         assert git_diff in FULL_TOOLS
+
+    def test_legacy_cctv_aliases_normalize_to_canonical_routes(self) -> None:
+        assert normalize_model_alias("claude-opus") == "opus"
+        assert normalize_model_alias("claude-sonnet") == "balanced"
+        assert normalize_model_alias("gemini-pro") == "gemini-3-pro"
+
+    def test_cache_policy_is_family_gated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("HAPAX_CCTV_PROMPT_CACHE", raising=False)
+        assert cache_control_ttl_for_alias("opus") == "5m"
+        assert cache_control_ttl_for_alias("gemini-3-pro") == "5m"
+        assert cache_control_ttl_for_alias("local-fast") is None
+        assert cache_control_ttl_for_alias("web-research") is None
+        assert cache_control_ttl_for_alias("mistral-large") is None
+
+    def test_cache_policy_can_be_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HAPAX_CCTV_PROMPT_CACHE", "0")
+        assert cache_control_ttl_for_alias("opus") is None
+        assert cache_policy_for_alias("opus")["cache_control"] is False
+
+    def test_openai_cache_settings_only_for_openai_family(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.deliberative_council import members
+
+        monkeypatch.setitem(members.MODEL_FAMILIES, "openai-reviewer", "openai")
+        monkeypatch.setenv("HAPAX_CCTV_OPENAI_PROMPT_CACHE_RETENTION", "24h")
+
+        settings = model_settings_for_alias("openai-reviewer")
+
+        assert settings == {
+            "openai_prompt_cache_key": "cctv-deliberative-council:openai-reviewer",
+            "openai_prompt_cache_retention": "24h",
+        }
+        assert model_settings_for_alias("opus") == {}
+
+    @pytest.mark.asyncio
+    async def test_litellm_model_maps_cache_point_to_previous_text_block(self) -> None:
+        from pydantic_ai.providers.litellm import LiteLLMProvider
+
+        model = CCTVLiteLLMChatModel(
+            "claude-sonnet",
+            provider=LiteLLMProvider(api_base="http://litellm.invalid", api_key="test"),
+        )
+        part = UserPromptPart(
+            content=(
+                "stable rubric prefix",
+                CachePoint(ttl="1h"),
+                "dynamic claim material",
+            )
+        )
+
+        mapped = await model._map_user_prompt(part)
+
+        assert mapped["content"][0]["text"] == "stable rubric prefix"
+        assert mapped["content"][0]["cache_control"] == {
+            "type": "ephemeral",
+            "ttl": "1h",
+        }
+        assert mapped["content"][1]["text"] == "dynamic claim material"
+        assert "cache_control" not in mapped["content"][1]
         assert len(FULL_TOOLS) == 7
         assert len(RESTRICTED_TOOLS) == 2
 

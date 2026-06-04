@@ -4,11 +4,13 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Sequence
 
 from pydantic_ai import Agent  # noqa: TC002 — used at runtime in _call_member
+from pydantic_ai.messages import UserContent
 
 from .aggregation import aggregate_scores, should_shortcircuit
-from .members import build_member
+from .members import build_member, cache_control_ttl_for_alias, cache_policy_for_aliases
 from .models import (
     AdversarialExchange,
     ConvergenceStatus,
@@ -21,7 +23,7 @@ from .models import (
     PhaseOneResult,
 )
 from .prompts import (
-    phase1_prompt,
+    phase1_prompt_parts,
     phase2_alternative_framing_prompt,
     phase3_adversarial_prompt,
     phase3_audience_simulation_prompt,
@@ -34,7 +36,10 @@ _log = logging.getLogger(__name__)
 _MEMBER_TIMEOUT_S = 120.0
 
 
-async def _call_member(member: Agent[None, str], prompt: str) -> tuple[str, list[str]]:
+PromptPayload = str | Sequence[UserContent]
+
+
+async def _call_member(member: Agent[None, str], prompt: PromptPayload) -> tuple[str, list[str]]:
     result = await asyncio.wait_for(member.run(prompt), timeout=_MEMBER_TIMEOUT_S)
     tool_calls: list[str] = []
     try:
@@ -53,6 +58,12 @@ async def _call_member(member: Agent[None, str], prompt: str) -> tuple[str, list
     except Exception:
         pass
     return result.output, tool_calls
+
+
+def _append_prompt_suffix(prompt: PromptPayload, suffix: str) -> PromptPayload:
+    if isinstance(prompt, str):
+        return prompt + suffix
+    return (*prompt, suffix)
 
 
 def _parse_phase1_output(model_alias: str, raw: str) -> PhaseOneResult:
@@ -100,10 +111,17 @@ async def run_phase1(
 
             findings_text = investigate_raw[:2000]
 
-            score_prompt = phase1_prompt(rubric, inp.text, inp.source_ref, seed=seed)
-            score_prompt += (
+            score_prompt = phase1_prompt_parts(
+                rubric,
+                inp.text,
+                inp.source_ref,
+                seed=seed,
+                cache_ttl=cache_control_ttl_for_alias(alias),
+            )
+            score_prompt = _append_prompt_suffix(
+                score_prompt,
                 f"\n\n## Your Prior Research Findings\n{findings_text}\n\n"
-                "Score based on your research above. Do NOT re-investigate."
+                "Score based on your research above. Do NOT re-investigate.",
             )
             score_raw, score_tools = await _call_member(member, score_prompt)
             all_tools = tool_calls + score_tools
@@ -145,6 +163,7 @@ async def deliberate(
     input_hash = hashlib.sha256(
         json.dumps({"text": inp.text, "source_ref": inp.source_ref}, sort_keys=True).encode()
     ).hexdigest()
+    cache_policy = cache_policy_for_aliases(config.model_aliases)
 
     phase1_results = await run_phase1(inp, rubric, config)
 
@@ -156,7 +175,11 @@ async def deliberate(
             disagreement_log=["All models failed in Phase 1"],
             research_findings=[],
             evidence_matrix=None,
-            receipt={"input_hash": input_hash, "error": "all_models_failed"},
+            receipt={
+                "input_hash": input_hash,
+                "error": "all_models_failed",
+                "cache_policy": cache_policy,
+            },
         )
 
     if should_shortcircuit(phase1_results, config.shortcircuit_iqr_threshold):
@@ -172,6 +195,7 @@ async def deliberate(
                 "input_hash": input_hash,
                 "shortcircuited": True,
                 "models_used": [r.model_alias for r in phase1_results],
+                "cache_policy": cache_policy,
                 "phases_completed": [1],
                 "phase1_transcript": [
                     {"model": r.model_alias, "tool_calls": r.tool_calls_log} for r in phase1_results
@@ -217,6 +241,7 @@ async def deliberate(
             "input_hash": input_hash,
             "shortcircuited": False,
             "models_used": [r.model_alias for r in phase1_results],
+            "cache_policy": cache_policy,
             "phases_completed": [1, 2, 3, 4, 5],
             "phase1_transcript": [
                 {"model": r.model_alias, "tool_calls": r.tool_calls_log} for r in phase1_results

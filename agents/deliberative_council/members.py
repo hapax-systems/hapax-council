@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import os
 from enum import StrEnum
+from typing import Any
 
 from pydantic_ai import Agent
+from pydantic_ai.messages import CachePoint, UserPromptPart
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.litellm import LiteLLMProvider
 
-from shared.config import get_model
+from shared.config import LITELLM_BASE, LITELLM_KEY, MODELS
 
 from .tools import FULL_TOOLS, RESTRICTED_TOOLS
 
@@ -33,11 +38,123 @@ MODEL_FAMILIES: dict[str, str] = {
     "mistral-large": "mistral",
 }
 
+LEGACY_MODEL_ALIASES: dict[str, str] = {
+    "claude-opus": "opus",
+    "claude-sonnet": "balanced",
+    "gemini-pro": "gemini-3-pro",
+}
+
+CACHE_CONTROL_FAMILIES = frozenset({"anthropic", "google"})
+OPENAI_PROMPT_CACHE_FAMILIES = frozenset({"openai"})
+_CACHE_OFF_VALUES = {"0", "false", "no", "off"}
+_CACHE_TTLS = {"5m", "1h"}
+_OPENAI_CACHE_RETENTIONS = {"in_memory", "24h"}
+
+
+class CCTVLiteLLMChatModel(OpenAIChatModel):
+    """OpenAI-compatible LiteLLM model that preserves Pydantic AI cache points.
+
+    Pydantic AI's stock OpenAI-chat adapter drops ``CachePoint`` because OpenAI
+    itself does not use block-level cache markers. LiteLLM does map
+    ``cache_control`` content blocks for Anthropic and Gemini routes, so CCTV
+    needs this narrow adapter when those families are selected.
+    """
+
+    async def _map_user_prompt(self, part: UserPromptPart) -> dict[str, Any]:
+        if isinstance(part.content, str):
+            return await super()._map_user_prompt(part)
+
+        content: list[dict[str, Any]] = []
+        for item in part.content:
+            if isinstance(item, CachePoint):
+                if content and content[-1].get("type") == "text":
+                    content[-1]["cache_control"] = {
+                        "type": "ephemeral",
+                        "ttl": item.ttl,
+                    }
+                continue
+            mapped_item = await self._map_content_item(item)
+            if mapped_item is not None:
+                content.append(dict(mapped_item))
+        return {"role": "user", "content": content}
+
+
+def normalize_model_alias(model_alias: str) -> str:
+    return LEGACY_MODEL_ALIASES.get(model_alias, model_alias)
+
+
+def model_family(model_alias: str) -> str:
+    return MODEL_FAMILIES.get(normalize_model_alias(model_alias), "unknown")
+
+
+def prompt_cache_enabled() -> bool:
+    raw = os.environ.get("HAPAX_CCTV_PROMPT_CACHE", "1").strip().lower()
+    return raw not in _CACHE_OFF_VALUES
+
+
+def prompt_cache_ttl() -> str:
+    raw = os.environ.get("HAPAX_CCTV_PROMPT_CACHE_TTL", "5m").strip()
+    return raw if raw in _CACHE_TTLS else "5m"
+
+
+def openai_prompt_cache_retention() -> str:
+    raw = os.environ.get("HAPAX_CCTV_OPENAI_PROMPT_CACHE_RETENTION", "in_memory").strip()
+    return raw if raw in _OPENAI_CACHE_RETENTIONS else "in_memory"
+
+
+def cache_control_ttl_for_alias(model_alias: str) -> str | None:
+    if not prompt_cache_enabled():
+        return None
+    if model_family(model_alias) not in CACHE_CONTROL_FAMILIES:
+        return None
+    return prompt_cache_ttl()
+
+
+def model_settings_for_alias(model_alias: str) -> dict[str, Any]:
+    if not prompt_cache_enabled():
+        return {}
+    alias = normalize_model_alias(model_alias)
+    if model_family(alias) not in OPENAI_PROMPT_CACHE_FAMILIES:
+        return {}
+    return {
+        "openai_prompt_cache_key": f"cctv-deliberative-council:{alias}",
+        "openai_prompt_cache_retention": openai_prompt_cache_retention(),
+    }
+
+
+def cache_policy_for_alias(model_alias: str) -> dict[str, Any]:
+    alias = normalize_model_alias(model_alias)
+    family = model_family(alias)
+    ttl = cache_control_ttl_for_alias(alias)
+    settings = model_settings_for_alias(alias)
+    return {
+        "alias": alias,
+        "family": family,
+        "cache_control": bool(ttl),
+        "cache_control_ttl": ttl,
+        "openai_prompt_cache": bool(settings),
+        "openai_prompt_cache_retention": settings.get("openai_prompt_cache_retention"),
+    }
+
+
+def cache_policy_for_aliases(model_aliases: tuple[str, ...]) -> dict[str, dict[str, Any]]:
+    return {alias: cache_policy_for_alias(alias) for alias in model_aliases}
+
+
+def get_cctv_model(model_alias: str) -> CCTVLiteLLMChatModel:
+    alias = normalize_model_alias(model_alias)
+    model_id = MODELS.get(alias, alias)
+    return CCTVLiteLLMChatModel(
+        model_id,
+        provider=LiteLLMProvider(api_base=LITELLM_BASE, api_key=LITELLM_KEY),
+    )
+
 
 def build_member(
     model_alias: str,
     tool_level: ToolLevel | None = None,
 ) -> Agent[None, str]:
+    model_alias = normalize_model_alias(model_alias)
     if tool_level is None:
         tool_level = MODEL_TOOL_LEVELS.get(model_alias, ToolLevel.FULL)
 
@@ -49,6 +166,7 @@ def build_member(
         tools = list(RESTRICTED_TOOLS)
 
     return Agent(
-        get_model(model_alias),
+        get_cctv_model(model_alias),
+        model_settings=model_settings_for_alias(model_alias),
         tools=tools,  # type: ignore[arg-type]
     )
