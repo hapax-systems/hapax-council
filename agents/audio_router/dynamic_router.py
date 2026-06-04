@@ -213,7 +213,9 @@ def assemble_state(
         programme=programme or ProgrammeState(),
         broadcaster=BroadcasterState(
             operator_voice_active=read_voice_active(),
-            mode_d_active=read_mode_d_active(),
+            # Evil Pet is decommissioned when the MIDI lane is absent. Ignore
+            # stale SHM from the old vinyl Mode-D claimant in that posture.
+            mode_d_active=read_mode_d_active() if evilpet_send_cc is not None else False,
         ),
         hardware=probe_hardware(
             evilpet_send_cc=evilpet_send_cc,

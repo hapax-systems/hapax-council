@@ -136,11 +136,11 @@ and never enters the sum bus. Music ducking: `hapax-audio-ducker` lowers
 
 | File | Purpose |
 |------|---------|
-| `~/.config/pipewire/pipewire.conf.d/hapax-voice-wet.conf` | S-4 wet return capture |
-| `~/.config/pipewire/pipewire.conf.d/hapax-mic-rode.conf` | Rode mic capture |
-| `~/.config/wireplumber/wireplumber.conf.d/14-hapax-mk5-pro-audio.conf` | mk5 profile pin |
-| `~/.config/hapax/audio-link-map.conf` | Reconciler desired-state links |
-| `~/.config/hapax/audio-forbidden-links.conf` | Reconciler forbidden links |
+| `config/pipewire/hapax-voice-wet.conf` | S-4 wet return capture |
+| `config/pipewire/hapax-mic-rode.conf` | Rode mic capture |
+| `config/wireplumber/14-hapax-mk5-pro-audio.conf` | mk5 profile pin |
+| `config/hapax/audio-link-map.conf` | Reconciler desired-state links |
+| `config/hapax/audio-forbidden-links.conf` | Reconciler forbidden links |
 | `config/equipment/faderfox-mx12-controls.yaml` | MX12 fader → node map |
 | `agents/faderfox_bridge.py` | MX12 → PipeWire manual-trim daemon |
 | `scripts/hapax-audio-routing-check` | invariant validation |

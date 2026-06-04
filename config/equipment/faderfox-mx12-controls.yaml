@@ -13,8 +13,8 @@ identity:
 # CC MAP VERIFICATION: Faderfox CC assignments are device-config-specific. The
 # values below are the working defaults; VERIFY/adjust them by running:
 #   uv run python -m agents.faderfox_bridge --learn
-# then move each fader/button and read the logged "CC ch=.. cc=.. val=.." lines,
-# and edit this file to match. The daemon also logs unmapped CCs at INFO.
+# then move each fader/button and read the raw "MIDI ..." log lines. The daemon
+# also logs unmapped CCs at INFO during normal operation; edit this file to match.
 #
 # control = volume (fader 0..127 -> node volume 0..scale) or mute (button).
 # channel is 1-indexed MIDI channel. target is the PipeWire node.name.

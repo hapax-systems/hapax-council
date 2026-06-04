@@ -69,6 +69,27 @@ regex_link_present() {
     '
 }
 
+livestream_tap_input_sources() {
+    printf '%s\n' "$GRAPH" | awk '
+        {
+            line = $0
+            sub(/^[[:space:]]*/, "", line)
+        }
+        line !~ /^\|/ {
+            current = line
+            next
+        }
+        line ~ /^\|->/ && current != "" && line ~ /hapax-livestream-tap:playback_(FL|FR)/ {
+            print current
+        }
+        current ~ /^hapax-livestream-tap:playback_(FL|FR)$/ && line ~ /^\|<-/ {
+            source = line
+            sub(/^\|<-[[:space:]]*/, "", source)
+            print source
+        }
+    ' | sort -u
+}
+
 current_default_sink() {
     if ! command -v pactl >/dev/null 2>&1; then
         return 1
@@ -157,8 +178,32 @@ else
 fi
 echo ""
 
-# ── Invariant 5: Broadcast spine + OBS ──
-echo "Chain 5: Broadcast Spine + OBS"
+# ── Invariant 5: Livestream tap input allowlist ──
+echo "Chain 5: Livestream Tap Input Allowlist"
+UNEXPECTED_TAP_INPUTS=""
+while IFS= read -r source_port; do
+    [ -n "$source_port" ] || continue
+    case "$source_port" in
+        hapax-voice-wet-playback:output_FL|hapax-voice-wet-playback:output_FR|hapax-mic-rode-playback:output_FL|hapax-mic-rode-playback:output_FR|hapax-music-loudnorm-playback:output_FL|hapax-music-loudnorm-playback:output_FR|hapax-yt-loudnorm-playback:output_FL|hapax-yt-loudnorm-playback:output_FR)
+            ;;
+        *)
+            if [ -n "$UNEXPECTED_TAP_INPUTS" ]; then
+                UNEXPECTED_TAP_INPUTS="$UNEXPECTED_TAP_INPUTS, $source_port"
+            else
+                UNEXPECTED_TAP_INPUTS="$source_port"
+            fi
+            ;;
+    esac
+done < <(livestream_tap_input_sources)
+if [ -n "$UNEXPECTED_TAP_INPUTS" ]; then
+    check "livestream-tap has only authorized inputs" "unexpected source(s): $UNEXPECTED_TAP_INPUTS"
+else
+    check "livestream-tap has only authorized inputs" "PASS"
+fi
+echo ""
+
+# ── Invariant 6: Broadcast spine + OBS ──
+echo "Chain 6: Broadcast Spine + OBS"
 if link_present "hapax-livestream-tap:monitor_FL" "hapax-broadcast-master-capture:input_FL"; then
     check "livestream-tap → broadcast-master" "PASS"
 else
@@ -177,8 +222,8 @@ else
 fi
 echo ""
 
-# ── Invariant 6: Livestream / non-livestream boundary (fail-closed) ──
-echo "Chain 6: Broadcast Boundary Guard (private/PC/notification fenced)"
+# ── Invariant 7: Livestream / non-livestream boundary (fail-closed) ──
+echo "Chain 7: Broadcast Boundary Guard (private/PC/notification fenced)"
 boundary_ok=true
 for src in hapax-private-playback hapax-notification-private-playback hapax-pc-loudnorm-playback; do
     if link_present "${src}:output_FL" "hapax-livestream-tap:playback_FL" \
@@ -191,7 +236,7 @@ for src in hapax-private-playback hapax-notification-private-playback hapax-pc-l
     fi
 done
 # private / PC must never reach the mk5 dry-voice send (AUX2/3 → S-4 → broadcast)
-for src in hapax-pc-loudnorm-playback hapax-private-playback; do
+for src in hapax-pc-loudnorm-playback hapax-private-playback hapax-notification-private-playback; do
     if link_present "${src}:output_FL" "${MK5_OUT}:playback_AUX2" \
         || link_present "${src}:output_FR" "${MK5_OUT}:playback_AUX3"; then
         check "$src not on mk5 dry-voice send AUX2/3" "$src is feeding the S-4 dry send"
@@ -200,26 +245,40 @@ for src in hapax-pc-loudnorm-playback hapax-private-playback; do
         check "$src not on mk5 dry-voice send AUX2/3" "PASS"
     fi
 done
+if link_present "input.loopback.sink.role.assistant-output:output_FL" "input.loopback.sink.role.multimedia:playback_FL" \
+    || link_present "output.loopback.sink.role.assistant:output_FL" "input.loopback.sink.role.multimedia:playback_FL"; then
+    check "assistant/private does not fall into multimedia" "assistant role is feeding multimedia/PC"
+    boundary_ok=false
+else
+    check "assistant/private does not fall into multimedia" "PASS"
+fi
+if regex_link_present '^output[.]loopback-[0-9]+-[0-9]+:output_FL$' 'input[.]loopback[.]sink[.]role[.]multimedia:playback_FL' \
+    || regex_link_present '^output[.]loopback-[0-9]+-[0-9]+:output_FR$' 'input[.]loopback[.]sink[.]role[.]multimedia:playback_FR'; then
+    check "livestream tap bridge does not fall into multimedia" "tap bridge is feeding multimedia/PC"
+    boundary_ok=false
+else
+    check "livestream tap bridge does not fall into multimedia" "PASS"
+fi
 [ "$boundary_ok" = true ] && echo "  Boundary: non-broadcast lanes are fenced ✓"
 echo ""
 
-# ── Invariant 7: Default sink fail-closed ──
-echo "Chain 7: Default Sink Fail-Closed Guard"
+# ── Invariant 8: Default sink fail-closed ──
+echo "Chain 8: Default Sink Fail-Closed Guard"
 DEFAULT_SINK="$(current_default_sink || true)"
 case "$DEFAULT_SINK" in
     hapax-pc-loudnorm|input.loopback.sink.role.multimedia)
-        check "default/unclassified audio lands on fail-closed sink" "PASS ($DEFAULT_SINK)" ;;
+        check "default/unclassified audio lands on fail-closed multimedia" "PASS ($DEFAULT_SINK)" ;;
     "")
-        check "default/unclassified audio lands on fail-closed sink" "could not read default sink" ;;
+        check "default/unclassified audio lands on fail-closed multimedia" "could not read default sink" ;;
     *MOTU_UltraLite-mk5*|*Torso_Electronics_S-4*|*Dirtywave_M8*|*Blue_Microphones_Yeti*|bluez_output.*|*hdmi*)
-        check "default/unclassified audio lands on fail-closed sink" "default sink is live/physical: $DEFAULT_SINK" ;;
+        check "default/unclassified audio lands on fail-closed multimedia" "default sink is live/physical: $DEFAULT_SINK" ;;
     *)
-        check "default/unclassified audio lands on fail-closed sink" "unexpected default sink: $DEFAULT_SINK" ;;
+        check "default/unclassified audio lands on fail-closed multimedia" "unexpected default sink: $DEFAULT_SINK" ;;
 esac
 echo ""
 
-# ── Invariant 8: .conf safety pattern (room-mic-hijack regression) ──
-echo "Chain 8: PipeWire .conf Safety Pattern"
+# ── Invariant 9: .conf safety pattern (room-mic-hijack regression) ──
+echo "Chain 9: PipeWire .conf Safety Pattern"
 UNSAFE_CONFS=""
 for conf in ~/.config/pipewire/pipewire.conf.d/*.conf; do
     [ -f "$conf" ] || continue
@@ -236,18 +295,23 @@ else
 fi
 echo ""
 
-# ── Invariant 9: webcam mic NEVER feeds the broadcast capture chains ──
-echo "Chain 9: Webcam Mic Broadcast Leak Guard"
+# ── Invariant 10: webcam / optional-device fallback guards ──
+echo "Chain 10: Webcam / Optional-Device Fallback Guards"
 WEBCAM_LEAK=$(pw-link -l 2>/dev/null | grep -B1 -E "hapax-(voice-wet-capture|mic-rode-capture):input" 2>/dev/null | grep -E "C920|Brio|Logitech" 2>/dev/null || true)
 if [ -n "$WEBCAM_LEAK" ]; then
     check "no webcam mic in mk5 voice/mic capture chains" "LEAK:${WEBCAM_LEAK:0:80}..."
 else
     check "no webcam mic in mk5 voice/mic capture chains" "PASS"
 fi
+if regex_link_present 'alsa_input[.]usb-(046d_Logitech|ZOOM_Corporation_L-12).*:capture_' 'hapax-polyend-instrument-capture:input_'; then
+    check "optional Polyend capture is fail-closed" "Polyend capture fell back to webcam/L-12/default capture"
+else
+    check "optional Polyend capture is fail-closed" "PASS"
+fi
 echo ""
 
-# ── Invariant 10: no retired-hardware nodes feed broadcast ──
-echo "Chain 10: Retired-Hardware Guard (no L-12 / MPC into broadcast)"
+# ── Invariant 11: no retired-hardware nodes feed broadcast ──
+echo "Chain 11: Retired-Hardware Guard (no L-12 / MPC into broadcast)"
 if regex_link_present 'hapax-(l12|mpc)' 'hapax-livestream-tap'; then
     check "no L-12/MPC node feeds livestream-tap" "a retired-hardware node is feeding broadcast"
 else
@@ -255,8 +319,8 @@ else
 fi
 echo ""
 
-# ── Invariant 11: critical nodes not muted ──
-echo "Chain 11: Mute State Guard"
+# ── Invariant 12: critical nodes not muted ──
+echo "Chain 12: Mute State Guard"
 for NODE_NAME in input.loopback.sink.role.broadcast hapax-voice-fx-capture hapax-loudnorm-capture hapax-voice-wet-capture hapax-mic-rode-capture; do
     NODE_ID=$(pw-cli ls Node 2>/dev/null | grep -B5 "$NODE_NAME" | grep -oE '^[[:space:]]*id [0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
     if [ -n "$NODE_ID" ]; then
@@ -270,19 +334,80 @@ for NODE_NAME in input.loopback.sink.role.broadcast hapax-voice-fx-capture hapax
 done
 echo ""
 
-# ── Invariant 12: WirePlumber deny policy + forbidden-links present ──
-echo "Chain 12: Boundary Policy Artifacts"
+# ── Invariant 13: WirePlumber deny policy + forbidden-links present ──
+echo "Chain 13: Boundary Policy Artifacts"
+WP_DENY_CONF_SOURCE="${HAPAX_WP_DENY_CONF_SOURCE:-$REPO_ROOT/config/wireplumber/98-hapax-link-deny.conf}"
+WP_DENY_SCRIPT_SOURCE="${HAPAX_WP_DENY_SCRIPT_SOURCE:-$REPO_ROOT/config/wireplumber/scripts/hapax/link-deny.lua}"
+WP_DENY_CONF_INSTALLED="${HAPAX_WP_DENY_CONF_INSTALLED:-$HOME/.config/wireplumber/wireplumber.conf.d/98-hapax-link-deny.conf}"
+WP_DENY_SCRIPT_INSTALLED="${HAPAX_WP_DENY_SCRIPT_INSTALLED:-$HOME/.local/share/wireplumber/scripts/hapax/link-deny.lua}"
+WP_DENY_SCRIPT_LEGACY_INSTALLED="${HAPAX_WP_DENY_SCRIPT_LEGACY_INSTALLED:-$HOME/.config/wireplumber/scripts/hapax/link-deny.lua}"
+FORBIDDEN_LINKS_SOURCE="${HAPAX_FORBIDDEN_LINKS_SOURCE:-$REPO_ROOT/config/hapax/audio-forbidden-links.conf}"
 FORBIDDEN_LINKS_RUNTIME="${HAPAX_FORBIDDEN_LINKS_RUNTIME:-$HOME/.config/hapax/audio-forbidden-links.conf}"
+LINK_MAP_SOURCE="${HAPAX_LINK_MAP_SOURCE:-$REPO_ROOT/config/hapax/audio-link-map.conf}"
 LINK_MAP_RUNTIME="${HAPAX_LINK_MAP_RUNTIME:-$HOME/.config/hapax/audio-link-map.conf}"
-if [ -f "$FORBIDDEN_LINKS_RUNTIME" ]; then
-    check "forbidden-links runtime conf present" "PASS"
+
+if [ -f "$WP_DENY_CONF_SOURCE" ] && [ -f "$WP_DENY_SCRIPT_SOURCE" ]; then
+    check "WirePlumber deny source artifacts present" "PASS"
 else
-    check "forbidden-links runtime conf present" "missing: $FORBIDDEN_LINKS_RUNTIME"
+    check "WirePlumber deny source artifacts present" "missing source policy"
 fi
-if [ -f "$LINK_MAP_RUNTIME" ] && grep -q 'UltraLite-mk5' "$LINK_MAP_RUNTIME" 2>/dev/null; then
-    check "link-map runtime targets the mk5" "PASS"
+
+if [ -f "$FORBIDDEN_LINKS_SOURCE" ]; then
+    check "forbidden links source conf present" "PASS"
+else
+    check "forbidden links source conf present" "missing: $FORBIDDEN_LINKS_SOURCE"
+fi
+
+if [ -f "$FORBIDDEN_LINKS_RUNTIME" ]; then
+    if cmp -s "$FORBIDDEN_LINKS_SOURCE" "$FORBIDDEN_LINKS_RUNTIME"; then
+        check "forbidden links runtime conf matches source" "PASS"
+    else
+        check "forbidden links runtime conf matches source" "runtime file differs from source — reinstall required"
+    fi
+else
+    check "forbidden links runtime conf present" "missing: deny hook will run in degraded fail-closed mode"
+fi
+
+if [ -f "$LINK_MAP_SOURCE" ]; then
+    check "link-map source conf present" "PASS"
+else
+    check "link-map source conf present" "missing: $LINK_MAP_SOURCE"
+fi
+if [ -f "$LINK_MAP_RUNTIME" ]; then
+    if cmp -s "$LINK_MAP_SOURCE" "$LINK_MAP_RUNTIME" && grep -q 'UltraLite-mk5' "$LINK_MAP_RUNTIME" 2>/dev/null; then
+        check "link-map runtime targets the mk5" "PASS"
+    else
+        check "link-map runtime targets the mk5" "runtime file differs from source or still references retired hardware"
+    fi
 else
     check "link-map runtime targets the mk5" "link-map missing or still references retired hardware"
+fi
+
+if [ -f "$WP_DENY_CONF_INSTALLED" ] && [ -f "$WP_DENY_SCRIPT_INSTALLED" ]; then
+    if cmp -s "$WP_DENY_CONF_SOURCE" "$WP_DENY_CONF_INSTALLED" \
+        && cmp -s "$WP_DENY_SCRIPT_SOURCE" "$WP_DENY_SCRIPT_INSTALLED"; then
+        check "WirePlumber deny policy installed matches source" "PASS"
+    else
+        check "WirePlumber deny policy installed matches source" "installed policy differs from source — stale hook"
+    fi
+else
+    check "WirePlumber deny policy not installed" "deny hook absent from live WirePlumber — boundaries unguarded at link-time"
+fi
+
+wp_deny_script_legacy_real="$(realpath -m "$WP_DENY_SCRIPT_LEGACY_INSTALLED")"
+wp_deny_script_installed_real="$(realpath -m "$WP_DENY_SCRIPT_INSTALLED")"
+if [ -f "$WP_DENY_SCRIPT_LEGACY_INSTALLED" ] && [ "$wp_deny_script_legacy_real" != "$wp_deny_script_installed_real" ]; then
+    check "WirePlumber deny script installed in data path only" "legacy config script exists at $WP_DENY_SCRIPT_LEGACY_INSTALLED — reinstall fixed policy"
+else
+    check "WirePlumber deny script installed in data path only" "PASS"
+fi
+
+if [ -f "$WP_DENY_SCRIPT_INSTALLED" ] && [ -r "$WP_DENY_SCRIPT_INSTALLED" ]; then
+    if grep -q "FAIL_CLOSED_BOUNDARY_PAIRS" "$WP_DENY_SCRIPT_INSTALLED"; then
+        check "installed deny hook has fail-closed boundary set" "PASS"
+    else
+        check "installed deny hook has fail-closed boundary set" "hook lacks FAIL_CLOSED_BOUNDARY_PAIRS — pre-fail-closed version"
+    fi
 fi
 if systemctl --user is-active hapax-audio-reconciler >/dev/null 2>&1; then
     check "hapax-audio-reconciler active" "PASS"

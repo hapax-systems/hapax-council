@@ -835,19 +835,6 @@ def _decompose_wireplumber_conf(
                     vol_m = _WP_NODE_VOLUME_RE.search(block)
                     if not name_m:
                         continue
-                    priority_val = 0
-                    if pri_m:
-                        priority_val = int(pri_m.group(1))
-                    else:
-                        node_name = name_m.group(1)
-                        if "assistant" in node_name:
-                            priority_val = 30
-                        elif "broadcast" in node_name:
-                            priority_val = 20
-                        elif "multimedia" in node_name:
-                            priority_val = 10
-                        elif "notification" in node_name:
-                            priority_val = 40
                     intended = []
                     if intended_m:
                         intended = [
@@ -855,6 +842,19 @@ def _decompose_wireplumber_conf(
                             for t in intended_m.group(1).split(",")
                             if t.strip()
                         ]
+                    priority_val = 0
+                    if pri_m:
+                        priority_val = int(pri_m.group(1))
+                    else:
+                        role_tokens = {role.lower() for role in intended}
+                        if role_tokens & {"music", "movie", "game", "multimedia"}:
+                            priority_val = 10
+                        elif "notification" in role_tokens:
+                            priority_val = 40
+                        elif "assistant" in role_tokens:
+                            priority_val = 30
+                        elif "broadcast" in role_tokens:
+                            priority_val = 20
                     role = intended[0] if intended else name_m.group(1).split(".")[-1].title()
                     loopbacks.append(
                         RoleLoopback(

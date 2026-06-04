@@ -26,6 +26,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 POLICY = REPO_ROOT / "config" / "audio-routing.yaml"
 MANIFEST = REPO_ROOT / "config" / "pipewire" / "generated" / "audio-routing-policy.manifest.json"
 SCRIPT = REPO_ROOT / "scripts" / "generate-pipewire-audio-confs.py"
+MK5_OUT = "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0"
+MK5_IN = "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0"
 
 
 def _route(policy: AudioRoutingPolicy, source_id: str) -> RoutePolicy | None:
@@ -133,50 +135,41 @@ def test_generated_route_maps_match_golden_output() -> None:
     assert forbidden == DEFAULT_FORBIDDEN_LINKS_PATH.read_text(encoding="utf-8")
 
 
-def test_generated_route_maps_keep_pc_aux45_forbidden_not_desired() -> None:
+def test_generated_route_maps_keep_private_default_dry_send_forbidden_not_desired() -> None:
     policy = load_audio_routing_policy(POLICY)
     topology = load_audio_topology_descriptor()
     desired, forbidden = generated_route_map_texts(topology, policy)
 
-    assert "playback_AUX4" not in desired
-    assert "playback_AUX5" not in desired
-    assert (
-        "hapax-pc-loudnorm-playback:output_FL|"
-        "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX4"
-    ) in forbidden
-    assert (
-        "hapax-pc-loudnorm-playback:output_FL|"
-        "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX4"
-    ) in forbidden
+    assert f"hapax-private-playback:output_FL|{MK5_OUT}:playback_AUX10" in desired
+    assert f"hapax-private-playback:output_FL|{MK5_OUT}:playback_AUX2" not in desired
+    for source in (
+        "hapax-pc-loudnorm-playback",
+        "hapax-private-playback",
+        "hapax-notification-private-playback",
+    ):
+        assert f"{source}:output_FL|{MK5_OUT}:playback_AUX2" in forbidden
+        assert f"{source}:output_FR|{MK5_OUT}:playback_AUX3" in forbidden
     assert "input.loopback.sink.role.assistant-output" in forbidden
     assert "input.loopback.sink.role.notification-output" in forbidden
 
 
-def test_generated_route_maps_only_allow_specified_mpc_channels() -> None:
+def test_generated_route_maps_only_allow_specified_mk5_and_sum_bus_links() -> None:
     policy = load_audio_routing_policy(POLICY)
     topology = load_audio_topology_descriptor()
     desired, forbidden = generated_route_map_texts(topology, policy)
 
-    assert "hapax-music-loudnorm-playback:output_FL|" in desired
-    assert "playback_AUX0" in desired
-    assert "playback_AUX1" in desired
-    assert "hapax-loudnorm-playback:output_FL|" in desired
-    assert "playback_AUX2" in desired
-    assert "playback_AUX3" in desired
-    assert "hapax-private-playback:output_FL|" in desired
-    assert "playback_AUX8" in desired
-    assert "playback_AUX9" in desired
-
-    # Interim MPC-only (2026-05-29): YouTube send to MPC AUX6/7 is enabled.
-    assert "hapax-yt-loudnorm-playback:output_FL|" in desired
-    assert "playback_AUX6" in desired
-    assert "playback_AUX7" in desired
-    # MPC public return capture legs (AUX0/1) are the broadcast return.
-    assert (
-        "alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0:capture_AUX0|"
-        "hapax-mpc-usb-return-capture:input_AUX0" in desired
-    )
-    assert "hapax-mpc-usb-return-playback:output_FL|hapax-livestream-tap:playback_FL" in desired
+    assert f"hapax-loudnorm-playback:output_FL|{MK5_OUT}:playback_AUX2" in desired
+    assert f"hapax-loudnorm-playback:output_FR|{MK5_OUT}:playback_AUX3" in desired
+    assert f"{MK5_IN}:capture_AUX2|hapax-voice-wet-capture:input_AUX2" in desired
+    assert f"{MK5_IN}:capture_AUX3|hapax-voice-wet-capture:input_AUX3" in desired
+    assert "hapax-voice-wet-playback:output_FL|hapax-livestream-tap:playback_FL" in desired
+    assert f"{MK5_IN}:capture_AUX0|hapax-mic-rode-capture:input_AUX0" in desired
+    assert "hapax-mic-rode-playback:output_FL|hapax-livestream-tap:playback_FL" in desired
+    assert "hapax-music-loudnorm-playback:output_FL|hapax-livestream-tap:playback_FL" in desired
+    assert "hapax-yt-loudnorm-playback:output_FL|hapax-livestream-tap:playback_FL" in desired
+    assert f"hapax-private-playback:output_FL|{MK5_OUT}:playback_AUX10" in desired
+    assert f"hapax-private-playback:output_FR|{MK5_OUT}:playback_AUX11" in desired
+    assert "Akai_Professional_MPC" not in desired
 
     for disallowed in (
         "hapax-notification-private-playback",
@@ -185,17 +178,10 @@ def test_generated_route_maps_only_allow_specified_mpc_channels() -> None:
     ):
         assert disallowed not in desired
 
-    # YouTube AUX6/7 is no longer forbidden (send enabled); the MPC private
-    # return (capture_AUX2/3) is fenced from broadcast instead.
     assert "hapax-yt-loudnorm-playback:output_FL|" not in forbidden
-    assert (
-        "alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0:capture_AUX2|"
-        "hapax-livestream-tap:playback_FL" in forbidden
-    )
     assert "hapax-notification-private-playback:output_FL|" in forbidden
-    assert "playback_AUX8" in forbidden
-    assert "hapax-m8-loudnorm-playback:output_AUX10|" in forbidden
-    assert "hapax-s4-tap:output_FL|hapax-livestream-tap:playback_FL" in forbidden
+    assert f"hapax-notification-private-playback:output_FL|{MK5_OUT}:playback_AUX2" in forbidden
+    assert f"hapax-pc-loudnorm-playback:output_FL|{MK5_OUT}:playback_AUX2" in forbidden
 
 
 def test_generator_route_map_check_mode() -> None:
@@ -229,19 +215,15 @@ def test_generated_wireplumber_deny_policy_matches_golden_output() -> None:
     assert "link:remove ()" in deny_script
 
     assert "FAIL_CLOSED_BOUNDARY_PAIRS" in deny_script
-    assert "hapax-tts-broadcast-playback|hapax-livestream-tap" in deny_script
+    assert "hapax-private-playback|hapax-livestream-tap" in deny_script
+    assert f"hapax-private-playback|{MK5_OUT}" not in deny_script
+    assert f"hapax-private-playback:output_FL|{MK5_OUT}:playback_AUX2" in deny_script
     assert "hapax-pc-loudnorm-playback|" in deny_script
     assert "hapax-private-playback|" in deny_script
-    # Interim MPC-only (2026-05-29): YouTube AUX6/7 is no longer forbidden (the
-    # send is enabled); instead the MPC private monitor return (capture_AUX2/3)
-    # is fenced from every broadcast node.
     assert "hapax-yt-loudnorm-playback|" not in deny_script
-    assert (
-        "alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0|hapax-livestream-tap"
-        in deny_script
-    )
     assert "hapax-notification-private-playback|" in deny_script
-    assert "hapax-s4-tap|hapax-livestream-tap" in deny_script
+    assert f"hapax-notification-private-playback:output_FL|{MK5_OUT}:playback_AUX2" in deny_script
+    assert f"hapax-pc-loudnorm-playback:output_FL|{MK5_OUT}:playback_AUX2" in deny_script
     assert (
         "input.loopback.sink.role.assistant-output|input.loopback.sink.role.multimedia"
         in deny_script
@@ -253,10 +235,11 @@ def test_generated_wireplumber_deny_policy_matches_golden_output() -> None:
     assert "(node boundary " in deny_script
 
 
-def test_forbidden_node_pairs_do_not_overlap_desired_node_pairs() -> None:
+def test_wireplumber_boundary_node_pairs_do_not_overlap_desired_node_pairs() -> None:
     policy = load_audio_routing_policy(POLICY)
     topology = load_audio_topology_descriptor()
-    desired, forbidden = generated_route_map_texts(topology, policy)
+    desired, _ = generated_route_map_texts(topology, policy)
+    _, deny_script = generated_wireplumber_deny_policy_texts(topology)
 
     def node_pairs(text: str) -> set[tuple[str, str]]:
         return {
@@ -266,7 +249,14 @@ def test_forbidden_node_pairs_do_not_overlap_desired_node_pairs() -> None:
             for source, target in [line.split("|", maxsplit=1)]
         }
 
-    assert node_pairs(desired).isdisjoint(node_pairs(forbidden))
+    desired_pairs = {f"{source}|{target}" for source, target in node_pairs(desired)}
+    boundary_block = deny_script.split("local FAIL_CLOSED_BOUNDARY_PAIRS = {", maxsplit=1)[1].split(
+        "}", maxsplit=1
+    )[0]
+
+    assert all(pair not in boundary_block for pair in desired_pairs)
+    assert f"hapax-private-playback|{MK5_OUT}" not in boundary_block
+    assert f"hapax-private-playback:output_FL|{MK5_OUT}:playback_AUX2" in deny_script
 
 
 def test_generator_wireplumber_deny_policy_check_mode() -> None:

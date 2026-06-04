@@ -19,53 +19,81 @@ SCRIPT = REPO_ROOT / "scripts" / "hapax-audio-routing-check"
 WP_DENY_CONF_SOURCE = REPO_ROOT / "config" / "wireplumber" / "98-hapax-link-deny.conf"
 WP_DENY_SCRIPT_SOURCE = REPO_ROOT / "config" / "wireplumber" / "scripts" / "hapax" / "link-deny.lua"
 FORBIDDEN_LINKS_SOURCE = REPO_ROOT / "config" / "hapax" / "audio-forbidden-links.conf"
+LINK_MAP_SOURCE = REPO_ROOT / "config" / "hapax" / "audio-link-map.conf"
+MK5_OUT = "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0"
+MK5_IN = "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0"
 
 
 def _base_graph(extra_tap_inputs: str = "") -> str:
-    # Interim MPC-only return (2026-05-29, L-12 removed): the broadcast return
-    # is the MPC's own USB return (hapax-mpc-usb-return-playback). The public
-    # mix returns on pro-input-0 capture_AUX0/1; the private monitor mix on
-    # capture_AUX2/3 is deliberately absent from this graph (fenced).
-    tap_inputs = f"|<- hapax-mpc-usb-return-playback:output_FL\n{extra_tap_inputs}"
-    mpc_refs = "\n".join(f"Akai Professional MPC Live III:playback_AUX{i}" for i in range(10))
-    mpc_return = "alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0"
+    tap_inputs_fl = textwrap.dedent(f"""
+        |<- hapax-voice-wet-playback:output_FL
+        |<- hapax-mic-rode-playback:output_FL
+        |<- hapax-music-loudnorm-playback:output_FL
+        |<- hapax-yt-loudnorm-playback:output_FL
+        {extra_tap_inputs}""")
+    tap_inputs_fr = textwrap.dedent("""
+        |<- hapax-voice-wet-playback:output_FR
+        |<- hapax-mic-rode-playback:output_FR
+        |<- hapax-music-loudnorm-playback:output_FR
+        |<- hapax-yt-loudnorm-playback:output_FR
+    """)
     return textwrap.dedent(f"""
-    {mpc_return}:capture_AUX0
-    |-> hapax-mpc-usb-return-capture:input_AUX0
-    {mpc_return}:capture_AUX1
-    |-> hapax-mpc-usb-return-capture:input_AUX1
-    output.loopback.sink.role.broadcast:output_FL
+    input.loopback.sink.role.broadcast-output:output_FL
     |-> hapax-voice-fx-capture:playback_FL
-hapax-voice-fx-playback:output_FL
-|-> hapax-loudnorm-capture:playback_FL
-hapax-loudnorm-playback:output_FL
-|-> Akai Professional MPC Live III:playback_AUX2
-hapax-loudnorm-playback:output_FR
-|-> Akai Professional MPC Live III:playback_AUX3
-hapax-music-loudnorm-playback:output_FL
-|-> Akai Professional MPC Live III:playback_AUX0
-hapax-music-loudnorm-playback:output_FR
-|-> Akai Professional MPC Live III:playback_AUX1
-hapax-private-playback:output_FL
-|-> Akai Professional MPC Live III:playback_AUX8
-hapax-private-playback:output_FR
-|-> Akai Professional MPC Live III:playback_AUX9
-hapax-broadcast-normalized:capture_FL
-|-> hapax-obs-broadcast-remap-capture:playback_FL
-hapax-obs-broadcast-remap:capture_FL
-|-> OBS:input_FL
-{mpc_refs}
-hapax-mpc-usb-return-playback:output_FL
-|-> hapax-livestream-tap:playback_FL
-hapax-mpc-usb-return-playback:output_FR
-|-> hapax-livestream-tap:playback_FR
-hapax-broadcast-master:monitor_FL
-|-> hapax-livestream:playback_FL
-hapax-livestream-tap:playback_FL
-{tap_inputs}|-> hapax-broadcast-master:playback_FL
+    input.loopback.sink.role.broadcast-output:output_FR
+    |-> hapax-voice-fx-capture:playback_FR
+    hapax-voice-fx-playback:output_FL
+    |-> hapax-loudnorm-capture:playback_FL
+    hapax-voice-fx-playback:output_FR
+    |-> hapax-loudnorm-capture:playback_FR
+    hapax-loudnorm-playback:output_FL
+    |-> {MK5_OUT}:playback_AUX2
+    hapax-loudnorm-playback:output_FR
+    |-> {MK5_OUT}:playback_AUX3
+    {MK5_IN}:capture_AUX2
+    |-> hapax-voice-wet-capture:input_AUX2
+    {MK5_IN}:capture_AUX3
+    |-> hapax-voice-wet-capture:input_AUX3
+    hapax-voice-wet-playback:output_FL
+    |-> hapax-livestream-tap:playback_FL
+    hapax-voice-wet-playback:output_FR
+    |-> hapax-livestream-tap:playback_FR
+    {MK5_IN}:capture_AUX0
+    |-> hapax-mic-rode-capture:input_AUX0
+    hapax-mic-rode-playback:output_FL
+    |-> hapax-livestream-tap:playback_FL
+    hapax-mic-rode-playback:output_FR
+    |-> hapax-livestream-tap:playback_FR
+    hapax-music-loudnorm-playback:output_FL
+    |-> hapax-livestream-tap:playback_FL
+    hapax-music-loudnorm-playback:output_FR
+    |-> hapax-livestream-tap:playback_FR
+    hapax-yt-loudnorm-playback:output_FL
+    |-> hapax-livestream-tap:playback_FL
+    hapax-yt-loudnorm-playback:output_FR
+    |-> hapax-livestream-tap:playback_FR
+    hapax-private-playback:output_FL
+    |-> {MK5_OUT}:playback_AUX10
+    hapax-private-playback:output_FR
+    |-> {MK5_OUT}:playback_AUX11
+    hapax-livestream-tap:monitor_FL
+    |-> hapax-broadcast-master-capture:input_FL
+    hapax-livestream-tap:monitor_FR
+    |-> hapax-broadcast-master-capture:input_FR
+    hapax-broadcast-normalized:capture_FL
+    |-> hapax-obs-broadcast-remap-capture:input_FL
+    hapax-obs-broadcast-remap:capture_FL
+    |-> OBS:input_FL
+    {MK5_OUT}:playback_AUX2
+    {MK5_OUT}:playback_AUX3
+    {MK5_OUT}:playback_AUX10
+    {MK5_OUT}:playback_AUX11
+    hapax-livestream-tap:playback_FL
+    {tap_inputs_fl.strip()}
+    |-> hapax-broadcast-master-capture:input_FL
     hapax-livestream-tap:playback_FR
-    |<- hapax-mpc-usb-return-playback:output_FR
-    |-> hapax-broadcast-master:playback_FR
+    {tap_inputs_fr.strip()}
+    |-> hapax-broadcast-master-capture:input_FR
     """).strip()
 
 
@@ -85,6 +113,7 @@ def _install_deny_policy(home: Path) -> None:
     shutil.copy2(WP_DENY_CONF_SOURCE, wp_conf_dir / WP_DENY_CONF_SOURCE.name)
     shutil.copy2(WP_DENY_SCRIPT_SOURCE, wp_script_dir / WP_DENY_SCRIPT_SOURCE.name)
     shutil.copy2(FORBIDDEN_LINKS_SOURCE, hapax_conf_dir / FORBIDDEN_LINKS_SOURCE.name)
+    shutil.copy2(LINK_MAP_SOURCE, hapax_conf_dir / LINK_MAP_SOURCE.name)
 
 
 def _run_with_graph(
@@ -118,6 +147,10 @@ def _run_with_graph(
         '    node.name = "hapax-voice-fx-capture"\n'
         "id 103,\n"
         '    node.name = "hapax-loudnorm-capture"\n'
+        "id 104,\n"
+        '    node.name = "hapax-voice-wet-capture"\n'
+        "id 105,\n"
+        '    node.name = "hapax-mic-rode-capture"\n'
         "EOF\n"
         "fi\n",
     )
@@ -133,6 +166,14 @@ def _run_with_graph(
         f"Default Sink: {default_sink}\n"
         "EOF\n"
         "fi\n",
+    )
+    _write_executable(
+        bin_dir / "systemctl",
+        "#!/usr/bin/env bash\n"
+        "if [[ \"${1:-}\" == '--user' && \"${2:-}\" == 'is-active' ]]; then\n"
+        "exit 0\n"
+        "fi\n"
+        "exit 1\n",
     )
 
     home = tmp_path / "home"
@@ -208,84 +249,68 @@ def test_tts_direct_bypass_guard_follows_multiline_link_blocks(tmp_path: Path) -
     result = _run_with_graph(tmp_path, graph)
 
     assert result.returncode == 1
-    assert "no TTS bypass to livestream-tap" in result.stdout
-    assert "BYPASS DETECTED" in result.stdout
+    assert "livestream-tap has only authorized inputs" in result.stdout
+    assert "hapax-tts-broadcast-playback:output_FL" in result.stdout
 
 
-def test_pc_usb56_failclosed_guard_rejects_pc_loudnorm_to_mpc(tmp_path: Path) -> None:
+def test_mk5_dry_send_failclosed_guard_rejects_pc_loudnorm(tmp_path: Path) -> None:
     graph = _base_graph() + textwrap.dedent(
-        """
+        f"""
 
         hapax-pc-loudnorm-playback:output_FL
-        |-> Akai Professional MPC Live III:playback_AUX4
+        |-> {MK5_OUT}:playback_AUX2
         hapax-pc-loudnorm-playback:output_FR
-        |-> Akai Professional MPC Live III:playback_AUX5
+        |-> {MK5_OUT}:playback_AUX3
         """
     )
 
     result = _run_with_graph(tmp_path, graph)
 
     assert result.returncode == 1
-    assert "PC USB 5/6 is fail-closed" in result.stdout
-    assert "PC loudnorm is feeding MPC AUX4/5" in result.stdout
+    assert "hapax-pc-loudnorm-playback not on mk5 dry-voice send AUX2/3" in result.stdout
+    assert "hapax-pc-loudnorm-playback is feeding the S-4 dry send" in result.stdout
 
 
-def test_youtube_aux67_send_is_allowed(tmp_path: Path) -> None:
-    """Interim MPC-only (2026-05-29): the YouTube send to MPC AUX6/7 is enabled
-    (operator-mix plumbing). It is no longer a forbidden boundary; the routing
-    check must NOT fail on it. Broadcast eligibility stays gated in policy, not
-    by a link-time guard."""
-    graph = _base_graph() + textwrap.dedent(
-        """
-
-        hapax-yt-loudnorm-playback:output_FL
-        |-> Akai Professional MPC Live III:playback_AUX6
-        hapax-yt-loudnorm-playback:output_FR
-        |-> Akai Professional MPC Live III:playback_AUX7
-        """
-    )
-
-    result = _run_with_graph(tmp_path, graph)
+def test_youtube_livestream_tap_send_is_allowed(tmp_path: Path) -> None:
+    result = _run_with_graph(tmp_path, _base_graph())
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "YouTube AUX6/7 is disabled" not in result.stdout
-    assert "YT loudnorm is feeding MPC AUX6/7" not in result.stdout
+    assert "yt-loudnorm → livestream-tap" in result.stdout
+    assert "unexpected source" not in result.stdout
 
 
-def test_notification_private_mpc_bridge_is_rejected(tmp_path: Path) -> None:
+def test_notification_private_mk5_dry_send_is_rejected(tmp_path: Path) -> None:
     graph = _base_graph() + textwrap.dedent(
-        """
+        f"""
 
         hapax-notification-private-playback:output_FL
-        |-> Akai Professional MPC Live III:playback_AUX8
+        |-> {MK5_OUT}:playback_AUX2
         hapax-notification-private-playback:output_FR
-        |-> Akai Professional MPC Live III:playback_AUX9
+        |-> {MK5_OUT}:playback_AUX3
         """
     )
 
     result = _run_with_graph(tmp_path, graph)
 
     assert result.returncode == 1
-    assert "notifications do not share private TTS AUX8/9" in result.stdout
-    assert "notification-private is feeding MPC AUX8/9" in result.stdout
+    assert "hapax-notification-private-playback not on mk5 dry-voice send AUX2/3" in result.stdout
+    assert "hapax-notification-private-playback is feeding the S-4 dry send" in result.stdout
 
 
-def test_m8_l12_or_mpc_egress_is_rejected(tmp_path: Path) -> None:
+def test_m8_direct_broadcast_egress_is_rejected(tmp_path: Path) -> None:
     graph = _base_graph() + textwrap.dedent(
         """
 
         hapax-m8-loudnorm-playback:output_AUX10
-        |-> alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL
-        hapax-m8-loudnorm-playback:output_AUX11
-        |-> alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FR
+        |-> hapax-livestream-tap:playback_FL
         """
     )
 
     result = _run_with_graph(tmp_path, graph)
 
     assert result.returncode == 1
-    assert "M8/instrument route is disabled" in result.stdout
-    assert "M8 loudnorm has a live MPC/L-12 egress" in result.stdout
+    assert "livestream-tap has only authorized inputs" in result.stdout
+    assert "hapax-m8-loudnorm-playback:output_AUX10" in result.stdout
 
 
 def test_assistant_private_fallback_to_multimedia_is_rejected(tmp_path: Path) -> None:
@@ -346,7 +371,7 @@ def test_default_sink_must_be_fail_closed_not_raw_mpc(tmp_path: Path) -> None:
     result = _run_with_graph(
         tmp_path,
         _base_graph(),
-        default_sink="alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0",
+        default_sink=MK5_OUT,
     )
 
     assert result.returncode == 1
@@ -354,21 +379,18 @@ def test_default_sink_must_be_fail_closed_not_raw_mpc(tmp_path: Path) -> None:
     assert "default sink is live/physical" in result.stdout
 
 
-def test_mpc_return_capture_requires_upstream_aux_links(tmp_path: Path) -> None:
-    """Interim MPC-only (2026-05-29): if the MPC public-mix capture leg
-    (capture_AUX0 -> mpc-usb-return-capture) is missing, the broadcast return
-    is silently starved — Chain 10 must fail."""
+def test_s4_wet_return_requires_mk5_input_links(tmp_path: Path) -> None:
     graph = "\n".join(
         line
         for line in _base_graph().splitlines()
-        if "capture_AUX0" not in line and "input_AUX0" not in line
+        if "capture_AUX2" not in line and "input_AUX2" not in line
     )
 
     result = _run_with_graph(tmp_path, graph)
 
     assert result.returncode == 1
-    assert "MPC AUX0 → mpc-usb-return-capture linked" in result.stdout
-    assert "MISSING" in result.stdout
+    assert "mk5 IN AUX2/3 → voice-wet-capture" in result.stdout
+    assert "S-4 wet voice not captured" in result.stdout
 
 
 def test_deny_policy_missing_forbidden_links_runtime_hard_fails(tmp_path: Path) -> None:
@@ -384,6 +406,7 @@ def test_deny_policy_not_installed_hard_fails(tmp_path: Path) -> None:
     hapax_conf_dir = home / ".config" / "hapax"
     hapax_conf_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(FORBIDDEN_LINKS_SOURCE, hapax_conf_dir / FORBIDDEN_LINKS_SOURCE.name)
+    shutil.copy2(LINK_MAP_SOURCE, hapax_conf_dir / LINK_MAP_SOURCE.name)
 
     result = _run_with_graph(tmp_path, _base_graph(), install_deny=False)
 
@@ -458,3 +481,4 @@ def test_deny_policy_fully_installed_passes(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
     assert "WirePlumber deny policy installed matches source" in result.stdout
     assert "forbidden links runtime conf matches source" in result.stdout
+    assert "link-map runtime targets the mk5" in result.stdout

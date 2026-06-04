@@ -94,16 +94,33 @@ def resolve_node_id(node_name: str) -> int | None:
     return None
 
 
-def _wpctl(args: list[str], node_name: str) -> None:
+def _wpctl(args: list[str], node_name: str) -> subprocess.CompletedProcess[str] | None:
     nid = resolve_node_id(node_name)
     if nid is None:
         log.debug("node %s not present — skipping", node_name)
-        return
+        return None
     try:
-        subprocess.run(["wpctl", *args[:1], str(nid), *args[1:]], timeout=5, check=False)
+        proc = subprocess.run(
+            ["wpctl", *args[:1], str(nid), *args[1:]],
+            timeout=5,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            _id_cache.pop(node_name, None)
+            log.debug(
+                "wpctl %s on %s failed: %s",
+                args,
+                node_name,
+                (proc.stderr or proc.stdout).strip(),
+            )
+            return None
+        return proc
     except Exception:
         log.debug("wpctl %s on %s failed", args, node_name, exc_info=True)
         _id_cache.pop(node_name, None)
+        return None
 
 
 def set_volume(node_name: str, vol: float) -> None:
@@ -112,6 +129,14 @@ def set_volume(node_name: str, vol: float) -> None:
 
 def set_mute(node_name: str, mute: bool) -> None:
     _wpctl(["set-mute", "1" if mute else "0"], node_name)
+
+
+def get_mute(node_name: str) -> bool | None:
+    proc = _wpctl(["get-volume"], node_name)
+    if proc is None:
+        return None
+    text = f"{proc.stdout}\n{proc.stderr}".lower()
+    return "muted" in text
 
 
 def load_map(path: str | Path) -> tuple[dict, dict]:
@@ -160,7 +185,15 @@ def run(config_path: str | Path, *, learn: bool = False) -> None:
                 button = buttons.get(key)
                 if button is not None:
                     if msg.value >= 64:
-                        new_mute = not bool(button.get("_muted"))
+                        current_mute = get_mute(button["target"])
+                        if current_mute is None:
+                            log.warning(
+                                "button %s -> %s skipped; mute state unavailable",
+                                button.get("label"),
+                                button["target"],
+                            )
+                            continue
+                        new_mute = not current_mute
                         set_mute(button["target"], new_mute)
                         button["_muted"] = new_mute
                         log.info(
