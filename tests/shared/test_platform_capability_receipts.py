@@ -25,8 +25,11 @@ from shared.platform_capability_registry import load_platform_capability_registr
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
+QUOTA_LEDGER = REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json"
 NOW = "2026-05-17T19:55:00Z"
 NOW_DT = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+API_NOW = "2026-06-04T16:00:00Z"
+API_NOW_DT = datetime.fromisoformat(API_NOW.replace("Z", "+00:00"))
 SECRET = "sk-live-secret-value"
 
 
@@ -70,6 +73,17 @@ def _fake_wrapper(home_dir: Path, relative_path: str) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     target.chmod(target.stat().st_mode | stat.S_IXUSR)
+
+
+def _fresh_quota_ledger(tmp_path: Path, *, captured_at: str) -> Path:
+    payload = json.loads(QUOTA_LEDGER.read_text(encoding="utf-8"))
+    payload["ledger_id"] = "quota-spend-ledger-test-fresh"
+    payload["captured_at"] = captured_at
+    target_dir = tmp_path / "quota-ledger"
+    target_dir.mkdir()
+    target = target_dir / "quota-spend-ledger.json"
+    target.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return target
 
 
 def _current_iso_z() -> str:
@@ -217,6 +231,84 @@ def test_antigrav_agy_receipt_clears_unobservable_quota_catch22(tmp_path: Path) 
     assert route.route_state.value == "active"
     assert "quota_telemetry_unknown" not in route.blocked_reasons
     assert "quota_telemetry_unknown" not in route.freshness.evidence.quota.blocked_reasons
+
+
+def test_api_provider_gateway_receipt_allows_paid_gateway_dispatch(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "python3", f"Python 3.12.3 api_key={SECRET}")
+
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir), "OPENAI_API_KEY": SECRET},
+        now=API_NOW,
+        platform="api",
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt_text = (tmp_path / "api.json").read_text(encoding="utf-8")
+    assert SECRET not in receipt_text
+    receipt = json.loads(receipt_text)
+    assert "api.headless.provider_gateway" in receipt["routes"]
+    assert receipt["quota"]["status"] == "unobservable"
+    assert receipt["known_unknowns"][0].startswith("Provider spend is authorized")
+
+    registry = load_platform_capability_registry(REGISTRY, receipt_dir=tmp_path, now=API_NOW_DT)
+    gateway = registry.require("api.headless.provider_gateway")
+    cloud = registry.require("api.headless.api_frontier")
+
+    assert gateway.route_state.value == "active"
+    assert "provider_budget_receipt_absent" not in gateway.blocked_reasons
+    assert "provider_gateway_evidence_absent" not in gateway.blocked_reasons
+    assert cloud.route_state.value == "blocked"
+    assert "cloud_burst_release_gate_absent" in cloud.blocked_reasons
+
+    sources = load_dispatch_policy_sources(
+        registry_path=REGISTRY,
+        quota_ledger_path=_fresh_quota_ledger(tmp_path, captured_at=API_NOW),
+        receipt_dir=tmp_path,
+        now=API_NOW_DT,
+    )
+    task_fields = {
+        "status": "claimed",
+        "assigned_to": "cctv-gateway",
+        "authority_case": "CASE-CAPACITY-ROUTING-001",
+        "authority_item": "PROVIDER-GATEWAY-RECEIPT-TEST",
+        "priority": "p0",
+        "wsjf": 12,
+        "route_metadata_schema": 1,
+        "quality_floor": "frontier_required",
+        "authority_level": "authoritative",
+        "mutation_surface": "provider_spend",
+        "mutation_scope_refs": ["~/llm-stack/litellm-config.yaml"],
+        "risk_flags": {"provider_billing_sensitive": True},
+    }
+    request = build_dispatch_request(
+        task_id="provider-gateway-receipt-present",
+        lane="cctv-gateway",
+        platform="api",
+        mode="headless",
+        profile="provider_gateway",
+        task_fields=task_fields,
+        registry=sources.registry,
+        registry_error=sources.registry_error,
+        quota_ledger=sources.quota_ledger,
+        quota_error=sources.quota_error,
+        now=API_NOW_DT,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=API_NOW_DT)
+
+    assert request.capability is not None
+    assert request.capability.paid_provider == "google"
+    assert request.capability.paid_profile == "frontier-fast"
+    assert request.quota is not None
+    assert "tb-20260510-anthropic-api-steady-state" in request.quota.evidence_refs
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.route_policy_green is True
+    assert "policy_launch" in decision.reason_codes
 
 
 def test_stale_receipt_is_not_consumed(tmp_path: Path) -> None:

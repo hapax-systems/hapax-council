@@ -227,6 +227,15 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         True,
         "Spike-only route; policy requires no-secret egress, public-repo/read-mostly scope, and a matching budget ref before launch eligibility.",
     ),
+    ("api", "headless", "provider_gateway"): PlatformPath(
+        "api",
+        "headless",
+        "provider_gateway",
+        "receipt-only provider-gateway packet; live config edits require a follow-up runtime/provider-spend task",
+        "Provider gateway maintenance route for governed runtime/provider-spend config changes",
+        True,
+        "Route-authority packet only; policy requires a matching paid-budget ledger and fresh gateway evidence before a downstream live edit may proceed.",
+    ),
 }
 
 RECEIPT_ONLY_ROUTE = PlatformPath(
@@ -1162,6 +1171,8 @@ def normalize_profile(platform: str, profile: str) -> str:
     profile = profile.strip().lower().replace("_", "-")
     if platform == "api" and profile in {"api-frontier", "cloud", "cloud-burst", "frontier"}:
         return "api_frontier"
+    if platform == "api" and profile in {"provider-gateway", "gateway", "provider_spend"}:
+        return "provider_gateway"
     if profile in {"default", "max", "pro", "full-capability"}:
         return "full"
     if profile == "quota-fallback":

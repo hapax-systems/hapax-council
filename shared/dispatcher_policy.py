@@ -120,6 +120,8 @@ class RouteCapabilityState(_PolicyModel):
     capability_tier: str | None = None
     worker_tier: str | None = None
     sanctioned_wrapper: str | None = None
+    paid_provider: str | None = None
+    paid_profile: str | None = None
     privacy_posture: str | None = None
     eligible_quality_floors: tuple[str, ...] = Field(default=())
     explicit_equivalence_records: tuple[str, ...] = Field(default=())
@@ -1668,6 +1670,8 @@ def _route_capability_state(
         capability_tier=route.capability_tier.value,
         worker_tier=route.worker_tier.value,
         sanctioned_wrapper=route.sanctioned_wrapper,
+        paid_provider=route.paid_provider,
+        paid_profile=route.paid_profile,
         privacy_posture=route.privacy_posture.value,
         eligible_quality_floors=tuple(
             quality_floor.value for quality_floor in route.quality_envelope.eligible_quality_floors
@@ -1706,9 +1710,7 @@ def _quota_state(
         request = PaidRouteRequest(
             route_id=capability.route_id,
             provider=_paid_provider_for(capability),
-            profile=capability.profile
-            if hasattr(capability, "profile")
-            else _profile_from_route_id(capability.route_id),
+            profile=capability.paid_profile or _profile_from_route_id(capability.route_id),
             task_class=_task_class_for(metadata),
             quality_floor=metadata.metadata.quality_floor.value
             if metadata.metadata is not None
@@ -2162,6 +2164,8 @@ def _task_class_for(metadata: RouteMetadataAssessment) -> str:
 
 
 def _paid_provider_for(capability: RouteCapabilityState) -> str:
+    if capability.paid_provider:
+        return capability.paid_provider
     parts = capability.route_id.split(".")
     return parts[0] if parts else "unknown"
 
