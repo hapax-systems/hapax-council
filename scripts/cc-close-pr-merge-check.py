@@ -18,6 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+DEFAULT_PR_REPO = "hapax-systems/hapax-council"
+
 
 def _extract_frontmatter(text: str) -> dict[str, str]:
     if not text.startswith("---"):
@@ -33,7 +35,11 @@ def _extract_frontmatter(text: str) -> dict[str, str]:
     return fields
 
 
-def _check_pr_merged(pr_num: str) -> str | None:
+def _nullish(value: str) -> bool:
+    return value.strip().lower() in {"", "null", "none", "~"}
+
+
+def _check_pr_merged(pr_num: str, repo: str = DEFAULT_PR_REPO) -> str | None:
     """Return PR state or None on error."""
     try:
         result = subprocess.run(
@@ -43,7 +49,7 @@ def _check_pr_merged(pr_num: str) -> str | None:
                 "view",
                 pr_num,
                 "--repo",
-                "hapax-systems/hapax-council",
+                repo,
                 "--json",
                 "state",
                 "--jq",
@@ -62,20 +68,31 @@ def _check_pr_merged(pr_num: str) -> str | None:
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("usage: cc-close-pr-merge-check.py <note_path> [--pr N]", file=sys.stderr)
+        print(
+            "usage: cc-close-pr-merge-check.py <note_path> [--pr N] [--repo OWNER/REPO]",
+            file=sys.stderr,
+        )
         return 0
 
     note_path = Path(sys.argv[1])
     cli_pr = None
+    cli_repo = None
     if "--pr" in sys.argv:
         idx = sys.argv.index("--pr")
         if idx + 1 < len(sys.argv):
             cli_pr = sys.argv[idx + 1]
+    if "--repo" in sys.argv:
+        idx = sys.argv.index("--repo")
+        if idx + 1 < len(sys.argv):
+            cli_repo = sys.argv[idx + 1]
 
     text = note_path.read_text(encoding="utf-8")
     fields = _extract_frontmatter(text)
 
     pr_num = cli_pr or fields.get("pr", "").strip()
+    pr_repo = cli_repo or fields.get("pr_repo", "").strip()
+    if _nullish(pr_repo):
+        pr_repo = DEFAULT_PR_REPO
     mutation_surface = fields.get("mutation_surface", "")
     kind = fields.get("kind", "build")
 
@@ -96,7 +113,7 @@ def main() -> int:
                     return 2
         return 0
 
-    state = _check_pr_merged(pr_num)
+    state = _check_pr_merged(pr_num, pr_repo)
     if state is None:
         print(
             "cc-close-pr-merge-check: WARNING — could not verify PR state (gh unavailable or API error). Allowing.",
@@ -108,7 +125,7 @@ def main() -> int:
         return 0
 
     print(
-        f"cc-close-pr-merge-check: BLOCKED — PR #{pr_num} is {state} (not MERGED).\n"
+        f"cc-close-pr-merge-check: BLOCKED — PR {pr_repo}#{pr_num} is {state} (not MERGED).\n"
         f"  Merge the PR before closing the task, or use --status withdrawn.\n"
         f"  Bypass: HAPAX_PR_MERGE_GATE_OFF=1",
         file=sys.stderr,
