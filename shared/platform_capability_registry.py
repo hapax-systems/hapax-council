@@ -41,6 +41,7 @@ CAPACITY_INVARIANT = (
 REQUIRED_ROUTE_IDS = frozenset(
     {
         "antigrav.interactive.full",
+        "api.headless.api_frontier",
         "claude.headless.full",
         "claude.headless.opus",
         "claude.headless.sonnet",

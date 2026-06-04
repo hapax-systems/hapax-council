@@ -89,6 +89,54 @@ def test_conservative_derivation_from_existing_task_fields() -> None:
     assert assessment.metadata.risk_flags.governance_sensitive is True
 
 
+def test_cloud_burst_derives_spike_workload_thresholds() -> None:
+    assessment = assess_route_metadata(
+        {
+            "type": "cc-task",
+            "task_id": "spike-task",
+            "title": "CI matrix release fanout",
+            "kind": "implementation",
+            "risk_tier": "T1",
+            "authority_case": "CASE-TEST-001",
+            "parent_spec": "/tmp/spec.md",
+            "estimated_parallel_jobs": 12,
+            "agent_fanout": 5,
+            "public_repo_only": True,
+            "read_mostly": True,
+            "cloud_burst_budget_ref": "tb-test-cloud-burst",
+        }
+    )
+
+    assert assessment.status == RouteMetadataStatus.DERIVED
+    assert assessment.metadata is not None
+    cloud_burst = assessment.metadata.cloud_burst
+    assert cloud_burst.eligible is True
+    assert "high_parallelism:12" in cloud_burst.spike_reasons
+    assert "multi_agent_fanout:5" in cloud_burst.spike_reasons
+    assert cloud_burst.public_repo_only is True
+    assert cloud_burst.read_mostly is True
+    assert cloud_burst.provider_budget_ref == "tb-test-cloud-burst"
+
+
+def test_cloud_burst_eligibility_fails_closed_on_secret_egress() -> None:
+    assessment = assess_route_metadata(
+        {
+            **_explicit_metadata(),
+            "cloud_burst": {
+                "eligible": True,
+                "spike_reasons": ["high_parallelism:12"],
+                "no_secret_egress": False,
+                "public_repo_only": True,
+                "read_mostly": True,
+                "provider_budget_ref": "tb-test-cloud-burst",
+            },
+        }
+    )
+
+    assert assessment.status == RouteMetadataStatus.MALFORMED
+    assert any("no_secret_egress" in error for error in assessment.validation_errors)
+
+
 def _derived_risk_flags(title: str, tags: list[str] | None = None):
     assessment = assess_route_metadata(
         {

@@ -52,6 +52,20 @@ class ExecutorCapabilities(BaseModel, frozen=True):
 
 
 EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
+    "api": ExecutorCapabilities(
+        platform="api",
+        modes=(),
+        profiles=("api_frontier",),
+        mutates=False,
+        claims=False,
+        hooks_wired=False,
+        headless=False,
+        read_only=True,
+        notes=(
+            "cloud-burst route metadata only; no direct provider launcher is wired, "
+            "so dispatch can emit receipts without spending provider budget"
+        ),
+    ),
     "claude": ExecutorCapabilities(
         platform="claude",
         modes=("headless", "interactive"),
