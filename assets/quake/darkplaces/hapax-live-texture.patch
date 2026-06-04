@@ -1,5 +1,5 @@
 diff --git a/gl_rmain.c b/gl_rmain.c
-index f9007caf..31b7c283 100644
+index f9007caf..7771cf14 100644
 --- a/gl_rmain.c
 +++ b/gl_rmain.c
 @@ -28,6 +28,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
@@ -114,16 +114,24 @@ index f9007caf..31b7c283 100644
  cvar_t r_glsl_offsetmapping_lod_distance = {CF_CLIENT | CF_ARCHIVE, "r_glsl_offsetmapping_lod_distance", "32", "first LOD level distance, second level (-50% steps) is 2x of this, third (33%) - 3x etc."};
  cvar_t r_glsl_postprocess = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess", "0", "use a GLSL postprocessing shader"};
 +cvar_t hapax_drift_enable = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_enable", "1", "(hapax) enable GPU world-surface drift permutation (HAPAX_DRIFT) on drift_* surfaces"};
-+cvar_t hapax_drift_geo_amp     = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_amp", "24", "(hapax) geometric drift displacement amplitude (units) for container geometry"};
-+cvar_t hapax_drift_geo_ampmax  = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_ampmax", "36", "(hapax) geometric drift hard displacement clamp (units)"};
-+cvar_t hapax_drift_geo_freq    = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_freq", "0.015", "(hapax) geometric drift spatial frequency"};
-+cvar_t hapax_drift_geo_speed   = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_speed", "0.25", "(hapax) geometric drift temporal evolution speed"};
-+cvar_t hapax_drift_geo_swirl   = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_swirl", "1.0", "(hapax) geometric drift curl-swirl operator weight"};
-+cvar_t hapax_drift_geo_content = {CF_CLIENT | CF_ARCHIVE, "hapax_drift_geo_content", "5", "(hapax) geometric drift ABSOLUTE displacement amplitude (units) for content (entity/model) geometry, independent of container amp"};
++cvar_t hapax_drift_geo_amp     = {CF_CLIENT | CF_SERVER | CF_ARCHIVE, "hapax_drift_geo_amp", "24", "(hapax) geometric drift displacement amplitude (units) for container geometry"};
++cvar_t hapax_drift_geo_ampmax  = {CF_CLIENT | CF_SERVER | CF_ARCHIVE, "hapax_drift_geo_ampmax", "36", "(hapax) geometric drift hard displacement clamp (units)"};
++cvar_t hapax_drift_geo_freq    = {CF_CLIENT | CF_SERVER | CF_ARCHIVE, "hapax_drift_geo_freq", "0.015", "(hapax) geometric drift spatial frequency"};
++cvar_t hapax_drift_geo_speed   = {CF_CLIENT | CF_SERVER | CF_ARCHIVE, "hapax_drift_geo_speed", "0.25", "(hapax) geometric drift temporal evolution speed"};
++cvar_t hapax_drift_geo_swirl   = {CF_CLIENT | CF_SERVER | CF_ARCHIVE, "hapax_drift_geo_swirl", "1.0", "(hapax) geometric drift curl-swirl operator weight"};
++cvar_t hapax_drift_geo_content = {CF_CLIENT | CF_SERVER | CF_ARCHIVE, "hapax_drift_geo_content", "5", "(hapax) geometric drift ABSOLUTE displacement amplitude (units) for content (entity/model) geometry, independent of container amp"};
  cvar_t r_glsl_postprocess_uservec1 = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec1", "0 0 0 0", "a 4-component vector to pass as uservec1 to the postprocessing shader (only useful if default.glsl has been customized)"};
  cvar_t r_glsl_postprocess_uservec2 = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec2", "0 0 0 0", "a 4-component vector to pass as uservec2 to the postprocessing shader (only useful if default.glsl has been customized)"};
  cvar_t r_glsl_postprocess_uservec3 = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec3", "0 0 0 0", "a 4-component vector to pass as uservec3 to the postprocessing shader (only useful if default.glsl has been customized)"};
-@@ -275,6 +375,7 @@ rtexture_t *r_texture_grey128;
+@@ -186,6 +286,7 @@ cvar_t r_glsl_postprocess_uservec1_enable = {CF_CLIENT | CF_ARCHIVE, "r_glsl_pos
+ cvar_t r_glsl_postprocess_uservec2_enable = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec2_enable", "1", "enables postprocessing uservec2 usage, creates USERVEC1 define (only useful if default.glsl has been customized)"};
+ cvar_t r_glsl_postprocess_uservec3_enable = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec3_enable", "1", "enables postprocessing uservec3 usage, creates USERVEC1 define (only useful if default.glsl has been customized)"};
+ cvar_t r_glsl_postprocess_uservec4_enable = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec4_enable", "1", "enables postprocessing uservec4 usage, creates USERVEC1 define (only useful if default.glsl has been customized)"};
++cvar_t r_glsl_postprocess_ruttetra_enable = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_ruttetra_enable", "0", "(hapax) compile the rutt_etra MODE_POSTPROCESS content pass (USERUTT_ETRA); default off = inert"};
+ cvar_t r_colorfringe = {CF_CLIENT | CF_ARCHIVE, "r_colorfringe", "0", "Chromatic aberration. Values higher than 0.025 will noticeably distort the image"};
+ cvar_t r_fxaa = {CF_CLIENT | CF_ARCHIVE, "r_fxaa", "0", "fast approximate anti aliasing"};
+ 
+@@ -275,6 +376,7 @@ rtexture_t *r_texture_grey128;
  rtexture_t *r_texture_black;
  rtexture_t *r_texture_notexture;
  rtexture_t *r_texture_whitecube;
@@ -131,7 +139,7 @@ index f9007caf..31b7c283 100644
  rtexture_t *r_texture_normalizationcube;
  rtexture_t *r_texture_fogattenuation;
  rtexture_t *r_texture_fogheighttexture;
-@@ -655,7 +756,8 @@ shaderpermutationinfo_t shaderpermutationinfo[SHADERPERMUTATION_COUNT] =
+@@ -655,7 +757,8 @@ shaderpermutationinfo_t shaderpermutationinfo[SHADERPERMUTATION_COUNT] =
  	{"#define USEDEPTHRGB\n", " depthrgb"},
  	{"#define USEALPHAGENVERTEX\n", " alphagenvertex"},
  	{"#define USESKELETAL\n", " skeletal"},
@@ -141,7 +149,7 @@ index f9007caf..31b7c283 100644
  };
  
  // NOTE: MUST MATCH ORDER OF SHADERMODE_* ENUMS!
-@@ -726,6 +828,7 @@ typedef struct r_glsl_permutation_s
+@@ -726,6 +829,7 @@ typedef struct r_glsl_permutation_s
  	int tex_Texture_ReflectMask;
  	int tex_Texture_ReflectCube;
  	int tex_Texture_BounceGrid;
@@ -149,7 +157,7 @@ index f9007caf..31b7c283 100644
  	/// locations of detected uniforms in program object, or -1 if not found
  	int loc_Texture_First;
  	int loc_Texture_Second;
-@@ -757,9 +860,17 @@ typedef struct r_glsl_permutation_s
+@@ -757,9 +861,17 @@ typedef struct r_glsl_permutation_s
  	int loc_Texture_ReflectMask;
  	int loc_Texture_ReflectCube;
  	int loc_Texture_BounceGrid;
@@ -167,7 +175,37 @@ index f9007caf..31b7c283 100644
  	int loc_Color_Ambient;
  	int loc_Color_Diffuse;
  	int loc_Color_Specular;
-@@ -1032,9 +1143,9 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+@@ -846,9 +958,10 @@ enum
+ 	SHADERSTATICPARM_CELSHADING = 11, ///< celshading (alternative diffuse and specular math)
+ 	SHADERSTATICPARM_CELOUTLINES = 12, ///< celoutline (depth buffer analysis to produce outlines)
+ 	SHADERSTATICPARM_FXAA = 13, ///< fast approximate anti aliasing
+-	SHADERSTATICPARM_COLORFRINGE = 14 ///< colorfringe (chromatic aberration)
++	SHADERSTATICPARM_COLORFRINGE = 14, ///< colorfringe (chromatic aberration)
++	SHADERSTATICPARM_POSTPROCESS_RUTTETRA = 15 ///< (hapax) rutt_etra content displacement MODE_POSTPROCESS pass
+ };
+-#define SHADERSTATICPARMS_COUNT 15
++#define SHADERSTATICPARMS_COUNT 16
+ 
+ static const char *shaderstaticparmstrings_list[SHADERSTATICPARMS_COUNT];
+ static int shaderstaticparms_count = 0;
+@@ -899,6 +1012,8 @@ qbool R_CompileShader_CheckStaticParms(void)
+ 		R_COMPILESHADER_STATICPARM_ENABLE(SHADERSTATICPARM_CELOUTLINES);
+ 	if (r_colorfringe.value)
+ 		R_COMPILESHADER_STATICPARM_ENABLE(SHADERSTATICPARM_COLORFRINGE);
++	if (r_glsl_postprocess_ruttetra_enable.integer)
++		R_COMPILESHADER_STATICPARM_ENABLE(SHADERSTATICPARM_POSTPROCESS_RUTTETRA);
+ 
+ 	return memcmp(r_compileshader_staticparms, r_compileshader_staticparms_save, sizeof(r_compileshader_staticparms)) != 0;
+ }
+@@ -928,6 +1043,7 @@ static void R_CompileShader_AddStaticParms(unsigned int mode, uint64_t permutati
+ 	R_COMPILESHADER_STATICPARM_EMIT(SHADERSTATICPARM_CELOUTLINES, "USECELOUTLINES");
+ 	R_COMPILESHADER_STATICPARM_EMIT(SHADERSTATICPARM_FXAA, "USEFXAA");
+ 	R_COMPILESHADER_STATICPARM_EMIT(SHADERSTATICPARM_COLORFRINGE, "USECOLORFRINGE");
++	R_COMPILESHADER_STATICPARM_EMIT(SHADERSTATICPARM_POSTPROCESS_RUTTETRA, "USERUTT_ETRA");
+ }
+ 
+ /// information about each possible shader permutation
+@@ -1032,9 +1148,9 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
  	int vertstrings_count = 0;
  	int geomstrings_count = 0;
  	int fragstrings_count = 0;
@@ -180,7 +218,7 @@ index f9007caf..31b7c283 100644
  
  	if (p->compiled)
  		return;
-@@ -1196,9 +1307,17 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+@@ -1196,9 +1312,17 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
  		p->loc_Texture_ReflectMask        = qglGetUniformLocation(p->program, "Texture_ReflectMask");
  		p->loc_Texture_ReflectCube        = qglGetUniformLocation(p->program, "Texture_ReflectCube");
  		p->loc_Texture_BounceGrid         = qglGetUniformLocation(p->program, "Texture_BounceGrid");
@@ -198,7 +236,7 @@ index f9007caf..31b7c283 100644
  		p->loc_Color_Ambient              = qglGetUniformLocation(p->program, "Color_Ambient");
  		p->loc_Color_Diffuse              = qglGetUniformLocation(p->program, "Color_Diffuse");
  		p->loc_Color_Specular             = qglGetUniformLocation(p->program, "Color_Specular");
-@@ -1287,6 +1406,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+@@ -1287,6 +1411,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
  		p->tex_Texture_ReflectMask = -1;
  		p->tex_Texture_ReflectCube = -1;
  		p->tex_Texture_BounceGrid = -1;
@@ -206,7 +244,7 @@ index f9007caf..31b7c283 100644
  		// bind the texture samplers in use
  		sampler = 0;
  		if (p->loc_Texture_First           >= 0) {p->tex_Texture_First            = sampler;qglUniform1i(p->loc_Texture_First           , sampler);sampler++;}
-@@ -1319,6 +1439,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+@@ -1319,6 +1444,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
  		if (p->loc_Texture_ReflectMask     >= 0) {p->tex_Texture_ReflectMask      = sampler;qglUniform1i(p->loc_Texture_ReflectMask     , sampler);sampler++;}
  		if (p->loc_Texture_ReflectCube     >= 0) {p->tex_Texture_ReflectCube      = sampler;qglUniform1i(p->loc_Texture_ReflectCube     , sampler);sampler++;}
  		if (p->loc_Texture_BounceGrid      >= 0) {p->tex_Texture_BounceGrid       = sampler;qglUniform1i(p->loc_Texture_BounceGrid      , sampler);sampler++;}
@@ -214,7 +252,7 @@ index f9007caf..31b7c283 100644
  		// get the uniform block indices so we can bind them
  		p->ubiloc_Skeletal_Transform12_UniformBlock = -1;
  #ifndef USE_GLES2 /* FIXME: GLES3 only */
-@@ -1388,6 +1509,19 @@ static void R_SetupShader_SetPermutationGLSL(unsigned int mode, uint64_t permuta
+@@ -1388,6 +1514,19 @@ static void R_SetupShader_SetPermutationGLSL(unsigned int mode, uint64_t permuta
  	if (r_glsl_permutation->loc_ModelViewProjectionMatrix >= 0) qglUniformMatrix4fv(r_glsl_permutation->loc_ModelViewProjectionMatrix, 1, false, gl_modelviewprojection16f);
  	if (r_glsl_permutation->loc_ModelViewMatrix >= 0) qglUniformMatrix4fv(r_glsl_permutation->loc_ModelViewMatrix, 1, false, gl_modelview16f);
  	if (r_glsl_permutation->loc_ClientTime >= 0) qglUniform1f(r_glsl_permutation->loc_ClientTime, cl.time);
@@ -234,7 +272,7 @@ index f9007caf..31b7c283 100644
  	CHECKGLERROR
  }
  
-@@ -1575,6 +1709,11 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
+@@ -1575,6 +1714,11 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
  	r_waterstate_waterplane_t *waterplane = (r_waterstate_waterplane_t *)surfacewaterplane;
  	if (r_trippy.integer && !notrippy)
  		permutation |= SHADERPERMUTATION_TRIPPY;
@@ -246,7 +284,7 @@ index f9007caf..31b7c283 100644
  	if (t->currentmaterialflags & MATERIALFLAG_ALPHATEST)
  		permutation |= SHADERPERMUTATION_ALPHAKILL;
  	if (t->currentmaterialflags & MATERIALFLAG_OCCLUDE)
-@@ -2083,6 +2222,9 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
+@@ -2083,6 +2227,9 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
  		}
  		if (r_glsl_permutation->tex_Texture_BounceGrid  >= 0) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_BounceGrid, r_shadow_bouncegrid_state.texture);
  		if (r_glsl_permutation->tex_Texture_LightGrid   >= 0 && r_refdef.scene.worldmodel) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_LightGrid, r_refdef.scene.worldmodel->brushq3.lightgridtexture);
@@ -256,7 +294,7 @@ index f9007caf..31b7c283 100644
  		CHECKGLERROR
  		break;
  	}
-@@ -2746,6 +2888,297 @@ static void R_SkinFrame_GenerateTexturesFromQPixels(skinframe_t *skinframe, qboo
+@@ -2746,6 +2893,297 @@ static void R_SkinFrame_GenerateTexturesFromQPixels(skinframe_t *skinframe, qboo
  	}
  }
  
@@ -554,7 +592,7 @@ index f9007caf..31b7c283 100644
  skinframe_t *R_SkinFrame_LoadInternal8bit(const char *name, int textureflags, const unsigned char *skindata, int width, int height, const unsigned int *palette, const unsigned int *alphapalette)
  {
  	int i;
-@@ -3288,6 +3721,18 @@ void GL_Main_Init(void)
+@@ -3288,6 +3726,18 @@ void GL_Main_Init(void)
  	Cvar_RegisterVariable(&r_sortentities);
  	Cvar_RegisterVariable(&r_drawviewmodel);
  	Cvar_RegisterVariable(&r_drawexteriormodel);
@@ -573,7 +611,7 @@ index f9007caf..31b7c283 100644
  	Cvar_RegisterVariable(&r_speeds);
  	Cvar_RegisterVariable(&r_fullbrights);
  	Cvar_RegisterVariable(&r_wateralpha);
-@@ -3341,6 +3786,13 @@ void GL_Main_Init(void)
+@@ -3341,6 +3791,14 @@ void GL_Main_Init(void)
  	Cvar_RegisterVariable(&r_glsl_offsetmapping_lod);
  	Cvar_RegisterVariable(&r_glsl_offsetmapping_lod_distance);
  	Cvar_RegisterVariable(&r_glsl_postprocess);
@@ -584,10 +622,31 @@ index f9007caf..31b7c283 100644
 +	Cvar_RegisterVariable(&hapax_drift_geo_speed);
 +	Cvar_RegisterVariable(&hapax_drift_geo_swirl);
 +	Cvar_RegisterVariable(&hapax_drift_geo_content);
++	Cvar_RegisterVariable(&r_glsl_postprocess_ruttetra_enable);
  	Cvar_RegisterVariable(&r_glsl_postprocess_uservec1);
  	Cvar_RegisterVariable(&r_glsl_postprocess_uservec2);
  	Cvar_RegisterVariable(&r_glsl_postprocess_uservec3);
-@@ -5649,6 +6101,8 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
+@@ -5314,6 +5772,19 @@ static void R_MotionBlurView(int viewfbo, rtexture_t *viewdepthtexture, rtexture
+ 	}
+ }
+ 
++// (hapax) forward decl so R_BlendView_N (the unified-fx content-pass seam) can wrap it.
++static void R_BlendView(rtexture_t *viewcolortexture, int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, int x, int y, int width, int height);
++
++// (hapax) R_BlendView_N — unified-fx content-effect MODE_POSTPROCESS seam.
++// Phase 1: the caller passes (NULL, 0) -> pixel-identical to R_BlendView. The
++// N-pass MODE_POSTPROCESS ping-pong over `passes` (passes != NULL && n > 0) is Phase 2.
++static void R_BlendView_N(rtexture_t *viewcolortexture, int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, int x, int y, int width, int height, const r_blendview_pass_t *passes, int n)
++{
++	(void)passes;
++	(void)n;
++	R_BlendView(viewcolortexture, fbo, depthtexture, colortexture, x, y, width, height);
++}
++
+ static void R_BlendView(rtexture_t *viewcolortexture, int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, int x, int y, int width, int height)
+ {
+ 	uint64_t permutation;
+@@ -5649,6 +6120,8 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
  	if (r_timereport_active)
  		R_TimeReport("start");
  	r_textureframe++; // used only by R_GetCurrentTexture
@@ -596,11 +655,20 @@ index f9007caf..31b7c283 100644
  	rsurface.entity = NULL; // used only by R_GetCurrentTexture and RSurf_ActiveModelEntity
  
  	if(R_CompileShader_CheckStaticParms())
+@@ -5788,7 +6261,7 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
+ 
+ 	R_MotionBlurView(viewfbo, viewdepthtexture, viewcolortexture, viewx, viewy, viewwidth, viewheight);
+ 	if (!skipblend)
+-		R_BlendView(viewcolortexture, fbo, depthtexture, colortexture, x, y, width, height);
++		R_BlendView_N(viewcolortexture, fbo, depthtexture, colortexture, x, y, width, height, NULL, 0);
+ 	if (r_timereport_active)
+ 		R_TimeReport("blendview");
+ 
 diff --git a/render.h b/render.h
-index 7fbcd0b3..8ec3075c 100644
+index 7fbcd0b3..0bd77491 100644
 --- a/render.h
 +++ b/render.h
-@@ -102,7 +102,8 @@ shadermode_t;
+@@ -102,9 +102,20 @@ shadermode_t;
  #define SHADERPERMUTATION_ALPHAGEN_VERTEX (1u<<29) ///< alphaGen vertex
  #define SHADERPERMUTATION_SKELETAL (1u<<30) ///< (skeletal models) use skeletal matrices to deform vertices (gpu-skinning)
  #define SHADERPERMUTATION_OCCLUDE (1u<<31) ///< use occlusion buffer for corona
@@ -609,8 +677,20 @@ index 7fbcd0b3..8ec3075c 100644
 +#define SHADERPERMUTATION_COUNT 33u ///< size of shaderpermutationinfo array
  // UBSan: unsigned literals because left shifting by 31 causes signed overflow, although it works as expected on x86.
  
++// (hapax) unified-fx content-effect pass descriptor — one recruited MODE_POSTPROCESS
++// content effect for R_BlendView_N's N-pass ping-pong. Inert in Phase 1 (the caller
++// passes NULL/0); populated by the recruiter in Phase 2.
++typedef struct r_blendview_pass_s
++{
++	int effect_id;          ///< recruited content effect id
++	uint64_t permutation;   ///< MODE_POSTPROCESS permutation bits for this pass
++	float uservecs[4][4];   ///< per-pass UserVec1..4
++} r_blendview_pass_t;
++
  // 1.0f / N table
-@@ -570,6 +571,7 @@ extern cvar_t r_test;
+ extern float ixtable[4096];
+ 
+@@ -570,6 +581,7 @@ extern cvar_t r_test;
  extern rtexture_t *r_texture_blanknormalmap;
  extern rtexture_t *r_texture_white;
  extern rtexture_t *r_texture_grey128;
@@ -619,7 +699,7 @@ index 7fbcd0b3..8ec3075c 100644
  extern rtexture_t *r_texture_notexture;
  extern rtexture_t *r_texture_whitecube;
 diff --git a/shader_glsl.h b/shader_glsl.h
-index dc56d085..0715dfa2 100644
+index dc56d085..392634a8 100644
 --- a/shader_glsl.h
 +++ b/shader_glsl.h
 @@ -178,6 +178,62 @@
@@ -699,7 +779,50 @@ index dc56d085..0715dfa2 100644
  "#ifdef USETRIPPY\n",
  "	gl_Position = TrippyVertex(gl_Position);\n",
  "#endif\n",
-@@ -773,6 +835,8 @@
+@@ -254,7 +316,9 @@
+ "//uncomment these if you want to use them:\n",
+ "uniform mediump vec4 UserVec1;\n",
+ "uniform mediump vec4 UserVec2;\n",
+-"// uniform mediump vec4 UserVec3;\n",
++"#ifdef USERUTT_ETRA\n",
++"uniform mediump vec4 UserVec3;\n",
++"#endif\n",
+ "// uniform mediump vec4 UserVec4;\n",
+ "uniform mediump float ColorFringe;\n",
+ "// uniform highp float ClientTime;\n",
+@@ -307,6 +371,13 @@
+ "}\n",
+ "#endif\n",
+ "\n",
++"#ifdef USERUTT_ETRA\n",
++"// opRuttEtra_luma_height: rutt_etra dual-domain displacement kernel (C1-safe).\n",
++"// Content lineage (the MODE_POSTPROCESS pass in main) reads frame luma -> Y height.\n",
++"// Geometry lineage would use an hpxVNoise proxy (vertex has no sampler) -> Phase 2.\n",
++"vec3 opRuttEtra_luma_height(vec3 p, float lum, float u){ return vec3(0.0, lum*u*0.01, 0.0); }\n",
++"#endif\n",
++"\n",
+ "void main(void)\n",
+ "{\n",
+ "#ifdef USECOLORFRINGE\n",
+@@ -360,6 +431,17 @@
+ "	dp_FragColor /= (1.0 + 5.0 * UserVec1.y);\n",
+ "	dp_FragColor.rgb = dp_FragColor.rgb * (1.0 + UserVec2.x) + vec3(max(0.0, sobel - UserVec2.z))*UserVec2.y;\n",
+ "#endif\n",
++"#ifdef USERUTT_ETRA\n",
++"	// rutt_etra content pass (unified-fx dual-domain proof): luma-height UV displacement.\n",
++"	// UserVec3: x=displacement, y=line_density, z=line_width, w=color_mode (Phase 1 fixed).\n",
++"	{\n",
++"		vec2 ruv = TexCoord1.xy;\n",
++"		float lum = dot(dp_texture2D(Texture_First, ruv).rgb, vec3(0.299, 0.587, 0.114));\n",
++"		vec3 d = opRuttEtra_luma_height(vec3(ruv, 0.0), lum, UserVec3.x);\n",
++"		ruv += d.xy * UserVec3.y;\n",
++"		dp_FragColor.rgb = dp_texture2D(Texture_First, ruv).rgb;\n",
++"	}\n",
++"#endif\n",
+ "#endif\n",
+ "\n",
+ "#ifdef USEBLOOM\n",
+@@ -773,6 +855,8 @@
  "#ifdef MODE_DEFERREDGEOMETRY\n",
  "dp_varying highp float Depth;\n",
  "#endif\n",
@@ -708,7 +831,7 @@ index dc56d085..0715dfa2 100644
  "\n",
  "\n",
  "\n",
-@@ -1327,6 +1391,35 @@
+@@ -1327,6 +1411,35 @@
  "#define Attrib_TexCoord3 SkeletalNormal\n",
  "#endif\n",
  "\n",
@@ -744,7 +867,7 @@ index dc56d085..0715dfa2 100644
  "#if defined(MODE_VERTEXCOLOR) || defined(USEVERTEXTEXTUREBLEND) || defined(MODE_LIGHTDIRECTIONMAP_FORCED_VERTEXCOLOR) || defined(USEALPHAGENVERTEX)\n",
  "	VertexColor = Attrib_Color;\n",
  "#endif\n",
-@@ -1404,6 +1497,8 @@
+@@ -1404,6 +1517,8 @@
  "#endif\n",
  "\n",
  "	// transform vertex to clipspace (post-projection, but before perspective divide by W occurs)\n",
@@ -753,7 +876,7 @@ index dc56d085..0715dfa2 100644
  "	gl_Position = ModelViewProjectionMatrix * Attrib_Position;\n",
  "\n",
  "#ifdef USESHADOWMAPORTHO\n",
-@@ -1466,6 +1561,9 @@
+@@ -1466,6 +1581,9 @@
  "    uint allpixels;\n",
  "};\n",
  "#endif\n",
@@ -763,7 +886,7 @@ index dc56d085..0715dfa2 100644
  "void main(void)\n",
  "{\n",
  "#ifdef USEOFFSETMAPPING\n",
-@@ -1797,6 +1895,47 @@
+@@ -1797,6 +1915,47 @@
  "   color.rgb *= clamp(float(visiblepixels) / float(allpixels), 0.0, 1.0);\n",
  "#endif\n",
  "\n",

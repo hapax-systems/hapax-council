@@ -376,6 +376,57 @@ class TestBatchIndexing:
         assert point.payload["provenance_ref"] == "provenance:test"
         assert point.payload["evidence_refs"] == ["evidence:test"]
 
+    def test_domain_field_survives_both_payload_writers(self):
+        """Phase 1 unified-fx: the ``domain`` tag must serialize through BOTH
+        index_capability and index_capabilities_batch. A miss in either writer
+        silently falls back to ``content`` with no error — the exact invisible
+        drift the domain tag exists to eliminate."""
+        from unittest.mock import MagicMock, patch
+
+        from shared.affordance import CapabilityRecord, OperationalProperties
+        from shared.affordance_pipeline import AffordancePipeline
+
+        both = CapabilityRecord(
+            name="rutt_etra_cap",
+            description="dual-domain effect",
+            daemon="test",
+            operational=OperationalProperties(domain="both"),
+        )
+        default = CapabilityRecord(
+            name="plain_cap",
+            description="content-only effect",
+            daemon="test",
+            operational=OperationalProperties(),
+        )
+
+        with (
+            patch(
+                "shared.affordance_pipeline.embed_batch_safe",
+                side_effect=lambda texts, *a, **k: [[1.0] * 768 for _ in texts],
+            ),
+            patch("shared.config.embed_safe", return_value=[1.0] * 768),
+            patch("shared.config.get_qdrant") as mock_qdrant,
+        ):
+            mock_client = MagicMock()
+            mock_client.collection_exists.return_value = True
+            mock_qdrant.return_value = mock_client
+            pipeline = AffordancePipeline()
+
+            # batch writer
+            assert pipeline.index_capabilities_batch([both, default]) == 2
+            by_name = {
+                p.payload["capability_name"]: p.payload
+                for p in mock_client.upsert.call_args.kwargs["points"]
+            }
+            assert by_name["rutt_etra_cap"]["domain"] == "both"
+            assert by_name["plain_cap"]["domain"] == "content"
+
+            # singular writer
+            mock_client.upsert.reset_mock()
+            assert pipeline.index_capability(both) is True
+            single = mock_client.upsert.call_args.kwargs["points"][0].payload
+            assert single["domain"] == "both"
+
     def test_batch_empty_list_returns_zero(self):
         from shared.affordance_pipeline import AffordancePipeline
 

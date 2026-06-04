@@ -66,6 +66,15 @@ class OperationalProperties(BaseModel, frozen=True):
     consent_data_category: str | None = None
     priority_floor: bool = False
 
+    # Unified-fx domain (screwm Phase 1): which effect bases this capability
+    # can target. "content" = fragment/post-process pixels; "geometry" =
+    # model-space vertex deformation; "both" = one effect with both forms
+    # (e.g. rutt_etra). Default "content" is correct for ~all existing records.
+    # MUST be serialized into BOTH Qdrant payload writers in affordance_pipeline
+    # (index_capability + index_capabilities_batch) — a miss silently falls back
+    # to "content" with no error.
+    domain: Literal["content", "geometry", "both"] = "content"
+
     # Monetization-safety classification (task #165, demonet plan Phase 1).
     # "high": unconditionally blocked at the affordance pipeline level (the
     # capability cannot be recruited on any surface).
