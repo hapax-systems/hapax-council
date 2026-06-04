@@ -19,7 +19,12 @@ from shared.sdlc_lifecycle import (
     STAGE_RE,
     TASK_CLAIMABLE_STATUSES,
     TASK_DISPATCHABLE_STATUSES,
+    active_blocked_task_blockers,
+    frontmatter_from_text,
+    is_active_blocked_with_evidence,
+    is_dependency_blocked_reason,
     stage_token,
+    task_closure_validity,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -104,6 +109,76 @@ class TestTaskDispatchableStatuses:
         assert frozenset({"offered", "claimed", "in_progress"}) not in set_literals, (
             "dispatch still hardcodes the dispatchable-status set literal"
         )
+
+
+class TestBlockedEvidenceLifecycle:
+    def test_blocked_with_evidence_has_precise_dependency_blockers(self) -> None:
+        text = """---
+status: blocked
+blocked_reason: minio_mirror_still_d_state
+blocked_witness: ~/.cache/hapax/witness/minio-d-state.json
+---
+
+# blocked
+"""
+
+        validity = task_closure_validity(text)
+
+        assert validity.valid is False
+        assert validity.blockers == (
+            "blocked_reason:minio_mirror_still_d_state",
+            "blocked_witness:~/.cache/hapax/witness/minio-d-state.json",
+        )
+
+    def test_blocked_evidence_requires_non_dependency_reason_and_witness(self) -> None:
+        evidence = frontmatter_from_text(
+            """---
+status: blocked
+blocked_reason: minio_mirror_still_d_state
+blocked_witness: ~/.cache/hapax/witness/minio-d-state.json
+---
+"""
+        )
+        dependency_wait = frontmatter_from_text(
+            """---
+status: blocked
+blocked_reason: 'waiting_for_closure_valid_dependencies: dep (pr_open:123)'
+blocked_witness: ~/.cache/hapax/witness/dependency.json
+---
+"""
+        )
+        no_witness = frontmatter_from_text(
+            """---
+status: blocked
+blocked_reason: minio_mirror_still_d_state
+---
+"""
+        )
+
+        assert is_active_blocked_with_evidence(evidence) is True
+        assert active_blocked_task_blockers(evidence) == (
+            "blocked_reason:minio_mirror_still_d_state",
+            "blocked_witness:~/.cache/hapax/witness/minio-d-state.json",
+        )
+        assert is_dependency_blocked_reason(
+            "waiting_for_closure_valid_dependencies: dep (pr_open:123)"
+        )
+        assert is_active_blocked_with_evidence(dependency_wait) is False
+        assert is_active_blocked_with_evidence(no_witness) is False
+
+    def test_malformed_frontmatter_is_non_fulfilling_not_exception(self) -> None:
+        text = """---
+status: blocked
+blocked_reason: waiting_for_closure_valid_dependencies: dep (pr_open:123)
+---
+
+# malformed
+"""
+
+        validity = task_closure_validity(text)
+
+        assert validity.valid is False
+        assert "status_not_fulfilling:missing" in validity.blockers
 
 
 class TestStageVocabulary:

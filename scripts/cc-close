@@ -5,6 +5,10 @@
 # default; completed_at: now), move the note from active/ to closed/,
 # and clear the session's claim file.
 #
+# Active blocked-with-evidence work is not a cc-close outcome. Keep the note in
+# active/ with status: blocked, blocked_reason: <machine-code>, and
+# blocked_witness: <current-witness-path>; cc-claim/cascade preserve that state.
+#
 # Symlink to ~/.local/bin/cc-close for quick access:
 #   ln -sf ~/projects/hapax-council/scripts/cc-close ~/.local/bin/cc-close
 
@@ -19,6 +23,7 @@ fi
 
 if [[ $# -lt 1 ]]; then
   echo "usage: cc-close <task_id> [--pr N] [--status done|withdrawn|superseded]" >&2
+  echo "       active blocked evidence stays in active/: status=blocked, blocked_reason, blocked_witness" >&2
   exit 1
 fi
 

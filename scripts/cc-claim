@@ -161,10 +161,14 @@ if str(repo_root) not in sys.path:
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
     TASK_RESUMABLE_STATUSES,
+    blocked_reason_from_frontmatter,
+    blocked_witness_from_frontmatter,
+    frontmatter_from_text,
     task_closure_validity,
 )
 
 text = path.read_text(encoding="utf-8")
+frontmatter = frontmatter_from_text(text)
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -214,8 +218,17 @@ elif status in READY_STATUSES:
         sys.exit(4)
     claim_mode = "resume"
 else:
+    detail = ""
+    if status == "blocked":
+        detail_parts: list[str] = []
+        reason = blocked_reason_from_frontmatter(frontmatter)
+        witness = blocked_witness_from_frontmatter(frontmatter)
+        detail_parts.append(f"blocked_reason: {reason or 'missing'}")
+        if witness:
+            detail_parts.append(f"blocked_witness: {witness}")
+        detail = " (" + "; ".join(detail_parts) + ")"
     print(
-        f"cc-claim: refusing to claim '{task_id}' — current status is '{status}', "
+        f"cc-claim: refusing to claim '{task_id}' — current status is '{status}'{detail}, "
         "not 'offered' or an assigned ready state",
         file=sys.stderr,
     )
