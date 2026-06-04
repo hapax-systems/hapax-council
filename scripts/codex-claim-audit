@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# codex-claim-audit — detect phantom task claims (claimed but no implementation progress).
+# codex-claim-audit — detect phantom or blocked task claims.
 #
-# Scans all active tasks assigned to cx-* or codex-* roles. For each, checks:
-#   1. Is the task claimed/in_progress for > STALE_HOURS without a PR or branch?
+# Scans active task claims. For each, checks:
+#   1. Is a cx-*/codex* task claimed/in_progress for > STALE_HOURS without a PR or branch?
 #   2. Does the assigned role have a matching cc-active-task cache marker?
 #   3. Are live resumed lane processes still coherent with active task state?
+#   4. Is the assigned lane quota-blocked by receipt or methodology-dispatch evidence?
 #
-# Reports phantom claims and optionally releases them (--release).
+# Reports phantom/quota-blocked claims and optionally releases them (--release).
 #
 # Intended to run as a systemd timer (codex-claim-audit.timer) or ad-hoc.
 
@@ -14,14 +15,19 @@ set -euo pipefail
 
 VAULT_ROOT="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
 CLAIM_CACHE_DIR="${HAPAX_CLAIM_CACHE_DIR:-$HOME/.cache/hapax}"
+RELAY_RECEIPT_DIR="${HAPAX_RELAY_RECEIPT_DIR:-$HOME/.cache/hapax/relay/receipts}"
+ORCHESTRATION_LEDGER_DIR="${HAPAX_ORCHESTRATION_LEDGER_DIR:-$HOME/.cache/hapax/orchestration}"
+QUOTA_BLOCKED_LOOKBACK_SECONDS="${HAPAX_QUOTA_BLOCKED_LOOKBACK_SECONDS:-86400}"
 STALE_HOURS="${CODEX_CLAIM_STALE_HOURS:-6}"
 RELEASE=false
+RELEASE_QUOTA_BLOCKED=false
 NTFY_URL="${NTFY_URL:-https://ntfy.sh}"
 NTFY_TOPIC="${NTFY_TOPIC:-hapax-ops}"
 
 for arg in "$@"; do
   case "$arg" in
     --release) RELEASE=true ;;
+    --release-quota-blocked) RELEASE_QUOTA_BLOCKED=true ;;
     --stale-hours=*) STALE_HOURS="${arg#*=}" ;;
   esac
 done
@@ -33,10 +39,13 @@ cache_mismatch_count=0
 stale_cache_count=0
 coherence_count=0
 process_count=0
+quota_blocked_count=0
 report=""
 cache_report=""
 coherence_report=""
 process_report=""
+quota_report=""
+release_cache_message=""
 
 _strip_scalar() {
   printf '%s' "$1" | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^['\"]//; s/['\"]$//"
@@ -125,6 +134,142 @@ _record_process() {
   process_report="${process_report}  $1\n"
 }
 
+_receipt_quota_evidence_for() {
+  local role="$1"
+  local receipt="$RELAY_RECEIPT_DIR/${role}-quota-wall.yaml"
+  [ -f "$receipt" ] || return 1
+
+  local status resets reset_epoch
+  status="$(grep -oP '^status:\s*\K.*' "$receipt" 2>/dev/null | head -n1 | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//" || true)"
+  [ -z "$status" ] || [ "$status" = "quota_blocked" ] || return 1
+
+  resets="$(grep -oP '^resets_at:\s*\K.*' "$receipt" 2>/dev/null | head -n1 | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//" || true)"
+  case "$resets" in
+    ""|unknown|null|none|"~")
+      printf 'quota-wall-receipt:%s' "$receipt"
+      return 0
+      ;;
+    *)
+      reset_epoch="$(date -d "$resets" +%s 2>/dev/null || echo 0)"
+      if [ "$reset_epoch" -ge "$now_epoch" ]; then
+        printf 'quota-wall-receipt:%s' "$receipt"
+        return 0
+      fi
+      return 1
+      ;;
+  esac
+}
+
+_dispatch_quota_evidence_for() {
+  local role="$1"
+  local task_id="$2"
+  command -v python3 >/dev/null 2>&1 || return 1
+  local ledger evidence
+  for ledger in "$ORCHESTRATION_LEDGER_DIR/methodology-dispatch.jsonl" "$ORCHESTRATION_LEDGER_DIR/route-decisions.jsonl"; do
+    [ -f "$ledger" ] || continue
+    evidence="$(python3 - "$role" "$task_id" "$ledger" "$QUOTA_BLOCKED_LOOKBACK_SECONDS" <<'PYEOF'
+import json
+import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+role, task_id, ledger_raw, lookback_raw = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+ledger = Path(ledger_raw)
+try:
+    lookback = int(lookback_raw)
+except ValueError:
+    lookback = 86400
+now = datetime.now(UTC)
+cutoff = now - timedelta(seconds=max(0, lookback))
+
+try:
+    lines = ledger.read_text(encoding="utf-8").splitlines()
+except OSError:
+    sys.exit(1)
+
+matches: list[tuple[datetime, str]] = []
+for raw in lines[-5000:]:
+    try:
+        record = json.loads(raw)
+    except json.JSONDecodeError:
+        continue
+    if record.get("lane") != role:
+        continue
+    if record.get("task_id") != task_id:
+        continue
+    ts_raw = str(record.get("timestamp") or record.get("created_at") or "")
+    try:
+        ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        continue
+    if ts < cutoff:
+        continue
+    reasons = record.get("route_policy_reason_codes") or []
+    if not reasons:
+        reasons = record.get("reason_codes") or []
+    if not isinstance(reasons, list):
+        reasons = [str(reasons)]
+    text = " ".join(
+        [
+            str(record.get("reason") or ""),
+            str(record.get("message") or ""),
+            str(record.get("decision") or ""),
+            str(record.get("policy_outcome") or ""),
+            str(record.get("route_policy_action") or ""),
+            str(record.get("route_policy_outcome") or ""),
+            " ".join(str(item) for item in reasons),
+        ]
+    ).lower()
+    quotaish = (
+        "quota" in text
+        or "account_live_quota" in text
+        or "usage limit" in text
+        or "rate_limit" in text
+    )
+    blocked = record.get("ok") is False or "hold" in text or "refuse" in text
+    if quotaish and blocked:
+        ident = str(record.get("route_decision_id") or record.get("decision_id") or ts_raw)
+        matches.append((ts, ident))
+
+if not matches:
+    sys.exit(1)
+
+_ts, ident = sorted(matches, key=lambda item: item[0])[-1]
+source = ledger.name.removesuffix(".jsonl")
+print(f"{source}:{ident}")
+PYEOF
+)" && {
+      printf '%s' "$evidence"
+      return 0
+    }
+  done
+  return 1
+}
+
+_quota_evidence_for() {
+  local role="$1"
+  local task_id="$2"
+  _receipt_quota_evidence_for "$role" || _dispatch_quota_evidence_for "$role" "$task_id"
+}
+
+_clear_claim_cache_for_release() {
+  local assigned="$1"
+  local task_id="$2"
+  release_cache_message=""
+  local claim_file claimed_task
+  claim_file="$CLAIM_CACHE_DIR/cc-active-task-$assigned"
+  if [ -f "$claim_file" ]; then
+    claimed_task=$(sed -n '1p' "$claim_file" 2>/dev/null || true)
+    if [ "$claimed_task" = "$task_id" ]; then
+      rm -f "$claim_file"
+      release_cache_message="    -> CLEARED stale claim cache $(basename "$claim_file")\n"
+    else
+      cache_mismatch_count=$((cache_mismatch_count + 1))
+      release_cache_message="    -> KEPT claim cache $(basename "$claim_file") because it names ${claimed_task:-<empty>}\n"
+    fi
+  fi
+}
+
 for note in "$VAULT_ROOT/active/"*.md; do
   [ -f "$note" ] || continue
 
@@ -137,6 +282,8 @@ for note in "$VAULT_ROOT/active/"*.md; do
   pr="$(_fm_value pr "$note")"
   branch="$(_fm_value branch "$note")"
   claimed_at="$(_fm_value claimed_at "$note")"
+  quota_evidence=""
+  claim_matches=false
 
   if ! _is_unassigned_role "$assigned"; then
     claim_file="$(_claim_file_for "$assigned")"
@@ -145,6 +292,32 @@ for note in "$VAULT_ROOT/active/"*.md; do
       _record_coherence "CACHE_MISSING: ${task_id} assigned=${assigned} status=${status} expected=$(basename "$claim_file")"
     elif [ "$claimed_task" != "$task_id" ]; then
       _record_coherence "CACHE_MISMATCH: ${task_id} assigned=${assigned} status=${status} cache=$(basename "$claim_file") cache_task=${claimed_task:-<empty>}"
+    else
+      claim_matches=true
+    fi
+
+    quota_evidence="$(_quota_evidence_for "$assigned" "$task_id" 2>/dev/null || true)"
+    if [ -n "$quota_evidence" ]; then
+      if [ "$claim_matches" != true ]; then
+        continue
+      fi
+      quota_blocked_count=$((quota_blocked_count + 1))
+      quota_report="${quota_report}  QUOTA_BLOCKED: ${task_id} assigned=${assigned} status=${status} evidence=${quota_evidence} pr=${pr} branch=${branch}\n"
+
+      if [ "$RELEASE" = true ] && [ "$RELEASE_QUOTA_BLOCKED" = true ]; then
+        now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        safe_evidence="$(printf '%s' "$quota_evidence" | sed 's/[&\\]/_/g')"
+        sed -i "s/^status:.*/status: offered/" "$note"
+        sed -i "s/^assigned_to:.*/assigned_to: unassigned/" "$note"
+        sed -i "s/^updated_at:.*/updated_at: $now_iso/" "$note"
+        sed -i "/^## Session log$/a\\- $now_iso codex-claim-audit released quota-blocked claim (${assigned}; evidence: ${safe_evidence})" "$note"
+        quota_report="${quota_report}    -> RELEASED back to offered for governed redispatch\n"
+        _clear_claim_cache_for_release "$assigned" "$task_id"
+        quota_report="${quota_report}${release_cache_message}"
+      elif [ "$RELEASE" = true ]; then
+        quota_report="${quota_report}    -> HELD: pass --release-quota-blocked to release quota-blocked claims\n"
+      fi
+      continue
     fi
   fi
 
@@ -175,17 +348,8 @@ for note in "$VAULT_ROOT/active/"*.md; do
       sed -i "s/^updated_at:.*/updated_at: $now_iso/" "$note"
       sed -i "/^## Session log$/a\\- $now_iso codex-claim-audit released phantom claim (${assigned}, ${age_h}h stale)" "$note"
       report="${report}    → RELEASED back to offered\n"
-      claim_file="$CLAIM_CACHE_DIR/cc-active-task-$assigned"
-      if [ -f "$claim_file" ]; then
-        claimed_task=$(sed -n '1p' "$claim_file" 2>/dev/null || true)
-        if [ "$claimed_task" = "$task_id" ]; then
-          rm -f "$claim_file"
-          report="${report}    → CLEARED stale claim cache $(basename "$claim_file")\n"
-        else
-          cache_mismatch_count=$((cache_mismatch_count + 1))
-          report="${report}    → KEPT claim cache $(basename "$claim_file") because it names ${claimed_task:-<empty>}\n"
-        fi
-      fi
+      _clear_claim_cache_for_release "$assigned" "$task_id"
+      report="${report}${release_cache_message}"
     fi
   fi
 done
@@ -283,9 +447,13 @@ while IFS= read -r proc_line; do
   _record_process "${reason}: pid=${pid:-?} age_s=${age_s:-?} role=${role} task=${task_id} ${detail}"
 done <<< "$process_input"
 
-issue_count=$((phantom_count + coherence_count + process_count))
+issue_count=$((phantom_count + coherence_count + process_count + quota_blocked_count))
 
 if [ "$issue_count" -gt 0 ]; then
+  if [ "$quota_blocked_count" -gt 0 ]; then
+    printf "codex-claim-audit: %d quota-blocked claim(s) found\n" "$quota_blocked_count"
+    printf '%b' "$quota_report"
+  fi
   if [ "$phantom_count" -gt 0 ]; then
     printf "codex-claim-audit: %d phantom claim(s) found\n" "$phantom_count"
     printf '%b' "$report"
@@ -311,7 +479,11 @@ if [ "$issue_count" -gt 0 ]; then
       -H "Tags: warning,robot" \
       "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
   fi
-  if [ "$RELEASE" = true ] && [ "$cache_mismatch_count" -eq 0 ] && [ "$coherence_count" -eq 0 ] && [ "$process_count" -eq 0 ]; then
+  if [ "$RELEASE" = true ] \
+    && { [ "$quota_blocked_count" -eq 0 ] || [ "$RELEASE_QUOTA_BLOCKED" = true ]; } \
+    && [ "$cache_mismatch_count" -eq 0 ] \
+    && [ "$coherence_count" -eq 0 ] \
+    && [ "$process_count" -eq 0 ]; then
     exit 0
   fi
   exit 1
