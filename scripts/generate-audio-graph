@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Offline mk5 audio graph compiler.
+
+This script never writes live audio config. `--emit-candidate` requires an
+explicit shadow directory and rejects live config locations.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.audio_graph.compiler import CandidateBundle, compile_port_audio_graph
+from shared.audio_graph.model import PortAudioGraph
+
+DEFAULT_CONFIG = Path("config/audio-graph.yaml")
+
+
+def _json_default(value: object) -> object:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    return str(value)
+
+
+def _bundle_summary(bundle: CandidateBundle) -> dict[str, Any]:
+    return {
+        "ok": bundle.proof_report.ok,
+        "violations": [
+            violation.model_dump(mode="json") for violation in bundle.proof_report.violations
+        ],
+        "manifest": bundle.manifest,
+    }
+
+
+def _reject_live_output_dir(path: Path) -> Path:
+    resolved = path.expanduser().resolve()
+    forbidden_roots = [
+        Path.home().joinpath(".config").resolve(),
+        Path("/etc").resolve(),
+        Path("/usr").resolve(),
+        Path("/run").resolve(),
+        Path("/dev").resolve(),
+        REPO_ROOT.joinpath("config/hapax").resolve(),
+    ]
+    for root in forbidden_roots:
+        if resolved == root or root in resolved.parents:
+            raise ValueError(
+                f"refusing to emit candidate artifacts under live/protected path: {root}"
+            )
+    return resolved
+
+
+def _write_candidate_dir(bundle: CandidateBundle, output_dir: Path) -> None:
+    output_dir = _reject_live_output_dir(output_dir)
+    files: dict[str, str] = {}
+    files.update(bundle.pipewire_confs)
+    files.update(bundle.wireplumber_confs)
+    files.update(bundle.hapax_confs)
+    files["hapax/audio-graph.manifest.json"] = (
+        json.dumps(bundle.manifest, indent=2, sort_keys=True, default=_json_default) + "\n"
+    )
+    files["hapax/audio-privacy-proof.json"] = (
+        json.dumps(bundle.proof_report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+    )
+    for relative, content in sorted(files.items()):
+        target = output_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG,
+        help="Path to config/audio-graph.yaml (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Run model validation and all proofs; exit nonzero on blocking violation.",
+    )
+    parser.add_argument(
+        "--emit-candidate",
+        type=Path,
+        metavar="DIR",
+        help="Write candidate artifacts to a shadow directory only.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    if not args.check and args.emit_candidate is None:
+        print("error: specify --check and/or --emit-candidate DIR", file=sys.stderr)
+        return 2
+
+    graph = PortAudioGraph.from_yaml(args.config)
+    bundle = compile_port_audio_graph(graph)
+    summary = _bundle_summary(bundle)
+
+    if args.check:
+        print(json.dumps(summary, indent=2, sort_keys=True, default=_json_default))
+
+    if not bundle.proof_report.ok:
+        return 1
+
+    if args.emit_candidate is not None:
+        try:
+            output_dir = _reject_live_output_dir(args.emit_candidate)
+            _write_candidate_dir(bundle, output_dir)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"wrote candidate artifacts to {output_dir}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

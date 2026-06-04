@@ -790,6 +790,31 @@ def _decompose_pipewire_conf(
     return nodes, loopbacks, tunables, profile_pins
 
 
+def _default_role_priority(role: str) -> int:
+    match role.lower():
+        case "multimedia" | "music":
+            return 10
+        case "notification":
+            return 20
+        case "assistant" | "broadcast":
+            return 40
+        case _:
+            return 10
+
+
+def _canonical_role_loopback(role: str, preferred_target: str) -> RoleLoopback:
+    return RoleLoopback(
+        role=role,
+        loopback_node_name=f"loopback.sink.role.{role.lower()}",
+        description=role,
+        priority=_default_role_priority(role),
+        intended_roles=[role],
+        preferred_target=preferred_target,
+        node_volume=1.0,
+        state_restore=False,
+    )
+
+
 def _decompose_wireplumber_conf(
     path: Path, gaps: GapReport
 ) -> tuple[
@@ -833,7 +858,7 @@ def _decompose_wireplumber_conf(
                     pref_m = _WP_PREFERRED_TARGET_RE.search(block)
                     intended_m = _WP_INTENDED_ROLES_RE.search(block)
                     vol_m = _WP_NODE_VOLUME_RE.search(block)
-                    if not name_m or not pri_m:
+                    if not name_m:
                         continue
                     intended = []
                     if intended_m:
@@ -848,13 +873,26 @@ def _decompose_wireplumber_conf(
                             role=role,
                             loopback_node_name=name_m.group(1),
                             description=desc_m.group(1) if desc_m else "",
-                            priority=int(pri_m.group(1)),
+                            priority=(
+                                int(pri_m.group(1)) if pri_m else _default_role_priority(role)
+                            ),
                             intended_roles=intended,
                             preferred_target=(pref_m.group(1) if pref_m else None),
                             node_volume=float(vol_m.group(1)) if vol_m else 1.0,
                             state_restore=False,
                         )
                     )
+            if loopbacks and path.name == "50-hapax-voice-duck.conf":
+                by_role = {lb.role.lower(): lb for lb in loopbacks}
+                canonical_targets = {
+                    "Multimedia": "hapax-pc-loudnorm",
+                    "Notification": "hapax-notification-private",
+                    "Assistant": "hapax-private",
+                    "Broadcast": "hapax-voice-fx-capture",
+                }
+                for role, target in canonical_targets.items():
+                    if role.lower() not in by_role:
+                        loopbacks.append(_canonical_role_loopback(role, target))
         if loopbacks:
             role_sink = MediaRoleSink(
                 duck_policy=duck,
