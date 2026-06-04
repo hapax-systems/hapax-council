@@ -343,6 +343,125 @@ def test_paid_route_without_active_budget_refuses() -> None:
     assert "refused_expired_budget" in decision.reason_codes
 
 
+def test_spike_workload_refuses_local_fleet_and_points_to_cloud_burst() -> None:
+    request = _request(
+        cloud_burst={
+            "eligible": True,
+            "spike_reasons": ["high_parallelism:12", "multi_agent_fanout:5"],
+            "parallelism": 12,
+            "agent_fanout": 5,
+            "public_repo_only": True,
+            "read_mostly": True,
+            "no_secret_egress": True,
+            "provider_budget_ref": "tb-test-cloud-burst",
+        }
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "cloud_burst_spike_excludes_local_fleet" in decision.reason_codes
+    assert "cloud_burst_target:api.headless.api_frontier" in decision.reason_codes
+    assert decision.cloud_burst_eligible is True
+    assert decision.cloud_burst_guard_state == "excluded_local"
+    assert decision.local_execution_target == "appendix"
+
+
+def test_non_spike_workload_launch_receipt_records_appendix_default() -> None:
+    decision = evaluate_dispatch_policy(_request(), now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert "cloud_burst_not_eligible_appendix_default" in decision.reason_codes
+    assert decision.cloud_burst_guard_state == "appendix_default"
+    assert decision.local_execution_target == "appendix"
+
+
+def test_cloud_burst_route_requires_secret_public_read_and_budget_guards() -> None:
+    request = _request(
+        platform="api",
+        profile="api_frontier",
+        route_id="api.headless.api_frontier",
+        capability=_capability(
+            route_id="api.headless.api_frontier",
+            capacity_pool="api_paid_spend",
+        ),
+        quota=_quota(
+            paid_api_budget_state="active",
+            paid_route_eligibility_state="eligible_active_budget",
+            evidence_refs=("tb-test-cloud-burst",),
+        ),
+        cloud_burst={
+            "eligible": True,
+            "spike_reasons": ["ci_matrix"],
+            "ci_matrix": True,
+            "public_repo_only": False,
+            "read_mostly": False,
+            "no_secret_egress": True,
+            "provider_budget_ref": "tb-test-cloud-burst",
+        },
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "cloud_burst_public_repo_guard_failed" in decision.reason_codes
+    assert "cloud_burst_read_mostly_guard_failed" in decision.reason_codes
+    assert decision.cloud_burst_guard_state == "blocked"
+
+
+def test_cloud_burst_route_ineligible_receipt_points_back_to_appendix() -> None:
+    request = _request(
+        platform="api",
+        profile="api_frontier",
+        route_id="api.headless.api_frontier",
+        capability=_capability(
+            route_id="api.headless.api_frontier",
+            capacity_pool="api_paid_spend",
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "cloud_burst_not_eligible_appendix_default" in decision.reason_codes
+    assert decision.cloud_burst_guard_state == "ineligible"
+    assert decision.local_execution_target == "appendix"
+
+
+def test_cloud_burst_route_launches_only_after_all_guards_and_budget_match() -> None:
+    request = _request(
+        platform="api",
+        profile="api_frontier",
+        route_id="api.headless.api_frontier",
+        capability=_capability(
+            route_id="api.headless.api_frontier",
+            capacity_pool="api_paid_spend",
+        ),
+        quota=_quota(
+            paid_api_budget_state="active",
+            paid_route_eligibility_state="eligible_active_budget",
+            evidence_refs=("tb-test-cloud-burst",),
+        ),
+        cloud_burst={
+            "eligible": True,
+            "spike_reasons": ["high_parallelism:12", "ci_matrix"],
+            "parallelism": 12,
+            "ci_matrix": True,
+            "public_repo_only": True,
+            "read_mostly": True,
+            "no_secret_egress": True,
+            "provider_budget_ref": "tb-test-cloud-burst",
+        },
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert "cloud_burst_guard_passed" in decision.reason_codes
+    assert decision.cloud_burst_guard_state == "eligible"
+    assert decision.cloud_burst_spike_reasons == ("high_parallelism:12", "ci_matrix")
+
+
 def test_support_artifact_without_eligible_review_refuses() -> None:
     request = _request(
         capability=_capability(authority_ceiling="frontier_review_required"),

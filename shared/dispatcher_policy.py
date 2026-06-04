@@ -69,6 +69,9 @@ SUPPORT_CEILINGS = frozenset(
     {"authoritative", "frontier_review_required", "support_only", "read_only"}
 )
 NON_MUTATING_SURFACES = frozenset({"none"})
+CLOUD_BURST_ROUTE_IDS = frozenset({"api.headless.api_frontier"})
+LOCAL_DEV_PLATFORMS = frozenset({"antigrav", "claude", "codex", "gemini", "vibe"})
+LOCAL_DEV_TARGET = "appendix"
 
 
 class DispatchAction(StrEnum):
@@ -276,6 +279,7 @@ class DispatchRequest(_PolicyModel):
     mutation_scope_refs: tuple[str, ...] = Field(default=())
     risk_flags: dict[str, bool] = Field(default_factory=dict)
     context_shape: dict[str, object] = Field(default_factory=dict)
+    cloud_burst: dict[str, object] = Field(default_factory=dict)
     route_constraints: dict[str, object] = Field(default_factory=dict)
     review_requirement: dict[str, object] = Field(default_factory=dict)
     capability: RouteCapabilityState | None = None
@@ -313,6 +317,11 @@ class RouteDecision(_PolicyModel):
     route_selection_authority: Literal[False] = False
     quality_floor_satisfied: bool
     authority_allowed: bool
+    cloud_burst_eligible: bool = False
+    cloud_burst_guard_state: str = "not_applicable"
+    cloud_burst_spike_reasons: tuple[str, ...] = Field(default=())
+    cloud_burst_guard_reasons: tuple[str, ...] = Field(default=())
+    local_execution_target: str | None = None
     reason_codes: tuple[str, ...] = Field(default=())
     message: str
     resource_state_refs: tuple[str, ...] = Field(default=())
@@ -462,6 +471,7 @@ def build_dispatch_request(
         context_shape=route_metadata.context_shape.model_dump(mode="json")
         if route_metadata
         else {},
+        cloud_burst=route_metadata.cloud_burst.model_dump(mode="json") if route_metadata else {},
         route_constraints=route_metadata.route_constraints.model_dump(mode="json")
         if route_metadata
         else {},
@@ -543,6 +553,17 @@ def evaluate_dispatch_policy(
             request,
             DispatchAction.REFUSE,
             ("unsupported_route",),
+            checked_at,
+            quality_floor_satisfied=False,
+            authority_allowed=False,
+        )
+
+    cloud_action, cloud_reasons = _cloud_burst_policy_gate(request)
+    if cloud_reasons:
+        return _decision(
+            request,
+            cloud_action,
+            cloud_reasons,
             checked_at,
             quality_floor_satisfied=False,
             authority_allowed=False,
@@ -645,7 +666,7 @@ def evaluate_dispatch_policy(
     return _decision(
         request,
         DispatchAction.LAUNCH,
-        ("policy_launch",),
+        _launch_reason_codes(request),
         checked_at,
         quality_floor_satisfied=quality_floor_satisfied,
         authority_allowed=authority_allowed,
@@ -685,6 +706,11 @@ def route_decision_receipt_payload(decision: RouteDecision) -> dict[str, Any]:
         "route_policy_route_selection_authority": decision.route_selection_authority,
         "route_policy_quality_floor_satisfied": decision.quality_floor_satisfied,
         "route_policy_authority_allowed": decision.authority_allowed,
+        "route_policy_cloud_burst_eligible": decision.cloud_burst_eligible,
+        "route_policy_cloud_burst_guard_state": decision.cloud_burst_guard_state,
+        "route_policy_cloud_burst_spike_reasons": list(decision.cloud_burst_spike_reasons),
+        "route_policy_cloud_burst_guard_reasons": list(decision.cloud_burst_guard_reasons),
+        "route_policy_local_execution_target": decision.local_execution_target,
     }
     if decision.dimensional_receipt is not None:
         payload.update(
@@ -1725,6 +1751,7 @@ def _decision(
 ) -> RouteDecision:
     compatibility_degraded = compatibility_mode != "none" or degraded_state is not None
     route_policy_green = action is DispatchAction.LAUNCH and not compatibility_degraded
+    cloud_burst_receipt = _cloud_burst_receipt_fields(request, reasons)
     decision = RouteDecision(
         decision_id=_decision_id(request, action, reasons, created_at),
         created_at=created_at,
@@ -1752,6 +1779,7 @@ def _decision(
         route_selection_authority=False,
         quality_floor_satisfied=quality_floor_satisfied,
         authority_allowed=authority_allowed,
+        **cloud_burst_receipt,
         reason_codes=tuple(reason for reason in reasons if reason),
         message="; ".join(reason for reason in reasons if reason) or action.value,
         resource_state_refs=request.resource_state_refs,
@@ -1861,6 +1889,146 @@ def _decision_id(
 
 def _route_id(platform: str, mode: str, profile: str) -> str:
     return ".".join([platform.strip(), mode.strip().replace("-", "_"), profile.strip()])
+
+
+def _cloud_burst_policy_gate(request: DispatchRequest) -> tuple[DispatchAction, tuple[str, ...]]:
+    cloud = request.cloud_burst
+    eligible = _cloud_burst_eligible(request)
+    if eligible and _is_local_dev_route(request):
+        return (
+            DispatchAction.REFUSE,
+            (
+                "cloud_burst_spike_excludes_local_fleet",
+                f"cloud_burst_target:{next(iter(sorted(CLOUD_BURST_ROUTE_IDS)))}",
+                f"local_execution_target:{LOCAL_DEV_TARGET}",
+                *_cloud_spike_reason_codes(request),
+            ),
+        )
+
+    if not _is_cloud_burst_route(request):
+        return DispatchAction.LAUNCH, ()
+
+    if not eligible:
+        return (
+            DispatchAction.REFUSE,
+            (
+                "cloud_burst_not_eligible_appendix_default",
+                f"local_execution_target:{LOCAL_DEV_TARGET}",
+            ),
+        )
+
+    violations: list[str] = []
+    if _privacy_sensitive(request) or not _cloud_bool(cloud, "no_secret_egress"):
+        violations.append("cloud_burst_secret_egress_guard_failed")
+    if not _cloud_bool(cloud, "public_repo_only"):
+        violations.append("cloud_burst_public_repo_guard_failed")
+    if not _cloud_bool(cloud, "read_mostly"):
+        violations.append("cloud_burst_read_mostly_guard_failed")
+
+    budget_ref = _optional_string(cloud.get("provider_budget_ref"))
+    if budget_ref is None:
+        violations.append("cloud_burst_budget_ref_missing")
+    elif request.quota is not None and request.quota.evidence_refs:
+        if budget_ref not in request.quota.evidence_refs:
+            violations.append("cloud_burst_budget_ref_not_backed_by_ledger")
+
+    if violations:
+        return (
+            DispatchAction.REFUSE,
+            (
+                *violations,
+                *_cloud_spike_reason_codes(request),
+            ),
+        )
+    return DispatchAction.LAUNCH, ()
+
+
+def _launch_reason_codes(request: DispatchRequest) -> tuple[str, ...]:
+    if _is_cloud_burst_route(request):
+        return (
+            "policy_launch",
+            "cloud_burst_guard_passed",
+            *_cloud_spike_reason_codes(request),
+        )
+    if not _cloud_burst_eligible(request) and _is_local_dev_route(request):
+        return (
+            "policy_launch",
+            "cloud_burst_not_eligible_appendix_default",
+            f"local_execution_target:{LOCAL_DEV_TARGET}",
+        )
+    return ("policy_launch",)
+
+
+def _is_cloud_burst_route(request: DispatchRequest) -> bool:
+    return request.route_id in CLOUD_BURST_ROUTE_IDS
+
+
+def _is_local_dev_route(request: DispatchRequest) -> bool:
+    return request.platform in LOCAL_DEV_PLATFORMS
+
+
+def _cloud_burst_eligible(request: DispatchRequest) -> bool:
+    return _cloud_bool(request.cloud_burst, "eligible")
+
+
+def _cloud_spike_reason_codes(request: DispatchRequest) -> tuple[str, ...]:
+    reasons = request.cloud_burst.get("spike_reasons")
+    if not isinstance(reasons, (list, tuple)):
+        return ()
+    return tuple(f"cloud_burst_spike:{reason}" for reason in reasons if str(reason).strip())
+
+
+def _cloud_bool(cloud_burst: Mapping[str, object], field: str) -> bool:
+    value = cloud_burst.get(field)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _cloud_burst_receipt_fields(
+    request: DispatchRequest,
+    reasons: tuple[str, ...],
+) -> dict[str, object]:
+    eligible = _cloud_burst_eligible(request)
+    raw_spike_reasons = request.cloud_burst.get("spike_reasons", ())
+    if not isinstance(raw_spike_reasons, (list, tuple)):
+        raw_spike_reasons = ()
+    spike_reasons = tuple(str(reason) for reason in raw_spike_reasons if str(reason).strip())
+    if _is_cloud_burst_route(request):
+        if not eligible:
+            state = "ineligible"
+        elif any(_cloud_burst_guard_failure_reason(reason) for reason in reasons):
+            state = "blocked"
+        else:
+            state = "eligible"
+    elif _is_local_dev_route(request):
+        state = "excluded_local" if eligible else "appendix_default"
+    else:
+        state = "not_applicable"
+
+    guard_reasons = tuple(reason for reason in reasons if _cloud_burst_guard_failure_reason(reason))
+    return {
+        "cloud_burst_eligible": eligible,
+        "cloud_burst_guard_state": state,
+        "cloud_burst_spike_reasons": spike_reasons,
+        "cloud_burst_guard_reasons": guard_reasons,
+        "local_execution_target": LOCAL_DEV_TARGET
+        if state in {"appendix_default", "excluded_local", "ineligible"}
+        else None,
+    }
+
+
+def _cloud_burst_guard_failure_reason(reason: str) -> bool:
+    return (
+        reason.startswith("cloud_burst_")
+        and reason != "cloud_burst_guard_passed"
+        and not reason.startswith("cloud_burst_spike:")
+        and not reason.startswith("cloud_burst_target:")
+    )
 
 
 def _route_constraint_reasons(request: DispatchRequest) -> tuple[str, ...]:

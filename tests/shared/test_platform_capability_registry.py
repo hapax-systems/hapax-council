@@ -221,6 +221,18 @@ def test_gemini_plan_and_worker_profiles_are_split() -> None:
     assert "quality_equivalence_record_absent" in worker.blocked_reasons
 
 
+def test_cloud_burst_api_route_is_blocked_dry_run_paid_surface() -> None:
+    registry = load_platform_capability_registry()
+    route = registry.require("api.headless.api_frontier")
+
+    assert route.route_state is RouteState.BLOCKED
+    assert route.capacity_pool.value == "api_paid_spend"
+    assert route.auth_surface.value == "api_key"
+    assert route.mutability.source is True
+    assert "provider_budget_receipt_absent" in route.blocked_reasons
+    assert "cloud_burst_release_gate_absent" in route.blocked_reasons
+
+
 def test_risky_auto_approval_routes_cannot_be_unrestricted_authoritative() -> None:
     registry = load_platform_capability_registry()
     vibe = registry.require("vibe.headless.full")

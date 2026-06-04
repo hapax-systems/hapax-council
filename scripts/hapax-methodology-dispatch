@@ -218,6 +218,15 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         True,
         "agy CLI interactive path; requires governed dispatch bootstrap and task claim.",
     ),
+    ("api", "headless", "api_frontier"): PlatformPath(
+        "api",
+        "headless",
+        "api_frontier",
+        "receipt-only cloud-burst packet; provider execution requires a follow-up release gate",
+        "Cloud-burst API route for spike dev dry-run packets",
+        True,
+        "Spike-only route; policy requires no-secret egress, public-repo/read-mostly scope, and a matching budget ref before launch eligibility.",
+    ),
 }
 
 RECEIPT_ONLY_ROUTE = PlatformPath(
@@ -1139,6 +1148,8 @@ def launch_claude_interactive(task_id: str, lane: str, validation: Validation) -
 
 def normalize_profile(platform: str, profile: str) -> str:
     profile = profile.strip().lower().replace("_", "-")
+    if platform == "api" and profile in {"api-frontier", "cloud", "cloud-burst", "frontier"}:
+        return "api_frontier"
     if profile in {"default", "max", "pro", "full-capability"}:
         return "full"
     if profile == "quota-fallback":
@@ -1535,7 +1546,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", help="Explicit cc-task id to dispatch")
     parser.add_argument("--lane", help="Target lane, e.g. beta or cx-red")
     parser.add_argument(
-        "--platform", default="claude", choices=["claude", "codex", "gemini", "vibe", "antigrav"]
+        "--platform",
+        default="claude",
+        choices=["api", "claude", "codex", "gemini", "vibe", "antigrav"],
     )
     parser.add_argument(
         "--mode", default="headless", choices=["headless", "interactive", "receipt-only"]
