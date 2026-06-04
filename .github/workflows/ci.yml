@@ -175,11 +175,11 @@ jobs:
           cache-dependency-glob: |
             pyproject.toml
             uv.lock
-      - uses: astral-sh/ruff-action@v3
+      - uses: astral-sh/ruff-action@v4.0.0
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           args: "check"
-      - uses: astral-sh/ruff-action@v3
+      - uses: astral-sh/ruff-action@v4.0.0
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
           args: "format --check"
@@ -880,11 +880,11 @@ jobs:
       # Path filter: detect whether this PR/push touches files that
       # plausibly affect visual-regression output. Outputs `homage_inputs`
       # (string "true"|"false") consumed by every downstream step's `if:`
-      # clause. `dorny/paths-filter@v3` handles both pull_request (diff
+      # clause. `dorny/paths-filter@v4` handles both pull_request (diff
       # vs base) and push (diff vs before-SHA) automatically.
       - name: Detect homage-vr input changes
         id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             homage_inputs:
@@ -979,7 +979,7 @@ jobs:
       - name: Detect web-build input changes
         id: filter
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             web_build:
@@ -1021,7 +1021,7 @@ jobs:
       # success when skipped so branch protection sees an honest status.
       - name: Detect Rust crate changes
         id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             rust_crates:
@@ -1085,7 +1085,7 @@ jobs:
       - name: Detect vscode-build input changes
         id: filter
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             vscode_build:
