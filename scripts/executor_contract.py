@@ -59,7 +59,7 @@ EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
         mutates=False,
         claims=False,
         hooks_wired=False,
-        headless=True,
+        headless=False,
         read_only=True,
         notes=(
             "cloud-burst route metadata only; no direct provider launcher is wired, "
