@@ -22,6 +22,7 @@ ExecStart=%h/.local/bin/hapax-lane-supervisor
 # nothing important but is always reachable from the oneshot's thin env.
 Environment=PATH=%h/.npm-global/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
+Environment=HAPAX_LOCAL_DEV_MAINTENANCE_MODE=appendix-only
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hapax-lane-supervisor

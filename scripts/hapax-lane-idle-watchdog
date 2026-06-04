@@ -53,10 +53,30 @@ REQUIRED_CODEX_LANES="${HAPAX_REQUIRED_CODEX_LANES:-cx-cpu-bridge cx-effect-drif
 CLAUDE_LAUNCHER="${HOME}/.local/bin/hapax-claude"
 CODEX_LAUNCHER="${HOME}/projects/hapax-council/scripts/hapax-codex"
 
+log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) lane-idle: $*"; }
+
+local_dev_maintenance_mode() {
+    local mode="${HAPAX_LOCAL_DEV_MAINTENANCE_MODE:-}"
+    if [ -z "$mode" ]; then
+        mode="${HAPAX_DEFAULT_DISPATCH_HOST:-${HAPAX_DISPATCH_HOST:-local}}"
+    fi
+    case "$mode" in
+        appendix | hapax-appendix | appendix-only | appendix_only | remote | thin-client | thin_client)
+            echo "appendix-only"
+            ;;
+        *)
+            echo "local"
+            ;;
+    esac
+}
+
+LOCAL_DEV_MAINTENANCE_MODE="$(local_dev_maintenance_mode)"
+if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ]; then
+    log "appendix-only local-dev maintenance: local required-lane launch/revive and unclaimed idle nudges disabled"
+fi
+
 mkdir -p "$STATE_DIR"
 now=$(date +%s)
-
-log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) lane-idle: $*"; }
 
 # ─── L3/L4 SDLC pressure admission ────────────────────────────────────────────
 # The respawn FLOOR must yield under CPU pressure. When admission is 'closed'
@@ -237,8 +257,10 @@ done
 launched_lanes=0
 revived_lanes=0
 
-# L4: the respawn floor yields under 'closed' — don't re-kick a paused lane.
-if [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CLAUDE_LAUNCHER" ]; then
+# L4: the respawn floor yields under 'closed' and under appendix-only local-dev
+# mode. Appendix-only mode keeps podium as a thin client; explicit governed
+# dispatch remains available through hapax-methodology-dispatch.
+if [ "$LOCAL_DEV_MAINTENANCE_MODE" != "appendix-only" ] && [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CLAUDE_LAUNCHER" ]; then
     for role in $REQUIRED_CLAUDE_LANES; do
         session="hapax-claude-${role}"
         worktree="${HOME}/projects/hapax-council--${role}"
@@ -326,8 +348,10 @@ fi
 
 # ─── Ensure required Codex lanes are alive ─────────────────────────────────
 
-# L4: the respawn floor yields under 'closed' — don't re-kick a paused lane.
-if [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CODEX_LAUNCHER" ]; then
+# L4: the respawn floor yields under 'closed' and under appendix-only local-dev
+# mode. Codex auto-launch is already governed-only; this also suppresses local
+# dead-session revive checks/noise while appendix is the dev execution host.
+if [ "$LOCAL_DEV_MAINTENANCE_MODE" != "appendix-only" ] && [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CODEX_LAUNCHER" ]; then
     for color in $REQUIRED_CODEX_LANES; do
         session="hapax-codex-${color}"
         worktree="${HOME}/projects/hapax-council--${color}"
@@ -461,6 +485,7 @@ find_claimed_task() {
 
 dispatched=0
 skipped_cooldown=0
+suppressed_appendix_only=0
 
 # L4: under 'closed' the floor yields — defer nudges (don't re-kick paused lanes).
 if [ "$SDLC_ADMISSION" = "closed" ]; then
@@ -502,6 +527,13 @@ for session in "${!IDLE_LANES[@]}"; do
         dispatch_target="$claimed"
     else
         log "IDLE without claim for $lane — awaiting governed dispatch"
+        if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ]; then
+            log "APPENDIX-ONLY skip nudge $session ($platform/$lane): unclaimed local dev lane must remain quiet until explicit governed dispatch"
+            echo "$now" > "$cooldown_file"
+            rm -f "$STATE_DIR/${session}.idle_since" 2>/dev/null
+            suppressed_appendix_only=$((suppressed_appendix_only + 1))
+            continue
+        fi
         dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with no active claimed task. Await governed dispatch; do not self-select queue work. Required path: scripts/hapax-methodology-dispatch --task <id> --lane ${lane} --platform ${platform} --mode <mode>."
         dispatch_target="await-governed-dispatch"
     fi
@@ -554,12 +586,15 @@ fi
 if [ "$dispatched" -eq 0 ] && [ "$skipped_cooldown" -gt 0 ]; then
     log "all $idle_count idle lanes in cooldown"
 fi
+if [ "$suppressed_appendix_only" -gt 0 ]; then
+    log "appendix-only suppressed $suppressed_appendix_only unclaimed local idle lane nudge(s)"
+fi
 
 log "dispatched $dispatched of $idle_count idle lanes"
 
 # ─── Summary alert if many lanes idle ────────────────────────────────────────
 
-if [ "$idle_count" -ge 3 ]; then
+if [ "$idle_count" -ge 3 ] && [ "$suppressed_appendix_only" -lt "$idle_count" ]; then
     idle_summary=""
     for session in "${!IDLE_LANES[@]}"; do
         idle_s="${IDLE_LANES[$session]}"
