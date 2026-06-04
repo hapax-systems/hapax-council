@@ -105,4 +105,15 @@ live screwm):** (1) re-arm the canary by regenerating `combined_crc<currentCRC>.
 orphaning-detection gate (assert the patched builtin CRC has a matching override) to close the
 silent-orphaning gap that the file-content contract test missed.
 
+- **Engine build verification + STEP 8 port registration:** the dp-fork (Commit 1+2) **builds and
+  links clean** (`make sdl-release`, 3.8 s incremental; only pre-existing upstream `wsum`
+  unused-var warnings) — concrete runtime-buildability evidence beyond the by-construction parity
+  argument. **Note on parity:** pixel-exact frame parity is *structurally* infeasible here — the
+  render is non-deterministic (ClientTime-driven vertex drift + live `/dev/shm` texture feeds), so
+  two separate runs never match pixel-for-pixel. The default-off compile-out (USERUTT_ETRA) +
+  `R_BlendView_N(NULL,0)`≡`R_BlendView` IS the parity proof; the build+link confirms it runs.
+  **STEP 8:** the `temporal_glfeedback_effects` aggregate port now owns the new content-effect work
+  — source-owner anchors `R_BlendView_N` / `opRuttEtra_luma_height` / `USERUTT_ETRA` in the deploy
+  patch + the `TestDomainStageHostArityFields` / `TestBothBasesGeometryContentCoverage` deterministic
+  tests. Port-owner gate green (5 tests).
 - (subsequent increments append their parity captures here before the draft → ready transition)

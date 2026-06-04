@@ -257,6 +257,14 @@
             "Release-grade expression is geometry-bound",
             "UserVec2: x=signal_aura"
           ]
+        },
+        {
+          "path": "assets/quake/darkplaces/hapax-live-texture.patch",
+          "anchors": [
+            "R_BlendView_N",
+            "opRuttEtra_luma_height",
+            "USERUTT_ETRA"
+          ]
         }
       ],
       "route_bridges": [
@@ -296,6 +304,13 @@
           "anchors": [
             "test_screwm_shader_effects_are_diagnostic_screen_space_only",
             "max(signal_presence"
+          ]
+        },
+        {
+          "path": "tests/test_wgsl_node_affordance_coverage.py",
+          "anchors": [
+            "TestDomainStageHostArityFields",
+            "TestBothBasesGeometryContentCoverage"
           ]
         }
       ],
