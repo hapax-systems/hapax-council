@@ -129,7 +129,7 @@ fi
 # --- 5. Extract PR number from a github.com pull URL.
 #       Pattern: https://github.com/<owner>/<repo>/pull/<N>
 #       gh pr create prints the URL on its own line; we take the first match. ---
-pr_url="$(printf '%s' "$tool_output" | grep -oE 'https://github\.com/[^/]+/[^/]+/pull/[0-9]+' | head -n1 || true)"
+pr_url="$(printf '%s' "$tool_output" | grep -m1 -oE 'https://github\.com/[^/]+/[^/]+/pull/[0-9]+' || true)"
 if [[ -z "$pr_url" ]]; then
   echo "cc-task-pr-link: no PR URL in output, skipping" >&2
   exit 0

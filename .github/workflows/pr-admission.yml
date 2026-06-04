@@ -55,7 +55,7 @@ jobs:
             echo "snapshot=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          mode=$(grep -E '^mode:' "$state_file" | awk '{print $2}' | tr -d '"' | head -1)
+          mode=$(grep -m1 -E '^mode:' "$state_file" | awk '{print $2}' | tr -d '"')
           [ -n "$mode" ] || mode="normal"
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           # Extract snapshot branches (one per line)

@@ -123,8 +123,7 @@ jobs:
             local n
             n=$(grep -cE '^\s*[0-9]+:\s+survived\b' "$file" 2>/dev/null || true)
             if [ -z "$n" ] || [ "$n" -eq 0 ]; then
-              n=$(grep -oE 'Survived[^0-9]*([0-9]+)' "$file" 2>/dev/null \
-                    | head -1 \
+              n=$(grep -m1 -oE 'Survived[^0-9]*([0-9]+)' "$file" 2>/dev/null \
                     | grep -oE '[0-9]+' || true)
             fi
             echo "${n:-0}"

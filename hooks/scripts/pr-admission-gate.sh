@@ -41,7 +41,7 @@ CONTROL_FILE="${HOME}/.cache/hapax/pr-admission-governor.yaml"
 
 # Quick mode read without invoking python. yq would be cleaner; using grep/awk
 # to avoid additional dep on hook hot path.
-MODE="$(grep -E '^mode:' "$CONTROL_FILE" 2>/dev/null | awk '{print $2}' | tr -d '"' | head -1)"
+MODE="$(grep -m1 -E '^mode:' "$CONTROL_FILE" 2>/dev/null | awk '{print $2}' | tr -d '"')"
 [ -n "$MODE" ] || MODE="normal"
 
 # Normal mode → no governor enforcement.
@@ -91,7 +91,7 @@ fi
 
 # 3. git push origin HEAD:refs/heads/<branch>   (the explicit detached-HEAD bypass pattern)
 if echo "$STRIPPED" | grep -qE '^\s*git\s+push\s+origin\s+HEAD:refs/heads/[A-Za-z0-9._/-]+'; then
-    target="$(echo "$STRIPPED" | grep -oE 'refs/heads/[A-Za-z0-9._/-]+' | head -1 | sed 's|refs/heads/||')"
+    target="$(echo "$STRIPPED" | grep -m1 -oE 'refs/heads/[A-Za-z0-9._/-]+' | sed 's|refs/heads/||')"
     if is_branch_in_snapshot "$target"; then
         # already-open snapshot branch — allow
         exit 0

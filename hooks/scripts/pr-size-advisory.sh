@@ -15,7 +15,7 @@ if ! echo "$OUTPUT" | grep -qE 'github\.com/.+/pull/[0-9]+'; then
 fi
 
 # Extract PR number
-PR_NUM="$(echo "$OUTPUT" | grep -oE 'pull/[0-9]+' | head -1 | cut -d/ -f2)"
+PR_NUM="$(echo "$OUTPUT" | grep -m1 -oE 'pull/[0-9]+' | cut -d/ -f2)"
 [ -n "$PR_NUM" ] || exit 0
 
 # Check commit count

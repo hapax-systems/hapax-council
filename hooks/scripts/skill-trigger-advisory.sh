@@ -15,7 +15,7 @@ COMBINED="${OUTPUT}${STDERR_OUT}"
 
 # /ci-watch — after gh pr create
 if echo "$CMD" | grep -qE '\bgh\s+pr\s+create\b'; then
-  PR_URL="$(echo "$OUTPUT" | grep -oP 'https://github\.com/\S+/pull/\d+' | head -1)"
+  PR_URL="$(echo "$OUTPUT" | grep -m1 -oP 'https://github\.com/\S+/pull/\d+' || true)"
   if [ -n "$PR_URL" ]; then
     PR_NUM="$(echo "$PR_URL" | grep -oP '\d+$')"
     echo "SKILL SUGGESTION: PR #${PR_NUM} created. Monitor CI with /ci-watch ${PR_NUM}" >&2
@@ -25,7 +25,7 @@ fi
 # /diagnose — after systemctl shows failed
 if echo "$CMD" | grep -qE '\bsystemctl\b'; then
   if echo "$COMBINED" | grep -qiE '(failed|inactive \(dead\)|could not be found|start-limit-hit)'; then
-    SERVICE="$(echo "$CMD" | grep -oP '(?<=status\s)\S+' | head -1)"
+    SERVICE="$(echo "$CMD" | grep -m1 -oP '(?<=status\s)\S+' || true)"
     if [ -n "$SERVICE" ]; then
       echo "SKILL SUGGESTION: Service issue detected. Run /diagnose ${SERVICE}" >&2
     else
