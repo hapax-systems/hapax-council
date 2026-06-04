@@ -229,7 +229,7 @@ def test_non_request_markdown_parent_spec_with_body_fences_is_ignored(tmp_path: 
     assert payload["blocked"][0]["reason"] == "no_linked_tasks"
 
 
-@pytest.mark.parametrize("status", ["active", "phase0_active"])
+@pytest.mark.parametrize("status", ["active", "phase0_active", "accepted_for_execution"])
 def test_active_request_statuses_close_with_explicit_fulfillment(
     tmp_path: Path, status: str
 ) -> None:
