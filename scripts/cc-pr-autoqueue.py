@@ -332,19 +332,46 @@ def _check_name(item: dict[str, Any]) -> str:
     )
 
 
+def _check_observed_at(item: dict[str, Any]) -> datetime | None:
+    for key in (
+        "completedAt",
+        "completed_at",
+        "startedAt",
+        "started_at",
+        "createdAt",
+        "created_at",
+    ):
+        value = _scalar(item.get(key))
+        if not value:
+            continue
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+        except ValueError:
+            continue
+    return None
+
+
 def summarize_checks(items: list[dict[str, Any]]) -> CheckSummary:
-    passed: list[str] = []
-    pending: list[str] = []
-    failed: list[str] = []
-    for item in items:
+    latest_by_name: dict[str, tuple[datetime | None, int, str]] = {}
+    for index, item in enumerate(items):
         if not isinstance(item, dict):
-            pending.append("malformed-check")
+            latest_by_name["malformed-check"] = (None, index, "PENDING")
             continue
         name = _check_name(item)
         if name in AUTOQUEUE_IGNORED_CHECK_CONTEXTS:
             continue
         raw_state = item.get("conclusion") or item.get("state") or item.get("status")
-        state = str(raw_state or "").upper()
+        candidate = (_check_observed_at(item), index, str(raw_state or "").upper())
+        previous = latest_by_name.get(name)
+        if previous is None or (candidate[0] or datetime.min.replace(tzinfo=UTC), index) >= (
+            previous[0] or datetime.min.replace(tzinfo=UTC),
+            previous[1],
+        ):
+            latest_by_name[name] = candidate
+    passed: list[str] = []
+    pending: list[str] = []
+    failed: list[str] = []
+    for name, (_observed_at, _index, state) in latest_by_name.items():
         if state in PASS_STATES:
             passed.append(name)
         elif state in FAIL_STATES:
