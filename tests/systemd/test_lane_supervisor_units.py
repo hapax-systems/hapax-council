@@ -46,6 +46,12 @@ def test_supervisor_service_execstart_is_branch_stable() -> None:
     assert "projects/hapax-council" not in exec_start, exec_start
 
 
+def test_supervisor_service_defaults_to_appendix_only_local_dev_maintenance() -> None:
+    unit = _load(SUPERVISOR_SERVICE)
+    environment = unit["Service"].get("Environment", "")
+    assert "HAPAX_LOCAL_DEV_MAINTENANCE_MODE=appendix-only" in environment
+
+
 def test_supervisor_timer_ticks_every_60s() -> None:
     assert SUPERVISOR_TIMER.exists()
     unit = _load(SUPERVISOR_TIMER)

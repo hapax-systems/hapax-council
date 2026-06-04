@@ -173,6 +173,25 @@ def test_supervisor_respawns_dead_claude_lane_with_no_task(tmp_path: Path) -> No
     assert "respawning read-only" in result.stdout
 
 
+def test_supervisor_appendix_only_suppresses_dead_claude_lane_with_no_task(
+    tmp_path: Path,
+) -> None:
+    """Appendix/thin-client mode must not recreate unclaimed local dev lanes."""
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CLAUDE_LANES="delta",
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="appendix-only",
+    )
+    _make_worktree(env, "delta")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert _reads(calls, "claude.txt") == ""
+    assert "appendix-only local-dev maintenance" in result.stdout
+    assert "suppresses idle-await respawn" in result.stdout
+
+
 def test_supervisor_respawns_dead_claude_lane_with_claimed_task(tmp_path: Path) -> None:
     """A dead claude lane WITH a claimed task resumes via the headless launcher."""
     env, calls = _base(tmp_path, HAPAX_SUPERVISOR_CLAUDE_LANES="delta")
@@ -187,6 +206,24 @@ def test_supervisor_respawns_dead_claude_lane_with_claimed_task(tmp_path: Path) 
     assert "reform-fix-lane-supervisor-20260531" in headless
     # task-bound respawn uses headless (mutating), not the read-only path
     assert "--readonly" not in _reads(calls, "claude.txt")
+
+
+def test_supervisor_appendix_only_preserves_claimed_task_resume(tmp_path: Path) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CLAUDE_LANES="delta",
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="appendix-only",
+    )
+    _make_worktree(env, "delta")
+    _write_claim(env, "delta", "appendix-active-task")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    headless = _wait_reads(calls, "claude-headless.txt")
+    assert "delta" in headless
+    assert "appendix-active-task" in headless
+    assert _reads(calls, "claude.txt") == ""
 
 
 def test_supervisor_skips_live_claude_lane(tmp_path: Path) -> None:
@@ -232,6 +269,23 @@ def test_supervisor_respawns_dead_codex_lane(tmp_path: Path) -> None:
     codex = _reads(calls, "codex.txt")
     assert "--session cx-amber" in codex
     assert "--no-claim" in codex
+
+
+def test_supervisor_appendix_only_suppresses_unclaimed_codex_lane(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CODEX_LANES="cx-amber",
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="appendix-only",
+    )
+    _make_worktree(env, "cx-amber")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert _reads(calls, "codex.txt") == ""
+    assert "cx-amber (codex): DEAD with no active task" in result.stdout
 
 
 def test_supervisor_skips_live_codex_lane(tmp_path: Path) -> None:
