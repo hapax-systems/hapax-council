@@ -190,6 +190,45 @@ class TestProbeAssembly:
         # State is IDLE.
         assert "IDLE" in argv
 
+    def test_pactl_nonzero_after_usable_output_still_invokes_cli(self, stub_env, tmp_path):
+        env, capture, bin_dir = stub_env
+
+        _write_stub(
+            bin_dir / "pactl",
+            r"""
+            case "$1 $2" in
+              "list sinks")
+                printf "Sink #42\n\tName: alsa_output.test\n\tState: RUNNING\n"
+                exit 1
+                ;;
+              "list short")
+                if [[ "$3" == "sinks" ]]; then
+                    printf "42\talsa_output.test\tPipeWire\ts32le 2ch 44100Hz\tRUNNING\n"
+                    exit 1
+                elif [[ "$3" == "sink-inputs" ]]; then
+                    printf "100\tPipeWire\t-\t42\ts16le 2ch\n"
+                    exit 1
+                fi
+                ;;
+            esac
+            exit 1
+            """,
+        )
+        _write_stub(bin_dir / "pw-cat", "exit 0\n")
+        _write_stub(
+            bin_dir / "ffmpeg",
+            r'echo "[Parsed_volumedetect_0 @ 0x55] mean_volume: -42.00 dB" >&2' "\nexit 0\n",
+        )
+
+        env["HAPAX_PIN_CHECK_SINK"] = "alsa_output.test"
+        result = _run_wrapper(env)
+
+        assert result.returncode == 0, f"stderr={result.stderr}"
+        argv = capture.read_text().splitlines()
+        assert "RUNNING" in argv
+        assert "--has-active-input" in argv
+        assert _arg_value(argv, "--rms-db") == "-42.00"
+
     def test_pw_cat_failure_passes_inf_dB(self, stub_env, tmp_path):
         env, capture, bin_dir = stub_env
 
