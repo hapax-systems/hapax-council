@@ -154,4 +154,13 @@ silent-orphaning gap that the file-content contract test missed.
   continuously-rendering context (the live engine or an interactive harness, toggling
   `r_glsl_postprocess_ruttetra_enable` and asserting the recompile + visual effect). dp-fork restored
   clean (CRC 36975, no probes); the committed deploy patch is unchanged throughout.
+- **Airtight confirmation (instrumented):** a temporary `Con_Printf` at the postprocess compile
+  logged `ruttetra_cvar=0 master_postprocess_cvar=0` — i.e. **even the master `r_glsl_postprocess`
+  reads 0 at the compile**, despite `+r_glsl_postprocess 1` on the command line AND
+  `"r_glsl_postprocess" "1"` in the loaded config.cfg. This proves shaders compile at early renderer
+  init *before* config/+commands apply, and the headless harness never loops to trigger the per-frame
+  `CheckStaticParms`→recompile (6127) — a universal harness-timing artifact, fully ruttetra-agnostic.
+  **Definitively NOT a code defect.** Instrument reverted; dp-fork `git diff` byte-matches the
+  committed deploy patch (CRC 36975). The content-path machinery is sound end-to-end; Phase-2
+  confirms cvar-driven activation under the live/continuous render.
 - (subsequent increments append their parity captures here before the draft → ready transition)
