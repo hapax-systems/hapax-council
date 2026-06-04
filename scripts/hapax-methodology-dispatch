@@ -1022,8 +1022,7 @@ def write_receipt(
         record["route_decision_receipt_path"] = (
             str(route_decision_receipt_path) if route_decision_receipt_path else None
         )
-    # G2: record where the lane's claude actually ran (Workshop hop vs podium-local).
-    record["dispatch_host"] = os.environ.get("HAPAX_DISPATCH_HOST", "local")
+    record["dispatch_host"] = effective_dispatch_host(platform, mode)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, sort_keys=True) + "\n")
     return path
@@ -1050,6 +1049,18 @@ def _sliced_call(args: list[str], env: dict[str, str] | None = None) -> int:
     if wrapped != list(args):
         base_env = {**base_env, "HAPAX_SDLC_SLICE_ATTACHED": "1"}
     return subprocess.call(wrapped, env=base_env)
+
+
+def effective_dispatch_host(platform: str, mode: str) -> str:
+    explicit = os.environ.get("HAPAX_DISPATCH_HOST", "").strip()
+    if explicit:
+        return explicit
+    default = os.environ.get("HAPAX_DEFAULT_DISPATCH_HOST", "").strip()
+    if default:
+        return default
+    if platform in {"claude", "codex"} and mode == "headless":
+        return "appendix"
+    return "local"
 
 
 def _write_delayed_receipt(args: argparse.Namespace, decision: AdmissionDecision) -> None:
@@ -1118,6 +1129,7 @@ def launch_claude_headless(task_id: str, lane: str, prompt: str, route: Platform
     if route.profile in {"opus", "sonnet"}:
         env["HAPAX_CLAUDE_MODEL"] = route.profile
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
+    env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("claude", "headless")
     return _sliced_call([str(launcher), "--task", task_id, lane, prompt], env)
 
 
@@ -1296,6 +1308,7 @@ def launch_codex_headless(
         )
     env = os.environ.copy()
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
+    env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
     return _sliced_call(args, env)
 
 

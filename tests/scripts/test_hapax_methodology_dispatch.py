@@ -937,10 +937,12 @@ def test_launches_codex_headless_through_codex_launcher(tmp_path: Path) -> None:
         """,
     )
     launcher_args = tmp_path / "launcher-args.txt"
+    launcher_env = tmp_path / "launcher-env.txt"
     fake_launcher = tmp_path / "bin" / "hapax-codex"
     fake_launcher.parent.mkdir(parents=True, exist_ok=True)
     fake_launcher.write_text(
         f"""#!/usr/bin/env bash
+printf '%s\\n' "$HAPAX_DISPATCH_HOST" > {launcher_env}
 printf '%s\\n' "$@" > {launcher_args}
 """,
         encoding="utf-8",
@@ -991,6 +993,8 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["route_policy_launch_allowed"] is True
     assert receipt["coord_dispatch_replayed"] is False
     assert receipt["coord_dispatch_cleanup_state"] == "processed"
+    assert receipt["dispatch_host"] == "appendix"
+    assert launcher_env.read_text(encoding="utf-8").strip() == "appendix"
 
 
 def test_launch_idempotency_replays_without_second_launcher_call(tmp_path: Path) -> None:
