@@ -775,15 +775,19 @@ class TestEffectiveRole:
 
 
 class TestRelayInference:
-    """hapax_effective_role falls back to legacy relay-presence inference."""
+    """Relay presence is NOT identity. The legacy relay-presence inference branch
+    was removed (reform-identity-coherence, cluster 11): it was permanently dead in
+    production (all four slot relays coexist, so 'exactly one' never fired) and a
+    relay file is not evidence of who THIS session is. The per-session identity
+    marker is the role-less recovery path now."""
 
-    def test_single_relay_file_infers_that_role(self, tmp_path: Path) -> None:
+    def test_single_relay_file_does_not_infer_role(self, tmp_path: Path) -> None:
         relay = tmp_path / ".cache" / "hapax" / "relay"
         relay.mkdir(parents=True)
         (relay / "delta.yaml").write_text("status: active\n")
+        # No role, no session id: a lone relay file no longer fabricates a role.
         r = _role_helper("hapax_effective_role", home=tmp_path, cwd=tmp_path)
-        assert r.returncode == 0, r.stderr
-        assert r.stdout.strip() == "delta"
+        assert r.returncode != 0, r.stdout
 
     def test_multiple_relay_files_no_inference(self, tmp_path: Path) -> None:
         relay = tmp_path / ".cache" / "hapax" / "relay"
@@ -793,6 +797,20 @@ class TestRelayInference:
         # Ambiguous relay + no role + no session id → no identity.
         r = _role_helper("hapax_effective_role", home=tmp_path, cwd=tmp_path)
         assert r.returncode != 0
+
+    def test_session_marker_recovers_explicit_role(self, tmp_path: Path) -> None:
+        """The marker (not relay presence) recovers an explicit role for a session."""
+        marker = tmp_path / ".cache" / "hapax" / "session-role-sidM"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("alpha\n")
+        r = _role_helper(
+            "hapax_effective_role",
+            home=tmp_path,
+            cwd=tmp_path,
+            env={"HAPAX_SESSION_ID": "sidM"},
+        )
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == "alpha"
 
     def test_explicit_role_beats_relay(self, tmp_path: Path) -> None:
         relay = tmp_path / ".cache" / "hapax" / "relay"
