@@ -414,6 +414,7 @@ def _frontmatter_status(note_text: str) -> str:
 
 
 vault_root = path.parent.parent
+DEFAULT_PR_REPO = "hapax-systems/hapax-council"
 
 
 def _parse_pr_number(note_text: str) -> str | None:
@@ -428,23 +429,38 @@ def _parse_pr_number(note_text: str) -> str | None:
     return val.lstrip("#")
 
 
-def _check_pr_merged(pr_number: str) -> str:
+def _parse_pr_repo(note_text: str) -> str:
+    """Extract PR repository from frontmatter pr_repo: field."""
+    match = re.search(r"^pr_repo:\s*(\S+)$", note_text, flags=re.MULTILINE)
+    if not match:
+        return DEFAULT_PR_REPO
+    val = match.group(1).strip().strip("\x27\x22")
+    if val.lower() in ("null", "none", "~", ""):
+        return DEFAULT_PR_REPO
+    return val
+
+
+def _check_pr_merged(pr_number: str, repo: str = DEFAULT_PR_REPO) -> str:
     """Check PR merge status via gh CLI. Returns merged|open|closed|unknown."""
     import subprocess
     try:
+        cwd = Path.home() / "projects" / "hapax-council"
+        run_kwargs = {"cwd": str(cwd)} if cwd.is_dir() else {}
         result = subprocess.run(
             [
                 "gh",
                 "pr",
                 "view",
                 pr_number,
+                "--repo",
+                repo,
                 "--json",
                 "state,mergedAt",
                 "--jq",
                 '.state + "," + ((.mergedAt != null and .mergedAt != "") | tostring)',
             ],
             capture_output=True, text=True, timeout=15,
-            cwd=str(Path.home() / "projects" / "hapax-council"),
+            **run_kwargs,
         )
         if result.returncode != 0:
             return "unknown"
@@ -481,9 +497,13 @@ if claim_mode == "claim":
             unmet.append(f"{dep_id} (not found in vault)")
             continue
         dep_text = dep_path.read_text(encoding="utf-8")
+        dep_pr_repo = _parse_pr_repo(dep_text)
         validity = task_closure_validity(
             dep_text,
-            pr_state_lookup=_check_pr_merged,
+            pr_state_lookup=lambda pr_number, repo=dep_pr_repo: _check_pr_merged(
+                pr_number,
+                repo,
+            ),
             require_route_metadata=True,
         )
         if not validity.valid:
