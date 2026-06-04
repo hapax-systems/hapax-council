@@ -9,7 +9,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "check-quota-spend-ledger"
 FIXTURE = REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json"
-NOW = "2026-06-04T16:23:00Z"
+NOW = "2026-06-04T17:10:00Z"
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:

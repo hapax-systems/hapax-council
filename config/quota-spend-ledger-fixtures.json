@@ -1,14 +1,15 @@
 {
   "schema_version": 1,
   "ledger_id": "quota-spend-ledger-reconciled-20260604",
-  "captured_at": "2026-06-04T16:22:00Z",
+  "captured_at": "2026-06-04T17:10:00Z",
   "authority_source": "isap:quota-spend-ledger-20260509",
   "generated_from": [
     "shared/quota_spend_ledger.py",
     "config/quota-spend-ledger-fixtures.json",
     "litellm-api-dashboard-2026-05-10",
     "capacity-routing-quota-spend-ledger-reconciliation",
-    "capacity-routing-quota-spend-ledger-current-refresh-20260604"
+    "capacity-routing-quota-spend-ledger-current-refresh-20260604",
+    "claude-code-subscription-api-separation-20260604"
   ],
   "privacy_scope": "private",
   "consumer_permission_after": "private_capacity_routing_tests_only",
@@ -19,17 +20,31 @@
   "quota_snapshots": [
     {
       "quota_snapshot_schema": 1,
-      "snapshot_id": "quota-anthropic-subscription-fresh-20260510",
-      "captured_at": "2026-05-10T18:00:00Z",
+      "snapshot_id": "quota-anthropic-api-fresh-20260604",
+      "captured_at": "2026-06-04T16:22:00Z",
       "route_id": "litellm.anthropic.claude-opus-4",
       "provider": "anthropic",
-      "capacity_pool": "subscription_quota",
+      "capacity_pool": "api_paid_spend",
       "subscription_quota_state": "fresh",
       "evidence_refs": [
         "litellm:gateway-4000-anthropic-route-healthy",
-        "ledger:anthropic-api-key-active"
+        "ledger:anthropic-api-key-active",
+        "capacity-routing-quota-spend-ledger-current-refresh-20260604"
       ],
-      "operator_visible_reason": "Anthropic API key active via LiteLLM gateway; claude-opus-4 route healthy"
+      "operator_visible_reason": "Anthropic API key active via LiteLLM gateway; claude-opus-4 route healthy; this is API spend evidence, not Claude Code subscription quota"
+    },
+    {
+      "quota_snapshot_schema": 1,
+      "snapshot_id": "quota-claude-code-subscription-exhausted-20260604",
+      "captured_at": "2026-06-04T17:10:00Z",
+      "route_id": "claude.headless.full",
+      "provider": "anthropic-claude-code-subscription",
+      "capacity_pool": "subscription_quota",
+      "subscription_quota_state": "exhausted",
+      "evidence_refs": [
+        "operator:claude-code-subscription-quota-dry-20260604"
+      ],
+      "operator_visible_reason": "Claude Code subscription lanes are quota-dry until 2026-06-05; this blocks Claude Code lane dispatch only and is not Anthropic API quota evidence"
     },
     {
       "quota_snapshot_schema": 1,
@@ -276,6 +291,7 @@
     "litellm:gateway-4000-anthropic-route-healthy",
     "ledger:anthropic-api-key-active",
     "capacity-routing-quota-spend-ledger-reconciliation",
-    "capacity-routing-quota-spend-ledger-current-refresh-20260604"
+    "capacity-routing-quota-spend-ledger-current-refresh-20260604",
+    "claude-code-subscription-api-separation-20260604"
   ]
 }
