@@ -118,6 +118,56 @@ def test_detect_specified_mpc_private_route_is_not_flagged(guard: types.ModuleTy
     assert leaks == []
 
 
+def test_detect_specified_mk5_private_route_is_not_flagged(guard: types.ModuleType) -> None:
+    legitimate = textwrap.dedent(
+        """\
+        hapax-private-playback:output_FL
+          |-> alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX10
+        hapax-private-playback:output_FR
+          |-> alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX11
+        hapax-private:monitor_FL
+          |-> hapax-private-monitor-capture:input_FL
+        """
+    )
+    edges = guard.parse_pw_link(legitimate)
+    leaks = guard.detect_forbidden(edges)
+    assert leaks == []
+
+
+def test_detect_private_to_mk5_voice_send_is_flagged(guard: types.ModuleType) -> None:
+    text = textwrap.dedent(
+        """\
+        hapax-private-playback:output_FL
+          |-> alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX2
+        hapax-private-playback:output_FR
+          |-> alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX3
+        """
+    )
+    edges = guard.parse_pw_link(text)
+    leaks = guard.detect_forbidden(edges)
+    assert len(leaks) == 2
+    assert {leak.target_port.rsplit(":", 1)[1] for leak in leaks} == {
+        "playback_AUX2",
+        "playback_AUX3",
+    }
+
+
+def test_detect_notification_private_to_mk5_monitor_is_flagged(
+    guard: types.ModuleType,
+) -> None:
+    text = textwrap.dedent(
+        """\
+        hapax-notification-private-playback:output_FL
+          |-> alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX10
+        """
+    )
+    edges = guard.parse_pw_link(text)
+    leaks = guard.detect_forbidden(edges)
+    assert len(leaks) == 1
+    assert leaks[0].source_node == "hapax-notification-private-playback"
+    assert leaks[0].target_port.endswith(":playback_AUX10")
+
+
 def test_detect_today_incident_l12_leak(guard: types.ModuleType) -> None:
     """Reproduces the 2026-05-02 incident edge."""
     incident = textwrap.dedent(
@@ -172,8 +222,9 @@ def test_detect_notification_private_to_mpc_aux8_9(guard: types.ModuleType) -> N
 def test_detect_covers_all_forbidden_target_families(guard: types.ModuleType) -> None:
     """One edge per forbidden target family — guard must catch every one.
 
-    MPC Live III AUX8/AUX9 is the only allowed private-monitor ingress.
-    S-4 USB audio is no longer an approved private target in HN readiness.
+    MPC Live III AUX8/AUX9 and MOTU mk5 AUX10/AUX11 are the only
+    allowed private-monitor ingresses. S-4 USB audio is no longer an
+    approved private target in HN readiness.
     """
     forbidden_targets = [
         "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL",
