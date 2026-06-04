@@ -4,6 +4,7 @@ import json
 import subprocess
 from collections.abc import Sequence
 
+from shared.memory_pressure import parse_memory_psi
 from shared.system_observability import (
     ObservationState,
     RemediationMode,
@@ -164,6 +165,10 @@ def test_resource_pressure_splits_ram_zram_and_swappiness_classes() -> None:
             "MemTotal": 128 * 1024**3,
             "MemAvailable": 67 * 1024**3,
         },
+        memory_psi=parse_memory_psi(
+            "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+            "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+        ),
         swaps=[],
         swappiness_value=150,
         expected_swappiness=10,
@@ -173,6 +178,7 @@ def test_resource_pressure_splits_ram_zram_and_swappiness_classes() -> None:
     by_class = {obs.raw["pressure_class"]: obs for obs in observations}
 
     assert by_class["global_ram_pressure"].state == ObservationState.PASS
+    assert by_class["memory_psi_pressure"].state == ObservationState.PASS
     assert by_class["zram_saturation"].state == ObservationState.PASS
     assert by_class["sysctl_drift"].state == ObservationState.FAIL
     assert by_class["sysctl_drift"].source == "/proc/sys/vm/swappiness"
@@ -194,6 +200,10 @@ def test_resource_pressure_zram_saturation_does_not_claim_global_ram_exhaustion(
             "MemTotal": 128 * 1024**3,
             "MemAvailable": 67 * 1024**3,
         },
+        memory_psi=parse_memory_psi(
+            "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+            "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+        ),
         swaps=swaps,
         swappiness_value=10,
         observed_at="2026-05-13T18:55:00Z",
@@ -202,5 +212,6 @@ def test_resource_pressure_zram_saturation_does_not_claim_global_ram_exhaustion(
     by_class = {obs.raw["pressure_class"]: obs for obs in observations}
 
     assert by_class["global_ram_pressure"].state == ObservationState.PASS
-    assert by_class["zram_saturation"].state == ObservationState.FAIL
+    assert by_class["memory_psi_pressure"].state == ObservationState.PASS
+    assert by_class["zram_saturation"].state == ObservationState.PASS
     assert by_class["zram_saturation"].entity_id == "host.swap"

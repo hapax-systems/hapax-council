@@ -21,10 +21,14 @@ Exit codes:
   2  operational distress (RTE must pause team)
 
 Thresholds (research/rnd mode — fortress tightens these via working_mode hook):
-  green:  team_cpu < 100% AND team_swap < 2GB AND system_load_per_core < 1.5
-  yellow: team_cpu in 100-300% OR team_swap in 2-5GB OR load_per_core 1.5-3.0
-  red:    team_cpu > 300% OR team_swap > 5GB OR load_per_core > 3.0
-  ops-distress: any operational service has watchdog warning, OR system swap > 90%
+  green:  team_cpu < 100%, MemAvailable > 30GB, memory PSI some avg10 < 10%,
+          and system_load_per_core < 1.5
+  yellow: team_cpu in 100-300%, MemAvailable 15-30GB, memory PSI some avg10
+          10-35%, or load_per_core 1.5-3.0
+  red:    team_cpu > 300%, MemAvailable < 15GB, memory PSI some avg10 > 35%,
+          or load_per_core > 3.0
+  ops-distress: severe MemAvailable/PSI pressure. Swap/zram fullness is telemetry
+          unless paired with real memory pressure.
 """
 
 from __future__ import annotations
@@ -173,8 +177,8 @@ def system_load() -> tuple[float, int]:
         return (0.0, 1)
 
 
-def system_swap() -> tuple[int, int]:
-    """Return (used_kb, total_kb) for swap."""
+def system_memory() -> dict[str, int]:
+    """Return selected /proc/meminfo counters in KiB."""
     try:
         with open("/proc/meminfo") as fh:
             info = {}
@@ -182,11 +186,42 @@ def system_swap() -> tuple[int, int]:
                 if ":" in line:
                     k, v = line.split(":", 1)
                     info[k.strip()] = v.strip()
-        total = int(info["SwapTotal"].split()[0])
-        free = int(info["SwapFree"].split()[0])
-        return (total - free, total)
+        swap_total = int(info.get("SwapTotal", "0 kB").split()[0])
+        swap_free = int(info.get("SwapFree", "0 kB").split()[0])
+        mem_total = int(info.get("MemTotal", "0 kB").split()[0])
+        mem_available = int(info.get("MemAvailable", "0 kB").split()[0])
+        return {
+            "swap_used_kb": max(0, swap_total - swap_free),
+            "swap_total_kb": swap_total,
+            "mem_total_kb": mem_total,
+            "mem_available_kb": mem_available,
+        }
     except (OSError, KeyError, ValueError):
-        return (0, 1)
+        return {
+            "swap_used_kb": 0,
+            "swap_total_kb": 0,
+            "mem_total_kb": 0,
+            "mem_available_kb": 0,
+        }
+
+
+def memory_psi_avg10() -> tuple[float, float]:
+    """Return (some avg10, full avg10) from /proc/pressure/memory."""
+    try:
+        text = Path("/proc/pressure/memory").read_text()
+    except OSError:
+        return (0.0, 0.0)
+
+    some = full = 0.0
+    for line in text.splitlines():
+        match = re.search(r"avg10=([0-9.]+)", line)
+        if not match:
+            continue
+        if line.startswith("some"):
+            some = float(match.group(1))
+        elif line.startswith("full"):
+            full = float(match.group(1))
+    return (some, full)
 
 
 def working_mode() -> str:
@@ -321,7 +356,8 @@ def collect() -> dict[str, Any]:
 
     # System state
     load_1, ncpu = system_load()
-    swap_used, swap_total = system_swap()
+    memory = system_memory()
+    memory_psi_some, memory_psi_full = memory_psi_avg10()
 
     # Team totals
     team_cpu = sum(a.cpu_pct for a in accounts)
@@ -335,9 +371,16 @@ def collect() -> dict[str, Any]:
             "load_1": load_1,
             "load_per_core": load_1 / max(ncpu, 1),
             "ncpu": ncpu,
-            "swap_used_kb": swap_used,
-            "swap_total_kb": swap_total,
-            "swap_pct": 100.0 * swap_used / max(swap_total, 1),
+            "swap_used_kb": memory["swap_used_kb"],
+            "swap_total_kb": memory["swap_total_kb"],
+            "swap_pct": 100.0 * memory["swap_used_kb"] / max(memory["swap_total_kb"], 1),
+            "mem_total_kb": memory["mem_total_kb"],
+            "mem_available_kb": memory["mem_available_kb"],
+            "mem_available_pct": 100.0
+            * memory["mem_available_kb"]
+            / max(memory["mem_total_kb"], 1),
+            "memory_psi_some_avg10": memory_psi_some,
+            "memory_psi_full_avg10": memory_psi_full,
         },
         "team": {
             "cpu_pct": team_cpu,
@@ -382,6 +425,15 @@ def classify(snapshot: dict[str, Any]) -> tuple[str, list[str]]:
         team_swap_yellow_gb = 1.0
         load_red = 2.0
         load_yellow = 1.0
+        mem_available_ops_gb = 8.0
+        mem_available_red_gb = 15.0
+        mem_available_yellow_gb = 30.0
+        psi_some_ops = 70.0
+        psi_some_red = 35.0
+        psi_some_yellow = 10.0
+        psi_full_ops = 20.0
+        psi_full_red = 10.0
+        psi_full_yellow = 2.0
     else:  # research / rnd
         team_cpu_red = 300.0
         team_cpu_yellow = 100.0
@@ -389,21 +441,61 @@ def classify(snapshot: dict[str, Any]) -> tuple[str, list[str]]:
         team_swap_yellow_gb = 2.0
         load_red = 3.0
         load_yellow = 1.5
+        mem_available_ops_gb = 8.0
+        mem_available_red_gb = 15.0
+        mem_available_yellow_gb = 30.0
+        psi_some_ops = 70.0
+        psi_some_red = 35.0
+        psi_some_yellow = 10.0
+        psi_full_ops = 20.0
+        psi_full_red = 10.0
+        psi_full_yellow = 2.0
 
     reasons_red: list[str] = []
     reasons_yellow: list[str] = []
+    memory_reasons_red: list[str] = []
+    memory_reasons_yellow: list[str] = []
 
     # Operational distress always wins
-    if sys_["swap_pct"] > 90.0:
-        return ("ops-distress", [f"system swap {sys_['swap_pct']:.0f}% > 90% — system thrashing"])
+    mem_available_gb = sys_.get("mem_available_kb", 0) / 1024 / 1024
+    if mem_available_gb and mem_available_gb < mem_available_ops_gb:
+        return (
+            "ops-distress",
+            [f"MemAvailable {mem_available_gb:.1f}GB < {mem_available_ops_gb:.1f}GB"],
+        )
+    if sys_.get("memory_psi_some_avg10", 0.0) > psi_some_ops:
+        return (
+            "ops-distress",
+            [f"memory PSI some avg10 {sys_['memory_psi_some_avg10']:.1f}% > {psi_some_ops:.0f}%"],
+        )
+    if sys_.get("memory_psi_full_avg10", 0.0) > psi_full_ops:
+        return (
+            "ops-distress",
+            [f"memory PSI full avg10 {sys_['memory_psi_full_avg10']:.1f}% > {psi_full_ops:.0f}%"],
+        )
 
     # Red checks
     if team["cpu_pct"] > team_cpu_red:
         reasons_red.append(f"team CPU {team['cpu_pct']:.0f}% > {team_cpu_red:.0f}% red threshold")
+    if mem_available_gb and mem_available_gb < mem_available_red_gb:
+        memory_reasons_red.append(
+            f"MemAvailable {mem_available_gb:.1f}GB < {mem_available_red_gb:.1f}GB red threshold"
+        )
+    if sys_.get("memory_psi_some_avg10", 0.0) > psi_some_red:
+        memory_reasons_red.append(
+            f"memory PSI some avg10 {sys_['memory_psi_some_avg10']:.1f}% > {psi_some_red:.0f}% red threshold"
+        )
+    if sys_.get("memory_psi_full_avg10", 0.0) > psi_full_red:
+        memory_reasons_red.append(
+            f"memory PSI full avg10 {sys_['memory_psi_full_avg10']:.1f}% > {psi_full_red:.0f}% red threshold"
+        )
+    reasons_red.extend(memory_reasons_red)
+
     team_swap_gb = team["swap_kb"] / 1024 / 1024
-    if team_swap_gb > team_swap_red_gb:
+    real_memory_pressure = bool(memory_reasons_red)
+    if team_swap_gb > team_swap_red_gb and real_memory_pressure:
         reasons_red.append(
-            f"team swap {team_swap_gb:.1f}GB > {team_swap_red_gb:.1f}GB red threshold"
+            f"team swap {team_swap_gb:.1f}GB > {team_swap_red_gb:.1f}GB red threshold with MemAvailable/PSI pressure"
         )
     if sys_["load_per_core"] > load_red:
         reasons_red.append(f"load/core {sys_['load_per_core']:.2f} > {load_red:.1f} red threshold")
@@ -416,9 +508,24 @@ def classify(snapshot: dict[str, Any]) -> tuple[str, list[str]]:
         reasons_yellow.append(
             f"team CPU {team['cpu_pct']:.0f}% > {team_cpu_yellow:.0f}% yellow threshold"
         )
-    if team_swap_gb > team_swap_yellow_gb:
+    if mem_available_gb and mem_available_gb < mem_available_yellow_gb:
+        memory_reasons_yellow.append(
+            f"MemAvailable {mem_available_gb:.1f}GB < {mem_available_yellow_gb:.1f}GB yellow threshold"
+        )
+    if sys_.get("memory_psi_some_avg10", 0.0) > psi_some_yellow:
+        memory_reasons_yellow.append(
+            f"memory PSI some avg10 {sys_['memory_psi_some_avg10']:.1f}% > {psi_some_yellow:.0f}% yellow threshold"
+        )
+    if sys_.get("memory_psi_full_avg10", 0.0) > psi_full_yellow:
+        memory_reasons_yellow.append(
+            f"memory PSI full avg10 {sys_['memory_psi_full_avg10']:.1f}% > {psi_full_yellow:.0f}% yellow threshold"
+        )
+    reasons_yellow.extend(memory_reasons_yellow)
+
+    real_memory_pressure = real_memory_pressure or bool(memory_reasons_yellow)
+    if team_swap_gb > team_swap_yellow_gb and real_memory_pressure:
         reasons_yellow.append(
-            f"team swap {team_swap_gb:.1f}GB > {team_swap_yellow_gb:.1f}GB yellow threshold"
+            f"team swap {team_swap_gb:.1f}GB > {team_swap_yellow_gb:.1f}GB yellow threshold with MemAvailable/PSI pressure"
         )
     if sys_["load_per_core"] > load_yellow:
         reasons_yellow.append(
@@ -462,7 +569,10 @@ def render(snapshot: dict[str, Any], level: str, reasons: list[str], use_color: 
         f"{c['bold']}TEAM LOAD SNAPSHOT — {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(snapshot['ts']))} — mode={snapshot['working_mode']}{c['reset']}"
     )
     out.append(
-        f"  system: load {sys_['load_1']:.2f} ({sys_['load_per_core']:.2f}/core×{sys_['ncpu']})  swap {sys_['swap_pct']:.0f}% ({fmt_kb(sys_['swap_used_kb'])}/{fmt_kb(sys_['swap_total_kb'])})"
+        f"  system: load {sys_['load_1']:.2f} ({sys_['load_per_core']:.2f}/core×{sys_['ncpu']})  "
+        f"MemAvailable {fmt_kb(sys_.get('mem_available_kb', 0))} ({sys_.get('mem_available_pct', 0.0):.0f}%)  "
+        f"mem PSI some/full avg10 {sys_.get('memory_psi_some_avg10', 0.0):.1f}%/{sys_.get('memory_psi_full_avg10', 0.0):.1f}%  "
+        f"swap {sys_['swap_pct']:.0f}% ({fmt_kb(sys_['swap_used_kb'])}/{fmt_kb(sys_['swap_total_kb'])}, telemetry)"
     )
     out.append("")
 
@@ -497,7 +607,7 @@ def render(snapshot: dict[str, Any], level: str, reasons: list[str], use_color: 
         "green": "Dispatch freely. Encourage parallel work.",
         "yellow": "Hold new dispatches. Let in-flight work complete. Drain merge ripe PRs.",
         "red": "PAUSE all new dispatches. Request peers wind down current tool calls. Drain only.",
-        "ops-distress": "EMERGENCY: pause team entirely. Identify swap eater + restart. Do NOT add new load.",
+        "ops-distress": "EMERGENCY: pause team entirely. Identify real memory pressure source. Do NOT add new load.",
     }
     out.append(f"  {color}RTE recommendation:{c['reset']} {rec_map.get(level, '')}")
     return "\n".join(out)
