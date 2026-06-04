@@ -89,7 +89,11 @@ HOLD_LABEL_RE = re.compile(
 )
 DEFAULT_REQUIRED_CHECKS = ("lint", "test", "typecheck", "web-build", "vscode-build")
 AUTOQUEUE_ADMISSION_CONTEXT = "hapax/autoqueue-admission"
-AUTOQUEUE_IGNORED_CHECK_CONTEXTS = {AUTOQUEUE_ADMISSION_CONTEXT, "pr-admission"}
+AUTOQUEUE_IGNORED_CHECK_CONTEXTS = {
+    AUTOQUEUE_ADMISSION_CONTEXT,
+    "governance-gate",
+    "pr-admission",
+}
 # Mirrors queue-admission-proof-check.py DEFAULT_TTL_SECONDS. The reconciler
 # re-posts the admission proof once it is older than half this window so the
 # server-side proof never goes stale (G3 idempotent writes).
