@@ -130,4 +130,16 @@ silent-orphaning gap that the file-content contract test missed.
   (default-off → inert → behavior-preserving), but **confirming the content-path activation is a
   Phase-2 prerequisite** before the recruiter drives it. Probe reverted, CRC back to 36975, clean
   binary rebuilt.
+- **Content-activation root-cause narrowed (break-test #2):** forcing the static-parm *enable*
+  unconditionally in `R_CompileShader_CheckStaticParms` (bypassing the cvar entirely) STILL did not
+  compile the probe — so the gap is **not the cvar**: `USERUTT_ETRA` is not reaching the
+  MODE_POSTPROCESS compile even when force-enabled. **Phase-2 root-cause target** is the
+  static-parm → postprocess-shader propagation / recompile-timing: the postprocess compiles once via
+  `R_GLSL_CompilePermutation`→`R_CompileShader_AddStaticParms`, while the per-frame
+  `CheckStaticParms`→`R_GLSL_Restart_f` recompile trigger (gl_rmain.c:6127-6128) may not re-trigger
+  the already-cached postprocess permutation in a headless render. (Note: `R_BlendView`'s own
+  postprocess-trivial check at gl_rmain.c:5698-5705 also omits RUTTETRA — likely benign since
+  `r_glsl_postprocess` forces non-trivial, but worth auditing in the same pass.) Both probes
+  reverted; CRC verified back to **36975**; clean binary rebuilt. **Phase 1 remains
+  default-off / inert / behavior-preserving** — this is strictly a Phase-2 activation prerequisite.
 - (subsequent increments append their parity captures here before the draft → ready transition)
