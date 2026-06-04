@@ -331,7 +331,7 @@ class FenceSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     default_exposure: ExposureDomain = ExposureDomain.QUARANTINE
-    default_sink: Literal["hapax-pc-loudnorm"] = "hapax-pc-loudnorm"
+    default_sink: Literal["hapax-pc-loudnorm-playback"] = "hapax-pc-loudnorm-playback"
     obs_allowed_sources: list[str] = Field(default_factory=list)
     forbidden_from_domains: list[ExposureDomain] = Field(default_factory=list)
     forbidden_to_domains: list[ExposureDomain] = Field(default_factory=list)
@@ -368,6 +368,38 @@ class PortAudioGraph(BaseModel):
     @model_validator(mode="after")
     def _references_are_valid(self) -> PortAudioGraph:
         ports = self.port_refs()
+        nodes_or_buses = set(self.nodes) | set(self.buses)
+        if self.fence.default_sink not in self.nodes:
+            raise ValueError(
+                f"fence default_sink {self.fence.default_sink!r} is not a declared node"
+            )
+        for node_id in self.fence.obs_allowed_sources:
+            if node_id not in self.nodes:
+                raise ValueError(f"fence obs_allowed_sources references missing node {node_id!r}")
+        for role_id, role in self.roles.items():
+            if role.default_bus not in self.buses:
+                raise ValueError(
+                    f"role {role_id!r} default_bus {role.default_bus!r} is not declared"
+                )
+        for bus_id, bus in self.buses.items():
+            for feed in bus.feeds:
+                if feed not in nodes_or_buses:
+                    raise ValueError(f"bus {bus_id!r} feed {feed!r} is not declared")
+        for insert_id, insert in self.hardware_inserts.items():
+            for label, ref in (("send", insert.send), ("return", insert.return_port)):
+                if ref and ref not in ports:
+                    raise ValueError(
+                        f"hardware insert {insert_id!r} {label} {ref!r} is not a declared port"
+                    )
+        for monitor_id, monitor in self.monitors.items():
+            if monitor.source not in ports:
+                raise ValueError(
+                    f"monitor {monitor_id!r} source {monitor.source!r} is not declared"
+                )
+            if monitor.target not in ports:
+                raise ValueError(
+                    f"monitor {monitor_id!r} target {monitor.target!r} is not declared"
+                )
         for edge in [*self.internal_edges, *self.desired_links, *self.forbidden_links]:
             if edge.source not in ports:
                 raise ValueError(f"edge source {edge.source!r} is not a declared port")

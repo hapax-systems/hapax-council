@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 from copy import deepcopy
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from typing import Any
 
@@ -12,11 +14,14 @@ from pydantic import ValidationError
 
 import shared.audio_loudness as loudness
 from shared.audio_graph import (
+    CandidateBundle,
     PortAudioGraph,
     ProofCode,
+    ProofReport,
     compile_port_audio_graph,
     run_all_proofs,
 )
+from shared.audio_graph.proof import generated_forbidden_edges
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = REPO_ROOT / "config/audio-graph.yaml"
@@ -40,12 +45,46 @@ def _codes(graph: PortAudioGraph) -> set[ProofCode]:
     return {violation.code for violation in run_all_proofs(graph).violations}
 
 
+def _find_desired_link(data: dict[str, Any], *, source: str, target: str) -> dict[str, Any]:
+    return next(
+        edge
+        for edge in data["desired_links"]
+        if edge["source"] == source and edge["target"] == target
+    )
+
+
+def _load_generate_audio_graph_module() -> Any:
+    script = REPO_ROOT / "scripts/generate-audio-graph"
+    loader = SourceFileLoader("generate_audio_graph", str(script))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_valid_mk5_model_passes_and_uses_loudness_ssot() -> None:
     graph = _load_graph()
     bundle = compile_port_audio_graph(graph)
 
     assert bundle.proof_report.ok
     assert bundle.manifest["clock_rate"] == 44100
+    unique_forbidden_keys = {
+        edge.key
+        for edge in (
+            *graph.forbidden_links,
+            *generated_forbidden_edges(graph),
+            *graph.fence.known_blocked_links,
+        )
+    }
+    raw_forbidden_count = (
+        len(graph.forbidden_links)
+        + len(generated_forbidden_edges(graph))
+        + len(graph.fence.known_blocked_links)
+    )
+    assert bundle.manifest["forbidden_link_count"] == len(unique_forbidden_keys)
+    assert bundle.manifest["forbidden_link_count"] < raw_forbidden_count
     constants = bundle.manifest["loudness_constants"]
     assert constants["egress_target_lufs_i"] == loudness.EGRESS_TARGET_LUFS_I
     assert constants["egress_true_peak_dbtp"] == loudness.EGRESS_TRUE_PEAK_DBTP
@@ -55,6 +94,10 @@ def test_valid_mk5_model_passes_and_uses_loudness_ssot() -> None:
     assert constants["duck_depth_tts_db"] == loudness.DUCK_DEPTH_TTS_DB
     assert "pipewire/hapax-wet-broadcast_tts.conf" not in bundle.manifest["pipewire_files"]
     assert "pipewire/hapax-wet-broadcast-tts-wet-profile.conf" in bundle.manifest["pipewire_files"]
+    assert graph.monitors["livestream_phones"].source == "hapax-broadcast-normalized:capture_FL"
+    assert graph.monitors["livestream_phones_r"].source == "hapax-broadcast-normalized:capture_FR"
+    assert graph.monitors["private_out5"].target.endswith(":playback_AUX4")
+    assert graph.fence.default_sink == "hapax-pc-loudnorm-playback"
 
 
 @pytest.mark.parametrize(
@@ -101,7 +144,11 @@ def test_operator_mic_missing_dry_safe_fails_never_drop_speech() -> None:
 
 def test_desired_forbidden_overlap_fails() -> None:
     def mutate(data: dict[str, Any]) -> None:
-        edge = data["desired_links"][0]
+        edge = _find_desired_link(
+            data,
+            source="role-assistant:output_FL",
+            target="hapax-wet-assistant-private:input_FL",
+        )
         data["forbidden_links"].append(edge)
 
     assert ProofCode.DESIRED_FORBIDDEN_OVERLAP in _codes(_mutated_graph(mutate))
@@ -123,7 +170,24 @@ def test_default_sink_physical_eligibility_fails() -> None:
 
 def test_gain_budget_over_24_db_fails() -> None:
     def mutate(data: dict[str, Any]) -> None:
-        data["desired_links"][2]["gain_db"] = 25.0
+        edge = _find_desired_link(
+            data,
+            source="hapax-mic-rode-playback:output_MONO",
+            target="hapax-livestream-tap:playback_FL",
+        )
+        edge["gain_db"] = 25.0
+
+    assert ProofCode.PF11_GAIN_BUDGET in _codes(_mutated_graph(mutate))
+
+
+def test_gain_budget_checks_alternate_channel_paths() -> None:
+    def mutate(data: dict[str, Any]) -> None:
+        edge = _find_desired_link(
+            data,
+            source="hapax-mic-rode-playback:output_MONO",
+            target="hapax-livestream-tap:playback_FR",
+        )
+        edge["gain_db"] = 25.0
 
     assert ProofCode.PF11_GAIN_BUDGET in _codes(_mutated_graph(mutate))
 
@@ -164,6 +228,20 @@ def test_source_cannot_use_software_wet_and_hardware_insert() -> None:
         PortAudioGraph.model_validate(data)
 
 
+def test_role_default_bus_cross_reference_is_validated() -> None:
+    data = _graph_data()
+    data["roles"]["broadcast_voice"]["default_bus"] = "bus.missing"
+    with pytest.raises(ValidationError, match="default_bus"):
+        PortAudioGraph.model_validate(data)
+
+
+def test_monitor_cross_reference_is_validated() -> None:
+    data = _graph_data()
+    data["monitors"]["livestream_phones_r"]["target"] = "missing-node:playback_AUX11"
+    with pytest.raises(ValidationError, match="monitor"):
+        PortAudioGraph.model_validate(data)
+
+
 def test_candidate_emit_writes_only_to_shadow_dir(tmp_path: Path) -> None:
     candidate_dir = tmp_path / "candidate"
     result = subprocess.run(
@@ -179,6 +257,27 @@ def test_candidate_emit_writes_only_to_shadow_dir(tmp_path: Path) -> None:
     assert (candidate_dir / "hapax/audio-forbidden-links.conf").exists()
     assert (candidate_dir / "hapax/audio-privacy-proof.json").exists()
     assert (candidate_dir / "wireplumber/98-hapax-link-deny.lua").exists()
+
+
+def test_candidate_emit_rejects_artifact_key_escape(tmp_path: Path) -> None:
+    module = _load_generate_audio_graph_module()
+    bundle = CandidateBundle(
+        proof_report=ProofReport(),
+        hapax_confs={"../escape.conf": "bad"},
+    )
+    with pytest.raises(ValueError, match="escapes output dir"):
+        module._write_candidate_dir(bundle, tmp_path / "candidate")
+
+
+def test_candidate_emit_rejects_duplicate_artifact_keys(tmp_path: Path) -> None:
+    module = _load_generate_audio_graph_module()
+    bundle = CandidateBundle(
+        proof_report=ProofReport(),
+        pipewire_confs={"same.conf": "a"},
+        wireplumber_confs={"same.conf": "b"},
+    )
+    with pytest.raises(ValueError, match="path collision"):
+        module._write_candidate_dir(bundle, tmp_path / "candidate")
 
 
 def test_candidate_emit_refuses_live_config_path() -> None:

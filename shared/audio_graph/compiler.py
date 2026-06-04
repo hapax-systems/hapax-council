@@ -347,16 +347,20 @@ def compile_port_audio_graph(graph: PortAudioGraph) -> CandidateBundle:
         "hapax/audio-forbidden-links.conf": render_forbidden_link_map(graph),
     }
     constants = graph.resolved_loudness_constants()
+    forbidden_keys = {
+        edge.key
+        for edge in (
+            *graph.forbidden_links,
+            *generated_forbidden_edges(graph),
+            *graph.fence.known_blocked_links,
+        )
+    }
     manifest: dict[str, object] = {
         "schema_version": graph.schema_version,
         "clock_rate": graph.clock.rate,
         "loudness_constants": constants,
         "desired_link_count": len(graph.desired_links),
-        "forbidden_link_count": (
-            len(graph.forbidden_links)
-            + len(generated_forbidden_edges(graph))
-            + len(graph.fence.known_blocked_links)
-        ),
+        "forbidden_link_count": len(forbidden_keys),
         "pipewire_files": sorted(pipewire),
         "wireplumber_files": sorted(wireplumber),
         "hapax_files": sorted(hapax),

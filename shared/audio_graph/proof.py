@@ -131,6 +131,27 @@ def _shortest_path(port_graph: PortGraph, start: str, targets: set[str]) -> list
     return None
 
 
+def _simple_paths_to_targets(
+    port_graph: PortGraph,
+    start: str,
+    targets: set[str],
+) -> list[list[str]]:
+    max_depth = len(port_graph.adjacency) + 1
+    queue: deque[tuple[str, list[str]]] = deque([(start, [start])])
+    paths: list[list[str]] = []
+    while queue:
+        node, path = queue.popleft()
+        if node in targets:
+            paths.append(path)
+            continue
+        if len(path) >= max_depth:
+            continue
+        for next_node in sorted(port_graph.adjacency.get(node, [])):
+            if next_node not in path:
+                queue.append((next_node, [*path, next_node]))
+    return paths
+
+
 def _path_gain_db(port_graph: PortGraph, path: list[str]) -> float:
     total = 0.0
     for src, dst in zip(path, path[1:], strict=False):
@@ -375,15 +396,18 @@ def check_broadcast_role_only_to_voice_fx(graph: PortAudioGraph) -> list[ProofVi
 
 def check_default_sink_fail_closed(graph: PortAudioGraph) -> list[ProofViolation]:
     violations: list[ProofViolation] = []
-    if graph.fence.default_sink != "hapax-pc-loudnorm":
+    if graph.fence.default_sink != "hapax-pc-loudnorm-playback":
         violations.append(
             ProofViolation(
                 code=ProofCode.PF7_DEFAULT_SINK_FAIL_CLOSED,
-                message=f"default sink must be hapax-pc-loudnorm, got {graph.fence.default_sink}",
+                message=(
+                    "default sink must be hapax-pc-loudnorm-playback, "
+                    f"got {graph.fence.default_sink}"
+                ),
             )
         )
     for ref, port in graph.ports_by_ref().items():
-        if port.default_sink_eligible and "hapax-pc-loudnorm" not in ref:
+        if port.default_sink_eligible and graph.fence.default_sink not in ref:
             violations.append(
                 ProofViolation(
                     code=ProofCode.PF7_DEFAULT_SINK_FAIL_CLOSED,
@@ -432,23 +456,21 @@ def check_gain_budget(graph: PortAudioGraph, port_graph: PortGraph) -> list[Proo
     )
     violations: list[ProofViolation] = []
     for root in sorted(graph.port_refs()):
-        path = _shortest_path(port_graph, root, public_targets)
-        if not path:
-            continue
-        gain = _path_gain_db(port_graph, path)
-        if gain > graph.fence.gain_budget_ceiling_db:
-            violations.append(
-                ProofViolation(
-                    code=ProofCode.PF11_GAIN_BUDGET,
-                    message=(
-                        f"path {' -> '.join(path)} accumulates {gain:+.1f} dB "
-                        f"(>{graph.fence.gain_budget_ceiling_db:+.1f} dB)"
-                    ),
-                    source=root,
-                    target=path[-1],
-                    path=path,
+        for path in _simple_paths_to_targets(port_graph, root, public_targets):
+            gain = _path_gain_db(port_graph, path)
+            if gain > graph.fence.gain_budget_ceiling_db:
+                violations.append(
+                    ProofViolation(
+                        code=ProofCode.PF11_GAIN_BUDGET,
+                        message=(
+                            f"path {' -> '.join(path)} accumulates {gain:+.1f} dB "
+                            f"(>{graph.fence.gain_budget_ceiling_db:+.1f} dB)"
+                        ),
+                        source=root,
+                        target=path[-1],
+                        path=path,
+                    )
                 )
-            )
     return violations
 
 
@@ -532,8 +554,8 @@ def check_limiter_obs_path(graph: PortAudioGraph, port_graph: PortGraph) -> list
     normalized_ports = {ref for ref in ports if ref.startswith("hapax-broadcast-normalized:")}
     violations: list[ProofViolation] = []
     for start in starts:
-        path = _shortest_path(port_graph, start, targets)
-        if not path:
+        paths = _simple_paths_to_targets(port_graph, start, targets)
+        if not paths:
             violations.append(
                 ProofViolation(
                     code=ProofCode.LIMITER_OBS_PATH,
@@ -542,7 +564,9 @@ def check_limiter_obs_path(graph: PortAudioGraph, port_graph: PortGraph) -> list
                 )
             )
             continue
-        if not any(port in normalized_ports for port in path):
+        for path in paths:
+            if any(port in normalized_ports for port in path):
+                continue
             violations.append(
                 ProofViolation(
                     code=ProofCode.LIMITER_OBS_PATH,
@@ -552,6 +576,7 @@ def check_limiter_obs_path(graph: PortAudioGraph, port_graph: PortGraph) -> list
                     path=path,
                 )
             )
+            break
     return violations
 
 

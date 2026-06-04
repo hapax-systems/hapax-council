@@ -60,9 +60,17 @@ def _reject_live_output_dir(path: Path) -> Path:
 def _write_candidate_dir(bundle: CandidateBundle, output_dir: Path) -> None:
     output_dir = _reject_live_output_dir(output_dir)
     files: dict[str, str] = {}
-    files.update(bundle.pipewire_confs)
-    files.update(bundle.wireplumber_confs)
-    files.update(bundle.hapax_confs)
+    for label, candidate_files in (
+        ("pipewire", bundle.pipewire_confs),
+        ("wireplumber", bundle.wireplumber_confs),
+        ("hapax", bundle.hapax_confs),
+    ):
+        collisions = sorted(set(files) & set(candidate_files))
+        if collisions:
+            raise ValueError(
+                f"candidate artifact path collision in {label}: {', '.join(collisions)}"
+            )
+        files.update(candidate_files)
     files["hapax/audio-graph.manifest.json"] = (
         json.dumps(bundle.manifest, indent=2, sort_keys=True, default=_json_default) + "\n"
     )
@@ -70,7 +78,12 @@ def _write_candidate_dir(bundle: CandidateBundle, output_dir: Path) -> None:
         json.dumps(bundle.proof_report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
     )
     for relative, content in sorted(files.items()):
-        target = output_dir / relative
+        relative_path = Path(relative)
+        if relative_path.is_absolute():
+            raise ValueError(f"candidate artifact path must be relative: {relative}")
+        target = (output_dir / relative_path).resolve()
+        if output_dir != target and output_dir not in target.parents:
+            raise ValueError(f"candidate artifact path escapes output dir: {relative}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
 

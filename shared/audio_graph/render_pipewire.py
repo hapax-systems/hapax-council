@@ -13,7 +13,7 @@ from shared.audio_graph.proof import generated_forbidden_edges
 def render_pipewire_candidates(graph: PortAudioGraph) -> dict[str, str]:
     """Render deterministic candidate PipeWire snippets."""
     rendered: dict[str, str] = {}
-    for node_id, node in graph.nodes.items():
+    for node_id, node in sorted(graph.nodes.items()):
         lines = [
             "# Generated candidate by shared.audio_graph.render_pipewire",
             "# DO NOT HAND-EDIT; not installed by this renderer",
@@ -34,7 +34,7 @@ def render_pipewire_candidates(graph: PortAudioGraph) -> dict[str, str]:
             )
         rendered[f"pipewire/{node_id}.conf"] = "\n".join(lines) + "\n"
 
-    for source_id, source in graph.sources.items():
+    for source_id, source in sorted(graph.sources.items()):
         if source.modulation != ModulationPath.SOFTWARE_WET:
             continue
         wet_node_id = _wet_node_id(source_id, graph)

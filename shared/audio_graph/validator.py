@@ -882,7 +882,7 @@ def _decompose_wireplumber_conf(
                             state_restore=False,
                         )
                     )
-            if loopbacks and path.name == "50-hapax-voice-duck.conf":
+            if path.name == "50-hapax-voice-duck.conf":
                 by_role = {lb.role.lower(): lb for lb in loopbacks}
                 canonical_targets = {
                     "Multimedia": "hapax-pc-loudnorm",

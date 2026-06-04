@@ -616,6 +616,12 @@ monitors:
     exposure: broadcast_monitor
     exclusive: true
     post_master: true
+  livestream_phones_r:
+    source: "hapax-broadcast-normalized:capture_FR"
+    target: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX11"
+    exposure: broadcast_monitor
+    exclusive: true
+    post_master: true
   private_out5:
     source: "hapax-private:output_FL"
     target: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX4"
@@ -625,7 +631,7 @@ monitors:
 
 fence:
   default_exposure: quarantine
-  default_sink: hapax-pc-loudnorm
+  default_sink: hapax-pc-loudnorm-playback
   obs_allowed_sources: [hapax-obs-broadcast-remap, hapax-broadcast-normalized]
   forbidden_from_domains: [private, notification, quarantine, unknown, disabled, failed, hardware_opaque]
   forbidden_to_domains: [broadcast, broadcast_processor, broadcast_egress, broadcast_monitor]
