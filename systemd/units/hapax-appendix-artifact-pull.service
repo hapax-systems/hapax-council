@@ -1,0 +1,22 @@
+[Unit]
+Description=Hapax appendix artifact pull from Synology vault
+Documentation=man:rsync(1)
+After=network-online.target
+ConditionHost=hapax-appendix
+ConditionPathIsMountPoint=/mnt/nas/models
+ConditionPathExists=/mnt/nas/models/ollama
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash %h/projects/hapax-council/scripts/hapax-appendix-artifact-pull --live --receipt-label systemd
+WorkingDirectory=%h/projects/hapax-council
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HAPAX_APPENDIX_ARTIFACT_CLASSES=models-ollama
+Environment=HAPAX_APPENDIX_ARTIFACT_DEST_ROOT=%h/.cache/hapax/appendix-artifacts
+Environment=HAPAX_APPENDIX_ARTIFACT_STATE_DIR=%h/.cache/hapax/appendix-artifact-pull
+MemoryHigh=2G
+MemoryMax=3G
+CPUQuota=60%
+SyslogIdentifier=hapax-appendix-artifact-pull
