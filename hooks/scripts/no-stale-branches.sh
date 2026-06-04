@@ -92,7 +92,7 @@ echo "$CMD" | grep -qE '^\s*git\s+worktree\s+add\s.*-[bB]\s' && is_create=true
 # (the worktree-repoint plumbing) — NOT creation — so leave it to the
 # destructive gate and keep that path working.
 if echo "$CMD" | grep -qE '^\s*git\s+update-ref\s+refs/heads/'; then
-  _newref="$(echo "$CMD" | grep -oE 'refs/heads/[^ ]+' | head -n1 || true)"
+  _newref="$(echo "$CMD" | grep -m1 -oE 'refs/heads/[^ ]+' || true)"
   if [ -n "$_newref" ] && ! git show-ref --verify --quiet "$_newref" 2>/dev/null; then
     is_create=true
   fi
@@ -103,7 +103,7 @@ fi
 # ref that the next commit materialises). Pointing HEAD at an EXISTING branch
 # is an ordinary switch — left allowed.
 if echo "$CMD" | grep -qE '^\s*git\s+symbolic-ref\s+HEAD\s+refs/heads/'; then
-  _symref="$(echo "$CMD" | grep -oE 'refs/heads/[^ ]+' | head -n1 || true)"
+  _symref="$(echo "$CMD" | grep -m1 -oE 'refs/heads/[^ ]+' || true)"
   if [ -n "$_symref" ] && ! git show-ref --verify --quiet "$_symref" 2>/dev/null; then
     is_create=true
   fi

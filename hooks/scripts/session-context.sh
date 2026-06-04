@@ -608,13 +608,14 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
 
   # Show work queue items for this role
   if [ -d "$RELAY_DIR/queue" ]; then
-    QUEUE_ITEMS=$(grep -l "assigned_to: $ROLE" "$RELAY_DIR/queue/"*.yaml 2>/dev/null | head -5)
+    QUEUE_ITEMS="$(grep -l "assigned_to: $ROLE" "$RELAY_DIR/queue/"*.yaml 2>/dev/null || true)"
+    QUEUE_ITEMS="$(printf '%s\n' "$QUEUE_ITEMS" | sed -n '1,5p')"
     if [ -n "$QUEUE_ITEMS" ]; then
       echo "Work queue ($ROLE):"
       for item in $QUEUE_ITEMS; do
-        TITLE=$(grep '^title:' "$item" | head -1 | sed 's/title: *//' | tr -d '"')
-        STATUS=$(grep '^status:' "$item" | head -1 | sed 's/status: *//' | tr -d '"')
-        ID=$(grep '^id:' "$item" | head -1 | sed 's/id: *//' | tr -d '"')
+        TITLE=$(grep -m1 '^title:' "$item" | sed 's/title: *//' | tr -d '"')
+        STATUS=$(grep -m1 '^status:' "$item" | sed 's/status: *//' | tr -d '"')
+        ID=$(grep -m1 '^id:' "$item" | sed 's/id: *//' | tr -d '"')
         echo "  [$STATUS] #$ID: $TITLE"
       done
     fi
@@ -728,8 +729,8 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
         CLAIMED_NOTE="$CC_TASKS_VAULT/active/${CLAIMED_ID}.md"
       fi
       if [ -n "$CLAIMED_NOTE" ]; then
-        CLAIMED_TITLE=$(grep '^title:' "$CLAIMED_NOTE" | head -1 | sed 's/^title: *//; s/^"//; s/"$//')
-        CLAIMED_STATUS=$(grep '^status:' "$CLAIMED_NOTE" | head -1 | sed 's/^status: *//')
+        CLAIMED_TITLE=$(grep -m1 '^title:' "$CLAIMED_NOTE" | sed 's/^title: *//; s/^"//; s/"$//')
+        CLAIMED_STATUS=$(grep -m1 '^status:' "$CLAIMED_NOTE" | sed 's/^status: *//')
         echo "  Claimed: $CLAIMED_ID [$CLAIMED_STATUS] $CLAIMED_TITLE"
       else
         echo "  Claimed: $CLAIMED_ID (note missing in vault — re-claim or check moved-to-closed)"

@@ -89,6 +89,22 @@ fi
 ANY_MATCH=false
 ADVISORY=""
 
+yaml_list_items() {
+  local header="$1"
+  local file="$2"
+  awk -v header="$header" '
+    $0 == header { in_block = 1; next }
+    in_block && /^[^[:space:]-]/ { exit }
+    in_block && /^[[:space:]]+-/ {
+      print
+      count += 1
+      if (count >= 50) {
+        exit
+      }
+    }
+  ' "$file" 2>/dev/null || true
+}
+
 for yaml in "$RELAY_DIR"/*.yaml; do
   [ -f "$yaml" ] || continue
   PEER="$(basename "$yaml" .yaml)"
@@ -97,7 +113,7 @@ for yaml in "$RELAY_DIR"/*.yaml; do
     onboarding-*|PROTOCOL|glossary|working-mode|alpha-status|beta-status) continue ;;
   esac
 
-  STATUS_LINE="$(grep -E '^session_status:' "$yaml" 2>/dev/null | head -1 || true)"
+  STATUS_LINE="$(grep -m1 -E '^session_status:' "$yaml" 2>/dev/null || true)"
   case "$STATUS_LINE" in
     *RETIRED*|*CLOSED*) continue ;;
   esac
@@ -108,9 +124,9 @@ for yaml in "$RELAY_DIR"/*.yaml; do
   # Extract prose-bearing lines: focus, current_item, decisions, context_artifacts, open_questions, convergence
   PROSE="$(grep -E '^(focus|current_item|next):|^\s+- (what|".*"):' "$yaml" 2>/dev/null || true)"
   PROSE="$PROSE
-$(grep -A 200 '^context_artifacts:' "$yaml" 2>/dev/null | grep -E '^\s+-' | head -50 || true)"
+$(yaml_list_items "context_artifacts:" "$yaml")"
   PROSE="$PROSE
-$(grep -A 200 '^convergence:' "$yaml" 2>/dev/null | grep -E '^\s+-' | head -50 || true)"
+$(yaml_list_items "convergence:" "$yaml")"
 
   MATCHED_TOKEN=""
   for tok in "$BASENAME" "$PARENT"; do

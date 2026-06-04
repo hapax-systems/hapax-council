@@ -86,7 +86,7 @@ fi
 
 # Cargo check failed. Print the first ~20 error/warning lines plus a
 # pointer at the full command so the operator can drill in.
-ERR_LINES="$(printf '%s' "$CARGO_OUT" | grep -E '^(error|warning|  -->|note:)' | head -20 || true)"
+ERR_LINES="$(printf '%s' "$CARGO_OUT" | grep -m20 -E '^(error|warning|  -->|note:)' || true)"
 [ -z "$ERR_LINES" ] && ERR_LINES="$(printf '%s' "$CARGO_OUT" | tail -20)"
 
 cat >&2 <<EOF

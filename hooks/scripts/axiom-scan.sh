@@ -81,7 +81,7 @@ for pattern in "${AXIOM_PATTERNS[@]}"; do
     esac
   fi
 
-  MATCHED="$(echo "$SCANNABLE" | grep -Ei "$pattern" 2>/dev/null | head -1 || true)"
+  MATCHED="$(echo "$SCANNABLE" | grep -m1 -Ei "$pattern" 2>/dev/null || true)"
   if [ -n "$MATCHED" ]; then
     MATCHED="$(echo "$MATCHED" | sed 's/^[[:space:]]*//')"
     # Identify which axiom domain the pattern belongs to

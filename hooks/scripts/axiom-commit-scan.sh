@@ -57,7 +57,7 @@ elif echo "$COMMAND" | grep -qE '(sed\s+-i|tee\s|>\s|python\s+-c|perl\s+-[ip])';
 
 # Detect curl/wget to non-localhost (corporate_boundary advisory)
 elif echo "$COMMAND" | grep -qE '\b(curl|wget)\b'; then
-  URL="$(echo "$COMMAND" | grep -oE 'https?://[^[:space:]"'"'"']+' | head -1)"
+  URL="$(echo "$COMMAND" | grep -m1 -oE 'https?://[^[:space:]"'"'"']+' || true)"
   if [ -z "$URL" ]; then
     exit 0
   fi
@@ -98,7 +98,7 @@ if [ -z "$ADDED_LINES" ]; then
 fi
 
 for pattern in "${AXIOM_PATTERNS[@]}"; do
-  MATCHED="$(echo "$ADDED_LINES" | grep -Ei "$pattern" 2>/dev/null | head -1 || true)"
+  MATCHED="$(echo "$ADDED_LINES" | grep -m1 -Ei "$pattern" 2>/dev/null || true)"
   if [ -n "$MATCHED" ]; then
     MATCHED="$(echo "$MATCHED" | sed 's/^[[:space:]]*//')"
     case "$pattern" in

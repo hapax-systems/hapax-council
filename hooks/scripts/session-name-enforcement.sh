@@ -81,7 +81,7 @@ patterns=(
 
 violation=""
 for pat in "${patterns[@]}"; do
-    match="$(echo "$CMD_STRIPPED" | grep -oiE "$pat" | head -1 || true)"
+    match="$(echo "$CMD_STRIPPED" | grep -m1 -oiE "$pat" || true)"
     if [ -n "$match" ]; then
         violation="$match"
         break
