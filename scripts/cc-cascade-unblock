@@ -22,6 +22,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_NON_FULFILLING_CLOSED_STATUSES,
+    frontmatter_from_text,
+    is_active_blocked_with_evidence,
     task_closure_validity,
 )
 
@@ -141,6 +143,28 @@ def _parse_depends(text: str) -> list[str]:
     return []
 
 
+def _set_frontmatter_scalar(text: str, key: str, value: str) -> str:
+    rendered = _yaml_scalar(value)
+    pattern = rf"^{re.escape(key)}:.*$"
+    if re.search(pattern, text, flags=re.M):
+        return re.sub(pattern, lambda _m: f"{key}: {rendered}", text, count=1, flags=re.M)
+    return re.sub(
+        r"^(status:\s*\S+.*)$",
+        lambda match: f"{match.group(1)}\n{key}: {rendered}",
+        text,
+        count=1,
+        flags=re.M,
+    )
+
+
+def _yaml_scalar(value: str) -> str:
+    if value in {"null", "true", "false"}:
+        return value
+    if re.fullmatch(r"[A-Za-z0-9_./~+-]+", value):
+        return value
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _blocked_candidates(trigger_task_id: str | None) -> list[tuple[Path, str, list[str]]]:
     if not ACTIVE.is_dir():
         return []
@@ -184,26 +208,19 @@ def cascade_unblock(trigger_task_id: str | None = None) -> int:
                 else:
                     reasons.append(f"{dep} (not found or not closure-valid)")
             blocked_reason = "waiting_for_closure_valid_dependencies: " + "; ".join(reasons)
-            if re.search(r"^blocked_reason: .+", text, re.M):
-                new = re.sub(
-                    r"^blocked_reason: .+",
-                    f"blocked_reason: {blocked_reason}",
-                    text,
-                    count=1,
-                    flags=re.M,
-                )
-                if new != text:
-                    f.write_text(new, encoding="utf-8")
+            new = _set_frontmatter_scalar(text, "blocked_reason", blocked_reason)
+            if new != text:
+                f.write_text(new, encoding="utf-8")
+            continue
+
+        if is_active_blocked_with_evidence(frontmatter_from_text(text)):
+            print(
+                f"cc-cascade-unblock: {f.stem} remains blocked (current blocked evidence present)"
+            )
             continue
 
         new = re.sub(r"^status: blocked", "status: offered", text, count=1, flags=re.M)
-        new = re.sub(
-            r"^blocked_reason: .+",
-            "blocked_reason: null",
-            new,
-            count=1,
-            flags=re.M,
-        )
+        new = _set_frontmatter_scalar(new, "blocked_reason", "null")
         f.write_text(new)
         unblocked += 1
         print(f"cc-cascade-unblock: {f.stem} -> offered (all deps satisfied)")

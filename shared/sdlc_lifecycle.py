@@ -83,6 +83,10 @@ TASK_MERGE_READY_STATUSES = frozenset({"pr_open", "merge_queue"}) | TASK_READY_F
 #: A lane may RESUME (re-claim) an owned task in these states — not a fresh claim.
 TASK_RESUMABLE_STATUSES = TASK_MERGE_READY_STATUSES
 
+BLOCKED_DEPENDENCY_REASON_PREFIX = "waiting_for_closure_valid_dependencies:"
+BLOCKED_WITNESS_FIELDS = ("blocked_witness", "blocked_witness_path")
+_FRONTMATTER_NULL_SCALARS = frozenset({"", "null", "none", "~", "[]"})
+
 # --- Dispatch-plane vocabulary: PR control actions (NOT statuses, NOT stages) -
 #: The autoqueue's ``classify_pr`` (scripts/cc-pr-autoqueue.py) emits a small,
 #: closed set of *control actions* deciding what to DO with a PR. This is a
@@ -190,7 +194,10 @@ def frontmatter_from_text(text: str) -> dict[str, Any]:
     raw = text[4:end].strip()
     if not raw:
         return {}
-    loaded = yaml.safe_load(raw)
+    try:
+        loaded = yaml.safe_load(raw)
+    except yaml.YAMLError:
+        return {}
     if isinstance(loaded, dict):
         return loaded
     return {}
@@ -202,6 +209,61 @@ def _frontmatter_scalar(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value).strip().strip('"').strip("'")
+
+
+def _frontmatter_non_null_scalar(value: object) -> str | None:
+    scalar = _frontmatter_scalar(value)
+    if scalar.lower() in _FRONTMATTER_NULL_SCALARS:
+        return None
+    return scalar
+
+
+def blocked_reason_from_frontmatter(frontmatter: Mapping[str, Any]) -> str | None:
+    """Return the machine blocker for an active blocked task, if one is present."""
+
+    return _frontmatter_non_null_scalar(frontmatter.get("blocked_reason"))
+
+
+def blocked_witness_from_frontmatter(frontmatter: Mapping[str, Any]) -> str | None:
+    """Return the canonical witness path for an active blocked task, if present."""
+
+    for field in BLOCKED_WITNESS_FIELDS:
+        witness = _frontmatter_non_null_scalar(frontmatter.get(field))
+        if witness:
+            return witness
+    return None
+
+
+def is_dependency_blocked_reason(reason: str | None) -> bool:
+    """Whether ``blocked_reason`` is the cascade-managed dependency wait reason."""
+
+    return bool(reason and reason.strip().startswith(BLOCKED_DEPENDENCY_REASON_PREFIX))
+
+
+def active_blocked_task_blockers(frontmatter: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return precise blockers for a task whose frontmatter status is ``blocked``."""
+
+    status = _frontmatter_scalar(frontmatter.get("status")).lower()
+    if status != "blocked":
+        return ()
+
+    reason = blocked_reason_from_frontmatter(frontmatter)
+    witness = blocked_witness_from_frontmatter(frontmatter)
+    blockers = [f"blocked_reason:{reason}" if reason else "blocked_reason:missing"]
+    if witness:
+        blockers.append(f"blocked_witness:{witness}")
+    return tuple(blockers)
+
+
+def is_active_blocked_with_evidence(frontmatter: Mapping[str, Any]) -> bool:
+    """True for the stable active blocked-with-evidence lifecycle state."""
+
+    status = _frontmatter_scalar(frontmatter.get("status")).lower()
+    reason = blocked_reason_from_frontmatter(frontmatter)
+    witness = blocked_witness_from_frontmatter(frontmatter)
+    return bool(
+        status == "blocked" and reason and witness and not is_dependency_blocked_reason(reason)
+    )
 
 
 def _frontmatter_pr_number(frontmatter: Mapping[str, Any]) -> str | None:
@@ -243,7 +305,9 @@ def task_closure_validity(
     status = _frontmatter_scalar(frontmatter.get("status")).lower()
     blockers: list[str] = []
 
-    if status not in TASK_FULFILLING_CLOSED_STATUSES:
+    if status == "blocked":
+        blockers.extend(active_blocked_task_blockers(frontmatter))
+    elif status not in TASK_FULFILLING_CLOSED_STATUSES:
         blockers.append(f"status_not_fulfilling:{status or 'missing'}")
 
     ac_state = acceptance_criteria_state(text)

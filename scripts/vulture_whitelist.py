@@ -3994,3 +3994,9 @@ from shared.liveness_surfaces import (
 legacy_deploy_stalled
 legacy_lane_progress_stalled
 legacy_reaper_stalled
+
+# SDLC blocked-evidence lifecycle: imported by the executable
+# scripts/cc-cascade-unblock path; vulture does not follow that script entrypoint.
+from shared.sdlc_lifecycle import is_active_blocked_with_evidence
+
+is_active_blocked_with_evidence
