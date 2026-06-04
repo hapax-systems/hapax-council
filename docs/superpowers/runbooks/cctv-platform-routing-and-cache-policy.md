@@ -38,6 +38,15 @@ but dispatcher policy refused both `runtime` and `provider_spend` mutation
 surfaces for every registered platform route, so the live config was not
 changed in the CCTV source PR.
 
+2026-06-04 Anthropic audit note: Claude model docs list Claude Opus 4.8,
+Claude Sonnet 4.6, and Claude Haiku 4.5 as the current main Claude model line.
+The live gateway already maps `claude-sonnet`/`balanced` to
+`anthropic/claude-sonnet-4-6` and `claude-haiku` to
+`anthropic/claude-haiku-4-5-20251001`, but still maps `claude-opus` to
+`anthropic/claude-opus-4-7`. The follow-up task
+`litellm-anthropic-current-route-refresh-20260604` records the required Opus
+route refresh. Do not update the live gateway under this CCTV source PR.
+
 ## Prompt Caching
 
 CCTV prompts must put stable instructions, rubric text, and stable examples at
@@ -93,6 +102,8 @@ dispatch, claim, quality gates, and PR/runtime release gates.
 
 - Anthropic Claude prompt caching:
   https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+- Anthropic Claude models:
+  https://platform.claude.com/docs/en/docs/about-claude/models
 - OpenAI API prompt caching:
   https://developers.openai.com/api/docs/guides/prompt-caching
 - Gemini API models and context caching:
