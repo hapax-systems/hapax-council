@@ -63,6 +63,17 @@ load_forbidden_links() {
     fi
 }
 
+add_port_inventory() {
+    local ports="$1"
+    local raw line
+    while IFS= read -r raw; do
+        line="$(trim_policy_line "$raw")"
+        [[ -z "$line" ]] && continue
+        [[ "$line" == "|->"* || "$line" == "|<-"* ]] && continue
+        PRESENT_PORTS["$line"]=1
+    done <<< "$ports"
+}
+
 refresh_graph() {
     if ! GRAPH="$("$PW_LINK" -l 2>/dev/null)"; then
         GRAPH=""
@@ -95,6 +106,18 @@ refresh_graph() {
         current_port="$line"
         PRESENT_PORTS["$current_port"]=1
     done <<< "$GRAPH"
+
+    local output_ports input_ports
+    if output_ports="$("$PW_LINK" -o 2>/dev/null)"; then
+        add_port_inventory "$output_ports"
+    else
+        log "WARN: could not read PipeWire output port inventory"
+    fi
+    if input_ports="$("$PW_LINK" -i 2>/dev/null)"; then
+        add_port_inventory "$input_ports"
+    else
+        log "WARN: could not read PipeWire input port inventory"
+    fi
 }
 
 link_present() {
