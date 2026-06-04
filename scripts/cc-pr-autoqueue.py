@@ -1128,6 +1128,8 @@ def set_autoqueue_admission_status(
     )
     if current is not None:
         cur_state, cur_description, cur_created = current
+        if cur_state == state == "failure":
+            return True, "unchanged_failure_state"
         unchanged = cur_state == state and cur_description == description
         fresh = cur_created is not None and (now - cur_created) < timedelta(
             seconds=AUTOQUEUE_ADMISSION_TTL_SECONDS / 2
