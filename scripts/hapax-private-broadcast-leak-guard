@@ -47,13 +47,17 @@ PRIVATE_SOURCE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^hapax-notification-private(?:[-:]|$)"),
 )
 
-# HN readiness uses MPC Live III AUX8/AUX9 as the specified private-TTS
-# monitor ingress. S-4 USB audio is not an allowed private target in this
-# path. A private edge to the MPC Live III is accepted only from
-# `hapax-private-playback` to playback_AUX8/playback_AUX9; notification
-# private audio is under-specified and must have no downstream egress.
+# HN readiness originally used MPC Live III AUX8/AUX9 as the specified
+# private-TTS monitor ingress. The mk5 migration moved the governed
+# private monitor to MOTU UltraLite-mk5 Phones AUX10/AUX11. S-4 USB
+# audio is not an allowed private target in this path. A private edge is
+# accepted only from `hapax-private-playback` to one of these explicit
+# monitor ingresses; notification-private audio is under-specified and
+# must have no downstream egress.
 MPC_LIVE_III_TARGET_RE = re.compile(r"^alsa_output\.usb-Akai_Professional_MPC_LIVE_III")
 MPC_PRIVATE_MONITOR_PORTS = frozenset({"playback_AUX8", "playback_AUX9"})
+MOTU_MK5_TARGET_RE = re.compile(r"^alsa_output\.usb-MOTU_UltraLite-mk5")
+MOTU_MK5_PRIVATE_MONITOR_PORTS = frozenset({"playback_AUX10", "playback_AUX11"})
 NO_EGRESS_SOURCE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^hapax-notification-private(?:[-:]|$)"),
 )
@@ -174,6 +178,20 @@ def _matches_any(node: str, patterns: Iterable[re.Pattern[str]]) -> bool:
     return any(p.search(node) for p in patterns)
 
 
+def _is_allowed_private_monitor_target(source_node: str, target_port: str) -> bool:
+    if source_node != "hapax-private-playback":
+        return False
+    target_node = target_port.split(":", 1)[0]
+    target_port_name = target_port.split(":", 1)[1] if ":" in target_port else ""
+    return (
+        MPC_LIVE_III_TARGET_RE.search(target_node) is not None
+        and target_port_name in MPC_PRIVATE_MONITOR_PORTS
+    ) or (
+        MOTU_MK5_TARGET_RE.search(target_node) is not None
+        and target_port_name in MOTU_MK5_PRIVATE_MONITOR_PORTS
+    )
+
+
 def detect_forbidden(edges: list[tuple[str, str]]) -> list[ForbiddenLink]:
     """Return links whose source matches `hapax-(notification-)?private*`
     AND whose target matches any FORBIDDEN_TARGET_PATTERN."""
@@ -192,11 +210,7 @@ def detect_forbidden(edges: list[tuple[str, str]]) -> list[ForbiddenLink]:
             leaks.append(ForbiddenLink(source_port=source_port, target_port=target_port))
             continue
         if source_node == "hapax-private-playback":
-            target_port_name = target_port.split(":", 1)[1] if ":" in target_port else ""
-            if (
-                MPC_LIVE_III_TARGET_RE.search(target_node)
-                and target_port_name in MPC_PRIVATE_MONITOR_PORTS
-            ):
+            if _is_allowed_private_monitor_target(source_node, target_port):
                 continue
             key = (source_port, target_port)
             if key in seen:
@@ -204,12 +218,8 @@ def detect_forbidden(edges: list[tuple[str, str]]) -> list[ForbiddenLink]:
             seen.add(key)
             leaks.append(ForbiddenLink(source_port=source_port, target_port=target_port))
             continue
-        if MPC_LIVE_III_TARGET_RE.search(target_node):
-            target_port_name = target_port.split(":", 1)[1] if ":" in target_port else ""
-            if (
-                source_node == "hapax-private-playback"
-                and target_port_name in MPC_PRIVATE_MONITOR_PORTS
-            ):
+        if MPC_LIVE_III_TARGET_RE.search(target_node) or MOTU_MK5_TARGET_RE.search(target_node):
+            if _is_allowed_private_monitor_target(source_node, target_port):
                 continue
             key = (source_port, target_port)
             if key in seen:
