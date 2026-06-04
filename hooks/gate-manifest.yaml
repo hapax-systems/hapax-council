@@ -16,6 +16,9 @@ runtimes:
         - matcher: ""
           hooks:
             - conductor-start.sh
+        - matcher: ""
+          hooks:
+            - hooks-doctor.sh
       PreToolUse:
         - matcher: "Bash|mcp__github__create_pull_request|mcp__github__merge_pull_request"
           hooks:

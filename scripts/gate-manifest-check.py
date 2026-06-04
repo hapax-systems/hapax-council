@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 import tomllib
 from pathlib import Path
@@ -40,7 +41,13 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def _hook_basename(command: str) -> str:
-    token = command.strip().split()[-1] if command.strip() else command
+    text = command.strip()
+    if not text:
+        return command
+    try:
+        token = shlex.split(text)[0]
+    except ValueError:
+        token = text.split()[0]
     return Path(token).name
 
 

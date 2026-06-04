@@ -77,6 +77,13 @@ def test_tavily_token_is_not_exported_by_parent_launcher() -> None:
     assert "unset TAVILY_API_KEY" in text
 
 
+def test_hapax_mcp_logos_url_is_launcher_selected_not_hardcoded_localhost() -> None:
+    launcher = CODEX_LAUNCHER.read_text()
+
+    assert 'mcp_servers.hapax.env.LOGOS_BASE_URL=\\"$LOGOS_BASE_URL\\"' in launcher
+    assert 'mcp_servers.hapax.env.LOGOS_BASE_URL="http://localhost:8051/api"' not in launcher
+
+
 def test_playwright_mcp_uses_noninteractive_wrapper(tmp_path: Path) -> None:
     config = _installed_config(tmp_path)
     launcher = CODEX_LAUNCHER.read_text()
