@@ -244,7 +244,7 @@ def test_required_frontend_build_jobs_are_path_gated_without_absent_checks() -> 
     assert "pull-requests: read" in ci_text
 
     assert "Detect web-build input changes" in web_block
-    assert "dorny/paths-filter@v3" in web_block
+    assert "dorny/paths-filter@v4" in web_block
     assert "web_build:" in web_block
     assert "'hapax-logos/**'" in web_block
     assert "Non-web required-check sentinel" in web_block
@@ -253,7 +253,7 @@ def test_required_frontend_build_jobs_are_path_gated_without_absent_checks() -> 
     assert "No web-build inputs changed; web-build reports success" in web_block
 
     assert "Detect vscode-build input changes" in vscode_block
-    assert "dorny/paths-filter@v3" in vscode_block
+    assert "dorny/paths-filter@v4" in vscode_block
     assert "vscode_build:" in vscode_block
     assert "'vscode/**'" in vscode_block
     assert "Non-vscode required-check sentinel" in vscode_block
