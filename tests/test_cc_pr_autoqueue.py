@@ -1309,7 +1309,7 @@ def _eligible_arm_extra() -> dict[str, object]:
     }
 
 
-def test_auto_arms_eligible_pr_open_task_then_merges(tmp_path: Path) -> None:
+def test_blocks_release_unauthorized_pr_open_task(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
@@ -1330,24 +1330,14 @@ def test_auto_arms_eligible_pr_open_task_then_merges(tmp_path: Path) -> None:
         auto_arm_ledger_path=tmp_path / "ledger.jsonl",
     )
 
-    # The note is armed in place: release authorized + advanced to S7.
-    armed = note.read_text(encoding="utf-8")
-    assert "release_authorized: true" in armed
-    assert "release_authorized: false" not in armed
-    assert "stage: S7_RELEASE" in armed
-    # And the PR is admitted to the merge queue.
-    assert [
-        "gh",
-        "pr",
-        "merge",
-        "701",
-        "--repo",
-        "owner/repo",
-        "--auto",
-        "--squash",
-    ] in runner.calls
+    untouched = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in untouched
+    assert "stage: S7_RELEASE" not in untouched
+    assert not any(call[:4] == ["gh", "pr", "merge", "701"] for call in runner.calls)
     decision = next(d for d in report["decisions"] if d["pr"] == 701)
-    assert decision["auto_arm"] is True
+    assert decision["action"] == "blocked"
+    assert "release_authorized_false" in decision["reasons"]
+    assert "auto_arm" not in decision
 
 
 def test_does_not_auto_arm_governance_sensitive_task(tmp_path: Path) -> None:
@@ -1379,10 +1369,10 @@ def test_does_not_auto_arm_governance_sensitive_task(tmp_path: Path) -> None:
     assert not any(call[:4] == ["gh", "pr", "merge", "702"] for call in runner.calls)
     decision = next(d for d in report["decisions"] if d["pr"] == 702)
     assert decision["action"] == "blocked"
-    assert any("release_auto_arm_ineligible" in reason for reason in decision["reasons"])
+    assert "release_authorized_false" in decision["reasons"]
 
 
-def test_dry_run_reports_auto_arm_without_writing_note(tmp_path: Path) -> None:
+def test_dry_run_blocks_release_unauthorized_without_writing_note(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
@@ -1405,10 +1395,14 @@ def test_dry_run_reports_auto_arm_without_writing_note(tmp_path: Path) -> None:
 
     assert "release_authorized: false" in note.read_text(encoding="utf-8")  # untouched
     decision = next(d for d in report["decisions"] if d["pr"] == 703)
-    assert decision["auto_arm"] is True
+    assert decision["action"] == "blocked"
+    assert "release_authorized_false" in decision["reasons"]
+    assert "auto_arm" not in decision
 
 
-def test_auto_arm_writes_authority_case_ledger_record(tmp_path: Path) -> None:
+def test_release_unauthorized_task_does_not_write_auto_arm_ledger_record(
+    tmp_path: Path,
+) -> None:
     vault = _make_vault(tmp_path)
     _write_task(
         vault,
@@ -1430,11 +1424,7 @@ def test_auto_arm_writes_authority_case_ledger_record(tmp_path: Path) -> None:
         auto_arm_ledger_path=ledger,
     )
 
-    records = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line]
-    assert any(
-        rec.get("kind") == "release_auto_arm" and rec.get("task_id") == "stranded-ledger"
-        for rec in records
-    )
+    assert not ledger.exists()
 
 
 def test_already_release_authorized_task_is_not_rearmed(tmp_path: Path) -> None:

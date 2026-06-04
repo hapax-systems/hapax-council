@@ -642,6 +642,10 @@ def _task_blockers(
                 blockers.append(f"closed_task_linked_to_open_pr_without_pr_field:{open_pr_number}")
     elif task.status not in ACTIVE_READY_STATUSES:
         blockers.append(f"active_task_status_not_ready:{task.status or 'missing'}")
+    elif task.folder == "active":
+        release_arm = assess_release_auto_arm(task.frontmatter)
+        if release_arm.needs_arming:
+            blockers.append("release_authorized_false")
 
     avsdlc_gate = evaluate_avsdlc_release_gate(task.frontmatter)
     blockers.extend(f"avsdlc_release_gate:{blocker}" for blocker in avsdlc_gate.blockers)
