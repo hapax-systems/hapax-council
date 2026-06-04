@@ -115,6 +115,7 @@ REQUEST_CLOSEABLE_STATUSES = frozenset(
         "normalized",
         "operator_confirmation",
         "accepted_for_planning",
+        "accepted_for_execution",
         "planned",
         "active",
         "phase0_active",
