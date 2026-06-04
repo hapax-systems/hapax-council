@@ -142,4 +142,16 @@ silent-orphaning gap that the file-content contract test missed.
   `r_glsl_postprocess` forces non-trivial, but worth auditing in the same pass.) Both probes
   reverted; CRC verified back to **36975**; clean binary rebuilt. **Phase 1 remains
   default-off / inert / behavior-preserving** — this is strictly a Phase-2 activation prerequisite.
+- **Activation question RESOLVED — not a code defect:** the shader-string assembly is mode-agnostic
+  (`R_GLSL_CompilePermutation` memcpy's the static-parm `#define`s into `fragstrings_list` for every
+  mode before the source, gl_rmain.c:1238-1250) — so USERUTT_ETRA *reaches* the postprocess compile
+  whenever the RUTTETRA bit is set; **there is no assembly defect.** The offscreen harness simply
+  **cannot exercise** a runtime static-parm recompile: the headless render does not run a continuous
+  frame loop, so the per-frame `CheckStaticParms`→`R_GLSL_Restart_f` trigger (gl_rmain.c:6127) never
+  fires after a cvar toggle (verified: a `+defer` runtime toggle produced **no** recompile — compile
+  count stayed flat). **Net for Phase 1:** the content-path machinery is structurally sound; its
+  runtime activation is simply not exercisable in a headless test and is confirmed in Phase 2 under a
+  continuously-rendering context (the live engine or an interactive harness, toggling
+  `r_glsl_postprocess_ruttetra_enable` and asserting the recompile + visual effect). dp-fork restored
+  clean (CRC 36975, no probes); the committed deploy patch is unchanged throughout.
 - (subsequent increments append their parity captures here before the draft → ready transition)
