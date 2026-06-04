@@ -198,6 +198,13 @@ def cascade_unblock(trigger_task_id: str | None = None) -> int:
     unblocked = 0
 
     for f, text, deps in candidates:
+        frontmatter = frontmatter_from_text(text)
+        if is_active_blocked_with_evidence(frontmatter):
+            print(
+                f"cc-cascade-unblock: {f.stem} remains blocked (current blocked evidence present)"
+            )
+            continue
+
         unmet = [dep for dep in deps if dep not in satisfied_ids]
         if unmet:
             reasons: list[str] = []
@@ -211,12 +218,6 @@ def cascade_unblock(trigger_task_id: str | None = None) -> int:
             new = _set_frontmatter_scalar(text, "blocked_reason", blocked_reason)
             if new != text:
                 f.write_text(new, encoding="utf-8")
-            continue
-
-        if is_active_blocked_with_evidence(frontmatter_from_text(text)):
-            print(
-                f"cc-cascade-unblock: {f.stem} remains blocked (current blocked evidence present)"
-            )
             continue
 
         new = re.sub(r"^status: blocked", "status: offered", text, count=1, flags=re.M)
