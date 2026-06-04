@@ -28,6 +28,22 @@ high-spend or benchmark CCTV runs, inspect that file and compare cloud route
 targets against current provider docs. If a route is stale, create a governed
 runtime/provider-spend cc-task before changing the gateway.
 
+## Critical SDLC Availability
+
+CCTV is critical SDLC infrastructure. It must not be degraded solely because a
+Claude Code subscription lane is quota-dry. Claude Code subscription quota is a
+lane-dispatch capacity signal, not evidence that Anthropic/Google API routes or
+LiteLLM gateway aliases are unavailable.
+
+The only quota/capacity blockers that may degrade or hold CCTV are actual paid
+API budget exhaustion, provider-side quota/rate-limit evidence for the selected
+API route, or gateway health/config evidence that the route is not dispatchable.
+When provider auto-reload is enabled, provider quota interruptions should
+normally be recorded as transient hold/retry evidence, then retried on the
+frontier API route. Do not silently substitute a lower-capability model family
+for CCTV unless the cc-task's quality floor and route evidence explicitly permit
+that degradation.
+
 2026-06-04 audit note: Google Gemini API docs list Gemini 3.1 Pro Preview and
 Gemini 3.5 Flash Stable in the current Gemini 3 line, and list Gemini 3 Pro
 Preview under previous/shut-down models. The live gateway still mapped
