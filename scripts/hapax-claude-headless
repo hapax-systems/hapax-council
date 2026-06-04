@@ -262,6 +262,8 @@ task_is_terminal() {
 
 RESTART_COUNT=0
 MAX_RESTART_BACKOFF="${HAPAX_CLAUDE_HEADLESS_RESTART_BACKOFF_SECONDS:-30}"
+QUOTA_STREAK=0
+QUOTA_BACKOFF_CAP="${HAPAX_HEADLESS_QUOTA_BACKOFF_CAP_SECONDS:-21600}"  # 6h ceiling for quota-wall backoff
 # Out-of-band self-reap poll cadence: how often the teardown watchdog re-checks
 # task terminality while claude is alive (claude never EOFs the held FIFO, so a
 # bare `wait` would block forever — see the watchdog in the loop below).
@@ -375,7 +377,21 @@ while true; do
     break
   fi
 
-  echo "hapax-claude-headless: $ROLE exited (code=$EXIT_CODE), restarting in ${MAX_RESTART_BACKOFF}s..."
+  # Quota-wall-aware backoff: if the lane hit a rate limit, honor the receipt's
+  # resets_at (or an exponential streak backoff) instead of the flat 30s restart
+  # thrash that re-hits the wall every tick. (quota-wall-backoff-fix)
+  BACKOFF="$MAX_RESTART_BACKOFF"
+  QW_RC=0
+  QW_OUT="$(detect-quota-wall "$ROLE" --streak "$((QUOTA_STREAK + 1))" --base "$MAX_RESTART_BACKOFF" --cap "$QUOTA_BACKOFF_CAP" 2>/dev/null)" || QW_RC=$?
+  if [ "$QW_RC" -eq 75 ]; then
+    QUOTA_STREAK=$((QUOTA_STREAK + 1))
+    [ -n "$QW_OUT" ] && BACKOFF="$QW_OUT"
+    echo "hapax-claude-headless: $ROLE QUOTA WALL (streak=$QUOTA_STREAK) — backing off ${BACKOFF}s"
+  else
+    QUOTA_STREAK=0
+  fi
+
+  echo "hapax-claude-headless: $ROLE exited (code=$EXIT_CODE), restarting in ${BACKOFF}s..."
 
   if [[ -e "$DISABLE_FILE" ]]; then
     echo "hapax-claude-headless: disabled by $DISABLE_FILE" >&2
@@ -387,6 +403,6 @@ while true; do
   fi
 
   RESTART_MSG='{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Resume only the active task named in your claim file and prior governed dispatch. If there is no active claim, write a relay status saying idle-awaiting-dispatch. Do not claim any new task."}]}}'
-  sleep "$MAX_RESTART_BACKOFF"
+  sleep "$BACKOFF"
   echo "$RESTART_MSG" >&3
 done
