@@ -486,6 +486,14 @@ for session in "${!IDLE_LANES[@]}"; do
         hapax-gemini-*)  lane="${session#hapax-gemini-}" ;;
     esac
 
+    # A quota-walled lane is intentionally paused — the headless wrapper backs off
+    # until its quota resets. Nudging it now just re-hits the wall every cooldown
+    # tick (the exact thrash this fix targets), so skip until resets_at. (quota-wall-backoff-fix)
+    if walled_until="$(quota_walled_until "$lane")"; then
+        log "SKIP nudge $lane: quota-walled until $walled_until"
+        continue
+    fi
+
     dispatch_msg=""
     claimed=$(find_claimed_task "$lane" 2>/dev/null || true)
     dispatch_target=""
