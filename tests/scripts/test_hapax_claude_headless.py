@@ -96,7 +96,19 @@ def test_appendix_hop_passes_remote_args_without_shell_interpolation(tmp_path: P
     _stub_bin(
         bin_dir,
         "ssh",
-        'remote_cmd="${@: -1}"\nexec bash -c "$remote_cmd"\n',
+        """remote_cmd="${@: -1}"
+case "$remote_cmd" in
+  HAPAX_REMOTE_PAYLOAD=*)
+    echo 'fish: Expected a variable name after this $' >&2
+    exit 127
+    ;;
+esac
+if [[ "$remote_cmd" == *"\\$'"* ]]; then
+  echo 'fish: Expected a variable name after this $' >&2
+  exit 127
+fi
+exec bash -c "$remote_cmd"
+""",
     )
     _stub_bin(
         bin_dir,

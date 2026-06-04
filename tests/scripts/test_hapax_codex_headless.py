@@ -28,7 +28,22 @@ def test_codex_headless_runs_on_appendix_via_remote_payload(tmp_path: Path) -> N
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
     env_file = tmp_path / "codex-env.txt"
-    _write_executable(bin_dir / "ssh", 'remote_cmd="${@: -1}"\nexec bash -c "$remote_cmd"\n')
+    _write_executable(
+        bin_dir / "ssh",
+        """remote_cmd="${@: -1}"
+case "$remote_cmd" in
+  HAPAX_REMOTE_PAYLOAD=*)
+    echo 'fish: Expected a variable name after this $' >&2
+    exit 127
+    ;;
+esac
+if [[ "$remote_cmd" == *"\\$'"* ]]; then
+  echo 'fish: Expected a variable name after this $' >&2
+  exit 127
+fi
+exec bash -c "$remote_cmd"
+""",
+    )
     _write_executable(
         bin_dir / "codex",
         f"""printf '%s\\n' "$*" > {args_file}

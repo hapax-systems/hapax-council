@@ -106,6 +106,19 @@ def _write_fake_ssh_eval(bin_dir: Path) -> None:
     fake_ssh.write_text(
         """#!/usr/bin/env bash
 remote_cmd="${@: -1}"
+if [ -n "${HAPAX_FAKE_SSH_REMOTE_CMDS:-}" ]; then
+  printf '%s\\n' "$remote_cmd" >> "$HAPAX_FAKE_SSH_REMOTE_CMDS"
+fi
+case "$remote_cmd" in
+  HAPAX_REMOTE_PAYLOAD=*)
+    echo 'fish: Expected a variable name after this $' >&2
+    exit 127
+    ;;
+esac
+if [[ "$remote_cmd" == *"\\$'"* ]]; then
+  echo 'fish: Expected a variable name after this $' >&2
+  exit 127
+fi
 exec bash -c "$remote_cmd"
 """,
         encoding="utf-8",
@@ -185,8 +198,10 @@ def test_appendix_codex_exec_uses_remote_payload_without_shell_interpolation(
     (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
     _write_fake_ssh_eval(tmp_path / "bin")
     exploit = tmp_path / "dispatch-host-shell-injection"
+    remote_cmds = tmp_path / "ssh-remote-commands.txt"
     env["HAPAX_DISPATCH_HOST"] = "appendix"
     env["HAPAX_DISPATCH_LOGOS_URL"] = f"http://podium.invalid/api; touch {exploit}"
+    env["HAPAX_FAKE_SSH_REMOTE_CMDS"] = str(remote_cmds)
 
     result = subprocess.run(
         [
@@ -208,6 +223,11 @@ def test_appendix_codex_exec_uses_remote_payload_without_shell_interpolation(
     )
 
     assert result.returncode == 0, result.stderr
+    commands = remote_cmds.read_text(encoding="utf-8").splitlines()
+    assert commands
+    assert all(command.startswith("bash -c ") for command in commands)
+    assert all(not command.startswith("HAPAX_REMOTE_PAYLOAD=") for command in commands)
+    assert all("$'" not in command for command in commands)
     assert not exploit.exists()
     assert "mcp list" in args_file.read_text(encoding="utf-8")
     launched_env = env_file.read_text(encoding="utf-8")
@@ -747,7 +767,7 @@ esac
     runner = Path(tmux_lines[-1])
     runner_text = runner.read_text(encoding="utf-8")
     assert "exec ssh" in runner_text
-    assert "HAPAX_REMOTE_PAYLOAD=" in runner_text
+    assert "bash" in runner_text
     assert "exec /" not in runner_text
 
     runner_result = subprocess.run(
