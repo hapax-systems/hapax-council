@@ -116,4 +116,18 @@ silent-orphaning gap that the file-content contract test missed.
   — source-owner anchors `R_BlendView_N` / `opRuttEtra_luma_height` / `USERUTT_ETRA` in the deploy
   patch + the `TestDomainStageHostArityFields` / `TestBothBasesGeometryContentCoverage` deterministic
   tests. Port-owner gate green (5 tests).
+- **Offscreen runtime verification (isolated xvfb, `-userdir /tmp`, live `config.cfg` confirmed
+  untouched):** the dp-fork ran the screwm map and **compiled every shader permutation clean** from
+  the builtin (generic / hapaxdrift / lightmap / lightsource / **postprocess** — zero compile
+  errors, no Host_Error, clean shutdown). **The engine probed `glsl/combined_crc36975.glsl`** — the
+  exact CRC computed offline — *empirically* confirming both the CRC mechanism and the canary-orphan
+  finding end-to-end (the file is absent → builtin used → canary orphaned, as found).
+  **Caveat (verify-before-done, no over-claim):** a deliberate-error break-test injected inside the
+  `USERUTT_ETRA` block did NOT trigger a compile failure when `r_glsl_postprocess_ruttetra_enable 1`
+  was forced — so the content-pass **runtime activation could not be confirmed offscreen** (either
+  the harness's late-`+cvar` handling, or a gap in the cvar→static-parm→recompile flow; the static
+  parm wiring reads structurally identical to the working USERVEC/FXAA parms). Phase 1 is unaffected
+  (default-off → inert → behavior-preserving), but **confirming the content-path activation is a
+  Phase-2 prerequisite** before the recruiter drives it. Probe reverted, CRC back to 36975, clean
+  binary rebuilt.
 - (subsequent increments append their parity captures here before the draft → ready transition)
