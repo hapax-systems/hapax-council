@@ -58,8 +58,9 @@ def test_dashboard_aggregates_required_non_green_routing_state() -> None:
     assert dashboard.route_metadata_summary.malformed == 1
     assert dashboard.registry_freshness_ok is False
     assert dashboard.registry_non_green_route_count > 0
-    assert dashboard.subscription_quota_state == "fresh"
+    assert dashboard.subscription_quota_state == "exhausted"
     assert dashboard.paid_api_budget_state == "active"
+    assert dashboard.paid_api_route_eligible is True
     assert dashboard.bootstrap_dependency_state == "none"
     assert dashboard.local_resource_state == "green"
     assert dashboard.provider_dependency_count == 0
