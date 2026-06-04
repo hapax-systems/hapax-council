@@ -138,6 +138,37 @@ def test_cascade_preserves_blocked_with_current_evidence(tmp_path: Path) -> None
     assert "blocked_witness: ~/.cache/hapax/witness/minio-d-state.json" in text
 
 
+def test_cascade_preserves_blocked_with_current_evidence_even_with_unmet_dependency(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+    module._check_pr_merged = lambda _pr: "merged"
+    _write_task(
+        vault,
+        "closed",
+        "invalid-dep",
+        status="done",
+        body="## Acceptance criteria\n\n- [ ] Evidence exists\n",
+    )
+    target = _write_task(
+        vault,
+        "active",
+        "target",
+        status="blocked",
+        blocked_reason="minio_mirror_still_d_state",
+        blocked_witness="~/.cache/hapax/witness/minio-d-state.json",
+        depends_on=["invalid-dep"],
+    )
+
+    assert module.cascade_unblock() == 0
+    text = target.read_text(encoding="utf-8")
+    assert "status: blocked" in text
+    assert "blocked_reason: minio_mirror_still_d_state" in text
+    assert "blocked_witness: ~/.cache/hapax/witness/minio-d-state.json" in text
+    assert "waiting_for_closure_valid_dependencies" not in text
+
+
 def test_cascade_surfaces_precise_active_blocked_dependency(tmp_path: Path) -> None:
     module = _load_module()
     vault = _make_vault(tmp_path, module)

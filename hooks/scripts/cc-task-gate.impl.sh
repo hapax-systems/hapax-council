@@ -767,6 +767,7 @@ while idx < len(lines):
 status = fields.get("status", "")
 assigned = fields.get("assigned_to", "")
 blocked_reason = fields.get("blocked_reason", "")
+blocked_witness = fields.get("blocked_witness", "") or fields.get("blocked_witness_path", "")
 authority_case = fields.get("authority_case") or fields.get("case_id", "")
 parent_spec = fields.get("parent_spec", "")
 route_schema = fields.get("route_metadata_schema", "")
@@ -777,9 +778,9 @@ docs_auth = fields.get("docs_mutation_authorized", "")
 runtime_auth = fields.get("runtime_mutation_authorized", "")
 scope_refs = fields.get("mutation_scope_refs", "")
 print(
-    f"{status}\t{assigned}\t{blocked_reason}\t{authority_case}\t{parent_spec}\t"
-    f"{route_schema}\t{stage}\t{impl_auth}\t{src_auth}\t{docs_auth}\t"
-    f"{runtime_auth}\t{scope_refs}"
+    f"{status}\t{assigned}\t{blocked_reason}\t{blocked_witness}\t"
+    f"{authority_case}\t{parent_spec}\t{route_schema}\t{stage}\t"
+    f"{impl_auth}\t{src_auth}\t{docs_auth}\t{runtime_auth}\t{scope_refs}"
 )
 PYEOF
 )"
@@ -787,15 +788,16 @@ PYEOF
 status="$(printf '%s' "$parse_output" | cut -f1)"
 assigned="$(printf '%s' "$parse_output" | cut -f2)"
 blocked_reason="$(printf '%s' "$parse_output" | cut -f3)"
-authority_case="$(printf '%s' "$parse_output" | cut -f4)"
-parent_spec="$(printf '%s' "$parse_output" | cut -f5)"
-route_schema="$(printf '%s' "$parse_output" | cut -f6)"
-case_stage="$(printf '%s' "$parse_output" | cut -f7)"
-impl_authorized="$(printf '%s' "$parse_output" | cut -f8)"
-src_authorized="$(printf '%s' "$parse_output" | cut -f9)"
-docs_authorized="$(printf '%s' "$parse_output" | cut -f10)"
-runtime_authorized="$(printf '%s' "$parse_output" | cut -f11)"
-mutation_scope_refs="$(printf '%s' "$parse_output" | cut -f12-)"
+blocked_witness="$(printf '%s' "$parse_output" | cut -f4)"
+authority_case="$(printf '%s' "$parse_output" | cut -f5)"
+parent_spec="$(printf '%s' "$parse_output" | cut -f6)"
+route_schema="$(printf '%s' "$parse_output" | cut -f7)"
+case_stage="$(printf '%s' "$parse_output" | cut -f8)"
+impl_authorized="$(printf '%s' "$parse_output" | cut -f9)"
+src_authorized="$(printf '%s' "$parse_output" | cut -f10)"
+docs_authorized="$(printf '%s' "$parse_output" | cut -f11)"
+runtime_authorized="$(printf '%s' "$parse_output" | cut -f12)"
+mutation_scope_refs="$(printf '%s' "$parse_output" | cut -f13-)"
 
 # --- 8. Check assigned_to ---
 if [[ "$assigned" != "$role" ]]; then
@@ -824,8 +826,9 @@ case "$status" in
     _emit_block <<EOF
 cc-task-gate: BLOCKED — task '$task_id' is in BLOCKED state.
 
-  Reason: ${blocked_reason:-(no reason set)}
-  Note:   $note_path
+  Reason:  ${blocked_reason:-(no reason set)}
+  Witness: ${blocked_witness:-(no witness set)}
+  Note:    $note_path
 
   Operator must edit the task to status: in_progress (or claimed) to resume.
 EOF

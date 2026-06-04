@@ -106,6 +106,7 @@ def _make_vault(
     assigned: str,
     task_id: str = "test-001",
     blocked_reason: str = "",
+    blocked_witness: str = "",
     authority: bool = True,
     source_authorized: bool = True,
     runtime_authorized: bool = False,
@@ -118,6 +119,7 @@ def _make_vault(
     note_dir.mkdir(parents=True, exist_ok=True)
     note = note_dir / f"{task_id}-test-task.md"
     blocked_line = f'\nblocked_reason: "{blocked_reason}"' if blocked_reason else ""
+    witness_line = f'\nblocked_witness: "{blocked_witness}"' if blocked_witness else ""
     authority_block = ""
     if authority:
         authority_block = f"""
@@ -139,7 +141,7 @@ task_id: {task_id}
 title: "Fixture task"
 status: {status}
 assigned_to: {assigned}
-priority: normal{blocked_line}
+priority: normal{blocked_line}{witness_line}
 created_at: 2026-04-20T00:00:00Z
 updated_at: 2026-04-20T00:00:00Z
 {authority_block.rstrip()}
@@ -590,6 +592,7 @@ class TestStatusGating:
             status="blocked",
             assigned="alpha",
             blocked_reason="operator paused",
+            blocked_witness="/tmp/operator-pause.json",
         )
         _write_claim(tmp_path, "alpha", "test-001")
         result = _run_hook(
@@ -598,6 +601,7 @@ class TestStatusGating:
         )
         assert result.returncode == 2
         assert "operator paused" in result.stderr
+        assert "/tmp/operator-pause.json" in result.stderr
 
     def test_pr_open_allows(self, tmp_path: Path) -> None:
         _make_vault(tmp_path, status="pr_open", assigned="alpha")
