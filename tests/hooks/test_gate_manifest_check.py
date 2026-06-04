@@ -27,8 +27,14 @@ def _manifest() -> dict:
     return yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
 
 
-def _write_claude_settings(tmp_path: Path, *, drop_last_pretool_hook: bool = False) -> Path:
+def _write_claude_settings(
+    tmp_path: Path,
+    *,
+    drop_last_pretool_hook: bool = False,
+    hook_command_overrides: dict[str, str] | None = None,
+) -> Path:
     phases = _manifest()["runtimes"]["claude"]["phases"]
+    hook_command_overrides = hook_command_overrides or {}
     settings = {"hooks": {}}
     for phase, entries in phases.items():
         settings["hooks"][phase] = []
@@ -43,7 +49,9 @@ def _write_claude_settings(tmp_path: Path, *, drop_last_pretool_hook: bool = Fal
                     "hooks": [
                         {
                             "type": "command",
-                            "command": f"/tmp/hapax-hooks/{hook_name}",
+                            "command": hook_command_overrides.get(
+                                hook_name, f"/tmp/hapax-hooks/{hook_name}"
+                            ),
                         }
                         for hook_name in hook_names
                     ],
@@ -66,6 +74,32 @@ def test_claude_settings_fixture_matches_manifest(tmp_path: Path) -> None:
     result = _run("--claude-settings", settings)
 
     assert result.returncode == 0, result.stderr
+
+
+def test_claude_settings_hook_command_with_args_uses_command_basename(tmp_path: Path) -> None:
+    settings = _write_claude_settings(
+        tmp_path,
+        hook_command_overrides={
+            "hooks-doctor.sh": "/opt/hapax/hooks/hooks-doctor.sh --session --root /tmp/repo"
+        },
+    )
+    result = _run("--claude-settings", settings)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_claude_settings_drift_with_args_reports_command_basename(tmp_path: Path) -> None:
+    settings = _write_claude_settings(
+        tmp_path,
+        hook_command_overrides={
+            "hooks-doctor.sh": "/opt/hapax/hooks/unexpected-doctor.sh --session --root /tmp/repo"
+        },
+    )
+    result = _run("--claude-settings", settings)
+
+    assert result.returncode == 1
+    assert "unexpected-doctor.sh" in result.stderr
+    assert "/tmp/repo" not in result.stderr
 
 
 def test_claude_settings_drift_fails(tmp_path: Path) -> None:
