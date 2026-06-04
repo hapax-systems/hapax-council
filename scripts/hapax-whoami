@@ -18,6 +18,21 @@
 
 set -eu
 
+# WM-independent identity (reform-identity-coherence, cluster 11): a per-session
+# marker — written by the spawners (hapax-claude / hapax-claude-headless) and the
+# in-session reassert command, keyed by the session id — resolves identity without
+# any compositor query. This is the niri/KWin path; the hyprctl walk below only
+# works on Hyprland (this script was previously dead anywhere without hyprctl).
+# Path convention SSOT: hapax_session_role_marker in hooks/scripts/agent-role.sh.
+_sid="${HAPAX_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
+if [ -n "$_sid" ] && [ -f "$HOME/.cache/hapax/session-role-$_sid" ]; then
+  _role="$(head -n1 "$HOME/.cache/hapax/session-role-$_sid" 2>/dev/null | tr -d '[:space:]' || true)"
+  if [ -n "$_role" ]; then
+    printf '%s\n' "$_role"
+    exit 0
+  fi
+fi
+
 # Walk up the process tree from $$ looking for a `foot` ancestor.
 pid=$$
 foot_pid=""
