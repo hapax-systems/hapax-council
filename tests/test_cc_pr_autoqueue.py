@@ -435,6 +435,59 @@ def test_ignores_prior_autoqueue_admission_checks_when_classifying_checks(
     )
 
 
+def test_uses_latest_duplicate_check_context_when_classifying_checks(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=50)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(
+            50,
+            checks=[
+                {
+                    "__typename": "CheckRun",
+                    "name": "governance-gate",
+                    "conclusion": "FAILURE",
+                    "completedAt": "2026-06-04T12:03:43Z",
+                },
+                {
+                    "__typename": "CheckRun",
+                    "name": "pr-admission",
+                    "conclusion": "FAILURE",
+                    "completedAt": "2026-06-04T12:03:41Z",
+                },
+                {
+                    "__typename": "CheckRun",
+                    "name": "governance-gate",
+                    "conclusion": "SUCCESS",
+                    "completedAt": "2026-06-04T12:05:18Z",
+                },
+                {
+                    "__typename": "CheckRun",
+                    "name": "pr-admission",
+                    "conclusion": "SUCCESS",
+                    "completedAt": "2026-06-04T12:05:17Z",
+                },
+                _check("lint"),
+                _check("test"),
+                _check("typecheck"),
+                _check("web-build"),
+                _check("vscode-build"),
+            ],
+        )
+    ]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert not report["decisions"][0].get("reasons")
+
+
 def test_blocks_missing_or_legacy_task_metadata(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="legacy", pr=50, route_metadata_schema=None)

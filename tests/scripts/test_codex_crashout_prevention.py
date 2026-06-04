@@ -10,6 +10,7 @@ Covers:
 import json
 import os
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -242,6 +243,225 @@ def test_audit_releases_phantom_claim(tmp_path: Path) -> None:
     updated = note.read_text(encoding="utf-8")
     assert "status: offered" in updated
     assert "assigned_to: unassigned" in updated
+
+
+def test_audit_reports_quota_blocked_claim_from_receipt(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(
+        home,
+        "quota-held",
+        status="in_progress",
+        assigned_to="alpha",
+    )
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-alpha").write_text("quota-held\n", encoding="utf-8")
+    receipt_dir = cache / "relay" / "receipts"
+    receipt_dir.mkdir(parents=True)
+    resets_at = (datetime.now(UTC) + timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+    (receipt_dir / "alpha-quota-wall.yaml").write_text(
+        "\n".join(
+            [
+                "role: alpha",
+                "status: quota_blocked",
+                "detected_at: 2026-06-04T00:00:00Z",
+                "signal_kind: rate_limit_event",
+                f"resets_at: {resets_at}",
+                "action: exit_clean_await_restart",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    r = _run_claim_audit(home, "--stale-hours=999")
+
+    assert r.returncode == 1
+    assert "quota-blocked claim(s) found" in r.stdout
+    assert "QUOTA_BLOCKED: quota-held assigned=alpha" in r.stdout
+    assert "quota-wall-receipt:" in r.stdout
+
+
+def test_audit_release_does_not_release_quota_blocked_without_explicit_flag(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "quota-held",
+        status="in_progress",
+        assigned_to="alpha",
+    )
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-alpha"
+    claim_file.write_text("quota-held\n", encoding="utf-8")
+    receipt_dir = cache / "relay" / "receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "alpha-quota-wall.yaml").write_text(
+        "\n".join(
+            [
+                "role: alpha",
+                "status: quota_blocked",
+                "detected_at: 2026-06-04T00:00:00Z",
+                "signal_kind: api_retry_429",
+                "resets_at: unknown",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    r = _run_claim_audit(home, "--release", "--stale-hours=999")
+
+    assert r.returncode == 1
+    assert "HELD: pass --release-quota-blocked" in r.stdout
+    assert claim_file.exists()
+    updated = note.read_text(encoding="utf-8")
+    assert "status: in_progress" in updated
+    assert "assigned_to: alpha" in updated
+
+
+def test_audit_releases_quota_blocked_claim_and_preserves_pr_branch(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "quota-release",
+        status="in_progress",
+        assigned_to="alpha",
+    )
+    note.write_text(
+        note.read_text(encoding="utf-8")
+        .replace("pr: null", "pr: 3867")
+        .replace("branch: null", "branch: alpha/audio-work"),
+        encoding="utf-8",
+    )
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-alpha"
+    claim_file.write_text("quota-release\n", encoding="utf-8")
+    receipt_dir = cache / "relay" / "receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "alpha-quota-wall.yaml").write_text(
+        "\n".join(
+            [
+                "role: alpha",
+                "status: quota_blocked",
+                "detected_at: 2026-06-04T00:00:00Z",
+                "signal_kind: api_retry_429",
+                "resets_at: unknown",
+                "action: exit_clean_await_restart",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    r = _run_claim_audit(
+        home,
+        "--release",
+        "--release-quota-blocked",
+        "--stale-hours=999",
+    )
+
+    assert r.returncode == 0
+    assert "RELEASED back to offered for governed redispatch" in r.stdout
+    assert not claim_file.exists()
+    updated = note.read_text(encoding="utf-8")
+    assert "status: offered" in updated
+    assert "assigned_to: unassigned" in updated
+    assert "pr: 3867" in updated
+    assert "branch: alpha/audio-work" in updated
+    assert "released quota-blocked claim" in updated
+
+
+def test_audit_reports_quota_blocked_claim_from_dispatch_ledger(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(
+        home,
+        "ledger-held",
+        status="claimed",
+        assigned_to="theta",
+    )
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-theta").write_text("ledger-held\n", encoding="utf-8")
+    ledger_dir = cache / "orchestration"
+    ledger_dir.mkdir(parents=True)
+    timestamp = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    (ledger_dir / "methodology-dispatch.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": timestamp,
+                "task_id": "ledger-held",
+                "lane": "theta",
+                "platform": "claude",
+                "ok": False,
+                "reason": "route policy hold: quota_telemetry_stale_or_unknown; claude.interactive.full: blocked: account_live_quota_receipt_absent",
+                "route_policy_action": "hold",
+                "route_policy_outcome": "hold",
+                "route_policy_reason_codes": [
+                    "quota_telemetry_stale_or_unknown",
+                    "claude.interactive.full: blocked: account_live_quota_receipt_absent",
+                ],
+                "route_decision_id": "rd-test-quota",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    r = _run_claim_audit(home, "--stale-hours=999")
+
+    assert r.returncode == 1
+    assert "QUOTA_BLOCKED: ledger-held assigned=theta" in r.stdout
+    assert "methodology-dispatch:rd-test-quota" in r.stdout
+
+
+def test_audit_reports_quota_blocked_claim_from_route_decision_ledger(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    _write_task(
+        home,
+        "route-held",
+        status="claimed",
+        assigned_to="alpha",
+    )
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-alpha").write_text("route-held\n", encoding="utf-8")
+    ledger_dir = cache / "orchestration"
+    ledger_dir.mkdir(parents=True)
+    timestamp = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    (ledger_dir / "route-decisions.jsonl").write_text(
+        json.dumps(
+            {
+                "created_at": timestamp,
+                "task_id": "route-held",
+                "lane": "alpha",
+                "platform": "claude",
+                "decision": "hold",
+                "policy_outcome": "hold",
+                "message": "claude.interactive.full: quota blocked: account_live_quota_receipt_absent",
+                "reason_codes": [
+                    "quota_telemetry_stale_or_unknown",
+                    "claude.interactive.full: quota blocked: account_live_quota_receipt_absent",
+                ],
+                "decision_id": "rd-route-quota",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    r = _run_claim_audit(home, "--stale-hours=999")
+
+    assert r.returncode == 1
+    assert "QUOTA_BLOCKED: route-held assigned=alpha" in r.stdout
+    assert "route-decisions:rd-route-quota" in r.stdout
 
 
 def test_audit_preserves_mismatched_claim_cache(tmp_path: Path) -> None:
