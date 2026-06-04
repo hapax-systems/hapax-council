@@ -70,6 +70,16 @@ def _run_wrapper(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _arg_value(argv: list[str], option: str) -> str:
+    prefix = f"{option}="
+    for idx, arg in enumerate(argv):
+        if arg.startswith(prefix):
+            return arg[len(prefix) :]
+        if arg == option:
+            return argv[idx + 1]
+    raise AssertionError(f"{option} not found in argv: {argv!r}")
+
+
 class TestSinkNotFound:
     def test_missing_sink_exits_zero_no_cli_call(self, stub_env, tmp_path):
         env, capture, bin_dir = stub_env
@@ -141,9 +151,7 @@ class TestProbeAssembly:
         # Active input → --has-active-input flag set.
         assert "--has-active-input" in argv
         # rms-db was passed (value is the mean_volume from ffmpeg).
-        assert "--rms-db" in argv
-        rms_idx = argv.index("--rms-db")
-        assert argv[rms_idx + 1] == "-25.50"
+        assert _arg_value(argv, "--rms-db") == "-25.50"
 
     def test_idle_sink_no_input_uses_no_active_input_flag(self, stub_env, tmp_path):
         env, capture, bin_dir = stub_env
@@ -215,8 +223,40 @@ class TestProbeAssembly:
         assert "pw-cat record failed" in result.stderr
         # rms_db should have been passed as -inf.
         argv = capture.read_text().splitlines()
-        rms_idx = argv.index("--rms-db")
-        assert argv[rms_idx + 1] == "-inf"
+        assert _arg_value(argv, "--rms-db") == "-inf"
+        assert "--rms-db=-inf" in argv
+
+    def test_empty_ffmpeg_mean_volume_passes_inf_as_attached_arg(self, stub_env, tmp_path):
+        env, capture, bin_dir = stub_env
+
+        _write_stub(
+            bin_dir / "pactl",
+            r"""
+            case "$1 $2" in
+              "list sinks")
+                printf "Sink #42\n\tName: alsa_output.test\n\tState: RUNNING\n"
+                ;;
+              "list short")
+                if [[ "$3" == "sinks" ]]; then
+                    printf "42\talsa_output.test\tPipeWire\ts32le 2ch 44100Hz\tRUNNING\n"
+                elif [[ "$3" == "sink-inputs" ]]; then
+                    printf ""
+                fi
+                ;;
+            esac
+            exit 0
+            """,
+        )
+        _write_stub(bin_dir / "pw-cat", "exit 0\n")
+        _write_stub(bin_dir / "ffmpeg", "exit 0\n")
+
+        env["HAPAX_PIN_CHECK_SINK"] = "alsa_output.test"
+        result = _run_wrapper(env)
+
+        assert result.returncode == 0, f"stderr={result.stderr}"
+        argv = capture.read_text().splitlines()
+        assert "--rms-db=-inf" in argv
+        assert "--rms-db" not in argv
 
 
 class TestAutoFixWiring:

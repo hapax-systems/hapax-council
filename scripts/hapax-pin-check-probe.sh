@@ -91,6 +91,6 @@ exec "$CLI" pin-check \
     --sink "$SINK_LABEL" \
     --state "$sink_state" \
     "$has_input_flag" \
-    --rms-db "$rms_db" \
+    "--rms-db=$rms_db" \
     --state-file "$STATE_FILE" \
     "${extra_args[@]}"
