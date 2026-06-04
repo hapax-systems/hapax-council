@@ -62,6 +62,12 @@ float coupling_shader_plan_post;
 float coupling_shader_plan_temporal_ratio;
 string coupling_current_mode;
 float coupling_mode_check_next;
+float coupling_drift_geo_amp;
+float coupling_drift_geo_ampmax;
+float coupling_drift_geo_freq;
+float coupling_drift_geo_speed;
+float coupling_drift_geo_swirl;
+float coupling_drift_geo_content;
 
 void() coupling_init =
 {
@@ -127,6 +133,12 @@ void() coupling_init =
     coupling_shader_plan_feedback = 0;
     coupling_shader_plan_post = 0;
     coupling_shader_plan_temporal_ratio = 0;
+    coupling_drift_geo_amp = 0.5;
+    coupling_drift_geo_ampmax = 0.5;
+    coupling_drift_geo_freq = 0.3;
+    coupling_drift_geo_speed = 0.25;
+    coupling_drift_geo_swirl = 0.333333;
+    coupling_drift_geo_content = 0.2;
     coupling_next_poll = time + 0.5;
     coupling_current_mode = "rnd";
     coupling_mode_check_next = time + 5.0;
@@ -255,7 +267,7 @@ float() coupling_apply_effect_review_preset =
     if (p < 1.5)
     {
         // 1: reference/readability baseline - drift visible, media readable.
-        coupling_write_uservecs(0.07, 1.75, 0.00, 0.035, 0.42, 1.45, 0, 0.12, 0.018, 0.085, 0, 0, 0, 0, 0, 0);
+        coupling_write_uservecs(0.07, 1.75, 0.00, 0.035, 0.42, 1.45, 0, 0.12, 9.0, 7.0, 1.5, 0, 0, 0, 0, 0);
         return 1;
     }
     if (p < 2.5)
@@ -392,6 +404,39 @@ void() coupling_read_local_effects =
     coupling_shader_plan_feedback = coupling_read_float("data/shader-plan-feedback.txt", 0);
     coupling_shader_plan_post = coupling_read_float("data/shader-plan-post.txt", 0);
     coupling_shader_plan_temporal_ratio = coupling_read_float("data/shader-plan-temporal-ratio.txt", 0);
+};
+
+void() coupling_apply_drift_geo =
+{
+    float alpha;
+    float amp_val;
+    float ampmax_val;
+    float freq_val;
+    float speed_val;
+    float swirl_val;
+    float content_val;
+
+    alpha = 0.15;
+    coupling_drift_geo_amp = coupling_drift_geo_amp * (1 - alpha) + coupling_read_float("data/drift-geo-amp.txt", coupling_drift_geo_amp) * alpha;
+    coupling_drift_geo_ampmax = coupling_drift_geo_ampmax * (1 - alpha) + coupling_read_float("data/drift-geo-ampmax.txt", coupling_drift_geo_ampmax) * alpha;
+    coupling_drift_geo_freq = coupling_drift_geo_freq * (1 - alpha) + coupling_read_float("data/drift-geo-freq.txt", coupling_drift_geo_freq) * alpha;
+    coupling_drift_geo_speed = coupling_drift_geo_speed * (1 - alpha) + coupling_read_float("data/drift-geo-speed.txt", coupling_drift_geo_speed) * alpha;
+    coupling_drift_geo_swirl = coupling_drift_geo_swirl * (1 - alpha) + coupling_read_float("data/drift-geo-swirl.txt", coupling_drift_geo_swirl) * alpha;
+    coupling_drift_geo_content = coupling_drift_geo_content * (1 - alpha) + coupling_read_float("data/drift-geo-content.txt", coupling_drift_geo_content) * alpha;
+
+    amp_val = 18 + coupling_drift_geo_amp * 12;
+    ampmax_val = 36;
+    freq_val = 0.012 + coupling_drift_geo_freq * 0.010;
+    speed_val = 0.20 + coupling_drift_geo_speed * 0.20;
+    swirl_val = 0.8 + coupling_drift_geo_swirl * 0.6;
+    content_val = 4 + coupling_drift_geo_content * 5;
+
+    cvar_set("hapax_drift_geo_amp", ftos(coupling_clamp_range(amp_val, 18, 30)));
+    cvar_set("hapax_drift_geo_ampmax", ftos(ampmax_val));
+    cvar_set("hapax_drift_geo_freq", ftos(coupling_clamp_range(freq_val, 0.012, 0.022)));
+    cvar_set("hapax_drift_geo_speed", ftos(coupling_clamp_range(speed_val, 0.20, 0.40)));
+    cvar_set("hapax_drift_geo_swirl", ftos(coupling_clamp_range(swirl_val, 0.8, 1.4)));
+    cvar_set("hapax_drift_geo_content", ftos(coupling_clamp_range(content_val, 4, 9)));
 };
 
 void() coupling_apply_stimmung =
@@ -555,20 +600,30 @@ void() coupling_apply_stimmung =
     // reachable when screwm_qc_screen_postprocess is deliberately enabled.
     if (coupling_effect_review_preset >= 0.5 && coupling_effect_review_preset < 1.5)
     {
-        if (vig < 0.055)
-            vig = 0.055;
-        if (ca < 1.85)
-            ca = 1.85;
-        if (scan_val < 0.46)
-            scan_val = 0.46;
-        if (edge_val < 1.32)
-            edge_val = 1.32;
-        if (warp_val < 0.035)
-            warp_val = 0.035;
-        if (noise_val < 0.070)
-            noise_val = 0.070;
-        if (sharpen_val < 0.10)
-            sharpen_val = 0.10;
+        if (cvar("r_glsl_postprocess_ruttetra_enable") > 0)
+        {
+            warp_val = 9.0;
+            noise_val = 7.0;
+            halftone_val = 1.5;
+            threshold_val = 0.0;
+        }
+        else
+        {
+            if (vig < 0.055)
+                vig = 0.055;
+            if (ca < 1.85)
+                ca = 1.85;
+            if (scan_val < 0.46)
+                scan_val = 0.46;
+            if (edge_val < 1.32)
+                edge_val = 1.32;
+            if (warp_val < 0.035)
+                warp_val = 0.035;
+            if (noise_val < 0.070)
+                noise_val = 0.070;
+            if (sharpen_val < 0.10)
+                sharpen_val = 0.10;
+        }
     }
     else if (coupling_effect_review_preset >= 1.5 && coupling_effect_review_preset < 2.5)
     {
@@ -717,6 +772,7 @@ void() coupling_tick =
     coupling_read_audio();
     coupling_read_effect_drift();
     coupling_read_local_effects();
+    coupling_apply_drift_geo();
     coupling_apply_stimmung();
     coupling_check_working_mode();
 };

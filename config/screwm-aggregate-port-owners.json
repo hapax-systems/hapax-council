@@ -482,6 +482,8 @@
         "unified_reactivity_export",
         "slotdrift_currency",
         "density_grounding",
+        "geo_drift_cvar_drive",
+        "live_texture_deploy_rebuild",
         "receiver_local_drift",
         "fail_safe_fallback"
       ],
@@ -490,8 +492,17 @@
           "path": "scripts/darkplaces-state-export.py",
           "anchors": [
             "def build_visual_chain_lines",
+            "drift-geo-amp.txt",
             "effect-drift-density.txt",
             "unified-reactivity.json"
+          ]
+        },
+        {
+          "path": "assets/quake/qc/coupling.qc",
+          "anchors": [
+            "void() coupling_apply_drift_geo",
+            "hapax_drift_geo_amp",
+            "r_glsl_postprocess_ruttetra_enable"
           ]
         },
         {
@@ -518,6 +529,20 @@
             "unified-reactivity.json @60Hz",
             "HAPAX_SCREWM_AUDIO_TARGET"
           ]
+        },
+        {
+          "path": "systemd/units/hapax-darkplaces-live-texture-rebuild.path",
+          "anchors": [
+            "PathChanged=%h/.cache/hapax/source-activation/current.json",
+            "hapax-darkplaces-live-texture-rebuild.service"
+          ]
+        },
+        {
+          "path": "systemd/units/hapax-darkplaces-live-texture-rebuild.service",
+          "anchors": [
+            "ensure-darkplaces-live-texture-build.sh",
+            "try-restart hapax-darkplaces-v4l2.service"
+          ]
         }
       ],
       "deterministic_tests": [
@@ -525,7 +550,15 @@
           "path": "tests/scripts/test_darkplaces_state_export.py",
           "anchors": [
             "test_darkplaces_state_export_density_grounds_drift_currency",
+            "test_darkplaces_state_export_emits_live_gated_drift_geo_scalars",
             "effect-drift-density-currency.txt"
+          ]
+        },
+        {
+          "path": "tests/systemd/test_screwm_darkplaces_units.py",
+          "anchors": [
+            "test_darkplaces_live_texture_rebuild_path_watches_source_activation_patch",
+            "try-restart hapax-darkplaces-v4l2.service"
           ]
         },
         {

@@ -99,6 +99,36 @@ def test_darkplaces_launchers_ensure_persistent_live_texture_binary() -> None:
         assert 'DARKPLACES_BIN="$(resolve_darkplaces_bin)"' in body
 
 
+def test_darkplaces_live_texture_rebuild_path_watches_source_activation_patch() -> None:
+    service = _read("hapax-darkplaces-live-texture-rebuild.service")
+    path = _read("hapax-darkplaces-live-texture-rebuild.path")
+
+    assert "WorkingDirectory=%h/.cache/hapax/source-activation/worktree" in service
+    assert (
+        "ConditionPathExists=%h/.cache/hapax/source-activation/worktree/"
+        "scripts/ensure-darkplaces-live-texture-build.sh"
+    ) in service
+    assert (
+        "ConditionPathExists=%h/.cache/hapax/source-activation/worktree/"
+        "assets/quake/darkplaces/hapax-live-texture.patch"
+    ) in service
+    assert (
+        "ExecStart=%h/.cache/hapax/source-activation/worktree/"
+        "scripts/ensure-darkplaces-live-texture-build.sh"
+    ) in service
+    assert "try-restart hapax-darkplaces-v4l2.service" in service
+    assert "StartLimitIntervalSec=600" in service
+    assert "%h/.cache/hapax/rebuild/worktree" not in service
+
+    assert "PathChanged=%h/.cache/hapax/source-activation/current.json" in path
+    assert (
+        "PathChanged=%h/.cache/hapax/source-activation/worktree/"
+        "assets/quake/darkplaces/hapax-live-texture.patch"
+    ) in path
+    assert "Unit=hapax-darkplaces-live-texture-rebuild.service" in path
+    assert "%h/.cache/hapax/rebuild/worktree" not in path
+
+
 def test_darkplaces_launchers_bind_youtube_camera_and_ward_atlas_textures() -> None:
     autoexec = (REPO_ROOT / "assets" / "quake" / "config" / "autoexec.cfg").read_text(
         encoding="utf-8"
