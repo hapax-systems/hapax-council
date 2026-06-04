@@ -185,6 +185,24 @@ is_gemini_idle() {
     return 1
 }
 
+# ─── Quota-wall skip ─────────────────────────────────────────────────────────
+# A lane walled until a known future reset is intentionally paused — the headless
+# wrapper backs off until the quota frees, so this watchdog must NOT relaunch /
+# revive / nudge it in the meantime (that would re-hit the wall every tick).
+# Echoes the receipt's resets_at iff walled until a FUTURE time; else returns 1.
+quota_walled_until() {
+    local role="$1"
+    local receipt="$HOME/.cache/hapax/relay/receipts/${role}-quota-wall.yaml"
+    [ -f "$receipt" ] || return 1
+    local resets_at
+    resets_at="$(sed -n 's/^resets_at:[[:space:]]*//p' "$receipt" | head -n1)"
+    [ -n "$resets_at" ] && [ "$resets_at" != "unknown" ] || return 1
+    local reset_epoch
+    reset_epoch="$(date -d "$resets_at" +%s 2>/dev/null)" || return 1
+    [ "$reset_epoch" -gt "${now:-$(date +%s)}" ] || return 1
+    printf '%s\n' "$resets_at"
+}
+
 # ─── Lane discovery ──────────────────────────────────────────────────────────
 
 declare -A LANES  # session_name -> platform
@@ -224,6 +242,12 @@ if [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CLAUDE_LAUNCHER" ]; then
     for role in $REQUIRED_CLAUDE_LANES; do
         session="hapax-claude-${role}"
         worktree="${HOME}/projects/hapax-council--${role}"
+
+        # Skip a quota-walled lane until its quota frees (no launch/revive thrash).
+        if walled_until="$(quota_walled_until "$role")"; then
+            log "SKIP $role: quota-walled until $walled_until"
+            continue
+        fi
 
         cooldown_file="$STATE_DIR/_lane_launch_${role}.last"
         launch_cooldown=300  # 5 min between launch attempts per lane
@@ -461,6 +485,14 @@ for session in "${!IDLE_LANES[@]}"; do
         hapax-codex-*)   lane="${session#hapax-codex-}" ;;
         hapax-gemini-*)  lane="${session#hapax-gemini-}" ;;
     esac
+
+    # A quota-walled lane is intentionally paused — the headless wrapper backs off
+    # until its quota resets. Nudging it now just re-hits the wall every cooldown
+    # tick (the exact thrash this fix targets), so skip until resets_at. (quota-wall-backoff-fix)
+    if walled_until="$(quota_walled_until "$lane")"; then
+        log "SKIP nudge $lane: quota-walled until $walled_until"
+        continue
+    fi
 
     dispatch_msg=""
     claimed=$(find_claimed_task "$lane" 2>/dev/null || true)

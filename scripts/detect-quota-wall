@@ -21,6 +21,11 @@ import logging
 import sys
 from pathlib import Path
 
+# Make `shared` importable when run directly via PATH: the headless wrapper invokes
+# us as a bare `detect-quota-wall` (its PATH has scripts/), so sys.path[0] is
+# scripts/, not the repo root. Anchor on the repo root (scripts/'s parent).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -31,6 +36,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to output.jsonl (default: ~/.cache/hapax/claude-headless/<role>/output.jsonl)",
     )
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--streak",
+        type=int,
+        default=1,
+        help="consecutive quota-wall streak (drives exponential backoff)",
+    )
+    parser.add_argument("--base", type=int, default=30, help="minimum backoff seconds")
+    parser.add_argument(
+        "--cap", type=int, default=21600, help="maximum backoff seconds (default 6h)"
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -42,9 +57,17 @@ def main(argv: list[str] | None = None) -> int:
         Path.home() / ".cache/hapax/claude-headless" / args.role / "output.jsonl"
     )
 
-    from shared.quota_wall import handle_quota_wall
+    from shared.quota_wall import (
+        QUOTA_WALL_EXIT_CODE,
+        compute_backoff_seconds,
+        handle_quota_wall,
+    )
 
-    return handle_quota_wall(args.role, output_path)
+    rc = handle_quota_wall(args.role, output_path)
+    if rc == QUOTA_WALL_EXIT_CODE:
+        # quota wall: emit the integer backoff so the bash restart loop can sleep it.
+        print(compute_backoff_seconds(args.role, args.streak, args.base, args.cap))
+    return rc
 
 
 if __name__ == "__main__":

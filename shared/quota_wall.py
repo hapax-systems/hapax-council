@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -188,10 +189,58 @@ def handle_quota_wall(role: str, output_path: Path) -> int:
     return QUOTA_WALL_EXIT_CODE
 
 
+def _read_receipt_resets_at(role: str) -> str | None:
+    """Return the role's quota-wall receipt ``resets_at`` ISO string, or None when
+    the receipt is absent / has no known reset time (``unknown``) / is unparseable."""
+    receipt_path = RELAY_RECEIPT_DIR / f"{role}-quota-wall.yaml"
+    try:
+        text = receipt_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("resets_at:"):
+            value = line.split(":", 1)[1].strip()
+            return value if value and value != "unknown" else None
+    return None
+
+
+def compute_backoff_seconds(
+    role: str,
+    streak: int,
+    base: int,
+    cap: int,
+    *,
+    now_epoch: float | None = None,
+    jitter: int = 0,
+) -> int:
+    """Seconds to wait before restarting a quota-walled lane — the fix for the
+    flat-30s restart thrash.
+
+    If the role's receipt reports a *future* ``resets_at`` → wait until the reset
+    plus a 30s cushion, clamped to ``[base, cap]`` (never re-hit the wall, never
+    sleep past the cap). Otherwise grow exponentially as
+    ``base * 2**min(streak-1, 6)`` (30→60→120→…→cap), clamped to ``[base, cap]``,
+    plus ``jitter`` to decorrelate herds. ``now_epoch``/``jitter`` are injectable
+    for deterministic tests.
+    """
+    resets_at = _read_receipt_resets_at(role)
+    if resets_at is not None:
+        now = time.time() if now_epoch is None else now_epoch
+        try:
+            reset_epoch = datetime.fromisoformat(resets_at.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            reset_epoch = None
+        if reset_epoch is not None and reset_epoch > now:
+            return max(base, min(cap, int(reset_epoch - now + 30)))
+    exponential = base * 2 ** min(max(streak - 1, 0), 6)
+    return max(base, min(cap, exponential + jitter))
+
+
 __all__ = [
     "QUOTA_WALL_EXIT_CODE",
     "QuotaWallSignal",
     "clear_quota_wall_receipt",
+    "compute_backoff_seconds",
     "detect_quota_wall",
     "handle_quota_wall",
     "is_quota_blocked",
