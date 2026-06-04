@@ -38,6 +38,7 @@ DEFAULT_TASKS_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "h
 DEFAULT_REPORT_PATH = Path.home() / ".cache" / "hapax" / "request-fulfillment-reconciler.json"
 
 REQUEST_ID_RE = re.compile(r"\b(REQ-[A-Z0-9][A-Z0-9-]*(?:-\d{6})?)\b")
+FRONTMATTER_CLOSE_RE = re.compile(r"(?m)^---[ \t]*$")
 
 
 @dataclass(frozen=True)
@@ -96,14 +97,26 @@ def parse_frontmatter(path: Path) -> MarkdownNote | None:
         raw = path.read_text(encoding="utf-8")
     except OSError:
         return None
-    if not raw.startswith("---"):
+    if not (raw.startswith("---\n") or raw.startswith("---\r\n")):
         return None
-    end = raw.find("\n---", 3)
-    if end == -1:
+    first_line_end = raw.find("\n")
+    if first_line_end == -1:
         return None
-    yaml_text = raw[3:end].strip()
-    body = raw[end + 4 :].lstrip("\n")
-    data = yaml.safe_load(yaml_text) if yaml_text else {}
+    content_start = first_line_end + 1
+    close = FRONTMATTER_CLOSE_RE.search(raw, content_start)
+    if close is None:
+        return None
+    yaml_text = raw[content_start : close.start()].strip()
+    body_start = close.end()
+    if raw.startswith("\r\n", body_start):
+        body_start += 2
+    elif raw.startswith("\n", body_start):
+        body_start += 1
+    body = raw[body_start:].lstrip("\n")
+    try:
+        data = yaml.safe_load(yaml_text) if yaml_text else {}
+    except yaml.YAMLError:
+        return None
     if not isinstance(data, dict):
         return None
     return MarkdownNote(path=path, frontmatter=data, body=body, raw=raw)

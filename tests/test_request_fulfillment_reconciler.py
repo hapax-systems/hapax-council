@@ -198,6 +198,37 @@ def test_no_linked_tasks_reported_without_mutating(tmp_path: Path) -> None:
     assert (active / "REQ-NO-LINK.md").exists()
 
 
+def test_non_request_markdown_parent_spec_with_body_fences_is_ignored(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    spec = tmp_path / "avsdlc-authority-case.md"
+    spec.write_text(
+        "---\n\n"
+        "## Authority Case\n\n"
+        "This answers the question: against what standards is aesthetic work evaluated?\n\n"
+        "---\n\n"
+        "Body continues here.\n",
+        encoding="utf-8",
+    )
+    _write_request(active / "REQ-SPEC.md", "REQ-SPEC")
+    _write_task(
+        task_closed / "T-SPEC.md",
+        "T-SPEC",
+        status="done",
+        extra_frontmatter={"parent_spec": str(spec)},
+    )
+
+    result = _run(tmp_path, "--dry-run", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["blocked"][0]["reason"] == "no_linked_tasks"
+
+
 @pytest.mark.parametrize("status", ["active", "phase0_active"])
 def test_active_request_statuses_close_with_explicit_fulfillment(
     tmp_path: Path, status: str
