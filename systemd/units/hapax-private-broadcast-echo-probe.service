@@ -6,7 +6,7 @@ After=pipewire.service hapax-secrets.service
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/uv run --project %h/projects/hapax-council %h/projects/hapax-council/scripts/private-broadcast-echo-probe.py
-TimeoutStartSec=15
+TimeoutStartSec=30
 SuccessExitStatus=0 2
 Nice=10
 

@@ -200,6 +200,15 @@ def test_canonical_25_timers_pair_with_existing_service() -> None:
     assert not failures, f"Timer(s) without a matching service in systemd/units/: {failures}"
 
 
+def test_private_broadcast_echo_probe_timeout_covers_loaded_probe_ticks() -> None:
+    """The echo probe records two monitor streams and can exceed 15s under load."""
+    unit = UNITS_DIR / "hapax-private-broadcast-echo-probe.service"
+    values = _raw_keys(unit, "Service", "TimeoutStartSec")
+    assert values, "hapax-private-broadcast-echo-probe.service missing TimeoutStartSec"
+    timeout_s = int(values[-1].removesuffix("s"))
+    assert timeout_s >= 30
+
+
 def test_canonical_25_execstart_repo_paths_exist() -> None:
     """Best-effort static check: ExecStart binaries that point inside the
     repo must resolve to a real file. Out-of-repo paths (system, .venv,
