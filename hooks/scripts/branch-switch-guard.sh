@@ -63,6 +63,26 @@ if echo "$CMD" | grep -qE '^\s*git\s+switch(\s|$)'; then
     # Everything else (plain switch) is allowed
 fi
 
+# git update-ref / git symbolic-ref into a NON-existent refs/heads/<name> is a
+# branch creation that bypasses checkout-b/switch-c — the un-ledgered
+# route-around the retired reform execution manifest documented. Treat NEW-ref
+# creation as branch creation; an update-ref / symbolic-ref of an EXISTING
+# branch is a repoint (worktree-repoint plumbing) and stays allowed. Linked
+# worktrees still pass below (the primary-worktree check), so lane repoints are
+# unaffected; this only closes the evasion in the PRIMARY worktree.
+if echo "$CMD" | grep -qE '^\s*git\s+update-ref\s+refs/heads/'; then
+    _newref="$(echo "$CMD" | grep -oE 'refs/heads/[^ ]+' | head -n1 || true)"
+    if [ -n "$_newref" ] && ! git show-ref --verify --quiet "$_newref" 2>/dev/null; then
+        is_branch_create=true
+    fi
+fi
+if echo "$CMD" | grep -qE '^\s*git\s+symbolic-ref\s+HEAD\s+refs/heads/'; then
+    _symref="$(echo "$CMD" | grep -oE 'refs/heads/[^ ]+' | head -n1 || true)"
+    if [ -n "$_symref" ] && ! git show-ref --verify --quiet "$_symref" 2>/dev/null; then
+        is_branch_create=true
+    fi
+fi
+
 [ "$is_branch_create" = true ] || exit 0
 
 # We matched a branch switch/create pattern. Now check if we're in a
