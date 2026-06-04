@@ -141,6 +141,22 @@ DEFAULT_THRESHOLDS: list[ResourceThreshold] = [
     ),
     ResourceThreshold(
         resource_type=ResourceType.RAM,
+        signal="memory_psi_some_avg10_pct",
+        unit="%",
+        green_above=10.0,
+        yellow_above=35.0,
+        direction="lower_is_better",
+    ),
+    ResourceThreshold(
+        resource_type=ResourceType.RAM,
+        signal="memory_psi_full_avg10_pct",
+        unit="%",
+        green_above=2.0,
+        yellow_above=10.0,
+        direction="lower_is_better",
+    ),
+    ResourceThreshold(
+        resource_type=ResourceType.RAM,
         signal="swap_used_gb",
         unit="GB",
         green_above=4.0,

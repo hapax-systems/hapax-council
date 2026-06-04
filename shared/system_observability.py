@@ -25,11 +25,14 @@ from shared.memory_pressure import (
     DEFAULT_EXPECTED_SWAPPINESS,
     MemoryPressureClass,
     MemoryPressureSignal,
+    MemoryPsiReading,
     SwapDevice,
     classify_global_ram_pressure,
+    classify_memory_psi_pressure,
     classify_swap_zram_saturation,
     classify_swappiness_drift,
     parse_meminfo,
+    parse_memory_psi,
     parse_proc_swaps,
 )
 from shared.resource_model import ResourceState
@@ -325,9 +328,17 @@ def _read_swappiness(path: Path = Path("/proc/sys/vm/swappiness")) -> int | None
         return None
 
 
+def _read_memory_psi(path: Path = Path("/proc/pressure/memory")) -> MemoryPsiReading | None:
+    try:
+        return parse_memory_psi(path.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+
+
 def collect_resource_pressure(
     *,
     meminfo: dict[str, int] | None = None,
+    memory_psi: MemoryPsiReading | None = None,
     swaps: list[SwapDevice] | None = None,
     swappiness_value: int | None = None,
     expected_swappiness: int = DEFAULT_EXPECTED_SWAPPINESS,
@@ -355,13 +366,16 @@ def collect_resource_pressure(
         )
 
     swaps = swaps if swaps is not None else _read_proc_swaps()
+    memory_psi = memory_psi if memory_psi is not None else _read_memory_psi()
     if swappiness_value is None:
         swappiness_value = _read_swappiness()
 
     signals = [
         classify_global_ram_pressure(meminfo),
-        classify_swap_zram_saturation(swaps),
     ]
+    if memory_psi is not None:
+        signals.append(classify_memory_psi_pressure(memory_psi))
+    signals.append(classify_swap_zram_saturation(swaps))
     if swappiness_value is not None:
         signals.append(
             classify_swappiness_drift(
@@ -412,6 +426,8 @@ def _memory_signal_observation(
 def _memory_signal_entity_and_source(pressure_class: MemoryPressureClass) -> tuple[str, str]:
     if pressure_class == MemoryPressureClass.GLOBAL_RAM_PRESSURE:
         return ("host.memory", "/proc/meminfo")
+    if pressure_class == MemoryPressureClass.MEMORY_PSI_PRESSURE:
+        return ("host.memory", "/proc/pressure/memory")
     if pressure_class == MemoryPressureClass.ZRAM_SATURATION:
         return ("host.swap", "/proc/swaps")
     if pressure_class == MemoryPressureClass.SYSCTL_DRIFT:
@@ -586,8 +602,10 @@ def _recommended_next(observation: HealthObservation) -> str:
         return "Restore or reassign RTE loop; do not treat stale RTE state as dispatch authority."
     if observation.source == "/proc/meminfo":
         return "Pause discretionary work and reduce pressure before launching repair sessions."
+    if observation.source == "/proc/pressure/memory":
+        return "Use memory PSI plus MemAvailable before changing admission or restart gates."
     if observation.source == "/proc/swaps":
-        return "Classify zram/swap saturation separately from global RAM before changing limits."
+        return "Treat zram/swap saturation as telemetry unless MemAvailable or memory PSI shows pressure."
     if observation.source == "/proc/sys/vm/swappiness":
         return "Reconcile live sysctl drift against source-controlled host policy."
     return "Create bounded diagnosis task with evidence bundle."

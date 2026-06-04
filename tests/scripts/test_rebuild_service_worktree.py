@@ -780,6 +780,71 @@ def test_pressure_skip_counter_progresses_then_forces_restart(harness: dict[str,
     assert sha_file.read_text().strip() == new_sha
 
 
+def test_high_swap_pct_env_no_longer_pressure_skips_restart(harness: dict[str, Path]) -> None:
+    """High zram/swap fullness alone must not block rebuild restarts."""
+    new_sha = _add_remote_commit(harness, "agents/voice/voice.py", "# swap\n", "swap")
+    fake_meminfo = harness["state_dir"] / "meminfo"
+    fake_memory_psi = harness["state_dir"] / "memory-psi"
+    fake_meminfo.write_text(
+        "MemTotal: 134217728 kB\n"
+        "MemAvailable: 70254592 kB\n"
+        "SwapTotal: 33554432 kB\n"
+        "SwapFree: 0 kB\n"
+    )
+    fake_memory_psi.write_text(
+        "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+        "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    )
+
+    result = _run(
+        harness,
+        service="hapax-daimonion.service",
+        extra_env={
+            "HAPAX_REBUILD_SKIP_GUARD": "0",
+            "HAPAX_REBUILD_LOAD_MAX": "999",
+            "HAPAX_REBUILD_SWAP_PCT_MAX": "0",
+            "HAPAX_REBUILD_MEMINFO_PATH": str(fake_meminfo),
+            "HAPAX_REBUILD_MEMORY_PSI_PATH": str(fake_memory_psi),
+        },
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    log = harness["log_file"].read_text()
+    assert "systemctl --user restart hapax-daimonion.service" in log
+    assert (harness["state_dir"] / "last-voice-sha").read_text().strip() == new_sha
+
+
+def test_memory_psi_pressure_skips_restart(harness: dict[str, Path]) -> None:
+    _add_remote_commit(harness, "agents/voice/voice.py", "# psi\n", "psi")
+    fake_meminfo = harness["state_dir"] / "meminfo"
+    fake_memory_psi = harness["state_dir"] / "memory-psi"
+    fake_meminfo.write_text(
+        "MemTotal: 134217728 kB\n"
+        "MemAvailable: 70254592 kB\n"
+        "SwapTotal: 33554432 kB\n"
+        "SwapFree: 0 kB\n"
+    )
+    fake_memory_psi.write_text(
+        "some avg10=42.00 avg60=0.00 avg300=0.00 total=0\n"
+        "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    )
+
+    result = _run(
+        harness,
+        service="hapax-daimonion.service",
+        extra_env={
+            "HAPAX_REBUILD_SKIP_GUARD": "0",
+            "HAPAX_REBUILD_LOAD_MAX": "999",
+            "HAPAX_REBUILD_MEMINFO_PATH": str(fake_meminfo),
+            "HAPAX_REBUILD_MEMORY_PSI_PATH": str(fake_memory_psi),
+        },
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _last_outcome(harness)["outcome"] == "deferred_pressure"
+    assert "memory-psi-some-avg10=42.00%" in result.stderr
+
+
 def test_pressure_skip_counter_resets_on_normal_restart(harness: dict[str, Path]) -> None:
     """A successful non-pressure restart clears any stale consecutive-skip count
     so the cap only ever measures *consecutive* skips."""

@@ -621,6 +621,13 @@ class TestMemoryChecks:
         def fake_read(path):
             if str(path) == "/proc/meminfo":
                 return "MemTotal: 134217728 kB\nMemAvailable: 70254592 kB\n"
+            if str(path) == "/proc/pressure/memory":
+                return "\n".join(
+                    [
+                        "some avg10=0.00 avg60=0.00 avg300=0.00 total=100",
+                        "full avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+                    ]
+                )
             if str(path) == "/proc/swaps":
                 return "\n".join(
                     [
@@ -640,9 +647,44 @@ class TestMemoryChecks:
 
         by_name = {result.name: result for result in results}
         assert by_name["memory.global_ram_pressure"].status == Status.HEALTHY
-        assert by_name["memory.zram_saturation"].status == Status.FAILED
+        assert by_name["memory.memory_psi_pressure"].status == Status.HEALTHY
+        assert by_name["memory.zram_saturation"].status == Status.HEALTHY
         assert by_name["memory.sysctl_drift"].status == Status.FAILED
+        assert "memory PSI" in by_name["memory.memory_psi_pressure"].message
         assert "zram" in by_name["memory.zram_saturation"].message
+        assert "informational" in by_name["memory.zram_saturation"].message
+
+    @pytest.mark.asyncio
+    async def test_memory_pressure_fails_on_memory_psi_pressure(self):
+        from agents.health_monitor import check_memory_pressure
+
+        def fake_read(path):
+            if str(path) == "/proc/meminfo":
+                return "MemTotal: 134217728 kB\nMemAvailable: 70254592 kB\n"
+            if str(path) == "/proc/pressure/memory":
+                return "\n".join(
+                    [
+                        "some avg10=36.00 avg60=0.00 avg300=0.00 total=100",
+                        "full avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+                    ]
+                )
+            if str(path) == "/proc/swaps":
+                return "Filename Type Size Used Priority\n"
+            if str(path) == "/proc/sys/vm/swappiness":
+                return "10\n"
+            return None
+
+        with (
+            patch("agents.health_monitor.checks.memory._read_text", side_effect=fake_read),
+            patch.dict("os.environ", {"HAPAX_EXPECTED_SWAPPINESS": "10"}, clear=False),
+        ):
+            results = await check_memory_pressure()
+
+        by_name = {result.name: result for result in results}
+        assert by_name["memory.global_ram_pressure"].status == Status.HEALTHY
+        assert by_name["memory.memory_psi_pressure"].status == Status.FAILED
+        assert by_name["memory.zram_saturation"].status == Status.HEALTHY
+        assert by_name["memory.sysctl_drift"].status == Status.HEALTHY
 
     @pytest.mark.asyncio
     async def test_memory_pressure_degrades_when_meminfo_unreadable(self):

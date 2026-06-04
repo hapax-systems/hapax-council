@@ -388,6 +388,12 @@ class TestDefaultThresholdsCoverage:
         for rt in ResourceType:
             assert rt in covered, f"No threshold for {rt}"
 
+    def test_memory_pressure_thresholds_use_memavailable_and_psi(self):
+        signals = {t.signal for t in DEFAULT_THRESHOLDS if t.resource_type == ResourceType.RAM}
+        assert "mem_available_gb" in signals
+        assert "memory_psi_some_avg10_pct" in signals
+        assert "memory_psi_full_avg10_pct" in signals
+
 
 class TestClassifyStateDeterminism:
     def test_same_inputs_same_output(self):
