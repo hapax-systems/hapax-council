@@ -54,6 +54,16 @@ but dispatcher policy refused both `runtime` and `provider_spend` mutation
 surfaces for every registered platform route, so the live config was not
 changed in the CCTV source PR.
 
+2026-06-04 gateway refresh note: after provider-gateway route evidence and the
+quota/spend ledger were accepted, `litellm-gemini-current-route-refresh-20260604`
+updated live LiteLLM routes so `gemini-pro` targets
+`gemini/gemini-3.1-pro-preview`, while `gemini-flash` and `fast` target
+`gemini/gemini-3.5-flash`. Validation: YAML parse passed, `docker compose
+--profile core config --quiet` accepted the stack, LiteLLM restarted with
+readiness HTTP 200, `/v1/models` exposed `gemini-pro`, `gemini-flash`, and
+`fast`, and bounded smoke calls returned HTTP 200 with `gemini-flash` producing
+`ok.` and `gemini-pro` producing `ok` with visible reasoning-token usage.
+
 2026-06-04 Anthropic audit note: Claude model docs list Claude Opus 4.8,
 Claude Sonnet 4.6, and Claude Haiku 4.5 as the current main Claude model line.
 The live gateway already maps `claude-sonnet`/`balanced` to
@@ -62,6 +72,16 @@ The live gateway already maps `claude-sonnet`/`balanced` to
 `anthropic/claude-opus-4-7`. The follow-up task
 `litellm-anthropic-current-route-refresh-20260604` records the required Opus
 route refresh. Do not update the live gateway under this CCTV source PR.
+
+2026-06-04 Anthropic gateway refresh note:
+`litellm-anthropic-current-route-refresh-20260604` updated live LiteLLM routes
+so `claude-opus` and the new full-name `claude-opus-4-8` route target
+`anthropic/claude-opus-4-8`. The legacy full-name `claude-opus-4-7` route is
+retained as an explicit compatibility alias that also targets current Opus 4.8.
+Validation: YAML parse passed, `docker compose --profile core config --quiet`
+accepted the stack, LiteLLM restarted with readiness HTTP 200, `/v1/models`
+exposed `claude-opus`, `claude-opus-4-8`, and `claude-opus-4-7`, and a bounded
+`claude-opus` smoke call returned HTTP 200 with `ok`.
 
 ## Prompt Caching
 
