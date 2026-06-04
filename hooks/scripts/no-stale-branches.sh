@@ -80,6 +80,35 @@ echo "$CMD" | grep -qE '^\s*git\s+branch\s+[a-zA-Z]' && is_create=true
 # removed worktree without being blocked by its own PR.
 echo "$CMD" | grep -qE '^\s*git\s+worktree\s+add\s.*-[bB]\s' && is_create=true
 
+# git update-ref refs/heads/<name> <start> CREATES a branch ref when <name>
+# does not yet exist. The retired reform execution manifest documented exactly
+# this — `git update-ref refs/heads/<b> origin/main` then `git symbolic-ref
+# HEAD refs/heads/<b>` — as an un-ledgered route-around for the checkout-b /
+# switch-c block: it never tripped is_create, so it evaded BOTH this gate and
+# the escape-grant ledger (no recorded authorization, violating §4.6). Treat a
+# NEW-ref update-ref as branch creation so the sanctioned, recorded path
+# (mint `coord-grant-mint --scope no-stale-branches`, then create) is the only
+# way through. An update-ref of an EXISTING branch is a repoint / force-move
+# (the worktree-repoint plumbing) — NOT creation — so leave it to the
+# destructive gate and keep that path working.
+if echo "$CMD" | grep -qE '^\s*git\s+update-ref\s+refs/heads/'; then
+  _newref="$(echo "$CMD" | grep -oE 'refs/heads/[^ ]+' | head -n1 || true)"
+  if [ -n "$_newref" ] && ! git show-ref --verify --quiet "$_newref" 2>/dev/null; then
+    is_create=true
+  fi
+fi
+
+# git symbolic-ref HEAD refs/heads/<name> pointing HEAD at a NON-existent
+# branch is the second half of that same route-around (HEAD is attached to a
+# ref that the next commit materialises). Pointing HEAD at an EXISTING branch
+# is an ordinary switch — left allowed.
+if echo "$CMD" | grep -qE '^\s*git\s+symbolic-ref\s+HEAD\s+refs/heads/'; then
+  _symref="$(echo "$CMD" | grep -oE 'refs/heads/[^ ]+' | head -n1 || true)"
+  if [ -n "$_symref" ] && ! git show-ref --verify --quiet "$_symref" 2>/dev/null; then
+    is_create=true
+  fi
+fi
+
 # --- Detect branch-destructive commands ---
 # These silently discard commits on feature branches. Block when on a
 # feature branch with commits ahead of main. Prevents subagents from

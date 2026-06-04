@@ -153,6 +153,46 @@ class TestWorktreeAware:
         assert result.returncode == 2
 
 
+# ── update-ref / symbolic-ref route-around close ───────────────────
+
+
+class TestUpdateRefEvasion:
+    """The retired reform manifest documented ``git update-ref refs/heads/<b>``
+    + ``git symbolic-ref HEAD refs/heads/<b>`` as a way to create a branch
+    without tripping checkout-b / switch-c. New-ref creation via either verb is
+    now treated as branch creation in the PRIMARY worktree; an update-ref /
+    symbolic-ref of an EXISTING branch (repoint plumbing) and creation in a
+    LINKED worktree both stay allowed.
+    """
+
+    def test_blocks_update_ref_new_branch_in_primary(self, tmp_path: Path) -> None:
+        repo = _make_primary_repo(tmp_path)
+        result = _run(_bash("git update-ref refs/heads/feature/x origin/main"), cwd=repo)
+        assert result.returncode == 2
+        assert "BLOCKED" in result.stderr
+
+    def test_blocks_symbolic_ref_new_branch_in_primary(self, tmp_path: Path) -> None:
+        repo = _make_primary_repo(tmp_path)
+        result = _run(_bash("git symbolic-ref HEAD refs/heads/feature/x"), cwd=repo)
+        assert result.returncode == 2
+
+    def test_allows_update_ref_existing_branch_in_primary(self, tmp_path: Path) -> None:
+        """Repoint / force-move of an existing branch is not creation."""
+        repo = _make_primary_repo(tmp_path)
+        result = _run(_bash("git update-ref refs/heads/main origin/main"), cwd=repo)
+        assert result.returncode == 0
+
+    def test_allows_update_ref_new_branch_in_linked_worktree(self, tmp_path: Path) -> None:
+        """Linked worktrees (lanes) are excepted — no-stale-branches.sh is the
+        gate that governs them, with the sanctioned escape grant."""
+        primary = _make_primary_repo(tmp_path / "primary")
+        linked = _make_linked_worktree(primary, tmp_path / "linked")
+        result = _run(_bash("git update-ref refs/heads/feature/in-linked origin/main"), cwd=linked)
+        assert result.returncode == 0, (
+            f"linked worktrees should allow branch creation: {result.stderr}"
+        )
+
+
 # ── Pass-through: non-Bash, empty cmd, outside-git ─────────────────
 
 

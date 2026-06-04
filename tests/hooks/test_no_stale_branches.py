@@ -292,3 +292,81 @@ class TestEscapeGrant:
         assert result.returncode == 0, (
             f"grant must override destructive block; stderr={result.stderr}"
         )
+
+    def test_grant_allows_update_ref_creation_and_ledgers(self, tmp_path: Path) -> None:
+        """The sanctioned replacement for the retired update-ref route-around
+        (task reform-manifest-route-around-sanction): a no-stale-branches grant
+        lets a claimed lane create a branch via ``git update-ref`` AND writes an
+        ``escape_grant_honored`` line to the methodology ledger — so every
+        branch creation on the new path is authorized and recorded (AC #2/#3).
+        """
+        repo = _make_repo(tmp_path)
+        _add_stale_branch(repo)
+        env = self._grant_env(tmp_path)
+        ledger = tmp_path / "methodology-emergency-ledger.jsonl"
+        env["HAPAX_METHODOLOGY_LEDGER"] = str(ledger)
+        self._drop_grant(tmp_path, scope="no-stale-branches")
+        result = self._run_env(
+            _bash("git update-ref refs/heads/feat/new origin/main"), cwd=repo, env=env
+        )
+        assert result.returncode == 0, (
+            f"grant must override the update-ref creation block; stderr={result.stderr}"
+        )
+        assert ledger.exists(), "honored escape grant must write a ledger line"
+        entries = [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
+        assert any(
+            e.get("kind") == "escape_grant_honored" and e.get("gate") == "no-stale-branches"
+            for e in entries
+        ), f"ledger missing escape_grant_honored for no-stale-branches: {entries}"
+
+
+# ── update-ref / symbolic-ref route-around close ────────────────────
+
+
+class TestUpdateRefEvasion:
+    """The retired reform execution manifest documented ``git update-ref
+    refs/heads/<b> origin/main`` + ``git symbolic-ref HEAD refs/heads/<b>`` as
+    an un-ledgered way to create a branch without tripping this gate. New-ref
+    creation via either verb is now treated as branch creation, while an
+    update-ref / symbolic-ref of an EXISTING branch (the worktree-repoint
+    plumbing) stays allowed so that path keeps working.
+    """
+
+    def test_update_ref_new_branch_blocked_when_stale(self, tmp_path: Path) -> None:
+        """The evasion is now caught: new-ref update-ref blocked when stale
+        branches exist (was a silent route-around before)."""
+        repo = _make_repo(tmp_path)
+        _add_stale_branch(repo)
+        result = _run(_bash("git update-ref refs/heads/feat/new origin/main"), cwd=repo)
+        assert result.returncode == 2
+        assert "BLOCKED" in result.stderr
+
+    def test_update_ref_new_branch_allowed_when_clean(self, tmp_path: Path) -> None:
+        """No stale branches → creation allowed, same as checkout -b."""
+        repo = _make_repo(tmp_path)
+        result = _run(_bash("git update-ref refs/heads/feat/new origin/main"), cwd=repo)
+        assert result.returncode == 0
+
+    def test_update_ref_existing_branch_is_repoint_not_creation(self, tmp_path: Path) -> None:
+        """Repoint / force-move of an EXISTING branch is not creation — the
+        worktree-repoint plumbing must keep working even with stale branches."""
+        repo = _make_repo(tmp_path)
+        _add_stale_branch(repo, name="feat/abandoned")
+        # feat/abandoned already exists; update-ref'ing it is a repoint.
+        result = _run(_bash("git update-ref refs/heads/feat/abandoned origin/main"), cwd=repo)
+        assert result.returncode == 0
+
+    def test_symbolic_ref_new_branch_blocked_when_stale(self, tmp_path: Path) -> None:
+        """The second half of the route-around: pointing HEAD at a new ref."""
+        repo = _make_repo(tmp_path)
+        _add_stale_branch(repo)
+        result = _run(_bash("git symbolic-ref HEAD refs/heads/feat/new"), cwd=repo)
+        assert result.returncode == 2
+        assert "BLOCKED" in result.stderr
+
+    def test_symbolic_ref_existing_branch_allowed(self, tmp_path: Path) -> None:
+        """Pointing HEAD at an EXISTING branch is an ordinary switch."""
+        repo = _make_repo(tmp_path)
+        _add_stale_branch(repo, name="feat/abandoned")
+        result = _run(_bash("git symbolic-ref HEAD refs/heads/feat/abandoned"), cwd=repo)
+        assert result.returncode == 0
