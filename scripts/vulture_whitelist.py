@@ -3980,3 +3980,17 @@ axis_beam_segments
 ward_review_drift_midpoint
 _draw_scanlines
 _paint_reverie_state_proxy
+
+# Liveness substrate (reform-liveness-recovery-substrate): the exact legacy
+# staleness predicate each bespoke watchdog uses today, kept as named regression
+# oracles that tests/shared/test_liveness_surfaces.py asserts the substrate's
+# verdict equals (behavior-preserving cutover). Intentionally production-unreferenced.
+from shared.liveness_surfaces import (
+    legacy_deploy_stalled,
+    legacy_lane_progress_stalled,
+    legacy_reaper_stalled,
+)
+
+legacy_deploy_stalled
+legacy_lane_progress_stalled
+legacy_reaper_stalled
