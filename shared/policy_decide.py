@@ -447,6 +447,55 @@ def is_cognition_path(path: str) -> bool:
     return path.startswith("/tmp/")
 
 
+#: Canonical cognition-carve-out corpus: ``(path_template, expected_is_cognition)``.
+#: The SINGLE shared spec both ``is_cognition_path`` implementations are pinned against
+#: — the live bash gate (``cc-task-gate.impl.sh``) and THIS module. ``{HOME}`` renders
+#: to the caller's home. These are the surfaces that decide Edit/Write always-allow;
+#: both languages MUST agree here (INV-5) or the shadow->cutover would silently flip
+#: enforcement at the most load-bearing boundary. The cross-language half is verified by
+#: the parity test in ``tests/hooks/test_cc_task_gate.py``; THIS module's conformance
+#: gates cutover via ``cognition_carveout_parity_ok`` (see ``evaluate_shadow_clean``).
+#:
+#: NB — policy_decide's ``is_cognition_path`` is intentionally BROADER than the gate's on
+#: two NON-carve-out surfaces (bare ``/tmp`` and ``~/.cache/hapax/relay/`` receipts),
+#: where it doubles as the command-target scratch classifier (``_unconditional_writes_in_tree``).
+#: Those are pinned separately in ``tests/test_policy_decide.py`` and are deliberately
+#: NOT in this corpus — they are a strict LOOSENING the asymmetry gate already accepts.
+COGNITION_CARVEOUT_PARITY_CORPUS: tuple[tuple[str, bool], ...] = (
+    ("{HOME}/.claude/projects/x/memory/note.md", True),  # operator auto-memory (deep)
+    ("{HOME}/.claude/x/memory", True),  # ``…/memory`` suffix
+    ("{HOME}/Documents/Personal/daily/n.md", True),  # personal vault note
+    ("/dev/shm/hapax/x", True),  # ephemeral diagnostic scratch
+    ("/tmp/hapax-foo.md", True),  # /tmp/hapax-* project scratch
+    ("/tmp/hapax/bar", True),  # /tmp/hapax/ project scratch
+    ("{HOME}/Documents/Personal/20-projects/hapax-cc-tasks/active/t.md", False),  # cc-task SSOT
+    ("{HOME}/Documents/Personal/20-projects/hapax-requests/r.md", False),  # request SSOT
+    ("{HOME}/projects/hapax-council/shared/x.py", False),  # repo source
+    ("{HOME}/.claude/settings.json", False),  # ~/.claude, not memory
+    ("{HOME}/.claude/memoryfoo", False),  # 'memory' not a path component
+    ("{HOME}/Documents/Personalish/x", False),  # Personal-prefix boundary
+    ("", False),  # empty path
+)
+
+
+def cognition_carveout_parity_ok() -> bool:
+    """True iff THIS module's ``is_cognition_path`` matches the canonical carve-out
+    corpus for every entry — the cutover-eligibility parity gate.
+
+    A divergence means policy_decide would classify an Edit/Write carve-out surface
+    differently from the live bash gate, silently flipping which writes are
+    always-allowed the moment policy_decide becomes authoritative. The cross-language
+    half (the bash gate also matching the corpus) is enforced by the parity test in
+    ``tests/hooks/test_cc_task_gate.py``. Reads ``~`` via the same ``$HOME`` that
+    ``is_cognition_path`` itself resolves, so both stay on one home.
+    """
+    home = os.path.expanduser("~")
+    return all(
+        is_cognition_path(template.replace("{HOME}", home)) is expected
+        for template, expected in COGNITION_CARVEOUT_PARITY_CORPUS
+    )
+
+
 #: The vault roots holding the governance SSOT notes (cc-task + request notes).
 _TASK_NOTE_ROOTS = ("/20-projects/hapax-cc-tasks/", "/20-projects/hapax-requests/")
 
@@ -1166,7 +1215,12 @@ def evaluate_shadow_clean(
 
     coverage_ok = total >= min_decisions and span_days >= min_days
     asymmetric_ok = tightening == 0
-    clean = coverage_ok and asymmetric_ok
+    # The cognition-carve-out parity gate (reform-cognition-path-parity): a divergence
+    # between this module's is_cognition_path and the canonical carve-out corpus would
+    # silently flip which Edit/Write surfaces are always-allowed the moment policy_decide
+    # becomes authoritative, so it blocks cutover exactly like a tightening divergence.
+    parity_ok = cognition_carveout_parity_ok()
+    clean = coverage_ok and asymmetric_ok and parity_ok
 
     reasons: list[str] = []
     if total < min_decisions:
@@ -1177,11 +1231,17 @@ def evaluate_shadow_clean(
         reasons.append(
             f"{tightening} TIGHTENING divergence(s): policy_decide newly blocks allowed work"
         )
+    if not parity_ok:
+        reasons.append(
+            "cognition-carve-out parity broken: is_cognition_path diverges from the "
+            "canonical corpus — cutover would silently flip Edit/Write enforcement"
+        )
 
     return {
         "clean": clean,
         "coverage_ok": coverage_ok,
         "asymmetric_ok": asymmetric_ok,
+        "parity_ok": parity_ok,
         "total_decisions": total,
         "span_days": round(span_days, 2),
         "divergences": divergences,
@@ -1261,6 +1321,7 @@ def build_cutover_receipt(verdict: dict[str, object], *, now: datetime | None = 
         "cutover_eligible": eligible,
         "asymmetric_ok": bool(verdict.get("asymmetric_ok")),
         "coverage_ok": bool(verdict.get("coverage_ok")),
+        "parity_ok": bool(verdict.get("parity_ok")),
         "span_days": span,
         "min_days": min_days,
         "countdown_days": countdown,
