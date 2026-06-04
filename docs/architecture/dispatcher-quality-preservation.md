@@ -65,6 +65,15 @@ provider execution directly. It only becomes eligible when the platform
 capability registry has fresh gateway evidence and the quota/spend ledger has a
 matching active budget for the declared paid provider/profile.
 
+CCTV is a critical SDLC process on this route. Do not degrade CCTV because a
+Claude Code subscription lane is quota-dry; that evidence blocks only Claude
+Code lane dispatch. CCTV/provider-gateway execution is held or retried only
+when paid API budget state, gateway health, or provider-side quota/rate-limit
+evidence blocks the declared provider route. When provider auto-reload is
+enabled, API quota interruptions should normally be treated as transient
+hold/retry evidence, not as permission to silently route CCTV to a lower
+quality tier.
+
 The SOP is two-step:
 
 1. Source-governance change or receipt packet establishes route authority and

@@ -418,6 +418,42 @@ def test_provider_gateway_route_launches_with_paid_budget_and_mutability() -> No
     assert "policy_launch" in decision.reason_codes
 
 
+def test_provider_gateway_route_ignores_subscription_quota_when_paid_api_is_eligible() -> None:
+    request = _request(
+        platform="api",
+        profile="provider_gateway",
+        route_id="api.headless.provider_gateway",
+        mutation_surface="provider_spend",
+        capability=_capability(
+            route_id="api.headless.provider_gateway",
+            capacity_pool="api_paid_spend",
+            paid_provider="anthropic",
+            paid_profile="frontier-full",
+            mutability={
+                "vault_docs": False,
+                "source": False,
+                "runtime": True,
+                "public": False,
+                "provider_spend": True,
+            },
+        ),
+        quota=_quota(
+            paid_api_budget_state="active",
+            paid_api_route_eligible=True,
+            paid_api_blocking_reasons=("subscription_quota_state:exhausted",),
+            paid_route_eligibility_state="eligible_active_budget",
+            evidence_refs=("tb-20260510-anthropic-api-steady-state",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.route_policy_green is True
+    assert "policy_launch" in decision.reason_codes
+    assert "paid_route_without_active_budget" not in decision.reason_codes
+
+
 def test_spike_workload_refuses_local_fleet_and_points_to_cloud_burst() -> None:
     request = _request(
         cloud_burst={
