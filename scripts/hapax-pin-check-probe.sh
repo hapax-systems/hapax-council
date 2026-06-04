@@ -37,8 +37,9 @@ CLI="${HAPAX_AUDIO_TOPOLOGY_CLI:-$(dirname "$(readlink -f "$0")")/hapax-audio-to
 sink_state="$(pactl list sinks 2>/dev/null \
     | awk -v name="$SINK_NAME" '
         /^\tName:/ { current = $2 }
-        /^\tState:/ && current == name { print $2; exit }
-      ')"
+        /^\tState:/ && current == name { state = $2 }
+        END { if (state != "") print state }
+      ' || true)"
 if [[ -z "$sink_state" ]]; then
     echo "pin-check probe: sink $SINK_NAME not found in pactl listing" >&2
     exit 0  # No sink → no diagnostic possible; not a failure.
@@ -46,11 +47,15 @@ fi
 
 # 2) Active sink-input count for the target sink. Parse `pactl list short
 #    sink-inputs` for entries whose Sink: column matches the target's id.
-sink_id="$(pactl list short sinks 2>/dev/null | awk -v name="$SINK_NAME" '$2 == name {print $1; exit}')"
+sink_id="$(pactl list short sinks 2>/dev/null \
+    | awk -v name="$SINK_NAME" '$2 == name { sink_id = $1 } END { if (sink_id != "") print sink_id }' \
+    || true)"
 active_inputs=0
 if [[ -n "$sink_id" ]]; then
     active_inputs="$(pactl list short sink-inputs 2>/dev/null \
-        | awk -v sid="$sink_id" '$4 == sid {n++} END {print n+0}')"
+        | awk -v sid="$sink_id" '$4 == sid {n++} END {print n+0}' \
+        || true)"
+    active_inputs="${active_inputs:-0}"
 fi
 if [[ "$active_inputs" -gt 0 ]]; then
     has_input_flag="--has-active-input"
