@@ -30,6 +30,7 @@ from shared.quota_spend_ledger import (
 )
 
 NOW = datetime(2026, 5, 17, 8, 0, 0, tzinfo=UTC)
+CURRENT_REFRESH_NOW = datetime(2026, 6, 4, 16, 23, 0, tzinfo=UTC)
 
 
 def _payload() -> dict[str, Any]:
@@ -96,6 +97,11 @@ def test_default_fixture_reconciles_expired_bootstrap_without_reopening_spend() 
     assert ledger.transition_budgets
     assert ledger.spend_gate_decisions[0].decision_state is (
         SpendGateDecisionState.REFUSED_UNRECONCILED_SPEND
+    )
+    assert any(
+        decision.decision_id == "sgd-20260604-provider-gateway-google-frontier-fast"
+        and decision.decision_state is SpendGateDecisionState.ELIGIBLE_ACTIVE_BUDGET
+        for decision in ledger.spend_gate_decisions
     )
     assert all(not budget.auto_top_up_allowed for budget in ledger.transition_budgets)
 
@@ -271,9 +277,10 @@ def test_support_artifact_provenance_stays_non_authoritative_until_accepted() ->
 
 
 def test_dashboard_exposes_reconciled_bootstrap_state() -> None:
-    dashboard = build_dashboard(load_quota_spend_ledger(), now=NOW)
+    dashboard = build_dashboard(load_quota_spend_ledger(), now=CURRENT_REFRESH_NOW)
 
     assert dashboard.paid_api_budget_state is PaidApiBudgetState.ACTIVE
+    assert dashboard.budget_ledger_stale is False
     assert dashboard.bootstrap_dependency_state is BootstrapDependencyState.NONE
     assert dashboard.provider_dependency_count == 0
     assert dashboard.support_artifacts_waiting_for_review == 0
@@ -283,6 +290,27 @@ def test_dashboard_exposes_reconciled_bootstrap_state() -> None:
     assert dashboard.closed_provider_dependency_refs == ("dep-opaque-provider-bootstrap",)
     assert dashboard.closed_support_artifact_refs == ("artifacts/support/bootstrap-draft.md",)
     assert dashboard.paid_api_route_eligible is True
+
+
+def test_provider_gateway_google_frontier_fast_budget_is_current_and_eligible() -> None:
+    ledger = load_quota_spend_ledger()
+
+    decision = evaluate_paid_route_eligibility(
+        ledger,
+        _request(
+            route_id="api.headless.provider_gateway",
+            provider="google",
+            profile="frontier-fast",
+            task_class="authority-case-implementation",
+            quality_floor="frontier_required",
+            capacity_pool="api_paid_spend",
+        ),
+        now=CURRENT_REFRESH_NOW,
+    )
+
+    assert decision.eligible is True
+    assert decision.state == "eligible_active_budget"
+    assert decision.budget_id == "tb-20260510-anthropic-api-steady-state"
 
 
 def test_module_has_no_provider_or_runtime_imports() -> None:

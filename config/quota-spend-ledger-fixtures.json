@@ -1,13 +1,14 @@
 {
   "schema_version": 1,
-  "ledger_id": "quota-spend-ledger-reconciled-20260517",
-  "captured_at": "2026-05-17T07:42:00Z",
+  "ledger_id": "quota-spend-ledger-reconciled-20260604",
+  "captured_at": "2026-06-04T16:22:00Z",
   "authority_source": "isap:quota-spend-ledger-20260509",
   "generated_from": [
     "shared/quota_spend_ledger.py",
     "config/quota-spend-ledger-fixtures.json",
     "litellm-api-dashboard-2026-05-10",
-    "capacity-routing-quota-spend-ledger-reconciliation"
+    "capacity-routing-quota-spend-ledger-reconciliation",
+    "capacity-routing-quota-spend-ledger-current-refresh-20260604"
   ],
   "privacy_scope": "private",
   "consumer_permission_after": "private_capacity_routing_tests_only",
@@ -178,6 +179,26 @@
         "tb-20260509-bootstrap-expired",
         "spend-20260509T193000Z-opaque-route"
       ]
+    },
+    {
+      "decision_schema": 1,
+      "decision_id": "sgd-20260604-provider-gateway-google-frontier-fast",
+      "created_at": "2026-06-04T16:22:00Z",
+      "route_id": "api.headless.provider_gateway",
+      "provider": "google",
+      "profile": "frontier-fast",
+      "task_class": "authority-case-implementation",
+      "quality_floor": "frontier_required",
+      "capacity_pool": "api_paid_spend",
+      "requested_cost_usd": "1.00",
+      "decision_state": "eligible_active_budget",
+      "eligible": true,
+      "budget_id": "tb-20260510-anthropic-api-steady-state",
+      "blocking_reasons": [],
+      "evidence_refs": [
+        "tb-20260510-anthropic-api-steady-state",
+        "capacity-routing-quota-spend-ledger-current-refresh-20260604"
+      ]
     }
   ],
   "provider_dependencies": [
@@ -243,7 +264,8 @@
       "cancellation_or_exit_ref": null,
       "evidence_refs": [
         "tb-20260510-anthropic-api-steady-state",
-        "ledger:anthropic-api-key-active"
+        "ledger:anthropic-api-key-active",
+        "capacity-routing-quota-spend-ledger-current-refresh-20260604"
       ],
       "operator_visible_reason": "monthly API budget renewal; review before expiry to confirm continued fleet throughput needs"
     }
@@ -253,6 +275,7 @@
     "CASE-CAPACITY-ROUTING-002-STEADY-STATE",
     "litellm:gateway-4000-anthropic-route-healthy",
     "ledger:anthropic-api-key-active",
-    "capacity-routing-quota-spend-ledger-reconciliation"
+    "capacity-routing-quota-spend-ledger-reconciliation",
+    "capacity-routing-quota-spend-ledger-current-refresh-20260604"
   ]
 }
