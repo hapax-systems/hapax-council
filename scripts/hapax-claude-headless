@@ -77,12 +77,20 @@ export CLAUDE_ROLE="$ROLE"
 export HAPAX_AGENT_ROLE="$ROLE"
 export HAPAX_WORKTREE_ROLE="$ROLE"
 
-# Per-session id (coordination reform Phase 1): a stable uuid so the gate keys a
-# claim lease to THIS session — two same-role sessions never collide (FM-2).
-# Minted before cc-claim below so the lease is session-keyed from the first
-# mutation. Matches the shared idiom in scripts/hapax-claude.
-SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$ROLE" "$$")}"
+# Per-spawn session id (reform-identity-coherence, cluster 11): every headless
+# launch is a fresh lane, so MINT a new uuid unconditionally — never inherit one
+# from the dispatcher's environment. launch_claude_headless does os.environ.copy(),
+# so honoring an inherited HAPAX_SESSION_ID would let two same-role re-dispatched
+# lanes share a claim key (defeats FM-2 / AC1). Computed once, before the restart
+# loop below, so it stays stable across in-launcher restarts of this same lane.
+SESSION_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$ROLE" "$$")"
 export HAPAX_SESSION_ID="$SESSION_UUID"
+# Per-session identity marker (WM-independent): record THIS session's role keyed by
+# the session id so agent-role.sh / hapax-whoami resolve identity without a
+# compositor query (dead on niri/KWin). Path convention SSOT:
+# hapax_session_role_marker in hooks/scripts/agent-role.sh.
+mkdir -p "$HOME/.cache/hapax" 2>/dev/null || true
+printf '%s\n' "$ROLE" >"$HOME/.cache/hapax/session-role-$SESSION_UUID" 2>/dev/null || true
 
 WORKDIR="$HOME/projects/hapax-council"
 [[ "$ROLE" != "alpha" ]] && WORKDIR="$HOME/projects/hapax-council--$ROLE"

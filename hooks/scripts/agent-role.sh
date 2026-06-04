@@ -115,6 +115,15 @@ hapax_agent_identity() {
     return 0
   fi
 
+  # Per-session identity marker (WM-independent; written by spawners + the
+  # in-session reassert command). Resolves before the compositor query below,
+  # which is dead on niri/KWin — so identity survives a missing hyprctl.
+  local marker_role
+  if marker_role="$(hapax_session_role_read 2>/dev/null)" && [ -n "$marker_role" ]; then
+    printf '%s\n' "$marker_role"
+    return 0
+  fi
+
   if command -v hapax-whoami >/dev/null 2>&1; then
     local who
     who="$(hapax-whoami 2>/dev/null | tr -d '[:space:]' || true)"
@@ -201,42 +210,49 @@ hapax_session_id() {
   return 1
 }
 
+# --- Per-session identity marker (reform-identity-coherence, cluster 11) -------
+# A WM-independent identity source keyed by the session id. Spawners write it at
+# launch (so identity resolves even where hapax-whoami's compositor query is dead
+# — niri/KWin have no hyprctl) and the in-session reassert command writes it (so a
+# role-less session can recover an explicit slot without a process restart). The
+# marker is scoped to ONE session id, so it never leaks identity across sessions.
+hapax_session_role_marker() {
+  local sid="${1:-}"
+  [ -n "$sid" ] || sid="$(hapax_session_id 2>/dev/null || true)"
+  [ -n "$sid" ] || return 1
+  printf '%s/.cache/hapax/session-role-%s\n' "${HOME:-/nonexistent}" "$sid"
+}
+
+hapax_session_role_read() {
+  local f role
+  f="$(hapax_session_role_marker "${1:-}" 2>/dev/null)" || return 1
+  [ -f "$f" ] || return 1
+  role="$(head -n1 "$f" 2>/dev/null | tr -d '[:space:]' || true)"
+  [ -n "$role" ] || return 1
+  printf '%s\n' "$role"
+}
+
+hapax_session_role_write() {
+  local role="${1:-}" sid="${2:-}" f
+  [ -n "$role" ] || return 1
+  f="$(hapax_session_role_marker "$sid" 2>/dev/null)" || return 1
+  mkdir -p "$(dirname "$f")" 2>/dev/null || true
+  printf '%s\n' "$role" >"$f" || return 1
+}
+
 # The role used for vault assignment, the gate's assignment check, and display.
 # Falls back to the constant "roleless" when no role resolves but a session id
 # exists, so a role-less session stays GOVERNED (assignment-checked, claim-keyed)
 # yet is never hard-blocked — "no role" must never mean "no escape" (master
 # design §6/§7 FM-1, audit B). Returns nonzero only when there is no identity at
-# all (no role AND no session id) — genuinely unkeyable.
-# Legacy relay-presence inference: when exactly one slot relay file exists, treat
-# that slot as the session's role. A weak heuristic kept only for bare sessions
-# launched without explicit identity; spawner-launched sessions set an explicit
-# role and never reach it. (Branch-prefix inference was removed entirely — FM-1.)
-hapax_relay_inferred_role() {
-  local relay_dir="${HOME:-/nonexistent}/.cache/hapax/relay"
-  [ -d "$relay_dir" ] || return 1
-  local r f match="" count=0
-  for r in alpha beta delta epsilon; do
-    f="$relay_dir/$r.yaml"
-    if [ -f "$f" ]; then
-      match="$r"
-      count=$((count + 1))
-    fi
-  done
-  if [ "$count" -eq 1 ]; then
-    printf '%s\n' "$match"
-    return 0
-  fi
-  return 1
-}
-
+# all (no role AND no session id) — genuinely unkeyable. A role-less session
+# recovers an explicit slot via the per-session identity marker (hapax_agent_identity
+# reads it), not via relay presence: the legacy relay-presence inference branch was
+# removed (it was permanently dead — all four slot relays coexist, so the "exactly
+# one" guard never fired — and a relay file is not evidence of who THIS session is).
 hapax_effective_role() {
   local role
   role="$(hapax_agent_identity 2>/dev/null || true)"
-  if [ -n "$role" ]; then
-    printf '%s\n' "$role"
-    return 0
-  fi
-  role="$(hapax_relay_inferred_role 2>/dev/null || true)"
   if [ -n "$role" ]; then
     printf '%s\n' "$role"
     return 0
@@ -264,3 +280,54 @@ hapax_agent_claim_key() {
     printf '%s\n' "$role"
   fi
 }
+
+# --- CLI entrypoint (in-session identity recovery; reform-identity-coherence) --
+# Runs ONLY when executed directly (bash agent-role.sh ...), never when sourced as
+# a library by the gate / cc-claim / spawners. `assert-identity <role>` is the
+# sanctioned in-session recovery for a role-less session (FM-1): it writes the
+# per-session identity marker so the very next gated call resolves the explicit
+# role — no process restart, no unsettable launch env vars.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  case "${1:-}" in
+    assert-identity | reassert)
+      _ar_role="${2:-}"
+      if [ -z "$_ar_role" ]; then
+        echo "usage: agent-role.sh assert-identity <role>" >&2
+        exit 2
+      fi
+      # Validate against the known lane vocabulary so a typo cannot mint a bogus
+      # identity: greek slots, cx-<color>, vbe-<n>, antigrav.
+      case "$_ar_role" in
+        alpha | beta | gamma | delta | epsilon | zeta | eta | theta | iota | antigrav) ;;
+        cx-[a-z]*) ;;
+        vbe-[0-9]*) ;;
+        *)
+          echo "agent-role.sh: unknown role '$_ar_role' (expected a greek slot, cx-<color>, vbe-<n>, or antigrav)" >&2
+          exit 2
+          ;;
+      esac
+      if ! _ar_sid="$(hapax_session_id 2>/dev/null)" || [ -z "$_ar_sid" ]; then
+        echo "agent-role.sh: no session id (HAPAX_SESSION_ID / CLAUDE_CODE_SESSION_ID) — cannot key a session-scoped identity" >&2
+        exit 3
+      fi
+      if ! hapax_session_role_write "$_ar_role"; then
+        echo "agent-role.sh: failed to write identity marker" >&2
+        exit 1
+      fi
+      # Audit the reassert — a recovery path must be observable after the fact.
+      printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_ar_sid" "$_ar_role" \
+        >>"${HOME:-/nonexistent}/.cache/hapax/session-role-asserts.log" 2>/dev/null || true
+      echo "agent-role: asserted identity '$_ar_role' for session $_ar_sid — gated calls now resolve this role without a restart."
+      ;;
+    whoami | identity)
+      hapax_agent_identity
+      ;;
+    claim-key)
+      hapax_agent_claim_key
+      ;;
+    *)
+      echo "usage: agent-role.sh {assert-identity <role>|whoami|claim-key}" >&2
+      exit 2
+      ;;
+  esac
+fi

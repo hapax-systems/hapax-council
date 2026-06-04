@@ -290,6 +290,11 @@ export CLAUDE_ROLE="$ROLE"
 export HAPAX_AGENT_ROLE="$ROLE"
 export HAPAX_WORKTREE_ROLE="$ROLE"
 export HAPAX_SESSION_ID="$SESSION_UUID"
+# Per-session identity marker (reform-identity-coherence, cluster 11): WM-independent
+# identity keyed by the session id (agent-role.sh / hapax-whoami read it; path
+# convention SSOT is hapax_session_role_marker in hooks/scripts/agent-role.sh).
+mkdir -p "$HOME/.cache/hapax" 2>/dev/null || true
+printf '%s\n' "$ROLE" >"$HOME/.cache/hapax/session-role-$SESSION_UUID" 2>/dev/null || true
 export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
 
 CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$ROLE"
