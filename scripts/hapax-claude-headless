@@ -281,8 +281,13 @@ dispatch_host_is_local() {
 
 remote_python_command() {
   local payload="$1" code="$2"
-  printf 'HAPAX_REMOTE_PAYLOAD=%s python3 -c ' "$payload"
-  printf '%q' "$code"
+  local code_b64="" bash_script="" quoted_script="" quoted_payload="" quoted_code=""
+  code_b64="$(printf '%s' "$code" | python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())')"
+  bash_script='export HAPAX_REMOTE_PAYLOAD="$1"; export HAPAX_REMOTE_CODE="$2"; exec python3 -c "import base64,os; exec(base64.b64decode(os.environ[\"HAPAX_REMOTE_CODE\"]))"'
+  quoted_script="${bash_script//\'/\'\\\'\'}"
+  quoted_payload="${payload//\'/\'\\\'\'}"
+  quoted_code="${code_b64//\'/\'\\\'\'}"
+  printf "bash -c '%s' bash '%s' '%s'" "$quoted_script" "$quoted_payload" "$quoted_code"
 }
 
 remote_payload_b64() {
