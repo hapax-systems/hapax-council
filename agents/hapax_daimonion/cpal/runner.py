@@ -814,11 +814,11 @@ class CpalRunner:
     def _wrap_audio_output_for_envelope_tap(self) -> None:
         """Decorate ``self._audio_output.write`` to tee PCM to the envelope publisher.
 
-        The underlying ``write`` method is preserved; the wrapper calls
-        it first (so latency-sensitive playback wins) and then feeds
-        PCM to the publisher. Analysis failures never propagate to the
-        playback path — they're logged at debug level and dropped so
-        a broken mmap never impacts voice.
+        The underlying ``write`` method is preserved; the wrapper feeds
+        PCM to the publisher before the blocking playback call so the
+        live visual ring updates while the speech is audible. Analysis
+        failures never propagate to the playback path — they're logged at
+        debug level and dropped so a broken mmap never impacts voice.
         """
         if self._audio_output is None or self._tts_envelope_publisher is None:
             return
@@ -827,12 +827,10 @@ class CpalRunner:
 
         def _wrapped_write(pcm, *args, **kwargs):
             try:
-                original_write(pcm, *args, **kwargs)
-            finally:
-                try:
-                    publisher.feed(pcm)  # type: ignore[attr-defined]
-                except Exception:
-                    log.debug("TTS envelope feed failed", exc_info=True)
+                publisher.feed(pcm)  # type: ignore[attr-defined]
+            except Exception:
+                log.debug("TTS envelope feed failed", exc_info=True)
+            return original_write(pcm, *args, **kwargs)
 
         self._audio_output.write = _wrapped_write  # type: ignore[assignment]
         self._envelope_wrap_done = True

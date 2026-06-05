@@ -1,6 +1,8 @@
 """Tests for CPAL runner."""
 
 import asyncio
+import math
+import struct
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,6 +11,16 @@ import pytest
 from agents.hapax_daimonion.cpal.destination_channel import DestinationChannel
 from agents.hapax_daimonion.cpal.runner import CpalRunner, SpeechEventKind
 from agents.hapax_daimonion.cpal.types import ConversationalRegion
+
+
+def _sine_pcm(freq_hz: float, sample_rate_hz: int, duration_s: float, amp: float = 0.5) -> bytes:
+    samples = []
+    sample_count = int(duration_s * sample_rate_hz)
+    for i in range(sample_count):
+        t = i / sample_rate_hz
+        sample = int(amp * math.sin(2.0 * math.pi * freq_hz * t) * 32767.0)
+        samples.append(struct.pack("<h", sample))
+    return b"".join(samples)
 
 
 class TestCpalRunnerLifecycle:
@@ -36,6 +48,95 @@ class TestCpalRunnerLifecycle:
         runner = self._make_runner()
         assert not runner.is_running
         assert runner.tick_count == 0
+
+    def test_envelope_tap_feeds_before_playback_and_preserves_result(self):
+        runner = CpalRunner.__new__(CpalRunner)
+        pcm = b"\x00\x01" * 10
+        playback_result = SimpleNamespace(status="completed")
+        events = []
+
+        def _feed(data):
+            events.append(("feed", data))
+
+        def _write(data, *args, **kwargs):
+            events.append(("write", data, args, kwargs))
+            return playback_result
+
+        audio_output = SimpleNamespace(write=_write)
+        runner._audio_output = audio_output
+        runner._tts_envelope_publisher = SimpleNamespace(feed=_feed)
+        runner._envelope_wrap_done = False
+
+        runner._wrap_audio_output_for_envelope_tap()
+        result = audio_output.write(pcm, target="hapax-private", media_role="Assistant")
+
+        assert result is playback_result
+        assert events == [
+            ("feed", pcm),
+            (
+                "write",
+                pcm,
+                (),
+                {"target": "hapax-private", "media_role": "Assistant"},
+            ),
+        ]
+        assert runner._envelope_wrap_done is True
+
+    def test_envelope_tap_feed_failure_does_not_block_playback(self):
+        runner = CpalRunner.__new__(CpalRunner)
+        pcm = b"\x00\x01" * 10
+        playback_result = SimpleNamespace(status="completed")
+        writes = []
+
+        def _feed(_data):
+            raise RuntimeError("ring unavailable")
+
+        def _write(data, *args, **kwargs):
+            writes.append((data, args, kwargs))
+            return playback_result
+
+        audio_output = SimpleNamespace(write=_write)
+        runner._audio_output = audio_output
+        runner._tts_envelope_publisher = SimpleNamespace(feed=_feed)
+        runner._envelope_wrap_done = False
+
+        runner._wrap_audio_output_for_envelope_tap()
+        result = audio_output.write(pcm, target="hapax-private", media_role="Assistant")
+
+        assert result is playback_result
+        assert writes == [(pcm, (), {"target": "hapax-private", "media_role": "Assistant"})]
+
+    def test_envelope_tap_updates_speech_wave_ring_for_private_playback(self, tmp_path):
+        from agents.hapax_daimonion.tts_envelope_publisher import TtsEnvelopePublisher
+
+        runner = CpalRunner.__new__(CpalRunner)
+        pcm = _sine_pcm(220.0, 24000, 0.05)
+        playback_result = SimpleNamespace(status="completed")
+        wave_path = tmp_path / "speech-wave.bin"
+        publisher = TtsEnvelopePublisher(
+            path=tmp_path / "tts-envelope.f32",
+            sample_rate_hz=24000,
+            wave_path=wave_path,
+        )
+        audio_output = SimpleNamespace(write=lambda _pcm, **_kwargs: playback_result)
+        runner._audio_output = audio_output
+        runner._tts_envelope_publisher = publisher
+        runner._envelope_wrap_done = False
+
+        try:
+            runner._wrap_audio_output_for_envelope_tap()
+            result = audio_output.write(pcm, target="hapax-private", media_role="Assistant")
+
+            data = wave_path.read_bytes()
+            frame_id, _color, _reserved, sample_count = struct.unpack_from("<QBBH", data, 0)
+            samples = data[12 : 12 + sample_count]
+
+            assert result is playback_result
+            assert frame_id >= 1
+            assert sample_count == 480
+            assert max(samples) > 128 and min(samples) < 128
+        finally:
+            publisher.close()
 
     @pytest.mark.asyncio
     async def test_run_and_stop(self):
