@@ -98,6 +98,11 @@ AUTOQUEUE_IGNORED_CHECK_CONTEXTS = {
 # re-posts the admission proof once it is older than half this window so the
 # server-side proof never goes stale (G3 idempotent writes).
 AUTOQUEUE_ADMISSION_TTL_SECONDS = 30 * 60
+# Failure proofs intentionally refresh less often than success proofs: blocked
+# PRs can sit for days, and GitHub caps commit statuses per SHA+context. Still,
+# when the blocker text changes, the proof must eventually stop advertising
+# cleared blockers.
+FAILURE_DESCRIPTION_REFRESH_SECONDS = 10 * 60
 CI_REPAIR_KINDS = {"cicd-speedup", "ci-repair", "ci-speedup", "merge-queue-repair"}
 CI_REPAIR_TAGS = {"cicd", "ci", "autoqueue"}
 INDEPENDENT_QUEUE_ADMISSION = {"independent", "independent_route"}
@@ -1131,7 +1136,13 @@ def set_autoqueue_admission_status(
     if current is not None:
         cur_state, cur_description, cur_created = current
         if cur_state == state == "failure":
-            return True, "unchanged_failure_state"
+            if cur_description == description:
+                return True, "unchanged_failure_state"
+            fresh_failure_description = cur_created is not None and (now - cur_created) < timedelta(
+                seconds=FAILURE_DESCRIPTION_REFRESH_SECONDS
+            )
+            if fresh_failure_description:
+                return True, "deferred_failure_description_update"
         unchanged = cur_state == state and cur_description == description
         fresh = cur_created is not None and (now - cur_created) < timedelta(
             seconds=AUTOQUEUE_ADMISSION_TTL_SECONDS / 2
