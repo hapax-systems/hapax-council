@@ -16,6 +16,17 @@ from ..registry import check_group
 async def check_ollama_models() -> list[CheckResult]:
     """Verify expected Ollama models are pulled."""
     t = time.monotonic()
+    if not _c.local_ollama_required():
+        return [
+            CheckResult(
+                name="models.ollama_api",
+                group="models",
+                status=Status.HEALTHY,
+                message="local Ollama not required on podium thin-client profile",
+                duration_ms=_u._timed(t),
+            )
+        ]
+
     code, body = await _u.http_get(f"{_c.OLLAMA_URL}/api/tags", timeout=5.0)
     if code != 200:
         return [

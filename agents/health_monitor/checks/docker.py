@@ -109,10 +109,19 @@ async def check_docker_containers() -> list[CheckResult]:
         state = container.get("State", "unknown").lower()
         health = container.get("Health", "").lower()
 
-        is_core = service in _c.CORE_CONTAINERS
+        is_core = service in _c.core_containers()
+        is_appendix_owned_on_thin_client = (
+            _c.podium_thin_client_enabled() and _c.appendix_owned_observability_service(service)
+        )
         running = state == "running"
 
-        if running and health in ("healthy", "", "starting"):
+        if is_appendix_owned_on_thin_client and not running:
+            status = Status.HEALTHY
+            msg = f"stopped ({state}) — appendix-owned on podium thin-client profile"
+        elif is_appendix_owned_on_thin_client and running:
+            status = Status.DEGRADED
+            msg = f"running ({health}) — expected on appendix, not podium"
+        elif running and health in ("healthy", "", "starting"):
             status = Status.HEALTHY
             msg = f"running ({health})" if health else "running"
         elif running and health == "unhealthy":
@@ -123,7 +132,7 @@ async def check_docker_containers() -> list[CheckResult]:
             msg = f"not running ({state})" if not is_core else f"not running ({state}) — CORE"
 
         remediation = None
-        if not running:
+        if not running and not is_appendix_owned_on_thin_client:
             remediation = (
                 f"cd {_c.COMPOSE_FILE.parent} && docker compose up -d {shlex.quote(service)}"
             )

@@ -14,7 +14,7 @@ from opentelemetry import trace
 # Ensure all check modules are imported (registers them into CHECK_REGISTRY)
 from . import checks  # noqa: F401
 from . import utils as _u
-from .constants import LITELLM_BASE, OLLAMA_URL, QDRANT_URL
+from .constants import LITELLM_BASE, OLLAMA_URL, QDRANT_URL, langfuse_endpoint_url
 from .models import CheckResult, HealthReport, Status, build_group_result, worst_status
 from .registry import CHECK_REGISTRY
 
@@ -160,7 +160,7 @@ async def quick_check(
         "litellm": f"{LITELLM_BASE}/health/liveliness",
         "qdrant": f"{QDRANT_URL}/healthz",
         "ollama": f"{OLLAMA_URL}/api/tags",
-        "langfuse": "http://localhost:3000/",
+        "langfuse": langfuse_endpoint_url(),
         "open-webui": "http://localhost:8080/health",
     }
 

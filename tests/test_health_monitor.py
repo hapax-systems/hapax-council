@@ -218,6 +218,27 @@ class TestDockerChecks:
             results = await check_docker_containers()
         assert results[0].status == Status.FAILED
 
+    @pytest.mark.asyncio
+    async def test_thin_client_observability_container_stopped_is_expected(self, monkeypatch):
+        from agents.health_monitor import check_docker_containers
+
+        monkeypatch.setenv("HAPAX_LLM_STACK_PROFILE", "podium-thin-client")
+        ndjson = json.dumps(
+            {
+                "Name": "minio",
+                "Service": "minio",
+                "State": "exited",
+                "Health": "",
+            }
+        )
+        with patch("agents.health_monitor.utils.run_cmd", new_callable=AsyncMock) as mock:
+            mock.return_value = (0, ndjson, "")
+            results = await check_docker_containers()
+
+        assert results[0].status == Status.HEALTHY
+        assert results[0].remediation is None
+        assert "appendix-owned" in results[0].message
+
 
 class TestGpuChecks:
     @pytest.mark.asyncio
@@ -516,9 +537,10 @@ class TestProfileChecks:
 
 class TestEndpointChecks:
     @pytest.mark.asyncio
-    async def test_all_endpoints_up(self):
+    async def test_all_endpoints_up(self, monkeypatch):
         from agents.health_monitor import check_service_endpoints
 
+        monkeypatch.setenv("HAPAX_LLM_STACK_PROFILE", "default")
         with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
             mock.return_value = (200, "ok")
             results = await check_service_endpoints()
@@ -526,9 +548,10 @@ class TestEndpointChecks:
         assert len(results) == 4
 
     @pytest.mark.asyncio
-    async def test_core_endpoint_down_is_failed(self):
+    async def test_core_endpoint_down_is_failed(self, monkeypatch):
         from agents.health_monitor import check_service_endpoints
 
+        monkeypatch.setenv("HAPAX_LLM_STACK_PROFILE", "default")
         with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
 
             async def side_effect(url, **kwargs):
@@ -542,9 +565,10 @@ class TestEndpointChecks:
         assert litellm_r.status == Status.FAILED
 
     @pytest.mark.asyncio
-    async def test_optional_endpoint_down_is_degraded(self):
+    async def test_optional_endpoint_down_is_degraded(self, monkeypatch):
         from agents.health_monitor import check_service_endpoints
 
+        monkeypatch.setenv("HAPAX_LLM_STACK_PROFILE", "default")
         with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
 
             async def side_effect(url, **kwargs):
@@ -556,6 +580,29 @@ class TestEndpointChecks:
             results = await check_service_endpoints()
         langfuse_r = next(r for r in results if "langfuse" in r.name)
         assert langfuse_r.status == Status.DEGRADED
+
+    @pytest.mark.asyncio
+    async def test_thin_client_langfuse_targets_appendix_without_local_restart(self, monkeypatch):
+        from agents.health_monitor import check_service_endpoints
+
+        monkeypatch.setenv("HAPAX_LLM_STACK_PROFILE", "podium-thin-client")
+        monkeypatch.setenv("HAPAX_APPENDIX_LANGFUSE_URL", "http://appendix.local:3000")
+        with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
+
+            async def side_effect(url, **kwargs):
+                if "appendix.local:3000/api/public/health" in url:
+                    return (0, "Connection refused")
+                return (200, "ok")
+
+            mock.side_effect = side_effect
+            results = await check_service_endpoints()
+
+        langfuse_r = next(r for r in results if "langfuse" in r.name)
+        assert langfuse_r.status == Status.DEGRADED
+        assert langfuse_r.remediation is None
+        urls = [call.args[0] for call in mock.await_args_list]
+        assert "http://appendix.local:3000/api/public/health" in urls
+        assert all(r.name != "endpoints.ollama" for r in results)
 
 
 class TestCredentialChecks:
@@ -896,9 +943,10 @@ class TestFormatter:
 
 class TestModelChecks:
     @pytest.mark.asyncio
-    async def test_ollama_models_all_present(self):
+    async def test_ollama_models_all_present(self, monkeypatch):
         from agents.health_monitor import check_ollama_models
 
+        monkeypatch.setenv("HAPAX_LLM_STACK_PROFILE", "default")
         tags_resp = json.dumps(
             {
                 "models": [
@@ -913,9 +961,10 @@ class TestModelChecks:
         assert all(r.status == Status.HEALTHY for r in results)
 
     @pytest.mark.asyncio
-    async def test_ollama_model_missing(self):
+    async def test_ollama_model_missing(self, monkeypatch):
         from agents.health_monitor import check_ollama_models
 
+        monkeypatch.setenv("HAPAX_LLM_STACK_PROFILE", "default")
         tags_resp = json.dumps({"models": [{"name": "qwen2.5:7b"}]})
         with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
             mock.return_value = (200, tags_resp)
@@ -923,6 +972,19 @@ class TestModelChecks:
         missing = [r for r in results if r.status == Status.DEGRADED]
         assert len(missing) >= 1
         assert any("ollama pull" in (r.remediation or "") for r in missing)
+
+    @pytest.mark.asyncio
+    async def test_thin_client_ollama_models_are_skipped(self, monkeypatch):
+        from agents.health_monitor import check_ollama_models
+
+        monkeypatch.setenv("HAPAX_LLM_STACK_PROFILE", "podium-thin-client")
+        with patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock:
+            results = await check_ollama_models()
+
+        assert len(results) == 1
+        assert results[0].status == Status.HEALTHY
+        assert "not required" in results[0].message
+        mock.assert_not_called()
 
 
 class TestAuthChecks:
@@ -1037,8 +1099,10 @@ class TestRotateHistory:
 
 class TestLatencyChecks:
     @pytest.mark.asyncio
-    async def test_healthy_latency(self):
+    async def test_healthy_latency(self, monkeypatch):
         from agents.health_monitor import check_service_latency
+
+        monkeypatch.setenv("HAPAX_LLM_STACK_PROFILE", "default")
 
         async def fast_latency(url, timeout=3.0):
             return 2.0  # 2ms — healthy
@@ -1051,8 +1115,10 @@ class TestLatencyChecks:
         assert len(results) == 3  # litellm, qdrant, ollama
 
     @pytest.mark.asyncio
-    async def test_unreachable_service(self):
+    async def test_unreachable_service(self, monkeypatch):
         from agents.health_monitor import check_service_latency
+
+        monkeypatch.setenv("HAPAX_LLM_STACK_PROFILE", "default")
 
         async def fail_latency(url, timeout=3.0):
             return None  # unreachable
@@ -1062,6 +1128,22 @@ class TestLatencyChecks:
         ):
             results = await check_service_latency()
         assert all(r.status == Status.FAILED for r in results)
+
+    @pytest.mark.asyncio
+    async def test_thin_client_latency_omits_ollama(self, monkeypatch):
+        from agents.health_monitor import check_service_latency
+
+        monkeypatch.setenv("HAPAX_LLM_STACK_PROFILE", "podium-thin-client")
+
+        async def fast_latency(url, timeout=3.0):
+            return 2.0
+
+        with patch(
+            "agents.health_monitor.checks.latency._http_latency_ms", side_effect=fast_latency
+        ):
+            results = await check_service_latency()
+
+        assert {r.name for r in results} == {"latency.litellm", "latency.qdrant"}
 
     @pytest.mark.asyncio
     async def test_postgres_healthy(self):
