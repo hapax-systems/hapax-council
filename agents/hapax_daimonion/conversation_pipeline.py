@@ -158,6 +158,7 @@ class ConversationPipeline:
         self.stt = stt
         self.tts = tts_manager
         self.system_prompt = system_prompt
+        self._system_context = system_prompt
         self.tools = tools
         self.tool_handlers = tool_handlers or {}
         self.llm_model = llm_model
@@ -549,6 +550,7 @@ class ConversationPipeline:
         system prompt rebuilds.
         """
         if not self.messages:
+            self._system_context = self.system_prompt
             return
 
         # ── STABLE band: prompt + conversation thread ──────────────────
@@ -673,6 +675,7 @@ class ConversationPipeline:
             except Exception:
                 log.debug("GQI shm write failed", exc_info=True)
 
+        self._system_context = updated
         content_hash = hash(updated)
         if content_hash == self._last_env_hash:
             return
