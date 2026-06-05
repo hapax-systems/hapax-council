@@ -1932,7 +1932,7 @@ def test_admission_status_reposts_when_stale(tmp_path: Path) -> None:
     assert len(_admission_posts(runner)) == 1
 
 
-def test_admission_status_does_not_repost_failure_description_churn(
+def test_admission_status_defers_fresh_failure_description_change(
     tmp_path: Path,
 ) -> None:
     decision = _admission_decision(action="blocked")
@@ -1950,11 +1950,28 @@ def test_admission_status_does_not_repost_failure_description_churn(
         decision, repo="owner/repo", repo_root=tmp_path, runner=runner, now=now
     )
 
+    assert result == (True, "deferred_failure_description_update")
+    assert _admission_posts(runner) == []
+
+
+def test_admission_status_does_not_repost_unchanged_failure_status(
+    tmp_path: Path,
+) -> None:
+    decision = _admission_decision(action="blocked")
+    state, description = autoqueue._admission_status_for(decision)
+    runner = _FakeRunner()
+    runner.head_statuses["sha-50"] = [_existing_status(state, description, "2026-06-02T00:00:00Z")]
+    now = datetime(2026, 6, 2, 1, 0, tzinfo=UTC)
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner, now=now
+    )
+
     assert result == (True, "unchanged_failure_state")
     assert _admission_posts(runner) == []
 
 
-def test_admission_status_does_not_refresh_stale_failure_status(
+def test_admission_status_refreshes_stale_failure_description_change(
     tmp_path: Path,
 ) -> None:
     decision = _admission_decision(action="blocked")
@@ -1972,8 +1989,10 @@ def test_admission_status_does_not_refresh_stale_failure_status(
         decision, repo="owner/repo", repo_root=tmp_path, runner=runner, now=now
     )
 
-    assert result == (True, "unchanged_failure_state")
-    assert _admission_posts(runner) == []
+    assert result is not None and result[0]
+    posts = _admission_posts(runner)
+    assert len(posts) == 1
+    assert "state=failure" in posts[0]
 
 
 def test_admission_status_posts_when_verdict_changed(tmp_path: Path) -> None:
