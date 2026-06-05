@@ -333,7 +333,14 @@ class TestRegistryIntegration:
         assert "gaps" in registry
         assert len(registry["gaps"]) >= 18
 
-    def test_registry_has_validated_gaps(self) -> None:
+    def test_registry_has_phase1_reviewed_gaps(self) -> None:
         registry = gap_validate.load_registry()
-        validated = [g for g in registry["gaps"] if g["validation_status"] == "validated_novel"]
-        assert len(validated) >= 3
+        phase1_statuses = {
+            "validated_novel",
+            "likely_novel_needs_phase2",
+            "prior_art_detected",
+            "needs_phase2_validation",
+        }
+        reviewed = [g for g in registry["gaps"] if g["validation_status"] in phase1_statuses]
+        reviewed_ids = {g["gap_id"] for g in reviewed}
+        assert {"GAP-001", "GAP-003", "GAP-007"} <= reviewed_ids

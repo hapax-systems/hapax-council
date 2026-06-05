@@ -16,14 +16,14 @@ gaps:
   title: Multimodal grounding research pipeline
   request_ref: REQ-20260509-multimodal-grounding-research-pipeline
   disposition: execute
-  validation_status: validated_novel
+  validation_status: needs_phase2_validation
   uniqueness_score: 0.85
   composability_score: 0.9
   decay_rate_halflife_days: 180
   unique_apparatus_required: true
   apparatus_justification: Requires perceptual_embodiment (camera/IR fleet) + temporal_grounding
     (bands architecture) + stigmergic_coordination (filesystem-as-bus context)
-  last_reviewed: '2026-05-20'
+  last_reviewed: '2026-06-04'
 - gap_id: GAP-002
   title: Epistemic quality infrastructure
   request_ref: REQ-20260512-epistemic-quality-infrastructure
@@ -40,14 +40,14 @@ gaps:
   title: Unb-AIRy discursive plane
   request_ref: REQ-20260509-unb-airy-discursive-plane
   disposition: publish
-  validation_status: validated_novel
+  validation_status: needs_phase2_validation
   uniqueness_score: 0.92
   composability_score: 0.7
   decay_rate_halflife_days: 270
   unique_apparatus_required: true
   apparatus_justification: Requires axiom_governance + single_operator_architecture
     for assertion-plane enforcement unique to single-operator AI systems
-  last_reviewed: '2026-05-20'
+  last_reviewed: '2026-06-04'
 - gap_id: GAP-004
   title: Research positioning and publication pipeline
   request_ref: REQ-20260509-research-positioning-and-publication
@@ -87,14 +87,14 @@ gaps:
   title: Deliberative council engine
   request_ref: REQ-20260515-deliberative-council-engine
   disposition: publish
-  validation_status: validated_novel
+  validation_status: needs_phase2_validation
   uniqueness_score: 0.88
   composability_score: 0.65
   decay_rate_halflife_days: 365
   unique_apparatus_required: true
   apparatus_justification: Requires bayesian_claim_tracking + axiom_governance for
     multi-agent claim disconfirmation unique to this architecture
-  last_reviewed: '2026-05-20'
+  last_reviewed: '2026-06-04'
 - gap_id: GAP-008
   title: 3D compositor direct v4l2 output
   request_ref: REQ-20260514-3d-compositor-v4l2-direct-output
