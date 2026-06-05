@@ -138,6 +138,73 @@ class TestCpalRunnerLifecycle:
         finally:
             publisher.close()
 
+    def test_direct_play_pcm_with_envelope_feeds_before_playback(self):
+        runner = CpalRunner.__new__(CpalRunner)
+        pcm = b"\x00\x01" * 10
+        playback_result = SimpleNamespace(status="completed")
+        events = []
+
+        runner._tts_envelope_publisher = SimpleNamespace(
+            feed=lambda data: events.append(("feed", data))
+        )
+
+        def _play(data, rate, channels, target, media_role):
+            events.append(("play", data, rate, channels, target, media_role))
+            return playback_result
+
+        with patch("agents.hapax_daimonion.pw_audio_output.play_pcm", side_effect=_play):
+            result = runner._play_pcm_with_envelope(
+                pcm,
+                24000,
+                1,
+                "hapax-private",
+                "Assistant",
+            )
+
+        assert result is playback_result
+        assert events == [
+            ("feed", pcm),
+            ("play", pcm, 24000, 1, "hapax-private", "Assistant"),
+        ]
+
+    def test_direct_play_pcm_with_envelope_feed_failure_does_not_block_playback(self):
+        runner = CpalRunner.__new__(CpalRunner)
+        pcm = b"\x00\x01" * 10
+        playback_result = SimpleNamespace(status="completed")
+
+        def _feed(_data):
+            raise RuntimeError("ring unavailable")
+
+        runner._tts_envelope_publisher = SimpleNamespace(feed=_feed)
+
+        with patch(
+            "agents.hapax_daimonion.pw_audio_output.play_pcm",
+            return_value=playback_result,
+        ) as play:
+            result = runner._play_pcm_with_envelope(
+                pcm,
+                24000,
+                1,
+                "hapax-private",
+                "Assistant",
+            )
+
+        assert result is playback_result
+        play.assert_called_once_with(pcm, 24000, 1, "hapax-private", "Assistant")
+
+    def test_attach_audio_output_late_binds_production_stream(self):
+        runner = CpalRunner.__new__(CpalRunner)
+        audio_output = SimpleNamespace(write=lambda _pcm, **_kwargs: None)
+        runner._audio_output = None
+        runner._production = SimpleNamespace(_audio_output=None)
+        runner._tts_envelope_publisher = None
+        runner._envelope_wrap_done = False
+
+        runner.attach_audio_output(audio_output)
+
+        assert runner._audio_output is audio_output
+        assert runner._production._audio_output is audio_output
+
     @pytest.mark.asyncio
     async def test_run_and_stop(self):
         runner = self._make_runner()
