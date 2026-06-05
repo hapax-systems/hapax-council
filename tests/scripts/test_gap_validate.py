@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -42,6 +43,21 @@ def sample_registry(sample_gap: dict) -> dict:
         "registry_id": "test",
         "gaps": [sample_gap],
     }
+
+
+@pytest.fixture(autouse=True)
+def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gap_validate.time, "sleep", lambda *_args: None)
+
+
+class FakeResponse:
+    def __init__(self, status_code: int = 200, text: str = "", payload: dict | None = None) -> None:
+        self.status_code = status_code
+        self.text = text
+        self._payload = payload or {}
+
+    def json(self) -> dict:
+        return self._payload
 
 
 class TestBuildSearchTerms:
@@ -122,6 +138,168 @@ class TestSignalResult:
         assert sr.evidence == []
         assert sr.source_urls == []
         assert sr.error is None
+
+
+class TestPatentSweep:
+    def test_uses_google_patents_results(
+        self, monkeypatch: pytest.MonkeyPatch, sample_gap: dict
+    ) -> None:
+        def fake_get(*args: object, **kwargs: object) -> FakeResponse:
+            html = '<a href="/patent/US123456A/en">Test patent result</a>'
+            return FakeResponse(text=html)
+
+        monkeypatch.setattr(gap_validate.httpx, "get", fake_get)
+
+        result = gap_validate.sweep_patents(sample_gap)
+
+        assert result.signal == "patents"
+        assert result.evidence[0]["source"] == "google_patents"
+        assert result.source_urls[0].startswith("https://patents.google.com/patent/")
+
+
+class TestCodeSearchSweep:
+    def test_combines_github_and_papers_with_code(
+        self, monkeypatch: pytest.MonkeyPatch, sample_gap: dict
+    ) -> None:
+        monkeypatch.setattr(
+            gap_validate,
+            "sweep_github",
+            lambda gap: gap_validate.SignalResult(
+                signal="code_search",
+                vote="novel",
+                confidence=0.7,
+                evidence=[{"repo": "example/repo"}],
+                source_urls=["https://github.com/example/repo"],
+            ),
+        )
+        monkeypatch.setattr(
+            gap_validate,
+            "sweep_papers_with_code",
+            lambda gap: gap_validate.SignalResult(
+                signal="papers_with_code",
+                vote="prior_art_exists",
+                confidence=0.8,
+                evidence=[{"title": "Prior implementation"}],
+                source_urls=["https://paperswithcode.com/paper/prior"],
+            ),
+        )
+
+        result = gap_validate.sweep_code_search(sample_gap)
+
+        assert result.signal == "code_search"
+        assert result.vote == "prior_art_exists"
+        assert {item["source_signal"] for item in result.evidence} == {
+            "code_search",
+            "papers_with_code",
+        }
+
+    def test_github_api_failure_is_inconclusive(
+        self, monkeypatch: pytest.MonkeyPatch, sample_gap: dict
+    ) -> None:
+        monkeypatch.setattr(
+            gap_validate.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="API rate limit exceeded",
+            ),
+        )
+
+        result = gap_validate.sweep_github(sample_gap)
+
+        assert result.vote == "inconclusive"
+        assert "github:API rate limit exceeded" in result.error
+
+    def test_papers_with_code_redirect_is_inconclusive(
+        self, monkeypatch: pytest.MonkeyPatch, sample_gap: dict
+    ) -> None:
+        monkeypatch.setattr(
+            gap_validate.httpx,
+            "get",
+            lambda *args, **kwargs: FakeResponse(status_code=302),
+        )
+
+        result = gap_validate.sweep_papers_with_code(sample_gap)
+
+        assert result.vote == "inconclusive"
+        assert "papers_with_code:http_302" in result.error
+
+
+class TestAcademicSweep:
+    def test_rate_limit_is_inconclusive(
+        self, monkeypatch: pytest.MonkeyPatch, sample_gap: dict
+    ) -> None:
+        monkeypatch.setattr(
+            gap_validate.httpx,
+            "get",
+            lambda *args, **kwargs: FakeResponse(status_code=429),
+        )
+
+        result = gap_validate.sweep_semantic_scholar(sample_gap)
+
+        assert result.vote == "inconclusive"
+        assert "semantic_scholar:http_429" in result.error
+
+
+class TestTradeArchiveSweep:
+    def test_uses_ieee_when_api_key_present(
+        self, monkeypatch: pytest.MonkeyPatch, sample_gap: dict
+    ) -> None:
+        monkeypatch.setenv("IEEE_XPLORE_API_KEY", "test-key")
+
+        def fake_get(url: str, *args: object, **kwargs: object) -> FakeResponse:
+            if "ieeexploreapi" in url:
+                return FakeResponse(
+                    payload={
+                        "articles": [
+                            {
+                                "title": "IEEE prior work",
+                                "publication_year": 2025,
+                                "html_url": "https://ieeexplore.ieee.org/document/1",
+                            }
+                        ]
+                    }
+                )
+            return FakeResponse(text="")
+
+        monkeypatch.setattr(gap_validate.httpx, "get", fake_get)
+
+        result = gap_validate.sweep_trade_archive(sample_gap)
+
+        assert result.signal == "trade_pubs"
+        assert result.evidence[0]["source"] == "ieee_xplore"
+
+    def test_uses_acm_without_ieee_key(
+        self, monkeypatch: pytest.MonkeyPatch, sample_gap: dict
+    ) -> None:
+        monkeypatch.delenv("IEEE_XPLORE_API_KEY", raising=False)
+
+        def fake_get(*args: object, **kwargs: object) -> FakeResponse:
+            html = '<a href="/doi/10.1145/123">ACM prior work</a>'
+            return FakeResponse(text=html)
+
+        monkeypatch.setattr(gap_validate.httpx, "get", fake_get)
+
+        result = gap_validate.sweep_trade_archive(sample_gap)
+
+        assert result.signal == "trade_pubs"
+        assert result.evidence[0]["source"] == "acm_dl"
+
+    def test_acm_http_failure_is_inconclusive(
+        self, monkeypatch: pytest.MonkeyPatch, sample_gap: dict
+    ) -> None:
+        monkeypatch.delenv("IEEE_XPLORE_API_KEY", raising=False)
+        monkeypatch.setattr(
+            gap_validate.httpx,
+            "get",
+            lambda *args, **kwargs: FakeResponse(status_code=403),
+        )
+
+        result = gap_validate.sweep_trade_archive(sample_gap)
+
+        assert result.vote == "inconclusive"
+        assert "acm_dl:http_403" in result.error
 
 
 class TestPhase2Scaffolding:

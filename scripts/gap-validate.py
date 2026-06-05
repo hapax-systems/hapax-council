@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Gap validation protocol — automated prior-art sweep + decision matrix.
 
-Phase 1: automated sweep across patents, GitHub, Semantic Scholar, Papers with Code.
+Phase 1: automated sweep across patents, GitHub/Papers with Code,
+Semantic Scholar, and ACM/IEEE trade-publication archives.
 Phase 2: community probe scaffolding (forum post + cold-email templates).
 Phase 3: practitioner observation guide (generated markdown).
 
@@ -14,13 +15,17 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
+import re
 import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from html import unescape
 from pathlib import Path
 from textwrap import dedent
+from urllib.parse import urljoin
 
 import httpx
 import yaml
@@ -34,6 +39,12 @@ OBSERVATION_GUIDE_PATH = REPO_ROOT / "docs" / "research" / "gap-validation-obser
 
 SWEEP_TIMEOUT = 30
 HTTP_TIMEOUT = 20
+GOOGLE_PATENTS_URL = "https://patents.google.com/"
+OPENALEX_WORKS_URL = "https://api.openalex.org/works"
+IEEE_XPLORE_URL = "https://ieeexploreapi.ieee.org/api/v1/search/articles"
+ACM_DL_SEARCH_URL = "https://dl.acm.org/action/doSearch"
+PATENT_LINK_RE = re.compile(r'href="(?P<href>/patent/[^"#?]+)')
+ACM_DOI_LINK_RE = re.compile(r'href="(?P<href>/doi/[^"#?]+)"[^>]*>(?P<title>.*?)</a>', re.S)
 
 
 @dataclass
@@ -91,10 +102,39 @@ def build_search_terms(gap: dict) -> list[str]:
     return terms
 
 
+def _strip_html(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", unescape(text))).strip()
+
+
+def _unique_by_url(items: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for item in items:
+        url = str(item.get("url") or item.get("doi") or item.get("source_url") or "")
+        key = url or json.dumps(item, sort_keys=True, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
+def _source_urls(items: list[dict]) -> list[str]:
+    urls: list[str] = []
+    for item in items:
+        for field_name in ("url", "doi", "source_url"):
+            value = item.get(field_name)
+            if value:
+                urls.append(str(value))
+                break
+    return urls
+
+
 def sweep_github(gap: dict) -> SignalResult:
     terms = build_search_terms(gap)
     all_results: list[dict] = []
     source_urls: list[str] = []
+    errors: list[str] = []
 
     for term in terms[:3]:
         try:
@@ -124,6 +164,8 @@ def sweep_github(gap: dict) -> SignalResult:
                         )
                     except json.JSONDecodeError:
                         continue
+            elif proc.returncode != 0:
+                errors.append(f"github:{proc.stderr.strip() or f'exit_{proc.returncode}'}")
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
             return SignalResult(
                 signal="code_search",
@@ -141,6 +183,9 @@ def sweep_github(gap: dict) -> SignalResult:
     elif len(unique_repos) >= 2:
         vote = "inconclusive"
         confidence = 0.5
+    elif errors and not unique_repos:
+        vote = "inconclusive"
+        confidence = 0.0
     else:
         vote = "novel"
         confidence = 0.7 if len(unique_repos) == 0 else 0.5
@@ -151,6 +196,7 @@ def sweep_github(gap: dict) -> SignalResult:
         confidence=confidence,
         evidence=all_results[:10],
         source_urls=source_urls[:10],
+        error="; ".join(errors) or None,
     )
 
 
@@ -158,6 +204,7 @@ def sweep_semantic_scholar(gap: dict) -> SignalResult:
     terms = build_search_terms(gap)
     all_papers: list[dict] = []
     source_urls: list[str] = []
+    errors: list[str] = []
 
     for term in terms[:2]:
         try:
@@ -178,6 +225,8 @@ def sweep_semantic_scholar(gap: dict) -> SignalResult:
                     )
                     if paper.get("url"):
                         source_urls.append(paper["url"])
+            else:
+                errors.append(f"semantic_scholar:http_{resp.status_code}")
         except httpx.HTTPError as e:
             return SignalResult(
                 signal="academic_papers",
@@ -195,6 +244,9 @@ def sweep_semantic_scholar(gap: dict) -> SignalResult:
     elif len(all_papers) >= 5:
         vote = "inconclusive"
         confidence = 0.4
+    elif errors and not all_papers:
+        vote = "inconclusive"
+        confidence = 0.0
     else:
         vote = "novel"
         confidence = 0.6 if len(all_papers) == 0 else 0.4
@@ -205,78 +257,86 @@ def sweep_semantic_scholar(gap: dict) -> SignalResult:
         confidence=confidence,
         evidence=all_papers[:10],
         source_urls=source_urls[:10],
+        error="; ".join(errors) or None,
     )
 
 
 def sweep_patents(gap: dict) -> SignalResult:
     terms = build_search_terms(gap)
     all_patents: list[dict] = []
-    source_urls: list[str] = []
+    errors: list[str] = []
+    successful_sources = 0
 
     for term in terms[:2]:
         try:
             resp = httpx.get(
-                "https://api.openalex.org/works",
+                GOOGLE_PATENTS_URL,
+                params={"q": term, "num": 10},
+                headers={"User-Agent": "hapax-gap-validate/1.0"},
+                timeout=HTTP_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                successful_sources += 1
+                for match in PATENT_LINK_RE.finditer(resp.text):
+                    href = match.group("href")
+                    patent_id = href.removeprefix("/patent/").split("/", 1)[0]
+                    all_patents.append(
+                        {
+                            "source": "google_patents",
+                            "title": patent_id,
+                            "url": urljoin(GOOGLE_PATENTS_URL, href),
+                        }
+                    )
+            else:
+                errors.append(f"google_patents:http_{resp.status_code}")
+        except httpx.HTTPError as e:
+            errors.append(f"google_patents:{e}")
+        time.sleep(0.5)
+
+    all_patents = _unique_by_url(all_patents)
+    if not all_patents:
+        try:
+            resp = httpx.get(
+                OPENALEX_WORKS_URL,
                 params={
-                    "search": term,
-                    "filter": "type:patent",
+                    "search": terms[0],
+                    "filter": "type:patent|type:standard",
                     "per_page": 10,
                 },
                 timeout=HTTP_TIMEOUT,
             )
             if resp.status_code == 200:
+                successful_sources += 1
                 data = resp.json()
                 for work in data.get("results", []):
                     all_patents.append(
                         {
+                            "source": "openalex",
                             "title": work.get("title"),
                             "year": work.get("publication_year"),
                             "doi": work.get("doi"),
                         }
                     )
-                    if work.get("doi"):
-                        source_urls.append(work["doi"])
-        except httpx.HTTPError:
-            pass
-        time.sleep(0.5)
-
-    if not all_patents:
-        try:
-            resp = httpx.get(
-                "https://api.openalex.org/works",
-                params={
-                    "search": terms[0],
-                    "per_page": 5,
-                    "filter": "type:patent|type:standard",
-                },
-                timeout=HTTP_TIMEOUT,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                for work in data.get("results", []):
-                    all_patents.append(
-                        {
-                            "title": work.get("title"),
-                            "year": work.get("publication_year"),
-                            "doi": work.get("doi"),
-                        }
-                    )
-                    if work.get("doi"):
-                        source_urls.append(work["doi"])
+            else:
+                errors.append(f"openalex:http_{resp.status_code}")
         except httpx.HTTPError as e:
             return SignalResult(
                 signal="patents",
                 vote="inconclusive",
                 confidence=0.0,
-                error=str(e),
+                error="; ".join([*errors, f"openalex:{e}"]),
             )
 
+    all_patents = _unique_by_url(all_patents)
     if len(all_patents) >= 3:
         vote = "prior_art_exists"
         confidence = min(1.0, len(all_patents) / 5)
     elif len(all_patents) >= 1:
         vote = "inconclusive"
         confidence = 0.4
+    elif errors and successful_sources == 0:
+        vote = "inconclusive"
+        confidence = 0.0
     else:
         vote = "novel"
         confidence = 0.6
@@ -286,7 +346,8 @@ def sweep_patents(gap: dict) -> SignalResult:
         vote=vote,
         confidence=confidence,
         evidence=all_patents[:10],
-        source_urls=source_urls[:10],
+        source_urls=_source_urls(all_patents)[:10],
+        error="; ".join(errors) or None,
     )
 
 
@@ -294,6 +355,7 @@ def sweep_papers_with_code(gap: dict) -> SignalResult:
     terms = build_search_terms(gap)
     all_results: list[dict] = []
     source_urls: list[str] = []
+    errors: list[str] = []
 
     for term in terms[:2]:
         try:
@@ -307,16 +369,20 @@ def sweep_papers_with_code(gap: dict) -> SignalResult:
                 for paper in data.get("results", []):
                     all_results.append(
                         {
+                            "source": "papers_with_code",
                             "title": paper.get("title"),
                             "published": paper.get("published"),
                             "stars": paper.get("repository_stars", 0),
+                            "url": paper.get("url_abs"),
                         }
                     )
                     if paper.get("url_abs"):
                         source_urls.append(paper["url_abs"])
+            else:
+                errors.append(f"papers_with_code:http_{resp.status_code}")
         except httpx.HTTPError as e:
             return SignalResult(
-                signal="trade_pubs",
+                signal="papers_with_code",
                 vote="inconclusive",
                 confidence=0.0,
                 error=str(e),
@@ -331,16 +397,152 @@ def sweep_papers_with_code(gap: dict) -> SignalResult:
     elif len(all_results) >= 3:
         vote = "inconclusive"
         confidence = 0.4
+    elif errors and not all_results:
+        vote = "inconclusive"
+        confidence = 0.0
     else:
         vote = "novel"
         confidence = 0.6 if len(all_results) == 0 else 0.4
 
     return SignalResult(
-        signal="trade_pubs",
+        signal="papers_with_code",
         vote=vote,
         confidence=confidence,
         evidence=all_results[:10],
         source_urls=source_urls[:10],
+        error="; ".join(errors) or None,
+    )
+
+
+def sweep_code_search(gap: dict) -> SignalResult:
+    github = sweep_github(gap)
+    papers_with_code = sweep_papers_with_code(gap)
+    signals = [github, papers_with_code]
+    evidence: list[dict] = []
+    urls: list[str] = []
+
+    for signal in signals:
+        evidence.extend({"source_signal": signal.signal, **item} for item in signal.evidence)
+        urls.extend(signal.source_urls)
+
+    prior_art = [signal for signal in signals if signal.vote == "prior_art_exists"]
+    novel = [signal for signal in signals if signal.vote == "novel"]
+    if prior_art:
+        vote = "prior_art_exists"
+        confidence = max(signal.confidence for signal in prior_art)
+    elif len(novel) == len(signals):
+        vote = "novel"
+        confidence = min(signal.confidence for signal in novel)
+    else:
+        vote = "inconclusive"
+        confidence = max((signal.confidence for signal in signals), default=0.0)
+
+    errors = "; ".join(signal.error for signal in signals if signal.error)
+    return SignalResult(
+        signal="code_search",
+        vote=vote,
+        confidence=confidence,
+        evidence=evidence[:15],
+        source_urls=urls[:15],
+        error=errors or None,
+    )
+
+
+def _sweep_ieee_xplore(terms: list[str]) -> tuple[list[dict], list[str]]:
+    api_key = os.environ.get("IEEE_XPLORE_API_KEY")
+    if not api_key:
+        return [], []
+
+    results: list[dict] = []
+    errors: list[str] = []
+    for term in terms[:2]:
+        resp = httpx.get(
+            IEEE_XPLORE_URL,
+            params={"querytext": term, "max_records": 10, "apikey": api_key},
+            timeout=HTTP_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            errors.append(f"ieee_xplore:http_{resp.status_code}")
+            continue
+        for article in resp.json().get("articles", []):
+            url = article.get("html_url") or article.get("pdf_url")
+            results.append(
+                {
+                    "source": "ieee_xplore",
+                    "title": article.get("title"),
+                    "year": article.get("publication_year"),
+                    "url": url,
+                }
+            )
+        time.sleep(1)
+    return results, errors
+
+
+def _sweep_acm_dl(terms: list[str]) -> tuple[list[dict], list[str]]:
+    results: list[dict] = []
+    errors: list[str] = []
+    for term in terms[:2]:
+        resp = httpx.get(
+            ACM_DL_SEARCH_URL,
+            params={"AllField": term},
+            headers={"User-Agent": "hapax-gap-validate/1.0"},
+            timeout=HTTP_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            errors.append(f"acm_dl:http_{resp.status_code}")
+            continue
+        for match in ACM_DOI_LINK_RE.finditer(resp.text):
+            href = match.group("href")
+            results.append(
+                {
+                    "source": "acm_dl",
+                    "title": _strip_html(match.group("title")) or href.rsplit("/", 1)[-1],
+                    "url": urljoin("https://dl.acm.org", href),
+                }
+            )
+        time.sleep(1)
+    return results, errors
+
+
+def sweep_trade_archive(gap: dict) -> SignalResult:
+    terms = build_search_terms(gap)
+    results: list[dict] = []
+    errors: list[str] = []
+
+    try:
+        ieee_results, ieee_errors = _sweep_ieee_xplore(terms)
+        results.extend(ieee_results)
+        errors.extend(ieee_errors)
+    except httpx.HTTPError as e:
+        errors.append(f"ieee_xplore:{e}")
+    try:
+        acm_results, acm_errors = _sweep_acm_dl(terms)
+        results.extend(acm_results)
+        errors.extend(acm_errors)
+    except httpx.HTTPError as e:
+        errors.append(f"acm_dl:{e}")
+
+    results = _unique_by_url(results)
+    if len(results) >= 3:
+        vote = "prior_art_exists"
+        confidence = min(1.0, len(results) / 5)
+    elif len(results) >= 1:
+        vote = "inconclusive"
+        confidence = 0.4
+    elif errors:
+        vote = "inconclusive"
+        confidence = 0.0
+    else:
+        vote = "novel"
+        confidence = 0.5
+
+    return SignalResult(
+        signal="trade_pubs",
+        vote=vote,
+        confidence=confidence,
+        evidence=results[:10],
+        source_urls=_source_urls(results)[:10],
+        error="; ".join(errors) or None,
     )
 
 
@@ -376,9 +578,9 @@ def run_sweep(gap: dict) -> SweepResult:
 
     sweepers = [
         ("patents", sweep_patents),
-        ("code_search", sweep_github),
+        ("code_search", sweep_code_search),
         ("academic_papers", sweep_semantic_scholar),
-        ("trade_pubs", sweep_papers_with_code),
+        ("trade_pubs", sweep_trade_archive),
     ]
 
     for name, fn in sweepers:
