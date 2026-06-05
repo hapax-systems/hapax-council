@@ -221,19 +221,27 @@ class TestRestoreVerifyCorrupt:
         assert "only 1 unit files" in result.stdout
 
 
-class TestBackupRestoreCoverage:
-    def test_backup_targets_match_restore_checks(self):
-        backup_text = BACKUP_SCRIPT.read_text()
+class TestHistoricalRestoreCoverage:
+    def test_restore_checks_historical_backup_targets(self):
         restore_text = SCRIPT.read_text()
+
         targets = [
-            ("claude-config", "claude"),
-            ("langfuse", "langfuse"),
-            ("qdrant", "qdrant"),
-            ("postgres", "postgres"),
-            ("n8n", "n8n"),
-            ("systemd", "systemd"),
-            ("cache-state", "cache"),
+            "claude-config",
+            "langfuse",
+            "qdrant",
+            "postgres",
+            "n8n",
+            "systemd",
+            "cache-state",
         ]
-        for restore_key, backup_key in targets:
+        for restore_key in targets:
             assert restore_key in restore_text, f"Restore missing: {restore_key}"
-            assert backup_key in backup_text.lower(), f"Backup missing: {backup_key}"
+
+    def test_standalone_backup_producer_is_deprecated(self):
+        backup_text = BACKUP_SCRIPT.read_text()
+
+        assert "DEPRECATED" in backup_text
+        assert "hapax-backup-local.service" in backup_text
+        assert "hapax-backup-remote.service" in backup_text
+        assert "pg_dump" not in backup_text
+        assert "ragdb" not in backup_text

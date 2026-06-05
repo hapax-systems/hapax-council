@@ -3,16 +3,18 @@ name: Local Backup
 version: "1.0.0"
 category: observability
 reports_to: operator
-peers: [backup_remote, llm_backup]
+peers: [backup_remote]
 depends_on: []
 
-purpose: Tier 1 daily backup to local restic repository — dumps Postgres, snapshots Qdrant, then runs restic backup.
+purpose: Tier 1 daily backup to the NAS restic repository — dumps PostgreSQL with pg_dumpall, snapshots Qdrant, exports n8n, then runs restic backup.
 inputs:
   - PostgreSQL databases
   - Qdrant snapshots
+  - n8n workflows
+  - Docker volume metadata
   - filesystem paths
 outputs:
-  - local restic snapshots
+  - NAS restic snapshots at /mnt/nas/backups/restic
 capabilities:
   - restic_backup
   - postgres_dump
@@ -38,12 +40,13 @@ health_group: null
 service_tier: 1
 
 timer_display:
-  schedule_label: "Daily 02:00"
-  purpose: "Local restic backup (Postgres + Qdrant + files)"
+  schedule_label: "Daily 03:00"
+  purpose: "NAS restic backup (Postgres + Qdrant + files)"
 
 narrative: |
   The Local Backup agent runs the Tier 1 daily backup pipeline. It first
-  dumps PostgreSQL databases and takes Qdrant collection snapshots, then
-  runs restic to back up the entire configured path set to the local
-  repository at /store/hapax-backups/restic. This is the first line of defense
-  against data loss.
+  dumps PostgreSQL with pg_dumpall using the current service user, takes Qdrant
+  collection snapshots, exports n8n workflows, and captures Docker volume
+  metadata. It then runs restic to back up the configured path set, including
+  the llm-stack file tree, to /mnt/nas/backups/restic. This is the first line of
+  defense against data loss.
