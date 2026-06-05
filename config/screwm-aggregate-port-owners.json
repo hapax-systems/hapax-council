@@ -533,7 +533,7 @@
         {
           "path": "systemd/units/hapax-darkplaces-live-texture-rebuild.path",
           "anchors": [
-            "PathChanged=%h/.cache/hapax/source-activation/current.json",
+            "PathChanged=%h/.cache/hapax/source-activation/last-success-sha",
             "hapax-darkplaces-live-texture-rebuild.service"
           ]
         },

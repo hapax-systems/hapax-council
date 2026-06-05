@@ -5,6 +5,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNITS_DIR = REPO_ROOT / "systemd" / "units"
 SCRIPTS_DIR = REPO_ROOT / "scripts"
+INSTALL_UNITS = REPO_ROOT / "systemd" / "scripts" / "install-units.sh"
+USER_PRESET = REPO_ROOT / "systemd" / "user-preset.d" / "hapax.preset"
 
 
 def _read(unit_name: str) -> str:
@@ -104,6 +106,7 @@ def test_darkplaces_live_texture_rebuild_path_watches_source_activation_patch() 
     path = _read("hapax-darkplaces-live-texture-rebuild.path")
 
     assert "WorkingDirectory=%h/.cache/hapax/source-activation/worktree" in service
+    assert "ConditionPathExists=%h/.cache/hapax/source-activation/last-success-sha" in service
     assert (
         "ConditionPathExists=%h/.cache/hapax/source-activation/worktree/"
         "scripts/ensure-darkplaces-live-texture-build.sh"
@@ -120,13 +123,24 @@ def test_darkplaces_live_texture_rebuild_path_watches_source_activation_patch() 
     assert "StartLimitIntervalSec=600" in service
     assert "%h/.cache/hapax/rebuild/worktree" not in service
 
-    assert "PathChanged=%h/.cache/hapax/source-activation/current.json" in path
+    assert "PathChanged=%h/.cache/hapax/source-activation/current.json" not in path
+    assert "PathChanged=%h/.cache/hapax/source-activation/last-success-sha" in path
     assert (
         "PathChanged=%h/.cache/hapax/source-activation/worktree/"
         "assets/quake/darkplaces/hapax-live-texture.patch"
     ) in path
     assert "Unit=hapax-darkplaces-live-texture-rebuild.service" in path
     assert "%h/.cache/hapax/rebuild/worktree" not in path
+
+
+def test_darkplaces_live_texture_rebuild_path_is_enabled_by_deploy_defaults() -> None:
+    install_units = INSTALL_UNITS.read_text(encoding="utf-8")
+    preset = USER_PRESET.read_text(encoding="utf-8")
+
+    assert "AUTO_ENABLE_PATHS=(" in install_units
+    assert "hapax-darkplaces-live-texture-rebuild.path" in install_units
+    assert 'systemctl --user enable --now "$path_name"' in install_units
+    assert "enable hapax-darkplaces-live-texture-rebuild.path" in preset
 
 
 def test_darkplaces_launchers_bind_youtube_camera_and_ward_atlas_textures() -> None:
