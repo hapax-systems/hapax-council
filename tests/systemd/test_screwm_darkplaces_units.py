@@ -101,6 +101,18 @@ def test_darkplaces_launchers_ensure_persistent_live_texture_binary() -> None:
         assert 'DARKPLACES_BIN="$(resolve_darkplaces_bin)"' in body
 
 
+def test_darkplaces_launchers_force_diagnostic_screen_postprocess_off() -> None:
+    for launcher in ("darkplaces-v4l2-xvfb.sh", "darkplaces-v4l2-xorg.sh"):
+        body = (SCRIPTS_DIR / launcher).read_text(encoding="utf-8")
+        assert "+r_glsl_postprocess 0" in body
+        assert "+r_glsl_postprocess_ruttetra_enable 0" in body
+        assert '+r_glsl_postprocess_uservec1 "0 0 0 0"' in body
+        assert '+r_glsl_postprocess_uservec2 "0 0 0 0"' in body
+        assert '+r_glsl_postprocess_uservec3 "0 0 0 0"' in body
+        assert '+r_glsl_postprocess_uservec4 "0 0 0 0"' in body
+        assert "+set screwm_qc_screen_postprocess 0" in body
+
+
 def test_darkplaces_live_texture_rebuild_path_watches_source_activation_patch() -> None:
     service = _read("hapax-darkplaces-live-texture-rebuild.service")
     path = _read("hapax-darkplaces-live-texture-rebuild.path")
@@ -129,6 +141,7 @@ def test_darkplaces_live_texture_rebuild_path_watches_source_activation_patch() 
         "PathChanged=%h/.cache/hapax/source-activation/worktree/"
         "assets/quake/darkplaces/hapax-live-texture.patch"
     ) in path
+    assert "\nPathExists=" not in path
     assert "Unit=hapax-darkplaces-live-texture-rebuild.service" in path
     assert "%h/.cache/hapax/rebuild/worktree" not in path
 

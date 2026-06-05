@@ -6,7 +6,6 @@ ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/ensure-da
 [Path]
 PathChanged=%h/.cache/hapax/source-activation/last-success-sha
 PathChanged=%h/.cache/hapax/source-activation/worktree/assets/quake/darkplaces/hapax-live-texture.patch
-PathExists=%h/.cache/hapax/source-activation/worktree/assets/quake/darkplaces/hapax-live-texture.patch
 Unit=hapax-darkplaces-live-texture-rebuild.service
 
 [Install]

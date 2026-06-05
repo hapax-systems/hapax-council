@@ -341,7 +341,14 @@ DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 "$DARKPLACES_BIN" \
     +hapax_live_texture14_name progs/aoa.mdl_0 \
     +hapax_live_texture14_path /dev/shm/hapax-compositor/quake-live-aoa-atlas.bgra \
     +hapax_live_texture14_width 2048 \
-    +hapax_live_texture14_height 2048 &
+    +hapax_live_texture14_height 2048 \
+    +r_glsl_postprocess 0 \
+    +r_glsl_postprocess_ruttetra_enable 0 \
+    +r_glsl_postprocess_uservec1 "0 0 0 0" \
+    +r_glsl_postprocess_uservec2 "0 0 0 0" \
+    +r_glsl_postprocess_uservec3 "0 0 0 0" \
+    +r_glsl_postprocess_uservec4 "0 0 0 0" \
+    +set screwm_qc_screen_postprocess 0 &
 darkplaces_pid="$!"
 
 sleep 3
