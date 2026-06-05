@@ -13,6 +13,7 @@ import asyncio
 import enum
 import json
 import logging
+import os
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -381,7 +382,7 @@ class ConversationPipeline:
                 {"role": "user", "content": prompt},
             ]
 
-            from shared.config import MODELS  # noqa: PLC0415
+            from shared.config import LITELLM_KEY, MODELS  # noqa: PLC0415
 
             # Spontaneous speech shapes what Hapax communicates about its own
             # state — a grounding act under the 2026-04-24 operative definition
@@ -400,10 +401,12 @@ class ConversationPipeline:
             )
             with metrics_ctx:
                 response = await litellm.acompletion(
-                    model=grounded_model,
+                    model=f"litellm_proxy/{grounded_model}",
                     messages=messages,
                     max_tokens=80,
                     temperature=0.7,
+                    api_base=_voice_litellm_base,
+                    api_key=LITELLM_KEY or os.environ.get("LITELLM_API_KEY", "not-set"),
                 )
 
             text = response.choices[0].message.content.strip()

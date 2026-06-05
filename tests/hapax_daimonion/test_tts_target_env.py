@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
+from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline, ConvState
 from agents.hapax_daimonion.cpal.destination_channel import DestinationChannel
 from agents.hapax_daimonion.pw_audio_output import PlaybackResult
 
@@ -307,3 +307,49 @@ class TestConversationPipelineRoutedAudio:
         assert record_playback.call_args.kwargs["target"] == "hapax-private"
         assert record_playback.call_args.kwargs["media_role"] == "Assistant"
         assert fed == [b"\x00\x01" * 120]
+
+    @pytest.mark.asyncio
+    async def test_spontaneous_speech_uses_litellm_proxy_alias_for_local_fast(self, monkeypatch):
+        pipeline = object.__new__(ConversationPipeline)
+        pipeline._running = True  # type: ignore[attr-defined]
+        pipeline.state = ConvState.LISTENING  # type: ignore[attr-defined]
+        pipeline._system_context = "system context"  # type: ignore[attr-defined]
+        pipeline._update_system_context = MagicMock()  # type: ignore[method-assign]
+        pipeline._speak_sentence = AsyncMock(return_value="Short acknowledgement.")  # type: ignore[method-assign]
+
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.conversation_pipeline._voice_litellm_base",
+            "http://litellm-proxy.test",
+        )
+        monkeypatch.setattr("shared.config.LITELLM_KEY", "test-litellm-key")
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Short acknowledgement."))]
+        )
+        impingement = SimpleNamespace(
+            source="operator.sidechat",
+            strength=1.0,
+            content={
+                "narrative": "private runtime witness for the speech-wave ring",
+                "channel": "sidechat",
+            },
+        )
+
+        with patch("litellm.acompletion", AsyncMock(return_value=response)) as completion:
+            await pipeline.generate_spontaneous_speech(
+                impingement,
+                destination_target="hapax-private",
+                destination_role="Assistant",
+                destination="private",
+            )
+
+        completion.assert_awaited_once()
+        call_kwargs = completion.await_args.kwargs
+        assert call_kwargs["model"] == "litellm_proxy/local-fast"
+        assert call_kwargs["api_base"] == "http://litellm-proxy.test"
+        assert call_kwargs["api_key"] == "test-litellm-key"
+        pipeline._speak_sentence.assert_awaited_once_with(  # type: ignore[attr-defined]
+            "Short acknowledgement.",
+            destination_target="hapax-private",
+            destination_role="Assistant",
+            destination="private",
+        )
