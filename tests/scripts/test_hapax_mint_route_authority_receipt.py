@@ -155,6 +155,34 @@ def test_default_mode_keeps_timestamped_ids(capsys, tmp_path: Path) -> None:
     assert len(files) == 2
 
 
+def test_default_mode_mints_runtime_actuation_receipt(capsys, tmp_path: Path) -> None:
+    rc, payload = _run_json(
+        capsys,
+        [
+            "--receipt-type",
+            "runtime_actuation",
+            "--route-id",
+            "codex.headless.full",
+            "--task-id",
+            "appendix-podium-minio-old-root-cleanup-20260605",
+            "--receipt-dir",
+            str(tmp_path),
+            "--now",
+            "2026-06-05T11:30:00Z",
+            "--json",
+        ],
+    )
+
+    assert rc == 0
+    target = Path(payload["receipt_path"])
+    assert target.is_file()
+    receipt = RouteAuthorityReceipt.model_validate(json.loads(target.read_text(encoding="utf-8")))
+    assert receipt.receipt_type == "runtime_actuation"
+    assert receipt.route_id == "codex.headless.full"
+    assert receipt.task_ids == ("appendix-podium-minio-old-root-cleanup-20260605",)
+    assert receipt.mutation_surfaces == ("runtime",)
+
+
 def test_invalid_refresh_within_is_refused(capsys, tmp_path: Path) -> None:
     rc = MINT.main(
         _ensure_args(tmp_path, now="2026-06-01T00:00:00Z", extra=["--refresh-within", "banana"])

@@ -264,16 +264,17 @@ def _escalate_remint_failure(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Mint a signed route-authority receipt (opus model entitlement or "
-            "quality equivalence) that un-degrades a frontier route to LAUNCH."
+            "Mint a signed route-authority receipt (opus model entitlement, "
+            "quality equivalence, or task-bound runtime actuation authority)."
         )
     )
     parser.add_argument(
         "--receipt-type",
         required=True,
-        choices=["opus_model_entitlement", "quality_equivalence"],
+        choices=["opus_model_entitlement", "quality_equivalence", "runtime_actuation"],
         help="opus_model_entitlement raises the opus authority ceiling; "
-        "quality_equivalence records a bounded-floor equivalence for a fallback route.",
+        "quality_equivalence records a bounded-floor equivalence for a fallback route; "
+        "runtime_actuation records task-bound authority for a runtime mutation.",
     )
     parser.add_argument(
         "--route-id",
@@ -305,6 +306,23 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         metavar="FLOOR",
         help="Quality floor (repeatable). Required for quality_equivalence receipts.",
+    )
+    parser.add_argument(
+        "--task-id",
+        action="append",
+        dest="task_ids",
+        default=[],
+        metavar="TASK",
+        help="Task id authorized by a runtime_actuation receipt (repeatable).",
+    )
+    parser.add_argument(
+        "--mutation-surface",
+        action="append",
+        dest="mutation_surfaces",
+        default=[],
+        metavar="SURFACE",
+        help="Mutation surface authorized by a runtime_actuation receipt (repeatable; "
+        "defaults to runtime for runtime_actuation).",
     )
     parser.add_argument(
         "--receipt-id",
@@ -361,6 +379,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     evidence_refs = args.evidence_refs or [f"operator-signed:{args.receipt_type}:{args.route_id}"]
+    mutation_surfaces = args.mutation_surfaces
+    if args.receipt_type == "runtime_actuation" and not mutation_surfaces:
+        mutation_surfaces = ["runtime"]
 
     receipt_id = args.receipt_id
     now_dt = _coerce_utc(_parse_now(args.now) or now_utc())
@@ -410,6 +431,8 @@ def main(argv: list[str] | None = None) -> int:
             signed_by=args.signed_by,
             stale_after=args.stale_after,
             quality_floors=args.quality_floors,
+            task_ids=args.task_ids,
+            mutation_surfaces=mutation_surfaces,
             issued_at=_parse_now(args.now),
         )
         path = write_route_authority_receipt(receipt, receipt_dir=args.receipt_dir)

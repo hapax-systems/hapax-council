@@ -97,19 +97,24 @@ def _write_route_authority_receipt(
     route_id: str,
     receipt_type: str,
     quality_floors: list[str] | None = None,
+    task_ids: list[str] | None = None,
+    mutation_surfaces: list[str] | None = None,
+    issued_at: str | None = None,
+    stale_after: str = "24h",
     payload_hash: str | None = None,
 ) -> Path:
-    issued_at = _current_iso_z()
     payload: dict[str, object] = {
         "route_authority_receipt_schema": 1,
         "receipt_id": receipt_id,
         "receipt_type": receipt_type,
         "route_id": route_id,
-        "issued_at": issued_at,
-        "stale_after": "24h",
+        "issued_at": issued_at or _current_iso_z(),
+        "stale_after": stale_after,
         "signed_by": "operator",
         "evidence_refs": [f"test:{receipt_id}"],
         "quality_floors": quality_floors or [],
+        "task_ids": task_ids or [],
+        "mutation_surfaces": mutation_surfaces or [],
     }
     payload["signed_payload_sha256"] = payload_hash or route_authority_receipt_payload_hash(payload)
     target_dir = receipt_dir / "route-authority"
@@ -520,6 +525,168 @@ def test_route_authority_receipt_signature_mismatch_fails_closed(tmp_path: Path)
     assert sources.registry is None
     assert sources.registry_error is not None
     assert "signed payload hash mismatch" in sources.registry_error
+
+
+def _runtime_dispatch_request(sources, *, task_id: str):  # type: ignore[no-untyped-def]
+    task_fields = {
+        "status": "claimed",
+        "assigned_to": "codex-main",
+        "authority_case": "CASE-SDLC-REFORM-001",
+        "authority_item": "MINIO-OLD-ROOT-CLEANUP",
+        "priority": "p0",
+        "wsjf": 35,
+        "route_metadata_schema": 1,
+        "quality_floor": "frontier_required",
+        "authority_level": "authoritative",
+        "mutation_surface": "runtime",
+        "mutation_scope_refs": ["/var/lib/hapax/minio"],
+    }
+    return build_dispatch_request(
+        task_id=task_id,
+        lane="codex-main",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=sources.registry,
+        registry_error=sources.registry_error,
+        quota_ledger=sources.quota_ledger,
+        quota_error=sources.quota_error,
+        route_authority_receipts=sources.route_authority_receipts,
+    )
+
+
+def test_runtime_actuation_receipt_allows_task_bound_runtime_dispatch(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
+    assert result.returncode == 0, result.stderr
+    _write_route_authority_receipt(
+        tmp_path,
+        receipt_id="minio-cleanup-runtime-test",
+        route_id="codex.headless.full",
+        receipt_type="runtime_actuation",
+        task_ids=["appendix-podium-minio-old-root-cleanup-20260605"],
+        mutation_surfaces=["runtime"],
+    )
+
+    sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
+    request = _runtime_dispatch_request(
+        sources, task_id="appendix-podium-minio-old-root-cleanup-20260605"
+    )
+    decision = evaluate_dispatch_policy(request)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.route_policy_green is True
+    assert any(
+        reason.startswith("route-authority-receipt:runtime_actuation:codex.headless.full:")
+        for reason in decision.reason_codes
+    )
+
+
+def test_runtime_actuation_receipt_wrong_task_fails_closed(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
+    assert result.returncode == 0, result.stderr
+    _write_route_authority_receipt(
+        tmp_path,
+        receipt_id="wrong-task-runtime-test",
+        route_id="codex.headless.full",
+        receipt_type="runtime_actuation",
+        task_ids=["some-other-task"],
+        mutation_surfaces=["runtime"],
+    )
+
+    sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
+    request = _runtime_dispatch_request(
+        sources, task_id="appendix-podium-minio-old-root-cleanup-20260605"
+    )
+    decision = evaluate_dispatch_policy(request)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "runtime_actuation_task_mismatch" in decision.reason_codes
+
+
+def test_runtime_actuation_receipt_wrong_route_fails_closed(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
+    assert result.returncode == 0, result.stderr
+    _write_route_authority_receipt(
+        tmp_path,
+        receipt_id="wrong-route-runtime-test",
+        route_id="claude.headless.full",
+        receipt_type="runtime_actuation",
+        task_ids=["appendix-podium-minio-old-root-cleanup-20260605"],
+        mutation_surfaces=["runtime"],
+    )
+
+    sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
+    request = _runtime_dispatch_request(
+        sources, task_id="appendix-podium-minio-old-root-cleanup-20260605"
+    )
+    decision = evaluate_dispatch_policy(request)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "runtime_actuation_route_mismatch" in decision.reason_codes
+
+
+def test_runtime_actuation_receipt_wrong_surface_fails_closed(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
+    assert result.returncode == 0, result.stderr
+    _write_route_authority_receipt(
+        tmp_path,
+        receipt_id="wrong-surface-runtime-test",
+        route_id="codex.headless.full",
+        receipt_type="runtime_actuation",
+        task_ids=["appendix-podium-minio-old-root-cleanup-20260605"],
+        mutation_surfaces=["source"],
+    )
+
+    sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
+    request = _runtime_dispatch_request(
+        sources, task_id="appendix-podium-minio-old-root-cleanup-20260605"
+    )
+    decision = evaluate_dispatch_policy(request)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "runtime_actuation_surface_mismatch" in decision.reason_codes
+
+
+def test_runtime_actuation_receipt_stale_fails_closed_as_absent(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
+    assert result.returncode == 0, result.stderr
+    _write_route_authority_receipt(
+        tmp_path,
+        receipt_id="stale-runtime-test",
+        route_id="codex.headless.full",
+        receipt_type="runtime_actuation",
+        task_ids=["appendix-podium-minio-old-root-cleanup-20260605"],
+        mutation_surfaces=["runtime"],
+        issued_at="2026-01-01T00:00:00Z",
+        stale_after="1h",
+    )
+
+    sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
+    request = _runtime_dispatch_request(
+        sources, task_id="appendix-podium-minio-old-root-cleanup-20260605"
+    )
+    decision = evaluate_dispatch_policy(request)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "runtime_actuation_receipt_absent" in decision.reason_codes
 
 
 MINT_SCRIPT = REPO_ROOT / "scripts" / "hapax-mint-route-authority-receipt"

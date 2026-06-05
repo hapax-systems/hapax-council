@@ -1819,6 +1819,7 @@ def main(argv: list[str] | None = None) -> int:
         registry_error=policy_sources.registry_error,
         quota_ledger=policy_sources.quota_ledger,
         quota_error=policy_sources.quota_error,
+        route_authority_receipts=policy_sources.route_authority_receipts,
         rollback_mode=args.policy_rollback or env_flag("HAPAX_DISPATCH_POLICY_ROLLBACK"),
         legacy_route_supported=route is not None,
         legacy_route_mutable=route.mutable if route else False,

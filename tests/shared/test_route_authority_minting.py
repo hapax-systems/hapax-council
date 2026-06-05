@@ -73,6 +73,27 @@ def test_build_opus_entitlement_receipt_round_trips_and_validates() -> None:
     )
 
 
+def test_legacy_opus_receipt_without_runtime_fields_still_validates() -> None:
+    payload = {
+        "route_authority_receipt_schema": 1,
+        "receipt_id": "legacy-opus",
+        "receipt_type": "opus_model_entitlement",
+        "route_id": "claude.headless.opus",
+        "issued_at": "2026-06-01T00:00:00Z",
+        "stale_after": "24h",
+        "signed_by": "operator",
+        "evidence_refs": ["operator-signed:oq-5"],
+        "quality_floors": [],
+    }
+    payload["signed_payload_sha256"] = route_authority_receipt_payload_hash(payload)
+
+    receipt = RouteAuthorityReceipt.model_validate(payload)
+
+    assert receipt.task_ids == ()
+    assert receipt.mutation_surfaces == ()
+    assert receipt.signed_payload_sha256 == route_authority_receipt_payload_hash(receipt)
+
+
 def test_build_quality_equivalence_receipt_round_trips_with_floors() -> None:
     receipt = build_route_authority_receipt(
         receipt_type="quality_equivalence",
@@ -83,6 +104,21 @@ def test_build_quality_equivalence_receipt_round_trips_with_floors() -> None:
 
     assert receipt.receipt_type == "quality_equivalence"
     assert receipt.quality_floors == ("frontier_required",)
+    assert receipt.signed_payload_sha256 == route_authority_receipt_payload_hash(receipt)
+
+
+def test_build_runtime_actuation_receipt_round_trips_with_task_scope() -> None:
+    receipt = build_route_authority_receipt(
+        receipt_type="runtime_actuation",
+        route_id="codex.headless.full",
+        evidence_refs=["operator-signed:minio-cleanup"],
+        task_ids=["appendix-podium-minio-old-root-cleanup-20260605"],
+        mutation_surfaces=["runtime"],
+    )
+
+    assert receipt.receipt_type == "runtime_actuation"
+    assert receipt.task_ids == ("appendix-podium-minio-old-root-cleanup-20260605",)
+    assert receipt.mutation_surfaces == ("runtime",)
     assert receipt.signed_payload_sha256 == route_authority_receipt_payload_hash(receipt)
 
 
@@ -101,6 +137,23 @@ def test_build_opus_entitlement_requires_opus_route() -> None:
             receipt_type="opus_model_entitlement",
             route_id="claude.headless.sonnet",
             evidence_refs=["operator-signed:oq-5"],
+        )
+
+
+def test_build_runtime_actuation_requires_task_and_surface() -> None:
+    with pytest.raises((ValidationError, ValueError)):
+        build_route_authority_receipt(
+            receipt_type="runtime_actuation",
+            route_id="codex.headless.full",
+            evidence_refs=["operator-signed:minio-cleanup"],
+            mutation_surfaces=["runtime"],
+        )
+    with pytest.raises((ValidationError, ValueError)):
+        build_route_authority_receipt(
+            receipt_type="runtime_actuation",
+            route_id="codex.headless.full",
+            evidence_refs=["operator-signed:minio-cleanup"],
+            task_ids=["appendix-podium-minio-old-root-cleanup-20260605"],
         )
 
 
