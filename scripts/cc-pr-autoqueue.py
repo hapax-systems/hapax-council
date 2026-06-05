@@ -609,6 +609,7 @@ def _task_blockers(
     *,
     require_route_metadata: bool,
     open_pr_number: int | None = None,
+    allow_release_auto_arm: bool = False,
 ) -> list[str]:
     blockers: list[str] = []
     if not task.authority_case:
@@ -644,7 +645,7 @@ def _task_blockers(
         blockers.append(f"active_task_status_not_ready:{task.status or 'missing'}")
     elif task.folder == "active":
         release_arm = assess_release_auto_arm(task.frontmatter)
-        if release_arm.needs_arming:
+        if release_arm.needs_arming and not allow_release_auto_arm:
             blockers.append("release_authorized_false")
 
     avsdlc_gate = evaluate_avsdlc_release_gate(task.frontmatter)
@@ -820,6 +821,7 @@ def classify_pr(
                 matched_task,
                 require_route_metadata=require_route_metadata,
                 open_pr_number=pr.number,
+                allow_release_auto_arm=len(matches) == 1,
             )
             if len(matches) == 1:
                 reasons.extend(blockers)
