@@ -119,6 +119,22 @@ class TestDaemonLifecycleInvariants:
         assert daemon._conversation_pipeline is None
 
     @pytest.mark.asyncio
+    async def test_stop_pipeline_clears_cpal_production_audio_output(self):
+        daemon = _make_daemon()
+        production = MagicMock()
+        production._audio_output = object()
+        cpal_runner = MagicMock()
+        cpal_runner._audio_output = object()
+        cpal_runner._production = production
+        daemon._cpal_runner = cpal_runner
+
+        await daemon._stop_pipeline()
+
+        cpal_runner.set_pipeline.assert_called_once_with(None)
+        assert cpal_runner._audio_output is None
+        assert production._audio_output is None
+
+    @pytest.mark.asyncio
     async def test_close_session_stops_pipeline_and_session(self):
         daemon = _make_daemon()
         daemon.session.open(trigger="test")
