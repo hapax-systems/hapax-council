@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 
+from agents.studio_compositor.final_frame_classifier import classify_screwm_geometry_legibility
 from agents.studio_compositor.homage import QUAKE_PACKAGE, get_package, registered_package_names
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1146,6 +1147,21 @@ def test_screwm_geo_drift_defaults_stay_within_legibility_floor() -> None:
         )
     # Container amplitude must never exceed the hard displacement clamp.
     assert expected["hapax_drift_geo_amp"] <= expected["hapax_drift_geo_ampmax"]
+    conservative_floor = classify_screwm_geometry_legibility(
+        bbox_extents=(64, 64, 64),
+        max_displacement=expected["hapax_drift_geo_ampmax"],
+        rest_pose_iou=1.0,
+        edge_correlation=1.0,
+    )
+    assert conservative_floor.passed, conservative_floor
+    unsafe_increase = classify_screwm_geometry_legibility(
+        bbox_extents=(64, 64, 64),
+        max_displacement=64,
+        rest_pose_iou=1.0,
+        edge_correlation=1.0,
+    )
+    assert not unsafe_increase.passed
+    assert "screwm_geo_legibility:max_displacement_exceeds_ampmax_safe" in unsafe_increase.reasons
 
     assert "DRIFT_GEO_BASELINES" in exporter
     assert '"amp": 0.5' in exporter
