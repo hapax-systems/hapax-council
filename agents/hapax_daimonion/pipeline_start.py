@@ -189,6 +189,11 @@ async def start_conversation_pipeline(daemon: VoiceDaemon) -> None:
                 attach(audio_output)
             else:
                 daemon._cpal_runner._audio_output = audio_output
+            daemon._conversation_pipeline._tts_envelope_publisher = getattr(
+                daemon._cpal_runner,
+                "_tts_envelope_publisher",
+                None,
+            )
 
     # Wake greeting
     _play_wake_greeting(daemon)
@@ -356,6 +361,13 @@ def _play_wake_greeting(daemon: VoiceDaemon) -> None:
                         pcm,
                         destination_target,
                         destination_role,
+                        None,
+                        None,
+                        getattr(
+                            daemon._conversation_pipeline,
+                            "_tts_envelope_publisher",
+                            None,
+                        ),
                     )
                 finally:
                     daemon._conversation_buffer.set_speaking(False)

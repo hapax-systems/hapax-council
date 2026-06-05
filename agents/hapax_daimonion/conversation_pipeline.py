@@ -184,6 +184,7 @@ class ConversationPipeline:
         self._running = False
         self._task: asyncio.Task | None = None
         self._audio_output = None
+        self._tts_envelope_publisher = None
         self._last_env_hash: int = 0
         self._session_id: str = ""
         self._activity_mode: str = "idle"
@@ -1760,6 +1761,9 @@ class ConversationPipeline:
             pcm,
             destination_target,
             destination_role,
+            None,
+            None,
+            getattr(self, "_tts_envelope_publisher", None),
         )
         return True
 
@@ -2202,6 +2206,7 @@ class ConversationPipeline:
                     destination_role,
                     text,
                     destination,
+                    getattr(self, "_tts_envelope_publisher", None),
                 )
             else:
                 from agents.hapax_daimonion.pw_audio_output import PlaybackResult
@@ -2237,6 +2242,7 @@ class ConversationPipeline:
         destination_role: str | None = None,
         text: str | None = None,
         destination: str | None = None,
+        tts_envelope_publisher=None,
     ) -> None:
         """Write PCM to audio output and feed AEC reference. Runs in _audio_executor.
 
@@ -2267,6 +2273,11 @@ class ConversationPipeline:
                         terminal_state="inhibited",
                     )
                 return
+            if tts_envelope_publisher is not None:
+                try:
+                    tts_envelope_publisher.feed(pcm)
+                except Exception:
+                    log.debug("TTS envelope feed failed in conversation pipeline", exc_info=True)
             if echo_canceller:
                 echo_canceller.feed_reference(pcm)
             else:
