@@ -13,8 +13,9 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-SAMPLE_RATE = 44100
+SAMPLE_RATE = 48000
 CLAP_SAMPLE_RATE = 48000
+ESSENTIA_SAMPLE_RATE = 44100
 PYANNOTE_SAMPLE_RATE = 16000
 
 SCENE_LABELS = [
@@ -66,21 +67,27 @@ class EssentiaAnalyzer:
         import essentia.standard as es
 
         self._rhythm = es.RhythmExtractor2013(method="multifeature")
-        self._key = es.KeyExtractor(profileType="edma")
+        self._key = es.KeyExtractor(profileType="edma", sampleRate=ESSENTIA_SAMPLE_RATE)
         self._rms = es.RMS()
         log.info("Essentia loaded (rhythm + key + RMS)")
 
     def analyze(self, audio_f32: np.ndarray) -> dict:
         result: dict = {}
+        # RhythmExtractor2013 is documented by Essentia as requiring 44.1 kHz
+        # input. Capture remains native 48 kHz; only model input is resampled.
+        essentia_audio = _resample(audio_f32, SAMPLE_RATE, ESSENTIA_SAMPLE_RATE).astype(
+            np.float32,
+            copy=False,
+        )
         try:
-            bpm, _ticks, _conf, _estimates, _intervals = self._rhythm(audio_f32)
+            bpm, _ticks, _conf, _estimates, _intervals = self._rhythm(essentia_audio)
             bpm_int = int(round(bpm))
             result["bpm"] = bpm_int if 40 <= bpm_int <= 240 else None
         except Exception:
             result["bpm"] = None
 
         try:
-            key, scale, _strength = self._key(audio_f32)
+            key, scale, _strength = self._key(essentia_audio)
             result["key"] = f"{key} {scale}" if key else None
         except Exception:
             result["key"] = None

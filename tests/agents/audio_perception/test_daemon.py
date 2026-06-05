@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 
 from agents.audio_perception.daemon import (
+    CAPTURE_DURATION_S,
+    CAPTURE_STAGE,
+    SAMPLE_RATE,
     AudioPerceptionState,
+    _capture_audio,
     _spectral_bpm,
     _spectral_features,
     _spectral_scene,
@@ -20,19 +25,19 @@ from agents.audio_perception.daemon import (
 
 class TestSpectralFeatures:
     def test_silence_returns_low_rms(self) -> None:
-        silence = np.zeros(44100, dtype=np.int16)
+        silence = np.zeros(SAMPLE_RATE, dtype=np.int16)
         features = _spectral_features(silence)
         assert features["rms_dbfs"] == -120.0
 
     def test_voice_band_dominant(self) -> None:
-        t = np.linspace(0, 1.0, 44100, endpoint=False)
+        t = np.linspace(0, 1.0, SAMPLE_RATE, endpoint=False)
         tone_500hz = (np.sin(2 * np.pi * 500 * t) * 16000).astype(np.int16)
         features = _spectral_features(tone_500hz)
         assert features["voice_ratio"] > 0.5
         assert features["rms_dbfs"] > -20
 
     def test_high_frequency_is_not_voice(self) -> None:
-        t = np.linspace(0, 1.0, 44100, endpoint=False)
+        t = np.linspace(0, 1.0, SAMPLE_RATE, endpoint=False)
         tone_10khz = (np.sin(2 * np.pi * 10000 * t) * 16000).astype(np.int16)
         features = _spectral_features(tone_10khz)
         assert features["voice_ratio"] < 0.2
@@ -70,7 +75,7 @@ class TestSpectralBPM:
         assert _spectral_bpm(silence) is None
 
     def test_detects_periodic_signal(self) -> None:
-        sr = 44100
+        sr = SAMPLE_RATE
         dur = 4.0
         bpm_target = 120
         t = np.linspace(0, dur, int(sr * dur), endpoint=False)
@@ -79,6 +84,24 @@ class TestSpectralBPM:
         bpm = _spectral_bpm(signal)
         if bpm is not None:
             assert 40 <= bpm <= 240
+
+
+class TestCaptureAudio:
+    def test_uses_persistent_probe_set_at_native_rate(self) -> None:
+        samples = np.arange(int(SAMPLE_RATE * CAPTURE_DURATION_S), dtype=np.int16)
+
+        class StubProbeSet:
+            captured_stage: str | None = None
+
+            def capture(self, stage: str) -> SimpleNamespace:
+                self.captured_stage = stage
+                return SimpleNamespace(ok=True, error=None, samples_mono=samples)
+
+        probe_set = StubProbeSet()
+        result = _capture_audio(probe_set=probe_set)  # type: ignore[arg-type]
+
+        assert probe_set.captured_stage == CAPTURE_STAGE
+        np.testing.assert_array_equal(result, samples)
 
 
 class TestWriteState:
@@ -122,7 +145,7 @@ class TestPerceiveOnce:
         assert state.is_speech is False
 
     def test_spectral_fallback_when_no_models(self) -> None:
-        t = np.linspace(0, 2.0, 88200, endpoint=False)
+        t = np.linspace(0, 2.0, int(SAMPLE_RATE * 2), endpoint=False)
         tone = (np.sin(2 * np.pi * 500 * t) * 16000).astype(np.int16)
         with patch("agents.audio_perception.daemon._capture_audio", return_value=tone):
             state = perceive_once(clap=None, essentia=None, pyannote=None)
@@ -132,7 +155,7 @@ class TestPerceiveOnce:
         assert state.key is None
 
     def test_clap_result_used_when_available(self) -> None:
-        t = np.linspace(0, 2.0, 88200, endpoint=False)
+        t = np.linspace(0, 2.0, int(SAMPLE_RATE * 2), endpoint=False)
         tone = (np.sin(2 * np.pi * 500 * t) * 16000).astype(np.int16)
         mock_clap = MagicMock()
         mock_clap.classify.return_value = ("music", 0.92)
@@ -143,7 +166,7 @@ class TestPerceiveOnce:
         assert state.music_playing is True
 
     def test_essentia_result_used_when_available(self) -> None:
-        t = np.linspace(0, 2.0, 88200, endpoint=False)
+        t = np.linspace(0, 2.0, int(SAMPLE_RATE * 2), endpoint=False)
         tone = (np.sin(2 * np.pi * 500 * t) * 16000).astype(np.int16)
         mock_essentia = MagicMock()
         mock_essentia.analyze.return_value = {"bpm": 128, "key": "C minor", "rms_dbfs": -12.5}
@@ -156,7 +179,7 @@ class TestPerceiveOnce:
         assert state.rms_dbfs == -12.5
 
     def test_pyannote_called_for_speech(self) -> None:
-        t = np.linspace(0, 2.0, 88200, endpoint=False)
+        t = np.linspace(0, 2.0, int(SAMPLE_RATE * 2), endpoint=False)
         tone = (np.sin(2 * np.pi * 500 * t) * 16000).astype(np.int16)
         mock_clap = MagicMock()
         mock_clap.classify.return_value = ("speech", 0.9)
@@ -169,7 +192,7 @@ class TestPerceiveOnce:
         mock_pyannote.segment.assert_called_once()
 
     def test_pyannote_skipped_for_music(self) -> None:
-        t = np.linspace(0, 2.0, 88200, endpoint=False)
+        t = np.linspace(0, 2.0, int(SAMPLE_RATE * 2), endpoint=False)
         tone = (np.sin(2 * np.pi * 500 * t) * 16000).astype(np.int16)
         mock_clap = MagicMock()
         mock_clap.classify.return_value = ("music", 0.88)
@@ -180,7 +203,7 @@ class TestPerceiveOnce:
         mock_pyannote.segment.assert_not_called()
 
     def test_pyannote_skipped_when_flag_set(self) -> None:
-        t = np.linspace(0, 2.0, 88200, endpoint=False)
+        t = np.linspace(0, 2.0, int(SAMPLE_RATE * 2), endpoint=False)
         tone = (np.sin(2 * np.pi * 500 * t) * 16000).astype(np.int16)
         mock_clap = MagicMock()
         mock_clap.classify.return_value = ("speech", 0.9)
@@ -193,7 +216,7 @@ class TestPerceiveOnce:
         mock_pyannote.segment.assert_not_called()
 
     def test_clap_exception_falls_back_to_spectral(self) -> None:
-        t = np.linspace(0, 2.0, 88200, endpoint=False)
+        t = np.linspace(0, 2.0, int(SAMPLE_RATE * 2), endpoint=False)
         tone = (np.sin(2 * np.pi * 500 * t) * 16000).astype(np.int16)
         mock_clap = MagicMock()
         mock_clap.classify.side_effect = RuntimeError("CLAP failed")

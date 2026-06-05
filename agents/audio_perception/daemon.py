@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import subprocess
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -22,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
+from agents.audio_health.probes import PersistentProbeSet, ProbeConfig
 from agents.audio_perception.models import (
     CLAPClassifier,
     EssentiaAnalyzer,
@@ -36,8 +36,10 @@ log = logging.getLogger(__name__)
 OUTPUT_DIR = Path("/dev/shm/hapax-perception")
 OUTPUT_FILE = OUTPUT_DIR / "audio.json"
 
+CAPTURE_STAGE = "hapax-broadcast-normalized"
 CAPTURE_DURATION_S = 2.0
-SAMPLE_RATE = 44100
+SAMPLE_RATE = 48000
+CAPTURE_CHANNELS = 2
 TICK_INTERVAL_S = 1.0
 
 VOICE_LOW_HZ = 85.0
@@ -49,6 +51,12 @@ MUSIC_RATIO_THRESHOLD = 0.25
 SILENCE_DBFS = -50.0
 
 TICK_TIMEOUT_S = 5.0
+
+PERSISTENT_PROBE_CONFIG = ProbeConfig(
+    duration_s=CAPTURE_DURATION_S,
+    sample_rate=SAMPLE_RATE,
+    channels=CAPTURE_CHANNELS,
+)
 
 
 @dataclass(frozen=True)
@@ -66,46 +74,21 @@ class AudioPerceptionState:
     updated_at: str
 
 
-def _capture_audio(duration_s: float = CAPTURE_DURATION_S) -> np.ndarray | None:
-    target_bytes = int(SAMPLE_RATE * duration_s * 2)
+def _capture_audio(probe_set: PersistentProbeSet | None = None) -> np.ndarray | None:
+    owns_probe_set = probe_set is None
+    probes = probe_set or PersistentProbeSet(config=PERSISTENT_PROBE_CONFIG)
     try:
-        proc = subprocess.Popen(
-            [
-                "parecord",
-                "--raw",
-                "--format=s16le",
-                f"--rate={SAMPLE_RATE}",
-                "--channels=1",
-                f"--latency-msec={int(duration_s * 1000)}",
-                "--device=hapax-broadcast-normalized",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except (FileNotFoundError, OSError) as exc:
-        log.warning("parecord spawn failed: %s", exc)
-        return None
-
-    captured = bytearray()
-    deadline = time.monotonic() + duration_s
-    try:
-        while time.monotonic() < deadline and len(captured) < target_bytes:
-            chunk = proc.stdout.read(min(4096, target_bytes - len(captured)))
-            if not chunk:
-                break
-            captured.extend(chunk)
+        result = probes.capture(CAPTURE_STAGE)
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+        if owns_probe_set:
+            probes.close()
 
-    if len(captured) < 64:
+    if not result.ok:
+        log.warning("audio perception capture failed: %s", result.error)
         return None
-    n = len(captured) - (len(captured) % 2)
-    return np.frombuffer(bytes(captured[:n]), dtype=np.int16)
+    if result.samples_mono.size < 64:
+        return None
+    return result.samples_mono.copy()
 
 
 # ── spectral fallback (used when ML models unavailable) ──────────────
@@ -198,8 +181,9 @@ def perceive_once(
     essentia: EssentiaAnalyzer | None,
     pyannote: PyannoteSegmenter | None,
     skip_pyannote: bool = False,
+    probe_set: PersistentProbeSet | None = None,
 ) -> AudioPerceptionState:
-    samples = _capture_audio()
+    samples = _capture_audio(probe_set=probe_set)
     now = datetime.now(UTC).isoformat()
     if samples is None or len(samples) < 64:
         return AudioPerceptionState(
@@ -292,28 +276,35 @@ def run_forever(tick_s: float = TICK_INTERVAL_S) -> None:
 
     log.info("audio-perception daemon running (tick=%.1fs)", tick_s)
     skip_pyannote = False
-    while True:
-        t0 = time.monotonic()
-        try:
-            state = perceive_once(clap, essentia, pyannote, skip_pyannote=skip_pyannote)
-            write_state(state)
-            if state.scene != "capture_failed":
-                log.debug(
-                    "scene=%s speech=%s music=%s bpm=%s rms=%.1f",
-                    state.scene,
-                    state.is_speech,
-                    state.music_playing,
-                    state.bpm,
-                    state.rms_dbfs,
+    with PersistentProbeSet(config=PERSISTENT_PROBE_CONFIG) as probes:
+        while True:
+            t0 = time.monotonic()
+            try:
+                state = perceive_once(
+                    clap,
+                    essentia,
+                    pyannote,
+                    skip_pyannote=skip_pyannote,
+                    probe_set=probes,
                 )
-        except Exception:
-            log.exception("perception tick failed")
+                write_state(state)
+                if state.scene != "capture_failed":
+                    log.debug(
+                        "scene=%s speech=%s music=%s bpm=%s rms=%.1f",
+                        state.scene,
+                        state.is_speech,
+                        state.music_playing,
+                        state.bpm,
+                        state.rms_dbfs,
+                    )
+            except Exception:
+                log.exception("perception tick failed")
 
-        elapsed = time.monotonic() - t0
-        skip_pyannote = elapsed > TICK_TIMEOUT_S and pyannote is not None
-        if skip_pyannote:
-            log.debug("tick took %.1fs — skipping pyannote next tick", elapsed)
+            elapsed = time.monotonic() - t0
+            skip_pyannote = elapsed > TICK_TIMEOUT_S and pyannote is not None
+            if skip_pyannote:
+                log.debug("tick took %.1fs — skipping pyannote next tick", elapsed)
 
-        sleep_time = max(0.0, tick_s - elapsed)
-        if sleep_time > 0:
-            time.sleep(sleep_time)
+            sleep_time = max(0.0, tick_s - elapsed)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
