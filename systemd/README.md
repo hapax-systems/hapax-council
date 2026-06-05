@@ -378,20 +378,31 @@ means the rule is live. Regression pin: `tests/scripts/test_webcam_audio_suppres
 
 Runs `scripts/monthly-claude-md-audit.sh` on a monthly cadence. Sweeps every workspace CLAUDE.md (council beta worktree + sibling repos + workspace root + dotfiles symlinks) through `check-claude-md-rot.sh` (default + `--strict`) and `check-vscode-sister-extensions.sh`. Posts to ntfy on findings; silent on success. Operator can run by hand at any time. Spec: `docs/superpowers/specs/2026-04-13-claude-md-excellence-design.md`.
 
-### Backups (two tiers)
+### Backups (two tiers plus critical offsite)
 
 | Tier | Timer | Destination | Tool |
 |------|-------|-------------|------|
 | Local | `hapax-backup-local.timer` daily 03:00 | `/mnt/nas/backups/restic` | restic |
 | Remote | `hapax-backup-remote.timer` Wed 04:00 | `rclone:b2:hapax-backups/restic` | restic + rclone → Backblaze B2 |
+| Critical offsite | `hapax-backup-gdrive-critical.timer` daily 04:35 | `rclone:gdrive:hapax-backups/restic-critical` | restic + rclone → Google Drive |
 
 Both tiers back up: PostgreSQL dumps, Qdrant snapshots, n8n workflows, Docker volume metadata, git bundles, systemd configs, user configs, LLM stack, system files.
+
+The GDrive critical lane is intentionally narrower. It backs up already
+materialized Postgres PITR artifacts, latest Qdrant snapshot files, and selected
+vault evidence/SOP artifacts while B2 is blocked by account storage cap. It does
+not create Qdrant snapshots, dump databases into `/tmp`, upload live MinIO, or
+run destructive restic prune. It is source-defined but not auto-enabled; a
+separate runtime lane must install/enable/run it and capture restore-smoke
+evidence.
 
 `llm-backup.timer` is retained only as a deprecated compatibility receipt. It
 does not produce backup artifacts; it points at the Tier 1/Tier 2 lanes above.
 Restore details: `docs/runbooks/llm-stack-backup-reconciliation.md`.
 
-Secrets: local password in `pass show backups/restic-password`, remote in `pass show backblaze/restic-password`.
+Secrets: local password in `pass show backups/restic-password`, broad B2 remote
+and current GDrive critical repo password in `pass show
+backblaze/restic-password`.
 
 ### Minio Object Lifecycle
 

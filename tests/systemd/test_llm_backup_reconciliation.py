@@ -69,6 +69,7 @@ def test_backup_manifests_name_canonical_lanes() -> None:
     llm = yaml.safe_load((MANIFESTS / "llm_backup.yaml").read_text())
     local = yaml.safe_load((MANIFESTS / "backup_local.yaml").read_text())
     remote = yaml.safe_load((MANIFESTS / "backup_remote.yaml").read_text())
+    gdrive = yaml.safe_load((MANIFESTS / "backup_gdrive_critical.yaml").read_text())
 
     assert "Deprecated compatibility receipt" in llm["purpose"]
     assert llm["outputs"] == ["Deprecation receipt in the systemd journal"]
@@ -79,6 +80,9 @@ def test_backup_manifests_name_canonical_lanes() -> None:
     assert "Qdrant" in local["purpose"]
     assert remote["schedule"]["interval"] == "weekly"
     assert "Backblaze B2" in remote["purpose"]
+    assert gdrive["schedule"]["systemd_unit"] == "hapax-backup-gdrive-critical.timer"
+    assert "rclone:gdrive:hapax-backups/restic-critical" in gdrive["narrative"]
+    assert "prune" in gdrive["decision_scope"]
 
 
 def test_reconciliation_runbook_documents_restore_path() -> None:
@@ -87,11 +91,13 @@ def test_reconciliation_runbook_documents_restore_path() -> None:
     for expected in [
         "hapax-backup-local.service",
         "hapax-backup-remote.service",
+        "hapax-backup-gdrive-critical.service",
         "postgres-all.sql",
         "Qdrant",
         "n8n",
         "$HOME/llm-stack/",
         "scripts/hapax-backup-watchdog",
+        "rclone:gdrive:hapax-backups/restic-critical",
     ]:
         assert expected in text
 
