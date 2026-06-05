@@ -353,3 +353,39 @@ class TestConversationPipelineRoutedAudio:
             destination_role="Assistant",
             destination="private",
         )
+
+    @pytest.mark.asyncio
+    async def test_spontaneous_speech_generation_failure_records_error(self, monkeypatch):
+        pipeline = object.__new__(ConversationPipeline)
+        pipeline._running = True  # type: ignore[attr-defined]
+        pipeline.state = ConvState.LISTENING  # type: ignore[attr-defined]
+        pipeline._system_context = "system context"  # type: ignore[attr-defined]
+        pipeline._update_system_context = MagicMock()  # type: ignore[method-assign]
+        pipeline._speak_sentence = AsyncMock()  # type: ignore[method-assign]
+
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.conversation_pipeline._voice_litellm_base",
+            "http://litellm-proxy.test",
+        )
+        monkeypatch.setattr("shared.config.LITELLM_KEY", "test-litellm-key")
+        impingement = SimpleNamespace(
+            source="imagination",
+            strength=1.0,
+            content={"narrative": "private runtime witness for the speech-wave ring"},
+        )
+
+        with (
+            patch("litellm.acompletion", AsyncMock(side_effect=RuntimeError("proxy refused"))),
+            patch("agents.hapax_daimonion.voice_output_witness.record_drop") as record_drop,
+        ):
+            await pipeline.generate_spontaneous_speech(
+                impingement,
+                destination_target="hapax-private",
+                destination_role="Assistant",
+                destination="private",
+            )
+
+        record_drop.assert_called_once()
+        assert record_drop.call_args.kwargs["reason"] == "spontaneous_speech_generation_failed"
+        assert record_drop.call_args.kwargs["error"] == "RuntimeError: proxy refused"
+        pipeline._speak_sentence.assert_not_awaited()  # type: ignore[attr-defined]
