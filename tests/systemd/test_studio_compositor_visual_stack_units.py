@@ -241,6 +241,7 @@ def test_screwm_obs_livestream_uses_ffmpeg_media_source_instead_of_v4l2() -> Non
     assert parser.get("Service", "ExecStart") == (
         "/usr/bin/obs --profile LegomenaLive --collection Untitled --scene Scene --startstreaming"
     )
+    assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
     assert "hapax-obs-ffmpeg-source-ensure" in parser.get("Service", "ExecStartPre")
     assert "hapax-obs-ffmpeg-source-ensure" in exec_start_post
     assert '--source-name "DarkPlaces Screwm Media"' in exec_start_post
