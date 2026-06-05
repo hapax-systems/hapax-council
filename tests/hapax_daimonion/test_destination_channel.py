@@ -70,12 +70,12 @@ def _write_private_status(path: Path) -> None:
                 "exact_target_present": True,
                 "fallback_policy": "no_default_fallback",
                 "operator_visible_reason": (
-                    "MPC Live III private monitor target and fail-closed bridge are present."
+                    "mk5 Phones private monitor target and fail-closed bridge are present."
                 ),
-                "reason_code": "mpc_private_monitor_bound",
+                "reason_code": "mk5_private_monitor_bound",
                 "sanitized": True,
                 "state": "ready",
-                "target_ref": "audio.mpc_private_monitor",
+                "target_ref": "audio.mk5_private_monitor",
             }
         ),
         encoding="utf-8",
