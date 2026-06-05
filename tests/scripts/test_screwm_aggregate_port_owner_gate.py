@@ -31,6 +31,8 @@ MINIMUM_RETAINED_CAPABILITIES = {
     "stable_by_id_devices",
     "v4l2_stall_recovery",
     "density_grounding",
+    "geo_drift_cvar_drive",
+    "live_texture_deploy_rebuild",
     "unified_reactivity_export",
 }
 

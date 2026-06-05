@@ -88,6 +88,13 @@ AUTO_ENABLE_PRIVACY_TIMERS=(
     hapax-audio-topology-assertion.timer
 )
 
+# Path-triggered units that must be enabled on install. Repo symlinking alone
+# leaves path watchers inert, so deploy-critical path units need the same
+# explicit default-on treatment as persistent daemon services.
+AUTO_ENABLE_PATHS=(
+    hapax-darkplaces-live-texture-rebuild.path
+)
+
 EXPECTED_PRIMARY="${HOME}/projects/hapax-council"
 if [ "$PROJECT_DIR" != "$EXPECTED_PRIMARY" ] && [ "${ALLOW_NONSTANDARD_REPO:-0}" != "1" ]; then
     echo "ERROR: install-units.sh must run from the primary alpha worktree" >&2
@@ -283,6 +290,34 @@ elif [ "${#AUTO_ENABLE_SERVICES[@]}" -gt 0 ]; then
     echo "skipped auto-enabling ${#AUTO_ENABLE_SERVICES[@]} service(s) (SKIP_TIMER_ENABLE=1)"
 fi
 
+# Auto-enable path units that are part of deployment durability. This mirrors
+# AUTO_ENABLE_SERVICES, but keeps the unit class explicit so oneshot services do
+# not accidentally become default-on just because their path watcher should be.
+if [ "${SKIP_TIMER_ENABLE:-0}" != "1" ]; then
+    paths_enabled=0
+    for path_name in "${AUTO_ENABLE_PATHS[@]}"; do
+        if [ ! -f "$REPO_DIR/$path_name" ]; then
+            echo "WARN: AUTO_ENABLE_PATHS entry $path_name not found in $REPO_DIR (skip)" >&2
+            continue
+        fi
+        if is_decommissioned_unit "$path_name"; then
+            echo "WARN: $path_name is in DECOMMISSIONED_UNITS; not auto-enabling" >&2
+            continue
+        fi
+        if systemctl --user enable --now "$path_name" 2>/dev/null; then
+            echo "auto-enabled path: $path_name"
+            paths_enabled=$((paths_enabled + 1))
+        else
+            echo "WARN: failed to auto-enable path $path_name (run manually)" >&2
+        fi
+    done
+    if [ "$paths_enabled" -gt 0 ]; then
+        echo "auto-enabled $paths_enabled path unit(s)"
+    fi
+elif [ "${#AUTO_ENABLE_PATHS[@]}" -gt 0 ]; then
+    echo "skipped auto-enabling ${#AUTO_ENABLE_PATHS[@]} path unit(s) (SKIP_TIMER_ENABLE=1)"
+fi
+
 # LRR Phase 3 item 1: walk ``systemd/units/*.service.d/`` directories
 # and install each drop-in as a real symlink under
 # ``~/.config/systemd/user/<service>.service.d/<name>.conf``. Previously
@@ -322,7 +357,7 @@ if [ "$dropin_changed" -gt 0 ]; then
     echo "daemon-reload done ($dropin_changed drop-in conf(s) linked)"
 fi
 
-if [ "$changed" -eq 0 ] && [ "${enabled_in_sweep:-0}" -eq 0 ] && [ "${services_enabled:-0}" -eq 0 ] && [ "$dropin_changed" -eq 0 ]; then
+if [ "$changed" -eq 0 ] && [ "${enabled_in_sweep:-0}" -eq 0 ] && [ "${services_enabled:-0}" -eq 0 ] && [ "${paths_enabled:-0}" -eq 0 ] && [ "$dropin_changed" -eq 0 ]; then
     echo "all units up to date"
 fi
 

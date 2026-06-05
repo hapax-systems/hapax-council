@@ -162,9 +162,13 @@ def test_obs_video50_bridge_is_guarded_as_manual_fallback() -> None:
     assert parser.get("Unit", "ConditionPathExists") == "/usr/bin/ffmpeg"
     unit_lines = _active_unit_lines(OBS_YUYV_BRIDGE)
     assert "ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime" in unit_lines
-    assert "ConditionPathExists=/dev/video52" in unit_lines
+    assert "ConditionPathExists=/tmp/.X11-unix/X82" in unit_lines
+    assert "ConditionPathExists=/dev/video52" not in unit_lines
     assert "ConditionPathExists=/dev/video50" in unit_lines
-    assert parser.get("Unit", "Conflicts") == "studio-fx-output.service"
+    assert parser.get("Unit", "Conflicts") == (
+        "studio-fx-output.service hapax-obs-video42-yuyv-bridge.service "
+        "hapax-screwm-meet-camera.service"
+    )
     assert parser.get("Unit", "After") == "hapax-darkplaces-v4l2.service"
     assert not parser.has_option("Unit", "Wants")
     assert parser.get("Unit", "PartOf") == "hapax-darkplaces-v4l2.service"
@@ -172,15 +176,16 @@ def test_obs_video50_bridge_is_guarded_as_manual_fallback() -> None:
     assert parser.get("Service", "KillMode") == "control-group"
     assert parser.get("Service", "SendSIGKILL") == "yes"
     assert "width=1920,height=1080,pixelformat=YUYV" in "\n".join(unit_lines)
-    assert "--set-parm=60" in "\n".join(unit_lines)
+    assert "--set-parm=30" in "\n".join(unit_lines)
     assert "-c sustain_framerate=1" in "\n".join(unit_lines)
     exec_start = parser.get("Service", "ExecStart")
-    assert "-input_format yuyv422" in exec_start
+    assert "-f x11grab" in exec_start
     assert "-video_size 1920x1080" in exec_start
-    assert "-framerate 60" in exec_start
-    assert "-i /dev/video52" in exec_start
-    assert "-vf fps=60" in exec_start
-    assert "-pix_fmt yuyv422 -r 60 /dev/video50" in exec_start
+    assert "-framerate 30" in exec_start
+    assert "-i :82.0+0,0" in exec_start
+    assert "-i /dev/video52" not in exec_start
+    assert "-vf format=yuyv422" in exec_start
+    assert "-pix_fmt yuyv422 -r 30 /dev/video50" in exec_start
     assert not parser.has_section("Install")
 
 

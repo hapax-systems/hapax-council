@@ -183,6 +183,23 @@ EFFECT_DRIFT_FAMILIES: tuple[str, ...] = (
     "compositing",
 )
 
+DRIFT_GEO_BASELINES: dict[str, float] = {
+    "amp": 0.5,
+    "ampmax": 0.5,
+    "freq": 0.3,
+    "speed": 0.25,
+    "swirl": 1.0 / 3.0,
+    "content": 0.2,
+}
+DRIFT_GEO_FILES: dict[str, str] = {
+    "amp": "drift-geo-amp.txt",
+    "ampmax": "drift-geo-ampmax.txt",
+    "freq": "drift-geo-freq.txt",
+    "speed": "drift-geo-speed.txt",
+    "swirl": "drift-geo-swirl.txt",
+    "content": "drift-geo-content.txt",
+}
+
 EFFECT_DRIFT_NODE_FAMILY: dict[str, str] = {
     "color": "tonal",
     "colorgrade": "tonal",
@@ -2087,6 +2104,7 @@ def build_visual_chain_lines(
     kind_variance = _clamp01(kind_variance + density_currency * 0.22)
     active_effect_ratio = _clamp01(active_effect_ratio + density_currency * 0.14)
 
+    spatial_pressure = 0.0
     if is_live > 0.0:
         # SlotDrift can be intensely active while a particular sampled pass set
         # has no literal edge/compositing node. For Screwm, that still must
@@ -2178,7 +2196,24 @@ def build_visual_chain_lines(
         lines[f"effect-drift-{family}.txt"] = f"{value:.4f}"
     for family, value in family_modes.items():
         lines[f"effect-drift-mode-{family}.txt"] = f"{value:.4f}"
+    lines.update(build_drift_geo_lines(spatial_pressure))
     return lines
+
+
+def build_drift_geo_lines(spatial_pressure: float) -> dict[str, str]:
+    """Map live spatial pressure into normalized geo cvar driver files.
+
+    The boost is live-gated by the caller: quiet or non-SlotDrift sources pass
+    zero pressure and therefore emit the conservative default-normalized values.
+    Coupling.qc applies the final floor-preserving range maps.
+    """
+    pressure = _clamp01(spatial_pressure)
+
+    def lifted(name: str) -> float:
+        baseline = DRIFT_GEO_BASELINES[name]
+        return _clamp01(baseline + (1.0 - baseline) * pressure)
+
+    return {filename: f"{lifted(name):.4f}" for name, filename in DRIFT_GEO_FILES.items()}
 
 
 def build_imagination_fragment_lines(

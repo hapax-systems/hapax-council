@@ -642,7 +642,14 @@ def test_darkplaces_state_export_writes_csqc_ward_text_files(tmp_path: Path) -> 
         encoding="utf-8"
     ).strip() == "0.0000"
     assert (game_dir / "visual-chain-source.txt").read_text(encoding="utf-8").strip() == "canonical"
+    assert (game_dir / "drift-geo-amp.txt").read_text(encoding="utf-8").strip() == "0.5000"
+    assert (game_dir / "drift-geo-ampmax.txt").read_text(encoding="utf-8").strip() == "0.5000"
+    assert (game_dir / "drift-geo-freq.txt").read_text(encoding="utf-8").strip() == "0.3000"
+    assert (game_dir / "drift-geo-speed.txt").read_text(encoding="utf-8").strip() == "0.2500"
+    assert (game_dir / "drift-geo-swirl.txt").read_text(encoding="utf-8").strip() == "0.3333"
+    assert (game_dir / "drift-geo-content.txt").read_text(encoding="utf-8").strip() == "0.2000"
     assert len(list(game_dir.glob("visual-chain-[0-9][0-9].txt"))) == 9
+    assert len(list(game_dir.glob("drift-geo-*.txt"))) == 6
     assert (game_dir / "imagination-salience.txt").read_text(encoding="utf-8").strip() == "0.7000"
     assert (game_dir / "imagination-continuation.txt").read_text(
         encoding="utf-8"
@@ -1392,6 +1399,65 @@ def test_darkplaces_state_export_density_grounds_drift_currency(tmp_path: Path) 
     assert nonslot["effect-drift-source.txt"] != "slotdrift"
     assert nonslot["effect-drift-density.txt"] == "0.2000"
     assert nonslot["effect-drift-density-currency.txt"] == "0.0000"
+
+
+def test_darkplaces_state_export_emits_live_gated_drift_geo_scalars(tmp_path: Path) -> None:
+    exporter = _load_exporter()
+    visual_chain_state_file = tmp_path / "visual-chain-state.json"
+    slot_drift_file = tmp_path / "effect-drift-state.json"
+    nonslot_drift_file = tmp_path / "nonslot-drift-state.json"
+    _write_json(visual_chain_state_file, {"levels": {}, "params": {}})
+    _write_json(
+        slot_drift_file,
+        {
+            "source_presence": {"main": True},
+            "slotdrift_coverage": {"covered": 1.0},
+            "passes": [
+                {
+                    "node_id": "slot1_1_edge_detect",
+                    "effect_family": "edge",
+                    "slot_intensity": 0.8,
+                    "non_neutral": True,
+                    "max_delta": 8.0,
+                    "eviction_cadence": "fast",
+                }
+            ],
+            "pass_count": 1,
+            "non_neutral_pass_count": 1,
+        },
+    )
+    _write_json(
+        nonslot_drift_file,
+        {
+            "passes": [{"node_id": "edge_detect", "non_neutral": True, "max_delta": 8.0}],
+            "pass_count": 1,
+            "non_neutral_pass_count": 1,
+        },
+    )
+
+    def _run(drift_file: Path) -> dict[str, str]:
+        return exporter.build_visual_chain_lines(
+            visual_chain_state_file,
+            drift_file,
+            visual_chain_fallback_state_file=tmp_path / "missing-visual-chain-fallback.json",
+            effect_drift_fallback_state_file=tmp_path / "missing-fallback.json",
+            now=15.0,
+        )
+
+    quiet = _run(nonslot_drift_file)
+    live = _run(slot_drift_file)
+
+    assert quiet["effect-drift-real-source.txt"] == "0.0000"
+    assert quiet["drift-geo-amp.txt"] == "0.5000"
+    assert quiet["drift-geo-freq.txt"] == "0.3000"
+    assert quiet["drift-geo-speed.txt"] == "0.2500"
+    assert quiet["drift-geo-swirl.txt"] == "0.3333"
+    assert quiet["drift-geo-content.txt"] == "0.2000"
+    assert live["effect-drift-real-source.txt"] == "1.0000"
+    for name in ("amp", "freq", "speed", "swirl", "content"):
+        assert float(live[f"drift-geo-{name}.txt"]) > float(quiet[f"drift-geo-{name}.txt"])
+        assert 0.0 <= float(live[f"drift-geo-{name}.txt"]) <= 1.0
+    assert live["drift-geo-ampmax.txt"] != ""
 
 
 def test_darkplaces_state_export_rejects_fail_closed_slotdrift(

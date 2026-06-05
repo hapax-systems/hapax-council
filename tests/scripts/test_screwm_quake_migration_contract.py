@@ -1128,6 +1128,11 @@ def test_screwm_geo_drift_defaults_stay_within_legibility_floor() -> None:
     patch = (REPO_ROOT / "assets" / "quake" / "darkplaces" / "hapax-live-texture.patch").read_text(
         encoding="utf-8"
     )
+    exporter = (REPO_ROOT / "scripts" / "darkplaces-state-export.py").read_text(encoding="utf-8")
+    coupling = (REPO_ROOT / "assets" / "quake" / "qc" / "coupling.qc").read_text(encoding="utf-8")
+    autoexec = (REPO_ROOT / "assets" / "quake" / "config" / "autoexec.cfg").read_text(
+        encoding="utf-8"
+    )
     expected = {
         "hapax_drift_geo_amp": 24,
         "hapax_drift_geo_ampmax": 36,
@@ -1141,3 +1146,33 @@ def test_screwm_geo_drift_defaults_stay_within_legibility_floor() -> None:
         )
     # Container amplitude must never exceed the hard displacement clamp.
     assert expected["hapax_drift_geo_amp"] <= expected["hapax_drift_geo_ampmax"]
+
+    assert "DRIFT_GEO_BASELINES" in exporter
+    assert '"amp": 0.5' in exporter
+    assert '"freq": 0.3' in exporter
+    assert '"speed": 0.25' in exporter
+    assert '"content": 0.2' in exporter
+    assert "drift-geo-amp.txt" in exporter
+    assert "drift-geo-content.txt" in exporter
+    assert "spatial_pressure = 0.0" in exporter
+
+    assert "void() coupling_apply_drift_geo" in coupling
+    assert 'coupling_read_float("data/drift-geo-amp.txt", coupling_drift_geo_amp)' in coupling
+    assert 'cvar_set("hapax_drift_geo_amp"' in coupling
+    assert 'cvar_set("hapax_drift_geo_ampmax", ftos(ampmax_val))' in coupling
+    assert "amp_val = 18 + coupling_drift_geo_amp * 12;" in coupling
+    assert "ampmax_val = 36;" in coupling
+    assert "content_val = 4 + coupling_drift_geo_content * 5;" in coupling
+    assert coupling.index("coupling_apply_drift_geo();") < coupling.index(
+        "coupling_apply_stimmung();"
+    )
+
+    assert "set hapax_drift_geo_amp 24" in autoexec
+    assert "set hapax_drift_geo_ampmax 36" in autoexec
+    assert "set hapax_drift_geo_speed 0.25" in autoexec
+    assert "set hapax_drift_geo_swirl 1.0" in autoexec
+
+    assert "r_glsl_postprocess_ruttetra_enable" in coupling
+    assert "warp_val = 9.0;" in coupling
+    assert "noise_val = 7.0;" in coupling
+    assert "halftone_val = 1.5;" in coupling
