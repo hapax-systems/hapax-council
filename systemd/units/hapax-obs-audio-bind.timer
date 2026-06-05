@@ -1,6 +1,5 @@
 [Unit]
 Description=Refresh Hapax OBS PipeWire audio binding
-After=pipewire.service wireplumber.service
 
 [Timer]
 OnBootSec=90s
