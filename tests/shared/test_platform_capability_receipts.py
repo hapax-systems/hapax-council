@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from shared.dispatcher_policy import (
     DispatchAction,
+    RouteAuthorityReceipt,
     build_dispatch_request,
     evaluate_dispatch_policy,
     load_dispatch_policy_sources,
@@ -687,6 +688,75 @@ def test_runtime_actuation_receipt_stale_fails_closed_as_absent(tmp_path: Path) 
 
     assert decision.action is DispatchAction.REFUSE
     assert "runtime_actuation_receipt_absent" in decision.reason_codes
+
+
+def test_runtime_actuation_receipt_stale_on_request_fails_closed(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now="2026-06-05T11:00:00Z")
+    assert result.returncode == 0, result.stderr
+
+    payload: dict[str, object] = {
+        "route_authority_receipt_schema": 1,
+        "receipt_id": "manually-stale-runtime-test",
+        "receipt_type": "runtime_actuation",
+        "route_id": "codex.headless.full",
+        "issued_at": "2026-06-05T10:00:00Z",
+        "stale_after": "1h",
+        "signed_by": "operator",
+        "evidence_refs": ["test:manually-stale-runtime-test"],
+        "quality_floors": [],
+        "task_ids": ["appendix-podium-minio-old-root-cleanup-20260605"],
+        "mutation_surfaces": ["runtime"],
+    }
+    payload["signed_payload_sha256"] = route_authority_receipt_payload_hash(payload)
+    stale_receipt = RouteAuthorityReceipt.model_validate(payload)
+    sources = load_dispatch_policy_sources(
+        registry_path=REGISTRY,
+        receipt_dir=tmp_path,
+        now=datetime.fromisoformat("2026-06-05T11:00:00+00:00"),
+    )
+    request = _runtime_dispatch_request(
+        sources, task_id="appendix-podium-minio-old-root-cleanup-20260605"
+    ).model_copy(update={"route_authority_receipts": (stale_receipt,)})
+
+    decision = evaluate_dispatch_policy(
+        request,
+        now=datetime.fromisoformat("2026-06-05T11:01:00+00:00"),
+    )
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "runtime_actuation_receipt_stale" in decision.reason_codes
+
+
+def test_runtime_actuation_receipt_allows_dimensional_runtime_candidate(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
+    assert result.returncode == 0, result.stderr
+    _write_route_authority_receipt(
+        tmp_path,
+        receipt_id="minio-cleanup-runtime-dimensional-test",
+        route_id="codex.headless.full",
+        receipt_type="runtime_actuation",
+        task_ids=["appendix-podium-minio-old-root-cleanup-20260605"],
+        mutation_surfaces=["runtime"],
+    )
+
+    sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
+    request = _runtime_dispatch_request(
+        sources, task_id="appendix-podium-minio-old-root-cleanup-20260605"
+    )
+    decision = evaluate_dispatch_policy(request, candidate_requests=(request,))
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.dimensional_receipt is not None
+    [candidate] = decision.dimensional_receipt.candidates
+    assert not any(veto.code == "mutation_surface_mismatch" for veto in candidate.vetoes)
 
 
 MINT_SCRIPT = REPO_ROOT / "scripts" / "hapax-mint-route-authority-receipt"

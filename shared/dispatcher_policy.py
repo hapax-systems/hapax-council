@@ -612,7 +612,7 @@ def evaluate_dispatch_policy(
             authority_allowed=False,
         )
 
-    mutation_reason = _mutation_refusal_reason(request, capability)
+    mutation_reason = _mutation_refusal_reason(request, capability, checked_at=checked_at)
     if mutation_reason:
         return _decision(
             request,
@@ -685,7 +685,7 @@ def evaluate_dispatch_policy(
     return _decision(
         request,
         DispatchAction.LAUNCH,
-        _launch_reason_codes(request),
+        _launch_reason_codes(request, checked_at=checked_at),
         checked_at,
         quality_floor_satisfied=quality_floor_satisfied,
         authority_allowed=authority_allowed,
@@ -1292,6 +1292,10 @@ def _dimensional_vetoes(
     if (
         request.mutation_surface
         and request.mutation_surface not in supply.authority.supported_mutation_surfaces
+        and not (
+            request.mutation_surface == "runtime"
+            and _runtime_actuation_refusal_reason(request, checked_at=checked_at) is None
+        )
     ):
         vetoes.append(
             DimensionalVeto(
@@ -1985,8 +1989,12 @@ def _cloud_burst_policy_gate(request: DispatchRequest) -> tuple[DispatchAction, 
     return DispatchAction.LAUNCH, ()
 
 
-def _launch_reason_codes(request: DispatchRequest) -> tuple[str, ...]:
-    runtime_authority_ref = _runtime_actuation_receipt_reference(request)
+def _launch_reason_codes(
+    request: DispatchRequest,
+    *,
+    checked_at: datetime,
+) -> tuple[str, ...]:
+    runtime_authority_ref = _runtime_actuation_receipt_reference(request, checked_at=checked_at)
     if _is_cloud_burst_route(request):
         return (
             "policy_launch",
@@ -2104,7 +2112,10 @@ def _mutation_requested(request: DispatchRequest) -> bool:
 
 
 def _mutation_refusal_reason(
-    request: DispatchRequest, capability: RouteCapabilityState
+    request: DispatchRequest,
+    capability: RouteCapabilityState,
+    *,
+    checked_at: datetime,
 ) -> str | None:
     surface = request.mutation_surface
     if surface is None or surface in NON_MUTATING_SURFACES:
@@ -2113,12 +2124,16 @@ def _mutation_refusal_reason(
         if capability.authority_ceiling == "read_only":
             return "read_only_mutation_route"
         if surface == "runtime":
-            return _runtime_actuation_refusal_reason(request)
+            return _runtime_actuation_refusal_reason(request, checked_at=checked_at)
         return f"route_not_mutable_for_{surface}"
     return None
 
 
-def _runtime_actuation_refusal_reason(request: DispatchRequest) -> str | None:
+def _runtime_actuation_refusal_reason(
+    request: DispatchRequest,
+    *,
+    checked_at: datetime,
+) -> str | None:
     receipts = tuple(
         receipt
         for receipt in request.route_authority_receipts
@@ -2143,10 +2158,20 @@ def _runtime_actuation_refusal_reason(request: DispatchRequest) -> str | None:
 
     if not any(request.mutation_surface in receipt.mutation_surfaces for receipt in task_matches):
         return "runtime_actuation_surface_mismatch"
+    if not any(
+        _route_authority_receipt_is_fresh(receipt, now=checked_at)
+        for receipt in task_matches
+        if request.mutation_surface in receipt.mutation_surfaces
+    ):
+        return "runtime_actuation_receipt_stale"
     return None
 
 
-def _runtime_actuation_receipt_reference(request: DispatchRequest) -> str | None:
+def _runtime_actuation_receipt_reference(
+    request: DispatchRequest,
+    *,
+    checked_at: datetime,
+) -> str | None:
     if request.mutation_surface != "runtime":
         return None
     for receipt in request.route_authority_receipts:
@@ -2155,6 +2180,7 @@ def _runtime_actuation_receipt_reference(request: DispatchRequest) -> str | None
             and normalize_route_id(receipt.route_id) == normalize_route_id(request.route_id)
             and request.task_id in receipt.task_ids
             and request.mutation_surface in receipt.mutation_surfaces
+            and _route_authority_receipt_is_fresh(receipt, now=checked_at)
         ):
             return route_authority_receipt_reference(receipt)
     return None
