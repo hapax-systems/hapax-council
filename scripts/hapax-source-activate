@@ -11,10 +11,20 @@ set -euo pipefail
 
 SKIP_DEPLOY=0
 FORCE=0
+FORCE_AUTHORITY="${HAPAX_SOURCE_ACTIVATE_FORCE_AUTHORITY:-}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-deploy) SKIP_DEPLOY=1; shift ;;
         --force) FORCE=1; shift ;;
+        --force-authority)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "hapax-source-activate: --force-authority requires a non-empty authority value" >&2
+                exit 2
+            fi
+            FORCE=1
+            FORCE_AUTHORITY="$2"
+            shift 2
+            ;;
         *) echo "hapax-source-activate: unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -126,7 +136,8 @@ write_receipt() {
         "$previous_active_target" "$promoted_active_target" \
         "$rollback_status" "$rollback_message" \
         "$quarantined_untracked_count" "$quarantined_untracked_path" \
-        "$quarantined_symlink_count" "$runtime_profile_link_count" <<'PY'
+        "$quarantined_symlink_count" "$runtime_profile_link_count" \
+        "$FORCE" "$FORCE_AUTHORITY" <<'PY'
 from __future__ import annotations
 
 import json
@@ -167,6 +178,8 @@ from pathlib import Path
     quarantined_untracked_path,
     quarantined_symlink_count,
     runtime_profile_link_count,
+    force,
+    force_authority,
 ) = sys.argv[1:]
 
 record = {
@@ -214,6 +227,10 @@ record = {
         "untracked_symlink_removed_count": int(quarantined_symlink_count),
         "runtime_profile_link_count": int(runtime_profile_link_count),
     },
+    "force": {
+        "requested": force == "1",
+        "authority": force_authority or None,
+    },
 }
 
 current = Path(current_path).expanduser()
@@ -257,8 +274,22 @@ hold_on_audio_critical_active_drift() {
         "0" \
         "audio-critical activation drift active: $drift_summary"
     echo "hapax-source-activate: held because active source has audio-critical drift: $drift_summary" >&2
-    echo "hapax-source-activate: sourceize the drift or rerun with --force after explicit operator approval" >&2
+    echo "hapax-source-activate: sourceize the drift or rerun with --force-authority cc-task:<id> after governed release evidence is recorded" >&2
     exit 0
+}
+
+enforce_force_authority() {
+    if [[ "$FORCE" != "1" ]]; then
+        return 0
+    fi
+    if [[ -n "$FORCE_AUTHORITY" ]]; then
+        return 0
+    fi
+
+    refresh_active_source_fields
+    write_receipt "failed" "not_started" "2" "--force missing governed release authority"
+    echo "hapax-source-activate: --force requires governed release authority; pass --force-authority cc-task:<id> or set HAPAX_SOURCE_ACTIVATE_FORCE_AUTHORITY" >&2
+    exit 2
 }
 
 fresh_file_exists() {
@@ -587,6 +618,7 @@ fi
 
 git -C "$CANONICAL_REPO" fetch origin main --quiet
 origin_sha="$(git -C "$CANONICAL_REPO" rev-parse origin/main)"
+enforce_force_authority
 hold_on_audio_critical_active_drift
 
 prepare_candidate_worktree "$origin_sha"

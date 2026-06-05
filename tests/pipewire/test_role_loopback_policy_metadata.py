@@ -3,9 +3,8 @@
 WirePlumber's role-volume Lua hook iterates every
 ``input.loopback.sink.role.*`` sink and compares
 ``policy.role-based.priority`` as a number. Generated PipeWire role
-fragments must carry the same role metadata as the canonical
-``50-hapax-voice-duck.conf`` loopbacks, otherwise a deployed generated
-fragment can make the hook compare a number with nil.
+fragments must carry the concrete role metadata because
+``50-hapax-voice-duck.conf`` is only the minimal WirePlumber policy surface.
 """
 
 from __future__ import annotations

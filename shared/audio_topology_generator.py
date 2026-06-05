@@ -17,8 +17,8 @@ LADSPA chain templates (schema v3, audit F#8):
 
 - ``loudnorm`` — single ``fast_lookahead_limiter_1913`` LADSPA stage
   with ``Input gain (dB) = 0``, configurable ``Limit (dB)`` and
-  ``Release time (s)``. Matches the live shape of
-  ``hapax-music-loudnorm.conf`` / ``hapax-voice-fx-loudnorm.conf``.
+  ``Release time (s)``. The ``audibility_passthrough`` escape hatch emits
+  paired builtin mixers when a live route has proved the LADSPA stage silent.
 - ``duck`` — paired-mono ``builtin mixer`` (``duck_l`` / ``duck_r``)
   with ``Gain 1 = 1.0`` default. The audio-ducker daemon writes
   runtime gain via ``pw-cli``. Matches ``hapax-music-duck.conf`` /
@@ -77,11 +77,32 @@ class ConfigError(ValueError):
 # at codegen time, not at PipeWire-load time.
 LADSPA_INPUT_GAIN_MIN_DB = -20.0
 LADSPA_INPUT_GAIN_MAX_DB = 20.0
+MAX_BUILTIN_MIXER_GAIN_LINEAR = 4.0
 
 
 def _gain_db_to_linear(db: float) -> float:
     """Convert dB to PipeWire ``builtin mixer`` ``Gain`` linear scalar."""
     return 10 ** (db / 20.0)
+
+
+def _format_linear_gain(value: float) -> str:
+    rendered = f"{value:.6g}"
+    if "." not in rendered and "e" not in rendered.lower():
+        rendered += ".0"
+    return rendered
+
+
+def _passthrough_gain(node: Node) -> str:
+    raw = node.params.get("audibility_passthrough_gain", 1.0)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ConfigError(f"Node {node.id!r} audibility_passthrough_gain must be numeric")
+    gain = float(raw)
+    if gain < 0.0 or gain > MAX_BUILTIN_MIXER_GAIN_LINEAR:
+        raise ConfigError(
+            f"Node {node.id!r} audibility_passthrough_gain={gain} exceeds "
+            f"allowed range 0..{MAX_BUILTIN_MIXER_GAIN_LINEAR}"
+        )
+    return _format_linear_gain(gain)
 
 
 def _channels_line(node: Node) -> str:
@@ -100,6 +121,10 @@ def _conf_literal(value: str | int | float | bool) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     return f'"{value}"'
+
+
+def _description(node: Node) -> str:
+    return " ".join((node.description or node.pipewire_name).split())
 
 
 def _params_lines(node: Node, indent: int = 12) -> str:
@@ -172,6 +197,48 @@ def _selected_params_lines(node: Node, keys: tuple[str, ...], indent: int = 16) 
     return "\n".join(out)
 
 
+def _playback_name(node: Node) -> str:
+    """Return the runtime playback node name for a filter-chain node."""
+    playback_node = node.params.get("playback_node")
+    if isinstance(playback_node, str) and playback_node:
+        return playback_node
+    if node.pipewire_name.endswith("-capture"):
+        return node.pipewire_name.removesuffix("-capture") + "-playback"
+    if node.pipewire_name.endswith("-playback"):
+        return node.pipewire_name
+    return f"{node.pipewire_name}-playback"
+
+
+def _reconciler_owns_playback_links(node: Node) -> bool:
+    return node.params.get("node.autoconnect") is False
+
+
+def _playback_target_line(node: Node, indent: int = 16) -> str:
+    if not node.target_object or _reconciler_owns_playback_links(node):
+        return ""
+    return f'{" " * indent}target.object = "{node.target_object}"'
+
+
+def _playback_safety_params(node: Node, indent: int = 16) -> str:
+    text = _selected_params_lines(
+        node,
+        (
+            "node.autoconnect",
+            "node.dont-fallback",
+            "node.dont-reconnect",
+            "node.dont-move",
+            "node.linger",
+            "state.restore",
+            "stream.dont-remix",
+        ),
+        indent=indent,
+    )
+    if "stream.dont-remix" not in node.params:
+        line = f"{' ' * indent}stream.dont-remix = true"
+        text = f"{text}\n{line}" if text else line
+    return text
+
+
 def _alsa_source_fragment(node: Node) -> str:
     channels = _channels_line(node)
     extra = _params_lines(node)
@@ -221,9 +288,7 @@ def _filter_chain_fragment(node: Node, incoming_edges: list[Edge]) -> str:
     multiple mixer nodes (one per port).
     """
     cm = node.channels
-    target_line = (
-        f'            target.object = "{node.target_object}"' if node.target_object else ""
-    )
+    target_line = _playback_target_line(node, indent=12)
     positions_str = " ".join(cm.positions) if cm.positions else ""
     position_block = f"\n            audio.position = [ {positions_str} ]" if positions_str else ""
 
@@ -251,18 +316,19 @@ def _filter_chain_fragment(node: Node, incoming_edges: list[Edge]) -> str:
                 outputs = [ {" ".join(outputs)} ]
             }}"""
 
-    return f"""# {node.description or node.pipewire_name}
+    description = _description(node)
+    return f"""# {description}
 context.modules = [
     {{  name = libpipewire-module-filter-chain
         args = {{
-            node.description = "{node.description or node.pipewire_name}"
+            node.description = "{description}"
             audio.rate = 44100
             audio.channels = {cm.count}{position_block}{graph_block}
             capture.props = {{
                 node.name = "{node.pipewire_name}"
             }}
             playback.props = {{
-                node.name = "{node.pipewire_name}-playback"
+                node.name = "{_playback_name(node)}"
 {target_line}
             }}
         }}
@@ -290,22 +356,28 @@ def _format_loudnorm_chain(node: Node, _incoming: list[Edge]) -> str:
     cm = node.channels
     positions_str = " ".join(cm.positions) if cm.positions else ""
     position_block = f"\n            audio.position = [ {positions_str} ]" if positions_str else ""
-    target_line = (
-        f'                target.object = "{node.target_object}"' if node.target_object else ""
-    )
+    target_line = _playback_target_line(node)
+    target_block = f"\n{target_line}" if target_line else ""
+    playback_params = _playback_safety_params(node)
+    playback_param_block = f"\n{playback_params}" if playback_params else ""
     release_s = node.release_s if node.release_s is not None else 0.20
     name_token = node.id.replace("-", "_")
-    description = node.description or node.pipewire_name
-    return f"""# {description}
-context.modules = [
-    {{  name = libpipewire-module-filter-chain
-        args = {{
-            node.name = "{node.pipewire_name}"
-            node.description = "{description}"
-            media.class = "Audio/Sink"
-            audio.rate = 44100
-            audio.channels = {cm.count}{position_block}
-
+    description = _description(node)
+    if node.params.get("audibility_passthrough") is True:
+        passthrough_gain = _passthrough_gain(node)
+        graph_block = f"""
+            filter.graph = {{
+                nodes = [
+                    {{ type = builtin name = pass_l label = mixer
+                      control = {{ "Gain 1" = {passthrough_gain} }} }}
+                    {{ type = builtin name = pass_r label = mixer
+                      control = {{ "Gain 1" = {passthrough_gain} }} }}
+                ]
+                inputs  = [ "pass_l:In 1" "pass_r:In 1" ]
+                outputs = [ "pass_l:Out"  "pass_r:Out"  ]
+            }}"""
+    else:
+        graph_block = f"""
             filter.graph = {{
                 nodes = [
                     {{ type = ladspa
@@ -321,17 +393,27 @@ context.modules = [
                 ]
                 inputs  = [ "{name_token}:Input 1"  "{name_token}:Input 2"  ]
                 outputs = [ "{name_token}:Output 1" "{name_token}:Output 2" ]
-            }}
+            }}"""
+    return f"""# {description}
+context.modules = [
+    {{  name = libpipewire-module-filter-chain
+        args = {{
+            node.name = "{node.pipewire_name}"
+            node.description = "{description}"
+            media.class = "Audio/Sink"
+            audio.rate = 44100
+            audio.channels = {cm.count}{position_block}
+{graph_block}
 
             capture.props = {{
                 node.name = "{node.pipewire_name}"
                 media.class = "Audio/Sink"
             }}
             playback.props = {{
-                node.name = "{node.pipewire_name}-playback"
-{target_line}
+                node.name = "{_playback_name(node)}"{target_block}
                 node.passive = false
-                stream.dont-remix = true
+                audio.channels = {cm.count}{position_block.replace(chr(10) + "            ", chr(10) + "                ")}
+{playback_param_block if playback_param_block else "                stream.dont-remix = true"}
             }}
         }}
     }}
@@ -354,10 +436,11 @@ def _format_duck_chain(node: Node, _incoming: list[Edge]) -> str:
     cm = node.channels
     positions_str = " ".join(cm.positions) if cm.positions else ""
     position_block = f"\n            audio.position = [ {positions_str} ]" if positions_str else ""
-    target_line = (
-        f'                target.object = "{node.target_object}"' if node.target_object else ""
-    )
-    description = node.description or node.pipewire_name
+    target_line = _playback_target_line(node)
+    target_block = f"\n{target_line}" if target_line else ""
+    playback_params = _playback_safety_params(node)
+    playback_param_block = f"\n{playback_params}" if playback_params else ""
+    description = _description(node)
     return f"""# {description}
 context.modules = [
     {{  name = libpipewire-module-filter-chain
@@ -384,10 +467,9 @@ context.modules = [
                 media.class = "Audio/Sink"
             }}
             playback.props = {{
-                node.name = "{node.pipewire_name}-playback"
-{target_line}
+                node.name = "{_playback_name(node)}"{target_block}
                 node.passive = false
-                stream.dont-remix = true
+{playback_param_block if playback_param_block else "                stream.dont-remix = true"}
             }}
         }}
     }}
@@ -426,9 +508,10 @@ def _format_usb_bias_chain(node: Node, _incoming: list[Edge]) -> str:
     cm = node.channels
     positions_str = " ".join(cm.positions) if cm.positions else ""
     position_block = f"\n            audio.position = [ {positions_str} ]" if positions_str else ""
-    target_line = (
-        f'                target.object = "{node.target_object}"' if node.target_object else ""
-    )
+    target_line = _playback_target_line(node)
+    target_block = f"\n{target_line}" if target_line else ""
+    playback_params = _playback_safety_params(node)
+    playback_param_block = f"\n{playback_params}" if playback_params else ""
     # Limit defaults to -1.0 dBFS true-peak when omitted — matches
     # MASTER_LIMITER_TRUE_PEAK_DBTP convention.
     limit_db = node.limit_db if node.limit_db is not None else -1.0
@@ -436,7 +519,7 @@ def _format_usb_bias_chain(node: Node, _incoming: list[Edge]) -> str:
     # for fast transient recovery on a line-driver.
     release_s = node.release_s if node.release_s is not None else 0.05
     name_token = node.id.replace("-", "_")
-    description = node.description or node.pipewire_name
+    description = _description(node)
     if node.remap_to_rear:
         playback_position_block = "\n                audio.position = [ RL RR ]"
     elif positions_str:
@@ -475,10 +558,9 @@ context.modules = [
                 media.class = "Audio/Sink"
             }}
             playback.props = {{
-                node.name = "{node.pipewire_name}-playback"
-{target_line}
+                node.name = "{_playback_name(node)}"{target_block}
                 node.passive = false{playback_position_block}
-                stream.dont-remix = true
+{playback_param_block if playback_param_block else "                stream.dont-remix = true"}
             }}
         }}
     }}
@@ -529,11 +611,12 @@ def _loopback_fragment(node: Node) -> str:
     playback_extra = f"\n{target_line}" if target_line else ""
     if playback_param_block:
         playback_extra += f"\n{playback_param_block}"
-    return f"""# {node.description or node.pipewire_name}
+    description = _description(node)
+    return f"""# {description}
 context.modules = [
     {{  name = libpipewire-module-loopback
         args = {{
-            node.description = "{node.description or node.pipewire_name}"
+            node.description = "{description}"
             audio.rate = 44100
             audio.channels = {cm.count}{position_block}
             capture.props = {{
@@ -558,7 +641,8 @@ def _tap_fragment(node: Node) -> str:
     position_block = (
         f"\n                audio.position = [ {positions_str} ]" if positions_str else ""
     )
-    return f"""# {node.description or node.pipewire_name}
+    description = _description(node)
+    return f"""# {description}
 context.objects = [
     {{  factory = adapter
         args = {{

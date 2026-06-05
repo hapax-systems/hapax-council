@@ -5,6 +5,7 @@
     "config/pipewire/hapax-l12-evilpet-capture.conf",
     "config/pipewire/hapax-l12-usb-return-capture.conf",
     "config/pipewire/hapax-m8-loudnorm.conf",
+    "config/pipewire/hapax-mic-rode.conf",
     "config/pipewire/hapax-mpc-usb-return-capture.conf",
     "config/pipewire/hapax-music-loudnorm.conf",
     "config/pipewire/hapax-notification-private.conf",
@@ -15,6 +16,7 @@
     "config/pipewire/hapax-stream-split.conf",
     "config/pipewire/hapax-voice-fx-chain.conf",
     "config/pipewire/hapax-voice-fx-loudnorm.conf",
+    "config/pipewire/hapax-voice-wet.conf",
     "config/pipewire/hapax-yt-loudnorm.conf",
     "config/wireplumber/10-default-sink-ryzen.conf",
     "config/wireplumber/50-hapax-voice-duck.conf",
@@ -22,7 +24,7 @@
     "config/wireplumber/92-hapax-notification-private.conf"
   ],
   "artifact_status_counts": {
-    "hand_mirrored": 18,
+    "hand_mirrored": 20,
     "non_round_trippable": 2
   },
   "blocked_source_ids": [
@@ -36,7 +38,8 @@
   "broadcast_eligible_source_ids": [
     "broadcast-tts",
     "l12-evilpet-capture",
-    "music-bed"
+    "music-bed",
+    "operator-mic"
   ],
   "default_sink_fallback_broadcast_eligible": false,
   "dry_run_only": true,

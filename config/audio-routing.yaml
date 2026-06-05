@@ -65,6 +65,7 @@ routes:
       - hapax-private
       - hapax-private-monitor-capture
       - hapax-private-playback
+      - mk5-output
     route_class: private
     broadcast_eligible: false
     public_claim_allowed: false
@@ -122,8 +123,9 @@ routes:
     target_chain:
       - hapax-voice-fx-capture
       - hapax-loudnorm-capture
-      - mpc-usb-output
-      - mpc-usb-return-capture
+      - mk5-output
+      - s4-analog-insert
+      - hapax-voice-wet-capture
       - hapax-livestream-tap
     route_class: broadcast_voice
     broadcast_eligible: true
@@ -149,7 +151,36 @@ routes:
       - config/wireplumber/50-hapax-voice-duck.conf
       - config/pipewire/hapax-voice-fx-chain.conf
       - config/pipewire/hapax-voice-fx-loudnorm.conf
-      - config/pipewire/hapax-mpc-usb-return-capture.conf
+      - config/pipewire/hapax-voice-wet.conf
+
+  - source_id: operator-mic
+    producer: rode-wireless-pro
+    role: operator_voice
+    pipewire_node: hapax-mic-rode
+    target_chain:
+      - mk5-input
+      - hapax-mic-rode-capture
+      - hapax-livestream-tap
+    route_class: broadcast_voice
+    broadcast_eligible: true
+    public_claim_allowed: false
+    broadcast_eligibility_basis: explicit_policy
+    default_fallback_allowed: false
+    rights_required: true
+    provenance_required: true
+    provenance_refs:
+      - config/audio-routing.yaml#operator-mic
+      - docs/audio-topology-reference.md#operator-mic
+    evidence_refs:
+      - config/audio-topology.yaml#mic-rode
+      - test:hapax-audio-routing-check
+    pre_normalization:
+      target_lufs_i: null
+      constant_ref: null
+    ducked_by: []
+    generated_artifact_owner: hand_mirrored
+    artifact_refs:
+      - config/pipewire/hapax-mic-rode.conf
 
   - source_id: multimedia-default
     producer: desktop-session
@@ -186,8 +217,6 @@ routes:
     pipewire_node: hapax-music-loudnorm
     target_chain:
       - hapax-music-loudnorm
-      - mpc-usb-output
-      - mpc-usb-return-capture
       - hapax-livestream-tap
     route_class: broadcast_content
     broadcast_eligible: true
@@ -212,21 +241,14 @@ routes:
     generated_artifact_owner: hand_mirrored
     artifact_refs:
       - config/pipewire/hapax-music-loudnorm.conf
-      - config/pipewire/hapax-mpc-usb-return-capture.conf
 
   - source_id: youtube-bed
     producer: youtube-player
     role: youtube
     pipewire_node: hapax-yt-loudnorm
-    # Interim MPC-only (2026-05-29): the SEND to MPC AUX6/7 is enabled so
-    # YouTube can join the operator's MPC mix + public return. Broadcast
-    # eligibility stays GATED (blocked_until_smoke) — the enabled send is
-    # operator-mix plumbing, not a broadcast-rights claim. The MPC public mix
-    # is operator-owned; whether YouTube reaches the public return is the
-    # operator's MPC-mixer decision, not a Hapax software claim.
     target_chain:
       - hapax-yt-loudnorm
-      - mpc-usb-output
+      - hapax-livestream-tap
     route_class: broadcast_content
     broadcast_eligible: false
     public_claim_allowed: false
@@ -359,7 +381,7 @@ artifacts:
   - path: config/wireplumber/50-hapax-voice-duck.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts
-    reason: Role preferred-target policy is the main routing policy artifact and must be generated in a later pass.
+    reason: Minimal role policy anchors are hand-mirrored; concrete role loopback preferred targets are generated into config/pipewire/generated/pipewire/role-*.conf.
   - path: config/wireplumber/92-hapax-notification-private.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#notification-private
@@ -379,11 +401,19 @@ artifacts:
   - path: config/pipewire/hapax-voice-fx-loudnorm.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts
-    reason: TTS loudnorm constants must cite shared/audio_loudness.py.
+    reason: TTS loudnorm is an audited passthrough after the LADSPA limiter emitted silence on the live public route; reconciler owns mk5 AUX2/3 dry-send links.
   - path: config/pipewire/hapax-mpc-usb-return-capture.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts
     reason: Interim MPC-only broadcast return (L-12 removed 2026-05-29) captures the MPC public mix on capture_AUX0/1 and is shared by broadcast voice/content routes. Supersedes hapax-l12-usb-return-capture.conf until the MOTU/FadeFox migration.
+  - path: config/pipewire/hapax-voice-wet.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#broadcast-tts
+    reason: Current mk5/S-4 topology captures the analog S-4 wet voice return from mk5 IN 3/4 into livestream-tap.
+  - path: config/pipewire/hapax-mic-rode.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#operator-mic
+    reason: Current mk5 topology captures the operator Rode Wireless Pro from mk5 IN 1 into livestream-tap.
   - path: config/pipewire/hapax-l12-usb-return-capture.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts

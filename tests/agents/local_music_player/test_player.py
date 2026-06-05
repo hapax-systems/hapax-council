@@ -22,12 +22,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agents.local_music_player.player import (
-    _LOUDNORM_MPC_LINKS,
     LocalMusicPlayer,
     PlayerConfig,
     _build_local_pwcat,
     _build_url_pipeline,
-    _ensure_loudnorm_mpc_links,
     format_attribution,
     is_url,
     write_attribution,
@@ -474,48 +472,43 @@ def test_kill_current_idempotent_when_nothing_playing(tmp_path: Path) -> None:
     assert player._current_proc is None
 
 
-# ── loudnorm-MPC link self-heal ─────────────────────────────────────────────
+# ── broadcast graph ownership ───────────────────────────────────────────────
 
 
-def test_loudnorm_mpc_link_pairs_cover_both_channels() -> None:
-    # Both channels must be present; the link is FL/FR → MPC AUX0/AUX1.
-    sources = {src for src, _ in _LOUDNORM_MPC_LINKS}
-    targets = {dst for _, dst in _LOUDNORM_MPC_LINKS}
-    assert sources == {
-        "hapax-music-loudnorm-playback:output_FL",
-        "hapax-music-loudnorm-playback:output_FR",
-    }
-    assert targets == {
-        "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX0",
-        "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0:playback_AUX1",
-    }
-
-
-def test_ensure_loudnorm_mpc_links_invokes_pwlink_per_pair() -> None:
-    completed = MagicMock()
-    completed.returncode = 0
-    completed.stderr = ""
-    with patch("agents.local_music_player.player.subprocess.run", return_value=completed) as run:
-        _ensure_loudnorm_mpc_links()
-    assert run.call_count == len(_LOUDNORM_MPC_LINKS)
-    # Each call's argv[0] should be the pw-link command for the pair.
-    for call_args, (src, dst) in zip(run.call_args_list, _LOUDNORM_MPC_LINKS, strict=True):
-        argv = call_args[0][0]
-        assert argv == ["pw-link", src, dst]
-
-
-def test_ensure_loudnorm_mpc_links_tolerates_already_linked() -> None:
-    completed = MagicMock()
-    completed.returncode = 1
-    completed.stderr = "failed to link ports: File exists"
-    with patch("agents.local_music_player.player.subprocess.run", return_value=completed):
-        # Must not raise — duplicate-link is the steady-state.
-        _ensure_loudnorm_mpc_links()
-
-
-def test_ensure_loudnorm_mpc_links_tolerates_missing_pwlink_binary() -> None:
-    with patch(
-        "agents.local_music_player.player.subprocess.run", side_effect=FileNotFoundError("pw-link")
+def test_default_sink_playback_does_not_mutate_pipewire_links(tmp_path: Path) -> None:
+    cfg = _make_config(tmp_path)
+    player = LocalMusicPlayer(cfg)
+    write_selection(
+        cfg.selection_path,
+        "https://soundcloud.com/oudepode/unknowntron-1/s-token",
+        title="UNKNOWNTRON",
+        artist="Oudepode",
+        source="soundcloud-oudepode",
+        **_safe_selection_fields(
+            provenance="soundcloud-licensed",
+            token="music:soundcloud-licensed:test",
+        ),
+    )
+    yt_proc = MagicMock()
+    yt_proc.stdout = MagicMock()
+    ffmpeg_proc = MagicMock()
+    ffmpeg_proc.stdout = MagicMock()
+    pw_proc = MagicMock()
+    with (
+        patch(
+            "agents.local_music_player.player._spawn_process",
+            side_effect=[yt_proc, ffmpeg_proc, pw_proc],
+        ),
+        patch("agents.local_music_player.player.subprocess.run") as run,
     ):
-        # Must not raise — pw-link missing in test env is expected.
-        _ensure_loudnorm_mpc_links()
+        player.tick()
+    run.assert_not_called()
+
+
+def test_player_startup_does_not_mutate_pipewire_links(tmp_path: Path) -> None:
+    cfg = _make_config(tmp_path)
+    player = LocalMusicPlayer(cfg)
+    player._stop = True
+    with patch("agents.local_music_player.player.subprocess.run") as run:
+        assert player.run() == 0
+    run.assert_not_called()

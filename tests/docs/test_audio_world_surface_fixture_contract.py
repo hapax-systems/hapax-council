@@ -67,7 +67,7 @@ def test_schema_pins_audio_surface_health_and_route_contracts() -> None:
         "programme_audio",
         "caption_source",
         "l12_capture",
-        "mpc_private_monitor",
+        "mk5_private_monitor",
         "broadcast_egress",
         "broadcast_health",
         "no_private_leak",

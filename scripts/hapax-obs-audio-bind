@@ -1,0 +1,526 @@
+#!/usr/bin/env python3
+"""Bind OBS's canonical PipeWire audio input to Hapax broadcast audio.
+
+This is intentionally narrow and idempotent: it does not restart OBS, it does
+not switch scenes, and it only touches the canonical broadcast audio input plus
+the retired PulseAudio input. Its job is to repair the exact post-PipeWire-
+restart failure where OBS remains live but its audio source has no PipeWire
+ports until the native PipeWire input is rebound to the current remap node ID.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+EXPECTED_TARGET_NAME = "hapax-obs-broadcast-remap"
+PIPEWIRE_INPUT_NAME = "Audio Input Capture (PipeWire)"
+PIPEWIRE_INPUT_KIND = "pipewire_audio_input_capture"
+LEGACY_PULSE_INPUT_NAME = "Audio Input Capture (PulseAudio)"
+STATUS_PATH = Path("/dev/shm/hapax-obs-audio-bind/status.json")
+
+
+@dataclass(frozen=True)
+class BindStatus:
+    state: str
+    ok: bool
+    remap_node_id: int | None
+    remap_target_id: int | None
+    scene_name: str | None
+    input_name: str
+    settings_target_name: str | None
+    links_complete: bool
+    legacy_pulse_disabled: bool | None
+    recreated_input: bool = False
+    reason: str | None = None
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _run_text(args: list[str], *, timeout: float = 5.0) -> str:
+    result = subprocess.run(
+        args,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    return result.stdout
+
+
+def _read_obs_websocket_password(config_path: Path) -> str:
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if data.get("server_enabled") is False:
+        return ""
+    if data.get("auth_required") is False:
+        return ""
+    password = data.get("server_password")
+    return password if isinstance(password, str) else ""
+
+
+def _default_obs_password() -> str:
+    return (
+        os.environ.get("HAPAX_OBS_WEBSOCKET_PASSWORD")
+        or os.environ.get("OBS_WEBSOCKET_PASSWORD")
+        or _read_obs_websocket_password(
+            Path.home()
+            / ".config"
+            / "obs-studio"
+            / "plugin_config"
+            / "obs-websocket"
+            / "config.json"
+        )
+    )
+
+
+def _connect(host: str, port: int) -> Any:
+    import obsws_python
+
+    return obsws_python.ReqClient(
+        host=host,
+        port=port,
+        password=_default_obs_password(),
+        timeout=5,
+    )
+
+
+def _value(obj: Any, *names: str, default: Any = None) -> Any:
+    for name in names:
+        if isinstance(obj, dict) and name in obj:
+            return obj[name]
+        if hasattr(obj, name):
+            return getattr(obj, name)
+    return default
+
+
+def _get_current_scene(client: Any) -> str:
+    resp = client.get_current_program_scene()
+    scene_name = _value(resp, "scene_name", "sceneName")
+    if not isinstance(scene_name, str) or not scene_name:
+        raise RuntimeError("OBS did not report a current program scene")
+    return scene_name
+
+
+def _get_input_list(client: Any) -> list[Any]:
+    resp = client.get_input_list()
+    inputs = _value(resp, "inputs", "input_list", "inputList", default=[])
+    return list(inputs or [])
+
+
+def _input_exists(client: Any, input_name: str) -> bool:
+    for item in _get_input_list(client):
+        if _value(item, "inputName", "input_name") == input_name:
+            return True
+    return False
+
+
+def _create_input(client: Any, scene_name: str, input_name: str) -> None:
+    settings = {"TargetName": EXPECTED_TARGET_NAME, "TargetId": 4294967295}
+    try:
+        client.create_input(
+            scene_name=scene_name,
+            input_name=input_name,
+            input_kind=PIPEWIRE_INPUT_KIND,
+            input_settings=settings,
+            scene_item_enabled=True,
+        )
+    except TypeError:
+        client.create_input(scene_name, input_name, PIPEWIRE_INPUT_KIND, settings, True)
+
+
+def _remove_input(client: Any, input_name: str) -> None:
+    try:
+        client.remove_input(input_name=input_name)
+    except TypeError:
+        client.remove_input(input_name)
+
+
+def _set_input_settings(client: Any, input_name: str, settings: dict[str, Any]) -> None:
+    try:
+        client.set_input_settings(
+            input_name=input_name,
+            input_settings=settings,
+            overlay=True,
+        )
+    except TypeError:
+        client.set_input_settings(input_name, settings, True)
+
+
+def _get_input_settings(client: Any, input_name: str) -> dict[str, Any]:
+    try:
+        resp = client.get_input_settings(input_name=input_name)
+    except TypeError:
+        resp = client.get_input_settings(input_name)
+    settings = _value(resp, "input_settings", "inputSettings", default={})
+    return dict(settings or {})
+
+
+def _set_input_mute(client: Any, input_name: str, muted: bool) -> None:
+    try:
+        client.set_input_mute(input_name=input_name, input_muted=muted)
+    except TypeError:
+        client.set_input_mute(input_name, muted)
+
+
+def _set_input_volume(client: Any, input_name: str, volume_mul: float) -> None:
+    try:
+        client.set_input_volume(input_name=input_name, input_volume_mul=volume_mul)
+    except TypeError:
+        client.set_input_volume(input_name, volume_mul)
+
+
+def _set_input_monitor_none(client: Any, input_name: str) -> None:
+    method = getattr(client, "set_input_audio_monitor_type", None)
+    if method is None:
+        return
+    try:
+        method(input_name=input_name, monitor_type="OBS_MONITORING_TYPE_NONE")
+    except TypeError:
+        method(input_name, "OBS_MONITORING_TYPE_NONE")
+
+
+def _get_scene_items(client: Any, scene_name: str) -> list[Any]:
+    try:
+        resp = client.get_scene_item_list(scene_name=scene_name)
+    except TypeError:
+        resp = client.get_scene_item_list(scene_name)
+    items = _value(resp, "scene_items", "sceneItems", default=[])
+    return list(items or [])
+
+
+def _find_scene_item_id(client: Any, scene_name: str, source_name: str) -> int | None:
+    for item in _get_scene_items(client, scene_name):
+        if _value(item, "sourceName", "source_name") != source_name:
+            continue
+        item_id = _value(item, "sceneItemId", "scene_item_id")
+        if isinstance(item_id, int):
+            return item_id
+    return None
+
+
+def _find_scene_item_index(client: Any, scene_name: str, source_name: str) -> int | None:
+    for item in _get_scene_items(client, scene_name):
+        if _value(item, "sourceName", "source_name") != source_name:
+            continue
+        item_index = _value(item, "sceneItemIndex", "scene_item_index")
+        if isinstance(item_index, int):
+            return item_index
+    return None
+
+
+def _set_scene_item_enabled(
+    client: Any,
+    scene_name: str,
+    item_id: int,
+    enabled: bool,
+) -> None:
+    try:
+        client.set_scene_item_enabled(
+            scene_name=scene_name,
+            scene_item_id=item_id,
+            scene_item_enabled=enabled,
+        )
+    except TypeError:
+        client.set_scene_item_enabled(scene_name, item_id, enabled)
+
+
+def _set_scene_item_index(
+    client: Any,
+    scene_name: str,
+    item_id: int,
+    index: int,
+) -> None:
+    try:
+        client.set_scene_item_index(
+            scene_name=scene_name,
+            scene_item_id=item_id,
+            scene_item_index=index,
+        )
+    except TypeError:
+        client.set_scene_item_index(scene_name, item_id, index)
+
+
+def _recreate_pipewire_input(
+    client: Any,
+    scene_name: str,
+    input_name: str,
+    settings: dict[str, Any],
+) -> None:
+    original_index = _find_scene_item_index(client, scene_name, input_name)
+    if _input_exists(client, input_name):
+        _remove_input(client, input_name)
+        time.sleep(0.5)
+    _create_input(client, scene_name, input_name)
+    _set_input_settings(client, input_name, settings)
+    item_id = _find_scene_item_id(client, scene_name, input_name)
+    if item_id is not None:
+        _set_scene_item_enabled(client, scene_name, item_id, True)
+        if original_index is not None:
+            _set_scene_item_index(client, scene_name, item_id, original_index)
+
+
+def _find_remap_node_id(pw_dump_text: str) -> int | None:
+    data = json.loads(pw_dump_text)
+    for obj in data:
+        if not isinstance(obj, dict):
+            continue
+        props = obj.get("info", {}).get("props", {})
+        if props.get("node.name") != EXPECTED_TARGET_NAME:
+            continue
+        node_id = obj.get("id")
+        return node_id if isinstance(node_id, int) else None
+    return None
+
+
+def _find_remap_target_id(pw_dump_text: str) -> int | None:
+    data = json.loads(pw_dump_text)
+    for obj in data:
+        if not isinstance(obj, dict):
+            continue
+        props = obj.get("info", {}).get("props", {})
+        if props.get("node.name") != EXPECTED_TARGET_NAME:
+            continue
+        try:
+            return int(props.get("object.serial"))
+        except (TypeError, ValueError):
+            node_id = obj.get("id")
+            return node_id if isinstance(node_id, int) else None
+    return None
+
+
+def _current_remap_ids() -> tuple[int | None, int | None]:
+    pw_dump_text = _run_text(["pw-dump"])
+    return _find_remap_node_id(pw_dump_text), _find_remap_target_id(pw_dump_text)
+
+
+def _obs_links_complete(pw_link_text: str) -> bool:
+    found = {"FL": False, "FR": False}
+    current: str | None = None
+    target_re = {
+        channel: re.compile(rf"^OBS: {re.escape(PIPEWIRE_INPUT_NAME)}:input_{channel}$")
+        for channel in found
+    }
+    for raw_line in pw_link_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if not raw_line.startswith((" ", "\t")):
+            current = line
+            continue
+        if current is None or not line.startswith("|->"):
+            continue
+        target = line.removeprefix("|->").strip()
+        for channel in found:
+            source = f"{EXPECTED_TARGET_NAME}:capture_{channel}"
+            if current == source and target_re[channel].match(target):
+                found[channel] = True
+    return all(found.values())
+
+
+def _obs_pipewire_links_safe(pw_link_text: str) -> bool:
+    current: str | None = None
+    pipewire_input_re = re.compile(rf"^OBS: {re.escape(PIPEWIRE_INPUT_NAME)}:input_(FL|FR)$")
+    allowed_sources = {
+        f"{EXPECTED_TARGET_NAME}:capture_FL",
+        f"{EXPECTED_TARGET_NAME}:capture_FR",
+    }
+    for raw_line in pw_link_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if not raw_line.startswith((" ", "\t")):
+            current = line
+            continue
+        if current is None or not line.startswith("|->"):
+            continue
+        target = line.removeprefix("|->").strip()
+        if pipewire_input_re.match(target) and current not in allowed_sources:
+            return False
+    return True
+
+
+def _wait_for_obs_links(timeout_s: float) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            link_text = _run_text(["pw-link", "-l"])
+            if _obs_links_complete(link_text) and _obs_pipewire_links_safe(link_text):
+                return True
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.25)
+
+
+def _disable_legacy_pulse_input(client: Any, scene_name: str, source_name: str) -> bool:
+    disabled = False
+    item_id = _find_scene_item_id(client, scene_name, source_name)
+    if item_id is not None:
+        _set_scene_item_enabled(client, scene_name, item_id, False)
+        disabled = True
+    if _input_exists(client, source_name):
+        _set_input_mute(client, source_name, True)
+        disabled = True
+    return disabled
+
+
+def _bind_obs_audio(args: argparse.Namespace) -> BindStatus:
+    remap_node_id, remap_target_id = _current_remap_ids()
+    if remap_node_id is None:
+        return BindStatus(
+            state="remap_missing",
+            ok=False,
+            remap_node_id=None,
+            remap_target_id=None,
+            scene_name=None,
+            input_name=args.input_name,
+            settings_target_name=None,
+            links_complete=False,
+            legacy_pulse_disabled=None,
+            recreated_input=False,
+            reason="PipeWire node hapax-obs-broadcast-remap was not present",
+        )
+
+    try:
+        client = _connect(args.host, args.port)
+    except Exception as exc:
+        return BindStatus(
+            state="obs_unavailable",
+            ok=not args.require_obs,
+            remap_node_id=remap_node_id,
+            remap_target_id=remap_target_id,
+            scene_name=args.scene,
+            input_name=args.input_name,
+            settings_target_name=None,
+            links_complete=False,
+            legacy_pulse_disabled=None,
+            recreated_input=False,
+            reason=f"{type(exc).__name__}: {exc}",
+        )
+
+    scene_name = args.scene or _get_current_scene(client)
+    if not _input_exists(client, args.input_name):
+        _create_input(client, scene_name, args.input_name)
+
+    target_settings = {"TargetName": EXPECTED_TARGET_NAME, "TargetId": remap_target_id}
+    recreated_input = False
+    _set_input_settings(client, args.input_name, target_settings)
+    _set_input_mute(client, args.input_name, False)
+    _set_input_volume(client, args.input_name, 1.0)
+    _set_input_monitor_none(client, args.input_name)
+
+    item_id = _find_scene_item_id(client, scene_name, args.input_name)
+    if item_id is not None:
+        _set_scene_item_enabled(client, scene_name, item_id, True)
+
+    legacy_disabled = _disable_legacy_pulse_input(client, scene_name, args.legacy_pulse_name)
+
+    settings = _get_input_settings(client, args.input_name)
+    target_name = settings.get("TargetName")
+    links_complete = _wait_for_obs_links(args.wait_links_s)
+    if not links_complete and args.recreate_input_on_missing_links:
+        _recreate_pipewire_input(client, scene_name, args.input_name, target_settings)
+        _set_input_mute(client, args.input_name, False)
+        _set_input_volume(client, args.input_name, 1.0)
+        _set_input_monitor_none(client, args.input_name)
+        recreated_input = True
+        settings = _get_input_settings(client, args.input_name)
+        target_name = settings.get("TargetName")
+        links_complete = _wait_for_obs_links(args.wait_links_s)
+
+    ok = target_name == EXPECTED_TARGET_NAME and links_complete
+    reason = None
+    state = "bound"
+    if target_name != EXPECTED_TARGET_NAME:
+        state = "target_name_mismatch"
+        reason = f"OBS settings TargetName={target_name!r}"
+    elif not links_complete:
+        state = "links_missing"
+        reason = "OBS PipeWire input did not expose both remap capture links"
+
+    return BindStatus(
+        state=state,
+        ok=ok,
+        remap_node_id=remap_node_id,
+        remap_target_id=remap_target_id,
+        scene_name=scene_name,
+        input_name=args.input_name,
+        settings_target_name=target_name if isinstance(target_name, str) else None,
+        links_complete=links_complete,
+        legacy_pulse_disabled=legacy_disabled,
+        recreated_input=recreated_input,
+        reason=reason,
+    )
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default="localhost")
+    parser.add_argument("--port", type=int, default=4455)
+    parser.add_argument("--scene", default=None)
+    parser.add_argument("--input-name", default=PIPEWIRE_INPUT_NAME)
+    parser.add_argument("--legacy-pulse-name", default=LEGACY_PULSE_INPUT_NAME)
+    parser.add_argument("--status-path", type=Path, default=STATUS_PATH)
+    parser.add_argument("--wait-links-s", type=float, default=3.0)
+    parser.add_argument(
+        "--no-recreate-input-on-missing-links",
+        dest="recreate_input_on_missing_links",
+        action="store_false",
+        help="Do not recreate the canonical PipeWire input when retargeting leaves no OBS links.",
+    )
+    parser.set_defaults(recreate_input_on_missing_links=True)
+    parser.add_argument(
+        "--require-obs",
+        action="store_true",
+        help="Return non-zero when OBS websocket is unavailable.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        status = _bind_obs_audio(args)
+    except Exception as exc:
+        status = BindStatus(
+            state="bind_failed",
+            ok=False,
+            remap_node_id=None,
+            remap_target_id=None,
+            scene_name=args.scene,
+            input_name=args.input_name,
+            settings_target_name=None,
+            links_complete=False,
+            legacy_pulse_disabled=None,
+            recreated_input=False,
+            reason=f"{type(exc).__name__}: {exc}",
+        )
+    payload = {
+        **asdict(status),
+        "checked_at_epoch": time.time(),
+        "expected_target_name": EXPECTED_TARGET_NAME,
+    }
+    _atomic_write_json(args.status_path, payload)
+    print(json.dumps(payload, sort_keys=True))
+    return 0 if status.ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
