@@ -301,6 +301,7 @@ def record_drop(
     target: str | None = None,
     media_role: str | None = None,
     text: str | None = None,
+    error: str | None = None,
     impulse_id: str | None = None,
     terminal_state: ImpulseTerminalState = "failed",
     path: Path = WITNESS_PATH,
@@ -334,6 +335,7 @@ def record_drop(
             "reason": reason,
             "target": target,
             "media_role": media_role,
+            "error": error,
         },
         last_narration_impulse=impulse_update,
     )

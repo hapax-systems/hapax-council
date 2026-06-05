@@ -324,6 +324,7 @@ class ConversationPipeline:
         # Build source-appropriate prompt
         if source == "imagination":
             narrative = content.get("narrative", "")
+            metric = narrative
             prompt = (
                 "You just had a thought worth sharing with the operator. "
                 "Express it naturally and concisely — 1-3 sentences. "
@@ -431,7 +432,7 @@ class ConversationPipeline:
                     terminal_state="failed",
                 )
                 log.debug("Cascade recruited speech but LLM chose silence")
-        except Exception:
+        except Exception as exc:
             from agents.hapax_daimonion.voice_output_witness import record_drop
 
             record_drop(
@@ -441,6 +442,7 @@ class ConversationPipeline:
                 target=destination_target,
                 media_role=destination_role,
                 text=text_for_witness,
+                error=f"{type(exc).__name__}: {exc}",
                 terminal_state="failed",
             )
             log.debug("Spontaneous speech generation failed (non-fatal)", exc_info=True)
