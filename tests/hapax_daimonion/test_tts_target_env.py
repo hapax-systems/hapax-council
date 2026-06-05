@@ -355,6 +355,54 @@ class TestConversationPipelineRoutedAudio:
         )
 
     @pytest.mark.asyncio
+    async def test_spontaneous_speech_rebuilds_missing_system_context(self, monkeypatch):
+        pipeline = ConversationPipeline(
+            stt=None,
+            tts_manager=None,
+            system_prompt="system context",
+            experiment_flags={
+                "phenomenal_stimmung_only": True,
+                "salience_context": False,
+                "sentinel": False,
+                "volatile_lockdown": True,
+            },
+        )
+        pipeline._running = True  # type: ignore[attr-defined]
+        pipeline.state = ConvState.LISTENING
+        pipeline.messages = [{"role": "system", "content": "system context"}]
+        del pipeline._system_context
+        pipeline._speak_sentence = AsyncMock(return_value="Short acknowledgement.")  # type: ignore[method-assign]
+
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.conversation_pipeline._voice_litellm_base",
+            "http://litellm-proxy.test",
+        )
+        monkeypatch.setattr("shared.config.LITELLM_KEY", "test-litellm-key")
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Short acknowledgement."))]
+        )
+        impingement = SimpleNamespace(
+            source="operator.sidechat",
+            strength=1.0,
+            content={
+                "narrative": "private runtime witness for the speech-wave ring",
+                "channel": "sidechat",
+            },
+        )
+
+        with patch("litellm.acompletion", AsyncMock(return_value=response)) as completion:
+            await pipeline.generate_spontaneous_speech(
+                impingement,
+                destination_target="hapax-private",
+                destination_role="Assistant",
+                destination="private",
+            )
+
+        system_message = completion.await_args.kwargs["messages"][0]["content"]
+        assert system_message.endswith("system context")
+        pipeline._speak_sentence.assert_awaited_once()  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
     async def test_spontaneous_speech_generation_failure_records_error(self, monkeypatch):
         pipeline = object.__new__(ConversationPipeline)
         pipeline._running = True  # type: ignore[attr-defined]
