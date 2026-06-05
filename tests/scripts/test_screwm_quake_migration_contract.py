@@ -295,6 +295,29 @@ def test_darkplaces_fork_patch_uploads_live_media_into_world_textures() -> None:
     assert "R_HapaxLiveTexture_Update();" in patch
 
 
+def test_darkplaces_fork_patch_material_flags_world_drift_eligibility() -> None:
+    patch = (REPO_ROOT / "assets" / "quake" / "darkplaces" / "hapax-live-texture.patch").read_text(
+        encoding="utf-8"
+    )
+
+    assert "#define MATERIALFLAG_HAPAXDRIFT 0x00400000" in patch
+    assert "qbool dphapaxdrift;" in patch
+    assert '"hapax_drift"' in patch
+    assert '"dphapaxdrift"' in patch
+    assert "shader.dphapaxdrift = true;" in patch
+    assert "texture->basematerialflags |= MATERIALFLAG_HAPAXDRIFT;" in patch
+    assert "static qbool Mod_HapaxDriftEligibleTextureName" in patch
+    for texture_prefix in ('"drift_"', '"hex_"', '"stipple_"', '"geometry"'):
+        assert texture_prefix in patch
+
+    setup_start = patch.index("void R_SetupShader_Surface")
+    setup_end = patch.index("if (t->currentmaterialflags & MATERIALFLAG_ALPHATEST)", setup_start)
+    setup_block = patch[setup_start:setup_end]
+    assert "t->currentmaterialflags & MATERIALFLAG_HAPAXDRIFT" in setup_block
+    assert 'strncmp(t->name, "drift_"' not in setup_block
+    assert "rsurface.entity && rsurface.entity != r_refdef.scene.worldentity" in setup_block
+
+
 def test_screwm_live_media_sources_apply_receiver_local_drift() -> None:
     media_source = (REPO_ROOT / "scripts" / "quake-live-media-source.py").read_text(
         encoding="utf-8"
