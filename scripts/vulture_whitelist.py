@@ -714,6 +714,13 @@ WorldCapabilityRegistry.records_for_domain
 WorldCapabilityRegistry.records_for_surface_ref
 WorldCapabilityRegistry.blocked_reason_codes
 
+# Screwm unified-fx Phase 2a exposes these source-only legibility-floor
+# helpers before the live activation/recruiter task consumes them. The tests
+# pin the contract; the runtime call path deliberately waits for a governed
+# visual witness task.
+screwm_ampmax_safe_from_bounds
+classify_screwm_geometry_legibility
+
 # Semantic recruitment row helpers are the public contract for the downstream
 # classification registry sweep and WCS adapters. Pydantic invokes validators
 # dynamically; downstream tasks consume projection helpers after this schema
