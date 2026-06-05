@@ -1,0 +1,733 @@
+schema_version: 1
+description: "Offline mk5 port-level graph for Phase 1+2 compiler/proof work."
+
+clock:
+  rate: 44100
+  allowed_rates: [44100]
+
+constants:
+  egress_target_lufs_i: EGRESS_TARGET_LUFS_I
+  egress_true_peak_dbtp: EGRESS_TRUE_PEAK_DBTP
+  pre_norm_target_lufs_i: PRE_NORM_TARGET_LUFS_I
+  pre_norm_true_peak_dbtp: PRE_NORM_TRUE_PEAK_DBTP
+  master_input_makeup_db: MASTER_INPUT_MAKEUP_DB
+  duck_depth_operator_voice_db: DUCK_DEPTH_OPERATOR_VOICE_DB
+  duck_depth_tts_db: DUCK_DEPTH_TTS_DB
+
+reconciler:
+  desired_link_format: "source_node:source_port|target_node:target_port"
+  forbidden_runs_last: true
+  reload_interval_ticks: 60
+
+devices:
+  motu_mk5:
+    kind: alsa
+    description: "MOTU UltraLite-mk5, live ACP pro-audio node family."
+    match:
+      device.name: "~alsa_card.usb-MOTU_UltraLite-mk5.*"
+    profile: pro-audio
+    api_alsa_use_acp: true
+    ports:
+      rode_in:
+        ref: "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX0"
+        exposure: broadcast
+        direction: output
+        channel: AUX0
+        description: "Rode Wireless Pro on mk5 IN1/AUX0."
+      s4_return_l:
+        ref: "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX2"
+        exposure: hardware_opaque
+        direction: output
+        channel: AUX2
+        description: "Opaque S-4 analog return L."
+      s4_return_r:
+        ref: "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX3"
+        exposure: hardware_opaque
+        direction: output
+        channel: AUX3
+        description: "Opaque S-4 analog return R."
+      microcosm_return:
+        ref: "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX5"
+        exposure: hardware_opaque
+        direction: output
+        channel: AUX5
+        description: "Opaque Microcosm return, disabled by default."
+      mpc_return:
+        ref: "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX6"
+        exposure: hardware_opaque
+        direction: output
+        channel: AUX6
+        description: "Opaque MPC return, disabled by default."
+      s4_send_l:
+        ref: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX2"
+        exposure: hardware_opaque
+        direction: input
+        channel: AUX2
+        description: "S-4 analog send L; protected public/private on-ramp."
+        tags: [protected_public_target]
+      s4_send_r:
+        ref: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX3"
+        exposure: hardware_opaque
+        direction: input
+        channel: AUX3
+        description: "S-4 analog send R; protected public/private on-ramp."
+        tags: [protected_public_target]
+      private_out5:
+        ref: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX4"
+        exposure: private
+        direction: input
+        channel: AUX4
+        description: "OUT5/AUX4 private comms monitor."
+      mpc_send:
+        ref: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX6"
+        exposure: hardware_opaque
+        direction: input
+        channel: AUX6
+        description: "Optional MPC character send, disabled by default."
+      microcosm_send:
+        ref: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX7"
+        exposure: hardware_opaque
+        direction: input
+        channel: AUX7
+        description: "Optional Microcosm character send, disabled by default."
+      phones_l:
+        ref: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX10"
+        exposure: broadcast_monitor
+        direction: input
+        channel: AUX10
+        description: "Phones L, post-master livestream confidence."
+        tags: [protected_public_target]
+      phones_r:
+        ref: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX11"
+        exposure: broadcast_monitor
+        direction: input
+        channel: AUX11
+        description: "Phones R, post-master livestream confidence."
+        tags: [protected_public_target]
+  s4:
+    kind: opaque_hardware
+    description: "Torso S-4; analog insert only in this model, USB node unused."
+    disabled_by_default: true
+    hardware_opaque: true
+  mpc:
+    kind: opaque_hardware
+    description: "Akai MPC optional character; not a required route."
+    disabled_by_default: true
+    hardware_opaque: true
+  microcosm:
+    kind: opaque_hardware
+    description: "Hologram Microcosm optional character; not a required route."
+    disabled_by_default: true
+    hardware_opaque: true
+  m8:
+    kind: opaque_hardware
+    description: "M8 hardware instrument; disabled from software wet/voice return."
+    disabled_by_default: true
+    hardware_opaque: true
+
+nodes:
+  role-broadcast:
+    kind: role
+    exposure: broadcast
+    description: "Broadcast media-role loopback output."
+    ports:
+      output_FL: {exposure: broadcast, direction: output}
+      output_FR: {exposure: broadcast, direction: output}
+  role-assistant:
+    kind: role
+    exposure: private
+    description: "Assistant private role loopback output."
+    ports:
+      output_FL: {exposure: private, direction: output}
+  role-notification:
+    kind: role
+    exposure: notification
+    description: "Notification private role loopback output."
+    ports:
+      output_FL: {exposure: notification, direction: output}
+  hapax-mic-rode-capture:
+    kind: source
+    exposure: broadcast
+    description: "Pinned mono Rode capture wrapper."
+    ports:
+      input_MONO:
+        exposure: broadcast
+        direction: input
+        target_object_pinned: true
+        autoconnect: false
+        dont_reconnect: true
+        tags: [capture_pin_required]
+      output_MONO: {exposure: broadcast, direction: output}
+  hapax-mic-rode-playback:
+    kind: source
+    exposure: broadcast
+    description: "Rode dry-safe public speech source."
+    ports:
+      input_MONO: {exposure: broadcast, direction: input}
+      output_MONO: {exposure: broadcast, direction: output}
+  hapax-voice-fx-capture:
+    kind: normalizer
+    exposure: broadcast
+    description: "Broadcast TTS voice-fx capture entry; broadcast role only."
+    ports:
+      input_FL: {exposure: broadcast, direction: input, tags: [protected_public_target]}
+      input_FR: {exposure: broadcast, direction: input, tags: [protected_public_target]}
+      output_FL: {exposure: broadcast, direction: output}
+      output_FR: {exposure: broadcast, direction: output}
+  hapax-loudnorm-capture:
+    kind: normalizer
+    exposure: broadcast
+    description: "TTS loudnorm capture entry."
+    ports:
+      input_FL: {exposure: broadcast, direction: input, tags: [protected_public_target]}
+      input_FR: {exposure: broadcast, direction: input, tags: [protected_public_target]}
+      output_FL: {exposure: broadcast, direction: output}
+      output_FR: {exposure: broadcast, direction: output}
+  hapax-voice-wet-capture:
+    kind: hardware_insert
+    exposure: broadcast
+    description: "Protected S-4 wet return capture entry; no M8 double-feed."
+    ports:
+      input_FL: {exposure: broadcast, direction: input, tags: [protected_public_target]}
+      input_FR: {exposure: broadcast, direction: input, tags: [protected_public_target]}
+      output_FL: {exposure: broadcast, direction: output}
+      output_FR: {exposure: broadcast, direction: output}
+  hapax-wet-broadcast-tts:
+    kind: wet
+    exposure: broadcast
+    description: "Software wet path for broadcast TTS."
+    ports:
+      input_FL: {exposure: broadcast, direction: input}
+      input_FR: {exposure: broadcast, direction: input}
+      output_FL: {exposure: broadcast, direction: output}
+      output_FR: {exposure: broadcast, direction: output}
+  hapax-music-loudnorm-playback:
+    kind: normalizer
+    exposure: broadcast
+    description: "Music source after loudnorm, before wet/duck."
+    ports:
+      output_FL: {exposure: broadcast, direction: output}
+      output_FR: {exposure: broadcast, direction: output}
+  hapax-wet-music-bed:
+    kind: wet
+    exposure: broadcast
+    description: "Software wet path for music bed."
+    ports:
+      input_FL: {exposure: broadcast, direction: input}
+      input_FR: {exposure: broadcast, direction: input}
+      output_FL: {exposure: broadcast, direction: output}
+      output_FR: {exposure: broadcast, direction: output}
+  hapax-duck-music-bed:
+    kind: duck
+    exposure: broadcast
+    description: "Inline duck mixer for music bed, post-wet pre-sum."
+    ports:
+      input_FL: {exposure: broadcast, direction: input}
+      input_FR: {exposure: broadcast, direction: input}
+      output_FL: {exposure: broadcast, direction: output}
+      output_FR: {exposure: broadcast, direction: output}
+  hapax-yt-loudnorm-playback:
+    kind: normalizer
+    exposure: broadcast
+    description: "YouTube/media source after loudnorm, before wet/duck."
+    ports:
+      output_FL: {exposure: broadcast, direction: output}
+      output_FR: {exposure: broadcast, direction: output}
+  hapax-wet-yt-bed:
+    kind: wet
+    exposure: broadcast
+    description: "Software wet path for YouTube bed."
+    ports:
+      input_FL: {exposure: broadcast, direction: input}
+      input_FR: {exposure: broadcast, direction: input}
+      output_FL: {exposure: broadcast, direction: output}
+      output_FR: {exposure: broadcast, direction: output}
+  hapax-duck-yt-bed:
+    kind: duck
+    exposure: broadcast
+    description: "Inline duck mixer for YouTube bed, post-wet pre-sum."
+    ports:
+      input_FL: {exposure: broadcast, direction: input}
+      input_FR: {exposure: broadcast, direction: input}
+      output_FL: {exposure: broadcast, direction: output}
+      output_FR: {exposure: broadcast, direction: output}
+  hapax-wet-assistant-private:
+    kind: wet
+    exposure: private
+    description: "Software wet private assistant path."
+    ports:
+      input_FL: {exposure: private, direction: input}
+      output_FL: {exposure: private, direction: output}
+  hapax-wet-notification-private:
+    kind: wet
+    exposure: notification
+    description: "Software wet private notification path."
+    ports:
+      input_FL: {exposure: notification, direction: input}
+      output_FL: {exposure: notification, direction: output}
+  hapax-private:
+    kind: bus
+    exposure: private
+    description: "Private sum bus, OUT5/AUX4 only."
+    ports:
+      input_FL: {exposure: private, direction: input}
+      output_FL: {exposure: private, direction: output}
+  hapax-pc-loudnorm-playback:
+    kind: quarantine
+    exposure: quarantine
+    description: "Default sink/fail-closed multimedia quarantine."
+    ports:
+      output_FL:
+        exposure: quarantine
+        direction: output
+        default_sink_eligible: true
+      output_FR:
+        exposure: quarantine
+        direction: output
+        default_sink_eligible: true
+  m8-capture:
+    kind: source
+    exposure: hardware_opaque
+    description: "M8 hardware source; explicitly blocked from voice wet return."
+    ports:
+      output_FL: {exposure: hardware_opaque, direction: output}
+      output_FR: {exposure: hardware_opaque, direction: output}
+  bus-public-voice:
+    kind: bus
+    exposure: broadcast
+    description: "Public voice bus."
+    ports:
+      input_FL: {exposure: broadcast, direction: input}
+      input_FR: {exposure: broadcast, direction: input}
+      output_FL: {exposure: broadcast, direction: output}
+      output_FR: {exposure: broadcast, direction: output}
+  bus-public-program:
+    kind: bus
+    exposure: broadcast
+    description: "Public program/music bus."
+    ports:
+      input_FL: {exposure: broadcast, direction: input}
+      input_FR: {exposure: broadcast, direction: input}
+      output_FL: {exposure: broadcast, direction: output}
+      output_FR: {exposure: broadcast, direction: output}
+  hapax-livestream-tap:
+    kind: bus
+    exposure: broadcast
+    description: "Public livestream sum tap."
+    ports:
+      playback_FL: {exposure: broadcast, direction: input, tags: [protected_public_target]}
+      playback_FR: {exposure: broadcast, direction: input, tags: [protected_public_target]}
+      monitor_FL:
+        exposure: broadcast_monitor
+        direction: monitor
+        monitor_port: true
+        autoconnect: false
+        dont_reconnect: true
+        dont_move: true
+      monitor_FR:
+        exposure: broadcast_monitor
+        direction: monitor
+        monitor_port: true
+        autoconnect: false
+        dont_reconnect: true
+        dont_move: true
+  hapax-broadcast-master-capture:
+    kind: processor
+    exposure: broadcast_processor
+    description: "Broadcast master loopback capture side."
+    ports:
+      input_FL: {exposure: broadcast_processor, direction: input, tags: [protected_public_target]}
+      input_FR: {exposure: broadcast_processor, direction: input, tags: [protected_public_target]}
+      output_FL: {exposure: broadcast_processor, direction: output}
+      output_FR: {exposure: broadcast_processor, direction: output}
+  hapax-broadcast-master:
+    kind: processor
+    exposure: broadcast_processor
+    description: "Broadcast master source side."
+    ports:
+      capture_FL:
+        exposure: broadcast_processor
+        direction: output
+        monitor_port: true
+        autoconnect: false
+        dont_reconnect: true
+        dont_move: true
+      capture_FR:
+        exposure: broadcast_processor
+        direction: output
+        monitor_port: true
+        autoconnect: false
+        dont_reconnect: true
+        dont_move: true
+  hapax-broadcast-normalized-capture:
+    kind: processor
+    exposure: broadcast_processor
+    description: "Safety-Net Limiter capture side."
+    ports:
+      input_FL: {exposure: broadcast_processor, direction: input, tags: [protected_public_target]}
+      input_FR: {exposure: broadcast_processor, direction: input, tags: [protected_public_target]}
+      output_FL: {exposure: broadcast_egress, direction: output}
+      output_FR: {exposure: broadcast_egress, direction: output}
+  hapax-broadcast-normalized:
+    kind: egress
+    exposure: broadcast_egress
+    description: "Safety-Net Limiter source side; OBS-readable."
+    required_effects: [fast_lookahead_limiter_1913]
+    ports:
+      capture_FL: {exposure: broadcast_egress, direction: output}
+      capture_FR: {exposure: broadcast_egress, direction: output}
+  hapax-obs-broadcast-remap-capture:
+    kind: egress
+    exposure: broadcast_egress
+    description: "OBS stable remap capture side."
+    ports:
+      input_FL: {exposure: broadcast_egress, direction: input, tags: [protected_public_target]}
+      input_FR: {exposure: broadcast_egress, direction: input, tags: [protected_public_target]}
+      output_FL: {exposure: broadcast_egress, direction: output}
+      output_FR: {exposure: broadcast_egress, direction: output}
+  hapax-obs-broadcast-remap:
+    kind: egress
+    exposure: broadcast_egress
+    description: "Stable OBS broadcast source."
+    ports:
+      capture_FL: {exposure: broadcast_egress, direction: output}
+      capture_FR: {exposure: broadcast_egress, direction: output}
+
+roles:
+  broadcast_voice:
+    media_role: Broadcast
+    default_bus: bus.public.voice
+    fallback_target: none
+    broadcast_voice_role: true
+  assistant_private:
+    media_role: Assistant
+    default_bus: bus.private
+    fallback_target: none
+  notification_private:
+    media_role: Notification
+    default_bus: bus.private
+    fallback_target: none
+  multimedia_quarantine:
+    media_role: Multimedia
+    default_bus: bus.quarantine
+    fallback_target: none
+
+sources:
+  operator_mic:
+    kind: hardware_capture
+    exposure: broadcast
+    role: broadcast_voice
+    source_port: "hapax-mic-rode-playback:output_MONO"
+    output_bus: bus.public.voice
+    modulation: dry
+    broadcast_eligible: true
+    authority_case: operator_mic_public
+    dry_safe: true
+    dry_allowed: true
+    never_drop: true
+    duck_trigger: operator_voice
+  broadcast_tts:
+    kind: role_loopback
+    exposure: broadcast
+    role: broadcast_voice
+    source_port: "role-broadcast:output_FL"
+    output_bus: bus.public.voice
+    modulation: software_wet
+    broadcast_eligible: true
+    authority_case: tts_public
+    wet_profile: speech_subtle
+    dry_safe: true
+    duck_trigger: tts_voice
+    ducked_by: [operator_voice]
+  music_bed:
+    kind: application_stream
+    exposure: broadcast
+    role: multimedia_quarantine
+    source_port: "hapax-music-loudnorm-playback:output_FL"
+    output_bus: bus.public.program
+    modulation: software_wet
+    broadcast_eligible: true
+    authority_case: music_public_rights_checked
+    rights_required: true
+    provenance_refs: [music_policy_ref]
+    wet_profile: program_subtle
+    ducked_by: [operator_voice, tts_voice]
+  yt_bed:
+    kind: application_stream
+    exposure: broadcast
+    role: multimedia_quarantine
+    source_port: "hapax-yt-loudnorm-playback:output_FL"
+    output_bus: bus.public.program
+    modulation: software_wet
+    broadcast_eligible: true
+    authority_case: youtube_public_rights_checked
+    rights_required: true
+    provenance_refs: [youtube_policy_ref]
+    wet_profile: program_subtle
+    ducked_by: [operator_voice, tts_voice]
+  assistant_private:
+    kind: role_loopback
+    exposure: private
+    role: assistant_private
+    source_port: "role-assistant:output_FL"
+    output_bus: bus.private
+    modulation: software_wet
+    wet_profile: private_subtle
+  notification_private:
+    kind: role_loopback
+    exposure: notification
+    role: notification_private
+    source_port: "role-notification:output_FL"
+    output_bus: bus.private
+    modulation: software_wet
+    wet_profile: private_subtle
+  m8_instrument:
+    kind: instrument
+    exposure: hardware_opaque
+    role: multimedia_quarantine
+    source_port: "m8-capture:output_FL"
+    output_bus: bus.quarantine
+    modulation: hardware_character
+    hardware_insert: m8_self
+    active: false
+
+wet_profiles:
+  speech_subtle:
+    template: hapax-wet
+    wet_mix_min: 0.08
+    wet_mix_default: 0.18
+    dry_gain_db_default: -1.5
+    controls:
+      - {plugin: multivoice_chorus_1201, control: "Number of voices", default: 2, min: 1, max: 8, unit: voices, smooth_ms: 500}
+      - {plugin: multivoice_chorus_1201, control: "Detune (%)", default: 0.6, min: 0, max: 5, unit: percent, smooth_ms: 500}
+      - {plugin: plate_1423, control: "Reverb time", default: 0.65, min: 0.01, max: 8.5, unit: seconds, smooth_ms: 1000}
+      - {plugin: plate_1423, control: Damping, default: 0.42, min: 0, max: 1, smooth_ms: 1000}
+      - {plugin: lcr_delay_1436, control: "L delay (ms)", default: 42, min: 0, max: 2700, unit: ms, smooth_ms: 500}
+      - {plugin: lcr_delay_1436, control: "R delay (ms)", default: 68, min: 0, max: 2700, unit: ms, smooth_ms: 500}
+      - {plugin: fast_lookahead_limiter_1913, control: "Input gain (dB)", default: 0, min: -20, max: 20, unit: dB, smooth_ms: 50}
+  program_subtle:
+    template: hapax-wet
+    wet_mix_min: 0.08
+    wet_mix_default: 0.16
+    dry_gain_db_default: -1.5
+    controls:
+      - {plugin: multivoice_chorus_1201, control: "Number of voices", default: 2, min: 1, max: 8, unit: voices, smooth_ms: 500}
+      - {plugin: plate_1423, control: "Reverb time", default: 0.55, min: 0.01, max: 8.5, unit: seconds, smooth_ms: 1000}
+      - {plugin: lcr_delay_1436, control: "Feedback", default: 8, min: -100, max: 100, unit: percent, smooth_ms: 500}
+      - {plugin: fast_lookahead_limiter_1913, control: "Input gain (dB)", default: 0, min: -20, max: 20, unit: dB, smooth_ms: 50}
+  private_subtle:
+    template: hapax-wet
+    wet_mix_min: 0.08
+    wet_mix_default: 0.12
+    dry_gain_db_default: -3
+    controls:
+      - {plugin: plate_1423, control: "Reverb time", default: 0.45, min: 0.01, max: 8.5, unit: seconds, smooth_ms: 1000}
+      - {plugin: fast_lookahead_limiter_1913, control: "Input gain (dB)", default: 0, min: -20, max: 20, unit: dB, smooth_ms: 50}
+
+hardware_inserts:
+  s4_livestream_lane:
+    kind: opaque_analog_insert
+    send: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX3"
+    return: "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX3"
+    exposure: hardware_opaque
+    enabled_by_default: false
+    isolation_credit: false
+    failure_policy: bypass
+    evidence_required: [no_crossfeed_watermark_test, scene_recall_witness]
+  s4_private_lane:
+    kind: opaque_analog_insert
+    send: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX2"
+    return: "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX2"
+    exposure: hardware_opaque
+    enabled_by_default: false
+    isolation_credit: false
+    failure_policy: bypass
+    evidence_required: [no_crossfeed_watermark_test, scene_recall_witness]
+  mpc_character:
+    kind: opaque_analog_insert
+    send: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX6"
+    return: "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX6"
+    exposure: hardware_opaque
+    enabled_by_default: false
+    isolation_credit: false
+    failure_policy: bypass
+  microcosm_character:
+    kind: opaque_analog_insert
+    send: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX7"
+    return: "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX5"
+    exposure: hardware_opaque
+    enabled_by_default: false
+    isolation_credit: false
+    failure_policy: bypass
+  m8_self:
+    kind: instrument
+    exposure: hardware_opaque
+    enabled_by_default: false
+    isolation_credit: false
+    failure_policy: quarantine
+
+buses:
+  bus.public.voice:
+    exposure: broadcast
+    kind: source_bus
+    accepts: [broadcast]
+    feeds: [hapax-livestream-tap]
+  bus.public.program:
+    exposure: broadcast
+    kind: source_bus
+    accepts: [broadcast]
+    feeds: [hapax-livestream-tap]
+  bus.private:
+    exposure: private
+    kind: source_bus
+    accepts: [private, notification]
+    feeds: [hapax-private]
+  bus.quarantine:
+    exposure: quarantine
+    kind: quarantine
+    accepts: [quarantine, unknown, disabled, hardware_opaque]
+    feeds: []
+  hapax-livestream-tap:
+    exposure: broadcast
+    kind: sum
+    accepts: [broadcast]
+    feeds: [hapax-broadcast-master]
+  hapax-broadcast-master:
+    exposure: broadcast_processor
+    kind: processor
+    accepts: [broadcast]
+    feeds: [hapax-broadcast-normalized]
+  hapax-broadcast-normalized:
+    exposure: broadcast_egress
+    kind: egress
+    accepts: [broadcast_processor]
+    feeds: [hapax-obs-broadcast-remap]
+    required_effects: [fast_lookahead_limiter_1913]
+  hapax-obs-broadcast-remap:
+    exposure: broadcast_egress
+    kind: egress
+    accepts: [broadcast_egress]
+    feeds: []
+
+monitors:
+  livestream_phones:
+    source: "hapax-broadcast-normalized:capture_FL"
+    target: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX10"
+    exposure: broadcast_monitor
+    exclusive: true
+    post_master: true
+  livestream_phones_r:
+    source: "hapax-broadcast-normalized:capture_FR"
+    target: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX11"
+    exposure: broadcast_monitor
+    exclusive: true
+    post_master: true
+  private_out5:
+    source: "hapax-private:output_FL"
+    target: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX4"
+    exposure: private
+    exclusive: true
+    post_master: false
+
+fence:
+  default_exposure: quarantine
+  default_sink: hapax-pc-loudnorm-playback
+  obs_allowed_sources: [hapax-obs-broadcast-remap, hapax-broadcast-normalized]
+  forbidden_from_domains: [private, notification, quarantine, unknown, disabled, failed, hardware_opaque]
+  forbidden_to_domains: [broadcast, broadcast_processor, broadcast_egress, broadcast_monitor]
+  protected_target_tag: protected_public_target
+  layer_c_forbidden_target_patterns:
+    - "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX2"
+    - "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX3"
+    - "hapax-voice-wet"
+  gain_budget_ceiling_db: 24
+  m8_voice_wet_block_required: true
+  known_blocked_links:
+    - source: "m8-capture:output_FL"
+      target: "hapax-voice-wet-capture:input_FL"
+      reason: "PF12 M8 double-feed into voice wet is blocked unless explicitly authorized."
+    - source: "m8-capture:output_FR"
+      target: "hapax-voice-wet-capture:input_FR"
+      reason: "PF12 M8 double-feed into voice wet is blocked unless explicitly authorized."
+
+internal_edges:
+  - {source: "hapax-mic-rode-capture:input_MONO", target: "hapax-mic-rode-capture:output_MONO"}
+  - {source: "hapax-mic-rode-playback:input_MONO", target: "hapax-mic-rode-playback:output_MONO"}
+  - {source: "hapax-voice-fx-capture:input_FL", target: "hapax-voice-fx-capture:output_FL"}
+  - {source: "hapax-voice-fx-capture:input_FR", target: "hapax-voice-fx-capture:output_FR"}
+  - {source: "hapax-loudnorm-capture:input_FL", target: "hapax-loudnorm-capture:output_FL"}
+  - {source: "hapax-loudnorm-capture:input_FR", target: "hapax-loudnorm-capture:output_FR"}
+  - {source: "hapax-voice-wet-capture:input_FL", target: "hapax-voice-wet-capture:output_FL"}
+  - {source: "hapax-voice-wet-capture:input_FR", target: "hapax-voice-wet-capture:output_FR"}
+  - {source: "hapax-wet-broadcast-tts:input_FL", target: "hapax-wet-broadcast-tts:output_FL"}
+  - {source: "hapax-wet-broadcast-tts:input_FR", target: "hapax-wet-broadcast-tts:output_FR"}
+  - {source: "hapax-wet-music-bed:input_FL", target: "hapax-wet-music-bed:output_FL"}
+  - {source: "hapax-wet-music-bed:input_FR", target: "hapax-wet-music-bed:output_FR"}
+  - {source: "hapax-duck-music-bed:input_FL", target: "hapax-duck-music-bed:output_FL"}
+  - {source: "hapax-duck-music-bed:input_FR", target: "hapax-duck-music-bed:output_FR"}
+  - {source: "hapax-wet-yt-bed:input_FL", target: "hapax-wet-yt-bed:output_FL"}
+  - {source: "hapax-wet-yt-bed:input_FR", target: "hapax-wet-yt-bed:output_FR"}
+  - {source: "hapax-duck-yt-bed:input_FL", target: "hapax-duck-yt-bed:output_FL"}
+  - {source: "hapax-duck-yt-bed:input_FR", target: "hapax-duck-yt-bed:output_FR"}
+  - {source: "hapax-wet-assistant-private:input_FL", target: "hapax-wet-assistant-private:output_FL"}
+  - {source: "hapax-wet-notification-private:input_FL", target: "hapax-wet-notification-private:output_FL"}
+  - {source: "hapax-private:input_FL", target: "hapax-private:output_FL"}
+  - {source: "bus-public-voice:input_FL", target: "bus-public-voice:output_FL"}
+  - {source: "bus-public-voice:input_FR", target: "bus-public-voice:output_FR"}
+  - {source: "bus-public-program:input_FL", target: "bus-public-program:output_FL"}
+  - {source: "bus-public-program:input_FR", target: "bus-public-program:output_FR"}
+  - {source: "hapax-livestream-tap:playback_FL", target: "hapax-livestream-tap:monitor_FL"}
+  - {source: "hapax-livestream-tap:playback_FR", target: "hapax-livestream-tap:monitor_FR"}
+  - {source: "hapax-broadcast-master-capture:input_FL", target: "hapax-broadcast-master-capture:output_FL"}
+  - {source: "hapax-broadcast-master-capture:input_FR", target: "hapax-broadcast-master-capture:output_FR"}
+  - {source: "hapax-broadcast-master-capture:output_FL", target: "hapax-broadcast-master:capture_FL"}
+  - {source: "hapax-broadcast-master-capture:output_FR", target: "hapax-broadcast-master:capture_FR"}
+  - {source: "hapax-broadcast-normalized-capture:input_FL", target: "hapax-broadcast-normalized-capture:output_FL"}
+  - {source: "hapax-broadcast-normalized-capture:input_FR", target: "hapax-broadcast-normalized-capture:output_FR"}
+  - {source: "hapax-broadcast-normalized-capture:output_FL", target: "hapax-broadcast-normalized:capture_FL"}
+  - {source: "hapax-broadcast-normalized-capture:output_FR", target: "hapax-broadcast-normalized:capture_FR"}
+  - {source: "hapax-obs-broadcast-remap-capture:input_FL", target: "hapax-obs-broadcast-remap-capture:output_FL"}
+  - {source: "hapax-obs-broadcast-remap-capture:input_FR", target: "hapax-obs-broadcast-remap-capture:output_FR"}
+  - {source: "hapax-obs-broadcast-remap-capture:output_FL", target: "hapax-obs-broadcast-remap:capture_FL"}
+  - {source: "hapax-obs-broadcast-remap-capture:output_FR", target: "hapax-obs-broadcast-remap:capture_FR"}
+
+desired_links:
+  - {source: "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0:capture_AUX0", target: "hapax-mic-rode-capture:input_MONO"}
+  - {source: "hapax-mic-rode-capture:output_MONO", target: "hapax-mic-rode-playback:input_MONO"}
+  - {source: "hapax-mic-rode-playback:output_MONO", target: "hapax-livestream-tap:playback_FL"}
+  - {source: "hapax-mic-rode-playback:output_MONO", target: "hapax-livestream-tap:playback_FR"}
+  - {source: "role-broadcast:output_FL", target: "hapax-wet-broadcast-tts:input_FL"}
+  - {source: "role-broadcast:output_FR", target: "hapax-wet-broadcast-tts:input_FR"}
+  - {source: "hapax-wet-broadcast-tts:output_FL", target: "bus-public-voice:input_FL"}
+  - {source: "hapax-wet-broadcast-tts:output_FR", target: "bus-public-voice:input_FR"}
+  - {source: "bus-public-voice:output_FL", target: "hapax-livestream-tap:playback_FL"}
+  - {source: "bus-public-voice:output_FR", target: "hapax-livestream-tap:playback_FR"}
+  - {source: "hapax-music-loudnorm-playback:output_FL", target: "hapax-wet-music-bed:input_FL"}
+  - {source: "hapax-music-loudnorm-playback:output_FR", target: "hapax-wet-music-bed:input_FR"}
+  - {source: "hapax-wet-music-bed:output_FL", target: "hapax-duck-music-bed:input_FL"}
+  - {source: "hapax-wet-music-bed:output_FR", target: "hapax-duck-music-bed:input_FR"}
+  - {source: "hapax-duck-music-bed:output_FL", target: "bus-public-program:input_FL"}
+  - {source: "hapax-duck-music-bed:output_FR", target: "bus-public-program:input_FR"}
+  - {source: "hapax-yt-loudnorm-playback:output_FL", target: "hapax-wet-yt-bed:input_FL"}
+  - {source: "hapax-yt-loudnorm-playback:output_FR", target: "hapax-wet-yt-bed:input_FR"}
+  - {source: "hapax-wet-yt-bed:output_FL", target: "hapax-duck-yt-bed:input_FL"}
+  - {source: "hapax-wet-yt-bed:output_FR", target: "hapax-duck-yt-bed:input_FR"}
+  - {source: "hapax-duck-yt-bed:output_FL", target: "bus-public-program:input_FL"}
+  - {source: "hapax-duck-yt-bed:output_FR", target: "bus-public-program:input_FR"}
+  - {source: "bus-public-program:output_FL", target: "hapax-livestream-tap:playback_FL"}
+  - {source: "bus-public-program:output_FR", target: "hapax-livestream-tap:playback_FR"}
+  - {source: "role-assistant:output_FL", target: "hapax-wet-assistant-private:input_FL"}
+  - {source: "hapax-wet-assistant-private:output_FL", target: "hapax-private:input_FL"}
+  - {source: "role-notification:output_FL", target: "hapax-wet-notification-private:input_FL"}
+  - {source: "hapax-wet-notification-private:output_FL", target: "hapax-private:input_FL"}
+  - {source: "hapax-private:output_FL", target: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX4"}
+  - {source: "hapax-livestream-tap:monitor_FL", target: "hapax-broadcast-master-capture:input_FL"}
+  - {source: "hapax-livestream-tap:monitor_FR", target: "hapax-broadcast-master-capture:input_FR"}
+  - {source: "hapax-broadcast-master:capture_FL", target: "hapax-broadcast-normalized-capture:input_FL"}
+  - {source: "hapax-broadcast-master:capture_FR", target: "hapax-broadcast-normalized-capture:input_FR"}
+  - {source: "hapax-broadcast-normalized:capture_FL", target: "hapax-obs-broadcast-remap-capture:input_FL"}
+  - {source: "hapax-broadcast-normalized:capture_FR", target: "hapax-obs-broadcast-remap-capture:input_FR"}
+  - {source: "hapax-broadcast-normalized:capture_FL", target: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX10"}
+  - {source: "hapax-broadcast-normalized:capture_FR", target: "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0:playback_AUX11"}
+
+forbidden_links: []

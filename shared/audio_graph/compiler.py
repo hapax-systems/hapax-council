@@ -20,6 +20,14 @@ from shared.audio_graph.invariants import (
     InvariantViolation,
     check_all_invariants,
 )
+from shared.audio_graph.model import PortAudioGraph
+from shared.audio_graph.proof import ProofReport, generated_forbidden_edges, run_all_proofs
+from shared.audio_graph.render_pipewire import (
+    render_forbidden_link_map,
+    render_link_map,
+    render_pipewire_candidates,
+)
+from shared.audio_graph.render_wireplumber import render_wireplumber_candidates
 from shared.audio_graph.schema import (
     AudioGraph,
     LoopbackTopology,
@@ -87,6 +95,17 @@ class CompiledArtefacts:
     pactl_loads: list[PactlLoad] = field(default_factory=list)
     pre_apply_violations: list[InvariantViolation] = field(default_factory=list)
     post_apply_probes: list[PostApplyProbe] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CandidateBundle:
+    """Offline candidate output for the mk5 port-level compiler."""
+
+    proof_report: ProofReport
+    pipewire_confs: dict[str, str] = field(default_factory=dict)
+    wireplumber_confs: dict[str, str] = field(default_factory=dict)
+    hapax_confs: dict[str, str] = field(default_factory=dict)
+    manifest: dict[str, object] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -311,10 +330,56 @@ def loopbacks_apply_via_pactl(graph: AudioGraph) -> list[LoopbackTopology]:
     return [lb for lb in graph.loopbacks if lb.apply_via_pactl_load]
 
 
+def compile_port_audio_graph(graph: PortAudioGraph) -> CandidateBundle:
+    """Compile the mk5 port-level graph to offline candidate strings.
+
+    This path has no apply/live behavior. If any blocking proof fails, candidate
+    artefact maps are empty and the proof report carries the violations.
+    """
+    proof_report = run_all_proofs(graph)
+    if not proof_report.ok:
+        return CandidateBundle(proof_report=proof_report)
+
+    pipewire = render_pipewire_candidates(graph)
+    wireplumber = render_wireplumber_candidates(graph)
+    hapax = {
+        "hapax/audio-link-map.conf": render_link_map(graph),
+        "hapax/audio-forbidden-links.conf": render_forbidden_link_map(graph),
+    }
+    constants = graph.resolved_loudness_constants()
+    forbidden_keys = {
+        edge.key
+        for edge in (
+            *graph.forbidden_links,
+            *generated_forbidden_edges(graph),
+            *graph.fence.known_blocked_links,
+        )
+    }
+    manifest: dict[str, object] = {
+        "schema_version": graph.schema_version,
+        "clock_rate": graph.clock.rate,
+        "loudness_constants": constants,
+        "desired_link_count": len(graph.desired_links),
+        "forbidden_link_count": len(forbidden_keys),
+        "pipewire_files": sorted(pipewire),
+        "wireplumber_files": sorted(wireplumber),
+        "hapax_files": sorted(hapax),
+    }
+    return CandidateBundle(
+        proof_report=proof_report,
+        pipewire_confs=pipewire,
+        wireplumber_confs=wireplumber,
+        hapax_confs=hapax,
+        manifest=manifest,
+    )
+
+
 __all__ = [
     "CompiledArtefacts",
+    "CandidateBundle",
     "PactlLoad",
     "PostApplyProbe",
     "compile_descriptor",
+    "compile_port_audio_graph",
     "loopbacks_apply_via_pactl",
 ]

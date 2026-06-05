@@ -32,6 +32,7 @@ from shared.archive_replay_sidecar_index import (
     ArchiveReplaySidecarIndexMetrics,
 )
 from shared.artifact_taxonomy import DispositionState, validate_artifact
+from shared.audio_graph.model import AudioEdge, DevicePort, PortAudioGraph, SourceSpec
 from shared.audio_reactivity_runtime_witness import (
     AudioReactivityRuntimeWitnessFixture as _AudioReactivityRuntimeWitnessFixture,
 )
@@ -562,6 +563,15 @@ studio_audio_safe_for_broadcast
 # entrypoint as a static importer.
 check_l12_forward_invariant
 build_topology_truth
+
+# mk5 port-level audio graph: Pydantic invokes these validators dynamically
+# during model validation; node_for_ref is a public graph helper for follow-on
+# compiler/reconciler work.
+DevicePort._ref_is_port_ref
+SourceSpec._one_modulation_path
+AudioEdge._edge_ref_is_port_ref
+PortAudioGraph._references_are_valid
+PortAudioGraph.node_for_ref
 
 # Director vocabulary is a contract surface for future programme scheduler and
 # content runner consumers. Pydantic calls validators dynamically; exported view
