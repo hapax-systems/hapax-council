@@ -34,6 +34,8 @@
 #       try-restart-is-a-no-op-for-a-never-enabled-unit gap). Unmarked new
 #       timers still auto-enable for back-compat; unmarked services do not.
 #   systemd/units/*.service.d/*.conf → cp drop-in + daemon-reload + restart active unit
+#       plus known stale local route-dropin cleanup for units that are being
+#       sourceized out of a temporary worktree override.
 #   systemd/user-preset.d/*.preset → cp user preset
 #   systemd/overrides/**           → source/rationale docs only; no direct deploy
 #   systemd/scripts/*              → installer helper scripts; no direct deploy
@@ -520,6 +522,25 @@ is_audio_safe_restart_unit() {
     return 1
 }
 
+cleanup_known_stale_user_dropins_for_unit() {
+    local unit="$1"
+    case "$unit" in
+        hapax-obs-audio-bind.service)
+            local dropin_dir="$SYSTEMD_USER_DIR/$unit.d"
+            local dropin
+            [ -d "$dropin_dir" ] || return 0
+            for dropin in "$dropin_dir"/*.conf; do
+                [ -f "$dropin" ] || continue
+                if grep -Eq 'hapax-council--codex-audio-l12' "$dropin"; then
+                    echo "  removing stale local drop-in '$dropin'"
+                    rm -f "$dropin" || true
+                fi
+            done
+            rmdir "$dropin_dir" 2>/dev/null || true
+            ;;
+    esac
+}
+
 audio_safe_restart_bin() {
     if [[ -n "${HAPAX_AUDIO_SAFE_RESTART_BIN:-}" ]]; then
         printf '%s\n' "$HAPAX_AUDIO_SAFE_RESTART_BIN"
@@ -831,6 +852,7 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
         if git cat-file -e "$SHA:$f" 2>/dev/null; then
             git show "$SHA:$f" > "$dest"
             echo "  '$f' -> '$dest'"
+            cleanup_known_stale_user_dropins_for_unit "$base"
             SYSTEMD_INSTALLED+=("$f")
         else
             rm -fv "$dest" || true

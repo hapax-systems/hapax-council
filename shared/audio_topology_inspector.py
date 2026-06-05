@@ -96,8 +96,8 @@ _PIPEWIRE_LINK = "PipeWire:Interface:Link"
 # Adding a new classification here is necessary but not sufficient — the
 # classifier function in the script must also produce the new label.
 ALLOWED_RUNTIME_EDGE_CLASSIFICATIONS: tuple[str, ...] = (
-    # Current HN readiness: private monitor binds to MPC Live III AUX8/AUX9.
-    "private-monitor-mpc-live-iii-binding",
+    # Current private monitor binds to MOTU UltraLite mk5 Phones AUX10/AUX11.
+    "private-monitor-mk5-phones-binding",
     # Legacy Yeti pin private-monitor binding.
     "private-monitor-runtime-output-binding",
     # Legacy Option C S-4 track-fenced classification retained only for
@@ -184,12 +184,9 @@ class SceneAssertion:
 
 
 _REQUIRED_L12_DIRECTIONALITY_NODES = {
-    "l12-capture",
-    "l12-usb-return",
     "livestream-tap",
-    "l12-evilpet-capture",
-    "l12-usb-return-capture",
-    "mpc-usb-output",
+    "mk5-output",
+    "mk5-input",
     "private-sink",
     "private-monitor-capture",
     "private-monitor-output",
@@ -204,6 +201,8 @@ _REQUIRED_L12_DIRECTIONALITY_NODES = {
     "pc-loudnorm",
     "voice-fx",
     "tts-loudnorm",
+    "voice-wet",
+    "mic-rode",
 }
 _ALLOWED_L12_RETURN_PRODUCERS: set[str] = set()
 _ALLOWED_L12_RETURN_DIRECTIONS = {"broadcast"}
@@ -233,15 +232,17 @@ _PRIVATE_FORBIDDEN_REACHABILITY = {
     "pc-loudnorm",
     "voice-fx",
     "tts-loudnorm",
+    "voice-wet",
+    "mic-rode",
 }
 _PRIVATE_MONITOR_BRIDGES = {
-    # HN readiness private-TTS monitor bridge targets the MPC Live III
-    # endpoint; the port-level reconciler pins AUX8/AUX9. Notification-private
+    # Current private-TTS monitor bridge targets the MOTU UltraLite mk5 Phones
+    # pair; the port-level reconciler pins AUX10/AUX11. Notification-private
     # remains dead-ended until it has separate route authority.
     "private-monitor-output": (
         "private-monitor-capture",
         "private-sink",
-        ("mpc-usb-output",),
+        ("mk5-output",),
     ),
 }
 _PRIVATE_MONITOR_CAPTURE_NODES = {
@@ -521,19 +522,21 @@ def check_tts_broadcast_path(
     source_name: str = "input.loopback.sink.role.broadcast",
     voice_fx_name: str = "hapax-voice-fx-capture",
     loudnorm_name: str = "hapax-loudnorm-capture",
-    mpc_output_name: str = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0",
-    wet_return_name: str = "hapax-mpc-usb-return-capture",
+    mk5_output_name: str = "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0",
+    mk5_input_name: str = "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0",
+    wet_return_name: str = "hapax-voice-wet-capture",
     target_name: str = "hapax-livestream-tap",
     master_name: str = "hapax-broadcast-master-capture",
 ) -> TtsBroadcastPathCheck:
-    """Verify broadcast TTS has the current MPC path to livestream.
+    """Verify broadcast TTS has the current mk5/S-4 path to livestream.
 
     The retired software bridge was:
     ``hapax-tts-duck -> hapax-tts-broadcast-* -> hapax-livestream-tap``.
-    The current interim baseline (2026-05-29, ZOOM L-12 removed) is MPC-only:
-    ``role.broadcast -> voice-fx -> loudnorm -> MPC USB AUX2/3 -> MPC public
-    mix -> MPC USB out 1/2 -> host capture_AUX0/1 -> mpc-usb-return-capture ->
-    livestream-tap``. (Previously the wet return ran via the L-12.)
+    The current baseline (2026-06-02, MOTU UltraLite mk5 + S-4) is:
+    ``role.broadcast -> voice-fx -> loudnorm -> mk5 OUT AUX2/3 -> S-4 analog
+    insert -> mk5 IN AUX2/3 -> voice-wet-capture -> livestream-tap``.
+    (Previously the return ran through the interim MPC USB return and, before
+    that, through the L-12.)
 
     ``pw-dump`` does not expose every port-level link in that chain as
     descriptor edges, so this check treats the current path as healthy when
@@ -546,7 +549,8 @@ def check_tts_broadcast_path(
         source_name,
         voice_fx_name,
         loudnorm_name,
-        mpc_output_name,
+        mk5_output_name,
+        mk5_input_name,
         wet_return_name,
         target_name,
         master_name,
@@ -1017,7 +1021,11 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
                     )
                 )
 
-    if not _can_reach(graph, "l12-capture", "livestream-tap"):
+    if node("l12-capture") is not None and not _can_reach(
+        graph,
+        "l12-capture",
+        "livestream-tap",
+    ):
         violations.append(
             L12ForwardInvariantViolation(
                 code="l12_capture_missing_livestream_forward_path",
@@ -1031,7 +1039,7 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
                 code="broadcast_role_missing_livestream_forward_path",
                 message=(
                     "role-broadcast must reach voice-fx, TTS loudnorm, "
-                    "MPC/L-12 wet return, and livestream-tap"
+                    "mk5/S-4 wet return, and livestream-tap"
                 ),
             )
         )
@@ -1039,30 +1047,28 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
     tts_loudnorm = node("tts-loudnorm")
     if tts_loudnorm is not None:
         resolved_target_id = ref_to_id.get(tts_loudnorm.target_object or "")
-        if resolved_target_id != "mpc-usb-output":
+        if resolved_target_id != "mk5-output":
             violations.append(
                 L12ForwardInvariantViolation(
-                    code="tts_loudnorm_target_not_mpc_output",
+                    code="tts_loudnorm_target_not_mk5_output",
                     message=(
-                        "tts-loudnorm must target the MPC USB output under "
-                        "the hardware-first broadcast baseline"
+                        "tts-loudnorm must target the mk5 output under "
+                        "the mk5/S-4 broadcast baseline"
                     ),
                 )
             )
         if tts_loudnorm.params.get("playback_positions") != "AUX2 AUX3":
             violations.append(
                 L12ForwardInvariantViolation(
-                    code="tts_loudnorm_mpc_pair_not_declared",
+                    code="tts_loudnorm_mk5_pair_not_declared",
                     message="tts-loudnorm must declare playback_positions=AUX2 AUX3",
                 )
             )
         forward_path = _param_words(tts_loudnorm.params.get("broadcast_forward_path"))
-        # Interim MPC-only (2026-05-29, L-12 removed): the broadcast return is
-        # the MPC's own USB return (mpc-usb-return-capture), not the L-12 wet
-        # return. MOTU/FadeFox migration will revise this again.
         expected_forward_path = [
-            "mpc-usb-output",
-            "mpc-usb-return-capture",
+            "mk5-output",
+            "s4-analog-insert",
+            "voice-wet",
             "hapax-livestream-tap",
         ]
         if forward_path != expected_forward_path:
@@ -1078,9 +1084,9 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
         if not _can_reach(graph, "tts-loudnorm", "livestream-tap"):
             violations.append(
                 L12ForwardInvariantViolation(
-                    code="tts_l12_missing_livestream_forward_path",
+                    code="tts_mk5_s4_missing_livestream_forward_path",
                     message=(
-                        "tts-loudnorm targets the MPC/L-12 wet return path "
+                        "tts-loudnorm targets the mk5/S-4 wet return path "
                         "but does not also reach livestream-tap"
                     ),
                 )

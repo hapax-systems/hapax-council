@@ -3,12 +3,12 @@
 Audit B #10 (2026-05-02): the LADSPA `hard_limiter_1413` is a sample
 clipper at the ceiling — it produces a square-wave at the limit
 threshold instead of compressing peaks, which is audibly broken on
-hot program material. The whole loudnorm family migrated to
+hot program material. Most loudnorm routes migrated to
 `fast_lookahead_limiter_1913` (5 ms lookahead + smooth gain
 reduction) in successive phases:
 
-- music-loudnorm — Phase 1.5
-- voice-fx-loudnorm — Phase 1.7
+- music-loudnorm — Phase 1.5, then audited passthrough after live silence
+- voice-fx-loudnorm — Phase 1.7, then audited passthrough after live silence
 - pc-loudnorm — Audit B #10
 - yt-loudnorm — Audit B #10
 
@@ -78,6 +78,32 @@ def test_pc_yt_loudnorm_use_fast_lookahead(conf_name: str) -> None:
     assert "fastLookaheadLimiter" in config_body, (
         f"{conf_name} missing fastLookaheadLimiter LADSPA label."
     )
+
+
+def test_tts_loudnorm_is_audibility_preserving_passthrough() -> None:
+    """The TTS loudnorm leg must stay as the audited passthrough shape.
+
+    The fast_lookahead_limiter_1913 stage emitted digital silence on this live
+    route on 2026-05-22. Reintroducing it requires live proof at the playback
+    node, mk5 dry-send ports, and S-4 wet return.
+    """
+    path = CONFIG_DIR / "hapax-voice-fx-loudnorm.conf"
+    if not path.exists():
+        pytest.skip("hapax-voice-fx-loudnorm.conf not present in repo checkout")
+    raw = path.read_text(encoding="utf-8")
+    body = _strip_comments(raw)
+
+    assert "type = ladspa" not in body
+    assert "fast_lookahead_limiter_1913" not in body
+    assert body.count("type = builtin") == 2
+    assert body.count('"Gain 1" = 1.0') == 2
+    assert 'node.name = "hapax-loudnorm-playback"' in body
+    playback = body[body.index("playback.props") :]
+    assert "target.object" not in playback
+    assert "node.autoconnect = false" in playback
+    assert "MPC" not in raw
+    assert "L-12" not in raw
+    assert "mk5 OUT AUX2/AUX3" in raw
 
 
 def test_broadcast_master_capture_is_active() -> None:

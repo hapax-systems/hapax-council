@@ -387,9 +387,8 @@ def _classify_live_extra_node(node: Node) -> str | None:
         return "wireplumber-runtime-role-loopback"
     if name == "hapax-livestream-duck":
         return "legacy-retired-l6-runtime-node"
-    # L-12 USB-return capture filter chain — runtime node not yet in the
-    # canonical descriptor (added by the L-12 USB-return capture module
-    # after the MPC-centric topology migration).
+    # L-12 USB-return capture filter chain — legacy runtime node retained for
+    # historical report parsing after the mk5/S-4 topology migration.
     if name == "hapax-l12-usb-return-capture":
         return "runtime-l12-usb-return-capture"
     return None
@@ -400,6 +399,12 @@ def _classify_declared_missing_node(node: Node) -> str | None:
     explicit = node.params.get("audit_classification")
     if isinstance(explicit, str) and explicit:
         return explicit
+    if node.params.get("quarantined") is True:
+        return "quarantined-declared-inactive"
+    if node.params.get("interim_l12_removed") is True:
+        return "retired-mpc-interim-history"
+    if node.params.get("interim_orphaned") is True:
+        return "retired-l12-history"
     return None
 
 
@@ -413,10 +418,10 @@ def _classify_live_extra_edge(
 
     Architectural compliance edges:
 
-    - `private-monitor-mpc-live-iii-binding` covers the HN private monitor
+    - `private-monitor-mk5-phones-binding` covers the private monitor
       route. Edges from a `private_monitor_bridge=true` source to the
-      `private_monitor_endpoint=true` MPC Live III target belong to the
-      fail-closed MPC AUX8/AUX9 path.
+      `private_monitor_endpoint=true` mk5 target belong to the fail-closed
+      mk5 Phones AUX10/AUX11 path.
     - `private-monitor-runtime-output-binding` is retained for legacy private
       endpoint report parsing.
     """
@@ -429,8 +434,8 @@ def _classify_live_extra_edge(
         and target.params.get("private_monitor_endpoint") is True
         and source.target_object == target_name
     ):
-        if target.params.get("private_monitor_route") == "private-monitor-via-mpc-live-iii":
-            return "private-monitor-mpc-live-iii-binding"
+        if target.params.get("private_monitor_route") == "private-monitor-via-mk5-phones":
+            return "private-monitor-mk5-phones-binding"
         return "private-monitor-runtime-output-binding"
 
     if (
@@ -441,10 +446,10 @@ def _classify_live_extra_edge(
     ):
         return "runtime-fallback-m8-source-absent"
 
-    # MPC-centric topology: private-monitor playback links to the MPC USB
-    # multichannel output are canonical only when declared by the descriptor.
-    if source_name == "hapax-private-playback" and "Akai_Professional_MPC" in target_name:
-        return "private-monitor-mpc-live-iii-binding"
+    # mk5 topology: private-monitor playback links to the mk5 output are
+    # canonical only when declared by the descriptor.
+    if source_name == "hapax-private-playback" and "MOTU_UltraLite-mk5" in target_name:
+        return "private-monitor-mk5-phones-binding"
 
     # L-12 USB-return capture: edges feeding runtime-classified nodes
     # should inherit a classification so they don't appear as unclassified
@@ -470,6 +475,8 @@ def _classify_declared_missing_edge(
         classification = _classify_declared_missing_node(node)
         if classification:
             return f"depends-on-{classification}"
+    if source is not None and source.target_object == target_name:
+        return "filter-chain-target-object-port-shape"
     if target is not None and target.target_object == source_name:
         return "filter-chain-target-object-port-shape"
     if source is not None:
@@ -1215,7 +1222,7 @@ def main() -> int:
 
     p_tts_broadcast = sub.add_parser(
         "tts-broadcast-check",
-        help="Verify TTS reaches livestream tap through the MPC-first L-12 wet-return path.",
+        help="Verify TTS reaches livestream tap through the mk5/S-4 wet-return path.",
     )
     p_tts_broadcast.add_argument(
         "--dump-file",

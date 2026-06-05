@@ -1,4 +1,4 @@
-"""Static pins for the off-L-12 private monitor bridge."""
+"""Static pins for the mk5 Phones private monitor bridge."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ CONF_REPO_PATH = (
     / "pipewire"
     / "hapax-private-monitor-bridge.conf"
 )
-MPC_TARGET = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
+MK5_TARGET = "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0"
 
 
 def _active(text: str) -> str:
@@ -43,19 +43,20 @@ def test_bridge_conf_exists_and_documents_fail_closed_contract() -> None:
     assert "absent hardware produces silence" in text
 
 
-def test_private_sink_monitor_is_captured_and_played_to_mpc_only() -> None:
+def test_private_sink_monitor_is_captured_and_played_to_mk5_phones_only() -> None:
     active = _active(_conf())
     capture = _node_block(active, "hapax-private-monitor-capture")
     playback = _node_block(active, "hapax-private-playback")
 
     assert "stream.capture.sink = true" in capture
     assert 'target.object = "hapax-private"' in capture
-    assert f'target.object = "{MPC_TARGET}"' in playback
+    assert f'target.object = "{MK5_TARGET}"' in playback
+    assert "Akai_Professional_MPC_LIVE_III" not in playback
     assert "Torso_Electronics_S-4" not in playback
     assert "Blue_Microphones_Yeti" not in playback
 
 
-def test_notification_private_sink_is_not_bridged_to_mpc() -> None:
+def test_notification_private_sink_is_not_bridged_to_mk5() -> None:
     active = _active(_conf())
 
     assert "hapax-notification-private-monitor-capture" not in active
@@ -63,7 +64,7 @@ def test_notification_private_sink_is_not_bridged_to_mpc() -> None:
     assert 'target.object = "hapax-notification-private"' not in active
 
 
-def test_playback_streams_are_fail_closed_when_mpc_is_absent() -> None:
+def test_playback_streams_are_fail_closed_when_mk5_is_absent() -> None:
     active = _active(_conf())
     playback = _node_block(active, "hapax-private-playback")
     assert "node.dont-fallback = true" in playback

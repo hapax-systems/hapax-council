@@ -1,0 +1,378 @@
+#!/usr/bin/env python3
+"""Witness canonical SoundCloud playlist audio shunted into OBS.
+
+This is the audio-reactivity preflight: downstream RMS alone is not enough.
+The witness requires the local music player to be playing a canonical
+SoundCloud JSONL track, the PipeWire graph to connect that track through the
+music/broadcast spine, and OBS to have live input ports consuming the remap.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from agents.audio_health.probes import ProbeConfig, capture_and_measure
+
+DEFAULT_SELECTION_PATH = Path("/dev/shm/hapax-compositor/music-selection.json")
+DEFAULT_SC_REPO_PATH = Path.home() / "hapax-state" / "music-repo" / "soundcloud.jsonl"
+DEFAULT_STATUS_PATH = Path("/dev/shm/hapax-soundcloud-obs-shunt-witness/status.json")
+DEFAULT_BIND_STATUS_PATH = Path("/dev/shm/hapax-obs-audio-bind/status.json")
+DEFAULT_MUSIC_SINK = "hapax-music-loudnorm"
+DEFAULT_OBS_SOURCE = "hapax-obs-broadcast-remap"
+DEFAULT_OBS_INPUT_NAME = "Audio Input Capture (PipeWire)"
+MIN_OBS_RMS_DBFS = -55.0
+
+
+@dataclass(frozen=True)
+class WitnessStatus:
+    state: str
+    ok: bool
+    selection_path: str
+    selection_url: str | None
+    selection_source: str | None
+    selection_title: str | None
+    canonical_repo_path: str
+    canonical_match: bool
+    player_active: bool
+    playback_sink: str | None
+    repair_attempted: bool
+    binder_ok: bool | None
+    music_links_complete: bool
+    broadcast_links_complete: bool
+    obs_links_complete: bool
+    obs_consumer_present: bool
+    obs_rms_dbfs: float | None
+    obs_rms_peak_dbfs: float | None
+    obs_rms_threshold_dbfs: float
+    checked_at_epoch: float
+    reason: str | None = None
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _run_text(args: list[str], *, timeout: float = 10.0, check: bool = False) -> str:
+    result = subprocess.run(
+        args,
+        check=check,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            args,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    return result.stdout
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _canonical_soundcloud_urls(path: Path) -> set[str]:
+    urls: set[str] = set()
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return urls
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        url = row.get("path")
+        if isinstance(url, str) and "soundcloud.com/" in url:
+            urls.add(url.rstrip("/"))
+    return urls
+
+
+def _is_canonical_soundcloud_selection(
+    selection: dict[str, Any],
+    canonical_urls: set[str],
+) -> bool:
+    url = selection.get("path")
+    source = selection.get("source")
+    if not isinstance(url, str) or "soundcloud.com/" not in url:
+        return False
+    if source != "soundcloud-oudepode":
+        return False
+    return url.rstrip("/") in canonical_urls
+
+
+def _systemd_unit_active(unit: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", "--quiet", unit],
+            check=False,
+            timeout=4,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _current_playback_sink(ps_text: str) -> str | None:
+    marker = "pw-cat --playback --target "
+    for line in ps_text.splitlines():
+        if marker not in line:
+            continue
+        tail = line.split(marker, 1)[1]
+        sink = tail.split(maxsplit=1)[0] if tail else ""
+        if sink:
+            return sink
+    return None
+
+
+def _link_present(pw_link_text: str, source: str, target: str) -> bool:
+    current: str | None = None
+    for raw_line in pw_link_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if not raw_line.startswith((" ", "\t")):
+            current = line
+            continue
+        if current != source or not line.startswith("|->"):
+            continue
+        if line.removeprefix("|->").strip() == target:
+            return True
+    return False
+
+
+def _links_complete(pw_link_text: str, links: tuple[tuple[str, str], ...]) -> bool:
+    return all(_link_present(pw_link_text, source, target) for source, target in links)
+
+
+def _music_links_complete(pw_link_text: str) -> bool:
+    return _links_complete(
+        pw_link_text,
+        (
+            ("pw-cat:output_FL", "hapax-music-loudnorm:playback_FL"),
+            ("pw-cat:output_FR", "hapax-music-loudnorm:playback_FR"),
+            ("hapax-music-loudnorm-playback:output_FL", "hapax-livestream-tap:playback_FL"),
+            ("hapax-music-loudnorm-playback:output_FR", "hapax-livestream-tap:playback_FR"),
+        ),
+    )
+
+
+def _broadcast_links_complete(pw_link_text: str) -> bool:
+    return _links_complete(
+        pw_link_text,
+        (
+            ("hapax-livestream-tap:monitor_FL", "hapax-broadcast-master-capture:input_FL"),
+            ("hapax-livestream-tap:monitor_FR", "hapax-broadcast-master-capture:input_FR"),
+            ("hapax-broadcast-master:capture_FL", "hapax-broadcast-normalized-capture:input_FL"),
+            ("hapax-broadcast-master:capture_FR", "hapax-broadcast-normalized-capture:input_FR"),
+            ("hapax-broadcast-normalized:capture_FL", "hapax-obs-broadcast-remap-capture:input_FL"),
+            ("hapax-broadcast-normalized:capture_FR", "hapax-obs-broadcast-remap-capture:input_FR"),
+        ),
+    )
+
+
+def _obs_links_complete(pw_link_text: str, *, input_name: str = DEFAULT_OBS_INPUT_NAME) -> bool:
+    return _links_complete(
+        pw_link_text,
+        (
+            (
+                "hapax-obs-broadcast-remap:capture_FL",
+                f"OBS: {input_name}:input_FL",
+            ),
+            (
+                "hapax-obs-broadcast-remap:capture_FR",
+                f"OBS: {input_name}:input_FR",
+            ),
+        ),
+    )
+
+
+def _obs_consumer_present(pw_dump_text: str) -> bool:
+    try:
+        data = json.loads(pw_dump_text)
+    except json.JSONDecodeError:
+        return False
+    remap_targets = {DEFAULT_OBS_SOURCE}
+    for obj in data:
+        if not isinstance(obj, dict):
+            continue
+        props = obj.get("info", {}).get("props", {})
+        if not isinstance(props, dict):
+            continue
+        if props.get("node.name") != DEFAULT_OBS_SOURCE:
+            continue
+        node_id = obj.get("id")
+        serial = props.get("object.serial")
+        if isinstance(node_id, int):
+            remap_targets.add(str(node_id))
+        if isinstance(serial, str) and serial:
+            remap_targets.add(serial)
+    for obj in data:
+        if not isinstance(obj, dict):
+            continue
+        props = obj.get("info", {}).get("props", {})
+        if not isinstance(props, dict):
+            continue
+        if (
+            props.get("node.name") == f"OBS: {DEFAULT_OBS_INPUT_NAME}"
+            and str(props.get("target.object")) in remap_targets
+        ):
+            return True
+    return False
+
+
+def _run_binder(script_path: Path, *, wait_links_s: float) -> bool:
+    uv = shutil.which("uv")
+    cmd = [str(script_path)]
+    if uv is not None:
+        cmd = [uv, "run", "--extra", "audio", str(script_path)]
+    try:
+        stdout = _run_text(
+            [*cmd, "--require-obs", "--wait-links-s", str(wait_links_s)],
+            timeout=max(10.0, wait_links_s * 3.0 + 5.0),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    try:
+        payload = json.loads(stdout.splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        return False
+    return bool(payload.get("ok"))
+
+
+def _build_status(args: argparse.Namespace) -> WitnessStatus:
+    bind_script = REPO_ROOT / "scripts" / "hapax-obs-audio-bind"
+    repair_attempted = bool(args.repair)
+    binder_ok: bool | None = None
+    if args.repair:
+        binder_ok = _run_binder(bind_script, wait_links_s=args.bind_wait_links_s)
+
+    selection = _load_json(args.selection_path)
+    canonical_urls = _canonical_soundcloud_urls(args.sc_repo_path)
+    canonical_match = _is_canonical_soundcloud_selection(selection, canonical_urls)
+    player_active = _systemd_unit_active("hapax-music-player.service")
+
+    try:
+        ps_text = _run_text(["ps", "-eo", "args="], timeout=5.0, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        ps_text = ""
+    playback_sink = _current_playback_sink(ps_text)
+
+    try:
+        pw_link_text = _run_text(["pw-link", "-l"], timeout=10.0, check=True)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pw_link_text = ""
+    music_links = _music_links_complete(pw_link_text)
+    broadcast_links = _broadcast_links_complete(pw_link_text)
+    obs_links = _obs_links_complete(pw_link_text)
+
+    try:
+        pw_dump_text = _run_text(["pw-dump"], timeout=15.0, check=True)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pw_dump_text = ""
+    obs_consumer = _obs_consumer_present(pw_dump_text)
+
+    obs_rms_dbfs: float | None = None
+    obs_peak_dbfs: float | None = None
+    probe = capture_and_measure(
+        DEFAULT_OBS_SOURCE,
+        config=ProbeConfig(duration_s=args.probe_duration_s),
+    )
+    if probe.error is None:
+        obs_rms_dbfs = float(probe.measurement.rms_dbfs)
+        obs_peak_dbfs = float(probe.measurement.peak_dbfs)
+
+    checks = {
+        "canonical_soundcloud_selection": canonical_match,
+        "music_player_active": player_active,
+        "playback_sink_is_music_loudnorm": playback_sink == DEFAULT_MUSIC_SINK,
+        "obs_binder_ok": binder_ok is not False,
+        "music_links_complete": music_links,
+        "broadcast_links_complete": broadcast_links,
+        "obs_links_complete": obs_links,
+        "obs_consumer_present": obs_consumer,
+        "obs_signal_present": obs_rms_dbfs is not None and obs_rms_dbfs >= args.min_obs_rms_dbfs,
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    ok = not failed
+    return WitnessStatus(
+        state="ready" if ok else "failed",
+        ok=ok,
+        selection_path=str(args.selection_path),
+        selection_url=selection.get("path") if isinstance(selection.get("path"), str) else None,
+        selection_source=selection.get("source")
+        if isinstance(selection.get("source"), str)
+        else None,
+        selection_title=selection.get("title") if isinstance(selection.get("title"), str) else None,
+        canonical_repo_path=str(args.sc_repo_path),
+        canonical_match=canonical_match,
+        player_active=player_active,
+        playback_sink=playback_sink,
+        repair_attempted=repair_attempted,
+        binder_ok=binder_ok,
+        music_links_complete=music_links,
+        broadcast_links_complete=broadcast_links,
+        obs_links_complete=obs_links,
+        obs_consumer_present=obs_consumer,
+        obs_rms_dbfs=obs_rms_dbfs,
+        obs_rms_peak_dbfs=obs_peak_dbfs,
+        obs_rms_threshold_dbfs=float(args.min_obs_rms_dbfs),
+        checked_at_epoch=time.time(),
+        reason=", ".join(failed) if failed else None,
+    )
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--selection-path", type=Path, default=DEFAULT_SELECTION_PATH)
+    parser.add_argument("--sc-repo-path", type=Path, default=DEFAULT_SC_REPO_PATH)
+    parser.add_argument("--status-path", type=Path, default=DEFAULT_STATUS_PATH)
+    parser.add_argument("--probe-duration-s", type=float, default=2.0)
+    parser.add_argument("--min-obs-rms-dbfs", type=float, default=MIN_OBS_RMS_DBFS)
+    parser.add_argument("--bind-wait-links-s", type=float, default=4.0)
+    parser.add_argument(
+        "--no-repair",
+        dest="repair",
+        action="store_false",
+        help="Only witness current state; do not run hapax-obs-audio-bind first.",
+    )
+    parser.set_defaults(repair=True)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(sys.argv[1:] if argv is None else argv)
+    status = _build_status(args)
+    payload = asdict(status)
+    _atomic_write_json(args.status_path, payload)
+    print(json.dumps(payload, sort_keys=True))
+    return 0 if status.ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

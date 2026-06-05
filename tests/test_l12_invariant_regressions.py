@@ -21,9 +21,9 @@ silence incidents**, so the same incidents cannot recur silently:
   - v1 (orphan voice_state probe): pinned via the COMPONENT_OWNERS
     test in tests/test_health_monitor_exploration.py (existing).
   - v3 (TTS chain not reaching broadcast): pinned here against the
-    current MPC-first baseline — TTS loudnorm MUST route to MPC USB
-    AUX2/AUX3, the L-12 wet return MUST capture AUX8-AUX11, and the
-    retired software direct-to-tap bridge MUST remain forbidden.
+    current mk5/S-4 baseline — TTS loudnorm MUST route to MOTU mk5 OUT
+    AUX2/AUX3, the S-4 wet return MUST be captured from mk5 IN AUX2/AUX3,
+    and the retired software direct-to-tap bridge MUST remain forbidden.
   - v4 (broadcast TTS via separate Broadcast media-role): pinned here —
     50-hapax-voice-duck.conf MUST register loopback.sink.role.broadcast
     in the requires list.
@@ -32,7 +32,8 @@ silence incidents**, so the same incidents cannot recur silently:
 
   Plus the current M8 invariant: M8 remains disabled/fail-closed until a
   bounded route-activation task explicitly promotes it. It must not terminate
-  at hapax-livestream-tap, L-12, or MPC while under-specified.
+  at hapax-livestream-tap, L-12, MPC, or the mk5 dry-voice send while
+  under-specified.
 """
 
 from __future__ import annotations
@@ -57,6 +58,8 @@ MPC_OUTPUT_NODE = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-outpu
 # return source. capture_AUX0/1 = public mix (broadcast); capture_AUX2/3 =
 # private monitor (fenced from broadcast).
 MPC_RETURN_NODE = "alsa_input.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-input-0"
+MK5_OUTPUT_NODE = "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0"
+MK5_INPUT_NODE = "alsa_input.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-input-0"
 L12_CAPTURE_NODE = (
     "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
 )
@@ -74,50 +77,84 @@ def _strip_comments(text: str) -> str:
     )
 
 
-def test_v3_tts_chain_routes_through_mpc_usb_return() -> None:
-    """v3: TTS must reach broadcast through the interim MPC-only USB return
-    (2026-05-29, L-12 removed), not through the retired software direct-to-tap
-    bridge nor the orphaned L-12 wet return."""
+def test_v3_tts_chain_routes_through_mk5_s4_wet_return() -> None:
+    """v3: TTS must reach broadcast through the current mk5/S-4 analog insert,
+    not through the retired software direct-to-tap bridge nor the orphaned
+    MPC/L-12 wet returns."""
     descriptor = TopologyDescriptor.from_yaml(CANONICAL_TOPOLOGY)
     tts_loudnorm = descriptor.node_by_id("tts-loudnorm")
-    wet_return = descriptor.node_by_id("mpc-usb-return-capture")
-    assert tts_loudnorm.target_object == MPC_OUTPUT_NODE
+    wet_return = descriptor.node_by_id("voice-wet")
+    assert tts_loudnorm.target_object == MK5_OUTPUT_NODE
     assert tts_loudnorm.params["playback_positions"] == "AUX2 AUX3"
     assert (
         tts_loudnorm.params["broadcast_forward_path"]
-        == "mpc-usb-output mpc-usb-return-capture hapax-livestream-tap"
+        == "mk5-output s4-analog-insert voice-wet hapax-livestream-tap"
     )
-    assert wet_return.target_object == MPC_RETURN_NODE
-    assert wet_return.params["capture_positions"] == "AUX0 AUX1"
+    assert wet_return.target_object == MK5_INPUT_NODE
+    assert wet_return.params["capture_positions"] == "AUX2 AUX3"
 
     link_map = _strip_comments(_read_conf(HAPAX_LINK_MAP))
-    for aux in ("AUX0", "AUX1"):
-        assert (
-            f"{MPC_RETURN_NODE}:capture_{aux}|hapax-mpc-usb-return-capture:input_{aux}" in link_map
-        )
-    assert "hapax-mpc-usb-return-playback:output_FL|hapax-livestream-tap:playback_FL" in link_map
-    assert "hapax-mpc-usb-return-playback:output_FR|hapax-livestream-tap:playback_FR" in link_map
+    assert (f"hapax-loudnorm-playback:output_FL|{MK5_OUTPUT_NODE}:playback_AUX2") in link_map
+    assert (f"hapax-loudnorm-playback:output_FR|{MK5_OUTPUT_NODE}:playback_AUX3") in link_map
+    assert f"{MK5_INPUT_NODE}:capture_AUX2|hapax-voice-wet-capture:input_AUX2" in link_map
+    assert f"{MK5_INPUT_NODE}:capture_AUX3|hapax-voice-wet-capture:input_AUX3" in link_map
+    assert "hapax-voice-wet-playback:output_FL|hapax-livestream-tap:playback_FL" in link_map
+    assert "hapax-voice-wet-playback:output_FR|hapax-livestream-tap:playback_FR" in link_map
 
-    # The orphaned L-12 wet/evilpet return legs must NOT be in the desired map
-    # (the reconciler must never enforce links to absent L-12 hardware).
+    # The orphaned MPC/L-12 wet return legs must NOT be in the desired map
+    # (the reconciler must never enforce links to retired hardware).
+    assert "hapax-mpc-usb-return-playback|" not in link_map
+    assert f"{MPC_RETURN_NODE}:capture_AUX0|" not in link_map
     assert "hapax-l12-usb-return-playback|" not in link_map
     assert "hapax-l12-evilpet-playback:output_FL|hapax-livestream-tap" not in link_map
     assert f"{L12_CAPTURE_NODE}:capture_AUX8|" not in link_map
 
-    forbidden = _strip_comments(_read_conf(HAPAX_FORBIDDEN_LINKS))
-    assert "hapax-tts-broadcast-playback:output_FL|hapax-livestream-tap:playback_FL" in forbidden
-    assert "hapax-tts-broadcast-playback:output_FR|hapax-livestream-tap:playback_FR" in forbidden
+    assert "hapax-tts-broadcast-playback:output_FL|" not in link_map
+    assert "hapax-tts-broadcast-playback:output_FR|" not in link_map
 
     tts_duck_conf = _strip_comments(_read_conf(PIPEWIRE_DIR / "hapax-tts-duck.conf"))
     assert "hapax-tts-broadcast-playback" not in tts_duck_conf
     assert 'target.object = "hapax-livestream-tap"' not in tts_duck_conf
 
 
-def test_interim_private_return_fenced_from_broadcast() -> None:
-    """Interim MPC-only private fence (2026-05-29): the MPC private monitor
-    return (capture_AUX2/3) must be forbidden into every broadcast node, and
-    must NOT appear in the desired link map. Defense-in-depth for the
-    operator-owned MPC public mix that should already exclude private."""
+def test_private_monitor_and_default_lanes_fenced_from_broadcast_and_voice_send() -> None:
+    """Current mk5/S-4 fence: private/default lanes must not reach broadcast
+    or the mk5 AUX2/3 dry-voice send into the S-4."""
+    forbidden = _strip_comments(_read_conf(HAPAX_FORBIDDEN_LINKS))
+    forbidden_pairs = (
+        ("hapax-private-playback:output_FL", "hapax-livestream-tap:playback_FL"),
+        ("hapax-private-playback:output_FR", "hapax-livestream-tap:playback_FR"),
+        ("hapax-private-playback:output_FL", "hapax-broadcast-master-capture:input_FL"),
+        ("hapax-private-playback:output_FR", "hapax-broadcast-master-capture:input_FR"),
+        ("hapax-private-playback:output_FL", f"{MK5_OUTPUT_NODE}:playback_AUX2"),
+        ("hapax-private-playback:output_FR", f"{MK5_OUTPUT_NODE}:playback_AUX3"),
+        ("hapax-notification-private-playback:output_FL", "hapax-livestream-tap:playback_FL"),
+        ("hapax-notification-private-playback:output_FR", "hapax-livestream-tap:playback_FR"),
+        ("hapax-pc-loudnorm-playback:output_FL", f"{MK5_OUTPUT_NODE}:playback_AUX2"),
+        ("hapax-pc-loudnorm-playback:output_FR", f"{MK5_OUTPUT_NODE}:playback_AUX3"),
+    )
+    for source, target in forbidden_pairs:
+        assert f"{source}|{target}" in forbidden
+
+    link_map = _strip_comments(_read_conf(HAPAX_LINK_MAP))
+    assert "hapax-private-playback:output_FL|hapax-livestream-tap" not in link_map
+    assert f"hapax-private-playback:output_FL|{MK5_OUTPUT_NODE}:playback_AUX2" not in link_map
+    assert f"hapax-pc-loudnorm-playback:output_FL|{MK5_OUTPUT_NODE}:playback_AUX2" not in link_map
+
+
+def test_youtube_send_sums_to_livestream_tap_and_remains_eligibility_gated() -> None:
+    """Current mk5/S-4 topology: YouTube is a software-sum input to
+    livestream-tap, while route policy still keeps the source eligibility
+    explicitly gated pending real-content smoke evidence."""
+    descriptor = TopologyDescriptor.from_yaml(CANONICAL_TOPOLOGY)
+    yt = descriptor.node_by_id("yt-loudnorm")
+    assert yt.params["playback_target"] == "hapax-livestream-tap"
+    assert yt.params["broadcast_eligibility_gated"] == "blocked_until_smoke"
+
+    link_map = _strip_comments(_read_conf(HAPAX_LINK_MAP))
+    assert "hapax-yt-loudnorm-playback:output_FL|hapax-livestream-tap:playback_FL" in link_map
+    assert "hapax-yt-loudnorm-playback:output_FR|hapax-livestream-tap:playback_FR" in link_map
+
     forbidden = _strip_comments(_read_conf(HAPAX_FORBIDDEN_LINKS))
     broadcast_targets = (
         "hapax-livestream-tap:playback_FL",
@@ -129,33 +166,9 @@ def test_interim_private_return_fenced_from_broadcast() -> None:
         "hapax-obs-broadcast-remap-capture:input_FL",
         "hapax-obs-broadcast-remap-capture:input_FR",
     )
-    for aux in ("AUX2", "AUX3"):
-        for target in broadcast_targets:
-            assert f"{MPC_RETURN_NODE}:capture_{aux}|{target}" in forbidden, (
-                f"private return capture_{aux} must be fenced from {target}"
-            )
-
-    # The private return must never be a desired-map source.
-    link_map = _strip_comments(_read_conf(HAPAX_LINK_MAP))
-    assert f"{MPC_RETURN_NODE}:capture_AUX2|" not in link_map
-    assert f"{MPC_RETURN_NODE}:capture_AUX3|" not in link_map
-
-
-def test_interim_youtube_send_enabled_eligibility_gated() -> None:
-    """Interim MPC-only (2026-05-29): the YouTube send to MPC AUX6/7 is enabled
-    (desired map), AUX6/7 is no longer forbidden, but the youtube-bed route
-    stays broadcast-ineligible (blocked_until_smoke)."""
-    descriptor = TopologyDescriptor.from_yaml(CANONICAL_TOPOLOGY)
-    yt = descriptor.node_by_id("yt-loudnorm")
-    assert yt.params["playback_positions"] == "AUX6 AUX7"
-
-    link_map = _strip_comments(_read_conf(HAPAX_LINK_MAP))
-    assert f"hapax-yt-loudnorm-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX6" in link_map
-    assert f"hapax-yt-loudnorm-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX7" in link_map
-
-    forbidden = _strip_comments(_read_conf(HAPAX_FORBIDDEN_LINKS))
-    assert f"hapax-yt-loudnorm-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX6" not in forbidden
-    assert f"hapax-yt-loudnorm-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX7" not in forbidden
+    for target in broadcast_targets:
+        assert f"hapax-yt-loudnorm-playback:output_FL|{target}" not in forbidden
+        assert f"hapax-yt-loudnorm-playback:output_FR|{target}" not in forbidden
 
 
 def test_generated_tts_artifacts_do_not_reintroduce_direct_broadcast_bridge() -> None:
@@ -170,35 +183,41 @@ def test_generated_tts_artifacts_do_not_reintroduce_direct_broadcast_bridge() ->
     assert "node.autoconnect = false" in generated_tts_bridge
 
 
-def test_reconciler_map_owns_only_specified_mpc_private_tts_output() -> None:
-    """Only private TTS playback is explicitly pinned to MPC AUX8/AUX9."""
+def test_reconciler_map_owns_only_specified_mk5_private_tts_output() -> None:
+    """Only private TTS playback is explicitly pinned to mk5 Phones AUX10/AUX11."""
     link_map = _strip_comments(_read_conf(HAPAX_LINK_MAP))
-    assert f"hapax-private-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX8" in link_map
-    assert f"hapax-private-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX9" in link_map
+    assert f"hapax-private-playback:output_FL|{MK5_OUTPUT_NODE}:playback_AUX10" in link_map
+    assert f"hapax-private-playback:output_FR|{MK5_OUTPUT_NODE}:playback_AUX11" in link_map
 
     forbidden = _strip_comments(_read_conf(HAPAX_FORBIDDEN_LINKS))
-    assert f"hapax-private-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX8" not in forbidden
-    assert f"hapax-private-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX9" not in forbidden
+    assert f"hapax-private-playback:output_FL|{MK5_OUTPUT_NODE}:playback_AUX10" not in forbidden
+    assert f"hapax-private-playback:output_FR|{MK5_OUTPUT_NODE}:playback_AUX11" not in forbidden
+    assert f"hapax-private-playback:output_FL|{MK5_OUTPUT_NODE}:playback_AUX2" in forbidden
+    assert f"hapax-private-playback:output_FR|{MK5_OUTPUT_NODE}:playback_AUX3" in forbidden
     assert (
-        f"hapax-notification-private-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX8"
-        in forbidden
+        f"hapax-notification-private-playback:output_FL|{MK5_OUTPUT_NODE}:playback_AUX10"
+        not in link_map
     )
     assert (
-        f"hapax-notification-private-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX9"
-        in forbidden
+        f"hapax-notification-private-playback:output_FR|{MK5_OUTPUT_NODE}:playback_AUX11"
+        not in link_map
     )
 
     assert "hapax-private:monitor_FL|hapax-private-monitor-capture:input_FL" in link_map
     assert "hapax-private:monitor_FR|hapax-private-monitor-capture:input_FR" in link_map
     assert "hapax-notification-private:monitor_FL|" not in link_map
     assert "hapax-notification-private:monitor_FR|" not in link_map
-    assert "output.loopback.sink.role.assistant:output_FL|hapax-private:playback_FL" in link_map
-    assert "output.loopback.sink.role.assistant:output_FR|hapax-private:playback_FR" in link_map
     assert (
-        "output.loopback.sink.role.notification:output_FL|hapax-notification-private:playback_FL"
+        "input.loopback.sink.role.assistant-output:output_FL|hapax-private:playback_FL" in link_map
+    )
+    assert (
+        "input.loopback.sink.role.assistant-output:output_FR|hapax-private:playback_FR" in link_map
+    )
+    assert (
+        "input.loopback.sink.role.notification-output:output_FL|hapax-notification-private:playback_FL"
     ) in link_map
     assert (
-        "output.loopback.sink.role.notification:output_FR|hapax-notification-private:playback_FR"
+        "input.loopback.sink.role.notification-output:output_FR|hapax-notification-private:playback_FR"
     ) in link_map
 
 

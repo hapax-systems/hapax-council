@@ -1,8 +1,8 @@
-"""Pin MPC target string in `scripts/hapax-private-monitor-recover`.
+"""Pin mk5 private-monitor target in `scripts/hapax-private-monitor-recover`.
 
-This regression test enforces the constitutional invariant that the private
-monitor recovery script targets the MPC Live III multichannel-output sink,
-not S-4 or the legacy Yeti.
+This regression test enforces the private monitor invariant that the recovery
+script targets the MOTU UltraLite mk5 Phones sink, not the retired MPC, S-4, or
+the legacy Yeti.
 
 Privacy invariant reference:
     feedback_l12_equals_livestream_invariant — anything entering L-12 reaches
@@ -25,6 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "scripts" / "hapax-private-monitor-recover"
 
 MPC_USB_SINK = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.pro-output-0"
+MK5_USB_SINK = "alsa_output.usb-MOTU_UltraLite-mk5_UL5LFEC2B0-00.pro-output-0"
 S4_USB_SINK = "alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output"
 YETI_TARGET_LEGACY = "alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo"
 
@@ -45,27 +46,30 @@ def recover() -> types.ModuleType:
     return _load_recover_script()
 
 
-def test_exact_target_pins_to_mpc_live_iii_sink(recover: types.ModuleType) -> None:
-    """`EXACT_PRIVATE_MONITOR_TARGET` must be the MPC Live III sink."""
-    assert recover.EXACT_PRIVATE_MONITOR_TARGET == MPC_USB_SINK, (
-        f"recover script must target MPC Live III under HN readiness; "
+def test_exact_target_pins_to_mk5_sink(recover: types.ModuleType) -> None:
+    """`EXACT_PRIVATE_MONITOR_TARGET` must be the mk5 Phones sink."""
+    assert recover.EXACT_PRIVATE_MONITOR_TARGET == MK5_USB_SINK, (
+        f"recover script must target mk5 Phones under current audio topology; "
         f"got {recover.EXACT_PRIVATE_MONITOR_TARGET!r}"
     )
 
 
 def test_exact_target_is_not_the_legacy_yeti_string(recover: types.ModuleType) -> None:
     """Defense-in-depth: pin the negative as well so a flip back is loud."""
+    assert recover.EXACT_PRIVATE_MONITOR_TARGET != MPC_USB_SINK
     assert recover.EXACT_PRIVATE_MONITOR_TARGET != YETI_TARGET_LEGACY
     assert recover.EXACT_PRIVATE_MONITOR_TARGET != S4_USB_SINK
 
 
-def test_sanitized_refs_indicate_mpc_route(recover: types.ModuleType) -> None:
-    """Sanitized refs in the status JSON must reflect MPC, not S-4/Yeti."""
-    assert recover.ROUTE_REF == "route:private.mpc_live_iii_monitor"
-    assert recover.SANITIZED_TARGET_REF == "audio.mpc_private_monitor"
+def test_sanitized_refs_indicate_mk5_route(recover: types.ModuleType) -> None:
+    """Sanitized refs in the status JSON must reflect mk5, not MPC/S-4/Yeti."""
+    assert recover.ROUTE_REF == "route:private.mk5_phones_monitor"
+    assert recover.SANITIZED_TARGET_REF == "audio.mk5_private_monitor"
     # The legacy yeti_monitor refs must be GONE.
     assert "yeti_monitor" not in recover.ROUTE_REF
     assert "yeti_monitor" not in recover.SANITIZED_TARGET_REF
+    assert "mpc" not in recover.ROUTE_REF
+    assert "mpc" not in recover.SANITIZED_TARGET_REF
     assert "s4" not in recover.ROUTE_REF
     assert "s4" not in recover.SANITIZED_TARGET_REF
 
@@ -82,19 +86,20 @@ def test_script_source_does_not_carry_yeti_target_string() -> None:
     text = SCRIPT_PATH.read_text(encoding="utf-8")
     assert YETI_TARGET_LEGACY not in text
     assert S4_USB_SINK not in text
-    assert MPC_USB_SINK in text
+    assert MPC_USB_SINK not in text
+    assert MK5_USB_SINK in text
 
 
-def test_script_validate_repo_bridge_requires_mpc_target(
+def test_script_validate_repo_bridge_requires_mk5_target(
     recover: types.ModuleType, tmp_path: Path
 ) -> None:
-    """`_validate_repo_bridge` must accept MPC bridge content and reject stale targets."""
+    """`_validate_repo_bridge` must accept mk5 bridge content and reject stale targets."""
     repo_bridge = tmp_path / "hapax-private-monitor-bridge.conf"
 
-    # Synthesize a minimally-valid bridge: includes the MPC sink
+    # Synthesize a minimally-valid bridge: includes the mk5 sink
     # string AND the fail-closed pins the validator requires.
     valid_bridge = (
-        f'target.object = "{MPC_USB_SINK}"\n'
+        f'target.object = "{MK5_USB_SINK}"\n'
         "node.dont-fallback = true\n"
         "node.dont-reconnect = true\n"
         "node.dont-move = true\n"
@@ -106,12 +111,17 @@ def test_script_validate_repo_bridge_requires_mpc_target(
     # Should not raise.
     recover._validate_repo_bridge(repo_bridge)
 
-    invalid_bridge = valid_bridge.replace(MPC_USB_SINK, YETI_TARGET_LEGACY)
+    invalid_bridge = valid_bridge.replace(MK5_USB_SINK, YETI_TARGET_LEGACY)
     repo_bridge.write_text(invalid_bridge, encoding="utf-8")
     with pytest.raises(ValueError, match="missing required fail-closed pin"):
         recover._validate_repo_bridge(repo_bridge)
 
-    invalid_bridge = valid_bridge.replace(MPC_USB_SINK, S4_USB_SINK)
+    invalid_bridge = valid_bridge.replace(MK5_USB_SINK, S4_USB_SINK)
+    repo_bridge.write_text(invalid_bridge, encoding="utf-8")
+    with pytest.raises(ValueError, match="missing required fail-closed pin"):
+        recover._validate_repo_bridge(repo_bridge)
+
+    invalid_bridge = valid_bridge.replace(MK5_USB_SINK, MPC_USB_SINK)
     repo_bridge.write_text(invalid_bridge, encoding="utf-8")
     with pytest.raises(ValueError, match="missing required fail-closed pin"):
         recover._validate_repo_bridge(repo_bridge)
@@ -145,7 +155,7 @@ def test_install_bridge_records_pipewire_reload_metadata(
     `pipewire_reload_error` keys so downstream observers can tell whether
     the daemon actually got cycled."""
     repo_bridge = tmp_path / "hapax-private-monitor-bridge.conf"
-    repo_bridge.write_text("# canonical S-4 bridge\n", encoding="utf-8")
+    repo_bridge.write_text("# canonical mk5 bridge\n", encoding="utf-8")
     install_path = tmp_path / "deployed.conf"
 
     bridge = recover._install_bridge(repo_bridge, install_path, install=False)
@@ -184,7 +194,7 @@ def test_install_bridge_auto_reload_restarts_pipewire_stack_on_repair(
     repo_bridge = tmp_path / "hapax-private-monitor-bridge.conf"
     repo_bridge.write_text("# canonical S-4\n", encoding="utf-8")
     install_path = tmp_path / "deployed.conf"
-    install_path.write_text("# stale Yeti\n", encoding="utf-8")
+    install_path.write_text("# stale retired target\n", encoding="utf-8")
 
     with patch.object(recover.shutil, "which", return_value="/usr/bin/systemctl"):
         with patch.object(recover.subprocess, "run") as run_mock:
@@ -208,7 +218,7 @@ def test_install_bridge_auto_reload_skips_when_no_drift(
 ) -> None:
     """When the deployed conf already matches canonical, auto_reload MUST NOT
     bounce PipeWire — the daemon is already correct."""
-    canonical = "# canonical S-4 bridge\n"
+    canonical = "# canonical mk5 bridge\n"
     repo_bridge = tmp_path / "hapax-private-monitor-bridge.conf"
     repo_bridge.write_text(canonical, encoding="utf-8")
     install_path = tmp_path / "deployed.conf"
@@ -314,7 +324,7 @@ def test_auto_reload_implies_install_when_only_auto_reload_passed(
     repo_bridge_dir.mkdir(parents=True)
     repo_bridge = repo_bridge_dir / "hapax-private-monitor-bridge.conf"
     valid = (
-        f'target.object = "{MPC_USB_SINK}"\n'
+        f'target.object = "{MK5_USB_SINK}"\n'
         "node.dont-fallback = true\n"
         "node.dont-reconnect = true\n"
         "node.dont-move = true\n"
