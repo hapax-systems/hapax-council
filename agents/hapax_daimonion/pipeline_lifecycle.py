@@ -72,6 +72,9 @@ async def stop_pipeline(daemon: VoiceDaemon) -> None:
     if daemon._cpal_runner is not None:
         daemon._cpal_runner.set_pipeline(None)
         daemon._cpal_runner._audio_output = None
+        production = getattr(daemon._cpal_runner, "_production", None)
+        if production is not None:
+            production._audio_output = None
 
     if daemon._pipeline_task is not None:
         daemon._pipeline_task.cancel()
