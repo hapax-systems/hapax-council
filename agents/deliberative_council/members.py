@@ -48,6 +48,16 @@ CACHE_CONTROL_FAMILIES = frozenset({"anthropic", "google"})
 OPENAI_PROMPT_CACHE_FAMILIES = frozenset({"openai"})
 _CACHE_OFF_VALUES = {"0", "false", "no", "off"}
 _CACHE_TTLS = {"5m", "1h"}
+_CACHE_CONTROL_TTLS_BY_FAMILY = {
+    "anthropic": {
+        "5m": "5m",
+        "1h": "1h",
+    },
+    "google": {
+        "5m": "300s",
+        "1h": "3600s",
+    },
+}
 _OPENAI_CACHE_RETENTIONS = {"in_memory", "24h"}
 
 
@@ -105,9 +115,10 @@ def openai_prompt_cache_retention() -> str:
 def cache_control_ttl_for_alias(model_alias: str) -> str | None:
     if not prompt_cache_enabled():
         return None
-    if model_family(model_alias) not in CACHE_CONTROL_FAMILIES:
+    family = model_family(model_alias)
+    if family not in CACHE_CONTROL_FAMILIES:
         return None
-    return prompt_cache_ttl()
+    return _CACHE_CONTROL_TTLS_BY_FAMILY[family][prompt_cache_ttl()]
 
 
 def model_settings_for_alias(model_alias: str) -> dict[str, Any]:
@@ -132,6 +143,7 @@ def cache_policy_for_alias(model_alias: str) -> dict[str, Any]:
         "family": family,
         "cache_control": bool(ttl),
         "cache_control_ttl": ttl,
+        "cache_control_ttl_setting": prompt_cache_ttl() if ttl else None,
         "openai_prompt_cache": bool(settings),
         "openai_prompt_cache_retention": settings.get("openai_prompt_cache_retention"),
     }
