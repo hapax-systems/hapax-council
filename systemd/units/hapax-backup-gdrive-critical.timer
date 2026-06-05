@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily GDrive critical offsite backup
+
+[Timer]
+OnCalendar=*-*-* 04:35:00
+RandomizedDelaySec=45m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

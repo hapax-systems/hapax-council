@@ -22,6 +22,21 @@ Tier 2 offsite coverage:
 - Restic repository: `rclone:b2:hapax-backups/restic`
 - Staging: `/tmp/hapax-backup-dumps-remote`
 
+Critical offsite safety baseline:
+
+- Timer: `hapax-backup-gdrive-critical.timer`
+- Service: `hapax-backup-gdrive-critical.service`
+- Script: `$HOME/projects/hapax-council/scripts/hapax-backup-gdrive-critical`
+- Restic repository: `rclone:gdrive:hapax-backups/restic-critical`
+- Cache: `/store/llm-data/restic-cache/gdrive-critical`
+
+The GDrive critical lane is a bounded critical-artifact baseline while the
+broad B2 remote is blocked. It backs up already-materialized Postgres PITR
+artifacts, latest Qdrant snapshot files, and selected vault evidence/SOP files.
+It does not create new Qdrant snapshots, dump databases into `/tmp`, upload live
+MinIO backing stores, or run destructive prune. Retention is
+`--retention-dry-run` only unless a later governed task changes policy.
+
 Both lanes stage service-native artifacts before restic runs:
 
 - PostgreSQL: `pg_dumpall` from the live `postgres` container with the current
@@ -47,8 +62,8 @@ This intentionally removes the stale standalone script assumptions:
 
 ## Restore Path
 
-1. Restore the chosen restic snapshot from Tier 1 or Tier 2 into a staging
-   directory.
+1. Restore the chosen restic snapshot from Tier 1, Tier 2, or the GDrive
+   critical repo into a staging directory.
 2. Restore `$HOME/llm-stack/` configuration from the restored filesystem tree.
 3. Restore PostgreSQL from the staged `postgres-all.sql` dump, or use the
    separately governed PITR lane when a point-in-time restore is required.
