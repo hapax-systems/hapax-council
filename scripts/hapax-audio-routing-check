@@ -97,6 +97,30 @@ current_default_sink() {
     pactl info 2>/dev/null | awk -F': ' '/^Default Sink:/ { print $2; exit }'
 }
 
+sink_volume_nonzero() {
+    local sink="$1"
+    local volume_text
+    if ! command -v pactl >/dev/null 2>&1; then
+        return 1
+    fi
+    volume_text="$(pactl get-sink-volume "$sink" 2>/dev/null || true)"
+    [ -n "$volume_text" ] || return 1
+    python3 -c 'import re, sys
+volumes = [int(value) for value in re.findall(r"/\s*([0-9]+)%", sys.stdin.read())]
+sys.exit(0 if volumes and all(value > 0 for value in volumes) else 1)
+' <<<"$volume_text"
+}
+
+sink_unmuted() {
+    local sink="$1"
+    local mute_text
+    if ! command -v pactl >/dev/null 2>&1; then
+        return 1
+    fi
+    mute_text="$(pactl get-sink-mute "$sink" 2>/dev/null || true)"
+    [ "$mute_text" = "Mute: no" ]
+}
+
 check() {
     local desc="$1"
     local result="$2"
@@ -332,6 +356,11 @@ for NODE_NAME in input.loopback.sink.role.broadcast hapax-voice-fx-capture hapax
         fi
     fi
 done
+if sink_unmuted "hapax-music-loudnorm" && sink_volume_nonzero "hapax-music-loudnorm"; then
+    check "hapax-music-loudnorm input sink audible" "PASS"
+else
+    check "hapax-music-loudnorm input sink audible" "muted or zero-volume — repair with: pactl set-sink-volume hapax-music-loudnorm 100% && pactl set-sink-mute hapax-music-loudnorm 0"
+fi
 echo ""
 
 # ── Invariant 13: WirePlumber deny policy + forbidden-links present ──

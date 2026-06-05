@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -51,6 +52,8 @@ class WitnessStatus:
     playback_sink: str | None
     repair_attempted: bool
     binder_ok: bool | None
+    music_sink_volume_ok: bool
+    music_sink_volume_repaired: bool
     music_links_complete: bool
     broadcast_links_complete: bool
     obs_links_complete: bool
@@ -85,6 +88,20 @@ def _run_text(args: list[str], *, timeout: float = 10.0, check: bool = False) ->
             stderr=result.stderr,
         )
     return result.stdout
+
+
+def _run_command_ok(args: list[str], *, timeout: float = 5.0) -> bool:
+    try:
+        result = subprocess.run(
+            args,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -170,6 +187,38 @@ def _current_playback_sink(ps_text: str) -> str | None:
         if sink:
             return sink
     return None
+
+
+def _sink_volume_nonzero(volume_text: str) -> bool:
+    percentages = [int(value) for value in re.findall(r"/\s*([0-9]+)%", volume_text)]
+    return bool(percentages) and all(value > 0 for value in percentages)
+
+
+def _sink_unmuted(mute_text: str) -> bool:
+    return "Mute: no" in mute_text
+
+
+def _music_sink_volume_ready(sink: str) -> bool:
+    try:
+        volume_text = _run_text(["pactl", "get-sink-volume", sink], timeout=4.0, check=True)
+        mute_text = _run_text(["pactl", "get-sink-mute", sink], timeout=4.0, check=True)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return False
+    return _sink_volume_nonzero(volume_text) and _sink_unmuted(mute_text)
+
+
+def _ensure_music_sink_volume(sink: str, *, repair: bool) -> tuple[bool, bool]:
+    if _music_sink_volume_ready(sink):
+        return True, False
+    if not repair:
+        return False, False
+
+    repaired = False
+    if _run_command_ok(["pactl", "set-sink-volume", sink, "100%"]):
+        repaired = True
+    if _run_command_ok(["pactl", "set-sink-mute", sink, "0"]):
+        repaired = True
+    return _music_sink_volume_ready(sink), repaired
 
 
 def _link_present(pw_link_text: str, source: str, target: str) -> bool:
@@ -294,6 +343,10 @@ def _build_status(args: argparse.Namespace) -> WitnessStatus:
     binder_ok: bool | None = None
     if args.repair:
         binder_ok = _run_binder(bind_script, wait_links_s=args.bind_wait_links_s)
+    music_sink_volume_ok, music_sink_volume_repaired = _ensure_music_sink_volume(
+        DEFAULT_MUSIC_SINK,
+        repair=args.repair,
+    )
 
     selection = _load_json(args.selection_path)
     canonical_urls = _canonical_soundcloud_urls(args.sc_repo_path)
@@ -334,6 +387,7 @@ def _build_status(args: argparse.Namespace) -> WitnessStatus:
         "canonical_soundcloud_selection": canonical_match,
         "music_player_active": player_active,
         "playback_sink_is_music_loudnorm": playback_sink == DEFAULT_MUSIC_SINK,
+        "music_sink_volume_ready": music_sink_volume_ok,
         "obs_binder_ok": binder_ok is not False,
         "music_links_complete": music_links,
         "broadcast_links_complete": broadcast_links,
@@ -358,6 +412,8 @@ def _build_status(args: argparse.Namespace) -> WitnessStatus:
         playback_sink=playback_sink,
         repair_attempted=repair_attempted,
         binder_ok=binder_ok,
+        music_sink_volume_ok=music_sink_volume_ok,
+        music_sink_volume_repaired=music_sink_volume_repaired,
         music_links_complete=music_links,
         broadcast_links_complete=broadcast_links,
         obs_links_complete=obs_links,

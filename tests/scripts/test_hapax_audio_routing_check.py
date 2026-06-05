@@ -177,6 +177,14 @@ def _run_with_graph(
         "11\thapax-livestream-tap\tmodule-null-sink.c\ts16le 2ch 48000Hz\tRUNNING\n"
         "12\thapax-broadcast-master\tmodule-null-sink.c\ts16le 2ch 48000Hz\tRUNNING\n"
         "EOF\n"
+        "elif [[ \"${1:-}\" == 'get-sink-volume' ]]; then\n"
+        'if [[ "${HAPAX_TEST_ZERO_SINK:-}" == "${2:-}" ]]; then\n'
+        "echo 'Volume: front-left: 0 /   0% / -inf dB,   front-right: 0 /   0% / -inf dB'\n"
+        "else\n"
+        "echo 'Volume: front-left: 65536 / 100% / 0.00 dB,   front-right: 65536 / 100% / 0.00 dB'\n"
+        "fi\n"
+        "elif [[ \"${1:-}\" == 'get-sink-mute' ]]; then\n"
+        "echo 'Mute: no'\n"
         "fi\n",
     )
     _write_executable(
@@ -237,6 +245,18 @@ def test_signal_flow_advisory_warns_on_parec_silence_without_failing(tmp_path: P
     assert "Signal-Flow Advisory" in result.stdout
     assert "below" in result.stdout
     assert "RMS=0.00000000" in result.stdout
+
+
+def test_music_loudnorm_zero_input_sink_volume_hard_fails(tmp_path: Path) -> None:
+    result = _run_with_graph(
+        tmp_path,
+        _base_graph(),
+        env_overrides={"HAPAX_TEST_ZERO_SINK": "hapax-music-loudnorm"},
+    )
+
+    assert result.returncode == 1
+    assert "hapax-music-loudnorm input sink audible" in result.stdout
+    assert "muted or zero-volume" in result.stdout
 
 
 def test_tap_input_parser_rejects_s4_direct_tap_until_promoted(tmp_path: Path) -> None:
