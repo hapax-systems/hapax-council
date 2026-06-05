@@ -69,6 +69,24 @@ def test_stable_receipt_id_is_timestamp_free() -> None:
     assert MINT._stable_receipt_id("opus_model_entitlement", "claude.headless.opus") == STABLE_ID
 
 
+def test_runtime_stable_receipt_id_includes_scope() -> None:
+    first = MINT._stable_receipt_id(
+        "runtime_actuation",
+        "codex.headless.full",
+        task_ids=["task-a"],
+        mutation_surfaces=["runtime"],
+    )
+    second = MINT._stable_receipt_id(
+        "runtime_actuation",
+        "codex.headless.full",
+        task_ids=["task-b"],
+        mutation_surfaces=["runtime"],
+    )
+
+    assert first.startswith("runtime_actuation-codex-headless-full-")
+    assert first != second
+
+
 def test_ensure_fresh_initial_mint_writes_stable_id(capsys, tmp_path: Path) -> None:
     rc, payload = _run_json(capsys, _ensure_args(tmp_path, now="2026-06-01T00:00:00Z"))
 
@@ -152,6 +170,62 @@ def test_default_mode_keeps_timestamped_ids(capsys, tmp_path: Path) -> None:
     # Without --ensure-fresh the default id is timestamped: two runs accumulate
     # two files. This is the behaviour --ensure-fresh exists to avoid.
     files = list((tmp_path / "route-authority").glob("*.json"))
+    assert len(files) == 2
+
+
+def test_default_mode_mints_runtime_actuation_receipt(capsys, tmp_path: Path) -> None:
+    rc, payload = _run_json(
+        capsys,
+        [
+            "--receipt-type",
+            "runtime_actuation",
+            "--route-id",
+            "codex.headless.full",
+            "--task-id",
+            "appendix-podium-minio-old-root-cleanup-20260605",
+            "--receipt-dir",
+            str(tmp_path),
+            "--now",
+            "2026-06-05T11:30:00Z",
+            "--json",
+        ],
+    )
+
+    assert rc == 0
+    target = Path(payload["receipt_path"])
+    assert target.is_file()
+    receipt = RouteAuthorityReceipt.model_validate(json.loads(target.read_text(encoding="utf-8")))
+    assert receipt.receipt_type == "runtime_actuation"
+    assert receipt.route_id == "codex.headless.full"
+    assert receipt.task_ids == ("appendix-podium-minio-old-root-cleanup-20260605",)
+    assert receipt.mutation_surfaces == ("runtime",)
+
+
+def test_ensure_fresh_runtime_actuation_keeps_scope_specific_files(capsys, tmp_path: Path) -> None:
+    base = [
+        "--receipt-type",
+        "runtime_actuation",
+        "--route-id",
+        "codex.headless.full",
+        "--receipt-dir",
+        str(tmp_path),
+        "--ensure-fresh",
+        "--now",
+        "2026-06-05T11:30:00Z",
+        "--json",
+    ]
+    rc_first, first = _run_json(
+        capsys,
+        [*base, "--task-id", "appendix-podium-minio-old-root-cleanup-20260605"],
+    )
+    rc_second, second = _run_json(capsys, [*base, "--task-id", "some-other-runtime-task"])
+
+    assert rc_first == 0
+    assert rc_second == 0
+    assert first["kept"] is False
+    assert second["kept"] is False
+    assert first["receipt_path"] != second["receipt_path"]
+    files = sorted((tmp_path / "route-authority").glob("*.json"))
     assert len(files) == 2
 
 

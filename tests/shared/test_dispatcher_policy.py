@@ -352,6 +352,15 @@ def test_ordinary_subscription_route_still_refuses_provider_spend_mutation() -> 
     assert "route_not_mutable_for_provider_spend" in decision.reason_codes
 
 
+def test_ordinary_subscription_route_refuses_runtime_without_task_authority() -> None:
+    request = _request(mutation_surface="runtime")
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert "runtime_actuation_receipt_absent" in decision.reason_codes
+
+
 def test_provider_gateway_route_requires_active_paid_budget() -> None:
     request = _request(
         platform="api",

@@ -213,7 +213,7 @@ class ReviewRequirementReceipt(_PolicyModel):
 class RouteAuthorityReceipt(_PolicyModel):
     route_authority_receipt_schema: Literal[1] = ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION
     receipt_id: str
-    receipt_type: Literal["opus_model_entitlement", "quality_equivalence"]
+    receipt_type: Literal["opus_model_entitlement", "quality_equivalence", "runtime_actuation"]
     route_id: str
     issued_at: datetime
     stale_after: str
@@ -221,6 +221,8 @@ class RouteAuthorityReceipt(_PolicyModel):
     signed_payload_sha256: str
     evidence_refs: tuple[str, ...] = Field(min_length=1)
     quality_floors: tuple[str, ...] = Field(default=())
+    task_ids: tuple[str, ...] = Field(default=())
+    mutation_surfaces: tuple[str, ...] = Field(default=())
 
     @model_validator(mode="after")
     def _valid_signed_receipt(self) -> RouteAuthorityReceipt:
@@ -234,6 +236,11 @@ class RouteAuthorityReceipt(_PolicyModel):
             raise ValueError("quality_equivalence receipts require quality_floors")
         if self.receipt_type == "opus_model_entitlement" and not self.route_id.endswith(".opus"):
             raise ValueError("opus_model_entitlement receipts must target an opus route")
+        if self.receipt_type == "runtime_actuation":
+            if not self.task_ids:
+                raise ValueError("runtime_actuation receipts require task_ids")
+            if not self.mutation_surfaces:
+                raise ValueError("runtime_actuation receipts require mutation_surfaces")
         return self
 
 
@@ -290,6 +297,7 @@ class DispatchRequest(_PolicyModel):
     supply_vector: SupplyVector | None = None
     degraded_mode_authority_ref: str | None = None
     resource_state_refs: tuple[str, ...] = Field(default=())
+    route_authority_receipts: tuple[RouteAuthorityReceipt, ...] = Field(default=())
     rollback_mode: bool = False
     legacy_route_supported: bool = False
     legacy_route_mutable: bool = False
@@ -339,6 +347,7 @@ class DispatchPolicySources(_PolicyModel):
     registry_error: str | None = None
     quota_ledger: QuotaSpendLedger | None = None
     quota_error: str | None = None
+    route_authority_receipts: tuple[RouteAuthorityReceipt, ...] = Field(default=())
 
 
 def now_utc() -> datetime:
@@ -358,6 +367,7 @@ def load_dispatch_policy_sources(
     registry_error: str | None = None
     quota_ledger: QuotaSpendLedger | None = None
     quota_error: str | None = None
+    route_authority_receipts: tuple[RouteAuthorityReceipt, ...] = ()
 
     try:
         effective_receipt_dir = receipt_dir or _receipt_dir_from_env()
@@ -367,6 +377,10 @@ def load_dispatch_policy_sources(
             now=now,
         )
         if registry is not None and effective_receipt_dir is not None:
+            route_authority_receipts = _load_fresh_route_authority_receipts(
+                effective_receipt_dir / ROUTE_AUTHORITY_RECEIPT_DIRNAME,
+                now=now,
+            )
             registry = apply_route_authority_receipts(
                 registry,
                 receipt_dir=effective_receipt_dir,
@@ -387,6 +401,7 @@ def load_dispatch_policy_sources(
         registry_error=registry_error,
         quota_ledger=quota_ledger,
         quota_error=quota_error,
+        route_authority_receipts=route_authority_receipts,
     )
 
 
@@ -421,6 +436,7 @@ def build_dispatch_request(
     registry_error: str | None = None,
     quota_ledger: QuotaSpendLedger | None = None,
     quota_error: str | None = None,
+    route_authority_receipts: Sequence[RouteAuthorityReceipt] = (),
     rollback_mode: bool = False,
     legacy_route_supported: bool = False,
     legacy_route_mutable: bool = False,
@@ -489,6 +505,7 @@ def build_dispatch_request(
             or task_fields.get("degraded_authority_ref")
         ),
         resource_state_refs=_resource_state_refs(capability, quota),
+        route_authority_receipts=tuple(route_authority_receipts),
         rollback_mode=rollback_mode,
         legacy_route_supported=legacy_route_supported,
         legacy_route_mutable=legacy_route_mutable,
@@ -595,7 +612,7 @@ def evaluate_dispatch_policy(
             authority_allowed=False,
         )
 
-    mutation_reason = _mutation_refusal_reason(request, capability)
+    mutation_reason = _mutation_refusal_reason(request, capability, checked_at=checked_at)
     if mutation_reason:
         return _decision(
             request,
@@ -668,7 +685,7 @@ def evaluate_dispatch_policy(
     return _decision(
         request,
         DispatchAction.LAUNCH,
-        _launch_reason_codes(request),
+        _launch_reason_codes(request, checked_at=checked_at),
         checked_at,
         quality_floor_satisfied=quality_floor_satisfied,
         authority_allowed=authority_allowed,
@@ -739,6 +756,13 @@ def route_authority_receipt_payload_hash(
     else:
         raw = dict(payload)
     raw.pop("signed_payload_sha256", None)
+    # These fields were added for runtime_actuation receipts after the Opus and
+    # quality-equivalence receipt formats were already live. Empty defaults are
+    # not part of those older signed payloads, so omit them for backward
+    # compatibility while preserving non-empty runtime scope in the signature.
+    for optional_empty in ("task_ids", "mutation_surfaces"):
+        if not raw.get(optional_empty):
+            raw.pop(optional_empty, None)
     return stable_payload_hash(raw)
 
 
@@ -759,13 +783,15 @@ def _default_route_authority_receipt_id(
 
 def build_route_authority_receipt(
     *,
-    receipt_type: Literal["opus_model_entitlement", "quality_equivalence"],
+    receipt_type: Literal["opus_model_entitlement", "quality_equivalence", "runtime_actuation"],
     route_id: str,
     evidence_refs: Sequence[str],
     receipt_id: str | None = None,
     signed_by: str = "operator",
     stale_after: str = "24h",
     quality_floors: Sequence[str] = (),
+    task_ids: Sequence[str] = (),
+    mutation_surfaces: Sequence[str] = (),
     issued_at: datetime | None = None,
 ) -> RouteAuthorityReceipt:
     """Build a signed route-authority receipt (the canonical minting path).
@@ -789,6 +815,8 @@ def build_route_authority_receipt(
         "signed_by": signed_by,
         "evidence_refs": list(evidence_refs),
         "quality_floors": list(quality_floors),
+        "task_ids": list(task_ids),
+        "mutation_surfaces": list(mutation_surfaces),
     }
     payload["signed_payload_sha256"] = route_authority_receipt_payload_hash(payload)
     return RouteAuthorityReceipt.model_validate(payload)
@@ -831,6 +859,8 @@ def apply_route_authority_receipts(
     payload = registry.model_dump(mode="json")
     routes_by_id = {route["route_id"]: route for route in payload["routes"]}
     for receipt in authority_receipts:
+        if receipt.receipt_type == "runtime_actuation":
+            continue
         route_id = normalize_route_id(receipt.route_id)
         route_payload = routes_by_id.get(route_id)
         if route_payload is None:
@@ -850,7 +880,7 @@ def _load_fresh_route_authority_receipts(
     if not receipt_dir.exists():
         return ()
     checked_now = _coerce_utc(now_utc() if now is None else now)
-    receipts: dict[tuple[str, str], RouteAuthorityReceipt] = {}
+    receipts: dict[tuple[str, ...], RouteAuthorityReceipt] = {}
     for path in sorted(receipt_dir.glob("*.json")):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -859,7 +889,15 @@ def _load_fresh_route_authority_receipts(
             raise ValueError(f"invalid route authority receipt at {path}: {exc}") from exc
         if not _route_authority_receipt_is_fresh(receipt, now=checked_now):
             continue
-        key = (normalize_route_id(receipt.route_id), receipt.receipt_type)
+        if receipt.receipt_type == "runtime_actuation":
+            key = (
+                normalize_route_id(receipt.route_id),
+                receipt.receipt_type,
+                ",".join(sorted(receipt.task_ids)),
+                ",".join(sorted(receipt.mutation_surfaces)),
+            )
+        else:
+            key = (normalize_route_id(receipt.route_id), receipt.receipt_type)
         prior = receipts.get(key)
         if prior is None or _coerce_utc(receipt.issued_at) > _coerce_utc(prior.issued_at):
             receipts[key] = receipt
@@ -941,6 +979,8 @@ def _apply_route_authority_receipt_to_route_payload(
 def _route_authority_removable_reasons(receipt: RouteAuthorityReceipt) -> set[str]:
     if receipt.receipt_type == "opus_model_entitlement":
         return {"opus_model_entitlement_receipt_absent", "fresh_capability_evidence_absent"}
+    if receipt.receipt_type == "runtime_actuation":
+        return set()
     return {"quality_equivalence_record_absent", "fresh_capability_evidence_absent"}
 
 
@@ -1252,6 +1292,10 @@ def _dimensional_vetoes(
     if (
         request.mutation_surface
         and request.mutation_surface not in supply.authority.supported_mutation_surfaces
+        and not (
+            request.mutation_surface == "runtime"
+            and _runtime_actuation_refusal_reason(request, checked_at=checked_at) is None
+        )
     ):
         vetoes.append(
             DimensionalVeto(
@@ -1945,20 +1989,27 @@ def _cloud_burst_policy_gate(request: DispatchRequest) -> tuple[DispatchAction, 
     return DispatchAction.LAUNCH, ()
 
 
-def _launch_reason_codes(request: DispatchRequest) -> tuple[str, ...]:
+def _launch_reason_codes(
+    request: DispatchRequest,
+    *,
+    checked_at: datetime,
+) -> tuple[str, ...]:
+    runtime_authority_ref = _runtime_actuation_receipt_reference(request, checked_at=checked_at)
     if _is_cloud_burst_route(request):
         return (
             "policy_launch",
             "cloud_burst_guard_passed",
             *_cloud_spike_reason_codes(request),
+            *((runtime_authority_ref,) if runtime_authority_ref else ()),
         )
     if not _cloud_burst_eligible(request) and _is_local_dev_route(request):
         return (
             "policy_launch",
             "cloud_burst_not_eligible_appendix_default",
             f"local_execution_target:{LOCAL_DEV_TARGET}",
+            *((runtime_authority_ref,) if runtime_authority_ref else ()),
         )
-    return ("policy_launch",)
+    return ("policy_launch", *((runtime_authority_ref,) if runtime_authority_ref else ()))
 
 
 def _is_cloud_burst_route(request: DispatchRequest) -> bool:
@@ -2061,7 +2112,10 @@ def _mutation_requested(request: DispatchRequest) -> bool:
 
 
 def _mutation_refusal_reason(
-    request: DispatchRequest, capability: RouteCapabilityState
+    request: DispatchRequest,
+    capability: RouteCapabilityState,
+    *,
+    checked_at: datetime,
 ) -> str | None:
     surface = request.mutation_surface
     if surface is None or surface in NON_MUTATING_SURFACES:
@@ -2069,7 +2123,66 @@ def _mutation_refusal_reason(
     if not capability.mutability.get(surface, False):
         if capability.authority_ceiling == "read_only":
             return "read_only_mutation_route"
+        if surface == "runtime":
+            return _runtime_actuation_refusal_reason(request, checked_at=checked_at)
         return f"route_not_mutable_for_{surface}"
+    return None
+
+
+def _runtime_actuation_refusal_reason(
+    request: DispatchRequest,
+    *,
+    checked_at: datetime,
+) -> str | None:
+    receipts = tuple(
+        receipt
+        for receipt in request.route_authority_receipts
+        if receipt.receipt_type == "runtime_actuation"
+    )
+    if not receipts:
+        return "runtime_actuation_receipt_absent"
+
+    route_matches = tuple(
+        receipt
+        for receipt in receipts
+        if normalize_route_id(receipt.route_id) == normalize_route_id(request.route_id)
+    )
+    if not route_matches:
+        return "runtime_actuation_route_mismatch"
+
+    task_matches = tuple(
+        receipt for receipt in route_matches if request.task_id in receipt.task_ids
+    )
+    if not task_matches:
+        return "runtime_actuation_task_mismatch"
+
+    if not any(request.mutation_surface in receipt.mutation_surfaces for receipt in task_matches):
+        return "runtime_actuation_surface_mismatch"
+    if not any(
+        _route_authority_receipt_is_fresh(receipt, now=checked_at)
+        for receipt in task_matches
+        if request.mutation_surface in receipt.mutation_surfaces
+    ):
+        return "runtime_actuation_receipt_stale"
+    return None
+
+
+def _runtime_actuation_receipt_reference(
+    request: DispatchRequest,
+    *,
+    checked_at: datetime,
+) -> str | None:
+    if request.mutation_surface != "runtime":
+        return None
+    for receipt in request.route_authority_receipts:
+        if (
+            receipt.receipt_type == "runtime_actuation"
+            and normalize_route_id(receipt.route_id) == normalize_route_id(request.route_id)
+            and request.task_id in receipt.task_ids
+            and request.mutation_surface in receipt.mutation_surfaces
+            and _route_authority_receipt_is_fresh(receipt, now=checked_at)
+        ):
+            return route_authority_receipt_reference(receipt)
     return None
 
 

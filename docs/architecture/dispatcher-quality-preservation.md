@@ -90,7 +90,24 @@ The SOP is two-step:
 Ordinary subscription worker routes stay non-mutable for `provider_spend` and
 `runtime` unless their route row explicitly authorizes those surfaces.
 
-### 3.4 Route Decision Receipts
+### 3.4 Local Runtime Actuation
+
+Bounded host-runtime maintenance, such as deleting an archived rollback tree,
+uses a task-bound `runtime_actuation` route-authority receipt. The receipt must
+name the route, task id, and mutation surface; a stale, wrong-route, wrong-task,
+or wrong-surface receipt fails closed. This preserves the registry invariant
+that ordinary subscription workers are not blanket runtime-mutable merely
+because they have shell access.
+
+The SOP is two-step:
+
+1. Source-governance work creates or refreshes the task-bound runtime authority
+   receipt after the runtime task, parent spec, archive/rollback evidence, and
+   route evidence are current.
+2. A separate `mutation_surface: runtime` task performs the live host mutation
+   only after methodology dispatch validates the matching fresh receipt.
+
+### 3.5 Route Decision Receipts
 
 Source: `shared/platform_capability_receipts.py`
 
