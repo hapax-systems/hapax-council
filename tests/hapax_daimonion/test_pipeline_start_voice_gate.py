@@ -21,6 +21,7 @@ def _daemon_stub():
     pipeline._session_id = "test-session"
     pipeline._audio_output = MagicMock()
     pipeline._echo_canceller = None
+    pipeline._tts_envelope_publisher = None
     daemon = SimpleNamespace(
         _conversation_pipeline=pipeline,
         _conversation_buffer=MagicMock(),
@@ -57,6 +58,9 @@ def test_wake_greeting_records_decision_before_routed_write():
         b"\x00\x01",
         "hapax-private",
         "Assistant",
+        None,
+        None,
+        None,
     )
 
 

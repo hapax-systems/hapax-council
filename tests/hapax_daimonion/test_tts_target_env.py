@@ -88,6 +88,68 @@ class TestConversationPipelineRoutedAudio:
 
         assert audio_output.calls == [(pcm, {"target": "hapax-private", "media_role": "Assistant"})]
 
+    def test_routed_write_feeds_tts_envelope_before_playback(self):
+        pcm = b"\x00\x01" * 500
+        events = []
+
+        class AudioOutput:
+            def write(self, data, **kwargs):
+                events.append(("write", data, kwargs))
+                return PlaybackResult(
+                    status="completed",
+                    returncode=0,
+                    duration_s=0.04,
+                    timeout_s=0.04,
+                    target=kwargs["target"],
+                    media_role=kwargs["media_role"],
+                )
+
+        publisher = SimpleNamespace(feed=lambda data: events.append(("feed", data)))
+
+        ConversationPipeline._write_audio(
+            AudioOutput(),
+            None,
+            pcm,
+            destination_target="hapax-private",
+            destination_role="Assistant",
+            tts_envelope_publisher=publisher,
+        )
+
+        assert events == [
+            ("feed", pcm),
+            ("write", pcm, {"target": "hapax-private", "media_role": "Assistant"}),
+        ]
+
+    def test_tts_envelope_feed_failure_does_not_block_routed_write(self):
+        pcm = b"\x00\x01" * 500
+        writes = []
+
+        class AudioOutput:
+            def write(self, data, **kwargs):
+                writes.append((data, kwargs))
+                return PlaybackResult(
+                    status="completed",
+                    returncode=0,
+                    duration_s=0.04,
+                    timeout_s=0.04,
+                    target=kwargs["target"],
+                    media_role=kwargs["media_role"],
+                )
+
+        def _feed(_data):
+            raise RuntimeError("ring unavailable")
+
+        ConversationPipeline._write_audio(
+            AudioOutput(),
+            None,
+            pcm,
+            destination_target="hapax-private",
+            destination_role="Assistant",
+            tts_envelope_publisher=SimpleNamespace(feed=_feed),
+        )
+
+        assert writes == [(pcm, {"target": "hapax-private", "media_role": "Assistant"})]
+
     @pytest.mark.asyncio
     async def test_bridge_phrase_drops_when_default_route_is_blocked(self):
         pipeline = object.__new__(ConversationPipeline)
@@ -206,6 +268,10 @@ class TestConversationPipelineRoutedAudio:
         pipeline._max_tts_history = 5  # type: ignore[attr-defined]
         pipeline.tts = SimpleNamespace(synthesize=MagicMock(return_value=b"\x00\x01" * 120))  # type: ignore[attr-defined]
         pipeline._echo_canceller = None  # type: ignore[attr-defined]
+        fed = []
+        pipeline._tts_envelope_publisher = SimpleNamespace(  # type: ignore[attr-defined]
+            feed=lambda pcm: fed.append(pcm)
+        )
         pipeline._audio_output = MagicMock()  # type: ignore[attr-defined]
         pipeline._audio_output.write.return_value = PlaybackResult(  # type: ignore[attr-defined]
             status="completed",
@@ -240,3 +306,4 @@ class TestConversationPipelineRoutedAudio:
         assert record_playback.call_args.kwargs["destination"] == "private"
         assert record_playback.call_args.kwargs["target"] == "hapax-private"
         assert record_playback.call_args.kwargs["media_role"] == "Assistant"
+        assert fed == [b"\x00\x01" * 120]
