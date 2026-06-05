@@ -46,21 +46,51 @@ def detect_quota_wall(output_path: Path, tail_lines: int = 50) -> QuotaWallSigna
         return None
 
     tail = lines[-tail_lines:] if len(lines) > tail_lines else lines
+    fallback: QuotaWallSignal | None = None
+    fallback_session_id: str | None = None
     for raw in reversed(tail):
-        signal = _parse_line(raw)
-        if signal is not None:
-            return signal
-    return None
+        record = _json_record(raw)
+        if record is None:
+            continue
+        signal = _parse_record(record)
+        if signal is None:
+            continue
+        if signal.kind == "rate_limit_event":
+            candidate_session_id = _session_id(record)
+            if fallback is None or _same_session(candidate_session_id, fallback_session_id):
+                return signal
+            continue
+        if fallback is None:
+            fallback = signal
+            fallback_session_id = _session_id(record)
+    return fallback
 
 
-def _parse_line(raw: str) -> QuotaWallSignal | None:
+def _json_record(raw: str) -> dict[str, Any] | None:
     try:
         record = json.loads(raw)
     except (json.JSONDecodeError, ValueError):
         return None
-    if not isinstance(record, dict):
-        return None
+    return record if isinstance(record, dict) else None
 
+
+def _session_id(record: dict[str, Any]) -> str | None:
+    value = record.get("session_id")
+    return value if isinstance(value, str) and value else None
+
+
+def _same_session(candidate: str | None, fallback: str | None) -> bool:
+    return candidate is None or fallback is None or candidate == fallback
+
+
+def _parse_line(raw: str) -> QuotaWallSignal | None:
+    record = _json_record(raw)
+    if record is None:
+        return None
+    return _parse_record(record)
+
+
+def _parse_record(record: dict[str, Any]) -> QuotaWallSignal | None:
     msg_type = record.get("type", "")
     subtype = record.get("subtype", "")
 
