@@ -92,6 +92,7 @@ def _run_activate(
     tmp_path: Path,
     canonical: Path,
     *,
+    extra_args: list[str] | None = None,
     deploy_exit: int = 0,
     env_overrides: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -106,7 +107,7 @@ def _run_activate(
     if env_overrides:
         env.update(env_overrides)
     return subprocess.run(
-        [str(SCRIPT)],
+        [str(SCRIPT), *(extra_args or [])],
         text=True,
         capture_output=True,
         check=False,
@@ -194,6 +195,51 @@ def test_audio_critical_active_drift_holds_before_reset_or_deploy(tmp_path: Path
     assert receipt["origin_main_sha"] == latest_sha
     assert receipt["active_source_head"] == active_sha
     assert "config/voice-output-routes.yaml" in receipt["message"]
+
+
+def test_force_requires_governed_authority_for_audio_critical_drift(tmp_path: Path) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    active_source = tmp_path / "active-source"
+    _write(active_source / "config" / "voice-output-routes.yaml", "schema_version: 1\n")
+    latest_sha = _advance_origin(tmp_path, origin, "advance before unaudited force")
+
+    second = _run_activate(tmp_path, canonical, extra_args=["--force"])
+
+    assert second.returncode == 2
+    assert "--force requires governed release authority" in second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == active_sha
+    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [active_sha]
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["origin_main_sha"] == latest_sha
+    assert receipt["active_source_head"] == active_sha
+    assert receipt["force"] == {"requested": True, "authority": None}
+
+
+def test_force_authority_allows_governed_audio_drift_cutover(tmp_path: Path) -> None:
+    canonical, origin, active_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    active_source = tmp_path / "active-source"
+    _write(active_source / "config" / "voice-output-routes.yaml", "schema_version: 1\n")
+    latest_sha = _advance_origin(tmp_path, origin, "advance before governed force")
+    authority = "cc-task:audio-mk5-private-monitor-source-activation-unblock-20260605"
+
+    second = _run_activate(tmp_path, canonical, extra_args=["--force-authority", authority])
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == latest_sha
+    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [
+        active_sha,
+        latest_sha,
+    ]
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "completed"
+    assert receipt["force"] == {"requested": True, "authority": authority}
 
 
 def test_same_sha_rerun_writes_no_op_and_does_not_redeploy(tmp_path: Path) -> None:
