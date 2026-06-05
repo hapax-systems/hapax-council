@@ -13,6 +13,7 @@ from shared.fix_capabilities.base import (
     ProbeResult,
     Safety,
 )
+from shared.maintenance_lock import maintenance_lock_for_target, maintenance_lock_message
 
 _ACTIONS: dict[str, Action] = {
     "restart_container": Action(
@@ -76,6 +77,17 @@ class DockerCapability(Capability):
     async def execute(self, proposal: FixProposal) -> ExecutionResult:
         """Execute a validated fix proposal."""
         container_name = proposal.params["container_name"]
+        lock = maintenance_lock_for_target(container_name, target_type="container")
+        if lock is not None:
+            return ExecutionResult(
+                success=False,
+                message=maintenance_lock_message(
+                    proposal.action_name.replace("_", " "),
+                    container_name,
+                    lock,
+                ),
+            )
+
         if proposal.action_name == "restart_container":
             cmd = ["docker", "restart", container_name]
         elif proposal.action_name == "start_container":

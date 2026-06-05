@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -237,6 +239,122 @@ async def test_evaluator_returns_none_skips():
 
     assert result.total == 0
     assert result.outcomes == []
+
+
+@pytest.mark.asyncio
+async def test_deterministic_docker_compose_up_suppressed_by_maintenance_lock(
+    tmp_path, monkeypatch
+):
+    """Fallback compose-up remediation does not run while target is locked."""
+    monkeypatch.setenv("HAPAX_MAINTENANCE_LOCK_DIR", str(tmp_path))
+    (tmp_path / "minio.json").write_text(
+        json.dumps(
+            {
+                "task_id": "minio-cutover",
+                "expires_at": "2999-01-01T00:00:00Z",
+                "services": ["minio"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    check = CheckResult(
+        name="docker.minio",
+        group="unknown-group",
+        status=Status.FAILED,
+        message="stopped",
+        remediation="cd ~/llm-stack && docker compose up -d minio",
+    )
+    report = _make_report(check)
+    with (
+        patch(f"{_PATCH_BASE}.get_capability_for_group", return_value=None),
+        patch(f"{_PATCH_BASE}.run_cmd", new_callable=AsyncMock) as mock_cmd,
+    ):
+        result = await run_fix_pipeline(report)
+
+    assert result.total == 1
+    outcome = result.outcomes[0]
+    assert outcome.executed is False
+    assert outcome.rejected_reason is not None
+    assert "Suppressed docker compose up for minio" in outcome.rejected_reason
+    assert "minio-cutover" in outcome.rejected_reason
+    mock_cmd.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_deterministic_targetless_compose_up_suppressed_when_any_docker_lock(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HAPAX_MAINTENANCE_LOCK_DIR", str(tmp_path))
+    (tmp_path / "active.json").write_text(
+        json.dumps(
+            {
+                "task_id": "maintenance",
+                "expires_at": "2999-01-01T00:00:00Z",
+                "containers": ["minio"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    check = CheckResult(
+        name="docker.containers",
+        group="unknown-group",
+        status=Status.FAILED,
+        message="none",
+        remediation="cd ~/llm-stack && docker compose up -d",
+    )
+    report = _make_report(check)
+    with (
+        patch(f"{_PATCH_BASE}.get_capability_for_group", return_value=None),
+        patch(f"{_PATCH_BASE}.run_cmd", new_callable=AsyncMock) as mock_cmd,
+    ):
+        result = await run_fix_pipeline(report)
+
+    assert result.total == 1
+    assert result.outcomes[0].rejected_reason is not None
+    assert "<all compose services>" in result.outcomes[0].rejected_reason
+    mock_cmd.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_deterministic_docker_compose_up_runs_when_lock_expired(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAPAX_MAINTENANCE_LOCK_DIR", str(tmp_path))
+    (tmp_path / "expired.json").write_text(
+        json.dumps(
+            {
+                "task_id": "old-maintenance",
+                "expires_at": "2000-01-01T00:00:00Z",
+                "services": ["minio"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    check = CheckResult(
+        name="docker.minio",
+        group="unknown-group",
+        status=Status.FAILED,
+        message="stopped",
+        remediation="cd ~/llm-stack && docker compose up -d minio",
+    )
+    report = _make_report(check)
+    with (
+        patch(f"{_PATCH_BASE}.get_capability_for_group", return_value=None),
+        patch(
+            f"{_PATCH_BASE}.run_cmd",
+            new_callable=AsyncMock,
+            return_value=(0, "ok", ""),
+        ) as mock_cmd,
+    ):
+        result = await run_fix_pipeline(report)
+
+    assert result.total == 1
+    assert result.outcomes[0].executed is True
+    assert result.outcomes[0].execution_result is not None
+    assert result.outcomes[0].execution_result.success is True
+    mock_cmd.assert_called_once_with(
+        ["docker", "compose", "up", "-d", "minio"],
+        timeout=30.0,
+        cwd=os.path.expanduser("~/llm-stack"),
+    )
 
 
 @pytest.mark.asyncio
