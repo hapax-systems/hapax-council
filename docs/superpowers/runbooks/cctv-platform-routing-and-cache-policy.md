@@ -92,11 +92,13 @@ research findings must remain after the cache breakpoint.
 Provider behavior:
 
 - Anthropic Claude: use an ephemeral `cache_control` breakpoint on the final
-  stable content block. Supported TTLs are `5m` and `1h`; default CCTV TTL is
-  `5m` via `HAPAX_CCTV_PROMPT_CACHE_TTL`.
+  stable content block. Supported TTL settings are `5m` and `1h`; default CCTV
+  TTL is `5m` via `HAPAX_CCTV_PROMPT_CACHE_TTL`.
 - Google Gemini through LiteLLM: use the same OpenAI-compatible content-block
-  `cache_control` shape for Gemini routes; Gemini also has native explicit
-  cached-content resources outside this Pydantic AI/LiteLLM path.
+  `cache_control` shape for Gemini routes, but emit Gemini TTLs in seconds
+  (`300s` for the `5m` CCTV setting and `3600s` for `1h`). Gemini also has
+  native explicit cached-content resources outside this Pydantic AI/LiteLLM
+  path.
 - OpenAI API routes, if added to CCTV: pass `openai_prompt_cache_key` and
   `openai_prompt_cache_retention` through Pydantic AI model settings. OpenAI
   API prompt caching is prefix-based and automatic for supported recent models;

@@ -157,15 +157,26 @@ class TestBuildMember:
     def test_cache_policy_is_family_gated(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("HAPAX_CCTV_PROMPT_CACHE", raising=False)
         assert cache_control_ttl_for_alias("opus") == "5m"
-        assert cache_control_ttl_for_alias("gemini-3-pro") == "5m"
+        assert cache_control_ttl_for_alias("gemini-3-pro") == "300s"
         assert cache_control_ttl_for_alias("local-fast") is None
         assert cache_control_ttl_for_alias("web-research") is None
         assert cache_control_ttl_for_alias("mistral-large") is None
+        assert cache_policy_for_alias("gemini-3-pro")["cache_control_ttl"] == "300s"
+        assert cache_policy_for_alias("gemini-3-pro")["cache_control_ttl_setting"] == "5m"
+
+    def test_cache_policy_normalizes_one_hour_ttl(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("HAPAX_CCTV_PROMPT_CACHE", raising=False)
+        monkeypatch.setenv("HAPAX_CCTV_PROMPT_CACHE_TTL", "1h")
+        assert cache_control_ttl_for_alias("opus") == "1h"
+        assert cache_control_ttl_for_alias("gemini-3-pro") == "3600s"
+        assert cache_policy_for_alias("gemini-3-pro")["cache_control_ttl"] == "3600s"
+        assert cache_policy_for_alias("gemini-3-pro")["cache_control_ttl_setting"] == "1h"
 
     def test_cache_policy_can_be_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HAPAX_CCTV_PROMPT_CACHE", "0")
         assert cache_control_ttl_for_alias("opus") is None
         assert cache_policy_for_alias("opus")["cache_control"] is False
+        assert cache_policy_for_alias("opus")["cache_control_ttl_setting"] is None
 
     def test_openai_cache_settings_only_for_openai_family(
         self, monkeypatch: pytest.MonkeyPatch
