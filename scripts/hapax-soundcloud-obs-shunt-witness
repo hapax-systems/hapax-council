@@ -18,6 +18,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -33,6 +34,7 @@ DEFAULT_MUSIC_SINK = "hapax-music-loudnorm"
 DEFAULT_OBS_SOURCE = "hapax-obs-broadcast-remap"
 DEFAULT_OBS_INPUT_NAME = "Audio Input Capture (PipeWire)"
 MIN_OBS_RMS_DBFS = -55.0
+SOUNDCLOUD_HOSTS = {"soundcloud.com", "www.soundcloud.com"}
 
 
 @dataclass(frozen=True)
@@ -93,6 +95,22 @@ def _load_json(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _normalized_soundcloud_url(value: str) -> str | None:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    host = (parsed.hostname or "").casefold()
+    if host not in SOUNDCLOUD_HOSTS:
+        return None
+    normalized_path = parsed.path.rstrip("/")
+    if not normalized_path or normalized_path == "/":
+        return None
+    return urlunsplit(("https", "soundcloud.com", normalized_path, "", ""))
+
+
 def _canonical_soundcloud_urls(path: Path) -> set[str]:
     urls: set[str] = set()
     try:
@@ -107,8 +125,10 @@ def _canonical_soundcloud_urls(path: Path) -> set[str]:
         except json.JSONDecodeError:
             continue
         url = row.get("path")
-        if isinstance(url, str) and "soundcloud.com/" in url:
-            urls.add(url.rstrip("/"))
+        if isinstance(url, str):
+            normalized_url = _normalized_soundcloud_url(url)
+            if normalized_url is not None:
+                urls.add(normalized_url)
     return urls
 
 
@@ -118,11 +138,14 @@ def _is_canonical_soundcloud_selection(
 ) -> bool:
     url = selection.get("path")
     source = selection.get("source")
-    if not isinstance(url, str) or "soundcloud.com/" not in url:
+    if not isinstance(url, str):
+        return False
+    normalized_url = _normalized_soundcloud_url(url)
+    if normalized_url is None:
         return False
     if source != "soundcloud-oudepode":
         return False
-    return url.rstrip("/") in canonical_urls
+    return normalized_url in canonical_urls
 
 
 def _systemd_unit_active(unit: str) -> bool:

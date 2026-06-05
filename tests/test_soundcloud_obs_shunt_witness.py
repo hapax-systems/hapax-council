@@ -48,6 +48,51 @@ def test_canonical_soundcloud_selection_requires_repo_match(witness_mod: types.M
     )
 
 
+def test_canonical_soundcloud_selection_rejects_lookalike_urls(
+    witness_mod: types.ModuleType,
+    tmp_path: Path,
+) -> None:
+    canonical = {"https://soundcloud.com/oudepode/dump-disciple-8"}
+
+    assert (
+        witness_mod._is_canonical_soundcloud_selection(
+            {
+                "path": "https://example.com/soundcloud.com/oudepode/dump-disciple-8",
+                "source": "soundcloud-oudepode",
+            },
+            canonical,
+        )
+        is False
+    )
+    assert (
+        witness_mod._is_canonical_soundcloud_selection(
+            {
+                "path": "https://soundcloud.com.example/oudepode/dump-disciple-8",
+                "source": "soundcloud-oudepode",
+            },
+            canonical,
+        )
+        is False
+    )
+
+    repo_path = tmp_path / "soundcloud.jsonl"
+    repo_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"path": "https://example.com/soundcloud.com/oudepode/not-real"}),
+                json.dumps({"path": "https://soundcloud.com.example/oudepode/not-real"}),
+                json.dumps({"path": "https://www.soundcloud.com/oudepode/dump-disciple-8/"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert witness_mod._canonical_soundcloud_urls(repo_path) == {
+        "https://soundcloud.com/oudepode/dump-disciple-8"
+    }
+
+
 def test_obs_links_complete_requires_pipewire_obs_input(witness_mod: types.ModuleType) -> None:
     graph = """
 hapax-obs-broadcast-remap:capture_FL
