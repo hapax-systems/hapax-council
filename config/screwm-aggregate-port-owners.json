@@ -506,6 +506,15 @@
           ]
         },
         {
+          "path": "assets/quake/darkplaces/hapax-live-texture.patch",
+          "anchors": [
+            "#define MATERIALFLAG_HAPAXDRIFT 0x00400000",
+            "Mod_HapaxDriftEligibleTextureName",
+            "t->currentmaterialflags & MATERIALFLAG_HAPAXDRIFT",
+            "qbool dphapaxdrift"
+          ]
+        },
+        {
           "path": "scripts/quake_media_drift.py",
           "anchors": [
             "effect-drift-active-ratio.txt",

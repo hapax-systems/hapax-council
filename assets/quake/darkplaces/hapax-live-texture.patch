@@ -276,8 +276,8 @@ index f9007caf..7771cf14 100644
  	r_waterstate_waterplane_t *waterplane = (r_waterstate_waterplane_t *)surfacewaterplane;
  	if (r_trippy.integer && !notrippy)
  		permutation |= SHADERPERMUTATION_TRIPPY;
-+	// (hapax) GPU world-surface drift: flag drift_* surfaces for the HAPAX_DRIFT permutation.
-+	if (hapax_drift_enable.integer && t->name[0] && (!strncmp(t->name, "drift_", 6) || !strncmp(t->name, "hex_", 4) || !strncmp(t->name, "stipple_", 8) || !strncmp(t->name, "geometry", 8)))
++	// (hapax) GPU world-surface drift: material-load eligibility selects the HAPAX_DRIFT permutation.
++	if (hapax_drift_enable.integer && (t->currentmaterialflags & MATERIALFLAG_HAPAXDRIFT))
 +		permutation |= SHADERPERMUTATION_HAPAXDRIFT;
 +	else if (hapax_drift_enable.integer && rsurface.entity && rsurface.entity != r_refdef.scene.worldentity)
 +		permutation |= SHADERPERMUTATION_HAPAXDRIFT; // (hapax) content geometry (alias models / entities) drifts too
@@ -661,9 +661,51 @@ index f9007caf..7771cf14 100644
  	if (!skipblend)
 -		R_BlendView(viewcolortexture, fbo, depthtexture, colortexture, x, y, width, height);
 +		R_BlendView_N(viewcolortexture, fbo, depthtexture, colortexture, x, y, width, height, NULL, 0);
- 	if (r_timereport_active)
- 		R_TimeReport("blendview");
- 
+	if (r_timereport_active)
+		R_TimeReport("blendview");
+
+diff --git a/model_brush.h b/model_brush.h
+index dae4a3cf..3809c7c7 100644
+--- a/model_brush.h
++++ b/model_brush.h
+@@ -121,0 +122,2 @@ mplane_t;
++// (hapax) eligible for GPU world-surface drift/effects stage
++#define MATERIALFLAG_HAPAXDRIFT 0x00400000
+diff --git a/model_shared.c b/model_shared.c
+index 9a87c4db..07c54a25 100644
+--- a/model_shared.c
++++ b/model_shared.c
+@@ -1993,0 +1994,2 @@ void Mod_LoadQ3Shaders(void)
++				else if (!strcasecmp(parameter[0], "hapax_drift") || !strcasecmp(parameter[0], "dphapaxdrift"))
++					shader.dphapaxdrift = true;
+@@ -2269,0 +2272,10 @@ texture_shaderpass_t *Mod_CreateShaderPassFromQ3ShaderLayer(mempool_t *mempool,
++static qbool Mod_HapaxDriftEligibleTextureName(const char *name)
++{
++	return name && name[0] && (
++		!strncmp(name, "drift_", 6)
++		|| !strncmp(name, "hex_", 4)
++		|| !strncmp(name, "stipple_", 8)
++		|| !strncmp(name, "geometry", 8)
++	);
++}
++
+@@ -2484,0 +2497,2 @@ nothing                GL_ZERO GL_ONE
++		if (shader->dphapaxdrift)
++			texture->basematerialflags |= MATERIALFLAG_HAPAXDRIFT;
+@@ -2640,0 +2655,2 @@ nothing                GL_ZERO GL_ONE
++	if (Mod_HapaxDriftEligibleTextureName(texture->name))
++		texture->basematerialflags |= MATERIALFLAG_HAPAXDRIFT;
+@@ -2660,0 +2677,2 @@ void Mod_LoadCustomMaterial(mempool_t *mempool, texture_t *texture, const char *
++	if (Mod_HapaxDriftEligibleTextureName(texture->name))
++		texture->basematerialflags |= MATERIALFLAG_HAPAXDRIFT;
+diff --git a/r_qshader.h b/r_qshader.h
+index ce38ff7f..61cba25b 100644
+--- a/r_qshader.h
++++ b/r_qshader.h
+@@ -222,0 +223,3 @@ typedef struct shader_s
++	// Hapax GPU drift/effects stage eligibility
++	qbool dphapaxdrift;
++
 diff --git a/render.h b/render.h
 index 7fbcd0b3..0bd77491 100644
 --- a/render.h
