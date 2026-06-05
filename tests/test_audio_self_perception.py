@@ -128,6 +128,11 @@ class TestDaemonConfig:
 
         assert daemon.DEFAULT_TARGET_STAGE == "hapax-broadcast-normalized"
 
+    def test_default_capture_rate_is_native_broadcast_rate(self):
+        from agents.audio_self_perception import __main__ as daemon
+
+        assert daemon.DEFAULT_SAMPLE_RATE == 48000
+
     def test_state_write_includes_source(self, monkeypatch, tmp_path):
         from agents.audio_self_perception import __main__ as daemon
 
@@ -147,6 +152,34 @@ class TestDaemonConfig:
 
         assert "WatchdogSec" not in unit
         assert "HAPAX_AUDIO_SELF_PERCEPTION_STAGE=hapax-broadcast-normalized" in unit
+
+    def test_probe_once_uses_persistent_probe_result(self, monkeypatch, tmp_path):
+        from agents.audio_self_perception import __main__ as daemon
+
+        class FakeProbeResult:
+            error = None
+            sample_rate = 48000
+            samples_mono = np.zeros(480, dtype=np.int16)
+
+        class FakeProbeSet:
+            def __init__(self) -> None:
+                self.stages: list[str] = []
+
+            def capture(self, stage: str) -> FakeProbeResult:
+                self.stages.append(stage)
+                return FakeProbeResult()
+
+        state_file = tmp_path / "state.json"
+        monkeypatch.setattr(daemon, "SHM_DIR", tmp_path)
+        monkeypatch.setattr(daemon, "SHM_FILE", state_file)
+        monkeypatch.setattr(daemon, "TARGET_STAGE", "hapax-broadcast-normalized")
+
+        probes = FakeProbeSet()
+        daemon._probe_once(probes)
+
+        payload = json.loads(state_file.read_text(encoding="utf-8"))
+        assert probes.stages == ["hapax-broadcast-normalized"]
+        assert payload["sample_rate"] == 48000
 
 
 # ── Stimmung dimension tests ───────────────────────────────────────────
