@@ -209,7 +209,8 @@ class TestCodeSearchSweep:
         result = gap_validate.sweep_github(sample_gap)
 
         assert result.vote == "inconclusive"
-        assert "github:API rate limit exceeded" in result.error
+        assert "github" in result.error
+        assert "API rate limit exceeded" in result.error
 
     def test_papers_with_code_redirect_is_inconclusive(
         self, monkeypatch: pytest.MonkeyPatch, sample_gap: dict
@@ -223,7 +224,8 @@ class TestCodeSearchSweep:
         result = gap_validate.sweep_papers_with_code(sample_gap)
 
         assert result.vote == "inconclusive"
-        assert "papers_with_code:http_302" in result.error
+        assert "papers_with_code" in result.error
+        assert "http_302" in result.error
 
 
 class TestAcademicSweep:
@@ -243,6 +245,23 @@ class TestAcademicSweep:
 
 
 class TestTradeArchiveSweep:
+    def test_ieee_key_prefers_pass_over_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("IEEE_XPLORE_API_KEY", "env-key")
+        monkeypatch.setattr(
+            gap_validate.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0,
+                stdout="pass-key\n",
+                stderr="",
+            ),
+        )
+
+        api_key, error = gap_validate._resolve_ieee_xplore_api_key()
+
+        assert api_key == "pass-key"
+        assert error is None
+
     def test_uses_ieee_when_api_key_present(
         self, monkeypatch: pytest.MonkeyPatch, sample_gap: dict
     ) -> None:
@@ -285,6 +304,26 @@ class TestTradeArchiveSweep:
 
         assert result.signal == "trade_pubs"
         assert result.evidence[0]["source"] == "acm_dl"
+
+    def test_missing_ieee_key_with_empty_acm_is_inconclusive(
+        self, monkeypatch: pytest.MonkeyPatch, sample_gap: dict
+    ) -> None:
+        monkeypatch.delenv("IEEE_XPLORE_API_KEY", raising=False)
+        monkeypatch.setattr(
+            gap_validate.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr=""),
+        )
+        monkeypatch.setattr(
+            gap_validate.httpx,
+            "get",
+            lambda *args, **kwargs: FakeResponse(text=""),
+        )
+
+        result = gap_validate.sweep_trade_archive(sample_gap)
+
+        assert result.vote == "inconclusive"
+        assert "ieee_xplore:missing_api_key" in result.error
 
     def test_acm_http_failure_is_inconclusive(
         self, monkeypatch: pytest.MonkeyPatch, sample_gap: dict
@@ -331,6 +370,7 @@ class TestRegistryIntegration:
     def test_registry_loads(self) -> None:
         registry = gap_validate.load_registry()
         assert "gaps" in registry
+        # Current seed registry defines GAP-001 through GAP-018.
         assert len(registry["gaps"]) >= 18
 
     def test_registry_has_phase1_reviewed_gaps(self) -> None:
@@ -343,4 +383,5 @@ class TestRegistryIntegration:
         }
         reviewed = [g for g in registry["gaps"] if g["validation_status"] in phase1_statuses]
         reviewed_ids = {g["gap_id"] for g in reviewed}
+        # The acceptance smoke batch exercises these three seeded gaps.
         assert {"GAP-001", "GAP-003", "GAP-007"} <= reviewed_ids

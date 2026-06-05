@@ -43,6 +43,8 @@ GOOGLE_PATENTS_URL = "https://patents.google.com/"
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 IEEE_XPLORE_URL = "https://ieeexploreapi.ieee.org/api/v1/search/articles"
 ACM_DL_SEARCH_URL = "https://dl.acm.org/action/doSearch"
+IEEE_XPLORE_API_KEY_ENV = "IEEE_XPLORE_API_KEY"
+IEEE_XPLORE_PASS_PATH = "ieee/xplore-api-key"
 PATENT_LINK_RE = re.compile(r'href="(?P<href>/patent/[^"#?]+)')
 ACM_DOI_LINK_RE = re.compile(r'href="(?P<href>/doi/[^"#?]+)"[^>]*>(?P<title>.*?)</a>', re.S)
 
@@ -128,6 +130,30 @@ def _source_urls(items: list[dict]) -> list[str]:
                 urls.append(str(value))
                 break
     return urls
+
+
+def _resolve_ieee_xplore_api_key() -> tuple[str | None, str | None]:
+    """Resolve the IEEE Xplore key from pass, then hapax-secrets exported env."""
+    try:
+        result = subprocess.run(
+            ["pass", "show", IEEE_XPLORE_PASS_PATH],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode == 0:
+            key = result.stdout.strip().splitlines()[0]
+            if key:
+                return key, None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    env_key = os.environ.get(IEEE_XPLORE_API_KEY_ENV, "").strip()
+    if env_key:
+        return env_key, None
+
+    return None, f"ieee_xplore:missing_api_key:{IEEE_XPLORE_PASS_PATH}|${IEEE_XPLORE_API_KEY_ENV}"
 
 
 def sweep_github(gap: dict) -> SignalResult:
@@ -449,9 +475,9 @@ def sweep_code_search(gap: dict) -> SignalResult:
 
 
 def _sweep_ieee_xplore(terms: list[str]) -> tuple[list[dict], list[str]]:
-    api_key = os.environ.get("IEEE_XPLORE_API_KEY")
+    api_key, missing_error = _resolve_ieee_xplore_api_key()
     if not api_key:
-        return [], []
+        return [], [missing_error] if missing_error else []
 
     results: list[dict] = []
     errors: list[str] = []
