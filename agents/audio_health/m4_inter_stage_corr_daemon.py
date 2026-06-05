@@ -26,12 +26,18 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from agents.audio_health.m1_dimensions import compute_envelope_correlation
-from agents.audio_health.probes import ProbeConfig, capture_and_measure
+from agents.audio_health.probes import (
+    PersistentProbeSet,
+    ProbeConfig,
+    ProbeResult,
+    capture_and_measure,
+)
 from agents.audio_health.service_loop import interruptible_sleep
 
 log = logging.getLogger(__name__)
@@ -264,6 +270,7 @@ def _probe_pair(
     config: M4DaemonConfig,
     *,
     now: float,
+    probe: Callable[[str], ProbeResult] | None = None,
 ) -> None:
     """Run one M4 pair probe and record failures as health evidence."""
 
@@ -273,9 +280,10 @@ def _probe_pair(
 
     try:
         probe_cfg = ProbeConfig(duration_s=config.capture_duration_s)
+        capture = probe or (lambda target: capture_and_measure(target, config=probe_cfg))
         with ThreadPoolExecutor(max_workers=2) as pool:
-            future_a = pool.submit(capture_and_measure, f"{stage_a}.monitor", config=probe_cfg)
-            future_b = pool.submit(capture_and_measure, f"{stage_b}.monitor", config=probe_cfg)
+            future_a = pool.submit(capture, f"{stage_a}.monitor")
+            future_b = pool.submit(capture, f"{stage_b}.monitor")
             result_a = future_a.result()
             result_b = future_b.result()
 
@@ -369,27 +377,29 @@ def run_daemon(config: M4DaemonConfig | None = None) -> None:
         len(cfg.stage_pairs),
     )
 
-    while not shutdown:
-        now = time.time()
+    probe_cfg = ProbeConfig(duration_s=cfg.capture_duration_s)
+    with PersistentProbeSet(config=probe_cfg) as probes:
+        while not shutdown:
+            now = time.time()
 
-        for stage_a, stage_b in cfg.stage_pairs:
-            key = _pair_key(stage_a, stage_b)
-            state = pair_states[key]
-            _probe_pair(stage_a, stage_b, state, cfg, now=now)
+            for stage_a, stage_b in cfg.stage_pairs:
+                key = _pair_key(stage_a, stage_b)
+                state = pair_states[key]
+                _probe_pair(stage_a, stage_b, state, cfg, now=now, probe=probes.capture)
 
-        _emit_textfile(pair_states)
-        _emit_snapshot(pair_states, now=now, path=cfg.snapshot_path)
+            _emit_textfile(pair_states)
+            _emit_snapshot(pair_states, now=now, path=cfg.snapshot_path)
 
-        try:
-            import systemd.daemon  # type: ignore[import-untyped]
+            try:
+                import systemd.daemon  # type: ignore[import-untyped]
 
-            systemd.daemon.notify("WATCHDOG=1")
-        except ImportError:
-            pass
+                systemd.daemon.notify("WATCHDOG=1")
+            except ImportError:
+                pass
 
-        elapsed = time.time() - now
-        sleep_time = max(0.1, cfg.probe_interval_s - elapsed)
-        interruptible_sleep(sleep_time, lambda: shutdown)
+            elapsed = time.time() - now
+            sleep_time = max(0.1, cfg.probe_interval_s - elapsed)
+            interruptible_sleep(sleep_time, lambda: shutdown)
 
     log.info("M4 inter-stage correlation daemon shutting down")
 

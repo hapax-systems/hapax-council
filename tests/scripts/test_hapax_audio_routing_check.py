@@ -132,7 +132,27 @@ def _run_with_graph(
         "cat <<'EOF'\n"
         f"Default Sink: {default_sink}\n"
         "EOF\n"
+        "elif [[ \"${1:-}\" == 'list' && \"${2:-}\" == 'sources' && \"${3:-}\" == 'short' ]]; then\n"
+        "cat <<'EOF'\n"
+        "1\thapax-livestream-tap.monitor\tmodule-null-sink.c\ts16le 2ch 48000Hz\tRUNNING\n"
+        "2\thapax-broadcast-master.monitor\tmodule-null-sink.c\ts16le 2ch 48000Hz\tRUNNING\n"
+        "3\thapax-broadcast-normalized\tmodule-remap-source.c\ts16le 2ch 48000Hz\tRUNNING\n"
+        "4\thapax-obs-broadcast-remap\tmodule-remap-source.c\ts16le 2ch 48000Hz\tRUNNING\n"
+        "EOF\n"
+        "elif [[ \"${1:-}\" == 'list' && \"${2:-}\" == 'sinks' && \"${3:-}\" == 'short' ]]; then\n"
+        "cat <<'EOF'\n"
+        "11\thapax-livestream-tap\tmodule-null-sink.c\ts16le 2ch 48000Hz\tRUNNING\n"
+        "12\thapax-broadcast-master\tmodule-null-sink.c\ts16le 2ch 48000Hz\tRUNNING\n"
+        "EOF\n"
         "fi\n",
+    )
+    _write_executable(
+        bin_dir / "parec",
+        "#!/usr/bin/env python3\n"
+        "import os, struct, sys\n"
+        "amp = int(os.environ.get('HAPAX_TEST_PAREC_AMPLITUDE', '1000'))\n"
+        "frames = int(os.environ.get('HAPAX_TEST_PAREC_FRAMES', '96000'))\n"
+        "sys.stdout.buffer.write(struct.pack('<h', amp) * frames)\n",
     )
 
     home = tmp_path / "home"
@@ -161,6 +181,21 @@ def test_tap_input_parser_ignores_adjacent_livestream_output_block(tmp_path: Pat
     assert result.returncode == 0, result.stdout + result.stderr
     assert "livestream-tap has only authorized inputs" in result.stdout
     assert "unexpected source" not in result.stdout
+    assert "RMS=" in result.stdout
+    assert "pw-top" not in result.stdout
+
+
+def test_signal_flow_advisory_warns_on_parec_silence_without_failing(tmp_path: Path) -> None:
+    result = _run_with_graph(
+        tmp_path,
+        _base_graph(),
+        env_overrides={"HAPAX_TEST_PAREC_AMPLITUDE": "0"},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Signal-Flow Advisory" in result.stdout
+    assert "below" in result.stdout
+    assert "RMS=0.00000000" in result.stdout
 
 
 def test_tap_input_parser_rejects_s4_direct_tap_until_promoted(tmp_path: Path) -> None:
