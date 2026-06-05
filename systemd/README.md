@@ -382,10 +382,14 @@ Runs `scripts/monthly-claude-md-audit.sh` on a monthly cadence. Sweeps every wor
 
 | Tier | Timer | Destination | Tool |
 |------|-------|-------------|------|
-| Local | `hapax-backup-local.timer` daily 03:00 | `/store/hapax-backups/restic` | restic |
+| Local | `hapax-backup-local.timer` daily 03:00 | `/mnt/nas/backups/restic` | restic |
 | Remote | `hapax-backup-remote.timer` Wed 04:00 | `rclone:b2:hapax-backups/restic` | restic + rclone → Backblaze B2 |
 
 Both tiers back up: PostgreSQL dumps, Qdrant snapshots, n8n workflows, Docker volume metadata, git bundles, systemd configs, user configs, LLM stack, system files.
+
+`llm-backup.timer` is retained only as a deprecated compatibility receipt. It
+does not produce backup artifacts; it points at the Tier 1/Tier 2 lanes above.
+Restore details: `docs/runbooks/llm-stack-backup-reconciliation.md`.
 
 Secrets: local password in `pass show backups/restic-password`, remote in `pass show backblaze/restic-password`.
 

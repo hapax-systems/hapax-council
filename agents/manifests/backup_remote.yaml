@@ -3,12 +3,16 @@ name: Remote Backup
 version: "1.0.0"
 category: observability
 reports_to: operator
-peers: [backup_local, llm_backup]
+peers: [backup_local]
 depends_on: [backup_local]
 
-purpose: Tier 2 backup to Backblaze B2 — offsite restic replication of the local backup repository.
+purpose: Tier 2 weekly backup to Backblaze B2 — offsite restic coverage with the same service-native staging as Tier 1.
 inputs:
-  - local restic repository
+  - PostgreSQL databases
+  - Qdrant snapshots
+  - n8n workflows
+  - Docker volume metadata
+  - filesystem paths
 outputs:
   - B2 restic snapshots
 capabilities:
@@ -17,7 +21,7 @@ capabilities:
 schedule:
   type: timer
   systemd_unit: hapax-backup-remote.timer
-  interval: daily
+  interval: weekly
 model: null
 
 autonomy: full
@@ -38,12 +42,11 @@ health_group: null
 service_tier: 1
 
 timer_display:
-  schedule_label: "Daily 03:00"
+  schedule_label: "Weekly Wed 04:00"
   purpose: "Offsite restic backup to Backblaze B2"
 
 narrative: |
-  The Remote Backup agent handles Tier 2 offsite replication. After the
-  local backup completes, this agent replicates snapshots to Backblaze B2,
-  providing geographic redundancy. It uses credentials from the pass
-  password store (backblaze/key-id, backblaze/app-key) and the restic
-  password from pass as well.
+  The Remote Backup agent handles Tier 2 offsite coverage. It performs the same
+  service-native staging as Tier 1, then writes a restic snapshot to Backblaze
+  B2 for geographic redundancy. It uses credentials from the pass password
+  store and does not depend on the retired llm-backup compatibility receipt.
