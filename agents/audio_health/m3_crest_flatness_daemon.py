@@ -26,6 +26,7 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,7 +35,9 @@ import numpy as np
 from agents.audio_health.m1_dimensions import compute_spectral_flatness
 from agents.audio_health.probes import (
     OBS_BOUND_STAGE,
+    PersistentProbeSet,
     ProbeConfig,
+    ProbeResult,
     capture_and_measure,
 )
 from agents.audio_health.service_loop import interruptible_sleep
@@ -321,12 +324,20 @@ def _is_noise_like_crest_drop(measurement: StageMeasurement, config: M3DaemonCon
     )
 
 
-def _probe_stage(stage: str, state: StageState, config: M3DaemonConfig, *, now: float) -> None:
+def _probe_stage(
+    stage: str,
+    state: StageState,
+    config: M3DaemonConfig,
+    *,
+    now: float,
+    probe: Callable[[str], ProbeResult] | None = None,
+) -> None:
     """Run one M3 stage probe and record failures as health evidence."""
 
     try:
         probe_cfg = ProbeConfig(duration_s=config.capture_duration_s)
-        result = capture_and_measure(f"{stage}.monitor", config=probe_cfg)
+        capture = probe or (lambda target: capture_and_measure(target, config=probe_cfg))
+        result = capture(f"{stage}.monitor")
         if result is None:
             _mark_error(state, "probe returned None")
             return
@@ -439,25 +450,27 @@ def run_daemon(config: M3DaemonConfig | None = None) -> None:
         cfg.stages,
     )
 
-    while not shutdown:
-        now = time.time()
+    probe_cfg = ProbeConfig(duration_s=cfg.capture_duration_s)
+    with PersistentProbeSet(config=probe_cfg) as probes:
+        while not shutdown:
+            now = time.time()
 
-        for stage in cfg.stages:
-            _probe_stage(stage, states[stage], cfg, now=now)
+            for stage in cfg.stages:
+                _probe_stage(stage, states[stage], cfg, now=now, probe=probes.capture)
 
-        _emit_textfile(states, cfg)
-        _emit_snapshot(states, cfg, now=now)
+            _emit_textfile(states, cfg)
+            _emit_snapshot(states, cfg, now=now)
 
-        try:
-            import systemd.daemon  # type: ignore[import-untyped]
+            try:
+                import systemd.daemon  # type: ignore[import-untyped]
 
-            systemd.daemon.notify("WATCHDOG=1")
-        except ImportError:
-            pass
+                systemd.daemon.notify("WATCHDOG=1")
+            except ImportError:
+                pass
 
-        elapsed = time.time() - now
-        sleep_time = max(0.1, cfg.probe_interval_s - elapsed)
-        interruptible_sleep(sleep_time, lambda: shutdown)
+            elapsed = time.time() - now
+            sleep_time = max(0.1, cfg.probe_interval_s - elapsed)
+            interruptible_sleep(sleep_time, lambda: shutdown)
 
     log.info("M3 crest/flatness daemon shutting down")
 
