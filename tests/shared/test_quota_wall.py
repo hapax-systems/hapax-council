@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 from shared.quota_wall import (
@@ -14,6 +16,9 @@ from shared.quota_wall import (
     is_quota_blocked,
     write_quota_wall_receipt,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DETECT_QUOTA_WALL = REPO_ROOT / "scripts" / "detect-quota-wall"
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:
@@ -85,6 +90,70 @@ def test_detect_error_rate_limit_on_assistant(tmp_path: Path) -> None:
     signal = detect_quota_wall(output)
     assert signal is not None
     assert signal.kind == "error_rate_limit"
+
+
+def test_prefers_rate_limit_event_when_synthetic_error_follows(tmp_path: Path) -> None:
+    output = tmp_path / "output.jsonl"
+    _write_jsonl(
+        output,
+        [
+            {
+                "type": "rate_limit_event",
+                "session_id": "current",
+                "rate_limit_info": {
+                    "status": "rejected",
+                    "resetsAt": 1780696800,
+                    "rateLimitType": "seven_day",
+                    "isUsingOverage": False,
+                },
+            },
+            {
+                "type": "assistant",
+                "session_id": "current",
+                "message": {"content": [{"type": "text", "text": "weekly limit"}]},
+                "error": "rate_limit",
+            },
+        ],
+    )
+
+    signal = detect_quota_wall(output)
+
+    assert signal is not None
+    assert signal.kind == "rate_limit_event"
+    assert signal.resets_at == 1780696800
+    assert signal.rate_limit_type == "seven_day"
+
+
+def test_keeps_newer_generic_error_when_structured_event_is_different_session(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output.jsonl"
+    _write_jsonl(
+        output,
+        [
+            {
+                "type": "rate_limit_event",
+                "session_id": "previous",
+                "rate_limit_info": {
+                    "status": "rejected",
+                    "resetsAt": 1780696800,
+                    "rateLimitType": "seven_day",
+                },
+            },
+            {
+                "type": "assistant",
+                "session_id": "current",
+                "message": {"content": [{"type": "text", "text": "rate limited"}]},
+                "error": "rate_limit",
+            },
+        ],
+    )
+
+    signal = detect_quota_wall(output)
+
+    assert signal is not None
+    assert signal.kind == "error_rate_limit"
+    assert signal.resets_at is None
 
 
 def test_no_detection_on_normal_output(tmp_path: Path) -> None:
@@ -184,6 +253,46 @@ def test_handle_quota_wall_returns_exit_code(tmp_path: Path, monkeypatch: object
     code = handle_quota_wall("delta", output)
     assert code == QUOTA_WALL_EXIT_CODE
     assert is_quota_blocked("delta")
+
+
+def test_detect_quota_wall_cli_streak_prints_backoff(tmp_path: Path) -> None:
+    output = tmp_path / "output.jsonl"
+    _write_jsonl(
+        output,
+        [
+            {
+                "type": "rate_limit_event",
+                "rate_limit_info": {"status": "rejected", "rateLimitType": "daily"},
+            },
+        ],
+    )
+    env = {
+        **os.environ,
+        "HAPAX_RELAY_RECEIPT_DIR": str(tmp_path / "receipts"),
+    }
+
+    result = subprocess.run(
+        [
+            str(DETECT_QUOTA_WALL),
+            "test-role",
+            "--output",
+            str(output),
+            "--streak",
+            "2",
+            "--base",
+            "30",
+            "--cap",
+            "300",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == QUOTA_WALL_EXIT_CODE
+    assert result.stdout.strip() == "60"
 
 
 def test_handle_quota_wall_clears_on_normal_exit(tmp_path: Path, monkeypatch: object) -> None:
