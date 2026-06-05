@@ -76,6 +76,24 @@ def test_audio_perception_runs_from_current_deployed_worktree_with_audio_extra()
     )
 
 
+def test_broadcast_egress_loopback_runs_from_current_deployed_worktree() -> None:
+    unit_path = UNITS_DIR / "hapax-broadcast-egress-loopback-producer.service"
+    parser = _load_unit(unit_path)
+    service = parser["Service"]
+
+    assert parser.get("Unit", "ConditionPathExists") == f"{REBUILD_WORKTREE}/pyproject.toml"
+    assert service["WorkingDirectory"] == REBUILD_WORKTREE
+    assert service["ExecStart"] == (
+        "%h/.local/bin/uv run python -m agents.broadcast_egress_loopback_producer"
+    )
+    assert "%h/projects/hapax-council" not in "\n".join(
+        [
+            service["WorkingDirectory"],
+            service["ExecStart"],
+        ]
+    )
+
+
 def test_equipment_state_uses_source_activation_worktree() -> None:
     unit_path = UNITS_DIR / "hapax-equipment-state.service"
     parser = _load_unit(unit_path)

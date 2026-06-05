@@ -28,12 +28,14 @@ import array
 import logging
 import math
 import os
+import shutil
 import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Condition, Thread
 from typing import Final
 
 from shared.broadcast_audio_health import (
@@ -64,8 +66,12 @@ DEFAULT_WINDOW_SECONDS: Final[float] = 5.0
 #: latency tight when the broadcast actually drops.
 DEFAULT_TICK_SECONDS: Final[float] = 1.0
 
-#: Capture sample rate.  Matches PipeWire graph / L-12 hardware.
-DEFAULT_SAMPLE_RATE_HZ: Final[int] = 44100
+#: Capture sample rate. Matches the live broadcast PipeWire graph.
+DEFAULT_SAMPLE_RATE_HZ: Final[int] = 48000
+
+DEFAULT_CHANNELS: Final[int] = 2
+DEFAULT_PERSISTENT_LATENCY_MSEC: Final[int] = 100
+DEFAULT_PERSISTENT_BUFFER_S: Final[float] = 15.0
 
 #: Silence floor in dBFS. Samples below this contribute to the
 #: silence_ratio numerator. -60 dBFS is well below typical room
@@ -96,8 +102,8 @@ class LoopbackSample:
     quality_reasons: tuple[str, ...]
 
 
-# Subprocess shell type: tests inject stubs that return synthetic PCM
-# bytes so the suite never touches real PipeWire.
+# Subprocess shell type: tests inject stubs that return synthetic mono
+# PCM bytes so the suite never touches real PipeWire.
 CaptureFn = Callable[[str, float, int], bytes]
 
 
@@ -170,6 +176,197 @@ def _default_capture(source: str, duration_s: float, sample_rate: int) -> bytes:
         "h", [(stereo[i] + stereo[i + 1]) // 2 for i in range(0, len(stereo), 2)]
     )
     return mono_buf.tobytes()
+
+
+class PersistentParecCapture:
+    """Long-lived ``parec`` reader for the broadcast egress witness.
+
+    The witness producer is itself a live-egress monitor, so it must not
+    reconnect once per tick. This reader keeps one PipeWire stream attached,
+    drains it into a bounded rolling buffer, and serves the latest window to
+    the producer without causing repeated graph renegotiation.
+    """
+
+    def __init__(
+        self,
+        *,
+        source: str,
+        sample_rate: int = DEFAULT_SAMPLE_RATE_HZ,
+        channels: int = DEFAULT_CHANNELS,
+        max_buffer_s: float = DEFAULT_PERSISTENT_BUFFER_S,
+        parec_path: str = "parec",
+    ) -> None:
+        if not source:
+            raise ValueError("source must be non-empty")
+        if sample_rate <= 0:
+            raise ValueError("sample_rate must be > 0")
+        if channels <= 0:
+            raise ValueError("channels must be > 0")
+        self.source = source
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.parec_path = parec_path
+        self.bytes_per_frame = 2 * channels
+        raw_max_buffer_bytes = int(max_buffer_s * sample_rate * self.bytes_per_frame)
+        self.max_buffer_bytes = max(
+            4096,
+            raw_max_buffer_bytes - (raw_max_buffer_bytes % self.bytes_per_frame),
+        )
+        self._condition = Condition()
+        self._buffer = bytearray()
+        self._error: str | None = None
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._thread: Thread | None = None
+
+    def capture(self, source: str, duration_s: float, sample_rate: int) -> bytes:
+        """Return the latest mono PCM window from the persistent stream."""
+
+        if source != self.source:
+            raise ValueError(f"capture source changed from {self.source!r} to {source!r}")
+        if sample_rate != self.sample_rate:
+            raise ValueError(
+                f"capture sample_rate changed from {self.sample_rate} to {sample_rate}"
+            )
+        if duration_s <= 0.0:
+            raise ValueError(f"duration_s must be > 0; got {duration_s}")
+        raw = self._read_window(duration_s)
+        return _downmix_s16le_stereo_to_mono(raw, channels=self.channels)
+
+    def start(self) -> None:
+        """Start ``parec`` once, or restart it after an EOF/error."""
+
+        with self._condition:
+            if self._proc is not None and self._proc.poll() is None:
+                return
+            self._buffer.clear()
+            self._error = None
+
+        if shutil.which(self.parec_path) is None:
+            raise FileNotFoundError(self.parec_path)
+
+        cmd = [
+            self.parec_path,
+            "--device",
+            self.source,
+            "--rate",
+            str(self.sample_rate),
+            "--channels",
+            str(self.channels),
+            "--format",
+            "s16le",
+            "--latency-msec",
+            str(DEFAULT_PERSISTENT_LATENCY_MSEC),
+            "--raw",
+        ]
+        try:
+            proc = subprocess.Popen(  # noqa: S603 - args are an explicit list
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except (FileNotFoundError, OSError) as exc:
+            raise RuntimeError(f"parec spawn failed: {exc}") from exc
+
+        thread = Thread(target=self._read_loop, name=f"parec:{self.source}", daemon=True)
+        with self._condition:
+            self._proc = proc
+            self._thread = thread
+        thread.start()
+
+    def _read_loop(self) -> None:
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return
+
+        try:
+            while True:
+                chunk = proc.stdout.read(8192)
+                if not chunk:
+                    break
+                with self._condition:
+                    self._buffer.extend(chunk)
+                    overflow = len(self._buffer) - self.max_buffer_bytes
+                    if overflow > 0:
+                        del self._buffer[:overflow]
+                    self._condition.notify_all()
+        except OSError as exc:
+            with self._condition:
+                self._error = f"parec read failed from {self.source!r}: {exc}"
+                self._condition.notify_all()
+            return
+
+        rc = proc.poll()
+        with self._condition:
+            if self._proc is proc and rc not in (None, 0):
+                self._error = f"parec exited for {self.source!r} rc={rc}"
+            elif self._proc is proc:
+                self._error = f"parec ended for {self.source!r}"
+            self._condition.notify_all()
+
+    def _read_window(self, duration_s: float) -> bytes:
+        self.start()
+        raw_target_bytes = int(duration_s * self.sample_rate * self.bytes_per_frame)
+        target_bytes = max(
+            self.bytes_per_frame,
+            raw_target_bytes - (raw_target_bytes % self.bytes_per_frame),
+        )
+        deadline = time.monotonic() + min(PAREC_TIMEOUT_S, duration_s + PAREC_TIMEOUT_S)
+
+        with self._condition:
+            while len(self._buffer) < target_bytes and self._error is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(timeout=min(0.1, remaining))
+
+            if len(self._buffer) >= target_bytes:
+                return bytes(self._buffer[-target_bytes:])
+
+            if self._buffer:
+                return bytes(self._buffer)
+
+            error = self._error or "timed out waiting for persistent parec data"
+            raise RuntimeError(error)
+
+    def close(self) -> None:
+        """Terminate the persistent ``parec`` child."""
+
+        proc = self._proc
+        if proc is None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                pass
+        except OSError:
+            pass
+        with self._condition:
+            if self._proc is proc:
+                self._proc = None
+            self._condition.notify_all()
+
+
+def _downmix_s16le_stereo_to_mono(raw: bytes, *, channels: int = DEFAULT_CHANNELS) -> bytes:
+    """Downmix interleaved signed-16 PCM to mono signed-16 PCM."""
+
+    samples = array.array("h")
+    usable = len(raw) - (len(raw) % (2 * channels))
+    samples.frombytes(raw[:usable])
+    if channels <= 1:
+        return samples.tobytes()
+    mono = array.array(
+        "h",
+        [
+            sum(samples[i + offset] for offset in range(channels)) // channels
+            for i in range(0, len(samples), channels)
+        ],
+    )
+    return mono.tobytes()
 
 
 def compute_loopback_metrics(
@@ -383,9 +580,24 @@ class EgressLoopbackProducer:
         self.tick_seconds = tick_seconds
         self.sample_rate = sample_rate
         self.witness_path = witness_path
-        self._capture = capture or _default_capture
+        self._persistent_capture: PersistentParecCapture | None = None
+        if capture is None:
+            self._persistent_capture = PersistentParecCapture(
+                source=source,
+                sample_rate=sample_rate,
+                max_buffer_s=max(DEFAULT_PERSISTENT_BUFFER_S, window_seconds * 3.0),
+            )
+            self._capture = self._persistent_capture.capture
+        else:
+            self._capture = capture
         self._clock = clock or (lambda: datetime.now(UTC))
         self._sleep = sleeper or time.sleep
+
+    def close(self) -> None:
+        """Close the persistent capture child when this producer owns one."""
+
+        if self._persistent_capture is not None:
+            self._persistent_capture.close()
 
     def tick_once(self) -> EgressLoopbackWitness:
         """Capture one window, compute metrics, write the witness, return it.
@@ -519,6 +731,8 @@ def load_config_from_env() -> dict[str, object]:
         (default: 5.0).
       - ``HAPAX_LOOPBACK_TICK_S`` — tick interval in seconds
         (default: 1.0).
+      - ``HAPAX_LOOPBACK_SAMPLE_RATE_HZ`` — capture rate in Hz
+        (default: 48000, native broadcast graph rate).
       - ``HAPAX_LOOPBACK_WITNESS_PATH`` — output JSON path (default:
         ``/dev/shm/hapax-broadcast/egress-loopback.json``).
 
@@ -530,6 +744,7 @@ def load_config_from_env() -> dict[str, object]:
         "source": os.environ.get("HAPAX_LOOPBACK_SOURCE", DEFAULT_BROADCAST_SOURCE),
         "window_seconds": float(os.environ.get("HAPAX_LOOPBACK_WINDOW_S", DEFAULT_WINDOW_SECONDS)),
         "tick_seconds": float(os.environ.get("HAPAX_LOOPBACK_TICK_S", DEFAULT_TICK_SECONDS)),
+        "sample_rate": int(os.environ.get("HAPAX_LOOPBACK_SAMPLE_RATE_HZ", DEFAULT_SAMPLE_RATE_HZ)),
         "witness_path": Path(
             os.environ.get("HAPAX_LOOPBACK_WITNESS_PATH", str(DEFAULT_WITNESS_PATH))
         ),

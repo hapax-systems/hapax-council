@@ -28,6 +28,7 @@ def main() -> int:
         producer.run_forever()
     except KeyboardInterrupt:
         log.info("egress loopback producer: shutting down on SIGINT")
+        producer.close()
         return 0
     return 0
 
