@@ -1407,7 +1407,7 @@ def test_launches_claude_headless_with_task_binding(tmp_path: Path) -> None:
     fake_launcher.parent.mkdir(parents=True, exist_ok=True)
     fake_launcher.write_text(
         f"""#!/usr/bin/env bash
-printf '%s\\n' "$HAPAX_METHODOLOGY_DISPATCH_TASK" "$@" > {launcher_args}
+printf '%s\\n' "$HAPAX_METHODOLOGY_DISPATCH_TASK" "$HAPAX_CLAUDE_HEADLESS_WORKDIR" "$@" > {launcher_args}
 """,
         encoding="utf-8",
     )
@@ -1430,8 +1430,55 @@ printf '%s\\n' "$HAPAX_METHODOLOGY_DISPATCH_TASK" "$@" > {launcher_args}
     assert result.returncode == 0, result.stderr
     args = launcher_args.read_text(encoding="utf-8").splitlines()
     assert args[0] == "governed-build"
-    assert args[1:4] == ["--task", "governed-build", "beta"]
-    assert "SDLC GOVERNED DISPATCH." in "\n".join(args[4:])
+    assert args[1] == str(tmp_path / "worktree")
+    assert args[2:5] == ["--task", "governed-build", "beta"]
+    assert "SDLC GOVERNED DISPATCH." in "\n".join(args[5:])
+
+
+def test_sliced_call_preserves_dispatch_env_and_marks_attached(monkeypatch) -> None:
+    dispatcher = _dispatcher_module()
+    captured: dict[str, object] = {}
+
+    def fake_wrap(args: list[str], *, setenv: dict[str, str]) -> list[str]:
+        captured["setenv"] = setenv
+        return ["systemd-run", "--", *args]
+
+    def fake_call(args: list[str], env: dict[str, str]) -> int:
+        captured["args"] = args
+        captured["env"] = env
+        return 0
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("HAPAX_CLAUDE_HEADLESS_WORKDIR", raising=False)
+    monkeypatch.delenv("HAPAX_DISPATCH_HOST", raising=False)
+    monkeypatch.setattr(dispatcher, "sdlc_slice_wrap", fake_wrap)
+    monkeypatch.setattr(dispatcher.subprocess, "call", fake_call)
+
+    rc = dispatcher._sliced_call(
+        ["hapax-claude-headless", "--task", "t", "alpha"],
+        {
+            "HAPAX_CLAUDE_HEADLESS_WORKDIR": "/tmp/clean-worktree",
+            "HAPAX_DISPATCH_HOST": "local",
+        },
+    )
+
+    assert rc == 0
+    assert captured["args"] == [
+        "systemd-run",
+        "--",
+        "hapax-claude-headless",
+        "--task",
+        "t",
+        "alpha",
+    ]
+    setenv = captured["setenv"]
+    assert isinstance(setenv, dict)
+    assert setenv["HAPAX_CLAUDE_HEADLESS_WORKDIR"] == "/tmp/clean-worktree"
+    assert setenv["HAPAX_DISPATCH_HOST"] == "local"
+    assert setenv["HAPAX_SDLC_SLICE_ATTACHED"] == "1"
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["HAPAX_SDLC_SLICE_ATTACHED"] == "1"
 
 
 def test_launches_claude_interactive_visible_lane_with_task_binding(tmp_path: Path) -> None:
