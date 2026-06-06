@@ -249,6 +249,34 @@ def test_default_json_darkplaces_points_at_dedicated_loopback() -> None:
     assert {"darkplaces", "background", "substrate", "screwm"}.issubset(darkplaces.tags)
 
 
+def test_default_json_cbip_dual_ir_points_at_brio_raw_ir_frames() -> None:
+    raw = json.loads(DEFAULT_JSON.read_text())
+    layout = Layout.model_validate(raw)
+
+    source = next(s for s in layout.sources if s.id == "cbip_dual_ir_displacement")
+    assert source.params.get("class_name") == "CBIPDualIrDisplacementCairoSource"
+    assert source.params.get("ir_frame_sources") == [
+        {
+            "label": "brio-operator-ir",
+            "path": "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.raw.bgra",
+            "width": 340,
+            "height": 340,
+        },
+        {
+            "label": "brio-room-ir",
+            "path": "/dev/shm/hapax-compositor/quake-live-ir-brio-room.raw.bgra",
+            "width": 340,
+            "height": 340,
+        },
+        {
+            "label": "brio-synths-ir",
+            "path": "/dev/shm/hapax-compositor/quake-live-ir-brio-synths.raw.bgra",
+            "width": 340,
+            "height": 340,
+        },
+    ]
+
+
 def test_default_json_operator_quadrant_defaults() -> None:
     """Garage-door layout default assignments: token_pole to upper-left-vitruvian,
     reverie to reverie-upper-right, album to lower-left-album,

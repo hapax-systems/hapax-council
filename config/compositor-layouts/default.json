@@ -711,7 +711,27 @@
       "params": {
         "class_name": "CBIPDualIrDisplacementCairoSource",
         "natural_w": 640,
-        "natural_h": 480
+        "natural_h": 480,
+        "ir_frame_sources": [
+          {
+            "label": "brio-operator-ir",
+            "path": "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.raw.bgra",
+            "width": 340,
+            "height": 340
+          },
+          {
+            "label": "brio-room-ir",
+            "path": "/dev/shm/hapax-compositor/quake-live-ir-brio-room.raw.bgra",
+            "width": 340,
+            "height": 340
+          },
+          {
+            "label": "brio-synths-ir",
+            "path": "/dev/shm/hapax-compositor/quake-live-ir-brio-synths.raw.bgra",
+            "width": 340,
+            "height": 340
+          }
+        ]
       },
       "update_cadence": "rate",
       "rate_hz": 6.0,

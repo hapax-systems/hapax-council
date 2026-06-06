@@ -29,6 +29,20 @@ def _png_bytes(brightness: int, *, size: tuple[int, int] = (32, 24)) -> bytes:
     return buf.getvalue()
 
 
+def _write_bgra_frame(
+    path: Path,
+    *,
+    brightness: int,
+    size: tuple[int, int] = (8, 8),
+    mtime: float | None = None,
+) -> None:
+    width, height = size
+    pixel = bytes((brightness, brightness, brightness, 255))
+    path.write_bytes(pixel * (width * height))
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+
+
 def _write_report(
     path: Path,
     *,
@@ -131,6 +145,42 @@ class TestImageEffects:
         assert source.last_status["mtime_delta_s"] is not None
         assert source.last_status["mtime_delta_s"] <= 0.1
 
+    def test_live_brio_ir_raw_frames_render_as_paired_ward_source(self, tmp_path: Path) -> None:
+        frame_a = tmp_path / "brio-operator-ir.raw.bgra"
+        frame_b = tmp_path / "brio-room-ir.raw.bgra"
+        frame_c = tmp_path / "brio-synths-ir.raw.bgra"
+        mtime = time.time()
+        _write_bgra_frame(frame_a, brightness=32, mtime=mtime)
+        _write_bgra_frame(frame_b, brightness=180, mtime=mtime)
+        _write_bgra_frame(frame_c, brightness=240, mtime=mtime)
+
+        source = CBIPDualIrDisplacementCairoSource(
+            ir_frame_sources=[
+                {"label": "brio-operator-ir", "path": str(frame_a), "width": 8, "height": 8},
+                {"label": "brio-room-ir", "path": str(frame_b), "width": 8, "height": 8},
+                {"label": "brio-synths-ir", "path": str(frame_c), "width": 8, "height": 8},
+            ],
+            max_frame_age_s=10.0,
+            mode="difference",
+        )
+
+        surface = _render(source)
+
+        assert _has_nonzero_pixels(surface)
+        assert source.last_status["status"] == "paired_live_ir"
+        assert source.last_status["primary"] == "fresh_frame"
+        assert source.last_status["secondary"] == "fresh_frame"
+        assert source.last_status["live_frame_roles"] == [
+            "brio-operator-ir",
+            "brio-room-ir",
+            "brio-synths-ir",
+        ]
+        assert source.last_status["ir_frames"] == {
+            "brio-operator-ir": "fresh_frame",
+            "brio-room-ir": "fresh_frame",
+            "brio-synths-ir": "fresh_frame",
+        }
+
     def test_synced_telemetry_pair_renders_without_frames(self, tmp_path: Path) -> None:
         primary = tmp_path / "cam_primary.json"
         secondary = tmp_path / "cam_secondary.json"
@@ -210,6 +260,41 @@ class TestRegistrationAndLayout:
             _CAIRO_SOURCE_CLASSES["CBIPDualIrDisplacementCairoSource"]
             is CBIPDualIrDisplacementCairoSource
         )
+
+    def test_source_registry_passes_layout_ir_sources(self, tmp_path: Path) -> None:
+        from agents.studio_compositor.source_registry import SourceRegistry
+        from shared.compositor_model import SourceSchema
+
+        frame = tmp_path / "operator.raw.bgra"
+        schema = SourceSchema.model_validate(
+            {
+                "id": "cbip_dual_ir_displacement",
+                "kind": "cairo",
+                "backend": "cairo",
+                "params": {
+                    "class_name": "CBIPDualIrDisplacementCairoSource",
+                    "natural_w": 64,
+                    "natural_h": 48,
+                    "ir_frame_sources": [
+                        {
+                            "label": "operator-ir",
+                            "path": str(frame),
+                            "width": 8,
+                            "height": 8,
+                        }
+                    ],
+                },
+                "update_cadence": "rate",
+                "rate_hz": 1.0,
+            }
+        )
+
+        backend = SourceRegistry().construct_backend(schema)
+
+        source = backend._source  # noqa: SLF001 - constructor wiring regression pin
+        assert isinstance(source, CBIPDualIrDisplacementCairoSource)
+        assert [frame_source.label for frame_source in source.ir_frame_sources] == ["operator-ir"]
+        assert [frame_source.path for frame_source in source.ir_frame_sources] == [frame]
 
     # ``test_example_layout_is_valid`` was removed when PR #2770 purged
     # ``config/compositor-layouts/examples/cbip-dual-ir-displacement.json``

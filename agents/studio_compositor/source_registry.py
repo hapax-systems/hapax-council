@@ -212,7 +212,12 @@ class SourceRegistry:
             if not class_name:
                 raise UnknownBackendError(f"cairo source {source.id}: missing params.class_name")
             source_cls = get_cairo_source_class(class_name)
-            source_obj = source_cls()
+            constructor_params = {
+                key: value
+                for key, value in source.params.items()
+                if key not in {"class_name", "natural_w", "natural_h", "fps"}
+            }
+            source_obj = source_cls(**constructor_params)
             natural_w = int(source.params.get("natural_w", 1920))
             natural_h = int(source.params.get("natural_h", 1080))
             # Precedence for render cadence:
