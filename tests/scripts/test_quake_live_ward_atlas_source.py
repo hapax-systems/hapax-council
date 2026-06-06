@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -12,6 +13,7 @@ import cairo
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "quake-live-ward-atlas-source.py"
+RUST_GPU_ATLAS = REPO_ROOT / "hapax-logos/crates/hapax-visual/src/bin/screwm_ward_atlas.rs"
 
 
 def _load_atlas() -> ModuleType:
@@ -95,6 +97,21 @@ def test_ward_atlas_places_brio_ir_feeds_in_explicit_cells() -> None:
     assert atlas.WARD_LABELS["brio-operator-ir"] == "BRIO OP IR"
     assert atlas.WARD_LABELS["brio-room-ir"] == "BRIO ROOM IR"
     assert atlas.WARD_LABELS["brio-synths-ir"] == "BRIO SYN IR"
+
+
+def test_gpu_ward_atlas_catalog_matches_canonical_python_catalog() -> None:
+    atlas = _load_atlas()
+    rust = RUST_GPU_ATLAS.read_text(encoding="utf-8")
+    block = rust.split("const WARD_SPECS: [WardSpec; 36] = [", 1)[1].split("];", 1)[0]
+    rust_ids = re.findall(r'id:\s*"([^"]+)"', block)
+
+    assert rust_ids == atlas.WARD_IDS
+    assert "m8-display" not in rust_ids
+    assert "steamdeck-display" not in rust_ids
+    assert "m8_oscilloscope" not in rust_ids
+    assert rust_ids[17] == "brio-operator-ir"
+    assert rust_ids[18] == "brio-room-ir"
+    assert rust_ids[34] == "brio-synths-ir"
 
 
 def test_ward_atlas_default_layout_constructs_aoa_oarb_state_source() -> None:

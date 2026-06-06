@@ -69,6 +69,10 @@ def test_matrix_witness_pov_stations_match_generated_review_stations() -> None:
         (-320.0, -1780.0, 208.0),
         (0.0, -555.0, 224.0),
     )
+    assert generated["far-garden-view"] == (
+        (720.0, 260.0, 240.0),
+        (-260.0, 980.0, 330.0),
+    )
     assert generated["brio-operator-ir-ward"] == (
         (-700.0, -1320.0, 700.0),
         (-1180.0, -1320.0, 650.0),
@@ -178,6 +182,25 @@ def test_duration_sweep_perturbs_pov_between_hold_frames() -> None:
     assert first[1] != station[1]
     assert last[1] != station[1]
     assert first[1] != last[1]
+
+
+def test_single_frame_metrics_report_visibility_threshold_inputs(tmp_path: Path) -> None:
+    module = _load_script()
+    image_module = pytest.importorskip("PIL.Image")
+    frame = tmp_path / "frame.png"
+    image = image_module.new("L", (16, 16), 0)
+    for x in range(8, 16):
+        for y in range(16):
+            image.putpixel((x, y), 255)
+    image.save(frame)
+
+    metrics = module["_single_frame_metrics"](frame)
+
+    assert metrics is not None
+    assert 0.45 <= metrics["mean_luma"] <= 0.55
+    assert metrics["black_ratio"] == 0.5
+    assert metrics["white_ratio"] == 0.5
+    assert metrics["edge_energy"] > 0
 
 
 def test_aesthetic_strength_metrics_detect_roomwide_region_coverage() -> None:

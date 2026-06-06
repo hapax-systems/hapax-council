@@ -261,7 +261,7 @@ GARDEN_CAMERA_STATIONS = [
     ("aoa-pause", (-320, -1780, 208), (AOA_X, AOA_Y, AOA_Z)),
     ("right-borrowed-view", (860, -1000, 184), (1180, -1120, 240)),
     ("right-media-window", (250, -1420, 220), (1580, 400, 650)),
-    ("far-garden-view", (420, -430, 220), (AOA_X, AOA_Y, AOA_Z + 18)),
+    ("far-garden-view", (720, 260, 240), (-260, 980, 330)),
 ]
 
 IR_CAMERA_WARD_STATIONS = [
@@ -362,7 +362,7 @@ SCROOM_PATH_STONES = [
     ("aoa-pause", "drift_a", -320, -1780, FLOOR_Z + 7, 208, 34),
     ("right-borrowed-view", "drift_g", 860, -1000, FLOOR_Z + 7, 190, 32),
     ("right-media-pause", "drift_r", 250, -1420, FLOOR_Z + 7, 196, 32),
-    ("far-garden-view", "drift_g", 420, -430, FLOOR_Z + 7, 188, 32),
+    ("far-garden-view", "drift_g", 720, 260, FLOOR_Z + 7, 188, 32),
     ("return-ridge", "drift_r", 0, -2380, FLOOR_Z + 7, 156, 30),
 ]
 SCROOM_GARDEN_ISLANDS = [
