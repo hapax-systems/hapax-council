@@ -165,6 +165,17 @@ async def get_infrastructure_storage():
     return _slow_response(_redact_infra_identity(_to_dict(cache.host_storage)))
 
 
+@router.get("/infrastructure/sop-gate")
+async def get_infrastructure_sop_gate():
+    from logos.data.sop_gate import collect_sop_gate
+
+    return _slow_response(_redact_infra_identity(_to_dict(collect_sop_gate())))
+
+
+# Keep decorator-registered route handlers statically visible to vulture.
+_FASTAPI_ROUTE_HANDLERS = (get_infrastructure_sop_gate,)
+
+
 # ── Slow cadence (5min) ──────────────────────────────────────────────────
 
 

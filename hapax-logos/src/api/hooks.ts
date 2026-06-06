@@ -25,6 +25,12 @@ export const useGpu = () =>
 export const useInfrastructure = () =>
   useQuery({ queryKey: ["infrastructure"], queryFn: api.infrastructure, refetchInterval: FAST });
 
+export const useHostStorage = () =>
+  useQuery({ queryKey: ["hostStorage"], queryFn: api.hostStorage, refetchInterval: SLOW });
+
+export const useSopGate = () =>
+  useQuery({ queryKey: ["sopGate"], queryFn: api.sopGate, refetchInterval: SLOW });
+
 export const useNudges = () =>
   useQuery({ queryKey: ["nudges"], queryFn: api.nudges, refetchInterval: SLOW });
 

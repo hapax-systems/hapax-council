@@ -5,6 +5,14 @@ export const api = {
   health: () => invoke<import("./types").HealthSnapshot | null>("get_health"),
   gpu: () => invoke<import("./types").VramSnapshot | null>("get_gpu"),
   infrastructure: () => invoke<import("./types").Infrastructure>("get_infrastructure"),
+  hostStorage: () =>
+    invoke<import("./types").HostStorageSnapshot>("proxy_get_generic", {
+      path: "/infrastructure/storage",
+    }),
+  sopGate: () =>
+    invoke<import("./types").SopGateSnapshot>("proxy_get_generic", {
+      path: "/infrastructure/sop-gate",
+    }),
   healthHistory: (days = 7) => invoke<import("./types").HealthHistory>("get_health_history", { days }),
   workingMode: () => invoke<import("./types").WorkingModeResponse>("get_working_mode"),
   setWorkingMode: (mode: "research" | "rnd") =>
