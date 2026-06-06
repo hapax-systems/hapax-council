@@ -27,10 +27,12 @@ def _load_atlas() -> ModuleType:
 
 
 class _Backend:
-    def __init__(self, shm_path: Path | None = None) -> None:
+    def __init__(self, shm_path: Path | None = None, source_obj: object | None = None) -> None:
         if shm_path is not None:
             self._path = shm_path
             self._sidecar_path = shm_path.with_suffix(shm_path.suffix + ".json")
+        if source_obj is not None:
+            self._source = source_obj
 
     def tick_once(self) -> None:
         return None
@@ -57,6 +59,24 @@ def _solid_surface(width: int, height: int, rgb: tuple[float, float, float]) -> 
     cr.set_source_rgb(*rgb)
     cr.paint()
     return surface
+
+
+def _transparent_surface(width: int, height: int) -> cairo.ImageSurface:
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+    cr = cairo.Context(surface)
+    cr.set_operator(cairo.OPERATOR_CLEAR)
+    cr.paint()
+    return surface
+
+
+class _AtlasIdleSource:
+    def render_atlas_idle_surface(
+        self,
+        width: int,
+        height: int,
+        _t: float,
+    ) -> cairo.ImageSurface:
+        return _solid_surface(width, height, (0.0, 1.0, 0.0))
 
 
 def _pixel_bgra(data: bytes, width: int, x: int, y: int) -> tuple[int, int, int, int]:
@@ -150,6 +170,36 @@ def test_ward_atlas_success_cells_are_borderless_source_surfaces(tmp_path: Path)
     assert observed[ward_id]["atlas_style"] == "borderless-no-grid"
     assert _pixel_bgra(data, 64, 4, 4) == (0, 0, 255, 255)
     assert _pixel_bgra(data, 64, 32, 16) == (0, 0, 255, 255)
+
+
+def test_ward_atlas_uses_idle_scaffold_for_transparent_activity_ward(
+    tmp_path: Path,
+) -> None:
+    atlas = _load_atlas()
+    ward_id = "durf"
+    source = _transparent_surface(64, 32)
+    backend = _Backend(source_obj=_AtlasIdleSource())
+    output = tmp_path / "atlas.bgra"
+    meta = tmp_path / "atlas.json"
+
+    observed, _errors = atlas.render_atlas(
+        output=output,
+        meta=meta,
+        layout_path=Path("/nonexistent-layout.json"),
+        width=256,
+        height=128,
+        columns=4,
+        cell_width=64,
+        cell_height=32,
+        frame_id=1,
+        backends={ward_id: _Registry(ward_id, source, backend)},
+        errors={},
+    )
+
+    data = output.read_bytes()
+    assert observed[ward_id]["status"] == "atlas-idle-scaffold"
+    assert observed[ward_id]["atlas_style"] == "borderless-no-grid"
+    assert _pixel_bgra(data, 256, 196, 100) == (0, 255, 0, 255)
 
 
 def test_ward_atlas_applies_receiver_local_drift_before_write(tmp_path: Path) -> None:

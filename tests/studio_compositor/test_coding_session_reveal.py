@@ -44,6 +44,7 @@ from agents.studio_compositor.durf_source import (
     TmuxCaptureResult,
     redact_terminal_lines,
 )
+from agents.studio_compositor.homage.transitional_source import TransitionState
 
 
 def _operator_home_str() -> str:
@@ -551,6 +552,40 @@ class TestMetadataAndVisibility:
             source.render_content(cr, 960, 720, 0.0, state)
 
             assert _surface_has_nonflat_signal(surface)
+            assert source.current_claim().want_visible is False
+        finally:
+            source.stop()
+
+    def test_atlas_idle_scaffold_renders_when_fsm_absent(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "panes.yaml"
+        cfg.write_text("panes: []\n", encoding="utf-8")
+        source = CodingSessionReveal(config_path=cfg, start_thread=False)
+        try:
+            source._state = TransitionState.ABSENT
+            metadata = CodingSessionMetadata(
+                branch="codex/durf-foot-coding-session-reveal",
+                branch_glyph="C123",
+                commits_since_main=1,
+                open_pr_count=1,
+                captured_at=1234.0,
+            )
+            source._snapshot = CodingSessionSnapshot(
+                sessions=(),
+                captured_at=1234.0,
+                egress_allowed=False,
+                suppression_reason="consent_safe",
+                metadata=metadata,
+                visibility_score=0.0,
+                wcs_row=build_wcs_row((), now=1234.0, egress_allowed=False),
+            )
+            state = source.state()
+            assert state["alpha"] == 0.0
+            assert source.current_claim().want_visible is False
+
+            surface = source.render_atlas_idle_surface(960, 720, t=0.0)
+
+            assert _surface_has_nonflat_signal(surface)
+            assert source.transition_state is TransitionState.ABSENT
             assert source.current_claim().want_visible is False
         finally:
             source.stop()

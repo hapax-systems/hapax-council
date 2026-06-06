@@ -502,6 +502,32 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         ramped_state["alpha"] = base * (1.0 - progress)
         self.render_content(cr, canvas_w, canvas_h, t, ramped_state)
 
+    def render_atlas_idle_surface(
+        self,
+        canvas_w: int,
+        canvas_h: int,
+        t: float | None = None,
+    ) -> cairo.ImageSurface:
+        """Render a privacy-safe ward-atlas substrate even when FSM-hidden."""
+        import cairo
+
+        w = max(1, int(canvas_w))
+        h = max(1, int(canvas_h))
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+        cr = cairo.Context(surface)
+        cr.set_operator(cairo.OPERATOR_CLEAR)
+        cr.paint()
+        cr.set_operator(cairo.OPERATOR_OVER)
+        self._render_idle_scaffold(
+            cr,
+            w,
+            h,
+            time.monotonic() if t is None else t,
+            _IDLE_SCAFFOLD_ALPHA,
+        )
+        surface.flush()
+        return surface
+
     def render_content(
         self,
         cr: cairo.Context,

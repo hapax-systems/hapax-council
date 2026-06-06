@@ -471,6 +471,27 @@ class TestSourceState:
         finally:
             source.stop()
 
+    def test_atlas_idle_scaffold_renders_when_fsm_absent(self, codex_config: Path) -> None:
+        source = DURFCairoSource(config_path=codex_config, start_thread=False)
+        try:
+            source._state = TransitionState.ABSENT
+            source._snapshot = DURFSourceSnapshot(
+                panes=(),
+                captured_at=100.0,
+                wcs_row=build_wcs_row((), now=100.0, egress_allowed=False),
+            )
+            state = source.state()
+            assert state["alpha"] == 0.0
+            assert source.current_claim().want_visible is False
+
+            surface = source.render_atlas_idle_surface(530, 180, t=0.0)
+
+            assert _surface_has_nonflat_signal(surface)
+            assert source.transition_state is TransitionState.ABSENT
+            assert source.current_claim().want_visible is False
+        finally:
+            source.stop()
+
 
 class TestDURFReflectionLayer:
     def test_reflection_lines_use_last_two_redacted_pane_lines(self) -> None:
