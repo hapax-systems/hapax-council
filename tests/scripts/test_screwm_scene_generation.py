@@ -85,6 +85,19 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert module["WARD_ANCHORS"][17] == "brio-operator-ir"
     assert module["WARD_ANCHORS"][18] == "brio-room-ir"
     assert module["WARD_ANCHORS"][34] == "brio-synths-ir"
+    sources = {source["role"]: source for source in module["SOURCE_ANCHORS"]}
+    ir_contexts = {
+        18: ("brio-operator-ir", "brio-operator", (-1180, -1320, 330)),
+        19: ("brio-room-ir", "brio-room", (-1180, 400, 250)),
+        35: ("brio-synths-ir", "brio-synths", (-1180, -2240, 310)),
+    }
+    for idx, (ward_anchor, source_role, expected_position) in ir_contexts.items():
+        ward_position = module["ward_review_position"](idx)
+        source_position = tuple(sources[source_role]["pos"])
+        assert module["WARD_ANCHORS"][idx - 1] == ward_anchor
+        assert ward_position == expected_position
+        assert abs(ward_position[0] - source_position[0]) <= 420
+        assert abs(ward_position[1] - source_position[1]) <= 320
     assert module["STATIC_WARD_MOUNT_PROFILE"] == "state-ward-instrument"
     assert content.count("// ward-anchor ") == 0
     assert content.count("// ward-depth-plate ") == 0
