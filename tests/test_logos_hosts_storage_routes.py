@@ -98,7 +98,8 @@ def _storage() -> HostStorageSnapshot:
 
 
 class TestHostStorageRoutes:
-    async def test_hosts_route_returns_host_qualified_cache(self, client):
+    async def test_hosts_route_returns_host_qualified_cache(self, client, monkeypatch):
+        monkeypatch.setattr("logos.api.routes.data.is_publicly_visible", lambda: False)
         cache.hosts = [_host()]
         resp = await client.get("/api/hosts")
 
@@ -214,6 +215,7 @@ def test_collect_host_storage_stale_witness_keeps_placement_unknown(tmp_path, mo
 async def test_infrastructure_route_stamps_container_host_witness(client, tmp_path, monkeypatch):
     from logos.data.infrastructure import collect_docker
 
+    monkeypatch.setattr("logos.api.routes.data.is_publicly_visible", lambda: False)
     snapshot = tmp_path / "infra-snapshot.json"
     observed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     snapshot.write_text(
