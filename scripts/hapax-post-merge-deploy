@@ -538,6 +538,19 @@ cleanup_known_stale_user_dropins_for_unit() {
             done
             rmdir "$dropin_dir" 2>/dev/null || true
             ;;
+        hapax-screwm-audio-reactivity.service)
+            local dropin_dir="$SYSTEMD_USER_DIR/$unit.d"
+            local dropin
+            [ -d "$dropin_dir" ] || return 0
+            for dropin in "$dropin_dir"/*.conf; do
+                [ -f "$dropin" ] || continue
+                if grep -Eq 'HAPAX_SCREWM_AUDIO_TARGET=hapax-broadcast-normalized-capture' "$dropin"; then
+                    echo "  removing stale local drop-in '$dropin'"
+                    rm -f "$dropin" || true
+                fi
+            done
+            rmdir "$dropin_dir" 2>/dev/null || true
+            ;;
     esac
 }
 
