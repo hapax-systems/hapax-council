@@ -97,7 +97,7 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert module["WARD_ANCHORS"][18] == "brio-room-ir"
     assert module["WARD_ANCHORS"][34] == "brio-synths-ir"
     assert module["IR_CAMERA_WARD_INDICES"] == frozenset({18, 19, 35})
-    assert module["IR_CAMERA_WARD_TARGET_WIDTH"] == 512
+    assert module["IR_CAMERA_WARD_TARGET_WIDTH"] == 1024
     sources = {source["role"]: source for source in module["SOURCE_ANCHORS"]}
     ir_contexts = {
         18: (
