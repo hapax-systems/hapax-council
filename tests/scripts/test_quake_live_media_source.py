@@ -17,6 +17,11 @@ def _load_module() -> dict:
     )
 
 
+def _pixel_bgra(data: bytes, width: int, x: int, y: int) -> tuple[int, int, int, int]:
+    offset = (y * width + x) * 4
+    return tuple(data[offset : offset + 4])
+
+
 def test_missing_camera_device_uses_explicit_offline_texture_fallback() -> None:
     module = _load_module()
     args = Namespace(
@@ -77,6 +82,110 @@ def test_brio_rgb_reserved_for_ir_publishes_explicit_fresh_placeholder(tmp_path:
     assert "LOCAL RGB OFF; IR WARD OWNS BRIO" in command_text
     assert str(device) not in command_text
     assert args.fallback_reason == "camera_reserved_for_ir:same_physical_brio_ir_ward"
+
+
+def test_brio_rgb_reserved_for_ir_resolves_matching_live_ir_proxy() -> None:
+    module = _load_module()
+    args = Namespace(source="camera", camera_role="brio-room", camera_reserved_for_ir=True)
+
+    spec = module["_reserved_ir_proxy_spec"](args)
+
+    assert spec["role"] == "brio-room-ir"
+    assert spec["raw_path"].name == "quake-live-ir-brio-room.raw.bgra"
+    assert spec["meta_path"].name == "quake-live-ir-brio-room.raw.json"
+    assert spec["width"] == 340
+    assert spec["height"] == 340
+
+
+def test_reserved_ir_proxy_fits_square_ir_into_large_camera_texture(tmp_path: Path) -> None:
+    module = _load_module()
+    raw = tmp_path / "ir.raw.bgra"
+    meta = tmp_path / "ir.raw.json"
+    # BGRA pixels: red, green, blue, white.
+    raw.write_bytes(
+        bytes(
+            (
+                0,
+                0,
+                255,
+                255,
+                0,
+                255,
+                0,
+                255,
+                255,
+                0,
+                0,
+                255,
+                255,
+                255,
+                255,
+                255,
+            )
+        )
+    )
+    meta.write_text('{"fallback_reason":""}\n', encoding="utf-8")
+    args = Namespace(
+        source="camera",
+        camera_role="brio-room",
+        camera_reserved_for_ir=True,
+        camera_reserved_ir_proxy_max_age_s=30.0,
+        width=6,
+        height=4,
+        mask_background="010203",
+        fallback_reason="",
+    )
+    spec = {
+        "role": "brio-room-ir",
+        "raw_path": raw,
+        "meta_path": meta,
+        "width": 2,
+        "height": 2,
+    }
+
+    frame = module["_reserved_ir_proxy_output_frame"](args, spec)
+
+    assert args.fallback_reason == "camera_reserved_for_ir:proxy:brio-room-ir"
+    assert _pixel_bgra(frame, 6, 0, 0) == (3, 2, 1, 255)
+    assert _pixel_bgra(frame, 6, 5, 3) == (3, 2, 1, 255)
+    assert _pixel_bgra(frame, 6, 1, 0) == (0, 0, 255, 255)
+    assert _pixel_bgra(frame, 6, 4, 0) == (0, 255, 0, 255)
+    assert _pixel_bgra(frame, 6, 1, 3) == (255, 0, 0, 255)
+    assert _pixel_bgra(frame, 6, 4, 3) == (255, 255, 255, 255)
+
+
+def test_reserved_ir_proxy_writes_status_frame_when_proxy_is_stale(tmp_path: Path) -> None:
+    module = _load_module()
+    raw = tmp_path / "ir.raw.bgra"
+    meta = tmp_path / "ir.raw.json"
+    raw.write_bytes(bytes((1, 2, 3, 255)) * 4)
+    meta.write_text("{}\n", encoding="utf-8")
+    stale = time.time() - 60.0
+    os.utime(raw, (stale, stale))
+    os.utime(meta, (stale, stale))
+    args = Namespace(
+        source="camera",
+        camera_role="brio-room",
+        camera_reserved_for_ir=True,
+        camera_reserved_ir_proxy_max_age_s=0.1,
+        width=64,
+        height=36,
+        mask_background="010203",
+        fallback_reason="",
+    )
+    spec = {
+        "role": "brio-room-ir",
+        "raw_path": raw,
+        "meta_path": meta,
+        "width": 2,
+        "height": 2,
+    }
+
+    frame = module["_reserved_ir_proxy_output_frame"](args, spec)
+
+    assert args.fallback_reason.startswith("camera_reserved_for_ir:proxy_source_stale:")
+    assert len(frame) == 64 * 36 * 4
+    assert frame != bytes((1, 2, 3, 255)) * (64 * 36)
 
 
 def test_media_sidecar_includes_shm_rgba_reader_aliases(tmp_path: Path) -> None:
@@ -437,6 +546,15 @@ def test_brio_ir_env_files_declare_visibility_profiles() -> None:
     for filename, line in expected.items():
         text = (REPO_ROOT / "config" / "quake-live-cameras" / filename).read_text()
         assert line in text
+
+
+def test_brio_rgb_reserved_env_files_declare_ir_proxy_freshness() -> None:
+    for filename in ("brio-operator.env", "brio-room.env", "brio-synths.env"):
+        text = (REPO_ROOT / "config" / "quake-live-cameras" / filename).read_text()
+
+        assert "HAPAX_QUAKE_CAMERA_RESERVED_FOR_IR=1" in text
+        assert "HAPAX_QUAKE_CAMERA_RESERVED_IR_PROXY_MAX_AGE_S=8.0" in text
+        assert "proxying the matching BRIO IR feed" in text
 
 
 def test_brio_ir_camera_roles_default_to_greyscale_endpoints() -> None:
