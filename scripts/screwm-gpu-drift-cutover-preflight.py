@@ -171,6 +171,13 @@ def producer_support_for(slot_name: str) -> ProducerSupport | None:
             service=f"hapax-quake-live-camera@{camera_id}.service",
             producer_env_flag="HAPAX_QUAKE_GPU_DRIFT",
         )
+    if slot_name.startswith("ir-brio-"):
+        camera_id = slot_name.removeprefix("ir-") + "-ir"
+        return ProducerSupport(
+            producer_class="live-media-camera-ir",
+            service=f"hapax-quake-live-camera@{camera_id}.service",
+            producer_env_flag="HAPAX_QUAKE_GPU_DRIFT",
+        )
     if slot_name.startswith("ticker-"):
         ticker_id = slot_name.removeprefix("ticker-")
         return ProducerSupport(

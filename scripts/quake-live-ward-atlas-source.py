@@ -78,10 +78,19 @@ WARD_IDS = [
 ]
 
 DIRECT_TEXTURE_WARDS = {
-    # Reverie is bound to DarkPlaces live-texture slot 12 as w05. Keeping a
-    # separate atlas proxy made stale substrate failures look like working
-    # in-world reverie. The atlas reserves the cell but never renders content.
+    # These wards are bound to DarkPlaces live-texture slots directly. Keeping
+    # separate atlas proxies made stale/dim substrate failures look like working
+    # in-world live wards. The atlas reserves each cell but never renders content.
     "reverie",
+    "brio-operator-ir",
+    "brio-room-ir",
+    "brio-synths-ir",
+}
+DIRECT_TEXTURE_WARD_TEXTURES = {
+    "reverie": "w05",
+    "brio-operator-ir": "w18",
+    "brio-room-ir": "w19",
+    "brio-synths-ir": "w35",
 }
 
 ATLAS_IDLE_SCAFFOLD_WARDS = frozenset(
@@ -557,7 +566,7 @@ def render_atlas(
             )
             observed[ward_id] = {
                 "status": "direct-texture-owned",
-                "texture": "w05",
+                "texture": DIRECT_TEXTURE_WARD_TEXTURES[ward_id],
                 "reason": "direct live texture owns this ward",
             }
             continue

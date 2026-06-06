@@ -238,6 +238,17 @@ def test_darkplaces_launchers_bind_youtube_camera_and_ward_atlas_textures() -> N
         assert "hapax_live_texture14_height 2048" in body or (
             "+hapax_live_texture14_height 2048" in body
         )
+        for slot, texture, frame in (
+            ("15", "w18", "quake-live-ir-brio-operator.bgra"),
+            ("16", "w19", "quake-live-ir-brio-room.bgra"),
+            ("17", "w35", "quake-live-ir-brio-synths.bgra"),
+        ):
+            prefix = f"hapax_live_texture{slot}"
+            assert f"{prefix}_enable 1" in body or f"+{prefix}_enable 1" in body
+            assert f"{prefix}_name {texture}" in body or f"+{prefix}_name {texture}" in body
+            assert frame in body
+            assert f"{prefix}_width 340" in body or f"+{prefix}_width 340" in body
+            assert f"{prefix}_height 340" in body or f"+{prefix}_height 340" in body
 
 
 def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() -> None:
@@ -372,17 +383,17 @@ def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() ->
 
     ir_expected = {
         "brio-operator-ir": (
-            "ir_bop",
+            "w18",
             "quake-live-ir-brio-operator.bgra",
             "usb-046d_Logitech_BRIO_5342C819-video-index2",
         ),
         "brio-room-ir": (
-            "ir_brm",
+            "w19",
             "quake-live-ir-brio-room.bgra",
             "usb-046d_Logitech_BRIO_43B0576A-video-index2",
         ),
         "brio-synths-ir": (
-            "ir_bsy",
+            "w35",
             "quake-live-ir-brio-synths.bgra",
             "usb-046d_Logitech_BRIO_9726C031-video-index2",
         ),
@@ -638,6 +649,9 @@ def test_screwm_gpu_services_use_darkplaces_runtime_marker_and_live_cutover() ->
         "ticker-chronicle:1344x176",
         "reverie:960x540",
         "aoa-atlas:2048x2048:2.25",
+        "ir-brio-operator:340x340",
+        "ir-brio-room:340x340",
+        "ir-brio-synths:340x340",
     ):
         assert slot in media_drift
     assert "Environment=HAPAX_WARD_ATLAS_SLOTS=ward-atlas:2048x2304@2" in ward_atlas_gpu

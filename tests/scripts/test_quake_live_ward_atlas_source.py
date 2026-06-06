@@ -117,6 +117,9 @@ def test_ward_atlas_places_brio_ir_feeds_in_explicit_cells() -> None:
     assert atlas.WARD_LABELS["brio-operator-ir"] == "BRIO OP IR"
     assert atlas.WARD_LABELS["brio-room-ir"] == "BRIO ROOM IR"
     assert atlas.WARD_LABELS["brio-synths-ir"] == "BRIO SYN IR"
+    assert atlas.DIRECT_TEXTURE_WARD_TEXTURES["brio-operator-ir"] == "w18"
+    assert atlas.DIRECT_TEXTURE_WARD_TEXTURES["brio-room-ir"] == "w19"
+    assert atlas.DIRECT_TEXTURE_WARD_TEXTURES["brio-synths-ir"] == "w35"
 
 
 def test_gpu_ward_atlas_catalog_matches_canonical_python_catalog() -> None:
@@ -313,3 +316,33 @@ def test_ward_atlas_reserves_reverie_for_direct_texture_instead_of_proxying_it(
     assert observed[ward_id]["reason"] == "direct live texture owns this ward"
     assert _pixel_bgra(data, 320, 288, 16) != (0, 0, 255, 255)
     assert _pixel_bgra(data, 320, 288, 16) == (7, 5, 3, 255)
+
+
+def test_ward_atlas_reserves_brio_ir_wards_for_direct_textures(tmp_path: Path) -> None:
+    atlas = _load_atlas()
+    output = tmp_path / "atlas.bgra"
+    meta = tmp_path / "atlas.json"
+
+    observed, _errors = atlas.render_atlas(
+        output=output,
+        meta=meta,
+        layout_path=Path("/nonexistent-layout.json"),
+        width=256,
+        height=288,
+        columns=4,
+        cell_width=64,
+        cell_height=32,
+        frame_id=1,
+        backends={},
+        errors={},
+        stale_source_seconds=6.0,
+    )
+
+    for ward_id, texture in {
+        "brio-operator-ir": "w18",
+        "brio-room-ir": "w19",
+        "brio-synths-ir": "w35",
+    }.items():
+        assert observed[ward_id]["status"] == "direct-texture-owned"
+        assert observed[ward_id]["texture"] == texture
+        assert observed[ward_id]["reason"] == "direct live texture owns this ward"
