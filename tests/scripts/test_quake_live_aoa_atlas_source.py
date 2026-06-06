@@ -50,9 +50,11 @@ def test_aoa_atlas_source_emits_gpu_drift_raw_face_control_atlas(tmp_path: Path)
 
     raw = tmp_path / "quake-live-aoa-atlas.raw.bgra"
     raw_meta = tmp_path / "quake-live-aoa-atlas.raw.json"
-    assert payload["geometry_revision"] == "aoa-regular-tetrix-v5-iteration-scale-perfect-fit-oarb"
+    assert (
+        payload["geometry_revision"] == "aoa-regular-tetrix-v6-expanded-iteration-perfect-fit-oarb"
+    )
     assert payload["face_count"] == 1024
-    assert payload["leaf_face_edge_units"] == 62.4
+    assert payload["leaf_face_edge_units"] == 81.12
     assert payload["atlas_contract"] == "one-live-control-cell-per-rendered-fractal-face"
     assert payload["face_operability_contract"] == (
         "stable-independent-control-per-rendered-fractal-face"

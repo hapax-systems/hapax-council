@@ -327,12 +327,12 @@ AOA_PAYLOAD_PANES = [
 SCROOM_SCENE_GRAPH_PANES = [
     # Larger media/source surfaces echo the 3D Scroom references. They are
     # room-mounted anchors, not a flat fourth-wall scene.
-    ("camera-source", "brio-operator", "cam_bop", "drift_a", -1580, -2140, 290, 128, 72),
-    ("camera-source", "brio-room", "cam_brm", "drift_g", -1580, -1320, 190, 120, 68),
-    ("camera-source", "brio-synths", "cam_bsy", "drift_r", -1580, -500, 300, 120, 68),
-    ("camera-source", "c920-desk", "cam_cdk", "drift_c", 1580, -2140, 290, 120, 68),
-    ("camera-source", "c920-room", "cam_crm", "drift_g", 1580, -1320, 190, 120, 68),
-    ("camera-source", "c920-overhead", "cam_cov", "drift_c", 1580, -500, 300, 120, 68),
+    ("camera-source", "brio-operator", "cam_bop", "drift_a", -1580, -1510, 650, 256, 144),
+    ("camera-source", "brio-room", "cam_brm", "drift_g", -1580, 400, 650, 240, 136),
+    ("camera-source", "brio-synths", "cam_bsy", "drift_r", -1024, -2532, 1180, 240, 136),
+    ("camera-source", "c920-desk", "cam_cdk", "drift_c", 1580, -1510, 650, 240, 136),
+    ("camera-source", "c920-room", "cam_crm", "drift_g", 1580, 400, 650, 240, 136),
+    ("camera-source", "c920-overhead", "cam_cov", "drift_c", 1024, -2532, 1180, 240, 136),
     ("ir", "cbip-ir", "w36", "drift_g", -1180, -600, 330, 64, 40),
     ("ward-shelf", "programme-history", "w23", "drift_a", 1180, -420, 160, 64, 40),
     ("ward-shelf", "instrument-dashboard", "w24", "drift_c", 1180, -150, 300, 64, 40),
