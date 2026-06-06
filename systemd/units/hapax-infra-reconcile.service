@@ -6,7 +6,7 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-infra-reconcile
+ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/hapax-infra-reconcile
 Nice=19
 StandardOutput=journal
 StandardError=journal
