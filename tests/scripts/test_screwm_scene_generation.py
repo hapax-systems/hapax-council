@@ -1168,6 +1168,13 @@ def test_screwm_wad_defines_scene_quad_effect_lens_textures() -> None:
 
 def test_ward_panel_texture_has_semantic_glyph_contrast() -> None:
     module = _load_script("scripts/generate-screwm-wad.py")
+    assert module["WARD_CODES"][17] == "BOPIR"
+    assert module["WARD_CODES"][18] == "BRMIR"
+    assert module["WARD_CODES"][34] == "BSYIR"
+    assert module["WARD_TEXTURE_TYPES"][17] == "hardware_grid"
+    assert module["WARD_TEXTURE_TYPES"][18] == "hardware_grid"
+    assert module["WARD_TEXTURE_TYPES"][34] == "hardware_grid"
+
     pixels, _palette = module["generate_pixel_data"](
         (120, 105, 70),
         0,
@@ -1184,18 +1191,18 @@ def test_ward_panel_texture_has_semantic_glyph_contrast() -> None:
     accent = module["WARD_ACCENT_INDICES"][(13 - 1) % len(module["WARD_ACCENT_INDICES"])]
     assert pixels.count(accent) > 180
 
-    scope_pixels, _palette = module["generate_pixel_data"](
+    synth_ir_pixels, _palette = module["generate_pixel_data"](
         (120, 105, 70),
         0,
         module["TEX_SIZE"],
         module["TEX_SIZE"],
         pattern="ward_panel",
         label=35,
-        code="SCOPE",
-        ward_type="scope_wave",
+        code="BSYIR",
+        ward_type="hardware_grid",
     )
-    scope_accent = module["WARD_ACCENT_INDICES"][(35 - 1) % len(module["WARD_ACCENT_INDICES"])]
-    assert scope_pixels.count(scope_accent) > 100
+    synth_ir_accent = module["WARD_ACCENT_INDICES"][(35 - 1) % len(module["WARD_ACCENT_INDICES"])]
+    assert synth_ir_pixels.count(synth_ir_accent) > 100
 
 
 def test_source_portal_texture_is_borderless_quiet_fallback() -> None:

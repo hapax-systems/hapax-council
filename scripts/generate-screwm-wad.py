@@ -35,8 +35,8 @@ WARD_CODES = [
     "HERE",
     "DURF",
     "CODE",
-    "M8",
-    "DECK",
+    "BOPIR",
+    "BRMIR",
     "EGRESS",
     "BANNER",
     "PRECED",
@@ -52,7 +52,7 @@ WARD_CODES = [
     "TUFTE",
     "ASCII",
     "SEG",
-    "SCOPE",
+    "BSYIR",
     "IRDUAL",
 ]
 
@@ -91,7 +91,7 @@ WARD_TEXTURE_TYPES = [
     "tufte_bars",
     "ascii_schema",
     "segment_page",
-    "scope_wave",
+    "hardware_grid",
     "ir_dual",
 ]
 

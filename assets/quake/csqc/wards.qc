@@ -2658,8 +2658,8 @@ void() screwm_draw_wards =
     screwm_draw_ward_label('-222 -360 172', "15", "HERE", 15, screwm_amber);
     screwm_draw_ward_label('-148 -360 172', "16", "DURF", 16, screwm_green);
     screwm_draw_ward_label('-74 -360 172', "17", "CODE", 17, screwm_cyan);
-    screwm_draw_ward_label('0 -360 172', "18", "M8", 18, screwm_rose);
-    screwm_draw_ward_label('74 -360 172', "19", "DECK", 19, screwm_rose);
+    screwm_draw_ward_label('0 -360 172', "18", "BOPIR", 18, screwm_rose);
+    screwm_draw_ward_label('74 -360 172', "19", "BRMIR", 19, screwm_rose);
     screwm_draw_ward_label('148 -360 172', "20", "EGRESS", 20, screwm_amber);
     screwm_draw_ward_label('222 -360 172', "21", "BANNER", 21, screwm_amber);
 
@@ -2677,7 +2677,7 @@ void() screwm_draw_wards =
     screwm_draw_ward_label('0 -360 64', "32", "TUFTE", 32, screwm_cyan);
     screwm_draw_ward_label('74 -360 64', "33", "ASCII", 33, screwm_cyan);
     screwm_draw_ward_label('148 -360 64', "34", "SEGMENT", 34, screwm_green);
-    screwm_draw_ward_label('222 -360 64', "35", "SCOPE", 35, screwm_rose);
+    screwm_draw_ward_label('222 -360 64', "35", "BSYIR", 35, screwm_rose);
     screwm_draw_ward_label('0 -360 28', "36", "IRDUAL", 36, screwm_green);
 
     screwm_draw_ward_detail('-222 -360 280', screwm_w01, 1, screwm_cyan);
