@@ -8,6 +8,17 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+HostId = str
+
+HOST_GPU_VRAM_MIB: dict[HostId, dict[str, float]] = {
+    # 2026-06-06 host-qualified correction: podium GPU0 is the RTX 5090, not
+    # the older RTX 3090 assumption.
+    "hapax-podium": {
+        "CG-GPU0": 32768.0,
+        "CG-GPU1": 16311.0,
+    }
+}
+
 
 class ResourceType(StrEnum):
     CPU = "cpu"
@@ -60,6 +71,7 @@ class ResourceAllocation(BaseModel):
 
 class ContentionGroup(BaseModel):
     name: str
+    host_id: HostId
     resource_type: ResourceType
     total_capacity: float
     unit: str
@@ -73,6 +85,13 @@ class ContentionGroup(BaseModel):
             raise ValueError("total_capacity must be positive")
         if not self.members:
             raise ValueError("members must not be empty")
+        if self.resource_type == ResourceType.GPU_VRAM:
+            expected = HOST_GPU_VRAM_MIB.get(self.host_id, {}).get(self.name)
+            if expected is not None and self.total_capacity != expected:
+                raise ValueError(
+                    f"{self.name} on {self.host_id} capacity {self.total_capacity} "
+                    f"does not match host GPU set {expected}"
+                )
         return self
 
 
@@ -232,15 +251,17 @@ DEFAULT_THRESHOLDS: list[ResourceThreshold] = [
 DEFAULT_CONTENTION_GROUPS: dict[str, ContentionGroup] = {
     "CG-GPU0": ContentionGroup(
         name="CG-GPU0",
+        host_id="hapax-podium",
         resource_type=ResourceType.GPU_VRAM,
-        total_capacity=24576.0,
+        total_capacity=32768.0,
         unit="MiB",
         members=["tabbyapi", "hapax-daimonion", "studio-compositor", "obs"],
         headroom_min=2048.0,
-        notes="RTX 3090 VRAM",
+        notes="RTX 5090 VRAM",
     ),
     "CG-GPU1": ContentionGroup(
         name="CG-GPU1",
+        host_id="hapax-podium",
         resource_type=ResourceType.GPU_VRAM,
         total_capacity=16311.0,
         unit="MiB",
@@ -250,6 +271,7 @@ DEFAULT_CONTENTION_GROUPS: dict[str, ContentionGroup] = {
     ),
     "CG-AUDIO": ContentionGroup(
         name="CG-AUDIO",
+        host_id="hapax-podium",
         resource_type=ResourceType.CPU,
         total_capacity=4.0,
         unit="cores",
@@ -265,6 +287,7 @@ DEFAULT_CONTENTION_GROUPS: dict[str, ContentionGroup] = {
     ),
     "CG-CPU-GENERAL": ContentionGroup(
         name="CG-CPU-GENERAL",
+        host_id="hapax-podium",
         resource_type=ResourceType.CPU,
         total_capacity=12.0,
         unit="cores",
@@ -312,6 +335,7 @@ DEFAULT_CONTENTION_GROUPS: dict[str, ContentionGroup] = {
     ),
     "CG-RAM": ContentionGroup(
         name="CG-RAM",
+        host_id="hapax-podium",
         resource_type=ResourceType.RAM,
         total_capacity=128.0,
         unit="GB",
@@ -361,6 +385,7 @@ DEFAULT_CONTENTION_GROUPS: dict[str, ContentionGroup] = {
     ),
     "CG-DISK-IO": ContentionGroup(
         name="CG-DISK-IO",
+        host_id="hapax-podium",
         resource_type=ResourceType.DISK_IO,
         total_capacity=1.0,
         unit="drive",
