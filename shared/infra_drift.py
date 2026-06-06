@@ -30,6 +30,11 @@ SCHEMA_VERSION = 1
 DRIFT_CODE = "infra-registry-drift"
 SCHEMA_SKEW_CODE = "infra-schema-version-skew"
 BACKUP_STATE_DRIFT_CODE = "backup-state-drift"
+DEFAULT_REGISTRY_SEED = (
+    Path(__file__).resolve().parents[1] / "config" / "infrastructure" / "host-storage-registry.json"
+)
+DEFAULT_RUNTIME_REGISTRY = Path.home() / "hapax-state" / "storage" / "host-storage-registry.json"
+DEFAULT_REPORT_PATH = Path.home() / "hapax-state" / "storage" / "infra-drift-report.json"
 
 _DESTRUCTIVE_FIELDS = {
     "device.presence",
@@ -100,7 +105,14 @@ def evaluate_infra_drift(
 
 
 def load_latest_receipts(cache_dir: Path = CACHE_DIR) -> list[dict[str, Any]]:
+    return [receipt for _, receipt in load_latest_receipts_with_paths(cache_dir)]
+
+
+def load_latest_receipts_with_paths(
+    cache_dir: Path = CACHE_DIR,
+) -> list[tuple[Path, dict[str, Any]]]:
     receipts: dict[str, dict[str, Any]] = {}
+    paths: dict[str, Path] = {}
     for path in sorted(cache_dir.glob("*.json")):
         if path.name == "index.json":
             continue
@@ -116,7 +128,56 @@ def load_latest_receipts(cache_dir: Path = CACHE_DIR) -> list[dict[str, Any]]:
             current.get("observed_at", "")
         ):
             receipts[host] = receipt
-    return list(receipts.values())
+            paths[host] = path
+    return [(paths[host], receipt) for host, receipt in sorted(receipts.items())]
+
+
+def ensure_runtime_registry(seed_path: Path, registry_path: Path) -> Path:
+    """Create the mutable runtime registry from the source seed if needed."""
+
+    if registry_path.exists():
+        return registry_path
+    payload = _load_json(str(seed_path))
+    HostStorageRegistry.model_validate(payload)
+    registry_path.parent.mkdir(parents=True, exist_ok=True)
+    registry_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return registry_path
+
+
+def stamp_registry_payload(
+    payload: dict[str, Any],
+    receipts_with_paths: list[tuple[Path, dict[str, Any]]],
+    *,
+    reconciled_at: str | None = None,
+) -> dict[str, Any]:
+    """Stamp registry rows with the receipt witness used for reconciliation."""
+
+    stamped = json.loads(json.dumps(payload))
+    stamp = reconciled_at or _now_iso()
+    receipt_by_host = {
+        _receipt_host(receipt): path.name
+        for path, receipt in receipts_with_paths
+        if _receipt_host(receipt)
+    }
+    all_receipts = ",".join(sorted(receipt_by_host.values())) or None
+    for section in (
+        "hosts",
+        "devices",
+        "mounts",
+        "network_nodes",
+        "secret_pointers",
+        "backup_policies",
+    ):
+        rows = stamped.get(section)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            host = row.get("target_host") or row.get("host_id") or row.get("custody_host")
+            row["reconciled_at"] = stamp
+            row["reconciled_against_receipt"] = receipt_by_host.get(host) or all_receipts
+    return stamped
 
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
@@ -510,6 +571,30 @@ def _load_json(path: str) -> Any:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _notify_drift(report: DriftReport, report_path: Path = DEFAULT_REPORT_PATH) -> None:
+    drift_entries = [entry for entry in report.entries if entry.status != DriftStatus.IN_SYNC]
+    if not drift_entries:
+        return
+    codes = sorted({entry.code for entry in drift_entries})
+    body = f"{len(drift_entries)} drift item(s): {', '.join(codes)}. Report: {report_path}"
+    try:
+        from shared.notify import send_notification
+
+        send_notification(
+            "Infra Registry Drift",
+            body,
+            priority="high",
+            tags=["warning"],
+        )
+    except Exception:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Host storage registry drift reporter")
     parser.add_argument("--registry-json", required=True)
@@ -542,15 +627,64 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if report.has_drift else 0
 
 
+def reconcile_main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Stamp host-storage registry reconciliation")
+    parser.add_argument("--seed-json", default=str(DEFAULT_REGISTRY_SEED))
+    parser.add_argument("--registry-json", default=str(DEFAULT_RUNTIME_REGISTRY))
+    parser.add_argument("--cache-dir", default=str(CACHE_DIR))
+    parser.add_argument("--report-json", default=str(DEFAULT_REPORT_PATH))
+    parser.add_argument("--observe-backups", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--notify", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--exit-on-drift", action="store_true")
+    parser.add_argument("--pretty", action="store_true")
+    args = parser.parse_args(argv)
+
+    seed_path = Path(args.seed_json)
+    registry_path = Path(args.registry_json)
+    if registry_path.exists() or not args.dry_run:
+        registry_path = ensure_runtime_registry(seed_path, registry_path)
+        registry_payload = _load_json(str(registry_path))
+    else:
+        registry_payload = _load_json(str(seed_path))
+    registry = HostStorageRegistry.model_validate(registry_payload)
+    receipts_with_paths = load_latest_receipts_with_paths(Path(args.cache_dir))
+    receipts = [receipt for _, receipt in receipts_with_paths]
+    backup_observations = collect_backup_observations(registry) if args.observe_backups else {}
+    report = evaluate_infra_drift(registry, receipts, backup_observations)
+    report_payload = report.model_dump(mode="json")
+    report_payload["summary"] = report.summary
+    report_payload["receipt_sources"] = [path.name for path, _ in receipts_with_paths]
+
+    if not args.dry_run:
+        report_path = Path(args.report_json)
+        _write_json(report_path, report_payload)
+        stamped_payload = stamp_registry_payload(registry_payload, receipts_with_paths)
+        HostStorageRegistry.model_validate(stamped_payload)
+        _write_json(registry_path, stamped_payload)
+    if args.notify:
+        _notify_drift(report, Path(args.report_json))
+
+    print(json.dumps(report_payload, indent=2 if args.pretty else None, sort_keys=True))
+    return 1 if args.exit_on_drift and report.has_drift else 0
+
+
 __all__ = [
     "BACKUP_STATE_DRIFT_CODE",
+    "DEFAULT_REGISTRY_SEED",
+    "DEFAULT_REPORT_PATH",
+    "DEFAULT_RUNTIME_REGISTRY",
     "DRIFT_CODE",
     "SCHEMA_SKEW_CODE",
     "DriftEntry",
     "DriftReport",
     "DriftStatus",
     "collect_backup_observations",
+    "ensure_runtime_registry",
     "evaluate_infra_drift",
     "load_latest_receipts",
+    "load_latest_receipts_with_paths",
     "main",
+    "reconcile_main",
+    "stamp_registry_payload",
 ]
