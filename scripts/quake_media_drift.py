@@ -142,7 +142,7 @@ def _receiver_gain(receiver: str) -> float:
         return 1.42
     if "reverie" in lowered:
         return 1.46
-    if "camera" in lowered or "cam" in lowered:
+    if lowered.startswith("ir-brio-") or "camera" in lowered or "cam" in lowered:
         return 1.12
     return 1.0
 
@@ -151,7 +151,7 @@ def _receiver_min_chroma_px(receiver: str) -> int:
     lowered = receiver.lower()
     if "ticker" in lowered:
         return 6
-    if "camera" in lowered or "cam" in lowered:
+    if lowered.startswith("ir-brio-") or "camera" in lowered or "cam" in lowered:
         return 14
     if "oarb" in lowered or "youtube" in lowered:
         return 18
@@ -162,7 +162,7 @@ def _receiver_min_chroma_px(receiver: str) -> int:
 
 def _receiver_is_camera(receiver: str) -> bool:
     lowered = receiver.lower()
-    return "camera" in lowered or "cam" in lowered
+    return lowered.startswith("ir-brio-") or "camera" in lowered or "cam" in lowered
 
 
 def _receiver_is_reverie(receiver: str) -> bool:
