@@ -265,9 +265,9 @@ GARDEN_CAMERA_STATIONS = [
 ]
 
 IR_CAMERA_WARD_STATIONS = [
-    ("brio-operator-ir-ward", (-700, -1320, 700), (-1180, -1320, 650)),
-    ("brio-room-ir-ward", (-700, 400, 700), (-1180, 400, 650)),
-    ("brio-synths-ir-ward", (-700, -2240, 1220), (-1180, -2240, 1180)),
+    ("brio-operator-ir-ward", (-120, -1320, 760), (-1180, -1320, 650)),
+    ("brio-room-ir-ward", (-120, 400, 760), (-1180, 400, 650)),
+    ("brio-synths-ir-ward", (-120, -2240, 1290), (-1180, -2240, 1180)),
 ]
 
 WARD_GARDEN_LAYOUT = {

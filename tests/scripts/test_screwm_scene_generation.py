@@ -104,18 +104,21 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
             "brio-operator-ir",
             "brio-operator",
             "brio-operator-ir-ward",
+            (-120, -1320, 760),
             (-1180, -1320, 650),
         ),
         19: (
             "brio-room-ir",
             "brio-room",
             "brio-room-ir-ward",
+            (-120, 400, 760),
             (-1180, 400, 650),
         ),
         35: (
             "brio-synths-ir",
             "brio-synths",
             "brio-synths-ir-ward",
+            (-120, -2240, 1290),
             (-1180, -2240, 1180),
         ),
     }
@@ -123,7 +126,13 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
         station_name: (origin, target)
         for station_name, origin, target in module["IR_CAMERA_WARD_STATIONS"]
     }
-    for idx, (ward_anchor, source_role, station_name, expected_position) in ir_contexts.items():
+    for idx, (
+        ward_anchor,
+        source_role,
+        station_name,
+        expected_origin,
+        expected_position,
+    ) in ir_contexts.items():
         ward_position = module["ward_review_position"](idx)
         source_position = tuple(sources[source_role]["pos"])
         station_origin, station_target = ir_stations[station_name]
@@ -139,9 +148,10 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
 
         assert module["WARD_ANCHORS"][idx - 1] == ward_anchor
         assert ward_position == expected_position
+        assert station_origin == expected_origin
         assert station_target == expected_position
         assert width == height == module["IR_CAMERA_WARD_TARGET_WIDTH"]
-        assert _visual_angle(width, station_origin, station_target) >= 50
+        assert 50 <= _visual_angle(width, station_origin, station_target) <= 54
         assert mount["id"] == f"{ward_anchor}-ward"
         assert mount["role"] == "state-ward"
         assert mount["mount_kind"] == "live-camera-instrument"
