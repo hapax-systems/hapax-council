@@ -49,19 +49,37 @@ def test_matrix_witness_pov_stations_match_generated_review_stations() -> None:
             tuple(float(value) for value in origin),
             tuple(float(value) for value in target),
         )
-        for name, origin, target in mapgen["GARDEN_CAMERA_STATIONS"]
+        for name, origin, target in (
+            mapgen["GARDEN_CAMERA_STATIONS"] + mapgen["IR_CAMERA_WARD_STATIONS"]
+        )
     }
 
     for name, origin, target in module["POV_STATIONS"]:
         assert generated[name] == (origin, target)
 
     assert generated["left-media-window"] == (
-        (-600.0, -1300.0, 196.0),
-        (-1580.0, -780.0, 532.0),
+        (-250.0, -1420.0, 220.0),
+        (-1580.0, 400.0, 650.0),
     )
     assert generated["right-media-window"] == (
-        (600.0, -1300.0, 196.0),
-        (1580.0, -780.0, 532.0),
+        (250.0, -1420.0, 220.0),
+        (1580.0, 400.0, 650.0),
+    )
+    assert generated["aoa-pause"] == (
+        (-320.0, -1780.0, 208.0),
+        (0.0, -555.0, 224.0),
+    )
+    assert generated["brio-operator-ir-ward"] == (
+        (-700.0, -1320.0, 700.0),
+        (-1180.0, -1320.0, 650.0),
+    )
+    assert generated["brio-room-ir-ward"] == (
+        (-700.0, 400.0, 700.0),
+        (-1180.0, 400.0, 650.0),
+    )
+    assert generated["brio-synths-ir-ward"] == (
+        (-700.0, -2240.0, 1220.0),
+        (-1180.0, -2240.0, 1180.0),
     )
 
 

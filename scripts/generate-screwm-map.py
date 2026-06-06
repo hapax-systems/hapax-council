@@ -245,21 +245,29 @@ SYNTHWAVE_TICKER_WARDS = {9, 22, 27}
 SPECIAL_WARD_POSITIONS = {
     36: (0, WARD_Y_TOP + 5 * WARD_Y_STEP, FLOOR_Z + 92),
 }
-REVIEW_WORLD_MINLIGHT = 36
-REVIEW_WORLD_MINLIGHT_COLOR = "0.18 0.20 0.24"
-REVIEW_FILL_BASE_MULTIPLIER = 1.18
-REVIEW_FILL_SCALES = (1.18, 0.86, 0.88, 1.08, 0.96, 0.90, 1.08, 0.74)
+REVIEW_WORLD_MINLIGHT = 48
+REVIEW_WORLD_MINLIGHT_COLOR = "0.20 0.22 0.26"
+REVIEW_FILL_BASE_MULTIPLIER = 1.28
+REVIEW_FILL_SCALES = (1.22, 0.90, 0.92, 1.12, 1.00, 0.94, 1.12, 0.78)
 REVIEW_MEDIA_TARGET_CLEARANCE = 24
+IR_CAMERA_WARD_INDICES = frozenset({18, 19, 35})
+IR_CAMERA_WARD_TARGET_WIDTH = 512
 
 GARDEN_CAMERA_STATIONS = [
     ("entry-stone", (0, -2380, 164), (0, AOA_Y, AOA_Z)),
     ("threshold-stone", (-320, -2200, 168), (AOA_X, AOA_Y, AOA_Z)),
     ("left-borrowed-view", (-860, -1880, 184), (-1180, -1600, 240)),
-    ("left-media-window", (-600, -1300, 196), (-1580, -780, 532)),
-    ("aoa-pause", (-320, -900, 182), (AOA_X, AOA_Y, AOA_Z)),
+    ("left-media-window", (-250, -1420, 220), (-1580, 400, 650)),
+    ("aoa-pause", (-320, -1780, 208), (AOA_X, AOA_Y, AOA_Z)),
     ("right-borrowed-view", (860, -1000, 184), (1180, -1120, 240)),
-    ("right-media-window", (600, -1300, 196), (1580, -780, 532)),
+    ("right-media-window", (250, -1420, 220), (1580, 400, 650)),
     ("far-garden-view", (420, -430, 220), (AOA_X, AOA_Y, AOA_Z + 18)),
+]
+
+IR_CAMERA_WARD_STATIONS = [
+    ("brio-operator-ir-ward", (-700, -1320, 700), (-1180, -1320, 650)),
+    ("brio-room-ir-ward", (-700, 400, 700), (-1180, 400, 650)),
+    ("brio-synths-ir-ward", (-700, -2240, 1220), (-1180, -2240, 1180)),
 ]
 
 WARD_GARDEN_LAYOUT = {
@@ -284,8 +292,8 @@ WARD_GARDEN_LAYOUT = {
     15: (800, 980, 285, "y"),
     16: (-1180, -420, 150, "x"),
     17: (1180, -760, 290, "x"),
-    18: (-1180, -1320, 330, "x"),
-    19: (-1180, 400, 250, "x"),
+    18: (-1180, -1320, 650, "x"),
+    19: (-1180, 400, 650, "x"),
     20: (520, -2360, 105, "y"),
     21: (1160, 980, 340, "y"),
     22: (1580, -1860, 220, "x"),
@@ -301,7 +309,7 @@ WARD_GARDEN_LAYOUT = {
     32: (1180, -580, 110, "x"),
     33: (1180, -280, 330, "x"),
     34: (1160, 980, 210, "y"),
-    35: (-1180, -2240, 310, "x"),
+    35: (-1180, -2240, 1180, "x"),
     36: (-1180, -600, 330, "x"),
 }
 
@@ -350,10 +358,10 @@ SCROOM_PATH_STONES = [
     ("roji-entry", "drift_c", 0, -2405, FLOOR_Z + 7, 210, 32),
     ("threshold", "drift_g", -320, -2200, FLOOR_Z + 7, 148, 30),
     ("left-borrowed-view", "drift_g", -860, -1880, FLOOR_Z + 7, 190, 32),
-    ("left-media-pause", "drift_c", -1040, -1480, FLOOR_Z + 7, 196, 32),
-    ("aoa-pause", "drift_a", -320, -900, FLOOR_Z + 7, 208, 34),
+    ("left-media-pause", "drift_c", -250, -1420, FLOOR_Z + 7, 196, 32),
+    ("aoa-pause", "drift_a", -320, -1780, FLOOR_Z + 7, 208, 34),
     ("right-borrowed-view", "drift_g", 860, -1000, FLOOR_Z + 7, 190, 32),
-    ("right-media-pause", "drift_r", 1040, -1480, FLOOR_Z + 7, 196, 32),
+    ("right-media-pause", "drift_r", 250, -1420, FLOOR_Z + 7, 196, 32),
     ("far-garden-view", "drift_g", 420, -430, FLOOR_Z + 7, 188, 32),
     ("return-ridge", "drift_r", 0, -2380, FLOOR_Z + 7, 156, 30),
 ]
@@ -1674,6 +1682,8 @@ def ward_source_aspect(idx, anchor):
 
 
 def ward_source_mount_width(idx, anchor):
+    if idx in IR_CAMERA_WARD_INDICES:
+        return IR_CAMERA_WARD_TARGET_WIDTH
     direct_mount = ACTIVE_WARD_MOUNTS_BY_INDEX.get(idx)
     if direct_mount and direct_mount.get("physical_width"):
         return int(direct_mount["physical_width"])
@@ -2575,17 +2585,17 @@ def lights(preset):
 def review_shell_lights(_preset):
     """Stable iteration-review washers for entry and media inspection POVs."""
     lightspecs = [
-        ("review-entry-floor-rake", (0, ROOM_Y_MIN + 330, FLOOR_Z + 86), 430, (0.82, 0.70, 0.46)),
-        ("review-entry-left-wall-skim", (-860, ROOM_Y_MIN + 390, 278), 390, (0.42, 0.82, 1.00)),
-        ("review-entry-right-wall-skim", (860, ROOM_Y_MIN + 390, 278), 390, (1.00, 0.48, 0.70)),
+        ("review-entry-floor-rake", (0, ROOM_Y_MIN + 330, FLOOR_Z + 86), 520, (0.82, 0.70, 0.46)),
+        ("review-entry-left-wall-skim", (-860, ROOM_Y_MIN + 390, 278), 470, (0.42, 0.82, 1.00)),
+        ("review-entry-right-wall-skim", (860, ROOM_Y_MIN + 390, 278), 470, (1.00, 0.48, 0.70)),
         (
             "review-entry-ceiling-return",
             (0, ROOM_Y_MIN + 520, CEIL_Z - 170),
-            330,
+            390,
             (0.54, 0.78, 1.00),
         ),
-        ("review-left-media-reader", (-720, -1220, 330), 340, (0.42, 0.88, 1.00)),
-        ("review-right-media-reader", (720, -1220, 330), 340, (1.00, 0.52, 0.72)),
+        ("review-left-media-reader", (-360, -1320, 350), 540, (0.42, 0.88, 1.00)),
+        ("review-right-media-reader", (360, -1320, 350), 540, (1.00, 0.52, 0.72)),
     ]
     entities = []
     for name, (x, y, z), value, (r, g, b) in lightspecs:

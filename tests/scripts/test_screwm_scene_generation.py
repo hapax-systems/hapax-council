@@ -42,6 +42,17 @@ def _pane_rect(
     return "y", float(y), (x - w / 2, x + w / 2), (z - h / 2, z + h / 2)
 
 
+def _source_pane_rect(
+    source: dict,
+) -> tuple[str, float, tuple[float, float], tuple[float, float]]:
+    x, y, z = source["pos"]
+    w = source["w"]
+    h = source["h"]
+    if source["facing"] == "x":
+        return "x", float(x), (y - w / 2, y + w / 2), (z - h / 2, z + h / 2)
+    return "y", float(y), (x - w / 2, x + w / 2), (z - h / 2, z + h / 2)
+
+
 def _line_intersects_pane(
     origin: tuple[int, int, int],
     target: tuple[int, int, int],
@@ -85,19 +96,29 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert module["WARD_ANCHORS"][17] == "brio-operator-ir"
     assert module["WARD_ANCHORS"][18] == "brio-room-ir"
     assert module["WARD_ANCHORS"][34] == "brio-synths-ir"
+    assert module["IR_CAMERA_WARD_INDICES"] == frozenset({18, 19, 35})
+    assert module["IR_CAMERA_WARD_TARGET_WIDTH"] == 512
     sources = {source["role"]: source for source in module["SOURCE_ANCHORS"]}
     ir_contexts = {
-        18: ("brio-operator-ir", "brio-operator", (-1180, -1320, 330)),
-        19: ("brio-room-ir", "brio-room", (-1180, 400, 250)),
-        35: ("brio-synths-ir", "brio-synths", (-1180, -2240, 310)),
+        18: ("brio-operator-ir", "brio-operator", (-1180, -1320, 650)),
+        19: ("brio-room-ir", "brio-room", (-1180, 400, 650)),
+        35: ("brio-synths-ir", "brio-synths", (-1180, -2240, 1180)),
     }
     for idx, (ward_anchor, source_role, expected_position) in ir_contexts.items():
         ward_position = module["ward_review_position"](idx)
         source_position = tuple(sources[source_role]["pos"])
+        width, height = module["ward_pane_dimensions"](idx)
+        mount = module["ward_live_mount_contract"](idx, ward_anchor)
+
         assert module["WARD_ANCHORS"][idx - 1] == ward_anchor
         assert ward_position == expected_position
+        assert width == height == module["IR_CAMERA_WARD_TARGET_WIDTH"]
+        assert mount["texture"] == "ward_atlas"
+        assert mount["source_id"] == ward_anchor
+        assert mount["purpose"] == f"{ward_anchor} compositor-authored live ward surface"
         assert abs(ward_position[0] - source_position[0]) <= 420
         assert abs(ward_position[1] - source_position[1]) <= 320
+        assert abs(ward_position[2] - source_position[2]) <= 40
     assert module["STATIC_WARD_MOUNT_PROFILE"] == "state-ward-instrument"
     assert content.count("// ward-anchor ") == 0
     assert content.count("// ward-depth-plate ") == 0
@@ -274,14 +295,14 @@ def test_screwm_review_lighting_floor_is_deliberate_not_fullbright() -> None:
     module = _load_script("scripts/generate-screwm-map.py")
     content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
 
-    assert module["REVIEW_WORLD_MINLIGHT"] == 36
-    assert module["REVIEW_WORLD_MINLIGHT_COLOR"] == "0.18 0.20 0.24"
-    assert 1.10 <= module["REVIEW_FILL_BASE_MULTIPLIER"] <= 1.30
-    assert module["REVIEW_FILL_SCALES"][0] >= 1.15
+    assert module["REVIEW_WORLD_MINLIGHT"] == 48
+    assert module["REVIEW_WORLD_MINLIGHT_COLOR"] == "0.20 0.22 0.26"
+    assert 1.20 <= module["REVIEW_FILL_BASE_MULTIPLIER"] <= 1.35
+    assert module["REVIEW_FILL_SCALES"][0] >= 1.20
     assert module["REVIEW_FILL_SCALES"][3] >= 1.0
     assert module["REVIEW_FILL_SCALES"][6] >= 1.0
-    assert '"_minlight" "36"' in content
-    assert '"_minlight_color" "0.18 0.20 0.24"' in content
+    assert '"_minlight" "48"' in content
+    assert '"_minlight_color" "0.20 0.22 0.26"' in content
     assert "// review-shell-light review-entry-floor-rake" in content
     assert "// review-shell-light review-entry-left-wall-skim" in content
     assert "// review-shell-light review-entry-right-wall-skim" in content
@@ -294,8 +315,8 @@ def test_screwm_media_window_review_targets_clear_camera_sources() -> None:
     module = _load_script("scripts/generate-screwm-map.py")
     sources = {source["role"]: source for source in module["SOURCE_ANCHORS"]}
     expected = {
-        "left-media-window": ("brio-room", (-600, -1300, 196), (-1580, -780, 532)),
-        "right-media-window": ("c920-room", (600, -1300, 196), (1580, -780, 532)),
+        "left-media-window": ("brio-room", (-250, -1420, 220), (-1580, 400, 650)),
+        "right-media-window": ("c920-room", (250, -1420, 220), (1580, 400, 650)),
     }
 
     for station_name, (source_role, expected_origin, expected_target) in expected.items():
@@ -304,6 +325,7 @@ def test_screwm_media_window_review_targets_clear_camera_sources() -> None:
 
         assert origin == expected_origin
         assert target == expected_target
+        assert target == source["pos"]
         assert _visual_angle(source["w"], origin, tuple(source["pos"])) >= 40
 
         blockers = [
@@ -317,6 +339,30 @@ def test_screwm_media_window_review_targets_clear_camera_sources() -> None:
             )
         ]
         assert blockers == []
+        source_blockers = [
+            other["role"]
+            for other in module["SOURCE_ANCHORS"]
+            if other["role"] != source_role
+            and _line_intersects_pane(
+                origin,
+                target,
+                _source_pane_rect(other),
+                margin=module["REVIEW_MEDIA_TARGET_CLEARANCE"],
+            )
+        ]
+        assert source_blockers == []
+
+
+def test_screwm_aoa_pause_keeps_expanded_aoa_inspectable_without_whiteout() -> None:
+    module = _load_script("scripts/generate-screwm-map.py")
+    origin, target = _station_by_name(module, "aoa-pause")
+    aoa = module["MEDIA_MOUNTS_BY_ID"]["aoa-fractal-face-atlas"]
+    aoa_width = int(aoa["aoa_parent_edge_units"])
+
+    assert origin == (-320, -1780, 208)
+    assert target == (module["AOA_X"], module["AOA_Y"], module["AOA_Z"])
+    assert 45 <= _visual_angle(aoa_width, origin, target) <= 60
+    assert module["SCROOM_PATH_STONES"][4][2:4] == (-320, -1780)
 
 
 def test_screwm_drift_graph_physically_touches_every_ward_anchor() -> None:
@@ -657,8 +703,8 @@ def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
     assert "SCROOM_GARDEN_LANTERNS" in source
     assert "AOA_SPHERE_FACE_SIZE" in source
     assert "AOA_SPHERE_STRIP_COUNT = 0" in source
-    assert "REVIEW_WORLD_MINLIGHT = 36" in source
-    assert 'REVIEW_WORLD_MINLIGHT_COLOR = "0.18 0.20 0.24"' in source
+    assert "REVIEW_WORLD_MINLIGHT = 48" in source
+    assert 'REVIEW_WORLD_MINLIGHT_COLOR = "0.20 0.22 0.26"' in source
     assert "scene_quad.wgsl" in source
     assert "No diagnostic floor crosshair" in source
     assert "No physical drift graph stones" in source
