@@ -1138,6 +1138,7 @@ def launch_claude_headless(task_id: str, lane: str, prompt: str, route: Platform
     if route.profile in {"opus", "sonnet"}:
         env["HAPAX_CLAUDE_MODEL"] = route.profile
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(lane_worktree(lane, "claude"))
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("claude", "headless")
     return _sliced_call([str(launcher), "--task", task_id, lane, prompt], env)
 

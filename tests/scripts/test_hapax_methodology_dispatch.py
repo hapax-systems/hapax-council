@@ -1407,7 +1407,7 @@ def test_launches_claude_headless_with_task_binding(tmp_path: Path) -> None:
     fake_launcher.parent.mkdir(parents=True, exist_ok=True)
     fake_launcher.write_text(
         f"""#!/usr/bin/env bash
-printf '%s\\n' "$HAPAX_METHODOLOGY_DISPATCH_TASK" "$@" > {launcher_args}
+printf '%s\\n' "$HAPAX_METHODOLOGY_DISPATCH_TASK" "$HAPAX_CLAUDE_HEADLESS_WORKDIR" "$@" > {launcher_args}
 """,
         encoding="utf-8",
     )
@@ -1430,8 +1430,9 @@ printf '%s\\n' "$HAPAX_METHODOLOGY_DISPATCH_TASK" "$@" > {launcher_args}
     assert result.returncode == 0, result.stderr
     args = launcher_args.read_text(encoding="utf-8").splitlines()
     assert args[0] == "governed-build"
-    assert args[1:4] == ["--task", "governed-build", "beta"]
-    assert "SDLC GOVERNED DISPATCH." in "\n".join(args[4:])
+    assert args[1] == str(tmp_path / "worktree")
+    assert args[2:5] == ["--task", "governed-build", "beta"]
+    assert "SDLC GOVERNED DISPATCH." in "\n".join(args[5:])
 
 
 def test_launches_claude_interactive_visible_lane_with_task_binding(tmp_path: Path) -> None:
