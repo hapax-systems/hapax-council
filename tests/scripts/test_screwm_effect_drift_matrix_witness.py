@@ -57,6 +57,11 @@ def test_matrix_witness_pov_stations_match_generated_review_stations() -> None:
     for name, origin, target in module["POV_STATIONS"]:
         assert generated[name] == (origin, target)
 
+    assert set(module["DEFAULT_POV_LABELS"]) >= {
+        "brio-operator-ir-ward",
+        "brio-room-ir-ward",
+        "brio-synths-ir-ward",
+    }
     assert generated["left-media-window"] == (
         (-250.0, -1420.0, 220.0),
         (-1580.0, 400.0, 650.0),

@@ -636,6 +636,8 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
         assert mount["texture_size"] == [340, 340]
         assert mount["physical_width"] == 1024
         assert mount["computed_mount_width"] == 1024
+        assert mount["receiver_light_multiplier"] == 2.6
+        assert mount["receiver_light_distance"] == 18
         assert mount["origin"] == origin
         assert mount["facing"] == "x"
         assert mount["hybrid_contract"]["quake_binding"] == f"BSP brush texture {texture}"

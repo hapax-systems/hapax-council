@@ -30,7 +30,7 @@ w18
 	dpnoshadow
 	{
 		map w18
-		rgbgen const 0.72 0.72 0.78
+		rgbgen const 1.0 1.0 1.0
 	}
 }
 
@@ -42,7 +42,7 @@ w19
 	dpnoshadow
 	{
 		map w19
-		rgbgen const 0.72 0.72 0.78
+		rgbgen const 1.0 1.0 1.0
 	}
 }
 
@@ -90,7 +90,7 @@ w35
 	dpnoshadow
 	{
 		map w35
-		rgbgen const 0.72 0.72 0.78
+		rgbgen const 1.0 1.0 1.0
 	}
 }
 

@@ -69,6 +69,9 @@ DEFAULT_POV_LABELS = (
     "left-media-window",
     "right-media-window",
     "far-garden-view",
+    "brio-operator-ir-ward",
+    "brio-room-ir-ward",
+    "brio-synths-ir-ward",
 )
 
 LOCAL_EFFECTS = (
