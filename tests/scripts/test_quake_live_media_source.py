@@ -32,6 +32,7 @@ def test_missing_camera_device_uses_explicit_offline_texture_fallback() -> None:
         projection="flat",
         mask="none",
         mask_background="0c0b0d",
+        camera_visibility_profile="auto",
         camera_reserved_for_ir=False,
         restart_delay=2.0,
         fallback_reason="",
@@ -64,6 +65,7 @@ def test_brio_rgb_reserved_for_ir_publishes_explicit_fresh_placeholder(tmp_path:
         projection="flat",
         mask="none",
         mask_background="0c0b0d",
+        camera_visibility_profile="auto",
         fallback_reason="",
     )
 
@@ -93,6 +95,7 @@ def test_media_sidecar_includes_shm_rgba_reader_aliases(tmp_path: Path) -> None:
         mask="none",
         mask_background="0c0b0d",
         projection="flat",
+        camera_visibility_profile="brio-ir-low-light",
         gpu_drift=True,
         gpu_drift_raw_output=tmp_path / "quake-live-ir-brio-operator.raw.bgra",
         output=tmp_path / "quake-live-ir-brio-operator.bgra",
@@ -118,6 +121,8 @@ def test_media_sidecar_includes_shm_rgba_reader_aliases(tmp_path: Path) -> None:
     assert payload["width"] == 340
     assert payload["height"] == 340
     assert payload["frames"] == 42
+    assert payload["camera_visibility_profile"] == "brio-ir-low-light"
+    assert payload["resolved_camera_visibility_profile"] == "brio-ir-low-light"
 
 
 def test_frame_read_timeout_returns_none_for_silent_pipe() -> None:
@@ -306,6 +311,7 @@ def test_exact_size_camera_filter_skips_scale_and_pad(tmp_path: Path) -> None:
         projection="flat",
         mask="none",
         mask_background="0c0b0d",
+        camera_visibility_profile="auto",
         fallback_reason="",
     )
 
@@ -315,6 +321,79 @@ def test_exact_size_camera_filter_skips_scale_and_pad(tmp_path: Path) -> None:
     assert "scale=" not in command_text
     assert "pad=" not in command_text
     assert "format=bgra" in command_text
+
+
+def test_low_light_brio_ir_roles_use_histeq_before_bgra(tmp_path: Path) -> None:
+    module = _load_module()
+    device = tmp_path / "video-ir"
+    device.write_bytes(b"")
+
+    for role in ("brio-room-ir", "brio-synths-ir"):
+        args = Namespace(
+            source="camera",
+            camera_role=role,
+            camera_device=str(device),
+            camera_format="gray",
+            camera_size="340x340",
+            camera_fps=10,
+            fps=6,
+            width=340,
+            height=340,
+            projection="flat",
+            mask="none",
+            mask_background="0c0b0d",
+            camera_visibility_profile="auto",
+            fallback_reason="",
+        )
+
+        command = module["_ffmpeg_command"](args, 340, 340)
+        vf = command[command.index("-vf") + 1]
+
+        assert "scale=" not in vf
+        assert "pad=" not in vf
+        assert "histeq=strength=0.30:intensity=0.20:antibanding=weak" in vf
+        assert vf.index("histeq=") < vf.index("format=bgra")
+        assert args.resolved_camera_visibility_profile == "brio-ir-low-light"
+
+
+def test_operator_ir_role_keeps_unmodified_visibility_profile(tmp_path: Path) -> None:
+    module = _load_module()
+    device = tmp_path / "video-ir"
+    device.write_bytes(b"")
+    args = Namespace(
+        source="camera",
+        camera_role="brio-operator-ir",
+        camera_device=str(device),
+        camera_format="gray",
+        camera_size="340x340",
+        camera_fps=10,
+        fps=6,
+        width=340,
+        height=340,
+        projection="flat",
+        mask="none",
+        mask_background="0c0b0d",
+        camera_visibility_profile="auto",
+        fallback_reason="",
+    )
+
+    command = module["_ffmpeg_command"](args, 340, 340)
+    vf = command[command.index("-vf") + 1]
+
+    assert "histeq=" not in vf
+    assert vf == "fps=6,format=bgra"
+    assert args.resolved_camera_visibility_profile == "none"
+
+
+def test_brio_ir_env_files_declare_visibility_profiles() -> None:
+    expected = {
+        "brio-operator-ir.env": "HAPAX_QUAKE_CAMERA_VISIBILITY_PROFILE=none",
+        "brio-room-ir.env": "HAPAX_QUAKE_CAMERA_VISIBILITY_PROFILE=brio-ir-low-light",
+        "brio-synths-ir.env": "HAPAX_QUAKE_CAMERA_VISIBILITY_PROFILE=brio-ir-low-light",
+    }
+    for filename, line in expected.items():
+        text = (REPO_ROOT / "config" / "quake-live-cameras" / filename).read_text()
+        assert line in text
 
 
 def test_brio_ir_camera_roles_default_to_greyscale_endpoints() -> None:
