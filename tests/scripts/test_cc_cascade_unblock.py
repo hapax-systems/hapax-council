@@ -42,6 +42,7 @@ def _write_task(
     blocked_reason: str = "waiting",
     blocked_witness: str | None = None,
     depends_on: list[str] | None = None,
+    depends_style: str = "indented",
     pr: int | None = None,
     quality_floor: str = "frontier_required",
     authority_level: str = "authoritative",
@@ -51,7 +52,14 @@ def _write_task(
     deps = depends_on or []
     deps_text = "[]"
     if deps:
-        deps_text = "\n" + "\n".join(f"  - {dep}" for dep in deps)
+        if depends_style == "unindented":
+            deps_text = "\n" + "\n".join(f"- {dep}" for dep in deps)
+        elif depends_style == "inline":
+            deps_text = "[" + ", ".join(deps) + "]"
+        elif depends_style == "scalar":
+            deps_text = deps[0]
+        else:
+            deps_text = "\n" + "\n".join(f"  - {dep}" for dep in deps)
     pr_text = f"pr: {pr}" if pr is not None else "pr: null"
     witness_text = f"blocked_witness: {blocked_witness}\n" if blocked_witness else ""
     path = vault / folder / f"{task_id}.md"
@@ -83,6 +91,22 @@ depends_on: {deps_text}
     return path
 
 
+def test_parse_depends_reads_yaml_frontmatter_shapes() -> None:
+    module = _load_module()
+
+    cases = [
+        ("depends_on:\n  - dep-a\n  - dep-b", ["dep-a", "dep-b"]),
+        ("depends_on:\n- dep-a\n- dep-b", ["dep-a", "dep-b"]),
+        ("depends_on: [dep-a, dep-b]", ["dep-a", "dep-b"]),
+        ("depends_on: dep-a", ["dep-a"]),
+        ("depends_on: []", []),
+    ]
+
+    for frontmatter, expected in cases:
+        text = f"---\n{frontmatter}\n---\n\n# Task\n"
+        assert module._parse_depends(text) == expected
+
+
 def test_cascade_unblocks_only_when_dependency_closure_is_valid(tmp_path: Path) -> None:
     module = _load_module()
     vault = _make_vault(tmp_path, module)
@@ -101,6 +125,34 @@ def test_cascade_unblocks_only_when_dependency_closure_is_valid(tmp_path: Path) 
         "target",
         status="blocked",
         depends_on=["valid-dep"],
+    )
+
+    assert module.cascade_unblock("valid-dep") == 1
+    text = target.read_text(encoding="utf-8")
+    assert "status: offered" in text
+    assert "blocked_reason: null" in text
+
+
+def test_cascade_unblocks_valid_dependency_with_unindented_yaml_list(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+    module._check_pr_merged = lambda _pr: "merged"
+    _write_task(
+        vault,
+        "closed",
+        "valid-dep",
+        status="done",
+        body="## Acceptance criteria\n\n- [x] Evidence exists\n",
+    )
+    target = _write_task(
+        vault,
+        "active",
+        "target",
+        status="blocked",
+        depends_on=["valid-dep"],
+        depends_style="unindented",
     )
 
     assert module.cascade_unblock("valid-dep") == 1

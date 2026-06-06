@@ -130,6 +130,10 @@ def _dependency_validity(dep_ids: set[str]) -> tuple[set[str], dict[str, tuple[s
 
 
 def _parse_depends(text: str) -> list[str]:
+    frontmatter = frontmatter_from_text(text)
+    if "depends_on" in frontmatter:
+        return _normalize_depends(frontmatter.get("depends_on"))
+
     block = re.search(r"^depends_on:\s*\n((?:\s+-\s+.+\n)*)", text, re.M)
     if block:
         return [
@@ -141,6 +145,26 @@ def _parse_depends(text: str) -> list[str]:
     if inline and inline.group(1).strip():
         return [d.strip().strip("\"'") for d in inline.group(1).split(",") if d.strip()]
     return []
+
+
+def _normalize_depends(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip().strip("\"'")
+        if stripped.lower() in {"", "null", "none", "~", "[]"}:
+            return []
+        return [stripped]
+    if isinstance(value, (list, tuple, set)):
+        deps: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            stripped = str(item).strip().strip("\"'")
+            if stripped and stripped.lower() not in {"null", "none", "~", "[]"}:
+                deps.append(stripped)
+        return deps
+    return [str(value).strip()]
 
 
 def _set_frontmatter_scalar(text: str, key: str, value: str) -> str:
