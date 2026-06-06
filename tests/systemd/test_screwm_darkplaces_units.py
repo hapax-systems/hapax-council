@@ -38,6 +38,9 @@ def test_darkplaces_v4l2_service_remains_runtime_guarded_and_uses_visible_xvfb_r
         "brio-operator",
         "brio-room",
         "brio-synths",
+        "brio-operator-ir",
+        "brio-room-ir",
+        "brio-synths-ir",
         "c920-desk",
         "c920-room",
         "c920-overhead",
@@ -354,6 +357,37 @@ def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() ->
         assert "HAPAX_QUAKE_LIVE_TEXTURE_FPS=5" in env
         assert "HAPAX_QUAKE_LIVE_TEXTURE_INPUT_FPS=10" in env
 
+    ir_expected = {
+        "brio-operator-ir": (
+            "ir_bop",
+            "quake-live-ir-brio-operator.bgra",
+            "usb-046d_Logitech_BRIO_5342C819-video-index2",
+        ),
+        "brio-room-ir": (
+            "ir_brm",
+            "quake-live-ir-brio-room.bgra",
+            "usb-046d_Logitech_BRIO_43B0576A-video-index2",
+        ),
+        "brio-synths-ir": (
+            "ir_bsy",
+            "quake-live-ir-brio-synths.bgra",
+            "usb-046d_Logitech_BRIO_9726C031-video-index2",
+        ),
+    }
+    for role, (texture, frame, device_id) in ir_expected.items():
+        env = (config_dir / f"{role}.env").read_text(encoding="utf-8")
+        assert f"HAPAX_QUAKE_CAMERA_ROLE={role}" in env
+        assert f"HAPAX_QUAKE_CAMERA_DEVICE=/dev/v4l/by-id/{device_id}" in env
+        assert "HAPAX_QUAKE_CAMERA_FORMAT=gray" in env
+        assert "HAPAX_QUAKE_CAMERA_SIZE=340x340" in env
+        assert "HAPAX_QUAKE_CAMERA_FPS=10" in env
+        assert f"HAPAX_QUAKE_LIVE_TEXTURE_NAME={texture}" in env
+        assert frame in env
+        assert "HAPAX_QUAKE_LIVE_TEXTURE_WIDTH=340" in env
+        assert "HAPAX_QUAKE_LIVE_TEXTURE_HEIGHT=340" in env
+        assert "HAPAX_QUAKE_LIVE_TEXTURE_FPS=6" in env
+        assert "HAPAX_QUAKE_LIVE_TEXTURE_INPUT_FPS=10" in env
+
 
 def test_darkplaces_xorg_launcher_disables_headless_screen_blanking() -> None:
     body = (SCRIPTS_DIR / "darkplaces-v4l2-xorg.sh").read_text(encoding="utf-8")
@@ -452,7 +486,7 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     assert "float EF_DOUBLESIDED = 32768;" in defs
     assert "float EF_ADDITIVE = 32;" in defs
     assert "float AOA_MODEL_SCALE = 1.0;" in defs
-    assert "float AOA_SPHERE_MODEL_SCALE = 0.45;" in defs
+    assert "float AOA_SPHERE_MODEL_SCALE = 1.0;" in defs
     assert "vector(vector v) vectoangles = #51;" in defs
     assert "ang = vectoangles(target - pos);" in camera
     assert 'if (cvar("screwm_camera_orbit") > 0)' in camera

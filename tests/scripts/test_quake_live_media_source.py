@@ -227,6 +227,23 @@ def test_exact_size_camera_filter_skips_scale_and_pad(tmp_path: Path) -> None:
     assert "format=bgra" in command_text
 
 
+def test_brio_ir_camera_roles_default_to_greyscale_endpoints() -> None:
+    module = _load_module()
+
+    expected = {
+        "brio-operator-ir": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_5342C819-video-index2",
+        "brio-room-ir": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_43B0576A-video-index2",
+        "brio-synths-ir": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index2",
+    }
+    for role, device in expected.items():
+        args = module["parse_args"](["--source", "camera", "--camera-role", role])
+
+        assert args.camera_device == device
+        assert args.camera_format == "gray"
+        assert args.camera_size == "340x340"
+        assert args.camera_fps == 10
+
+
 def test_youtube_url_file_accepts_video_id(tmp_path: Path) -> None:
     module = _load_module()
     url_file = tmp_path / "youtube-video-id.txt"

@@ -139,6 +139,7 @@ def test_csqc_source_anchors_carry_live_camera_scalars() -> None:
 
 
 def test_csqc_content_source_manifests_live_on_source_planes() -> None:
+    map_module = _load_script("scripts/generate-screwm-map.py")
     body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
 
     assert 'screwm_read_norm("data/content-source-count.txt")' in body
@@ -157,8 +158,9 @@ def test_csqc_content_source_manifests_live_on_source_planes() -> None:
     assert "fresh * 78 + opacity * 46 + area * 42" in body
     assert "screwm_content_source_count * 16" in body
     assert "void() screwm_add_media_source_signal_lights" in body
-    assert "screwm_add_content_source_light('-1580 -2140 290', 1" in body
-    assert "screwm_add_content_source_light('1580 -500 300', 6" in body
+    for idx, source in enumerate(map_module["SOURCE_ANCHORS"], start=1):
+        x, y, z = source["pos"]
+        assert f"screwm_add_content_source_light('{x} {y} {z}', {idx}" in body
 
 
 def test_csqc_aoa_panes_and_scroom_scene_graph_carry_live_lightfields() -> None:

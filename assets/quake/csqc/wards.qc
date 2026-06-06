@@ -1119,18 +1119,18 @@ void(vector org, float idx, vector color, float fresh, float opacity, float area
 
 void() screwm_add_media_source_signal_lights =
 {
-    screwm_add_source_light('-1580 -2140 290', 1, screwm_amber, screwm_source_priority_01, screwm_source_fresh_01);
-    screwm_add_source_light('-1580 -1320 190', 2, screwm_green, screwm_source_priority_02, screwm_source_fresh_02);
-    screwm_add_source_light('-1580 -500 300', 3, screwm_rose, screwm_source_priority_03, screwm_source_fresh_03);
-    screwm_add_source_light('1580 -2140 290', 4, screwm_cyan, screwm_source_priority_04, screwm_source_fresh_04);
-    screwm_add_source_light('1580 -1320 190', 5, screwm_green, screwm_source_priority_05, screwm_source_fresh_05);
-    screwm_add_source_light('1580 -500 300', 6, screwm_green, screwm_source_priority_06, screwm_source_fresh_06);
-    screwm_add_content_source_light('-1580 -2140 290', 1, screwm_cyan, screwm_content_fresh_01, screwm_content_opacity_01, screwm_content_area_01);
-    screwm_add_content_source_light('-1580 -1320 190', 2, screwm_green, screwm_content_fresh_02, screwm_content_opacity_02, screwm_content_area_02);
-    screwm_add_content_source_light('-1580 -500 300', 3, screwm_rose, screwm_content_fresh_03, screwm_content_opacity_03, screwm_content_area_03);
-    screwm_add_content_source_light('1580 -2140 290', 4, screwm_amber, screwm_content_fresh_04, screwm_content_opacity_04, screwm_content_area_04);
-    screwm_add_content_source_light('1580 -1320 190', 5, screwm_cyan, screwm_content_fresh_05, screwm_content_opacity_05, screwm_content_area_05);
-    screwm_add_content_source_light('1580 -500 300', 6, screwm_green, screwm_content_fresh_06, screwm_content_opacity_06, screwm_content_area_06);
+    screwm_add_source_light('-1580 -2030 420', 1, screwm_amber, screwm_source_priority_01, screwm_source_fresh_01);
+    screwm_add_source_light('-1580 -780 420', 2, screwm_green, screwm_source_priority_02, screwm_source_fresh_02);
+    screwm_add_source_light('-1580 470 420', 3, screwm_rose, screwm_source_priority_03, screwm_source_fresh_03);
+    screwm_add_source_light('1580 -2030 420', 4, screwm_cyan, screwm_source_priority_04, screwm_source_fresh_04);
+    screwm_add_source_light('1580 -780 420', 5, screwm_green, screwm_source_priority_05, screwm_source_fresh_05);
+    screwm_add_source_light('1580 470 420', 6, screwm_green, screwm_source_priority_06, screwm_source_fresh_06);
+    screwm_add_content_source_light('-1580 -2030 420', 1, screwm_cyan, screwm_content_fresh_01, screwm_content_opacity_01, screwm_content_area_01);
+    screwm_add_content_source_light('-1580 -780 420', 2, screwm_green, screwm_content_fresh_02, screwm_content_opacity_02, screwm_content_area_02);
+    screwm_add_content_source_light('-1580 470 420', 3, screwm_rose, screwm_content_fresh_03, screwm_content_opacity_03, screwm_content_area_03);
+    screwm_add_content_source_light('1580 -2030 420', 4, screwm_amber, screwm_content_fresh_04, screwm_content_opacity_04, screwm_content_area_04);
+    screwm_add_content_source_light('1580 -780 420', 5, screwm_cyan, screwm_content_fresh_05, screwm_content_opacity_05, screwm_content_area_05);
+    screwm_add_content_source_light('1580 470 420', 6, screwm_green, screwm_content_fresh_06, screwm_content_opacity_06, screwm_content_area_06);
 };
 
 void() screwm_add_aoa_pane_signal_lights =

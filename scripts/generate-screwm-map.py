@@ -1759,6 +1759,12 @@ def ward_mount_is_inherently_rectangular(mount):
     return mount.get("mount_kind") in WARD_RECTANGULAR_MOUNT_KINDS
 
 
+def ward_mount_is_live_atlas_receiver(mount):
+    if not mount or not WARD_ATLAS_MOUNT:
+        return False
+    return mount.get("texture") == WARD_ATLAS_MOUNT.get("texture")
+
+
 def ward_homage_receiver_metrics(w=None, h=None):
     receiver_w = max(WARD_PURPOSE_RECEIVER_MIN_WIDTH, int(w or WARD_PANE_W))
     receiver_h = max(WARD_PURPOSE_RECEIVER_MIN_HEIGHT, int(h or WARD_PANE_H))
@@ -2263,6 +2269,28 @@ def ward_review_panes(_preset):
             brushes.extend(
                 framed_garden_pane(
                     "ward-garden-pane",
+                    idx,
+                    anchor,
+                    tex,
+                    glow_tex,
+                    x,
+                    y,
+                    z,
+                    w,
+                    h,
+                    facing,
+                    texture_size,
+                    texture_transform,
+                    mount,
+                )
+            )
+        elif ward_mount_is_live_atlas_receiver(mount):
+            tex = mount["texture"]
+            texture_size = tuple(int(v) for v in mount["texture_size"])
+            texture_transform = mount.get("texture_transform")
+            brushes.extend(
+                framed_garden_pane(
+                    "ward-homage-receiver",
                     idx,
                     anchor,
                     tex,

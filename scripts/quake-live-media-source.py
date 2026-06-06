@@ -57,6 +57,24 @@ CAMERA_ROLE_DEFAULTS = {
         "fps": 10,
         "format": "mjpeg",
     },
+    "brio-operator-ir": {
+        "device": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_5342C819-video-index2",
+        "size": "340x340",
+        "fps": 10,
+        "format": "gray",
+    },
+    "brio-room-ir": {
+        "device": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_43B0576A-video-index2",
+        "size": "340x340",
+        "fps": 10,
+        "format": "gray",
+    },
+    "brio-synths-ir": {
+        "device": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index2",
+        "size": "340x340",
+        "fps": 10,
+        "format": "gray",
+    },
     "c920-desk": {
         "device": "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_2657DFCF-video-index0",
         "size": "1280x720",

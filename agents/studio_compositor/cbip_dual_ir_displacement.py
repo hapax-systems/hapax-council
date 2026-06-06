@@ -36,6 +36,26 @@ _HAPAX_HOME: Final[Path] = Path(os.environ.get("HAPAX_HOME", str(Path.home())))
 _DEFAULT_STATE_DIR: Final[Path] = _HAPAX_HOME / "hapax-state" / "pi-noir"
 DEFAULT_PRIMARY_STATE_PATH: Final[Path] = _DEFAULT_STATE_DIR / "cam_primary.json"
 DEFAULT_SECONDARY_STATE_PATH: Final[Path] = _DEFAULT_STATE_DIR / "cam_secondary.json"
+DEFAULT_BRIO_IR_FRAME_SOURCES: Final[tuple[dict[str, object], ...]] = (
+    {
+        "label": "brio-operator-ir",
+        "path": "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.raw.bgra",
+        "width": 340,
+        "height": 340,
+    },
+    {
+        "label": "brio-room-ir",
+        "path": "/dev/shm/hapax-compositor/quake-live-ir-brio-room.raw.bgra",
+        "width": 340,
+        "height": 340,
+    },
+    {
+        "label": "brio-synths-ir",
+        "path": "/dev/shm/hapax-compositor/quake-live-ir-brio-synths.raw.bgra",
+        "width": 340,
+        "height": 340,
+    },
+)
 
 DEFAULT_SYNC_TOLERANCE_S: Final[float] = 0.100
 DEFAULT_MAX_FRAME_AGE_S: Final[float] = 2.0
@@ -81,6 +101,16 @@ class IrStreamSnapshot:
         return _coerce_float(self.payload.get("ir_brightness"), default=0.0)
 
 
+@dataclass(frozen=True, slots=True)
+class IrFrameSource:
+    """Raw BGRA frame source produced by a local BRIO IR service."""
+
+    label: str
+    path: Path
+    width: int
+    height: int
+
+
 def _coerce_float(value: object, *, default: float) -> float:
     try:
         return float(value)
@@ -115,6 +145,29 @@ def _image_from_path(path: Path) -> Image.Image | None:
             return opened.convert("L")
     except (OSError, UnidentifiedImageError):
         return None
+
+
+def _image_from_bgra_path(path: Path, *, width: int, height: int) -> Image.Image | None:
+    expected = width * height * 4
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < expected:
+        return None
+    try:
+        frame = np.frombuffer(data[:expected], dtype=np.uint8).reshape((height, width, 4))
+    except ValueError:
+        return None
+    # The DarkPlaces live-texture producer ABI is BGRA. For GREY v4l2 inputs
+    # FFmpeg expands identical RGB channels, but use true luma so the reader is
+    # also correct if a future IR producer uses a tinted diagnostic overlay.
+    luma = (
+        frame[:, :, 0].astype(np.float32) * 0.114
+        + frame[:, :, 1].astype(np.float32) * 0.587
+        + frame[:, :, 2].astype(np.float32) * 0.299
+    ).astype(np.uint8)
+    return Image.fromarray(luma)
 
 
 def _extract_image(payload: dict[str, Any], *, base_dir: Path) -> Image.Image | None:
@@ -163,6 +216,44 @@ def _extract_image(payload: dict[str, Any], *, base_dir: Path) -> Image.Image | 
     return None
 
 
+def _parse_path(value: object) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return Path(value).expanduser()
+
+
+def _parse_dimension(value: object, *, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _parse_ir_frame_sources(raw: object) -> tuple[IrFrameSource, ...]:
+    entries = DEFAULT_BRIO_IR_FRAME_SOURCES if raw in (None, "") else raw
+    if not isinstance(entries, (list, tuple)):
+        return ()
+    parsed: list[IrFrameSource] = []
+    for index, entry in enumerate(entries, start=1):
+        if isinstance(entry, str):
+            path = _parse_path(entry)
+            label = Path(entry).stem if path is not None else f"ir-{index}"
+            width = 340
+            height = 340
+        elif isinstance(entry, dict):
+            path = _parse_path(entry.get("path", entry.get("frame_path")))
+            label = str(entry.get("label", entry.get("role", f"ir-{index}")))
+            width = _parse_dimension(entry.get("width", entry.get("w")), default=340)
+            height = _parse_dimension(entry.get("height", entry.get("h")), default=340)
+        else:
+            continue
+        if path is None:
+            continue
+        parsed.append(IrFrameSource(label=label, path=path, width=width, height=height))
+    return tuple(parsed)
+
+
 def _fit_luma(image: Image.Image, width: int, height: int) -> np.ndarray:
     fitted = ImageOps.fit(
         image.convert("L"),
@@ -170,7 +261,7 @@ def _fit_luma(image: Image.Image, width: int, height: int) -> np.ndarray:
         method=Image.Resampling.BILINEAR,
         centering=(0.5, 0.5),
     )
-    return np.asarray(fitted, dtype=np.uint8)
+    return np.asarray(ImageOps.autocontrast(fitted, cutoff=1), dtype=np.uint8)
 
 
 def _rgba_to_cairo_surface(rgba: np.ndarray) -> tuple[cairo.ImageSurface, np.ndarray]:
@@ -274,6 +365,7 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
         *,
         primary_path: Path | None = None,
         secondary_path: Path | None = None,
+        ir_frame_sources: object = None,
         mode: EffectMode | None = None,
         sync_tolerance_s: float = DEFAULT_SYNC_TOLERANCE_S,
         max_frame_age_s: float = DEFAULT_MAX_FRAME_AGE_S,
@@ -284,6 +376,7 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
         self.secondary_path = secondary_path or Path(
             os.environ.get("HAPAX_CBIP_DUAL_IR_SECONDARY_PATH", str(DEFAULT_SECONDARY_STATE_PATH))
         )
+        self.ir_frame_sources = _parse_ir_frame_sources(ir_frame_sources)
         self.mode: EffectMode = mode or _mode_from_env()
         self.sync_tolerance_s = sync_tolerance_s
         self.max_frame_age_s = max_frame_age_s
@@ -299,13 +392,52 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
     ) -> None:
         del state
         now = time.time()
+        frame_snapshots = [
+            self._read_frame_source(source, now=now) for source in self.ir_frame_sources
+        ]
+        live_frames = [
+            snapshot
+            for snapshot in frame_snapshots
+            if snapshot.fresh and snapshot.image is not None
+        ]
+        if len(live_frames) >= 2:
+            primary = live_frames[0]
+            secondary = live_frames[1]
+            self._paint_backdrop(cr, canvas_w, canvas_h, t)
+            self._paint_image_pair(primary.image, secondary.image, cr, canvas_w, canvas_h, t)
+            self._paint_frame_strip(cr, canvas_w, canvas_h, frame_snapshots)
+            status = "paired_live_ir"
+            self.last_status = self._status_payload(
+                status=status,
+                primary=primary,
+                secondary=secondary,
+                frame_snapshots=frame_snapshots,
+            )
+            self._paint_status_line(cr, canvas_w, canvas_h, primary, secondary, status)
+            return
+        if live_frames:
+            live = live_frames[0]
+            missing = next((snapshot for snapshot in frame_snapshots if not snapshot.fresh), live)
+            self._paint_backdrop(cr, canvas_w, canvas_h, t)
+            self._paint_single_fallback(cr, live, canvas_w, canvas_h, t)
+            self._paint_frame_strip(cr, canvas_w, canvas_h, frame_snapshots)
+            status = "single_live_ir_fallback"
+            self.last_status = self._status_payload(
+                status=status,
+                primary=live,
+                secondary=missing,
+                frame_snapshots=frame_snapshots,
+            )
+            self._paint_status_line(cr, canvas_w, canvas_h, live, missing, status)
+            return
+
         primary = self._read_snapshot(self.primary_path, label="primary", now=now)
         secondary = self._read_snapshot(self.secondary_path, label="secondary", now=now)
         synced = self._synced_pair(primary, secondary)
 
         self._paint_backdrop(cr, canvas_w, canvas_h, t)
         if synced and primary.image is not None and secondary.image is not None:
-            self._paint_image_pair(cr, primary.image, secondary.image, canvas_w, canvas_h, t)
+            self._paint_image_pair(primary.image, secondary.image, cr, canvas_w, canvas_h, t)
             status = "paired"
         elif synced:
             self._paint_procedural_pair(cr, primary, secondary, canvas_w, canvas_h, t)
@@ -318,7 +450,23 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
             self._paint_offline(cr, canvas_w, canvas_h)
             status = "offline"
 
-        self.last_status = {
+        self.last_status = self._status_payload(
+            status=status,
+            primary=primary,
+            secondary=secondary,
+            frame_snapshots=frame_snapshots,
+        )
+        self._paint_status_line(cr, canvas_w, canvas_h, primary, secondary, status)
+
+    def _status_payload(
+        self,
+        *,
+        status: str,
+        primary: IrStreamSnapshot,
+        secondary: IrStreamSnapshot,
+        frame_snapshots: list[IrStreamSnapshot],
+    ) -> dict[str, Any]:
+        return {
             "status": status,
             "mode": self.mode,
             "primary": primary.reason,
@@ -328,8 +476,57 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
                 if primary.fresh and secondary.fresh
                 else None
             ),
+            "ir_frames": {snapshot.label: snapshot.reason for snapshot in frame_snapshots},
+            "live_frame_roles": [
+                snapshot.label
+                for snapshot in frame_snapshots
+                if snapshot.fresh and snapshot.image is not None
+            ],
         }
-        self._paint_status_line(cr, canvas_w, canvas_h, primary, secondary, status)
+
+    def _read_frame_source(self, source: IrFrameSource, *, now: float) -> IrStreamSnapshot:
+        try:
+            stat = source.path.stat()
+        except OSError:
+            return IrStreamSnapshot(source.label, source.path, {}, 0.0, False, "missing_frame")
+
+        age = max(0.0, now - stat.st_mtime)
+        payload: dict[str, Any] = {
+            "role": source.label,
+            "frame_path": str(source.path),
+            "width": source.width,
+            "height": source.height,
+        }
+        if age > self.max_frame_age_s:
+            return IrStreamSnapshot(
+                source.label,
+                source.path,
+                payload,
+                stat.st_mtime,
+                False,
+                "stale_frame",
+            )
+
+        image = _image_from_bgra_path(source.path, width=source.width, height=source.height)
+        if image is None:
+            return IrStreamSnapshot(
+                source.label,
+                source.path,
+                payload,
+                stat.st_mtime,
+                False,
+                "malformed_frame",
+            )
+        payload["ir_brightness"] = float(np.asarray(image, dtype=np.uint8).mean())
+        return IrStreamSnapshot(
+            source.label,
+            source.path,
+            payload,
+            stat.st_mtime,
+            True,
+            "fresh_frame",
+            image=image,
+        )
 
     def _read_snapshot(self, path: Path, *, label: str, now: float) -> IrStreamSnapshot:
         try:
@@ -365,9 +562,9 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
 
     def _paint_image_pair(
         self,
-        cr: cairo.Context,
         primary: Image.Image,
         secondary: Image.Image,
+        cr: cairo.Context,
         canvas_w: int,
         canvas_h: int,
         t: float,
@@ -384,6 +581,42 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
         cr.save()
         cr.set_source_surface(surface, 0, 0)
         cr.paint_with_alpha(0.92)
+        cr.restore()
+
+    def _paint_frame_strip(
+        self,
+        cr: cairo.Context,
+        canvas_w: int,
+        canvas_h: int,
+        snapshots: list[IrStreamSnapshot],
+    ) -> None:
+        fresh = [
+            snapshot for snapshot in snapshots if snapshot.fresh and snapshot.image is not None
+        ]
+        if not fresh:
+            return
+        pad = max(6, canvas_h // 70)
+        preview_h = max(28, min(72, canvas_h // 5))
+        preview_w = preview_h
+        total_w = len(fresh) * preview_w + max(0, len(fresh) - 1) * pad
+        x = max(pad, canvas_w - total_w - pad)
+        y = pad
+        cr.save()
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.42)
+        cr.rectangle(x - pad, y - pad, total_w + pad * 2, preview_h + pad * 2)
+        cr.fill()
+        for snapshot in fresh:
+            assert snapshot.image is not None
+            luma = _fit_luma(snapshot.image, preview_w, preview_h)
+            alpha = np.full((preview_h, preview_w), 255, dtype=np.uint8)
+            rgba = np.dstack((luma, luma, luma, alpha))
+            surface, _owner = _rgba_to_cairo_surface(rgba)
+            cr.set_source_surface(surface, x, y)
+            cr.paint_with_alpha(0.86)
+            cr.set_source_rgba(0.27, 0.90, 1.0, 0.72)
+            cr.rectangle(x + 0.5, y + 0.5, preview_w - 1, preview_h - 1)
+            cr.stroke()
+            x += preview_w + pad
         cr.restore()
 
     def _paint_backdrop(self, cr: cairo.Context, canvas_w: int, canvas_h: int, t: float) -> None:
