@@ -105,6 +105,29 @@ CAMERA_ROLE_DEFAULTS = {
         "format": "mjpeg",
     },
 }
+RESERVED_IR_PROXY_BY_CAMERA_ROLE = {
+    "brio-operator": {
+        "role": "brio-operator-ir",
+        "raw_path": Path("/dev/shm/hapax-compositor/quake-live-ir-brio-operator.raw.bgra"),
+        "meta_path": Path("/dev/shm/hapax-compositor/quake-live-ir-brio-operator.raw.json"),
+        "width": 340,
+        "height": 340,
+    },
+    "brio-room": {
+        "role": "brio-room-ir",
+        "raw_path": Path("/dev/shm/hapax-compositor/quake-live-ir-brio-room.raw.bgra"),
+        "meta_path": Path("/dev/shm/hapax-compositor/quake-live-ir-brio-room.raw.json"),
+        "width": 340,
+        "height": 340,
+    },
+    "brio-synths": {
+        "role": "brio-synths-ir",
+        "raw_path": Path("/dev/shm/hapax-compositor/quake-live-ir-brio-synths.raw.bgra"),
+        "meta_path": Path("/dev/shm/hapax-compositor/quake-live-ir-brio-synths.raw.json"),
+        "width": 340,
+        "height": 340,
+    },
+}
 
 
 def _run_checked(args: list[str]) -> str:
@@ -470,6 +493,166 @@ def _parse_hex_color(value: str) -> tuple[int, int, int]:
     return int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16)
 
 
+def _reserved_ir_proxy_spec(args: argparse.Namespace) -> dict[str, object] | None:
+    if args.source != "camera" or not bool(getattr(args, "camera_reserved_for_ir", False)):
+        return None
+    spec = RESERVED_IR_PROXY_BY_CAMERA_ROLE.get(str(getattr(args, "camera_role", "")))
+    return dict(spec) if spec else None
+
+
+def _read_json(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _read_reserved_ir_proxy_frame(
+    args: argparse.Namespace,
+    spec: dict[str, object],
+) -> tuple[bytes | None, str]:
+    raw_path = Path(spec["raw_path"])
+    meta_path = Path(spec["meta_path"])
+    src_w = int(spec["width"])
+    src_h = int(spec["height"])
+    expected = src_w * src_h * 4
+    try:
+        raw_stat = raw_path.stat()
+        meta_stat = meta_path.stat()
+    except OSError as exc:
+        return None, f"proxy_source_unavailable:{type(exc).__name__}"
+    max_age_s = float(getattr(args, "camera_reserved_ir_proxy_max_age_s", 8.0))
+    age_s = time.time() - min(raw_stat.st_mtime, meta_stat.st_mtime)
+    if age_s > max_age_s:
+        return None, f"proxy_source_stale:{age_s:.1f}s>{max_age_s:.1f}s"
+    data = raw_path.read_bytes()
+    if len(data) != expected:
+        return None, f"proxy_source_size:{len(data)}/{expected}"
+    payload = _read_json(meta_path)
+    source_reason = str(payload.get("fallback_reason", "") or "")
+    if source_reason:
+        return data, f"proxy:{spec['role']}:{source_reason}"
+    return data, f"proxy:{spec['role']}"
+
+
+def _fit_bgra_nearest(
+    data: bytes,
+    *,
+    src_w: int,
+    src_h: int,
+    out_w: int,
+    out_h: int,
+    background: str,
+) -> bytes:
+    if src_w == out_w and src_h == out_h:
+        return data
+    import numpy as np
+
+    bg_r, bg_g, bg_b = _parse_hex_color(background)
+    src = np.frombuffer(data, dtype=np.uint8).reshape((src_h, src_w, 4))
+    dst = np.empty((out_h, out_w, 4), dtype=np.uint8)
+    dst[:, :] = (bg_b, bg_g, bg_r, 255)
+    scale = min(out_w / src_w, out_h / src_h)
+    target_w = max(1, min(out_w, int(round(src_w * scale))))
+    target_h = max(1, min(out_h, int(round(src_h * scale))))
+    x_idx = np.rint(np.linspace(0, src_w - 1, target_w)).astype(np.intp)
+    y_idx = np.rint(np.linspace(0, src_h - 1, target_h)).astype(np.intp)
+    scaled = src[y_idx][:, x_idx]
+    x0 = (out_w - target_w) // 2
+    y0 = (out_h - target_h) // 2
+    dst[y0 : y0 + target_h, x0 : x0 + target_w] = scaled
+    return dst.tobytes()
+
+
+def _surface_bgra_bytes(surface: object, width: int, height: int) -> bytes:
+    surface.flush()
+    stride = int(surface.get_stride())
+    row_bytes = width * 4
+    data = bytes(surface.get_data())
+    if stride == row_bytes:
+        return data[: row_bytes * height]
+    return b"".join(data[y * stride : y * stride + row_bytes] for y in range(height))
+
+
+def _camera_status_frame_bgra(
+    *,
+    width: int,
+    height: int,
+    title: str,
+    subtitle: str,
+    background: str,
+) -> bytes:
+    try:
+        import cairo
+
+        bg_r, bg_g, bg_b = _parse_hex_color(background)
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+        cr = cairo.Context(surface)
+        cr.set_source_rgb(bg_r / 255, bg_g / 255, bg_b / 255)
+        cr.paint()
+        grid_w = max(80, width // 8)
+        grid_h = max(45, height // 8)
+        cr.set_line_width(2)
+        cr.set_source_rgba(0.27, 0.90, 1.0, 0.27)
+        for x in range(0, width + 1, grid_w):
+            cr.move_to(x, 0)
+            cr.line_to(x, height)
+        for y in range(0, height + 1, grid_h):
+            cr.move_to(0, y)
+            cr.line_to(width, y)
+        cr.stroke()
+        cr.select_font_face("monospace", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+        title_size = max(24, min(width, height) // 14)
+        subtitle_size = max(16, title_size // 2)
+        cr.set_font_size(title_size)
+        title_extents = cr.text_extents(title)
+        cr.set_source_rgb(1.0, 0.69, 0.0)
+        cr.move_to((width - title_extents.width) / 2, height / 2 - title_size * 0.35)
+        cr.show_text(title)
+        cr.set_font_size(subtitle_size)
+        subtitle_extents = cr.text_extents(subtitle)
+        cr.set_source_rgb(0.27, 0.90, 1.0)
+        cr.move_to((width - subtitle_extents.width) / 2, height / 2 + subtitle_size * 1.2)
+        cr.show_text(subtitle)
+        return _surface_bgra_bytes(surface, width, height)
+    except Exception:  # noqa: BLE001 - last-resort status frame
+        import numpy as np
+
+        bg_r, bg_g, bg_b = _parse_hex_color(background)
+        frame = np.empty((height, width, 4), dtype=np.uint8)
+        frame[:, :] = (bg_b, bg_g, bg_r, 255)
+        frame[:: max(1, height // 12), :, :] = (255, 231, 68, 255)
+        frame[:, :: max(1, width // 16), :] = (255, 231, 68, 255)
+        return frame.tobytes()
+
+
+def _reserved_ir_proxy_output_frame(
+    args: argparse.Namespace,
+    spec: dict[str, object],
+) -> bytes:
+    data, reason = _read_reserved_ir_proxy_frame(args, spec)
+    if data is None:
+        args.fallback_reason = f"camera_reserved_for_ir:{reason}"
+        role = str(getattr(args, "camera_role", "camera") or "camera").replace("-", " ").upper()
+        return _camera_status_frame_bgra(
+            width=args.width,
+            height=args.height,
+            title=f"{role} IR UNAVAILABLE",
+            subtitle="WAITING FOR MATCHING IR FEED",
+            background=CAMERA_FALLBACK_BACKGROUND,
+        )
+    args.fallback_reason = f"camera_reserved_for_ir:{reason}"
+    return _fit_bgra_nearest(
+        data,
+        src_w=int(spec["width"]),
+        src_h=int(spec["height"]),
+        out_w=args.width,
+        out_h=args.height,
+        background=args.mask_background,
+    )
+
+
 def _apply_mask(data: bytes, width: int, height: int, mask: str, background: str) -> bytes:
     if mask == "none":
         return data
@@ -789,6 +972,69 @@ def _mark_camera_loop_failure(
         args.camera_forced_fallback_reason = loop_failure_reason
 
 
+def _stream_reserved_ir_proxy(
+    args: argparse.Namespace,
+    spec: dict[str, object],
+    *,
+    drift_renderer: MediaDriftRenderer,
+    drift_receiver: str,
+    raw_output: Path | None,
+    raw_meta: Path | None,
+) -> int:
+    frames = 0
+    stop = False
+    period = 1.0 / max(0.1, float(args.fps))
+    args.source_frame_width = int(spec["width"])
+    args.source_frame_height = int(spec["height"])
+
+    def _stop(_signum: int, _frame: object) -> None:
+        nonlocal stop
+        stop = True
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+
+    while not stop:
+        started = time.monotonic()
+        frames += 1
+        data = _reserved_ir_proxy_output_frame(args, spec)
+        data = _project_frame(data, args, args.width, args.height, frames)
+        should_write_meta = _metadata_write_due(
+            frames=frames,
+            loop_frames=frames,
+            fps=args.fps,
+        )
+        if raw_output is not None:
+            if should_write_meta:
+                args.drift_input_hash = _short_hash(data)
+                args.drift_output_hash = ""
+                args.drift_changed = False
+            _write_atomic(raw_output, data)
+            if should_write_meta and raw_meta is not None:
+                _write_meta(raw_meta, args, frames)
+        else:
+            drift_input_hash = _short_hash(data) if should_write_meta else ""
+            data = drift_renderer.apply(
+                data,
+                width=args.width,
+                height=args.height,
+                receiver=drift_receiver,
+                frame=frames,
+            )
+            if should_write_meta:
+                drift_output_hash = _short_hash(data)
+                args.drift_input_hash = drift_input_hash
+                args.drift_output_hash = drift_output_hash
+                args.drift_changed = drift_input_hash != drift_output_hash
+            _write_atomic(args.output, data)
+            if should_write_meta:
+                _write_meta(args.meta, args, frames)
+        elapsed = time.monotonic() - started
+        time.sleep(max(0.01, period - elapsed))
+    _write_meta(raw_meta if raw_meta is not None else args.meta, args, frames)
+    return 0
+
+
 def stream_frames(args: argparse.Namespace) -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     raw_output, raw_meta = _gpu_drift_paths(args.output) if args.gpu_drift else (None, None)
@@ -806,6 +1052,16 @@ def stream_frames(args: argparse.Namespace) -> int:
         intensity=float(getattr(args, "drift_intensity", 1.0)),
     )
     drift_receiver = _drift_receiver(args)
+    reserved_ir_proxy = _reserved_ir_proxy_spec(args)
+    if reserved_ir_proxy is not None:
+        return _stream_reserved_ir_proxy(
+            args,
+            reserved_ir_proxy,
+            drift_renderer=drift_renderer,
+            drift_receiver=drift_receiver,
+            raw_output=raw_output,
+            raw_meta=raw_meta,
+        )
     frames = 0
     stop = False
 
@@ -1035,9 +1291,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         default=_truthy(os.environ.get("HAPAX_QUAKE_CAMERA_RESERVED_FOR_IR", "")),
         help=(
-            "Publish a fresh reserve frame instead of opening this local RGB endpoint; "
-            "used when the same physical BRIO is owned by an IR ward producer."
+            "Publish the matching IR feed into this local BRIO camera texture instead of "
+            "opening the RGB endpoint; used when the same physical BRIO is owned by an "
+            "IR ward producer."
         ),
+    )
+    parser.add_argument(
+        "--camera-reserved-ir-proxy-max-age-s",
+        type=float,
+        default=float(os.environ.get("HAPAX_QUAKE_CAMERA_RESERVED_IR_PROXY_MAX_AGE_S", "8.0")),
+        help="Maximum age for a reserved BRIO's matching IR proxy raw frame and sidecar.",
     )
     args = parser.parse_args(argv)
     args.configured_url = args.url
