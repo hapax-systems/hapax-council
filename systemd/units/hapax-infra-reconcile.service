@@ -6,7 +6,7 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-ExecStart=%h/projects/hapax-council/scripts/hapax-infra-reconcile
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-infra-reconcile
 Nice=19
 StandardOutput=journal
 StandardError=journal
