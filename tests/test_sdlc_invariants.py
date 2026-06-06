@@ -217,6 +217,78 @@ class TestLoadLedgerTrace:
             path.unlink(missing_ok=True)
         assert r.holds, r.violations
 
+    def test_non_stage_event_without_to_stage_does_not_override_latest_stage(self):
+        iso_stage = "2026-05-25T00:00:00Z"
+        iso_event = "2026-06-02T00:00:00Z"
+        ref = datetime.fromisoformat(iso_event.replace("Z", "+00:00")).timestamp()
+        path = self._write(
+            [
+                {
+                    "kind": "stage_transition",
+                    "ts": iso_stage,
+                    "task_id": "released",
+                    "to_stage": "S7_RELEASE",
+                },
+                {
+                    "kind": "release_authorization",
+                    "ts": iso_event,
+                    "task_id": "released",
+                    "fields": ["release_authorized=true"],
+                },
+            ]
+        )
+        try:
+            trace = _load_ledger_trace(path)
+            r = check_inv2_liveness(trace, now=ref + 7 * 86400.0, stale_after_s=86400.0)
+        finally:
+            path.unlink(missing_ok=True)
+        assert len(trace) == 1
+        assert trace[0]["to_stage"] == "S7"
+        assert r.holds, r.violations
+
+    def test_non_stage_reoffer_event_with_status_like_to_stage_is_ignored(self):
+        iso_stage = "2026-06-02T00:00:00Z"
+        iso_event = "2026-06-03T00:00:00Z"
+        ref = datetime.fromisoformat(iso_stage.replace("Z", "+00:00")).timestamp()
+        path = self._write(
+            [
+                {
+                    "kind": "stage_transition",
+                    "ts": iso_stage,
+                    "task_id": "mid",
+                    "to_stage": "S6_IMPLEMENTATION",
+                },
+                {
+                    "kind": "lane_stalled_reoffer",
+                    "ts": iso_event,
+                    "task_id": "mid",
+                    "to_stage": "offered",
+                },
+            ]
+        )
+        try:
+            trace = _load_ledger_trace(path)
+            r = check_inv2_liveness(trace, now=ref + 7200.0, stale_after_s=3600)
+        finally:
+            path.unlink(missing_ok=True)
+        assert len(trace) == 1
+        assert trace[0]["to_stage"] == "S6"
+        assert not r.holds
+        assert any("mid:stuck:S6" in v for v in r.violations)
+        assert not any("unknown_stage:offered" in v for v in r.violations)
+
+    def test_malformed_blank_stage_transition_still_surfaces(self):
+        iso = "2026-06-02T00:00:00Z"
+        path = self._write([{"kind": "stage_transition", "ts": iso, "task_id": "bad"}])
+        try:
+            trace = _load_ledger_trace(path)
+            r = check_inv2_liveness(trace, now=1_000_000.0, stale_after_s=3600)
+        finally:
+            path.unlink(missing_ok=True)
+        assert len(trace) == 1
+        assert not r.holds
+        assert any("bad:unknown_stage:<blank>" in v for v in r.violations)
+
 
 # --- INV-4 / INV-5 build on Phase 3b policy_decide ----------------------------
 
