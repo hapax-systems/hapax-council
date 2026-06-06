@@ -399,7 +399,7 @@ def test_screwm_aoa_pause_keeps_expanded_aoa_inspectable_without_whiteout() -> N
 
     assert origin == (-320, -1780, 208)
     assert target == (module["AOA_X"], module["AOA_Y"], module["AOA_Z"])
-    assert 45 <= _visual_angle(aoa_width, origin, target) <= 60
+    assert 65 <= _visual_angle(aoa_width, origin, target) <= 72
     assert module["SCROOM_PATH_STONES"][4][2:4] == (-320, -1780)
 
 
@@ -1016,9 +1016,9 @@ def test_aoa_model_transform_stands_pyramid_upright_and_centers_media_front() ->
     assert max(edge_lengths) - min(edge_lengths) < 0.000001
     assert module["DEPTH"] == 4
     assert module["AOA_LEAF_FACE_EDGE_UNITS"] == 48
-    assert module["AOA_ITERATION_SCALE_MULTIPLIER"] == 1.69
+    assert module["AOA_ITERATION_SCALE_MULTIPLIER"] == 2.197
     assert module["BASE_SCALE"] == 768
-    assert math.isclose(module["SCALE"], 1297.92)
+    assert math.isclose(module["SCALE"], 1687.296)
     assert module["aoa_face_count"]() == 1024
 
     parts = module["compose_aoa_parts"](module["DEPTH"])

@@ -468,13 +468,13 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
     assert mounts["aoa-media-sphere"]["liveness_class"] == "live-public-media"
     assert mounts["aoa-media-sphere"]["mount_kind"] == "live-object-of-attention-sphere"
     assert mounts["aoa-media-sphere"]["hybrid_contract"]["memory_format"] == "BGRA8888"
-    assert mounts["aoa-media-sphere"]["target_visual_angle_deg"] == 39.9
-    assert mounts["aoa-media-sphere"]["target_visual_angle_deg_max"] == 41.0
+    assert mounts["aoa-media-sphere"]["target_visual_angle_deg"] == 50.5
+    assert mounts["aoa-media-sphere"]["target_visual_angle_deg_max"] == 52.0
     assert mounts["aoa-media-sphere"]["legibility_px_per_degree_floor"] == 40.0
     assert mounts["aoa-media-sphere"]["intended_view_distance"] == 730
-    assert mounts["aoa-media-sphere"]["computed_mount_width"] == 530
+    assert mounts["aoa-media-sphere"]["computed_mount_width"] == 689
     assert mounts["aoa-media-sphere"]["runtime_scale"] == 1.0
-    assert mounts["aoa-media-sphere"]["physical_radius"] == 265
+    assert mounts["aoa-media-sphere"]["physical_radius"] == 344.42
     assert mounts["aoa-media-sphere"]["enclosure"] == "aoa-tetrix-inner-volume"
     assert (
         mounts["aoa-media-sphere"]["fit_contract"] == "regular-tetrix-central-void-perfect-insphere"
@@ -486,8 +486,8 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
     assert mounts["aoa-media-sphere"]["inner_void_radius_fill_ratio"] == 1.0
     assert mounts["aoa-media-sphere"]["origin"] == [0, -555, 224]
     assert mounts["aoa-media-sphere"]["fractal_depth"] == 4
-    assert mounts["aoa-media-sphere"]["leaf_face_edge_units"] == 81.12
-    assert mounts["aoa-media-sphere"]["aoa_parent_edge_units"] == 1298
+    assert mounts["aoa-media-sphere"]["leaf_face_edge_units"] == 105.46
+    assert mounts["aoa-media-sphere"]["aoa_parent_edge_units"] == 1687
     assert mounts["aoa-media-sphere"]["fractal_face_count"] == 1024
     assert (
         "one triangular fractal face per atlas cell"
@@ -511,19 +511,17 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
     assert aoa_atlas["projection"] == "regular-tetrix-skinframe"
     assert aoa_atlas["source_aspect"] == [1, 1]
     assert aoa_atlas["gpu_drift_intensity"] == 2.25
-    assert aoa_atlas["target_visual_angle_deg"] == 83.1
-    assert aoa_atlas["target_visual_angle_deg_max"] == 85.0
+    assert aoa_atlas["target_visual_angle_deg"] == 98.1
+    assert aoa_atlas["target_visual_angle_deg_max"] == 100.0
     assert aoa_atlas["intended_view_distance"] == 732
-    assert aoa_atlas["computed_mount_width"] == 1298
+    assert aoa_atlas["computed_mount_width"] == 1687
     assert aoa_atlas["legibility_px_per_degree_floor"] == 20.0
     assert aoa_atlas["runtime_scale"] == 1.0
-    assert aoa_atlas["geometry_revision"] == (
-        "aoa-regular-tetrix-v6-expanded-iteration-perfect-fit-oarb"
-    )
+    assert aoa_atlas["geometry_revision"] == ("aoa-regular-tetrix-v7-30pct-larger-perfect-fit-oarb")
     assert aoa_atlas["fit_contract"] == "regular-tetrix-central-void-perfect-insphere"
     assert aoa_atlas["fractal_depth"] == 4
-    assert aoa_atlas["leaf_face_edge_units"] == 81.12
-    assert aoa_atlas["aoa_parent_edge_units"] == 1298
+    assert aoa_atlas["leaf_face_edge_units"] == 105.46
+    assert aoa_atlas["aoa_parent_edge_units"] == 1687
     assert aoa_atlas["fractal_face_count"] == 1024
     assert aoa_atlas["atlas_contract"] == "one-live-control-cell-per-rendered-fractal-face"
     assert aoa_atlas["face_operability_contract"] == (

@@ -41,6 +41,7 @@ SPHERE_FRONT_HEIGHT_RATIO = 1.0
 CAMERA_FALLBACK_BACKGROUND = "0c0b0d"
 LOW_LIGHT_IR_CAMERA_ROLES = frozenset(
     {
+        "brio-operator-ir",
         "brio-room-ir",
         "brio-synths-ir",
     }
