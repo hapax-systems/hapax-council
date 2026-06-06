@@ -64,6 +64,7 @@ SCROOM_GRID_BOUNDS = (
     ROOM_Y_MIN + SCROOM_GRID_MARGIN,
     ROOM_Y_MAX - SCROOM_GRID_MARGIN,
 )
+BOX_FACE_ORDER = ("min_x", "max_x", "min_y", "max_y", "bottom", "top")
 REVIEW_ALCOVE_Y_MIN = ROOM_Y_MIN
 REVIEW_WARD_Y = AOA_Y
 REVIEW_DRIFT_Y = AOA_Y - 45
@@ -1035,17 +1036,22 @@ def box_brush(
     texture_scale=(1, 1),
     texture_rotation=0,
     texture_shift=(0, 0),
+    face_textures=None,
 ):
     mn = [min(x1, x2), min(y1, y2), min(z1, z2)]
     mx = [max(x1, x2), max(y1, y2), max(z1, z2)]
     if mx[0] - mn[0] < 1 or mx[1] - mn[1] < 1 or mx[2] - mn[2] < 1:
         return None
+    if face_textures:
+        textures = [face_textures.get(face, tex) for face in BOX_FACE_ORDER]
+    else:
+        textures = [tex] * len(BOX_FACE_ORDER)
     planes = [
         fmt_plane(
             (mn[0], mn[1], mn[2]),
             (mn[0], mx[1], mn[2]),
             (mn[0], mn[1], mx[2]),
-            tex,
+            textures[0],
             texture_scale,
             texture_rotation,
             texture_shift,
@@ -1054,7 +1060,7 @@ def box_brush(
             (mx[0], mn[1], mn[2]),
             (mx[0], mn[1], mx[2]),
             (mx[0], mx[1], mn[2]),
-            tex,
+            textures[1],
             texture_scale,
             texture_rotation,
             texture_shift,
@@ -1063,7 +1069,7 @@ def box_brush(
             (mn[0], mn[1], mn[2]),
             (mn[0], mn[1], mx[2]),
             (mx[0], mn[1], mn[2]),
-            tex,
+            textures[2],
             texture_scale,
             texture_rotation,
             texture_shift,
@@ -1072,7 +1078,7 @@ def box_brush(
             (mn[0], mx[1], mn[2]),
             (mx[0], mx[1], mn[2]),
             (mn[0], mx[1], mx[2]),
-            tex,
+            textures[3],
             texture_scale,
             texture_rotation,
             texture_shift,
@@ -1081,7 +1087,7 @@ def box_brush(
             (mn[0], mn[1], mn[2]),
             (mx[0], mn[1], mn[2]),
             (mn[0], mx[1], mn[2]),
-            tex,
+            textures[4],
             texture_scale,
             texture_rotation,
             texture_shift,
@@ -1090,13 +1096,43 @@ def box_brush(
             (mn[0], mn[1], mx[2]),
             (mn[0], mx[1], mx[2]),
             (mx[0], mn[1], mx[2]),
-            tex,
+            textures[5],
             texture_scale,
             texture_rotation,
             texture_shift,
         ),
     ]
     return "{\n" + "\n".join(planes) + "\n}"
+
+
+def face_selective_box_brush(
+    x1,
+    y1,
+    z1,
+    x2,
+    y2,
+    z2,
+    tex,
+    display_face,
+    texture_scale=(1, 1),
+    texture_rotation=0,
+    texture_shift=(0, 0),
+):
+    face_textures = dict.fromkeys(BOX_FACE_ORDER, NO_DRAW_SHELL_TEX)
+    face_textures[display_face] = tex
+    return box_brush(
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        tex,
+        texture_scale=texture_scale,
+        texture_rotation=texture_rotation,
+        texture_shift=texture_shift,
+        face_textures=face_textures,
+    )
 
 
 def line_prism_brush(
@@ -1884,8 +1920,11 @@ def append_wall_grid_and_stipple(brushes):
     count = 0
 
     for z in horizontal_z:
-        for label, x1, x2 in (("left", left_x1, left_x2), ("right", right_x1, right_x2)):
-            beam = box_brush(
+        for label, x1, x2, face in (
+            ("left", left_x1, left_x2, "max_x"),
+            ("right", right_x1, right_x2, "min_x"),
+        ):
+            beam = face_selective_box_brush(
                 x1,
                 side_y_min,
                 z - WALL_GRID_LINE_WIDTH // 2,
@@ -1893,13 +1932,17 @@ def append_wall_grid_and_stipple(brushes):
                 side_y_max,
                 z + WALL_GRID_LINE_WIDTH // 2,
                 HEX_GRID_WALL_TEX,
+                face,
                 texture_scale=(8, 8),
             )
             if beam:
                 count += 1
                 brushes.append(f"// scroom-wall-grid-{label}-h {count:03d}\n{beam}")
-        for label, y1, y2 in (("entry", front_y1, front_y2), ("far", back_y1, back_y2)):
-            beam = box_brush(
+        for label, y1, y2, face in (
+            ("entry", front_y1, front_y2, "max_y"),
+            ("far", back_y1, back_y2, "min_y"),
+        ):
+            beam = face_selective_box_brush(
                 end_x_min,
                 y1,
                 z - WALL_GRID_LINE_WIDTH // 2,
@@ -1907,6 +1950,7 @@ def append_wall_grid_and_stipple(brushes):
                 y2,
                 z + WALL_GRID_LINE_WIDTH // 2,
                 HEX_GRID_WALL_TEX,
+                face,
                 texture_scale=(8, 8),
             )
             if beam:
@@ -1914,8 +1958,11 @@ def append_wall_grid_and_stipple(brushes):
                 brushes.append(f"// scroom-wall-grid-{label}-h {count:03d}\n{beam}")
 
     for y in side_y_lines:
-        for label, x1, x2 in (("left", left_x1, left_x2), ("right", right_x1, right_x2)):
-            beam = box_brush(
+        for label, x1, x2, face in (
+            ("left", left_x1, left_x2, "max_x"),
+            ("right", right_x1, right_x2, "min_x"),
+        ):
+            beam = face_selective_box_brush(
                 x1,
                 y - WALL_GRID_LINE_WIDTH // 2,
                 z_min,
@@ -1923,6 +1970,7 @@ def append_wall_grid_and_stipple(brushes):
                 y + WALL_GRID_LINE_WIDTH // 2,
                 z_max,
                 HEX_GRID_WALL_TEX,
+                face,
                 texture_scale=(8, 8),
             )
             if beam:
@@ -1930,8 +1978,11 @@ def append_wall_grid_and_stipple(brushes):
                 brushes.append(f"// scroom-wall-grid-{label}-v {count:03d}\n{beam}")
 
     for x in end_x_lines:
-        for label, y1, y2 in (("entry", front_y1, front_y2), ("far", back_y1, back_y2)):
-            beam = box_brush(
+        for label, y1, y2, face in (
+            ("entry", front_y1, front_y2, "max_y"),
+            ("far", back_y1, back_y2, "min_y"),
+        ):
+            beam = face_selective_box_brush(
                 x - WALL_GRID_LINE_WIDTH // 2,
                 y1,
                 z_min,
@@ -1939,6 +1990,7 @@ def append_wall_grid_and_stipple(brushes):
                 y2,
                 z_max,
                 HEX_GRID_WALL_TEX,
+                face,
                 texture_scale=(8, 8),
             )
             if beam:
@@ -1948,8 +2000,11 @@ def append_wall_grid_and_stipple(brushes):
     for idx in range(24):
         z = FLOOR_Z + 180 + (idx * 241) % max(1, CEIL_Z - FLOOR_Z - 360)
         y = side_y_min + (idx * 421) % max(1, side_y_max - side_y_min)
-        for label, x1, x2 in (("left", left_x1, left_x2), ("right", right_x1, right_x2)):
-            dot = box_brush(
+        for label, x1, x2, face in (
+            ("left", left_x1, left_x2, "max_x"),
+            ("right", right_x1, right_x2, "min_x"),
+        ):
+            dot = face_selective_box_brush(
                 x1,
                 y - WALL_STIPPLE_DOT_SIZE,
                 z - WALL_STIPPLE_DOT_SIZE,
@@ -1957,14 +2012,18 @@ def append_wall_grid_and_stipple(brushes):
                 y + WALL_STIPPLE_DOT_SIZE,
                 z + WALL_STIPPLE_DOT_SIZE,
                 STIPPLE_WALL_TEX,
+                face,
                 texture_scale=(8, 8),
             )
             if dot:
                 brushes.append(f"// scroom-wall-stipple-{label} {idx:02d}\n{dot}")
 
         x = end_x_min + (idx * 557) % max(1, end_x_max - end_x_min)
-        for label, y1, y2 in (("entry", front_y1, front_y2), ("far", back_y1, back_y2)):
-            dot = box_brush(
+        for label, y1, y2, face in (
+            ("entry", front_y1, front_y2, "max_y"),
+            ("far", back_y1, back_y2, "min_y"),
+        ):
+            dot = face_selective_box_brush(
                 x - WALL_STIPPLE_DOT_SIZE,
                 y1,
                 z - WALL_STIPPLE_DOT_SIZE,
@@ -1972,6 +2031,7 @@ def append_wall_grid_and_stipple(brushes):
                 y2,
                 z + WALL_STIPPLE_DOT_SIZE,
                 STIPPLE_WALL_TEX,
+                face,
                 texture_scale=(8, 8),
             )
             if dot:
@@ -2054,7 +2114,7 @@ def scroom_hex_grid_and_stipple(_preset):
             continue
         stipple_points.append((x, y))
     for idx, (x, y) in enumerate(stipple_points, start=1):
-        floor_dot = box_brush(
+        floor_dot = face_selective_box_brush(
             x - STIPPLE_DOT_SIZE,
             y - STIPPLE_DOT_SIZE,
             FLOOR_Z + 1,
@@ -2062,9 +2122,10 @@ def scroom_hex_grid_and_stipple(_preset):
             y + STIPPLE_DOT_SIZE,
             FLOOR_Z + 3,
             STIPPLE_FLOOR_TEX,
+            "top",
             texture_scale=(8, 8),
         )
-        ceil_dot = box_brush(
+        ceil_dot = face_selective_box_brush(
             x - STIPPLE_DOT_SIZE,
             y - STIPPLE_DOT_SIZE,
             CEIL_Z - 3,
@@ -2072,6 +2133,7 @@ def scroom_hex_grid_and_stipple(_preset):
             y + STIPPLE_DOT_SIZE,
             CEIL_Z - 1,
             STIPPLE_CEIL_TEX,
+            "bottom",
             texture_scale=(8, 8),
         )
         if floor_dot:
