@@ -42,6 +42,7 @@ HOST_NORM = {"podium": "hapax-podium", "appendix": "hapax-appendix"}
 # binds the witness (hostname + root serial) to the device rows.
 PROBE = r"""
 echo '===HOSTNAME==='; uname -n
+echo '===MACHINEID==='; cat /etc/machine-id 2>/dev/null || true
 echo '===LSBLK==='; lsblk -O -J 2>/dev/null || echo '{}'
 echo '===BYID==='; ls -l /dev/disk/by-id 2>/dev/null | awk '{print $9, $11}' || true
 echo '===PCINVME==='; (lspci -D -nn 2>/dev/null | grep -iE 'non-volatile|nvme') || true
@@ -174,6 +175,7 @@ def build_receipt(
     intent_host: str, exec_host: str, transport: str, sections: dict[str, str], rc: int
 ) -> dict:
     evidence_host = (sections.get("HOSTNAME", "") or "").strip() or None
+    machine_id = (sections.get("MACHINEID", "") or "").strip() or None
     devices = parse_lsblk(sections.get("LSBLK", ""))
     byid = parse_byid(sections.get("BYID", ""))
     for d in devices:
@@ -211,6 +213,7 @@ def build_receipt(
         },
         "evidence_witness": {
             "hostname": evidence_host,
+            "machine_id": machine_id,
             "root_disk_serial": root_serial,
             "captured_in_same_command": True,
             "anchor_verified": bool(anchor_ok),

@@ -78,6 +78,7 @@ class EvidenceWitness(BaseModel):
     than assumed away. ``hostname`` alone is not trusted as identity."""
 
     hostname: Hostname
+    machine_id: str | None = None
     root_disk_serial: str | None = None  # device-intrinsic anchor; non-secret
     ssh_host_key_fp: str | None = None  # public host-key fingerprint
     captured_in_same_command: bool = True
