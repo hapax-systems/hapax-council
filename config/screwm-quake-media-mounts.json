@@ -288,6 +288,8 @@
       "edge_faces": "hidden_or_zero_contrast",
       "stale_texture_style": "borderless_quiet_void",
       "size_policy": "source_aspect_legibility_distance_role",
+      "receiver_light_multiplier": 2.6,
+      "receiver_light_distance": 18,
       "drift_interaction": {
         "substance_role": "presence-instrument-ir-form",
         "owner": "hapax-compositor",
@@ -353,6 +355,8 @@
       "edge_faces": "hidden_or_zero_contrast",
       "stale_texture_style": "borderless_quiet_void",
       "size_policy": "source_aspect_legibility_distance_role",
+      "receiver_light_multiplier": 2.6,
+      "receiver_light_distance": 18,
       "drift_interaction": {
         "substance_role": "presence-instrument-ir-form",
         "owner": "hapax-compositor",
@@ -418,6 +422,8 @@
       "edge_faces": "hidden_or_zero_contrast",
       "stale_texture_style": "borderless_quiet_void",
       "size_policy": "source_aspect_legibility_distance_role",
+      "receiver_light_multiplier": 2.6,
+      "receiver_light_distance": 18,
       "drift_interaction": {
         "substance_role": "presence-instrument-ir-form",
         "owner": "hapax-compositor",

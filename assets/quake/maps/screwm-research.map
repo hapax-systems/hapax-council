@@ -5224,16 +5224,16 @@
 // ward-garden-light 18: brio-operator-ir
 {
 "classname" "light"
-"origin" "-1152 -1320 650"
-"light" "70"
+"origin" "-1162 -1320 650"
+"light" "182"
 "_color" "0.58 0.88 0.34"
 }
 
 // ward-garden-light 19: brio-room-ir
 {
 "classname" "light"
-"origin" "-1152 400 650"
-"light" "70"
+"origin" "-1162 400 650"
+"light" "182"
 "_color" "0.58 0.88 0.34"
 }
 
@@ -5360,8 +5360,8 @@
 // ward-garden-light 35: brio-synths-ir
 {
 "classname" "light"
-"origin" "-1152 -2240 1180"
-"light" "70"
+"origin" "-1162 -2240 1180"
+"light" "182"
 "_color" "0.58 0.88 0.34"
 }
 

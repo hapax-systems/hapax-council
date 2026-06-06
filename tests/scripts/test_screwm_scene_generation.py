@@ -166,6 +166,8 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
         assert mount["capture_resolution"] == [340, 340]
         assert mount["source_aspect"] == [1, 1]
         assert mount["physical_width"] == module["IR_CAMERA_WARD_TARGET_WIDTH"]
+        assert mount["receiver_light_multiplier"] == 2.6
+        assert mount["receiver_light_distance"] == 18
         assert expected_slot in mount["hybrid_contract"]["update_semantics"]
         assert abs(ward_position[0] - source_position[0]) <= 420
         assert abs(ward_position[1] - source_position[1]) <= 320
@@ -927,9 +929,12 @@ def test_live_media_textures_are_self_lit_information_surfaces() -> None:
     live_names = [
         "w05",
         "ward_atlas",
+        "w18",
+        "w19",
         "w09",
         "w22",
         "w27",
+        "w35",
         "cam_bop",
         "cam_brm",
         "cam_bsy",
@@ -957,6 +962,8 @@ def test_live_media_textures_are_self_lit_information_surfaces() -> None:
         assert "dpnoshadow" in block
         assert f"map {name}" in block
         assert "rgbgen const" in block
+        if name in {"w18", "w19", "w35"}:
+            assert "rgbgen const 1.0 1.0 1.0" in block
 
 
 def test_spatiotemporal_framework_makes_media_ethics_operational() -> None:
