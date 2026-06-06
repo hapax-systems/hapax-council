@@ -725,24 +725,15 @@ def test_brio_rgb_reserved_env_files_declare_ir_proxy_freshness() -> None:
         assert "proxying the matching BRIO IR feed" in text
 
 
-def test_brio_synths_ir_env_declares_truthful_rgb_substitute() -> None:
+def test_brio_synths_ir_env_uses_direct_greyscale_endpoint() -> None:
     text = (REPO_ROOT / "config" / "quake-live-cameras" / "brio-synths-ir.env").read_text()
 
-    assert "HAPAX_QUAKE_CAMERA_SUBSTITUTE_MODE=always" in text
     assert (
-        "HAPAX_QUAKE_CAMERA_SUBSTITUTE_RAW_PATH="
-        "/dev/shm/hapax-compositor/quake-live-cam-c920-desk.raw.bgra"
+        "HAPAX_QUAKE_CAMERA_DEVICE=/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index2"
     ) in text
-    assert (
-        "HAPAX_QUAKE_CAMERA_SUBSTITUTE_RAW_META="
-        "/dev/shm/hapax-compositor/quake-live-cam-c920-desk.raw.json"
-    ) in text
-    assert "HAPAX_QUAKE_CAMERA_SUBSTITUTE_RAW_SIZE=1280x720" in text
-    assert "HAPAX_QUAKE_CAMERA_SUBSTITUTE_RAW_ROLE=c920-desk" in text
-    assert (
-        "HAPAX_QUAKE_CAMERA_SUBSTITUTE_REASON=ir_endpoint_unavailable:c920_desk_rgb_substitute"
-    ) in text
-    assert "force the already-running c920-desk synths-area raw feed" in text
+    assert "HAPAX_QUAKE_CAMERA_FORMAT=gray" in text
+    assert "HAPAX_QUAKE_CAMERA_SIZE=340x340" in text
+    assert "HAPAX_QUAKE_CAMERA_SUBSTITUTE" not in text
 
 
 def test_brio_ir_camera_roles_default_to_greyscale_endpoints() -> None:

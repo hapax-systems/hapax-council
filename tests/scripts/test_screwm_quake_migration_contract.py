@@ -643,29 +643,7 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
         assert mount["hybrid_contract"]["quake_binding"] == f"BSP brush texture {texture}"
         assert slot_label in mount["hybrid_contract"]["update_semantics"]
         assert "hidden atlas proxies" in mount["drift_interaction"]["principle"]
-        if mount_id == "brio-synths-ir-ward":
-            substitute = mount["runtime_substitute"]
-            assert substitute["active"] is True
-            assert substitute["mode"] == "always"
-            assert (
-                substitute["configured_device"]
-                == "/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index2"
-            )
-            assert substitute["substitute_source_id"] == "c920-desk"
-            assert substitute["substitute_kind"] == "raw-bgra-camera"
-            assert (
-                substitute["substitute_raw_path"]
-                == "/dev/shm/hapax-compositor/quake-live-cam-c920-desk.raw.bgra"
-            )
-            assert (
-                substitute["substitute_raw_meta"]
-                == "/dev/shm/hapax-compositor/quake-live-cam-c920-desk.raw.json"
-            )
-            assert substitute["substitute_raw_size"] == [1280, 720]
-            assert substitute["reason"] == "ir_endpoint_unavailable:c920_desk_rgb_substitute"
-            assert "STREAMON/read probe" in substitute["restore_condition"]
-        else:
-            assert "runtime_substitute" not in mount
+        assert "runtime_substitute" not in mount
     for mount_id, texture in (
         ("grounding-provenance-ticker", "w09"),
         ("precedent-ticker", "w22"),
