@@ -100,8 +100,8 @@ WARD_ACTIVITY_EXPORTS: tuple[tuple[str, str], ...] = (
     ("15", "whos_here"),
     ("16", "durf"),
     ("17", "coding_session_reveal"),
-    ("18", "m8-display"),
-    ("19", "steamdeck-display"),
+    ("18", "brio-operator-ir"),
+    ("19", "brio-room-ir"),
     ("20", "egress_footer"),
     ("21", "programme_banner"),
     ("22", "precedent_ticker"),
@@ -117,7 +117,7 @@ WARD_ACTIVITY_EXPORTS: tuple[tuple[str, str], ...] = (
     ("32", "tufte_density"),
     ("33", "ascii_schematic"),
     ("34", "segment_content"),
-    ("35", "m8_oscilloscope"),
+    ("35", "brio-synths-ir"),
     ("36", "cbip_dual_ir_displacement"),
 )
 

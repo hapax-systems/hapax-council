@@ -56,8 +56,8 @@ WARD_IDS = [
     "whos_here",
     "durf",
     "coding_session_reveal",
-    "m8-display",
-    "steamdeck-display",
+    "brio-operator-ir",
+    "brio-room-ir",
     "egress_footer",
     "programme_banner",
     "precedent_ticker",
@@ -73,7 +73,7 @@ WARD_IDS = [
     "tufte_density",
     "ascii_schematic",
     "segment_content",
-    "m8_oscilloscope",
+    "brio-synths-ir",
     "cbip_dual_ir_displacement",
 ]
 
@@ -102,8 +102,8 @@ WARD_LABELS = {
     "whos_here": "WHO'S HERE",
     "durf": "DURF",
     "coding_session_reveal": "CODING",
-    "m8-display": "M8 DISPLAY",
-    "steamdeck-display": "STEAM DECK",
+    "brio-operator-ir": "BRIO OP IR",
+    "brio-room-ir": "BRIO ROOM IR",
     "egress_footer": "EGRESS",
     "programme_banner": "PROGRAMME",
     "precedent_ticker": "PRECEDENT",
@@ -119,7 +119,7 @@ WARD_LABELS = {
     "tufte_density": "TUFTE",
     "ascii_schematic": "ASCII",
     "segment_content": "SEGMENT",
-    "m8_oscilloscope": "M8 SCOPE",
+    "brio-synths-ir": "BRIO SYN IR",
     "cbip_dual_ir_displacement": "IR DUAL",
 }
 

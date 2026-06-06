@@ -1705,7 +1705,7 @@ def test_darkplaces_state_export_normalizes_all_in_scroom_ward_activity() -> Non
                 "activity_header",
                 "coding-session-reveal",
                 "programme-banner",
-                "m8-display",
+                "brio-operator-ir",
                 "cbip-dual-ir-displacement",
             ]
         }
@@ -1925,7 +1925,7 @@ def test_darkplaces_state_export_builds_aoa_pane_binding_scalars(tmp_path: Path)
                 "whos_here",
                 "durf",
                 "coding_session_reveal",
-                "m8-display",
+                "brio-operator-ir",
             ]
         },
     )

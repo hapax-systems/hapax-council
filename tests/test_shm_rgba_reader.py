@@ -51,6 +51,20 @@ class TestShmRgbaReaderHappyPath:
         second = reader.get_current_surface()
         assert first is second
 
+    def test_reads_legacy_media_source_width_height_frames_sidecar(self, tmp_path: Path):
+        path = tmp_path / "quake-live-ir-brio-operator.raw.bgra"
+        sidecar = tmp_path / "quake-live-ir-brio-operator.raw.json"
+        path.write_bytes(bytes([0xDD]) * (4 * 3 * 4))
+        sidecar.write_text(json.dumps({"width": 4, "height": 3, "frames": 11}))
+
+        reader = ShmRgbaReader(path, sidecar_path=sidecar)
+        surf = reader.get_current_surface()
+
+        assert surf is not None
+        assert surf.get_width() == 4
+        assert surf.get_height() == 3
+        assert reader.get_current_surface() is surf
+
     def test_max_age_returns_none_for_stale_frame(self, tmp_path: Path):
         path = _write_rgba_and_sidecar(tmp_path, w=4, h=3, fill=0xCC, frame_id=7)
         sidecar = path.with_suffix(".rgba.json")

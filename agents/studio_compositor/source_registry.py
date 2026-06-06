@@ -257,6 +257,7 @@ class SourceRegistry:
             shm_path = source.params.get("shm_path")
             if not shm_path:
                 raise UnknownBackendError(f"shm_rgba source {source.id}: missing params.shm_path")
+            sidecar_path = source.params.get("sidecar_path")
             # HOMAGE #124: the Reverie ``external_rgba`` slot is the
             # always-on generative substrate — its backend carries the
             # ``HomageSubstrateSource`` marker so the choreographer
@@ -283,6 +284,7 @@ class SourceRegistry:
             )
             return ShmRgbaReader(
                 Path(shm_path),
+                sidecar_path=Path(sidecar_path) if sidecar_path else None,
                 is_substrate=is_substrate,
                 max_age_s=max_age_s,
             )

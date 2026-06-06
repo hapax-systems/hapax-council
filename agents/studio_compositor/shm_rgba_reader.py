@@ -53,12 +53,17 @@ class ShmRgbaReader:
         self,
         path: Path,
         *,
+        sidecar_path: Path | None = None,
         is_substrate: bool = False,
         max_age_s: float | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._path = Path(path)
-        self._sidecar_path = self._path.with_suffix(self._path.suffix + ".json")
+        self._sidecar_path = (
+            Path(sidecar_path)
+            if sidecar_path is not None
+            else self._path.with_suffix(self._path.suffix + ".json")
+        )
         self._cached_surface: cairo.ImageSurface | None = None
         self._cached_frame_id: int | None = None
         self._max_age_s = max_age_s if max_age_s is None or max_age_s > 0 else None
@@ -182,14 +187,14 @@ class ShmRgbaReader:
             self._cached_frame_id = None
             return None
 
-        frame_id = meta.get("frame_id")
+        frame_id = meta.get("frame_id", meta.get("frames"))
         if frame_id == self._cached_frame_id and self._cached_surface is not None:
             return self._cached_surface
 
         try:
-            w = int(meta["w"])
-            h = int(meta["h"])
-            stride = int(meta["stride"])
+            w = int(meta.get("w", meta.get("width")))
+            h = int(meta.get("h", meta.get("height")))
+            stride = int(meta.get("stride", w * 4))
         except (KeyError, TypeError, ValueError):
             log.debug("ShmRgbaReader sidecar %s missing w/h/stride", self._sidecar_path)
             return None

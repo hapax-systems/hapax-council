@@ -77,6 +77,49 @@ def test_brio_rgb_reserved_for_ir_publishes_explicit_fresh_placeholder(tmp_path:
     assert args.fallback_reason == "camera_reserved_for_ir:same_physical_brio_ir_ward"
 
 
+def test_media_sidecar_includes_shm_rgba_reader_aliases(tmp_path: Path) -> None:
+    module = _load_module()
+    meta = tmp_path / "quake-live-ir-brio-operator.raw.json"
+    args = Namespace(
+        source="camera",
+        url="",
+        camera_role="brio-operator-ir",
+        camera_device="/dev/video-ir",
+        width=340,
+        height=340,
+        source_frame_width=340,
+        source_frame_height=340,
+        fps=6,
+        mask="none",
+        mask_background="0c0b0d",
+        projection="flat",
+        gpu_drift=True,
+        gpu_drift_raw_output=tmp_path / "quake-live-ir-brio-operator.raw.bgra",
+        output=tmp_path / "quake-live-ir-brio-operator.bgra",
+        gpu_projection_kind="",
+        youtube_gpu_decode=False,
+        youtube_gpu_decode_active=False,
+        youtube_gpu_decode_runtime_disabled=False,
+        drift="off",
+        drift_intensity=1.0,
+        drift_input_hash="abc",
+        drift_output_hash="",
+        drift_changed=False,
+        fallback_reason="",
+    )
+
+    module["_write_meta"](meta, args, frames=42)
+    payload = json.loads(meta.read_text(encoding="utf-8"))
+
+    assert payload["w"] == 340
+    assert payload["h"] == 340
+    assert payload["stride"] == 1360
+    assert payload["frame_id"] == 42
+    assert payload["width"] == 340
+    assert payload["height"] == 340
+    assert payload["frames"] == 42
+
+
 def test_frame_read_timeout_returns_none_for_silent_pipe() -> None:
     module = _load_module()
     read_fd, write_fd = os.pipe()
