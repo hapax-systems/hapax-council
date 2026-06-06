@@ -283,6 +283,67 @@ def test_ward_atlas_uses_idle_scaffold_for_transparent_activity_ward(
     assert _pixel_bgra(data, 256, 196, 100) == (0, 255, 0, 255)
 
 
+def test_ward_atlas_uses_generic_idle_scaffold_for_transparent_lore_ward(
+    tmp_path: Path,
+) -> None:
+    atlas = _load_atlas()
+    ward_id = "chronicle_ticker"
+    source = _transparent_surface(64, 32)
+    output = tmp_path / "atlas.bgra"
+    meta = tmp_path / "atlas.json"
+
+    observed, _errors = atlas.render_atlas(
+        output=output,
+        meta=meta,
+        layout_path=Path("/nonexistent-layout.json"),
+        width=256,
+        height=256,
+        columns=4,
+        cell_width=64,
+        cell_height=32,
+        frame_id=1,
+        backends={ward_id: _Registry(ward_id, source)},
+        errors={},
+    )
+
+    payload = json.loads(meta.read_text(encoding="utf-8"))
+    ward = observed[ward_id]
+    assert ward_id in atlas.GENERIC_ATLAS_IDLE_SCAFFOLD_WARDS
+    assert ward["status"] == "atlas-idle-scaffold"
+    assert ward["visibility_classification"] == "visible"
+    assert ward["visibility_reasons"] == []
+    assert ward["alpha_nonzero_ratio"] == 1.0
+    assert payload["visibility_summary"]["counts"]["visible"] == 1
+
+
+def test_ward_atlas_does_not_fake_unknown_transparent_ward(tmp_path: Path) -> None:
+    atlas = _load_atlas()
+    ward_id = "token_pole"
+    source = _transparent_surface(64, 32)
+    output = tmp_path / "atlas.bgra"
+    meta = tmp_path / "atlas.json"
+
+    observed, _errors = atlas.render_atlas(
+        output=output,
+        meta=meta,
+        layout_path=Path("/nonexistent-layout.json"),
+        width=64,
+        height=32,
+        columns=1,
+        cell_width=64,
+        cell_height=32,
+        frame_id=1,
+        backends={ward_id: _Registry(ward_id, source)},
+        errors={},
+    )
+
+    ward = observed[ward_id]
+    assert ward_id not in atlas.ATLAS_IDLE_SCAFFOLD_WARDS
+    assert ward["status"] == "rendered"
+    assert ward["visibility_classification"] == "weak-rendered"
+    assert "alpha_nonzero_ratio_below_floor" in ward["visibility_reasons"]
+
+
 def test_ward_atlas_applies_receiver_local_drift_before_write(tmp_path: Path) -> None:
     atlas = _load_atlas()
     ward_id = atlas.WARD_IDS[0]
