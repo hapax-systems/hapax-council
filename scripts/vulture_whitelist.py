@@ -4017,3 +4017,11 @@ legacy_reaper_stalled
 from shared.sdlc_lifecycle import is_active_blocked_with_evidence
 
 is_active_blocked_with_evidence
+
+# Host-provenance + storage receipts (infra-host-storage-formalization): Pydantic
+# invokes these @model_validator(mode="after") methods dynamically at
+# model_validate time; vulture cannot trace through the decorator.
+from shared.host_provenance import HostScopedClaim, StorageReceipt  # noqa: F401, E402
+
+HostScopedClaim._enforce_provenance
+StorageReceipt._transport_consistency
