@@ -516,6 +516,12 @@ def _load_ledger_trace(path: Path) -> list[dict[str, object]]:
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
+        kind = str(record.get("kind", "")).strip()
+        to_stage_raw = str(record.get("to_stage", "")).strip()
+        if kind and kind != "stage_transition":
+            continue
+        if not to_stage_raw and kind != "stage_transition":
+            continue
         # The producer (cc-stage-advance) keys the ISO timestamp "ts"; tolerate the
         # legacy "timestamp" key too. Reading the wrong key silently fell back to 0.0,
         # making every record look ~56 years stale (INV-2 false-positive — fixed here).
@@ -528,7 +534,7 @@ def _load_ledger_trace(path: Path) -> list[dict[str, object]]:
         trace.append(
             {
                 "task_id": str(record.get("case_id") or record.get("task_id") or ""),
-                "to_stage": _stage_token(str(record.get("to_stage", ""))),
+                "to_stage": _stage_token(to_stage_raw),
                 "timestamp": ts,
             }
         )
