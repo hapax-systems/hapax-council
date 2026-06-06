@@ -247,26 +247,173 @@ def _parse_size(value: str | None) -> tuple[int, int] | None:
     return width, height
 
 
-def _resolve_camera_visibility_profile(args: argparse.Namespace) -> str:
+def _resolve_camera_visibility_profile(
+    args: argparse.Namespace,
+    *,
+    profile: str | None = None,
+) -> str:
     if args.source != "camera":
         return "none"
-    profile = str(getattr(args, "camera_visibility_profile", "auto") or "auto").strip()
-    if profile == "auto":
-        profile = (
+    resolved = str(
+        profile
+        if profile is not None
+        else getattr(args, "camera_visibility_profile", "auto") or "auto"
+    ).strip()
+    if resolved == "auto":
+        resolved = (
             "brio-ir-low-light"
             if str(getattr(args, "camera_role", "")) in LOW_LIGHT_IR_CAMERA_ROLES
             else "none"
         )
-    if profile not in CAMERA_VISIBILITY_FILTERS:
+    if resolved not in CAMERA_VISIBILITY_FILTERS:
         known = ", ".join(sorted(["auto", *CAMERA_VISIBILITY_FILTERS]))
-        raise ValueError(f"unknown camera visibility profile {profile!r}; known profiles: {known}")
-    args.resolved_camera_visibility_profile = profile
-    return profile
+        raise ValueError(f"unknown camera visibility profile {resolved!r}; known profiles: {known}")
+    if profile is None:
+        args.resolved_camera_visibility_profile = resolved
+    return resolved
 
 
-def _camera_visibility_filters(args: argparse.Namespace) -> list[str]:
-    profile = _resolve_camera_visibility_profile(args)
-    return list(CAMERA_VISIBILITY_FILTERS[profile])
+def _camera_visibility_filters(
+    args: argparse.Namespace,
+    *,
+    profile: str | None = None,
+) -> list[str]:
+    resolved = _resolve_camera_visibility_profile(args, profile=profile)
+    return list(CAMERA_VISIBILITY_FILTERS[resolved])
+
+
+def _camera_filtergraph(
+    args: argparse.Namespace,
+    frame_width: int,
+    frame_height: int,
+    *,
+    input_size: str,
+    visibility_profile: str | None,
+) -> str:
+    filters = [f"fps={args.fps}"]
+    if _parse_size(input_size) != (frame_width, frame_height):
+        filters.extend(
+            [
+                (
+                    f"scale=w={frame_width}:h={frame_height}:"
+                    "force_original_aspect_ratio=decrease:flags=lanczos"
+                ),
+                f"pad={frame_width}:{frame_height}:(ow-iw)/2:(oh-ih)/2",
+            ]
+        )
+    filters.extend(_camera_visibility_filters(args, profile=visibility_profile))
+    filters.append("format=bgra")
+    return ",".join(filters)
+
+
+def _set_camera_runtime_capture(
+    args: argparse.Namespace,
+    *,
+    device: str,
+    camera_format: str,
+    size: str,
+    fps: int,
+    substitute: bool,
+    substitute_reason: str = "",
+) -> None:
+    args.camera_runtime_device = device
+    args.camera_runtime_format = camera_format
+    args.camera_runtime_size = size
+    args.camera_runtime_fps = fps
+    args.camera_runtime_substitute = substitute
+    args.camera_runtime_substitute_reason = substitute_reason if substitute else ""
+
+
+def _clear_camera_runtime_capture(args: argparse.Namespace) -> None:
+    _set_camera_runtime_capture(
+        args,
+        device=str(getattr(args, "camera_device", "") or ""),
+        camera_format=str(getattr(args, "camera_format", "") or ""),
+        size=str(getattr(args, "camera_size", "") or ""),
+        fps=int(getattr(args, "camera_fps", 0) or 0),
+        substitute=False,
+    )
+
+
+def _camera_substitute_reason(args: argparse.Namespace) -> str:
+    return str(
+        getattr(args, "camera_substitute_reason", "") or "camera_substitute_endpoint"
+    ).strip()
+
+
+def _camera_substitute_device(args: argparse.Namespace) -> str:
+    return str(getattr(args, "camera_substitute_device", "") or "").strip()
+
+
+def _camera_substitute_raw_path(args: argparse.Namespace) -> str:
+    return str(getattr(args, "camera_substitute_raw_path", "") or "").strip()
+
+
+def _camera_substitute_mode(args: argparse.Namespace) -> str:
+    mode = str(getattr(args, "camera_substitute_mode", "after-failure") or "after-failure")
+    if mode not in {"after-failure", "always"}:
+        raise ValueError(f"unknown camera substitute mode {mode!r}")
+    return mode
+
+
+def _camera_capture_command(
+    args: argparse.Namespace,
+    frame_width: int,
+    frame_height: int,
+    *,
+    base: list[str],
+    substitute: bool = False,
+    substitute_reason: str = "",
+) -> list[str]:
+    if substitute:
+        device = _camera_substitute_device(args)
+        camera_format = str(getattr(args, "camera_substitute_format", "") or args.camera_format)
+        camera_size = str(getattr(args, "camera_substitute_size", "") or args.camera_size)
+        camera_fps = int(getattr(args, "camera_substitute_fps", 0) or args.camera_fps)
+        visibility_profile = str(
+            getattr(args, "camera_substitute_visibility_profile", "") or "none"
+        )
+    else:
+        device = str(args.camera_device)
+        camera_format = str(args.camera_format)
+        camera_size = str(args.camera_size)
+        camera_fps = int(args.camera_fps)
+        visibility_profile = None
+    _set_camera_runtime_capture(
+        args,
+        device=device,
+        camera_format=camera_format,
+        size=camera_size,
+        fps=camera_fps,
+        substitute=substitute,
+        substitute_reason=substitute_reason,
+    )
+    return base + [
+        "-f",
+        "v4l2",
+        "-input_format",
+        camera_format,
+        "-video_size",
+        camera_size,
+        "-framerate",
+        str(camera_fps),
+        "-i",
+        device,
+        "-an",
+        "-vf",
+        _camera_filtergraph(
+            args,
+            frame_width,
+            frame_height,
+            input_size=camera_size,
+            visibility_profile=visibility_profile,
+        ),
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "bgra",
+        "-",
+    ]
 
 
 def _ffmpeg_command(args: argparse.Namespace, frame_width: int, frame_height: int) -> list[str]:
@@ -287,20 +434,7 @@ def _ffmpeg_command(args: argparse.Namespace, frame_width: int, frame_height: in
         filters.append("format=bgra")
         vf = ",".join(filters)
     elif args.source == "camera":
-        filters = [f"fps={args.fps}"]
-        if _parse_size(args.camera_size) != (frame_width, frame_height):
-            filters.extend(
-                [
-                    (
-                        f"scale=w={frame_width}:h={frame_height}:"
-                        "force_original_aspect_ratio=decrease:flags=lanczos"
-                    ),
-                    f"pad={frame_width}:{frame_height}:(ow-iw)/2:(oh-ih)/2",
-                ]
-            )
-        filters.extend(_camera_visibility_filters(args))
-        filters.append("format=bgra")
-        vf = ",".join(filters)
+        vf = ""
     else:
         vf = (
             f"fps={args.fps},"
@@ -361,10 +495,45 @@ def _ffmpeg_command(args: argparse.Namespace, frame_width: int, frame_height: in
             "-",
         ]
     if args.source == "camera":
+        _clear_camera_runtime_capture(args)
+        substitute_device = _camera_substitute_device(args)
+        if substitute_device and _camera_substitute_mode(args) == "always":
+            substitute_reason = _camera_substitute_reason(args)
+            if Path(substitute_device).exists():
+                args.fallback_reason = f"camera_substitute_forced:{substitute_reason}"
+                return _camera_capture_command(
+                    args,
+                    frame_width,
+                    frame_height,
+                    base=base,
+                    substitute=True,
+                    substitute_reason=substitute_reason,
+                )
+            args.fallback_reason = f"camera_substitute_device_missing:{substitute_device}"
+            args.camera_fallback_duration_s = max(2.0, float(args.restart_delay))
+            return _camera_fallback_command(args, frame_width, frame_height)
         forced_fallback_reason = str(getattr(args, "camera_forced_fallback_reason", "") or "")
         if forced_fallback_reason:
-            args.fallback_reason = forced_fallback_reason
             args.camera_forced_fallback_reason = ""
+            if substitute_device:
+                substitute_reason = _camera_substitute_reason(args)
+                if Path(substitute_device).exists():
+                    args.fallback_reason = (
+                        f"{forced_fallback_reason}:substitute:{substitute_reason}"
+                    )
+                    return _camera_capture_command(
+                        args,
+                        frame_width,
+                        frame_height,
+                        base=base,
+                        substitute=True,
+                        substitute_reason=substitute_reason,
+                    )
+                args.fallback_reason = (
+                    f"{forced_fallback_reason}:substitute_device_missing:{substitute_device}"
+                )
+            else:
+                args.fallback_reason = forced_fallback_reason
             args.camera_fallback_duration_s = max(2.0, float(args.restart_delay))
             return _camera_fallback_command(args, frame_width, frame_height)
         if bool(getattr(args, "camera_reserved_for_ir", False)):
@@ -374,26 +543,7 @@ def _ffmpeg_command(args: argparse.Namespace, frame_width: int, frame_height: in
             args.fallback_reason = f"camera_device_missing:{args.camera_device}"
             args.camera_fallback_duration_s = max(2.0, float(args.restart_delay))
             return _camera_fallback_command(args, frame_width, frame_height)
-        return base + [
-            "-f",
-            "v4l2",
-            "-input_format",
-            args.camera_format,
-            "-video_size",
-            args.camera_size,
-            "-framerate",
-            str(args.camera_fps),
-            "-i",
-            args.camera_device,
-            "-an",
-            "-vf",
-            vf,
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "bgra",
-            "-",
-        ]
+        return _camera_capture_command(args, frame_width, frame_height, base=base)
     return base + [
         "-f",
         "lavfi",
@@ -500,6 +650,27 @@ def _reserved_ir_proxy_spec(args: argparse.Namespace) -> dict[str, object] | Non
     return dict(spec) if spec else None
 
 
+def _camera_raw_substitute_spec(args: argparse.Namespace) -> dict[str, object] | None:
+    if args.source != "camera" or _camera_substitute_mode(args) != "always":
+        return None
+    raw_path_text = _camera_substitute_raw_path(args)
+    if not raw_path_text:
+        return None
+    raw_path = Path(raw_path_text)
+    meta_path_text = str(getattr(args, "camera_substitute_raw_meta", "") or "").strip()
+    raw_size = _parse_size(str(getattr(args, "camera_substitute_raw_size", "") or ""))
+    if raw_size is None:
+        raise ValueError("--camera-substitute-raw-size must be WIDTHxHEIGHT")
+    return {
+        "role": str(getattr(args, "camera_substitute_raw_role", "") or "raw-camera"),
+        "raw_path": raw_path,
+        "meta_path": Path(meta_path_text) if meta_path_text else raw_path.with_suffix(".json"),
+        "width": raw_size[0],
+        "height": raw_size[1],
+        "max_age_s": float(getattr(args, "camera_substitute_raw_max_age_s", 8.0)),
+    }
+
+
 def _read_json(path: Path) -> dict[str, object]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -534,6 +705,34 @@ def _read_reserved_ir_proxy_frame(
     if source_reason:
         return data, f"proxy:{spec['role']}:{source_reason}"
     return data, f"proxy:{spec['role']}"
+
+
+def _read_camera_raw_substitute_frame(
+    args: argparse.Namespace,
+    spec: dict[str, object],
+) -> tuple[bytes | None, str]:
+    raw_path = Path(spec["raw_path"])
+    meta_path = Path(spec["meta_path"])
+    src_w = int(spec["width"])
+    src_h = int(spec["height"])
+    expected = src_w * src_h * 4
+    try:
+        raw_stat = raw_path.stat()
+        meta_stat = meta_path.stat()
+    except OSError as exc:
+        return None, f"raw_source_unavailable:{type(exc).__name__}"
+    max_age_s = float(spec.get("max_age_s", 8.0))
+    age_s = time.time() - min(raw_stat.st_mtime, meta_stat.st_mtime)
+    if age_s > max_age_s:
+        return None, f"raw_source_stale:{age_s:.1f}s>{max_age_s:.1f}s"
+    data = raw_path.read_bytes()
+    if len(data) != expected:
+        return None, f"raw_source_size:{len(data)}/{expected}"
+    payload = _read_json(meta_path)
+    source_reason = str(payload.get("fallback_reason", "") or "")
+    if source_reason:
+        return data, f"raw:{spec['role']}:{source_reason}"
+    return data, f"raw:{spec['role']}"
 
 
 def _fit_bgra_nearest(
@@ -643,6 +842,42 @@ def _reserved_ir_proxy_output_frame(
             background=CAMERA_FALLBACK_BACKGROUND,
         )
     args.fallback_reason = f"camera_reserved_for_ir:{reason}"
+    return _fit_bgra_nearest(
+        data,
+        src_w=int(spec["width"]),
+        src_h=int(spec["height"]),
+        out_w=args.width,
+        out_h=args.height,
+        background=args.mask_background,
+    )
+
+
+def _camera_raw_substitute_output_frame(
+    args: argparse.Namespace,
+    spec: dict[str, object],
+) -> bytes:
+    substitute_reason = _camera_substitute_reason(args)
+    _set_camera_runtime_capture(
+        args,
+        device=str(spec["raw_path"]),
+        camera_format="raw-bgra",
+        size=f"{int(spec['width'])}x{int(spec['height'])}",
+        fps=int(getattr(args, "fps", 0) or 0),
+        substitute=True,
+        substitute_reason=substitute_reason,
+    )
+    data, reason = _read_camera_raw_substitute_frame(args, spec)
+    if data is None:
+        args.fallback_reason = f"camera_substitute_forced:{substitute_reason}:{reason}"
+        role = str(getattr(args, "camera_role", "camera") or "camera").replace("-", " ").upper()
+        return _camera_status_frame_bgra(
+            width=args.width,
+            height=args.height,
+            title=f"{role} SUBSTITUTE UNAVAILABLE",
+            subtitle="WAITING FOR LIVE SUBSTITUTE",
+            background=CAMERA_FALLBACK_BACKGROUND,
+        )
+    args.fallback_reason = f"camera_substitute_forced:{substitute_reason}:{reason}"
     return _fit_bgra_nearest(
         data,
         src_w=int(spec["width"]),
@@ -815,7 +1050,36 @@ def _write_meta(path: Path, args: argparse.Namespace, frames: int) -> None:
         "url_source": getattr(args, "url_source", "") if args.source == "youtube" else "",
         "url_file": str(getattr(args, "url_file", "")) if args.source == "youtube" else "",
         "camera_role": args.camera_role if args.source == "camera" else "",
-        "camera_device": args.camera_device if args.source == "camera" else "",
+        "camera_device": getattr(args, "camera_runtime_device", getattr(args, "camera_device", ""))
+        if args.source == "camera"
+        else "",
+        "camera_configured_device": getattr(args, "camera_device", "")
+        if args.source == "camera"
+        else "",
+        "camera_runtime_device": getattr(
+            args, "camera_runtime_device", getattr(args, "camera_device", "")
+        )
+        if args.source == "camera"
+        else "",
+        "camera_runtime_format": getattr(
+            args, "camera_runtime_format", getattr(args, "camera_format", "")
+        )
+        if args.source == "camera"
+        else "",
+        "camera_runtime_size": getattr(
+            args, "camera_runtime_size", getattr(args, "camera_size", "")
+        )
+        if args.source == "camera"
+        else "",
+        "camera_runtime_fps": getattr(args, "camera_runtime_fps", getattr(args, "camera_fps", ""))
+        if args.source == "camera"
+        else "",
+        "camera_runtime_substitute": bool(getattr(args, "camera_runtime_substitute", False))
+        if args.source == "camera"
+        else False,
+        "camera_runtime_substitute_reason": getattr(args, "camera_runtime_substitute_reason", "")
+        if args.source == "camera"
+        else "",
         "camera_visibility_profile": getattr(args, "camera_visibility_profile", "auto")
         if args.source == "camera"
         else "",
@@ -1035,6 +1299,69 @@ def _stream_reserved_ir_proxy(
     return 0
 
 
+def _stream_camera_raw_substitute(
+    args: argparse.Namespace,
+    spec: dict[str, object],
+    *,
+    drift_renderer: MediaDriftRenderer,
+    drift_receiver: str,
+    raw_output: Path | None,
+    raw_meta: Path | None,
+) -> int:
+    frames = 0
+    stop = False
+    period = 1.0 / max(0.1, float(args.fps))
+    args.source_frame_width = int(spec["width"])
+    args.source_frame_height = int(spec["height"])
+
+    def _stop(_signum: int, _frame: object) -> None:
+        nonlocal stop
+        stop = True
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+
+    while not stop:
+        started = time.monotonic()
+        frames += 1
+        data = _camera_raw_substitute_output_frame(args, spec)
+        data = _project_frame(data, args, args.width, args.height, frames)
+        should_write_meta = _metadata_write_due(
+            frames=frames,
+            loop_frames=frames,
+            fps=args.fps,
+        )
+        if raw_output is not None:
+            if should_write_meta:
+                args.drift_input_hash = _short_hash(data)
+                args.drift_output_hash = ""
+                args.drift_changed = False
+            _write_atomic(raw_output, data)
+            if should_write_meta and raw_meta is not None:
+                _write_meta(raw_meta, args, frames)
+        else:
+            drift_input_hash = _short_hash(data) if should_write_meta else ""
+            data = drift_renderer.apply(
+                data,
+                width=args.width,
+                height=args.height,
+                receiver=drift_receiver,
+                frame=frames,
+            )
+            if should_write_meta:
+                drift_output_hash = _short_hash(data)
+                args.drift_input_hash = drift_input_hash
+                args.drift_output_hash = drift_output_hash
+                args.drift_changed = drift_input_hash != drift_output_hash
+            _write_atomic(args.output, data)
+            if should_write_meta:
+                _write_meta(args.meta, args, frames)
+        elapsed = time.monotonic() - started
+        time.sleep(max(0.01, period - elapsed))
+    _write_meta(raw_meta if raw_meta is not None else args.meta, args, frames)
+    return 0
+
+
 def stream_frames(args: argparse.Namespace) -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     raw_output, raw_meta = _gpu_drift_paths(args.output) if args.gpu_drift else (None, None)
@@ -1052,6 +1379,16 @@ def stream_frames(args: argparse.Namespace) -> int:
         intensity=float(getattr(args, "drift_intensity", 1.0)),
     )
     drift_receiver = _drift_receiver(args)
+    camera_raw_substitute = _camera_raw_substitute_spec(args)
+    if camera_raw_substitute is not None:
+        return _stream_camera_raw_substitute(
+            args,
+            camera_raw_substitute,
+            drift_renderer=drift_renderer,
+            drift_receiver=drift_receiver,
+            raw_output=raw_output,
+            raw_meta=raw_meta,
+        )
     reserved_ir_proxy = _reserved_ir_proxy_spec(args)
     if reserved_ir_proxy is not None:
         return _stream_reserved_ir_proxy(
@@ -1278,6 +1615,81 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--camera-size", default=os.environ.get("HAPAX_QUAKE_CAMERA_SIZE"))
     parser.add_argument("--camera-fps", type=int, default=_int_env("HAPAX_QUAKE_CAMERA_FPS"))
     parser.add_argument(
+        "--camera-substitute-device",
+        default=os.environ.get("HAPAX_QUAKE_CAMERA_SUBSTITUTE_DEVICE", ""),
+        help=(
+            "Optional camera endpoint to use after the primary camera read loop fails. "
+            "The primary configured device remains authoritative and is retried on service restart."
+        ),
+    )
+    parser.add_argument(
+        "--camera-substitute-raw-path",
+        type=Path,
+        default=(
+            Path(os.environ["HAPAX_QUAKE_CAMERA_SUBSTITUTE_RAW_PATH"])
+            if os.environ.get("HAPAX_QUAKE_CAMERA_SUBSTITUTE_RAW_PATH")
+            else None
+        ),
+        help="Optional live BGRA raw frame to poll as a substitute instead of opening V4L.",
+    )
+    parser.add_argument(
+        "--camera-substitute-raw-meta",
+        type=Path,
+        default=(
+            Path(os.environ["HAPAX_QUAKE_CAMERA_SUBSTITUTE_RAW_META"])
+            if os.environ.get("HAPAX_QUAKE_CAMERA_SUBSTITUTE_RAW_META")
+            else None
+        ),
+    )
+    parser.add_argument(
+        "--camera-substitute-raw-size",
+        default=os.environ.get("HAPAX_QUAKE_CAMERA_SUBSTITUTE_RAW_SIZE", ""),
+    )
+    parser.add_argument(
+        "--camera-substitute-raw-role",
+        default=os.environ.get("HAPAX_QUAKE_CAMERA_SUBSTITUTE_RAW_ROLE", ""),
+    )
+    parser.add_argument(
+        "--camera-substitute-raw-max-age-s",
+        type=float,
+        default=float(os.environ.get("HAPAX_QUAKE_CAMERA_SUBSTITUTE_RAW_MAX_AGE_S", "8.0")),
+    )
+    parser.add_argument(
+        "--camera-substitute-format",
+        default=os.environ.get("HAPAX_QUAKE_CAMERA_SUBSTITUTE_FORMAT", ""),
+    )
+    parser.add_argument(
+        "--camera-substitute-size",
+        default=os.environ.get("HAPAX_QUAKE_CAMERA_SUBSTITUTE_SIZE", ""),
+    )
+    parser.add_argument(
+        "--camera-substitute-fps",
+        type=int,
+        default=_int_env("HAPAX_QUAKE_CAMERA_SUBSTITUTE_FPS"),
+    )
+    parser.add_argument(
+        "--camera-substitute-mode",
+        choices=("after-failure", "always"),
+        default=os.environ.get("HAPAX_QUAKE_CAMERA_SUBSTITUTE_MODE", "after-failure"),
+        help=(
+            "after-failure tries the configured camera first; always keeps the configured "
+            "camera in metadata but captures only from the substitute endpoint."
+        ),
+    )
+    parser.add_argument(
+        "--camera-substitute-visibility-profile",
+        choices=("auto", *CAMERA_VISIBILITY_FILTERS.keys()),
+        default=os.environ.get("HAPAX_QUAKE_CAMERA_SUBSTITUTE_VISIBILITY_PROFILE", "none"),
+        help="Visibility profile used for the substitute camera endpoint.",
+    )
+    parser.add_argument(
+        "--camera-substitute-reason",
+        default=os.environ.get(
+            "HAPAX_QUAKE_CAMERA_SUBSTITUTE_REASON", "camera_substitute_endpoint"
+        ),
+        help="Reason appended to fallback metadata when a substitute endpoint is active.",
+    )
+    parser.add_argument(
         "--camera-visibility-profile",
         choices=("auto", *CAMERA_VISIBILITY_FILTERS.keys()),
         default=os.environ.get("HAPAX_QUAKE_CAMERA_VISIBILITY_PROFILE", "auto"),
@@ -1332,6 +1744,15 @@ def _resolve_camera_defaults(args: argparse.Namespace) -> None:
     args.camera_format = args.camera_format or (defaults or {}).get("format") or "mjpeg"
     args.camera_size = args.camera_size or (defaults or {}).get("size") or "1280x720"
     args.camera_fps = args.camera_fps or int((defaults or {}).get("fps") or 30)
+    args.camera_substitute_device = str(getattr(args, "camera_substitute_device", "") or "").strip()
+    if args.camera_substitute_device:
+        args.camera_substitute_format = (
+            getattr(args, "camera_substitute_format", "") or args.camera_format
+        )
+        args.camera_substitute_size = (
+            getattr(args, "camera_substitute_size", "") or args.camera_size
+        )
+        args.camera_substitute_fps = getattr(args, "camera_substitute_fps", None) or args.camera_fps
 
 
 def main(argv: list[str]) -> int:
