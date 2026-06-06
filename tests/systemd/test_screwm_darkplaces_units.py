@@ -352,6 +352,8 @@ def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() ->
         assert frame in env
         assert "HAPAX_QUAKE_CAMERA_SIZE=1280x720" in env
         assert "HAPAX_QUAKE_CAMERA_FPS=10" in env
+        if role.startswith("brio-"):
+            assert "HAPAX_QUAKE_CAMERA_RESERVED_FOR_IR=1" in env
         assert "HAPAX_QUAKE_LIVE_TEXTURE_WIDTH=1280" in env
         assert "HAPAX_QUAKE_LIVE_TEXTURE_HEIGHT=720" in env
         assert "HAPAX_QUAKE_LIVE_TEXTURE_FPS=5" in env

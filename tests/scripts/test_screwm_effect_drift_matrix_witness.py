@@ -13,6 +13,13 @@ def _load_script() -> dict:
     return runpy.run_path(str(SCRIPT), run_name="__test_screwm_matrix__")
 
 
+def _load_map_generator() -> dict:
+    return runpy.run_path(
+        str(REPO_ROOT / "scripts" / "generate-screwm-map.py"),
+        run_name="__test_screwm_matrix_map__",
+    )
+
+
 def test_matrix_pairs_every_geometry_bound_row_with_existing_slotdrift_bank() -> None:
     module = _load_script()
     rows = module["MATRIX_ROWS"]
@@ -31,6 +38,31 @@ def test_matrix_pairs_every_geometry_bound_row_with_existing_slotdrift_bank() ->
     ]
     assert set(paired) <= set(banks)
     assert all(row.expected_cues for row in rows)
+
+
+def test_matrix_witness_pov_stations_match_generated_review_stations() -> None:
+    module = _load_script()
+    mapgen = _load_map_generator()
+
+    generated = {
+        name: (
+            tuple(float(value) for value in origin),
+            tuple(float(value) for value in target),
+        )
+        for name, origin, target in mapgen["GARDEN_CAMERA_STATIONS"]
+    }
+
+    for name, origin, target in module["POV_STATIONS"]:
+        assert generated[name] == (origin, target)
+
+    assert generated["left-media-window"] == (
+        (-600.0, -1300.0, 196.0),
+        (-1580.0, -780.0, 532.0),
+    )
+    assert generated["right-media-window"] == (
+        (600.0, -1300.0, 196.0),
+        (1580.0, -780.0, 532.0),
+    )
 
 
 def test_quiet_live_baseline_zeros_prior_effect_state() -> None:

@@ -14,6 +14,7 @@ import hashlib
 import json
 import math
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -215,6 +216,7 @@ def _parse_size(value: str | None) -> tuple[int, int] | None:
 
 def _ffmpeg_command(args: argparse.Namespace, frame_width: int, frame_height: int) -> list[str]:
     args.fallback_reason = ""
+    args.camera_fallback_duration_s = 0.0
     args.youtube_gpu_decode_active = False
     if args.projection == "sphere-front":
         filters = [
@@ -291,8 +293,18 @@ def _ffmpeg_command(args: argparse.Namespace, frame_width: int, frame_height: in
             "-",
         ]
     if args.source == "camera":
+        forced_fallback_reason = str(getattr(args, "camera_forced_fallback_reason", "") or "")
+        if forced_fallback_reason:
+            args.fallback_reason = forced_fallback_reason
+            args.camera_forced_fallback_reason = ""
+            args.camera_fallback_duration_s = max(2.0, float(args.restart_delay))
+            return _camera_fallback_command(args, frame_width, frame_height)
+        if bool(getattr(args, "camera_reserved_for_ir", False)):
+            args.fallback_reason = "camera_reserved_for_ir:same_physical_brio_ir_ward"
+            return _camera_fallback_command(args, frame_width, frame_height)
         if args.camera_device and not Path(args.camera_device).exists():
             args.fallback_reason = f"camera_device_missing:{args.camera_device}"
+            args.camera_fallback_duration_s = max(2.0, float(args.restart_delay))
             return _camera_fallback_command(args, frame_width, frame_height)
         return base + [
             "-f",
@@ -363,6 +375,12 @@ def _camera_fallback_command(
     frame_height: int,
 ) -> list[str]:
     role = (args.camera_role or "camera").replace("-", " ").upper()
+    reason = str(getattr(args, "fallback_reason", "") or "")
+    title = f"{role} OFFLINE"
+    subtitle = "WAITING FOR LIVE CAMERA"
+    if reason.startswith("camera_reserved_for_ir:"):
+        title = f"{role} RESERVED"
+        subtitle = "LOCAL RGB OFF; IR WARD OWNS BRIO"
     font_size = max(24, min(frame_width, frame_height) // 14)
     sub_font_size = max(16, font_size // 2)
     grid_w = max(80, frame_width // 8)
@@ -370,13 +388,13 @@ def _camera_fallback_command(
     lavfi = (
         f"color=c={CAMERA_FALLBACK_BACKGROUND}:s={frame_width}x{frame_height}:r={args.fps},"
         f"drawgrid=width={grid_w}:height={grid_h}:thickness=2:color=0x44e7ff44,"
-        f"drawtext=text='{role} OFFLINE':fontcolor=0xffb000:fontsize={font_size}:"
+        f"drawtext=text='{title}':fontcolor=0xffb000:fontsize={font_size}:"
         "x=(w-text_w)/2:y=(h-text_h)/2-36,"
-        f"drawtext=text='WAITING FOR LIVE CAMERA':fontcolor=0x44e7ff:fontsize={sub_font_size}:"
+        f"drawtext=text='{subtitle}':fontcolor=0x44e7ff:fontsize={sub_font_size}:"
         "x=(w-text_w)/2:y=(h-text_h)/2+36,"
         "format=bgra"
     )
-    return [
+    command = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
@@ -387,6 +405,11 @@ def _camera_fallback_command(
         "-re",
         "-i",
         lavfi,
+    ]
+    duration = float(getattr(args, "camera_fallback_duration_s", 0.0) or 0.0)
+    if duration > 0.0:
+        command += ["-t", f"{duration:.3f}"]
+    return command + [
         "-f",
         "rawvideo",
         "-pix_fmt",
@@ -601,6 +624,26 @@ def _write_meta(path: Path, args: argparse.Namespace, frames: int) -> None:
     _write_atomic(path, json.dumps(payload, sort_keys=True).encode("utf-8") + b"\n")
 
 
+def _read_exact_with_timeout(pipe: object, size: int, timeout_s: float) -> bytes | None:
+    chunks: list[bytes] = []
+    remaining = size
+    fd = pipe.fileno()
+    deadline = time.monotonic() + max(0.001, timeout_s)
+    while remaining > 0:
+        wait_s = deadline - time.monotonic()
+        if wait_s <= 0:
+            return None
+        ready, _, _ = select.select([fd], [], [], wait_s)
+        if not ready:
+            return None
+        chunk = os.read(fd, remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
 def _truthy(value: object) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
@@ -703,10 +746,22 @@ def stream_frames(args: argparse.Namespace) -> int:
     while not stop:
         command = _ffmpeg_command(args, frame_width, frame_height)
         loop_frames = 0
+        loop_failure_reason = ""
         with subprocess.Popen(command, stdout=subprocess.PIPE) as proc:
             assert proc.stdout is not None
             while not stop:
-                data = proc.stdout.read(frame_size)
+                data = _read_exact_with_timeout(
+                    proc.stdout,
+                    frame_size,
+                    float(getattr(args, "frame_read_timeout_s", 8.0)),
+                )
+                if data is None:
+                    loop_failure_reason = (
+                        f"camera_frame_timeout:{float(getattr(args, 'frame_read_timeout_s', 8.0)):.1f}s"
+                        if args.source == "camera"
+                        else "frame_read_timeout"
+                    )
+                    break
                 if len(data) != frame_size:
                     break
                 loop_frames += 1
@@ -748,6 +803,8 @@ def stream_frames(args: argparse.Namespace) -> int:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=3)
+        if args.source == "camera" and loop_frames == 0 and loop_failure_reason and not stop:
+            args.camera_forced_fallback_reason = loop_failure_reason
         if (
             args.source == "youtube"
             and bool(getattr(args, "youtube_gpu_decode_active", False))
@@ -875,11 +932,26 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--restart-delay", type=float, default=2.0)
+    parser.add_argument(
+        "--frame-read-timeout-s",
+        type=float,
+        default=float(os.environ.get("HAPAX_QUAKE_FRAME_READ_TIMEOUT_S", "8.0")),
+        help="Maximum seconds to wait for one raw frame before restarting the decoder.",
+    )
     parser.add_argument("--camera-role", default=os.environ.get("HAPAX_QUAKE_CAMERA_ROLE", ""))
     parser.add_argument("--camera-device", default=os.environ.get("HAPAX_QUAKE_CAMERA_DEVICE"))
     parser.add_argument("--camera-format", default=os.environ.get("HAPAX_QUAKE_CAMERA_FORMAT"))
     parser.add_argument("--camera-size", default=os.environ.get("HAPAX_QUAKE_CAMERA_SIZE"))
     parser.add_argument("--camera-fps", type=int, default=_int_env("HAPAX_QUAKE_CAMERA_FPS"))
+    parser.add_argument(
+        "--camera-reserved-for-ir",
+        action="store_true",
+        default=_truthy(os.environ.get("HAPAX_QUAKE_CAMERA_RESERVED_FOR_IR", "")),
+        help=(
+            "Publish a fresh reserve frame instead of opening this local RGB endpoint; "
+            "used when the same physical BRIO is owned by an IR ward producer."
+        ),
+    )
     args = parser.parse_args(argv)
     args.configured_url = args.url
     args.resolved_url = args.url

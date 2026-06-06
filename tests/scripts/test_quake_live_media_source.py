@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import runpy
 import subprocess
+import time
 from argparse import Namespace
 from pathlib import Path
 
@@ -30,6 +32,8 @@ def test_missing_camera_device_uses_explicit_offline_texture_fallback() -> None:
         projection="flat",
         mask="none",
         mask_background="0c0b0d",
+        camera_reserved_for_ir=False,
+        restart_delay=2.0,
         fallback_reason="",
     )
 
@@ -40,6 +44,49 @@ def test_missing_camera_device_uses_explicit_offline_texture_fallback() -> None:
     assert "C920 OVERHEAD OFFLINE" in command_text
     assert "WAITING FOR LIVE CAMERA" in command_text
     assert args.fallback_reason.startswith("camera_device_missing:")
+
+
+def test_brio_rgb_reserved_for_ir_publishes_explicit_fresh_placeholder(tmp_path: Path) -> None:
+    module = _load_module()
+    device = tmp_path / "video0"
+    device.write_bytes(b"")
+    args = Namespace(
+        source="camera",
+        camera_role="brio-room",
+        camera_device=str(device),
+        camera_format="mjpeg",
+        camera_size="1280x720",
+        camera_fps=10,
+        camera_reserved_for_ir=True,
+        fps=5,
+        width=1280,
+        height=720,
+        projection="flat",
+        mask="none",
+        mask_background="0c0b0d",
+        fallback_reason="",
+    )
+
+    command = module["_ffmpeg_command"](args, 1280, 720)
+    command_text = " ".join(command)
+
+    assert "-f lavfi" in command_text
+    assert "BRIO ROOM RESERVED" in command_text
+    assert "LOCAL RGB OFF; IR WARD OWNS BRIO" in command_text
+    assert str(device) not in command_text
+    assert args.fallback_reason == "camera_reserved_for_ir:same_physical_brio_ir_ward"
+
+
+def test_frame_read_timeout_returns_none_for_silent_pipe() -> None:
+    module = _load_module()
+    read_fd, write_fd = os.pipe()
+    try:
+        with os.fdopen(read_fd, "rb", buffering=0) as pipe:
+            started = time.monotonic()
+            assert module["_read_exact_with_timeout"](pipe, 4, 0.02) is None
+            assert time.monotonic() - started < 1.0
+    finally:
+        os.close(write_fd)
 
 
 def test_sphere_front_projection_uses_deterministic_oarb_sphere_fill() -> None:
@@ -242,6 +289,7 @@ def test_brio_ir_camera_roles_default_to_greyscale_endpoints() -> None:
         assert args.camera_format == "gray"
         assert args.camera_size == "340x340"
         assert args.camera_fps == 10
+        assert args.camera_reserved_for_ir is False
 
 
 def test_youtube_url_file_accepts_video_id(tmp_path: Path) -> None:
