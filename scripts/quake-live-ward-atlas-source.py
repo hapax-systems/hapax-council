@@ -84,6 +84,13 @@ DIRECT_TEXTURE_WARDS = {
     "reverie",
 }
 
+ATLAS_IDLE_SCAFFOLD_WARDS = frozenset(
+    {
+        "durf",
+        "coding_session_reveal",
+    }
+)
+
 WARD_LABELS = {
     "token_pole": "TOKEN POLE",
     "album": "ALBUM",
@@ -468,6 +475,38 @@ def _blit_surface_into_cell(
     cr.restore()
 
 
+def _surface_has_visible_alpha(surface: cairo.ImageSurface, *, min_alpha: int = 3) -> bool:
+    surface.flush()
+    width = max(0, int(surface.get_width()))
+    height = max(0, int(surface.get_height()))
+    stride = int(surface.get_stride())
+    data = bytes(surface.get_data())
+    row_bytes = width * 4
+    for row in range(height):
+        start = row * stride + 3
+        end = row * stride + row_bytes
+        if any(data[offset] > min_alpha for offset in range(start, end, 4)):
+            return True
+    return False
+
+
+def _atlas_idle_surface_from_backend(
+    backend: Any,
+    *,
+    ward_id: str,
+    width: int,
+    height: int,
+    t: float,
+) -> cairo.ImageSurface | None:
+    if ward_id not in ATLAS_IDLE_SCAFFOLD_WARDS:
+        return None
+    source = getattr(backend, "_source", None)
+    render_idle = getattr(source, "render_atlas_idle_surface", None)
+    if not callable(render_idle):
+        return None
+    return render_idle(width, height, t)
+
+
 def render_atlas(
     *,
     output: Path,
@@ -569,9 +608,22 @@ def render_atlas(
             observed[ward_id] = {"status": "fallback", "reason": errors.get(ward_id)}
             continue
 
+        status = "rendered"
+        if ward_id in ATLAS_IDLE_SCAFFOLD_WARDS and not _surface_has_visible_alpha(src):
+            idle_src = _atlas_idle_surface_from_backend(
+                backend,
+                ward_id=ward_id,
+                width=int(src.get_width()),
+                height=int(src.get_height()),
+                t=now,
+            )
+            if idle_src is not None:
+                src = idle_src
+                status = "atlas-idle-scaffold"
+
         _blit_surface_into_cell(cr, src, x=x, y=y, w=cell_width, h=cell_height)
         observed[ward_id] = {
-            "status": "rendered",
+            "status": status,
             "source_width": int(src.get_width()),
             "source_height": int(src.get_height()),
             "atlas_style": "borderless-no-grid",
