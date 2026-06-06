@@ -18,6 +18,11 @@ def _comment_block(content: str, marker: str) -> str:
     return content[start:] if end == -1 else content[start:end]
 
 
+def _brush_face_textures(content: str, marker: str) -> list[str]:
+    block = _comment_block(content, marker)
+    return [line.split()[15] for line in block.splitlines() if line.startswith("( ")]
+
+
 def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments() -> None:
     module = _load_script("scripts/generate-screwm-map.py")
     content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
@@ -274,6 +279,103 @@ def test_screwm_map_embeds_hex_alignment_substrate_without_filled_receiver_strip
     assert "drift_c" not in hex_section
     assert "drift_g" not in hex_section
     assert "drift_r" not in hex_section
+    skip = module["NO_DRAW_SHELL_TEX"]
+    assert _brush_face_textures(hex_section, "// scroom-hex-floor-line 001") == [
+        skip,
+        "hex_floor",
+        skip,
+        skip,
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-hex-ceiling-line 001") == [
+        "hex_ceil",
+        skip,
+        skip,
+        skip,
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-stipple-floor-dot 01") == [
+        skip,
+        skip,
+        skip,
+        skip,
+        skip,
+        "stipple_floor",
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-stipple-ceiling-dot 01") == [
+        skip,
+        skip,
+        skip,
+        skip,
+        "stipple_ceil",
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-wall-grid-left-h 001") == [
+        skip,
+        "hex_wall",
+        skip,
+        skip,
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-wall-grid-right-h 002") == [
+        "hex_wall",
+        skip,
+        skip,
+        skip,
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-wall-grid-entry-h 003") == [
+        skip,
+        skip,
+        skip,
+        "hex_wall",
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-wall-grid-far-h 004") == [
+        skip,
+        skip,
+        "hex_wall",
+        skip,
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-wall-stipple-left 00") == [
+        skip,
+        "stipple_wall",
+        skip,
+        skip,
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-wall-stipple-right 00") == [
+        "stipple_wall",
+        skip,
+        skip,
+        skip,
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-wall-stipple-entry 00") == [
+        skip,
+        skip,
+        skip,
+        "stipple_wall",
+        skip,
+        skip,
+    ]
+    assert _brush_face_textures(hex_section, "// scroom-wall-stipple-far 00") == [
+        skip,
+        skip,
+        "stipple_wall",
+        skip,
+        skip,
+        skip,
+    ]
 
 
 def test_screwm_room_textures_are_information_surfaces_not_identifiable_materials() -> None:
