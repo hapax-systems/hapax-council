@@ -689,19 +689,31 @@ def test_screwm_map_embeds_camera_source_constellation() -> None:
         content, "// source-garden-anchor 01: brio-operator cam_bop"
     )
     assert "cam_bop" in brio_operator_pane
-    assert "0.8 0.8" in brio_operator_pane
-    assert module["SOURCE_ANCHORS"][0]["w"] == 1024
-    assert module["SOURCE_ANCHORS"][0]["h"] == 576
-    assert module["SOURCE_ANCHORS"][0]["pos"] == (-1580, -2030, 420)
-    assert module["SOURCE_ANCHORS"][3]["w"] == 1024
-    assert module["SOURCE_ANCHORS"][3]["h"] == 576
-    assert module["SOURCE_ANCHORS"][3]["pos"] == (1580, -2030, 420)
-    for wall_sources in (module["SOURCE_ANCHORS"][:3], module["SOURCE_ANCHORS"][3:]):
-        y_centers = [source["pos"][1] for source in wall_sources]
-        assert min(abs(a - b) for a in y_centers for b in y_centers if a != b) > 1024
-        assert all(
-            source["pos"][2] - source["h"] // 2 > module["FLOOR_Z"] for source in wall_sources
-        )
+    assert "1.6 1.6" in brio_operator_pane
+    assert module["SOURCE_ANCHORS"][0]["w"] == 2048
+    assert module["SOURCE_ANCHORS"][0]["h"] == 1152
+    assert module["SOURCE_ANCHORS"][0]["pos"] == (-1580, -1510, 650)
+    assert module["SOURCE_ANCHORS"][2]["facing"] == "y"
+    assert module["SOURCE_ANCHORS"][2]["pos"] == (-1024, -2532, 1180)
+    assert module["SOURCE_ANCHORS"][3]["w"] == 2048
+    assert module["SOURCE_ANCHORS"][3]["h"] == 1152
+    assert module["SOURCE_ANCHORS"][3]["pos"] == (1580, -1510, 650)
+    assert module["SOURCE_ANCHORS"][5]["facing"] == "y"
+    assert module["SOURCE_ANCHORS"][5]["pos"] == (1024, -2532, 1180)
+    for source in module["SOURCE_ANCHORS"]:
+        x, y, z = source["pos"]
+        half_w = source["w"] // 2
+        half_h = source["h"] // 2
+        if source["facing"] == "x":
+            assert module["ROOM_Y_MIN"] <= y - half_w
+            assert y + half_w <= module["ROOM_Y_MAX"]
+        else:
+            assert -module["ROOM_X_EXT"] <= x - half_w
+            assert x + half_w <= module["ROOM_X_EXT"]
+            assert module["ROOM_Y_MIN"] < y - 1
+            assert y + 1 < module["ROOM_Y_MAX"]
+        assert module["FLOOR_Z"] < z - half_h
+        assert z + half_h < module["CEIL_Z"]
     assert module["SOURCE_ANCHORS"][0]["texture_size"] == (1280, 720)
     assert module["SOURCE_ANCHORS"][0]["texture_transform"] == {
         "u_sign": 1,
@@ -907,9 +919,9 @@ def test_aoa_model_transform_stands_pyramid_upright_and_centers_media_front() ->
     assert max(edge_lengths) - min(edge_lengths) < 0.000001
     assert module["DEPTH"] == 4
     assert module["AOA_LEAF_FACE_EDGE_UNITS"] == 48
-    assert module["AOA_ITERATION_SCALE_MULTIPLIER"] == 1.3
+    assert module["AOA_ITERATION_SCALE_MULTIPLIER"] == 1.69
     assert module["BASE_SCALE"] == 768
-    assert math.isclose(module["SCALE"], 998.4)
+    assert math.isclose(module["SCALE"], 1297.92)
     assert module["aoa_face_count"]() == 1024
 
     parts = module["compose_aoa_parts"](module["DEPTH"])

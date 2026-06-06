@@ -471,10 +471,10 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
     assert mounts["aoa-media-sphere"]["target_visual_angle_deg"] == 39.9
     assert mounts["aoa-media-sphere"]["target_visual_angle_deg_max"] == 41.0
     assert mounts["aoa-media-sphere"]["legibility_px_per_degree_floor"] == 40.0
-    assert mounts["aoa-media-sphere"]["intended_view_distance"] == 563
-    assert mounts["aoa-media-sphere"]["computed_mount_width"] == 408
+    assert mounts["aoa-media-sphere"]["intended_view_distance"] == 730
+    assert mounts["aoa-media-sphere"]["computed_mount_width"] == 530
     assert mounts["aoa-media-sphere"]["runtime_scale"] == 1.0
-    assert mounts["aoa-media-sphere"]["physical_radius"] == 204
+    assert mounts["aoa-media-sphere"]["physical_radius"] == 265
     assert mounts["aoa-media-sphere"]["enclosure"] == "aoa-tetrix-inner-volume"
     assert (
         mounts["aoa-media-sphere"]["fit_contract"] == "regular-tetrix-central-void-perfect-insphere"
@@ -486,8 +486,8 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
     assert mounts["aoa-media-sphere"]["inner_void_radius_fill_ratio"] == 1.0
     assert mounts["aoa-media-sphere"]["origin"] == [0, -555, 224]
     assert mounts["aoa-media-sphere"]["fractal_depth"] == 4
-    assert mounts["aoa-media-sphere"]["leaf_face_edge_units"] == 62.4
-    assert mounts["aoa-media-sphere"]["aoa_parent_edge_units"] == 998
+    assert mounts["aoa-media-sphere"]["leaf_face_edge_units"] == 81.12
+    assert mounts["aoa-media-sphere"]["aoa_parent_edge_units"] == 1298
     assert mounts["aoa-media-sphere"]["fractal_face_count"] == 1024
     assert (
         "one triangular fractal face per atlas cell"
@@ -513,17 +513,17 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
     assert aoa_atlas["gpu_drift_intensity"] == 2.25
     assert aoa_atlas["target_visual_angle_deg"] == 83.1
     assert aoa_atlas["target_visual_angle_deg_max"] == 85.0
-    assert aoa_atlas["intended_view_distance"] == 563
-    assert aoa_atlas["computed_mount_width"] == 998
+    assert aoa_atlas["intended_view_distance"] == 732
+    assert aoa_atlas["computed_mount_width"] == 1298
     assert aoa_atlas["legibility_px_per_degree_floor"] == 20.0
     assert aoa_atlas["runtime_scale"] == 1.0
     assert aoa_atlas["geometry_revision"] == (
-        "aoa-regular-tetrix-v5-iteration-scale-perfect-fit-oarb"
+        "aoa-regular-tetrix-v6-expanded-iteration-perfect-fit-oarb"
     )
     assert aoa_atlas["fit_contract"] == "regular-tetrix-central-void-perfect-insphere"
     assert aoa_atlas["fractal_depth"] == 4
-    assert aoa_atlas["leaf_face_edge_units"] == 62.4
-    assert aoa_atlas["aoa_parent_edge_units"] == 998
+    assert aoa_atlas["leaf_face_edge_units"] == 81.12
+    assert aoa_atlas["aoa_parent_edge_units"] == 1298
     assert aoa_atlas["fractal_face_count"] == 1024
     assert aoa_atlas["atlas_contract"] == "one-live-control-cell-per-rendered-fractal-face"
     assert aoa_atlas["face_operability_contract"] == (
@@ -577,11 +577,11 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
         assert mount["source_aspect"] == [16, 9]
         assert mount["texture_size"] == [1280, 720]
         assert mount["target_visual_angle_deg"] == 24.0
-        assert mount["intended_view_distance"] == 2409
+        assert mount["intended_view_distance"] == 4818
         assert mount["anti_parasocial_posture"] == "instrument-not-intimacy-billboard"
         assert mount["material_profile"] == "flat-live-camera-instrument"
-        assert mount["physical_width"] == 1024
-        assert mount["computed_mount_width"] == 1024
+        assert mount["physical_width"] == 2048
+        assert mount["computed_mount_width"] == 2048
         assert mount["texture"].startswith("cam_")
         assert mount["producer_output"].endswith(".bgra")
     for mount_id, texture in (

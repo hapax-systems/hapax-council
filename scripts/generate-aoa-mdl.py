@@ -14,10 +14,10 @@ import math
 import struct
 from pathlib import Path
 
-AOA_GEOMETRY_REVISION = "aoa-regular-tetrix-v5-iteration-scale-perfect-fit-oarb"
+AOA_GEOMETRY_REVISION = "aoa-regular-tetrix-v6-expanded-iteration-perfect-fit-oarb"
 DEPTH = 4
 AOA_LEAF_FACE_EDGE_UNITS = 48
-AOA_ITERATION_SCALE_MULTIPLIER = 1.3
+AOA_ITERATION_SCALE_MULTIPLIER = 1.69
 BASE_SCALE = AOA_LEAF_FACE_EDGE_UNITS * (2**DEPTH)
 SCALE = BASE_SCALE * AOA_ITERATION_SCALE_MULTIPLIER
 ATTENDANT_SPHERE_RADIUS = math.sqrt(6.0) / 12.0
