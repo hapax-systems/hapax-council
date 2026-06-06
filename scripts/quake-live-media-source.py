@@ -39,6 +39,16 @@ DEFAULT_MASK_BACKGROUND = "0c0b0d"
 DEFAULT_SPHERE_MEDIA_ASPECT = 16 / 9
 SPHERE_FRONT_HEIGHT_RATIO = 1.0
 CAMERA_FALLBACK_BACKGROUND = "0c0b0d"
+LOW_LIGHT_IR_CAMERA_ROLES = frozenset(
+    {
+        "brio-room-ir",
+        "brio-synths-ir",
+    }
+)
+CAMERA_VISIBILITY_FILTERS = {
+    "none": (),
+    "brio-ir-low-light": ("histeq=strength=0.30:intensity=0.20:antibanding=weak",),
+}
 CAMERA_ROLE_DEFAULTS = {
     "brio-operator": {
         "device": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_5342C819-video-index0",
@@ -214,6 +224,28 @@ def _parse_size(value: str | None) -> tuple[int, int] | None:
     return width, height
 
 
+def _resolve_camera_visibility_profile(args: argparse.Namespace) -> str:
+    if args.source != "camera":
+        return "none"
+    profile = str(getattr(args, "camera_visibility_profile", "auto") or "auto").strip()
+    if profile == "auto":
+        profile = (
+            "brio-ir-low-light"
+            if str(getattr(args, "camera_role", "")) in LOW_LIGHT_IR_CAMERA_ROLES
+            else "none"
+        )
+    if profile not in CAMERA_VISIBILITY_FILTERS:
+        known = ", ".join(sorted(["auto", *CAMERA_VISIBILITY_FILTERS]))
+        raise ValueError(f"unknown camera visibility profile {profile!r}; known profiles: {known}")
+    args.resolved_camera_visibility_profile = profile
+    return profile
+
+
+def _camera_visibility_filters(args: argparse.Namespace) -> list[str]:
+    profile = _resolve_camera_visibility_profile(args)
+    return list(CAMERA_VISIBILITY_FILTERS[profile])
+
+
 def _ffmpeg_command(args: argparse.Namespace, frame_width: int, frame_height: int) -> list[str]:
     args.fallback_reason = ""
     args.camera_fallback_duration_s = 0.0
@@ -231,8 +263,21 @@ def _ffmpeg_command(args: argparse.Namespace, frame_width: int, frame_height: in
             filters.append("hflip")
         filters.append("format=bgra")
         vf = ",".join(filters)
-    elif args.source == "camera" and _parse_size(args.camera_size) == (frame_width, frame_height):
-        vf = f"fps={args.fps},format=bgra"
+    elif args.source == "camera":
+        filters = [f"fps={args.fps}"]
+        if _parse_size(args.camera_size) != (frame_width, frame_height):
+            filters.extend(
+                [
+                    (
+                        f"scale=w={frame_width}:h={frame_height}:"
+                        "force_original_aspect_ratio=decrease:flags=lanczos"
+                    ),
+                    f"pad={frame_width}:{frame_height}:(ow-iw)/2:(oh-ih)/2",
+                ]
+            )
+        filters.extend(_camera_visibility_filters(args))
+        filters.append("format=bgra")
+        vf = ",".join(filters)
     else:
         vf = (
             f"fps={args.fps},"
@@ -575,6 +620,9 @@ def _write_atomic(path: Path, data: bytes) -> None:
 def _write_meta(path: Path, args: argparse.Namespace, frames: int) -> None:
     gpu_drift = bool(getattr(args, "gpu_drift", False))
     gpu_projection_kind = str(getattr(args, "gpu_projection_kind", "") or "")
+    camera_visibility_profile = (
+        _resolve_camera_visibility_profile(args) if args.source == "camera" else "none"
+    )
     payload = {
         "source": args.source,
         "url": getattr(args, "resolved_url", args.url) if args.source == "youtube" else "",
@@ -585,6 +633,12 @@ def _write_meta(path: Path, args: argparse.Namespace, frames: int) -> None:
         "url_file": str(getattr(args, "url_file", "")) if args.source == "youtube" else "",
         "camera_role": args.camera_role if args.source == "camera" else "",
         "camera_device": args.camera_device if args.source == "camera" else "",
+        "camera_visibility_profile": getattr(args, "camera_visibility_profile", "auto")
+        if args.source == "camera"
+        else "",
+        "resolved_camera_visibility_profile": camera_visibility_profile
+        if args.source == "camera"
+        else "",
         "w": args.width,
         "h": args.height,
         "stride": args.width * 4,
@@ -947,6 +1001,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--camera-format", default=os.environ.get("HAPAX_QUAKE_CAMERA_FORMAT"))
     parser.add_argument("--camera-size", default=os.environ.get("HAPAX_QUAKE_CAMERA_SIZE"))
     parser.add_argument("--camera-fps", type=int, default=_int_env("HAPAX_QUAKE_CAMERA_FPS"))
+    parser.add_argument(
+        "--camera-visibility-profile",
+        choices=("auto", *CAMERA_VISIBILITY_FILTERS.keys()),
+        default=os.environ.get("HAPAX_QUAKE_CAMERA_VISIBILITY_PROFILE", "auto"),
+        help=(
+            "Source-preserving visibility profile before BGRA output. "
+            "auto applies the low-light BRIO IR profile only to declared dark IR wards."
+        ),
+    )
     parser.add_argument(
         "--camera-reserved-for-ir",
         action="store_true",
