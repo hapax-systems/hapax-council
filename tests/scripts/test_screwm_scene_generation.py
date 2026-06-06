@@ -129,15 +129,34 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
         station_origin, station_target = ir_stations[station_name]
         width, height = module["ward_pane_dimensions"](idx)
         mount = module["ward_live_mount_contract"](idx, ward_anchor)
+        expected_texture = {18: "w18", 19: "w19", 35: "w35"}[idx]
+        expected_output = {
+            18: "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.bgra",
+            19: "/dev/shm/hapax-compositor/quake-live-ir-brio-room.bgra",
+            35: "/dev/shm/hapax-compositor/quake-live-ir-brio-synths.bgra",
+        }[idx]
+        expected_slot = {18: "slot 15", 19: "slot 16", 35: "slot 17"}[idx]
 
         assert module["WARD_ANCHORS"][idx - 1] == ward_anchor
         assert ward_position == expected_position
         assert station_target == expected_position
         assert width == height == module["IR_CAMERA_WARD_TARGET_WIDTH"]
         assert _visual_angle(width, station_origin, station_target) >= 50
-        assert mount["texture"] == "ward_atlas"
+        assert mount["id"] == f"{ward_anchor}-ward"
+        assert mount["role"] == "state-ward"
+        assert mount["mount_kind"] == "live-camera-instrument"
+        assert mount["texture"] == expected_texture
+        assert mount["producer_output"] == expected_output
+        assert mount["producer_kind"] == "live-camera-ir"
         assert mount["source_id"] == ward_anchor
-        assert mount["purpose"] == f"{ward_anchor} compositor-authored live ward surface"
+        assert mount["liveness_class"] == "live-local-ir-camera"
+        assert mount["native_resolution"] == [340, 340]
+        assert mount["texture_size"] == [340, 340]
+        assert mount["capture_format"] == "gray"
+        assert mount["capture_resolution"] == [340, 340]
+        assert mount["source_aspect"] == [1, 1]
+        assert mount["physical_width"] == module["IR_CAMERA_WARD_TARGET_WIDTH"]
+        assert expected_slot in mount["hybrid_contract"]["update_semantics"]
         assert abs(ward_position[0] - source_position[0]) <= 420
         assert abs(ward_position[1] - source_position[1]) <= 320
         assert abs(ward_position[2] - source_position[2]) <= 40
@@ -244,15 +263,17 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert content.count("// ward-drift ") == 0
     assert "w01" not in content
     assert "// ward-garden-pane 09: grounding_provenance_ticker w09" in content
+    assert "// ward-garden-pane 18: brio-operator-ir w18" in content
+    assert "// ward-garden-pane 19: brio-room-ir w19" in content
     assert "// ward-garden-pane 22: precedent_ticker w22" in content
     assert "// ward-garden-pane 27: chronicle_ticker w27" in content
-    assert "w35" not in content
+    assert "// ward-garden-pane 35: brio-synths-ir w35" in content
     assert "// ward-homage-receiver 02: album ward_atlas" in content
     assert "// ward-garden-pane 02: album ward_atlas" not in content
     assert "// ward-homage-receiver 01: token_pole ward_atlas" in content
-    assert "// ward-homage-receiver 18: brio-operator-ir ward_atlas" in content
-    assert "// ward-homage-receiver 19: brio-room-ir ward_atlas" in content
-    assert "// ward-homage-receiver 35: brio-synths-ir ward_atlas" in content
+    assert "// ward-homage-receiver 18: brio-operator-ir ward_atlas" not in content
+    assert "// ward-homage-receiver 19: brio-room-ir ward_atlas" not in content
+    assert "// ward-homage-receiver 35: brio-synths-ir ward_atlas" not in content
     before_receivers, receiver_tail = content.split("// section: scroom-drift-receiver-strips")
     _receivers, after_receivers = receiver_tail.split("// section: scroom-local-effect-lenses")
     non_receiver_content = before_receivers + after_receivers
@@ -287,6 +308,9 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert module["ward_live_mount_contract"](2, "album")["texture"] == "ward_atlas"
     assert module["ward_live_mount_contract"](2, "album")["atlas_cell"] == [1, 0]
     assert module["ward_live_mount_contract"](5, "reverie")["texture"] == "w05"
+    assert module["ward_live_mount_contract"](18, "brio-operator-ir")["texture"] == "w18"
+    assert module["ward_live_mount_contract"](19, "brio-room-ir")["texture"] == "w19"
+    assert module["ward_live_mount_contract"](35, "brio-synths-ir")["texture"] == "w35"
     assert module["ward_garden_facing"](5) == "y"
     assert module["ward_live_mount_contract"](8, "gem")["texture"] == "ward_atlas"
     assert module["ward_atlas_cell"](1) == (0, 0)
@@ -1076,8 +1100,8 @@ def test_screwm_wad_defines_only_declared_live_ward_receiver_textures() -> None:
     textures = module["TEXTURES"]
 
     ward_textures = [name for name in textures if name.startswith("w") and name[1:].isdigit()]
-    assert ward_textures == ["w05", "w09", "w22", "w27"]
-    assert module["ACTIVE_WARD_TEXTURES"] == {"w05", "w09", "w22", "w27"}
+    assert ward_textures == ["w05", "w09", "w18", "w19", "w22", "w27", "w35"]
+    assert module["ACTIVE_WARD_TEXTURES"] == {"w05", "w09", "w18", "w19", "w22", "w27", "w35"}
     assert module["generate_pixel_data"].__defaults__[1] == "void_substrate"
     assert textures["ward_atlas"]["pattern"] == "live_media"
     assert textures["ward_atlas"]["width"] == 2048
@@ -1091,6 +1115,14 @@ def test_screwm_wad_defines_only_declared_live_ward_receiver_textures() -> None:
     assert textures["w05"]["width"] == 960
     assert textures["w05"]["height"] == 540
     assert textures["w05"]["code"] == "REV"
+    assert textures["w18"]["pattern"] == "live_media"
+    assert textures["w18"]["width"] == 340
+    assert textures["w18"]["height"] == 340
+    assert textures["w18"]["code"] == "BOPIR"
+    assert textures["w19"]["pattern"] == "live_media"
+    assert textures["w19"]["width"] == 340
+    assert textures["w19"]["height"] == 340
+    assert textures["w19"]["code"] == "BRMIR"
     assert textures["w22"]["pattern"] == "live_media"
     assert textures["w22"]["width"] == 1344
     assert textures["w22"]["height"] == 176
@@ -1099,6 +1131,10 @@ def test_screwm_wad_defines_only_declared_live_ward_receiver_textures() -> None:
     assert textures["w27"]["width"] == 1344
     assert textures["w27"]["height"] == 176
     assert textures["w27"]["code"] == "CHRON"
+    assert textures["w35"]["pattern"] == "live_media"
+    assert textures["w35"]["width"] == 340
+    assert textures["w35"]["height"] == 340
+    assert textures["w35"]["code"] == "BSYIR"
     assert textures["speech_wave"]["pattern"] == "live_media"
     assert textures["speech_wave"]["width"] == 512
     assert textures["speech_wave"]["height"] == 128

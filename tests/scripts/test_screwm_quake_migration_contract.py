@@ -240,7 +240,7 @@ def test_darkplaces_fork_patch_uploads_live_media_into_world_textures() -> None:
     )
 
     _assert_unified_patch_hunk_counts(patch)
-    assert "HAPAX_LIVE_TEXTURE_SLOT_COUNT 14" in patch
+    assert "HAPAX_LIVE_TEXTURE_SLOT_COUNT 17" in patch
     assert "hapax_live_texture_name" in patch
     assert "hapax_live_texture7_name" in patch
     assert '"progs/aoa_sphere.mdl_0"' in patch
@@ -260,14 +260,21 @@ def test_darkplaces_fork_patch_uploads_live_media_into_world_textures() -> None:
     assert '"w22"' in patch
     assert '"w27"' in patch
     assert '"w05"' in patch
+    assert '"w18"' in patch
+    assert '"w19"' in patch
+    assert '"w35"' in patch
     assert '"speech_wave"' in patch
     assert "quake-live-reverie.bgra" in patch
     assert "quake-live-speech-wave.bgra" in patch
     assert "quake-live-aoa-atlas.bgra" in patch
+    assert "quake-live-ir-brio-operator.bgra" in patch
+    assert "quake-live-ir-brio-room.bgra" in patch
+    assert "quake-live-ir-brio-synths.bgra" in patch
     assert "quake-live-ticker-grounding.bgra" in patch
     assert "quake-live-ticker-precedent.bgra" in patch
     assert "quake-live-ticker-chronicle.bgra" in patch
     assert '"2304"' in patch
+    assert '"340"' in patch
     assert '"512"' in patch
     assert '"128"' in patch
     assert "R_HapaxLiveTexture_UpdateSlot" in patch
@@ -582,6 +589,58 @@ def test_screwm_media_mount_contracts_are_deterministic() -> None:
         assert mount["computed_mount_width"] == 2048
         assert mount["texture"].startswith("cam_")
         assert mount["producer_output"].endswith(".bgra")
+    ir_wards = {
+        "brio-operator-ir-ward": (
+            "brio-operator-ir",
+            "w18",
+            "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.bgra",
+            "slot 15",
+            [-1180, -1320, 650],
+        ),
+        "brio-room-ir-ward": (
+            "brio-room-ir",
+            "w19",
+            "/dev/shm/hapax-compositor/quake-live-ir-brio-room.bgra",
+            "slot 16",
+            [-1180, 400, 650],
+        ),
+        "brio-synths-ir-ward": (
+            "brio-synths-ir",
+            "w35",
+            "/dev/shm/hapax-compositor/quake-live-ir-brio-synths.bgra",
+            "slot 17",
+            [-1180, -2240, 1180],
+        ),
+    }
+    for mount_id, (
+        source_id,
+        texture,
+        output,
+        slot_label,
+        origin,
+    ) in ir_wards.items():
+        mount = mounts[mount_id]
+        assert mount["role"] == "state-ward"
+        assert mount["source_id"] == source_id
+        assert mount["texture"] == texture
+        assert mount["producer_output"] == output
+        assert mount["producer_kind"] == "live-camera-ir"
+        assert mount["liveness_class"] == "live-local-ir-camera"
+        assert mount["mount_kind"] == "live-camera-instrument"
+        assert mount["native_resolution"] == [340, 340]
+        assert mount["capture_format"] == "gray"
+        assert mount["capture_resolution"] == [340, 340]
+        assert mount["capture_fps"] == 10
+        assert mount["texture_fps"] == 6
+        assert mount["source_aspect"] == [1, 1]
+        assert mount["texture_size"] == [340, 340]
+        assert mount["physical_width"] == 1024
+        assert mount["computed_mount_width"] == 1024
+        assert mount["origin"] == origin
+        assert mount["facing"] == "x"
+        assert mount["hybrid_contract"]["quake_binding"] == f"BSP brush texture {texture}"
+        assert slot_label in mount["hybrid_contract"]["update_semantics"]
+        assert "hidden atlas proxies" in mount["drift_interaction"]["principle"]
     for mount_id, texture in (
         ("grounding-provenance-ticker", "w09"),
         ("precedent-ticker", "w22"),
@@ -666,6 +725,35 @@ def test_screwm_live_camera_texture_dimensions_match_all_runtime_declarations() 
 
         for slots in (autoexec_slots, launcher_slots):
             slot = _slot_for_texture(slots, mount["texture"])
+            assert int(slots[slot]["width"]) == width
+            assert int(slots[slot]["height"]) == height
+            assert slots[slot]["path"] == mount["producer_output"]
+            assert patch_dims[slot] == {"width": width, "height": height}
+
+    ir_ward_mounts = {
+        "brio-operator-ir-ward": "brio-operator-ir",
+        "brio-room-ir-ward": "brio-room-ir",
+        "brio-synths-ir-ward": "brio-synths-ir",
+    }
+    for mount in (mount for mount in contract["mounts"] if mount["id"] in ir_ward_mounts):
+        width, height = mount["texture_size"]
+        assert mount["native_resolution"] == [width, height]
+        assert mount["capture_resolution"] == [width, height]
+
+        env = _env_file(
+            REPO_ROOT / "config" / "quake-live-cameras" / f"{ir_ward_mounts[mount['id']]}.env"
+        )
+        assert env["HAPAX_QUAKE_CAMERA_SIZE"] == f"{width}x{height}"
+        assert int(env["HAPAX_QUAKE_LIVE_TEXTURE_WIDTH"]) == width
+        assert int(env["HAPAX_QUAKE_LIVE_TEXTURE_HEIGHT"]) == height
+        assert int(env["HAPAX_QUAKE_CAMERA_FPS"]) == mount["capture_fps"]
+        assert int(env["HAPAX_QUAKE_LIVE_TEXTURE_FPS"]) == mount["texture_fps"]
+        assert env["HAPAX_QUAKE_LIVE_TEXTURE_NAME"] == mount["texture"]
+        assert env["HAPAX_QUAKE_LIVE_TEXTURE_OUTPUT"] == mount["producer_output"]
+
+        for slots in (autoexec_slots, launcher_slots):
+            slot = _slot_for_texture(slots, mount["texture"])
+            assert slot in {15, 16, 17}
             assert int(slots[slot]["width"]) == width
             assert int(slots[slot]["height"]) == height
             assert slots[slot]["path"] == mount["producer_output"]
