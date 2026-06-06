@@ -10,7 +10,7 @@ WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HAPAX_UNIFIED_REACTIVITY_ACTIVE=1
 # Tap the golden-chain broadcast audio (the GStreamer compositor's mixer_master
 # is unfed in screwm mode). Read-only capture; no routing change.
-Environment=HAPAX_SCREWM_AUDIO_TARGET=hapax-broadcast-normalized-capture
+Environment=HAPAX_SCREWM_AUDIO_TARGET=hapax-broadcast-normalized
 ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/screwm-audio-reactivity-source.py
 ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/screwm-audio-reactivity-source.py
 Restart=always
