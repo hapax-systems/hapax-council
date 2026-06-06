@@ -46,10 +46,11 @@ class TestWatchdogScript:
         text = SCRIPT.read_text()
         assert "pass show" in text, "Must use pass for restic password"
 
-    def test_script_checks_tier1_and_tier2(self):
+    def test_script_checks_tier1_and_not_retired_b2(self):
         text = SCRIPT.read_text()
         assert "Tier1-NAS" in text, "Must check Tier 1 (NAS) snapshots"
-        assert "Tier2-B2" in text, "Must check Tier 2 (B2) snapshots"
+        assert "Tier2-B2" not in text, "Retired B2 lane must not be required"
+        assert "rclone:b2:hapax-backups/restic" not in text
 
     def test_script_checks_gdrive_critical(self):
         text = SCRIPT.read_text()

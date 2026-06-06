@@ -14,14 +14,6 @@ Tier 1 local coverage:
 - Restic repository: `/mnt/nas/backups/restic`
 - Staging: `/tmp/hapax-backup-dumps`
 
-Tier 2 offsite coverage:
-
-- Timer: `hapax-backup-remote.timer`
-- Service: `hapax-backup-remote.service`
-- Script: `$HOME/projects/distro-work/hapax-backup-remote.sh`
-- Restic repository: `rclone:b2:hapax-backups/restic`
-- Staging: `/tmp/hapax-backup-dumps-remote`
-
 Critical offsite safety baseline:
 
 - Timer: `hapax-backup-gdrive-critical.timer`
@@ -30,8 +22,9 @@ Critical offsite safety baseline:
 - Restic repository: `rclone:gdrive:hapax-backups/restic-critical`
 - Cache: `/store/llm-data/restic-cache/gdrive-critical`
 
-The GDrive critical lane is a bounded critical-artifact baseline while the
-broad B2 remote is blocked. It backs up already-materialized Postgres PITR
+The GDrive critical lane is the bounded critical-artifact offsite baseline
+after the broad Backblaze B2 remote lane was retired by operator policy on
+2026-06-06. It backs up already-materialized Postgres PITR
 artifacts, latest Qdrant snapshot files, and selected vault evidence/SOP files.
 It does not create new Qdrant snapshots, dump databases into `/tmp`, upload live
 MinIO backing stores, or run destructive prune. Retention is
@@ -53,6 +46,10 @@ Both lanes stage service-native artifacts before restic runs:
 successfully, writes no backup artifacts, does not read secrets, and points at
 the Tier 1/Tier 2 lanes above.
 
+Backblaze B2 broad remote backup is retained only as historical context; no
+`hapax-backup-remote.timer` should be installed, enabled, or expected by health
+policy unless a later governed task reinstates it.
+
 This intentionally removes the stale standalone script assumptions:
 
 - No per-database `pg_dump` list.
@@ -62,7 +59,7 @@ This intentionally removes the stale standalone script assumptions:
 
 ## Restore Path
 
-1. Restore the chosen restic snapshot from Tier 1, Tier 2, or the GDrive
+1. Restore the chosen restic snapshot from the Tier 1 local repo or the GDrive
    critical repo into a staging directory.
 2. Restore `$HOME/llm-stack/` configuration from the restored filesystem tree.
 3. Restore PostgreSQL from the staged `postgres-all.sql` dump, or use the

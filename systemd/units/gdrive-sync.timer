@@ -1,11 +1,11 @@
 [Unit]
-Description=gdrive sync (every 6h)
+Description=gdrive sync (daily)
 
 [Timer]
-OnBootSec=8min
-OnUnitActiveSec=6h
-RandomizedDelaySec=10min
-Persistent=true
+# Daily background reconciliation only. Fast file movement now uses direct
+# KDE Connect/Tailscale/SSH paths instead of polling Drive as hot storage.
+OnCalendar=*-*-* 18:30:00
+RandomizedDelaySec=30min
 
 [Install]
 WantedBy=timers.target

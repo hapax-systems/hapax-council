@@ -242,6 +242,7 @@ class TestHistoricalRestoreCoverage:
 
         assert "DEPRECATED" in backup_text
         assert "hapax-backup-local.service" in backup_text
-        assert "hapax-backup-remote.service" in backup_text
+        assert "hapax-backup-gdrive-critical.service" in backup_text
+        assert "hapax-backup-remote.service" not in backup_text
         assert "pg_dump" not in backup_text
         assert "ragdb" not in backup_text
