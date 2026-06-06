@@ -774,6 +774,21 @@ def _gpu_drift_paths(output: Path) -> tuple[Path, Path]:
     return raw_output, raw_output.with_suffix(".json")
 
 
+def _metadata_write_due(*, frames: int, loop_frames: int, fps: float) -> bool:
+    cadence = max(1, int(round(float(fps) * 5.0)))
+    return frames == 1 or loop_frames == 1 or frames % cadence == 0
+
+
+def _mark_camera_loop_failure(
+    args: argparse.Namespace,
+    loop_failure_reason: str,
+    *,
+    stop: bool,
+) -> None:
+    if args.source == "camera" and loop_failure_reason and not stop:
+        args.camera_forced_fallback_reason = loop_failure_reason
+
+
 def stream_frames(args: argparse.Namespace) -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     raw_output, raw_meta = _gpu_drift_paths(args.output) if args.gpu_drift else (None, None)
@@ -821,10 +836,16 @@ def stream_frames(args: argparse.Namespace) -> int:
                     )
                     break
                 if len(data) != frame_size:
+                    if args.source == "camera":
+                        loop_failure_reason = f"camera_short_frame:{len(data)}/{frame_size}"
                     break
                 loop_frames += 1
                 frames += 1
-                should_write_meta = frames == 1 or frames % max(1, args.fps * 5) == 0
+                should_write_meta = _metadata_write_due(
+                    frames=frames,
+                    loop_frames=loop_frames,
+                    fps=args.fps,
+                )
                 if raw_output is not None:
                     if not args.gpu_projection_kind:
                         data = _project_frame(data, args, frame_width, frame_height, frames)
@@ -861,8 +882,7 @@ def stream_frames(args: argparse.Namespace) -> int:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=3)
-        if args.source == "camera" and loop_frames == 0 and loop_failure_reason and not stop:
-            args.camera_forced_fallback_reason = loop_failure_reason
+        _mark_camera_loop_failure(args, loop_failure_reason, stop=stop)
         if (
             args.source == "youtube"
             and bool(getattr(args, "youtube_gpu_decode_active", False))

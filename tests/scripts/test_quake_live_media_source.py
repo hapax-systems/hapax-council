@@ -137,6 +137,49 @@ def test_frame_read_timeout_returns_none_for_silent_pipe() -> None:
         os.close(write_fd)
 
 
+def test_recovered_camera_loop_first_frame_refreshes_metadata() -> None:
+    module = _load_module()
+
+    assert module["_metadata_write_due"](frames=84, loop_frames=1, fps=6)
+    assert not module["_metadata_write_due"](frames=84, loop_frames=2, fps=6)
+
+
+def test_camera_timeout_after_success_schedules_visible_fallback(tmp_path: Path) -> None:
+    module = _load_module()
+    device = tmp_path / "video-ir"
+    device.write_bytes(b"")
+    args = Namespace(
+        source="camera",
+        camera_role="brio-synths-ir",
+        camera_device=str(device),
+        camera_format="gray",
+        camera_size="340x340",
+        camera_fps=10,
+        fps=6,
+        width=340,
+        height=340,
+        projection="flat",
+        mask="none",
+        mask_background="0c0b0d",
+        camera_visibility_profile="brio-ir-low-light",
+        camera_reserved_for_ir=False,
+        camera_forced_fallback_reason="",
+        restart_delay=2.0,
+        fallback_reason="",
+    )
+
+    module["_mark_camera_loop_failure"](args, "camera_frame_timeout:8.0s", stop=False)
+    command = module["_ffmpeg_command"](args, 340, 340)
+    command_text = " ".join(command)
+
+    assert args.fallback_reason == "camera_frame_timeout:8.0s"
+    assert args.camera_forced_fallback_reason == ""
+    assert "-f lavfi" in command_text
+    assert "BRIO SYNTHS IR OFFLINE" in command_text
+    assert "WAITING FOR LIVE CAMERA" in command_text
+    assert str(device) not in command_text
+
+
 def test_sphere_front_projection_uses_deterministic_oarb_sphere_fill() -> None:
     module = _load_module()
     args = Namespace(
