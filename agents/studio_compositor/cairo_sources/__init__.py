@@ -70,6 +70,7 @@ def list_classes() -> list[str]:
 
 def _register_builtins() -> None:
     from agents.studio_compositor.album_overlay import AlbumOverlayCairoSource
+    from agents.studio_compositor.aoa_oarb_state_ward import AoaOarbStateCairoSource
     from agents.studio_compositor.captions_source import CaptionsCairoSource
     from agents.studio_compositor.cbip_signal_density import (
         CBIPSignalDensityCairoSource,
@@ -104,6 +105,7 @@ def _register_builtins() -> None:
     from agents.studio_compositor.token_pole import TokenPoleCairoSource
 
     register("TokenPoleCairoSource", TokenPoleCairoSource)
+    register("AoaOarbStateCairoSource", AoaOarbStateCairoSource)
     register("ScrewmQuakeStatusCairoSource", ScrewmQuakeStatusCairoSource)
     register("AlbumOverlayCairoSource", AlbumOverlayCairoSource)
     register("CBIPSignalDensityCairoSource", CBIPSignalDensityCairoSource)

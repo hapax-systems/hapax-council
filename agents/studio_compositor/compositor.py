@@ -164,6 +164,20 @@ _FALLBACK_LAYOUT = Layout(
             rate_hz=2.0,
         ),
         SourceSchema(
+            id="aoa_oarb_state",
+            kind="cairo",
+            backend="cairo",
+            params={
+                "class_name": "AoaOarbStateCairoSource",
+                "natural_w": 540,
+                "natural_h": 180,
+            },
+            update_cadence="rate",
+            rate_hz=1.0,
+            tags=["screwm", "aoa", "oarb", "ward", "state"],
+            ward_id="aoa-oarb-state",
+        ),
+        SourceSchema(
             id="sierpinski",
             kind="cairo",
             backend="cairo",
