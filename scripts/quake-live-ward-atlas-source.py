@@ -104,11 +104,26 @@ DIRECT_TEXTURE_WARD_TEXTURES = {
     "brio-synths-ir": "w35",
 }
 
-ATLAS_IDLE_SCAFFOLD_WARDS = frozenset(
+GENERIC_ATLAS_IDLE_SCAFFOLD_WARDS = frozenset(
+    {
+        "precedent_ticker",
+        "programme_history",
+        "research_instrument_dashboard",
+        "chronicle_ticker",
+        "programme_state",
+        "constructivist_research_poster",
+        "tufte_density",
+        "ascii_schematic",
+    }
+)
+SOURCE_PROVIDED_ATLAS_IDLE_SCAFFOLD_WARDS = frozenset(
     {
         "durf",
         "coding_session_reveal",
     }
+)
+ATLAS_IDLE_SCAFFOLD_WARDS = (
+    GENERIC_ATLAS_IDLE_SCAFFOLD_WARDS | SOURCE_PROVIDED_ATLAS_IDLE_SCAFFOLD_WARDS
 )
 
 WARD_LABELS = {
@@ -687,6 +702,54 @@ def _surface_has_visible_alpha(surface: cairo.ImageSurface, *, min_alpha: int = 
     return False
 
 
+def _generic_atlas_idle_surface(
+    *,
+    ward_id: str,
+    width: int,
+    height: int,
+    t: float,
+) -> cairo.ImageSurface:
+    width = max(1, int(width))
+    height = max(1, int(height))
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+    cr = cairo.Context(surface)
+    cr.set_source_rgb(0.075, 0.090, 0.105)
+    cr.paint()
+    cr.rectangle(0, 0, width, height)
+    cr.set_source_rgba(0.17, 0.23, 0.30, 0.70)
+    cr.fill()
+
+    cr.set_line_width(max(1.0, min(width, height) * 0.006))
+    grid = max(18, min(width, height) // 5)
+    for x in range(0, width + grid, grid):
+        cr.set_source_rgba(0.27, 0.90, 1.0, 0.20)
+        cr.move_to(x, 0)
+        cr.line_to(max(0, x - width * 0.20), height)
+        cr.stroke()
+    for y in range(0, height + grid, grid):
+        cr.set_source_rgba(1.0, 0.25, 0.66, 0.18)
+        cr.move_to(0, y)
+        cr.line_to(width, max(0, y - height * 0.16))
+        cr.stroke()
+
+    pulse = 0.5 + 0.5 * math.sin(t * 1.37 + len(ward_id))
+    cr.set_line_width(max(2.0, min(width, height) * 0.012))
+    cr.set_source_rgba(0.46, 1.0, 0.70, 0.45 + pulse * 0.22)
+    cr.rectangle(width * 0.055, height * 0.14, width * 0.89, height * 0.72)
+    cr.stroke()
+    cr.set_source_rgba(1.0, 0.68, 0.05, 0.28 + pulse * 0.16)
+    cr.rectangle(width * 0.075, height * 0.20, width * 0.85, height * 0.20)
+    cr.fill()
+
+    label = WARD_LABELS.get(ward_id, ward_id.replace("_", " ").upper())
+    title_size = max(13, min(30, width // max(8, len(label))))
+    status_size = max(12, min(24, height // 6))
+    _draw_text(cr, label[:34], width * 0.10, height * 0.35, title_size, "cyan")
+    _draw_text(cr, "IDLE", width * 0.10, height * 0.63, status_size, "amber")
+    surface.flush()
+    return surface
+
+
 def _atlas_idle_surface_from_backend(
     backend: Any,
     *,
@@ -699,9 +762,11 @@ def _atlas_idle_surface_from_backend(
         return None
     source = getattr(backend, "_source", None)
     render_idle = getattr(source, "render_atlas_idle_surface", None)
-    if not callable(render_idle):
-        return None
-    return render_idle(width, height, t)
+    if ward_id in SOURCE_PROVIDED_ATLAS_IDLE_SCAFFOLD_WARDS and callable(render_idle):
+        return render_idle(width, height, t)
+    if ward_id in GENERIC_ATLAS_IDLE_SCAFFOLD_WARDS:
+        return _generic_atlas_idle_surface(ward_id=ward_id, width=width, height=height, t=t)
+    return None
 
 
 def render_atlas(
