@@ -331,7 +331,11 @@ def _systemd_environment_value(unit: str, name: str) -> str | None:
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
-    for token in shlex.split(env_text):
+    try:
+        env_tokens = shlex.split(env_text)
+    except ValueError:
+        return None
+    for token in env_tokens:
         key, sep, value = token.partition("=")
         if sep and key == name:
             return value
