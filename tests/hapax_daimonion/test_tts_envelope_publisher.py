@@ -119,6 +119,27 @@ def test_feed_writes_oscilloscope_wave_frame(publisher, publisher_path) -> None:
     assert max(samples) > 128 and min(samples) < 128
 
 
+def test_low_level_speech_wave_survives_uint8_quantization(publisher, publisher_path) -> None:
+    publisher.feed(_sine_pcm(220.0, 24000, 0.05, amp=0.002))
+    frame_id, sample_count, samples = _read_wave(publisher_path.parent / "speech-wave.bin")
+    assert frame_id >= 1
+    assert sample_count == _WAVE_MAX_SAMPLES
+    assert max(samples) > 128 and min(samples) < 128
+
+
+def test_trailing_silence_does_not_overwrite_last_speech_wave(publisher, publisher_path) -> None:
+    wave_file = publisher_path.parent / "speech-wave.bin"
+    publisher.feed(_sine_pcm(220.0, 24000, 0.05, amp=0.002))
+    speech_frame_id, _sample_count, _speech_samples = _read_wave(wave_file)
+
+    publisher.feed(np.zeros(int(0.09 * 24000), dtype=np.int16).tobytes())
+    silence_frame_id, sample_count, samples = _read_wave(wave_file)
+
+    assert silence_frame_id >= speech_frame_id
+    assert sample_count == _WAVE_MAX_SAMPLES
+    assert max(samples) > 128 and min(samples) < 128
+
+
 def test_wave_silence_is_flat_midline(publisher, publisher_path) -> None:
     publisher.feed(np.zeros(int(0.05 * 24000), dtype=np.int16).tobytes())
     _frame, sample_count, samples = _read_wave(publisher_path.parent / "speech-wave.bin")

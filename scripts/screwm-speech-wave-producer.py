@@ -55,6 +55,8 @@ _HEADER_FMT = "<QBBH"
 _HEADER_SIZE = struct.calcsize(_HEADER_FMT)  # 12
 _MAX_SAMPLES = 480
 _RING_SIZE = _HEADER_SIZE + _MAX_SAMPLES  # 492
+_LAST_RING_FRAME_ID: int | None = None
+_LAST_RING_FRAME_TS: float = 0.0
 
 LINE_WIDTH = 2.0
 LINE_WIDTH_AMP_SCALE = 3.0
@@ -78,8 +80,8 @@ def _on_signal(_signum: int, _frame: object) -> None:
     _STOP = True
 
 
-def _read_ring(path: Path) -> tuple[bytes, float] | None:
-    """Read (samples, mtime) from the m8-format ring. Defensive — never raises."""
+def _read_ring(path: Path) -> tuple[int, bytes, float] | None:
+    """Read (frame_id, samples, mtime) from the m8-format ring. Defensive — never raises."""
     try:
         st = path.stat()
         with path.open("rb") as fh:
@@ -89,11 +91,24 @@ def _read_ring(path: Path) -> tuple[bytes, float] | None:
     if len(buf) < _HEADER_SIZE:
         return None
     try:
-        _frame_id, _color, _reserved, sample_count = struct.unpack(_HEADER_FMT, buf[:_HEADER_SIZE])
+        frame_id, _color, _reserved, sample_count = struct.unpack(_HEADER_FMT, buf[:_HEADER_SIZE])
     except struct.error:
         return None
     sample_count = min(sample_count, _MAX_SAMPLES)
-    return buf[_HEADER_SIZE : _HEADER_SIZE + sample_count], st.st_mtime
+    return frame_id, buf[_HEADER_SIZE : _HEADER_SIZE + sample_count], st.st_mtime
+
+
+def _ring_age_s(frame_id: int, mtime: float, now: float) -> float:
+    """Use frame advancement as freshness; fall back to mtime before the first change."""
+
+    global _LAST_RING_FRAME_ID, _LAST_RING_FRAME_TS
+    if _LAST_RING_FRAME_ID is None:
+        _LAST_RING_FRAME_ID = frame_id
+        _LAST_RING_FRAME_TS = mtime
+    elif frame_id != _LAST_RING_FRAME_ID:
+        _LAST_RING_FRAME_ID = frame_id
+        _LAST_RING_FRAME_TS = now
+    return max(0.0, now - _LAST_RING_FRAME_TS)
 
 
 def _silence_alpha(mtime: float, now: float) -> float:
@@ -168,20 +183,22 @@ def _render(accent: tuple[float, float, float], now: float) -> tuple[bytes, dict
         "frame_size_bytes": FRAME_SIZE,
         "ring_present": False,
         "ring_age_s": None,
+        "ring_frame_id": None,
         "sample_count": 0,
         "amplitude": 0.0,
         "alpha": IDLE_ALPHA,
         "state": "missing-ring-idle-midline",
     }
     if ring is not None:
-        samples, mtime = ring
-        ring_age_s = max(0.0, now - mtime)
-        base_alpha = _silence_alpha(mtime, now)
+        frame_id, samples, mtime = ring
+        ring_age_s = _ring_age_s(frame_id, mtime, now)
+        base_alpha = _silence_alpha(now - ring_age_s, now)
         amplitude = min(_amplitude(samples), AMP_BURST_CLAMP)
         meta.update(
             {
                 "ring_present": True,
                 "ring_age_s": ring_age_s,
+                "ring_frame_id": frame_id,
                 "sample_count": len(samples),
                 "amplitude": amplitude,
             }
