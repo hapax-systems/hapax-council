@@ -5,9 +5,9 @@ Pinned by tests:
 * Default-OFF feature flag: an unset / "0" env produces a no-op render
   (transparent canvas) so the ward never surprises a viewer mid-broadcast
   on first deploy.
-* Empty-state silence: no marker AND no claims ⇒ no-op render. The
-  ward squats no pixels in the steady state where research is not
-  configured.
+* Empty-state inactivity: no marker AND no claims ⇒ frame + inactive
+  rows render when the feature flag is enabled. Screwm ward-atlas cells
+  must not be dead frames after the operator explicitly enables the ward.
 * Empty-state header: marker present but no claims ⇒ frame + header +
   active-condition line render. Tests that ``render_content`` paints
   *something* in this case (line-count > 0 in the cairo recording
@@ -218,18 +218,29 @@ class TestRenderContentGating:
         assert ctx.fill_count == 0
         assert ctx.stroke_count == 0
 
-    def test_empty_state_renders_nothing(self, ward_module, monkeypatch):
-        """Flag on, but no marker AND no claims ⇒ no-op render."""
+    def test_empty_state_renders_inactive_panel(self, ward_module, monkeypatch):
+        """Flag on, but no marker AND no claims ⇒ visible inactive panel."""
         monkeypatch.setenv("HAPAX_LORE_RESEARCH_INSTRUMENT_DASHBOARD_ENABLED", "1")
         ward = ward_module.ResearchInstrumentDashboardCairoSource()
         with (
             mock.patch.object(ward_module, "read_marker", return_value=None),
             mock.patch.object(ward_module, "load_claims", return_value=[]),
+            mock.patch(
+                "agents.studio_compositor.text_render.render_text",
+                return_value=None,
+            ) as render_text,
+            mock.patch(
+                "agents.studio_compositor.text_render.measure_text",
+                return_value=(120, 14),
+            ),
         ):
             ctx = _FakeContext()
             ward.render_content(ctx, 540, 220, t=0.0, state={})
-        assert ctx.fill_count == 0
-        assert ctx.stroke_count == 0
+        assert ctx.fill_count >= 1
+        assert ctx.stroke_count >= 1
+        rendered = " ".join(call.args[1].text for call in render_text.call_args_list)
+        assert "no active research condition" in rendered
+        assert "no claims tracked" in rendered
 
     def test_marker_only_renders_frame(self, ward_module, monkeypatch):
         """Flag on, marker but zero claims ⇒ frame + header paint."""

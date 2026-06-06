@@ -292,6 +292,17 @@ def test_quake_live_media_services_feed_youtube_camera_and_ward_atlas_slots() ->
     assert "--output /dev/shm/hapax-compositor/quake-live-ward-atlas.bgra" in atlas
     assert "--meta /dev/shm/hapax-compositor/quake-live-ward-atlas.json" in atlas
     assert "Environment=HAPAX_QUAKE_WARD_ATLAS_GPU_DRIFT=1" in atlas
+    for env_name in (
+        "HAPAX_LORE_CHRONICLE_TICKER_ENABLED",
+        "HAPAX_LORE_PROGRAMME_STATE_ENABLED",
+        "HAPAX_LORE_PROGRAMME_HISTORY_ENABLED",
+        "HAPAX_LORE_PRECEDENT_TICKER_ENABLED",
+        "HAPAX_LORE_RESEARCH_INSTRUMENT_DASHBOARD_ENABLED",
+        "HAPAX_LORE_RESEARCH_POSTER_CONSTRUCTIVIST_ENABLED",
+        "HAPAX_LORE_RESEARCH_POSTER_TUFTE_ENABLED",
+        "HAPAX_LORE_RESEARCH_POSTER_ASCII_ENABLED",
+    ):
+        assert f"Environment={env_name}=1" in atlas
     assert "Restart=always" in atlas
 
     assert "PartOf=hapax-visual-stack.target hapax-darkplaces-v4l2.service" in reverie
