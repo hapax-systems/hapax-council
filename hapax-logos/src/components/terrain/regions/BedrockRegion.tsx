@@ -12,6 +12,7 @@ import { OverheadPanel } from "../../sidebar/OverheadPanel";
 import { PrecedentPanel } from "../../sidebar/PrecedentPanel";
 import { TimersPanel } from "../../sidebar/TimersPanel";
 import { AccommodationPanel } from "../../sidebar/AccommodationPanel";
+import { HostStoragePanel } from "../../sidebar/HostStoragePanel";
 import { SignalCluster, densityFromDepth } from "../signals/SignalCluster";
 import { useSignals } from "../../../contexts/ClassificationOverlayContext";
 
@@ -99,6 +100,7 @@ export const BedrockRegion = memo(function BedrockRegion() {
                 <HealthPanel />
                 <VramPanel />
                 <ContainersPanel />
+                <HostStoragePanel />
                 <CostPanel />
                 <ConsentPanel />
                 <GovernancePanel />

@@ -46,6 +46,110 @@ export interface Infrastructure {
   timers: TimerStatus[];
 }
 
+export interface HostStorageHost {
+  host_id: string;
+  evidence_host: string | null;
+  evidence_machine_id: string | null;
+  evidence_class: string;
+  observed_at: string;
+  recency_class: string;
+  locality_class: string;
+  transport: string | null;
+  anchor_verified: boolean;
+  root_disk_serial: string | null;
+  warnings: string[];
+}
+
+export interface HostStorageFilesystem {
+  target_host: string;
+  device_serial: string | null;
+  uuid: string | null;
+  fstype: string | null;
+  label: string | null;
+  mountpoints: string[];
+  partition_kernel_dev: string | null;
+  partuuid: string | null;
+}
+
+export interface HostStorageDevice {
+  target_host: string;
+  serial: string | null;
+  presence: string;
+  model: string | null;
+  kernel_dev: string | null;
+  size: string | null;
+  transport: string | null;
+  by_id: string[];
+  filesystems: HostStorageFilesystem[];
+}
+
+export interface ActualHostWitness {
+  source: string;
+  evidence_host: string | null;
+  evidence_machine_id: string | null;
+  observed_at: string | null;
+  witness_age_s: number | null;
+  max_witness_age_s: number;
+}
+
+export interface StorageDataRole {
+  store_id: string;
+  surface: string;
+  authority_class: string;
+  retrieval_mode: string;
+  current_placement: string;
+  target_placement: string;
+  data_authority_host: string | null;
+  expected_host: string | null;
+  container_running_host: string | null;
+  actual_host_witness: ActualHostWitness | null;
+  placement_state: string;
+  quality_gate: string;
+}
+
+export interface HostStorageSnapshot {
+  schema_version: number;
+  generated_at: string;
+  hosts: HostStorageHost[];
+  devices: HostStorageDevice[];
+  filesystems: HostStorageFilesystem[];
+  data_roles: StorageDataRole[];
+}
+
+export interface SopDependency {
+  task_id: string;
+  title: string | null;
+  status: string;
+  state: "closed" | "blocked" | "open" | "missing" | "non_fulfilling";
+  stage: string | null;
+  assigned_to: string | null;
+  authority_case: string | null;
+  pr: string | null;
+  blocked_reason: string | null;
+  blocked_witness: string | null;
+  completed_at: string | null;
+  collection: string;
+}
+
+export interface SopGateSnapshot {
+  schema_version: number;
+  generated_at: string;
+  task_id: string;
+  title: string | null;
+  status: string;
+  stage: string | null;
+  blocked_reason: string | null;
+  blocked_witness: string | null;
+  dependency_count: number;
+  closed_count: number;
+  blocked_count: number;
+  open_count: number;
+  missing_count: number;
+  non_fulfilling_count: number;
+  normal_dev_ready: boolean;
+  dependencies: SopDependency[];
+}
+
 export interface Nudge {
   category: string;
   priority_score: number;
