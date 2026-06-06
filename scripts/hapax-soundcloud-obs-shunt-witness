@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,8 @@ DEFAULT_BIND_STATUS_PATH = Path("/dev/shm/hapax-obs-audio-bind/status.json")
 DEFAULT_MUSIC_SINK = "hapax-music-loudnorm"
 DEFAULT_OBS_SOURCE = "hapax-obs-broadcast-remap"
 DEFAULT_OBS_INPUT_NAME = "Audio Input Capture (PipeWire)"
+DEFAULT_REACTIVITY_UNIT = "hapax-screwm-audio-reactivity.service"
+DEFAULT_REACTIVITY_SOURCE = "hapax-broadcast-normalized"
 MIN_OBS_RMS_DBFS = -55.0
 SOUNDCLOUD_HOSTS = {"soundcloud.com", "www.soundcloud.com"}
 
@@ -58,6 +61,8 @@ class WitnessStatus:
     broadcast_links_complete: bool
     obs_links_complete: bool
     obs_consumer_present: bool
+    audio_reactivity_target: str | None
+    audio_reactivity_target_ok: bool
     obs_rms_dbfs: float | None
     obs_rms_peak_dbfs: float | None
     obs_rms_threshold_dbfs: float
@@ -317,6 +322,22 @@ def _obs_consumer_present(pw_dump_text: str) -> bool:
     return False
 
 
+def _systemd_environment_value(unit: str, name: str) -> str | None:
+    try:
+        env_text = _run_text(
+            ["systemctl", "--user", "show", unit, "-p", "Environment", "--value"],
+            timeout=4.0,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    for token in shlex.split(env_text):
+        key, sep, value = token.partition("=")
+        if sep and key == name:
+            return value
+    return None
+
+
 def _run_binder(script_path: Path, *, wait_links_s: float) -> bool:
     uv = shutil.which("uv")
     cmd = [str(script_path)]
@@ -372,6 +393,11 @@ def _build_status(args: argparse.Namespace) -> WitnessStatus:
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         pw_dump_text = ""
     obs_consumer = _obs_consumer_present(pw_dump_text)
+    audio_reactivity_target = _systemd_environment_value(
+        DEFAULT_REACTIVITY_UNIT,
+        "HAPAX_SCREWM_AUDIO_TARGET",
+    )
+    audio_reactivity_target_ok = audio_reactivity_target == DEFAULT_REACTIVITY_SOURCE
 
     obs_rms_dbfs: float | None = None
     obs_peak_dbfs: float | None = None
@@ -393,6 +419,7 @@ def _build_status(args: argparse.Namespace) -> WitnessStatus:
         "broadcast_links_complete": broadcast_links,
         "obs_links_complete": obs_links,
         "obs_consumer_present": obs_consumer,
+        "audio_reactivity_target_obs_bound": audio_reactivity_target_ok,
         "obs_signal_present": obs_rms_dbfs is not None and obs_rms_dbfs >= args.min_obs_rms_dbfs,
     }
     failed = [name for name, ok in checks.items() if not ok]
@@ -418,6 +445,8 @@ def _build_status(args: argparse.Namespace) -> WitnessStatus:
         broadcast_links_complete=broadcast_links,
         obs_links_complete=obs_links,
         obs_consumer_present=obs_consumer,
+        audio_reactivity_target=audio_reactivity_target,
+        audio_reactivity_target_ok=audio_reactivity_target_ok,
         obs_rms_dbfs=obs_rms_dbfs,
         obs_rms_peak_dbfs=obs_peak_dbfs,
         obs_rms_threshold_dbfs=float(args.min_obs_rms_dbfs),
