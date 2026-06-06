@@ -65,7 +65,7 @@
           "anchors": [
             "HAPAX_UNIFIED_REACTIVITY_ACTIVE=1",
             "Read-only capture",
-            "hapax-broadcast-normalized-capture"
+            "HAPAX_SCREWM_AUDIO_TARGET=hapax-broadcast-normalized"
           ]
         },
         {
@@ -104,6 +104,13 @@
           "anchors": [
             "test_unknown_phase_is_unsafe",
             "CONSENT_SAFE_LAYOUT_NAME"
+          ]
+        },
+        {
+          "path": "tests/systemd/test_screwm_darkplaces_units.py",
+          "anchors": [
+            "test_screwm_audio_reactivity_taps_obs_bound_broadcast_source",
+            "hapax-broadcast-normalized-capture"
           ]
         }
       ],

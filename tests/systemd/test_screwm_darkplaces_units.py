@@ -603,3 +603,12 @@ def test_screwm_gpu_services_use_darkplaces_runtime_marker_and_live_cutover() ->
     assert "HAPAX_WARD_ATLAS_REAL" not in ward_atlas_gpu
     assert "ExecStart=%h/.local/bin/screwm-ward-atlas" in ward_atlas_gpu
     assert "ExecStart=%h/.local/bin/screwm-media-drift" in media_drift
+
+
+def test_screwm_audio_reactivity_taps_obs_bound_broadcast_source() -> None:
+    body = _read("hapax-screwm-audio-reactivity.service")
+
+    assert "Environment=HAPAX_SCREWM_AUDIO_TARGET=hapax-broadcast-normalized" in body
+    assert "Environment=HAPAX_SCREWM_AUDIO_TARGET=hapax-broadcast-normalized-capture" not in body
+    assert "--require-file scripts/screwm-audio-reactivity-source.py" in body
+    assert "scripts/screwm-audio-reactivity-source.py" in body
