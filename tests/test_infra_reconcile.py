@@ -223,7 +223,11 @@ def test_source_units_call_hapax_infra_reconcile():
     service = Path("systemd/units/hapax-infra-reconcile.service").read_text(encoding="utf-8")
     timer = Path("systemd/units/hapax-infra-reconcile.timer").read_text(encoding="utf-8")
 
-    assert "ExecStart=%h/projects/hapax-council/scripts/hapax-infra-reconcile" in service
+    assert (
+        "ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-infra-reconcile"
+        in service
+    )
+    assert "%h/projects/hapax-council/scripts/hapax-infra-reconcile" not in service
     assert "OnFailure=notify-failure@%n.service" in service
     assert "Unit=hapax-infra-reconcile.service" in timer
     assert "Persistent=true" in timer
