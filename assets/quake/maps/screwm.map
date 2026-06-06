@@ -4952,7 +4952,7 @@
 // review-fill-light 8
 {
 "classname" "light"
-"origin" "420 -430 220"
+"origin" "720 260 240"
 "light" "283"
 "_color" "1.0 0.78 0.5"
 }

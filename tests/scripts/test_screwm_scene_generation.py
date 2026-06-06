@@ -100,19 +100,41 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert module["IR_CAMERA_WARD_TARGET_WIDTH"] == 512
     sources = {source["role"]: source for source in module["SOURCE_ANCHORS"]}
     ir_contexts = {
-        18: ("brio-operator-ir", "brio-operator", (-1180, -1320, 650)),
-        19: ("brio-room-ir", "brio-room", (-1180, 400, 650)),
-        35: ("brio-synths-ir", "brio-synths", (-1180, -2240, 1180)),
+        18: (
+            "brio-operator-ir",
+            "brio-operator",
+            "brio-operator-ir-ward",
+            (-1180, -1320, 650),
+        ),
+        19: (
+            "brio-room-ir",
+            "brio-room",
+            "brio-room-ir-ward",
+            (-1180, 400, 650),
+        ),
+        35: (
+            "brio-synths-ir",
+            "brio-synths",
+            "brio-synths-ir-ward",
+            (-1180, -2240, 1180),
+        ),
     }
-    for idx, (ward_anchor, source_role, expected_position) in ir_contexts.items():
+    ir_stations = {
+        station_name: (origin, target)
+        for station_name, origin, target in module["IR_CAMERA_WARD_STATIONS"]
+    }
+    for idx, (ward_anchor, source_role, station_name, expected_position) in ir_contexts.items():
         ward_position = module["ward_review_position"](idx)
         source_position = tuple(sources[source_role]["pos"])
+        station_origin, station_target = ir_stations[station_name]
         width, height = module["ward_pane_dimensions"](idx)
         mount = module["ward_live_mount_contract"](idx, ward_anchor)
 
         assert module["WARD_ANCHORS"][idx - 1] == ward_anchor
         assert ward_position == expected_position
+        assert station_target == expected_position
         assert width == height == module["IR_CAMERA_WARD_TARGET_WIDTH"]
+        assert _visual_angle(width, station_origin, station_target) >= 50
         assert mount["texture"] == "ward_atlas"
         assert mount["source_id"] == ward_anchor
         assert mount["purpose"] == f"{ward_anchor} compositor-authored live ward surface"
@@ -351,6 +373,22 @@ def test_screwm_media_window_review_targets_clear_camera_sources() -> None:
             )
         ]
         assert source_blockers == []
+
+
+def test_far_garden_review_station_avoids_aoa_whiteout() -> None:
+    module = _load_script("scripts/generate-screwm-map.py")
+    origin, target = _station_by_name(module, "far-garden-view")
+    aoa_center = (module["AOA_X"], module["AOA_Y"], module["AOA_Z"])
+    distance_from_aoa = math.sqrt(
+        sum((origin[index] - aoa_center[index]) ** 2 for index in range(3))
+    )
+
+    assert origin == (720, 260, 240)
+    assert target == (-260, 980, 330)
+    assert distance_from_aoa >= 900
+    assert target[1] >= 900
+    assert _visual_angle(512, origin, aoa_center) <= 28
+    assert module["SCROOM_PATH_STONES"][7][2:4] == (720, 260)
 
 
 def test_screwm_aoa_pause_keeps_expanded_aoa_inspectable_without_whiteout() -> None:

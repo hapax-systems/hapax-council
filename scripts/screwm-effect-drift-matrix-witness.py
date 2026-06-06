@@ -58,7 +58,7 @@ POV_STATIONS: tuple[Station, ...] = (
     ("aoa-pause", (-320.0, -1780.0, 208.0), AOA_LOOKAT),
     ("right-borrowed-view", (860.0, -1000.0, 184.0), (1180.0, -1120.0, 240.0)),
     ("right-media-window", (250.0, -1420.0, 220.0), (1580.0, 400.0, 650.0)),
-    ("far-garden-view", (420.0, -430.0, 220.0), (0.0, -555.0, 242.0)),
+    ("far-garden-view", (720.0, 260.0, 240.0), (-260.0, 980.0, 330.0)),
     ("brio-operator-ir-ward", (-700.0, -1320.0, 700.0), (-1180.0, -1320.0, 650.0)),
     ("brio-room-ir-ward", (-700.0, 400.0, 700.0), (-1180.0, 400.0, 650.0)),
     ("brio-synths-ir-ward", (-700.0, -2240.0, 1220.0), (-1180.0, -2240.0, 1180.0)),
@@ -608,6 +608,31 @@ def _frame_stats(path: Path) -> tuple[float | None, list[int] | None]:
         return None, None
 
 
+def _single_frame_metrics(path: Path) -> dict[str, float] | None:
+    """Return bounded still-frame visibility metrics for one witness PNG."""
+    try:
+        from PIL import Image, ImageFilter, ImageStat
+
+        with Image.open(path) as image:
+            gray = image.convert("L")
+            stat = ImageStat.Stat(gray)
+            hist = gray.histogram()
+            total = sum(hist)
+            edge = ImageStat.Stat(gray.filter(ImageFilter.FIND_EDGES))
+    except Exception:
+        return None
+
+    if total <= 0:
+        return None
+    return {
+        "mean_luma": round(stat.mean[0] / 255.0, 6),
+        "std_luma": round(stat.stddev[0] / 255.0, 6),
+        "black_ratio": round(sum(hist[:12]) / total, 6),
+        "white_ratio": round(sum(hist[244:]) / total, 6),
+        "edge_energy": round(edge.mean[0] / 255.0, 6),
+    }
+
+
 def _mean(values: list[float]) -> float:
     if not values:
         return 0.0
@@ -996,6 +1021,9 @@ def capture_pov_sweep(
                 timeout_s=timeout_s,
                 require_obs_websocket=require_obs_websocket,
             )
+            stats = _single_frame_metrics(Path(str(entry["obs"]["path"])))
+            if stats is not None:
+                entry["obs"].update(stats)
         captures[label] = entry
     return captures
 
