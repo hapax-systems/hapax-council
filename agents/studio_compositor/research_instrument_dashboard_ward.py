@@ -18,8 +18,9 @@ Data sources:
 
 * Active research condition: ``shared.research_marker.read_marker()``
   reads ``/dev/shm/hapax-compositor/research-marker.json``. A missing
-  / stale marker resolves to "no active condition" — the ward renders
-  the panel header alone, no rows.
+  / stale marker resolves to "no active condition" — when the feature
+  flag is on the ward still renders an explicit inactive instrument
+  panel rather than a dead atlas cell.
 * Claims: ``~/hapax-state/research-claims.yaml`` (operator-authored).
   Schema: ``claims: [{id, metric, target_condition, status}]`` where
   status ∈ {``passing``, ``failing``, ``unverified``}. A missing /
@@ -286,12 +287,10 @@ class ResearchInstrumentDashboardCairoSource(HomageTransitionalSource):
     BitchX-aligned active package. Status glyphs are bracket-grammar
     ASCII — no emoji, fits BitchX grammar.
 
-    The ward renders transparent when the feature flag is off OR
-    there is no active research marker AND no claims. Empty state
-    with an active marker but zero claims renders the chrome + header
-    + the active condition line, no grid — this is correct: it tells
-    the viewer "research is configured but no claims are being
-    tracked yet."
+    The ward renders transparent when the feature flag is off. When the
+    feature flag is on, even the no-marker/no-claims state renders the
+    chrome + header + inactive lines; a mounted Screwm ward should never
+    be a dead atlas cell.
     """
 
     source_id: str = "research_instrument_dashboard"
@@ -331,11 +330,6 @@ class ResearchInstrumentDashboardCairoSource(HomageTransitionalSource):
 
         now = time.time()
         self._maybe_refresh(now)
-
-        # Empty state: no marker, no claims → don't paint at all so the
-        # ward doesn't squat on screen with a useless chrome.
-        if self._cached_marker_id is None and not self._cached_claims:
-            return
 
         moksha = _moksha_package()
         bitchx = _bitchx_package()
@@ -382,9 +376,10 @@ class ResearchInstrumentDashboardCairoSource(HomageTransitionalSource):
         header_font = _font_description(moksha, 13, bold=True)
         style = TextStyle(text=label, font_description=header_font, color_rgba=header_color)
         text_w, text_h = measure_text(cr, style)
-        # Centered on top edge, cuts the bracket chrome.
+        # Keep the label inside the surface; the Screwm ward atlas crops each
+        # cell exactly to source bounds, so edge-straddling text is lost.
         text_x = (w - text_w) / 2
-        text_y = -text_h / 2 + FRAME_BORDER_PX / 2
+        text_y = FRAME_BORDER_PX + 2.0
         # Gap-fill behind the label so the bracket chrome doesn't show
         # through the glyphs.
         cr.set_source_rgba(*bg)
@@ -467,6 +462,41 @@ class ResearchInstrumentDashboardCairoSource(HomageTransitionalSource):
         condition_color = _resolve(bitchx, "terminal_default")
         metric_color = _resolve(bitchx, "terminal_default")
         cell_font = _font_description(bitchx, 12)
+
+        if not rows:
+            muted = _resolve(bitchx, "muted")
+            row_y = inner_y + GRID_ROW_HEIGHT_PX
+            render_text(
+                cr,
+                TextStyle(
+                    text="inactive",
+                    font_description=cell_font,
+                    color_rgba=muted,
+                ),
+                x=cell_x_condition,
+                y=row_y,
+            )
+            render_text(
+                cr,
+                TextStyle(
+                    text="no claims tracked",
+                    font_description=cell_font,
+                    color_rgba=muted,
+                ),
+                x=cell_x_metric,
+                y=row_y,
+            )
+            render_text(
+                cr,
+                TextStyle(
+                    text="- idle",
+                    font_description=cell_font,
+                    color_rgba=muted,
+                ),
+                x=cell_x_status,
+                y=row_y,
+            )
+            return
 
         for i, row in enumerate(rows, start=1):
             row_y = inner_y + i * GRID_ROW_HEIGHT_PX
