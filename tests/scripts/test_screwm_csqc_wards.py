@@ -18,7 +18,7 @@ def _load_script(path: str) -> dict:
     return runpy.run_path(str(REPO_ROOT / path), run_name="__test__")
 
 
-def test_csqc_sources_define_all_legacy_ward_labels() -> None:
+def test_csqc_sources_define_all_in_world_ward_labels() -> None:
     body = (CSQC_DIR / "wards.qc").read_text(encoding="utf-8")
 
     assert "CSQC_UpdateView" in body
@@ -31,6 +31,13 @@ def test_csqc_sources_define_all_legacy_ward_labels() -> None:
         assert f'"{ordinal:02d}"' in body
         assert f"data/ward-{ordinal:02d}.txt" in body
         assert f"screwm_w{ordinal:02d}" in body
+
+    assert 'screwm_draw_ward_label(\'0 -360 172\', "18", "BOPIR"' in body
+    assert 'screwm_draw_ward_label(\'74 -360 172\', "19", "BRMIR"' in body
+    assert 'screwm_draw_ward_label(\'222 -360 64\', "35", "BSYIR"' in body
+    assert 'screwm_draw_ward_label(\'0 -360 172\', "18", "M8"' not in body
+    assert 'screwm_draw_ward_label(\'74 -360 172\', "19", "DECK"' not in body
+    assert 'screwm_draw_ward_label(\'222 -360 64\', "35", "SCOPE"' not in body
 
 
 def test_csqc_text_overlay_is_not_the_default_ward_surface() -> None:
