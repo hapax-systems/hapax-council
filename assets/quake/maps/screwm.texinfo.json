@@ -1,522 +1,522 @@
 {
 	"0" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"1" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"10" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"11" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"12" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"13" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"14" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"15" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"16" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"17" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"18" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"19" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"2" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"20" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"21" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"22" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"23" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"24" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"25" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"26" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"27" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"28" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"29" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"3" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"30" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"31" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"32" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"33" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"34" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"35" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"36" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"37" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"38" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"39" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"4" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"40" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"41" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"42" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"43" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"44" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"45" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"46" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"47" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"48" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"49" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"5" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"50" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"51" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"6" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"7" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"8" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	},
 	"9" : 
 	{
-		"minlight" : 16.0,
+		"minlight" : 36.0,
 		"minlight_color" : 
 		[
-			30,
-			35,
-			45
+			45,
+			51,
+			61
 		]
 	}
 }

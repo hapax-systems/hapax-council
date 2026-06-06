@@ -5,8 +5,8 @@
 "message" "The Screwm [Research]"
 "wad" "screwm.wad"
 "fog" "0.05 0.03 0.04 0.07"
-"_minlight" "16"
-"_minlight_color" "0.12 0.14 0.18"
+"_minlight" "36"
+"_minlight_color" "0.18 0.20 0.24"
 // section: sealed-scroom-shell
 {
 ( -2080 -2550 -80 ) ( -2080 1440 -80 ) ( -2080 -2550 -64 ) skip 0 0 0 16 16
@@ -4879,7 +4879,7 @@
 {
 "classname" "light"
 "origin" "0 -2380 164"
-"light" "149"
+"light" "354"
 "_color" "0.5 0.65 0.8"
 }
 
@@ -4887,7 +4887,7 @@
 {
 "classname" "light"
 "origin" "-320 -2200 168"
-"light" "168"
+"light" "258"
 "_color" "0.5 0.65 0.8"
 }
 
@@ -4895,15 +4895,15 @@
 {
 "classname" "light"
 "origin" "-860 -1880 184"
-"light" "191"
+"light" "264"
 "_color" "0.5 0.65 0.8"
 }
 
 // review-fill-light 4
 {
 "classname" "light"
-"origin" "-1040 -1480 196"
-"light" "210"
+"origin" "-600 -1300 196"
+"light" "324"
 "_color" "0.5 0.65 0.8"
 }
 
@@ -4911,7 +4911,7 @@
 {
 "classname" "light"
 "origin" "-320 -900 182"
-"light" "219"
+"light" "288"
 "_color" "0.5 0.65 0.8"
 }
 
@@ -4919,15 +4919,15 @@
 {
 "classname" "light"
 "origin" "860 -1000 184"
-"light" "201"
+"light" "270"
 "_color" "0.5 0.65 0.8"
 }
 
 // review-fill-light 7
 {
 "classname" "light"
-"origin" "1040 -1480 196"
-"light" "177"
+"origin" "600 -1300 196"
+"light" "324"
 "_color" "0.5 0.65 0.8"
 }
 
@@ -4935,7 +4935,7 @@
 {
 "classname" "light"
 "origin" "420 -430 220"
-"light" "154"
+"light" "222"
 "_color" "0.5 0.65 0.8"
 }
 
@@ -5017,6 +5017,54 @@
 "origin" "0 -549 224"
 "light" "170"
 "_color" "0.5 0.65 0.8"
+}
+
+// review-shell-light review-entry-floor-rake
+{
+"classname" "light"
+"origin" "0 -2220 22"
+"light" "430"
+"_color" "0.82 0.7 0.46"
+}
+
+// review-shell-light review-entry-left-wall-skim
+{
+"classname" "light"
+"origin" "-860 -2160 278"
+"light" "390"
+"_color" "0.42 0.82 1.0"
+}
+
+// review-shell-light review-entry-right-wall-skim
+{
+"classname" "light"
+"origin" "860 -2160 278"
+"light" "390"
+"_color" "1.0 0.48 0.7"
+}
+
+// review-shell-light review-entry-ceiling-return
+{
+"classname" "light"
+"origin" "0 -2030 1590"
+"light" "330"
+"_color" "0.54 0.78 1.0"
+}
+
+// review-shell-light review-left-media-reader
+{
+"classname" "light"
+"origin" "-720 -1220 330"
+"light" "340"
+"_color" "0.42 0.88 1.0"
+}
+
+// review-shell-light review-right-media-reader
+{
+"classname" "light"
+"origin" "720 -1220 330"
+"light" "340"
+"_color" "1.0 0.52 0.72"
 }
 
 // ward-garden-light 01: token_pole

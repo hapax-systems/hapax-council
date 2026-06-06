@@ -242,15 +242,20 @@ SYNTHWAVE_TICKER_WARDS = {9, 22, 27}
 SPECIAL_WARD_POSITIONS = {
     36: (0, WARD_Y_TOP + 5 * WARD_Y_STEP, FLOOR_Z + 92),
 }
+REVIEW_WORLD_MINLIGHT = 36
+REVIEW_WORLD_MINLIGHT_COLOR = "0.18 0.20 0.24"
+REVIEW_FILL_BASE_MULTIPLIER = 1.18
+REVIEW_FILL_SCALES = (1.18, 0.86, 0.88, 1.08, 0.96, 0.90, 1.08, 0.74)
+REVIEW_MEDIA_TARGET_CLEARANCE = 24
 
 GARDEN_CAMERA_STATIONS = [
     ("entry-stone", (0, -2380, 164), (0, AOA_Y, AOA_Z)),
     ("threshold-stone", (-320, -2200, 168), (AOA_X, AOA_Y, AOA_Z)),
     ("left-borrowed-view", (-860, -1880, 184), (-1180, -1600, 240)),
-    ("left-media-window", (-1040, -1480, 196), (-1580, -1320, 230)),
+    ("left-media-window", (-600, -1300, 196), (-1580, -780, 532)),
     ("aoa-pause", (-320, -900, 182), (AOA_X, AOA_Y, AOA_Z)),
     ("right-borrowed-view", (860, -1000, 184), (1180, -1120, 240)),
-    ("right-media-window", (1040, -1480, 196), (1580, -1320, 230)),
+    ("right-media-window", (600, -1300, 196), (1580, -780, 532)),
     ("far-garden-view", (420, -430, 220), (AOA_X, AOA_Y, AOA_Z + 18)),
 ]
 
@@ -2527,9 +2532,9 @@ def lights(preset):
 
     # Review fill lights live inside the scroom corridor. They keep the fixed
     # POV critiqueable without turning the scene into a flat/fullbright level.
-    review_fill = int(level_light * 0.92)
+    review_fill = int(level_light * REVIEW_FILL_BASE_MULTIPLIER)
     for idx, (_name, (x, y, z), _target) in enumerate(GARDEN_CAMERA_STATIONS, start=1):
-        scale = (0.64, 0.72, 0.82, 0.90, 0.94, 0.86, 0.76, 0.66)[idx - 1]
+        scale = REVIEW_FILL_SCALES[idx - 1]
         entities.append(
             f"// review-fill-light {idx}\n"
             "{\n"
@@ -2554,6 +2559,35 @@ def lights(preset):
     for name, (x, y, z), value, (r, g, b) in scroom_keys:
         entities.append(
             f"// {name}\n"
+            "{\n"
+            '"classname" "light"\n'
+            f'"origin" "{x} {y} {z}"\n'
+            f'"light" "{value}"\n'
+            f'"_color" "{r} {g} {b}"\n'
+            "}"
+        )
+    return entities
+
+
+def review_shell_lights(_preset):
+    """Stable iteration-review washers for entry and media inspection POVs."""
+    lightspecs = [
+        ("review-entry-floor-rake", (0, ROOM_Y_MIN + 330, FLOOR_Z + 86), 430, (0.82, 0.70, 0.46)),
+        ("review-entry-left-wall-skim", (-860, ROOM_Y_MIN + 390, 278), 390, (0.42, 0.82, 1.00)),
+        ("review-entry-right-wall-skim", (860, ROOM_Y_MIN + 390, 278), 390, (1.00, 0.48, 0.70)),
+        (
+            "review-entry-ceiling-return",
+            (0, ROOM_Y_MIN + 520, CEIL_Z - 170),
+            330,
+            (0.54, 0.78, 1.00),
+        ),
+        ("review-left-media-reader", (-720, -1220, 330), 340, (0.42, 0.88, 1.00)),
+        ("review-right-media-reader", (720, -1220, 330), 340, (1.00, 0.52, 0.72)),
+    ]
+    entities = []
+    for name, (x, y, z), value, (r, g, b) in lightspecs:
+        entities.append(
+            f"// review-shell-light {name}\n"
             "{\n"
             '"classname" "light"\n'
             f'"origin" "{x} {y} {z}"\n'
@@ -2715,8 +2749,8 @@ def generate_map(preset):
     lines.append(f'"message" "{preset["message"]}"')
     lines.append('"wad" "screwm.wad"')
     lines.append(f'"fog" "{preset["fog"]}"')
-    lines.append('"_minlight" "16"')
-    lines.append('"_minlight_color" "0.12 0.14 0.18"')
+    lines.append(f'"_minlight" "{REVIEW_WORLD_MINLIGHT}"')
+    lines.append(f'"_minlight_color" "{REVIEW_WORLD_MINLIGHT_COLOR}"')
     for brush in worldspawn_brushes:
         lines.append(brush)
     lines.append("}")
@@ -2733,6 +2767,7 @@ def generate_map(preset):
         + aoa_payload_lights(preset)
         + scroom_scene_graph_lights(preset)
         + scroom_local_effect_lights(preset)
+        + review_shell_lights(preset)
         + ward_review_lights(preset)
         + ward_lights(preset)
         + source_lights(preset)
@@ -2761,6 +2796,15 @@ def compile_map(map_path: Path, output_dir: Path, *, full_vis: bool = False):
             print(f"    WARNING: {cmd[0]} returned {result.returncode}")
         else:
             print("    OK")
+    normalize_generated_text(output_dir / f"{bsp_name}.prt")
+
+
+def normalize_generated_text(path: Path):
+    """Keep external map-tool text artifacts compatible with git diff checks."""
+    if not path.exists():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines()
+    path.write_text("\n".join(line.rstrip() for line in lines) + "\n", encoding="utf-8")
 
 
 def main():

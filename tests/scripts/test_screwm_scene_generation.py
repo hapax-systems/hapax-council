@@ -23,6 +23,55 @@ def _brush_face_textures(content: str, marker: str) -> list[str]:
     return [line.split()[15] for line in block.splitlines() if line.startswith("( ")]
 
 
+def _station_by_name(module: dict, name: str) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    stations = {
+        station_name: (origin, target)
+        for station_name, origin, target in module["GARDEN_CAMERA_STATIONS"]
+    }
+    return stations[name]
+
+
+def _pane_rect(
+    module: dict, idx: int
+) -> tuple[str, float, tuple[float, float], tuple[float, float]]:
+    x, y, z = module["ward_review_position"](idx)
+    facing = module["ward_garden_facing"](idx)
+    w, h = module["ward_pane_dimensions"](idx)
+    if facing == "x":
+        return "x", float(x), (y - w / 2, y + w / 2), (z - h / 2, z + h / 2)
+    return "y", float(y), (x - w / 2, x + w / 2), (z - h / 2, z + h / 2)
+
+
+def _line_intersects_pane(
+    origin: tuple[int, int, int],
+    target: tuple[int, int, int],
+    pane: tuple[str, float, tuple[float, float], tuple[float, float]],
+    *,
+    margin: float,
+) -> bool:
+    axis, plane, axis_span, z_span = pane
+    axis_idx = 0 if axis == "x" else 1
+    denom = target[axis_idx] - origin[axis_idx]
+    if abs(denom) < 1e-9:
+        return False
+    t = (plane - origin[axis_idx]) / denom
+    if not 0 < t < 1:
+        return False
+    x = origin[0] + (target[0] - origin[0]) * t
+    y = origin[1] + (target[1] - origin[1]) * t
+    z = origin[2] + (target[2] - origin[2]) * t
+    axis_coord = y if axis == "x" else x
+    return (
+        axis_span[0] - margin <= axis_coord <= axis_span[1] + margin
+        and z_span[0] - margin <= z <= z_span[1] + margin
+    )
+
+
+def _visual_angle(width: int, origin: tuple[int, int, int], target: tuple[int, int, int]) -> float:
+    distance = math.sqrt(sum((target[i] - origin[i]) ** 2 for i in range(3)))
+    return math.degrees(2 * math.atan((width / 2) / distance))
+
+
 def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments() -> None:
     module = _load_script("scripts/generate-screwm-map.py")
     content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
@@ -42,6 +91,7 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert content.count("// ward-glow ") == 0
     assert content.count("// ward-light ") == 0
     assert content.count("// review-fill-light ") == 8
+    assert content.count("// review-shell-light ") == 6
     assert content.count("// ward-garden-light ") == len(module["ACTIVE_WARD_INDICES"])
     rectangular_ward_indices = {
         idx
@@ -202,6 +252,55 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert "aoa-attendant-sphere 01: yt-media-face-strip yt_sphere" not in content
     assert "aoa-attendant-sphere-cross 01: yt-media-face-side yt_sphere" not in content
     assert '"origin" "0 -555 224"' in content
+
+
+def test_screwm_review_lighting_floor_is_deliberate_not_fullbright() -> None:
+    module = _load_script("scripts/generate-screwm-map.py")
+    content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
+
+    assert module["REVIEW_WORLD_MINLIGHT"] == 36
+    assert module["REVIEW_WORLD_MINLIGHT_COLOR"] == "0.18 0.20 0.24"
+    assert 1.10 <= module["REVIEW_FILL_BASE_MULTIPLIER"] <= 1.30
+    assert module["REVIEW_FILL_SCALES"][0] >= 1.15
+    assert module["REVIEW_FILL_SCALES"][3] >= 1.0
+    assert module["REVIEW_FILL_SCALES"][6] >= 1.0
+    assert '"_minlight" "36"' in content
+    assert '"_minlight_color" "0.18 0.20 0.24"' in content
+    assert "// review-shell-light review-entry-floor-rake" in content
+    assert "// review-shell-light review-entry-left-wall-skim" in content
+    assert "// review-shell-light review-entry-right-wall-skim" in content
+    assert "// review-shell-light review-left-media-reader" in content
+    assert "// review-shell-light review-right-media-reader" in content
+    assert '"_minlight" "255"' not in content
+
+
+def test_screwm_media_window_review_targets_clear_camera_sources() -> None:
+    module = _load_script("scripts/generate-screwm-map.py")
+    sources = {source["role"]: source for source in module["SOURCE_ANCHORS"]}
+    expected = {
+        "left-media-window": ("brio-room", (-600, -1300, 196), (-1580, -780, 532)),
+        "right-media-window": ("c920-room", (600, -1300, 196), (1580, -780, 532)),
+    }
+
+    for station_name, (source_role, expected_origin, expected_target) in expected.items():
+        origin, target = _station_by_name(module, station_name)
+        source = sources[source_role]
+
+        assert origin == expected_origin
+        assert target == expected_target
+        assert _visual_angle(source["w"], origin, tuple(source["pos"])) >= 40
+
+        blockers = [
+            (idx, module["WARD_ANCHORS"][idx - 1])
+            for idx in sorted(module["ACTIVE_WARD_INDICES"])
+            if _line_intersects_pane(
+                origin,
+                target,
+                _pane_rect(module, idx),
+                margin=module["REVIEW_MEDIA_TARGET_CLEARANCE"],
+            )
+        ]
+        assert blockers == []
 
 
 def test_screwm_drift_graph_physically_touches_every_ward_anchor() -> None:
@@ -542,8 +641,8 @@ def test_screwm_review_geometry_keeps_wards_primary_not_architecture() -> None:
     assert "SCROOM_GARDEN_LANTERNS" in source
     assert "AOA_SPHERE_FACE_SIZE" in source
     assert "AOA_SPHERE_STRIP_COUNT = 0" in source
-    assert '"_minlight" "16"' in source
-    assert '"_minlight_color" "0.12 0.14 0.18"' in source
+    assert "REVIEW_WORLD_MINLIGHT = 36" in source
+    assert 'REVIEW_WORLD_MINLIGHT_COLOR = "0.18 0.20 0.24"' in source
     assert "scene_quad.wgsl" in source
     assert "No diagnostic floor crosshair" in source
     assert "No physical drift graph stones" in source
