@@ -404,6 +404,18 @@
       "capture_fps": 10,
       "texture_fps": 6,
       "resolution_basis": "runtime-contained-ir-greyscale-340p10-live-texture-6fps",
+      "runtime_substitute": {
+        "active": true,
+        "mode": "always",
+        "configured_device": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index2",
+        "substitute_source_id": "c920-desk",
+        "substitute_kind": "raw-bgra-camera",
+        "substitute_raw_path": "/dev/shm/hapax-compositor/quake-live-cam-c920-desk.raw.bgra",
+        "substitute_raw_meta": "/dev/shm/hapax-compositor/quake-live-cam-c920-desk.raw.json",
+        "substitute_raw_size": [1280, 720],
+        "reason": "ir_endpoint_unavailable:c920_desk_rgb_substitute",
+        "restore_condition": "Remove the forced substitute only after a bounded STREAMON/read probe proves 9726C031 index2 no longer wedges the BRIO UVC device."
+      },
       "freshness": "live-camera-frame",
       "consent_or_license": "operator-owned-local-camera",
       "purpose": "synths-area IR ward instrument as a direct in-world live texture",
