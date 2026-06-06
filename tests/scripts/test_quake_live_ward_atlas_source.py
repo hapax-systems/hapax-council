@@ -97,6 +97,17 @@ def test_ward_atlas_places_brio_ir_feeds_in_explicit_cells() -> None:
     assert atlas.WARD_LABELS["brio-synths-ir"] == "BRIO SYN IR"
 
 
+def test_ward_atlas_default_layout_constructs_aoa_oarb_state_source() -> None:
+    atlas = _load_atlas()
+
+    assert atlas.WARD_IDS[3] == "aoa_oarb_state"
+    backends, errors = atlas._construct_backends(atlas.DEFAULT_LAYOUT)  # noqa: SLF001
+
+    assert "aoa_oarb_state" not in errors
+    assert "aoa_oarb_state" in backends
+    assert "aoa_oarb_state" in backends["aoa_oarb_state"].ids()
+
+
 def test_ward_atlas_success_cells_are_borderless_source_surfaces(tmp_path: Path) -> None:
     atlas = _load_atlas()
     ward_id = atlas.WARD_IDS[0]

@@ -31,6 +31,7 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "token_pole",
         "album",
         "stream_overlay",
+        "aoa_oarb_state",
         "sierpinski",
         "reverie",
         "darkplaces",
@@ -170,6 +171,7 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         "token_pole": "cairo",
         "album": "cairo",
         "stream_overlay": "cairo",
+        "aoa_oarb_state": "cairo",
         "sierpinski": "cairo",
         "reverie": "shm_rgba",
         "darkplaces": "v4l2",
@@ -393,6 +395,26 @@ def test_default_json_stream_overlay_source_is_registered() -> None:
     assert cls.__name__ == "StreamOverlayCairoSource"
 
 
+def test_default_json_aoa_oarb_state_source_backs_screwm_ward_atlas() -> None:
+    from agents.studio_compositor.cairo_sources import get_cairo_source_class
+
+    raw = json.loads(DEFAULT_JSON.read_text())
+    layout = Layout.model_validate(raw)
+
+    source = next((s for s in layout.sources if s.id == "aoa_oarb_state"), None)
+    assert source is not None
+    assert source.kind == "cairo"
+    assert source.backend == "cairo"
+    assert source.params.get("class_name") == "AoaOarbStateCairoSource"
+    assert source.params.get("natural_w") == 540
+    assert source.params.get("natural_h") == 180
+    assert source.update_cadence == "rate"
+    assert source.rate_hz == 1.0
+    assert source.ward_id == "aoa-oarb-state"
+    assert {"screwm", "aoa", "oarb", "ward", "state"}.issubset(source.tags)
+    assert get_cairo_source_class("AoaOarbStateCairoSource").__name__ == "AoaOarbStateCairoSource"
+
+
 # chat_ambient retired 2026-04-23 (PR #1239 — aspect-ratio mismatch).
 # Original test pinned its binding to ChatAmbientWard; the source and
 # surface are no longer in default.json so the pin is obsolete.
@@ -419,6 +441,7 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "token_pole",
         "album",
         "stream_overlay",
+        "aoa_oarb_state",
         "sierpinski",
         "reverie",
         "darkplaces",

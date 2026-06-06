@@ -78,6 +78,7 @@ class TestStartLayoutOnly:
             "activity_header",
             "activity_variety_log",
             "album",
+            "aoa_oarb_state",
             "ascii_schematic",
             "brio-operator-ir",
             "brio-room-ir",
@@ -225,6 +226,7 @@ class TestStartLayoutOnly:
         expected = {
             "token_pole",
             "album",
+            "aoa_oarb_state",
             "stream_overlay",
             "sierpinski",
             "reverie",
