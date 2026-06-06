@@ -4,6 +4,8 @@ After=hapax-video42-format-guard.service studio-compositor.service
 Requires=hapax-video42-format-guard.service studio-compositor.service
 BindsTo=studio-compositor.service
 PartOf=studio-compositor.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-bridge
 
 [Service]
@@ -15,6 +17,11 @@ ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-bridge
 Restart=on-failure
 RestartSec=1s
 TimeoutStartSec=45s
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
 Environment=GST_DEBUG=2
 Environment=HAPAX_V4L2_BRIDGE_DEVICE=/dev/video42
 Environment=HAPAX_V4L2_BRIDGE_ENABLED=1

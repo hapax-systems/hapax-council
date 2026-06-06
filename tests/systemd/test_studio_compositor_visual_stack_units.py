@@ -279,6 +279,8 @@ def test_v4l2_bridge_runs_from_activation_worktree_and_is_supervised_by_studio()
     )
     assert parser.get("Unit", "BindsTo") == "studio-compositor.service"
     assert parser.get("Unit", "PartOf") == "studio-compositor.service"
+    assert parser.get("Unit", "StartLimitIntervalSec") == "300"
+    assert parser.get("Unit", "StartLimitBurst") == "5"
     assert parser.get("Unit", "ConditionPathExists") == f"{SOURCE_ROOT}/scripts/hapax-v4l2-bridge"
     assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
     assert parser.get("Service", "ExecStart").startswith(f"{SOURCE_ROOT}/scripts/hapax-v4l2-bridge")
@@ -286,6 +288,12 @@ def test_v4l2_bridge_runs_from_activation_worktree_and_is_supervised_by_studio()
     assert "hapax-compositor-runtime-source-check" in exec_start_pre
     assert "hapax-v4l2-video42-format-guard --verify-only" in exec_start_pre
     assert parser.get("Service", "Restart") == "on-failure"
+    assert parser.get("Service", "RestartSec") == "1s"
+    assert parser.get("Service", "PrivateTmp") == "yes"
+    assert parser.get("Service", "NoNewPrivileges") == "yes"
+    assert parser.get("Service", "CapabilityBoundingSet") == ""
+    assert parser.get("Service", "AmbientCapabilities") == ""
+    assert parser.get("Service", "RestrictSUIDSGID") == "yes"
     lines = _active_unit_lines(BRIDGE)
     assert any("HAPAX_V4L2_BRIDGE_WAIT_SECONDS=60" in line for line in lines)
     assert any("HAPAX_V4L2_BRIDGE_ENABLED=1" in line for line in lines)
