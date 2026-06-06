@@ -1705,7 +1705,7 @@ def test_darkplaces_state_export_normalizes_all_in_scroom_ward_activity() -> Non
                 "activity_header",
                 "coding-session-reveal",
                 "programme-banner",
-                "m8-display",
+                "brio-operator-ir",
                 "cbip-dual-ir-displacement",
             ]
         }
@@ -1751,6 +1751,20 @@ def test_darkplaces_state_export_falls_back_to_current_layout_active_wards(
     assert lines["ward-active-34.txt"] == "1.0000"
     assert lines["ward-active-01.txt"] == "0.0000"
     assert "PROGRAMME_BANNER SEGMENT_CONTENT" in ward_lines["06"]
+
+
+def test_darkplaces_state_export_labels_explicit_brio_ir_wards(tmp_path: Path) -> None:
+    exporter = _load_exporter()
+    shm_dir = tmp_path / "shm"
+    shm_dir.mkdir()
+
+    _write_json(shm_dir / "unified-reactivity.json", {"blended": {"rms": 0.42, "onset": 0.73}})
+
+    ward_lines = exporter.build_ward_lines(shm_dir)
+
+    assert ward_lines["18"] == "BRIO OP IR RMS 042%"
+    assert ward_lines["19"] == "BRIO ROOM IR ON 073%"
+    assert ward_lines["35"] == "BRIO SYN IR RMS 042% ON 073%"
 
 
 def test_darkplaces_state_export_writes_camera_source_scalars(tmp_path: Path) -> None:
@@ -1925,7 +1939,7 @@ def test_darkplaces_state_export_builds_aoa_pane_binding_scalars(tmp_path: Path)
                 "whos_here",
                 "durf",
                 "coding_session_reveal",
-                "m8-display",
+                "brio-operator-ir",
             ]
         },
     )

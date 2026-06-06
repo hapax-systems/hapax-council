@@ -77,13 +77,14 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     content = module["generate_map"](module["MODE_PRESETS"]["rnd"])
 
     assert len(module["WARD_ANCHORS"]) == 36
-    assert module["WARD_ATLAS_VISIBLE_INDICES"] == frozenset(set(range(1, 37)) - {18, 19})
-    assert module["ACTIVE_WARD_INDICES"] == frozenset(set(range(1, 37)) - {18, 19})
+    assert module["WARD_ATLAS_VISIBLE_INDICES"] == frozenset(range(1, 37))
+    assert module["ACTIVE_WARD_INDICES"] == frozenset(range(1, 37))
     assert module["WARD_ATLAS_MOUNT"]["texture"] == "ward_atlas"
-    assert module["WARD_ATLAS_MOUNT"]["active_visible_indices"] == sorted(
-        set(range(1, 37)) - {18, 19}
-    )
-    assert module["WARD_ATLAS_MOUNT"]["activation_policy"] == ("all-wards-live-34-of-36")
+    assert module["WARD_ATLAS_MOUNT"]["active_visible_indices"] == list(range(1, 37))
+    assert module["WARD_ATLAS_MOUNT"]["activation_policy"] == ("all-wards-spatialized-36-of-36")
+    assert module["WARD_ANCHORS"][17] == "brio-operator-ir"
+    assert module["WARD_ANCHORS"][18] == "brio-room-ir"
+    assert module["WARD_ANCHORS"][34] == "brio-synths-ir"
     assert module["STATIC_WARD_MOUNT_PROFILE"] == "state-ward-instrument"
     assert content.count("// ward-anchor ") == 0
     assert content.count("// ward-depth-plate ") == 0
@@ -193,7 +194,9 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert "// ward-homage-receiver 02: album ward_atlas" in content
     assert "// ward-garden-pane 02: album ward_atlas" not in content
     assert "// ward-homage-receiver 01: token_pole ward_atlas" in content
-    assert "// ward-homage-receiver 35: m8_oscilloscope ward_atlas" in content
+    assert "// ward-homage-receiver 18: brio-operator-ir ward_atlas" in content
+    assert "// ward-homage-receiver 19: brio-room-ir ward_atlas" in content
+    assert "// ward-homage-receiver 35: brio-synths-ir ward_atlas" in content
     before_receivers, receiver_tail = content.split("// section: scroom-drift-receiver-strips")
     _receivers, after_receivers = receiver_tail.split("// section: scroom-local-effect-lenses")
     non_receiver_content = before_receivers + after_receivers
@@ -943,6 +946,7 @@ def test_screwm_map_inventory_matches_default_non_darkplaces_sources() -> None:
     )
     default_sources = {source["id"] for source in default_layout["sources"]} - {"darkplaces"}
     default_sources.discard("sierpinski")
+    default_sources.difference_update({"m8-display", "steamdeck-display", "m8_oscilloscope"})
     default_sources.add("aoa_oarb_state")
 
     assert set(module["WARD_ANCHORS"]) == default_sources

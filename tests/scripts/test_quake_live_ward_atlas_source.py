@@ -86,6 +86,17 @@ def _write_drift_state(game_data: Path) -> None:
         (game_data / filename).write_text(value + "\n", encoding="utf-8")
 
 
+def test_ward_atlas_places_brio_ir_feeds_in_explicit_cells() -> None:
+    atlas = _load_atlas()
+
+    assert atlas.WARD_IDS[17] == "brio-operator-ir"
+    assert atlas.WARD_IDS[18] == "brio-room-ir"
+    assert atlas.WARD_IDS[34] == "brio-synths-ir"
+    assert atlas.WARD_LABELS["brio-operator-ir"] == "BRIO OP IR"
+    assert atlas.WARD_LABELS["brio-room-ir"] == "BRIO ROOM IR"
+    assert atlas.WARD_LABELS["brio-synths-ir"] == "BRIO SYN IR"
+
+
 def test_ward_atlas_success_cells_are_borderless_source_surfaces(tmp_path: Path) -> None:
     atlas = _load_atlas()
     ward_id = atlas.WARD_IDS[0]

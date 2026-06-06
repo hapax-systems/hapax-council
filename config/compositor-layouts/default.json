@@ -377,6 +377,75 @@
       "ward_id": null
     },
     {
+      "id": "brio-operator-ir",
+      "kind": "external_rgba",
+      "backend": "shm_rgba",
+      "params": {
+        "natural_w": 340,
+        "natural_h": 340,
+        "shm_path": "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.raw.bgra",
+        "sidecar_path": "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.raw.json",
+        "max_age_s": 8.0
+      },
+      "update_cadence": "always",
+      "rate_hz": null,
+      "tags": [
+        "brio",
+        "ir",
+        "screwm",
+        "ward"
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": "brio-operator-ir"
+    },
+    {
+      "id": "brio-room-ir",
+      "kind": "external_rgba",
+      "backend": "shm_rgba",
+      "params": {
+        "natural_w": 340,
+        "natural_h": 340,
+        "shm_path": "/dev/shm/hapax-compositor/quake-live-ir-brio-room.raw.bgra",
+        "sidecar_path": "/dev/shm/hapax-compositor/quake-live-ir-brio-room.raw.json",
+        "max_age_s": 8.0
+      },
+      "update_cadence": "always",
+      "rate_hz": null,
+      "tags": [
+        "brio",
+        "ir",
+        "screwm",
+        "ward"
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": "brio-room-ir"
+    },
+    {
+      "id": "brio-synths-ir",
+      "kind": "external_rgba",
+      "backend": "shm_rgba",
+      "params": {
+        "natural_w": 340,
+        "natural_h": 340,
+        "shm_path": "/dev/shm/hapax-compositor/quake-live-ir-brio-synths.raw.bgra",
+        "sidecar_path": "/dev/shm/hapax-compositor/quake-live-ir-brio-synths.raw.json",
+        "max_age_s": 8.0
+      },
+      "update_cadence": "always",
+      "rate_hz": null,
+      "tags": [
+        "brio",
+        "ir",
+        "screwm",
+        "ward"
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": "brio-synths-ir"
+    },
+    {
       "id": "egress_footer",
       "kind": "cairo",
       "backend": "cairo",

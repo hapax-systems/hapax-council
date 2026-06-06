@@ -100,8 +100,8 @@ WARD_ACTIVITY_EXPORTS: tuple[tuple[str, str], ...] = (
     ("15", "whos_here"),
     ("16", "durf"),
     ("17", "coding_session_reveal"),
-    ("18", "m8-display"),
-    ("19", "steamdeck-display"),
+    ("18", "brio-operator-ir"),
+    ("19", "brio-room-ir"),
     ("20", "egress_footer"),
     ("21", "programme_banner"),
     ("22", "precedent_ticker"),
@@ -117,7 +117,7 @@ WARD_ACTIVITY_EXPORTS: tuple[tuple[str, str], ...] = (
     ("32", "tufte_density"),
     ("33", "ascii_schematic"),
     ("34", "segment_content"),
-    ("35", "m8_oscilloscope"),
+    ("35", "brio-synths-ir"),
     ("36", "cbip_dual_ir_displacement"),
 )
 
@@ -805,8 +805,8 @@ def build_ward_lines(shm_dir: Path) -> dict[str, str]:
         "15": _one_line(f"HERE {int(token.get('active_viewers', 0))} VIEW", limit=34),
         "16": _one_line(f"DURF {role}", limit=34),
         "17": _one_line(f"CODE {topic}", limit=44),
-        "18": _one_line(f"M8 RMS {rms}", limit=34),
-        "19": _one_line(f"DECK ONSET {onset}", limit=34),
+        "18": _one_line(f"BRIO OP IR RMS {rms}", limit=34),
+        "19": _one_line(f"BRIO ROOM IR ON {onset}", limit=34),
         "20": _one_line(f"EGRESS {progress}", limit=34),
         "21": _one_line(f"{role}: {topic}", limit=48),
         "22": _one_line(f"PRECED {source_line or role}", limit=44),
@@ -822,7 +822,7 @@ def build_ward_lines(shm_dir: Path) -> dict[str, str]:
         "32": _one_line(f"TUFTE {active_count:02d} WARDS", limit=34),
         "33": _one_line(f"ASCII {progress}", limit=34),
         "34": beat or "SEGMENT WAIT",
-        "35": _one_line(f"SCOPE RMS {rms} ON {onset}", limit=34),
+        "35": _one_line(f"BRIO SYN IR RMS {rms} ON {onset}", limit=34),
         "36": _one_line(f"IRDUAL {rms}/{onset}", limit=34),
     }
 

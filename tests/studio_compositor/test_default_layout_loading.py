@@ -47,6 +47,9 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "coding_session_reveal",
         "m8-display",
         "steamdeck-display",
+        "brio-operator-ir",
+        "brio-room-ir",
+        "brio-synths-ir",
         "egress_footer",
         "gem",
         "programme_banner",
@@ -183,6 +186,9 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         "coding_session_reveal": "cairo",
         "m8-display": "shm_rgba",
         "steamdeck-display": "shm_rgba",
+        "brio-operator-ir": "shm_rgba",
+        "brio-room-ir": "shm_rgba",
+        "brio-synths-ir": "shm_rgba",
         "egress_footer": "cairo",
         "programme_banner": "cairo",
         "precedent_ticker": "cairo",
@@ -275,6 +281,28 @@ def test_default_json_cbip_dual_ir_points_at_brio_raw_ir_frames() -> None:
             "height": 340,
         },
     ]
+
+
+def test_default_json_exposes_brio_ir_feeds_as_first_class_ward_sources() -> None:
+    raw = json.loads(DEFAULT_JSON.read_text())
+    layout = Layout.model_validate(raw)
+    sources = {source.id: source for source in layout.sources}
+
+    expected = {
+        "brio-operator-ir": "quake-live-ir-brio-operator",
+        "brio-room-ir": "quake-live-ir-brio-room",
+        "brio-synths-ir": "quake-live-ir-brio-synths",
+    }
+    for source_id, stem in expected.items():
+        source = sources[source_id]
+        assert source.kind == "external_rgba"
+        assert source.backend == "shm_rgba"
+        assert source.params["natural_w"] == 340
+        assert source.params["natural_h"] == 340
+        assert source.params["shm_path"] == f"/dev/shm/hapax-compositor/{stem}.raw.bgra"
+        assert source.params["sidecar_path"] == f"/dev/shm/hapax-compositor/{stem}.raw.json"
+        assert source.params["max_age_s"] == 8.0
+        assert source.ward_id == source_id
 
 
 def test_default_json_operator_quadrant_defaults() -> None:
@@ -407,6 +435,9 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "coding_session_reveal",
         "m8-display",
         "steamdeck-display",
+        "brio-operator-ir",
+        "brio-room-ir",
+        "brio-synths-ir",
         "egress_footer",
         "gem",
         "programme_banner",

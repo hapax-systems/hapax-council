@@ -204,6 +204,25 @@ class TestSourceRegistryDispatch:
         assert isinstance(backend, ShmRgbaReader)
         assert backend._max_age_s == 5.0
 
+    def test_dispatch_shm_rgba_honors_explicit_sidecar_path(self):
+        from agents.studio_compositor.shm_rgba_reader import ShmRgbaReader
+
+        registry = SourceRegistry()
+        src = SourceSchema(
+            id="brio-operator-ir",
+            kind="external_rgba",
+            backend="shm_rgba",
+            params={
+                "natural_w": 340,
+                "natural_h": 340,
+                "shm_path": "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.raw.bgra",
+                "sidecar_path": "/dev/shm/hapax-compositor/quake-live-ir-brio-operator.raw.json",
+            },
+        )
+        backend = registry.construct_backend(src)
+        assert isinstance(backend, ShmRgbaReader)
+        assert str(backend._sidecar_path).endswith("quake-live-ir-brio-operator.raw.json")
+
     def test_dispatch_shm_rgba_missing_path_raises(self):
         registry = SourceRegistry()
         src = SourceSchema(

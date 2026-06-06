@@ -98,8 +98,8 @@ WARD_ANCHORS = [
     "whos_here",
     "durf",
     "coding_session_reveal",
-    "m8-display",
-    "steamdeck-display",
+    "brio-operator-ir",
+    "brio-room-ir",
     "egress_footer",
     "programme_banner",
     "precedent_ticker",
@@ -115,7 +115,7 @@ WARD_ANCHORS = [
     "tufte_density",
     "ascii_schematic",
     "segment_content",
-    "m8_oscilloscope",
+    "brio-synths-ir",
     "cbip_dual_ir_displacement",
 ]
 
@@ -137,8 +137,8 @@ WARD_DOMAINS = {
     "whos_here": "presence",
     "durf": "perception",
     "coding_session_reveal": "cognition",
-    "m8-display": "music",
-    "steamdeck-display": "music",
+    "brio-operator-ir": "perception",
+    "brio-room-ir": "perception",
     "egress_footer": "director",
     "programme_banner": "director",
     "precedent_ticker": "director",
@@ -154,7 +154,7 @@ WARD_DOMAINS = {
     "tufte_density": "cognition",
     "ascii_schematic": "cognition",
     "segment_content": "communication",
-    "m8_oscilloscope": "music",
+    "brio-synths-ir": "perception",
     "cbip_dual_ir_displacement": "perception",
 }
 
@@ -170,12 +170,15 @@ WARD_DEPTH_PLANES = {
     "thinking_indicator": "surface-scrim",
     "whos_here": "surface-scrim",
     "durf": "beyond-scrim",
+    "brio-operator-ir": "near-surface",
+    "brio-room-ir": "near-surface",
     "egress_footer": "surface-scrim",
     "programme_banner": "surface-scrim",
     "precedent_ticker": "surface-scrim",
     "chronicle_ticker": "surface-scrim",
     "programme_state": "surface-scrim",
     "segment_content": "surface-scrim",
+    "brio-synths-ir": "near-surface",
 }
 
 WARD_DEPTH_STYLES = {
@@ -2797,6 +2800,7 @@ def compile_map(map_path: Path, output_dir: Path, *, full_vis: bool = False):
         else:
             print("    OK")
     normalize_generated_text(output_dir / f"{bsp_name}.prt")
+    normalize_generated_text(output_dir / f"{bsp_name}.texinfo.json")
 
 
 def normalize_generated_text(path: Path):
