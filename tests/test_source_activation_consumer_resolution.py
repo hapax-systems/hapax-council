@@ -169,6 +169,22 @@ class TestCcPrMergeWatcherSourceResolution:
         assert any("scripts/cc-pr-merge-watcher.py" in line for line in execution_lines)
 
 
+class TestReformCompleteSourceResolution:
+    def test_reform_complete_unit_uses_deploy_worktree_with_explicit_coord_repo(self) -> None:
+        text = (UNITS_DIR / "hapax-reform-complete.service").read_text()
+        execution_lines = [
+            line
+            for line in text.splitlines()
+            if line.startswith(("ExecStart=", "ConditionPathExists="))
+        ]
+
+        assert execution_lines
+        assert all("%h/projects/hapax-council" not in line for line in execution_lines)
+        assert any("%h/.cache/hapax/rebuild/worktree" in line for line in execution_lines)
+        assert any("scripts/hapax-reform-complete" in line for line in execution_lines)
+        assert any("--coord-repo %h/projects/hapax-coord" in line for line in execution_lines)
+
+
 class TestDeployChainServiceSourceResolution:
     UNIT_REQUIRE_FILES = {
         "hapax-daimonion.service": "agents/hapax_daimonion/__main__.py",
