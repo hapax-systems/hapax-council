@@ -141,12 +141,27 @@ class SecretCustodyPointerRecord(RegistryRecord):
         return self
 
 
+class BackupIntendedState(StrEnum):
+    ENABLED = "enabled"
+    PAUSED = "paused"
+    RETIRED = "retired"
+
+
+class BackupObservedState(BaseModel):
+    load_state: str
+    active_state: str
+    witnessed_at: datetime
+
+
 class BackupPolicyRecord(RegistryRecord):
     store_id: str
     method: str
     cadence: str
     offsite: bool
     target_host: HostId | None = None
+    unit_name: str | None = None
+    intended_state: BackupIntendedState = Field(...)
+    observed_state: BackupObservedState | None = None
 
 
 class HostStorageRegistry(BaseModel):
@@ -195,6 +210,8 @@ _PYDANTIC_VALIDATORS = (
 )
 
 __all__ = [
+    "BackupIntendedState",
+    "BackupObservedState",
     "BackupPolicyRecord",
     "DeviceIdentityRecord",
     "DeviceRef",
