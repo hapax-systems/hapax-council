@@ -136,6 +136,38 @@ def test_media_drift_uses_lightweight_camera_tier(tmp_path: Path) -> None:
     assert "camera:test" not in renderer._history
 
 
+def test_media_drift_treats_direct_ir_brio_slots_as_camera_receivers(tmp_path: Path) -> None:
+    module = _load_module()
+    game_data = tmp_path / "data"
+    _write_state(game_data)
+    renderer = module["MediaDriftRenderer"](game_data=game_data)
+    width = 48
+    height = 24
+    frame = bytes((10, 40, 120, 255)) * (width * height)
+
+    first = renderer.apply(
+        frame, width=width, height=height, receiver="ir-brio-operator", frame=1, now=4.0
+    )
+    second = renderer.apply(
+        frame, width=width, height=height, receiver="ir-brio-operator", frame=2, now=4.3
+    )
+
+    assert module["_receiver_is_camera"]("ir-brio-operator")
+    assert module["_receiver_gain"]("ir-brio-operator") == module["_receiver_gain"]("camera:test")
+    assert first != frame
+    assert second != frame
+    assert "ir-brio-operator" not in renderer._history
+
+
+def test_media_drift_keeps_ir_ward_view_labels_on_ward_tier() -> None:
+    module = _load_module()
+
+    assert not module["_receiver_is_camera"]("brio-operator-ir-ward")
+    assert module["_receiver_gain"]("brio-operator-ir-ward") == module["_receiver_gain"](
+        "ward-atlas"
+    )
+
+
 def test_media_drift_uses_slotdrift_variance_scalars(tmp_path: Path) -> None:
     module = _load_module()
     game_data = tmp_path / "data"

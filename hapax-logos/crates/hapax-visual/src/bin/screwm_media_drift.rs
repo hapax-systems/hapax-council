@@ -1038,10 +1038,10 @@ mod tests {
     #[test]
     fn slot_config_parse_derives_paths_and_receiver_class() {
         let slots = parse_slot_configs(
-            " yt:2048x1024:1.6:sphere-front:1820x1024:0c0b0d, ward-atlas:2048x2304:1.3, ticker-grounding:1344x176 ",
+            " yt:2048x1024:1.6:sphere-front:1820x1024:0c0b0d, ward-atlas:2048x2304:1.3, ticker-grounding:1344x176, ir-brio-operator:340x340 ",
         )
         .unwrap();
-        assert_eq!(slots.len(), 3);
+        assert_eq!(slots.len(), 4);
 
         let atlas = &slots[0];
         assert_eq!(atlas.name, "yt");
@@ -1088,6 +1088,18 @@ mod tests {
         );
         assert_eq!(ticker.class, ReceiverClass::Ticker);
         assert_eq!(ticker.intensity, 1.0);
+
+        let ir = &slots[3];
+        assert_eq!(ir.name, "ir-brio-operator");
+        assert_eq!(
+            ir.raw_path,
+            Path::new(SHM_DIR).join("quake-live-ir-brio-operator.raw.bgra")
+        );
+        assert_eq!(
+            ir.out_path,
+            Path::new(SHM_DIR).join("quake-live-ir-brio-operator.bgra")
+        );
+        assert_eq!(ir.class, ReceiverClass::Camera);
     }
 
     #[test]
