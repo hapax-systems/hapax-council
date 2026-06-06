@@ -3,7 +3,7 @@ name: Local Backup
 version: "1.0.0"
 category: observability
 reports_to: operator
-peers: [backup_remote]
+peers: [backup_gdrive_critical]
 depends_on: []
 
 purpose: Tier 1 daily backup to the NAS restic repository — dumps PostgreSQL with pg_dumpall, snapshots Qdrant, exports n8n, then runs restic backup.
@@ -49,4 +49,6 @@ narrative: |
   collection snapshots, exports n8n workflows, and captures Docker volume
   metadata. It then runs restic to back up the configured path set, including
   the llm-stack file tree, to /mnt/nas/backups/restic. This is the first line of
-  defense against data loss.
+  defense against data loss. Offsite coverage for critical material is paired
+  with `backup_gdrive_critical`; broad Backblaze B2 remote backup is retired as
+  a required routine lane.

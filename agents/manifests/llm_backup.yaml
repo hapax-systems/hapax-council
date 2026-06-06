@@ -3,10 +3,10 @@ name: LLM Stack Backup
 version: "1.0.0"
 category: observability
 reports_to: operator
-peers: [backup_local, backup_remote]
+peers: [backup_local, backup_gdrive_critical]
 depends_on: []
 
-purpose: Deprecated compatibility receipt for the retired standalone LLM stack backup lane. Active coverage lives in backup_local and backup_remote.
+purpose: Deprecated compatibility receipt for the retired standalone LLM stack backup lane. Active coverage lives in backup_local and backup_gdrive_critical.
 inputs:
   - Legacy llm-backup timer invocation
 outputs:
@@ -41,5 +41,5 @@ narrative: |
   The LLM Stack Backup agent is retained only as a compatibility receipt for
   the retired standalone LLM-stack backup script. It does not create backup
   artifacts. Canonical LLM-stack data protection is owned by the Tier 1 local
-  and Tier 2 remote backup agents, which capture PostgreSQL, Qdrant, n8n,
-  Docker metadata, system configuration, and the llm-stack file tree.
+  backup plus the bounded GDrive critical offsite lane. Broad Backblaze B2
+  remote backup is retired as a required routine lane.

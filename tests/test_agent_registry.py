@@ -242,7 +242,16 @@ class TestTimerAgents:
         assert et["briefing"] == "daily-briefing.timer"
         assert "llm_backup" in et
         assert "backup_local" in et
-        assert "backup_remote" in et
+        assert "backup_gdrive_critical" in et
+        assert "backup_remote" not in et
+
+    def test_backup_remote_is_retired_on_demand(self, registry):
+        remote = registry.get_agent("backup_remote")
+        assert remote is not None
+        assert remote.schedule.type == ScheduleType.ON_DEMAND
+        assert remote.service_tier == 3
+        assert "retired" in remote.purpose.lower()
+        assert "backup_remote" not in registry.expected_timers()
 
     def test_expected_timers_matches_legacy(self, registry):
         """Verify registry-derived timers are a superset of the old YAML file."""
