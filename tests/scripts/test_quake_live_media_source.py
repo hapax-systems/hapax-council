@@ -677,7 +677,7 @@ def test_low_light_brio_ir_roles_use_histeq_before_bgra(tmp_path: Path) -> None:
     device = tmp_path / "video-ir"
     device.write_bytes(b"")
 
-    for role in ("brio-room-ir", "brio-synths-ir"):
+    for role in ("brio-operator-ir", "brio-room-ir", "brio-synths-ir"):
         args = Namespace(
             source="camera",
             camera_role=role,
@@ -705,38 +705,9 @@ def test_low_light_brio_ir_roles_use_histeq_before_bgra(tmp_path: Path) -> None:
         assert args.resolved_camera_visibility_profile == "brio-ir-low-light"
 
 
-def test_operator_ir_role_keeps_unmodified_visibility_profile(tmp_path: Path) -> None:
-    module = _load_module()
-    device = tmp_path / "video-ir"
-    device.write_bytes(b"")
-    args = Namespace(
-        source="camera",
-        camera_role="brio-operator-ir",
-        camera_device=str(device),
-        camera_format="gray",
-        camera_size="340x340",
-        camera_fps=10,
-        fps=6,
-        width=340,
-        height=340,
-        projection="flat",
-        mask="none",
-        mask_background="0c0b0d",
-        camera_visibility_profile="auto",
-        fallback_reason="",
-    )
-
-    command = module["_ffmpeg_command"](args, 340, 340)
-    vf = command[command.index("-vf") + 1]
-
-    assert "histeq=" not in vf
-    assert vf == "fps=6,format=bgra"
-    assert args.resolved_camera_visibility_profile == "none"
-
-
 def test_brio_ir_env_files_declare_visibility_profiles() -> None:
     expected = {
-        "brio-operator-ir.env": "HAPAX_QUAKE_CAMERA_VISIBILITY_PROFILE=none",
+        "brio-operator-ir.env": "HAPAX_QUAKE_CAMERA_VISIBILITY_PROFILE=brio-ir-low-light",
         "brio-room-ir.env": "HAPAX_QUAKE_CAMERA_VISIBILITY_PROFILE=brio-ir-low-light",
         "brio-synths-ir.env": "HAPAX_QUAKE_CAMERA_VISIBILITY_PROFILE=brio-ir-low-light",
     }

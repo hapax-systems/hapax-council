@@ -23,8 +23,8 @@ DEFAULT_COLUMNS = 32
 DEFAULT_CELL_SIZE = 64
 DEFAULT_FPS = 4.0
 FACE_COUNT = 1024
-GEOMETRY_REVISION = "aoa-regular-tetrix-v6-expanded-iteration-perfect-fit-oarb"
-LEAF_FACE_EDGE_UNITS = 81.12
+GEOMETRY_REVISION = "aoa-regular-tetrix-v7-30pct-larger-perfect-fit-oarb"
+LEAF_FACE_EDGE_UNITS = 105.46
 FACE_OPERABILITY_CONTRACT = "stable-independent-control-per-rendered-fractal-face"
 
 
