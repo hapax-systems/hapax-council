@@ -30,7 +30,7 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -383,6 +383,7 @@ def sdlc_slice_wrap(
     already_attached: bool | None = None,
     systemd_run: str | None = _DETECT,
     slice_available: bool | None = None,
+    setenv: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Prefix ``argv`` with ``systemd-run --user --scope --slice=hapax-sdlc.slice``
     so the launched lane AND its git/pytest/cargo grandchildren inherit cpu.idle +
@@ -402,7 +403,17 @@ def sdlc_slice_wrap(
         slice_available = sdlc_slice_available(systemd_run)
     if not slice_available:
         return argv
-    return [systemd_run, "--user", "--scope", "--quiet", f"--slice={SDLC_SLICE}", "--", *argv]
+    setenv_args = [f"--setenv={key}={value}" for key, value in sorted((setenv or {}).items())]
+    return [
+        systemd_run,
+        "--user",
+        "--scope",
+        "--quiet",
+        f"--slice={SDLC_SLICE}",
+        *setenv_args,
+        "--",
+        *argv,
+    ]
 
 
 # ── L3 chokepoint: block-and-wait while closed (queue, never drop) ───────────

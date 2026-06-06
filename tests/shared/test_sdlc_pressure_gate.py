@@ -183,6 +183,24 @@ def test_slice_wrap_prefixes_systemd_run_scope() -> None:
     assert wrapped[-4:] == ["hapax-claude-headless", "--task", "t", "zeta"]
 
 
+def test_slice_wrap_preserves_explicit_dispatch_environment() -> None:
+    wrapped = sdlc_slice_wrap(
+        ["hapax-claude-headless", "--task", "t", "alpha"],
+        already_attached=False,
+        systemd_run="/usr/bin/systemd-run",
+        slice_available=True,
+        setenv={
+            "HAPAX_CLAUDE_HEADLESS_WORKDIR": "/tmp/clean-worktree",
+            "HAPAX_DISPATCH_HOST": "local",
+        },
+    )
+
+    separator = wrapped.index("--")
+    assert "--setenv=HAPAX_CLAUDE_HEADLESS_WORKDIR=/tmp/clean-worktree" in wrapped[:separator]
+    assert "--setenv=HAPAX_DISPATCH_HOST=local" in wrapped[:separator]
+    assert wrapped[separator + 1 :] == ["hapax-claude-headless", "--task", "t", "alpha"]
+
+
 def test_slice_wrap_is_noop_when_already_attached() -> None:
     argv = ["hapax-codex-headless", "cx-amber"]
     assert (

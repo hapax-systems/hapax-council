@@ -92,8 +92,14 @@ export HAPAX_SESSION_ID="$SESSION_UUID"
 mkdir -p "$HOME/.cache/hapax" 2>/dev/null || true
 printf '%s\n' "$ROLE" >"$HOME/.cache/hapax/session-role-$SESSION_UUID" 2>/dev/null || true
 
-WORKDIR="$HOME/projects/hapax-council"
-[[ "$ROLE" != "alpha" ]] && WORKDIR="$HOME/projects/hapax-council--$ROLE"
+WORKDIR="${HAPAX_CLAUDE_HEADLESS_WORKDIR:-}"
+if [[ -n "$WORKDIR" && "$WORKDIR" == "~/"* ]]; then
+  WORKDIR="$HOME/${WORKDIR#"~/"}"
+fi
+if [[ -z "$WORKDIR" ]]; then
+  WORKDIR="$HOME/projects/hapax-council"
+  [[ "$ROLE" != "alpha" ]] && WORKDIR="$HOME/projects/hapax-council--$ROLE"
+fi
 [[ -d "$WORKDIR" ]] || { echo "hapax-claude-headless: worktree not found: $WORKDIR" >&2; exit 3; }
 
 export PATH="$WORKDIR/scripts:$PATH"

@@ -1054,7 +1054,13 @@ def _sliced_call(args: list[str], env: dict[str, str] | None = None) -> int:
     base_env = dict(os.environ) if env is None else env
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return subprocess.call(list(args), env=base_env)  # don't probe/create scopes in tests
-    wrapped = sdlc_slice_wrap(args)
+    explicit_env = {
+        key: value
+        for key, value in base_env.items()
+        if key.startswith(("HAPAX_", "CLAUDE_")) and os.environ.get(key) != value
+    }
+    explicit_env["HAPAX_SDLC_SLICE_ATTACHED"] = "1"
+    wrapped = sdlc_slice_wrap(args, setenv=explicit_env)
     if wrapped != list(args):
         base_env = {**base_env, "HAPAX_SDLC_SLICE_ATTACHED": "1"}
     return subprocess.call(wrapped, env=base_env)
@@ -1138,6 +1144,7 @@ def launch_claude_headless(task_id: str, lane: str, prompt: str, route: Platform
     if route.profile in {"opus", "sonnet"}:
         env["HAPAX_CLAUDE_MODEL"] = route.profile
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(lane_worktree(lane, "claude"))
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("claude", "headless")
     return _sliced_call([str(launcher), "--task", task_id, lane, prompt], env)
 
