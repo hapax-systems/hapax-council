@@ -45,3 +45,13 @@ def test_no_fail_open_task_pickup(launcher: Path) -> None:
     assert "self-claim highest eligible WSJF" not in text, (
         f"{launcher.name} contains fail-open WSJF self-claim instruction"
     )
+
+
+def test_antigrav_launcher_resolves_installed_agy_binary_name() -> None:
+    text = (REPO_ROOT / "scripts" / "hapax-antigrav").read_text()
+
+    assert "resolve_antigrav_bin()" in text
+    assert "HAPAX_ANTIGRAV_BIN" in text
+    assert "for candidate in agy antigravity" in text
+    assert "for candidate in /usr/bin/agy /usr/bin/antigravity" in text
+    assert "expected agy, antigravity, or HAPAX_ANTIGRAV_BIN" in text
