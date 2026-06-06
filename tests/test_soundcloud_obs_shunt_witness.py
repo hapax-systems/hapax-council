@@ -134,6 +134,21 @@ def test_obs_consumer_present_accepts_remap_numeric_target(
     assert witness_mod._obs_consumer_present(pw_dump) is True
 
 
+def test_systemd_environment_value_treats_malformed_environment_as_missing(
+    witness_mod: types.ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(witness_mod, "_run_text", lambda *_args, **_kwargs: 'BROKEN="unterminated')
+
+    assert (
+        witness_mod._systemd_environment_value(
+            "hapax-screwm-audio-reactivity.service",
+            "HAPAX_SCREWM_AUDIO_TARGET",
+        )
+        is None
+    )
+
+
 def test_build_status_accepts_canonical_soundcloud_obs_shunt(
     witness_mod: types.ModuleType,
     tmp_path: Path,
