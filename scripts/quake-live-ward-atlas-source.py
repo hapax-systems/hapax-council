@@ -37,6 +37,17 @@ DEFAULT_FPS = 2.0
 DEFAULT_STALE_SOURCE_SECONDS = 6.0
 DEFAULT_REVERIE_UNIFORMS = Path("/dev/shm/hapax-imagination/uniforms.json")
 DEFAULT_REVERIE_VISUAL_CHAIN = Path("/dev/shm/hapax-visual/screwm-visual-chain-state.json")
+VISIBILITY_SAMPLE_GRID = 96
+VISIBILITY_ALPHA_NONZERO_FLOOR = 0.01
+VISIBILITY_MEAN_LUMA_FLOOR = 0.08
+VISIBILITY_DETAIL_STD_FLOOR = 0.025
+VISIBILITY_DETAIL_EDGE_FLOOR = 0.006
+VISIBILITY_NEAR_BLACK_LUMA = 0.06
+VISIBILITY_BLACK_LUMA = 0.02
+VISIBILITY_WHITE_LUMA = 0.95
+VISIBILITY_NEAR_BLACK_RATIO_CEILING = 0.70
+VISIBILITY_BLACK_RATIO_CEILING = 0.90
+VISIBILITY_WHITE_RATIO_CEILING = 0.90
 
 WARD_IDS = [
     "token_pole",
@@ -184,6 +195,183 @@ def _surface_bgra_bytes(surface: cairo.ImageSurface, width: int, height: int) ->
     if stride == row_bytes:
         return data[: row_bytes * height]
     return b"".join(data[y * stride : y * stride + row_bytes] for y in range(height))
+
+
+def _luma_from_bgra(data: bytes, offset: int) -> float:
+    b = data[offset]
+    g = data[offset + 1]
+    r = data[offset + 2]
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+
+
+def _surface_visibility_stats(surface: cairo.ImageSurface) -> dict[str, float | int]:
+    """Return bounded pixel metrics for classifying weak live ward frames."""
+    surface.flush()
+    width = max(0, int(surface.get_width()))
+    height = max(0, int(surface.get_height()))
+    if width <= 0 or height <= 0:
+        return {
+            "sample_count": 0,
+            "mean_luma": 0.0,
+            "luma_std": 0.0,
+            "edge_energy": 0.0,
+            "near_black_ratio": 1.0,
+            "black_ratio": 1.0,
+            "white_ratio": 0.0,
+            "alpha_nonzero_ratio": 0.0,
+        }
+
+    stride = int(surface.get_stride())
+    data = bytes(surface.get_data())
+    x_step = max(1, width // VISIBILITY_SAMPLE_GRID)
+    y_step = max(1, height // VISIBILITY_SAMPLE_GRID)
+    sample_count = 0
+    alpha_nonzero = 0
+    near_black = 0
+    black = 0
+    white = 0
+    luma_sum = 0.0
+    luma_sq_sum = 0.0
+    edge_sum = 0.0
+    edge_count = 0
+
+    for y in range(0, height, y_step):
+        row = y * stride
+        for x in range(0, width, x_step):
+            offset = row + x * 4
+            luma = _luma_from_bgra(data, offset)
+            sample_count += 1
+            luma_sum += luma
+            luma_sq_sum += luma * luma
+            if data[offset + 3] > 2:
+                alpha_nonzero += 1
+            if luma <= VISIBILITY_NEAR_BLACK_LUMA:
+                near_black += 1
+            if luma <= VISIBILITY_BLACK_LUMA:
+                black += 1
+            if luma >= VISIBILITY_WHITE_LUMA:
+                white += 1
+
+            next_x = x + x_step
+            if next_x < width:
+                edge_sum += abs(luma - _luma_from_bgra(data, row + next_x * 4))
+                edge_count += 1
+            next_y = y + y_step
+            if next_y < height:
+                edge_sum += abs(luma - _luma_from_bgra(data, next_y * stride + x * 4))
+                edge_count += 1
+
+    if sample_count <= 0:
+        return {
+            "sample_count": 0,
+            "mean_luma": 0.0,
+            "luma_std": 0.0,
+            "edge_energy": 0.0,
+            "near_black_ratio": 1.0,
+            "black_ratio": 1.0,
+            "white_ratio": 0.0,
+            "alpha_nonzero_ratio": 0.0,
+        }
+
+    mean = luma_sum / sample_count
+    variance = max(0.0, (luma_sq_sum / sample_count) - (mean * mean))
+    return {
+        "sample_count": sample_count,
+        "mean_luma": round(mean, 6),
+        "luma_std": round(math.sqrt(variance), 6),
+        "edge_energy": round(edge_sum / max(1, edge_count), 6),
+        "near_black_ratio": round(near_black / sample_count, 6),
+        "black_ratio": round(black / sample_count, 6),
+        "white_ratio": round(white / sample_count, 6),
+        "alpha_nonzero_ratio": round(alpha_nonzero / sample_count, 6),
+    }
+
+
+def _visibility_thresholds() -> dict[str, float | int]:
+    return {
+        "sample_grid": VISIBILITY_SAMPLE_GRID,
+        "alpha_nonzero_floor": VISIBILITY_ALPHA_NONZERO_FLOOR,
+        "mean_luma_floor": VISIBILITY_MEAN_LUMA_FLOOR,
+        "detail_std_floor": VISIBILITY_DETAIL_STD_FLOOR,
+        "detail_edge_floor": VISIBILITY_DETAIL_EDGE_FLOOR,
+        "near_black_luma": VISIBILITY_NEAR_BLACK_LUMA,
+        "black_luma": VISIBILITY_BLACK_LUMA,
+        "white_luma": VISIBILITY_WHITE_LUMA,
+        "near_black_ratio_ceiling": VISIBILITY_NEAR_BLACK_RATIO_CEILING,
+        "black_ratio_ceiling": VISIBILITY_BLACK_RATIO_CEILING,
+        "white_ratio_ceiling": VISIBILITY_WHITE_RATIO_CEILING,
+    }
+
+
+def _visibility_classification(
+    *,
+    status: str,
+    stats: dict[str, float | int],
+) -> tuple[str, list[str]]:
+    if status not in {"rendered", "atlas-idle-scaffold"}:
+        return status, []
+
+    sample_count = int(stats.get("sample_count", 0))
+    mean_luma = float(stats.get("mean_luma", 0.0))
+    luma_std = float(stats.get("luma_std", 0.0))
+    edge_energy = float(stats.get("edge_energy", 0.0))
+    near_black_ratio = float(stats.get("near_black_ratio", 1.0))
+    black_ratio = float(stats.get("black_ratio", 1.0))
+    white_ratio = float(stats.get("white_ratio", 0.0))
+    alpha_nonzero_ratio = float(stats.get("alpha_nonzero_ratio", 0.0))
+    reasons: list[str] = []
+
+    if sample_count <= 0:
+        reasons.append("sample_count_empty")
+    if alpha_nonzero_ratio < VISIBILITY_ALPHA_NONZERO_FLOOR:
+        reasons.append("alpha_nonzero_ratio_below_floor")
+    if black_ratio > VISIBILITY_BLACK_RATIO_CEILING:
+        reasons.append("black_ratio_above_ceiling")
+    if near_black_ratio > VISIBILITY_NEAR_BLACK_RATIO_CEILING:
+        reasons.append("near_black_ratio_above_ceiling")
+    if white_ratio > VISIBILITY_WHITE_RATIO_CEILING:
+        reasons.append("white_ratio_above_ceiling")
+    if mean_luma < VISIBILITY_MEAN_LUMA_FLOOR:
+        reasons.append("mean_luma_below_floor")
+    if luma_std < VISIBILITY_DETAIL_STD_FLOOR and edge_energy < VISIBILITY_DETAIL_EDGE_FLOOR:
+        reasons.append("detail_below_floor")
+
+    if not reasons:
+        return "visible", []
+    if status == "atlas-idle-scaffold":
+        return "weak-idle-scaffold", reasons
+    return "weak-rendered", reasons
+
+
+def _visibility_summary(observed: dict[str, Any]) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    suspect_wards: list[dict[str, Any]] = []
+    for index, ward_id in enumerate(WARD_IDS, start=1):
+        ward = observed.get(ward_id)
+        if not isinstance(ward, dict):
+            continue
+        classification = str(
+            ward.get("visibility_classification") or ward.get("status") or "unknown"
+        )
+        counts[classification] = counts.get(classification, 0) + 1
+        if classification in {"fallback", "weak-rendered", "weak-idle-scaffold"}:
+            suspect_wards.append(
+                {
+                    "index": index,
+                    "ward_id": ward_id,
+                    "status": ward.get("status"),
+                    "visibility_classification": classification,
+                    "visibility_reasons": ward.get("visibility_reasons", []),
+                    "mean_luma": ward.get("mean_luma"),
+                    "luma_std": ward.get("luma_std"),
+                    "edge_energy": ward.get("edge_energy"),
+                    "near_black_ratio": ward.get("near_black_ratio"),
+                }
+            )
+    return {
+        "counts": counts,
+        "suspect_wards": suspect_wards,
+    }
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
@@ -568,6 +756,8 @@ def render_atlas(
                 "status": "direct-texture-owned",
                 "texture": DIRECT_TEXTURE_WARD_TEXTURES[ward_id],
                 "reason": "direct live texture owns this ward",
+                "visibility_classification": "direct-texture-owned",
+                "visibility_reasons": ["owned_by_direct_live_texture"],
             }
             continue
 
@@ -583,7 +773,12 @@ def render_atlas(
                 h=cell_height,
                 reason=errors.get(ward_id, "backend unavailable"),
             )
-            observed[ward_id] = {"status": "fallback", "reason": errors.get(ward_id)}
+            observed[ward_id] = {
+                "status": "fallback",
+                "reason": errors.get(ward_id),
+                "visibility_classification": "fallback",
+                "visibility_reasons": [str(errors.get(ward_id) or "backend unavailable")],
+            }
             continue
 
         try:
@@ -614,7 +809,12 @@ def render_atlas(
                 h=cell_height,
                 reason=errors.get(ward_id, "surface not fresh"),
             )
-            observed[ward_id] = {"status": "fallback", "reason": errors.get(ward_id)}
+            observed[ward_id] = {
+                "status": "fallback",
+                "reason": errors.get(ward_id),
+                "visibility_classification": "fallback",
+                "visibility_reasons": [str(errors.get(ward_id) or "surface not fresh")],
+            }
             continue
 
         status = "rendered"
@@ -631,15 +831,24 @@ def render_atlas(
                 status = "atlas-idle-scaffold"
 
         _blit_surface_into_cell(cr, src, x=x, y=y, w=cell_width, h=cell_height)
+        visibility_stats = _surface_visibility_stats(src)
+        visibility_classification, visibility_reasons = _visibility_classification(
+            status=status,
+            stats=visibility_stats,
+        )
         observed[ward_id] = {
             "status": status,
             "source_width": int(src.get_width()),
             "source_height": int(src.get_height()),
             "atlas_style": "borderless-no-grid",
+            "visibility_classification": visibility_classification,
+            "visibility_reasons": visibility_reasons,
+            **visibility_stats,
         }
 
     data = _surface_bgra_bytes(surface, width, height)
     drift_input_hash = _short_hash(data)
+    visibility_summary = _visibility_summary(observed)
     if gpu_drift_raw_output is not None:
         _atomic_write(gpu_drift_raw_output, data)
         payload = {
@@ -653,6 +862,8 @@ def render_atlas(
             "columns": columns,
             "ward_count": len(WARD_IDS),
             "wards": observed,
+            "visibility_thresholds": _visibility_thresholds(),
+            "visibility_summary": visibility_summary,
             "gpu_drift": True,
             "gpu_drift_raw_output": str(gpu_drift_raw_output),
             "gpu_drift_final_output": str(output),
@@ -697,6 +908,8 @@ def render_atlas(
         "columns": columns,
         "ward_count": len(WARD_IDS),
         "wards": observed,
+        "visibility_thresholds": _visibility_thresholds(),
+        "visibility_summary": visibility_summary,
         "drift_renderer": "quake-media-drift-v1",
         "drift_enabled": bool(getattr(drift_renderer, "enabled", False))
         if drift_renderer is not None

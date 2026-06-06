@@ -61,6 +61,20 @@ def _solid_surface(width: int, height: int, rgb: tuple[float, float, float]) -> 
     return surface
 
 
+def _checker_surface(width: int, height: int) -> cairo.ImageSurface:
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+    cr = cairo.Context(surface)
+    for y in range(0, height, 4):
+        for x in range(0, width, 4):
+            if ((x // 4) + (y // 4)) % 2:
+                cr.set_source_rgb(0.0, 0.9, 1.0)
+            else:
+                cr.set_source_rgb(1.0, 0.08, 0.55)
+            cr.rectangle(x, y, 4, 4)
+            cr.fill()
+    return surface
+
+
 def _transparent_surface(width: int, height: int) -> cairo.ImageSurface:
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
     cr = cairo.Context(surface)
@@ -175,6 +189,70 @@ def test_ward_atlas_success_cells_are_borderless_source_surfaces(tmp_path: Path)
     assert _pixel_bgra(data, 64, 32, 16) == (0, 0, 255, 255)
 
 
+def test_ward_atlas_classifies_low_detail_rendered_cells_as_weak(tmp_path: Path) -> None:
+    atlas = _load_atlas()
+    ward_id = atlas.WARD_IDS[0]
+    source = _solid_surface(64, 32, (0.01, 0.01, 0.01))
+    output = tmp_path / "atlas.bgra"
+    meta = tmp_path / "atlas.json"
+
+    observed, _errors = atlas.render_atlas(
+        output=output,
+        meta=meta,
+        layout_path=Path("/nonexistent-layout.json"),
+        width=64,
+        height=32,
+        columns=1,
+        cell_width=64,
+        cell_height=32,
+        frame_id=1,
+        backends={ward_id: _Registry(ward_id, source)},
+        errors={},
+    )
+
+    payload = json.loads(meta.read_text(encoding="utf-8"))
+    ward = observed[ward_id]
+    assert ward["status"] == "rendered"
+    assert ward["visibility_classification"] == "weak-rendered"
+    assert "mean_luma_below_floor" in ward["visibility_reasons"]
+    assert "near_black_ratio_above_ceiling" in ward["visibility_reasons"]
+    assert "detail_below_floor" in ward["visibility_reasons"]
+    assert payload["wards"][ward_id]["visibility_classification"] == "weak-rendered"
+    assert payload["visibility_summary"]["counts"]["weak-rendered"] == 1
+    assert payload["visibility_summary"]["suspect_wards"][0]["ward_id"] == ward_id
+    assert payload["visibility_thresholds"]["mean_luma_floor"] == atlas.VISIBILITY_MEAN_LUMA_FLOOR
+
+
+def test_ward_atlas_classifies_high_contrast_cells_as_visible(tmp_path: Path) -> None:
+    atlas = _load_atlas()
+    ward_id = atlas.WARD_IDS[0]
+    source = _checker_surface(64, 32)
+    output = tmp_path / "atlas.bgra"
+    meta = tmp_path / "atlas.json"
+
+    observed, _errors = atlas.render_atlas(
+        output=output,
+        meta=meta,
+        layout_path=Path("/nonexistent-layout.json"),
+        width=64,
+        height=32,
+        columns=1,
+        cell_width=64,
+        cell_height=32,
+        frame_id=1,
+        backends={ward_id: _Registry(ward_id, source)},
+        errors={},
+    )
+
+    ward = observed[ward_id]
+    assert ward["status"] == "rendered"
+    assert ward["visibility_classification"] == "visible"
+    assert ward["visibility_reasons"] == []
+    assert ward["mean_luma"] >= atlas.VISIBILITY_MEAN_LUMA_FLOOR
+    assert ward["luma_std"] >= atlas.VISIBILITY_DETAIL_STD_FLOOR
+    assert ward["edge_energy"] >= atlas.VISIBILITY_DETAIL_EDGE_FLOOR
+
+
 def test_ward_atlas_uses_idle_scaffold_for_transparent_activity_ward(
     tmp_path: Path,
 ) -> None:
@@ -275,6 +353,12 @@ def test_ward_atlas_gpu_drift_writes_raw_handoff_without_final_output(tmp_path: 
     assert payload["drift_receiver"] == "ward-atlas"
     assert payload["drift_input_hash"]
     assert payload["drift_output_hash"] == ""
+    assert payload["wards"][ward_id]["visibility_classification"] in {
+        "visible",
+        "weak-rendered",
+    }
+    assert "visibility_summary" in payload
+    assert "visibility_thresholds" in payload
 
 
 def test_ward_atlas_reserves_reverie_for_direct_texture_instead_of_proxying_it(
@@ -346,3 +430,5 @@ def test_ward_atlas_reserves_brio_ir_wards_for_direct_textures(tmp_path: Path) -
         assert observed[ward_id]["status"] == "direct-texture-owned"
         assert observed[ward_id]["texture"] == texture
         assert observed[ward_id]["reason"] == "direct live texture owns this ward"
+        assert observed[ward_id]["visibility_classification"] == "direct-texture-owned"
+        assert observed[ward_id]["visibility_reasons"] == ["owned_by_direct_live_texture"]
