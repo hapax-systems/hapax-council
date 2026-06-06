@@ -1,0 +1,403 @@
+{
+  "backup_policies": [
+    {
+      "cadence": "daily",
+      "command_host": "hapax-podium",
+      "locality_class": "same_host",
+      "method": "restic-nas",
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:37Z",
+      "offsite": false,
+      "recency_class": "live",
+      "store_id": "local-nas-restic",
+      "target_host": "hapax-podium",
+      "unit_name": "hapax-backup-local.timer",
+      "intended_state": "enabled"
+    },
+    {
+      "cadence": "daily",
+      "command_host": "hapax-podium",
+      "locality_class": "same_host",
+      "method": "restic-gdrive",
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:37Z",
+      "offsite": true,
+      "recency_class": "live",
+      "store_id": "gdrive-critical-restic",
+      "target_host": "hapax-podium",
+      "unit_name": "hapax-backup-gdrive-critical.timer",
+      "intended_state": "enabled"
+    },
+    {
+      "cadence": "daily",
+      "command_host": "hapax-podium",
+      "locality_class": "same_host",
+      "method": "rclone-gdrive",
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:37Z",
+      "offsite": true,
+      "recency_class": "live",
+      "store_id": "gdrive-sync",
+      "target_host": "hapax-podium",
+      "unit_name": "gdrive-sync.timer",
+      "intended_state": "enabled"
+    },
+    {
+      "cadence": "retired",
+      "command_host": "hapax-podium",
+      "locality_class": "same_host",
+      "method": "restic-b2",
+      "next_action": "Keep retired unless operator explicitly reopens B2 capacity policy",
+      "observed_at": "2026-06-06T14:38:37Z",
+      "offsite": true,
+      "recency_class": "live",
+      "store_id": "b2-restic-offsite",
+      "target_host": "hapax-podium",
+      "unit_name": "hapax-backup-remote.timer",
+      "intended_state": "retired"
+    }
+  ],
+  "devices": [
+    {
+      "by_id": [
+        "ata-Samsung_SSD_870_EVO_1TB_S6PTNL0YA01820L",
+        "wwn-0x5002538f55a071dc"
+      ],
+      "command_host": "hapax-podium",
+      "kernel_names": [
+        "/dev/sda"
+      ],
+      "locality_class": "same_host",
+      "model": "Samsung SSD 870 EVO 1TB",
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:37Z",
+      "presence": "present",
+      "recency_class": "live",
+      "serial": "S6PTNL0YA01820L",
+      "target_host": "hapax-podium",
+      "transport": "sata"
+    },
+    {
+      "by_id": [
+        "ata-Samsung_SSD_870_EVO_1TB_S8HUNS0YC03008L",
+        "wwn-0x5002538635c0e311"
+      ],
+      "command_host": "hapax-podium",
+      "kernel_names": [
+        "/dev/sdb"
+      ],
+      "locality_class": "same_host",
+      "model": "Samsung SSD 870 EVO 1TB",
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:37Z",
+      "presence": "present",
+      "recency_class": "live",
+      "serial": "S8HUNS0YC03008L",
+      "target_host": "hapax-podium",
+      "transport": "sata"
+    },
+    {
+      "by_id": [
+        "nvme-eui.002538b43140370a",
+        "nvme-Samsung_SSD_980_PRO_with_Heatsink_1TB_S6WSNS0W406658B",
+        "nvme-Samsung_SSD_980_PRO_with_Heatsink_1TB_S6WSNS0W406658B_1"
+      ],
+      "command_host": "hapax-podium",
+      "kernel_names": [
+        "/dev/nvme0n1"
+      ],
+      "locality_class": "same_host",
+      "model": "Samsung SSD 980 PRO with Heatsink 1TB",
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:37Z",
+      "presence": "present",
+      "recency_class": "live",
+      "serial": "S6WSNS0W406658B",
+      "target_host": "hapax-podium",
+      "transport": "nvme"
+    },
+    {
+      "by_id": [
+        "ata-T-FORCE_2TB_TPBF2510310070101576"
+      ],
+      "command_host": "hapax-podium",
+      "kernel_names": [
+        "/dev/sda"
+      ],
+      "locality_class": "cross_host_ssh",
+      "model": "T-FORCE 2TB",
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:38Z",
+      "presence": "present",
+      "recency_class": "live",
+      "serial": "TPBF2510310070101576",
+      "target_host": "hapax-appendix",
+      "transport": "sata"
+    },
+    {
+      "by_id": [
+        "nvme-eui.002538a16140879d",
+        "nvme-Samsung_SSD_9100_PRO_2TB_S7YCNJ0L100668Y",
+        "nvme-Samsung_SSD_9100_PRO_2TB_S7YCNJ0L100668Y_1"
+      ],
+      "command_host": "hapax-podium",
+      "kernel_names": [
+        "/dev/nvme0n1"
+      ],
+      "locality_class": "cross_host_ssh",
+      "model": "Samsung SSD 9100 PRO 2TB",
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:38Z",
+      "presence": "present",
+      "recency_class": "live",
+      "serial": "S7YCNJ0L100668Y",
+      "target_host": "hapax-appendix",
+      "transport": "nvme"
+    },
+    {
+      "by_id": [
+        "nvme-eui.e8238fa6bf530001001b448b4d9f872d",
+        "nvme-WD_BLACK_SN7100_1TB_24511K802589",
+        "nvme-WD_BLACK_SN7100_1TB_24511K802589_1"
+      ],
+      "command_host": "hapax-podium",
+      "kernel_names": [
+        "/dev/nvme1n1"
+      ],
+      "locality_class": "cross_host_ssh",
+      "model": "WD_BLACK SN7100 1TB",
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:38Z",
+      "presence": "present",
+      "recency_class": "live",
+      "serial": "24511K802589",
+      "target_host": "hapax-appendix",
+      "transport": "nvme"
+    }
+  ],
+  "hosts": [
+    {
+      "command_host": "hapax-podium",
+      "function_class": [
+        "production",
+        "control-plane",
+        "thin-client"
+      ],
+      "host_id": "hapax-podium",
+      "hostname": "hapax-podium",
+      "lan_ip_hint": "192.168.68.85",
+      "locality_class": "same_host",
+      "machine_anchor": "S6WSNS0W406658B",
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:37Z",
+      "recency_class": "live",
+      "ssh_alias": null,
+      "ssh_reachable_from": [
+        "hapax-podium"
+      ],
+      "tailscale_ip": "100.117.1.83",
+      "tailscale_name": "hapax-podium"
+    },
+    {
+      "command_host": "hapax-podium",
+      "function_class": [
+        "dev-execution",
+        "observability-target"
+      ],
+      "host_id": "hapax-appendix",
+      "hostname": "hapax-appendix",
+      "lan_ip_hint": "192.168.68.50",
+      "locality_class": "cross_host_ssh",
+      "machine_anchor": "TPBF2510310070101576",
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:38Z",
+      "recency_class": "live",
+      "ssh_alias": "appendix",
+      "ssh_reachable_from": [
+        "hapax-podium"
+      ],
+      "tailscale_ip": "100.85.131.41",
+      "tailscale_name": "hapax-appendix"
+    }
+  ],
+  "mounts": [
+    {
+      "command_host": "hapax-podium",
+      "device_ref": {
+        "serial": "S6PTNL0YA01820L",
+        "target_host": "hapax-podium"
+      },
+      "fstype": "ext4",
+      "label": "store",
+      "locality_class": "same_host",
+      "mountpoints": [
+        "/store",
+        "/var/lib/containerd",
+        "/var/lib/docker"
+      ],
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:37Z",
+      "partition_kernel_dev": "/dev/sda1",
+      "partuuid": "49c8b68d-7c1b-429a-bda7-3e9a96aa1581",
+      "recency_class": "live",
+      "target_host": "hapax-podium",
+      "uuid": "3210603f-c7c4-4f46-88e2-f92a856fb5eb"
+    },
+    {
+      "command_host": "hapax-podium",
+      "device_ref": {
+        "serial": "S8HUNS0YC03008L",
+        "target_host": "hapax-podium"
+      },
+      "fstype": "btrfs",
+      "label": "hapax-data",
+      "locality_class": "same_host",
+      "mountpoints": [
+        "/data",
+        "/home/hapax/projects"
+      ],
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:37Z",
+      "partition_kernel_dev": "/dev/sdb",
+      "partuuid": null,
+      "recency_class": "live",
+      "target_host": "hapax-podium",
+      "uuid": "65221e40-a3aa-4537-afe3-91a93f825708"
+    },
+    {
+      "command_host": "hapax-podium",
+      "device_ref": {
+        "serial": "S6WSNS0W406658B",
+        "target_host": "hapax-podium"
+      },
+      "fstype": "vfat",
+      "label": null,
+      "locality_class": "same_host",
+      "mountpoints": [
+        "/boot"
+      ],
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:37Z",
+      "partition_kernel_dev": "/dev/nvme0n1p1",
+      "partuuid": "37a96a5f-811a-475e-921e-26b1f77ef083",
+      "recency_class": "live",
+      "target_host": "hapax-podium",
+      "uuid": "CD79-B1BE"
+    },
+    {
+      "command_host": "hapax-podium",
+      "device_ref": {
+        "serial": "S6WSNS0W406658B",
+        "target_host": "hapax-podium"
+      },
+      "fstype": "btrfs",
+      "label": null,
+      "locality_class": "same_host",
+      "mountpoints": [
+        "/",
+        "/home",
+        "/root",
+        "/srv",
+        "/var/cache",
+        "/var/log",
+        "/var/tmp"
+      ],
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:37Z",
+      "partition_kernel_dev": "/dev/nvme0n1p2",
+      "partuuid": "35678cc6-254f-41e3-92d8-f61f48c3d616",
+      "recency_class": "live",
+      "target_host": "hapax-podium",
+      "uuid": "e8d4439a-90ff-4391-a384-04fc632e46f1"
+    },
+    {
+      "command_host": "hapax-podium",
+      "device_ref": {
+        "serial": "TPBF2510310070101576",
+        "target_host": "hapax-appendix"
+      },
+      "fstype": "vfat",
+      "label": null,
+      "locality_class": "cross_host_ssh",
+      "mountpoints": [
+        "/boot"
+      ],
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:38Z",
+      "partition_kernel_dev": "/dev/sda1",
+      "partuuid": "13cfd79d-7321-4af8-9e8e-f9b4c4688719",
+      "recency_class": "live",
+      "target_host": "hapax-appendix",
+      "uuid": "7719-38FF"
+    },
+    {
+      "command_host": "hapax-podium",
+      "device_ref": {
+        "serial": "TPBF2510310070101576",
+        "target_host": "hapax-appendix"
+      },
+      "fstype": "btrfs",
+      "label": null,
+      "locality_class": "cross_host_ssh",
+      "mountpoints": [
+        "/",
+        "/home",
+        "/root",
+        "/srv",
+        "/var/cache",
+        "/var/log",
+        "/var/tmp"
+      ],
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:38Z",
+      "partition_kernel_dev": "/dev/sda2",
+      "partuuid": "5fae27c7-1bc7-48bf-a918-98b8a28a9ae2",
+      "recency_class": "live",
+      "target_host": "hapax-appendix",
+      "uuid": "d6acb7bd-74e0-4d39-8ef7-53193c6085b5"
+    },
+    {
+      "command_host": "hapax-podium",
+      "device_ref": {
+        "serial": "S7YCNJ0L100668Y",
+        "target_host": "hapax-appendix"
+      },
+      "fstype": "xfs",
+      "label": "store-fast",
+      "locality_class": "cross_host_ssh",
+      "mountpoints": [
+        "/store-fast"
+      ],
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:38Z",
+      "partition_kernel_dev": "/dev/nvme0n1p1",
+      "partuuid": "bbe35217-3551-43bb-a4f4-c463dcd136dc",
+      "recency_class": "live",
+      "target_host": "hapax-appendix",
+      "uuid": "5934e619-0f38-4285-8556-5fed21ef7b9a"
+    },
+    {
+      "command_host": "hapax-podium",
+      "device_ref": {
+        "serial": "24511K802589",
+        "target_host": "hapax-appendix"
+      },
+      "fstype": "xfs",
+      "label": "store",
+      "locality_class": "cross_host_ssh",
+      "mountpoints": [
+        "/store"
+      ],
+      "next_action": null,
+      "observed_at": "2026-06-06T14:38:38Z",
+      "partition_kernel_dev": "/dev/nvme1n1p1",
+      "partuuid": "cd852963-b7c8-4c1f-b001-7733832373cb",
+      "recency_class": "live",
+      "target_host": "hapax-appendix",
+      "uuid": "1e70ec1f-00db-4734-8885-3ecbdfa400e5"
+    }
+  ],
+  "network_nodes": [],
+  "schema_version": 1,
+  "secret_pointers": []
+}
