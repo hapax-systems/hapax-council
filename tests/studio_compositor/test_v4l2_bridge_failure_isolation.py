@@ -214,8 +214,12 @@ class TestScenario2CompositorRestart:
         unit = _load_unit(BRIDGE_UNIT)
         assert unit.get("Unit", "PartOf") == "studio-compositor.service"
         compositor = COMPOSITOR_UNIT.read_text(encoding="utf-8")
-        assert "v4l2-bridge.sock" in compositor
-        assert "-delete" in compositor
+        # Both tokens must land on the *same* ExecStartPre entry -- the stale-
+        # socket delete -- not merely co-occur somewhere in the unit file.
+        cleanup_lines = [
+            line for line in compositor.splitlines() if line.startswith("ExecStartPre=")
+        ]
+        assert any("v4l2-bridge.sock" in line and "-delete" in line for line in cleanup_lines)
 
 
 class TestScenario3ModuleReload:
