@@ -50,7 +50,16 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
             module["ward_live_mount_contract"](idx, module["WARD_ANCHORS"][idx - 1])
         )
     }
-    glyph_ward_indices = module["ACTIVE_WARD_INDICES"] - rectangular_ward_indices
+    atlas_receiver_indices = {
+        idx
+        for idx in module["ACTIVE_WARD_INDICES"]
+        if module["ward_mount_is_live_atlas_receiver"](
+            module["ward_live_mount_contract"](idx, module["WARD_ANCHORS"][idx - 1])
+        )
+    }
+    glyph_ward_indices = (
+        module["ACTIVE_WARD_INDICES"] - rectangular_ward_indices - atlas_receiver_indices
+    )
     receiver_w, receiver_h, _u_scale, _v_scale, thickness = module["ward_homage_receiver_metrics"](
         *module["ward_pane_dimensions"](2)
     )
@@ -59,6 +68,13 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert thickness >= 18
     assert module["WARD_PURPOSE_RECEIVER_THICKNESS_RATIO"] >= 0.18
     assert content.count("// ward-garden-pane ") == len(rectangular_ward_indices)
+    assert content.count("// ward-homage-receiver ") == len(atlas_receiver_indices)
+    assert all(f"// ward-homage-receiver {idx:02d}:" in content for idx in atlas_receiver_indices)
+    assert all(
+        module["ward_live_mount_contract"](idx, module["WARD_ANCHORS"][idx - 1])["texture"]
+        in _comment_block(content, f"// ward-homage-receiver {idx:02d}:")
+        for idx in atlas_receiver_indices
+    )
     assert all(f"// ward-homage-glyph {idx:02d}." in content for idx in glyph_ward_indices)
     assert all(
         module["ward_live_mount_contract"](idx, module["WARD_ANCHORS"][idx - 1])["texture"]
@@ -124,10 +140,10 @@ def test_screwm_map_spatializes_only_functional_wards_as_geometric_instruments()
     assert "// ward-garden-pane 22: precedent_ticker w22" in content
     assert "// ward-garden-pane 27: chronicle_ticker w27" in content
     assert "w35" not in content
-    assert "// ward-homage-glyph 02.1: album music slash-pair ward_atlas" in content
+    assert "// ward-homage-receiver 02: album ward_atlas" in content
     assert "// ward-garden-pane 02: album ward_atlas" not in content
-    assert "// ward-homage-glyph 01.1: token_pole token spine ward_atlas" in content
-    assert "// ward-homage-glyph 35.1: m8_oscilloscope music slash-pair ward_atlas" in content
+    assert "// ward-homage-receiver 01: token_pole ward_atlas" in content
+    assert "// ward-homage-receiver 35: m8_oscilloscope ward_atlas" in content
     before_receivers, receiver_tail = content.split("// section: scroom-drift-receiver-strips")
     _receivers, after_receivers = receiver_tail.split("// section: scroom-local-effect-lenses")
     non_receiver_content = before_receivers + after_receivers
@@ -567,11 +583,23 @@ def test_screwm_map_embeds_camera_source_constellation() -> None:
     assert "cam_bop" in content
     assert "cam_cov" in content
     assert "speech_wave" in content
-    assert "cam_bop 5990 1085 0 0.4 0.4" in content
-    assert module["SOURCE_ANCHORS"][0]["w"] == 512
-    assert module["SOURCE_ANCHORS"][0]["h"] == 288
-    assert module["SOURCE_ANCHORS"][3]["w"] == 512
-    assert module["SOURCE_ANCHORS"][3]["h"] == 288
+    brio_operator_pane = _comment_block(
+        content, "// source-garden-anchor 01: brio-operator cam_bop"
+    )
+    assert "cam_bop" in brio_operator_pane
+    assert "0.8 0.8" in brio_operator_pane
+    assert module["SOURCE_ANCHORS"][0]["w"] == 1024
+    assert module["SOURCE_ANCHORS"][0]["h"] == 576
+    assert module["SOURCE_ANCHORS"][0]["pos"] == (-1580, -2030, 420)
+    assert module["SOURCE_ANCHORS"][3]["w"] == 1024
+    assert module["SOURCE_ANCHORS"][3]["h"] == 576
+    assert module["SOURCE_ANCHORS"][3]["pos"] == (1580, -2030, 420)
+    for wall_sources in (module["SOURCE_ANCHORS"][:3], module["SOURCE_ANCHORS"][3:]):
+        y_centers = [source["pos"][1] for source in wall_sources]
+        assert min(abs(a - b) for a in y_centers for b in y_centers if a != b) > 1024
+        assert all(
+            source["pos"][2] - source["h"] // 2 > module["FLOOR_Z"] for source in wall_sources
+        )
     assert module["SOURCE_ANCHORS"][0]["texture_size"] == (1280, 720)
     assert module["SOURCE_ANCHORS"][0]["texture_transform"] == {
         "u_sign": 1,
@@ -777,7 +805,9 @@ def test_aoa_model_transform_stands_pyramid_upright_and_centers_media_front() ->
     assert max(edge_lengths) - min(edge_lengths) < 0.000001
     assert module["DEPTH"] == 4
     assert module["AOA_LEAF_FACE_EDGE_UNITS"] == 48
-    assert module["SCALE"] == 768
+    assert module["AOA_ITERATION_SCALE_MULTIPLIER"] == 1.3
+    assert module["BASE_SCALE"] == 768
+    assert math.isclose(module["SCALE"], 998.4)
     assert module["aoa_face_count"]() == 1024
 
     parts = module["compose_aoa_parts"](module["DEPTH"])

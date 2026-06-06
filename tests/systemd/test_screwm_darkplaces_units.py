@@ -452,7 +452,7 @@ def test_darkplaces_camera_defaults_to_stable_review_position() -> None:
     assert "float EF_DOUBLESIDED = 32768;" in defs
     assert "float EF_ADDITIVE = 32;" in defs
     assert "float AOA_MODEL_SCALE = 1.0;" in defs
-    assert "float AOA_SPHERE_MODEL_SCALE = 0.45;" in defs
+    assert "float AOA_SPHERE_MODEL_SCALE = 1.0;" in defs
     assert "vector(vector v) vectoangles = #51;" in defs
     assert "ang = vectoangles(target - pos);" in camera
     assert 'if (cvar("screwm_camera_orbit") > 0)' in camera
