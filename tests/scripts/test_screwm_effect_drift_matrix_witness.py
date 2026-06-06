@@ -74,15 +74,15 @@ def test_matrix_witness_pov_stations_match_generated_review_stations() -> None:
         (-260.0, 980.0, 330.0),
     )
     assert generated["brio-operator-ir-ward"] == (
-        (-700.0, -1320.0, 700.0),
+        (-120.0, -1320.0, 760.0),
         (-1180.0, -1320.0, 650.0),
     )
     assert generated["brio-room-ir-ward"] == (
-        (-700.0, 400.0, 700.0),
+        (-120.0, 400.0, 760.0),
         (-1180.0, 400.0, 650.0),
     )
     assert generated["brio-synths-ir-ward"] == (
-        (-700.0, -2240.0, 1220.0),
+        (-120.0, -2240.0, 1290.0),
         (-1180.0, -2240.0, 1180.0),
     )
 
