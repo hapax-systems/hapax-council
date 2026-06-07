@@ -1,0 +1,19 @@
+[Unit]
+Description=World-language Layer-2 materializer — project the WCS SSOT into the /dev/shm manifest
+After=hapax-secrets.service
+
+[Service]
+Type=oneshot
+# Root at the source-activation worktree (non-stale deployed code), NOT the
+# canonical interactive worktree which may sit on a feature branch and run STALE
+# materializer code. Enforced by tests/systemd/test_source_activation_rooted_python_units.py.
+# Mirrors hapax-daimonion.service.
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m shared.materialize_world_language
+Environment=HOME=%h
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=CUDA_VISIBLE_DEVICES=
+SyslogIdentifier=world-language-materialize
+TimeoutStartSec=60
+MemoryMax=512M

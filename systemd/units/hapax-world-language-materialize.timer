@@ -1,0 +1,14 @@
+[Unit]
+Description=Materialize the world-language Layer-2 manifest at boot + refresh on SSOT change
+
+[Timer]
+# /dev/shm is cleared on reboot, so re-materialize shortly after boot. The
+# world-capability-registry SSOT only changes on deploy, so a 10-min refresh is
+# ample (the materialize is ~1s); the in-place write bumps the manifest mtime so
+# already-running affordance-pipeline consumers re-read it live on next select().
+OnBootSec=30s
+OnUnitActiveSec=10min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
