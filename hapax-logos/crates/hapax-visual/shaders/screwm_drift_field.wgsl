@@ -90,7 +90,7 @@ fn fs_main(@location(0) uv: vec2<f32>) -> FragOut {
     let aw = dot(textureSample(t_in, s_in, uv - vec2<f32>(wr.x, 0.0)).rgb, LUMA);
     let activity = clamp((abs(l - an) + abs(l - as_) + abs(l - ae) + abs(l - aw)) * 2.0 + edge * 0.5, 0.0, 1.0);
     // bounded [0.2,1.0]; engine maps to an amplitude multiplier (0.2 = calm zone, 1.0 = active)
-    let currency = clamp(0.42 + activity * 0.5, 0.2, 1.0);
+    let currency = clamp(0.2 + activity * 0.8, 0.2, 1.0);
 
     // ── Phase 2a temporal substrate: feedback / echo / trail / diff (prev-frame family) ──
     // prev_tex is the PREVIOUS field output (CPU round-trip). The field gains temporal memory
