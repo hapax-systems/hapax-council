@@ -26,8 +26,13 @@ class ProtentionEntry(BaseModel, frozen=True):
     """A simple prediction about the near future."""
 
     predicted_state: str
-    confidence: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(ge=0.0, le=1.0)  # probability of the predicted state
     basis: str  # what observation drove this prediction
+    # Rosen anticipatory-model confidence / future steering-magnitude — the open,
+    # affect-suffused protention weight. Distinct from `confidence`. Defaulted so
+    # existing call sites are unaffected (never-remove); populated by the
+    # affect/IDF REQ. See REQ-20260605-temporal-2d-band-tense-grid.
+    precision: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class SurpriseField(BaseModel, frozen=True):

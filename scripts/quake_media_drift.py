@@ -183,6 +183,16 @@ def _apply_reverie_tonemap(rgb: np.ndarray, intensity: float) -> np.ndarray:
     return np.clip(toned, 0, 255)
 
 
+def _aces_tonemap(rgb: np.ndarray) -> np.ndarray:
+    """Narkowicz ACES-fitted filmic egress tonemap on 0-255 RGB. Maps the
+    (possibly >255) drifted output to [0,255] with a smooth highlight shoulder --
+    no flat white-clip. Same constants as media_drift.wgsl aces_tonemap (parity)."""
+    x = np.clip(rgb, 0.0, None) / 255.0
+    a, b, c, d, e = 2.51, 0.03, 2.43, 0.59, 0.14
+    y = (x * (a * x + b)) / (x * (c * x + d) + e)
+    return np.clip(y, 0.0, 1.0) * 255.0
+
+
 def apply_frame_drift(
     data: bytes,
     *,
@@ -373,7 +383,7 @@ def apply_frame_drift(
     amber = np.array([0.93, 1.0 + state.tonal * 0.06, 1.0 + state.tonal * 0.13])
     rgb *= cyan_magenta * pulse + amber * (1.0 - pulse)
 
-    arr[:, :, :3] = np.clip(rgb, 0, 255).astype(np.uint8)
+    arr[:, :, :3] = _aces_tonemap(rgb).astype(np.uint8)
     arr[:, :, 3] = 255
     return arr.tobytes(), None if camera_receiver else rgb.astype(np.float32, copy=False)
 

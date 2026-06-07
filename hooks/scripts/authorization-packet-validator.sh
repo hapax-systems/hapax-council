@@ -194,9 +194,21 @@ if [[ -z "$role" ]]; then
   exit 2
 fi
 
-# Read claim file
-claim_file="$HOME/.cache/hapax/cc-active-task-$role"
-if [[ ! -f "$claim_file" ]]; then
+# Read claim file — prefer the session-scoped claim, fall back to the legacy
+# plain file (mirrors cc-task-gate.sh's resolution). The plain file is reaped
+# routinely for non-slot roles (dev/dev2), so resolving ONLY the plain file
+# wrongly blocks governed push/PR even when a valid session-suffixed claim
+# exists. Additive + fallback-preserving: identical behaviour when no
+# session-suffixed file is present.
+session_id=""
+if declare -F hapax_session_id >/dev/null 2>&1; then
+  session_id="$(hapax_session_id 2>/dev/null || true)"
+fi
+if [[ -n "$session_id" ]] && [[ -f "$HOME/.cache/hapax/cc-active-task-$role-$session_id" ]]; then
+  claim_file="$HOME/.cache/hapax/cc-active-task-$role-$session_id"
+elif [[ -f "$HOME/.cache/hapax/cc-active-task-$role" ]]; then
+  claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+else
   echo "authorization-packet-validator: BLOCKED — no claimed task for release/PR command." >&2
   echo "  Release actions require a governed task claim with authority_case." >&2
   exit 2

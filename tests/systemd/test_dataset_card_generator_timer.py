@@ -22,7 +22,10 @@ def test_dataset_card_generator_service_invokes_package_cli() -> None:
     parser = _read_unit(SERVICE)
 
     assert parser.get("Service", "Type") == "oneshot"
-    assert parser.get("Service", "WorkingDirectory") == "%h/projects/hapax-council"
+    # Runs from the source-activation deploy tree (main-tracking), not the
+    # operator's canonical interactive worktree — see
+    # docs/research/2026-06-07-canonical-rooted-unit-audit.md.
+    assert parser.get("Service", "WorkingDirectory") == "%h/.cache/hapax/source-activation/worktree"
     exec_start = parser.get("Service", "ExecStart")
     assert "python -m agents.dataset_card_generator" in exec_start
     assert "--output %h/hapax-state/research/dataset-cards.md" in exec_start

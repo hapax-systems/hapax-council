@@ -14,6 +14,14 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from shared.operator_quality_posterior import (
+    DEFAULT_MIN_SAMPLES,
+    DERIVED_QUALITY_BARS_VERSION,
+    GOVERNED_QUALITY_BARS,
+    DerivedQualityBars,
+    load_derived_quality_bars,
+    resolve_quality_bar,
+)
 from shared.resident_command_r import RESIDENT_COMMAND_R_MODEL
 from shared.segment_live_event_quality import validate_live_event_report_matches_artifact
 from shared.segment_prep_consultation import (
@@ -693,9 +701,16 @@ def review_one_segment_iteration(
     accepted_artifacts: Sequence[Mapping[str, Any]],
     *,
     team_critique_receipts: Sequence[Mapping[str, Any]] | None = None,
+    derived_bars: DerivedQualityBars | None = None,
 ) -> dict[str, Any]:
-    """Review the canary set and return a receipt for the next-nine gate."""
+    """Review the canary set and return a receipt for the next-nine gate.
 
+    ``derived_bars`` supplies the operator-quality calibrated gate bars; when
+    ``None`` they are loaded from the emitted artifact (and fall back to the
+    loud + advisory seed defaults if that artifact is absent).
+    """
+
+    bars = derived_bars if derived_bars is not None else load_derived_quality_bars()
     criteria = [
         _criterion(
             "artifact.exactly_one_manifest_accepted",
@@ -720,6 +735,7 @@ def review_one_segment_iteration(
             actionability_report={},
             layout_report={},
             team_critique_loop=team,
+            derived_bars=bars,
         )
 
     artifact, loader_metadata, separation_error = _separate_review_artifact(accepted_artifacts[0])
@@ -739,6 +755,7 @@ def review_one_segment_iteration(
     artifact_criteria, quality, actionability, layout = _review_artifact(
         artifact,
         loader_metadata=loader_metadata,
+        derived_bars=bars,
     )
     criteria.extend(artifact_criteria)
     team = _team_critique_loop(
@@ -756,6 +773,7 @@ def review_one_segment_iteration(
         actionability_report=actionability,
         layout_report=layout,
         team_critique_loop=team,
+        derived_bars=bars,
     )
 
 
@@ -763,10 +781,20 @@ def _review_artifact(
     artifact: Mapping[str, Any],
     *,
     loader_metadata: Mapping[str, Any],
+    derived_bars: DerivedQualityBars | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    # Operator-quality derived bar: the operative minimum script score. Falls
+    # back to the seed default (MIN_AUTOMATED_SCRIPT_SCORE) loud + advisory when
+    # the posterior has no quorum; it can only tighten above the seed, not below.
+    min_script_score = resolve_quality_bar("automated_script_overall", bars=derived_bars).value
     script = _string_list(artifact.get("prepared_script"))
     beats = _string_list(artifact.get("segment_beats"))
     segment_prep_contract = _mapping(artifact.get("segment_prep_contract"))
+    # FLAG (separate scoped item, do not fix here): score_segment_quality's
+    # keyword/length axes are themselves magic-heuristic scorers, so an
+    # operator-derived cutoff over a magic-keyword score is only half-honest. The
+    # scorer rewrite is partly gated on having grounded artifacts to score; this
+    # task wires the cutoff, it does not de-magic the scorer.
     quality = score_segment_quality(script, beats) if script else {}
     actionability = (
         validate_segment_actionability(script, beats, prep_contract=segment_prep_contract)
@@ -946,7 +974,7 @@ def _review_artifact(
         _criterion(
             "script.quality_floor",
             bool(quality)
-            and float(quality.get("overall") or 0) >= MIN_AUTOMATED_SCRIPT_SCORE
+            and float(quality.get("overall") or 0) >= min_script_score
             and quality.get("label") != "generic"
             and _mapping(quality.get("diagnostics")).get("thin_beats") == 0,
             "script must clear the automated quality floor; team critique decides excellence",
@@ -954,6 +982,8 @@ def _review_artifact(
                 "overall": quality.get("overall"),
                 "label": quality.get("label"),
                 "thin_beats": _mapping(quality.get("diagnostics")).get("thin_beats"),
+                "minimum_script_score": min_script_score,
+                "seed_minimum_script_score": MIN_AUTOMATED_SCRIPT_SCORE,
             },
         ),
         _criterion(
@@ -1110,7 +1140,9 @@ def _receipt(
     actionability_report: dict[str, Any],
     layout_report: dict[str, Any],
     team_critique_loop: dict[str, Any],
+    derived_bars: DerivedQualityBars | None = None,
 ) -> dict[str, Any]:
+    min_script_score = resolve_quality_bar("automated_script_overall", bars=derived_bars).value
     eligibility_criteria = [
         item for item in criteria if item.get("name") not in EXCELLENCE_CRITERION_NAMES
     ]
@@ -1150,7 +1182,7 @@ def _receipt(
         },
         "automated_gate": {
             "passed": automation_passed,
-            "minimum_script_score": MIN_AUTOMATED_SCRIPT_SCORE,
+            "minimum_script_score": min_script_score,
             "criteria": criteria,
         },
         "eligibility_gate": {
@@ -1199,6 +1231,63 @@ def _receipt(
             "no_unload_or_swap": True,
         },
     }
+    body["operator_quality_calibration"] = _operator_quality_calibration(derived_bars)
     body["review_gate_sections"] = project_review_gate_sections(body)
     body["review_receipt_sha256"] = _sha256_json(body)
     return body
+
+
+def _operator_quality_calibration(bars: DerivedQualityBars | None) -> dict[str, Any]:
+    """Advisory operator-quality calibration readout for the review receipt.
+
+    This is a non-gating sidecar: it never appears in ``automated_gate.criteria``
+    (an advisory signal must not block release). It records, loudly, which
+    derived bar drove each gate decision and whether that bar is operator-derived
+    or still the seed default, plus the axis-aware verdict (hung/unrated axes are
+    ``unresolved`` and kept in the denominator, never silently dropped).
+    """
+
+    resolved = [resolve_quality_bar(spec.name, bars=bars) for spec in GOVERNED_QUALITY_BARS]
+    if bars is not None:
+        corpus_sha256 = bars.corpus_sha256
+        bar_derivation_sha256 = bars.bar_derivation_sha256
+        min_samples = bars.min_samples
+        axis_verdict: dict[str, str] = dict(bars.axis_verdict)
+        quorum_met = bars.quorum_met
+        derived_at = bars.derived_at.isoformat()
+    else:
+        corpus_sha256 = resolved[0].corpus_sha256
+        bar_derivation_sha256 = "seed-defaults-no-corpus"
+        min_samples = DEFAULT_MIN_SAMPLES
+        axis_verdict = {}
+        quorum_met = False
+        derived_at = resolved[0].derived_at.isoformat()
+    return {
+        "derived_quality_bars_version": DERIVED_QUALITY_BARS_VERSION,
+        "bar_derivation_sha256": bar_derivation_sha256,
+        "corpus_sha256": corpus_sha256,
+        "min_samples": min_samples,
+        "derived_at": derived_at,
+        "quorum_met": quorum_met,
+        "all_bars_advisory": all(bar.advisory for bar in resolved),
+        "axis_verdict": axis_verdict,
+        "bars": [
+            {
+                "name": bar.name,
+                "rating_axis": bar.rating_axis,
+                "scale": bar.scale,
+                "seed_default": bar.seed_default,
+                "value": bar.value,
+                "derived_value": bar.derived_value,
+                "sample_count": bar.sample_count,
+                "confidence": bar.confidence,
+                "posterior_alpha": bar.posterior_alpha,
+                "posterior_beta": bar.posterior_beta,
+                "std": bar.std,
+                "uncertainty_reason": bar.uncertainty_reason,
+                "derivation_status": bar.derivation_status,
+                "advisory": bar.advisory,
+            }
+            for bar in resolved
+        ],
+    }

@@ -208,3 +208,38 @@ def test_media_drift_disabled_is_identity(tmp_path: Path) -> None:
     assert (
         renderer.apply(frame, width=4, height=4, receiver="ticker:test", frame=1, now=1.0) == frame
     )
+
+
+def test_aces_tonemap_is_filmic_and_not_blown() -> None:
+    import numpy as np
+
+    module = _load_module()
+    aces = module["_aces_tonemap"]
+    # aces(0) == 0; input 255 (1.0) -> filmic shoulder ~0.80*255
+    assert float(aces(np.array([0.0]))[0]) == 0.0
+    mid = float(aces(np.array([255.0]))[0])
+    assert 195.0 < mid < 215.0
+    # 3x overdrive -> rolls off smoothly, NEVER flat-white-clips
+    big = float(aces(np.array([255.0 * 3.0]))[0])
+    assert big < 250.0
+    # monotonic increasing (no inversion)
+    xs = np.array([0.0, 64.0, 128.0, 255.0, 512.0, 1024.0])
+    ys = aces(xs)
+    assert bool(np.all(np.diff(ys) > 0))
+    # bounded [0,255]
+    assert float(ys.min()) >= 0.0 and float(ys.max()) <= 255.0
+
+
+def test_media_drift_aces_constants_match_wgsl_and_python() -> None:
+    """CPU/GPU parity guard: media_drift.wgsl aces_tonemap and quake_media_drift._aces_tonemap
+    must carry the IDENTICAL Narkowicz ACES constants, or the GPU + CPU drift paths diverge."""
+    import re
+
+    wgsl = (REPO_ROOT / "agents" / "shaders" / "nodes" / "media_drift.wgsl").read_text()
+    for const in ("2.51", "0.03", "2.43", "0.59", "0.14"):
+        assert const in wgsl, f"wgsl aces_tonemap missing Narkowicz constant {const}"
+    src = (REPO_ROOT / "scripts" / "quake_media_drift.py").read_text()
+    m = re.search(r"a, b, c, d, e = ([\d., ]+)", src)
+    assert m is not None, "python _aces_tonemap constants not found"
+    vals = [float(x) for x in m.group(1).split(",")]
+    assert vals == [2.51, 0.03, 2.43, 0.59, 0.14], f"CPU/GPU ACES constant divergence: {vals}"

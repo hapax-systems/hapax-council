@@ -5,10 +5,43 @@ from pathlib import Path
 import pytest
 
 from shared.segment_candidate_selection import (
+    LIVE_EVENT_GOOD_FLOOR,
+    derive_excellence_receipt,
+    derive_excellence_receipts,
     review_segment_candidate_set,
     selected_release_manifest,
     write_selected_release_manifest,
 )
+
+
+def _live_report(score: int, *, role: str = "rant", required: tuple[str, ...] = ()) -> dict:
+    return {
+        "live_event_rubric_version": 1,
+        "score": score,
+        "band": "good" if score >= LIVE_EVENT_GOOD_FLOOR else "thin",
+        "ok": score >= LIVE_EVENT_GOOD_FLOOR,
+        "dimensions": [
+            {"name": "live_event_object", "passed": True, "points": 12, "observed": {}},
+            {
+                "name": "role_standard_fit",
+                "passed": True,
+                "points": 10,
+                "observed": {"role": role, "required_action_kinds": list(required)},
+            },
+        ],
+    }
+
+
+def _scored_artifact(programme_id: str, *, score: int, role: str = "rant") -> dict:
+    required = ("tier_chart",) if role == "tier_list" else ()
+    return {
+        "programme_id": programme_id,
+        "role": role,
+        "artifact_path": f"/tmp/{programme_id}.json",
+        "artifact_sha256": programme_id.rjust(64, "0")[-64:],
+        "segment_quality_report": {"overall": 4.2},
+        "segment_live_event_report": _live_report(score, role=role, required=required),
+    }
 
 
 def _artifact(programme_id: str, *, score: int = 90) -> dict:
@@ -218,3 +251,92 @@ def test_write_selected_release_manifest_refuses_failed_manifest(tmp_path: Path)
         write_selected_release_manifest(tmp_path, manifest)
 
     assert not (tmp_path / "selected-release-manifest.json").exists()
+
+
+def test_derive_excellence_receipt_records_criterion_vector_and_scores() -> None:
+    artifact = _scored_artifact("prog-a", score=90)
+
+    receipt = derive_excellence_receipt(artifact, checked_at="2026-06-07T00:00:00Z")
+
+    # Auditable: keyed by artifact_sha256, transparent (criterion vector + scores), not
+    # a bare boolean.
+    assert receipt["artifact_sha256"] == artifact["artifact_sha256"]
+    assert receipt["verdict"] == "approved"
+    assert receipt["auto_derived"] is True
+    assert receipt["criterion_vector"]["role_standard_fit"] == {"passed": True, "points": 10}
+    assert receipt["scores"]["live_event_score"] == 90.0
+    assert receipt["scores"]["live_event_floor"] == LIVE_EVENT_GOOD_FLOOR
+    assert receipt["scores"]["quality_overall"] == 4.2
+    # Re-checkable: the receipt is self-hashed over its own body.
+    assert isinstance(receipt["auto_excellence_receipt_sha256"], str)
+    # Carries the identity fields the release-receipt gate requires.
+    for field in ("receipt_id", "reviewer", "checked_at", "programme_id", "notes"):
+        assert isinstance(receipt[field], str) and receipt[field]
+
+
+def test_derive_excellence_receipt_rejects_below_live_event_floor() -> None:
+    artifact = _scored_artifact("prog-weak", score=LIVE_EVENT_GOOD_FLOOR - 2)
+
+    receipt = derive_excellence_receipt(artifact, checked_at="2026-06-07T00:00:00Z")
+
+    assert receipt["verdict"] == "rejected"
+    floor_criterion = next(
+        c for c in receipt["criteria"] if c["name"] == "live_event_score_meets_floor"
+    )
+    assert floor_criterion["passed"] is False
+
+
+def test_derive_excellence_receipt_flags_lecture_vacuous_role_standard_fit() -> None:
+    # A lecture earns role_standard_fit vacuously (no role-required actions); the score
+    # only clears the floor because of those vacuously-awarded points.
+    artifact = _scored_artifact("lecture-a", score=LIVE_EVENT_GOOD_FLOOR, role="lecture")
+
+    receipt = derive_excellence_receipt(artifact, checked_at="2026-06-07T00:00:00Z")
+
+    assert receipt["role_standard_fit_vacuous"] is True
+    assert receipt["clears_floor_without_vacuous_role_fit"] is False
+    assert "role_standard_fit_points_awarded_vacuously" in receipt["anti_gaming_flags"]
+    assert "clears_floor_only_via_vacuous_role_fit_points" in receipt["anti_gaming_flags"]
+    # Flagged, not silently inflated — a floor-clearing artifact is still approved.
+    assert receipt["verdict"] == "approved"
+
+
+def test_derive_excellence_receipt_tier_list_role_fit_not_vacuous() -> None:
+    artifact = _scored_artifact("tier-a", score=95, role="tier_list")
+
+    receipt = derive_excellence_receipt(artifact, checked_at="2026-06-07T00:00:00Z")
+
+    assert receipt["role_standard_fit_vacuous"] is False
+    assert receipt["anti_gaming_flags"] == []
+
+
+def test_selected_release_manifest_embeds_auto_excellence_receipt() -> None:
+    artifact = _scored_artifact("prog-a", score=92)
+    [receipt] = derive_excellence_receipts(
+        [artifact],
+        checked_at="2026-06-07T00:00:00Z",
+    )
+
+    # The auto receipt must carry the identity fields the manifest gate requires.
+    receipt = {
+        **receipt,
+        "receipt_id": receipt["receipt_id"],
+        "notes": "auto-derived",
+    }
+    manifest = selected_release_manifest([artifact], [receipt], selected_count=1)
+
+    assert manifest["ok"] is True
+    embedded = manifest["selected_artifacts"][0]["excellence_receipt"]
+    assert embedded["auto_derived"] is True
+    assert embedded["verdict"] == "approved"
+    assert embedded["criterion_vector"]["live_event_object"]["points"] == 12
+    assert embedded["scores"]["live_event_score"] == 92.0
+
+
+def test_derive_excellence_receipts_skips_artifacts_without_hash() -> None:
+    receipts = derive_excellence_receipts(
+        [{"programme_id": "no-hash", "segment_live_event_report": _live_report(90)}],
+        checked_at="2026-06-07T00:00:00Z",
+    )
+
+    assert receipts == []

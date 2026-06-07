@@ -1,5 +1,5 @@
 diff --git a/gl_rmain.c b/gl_rmain.c
-index f9007caf..7771cf14 100644
+index f9007caf..0c1df348 100644
 --- a/gl_rmain.c
 +++ b/gl_rmain.c
 @@ -28,6 +28,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
@@ -15,7 +15,7 @@ index f9007caf..7771cf14 100644
  #ifdef WIN32
  // Enable NVIDIA High Performance Graphics while using Integrated Graphics.
  #ifdef __cplusplus
-@@ -110,6 +116,108 @@ cvar_t r_cullentities_trace_eyejitter = {CF_CLIENT, "r_cullentities_trace_eyejit
+@@ -110,6 +116,112 @@ cvar_t r_cullentities_trace_eyejitter = {CF_CLIENT, "r_cullentities_trace_eyejit
  cvar_t r_sortentities = {CF_CLIENT, "r_sortentities", "0", "sort entities before drawing (might be faster)"};
  cvar_t r_speeds = {CF_CLIENT, "r_speeds","0", "displays rendering statistics and per-subsystem timings"};
  cvar_t r_fullbright = {CF_CLIENT, "r_fullbright","0", "makes map very bright and renders faster"};
@@ -121,10 +121,14 @@ index f9007caf..7771cf14 100644
 +cvar_t hapax_driftfield_path = {CF_CLIENT, "hapax_driftfield_path", "/dev/shm/hapax-compositor/quake-drift-field.bgra", "raw BGRA frame path for Hapax drift field sampler"};
 +cvar_t hapax_driftfield_width = {CF_CLIENT, "hapax_driftfield_width", "256", "raw BGRA frame width for Hapax drift field sampler"};
 +cvar_t hapax_driftfield_height = {CF_CLIENT, "hapax_driftfield_height", "256", "raw BGRA frame height for Hapax drift field sampler"};
++cvar_t hapax_driftcurrency_enable = {CF_CLIENT, "hapax_driftcurrency_enable", "0", "enable Hapax per-zone drift currency standalone BGRA sampler upload"};
++cvar_t hapax_driftcurrency_path = {CF_CLIENT, "hapax_driftcurrency_path", "/dev/shm/hapax-compositor/quake-drift-currency.bgra", "raw BGRA frame path for Hapax per-zone drift currency sampler"};
++cvar_t hapax_driftcurrency_width = {CF_CLIENT, "hapax_driftcurrency_width", "256", "raw BGRA frame width for Hapax drift currency sampler"};
++cvar_t hapax_driftcurrency_height = {CF_CLIENT, "hapax_driftcurrency_height", "256", "raw BGRA frame height for Hapax drift currency sampler"};
  
  cvar_t r_fullbright_directed = {CF_CLIENT, "r_fullbright_directed", "0", "render fullbright things (unlit worldmodel and EF_FULLBRIGHT entities, but not fullbright shaders) using a constant light direction instead to add more depth while keeping uniform brightness"};
  cvar_t r_fullbright_directed_ambient = {CF_CLIENT, "r_fullbright_directed_ambient", "0.5", "ambient light multiplier for directed fullbright"};
-@@ -178,6 +271,13 @@ cvar_t r_glsl_offsetmapping_scale = {CF_CLIENT | CF_ARCHIVE, "r_glsl_offsetmappi
+@@ -178,6 +290,13 @@ cvar_t r_glsl_offsetmapping_scale = {CF_CLIENT | CF_ARCHIVE, "r_glsl_offsetmappi
  cvar_t r_glsl_offsetmapping_lod = {CF_CLIENT | CF_ARCHIVE, "r_glsl_offsetmapping_lod", "0", "apply distance-based level-of-detail correction to number of offsetmappig steps, effectively making it render faster on large open-area maps"};
  cvar_t r_glsl_offsetmapping_lod_distance = {CF_CLIENT | CF_ARCHIVE, "r_glsl_offsetmapping_lod_distance", "32", "first LOD level distance, second level (-50% steps) is 2x of this, third (33%) - 3x etc."};
  cvar_t r_glsl_postprocess = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess", "0", "use a GLSL postprocessing shader"};
@@ -138,7 +142,7 @@ index f9007caf..7771cf14 100644
  cvar_t r_glsl_postprocess_uservec1 = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec1", "0 0 0 0", "a 4-component vector to pass as uservec1 to the postprocessing shader (only useful if default.glsl has been customized)"};
  cvar_t r_glsl_postprocess_uservec2 = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec2", "0 0 0 0", "a 4-component vector to pass as uservec2 to the postprocessing shader (only useful if default.glsl has been customized)"};
  cvar_t r_glsl_postprocess_uservec3 = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec3", "0 0 0 0", "a 4-component vector to pass as uservec3 to the postprocessing shader (only useful if default.glsl has been customized)"};
-@@ -186,6 +286,7 @@ cvar_t r_glsl_postprocess_uservec1_enable = {CF_CLIENT | CF_ARCHIVE, "r_glsl_pos
+@@ -186,6 +305,7 @@ cvar_t r_glsl_postprocess_uservec1_enable = {CF_CLIENT | CF_ARCHIVE, "r_glsl_pos
  cvar_t r_glsl_postprocess_uservec2_enable = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec2_enable", "1", "enables postprocessing uservec2 usage, creates USERVEC1 define (only useful if default.glsl has been customized)"};
  cvar_t r_glsl_postprocess_uservec3_enable = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec3_enable", "1", "enables postprocessing uservec3 usage, creates USERVEC1 define (only useful if default.glsl has been customized)"};
  cvar_t r_glsl_postprocess_uservec4_enable = {CF_CLIENT | CF_ARCHIVE, "r_glsl_postprocess_uservec4_enable", "1", "enables postprocessing uservec4 usage, creates USERVEC1 define (only useful if default.glsl has been customized)"};
@@ -146,15 +150,16 @@ index f9007caf..7771cf14 100644
  cvar_t r_colorfringe = {CF_CLIENT | CF_ARCHIVE, "r_colorfringe", "0", "Chromatic aberration. Values higher than 0.025 will noticeably distort the image"};
  cvar_t r_fxaa = {CF_CLIENT | CF_ARCHIVE, "r_fxaa", "0", "fast approximate anti aliasing"};
  
-@@ -275,6 +376,7 @@ rtexture_t *r_texture_grey128;
+@@ -275,6 +395,8 @@ rtexture_t *r_texture_grey128;
  rtexture_t *r_texture_black;
  rtexture_t *r_texture_notexture;
  rtexture_t *r_texture_whitecube;
 +rtexture_t *r_hapax_driftfield_texture; // Hapax drift field - standalone sampler, not surface-bound
++rtexture_t *r_hapax_driftcurrency_texture; // Hapax per-zone drift currency - standalone sampler, not surface-bound
  rtexture_t *r_texture_normalizationcube;
  rtexture_t *r_texture_fogattenuation;
  rtexture_t *r_texture_fogheighttexture;
-@@ -655,7 +757,8 @@ shaderpermutationinfo_t shaderpermutationinfo[SHADERPERMUTATION_COUNT] =
+@@ -655,7 +777,8 @@ shaderpermutationinfo_t shaderpermutationinfo[SHADERPERMUTATION_COUNT] =
  	{"#define USEDEPTHRGB\n", " depthrgb"},
  	{"#define USEALPHAGENVERTEX\n", " alphagenvertex"},
  	{"#define USESKELETAL\n", " skeletal"},
@@ -164,19 +169,21 @@ index f9007caf..7771cf14 100644
  };
  
  // NOTE: MUST MATCH ORDER OF SHADERMODE_* ENUMS!
-@@ -726,6 +829,7 @@ typedef struct r_glsl_permutation_s
+@@ -726,6 +849,8 @@ typedef struct r_glsl_permutation_s
  	int tex_Texture_ReflectMask;
  	int tex_Texture_ReflectCube;
  	int tex_Texture_BounceGrid;
 +	int tex_Texture_HapaxDriftField;
++	int tex_Texture_HapaxDriftCurrency;
  	/// locations of detected uniforms in program object, or -1 if not found
  	int loc_Texture_First;
  	int loc_Texture_Second;
-@@ -757,9 +861,17 @@ typedef struct r_glsl_permutation_s
+@@ -757,9 +882,18 @@ typedef struct r_glsl_permutation_s
  	int loc_Texture_ReflectMask;
  	int loc_Texture_ReflectCube;
  	int loc_Texture_BounceGrid;
 +	int loc_Texture_HapaxDriftField;
++	int loc_Texture_HapaxDriftCurrency;
  	int loc_Alpha;
  	int loc_BloomBlur_Parameters;
  	int loc_ClientTime;
@@ -190,7 +197,7 @@ index f9007caf..7771cf14 100644
  	int loc_Color_Ambient;
  	int loc_Color_Diffuse;
  	int loc_Color_Specular;
-@@ -846,9 +958,10 @@ enum
+@@ -846,9 +980,10 @@ enum
  	SHADERSTATICPARM_CELSHADING = 11, ///< celshading (alternative diffuse and specular math)
  	SHADERSTATICPARM_CELOUTLINES = 12, ///< celoutline (depth buffer analysis to produce outlines)
  	SHADERSTATICPARM_FXAA = 13, ///< fast approximate anti aliasing
@@ -203,7 +210,7 @@ index f9007caf..7771cf14 100644
  
  static const char *shaderstaticparmstrings_list[SHADERSTATICPARMS_COUNT];
  static int shaderstaticparms_count = 0;
-@@ -899,6 +1012,8 @@ qbool R_CompileShader_CheckStaticParms(void)
+@@ -899,6 +1034,8 @@ qbool R_CompileShader_CheckStaticParms(void)
  		R_COMPILESHADER_STATICPARM_ENABLE(SHADERSTATICPARM_CELOUTLINES);
  	if (r_colorfringe.value)
  		R_COMPILESHADER_STATICPARM_ENABLE(SHADERSTATICPARM_COLORFRINGE);
@@ -212,7 +219,7 @@ index f9007caf..7771cf14 100644
  
  	return memcmp(r_compileshader_staticparms, r_compileshader_staticparms_save, sizeof(r_compileshader_staticparms)) != 0;
  }
-@@ -928,6 +1043,7 @@ static void R_CompileShader_AddStaticParms(unsigned int mode, uint64_t permutati
+@@ -928,6 +1065,7 @@ static void R_CompileShader_AddStaticParms(unsigned int mode, uint64_t permutati
  	R_COMPILESHADER_STATICPARM_EMIT(SHADERSTATICPARM_CELOUTLINES, "USECELOUTLINES");
  	R_COMPILESHADER_STATICPARM_EMIT(SHADERSTATICPARM_FXAA, "USEFXAA");
  	R_COMPILESHADER_STATICPARM_EMIT(SHADERSTATICPARM_COLORFRINGE, "USECOLORFRINGE");
@@ -220,7 +227,7 @@ index f9007caf..7771cf14 100644
  }
  
  /// information about each possible shader permutation
-@@ -1032,9 +1148,9 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+@@ -1032,9 +1170,9 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
  	int vertstrings_count = 0;
  	int geomstrings_count = 0;
  	int fragstrings_count = 0;
@@ -233,11 +240,12 @@ index f9007caf..7771cf14 100644
  
  	if (p->compiled)
  		return;
-@@ -1196,9 +1312,17 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+@@ -1196,9 +1334,18 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
  		p->loc_Texture_ReflectMask        = qglGetUniformLocation(p->program, "Texture_ReflectMask");
  		p->loc_Texture_ReflectCube        = qglGetUniformLocation(p->program, "Texture_ReflectCube");
  		p->loc_Texture_BounceGrid         = qglGetUniformLocation(p->program, "Texture_BounceGrid");
 +		p->loc_Texture_HapaxDriftField    = qglGetUniformLocation(p->program, "Texture_HapaxDriftField");
++		p->loc_Texture_HapaxDriftCurrency    = qglGetUniformLocation(p->program, "Texture_HapaxDriftCurrency");
  		p->loc_Alpha                      = qglGetUniformLocation(p->program, "Alpha");
  		p->loc_BloomBlur_Parameters       = qglGetUniformLocation(p->program, "BloomBlur_Parameters");
  		p->loc_ClientTime                 = qglGetUniformLocation(p->program, "ClientTime");
@@ -251,23 +259,25 @@ index f9007caf..7771cf14 100644
  		p->loc_Color_Ambient              = qglGetUniformLocation(p->program, "Color_Ambient");
  		p->loc_Color_Diffuse              = qglGetUniformLocation(p->program, "Color_Diffuse");
  		p->loc_Color_Specular             = qglGetUniformLocation(p->program, "Color_Specular");
-@@ -1287,6 +1411,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+@@ -1287,6 +1434,8 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
  		p->tex_Texture_ReflectMask = -1;
  		p->tex_Texture_ReflectCube = -1;
  		p->tex_Texture_BounceGrid = -1;
 +		p->tex_Texture_HapaxDriftField = -1;
++		p->tex_Texture_HapaxDriftCurrency = -1;
  		// bind the texture samplers in use
  		sampler = 0;
  		if (p->loc_Texture_First           >= 0) {p->tex_Texture_First            = sampler;qglUniform1i(p->loc_Texture_First           , sampler);sampler++;}
-@@ -1319,6 +1444,7 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
+@@ -1319,6 +1468,8 @@ static void R_GLSL_CompilePermutation(r_glsl_permutation_t *p, unsigned int mode
  		if (p->loc_Texture_ReflectMask     >= 0) {p->tex_Texture_ReflectMask      = sampler;qglUniform1i(p->loc_Texture_ReflectMask     , sampler);sampler++;}
  		if (p->loc_Texture_ReflectCube     >= 0) {p->tex_Texture_ReflectCube      = sampler;qglUniform1i(p->loc_Texture_ReflectCube     , sampler);sampler++;}
  		if (p->loc_Texture_BounceGrid      >= 0) {p->tex_Texture_BounceGrid       = sampler;qglUniform1i(p->loc_Texture_BounceGrid      , sampler);sampler++;}
 +		if (p->loc_Texture_HapaxDriftField >= 0) {p->tex_Texture_HapaxDriftField  = sampler;qglUniform1i(p->loc_Texture_HapaxDriftField , sampler);sampler++;}
++		if (p->loc_Texture_HapaxDriftCurrency >= 0) {p->tex_Texture_HapaxDriftCurrency  = sampler;qglUniform1i(p->loc_Texture_HapaxDriftCurrency , sampler);sampler++;}
  		// get the uniform block indices so we can bind them
  		p->ubiloc_Skeletal_Transform12_UniformBlock = -1;
  #ifndef USE_GLES2 /* FIXME: GLES3 only */
-@@ -1388,6 +1514,19 @@ static void R_SetupShader_SetPermutationGLSL(unsigned int mode, uint64_t permuta
+@@ -1388,6 +1539,19 @@ static void R_SetupShader_SetPermutationGLSL(unsigned int mode, uint64_t permuta
  	if (r_glsl_permutation->loc_ModelViewProjectionMatrix >= 0) qglUniformMatrix4fv(r_glsl_permutation->loc_ModelViewProjectionMatrix, 1, false, gl_modelviewprojection16f);
  	if (r_glsl_permutation->loc_ModelViewMatrix >= 0) qglUniformMatrix4fv(r_glsl_permutation->loc_ModelViewMatrix, 1, false, gl_modelview16f);
  	if (r_glsl_permutation->loc_ClientTime >= 0) qglUniform1f(r_glsl_permutation->loc_ClientTime, cl.time);
@@ -287,7 +297,7 @@ index f9007caf..7771cf14 100644
  	CHECKGLERROR
  }
  
-@@ -1575,6 +1714,11 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
+@@ -1575,6 +1739,11 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
  	r_waterstate_waterplane_t *waterplane = (r_waterstate_waterplane_t *)surfacewaterplane;
  	if (r_trippy.integer && !notrippy)
  		permutation |= SHADERPERMUTATION_TRIPPY;
@@ -299,17 +309,18 @@ index f9007caf..7771cf14 100644
  	if (t->currentmaterialflags & MATERIALFLAG_ALPHATEST)
  		permutation |= SHADERPERMUTATION_ALPHAKILL;
  	if (t->currentmaterialflags & MATERIALFLAG_OCCLUDE)
-@@ -2083,6 +2227,9 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
+@@ -2083,6 +2252,10 @@ void R_SetupShader_Surface(const float rtlightambient[3], const float rtlightdif
  		}
  		if (r_glsl_permutation->tex_Texture_BounceGrid  >= 0) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_BounceGrid, r_shadow_bouncegrid_state.texture);
  		if (r_glsl_permutation->tex_Texture_LightGrid   >= 0 && r_refdef.scene.worldmodel) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_LightGrid, r_refdef.scene.worldmodel->brushq3.lightgridtexture);
 +		if (r_glsl_permutation->tex_Texture_HapaxDriftField >= 0) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_HapaxDriftField, r_hapax_driftfield_texture ? r_hapax_driftfield_texture : r_texture_grey128);
++		if (r_glsl_permutation->tex_Texture_HapaxDriftCurrency >= 0) R_Mesh_TexBind(r_glsl_permutation->tex_Texture_HapaxDriftCurrency, r_hapax_driftcurrency_texture ? r_hapax_driftcurrency_texture : r_texture_grey128);
 +		// (hapax) ContainerContent now pushed in R_SetupShader_SetPermutationGLSL so it reaches
 +		// the depth/shadow program too (fixes entity silhouette-detach); no per-surface push here.
  		CHECKGLERROR
  		break;
  	}
-@@ -2746,6 +2893,297 @@ static void R_SkinFrame_GenerateTexturesFromQPixels(skinframe_t *skinframe, qboo
+@@ -2746,6 +2919,379 @@ static void R_SkinFrame_GenerateTexturesFromQPixels(skinframe_t *skinframe, qboo
  	}
  }
  
@@ -603,11 +614,93 @@ index f9007caf..7771cf14 100644
 +	state->uploaded = true;
 +}
 +
++typedef struct hapax_driftcurrency_state_s
++{
++	unsigned char *pixels;
++	size_t pixels_size;
++	time_t mtime_sec;
++	long mtime_nsec;
++	off_t file_size;
++	int width;
++	int height;
++	qbool uploaded;
++}
++hapax_driftcurrency_state_t;
++static hapax_driftcurrency_state_t hapax_driftcurrency_state;
++
++static void R_HapaxDriftCurrency_Update(void)
++{
++	const char *path;
++	int width;
++	int height;
++	size_t size;
++	struct stat st;
++	time_t mtime_sec;
++	long mtime_nsec;
++	hapax_driftcurrency_state_t *state = &hapax_driftcurrency_state;
++
++	if (!hapax_driftcurrency_enable.integer || cls.state == ca_dedicated)
++		return;
++
++	path = hapax_driftcurrency_path.string;
++	width = hapax_driftcurrency_width.integer;
++	height = hapax_driftcurrency_height.integer;
++	if (!path[0] || width <= 0 || height <= 0 || width > 4096 || height > 4096)
++		return;
++
++	size = (size_t)width * (size_t)height * 4;
++	if (stat(path, &st) != 0)
++		return;
++	if ((size_t)st.st_size != size) // torn-frame/size reject: must be exactly w*h*4
++		return;
++	mtime_sec = st.st_mtim.tv_sec;
++	mtime_nsec = st.st_mtim.tv_nsec;
++	if (state->uploaded && r_hapax_driftcurrency_texture &&
++		state->file_size == st.st_size && state->mtime_sec == mtime_sec && state->mtime_nsec == mtime_nsec)
++		return;
++	if (state->pixels_size != size || !state->pixels)
++	{
++		if (state->pixels)
++			Mem_Free(state->pixels);
++		state->pixels = (unsigned char *)Mem_Alloc(r_main_mempool, size);
++		state->pixels_size = size;
++	}
++	if (!state->pixels)
++		return;
++	if (!R_HapaxLiveTexture_ReadFrame(path, state->pixels, size)) // second torn-frame guard (short read)
++		return;
++
++	if (!r_hapax_driftcurrency_texture || state->width != width || state->height != height)
++	{
++		r_hapax_driftcurrency_texture = R_LoadTexture2D(
++			r_main_texturepool,
++			"hapax_driftcurrency",
++			width,
++			height,
++			state->pixels,
++			TEXTYPE_BGRA,
++			TEXF_FORCELINEAR | TEXF_CLAMP | TEXF_PERSISTENT | TEXF_ALLOWUPDATES,
++			-1,
++			NULL);
++		state->width = width;
++		state->height = height;
++		if (!r_hapax_driftcurrency_texture)
++			return;
++	}
++	else
++		R_UpdateTexture(r_hapax_driftcurrency_texture, state->pixels, 0, 0, 0, width, height, 1, 0);
++
++	state->file_size = st.st_size;
++	state->mtime_sec = mtime_sec;
++	state->mtime_nsec = mtime_nsec;
++	state->uploaded = true;
++}
++
 +
  skinframe_t *R_SkinFrame_LoadInternal8bit(const char *name, int textureflags, const unsigned char *skindata, int width, int height, const unsigned int *palette, const unsigned int *alphapalette)
  {
  	int i;
-@@ -3288,6 +3726,18 @@ void GL_Main_Init(void)
+@@ -3288,6 +3834,22 @@ void GL_Main_Init(void)
  	Cvar_RegisterVariable(&r_sortentities);
  	Cvar_RegisterVariable(&r_drawviewmodel);
  	Cvar_RegisterVariable(&r_drawexteriormodel);
@@ -623,10 +716,14 @@ index f9007caf..7771cf14 100644
 +	Cvar_RegisterVariable(&hapax_driftfield_path);
 +	Cvar_RegisterVariable(&hapax_driftfield_width);
 +	Cvar_RegisterVariable(&hapax_driftfield_height);
++	Cvar_RegisterVariable(&hapax_driftcurrency_enable);
++	Cvar_RegisterVariable(&hapax_driftcurrency_path);
++	Cvar_RegisterVariable(&hapax_driftcurrency_width);
++	Cvar_RegisterVariable(&hapax_driftcurrency_height);
  	Cvar_RegisterVariable(&r_speeds);
  	Cvar_RegisterVariable(&r_fullbrights);
  	Cvar_RegisterVariable(&r_wateralpha);
-@@ -3341,6 +3791,14 @@ void GL_Main_Init(void)
+@@ -3341,6 +3903,14 @@ void GL_Main_Init(void)
  	Cvar_RegisterVariable(&r_glsl_offsetmapping_lod);
  	Cvar_RegisterVariable(&r_glsl_offsetmapping_lod_distance);
  	Cvar_RegisterVariable(&r_glsl_postprocess);
@@ -641,7 +738,7 @@ index f9007caf..7771cf14 100644
  	Cvar_RegisterVariable(&r_glsl_postprocess_uservec1);
  	Cvar_RegisterVariable(&r_glsl_postprocess_uservec2);
  	Cvar_RegisterVariable(&r_glsl_postprocess_uservec3);
-@@ -5314,6 +5772,19 @@ static void R_MotionBlurView(int viewfbo, rtexture_t *viewdepthtexture, rtexture
+@@ -5314,6 +5884,19 @@ static void R_MotionBlurView(int viewfbo, rtexture_t *viewdepthtexture, rtexture
  	}
  }
  
@@ -661,39 +758,55 @@ index f9007caf..7771cf14 100644
  static void R_BlendView(rtexture_t *viewcolortexture, int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, int x, int y, int width, int height)
  {
  	uint64_t permutation;
-@@ -5649,6 +6120,8 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
+@@ -5649,6 +6232,9 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
  	if (r_timereport_active)
  		R_TimeReport("start");
  	r_textureframe++; // used only by R_GetCurrentTexture
 +	R_HapaxLiveTexture_Update();
 +	R_HapaxDriftField_Update();
++	R_HapaxDriftCurrency_Update();
  	rsurface.entity = NULL; // used only by R_GetCurrentTexture and RSurf_ActiveModelEntity
  
  	if(R_CompileShader_CheckStaticParms())
-@@ -5788,7 +6261,7 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
+@@ -5788,7 +6374,7 @@ void R_RenderView(int fbo, rtexture_t *depthtexture, rtexture_t *colortexture, i
  
  	R_MotionBlurView(viewfbo, viewdepthtexture, viewcolortexture, viewx, viewy, viewwidth, viewheight);
  	if (!skipblend)
 -		R_BlendView(viewcolortexture, fbo, depthtexture, colortexture, x, y, width, height);
 +		R_BlendView_N(viewcolortexture, fbo, depthtexture, colortexture, x, y, width, height, NULL, 0);
-	if (r_timereport_active)
-		R_TimeReport("blendview");
-
+ 	if (r_timereport_active)
+ 		R_TimeReport("blendview");
+ 
 diff --git a/model_brush.h b/model_brush.h
 index dae4a3cf..3809c7c7 100644
 --- a/model_brush.h
 +++ b/model_brush.h
-@@ -121,0 +122,2 @@ mplane_t;
+@@ -119,6 +119,8 @@ mplane_t;
+ #define MATERIALFLAG_REFLECTION 0x00100000
+ // use model lighting on this material (q1bsp lightmap sampling or q3bsp lightgrid, implies FULLBRIGHT is false)
+ #define MATERIALFLAG_MODELLIGHT 0x00200000
 +// (hapax) eligible for GPU world-surface drift/effects stage
 +#define MATERIALFLAG_HAPAXDRIFT 0x00400000
+ // causes RSurf_GetCurrentTexture to leave alone certain fields
+ #define MATERIALFLAG_CUSTOMSURFACE 0x00800000
+ // causes MATERIALFLAG_BLENDED to render a depth pass before rendering, hiding backfaces and other hidden geometry
 diff --git a/model_shared.c b/model_shared.c
 index 9a87c4db..07c54a25 100644
 --- a/model_shared.c
 +++ b/model_shared.c
-@@ -1993,0 +1994,2 @@ void Mod_LoadQ3Shaders(void)
+@@ -1991,6 +1991,8 @@ void Mod_LoadQ3Shaders(void)
+ 					dp_strlcpy(shader.dpreflectcube, parameter[1], sizeof(shader.dpreflectcube));
+ 				else if (!strcasecmp(parameter[0], "dpmeshcollisions"))
+ 					shader.dpmeshcollisions = true;
 +				else if (!strcasecmp(parameter[0], "hapax_drift") || !strcasecmp(parameter[0], "dphapaxdrift"))
 +					shader.dphapaxdrift = true;
-@@ -2269,0 +2272,10 @@ texture_shaderpass_t *Mod_CreateShaderPassFromQ3ShaderLayer(mempool_t *mempool,
+ 				// this sets dpshaderkill to true if dpshaderkillifcvarzero was used, and to false if dpnoshaderkillifcvarzero was used
+ 				else if (((dpshaderkill = !strcasecmp(parameter[0], "dpshaderkillifcvarzero")) || !strcasecmp(parameter[0], "dpnoshaderkillifcvarzero")) && numparameters >= 2)
+ 				{
+@@ -2267,6 +2269,16 @@ texture_shaderpass_t *Mod_CreateShaderPassFromQ3ShaderLayer(mempool_t *mempool,
+ 	return shaderpass;
+ }
+ 
 +static qbool Mod_HapaxDriftEligibleTextureName(const char *name)
 +{
 +	return name && name[0] && (
@@ -704,25 +817,52 @@ index 9a87c4db..07c54a25 100644
 +	);
 +}
 +
-@@ -2484,0 +2497,2 @@ nothing                GL_ZERO GL_ONE
+ qbool Mod_LoadTextureFromQ3Shader(mempool_t *mempool, const char *modelname, texture_t *texture, const char *name, qbool warnmissing, qbool fallback, int defaulttexflags, int defaultmaterialflags)
+ {
+ 	int texflagsmask, texflagsor;
+@@ -2482,6 +2494,8 @@ nothing                GL_ZERO GL_ONE
+ 			texture->basematerialflags |= MATERIALFLAG_NORTLIGHT;
+ 		if (shader->vertexalpha)
+ 			texture->basematerialflags |= MATERIALFLAG_ALPHAGEN_VERTEX;
 +		if (shader->dphapaxdrift)
 +			texture->basematerialflags |= MATERIALFLAG_HAPAXDRIFT;
-@@ -2640,0 +2655,2 @@ nothing                GL_ZERO GL_ONE
+ 		memcpy(texture->deforms, shader->deforms, sizeof(texture->deforms));
+ 		texture->reflectmin = shader->reflectmin;
+ 		texture->reflectmax = shader->reflectmax;
+@@ -2638,6 +2652,8 @@ nothing                GL_ZERO GL_ONE
+ 				Con_Printf("^1%s:^7 could not load texture ^3\"%s\"\n", modelname, texture->name);
+ 		}
+ 	}
 +	if (Mod_HapaxDriftEligibleTextureName(texture->name))
 +		texture->basematerialflags |= MATERIALFLAG_HAPAXDRIFT;
-@@ -2660,0 +2677,2 @@ void Mod_LoadCustomMaterial(mempool_t *mempool, texture_t *texture, const char *
+ 	// init the animation variables
+ 	texture->currentframe = texture;
+ 	texture->currentmaterialflags = texture->basematerialflags;
+@@ -2658,6 +2674,8 @@ void Mod_LoadCustomMaterial(mempool_t *mempool, texture_t *texture, const char *
+ 	dp_strlcpy(texture->name, name, sizeof(texture->name));
+ 	texture->basealpha = 1.0f;
+ 	texture->basematerialflags = materialflags;
 +	if (Mod_HapaxDriftEligibleTextureName(texture->name))
 +		texture->basematerialflags |= MATERIALFLAG_HAPAXDRIFT;
+ 	texture->supercontents = supercontents;
+ 
+ 	texture->offsetmapping = (mod_noshader_default_offsetmapping.value) ? OFFSETMAPPING_DEFAULT : OFFSETMAPPING_OFF;
 diff --git a/r_qshader.h b/r_qshader.h
 index ce38ff7f..61cba25b 100644
 --- a/r_qshader.h
 +++ b/r_qshader.h
-@@ -222,0 +223,3 @@ typedef struct shader_s
+@@ -220,6 +220,9 @@ typedef struct shader_s
+ 	// add collisions to all triangles of the surface
+ 	qbool dpmeshcollisions;
+ 
 +	// Hapax GPU drift/effects stage eligibility
 +	qbool dphapaxdrift;
 +
+ 	// kill shader based on cvar checks
+ 	qbool dpshaderkill;
+ 
 diff --git a/render.h b/render.h
-index 7fbcd0b3..0bd77491 100644
+index 7fbcd0b3..c9939bb6 100644
 --- a/render.h
 +++ b/render.h
 @@ -102,9 +102,20 @@ shadermode_t;
@@ -747,16 +887,17 @@ index 7fbcd0b3..0bd77491 100644
  // 1.0f / N table
  extern float ixtable[4096];
  
-@@ -570,6 +581,7 @@ extern cvar_t r_test;
+@@ -570,6 +581,8 @@ extern cvar_t r_test;
  extern rtexture_t *r_texture_blanknormalmap;
  extern rtexture_t *r_texture_white;
  extern rtexture_t *r_texture_grey128;
 +extern rtexture_t *r_hapax_driftfield_texture;
++extern rtexture_t *r_hapax_driftcurrency_texture;
  extern rtexture_t *r_texture_black;
  extern rtexture_t *r_texture_notexture;
  extern rtexture_t *r_texture_whitecube;
 diff --git a/shader_glsl.h b/shader_glsl.h
-index dc56d085..392634a8 100644
+index dc56d085..a210b714 100644
 --- a/shader_glsl.h
 +++ b/shader_glsl.h
 @@ -178,6 +178,62 @@
@@ -933,17 +1074,18 @@ index dc56d085..392634a8 100644
  "	gl_Position = ModelViewProjectionMatrix * Attrib_Position;\n",
  "\n",
  "#ifdef USESHADOWMAPORTHO\n",
-@@ -1466,6 +1581,9 @@
+@@ -1466,6 +1581,10 @@
  "    uint allpixels;\n",
  "};\n",
  "#endif\n",
 +"#ifdef USEHAPAXDRIFT\n",
 +"uniform sampler2D Texture_HapaxDriftField;\n",
++"uniform sampler2D Texture_HapaxDriftCurrency;\n",
 +"#endif\n",
  "void main(void)\n",
  "{\n",
  "#ifdef USEOFFSETMAPPING\n",
-@@ -1797,6 +1915,47 @@
+@@ -1797,6 +1916,69 @@
  "   color.rgb *= clamp(float(visiblepixels) / float(allpixels), 0.0, 1.0);\n",
  "#endif\n",
  "\n",
@@ -951,6 +1093,8 @@ index dc56d085..392634a8 100644
 +"	{\n",
 +"		float hpx_luma = dot(color.rgb, vec3(0.299, 0.587, 0.114));\n",
 +"		float hpx_field = dp_texture2D(Texture_HapaxDriftField, fract(HapaxModelPos.xy * 0.0078125)).r;\n",
++"		float hpx_currency = dp_texture2D(Texture_HapaxDriftCurrency, fract(HapaxModelPos.xy * 0.0078125)).r;\n",
++"		float hpx_amp = 0.80 + hpx_currency * 0.90; // per-zone drift-amplitude envelope (Phase 1 currency wire)\n",
 +"		float hpx_wpos = HapaxModelPos.x*0.018 + HapaxModelPos.y*0.012 + HapaxModelPos.z*0.015;\n",
 +"		// dark-preserving brightness (void/unlit stays dark; only the wire gets a faint floor)\n",
 +"		vec3 hpx_desat = mix(color.rgb, vec3(hpx_luma), 0.50);\n",
@@ -964,7 +1108,7 @@ index dc56d085..392634a8 100644
 +"		vec3 hpx_paln = hpx_pal / max(dot(hpx_pal, vec3(0.299, 0.587, 0.114)), 0.05);\n",
 +"		vec3 hpx_wire = hpx_paln * hpx_wl;\n",
 +"		// (2) DRIFT layer: additional luma-preserving HUE ROTATION (field + time)\n",
-+"		float hpx_ang = ClientTime*0.28 + hpx_wpos*6.2831853 + (hpx_field - 0.5)*6.5;\n",
++"		float hpx_ang = ClientTime*0.28 + hpx_wpos*6.2831853 + (hpx_field - 0.5)*6.5*hpx_amp;\n",
 +"		vec3 hpx_k = vec3(0.5773503);\n",
 +"		float hpx_ca = cos(hpx_ang);\n",
 +"		float hpx_sa = sin(hpx_ang);\n",
@@ -986,6 +1130,26 @@ index dc56d085..392634a8 100644
 +"		// live reverie currency drives the stipple too (brightness shimmer), so EVERY drift\n",
 +"		// element responds to the currency, not just the grid hue-rotation.\n",
 +"		color.rgb += hpx_wc * hpx_dot * hpx_scol * 0.42 * (0.65 + 0.7*hpx_field);\n",
++"		// (4) STANDING-NEON EDGE ACCENT \u2014 thin vertical neon tube-lines on standing\n",
++"		// surfaces (walls); luma-normalised neon hue (sets HUE only, never luminance), a slow\n",
++"		// horizontal march on its own clock, currency-reactive. Synthwave room tubes.\n",
++"		float hpx_horiz = (hpx_an.x > hpx_an.y) ? HapaxModelPos.y : HapaxModelPos.x;\n",
++"		float hpx_neon_t = fract(hpx_horiz * 0.18 + ClientTime * 0.04 + hpx_field * 0.5);\n",
++"		float hpx_neon = smoothstep(0.060, 0.0, abs(hpx_neon_t - 0.5));\n",
++"		vec3 hpx_neoncol = 0.5 + 0.5*cos(6.2831853*(hpx_horiz*0.03 + ClientTime*0.06 + hpx_currency*0.8 + vec3(0.0, 0.45, 0.85)));\n",
++"		hpx_neoncol = hpx_neoncol / max(dot(hpx_neoncol, vec3(0.299, 0.587, 0.114)), 0.05);\n",
++"		color.rgb += hpx_wc * hpx_neon * hpx_neoncol * hpx_wl * 0.55 * (0.6 + 0.6*hpx_currency);\n",
++"		// (5) SCRIM-FLOOR WEAVE \u2014 woven moir\u00e9 scrim on the floor (up-facing): two\n",
++"		// perpendicular gratings interfere into a fabric weave, centred so it modulates\n",
++"		// (+/-) the wire luma-neutrally rather than washing it. Slow, currency/field-reactive.\n",
++"		float hpx_floor = step(0.60, hpx_nn.z);\n",
++"		vec2 hpx_wuv = HapaxModelPos.xy * 0.22;\n",
++"		float hpx_warp = sin(hpx_wuv.x * 6.2831853 + ClientTime*0.05 + hpx_field*3.0);\n",
++"		float hpx_weft = sin(hpx_wuv.y * 6.2831853 - ClientTime*0.04 + hpx_currency*2.0);\n",
++"		float hpx_weave = hpx_warp * hpx_weft;\n",
++"		vec3 hpx_wvcol = 0.5 + 0.5*cos(6.2831853*(hpx_weave*0.35 + ClientTime*0.03 + vec3(0.10, 0.40, 0.70)));\n",
++"		hpx_wvcol = hpx_wvcol / max(dot(hpx_wvcol, vec3(0.299, 0.587, 0.114)), 0.05);\n",
++"		color.rgb += hpx_floor * hpx_weave * hpx_wvcol * hpx_wl * 0.26 * (0.6 + 0.5*hpx_field);\n",
 +"	}\n",
 +"#endif\n",
  "	dp_FragColor = vec4(color);\n",

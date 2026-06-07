@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch source activation for screwm GPU drift daemon rebuild
+ConditionPathExists=%h/.config/hapax/enable-darkplaces-runtime
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/ensure-screwm-gpu-drift-build.sh
+
+[Path]
+PathChanged=%h/.cache/hapax/source-activation/last-success-sha
+PathChanged=%h/.cache/hapax/source-activation/worktree/hapax-logos/crates/hapax-visual/Cargo.toml
+Unit=hapax-screwm-gpu-drift-rebuild.service
+
+[Install]
+WantedBy=default.target

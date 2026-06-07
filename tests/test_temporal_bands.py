@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from agents.hapax_daimonion.perception_ring import PerceptionRing
+from agents.hapax_daimonion.phenomenal_parsing import parse_temporal_xml
 from agents.temporal_bands import (
+    ProtentionEntry,
     RetentionEntry,
     TemporalBandFormatter,
     TemporalBands,
@@ -157,7 +159,7 @@ class TestXmlFormat:
         fmt = TemporalBandFormatter()
         bands = fmt.format(ring)
         xml = fmt.format_xml(bands)
-        assert "<impression>" in xml
+        assert '<impression scale="tick">' in xml
 
     def test_empty_bands_minimal_xml(self):
         fmt = TemporalBandFormatter()
@@ -181,3 +183,65 @@ class TestProtentionConfidence:
         bands = fmt.format(ring)
         for p in bands.protention:
             assert len(p.basis) > 0
+
+
+class TestScaleLadderAndPrecision:
+    def test_xml_emits_scale_for_impression(self):
+        ring = _make_ring(15)
+        fmt = TemporalBandFormatter()
+        xml = fmt.format_xml(fmt.format(ring))
+        # scale ladder is now uniform: impression carries scale=, not only retention
+        assert '<impression scale="tick">' in xml
+
+    def test_xml_emits_scale_for_protention(self):
+        bands = TemporalBands(
+            protention=[
+                ProtentionEntry(predicted_state="entering_deep_work", confidence=0.7, basis="b")
+            ]
+        )
+        xml = TemporalBandFormatter().format_xml(bands)
+        assert '<protention scale="tick">' in xml
+
+    def test_protention_precision_defaults_zero(self):
+        # 17 legacy call sites construct without precision (never-remove)
+        p = ProtentionEntry(predicted_state="x", confidence=0.7, basis="b")
+        assert p.precision == 0.0
+
+    def test_protention_precision_distinct_from_confidence(self):
+        p = ProtentionEntry(predicted_state="x", confidence=0.7, basis="b", precision=0.4)
+        assert p.precision == 0.4
+        assert p.precision != p.confidence
+
+    def test_prediction_precision_roundtrips_through_parser(self):
+        # guards the regex-order hazard: state -> confidence -> precision
+        bands = TemporalBands(
+            protention=[
+                ProtentionEntry(
+                    predicted_state="entering_deep_work",
+                    confidence=0.72,
+                    basis="rising",
+                    precision=0.4,
+                )
+            ]
+        )
+        xml = TemporalBandFormatter().format_xml(bands)
+        assert 'precision="0.40"' in xml
+        parsed = parse_temporal_xml(xml, {})
+        prot = parsed["protention"]
+        assert len(prot) == 1
+        assert prot[0]["predicted_state"] == "entering_deep_work"
+        assert prot[0]["confidence"] == 0.72
+        assert prot[0]["precision"] == 0.4
+
+    def test_parser_back_compat_precision_optional(self):
+        # pre-band-tense XML (no precision attr) still parses, precision -> 0.0
+        xml = (
+            "<temporal_context>\n"
+            '  <protention scale="tick">\n'
+            '    <prediction state="flow_continuing" confidence="0.60">stable</prediction>\n'
+            "  </protention>\n"
+            "</temporal_context>"
+        )
+        parsed = parse_temporal_xml(xml, {})
+        assert parsed["protention"][0]["confidence"] == 0.60
+        assert parsed["protention"][0]["precision"] == 0.0

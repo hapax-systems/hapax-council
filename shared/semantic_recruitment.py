@@ -28,6 +28,7 @@ from shared.affordance import (
 from shared.affordance import (
     MonetizationRisk as AffordanceMonetizationRisk,
 )
+from shared.direction import Direction, PhysicalDirection
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SEMANTIC_RECRUITMENT_FIXTURES = REPO_ROOT / "config" / "semantic-recruitment-fixtures.json"
@@ -107,16 +108,6 @@ class LifecycleState(StrEnum):
     DECOMMISSIONED = "decommissioned"
     SUPERSEDED = "superseded"
     CATALOG_ONLY = "catalog_only"
-
-
-class Direction(StrEnum):
-    OBSERVE = "observe"
-    EXPRESS = "express"
-    ACT = "act"
-    ROUTE = "route"
-    RECALL = "recall"
-    COMMUNICATE = "communicate"
-    REGULATE = "regulate"
 
 
 class EffectType(StrEnum):
@@ -413,6 +404,9 @@ class SemanticRecruitmentRow(BaseModel):
     domain_tags: list[DomainTag] = Field(min_length=1)
     family_tags: list[FamilyTag] = Field(min_length=1)
     direction: Direction
+    # Orthogonal physical-transport polarity (super-spec). None = unclassified;
+    # NOT derived from `direction` — the two axes are independent.
+    physical_direction: PhysicalDirection | None = None
     effect_type: EffectType
     realm: Realm
     medium: Medium

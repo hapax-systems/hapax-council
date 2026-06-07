@@ -226,4 +226,4 @@ class TestMultiScaleAggregatorIntegration:
 
         # Should have tick retention + at least minute data
         assert '<retention scale="tick">' in xml
-        assert "<impression>" in xml
+        assert '<impression scale="tick">' in xml

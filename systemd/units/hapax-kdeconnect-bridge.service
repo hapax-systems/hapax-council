@@ -5,8 +5,9 @@ Wants=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python -m agents.kdeconnect_bridge
-WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.kdeconnect_bridge
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 Environment=HAPAX_LOG_LEVEL=INFO
 Restart=on-failure
 RestartSec=5s

@@ -20,6 +20,7 @@ use blake2::Blake2sVar;
 
 const REVERIE_IN: &str = "/dev/shm/hapax-sources/reverie.rgba";
 const OUT_PATH: &str = "/dev/shm/hapax-compositor/quake-drift-field.bgra";
+const CURRENCY_PATH: &str = "/dev/shm/hapax-compositor/quake-drift-currency.bgra";
 const IN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm; // reverie is RGBA
 const OUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm; // engine reads BGRA directly
 const SHADER_SRC: &str = include_str!(concat!(
@@ -61,6 +62,45 @@ fn input_sig(path: &str) -> Option<(u64, u128)> {
 fn atomic_write(path: &str, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = format!("{path}.tmp");
     std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, path))
+}
+
+/// Map a finished staging buffer, de-pad rows, and atomic-write to `path` when changed.
+fn drain_target(
+    device: &wgpu::Device,
+    staging: &wgpu::Buffer,
+    bytes_per_row: u32,
+    padded_bytes_per_row: u32,
+    size: u32,
+    path: &str,
+    last_hash: &mut [u8; 8],
+) -> Option<Vec<u8>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    device.poll(wgpu::Maintain::Wait);
+    if rx.recv().map(|r| r.is_ok()).unwrap_or(false) {
+        let mapped = staging.slice(..).get_mapped_range();
+        let mut out = Vec::with_capacity((bytes_per_row * size) as usize);
+        if padded_bytes_per_row == bytes_per_row {
+            out.extend_from_slice(&mapped[..(bytes_per_row * size) as usize]);
+        } else {
+            for row in 0..size {
+                let s = (row * padded_bytes_per_row) as usize;
+                out.extend_from_slice(&mapped[s..s + bytes_per_row as usize]);
+            }
+        }
+        drop(mapped);
+        staging.unmap();
+        let h = stable_short_hash(&out);
+        if h != *last_hash && atomic_write(path, &out).is_ok() {
+            *last_hash = h;
+        }
+        Some(out)
+    } else {
+        staging.unmap();
+        None
+    }
 }
 
 fn pick_adapter(instance: &wgpu::Instance) -> wgpu::Adapter {
@@ -138,6 +178,16 @@ async fn run() {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -157,11 +207,18 @@ async fn run() {
         fragment: Some(wgpu::FragmentState {
             module: &shader,
             entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: OUT_FORMAT,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
+            targets: &[
+                Some(wgpu::ColorTargetState {
+                    format: OUT_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+                Some(wgpu::ColorTargetState {
+                    format: OUT_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+            ],
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState::default(),
@@ -210,6 +267,36 @@ async fn run() {
         view_formats: &[],
     });
     let out_view = out_tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let cur_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("drift-currency out"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: OUT_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let cur_view = cur_tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let prev_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("drift-field prev (feedback)"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: OUT_FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let prev_view = prev_tex.create_view(&wgpu::TextureViewDescriptor::default());
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("drift-field bg"),
         layout: &bgl,
@@ -222,6 +309,10 @@ async fn run() {
                 binding: 1,
                 resource: wgpu::BindingResource::Sampler(&sampler),
             },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&prev_view),
+            },
         ],
     });
 
@@ -233,11 +324,20 @@ async fn run() {
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
+    let cur_staging = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("drift-currency staging"),
+        size: (padded_bytes_per_row * size) as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
 
     log::info!("drift-field live: reverie {in_w}x{in_h} -> field {size}x{size} @ {fps}fps -> {OUT_PATH}");
     let period = Duration::from_secs_f32(1.0 / fps.max(1.0));
     let mut last_sig: Option<(u64, u128)> = None;
     let mut last_out_hash = [0u8; 8];
+    let mut last_cur_hash = [0u8; 8];
+    // previous field output, round-tripped as the temporal-feedback input (init neutral)
+    let mut last_field_bytes: Vec<u8> = vec![128u8; (size as usize) * (size as usize) * 4];
 
     loop {
         let tick = Instant::now();
@@ -270,20 +370,50 @@ async fn run() {
                             depth_or_array_layers: 1,
                         },
                     );
+                    // upload the previous field as the temporal-feedback input (prev_tex)
+                    queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &prev_tex,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        &last_field_bytes,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(size * 4),
+                            rows_per_image: Some(size),
+                        },
+                        wgpu::Extent3d {
+                            width: size,
+                            height: size,
+                            depth_or_array_layers: 1,
+                        },
+                    );
                     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                         label: Some("drift-field enc"),
                     });
                     {
                         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("drift-field pass"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &out_view,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
+                            color_attachments: &[
+                                Some(wgpu::RenderPassColorAttachment {
+                                    view: &out_view,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                }),
+                                Some(wgpu::RenderPassColorAttachment {
+                                    view: &cur_view,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                }),
+                            ],
                             depth_stencil_attachment: None,
                             timestamp_writes: None,
                             occlusion_query_set: None,
@@ -313,35 +443,49 @@ async fn run() {
                             depth_or_array_layers: 1,
                         },
                     );
+                    enc.copy_texture_to_buffer(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &cur_tex,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        wgpu::TexelCopyBufferInfo {
+                            buffer: &cur_staging,
+                            layout: wgpu::TexelCopyBufferLayout {
+                                offset: 0,
+                                bytes_per_row: Some(padded_bytes_per_row),
+                                rows_per_image: Some(size),
+                            },
+                        },
+                        wgpu::Extent3d {
+                            width: size,
+                            height: size,
+                            depth_or_array_layers: 1,
+                        },
+                    );
                     queue.submit(Some(enc.finish()));
 
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    staging
-                        .slice(..)
-                        .map_async(wgpu::MapMode::Read, move |r| {
-                            let _ = tx.send(r);
-                        });
-                    device.poll(wgpu::Maintain::Wait);
-                    if rx.recv().map(|r| r.is_ok()).unwrap_or(false) {
-                        let mapped = staging.slice(..).get_mapped_range();
-                        let mut out = Vec::with_capacity((bytes_per_row * size) as usize);
-                        if padded_bytes_per_row == bytes_per_row {
-                            out.extend_from_slice(&mapped[..(bytes_per_row * size) as usize]);
-                        } else {
-                            for row in 0..size {
-                                let s = (row * padded_bytes_per_row) as usize;
-                                out.extend_from_slice(&mapped[s..s + bytes_per_row as usize]);
-                            }
-                        }
-                        drop(mapped);
-                        staging.unmap();
-                        let h = stable_short_hash(&out);
-                        if h != last_out_hash && atomic_write(OUT_PATH, &out).is_ok() {
-                            last_out_hash = h;
-                        }
-                    } else {
-                        staging.unmap();
+                    if let Some(field_bytes) = drain_target(
+                        &device,
+                        &staging,
+                        bytes_per_row,
+                        padded_bytes_per_row,
+                        size,
+                        OUT_PATH,
+                        &mut last_out_hash,
+                    ) {
+                        last_field_bytes = field_bytes;
                     }
+                    let _ = drain_target(
+                        &device,
+                        &cur_staging,
+                        bytes_per_row,
+                        padded_bytes_per_row,
+                        size,
+                        CURRENCY_PATH,
+                        &mut last_cur_hash,
+                    );
                 }
             }
         }
