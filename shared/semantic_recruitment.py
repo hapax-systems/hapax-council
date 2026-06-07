@@ -28,6 +28,7 @@ from shared.affordance import (
 from shared.affordance import (
     MonetizationRisk as AffordanceMonetizationRisk,
 )
+from shared.direction import Direction
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SEMANTIC_RECRUITMENT_FIXTURES = REPO_ROOT / "config" / "semantic-recruitment-fixtures.json"
@@ -107,16 +108,6 @@ class LifecycleState(StrEnum):
     DECOMMISSIONED = "decommissioned"
     SUPERSEDED = "superseded"
     CATALOG_ONLY = "catalog_only"
-
-
-class Direction(StrEnum):
-    OBSERVE = "observe"
-    EXPRESS = "express"
-    ACT = "act"
-    ROUTE = "route"
-    RECALL = "recall"
-    COMMUNICATE = "communicate"
-    REGULATE = "regulate"
 
 
 class EffectType(StrEnum):

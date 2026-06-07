@@ -16,6 +16,8 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from shared.direction import Direction
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORLD_CAPABILITY_REGISTRY = REPO_ROOT / "config" / "world-capability-registry.json"
 
@@ -59,16 +61,6 @@ REQUIRED_EVIDENCE_FIELDS = frozenset(
 
 class WCSRegistryError(ValueError):
     """Raised when the WCS registry cannot be loaded safely."""
-
-
-class Direction(StrEnum):
-    OBSERVE = "observe"
-    EXPRESS = "express"
-    ACT = "act"
-    ROUTE = "route"
-    RECALL = "recall"
-    COMMUNICATE = "communicate"
-    REGULATE = "regulate"
 
 
 class GroundingStatus(StrEnum):
