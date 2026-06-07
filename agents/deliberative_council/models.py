@@ -58,6 +58,25 @@ class PhaseOneResult(BaseModel):
     tool_calls_log: list[str] = Field(default_factory=list)
 
 
+class MemberFailure(BaseModel):
+    """A council member that failed to produce a Phase 1 result.
+
+    Recorded into the verdict receipt so a degraded panel is *visible*
+    rather than silently dropped. A survivors-only verdict can otherwise
+    masquerade as consensus (e.g. a mean of 2.0 drawn from 2 of 6 members),
+    which corrupts the downstream substance gate. See cc-task
+    segment-prep-council-model-alias-reliability-20260607.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    model_alias: str
+    # Exception *type name* only (e.g. "TimeoutError") — never the raw
+    # exception message, which can carry upstream URLs/credentials. Full
+    # detail stays in the server log. See _run_one in engine.py.
+    reason: str
+
+
 class EvidenceClassification(BaseModel):
     model_config = ConfigDict(frozen=True)
 

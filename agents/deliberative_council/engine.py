@@ -20,6 +20,7 @@ from .models import (
     CouncilVerdict,
     EvidenceMatrix,
     EvidenceMatrixAxis,
+    MemberFailure,
     PhaseOneResult,
 )
 from .prompts import (
@@ -89,7 +90,17 @@ async def run_phase1(
     inp: CouncilInput,
     rubric: Rubric,
     config: CouncilConfig,
+    *,
+    failures_out: list[MemberFailure] | None = None,
 ) -> list[PhaseOneResult]:
+    """Run Phase 1 across the configured member panel.
+
+    Returns the surviving members' results. When ``failures_out`` is
+    provided, every member that fails to produce a result is appended to it
+    (alias + reason) so a degraded panel can be recorded transparently by
+    the caller — survivors-only behaviour is otherwise unchanged.
+    """
+
     async def _run_one(alias: str, seed: int) -> PhaseOneResult | None:
         try:
             member = build_member(alias)
@@ -135,7 +146,15 @@ async def run_phase1(
                 tool_calls_log=all_tools,
             )
         except Exception as e:
+            # Full detail (which may include a request URL or auth header from
+            # an upstream LiteLLM error) goes only to the server log, where
+            # credential scrubbing applies.
             _log.error("Phase 1 failure for %s: %s", alias, e)
+            if failures_out is not None:
+                # The verdict receipt is a durable, downstream-published
+                # artifact — record only the exception *type*, never str(e),
+                # so a secret/PII-bearing error message cannot leak into it.
+                failures_out.append(MemberFailure(model_alias=alias, reason=type(e).__name__))
             return None
 
     results_or_none = await asyncio.gather(
@@ -165,7 +184,11 @@ async def deliberate(
     ).hexdigest()
     cache_policy = cache_policy_for_aliases(config.model_aliases)
 
-    phase1_results = await run_phase1(inp, rubric, config)
+    failed_members: list[MemberFailure] = []
+    phase1_results = await run_phase1(inp, rubric, config, failures_out=failed_members)
+    failed_members_payload = [
+        {"model_alias": f.model_alias, "reason": f.reason} for f in failed_members
+    ]
 
     if not phase1_results:
         return CouncilVerdict(
@@ -178,6 +201,7 @@ async def deliberate(
             receipt={
                 "input_hash": input_hash,
                 "error": "all_models_failed",
+                "failed_members": failed_members_payload,
                 "cache_policy": cache_policy,
             },
         )
@@ -195,6 +219,7 @@ async def deliberate(
                 "input_hash": input_hash,
                 "shortcircuited": True,
                 "models_used": [r.model_alias for r in phase1_results],
+                "failed_members": failed_members_payload,
                 "cache_policy": cache_policy,
                 "phases_completed": [1],
                 "phase1_transcript": [
@@ -241,6 +266,7 @@ async def deliberate(
             "input_hash": input_hash,
             "shortcircuited": False,
             "models_used": [r.model_alias for r in phase1_results],
+            "failed_members": failed_members_payload,
             "cache_policy": cache_policy,
             "phases_completed": [1, 2, 3, 4, 5],
             "phase1_transcript": [
