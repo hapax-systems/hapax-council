@@ -27,6 +27,7 @@ import re
 import re as _re
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -1512,6 +1513,7 @@ def prep_segment(
     prep_dir: Path,
     *,
     prep_session: dict[str, Any] | None = None,
+    deadline_monotonic: float | None = None,
 ) -> Path | None:
     """Compose the full narration script for one programme and save it.
 
@@ -1730,22 +1732,52 @@ def prep_segment(
         avg_chars,
     )
 
-    # Pass 1.5: Council coherence check — reject segments with no narrative force
-    coherence_passed = True
-    try:
-        coherence_passed, coherence_feedback = _council_coherence_check(
-            "\n\n".join(script), prog_id
+    # Pass 1.5: Council coherence check. A degraded / unavailable / REFUSED
+    # council is a TERMINAL no-release (fail-LOUD) — never a soft feedback inject
+    # (the prior fail-open let a down council wave the segment through). A HEALTHY
+    # council with low coherence injects feedback into refinement (recoverable).
+    # council_decisions accumulates the council audit receipt for the manifest.
+    council_decisions: dict[str, Any] = {}
+    if _prep_deadline_exceeded(
+        deadline_monotonic,
+        prep_dir=prep_dir,
+        prep_session=prep_session,
+        programme_id=prog_id,
+        role=role,
+        topic=topic,
+        beats=beats,
+        council_decisions=council_decisions,
+        phase="coherence_check",
+    ):
+        return None
+    coherence_outcome = _council_coherence_check("\n\n".join(script), prog_id)
+    council_decisions["coherence"] = coherence_outcome.council_decisions
+    if coherence_outcome.refused:
+        log.warning("prep_segment: council coherence REFUSED for %s — no release", prog_id)
+        _emit_council_degradation_signal(prog_id, "coherence", coherence_outcome.council_decisions)
+        _append_council_decisions_ledger(
+            prep_dir, prog_id, council_decisions, terminal_status="refused_no_release"
         )
-        if not coherence_passed and coherence_feedback:
-            log.warning(
-                "prep_segment: coherence check failed for %s, injecting feedback into refinement",
-                prog_id,
-            )
-            seed = f"{seed}\n\n## Council Coherence Feedback\n{coherence_feedback}"
-            # A3: carry the coherence rationale to the next batch's planner too.
-            _record_substance_feedback(prep_session, prog_id, coherence_feedback)
-    except Exception:
-        log.warning("prep_segment: coherence check failed", exc_info=True)
+        _write_prep_diagnostic_outcome(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            terminal_status="refused_no_release",
+            terminal_reason="council_degraded_refused_no_release",
+            not_loadable_reason="council degraded — coherence could not be certified",
+            refusal_metadata={"council_decisions": council_decisions},
+        )
+        return None
+    if not coherence_outcome.passed and coherence_outcome.feedback:
+        log.warning(
+            "prep_segment: low coherence for %s, injecting feedback into refinement", prog_id
+        )
+        seed = f"{seed}\n\n## Council Coherence Feedback\n{coherence_outcome.feedback}"
+        # A3: carry the coherence rationale to the next batch's planner too.
+        _record_substance_feedback(prep_session, prog_id, coherence_outcome.feedback)
 
     # Pass 2: Iterative refinement
     refine_result = _refine_script(
@@ -1779,6 +1811,18 @@ def prep_segment(
     script = _repair_live_event_payoff(script)
 
     # Pass 3: Council disconfirmation — adversarially test material claims
+    if _prep_deadline_exceeded(
+        deadline_monotonic,
+        prep_dir=prep_dir,
+        prep_session=prep_session,
+        programme_id=prog_id,
+        role=role,
+        topic=topic,
+        beats=beats,
+        council_decisions=council_decisions,
+        phase="disconfirmation",
+    ):
+        return None
     council_disconfirmation_result: dict[str, Any] | None = None
     try:
         from shared.segment_disconfirmation import (
@@ -1815,6 +1859,18 @@ def prep_segment(
                     source_consequence_map=list(sc_map),
                     claim_map=list(claim_map),
                 )
+                council_decisions["disconfirmation"] = {
+                    "check": "disconfirmation",
+                    "convergence_status": "degraded"
+                    if council_disconfirmation_result.get("council_degraded")
+                    else "ran",
+                    "passed": council_disconfirmation_result.get("council_disconfirmation_passed"),
+                    "degraded": council_disconfirmation_result.get("council_degraded"),
+                    "survived": len(council_disconfirmation_result.get("survived_claims", [])),
+                    "contested": len(council_disconfirmation_result.get("contested_claims", [])),
+                    "refuted": len(council_disconfirmation_result.get("refuted_claims", [])),
+                    "degraded_claims": council_disconfirmation_result.get("degraded_claims", []),
+                }
                 if council_disconfirmation_result.get("no_candidate_triggered"):
                     log.warning(
                         "prep_segment: council refuted structural claim in %s — no candidate",
@@ -1889,7 +1945,47 @@ def prep_segment(
     except Exception as exc:
         log.warning("prep_segment: council disconfirmation failed for %s: %s", prog_id, exc)
 
+    # FAIL-LOUD (outside the broad except so a diagnostic-write error cannot
+    # swallow the refusal): a degraded disconfirmation panel (unavailable, below
+    # quorum, or HUNG-with-empty-scores routed to degraded) means the gate cannot
+    # be trusted — terminal no-release. cc-task cctv-council-perfect-health-faillloud.
+    if council_disconfirmation_result is not None and council_disconfirmation_result.get(
+        "council_degraded"
+    ):
+        log.warning("prep_segment: council disconfirmation DEGRADED for %s — no release", prog_id)
+        _emit_council_degradation_signal(
+            prog_id, "disconfirmation", council_decisions.get("disconfirmation", {})
+        )
+        _append_council_decisions_ledger(
+            prep_dir, prog_id, council_decisions, terminal_status="refused_no_release"
+        )
+        _write_prep_diagnostic_outcome(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            terminal_status="refused_no_release",
+            terminal_reason="council_degraded_refused_no_release",
+            not_loadable_reason="council degraded — disconfirmation could not be certified",
+            refusal_metadata={"council_decisions": council_decisions},
+        )
+        return None
+
     # Pass 4: Narrative quality council — structural/rhetorical critique
+    if _prep_deadline_exceeded(
+        deadline_monotonic,
+        prep_dir=prep_dir,
+        prep_session=prep_session,
+        programme_id=prog_id,
+        role=role,
+        topic=topic,
+        beats=beats,
+        council_decisions=council_decisions,
+        phase="narrative_critique",
+    ):
+        return None
     narrative_verdict_data: dict[str, Any] | None = None
     try:
         from shared.segment_narrative_critique import (
@@ -1903,6 +1999,11 @@ def prep_segment(
         narrative_verdict_data["scores"] = narrative_verdict.scores
         narrative_verdict_data["verdict_status"] = narrative_verdict.verdict_status.value
         narrative_verdict_data["revision_directives"] = narrative_verdict.revision_directives
+        council_decisions["narrative"] = {
+            "check": "narrative",
+            "convergence_status": narrative_verdict.convergence_status.value,
+            "verdict_status": narrative_verdict.verdict_status.value,
+        }
 
         from agents.deliberative_council.models import NarrativeVerdictStatus
 
@@ -2362,11 +2463,18 @@ def prep_segment(
         )
     if narrative_verdict_data is not None:
         payload["narrative_quality_verdict"] = narrative_verdict_data
+    # AC 2d: the council is otherwise an UNRECORDED LLM consumer — thread its
+    # decisions (coherence / disconfirmation / narrative health, with
+    # members_valid/families_valid) into the manifest artifact + append-only ledger.
+    payload["council_decisions"] = council_decisions
     payload["artifact_sha256"] = _artifact_hash(payload)
     tmp = out_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(out_path)
     _append_candidate_ledger(prep_dir, payload, out_path)
+    _append_council_decisions_ledger(
+        prep_dir, prog_id, council_decisions, terminal_status="released"
+    )
     log.info(
         "prep_segment: saved %s (%d blocks, avg %.0f chars/beat)",
         out_path,
@@ -2746,7 +2854,14 @@ def run_prep(
             segmented_count=len(segmented),
         )
         try:
-            path = prep_segment(prog, today, prep_session=prep_session)
+            # AC 3a: pass the absolute prep deadline so prep_segment can fail
+            # LOUD mid-segment instead of overrunning the budget unbounded.
+            path = prep_segment(
+                prog,
+                today,
+                prep_session=prep_session,
+                deadline_monotonic=start + PREP_BUDGET_S,
+            )
         except Exception as exc:
             _update_prep_status(
                 prep_session,
@@ -2886,20 +3001,161 @@ def _extract_topic_string(programme: Any) -> str | None:
     return None
 
 
-def _council_coherence_check(full_script: str, programme_id: str) -> tuple[bool, str]:
-    """Run the council coherence rubric on a composed script.
+COUNCIL_DECISIONS_LEDGER_FILENAME = "council-decisions.ndjson"
 
-    Returns (passed, feedback_string). Feedback is a summary of the
-    council's scoring across the 4 coherence axes. When mean < 3.0,
-    passed=False and feedback contains specific axis-level critique.
+
+def _emit_council_degradation_signal(
+    programme_id: str, check: str, decision: dict[str, Any]
+) -> None:
+    """Loud degradation signal: ntfy (operator) + Prometheus counter (scrape).
+
+    The council is otherwise an UNRECORDED LLM consumer; a degraded/refused panel
+    must be loud, not silent. Best-effort — a failing signal never crashes prep.
+    cc-task cctv-council-perfect-health-faillloud-convergence.
     """
+    status = str(decision.get("convergence_status", "degraded"))
+    reason = f"{check}_{status}"
     try:
-        import asyncio
+        from agents.deliberative_council.members import model_family
+        from agents.deliberative_council.metrics import record_panel_degraded
 
-        from agents.deliberative_council.engine import deliberate
-        from agents.deliberative_council.models import CouncilConfig, CouncilInput, CouncilMode
-        from agents.deliberative_council.rubrics import CoherenceRubric
+        failed = decision.get("failed_members") or []
+        families = sorted(
+            {model_family(str(f.get("model_alias", ""))) for f in failed if isinstance(f, dict)}
+        )
+        for fam in families or ["panel"]:
+            record_panel_degraded(fam, reason)
+    except Exception:
+        log.debug("council degradation metric emit failed", exc_info=True)
+    try:
+        from shared.notify import send_notification
 
+        send_notification(
+            "Council panel degraded — segment refused",
+            f"{check} council {status} for {programme_id}: "
+            f"members_valid={decision.get('members_valid')}, "
+            f"families_valid={decision.get('families_valid')}. Segment NOT released.",
+            priority="high",
+            tags=["warning"],
+        )
+    except Exception:
+        log.debug("council degradation ntfy emit failed", exc_info=True)
+
+
+def _append_council_decisions_ledger(
+    prep_dir: Path,
+    programme_id: str,
+    decisions: dict[str, Any],
+    *,
+    terminal_status: str,
+) -> None:
+    """Append a programme's council decisions to the append-only ledger.
+
+    Durable audit trail of every council decision (coherence / disconfirmation /
+    narrative) with health counts and whether the segment was released or refused
+    — the council is otherwise unrecorded in the prep manifest. Best-effort.
+    """
+    row = {
+        "schema_version": PREP_DIAGNOSTIC_SCHEMA_VERSION,
+        "record_type": "council_decisions_ledger_entry",
+        "ledgered_at": datetime.now(tz=UTC).isoformat(),
+        "programme_id": programme_id,
+        "terminal_status": terminal_status,
+        "council_decisions": decisions,
+    }
+    try:
+        ledger_path = prep_dir / COUNCIL_DECISIONS_LEDGER_FILENAME
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        with ledger_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
+    except Exception:
+        log.debug("council decisions ledger append failed", exc_info=True)
+
+
+def _prep_deadline_exceeded(
+    deadline_monotonic: float | None,
+    *,
+    prep_dir: Path,
+    prep_session: dict[str, Any] | None,
+    programme_id: str,
+    role: str,
+    topic: str,
+    beats: list[Any],
+    council_decisions: dict[str, Any],
+    phase: str,
+) -> bool:
+    """True (and records a terminal budget-exhausted dossier) if the mid-segment
+    deadline has passed.
+
+    AC 3a: ``PREP_BUDGET_S`` was previously checked only BETWEEN segments, so a
+    single in-flight gauntlet overran by 1398s. Budget exhaustion is now a LOUD,
+    recorded terminal outcome (checked before each expensive council pass), not an
+    unbounded overrun. cc-task cctv-council-perfect-health-faillloud-convergence.
+    """
+    if deadline_monotonic is None or time.monotonic() <= deadline_monotonic:
+        return False
+    log.warning(
+        "prep_segment: prep budget exhausted before %s for %s — no release", phase, programme_id
+    )
+    _append_council_decisions_ledger(
+        prep_dir, programme_id, council_decisions, terminal_status="budget_exhausted_no_release"
+    )
+    _write_prep_diagnostic_outcome(
+        prep_dir,
+        prep_session=prep_session,
+        programme_id=programme_id,
+        role=role,
+        topic=topic,
+        segment_beats=list(beats),
+        terminal_status="budget_exhausted_no_release",
+        terminal_reason="prep_budget_exhausted_mid_segment",
+        not_loadable_reason=f"prep budget exhausted before {phase}",
+        refusal_metadata={"phase": phase, "council_decisions": council_decisions},
+    )
+    return True
+
+
+@dataclass(frozen=True)
+class _CoherenceOutcome:
+    """Result of the council coherence check (cc-task cctv-council-perfect-health).
+
+    ``refused`` is the FAIL-LOUD signal: a degraded / unavailable / REFUSED
+    council cannot certify coherence, so the segment must NOT be released (the
+    caller writes a terminal ``council_degraded_refused_no_release`` diagnostic
+    and produces no candidate). ``passed`` is the quality verdict for a HEALTHY
+    council (mean >= 3.0); ``passed=False`` with feedback is a recoverable quality
+    miss that feeds refinement. ``council_decisions`` is the receipt fragment
+    recorded into the prep manifest + the council-decisions ledger.
+    """
+
+    passed: bool
+    feedback: str
+    refused: bool
+    council_decisions: dict[str, Any]
+
+
+def _council_coherence_check(full_script: str, programme_id: str) -> _CoherenceOutcome:
+    """Run the council coherence rubric on a composed script — FAIL-LOUD.
+
+    A degraded / unavailable / REFUSED council yields ``refused=True``; the caller
+    must treat that as a terminal no-release, NOT a soft feedback injection. The
+    prior implementation returned ``(True, "")`` on a down council (fail-OPEN),
+    letting an unavailable council wave a segment through — that is the bug this
+    fixes. A healthy council with mean < 3.0 yields ``passed=False`` with
+    axis-level feedback (a genuine, recoverable quality gate).
+    """
+    import asyncio
+
+    from agents.deliberative_council.engine import deliberate
+    from agents.deliberative_council.models import (
+        ConvergenceStatus,
+        CouncilConfig,
+        CouncilInput,
+        CouncilMode,
+    )
+    from agents.deliberative_council.rubrics import CoherenceRubric
+
+    try:
         council_input = CouncilInput(
             text=full_script[:4000],
             source_ref=f"coherence_check:{programme_id}",
@@ -2909,37 +3165,62 @@ def _council_coherence_check(full_script: str, programme_id: str) -> tuple[bool,
         verdict = asyncio.run(
             deliberate(council_input, CouncilMode.DISCONFIRMATION, CoherenceRubric(), config)
         )
-        scores = verdict.scores
-        valid_scores = [s for s in scores.values() if s is not None]
-        if not valid_scores:
-            # Council degraded (no scores) — fail-open, mirroring the topic gate
-            # and this function's except branch; do not block composition on a
-            # down council.
-            log.warning(
-                "_council_coherence_check: council degraded (no scores), fail-open for %s",
-                programme_id,
-            )
-            return True, ""
-        mean_score = sum(valid_scores) / len(valid_scores)
-        feedback_lines = [f"Council coherence scores (mean={mean_score:.1f}):"]
-        for axis, score in scores.items():
-            feedback_lines.append(f"  - {axis}: {score}")
-        for note in verdict.disagreement_log[:3]:
-            feedback_lines.append(f"  Council note: {note[:200]}")
-        feedback = "\n".join(feedback_lines)
-
-        if mean_score < 3.0:
-            log.warning(
-                "_council_coherence_check: FAILED (mean=%.1f) for %s",
-                mean_score,
-                programme_id,
-            )
-            return False, feedback
-        log.info("_council_coherence_check: passed (mean=%.1f) for %s", mean_score, programme_id)
-        return True, feedback
     except Exception:
-        log.warning("_council_coherence_check: council unavailable, fail-open", exc_info=True)
-        return True, ""
+        log.warning(
+            "_council_coherence_check: council UNAVAILABLE — REFUSING (no release) for %s",
+            programme_id,
+            exc_info=True,
+        )
+        return _CoherenceOutcome(
+            passed=False,
+            feedback="",
+            refused=True,
+            council_decisions={"check": "coherence", "convergence_status": "unavailable"},
+        )
+
+    health = verdict.receipt.get("council_health", {})
+    scores = verdict.scores
+    valid_scores = [s for s in scores.values() if s is not None]
+    mean_score = (sum(valid_scores) / len(valid_scores)) if valid_scores else None
+    decision: dict[str, Any] = {
+        "check": "coherence",
+        "convergence_status": verdict.convergence_status.value,
+        "members_valid": health.get("members_valid"),
+        "families_valid": health.get("families_valid"),
+        "failed_members": verdict.receipt.get("failed_members", []),
+        "mean_score": round(mean_score, 2) if mean_score is not None else None,
+    }
+
+    if verdict.convergence_status == ConvergenceStatus.REFUSED or not valid_scores:
+        log.warning(
+            "_council_coherence_check: council REFUSED/degraded (status=%s, valid_scores=%d) — "
+            "no release for %s",
+            verdict.convergence_status.value,
+            len(valid_scores),
+            programme_id,
+        )
+        return _CoherenceOutcome(
+            passed=False, feedback="", refused=True, council_decisions=decision
+        )
+
+    feedback_lines = [f"Council coherence scores (mean={mean_score:.1f}):"]
+    for axis, score in scores.items():
+        feedback_lines.append(f"  - {axis}: {score}")
+    for note in verdict.disagreement_log[:3]:
+        feedback_lines.append(f"  Council note: {note[:200]}")
+    feedback = "\n".join(feedback_lines)
+
+    if mean_score < 3.0:
+        log.warning(
+            "_council_coherence_check: low coherence (mean=%.1f) for %s", mean_score, programme_id
+        )
+        return _CoherenceOutcome(
+            passed=False, feedback=feedback, refused=False, council_decisions=decision
+        )
+    log.info("_council_coherence_check: passed (mean=%.1f) for %s", mean_score, programme_id)
+    return _CoherenceOutcome(
+        passed=True, feedback=feedback, refused=False, council_decisions=decision
+    )
 
 
 def _compose_refusal_reason(

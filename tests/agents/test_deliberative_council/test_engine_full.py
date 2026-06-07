@@ -23,6 +23,13 @@ from agents.deliberative_council.models import (
 )
 from agents.deliberative_council.rubrics import EpistemicQualityRubric
 
+# These tests exercise the phase 2-5 convergence mechanics, not the quorum /
+# family-diversity gate (which has dedicated pins in test_council_fail_loud.py).
+# A 2-3 member panel is below the principled floor and would REFUSE before
+# phase 2, so deliberate() tests pass a quorum-1 config to isolate convergence.
+# cc-task cctv-council-perfect-health-faillloud-convergence.
+_QUORUM_OFF = {"min_valid_members": 1, "min_valid_families": 1}
+
 
 def _make_phase1_results(
     scores_by_model: dict[str, dict[str, int]],
@@ -250,7 +257,7 @@ class TestPhase5Convergence:
             patch("agents.deliberative_council.engine._run_phase3", return_value=[]),
             patch("agents.deliberative_council.engine._run_phase4", return_value=converged_p4),
         ):
-            config = CouncilConfig(model_aliases=("opus", "balanced", "local-fast"))
+            config = CouncilConfig(model_aliases=("opus", "balanced", "local-fast"), **_QUORUM_OFF)
             inp = CouncilInput(text="test", source_ref="ref.md")
             rubric = EpistemicQualityRubric()
             verdict = await deliberate(inp, CouncilMode.DISCONFIRMATION, rubric, config)
@@ -274,7 +281,7 @@ class TestPhase5Convergence:
             patch("agents.deliberative_council.engine._run_phase3", return_value=[]),
             patch("agents.deliberative_council.engine._run_phase4", return_value=contested_p4),
         ):
-            config = CouncilConfig(model_aliases=("opus", "balanced", "local-fast"))
+            config = CouncilConfig(model_aliases=("opus", "balanced", "local-fast"), **_QUORUM_OFF)
             inp = CouncilInput(text="test", source_ref="ref.md")
             rubric = EpistemicQualityRubric()
             verdict = await deliberate(inp, CouncilMode.DISCONFIRMATION, rubric, config)
@@ -297,7 +304,7 @@ class TestPhase5Convergence:
             patch("agents.deliberative_council.engine._run_phase3", return_value=[]),
             patch("agents.deliberative_council.engine._run_phase4", return_value=hung_p4),
         ):
-            config = CouncilConfig(model_aliases=("opus", "balanced", "local-fast"))
+            config = CouncilConfig(model_aliases=("opus", "balanced", "local-fast"), **_QUORUM_OFF)
             inp = CouncilInput(text="test", source_ref="ref.md")
             rubric = EpistemicQualityRubric()
             verdict = await deliberate(inp, CouncilMode.DISCONFIRMATION, rubric, config)
@@ -370,7 +377,7 @@ class TestFullDeliberation:
             patch("agents.deliberative_council.engine.run_phase1", return_value=phase1_results),
             patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call),
         ):
-            config = CouncilConfig(model_aliases=("opus", "balanced"))
+            config = CouncilConfig(model_aliases=("opus", "balanced"), **_QUORUM_OFF)
             inp = CouncilInput(
                 text="This system is production-ready and fully tested.",
                 source_ref="suspicious-claim.md",
@@ -412,7 +419,7 @@ class TestFullDeliberation:
             patch("agents.deliberative_council.engine._run_phase3", return_value=exchanges),
             patch("agents.deliberative_council.engine._run_phase4", return_value=revised_p4),
         ):
-            config = CouncilConfig(model_aliases=("opus", "balanced"))
+            config = CouncilConfig(model_aliases=("opus", "balanced"), **_QUORUM_OFF)
             inp = CouncilInput(text="test", source_ref="ref.md")
             rubric = EpistemicQualityRubric()
             verdict = await deliberate(inp, CouncilMode.DISCONFIRMATION, rubric, config)

@@ -19,7 +19,6 @@ timeouts), not an alias bug. These tests pin two invariants going forward:
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from unittest.mock import patch
@@ -31,6 +30,7 @@ from agents.deliberative_council.models import (
     CouncilInput,
     CouncilMode,
     MemberFailure,
+    Phase1Output,
 )
 from agents.deliberative_council.rubrics import EpistemicQualityRubric
 from shared.config import MODELS
@@ -115,19 +115,19 @@ class TestCouncilMemberRoutes:
 
 class TestPhase1FailureTransparency:
     async def test_run_phase1_records_failures_into_out_param(self) -> None:
-        # First member call raises (simulated timeout); the rest succeed.
-        # Concurrent gather means exactly one member is dropped.
-        call_count = 0
+        # The structured scoring call (output_type set) raises for exactly one
+        # member; the rest emit a valid Phase1Output. The failed member is
+        # recorded and excluded — survivors-only, no fail-open, no retry.
+        score_calls = 0
 
-        async def _mock_call(member, prompt):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
+        async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
+            nonlocal score_calls
+            if output_type is None:  # the investigate (research) call
+                return "researched the claim", []
+            score_calls += 1
+            if score_calls == 1:
                 raise TimeoutError("simulated member timeout")
-            return (
-                json.dumps({"scores": {"a": 3}, "rationale": {"a": "ok"}, "research_findings": []}),
-                [],
-            )
+            return Phase1Output(scores={"a": 3}, rationale={"a": "ok"}, research_findings=[]), []
 
         failures: list[MemberFailure] = []
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
@@ -142,7 +142,7 @@ class TestPhase1FailureTransparency:
         assert "TimeoutError" in failures[0].reason
 
     async def test_run_phase1_without_out_param_is_unchanged(self) -> None:
-        async def _mock_call(member, prompt):
+        async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
             raise RuntimeError("boom")
 
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
@@ -154,9 +154,10 @@ class TestPhase1FailureTransparency:
         assert results == []
 
     async def test_deliberate_receipt_names_failed_members(self) -> None:
-        # Whole panel fails -> HUNG verdict whose receipt names every failure,
-        # so a fully-degraded council is never reported as silent consensus.
-        async def _mock_call(member, prompt):
+        # Whole panel fails -> REFUSED verdict (typed "broke", NOT HUNG which
+        # means genuine disagreement) whose receipt names every failure, so a
+        # fully-degraded council is never reported as silent consensus.
+        async def _mock_call(member, prompt, *, output_type=None, usage_limits=None):
             raise TimeoutError("litellm unavailable")
 
         with patch("agents.deliberative_council.engine._call_member", side_effect=_mock_call):
@@ -166,7 +167,8 @@ class TestPhase1FailureTransparency:
                 inp, CouncilMode.DISCONFIRMATION, EpistemicQualityRubric(), config
             )
 
-        assert verdict.convergence_status == ConvergenceStatus.HUNG
+        assert verdict.convergence_status == ConvergenceStatus.REFUSED
+        assert verdict.receipt["refusal_reason"] == "all_models_failed"
         failed = verdict.receipt.get("failed_members", [])
         assert {f["model_alias"] for f in failed} == {"opus", "balanced", "gemini-3-pro"}
         assert all("TimeoutError" in f["reason"] for f in failed)

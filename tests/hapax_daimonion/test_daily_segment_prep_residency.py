@@ -65,6 +65,36 @@ def _ready_content(
     )
 
 
+@pytest.fixture(autouse=True)
+def _healthy_council_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default the deliberative council to a HEALTHY verdict for prep tests.
+
+    prep_segment is now fail-LOUD: a degraded / unavailable council (no LiteLLM
+    in the test env) is a TERMINAL no-release. These tests exercise the
+    DETERMINISTIC gauntlet (actionability / layout / tier-list / manifest), not
+    the council, so a healthy default lets them reach their actual concern. The
+    council fail-loud behavior has dedicated pins (test_council_coherence_check_*
+    here, and tests/deliberative_council/test_council_fail_loud.py). Tests that
+    patch ``deliberate`` themselves override this (later monkeypatch wins).
+    cc-task cctv-council-perfect-health-faillloud-convergence.
+    """
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    async def _healthy(council_input: Any, mode: Any, rubric: Any, config: Any = None) -> Any:
+        return CouncilVerdict(
+            scores={"coherence": 4},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.CONVERGED,
+            disagreement_log=[],
+            research_findings=[],
+            evidence_matrix=None,
+            receipt={"council_health": {"members_valid": 6, "families_valid": 5}},
+        )
+
+    monkeypatch.setattr(council_engine, "deliberate", _healthy)
+
+
 def test_prep_model_is_command_r_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HAPAX_SEGMENT_PREP_MODEL", raising=False)
     assert prep._prep_model() == prep.RESIDENT_PREP_MODEL
@@ -847,6 +877,7 @@ def test_run_prep_appends_manifest_without_readmitting_invalid_or_unlisted_artif
         prep_dir: Path,
         *,
         prep_session: dict[str, Any],
+        deadline_monotonic: float | None = None,  # noqa: ARG001 — accept run_prep's AC-3a deadline
     ) -> Path:
         path = prep_dir / f"{programme.programme_id}.json"
         payload = _valid_artifact_for(
@@ -1791,11 +1822,12 @@ def test_council_coherence_check_constructs_valid_config(
 
     monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
 
-    passed, _feedback = prep._council_coherence_check("a coherent composed script", "prog-1")
+    outcome = prep._council_coherence_check("a coherent composed script", "prog-1")
 
     assert "config" in captured, "deliberate never reached — CouncilConfig construction raised"
     assert isinstance(captured["config"], CouncilConfig)
-    assert passed is True
+    assert outcome.passed is True
+    assert outcome.refused is False
 
 
 def test_run_narrative_critique_constructs_valid_config(
@@ -1823,11 +1855,12 @@ def test_run_narrative_critique_constructs_valid_config(
     assert isinstance(captured["config"], CouncilConfig)
 
 
-def test_council_coherence_check_fails_open_when_degraded(
+def test_council_coherence_check_refuses_when_degraded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """R-A3 downstream: a degraded coherence council fails open (does not block
-    composition on an unavailable council)."""
+    """Fail-LOUD (cc-task cctv-council-perfect-health-faillloud-convergence):
+    a degraded coherence council (no trustworthy scores) REFUSES — it must NOT
+    wave the segment through. Replaces the prior fail-open behavior."""
     from agents.deliberative_council import engine as council_engine
 
     async def fake_deliberate(
@@ -1837,8 +1870,85 @@ def test_council_coherence_check_fails_open_when_degraded(
 
     monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
 
-    passed, _feedback = prep._council_coherence_check("a script", "prog-1")
-    assert passed is True
+    outcome = prep._council_coherence_check("a script", "prog-1")
+    assert outcome.refused is True
+    assert outcome.passed is False
+
+
+def test_council_coherence_check_refuses_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """council-unavailable (deliberate raises) → the consumer REFUSES the
+    segment, never returns a silent pass."""
+    from agents.deliberative_council import engine as council_engine
+
+    async def boom(council_input: Any, mode: Any, rubric: Any, config: Any = None) -> Any:
+        raise RuntimeError("litellm down")
+
+    monkeypatch.setattr(council_engine, "deliberate", boom)
+
+    outcome = prep._council_coherence_check("a script", "prog-1")
+    assert outcome.refused is True
+    assert outcome.passed is False
+
+
+def test_council_coherence_check_refuses_on_refused_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A REFUSED panel verdict (below quorum / family floor) → coherence refuses
+    and records the council decision for the manifest receipt."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    async def fake_deliberate(
+        council_input: Any, mode: Any, rubric: Any, config: Any = None
+    ) -> Any:
+        return CouncilVerdict(
+            scores={},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.REFUSED,
+            disagreement_log=[],
+            research_findings=[],
+            evidence_matrix=None,
+            receipt={"council_health": {"members_valid": 1, "families_valid": 1}},
+        )
+
+    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
+
+    outcome = prep._council_coherence_check("a script", "prog-1")
+    assert outcome.refused is True
+    assert outcome.council_decisions["convergence_status"] == "refused"
+    assert outcome.council_decisions["members_valid"] == 1
+
+
+def test_council_coherence_check_records_health_when_healthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A healthy, good-quality panel passes AND records members_valid/
+    families_valid into the council_decisions receipt for the manifest."""
+    from agents.deliberative_council import engine as council_engine
+    from agents.deliberative_council.models import ConvergenceStatus, CouncilVerdict
+
+    async def fake_deliberate(
+        council_input: Any, mode: Any, rubric: Any, config: Any = None
+    ) -> Any:
+        return CouncilVerdict(
+            scores={"a": 4, "b": 4},
+            confidence_bands={},
+            convergence_status=ConvergenceStatus.CONVERGED,
+            disagreement_log=[],
+            research_findings=[],
+            evidence_matrix=None,
+            receipt={"council_health": {"members_valid": 5, "families_valid": 5}},
+        )
+
+    monkeypatch.setattr(council_engine, "deliberate", fake_deliberate)
+
+    outcome = prep._council_coherence_check("a script", "prog-1")
+    assert outcome.passed is True
+    assert outcome.refused is False
+    assert outcome.council_decisions["members_valid"] == 5
+    assert outcome.council_decisions["families_valid"] == 5
 
 
 # --- Phase C: selection + manifest automation and prep->active-Programme bridge ----

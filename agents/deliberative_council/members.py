@@ -177,8 +177,13 @@ def build_member(
     else:
         tools = list(RESTRICTED_TOOLS)
 
+    # retries=0: a non-conforming structured output (or a failed tool call) fails
+    # LOUD rather than silently retrying. Combined with the per-run UsageLimits in
+    # engine._call_member, a member can no longer runaway-loop or degrade quietly.
+    # cc-task cctv-council-perfect-health-faillloud-convergence.
     return Agent(
         get_cctv_model(model_alias),
         model_settings=model_settings_for_alias(model_alias),
         tools=tools,  # type: ignore[arg-type]
+        retries=0,
     )

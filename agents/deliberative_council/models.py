@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,9 +17,25 @@ class CouncilMode(StrEnum):
 
 
 class ConvergenceStatus(StrEnum):
+    """Outcome of a council deliberation.
+
+    "Converged" vs "broke" are TYPED and DISTINCT (cc-task
+    cctv-council-perfect-health-faillloud-convergence):
+
+    - ``CONVERGED`` / ``CONTESTED`` / ``HUNG`` describe a HEALTHY panel that
+      actually deliberated — members agreed, partly disagreed, or genuinely
+      disagreed (HUNG always carries real scores).
+    - ``REFUSED`` means the panel could NOT be trusted to produce a verdict at
+      all: below the quorum / family-diversity floor, all members failed, or an
+      axis had insufficient independent coverage. It is never a quiet pass — it
+      forces the downstream consumer to refuse the segment. A REFUSED panel must
+      NEVER be collapsed into CONVERGED/CONTESTED by a fall-through ``else``.
+    """
+
     CONVERGED = "converged"
     CONTESTED = "contested"
     HUNG = "hung"
+    REFUSED = "refused"
 
 
 class CouncilInput(BaseModel):
@@ -45,7 +61,26 @@ class CouncilConfig(BaseModel):
     )
     shortcircuit_iqr_threshold: float = 1.0
     contested_iqr_threshold: float = 2.0
-    family_correlation_penalty_threshold: float = 0.90
+
+    # ── PRINCIPLED QUORUM / FAMILY-DIVERSITY FLOOR ──────────────────────────
+    # Replaces the dead ``family_correlation_penalty_threshold``. A convergence
+    # verdict is trustworthy ONLY when INDEPENDENT model families agree;
+    # correlated members (same family) add no independent evidence. The default
+    # panel is 6 members across 5 families (anthropic x2, google, cohere,
+    # perplexity, mistral). The floor is FAMILY COVERAGE, not a tuned magic
+    # constant:
+    #   - min_valid_families: >= this many DISTINCT families must emit a valid
+    #     scored result (default 4 of 5 — tolerates losing at most one family).
+    #   - min_valid_members:  >= this many valid members (default 4 of 6).
+    # A panel below the floor -> ConvergenceStatus.REFUSED (never CONVERGED).
+    # FLAGGED FOR OPERATOR RATIFICATION: "CCTV full-power" implies 6 members /
+    # 5 families; the operator may ratify that stricter floor by raising these.
+    min_valid_members: int = 4
+    min_valid_families: int = 4
+    # Per-axis coverage floor: the minimum number of independent member scores
+    # required to certify a single axis (a lone score's IQR is 0.0, which must
+    # not read as consensus). Applied in aggregate_scores().
+    min_axis_values: int = 2
 
 
 class PhaseOneResult(BaseModel):
@@ -75,6 +110,48 @@ class MemberFailure(BaseModel):
     # exception message, which can carry upstream URLs/credentials. Full
     # detail stays in the server log. See _run_one in engine.py.
     reason: str
+
+
+class Phase1Output(BaseModel):
+    """Provider-enforced structured output for a Phase 1 member scoring call.
+
+    Used as pydantic-ai ``output_type=NativeOutput(Phase1Output)`` so the model
+    is constrained to emit valid JSON via the provider's native structured-output
+    (``response_format: json_schema`` for cloud routes; the same standard OpenAI
+    field is forwarded to TabbyAPI :5000 and enforced by Formatron for the local
+    Command-R member). Guided decoding constrains the TOKENS, not the model's
+    power. Scores are constrained to the 1-5 rubric scale; an output that parses
+    but carries NO scores is treated by the engine as a LOUD member failure, not
+    a phantom abstainer. cc-task cctv-council-perfect-health-faillloud-convergence.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scores: dict[str, Annotated[int, Field(ge=1, le=5)]] = Field(default_factory=dict)
+    rationale: dict[str, str] = Field(default_factory=dict)
+    research_findings: list[str] = Field(default_factory=list)
+
+
+class CouncilHealth(BaseModel):
+    """Typed health of a council panel — recorded so a degraded panel is VISIBLE.
+
+    A verdict is only trustworthy across independent families. This records how
+    many members and DISTINCT families produced a valid scored result vs how many
+    were requested, plus every member that failed (alias + exception type). The
+    engine sets ``below_quorum`` from the CouncilConfig floor; a below-quorum or
+    no-family-diversity panel yields ConvergenceStatus.REFUSED.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    members_requested: int
+    members_valid: int
+    families_requested: int
+    families_valid: int
+    failed_members: tuple[MemberFailure, ...] = ()
+    below_quorum: bool = False
+    quorum_floor_members: int = 0
+    quorum_floor_families: int = 0
 
 
 class EvidenceClassification(BaseModel):

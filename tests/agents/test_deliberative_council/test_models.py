@@ -43,8 +43,12 @@ class TestCouncilMode:
 
 
 class TestConvergenceStatus:
-    def test_all_three_statuses(self) -> None:
-        assert set(ConvergenceStatus) == {"converged", "contested", "hung"}
+    def test_status_vocabulary(self) -> None:
+        # REFUSED is the typed "broke" outcome — a panel that could not be trusted
+        # to produce a verdict (below quorum / family floor / all-failed). It is
+        # DISTINCT from HUNG (genuine disagreement). cc-task
+        # cctv-council-perfect-health-faillloud-convergence.
+        assert set(ConvergenceStatus) == {"converged", "contested", "hung", "refused"}
 
 
 class TestPhaseOneResult:

@@ -184,6 +184,22 @@ def apply_council_verdicts(
             degraded.append(claim_id)
             continue
 
+        # A panel that REFUSED (below the quorum / family-diversity floor, or all
+        # members failed) could not be trusted to produce a verdict at all —
+        # degraded, never a pass. cc-task cctv-council-perfect-health-faillloud.
+        if verdict.convergence_status == ConvergenceStatus.REFUSED:
+            degraded.append(claim_id)
+            continue
+
+        # A verdict carrying NO valid scores is a panel that BROKE — e.g. every
+        # member timed out and the engine RETURNED (not raised) a HUNG verdict
+        # with scores={}. Previously this fell to else->contested, so
+        # council_disconfirmation_passed could read True for a fully-timed-out
+        # panel. Route it to degraded, never contested-pass.
+        if not any(s is not None for s in verdict.scores.values()):
+            degraded.append(claim_id)
+            continue
+
         if verdict.convergence_status == ConvergenceStatus.CONVERGED:
             all_low = all(s is not None and s <= 2 for s in verdict.scores.values())
             if all_low:
@@ -209,6 +225,8 @@ def apply_council_verdicts(
             )
 
         else:
+            # HUNG WITH real scores = genuine disagreement (the degraded/refused
+            # panels were already routed to degraded above). Treat as contested.
             contested.append(claim_id)
 
     all_verdicts_json = json.dumps(
