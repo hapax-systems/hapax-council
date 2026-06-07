@@ -33,8 +33,13 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 
 const LUMA: vec3<f32> = vec3<f32>(0.299, 0.587, 0.114);
 
+struct FragOut {
+    @location(0) field: vec4<f32>,
+    @location(1) currency: vec4<f32>,
+};
+
 @fragment
-fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+fn fs_main(@location(0) uv: vec2<f32>) -> FragOut {
     let px = vec2<f32>(1.0) / vec2<f32>(textureDimensions(t_in));
     let c = textureSample(t_in, s_in, uv).rgb;
     let l = dot(c, LUMA);
@@ -71,5 +76,23 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 
     // presence in alpha (reserved for a future signal_presence gate)
     let presence = smoothstep(0.04, 0.25, l);
-    return vec4<f32>(field, presence);
+
+    // CURRENCY (target 1): a coarse, slowly-varying per-zone drift-AMPLITUDE envelope —
+    // "how much is the reverie substrate doing in this zone" — that the DarkPlaces engine
+    // multiplies into per-zone drift amplitude (Phase 1 modulation-currency wire). It is
+    // LUMA-NEUTRAL: it modulates drift amount, not whole-frame luminance (anti_visualizer).
+    // Wider taps than the field's high-pass so it is a smooth per-zone envelope, not detail.
+    let wr = 40.0 * px;
+    let an = dot(textureSample(t_in, s_in, uv + vec2<f32>(0.0, wr.y)).rgb, LUMA);
+    let as_ = dot(textureSample(t_in, s_in, uv - vec2<f32>(0.0, wr.y)).rgb, LUMA);
+    let ae = dot(textureSample(t_in, s_in, uv + vec2<f32>(wr.x, 0.0)).rgb, LUMA);
+    let aw = dot(textureSample(t_in, s_in, uv - vec2<f32>(wr.x, 0.0)).rgb, LUMA);
+    let activity = clamp((abs(l - an) + abs(l - as_) + abs(l - ae) + abs(l - aw)) * 2.0 + edge * 0.5, 0.0, 1.0);
+    // bounded [0.2,1.0]; engine maps to an amplitude multiplier (0.2 = calm zone, 1.0 = active)
+    let currency = clamp(0.42 + activity * 0.5, 0.2, 1.0);
+
+    var out: FragOut;
+    out.field = vec4<f32>(field, presence);
+    out.currency = vec4<f32>(vec3<f32>(currency), 1.0);
+    return out;
 }
