@@ -18,6 +18,7 @@ from .models import (
     CouncilVerdict,
     EvidenceMatrix,
     EvidenceMatrixAxis,
+    MemberFailure,
     PhaseOneResult,
 )
 from .prompts import (
@@ -78,7 +79,17 @@ async def run_phase1(
     inp: CouncilInput,
     rubric: Rubric,
     config: CouncilConfig,
+    *,
+    failures_out: list[MemberFailure] | None = None,
 ) -> list[PhaseOneResult]:
+    """Run Phase 1 across the configured member panel.
+
+    Returns the surviving members' results. When ``failures_out`` is
+    provided, every member that fails to produce a result is appended to it
+    (alias + reason) so a degraded panel can be recorded transparently by
+    the caller — survivors-only behaviour is otherwise unchanged.
+    """
+
     async def _run_one(alias: str, seed: int) -> PhaseOneResult | None:
         try:
             member = build_member(alias)
@@ -118,6 +129,10 @@ async def run_phase1(
             )
         except Exception as e:
             _log.error("Phase 1 failure for %s: %s", alias, e)
+            if failures_out is not None:
+                failures_out.append(
+                    MemberFailure(model_alias=alias, reason=f"{type(e).__name__}: {e}")
+                )
             return None
 
     results_or_none = await asyncio.gather(
@@ -146,7 +161,11 @@ async def deliberate(
         json.dumps({"text": inp.text, "source_ref": inp.source_ref}, sort_keys=True).encode()
     ).hexdigest()
 
-    phase1_results = await run_phase1(inp, rubric, config)
+    failed_members: list[MemberFailure] = []
+    phase1_results = await run_phase1(inp, rubric, config, failures_out=failed_members)
+    failed_members_payload = [
+        {"model_alias": f.model_alias, "reason": f.reason} for f in failed_members
+    ]
 
     if not phase1_results:
         return CouncilVerdict(
@@ -156,7 +175,11 @@ async def deliberate(
             disagreement_log=["All models failed in Phase 1"],
             research_findings=[],
             evidence_matrix=None,
-            receipt={"input_hash": input_hash, "error": "all_models_failed"},
+            receipt={
+                "input_hash": input_hash,
+                "error": "all_models_failed",
+                "failed_members": failed_members_payload,
+            },
         )
 
     if should_shortcircuit(phase1_results, config.shortcircuit_iqr_threshold):
@@ -172,6 +195,7 @@ async def deliberate(
                 "input_hash": input_hash,
                 "shortcircuited": True,
                 "models_used": [r.model_alias for r in phase1_results],
+                "failed_members": failed_members_payload,
                 "phases_completed": [1],
                 "phase1_transcript": [
                     {"model": r.model_alias, "tool_calls": r.tool_calls_log} for r in phase1_results
@@ -217,6 +241,7 @@ async def deliberate(
             "input_hash": input_hash,
             "shortcircuited": False,
             "models_used": [r.model_alias for r in phase1_results],
+            "failed_members": failed_members_payload,
             "phases_completed": [1, 2, 3, 4, 5],
             "phase1_transcript": [
                 {"model": r.model_alias, "tool_calls": r.tool_calls_log} for r in phase1_results
