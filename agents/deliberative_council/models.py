@@ -71,6 +71,9 @@ class MemberFailure(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     model_alias: str
+    # Exception *type name* only (e.g. "TimeoutError") — never the raw
+    # exception message, which can carry upstream URLs/credentials. Full
+    # detail stays in the server log. See _run_one in engine.py.
     reason: str
 
 

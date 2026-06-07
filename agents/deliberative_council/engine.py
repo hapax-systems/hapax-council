@@ -128,11 +128,15 @@ async def run_phase1(
                 tool_calls_log=all_tools,
             )
         except Exception as e:
+            # Full detail (which may include a request URL or auth header from
+            # an upstream LiteLLM error) goes only to the server log, where
+            # credential scrubbing applies.
             _log.error("Phase 1 failure for %s: %s", alias, e)
             if failures_out is not None:
-                failures_out.append(
-                    MemberFailure(model_alias=alias, reason=f"{type(e).__name__}: {e}")
-                )
+                # The verdict receipt is a durable, downstream-published
+                # artifact — record only the exception *type*, never str(e),
+                # so a secret/PII-bearing error message cannot leak into it.
+                failures_out.append(MemberFailure(model_alias=alias, reason=type(e).__name__))
             return None
 
     results_or_none = await asyncio.gather(
