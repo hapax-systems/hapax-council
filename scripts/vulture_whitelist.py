@@ -4028,3 +4028,10 @@ from shared.host_provenance import HostScopedClaim, StorageReceipt  # noqa: F401
 
 HostScopedClaim._enforce_provenance
 StorageReceipt._transport_consistency
+
+# World-language node validators (keystone) — invoked by Pydantic at
+# model_validate time; vulture cannot trace through @model_validator.
+from shared.world_language import ImageSchemaNode, WorldLanguageNode  # noqa: F401, E402
+
+ImageSchemaNode._force_requires_efferent_terminus
+WorldLanguageNode._invariants
