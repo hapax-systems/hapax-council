@@ -47,9 +47,9 @@ def test_aoa_oarb_contract_reads_current_perfect_fit_geometry() -> None:
     assert contract.geometry_revision == "aoa-regular-tetrix-v7-30pct-larger-perfect-fit-oarb"
     assert contract.inner_void_radius_fill_ratio == 1.0
     assert contract.enclosure_clearance_ratio == 1.0
-    assert contract.physical_radius == 344.42
-    assert contract.leaf_face_edge_units == 105.46
-    assert contract.aoa_parent_edge_units == 1687.0
+    assert contract.physical_radius == 447.75
+    assert contract.leaf_face_edge_units == 137.1
+    assert contract.aoa_parent_edge_units == 2193.0
     assert contract.fractal_face_count == 1024
     assert contract.texture_size == (2048, 1024)
     assert contract.sphere_source_id == "youtube-canary"
