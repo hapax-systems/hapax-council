@@ -189,7 +189,7 @@ def test_ward_atlas_success_cells_are_borderless_source_surfaces(tmp_path: Path)
     assert _pixel_bgra(data, 64, 32, 16) == (0, 0, 255, 255)
 
 
-def test_ward_atlas_classifies_low_detail_rendered_cells_as_weak(tmp_path: Path) -> None:
+def test_ward_atlas_lifts_low_detail_rendered_cells_with_trace(tmp_path: Path) -> None:
     atlas = _load_atlas()
     ward_id = atlas.WARD_IDS[0]
     source = _solid_surface(64, 32, (0.01, 0.01, 0.01))
@@ -213,13 +213,21 @@ def test_ward_atlas_classifies_low_detail_rendered_cells_as_weak(tmp_path: Path)
     payload = json.loads(meta.read_text(encoding="utf-8"))
     ward = observed[ward_id]
     assert ward["status"] == "rendered"
-    assert ward["visibility_classification"] == "weak-rendered"
-    assert "mean_luma_below_floor" in ward["visibility_reasons"]
-    assert "near_black_ratio_above_ceiling" in ward["visibility_reasons"]
-    assert "detail_below_floor" in ward["visibility_reasons"]
-    assert payload["wards"][ward_id]["visibility_classification"] == "weak-rendered"
-    assert payload["visibility_summary"]["counts"]["weak-rendered"] == 1
-    assert payload["visibility_summary"]["suspect_wards"][0]["ward_id"] == ward_id
+    assert ward["readability_lift"] is True
+    assert ward["visibility_classification"] == "visible"
+    assert ward["visibility_reasons"] == []
+    pre_visibility = ward["pre_readability_visibility"]
+    assert pre_visibility["classification"] == "weak-rendered"
+    assert "mean_luma_below_floor" in pre_visibility["reasons"]
+    assert "near_black_ratio_above_ceiling" in pre_visibility["reasons"]
+    assert "detail_below_floor" in pre_visibility["reasons"]
+    assert ward["mean_luma"] >= atlas.VISIBILITY_MEAN_LUMA_FLOOR
+    assert payload["wards"][ward_id]["visibility_classification"] == "visible"
+    assert payload["wards"][ward_id]["pre_readability_visibility"]["classification"] == (
+        "weak-rendered"
+    )
+    assert payload["visibility_summary"]["counts"]["visible"] == 1
+    assert payload["visibility_summary"]["suspect_wards"] == []
     assert payload["visibility_thresholds"]["mean_luma_floor"] == atlas.VISIBILITY_MEAN_LUMA_FLOOR
 
 
@@ -246,6 +254,7 @@ def test_ward_atlas_classifies_high_contrast_cells_as_visible(tmp_path: Path) ->
 
     ward = observed[ward_id]
     assert ward["status"] == "rendered"
+    assert ward["readability_lift"] is False
     assert ward["visibility_classification"] == "visible"
     assert ward["visibility_reasons"] == []
     assert ward["mean_luma"] >= atlas.VISIBILITY_MEAN_LUMA_FLOOR
@@ -280,6 +289,7 @@ def test_ward_atlas_uses_idle_scaffold_for_transparent_activity_ward(
     data = output.read_bytes()
     assert observed[ward_id]["status"] == "atlas-idle-scaffold"
     assert observed[ward_id]["atlas_style"] == "borderless-no-grid"
+    assert observed[ward_id]["readability_lift"] is False
     assert _pixel_bgra(data, 256, 196, 100) == (0, 255, 0, 255)
 
 
@@ -310,6 +320,7 @@ def test_ward_atlas_uses_generic_idle_scaffold_for_transparent_lore_ward(
     ward = observed[ward_id]
     assert ward_id in atlas.GENERIC_ATLAS_IDLE_SCAFFOLD_WARDS
     assert ward["status"] == "atlas-idle-scaffold"
+    assert ward["readability_lift"] is False
     assert ward["visibility_classification"] == "visible"
     assert ward["visibility_reasons"] == []
     assert ward["alpha_nonzero_ratio"] == 1.0
@@ -340,6 +351,7 @@ def test_ward_atlas_does_not_fake_unknown_transparent_ward(tmp_path: Path) -> No
     ward = observed[ward_id]
     assert ward_id not in atlas.ATLAS_IDLE_SCAFFOLD_WARDS
     assert ward["status"] == "rendered"
+    assert ward["readability_lift"] is False
     assert ward["visibility_classification"] == "weak-rendered"
     assert "alpha_nonzero_ratio_below_floor" in ward["visibility_reasons"]
 

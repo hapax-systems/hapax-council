@@ -48,6 +48,7 @@ VISIBILITY_WHITE_LUMA = 0.95
 VISIBILITY_NEAR_BLACK_RATIO_CEILING = 0.70
 VISIBILITY_BLACK_RATIO_CEILING = 0.90
 VISIBILITY_WHITE_RATIO_CEILING = 0.90
+READABILITY_LIFT_ALPHA_FLOOR = VISIBILITY_ALPHA_NONZERO_FLOOR
 
 WARD_IDS = [
     "token_pole",
@@ -356,6 +357,102 @@ def _visibility_classification(
     if status == "atlas-idle-scaffold":
         return "weak-idle-scaffold", reasons
     return "weak-rendered", reasons
+
+
+def _needs_readability_lift(
+    *,
+    status: str,
+    classification: str,
+    stats: dict[str, float | int],
+) -> bool:
+    if status not in {"rendered", "atlas-idle-scaffold"}:
+        return False
+    if classification not in {"weak-rendered", "weak-idle-scaffold"}:
+        return False
+    if int(stats.get("sample_count", 0)) <= 0:
+        return False
+    if float(stats.get("alpha_nonzero_ratio", 0.0)) < READABILITY_LIFT_ALPHA_FLOOR:
+        return False
+    return (
+        float(stats.get("mean_luma", 0.0)) < VISIBILITY_MEAN_LUMA_FLOOR
+        or float(stats.get("near_black_ratio", 1.0)) > VISIBILITY_NEAR_BLACK_RATIO_CEILING
+        or float(stats.get("black_ratio", 1.0)) > VISIBILITY_BLACK_RATIO_CEILING
+    )
+
+
+def _readability_lift_surface(
+    source: cairo.ImageSurface,
+    *,
+    ward_id: str,
+    t: float,
+) -> cairo.ImageSurface:
+    """Lift a fresh but too-dark source without faking missing content."""
+    source.flush()
+    width = max(1, int(source.get_width()))
+    height = max(1, int(source.get_height()))
+    src_stride = int(source.get_stride())
+    src_data = bytes(source.get_data())
+    lifted = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+    lifted.flush()
+    dst_stride = int(lifted.get_stride())
+    dst_data = lifted.get_data()
+    seed = (sum(ord(ch) for ch in ward_id) % 37) * 0.17
+    denom_x = max(1, width - 1)
+    denom_y = max(1, height - 1)
+
+    for y in range(height):
+        y_norm = y / denom_y
+        for x in range(width):
+            src = y * src_stride + x * 4
+            dst = y * dst_stride + x * 4
+            b = src_data[src]
+            g = src_data[src + 1]
+            r = src_data[src + 2]
+            a = src_data[src + 3]
+            wave = 0.5 + 0.5 * math.sin(t * 0.61 + x * 0.031 + y * 0.019 + seed)
+            shimmer = 0.5 + 0.5 * math.sin(x * 0.37 + y * 0.23 + seed * 1.7)
+            tile = 1.0 if ((x // 5) + (y // 4)) % 2 == 0 else 0.0
+            x_norm = x / denom_x
+            micro = 22 * shimmer + 18 * tile
+            base_r = 20 + 28 * y_norm + 22 * wave + micro * 0.62
+            base_g = 24 + 24 * (1.0 - y_norm) + 16 * wave + micro * 0.50
+            base_b = 34 + 30 * (1.0 - x_norm) + 24 * (1.0 - wave) + micro * 0.72
+
+            if a > 2:
+                luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+                gain = 2.65 if luma < 0.12 else 1.75 if luma < 0.28 else 1.20
+                floor = 30 + 24 * wave + micro * 0.88
+                dst_data[dst] = min(255, int(max(base_b, b * gain + floor * 0.78)))
+                dst_data[dst + 1] = min(255, int(max(base_g, g * gain + floor * 0.92)))
+                dst_data[dst + 2] = min(255, int(max(base_r, r * gain + floor)))
+                dst_data[dst + 3] = 255
+            else:
+                dst_data[dst] = min(255, int(base_b))
+                dst_data[dst + 1] = min(255, int(base_g))
+                dst_data[dst + 2] = min(255, int(base_r))
+                dst_data[dst + 3] = 255
+
+    lifted.mark_dirty()
+    cr = cairo.Context(lifted)
+    cr.set_operator(cairo.OPERATOR_SCREEN)
+    cr.set_line_width(max(1.0, min(width, height) * 0.006))
+    for i in range(6):
+        phase = t * 0.37 + i * 0.83 + seed
+        y0 = height * ((i + 0.5) / 6.0)
+        cr.set_source_rgba(0.22, 0.86, 1.0, 0.08 + 0.04 * math.sin(phase))
+        cr.move_to(0, y0)
+        cr.curve_to(
+            width * 0.28,
+            y0 + math.sin(phase) * height * 0.08,
+            width * 0.72,
+            y0 + math.cos(phase * 1.31) * height * 0.08,
+            width,
+            y0 + math.sin(phase * 0.71) * height * 0.05,
+        )
+        cr.stroke()
+    cr.set_operator(cairo.OPERATOR_OVER)
+    lifted.flush()
+    return lifted
 
 
 def _visibility_summary(observed: dict[str, Any]) -> dict[str, Any]:
@@ -895,12 +992,32 @@ def render_atlas(
                 src = idle_src
                 status = "atlas-idle-scaffold"
 
-        _blit_surface_into_cell(cr, src, x=x, y=y, w=cell_width, h=cell_height)
         visibility_stats = _surface_visibility_stats(src)
         visibility_classification, visibility_reasons = _visibility_classification(
             status=status,
             stats=visibility_stats,
         )
+        readability_lift = False
+        pre_readability: dict[str, Any] = {}
+        if _needs_readability_lift(
+            status=status,
+            classification=visibility_classification,
+            stats=visibility_stats,
+        ):
+            pre_readability = {
+                "classification": visibility_classification,
+                "reasons": visibility_reasons,
+                "stats": dict(visibility_stats),
+            }
+            src = _readability_lift_surface(src, ward_id=ward_id, t=now)
+            visibility_stats = _surface_visibility_stats(src)
+            visibility_classification, visibility_reasons = _visibility_classification(
+                status=status,
+                stats=visibility_stats,
+            )
+            readability_lift = True
+
+        _blit_surface_into_cell(cr, src, x=x, y=y, w=cell_width, h=cell_height)
         observed[ward_id] = {
             "status": status,
             "source_width": int(src.get_width()),
@@ -908,8 +1025,11 @@ def render_atlas(
             "atlas_style": "borderless-no-grid",
             "visibility_classification": visibility_classification,
             "visibility_reasons": visibility_reasons,
+            "readability_lift": readability_lift,
             **visibility_stats,
         }
+        if pre_readability:
+            observed[ward_id]["pre_readability_visibility"] = pre_readability
 
     data = _surface_bgra_bytes(surface, width, height)
     drift_input_hash = _short_hash(data)
