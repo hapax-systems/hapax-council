@@ -16,7 +16,7 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from shared.direction import Direction
+from shared.direction import Direction, PhysicalDirection
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORLD_CAPABILITY_REGISTRY = REPO_ROOT / "config" / "world-capability-registry.json"
@@ -218,6 +218,9 @@ class WorldCapabilityRecord(BaseModel):
     realm: str
     domain: str
     direction: Direction
+    # Orthogonal physical-transport polarity (super-spec). None = unclassified;
+    # NOT derived from `direction` — the two axes are independent.
+    physical_direction: PhysicalDirection | None = None
     intent_family: str
     recruitment_family: str
     surface_refs: list[str] = Field(min_length=1)
