@@ -49,7 +49,8 @@ def parse_temporal_xml(xml: str, raw: dict) -> dict:
     result: dict = {"retention": [], "impression": {}, "protention": [], "surprises": []}
 
     # Impression fields: <tag>value</tag> or <tag surprise="0.5" expected="foo">value</tag>
-    impression_match = re.search(r"<impression>(.*?)</impression>", xml, re.DOTALL)
+    # tolerate attrs on the opening tag (e.g. <impression scale="tick">)
+    impression_match = re.search(r"<impression[^>]*>(.*?)</impression>", xml, re.DOTALL)
     if impression_match:
         imp_xml = impression_match.group(1)
         for m in re.finditer(r"<(\w+)([^>]*)>([^<]*)</\1>", imp_xml):
@@ -86,16 +87,19 @@ def parse_temporal_xml(xml: str, raw: dict) -> dict:
             }
         )
 
-    # Protention: <prediction state="entering_deep_work" confidence="0.72">basis</prediction>
+    # Protention: <prediction state="..." confidence="0.72" precision="0.40">basis</prediction>
+    # precision is optional (back-compat with pre-band-tense XML).
     for m in re.finditer(
-        r'<prediction\s+state="([^"]*)"\s+confidence="([^"]*)">([^<]*)</prediction>',
+        r'<prediction\s+state="([^"]*)"\s+confidence="([^"]*)"'
+        r'(?:\s+precision="([^"]*)")?>([^<]*)</prediction>',
         xml,
     ):
-        state, confidence, basis = m.groups()
+        state, confidence, precision, basis = m.groups()
         result["protention"].append(
             {
                 "predicted_state": state,
                 "confidence": float(confidence),
+                "precision": float(precision) if precision is not None else 0.0,
                 "basis": basis.strip(),
             }
         )
