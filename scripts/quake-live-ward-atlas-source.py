@@ -458,22 +458,40 @@ def _readability_lift_surface(
 def _visibility_summary(observed: dict[str, Any]) -> dict[str, Any]:
     counts: dict[str, int] = {}
     suspect_wards: list[dict[str, Any]] = []
+    readability_lift_count = 0
+    suspect_classifications = {"fallback", "weak-rendered", "weak-idle-scaffold"}
     for index, ward_id in enumerate(WARD_IDS, start=1):
         ward = observed.get(ward_id)
         if not isinstance(ward, dict):
             continue
-        classification = str(
+        post_classification = str(
             ward.get("visibility_classification") or ward.get("status") or "unknown"
         )
+        # A readability lift decorates a dim/empty source so the cell renders legibly,
+        # but its POST-lift classification must not mask a genuinely weak/dead source
+        # from the audit. Report the PRE-lift classification and keep lifted wards in
+        # the suspect list so the weak-frame signal survives the lift (#3985 neutralized
+        # the #3979 detector; this restores it without changing the rendered pixels).
+        lifted = bool(ward.get("readability_lift"))
+        pre = ward.get("pre_readability_visibility") or {}
+        if lifted:
+            readability_lift_count += 1
+            classification = str(pre.get("classification") or post_classification)
+            reasons = pre.get("reasons") or ward.get("visibility_reasons", [])
+        else:
+            classification = post_classification
+            reasons = ward.get("visibility_reasons", [])
         counts[classification] = counts.get(classification, 0) + 1
-        if classification in {"fallback", "weak-rendered", "weak-idle-scaffold"}:
+        if lifted or classification in suspect_classifications:
             suspect_wards.append(
                 {
                     "index": index,
                     "ward_id": ward_id,
                     "status": ward.get("status"),
                     "visibility_classification": classification,
-                    "visibility_reasons": ward.get("visibility_reasons", []),
+                    "post_lift_classification": post_classification if lifted else None,
+                    "readability_lift": lifted,
+                    "visibility_reasons": reasons,
                     "mean_luma": ward.get("mean_luma"),
                     "luma_std": ward.get("luma_std"),
                     "edge_energy": ward.get("edge_energy"),
@@ -483,6 +501,7 @@ def _visibility_summary(observed: dict[str, Any]) -> dict[str, Any]:
     return {
         "counts": counts,
         "suspect_wards": suspect_wards,
+        "readability_lift_count": readability_lift_count,
     }
 
 
