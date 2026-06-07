@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,9 @@ from typing import Any
 import pytest
 
 from agents.hapax_daimonion import daily_segment_prep as prep
+from agents.hapax_daimonion import programme_loop
+from shared.programme_store import ProgrammePlanStore
+from shared.segment_candidate_selection import SEGMENT_CANDIDATE_SELECTION_VERSION
 
 SOURCE_REF = "vault:test-segment-source"
 
@@ -1644,3 +1648,202 @@ def test_council_coherence_check_fails_open_when_degraded(
 
     passed, _feedback = prep._council_coherence_check("a script", "prog-1")
     assert passed is True
+
+
+# --- Phase C: selection + manifest automation and prep->active-Programme bridge ----
+
+
+def _phase_c_live_report(score: int, *, role: str = "rant") -> dict[str, Any]:
+    return {
+        "live_event_rubric_version": 1,
+        "score": score,
+        "band": "good" if score >= 82 else "thin",
+        "ok": score >= 82,
+        "dimensions": [
+            {"name": "live_event_object", "passed": True, "points": 12, "observed": {}},
+            {
+                "name": "role_standard_fit",
+                "passed": True,
+                "points": 10,
+                "observed": {"role": role, "required_action_kinds": []},
+            },
+        ],
+    }
+
+
+def _phase_c_hex_sha(pid: str) -> str:
+    return hashlib.sha256(pid.encode("utf-8")).hexdigest()
+
+
+def _phase_c_eligible_artifact(pid: str, *, score: int) -> dict[str, Any]:
+    return {
+        "programme_id": pid,
+        "role": "rant",
+        "artifact_path": f"/tmp/{pid}.json",
+        "artifact_sha256": _phase_c_hex_sha(pid),
+        "segment_quality_report": {"overall": 4.2},
+        "segment_live_event_report": _phase_c_live_report(score),
+    }
+
+
+def _phase_c_ledger_row(artifact: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "candidate_ledger_version": SEGMENT_CANDIDATE_SELECTION_VERSION,
+        "programme_id": artifact["programme_id"],
+        "artifact_name": Path(artifact["artifact_path"]).name,
+        "artifact_path": artifact["artifact_path"],
+        "artifact_sha256": artifact["artifact_sha256"],
+        "segment_quality_overall": artifact["segment_quality_report"]["overall"],
+        "segment_live_event_score": artifact["segment_live_event_report"]["score"],
+        "manifest_eligible": True,
+        "prep_contract_ok": True,
+        "runtime_pool_eligible": False,
+        "selected_release_required": True,
+    }
+
+
+def _patch_selection(monkeypatch: pytest.MonkeyPatch, artifacts: list[dict[str, Any]]) -> None:
+    monkeypatch.setattr(prep, "load_prepped_programmes", lambda *a, **k: list(artifacts))
+    monkeypatch.setattr(
+        prep, "read_candidate_ledger", lambda *a, **k: [_phase_c_ledger_row(x) for x in artifacts]
+    )
+    monkeypatch.setattr(
+        prep,
+        "assert_segment_prep_allowed",
+        lambda *a, **k: SimpleNamespace(
+            mode="runtime_pool_load_allowed", reason="test", source="test"
+        ),
+    )
+    monkeypatch.setattr(
+        prep,
+        "publish_selected_release_feedback",
+        lambda **k: {"ok": True, "publication_ok": True},
+    )
+
+
+def test_select_release_pool_writes_manifest_with_auto_excellence_receipts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    artifacts = [
+        _phase_c_eligible_artifact("prog-a", score=96),
+        _phase_c_eligible_artifact("prog-b", score=88),
+    ]
+    _patch_selection(monkeypatch, artifacts)
+
+    result = prep.select_release_pool(tmp_path, selected_count=10)
+
+    assert result["ok"] is True
+    assert result["manifest_written"] is True
+    today = prep._today_path(tmp_path)
+    manifest_path = today / "selected-release-manifest.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["ok"] is True
+    assert manifest["selected_count"] == 2
+    # Each chosen candidate records an auditable, re-checkable excellence receipt.
+    receipt = manifest["selected_artifacts"][0]["excellence_receipt"]
+    assert receipt["auto_derived"] is True
+    assert receipt["verdict"] == "approved"
+    assert receipt["criterion_vector"]["role_standard_fit"]["points"] == 10
+    assert receipt["scores"]["live_event_floor"] == 82
+    # require_selected=True would filter the runtime pool to exactly these hashes.
+    selected_hashes = set(prep._selected_release_artifact_hashes(today).values())
+    assert selected_hashes == {a["artifact_sha256"] for a in artifacts}
+
+
+def test_select_release_pool_enforces_selected_count_bound(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    artifacts = [
+        _phase_c_eligible_artifact("prog-a", score=96),
+        _phase_c_eligible_artifact("prog-b", score=90),
+        _phase_c_eligible_artifact("prog-c", score=84),
+    ]
+    _patch_selection(monkeypatch, artifacts)
+
+    result = prep.select_release_pool(tmp_path, selected_count=1)
+
+    assert result["ok"] is True
+    assert result["selected_count"] == 1
+    manifest = json.loads(
+        (prep._today_path(tmp_path) / "selected-release-manifest.json").read_text(encoding="utf-8")
+    )
+    # Ranking is respected: the single slot goes to the top-scoring candidate.
+    assert manifest["programmes"] == ["prog-a.json"]
+
+
+def test_select_release_pool_no_eligible_pool_writes_no_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(prep, "load_prepped_programmes", lambda *a, **k: [])
+
+    result = prep.select_release_pool(tmp_path, selected_count=10)
+
+    # A no-candidate outcome is a successful no-release, not an error.
+    assert result["ok"] is False
+    assert result["reason"] == "no_eligible_pool"
+    assert not (prep._today_path(tmp_path) / "selected-release-manifest.json").exists()
+
+
+def _phase_c_prepped_payload(pid: str, *, authority: str = "prior_only") -> dict[str, Any]:
+    sha = _phase_c_hex_sha(pid)
+    return {
+        "programme_id": pid,
+        "role": "rant",
+        "topic": "the source-backed segment topic",
+        "declared_topic": "the source-backed segment topic",
+        "prepared_script": ["First spoken beat grounded in the source-backed claim."],
+        "segment_beats": ["beat one direction"],
+        "beat_action_intents": [{"beat_index": 0, "intents": [{"kind": "source_citation"}]}],
+        "beat_layout_intents": [
+            {"beat_id": "beat-1", "needs": ["source_visible"], "evidence_refs": [SOURCE_REF]}
+        ],
+        "prepared_artifact_ref": {
+            "ref": f"prepared_artifact:{sha}",
+            "artifact_sha256": sha,
+            "authority": authority,
+            "projected_authority": authority,
+        },
+        "authority": authority,
+        "hosting_context": "responsible_live_hosting",
+        "source_refs": [SOURCE_REF],
+        "evidence_refs": [SOURCE_REF],
+    }
+
+
+def test_bridge_activates_prior_only_and_refuses_non_prior_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    prior = _phase_c_prepped_payload("prog-prior")
+    launder = _phase_c_prepped_payload("prog-launder", authority="diagnostic_only")
+    monkeypatch.setattr(prep, "load_prepped_programmes", lambda *a, **k: [prior, launder])
+    store = ProgrammePlanStore(path=tmp_path / "programmes.jsonl")
+
+    result = prep.activate_selected_prepped_segment(store, prep_dir=tmp_path)
+
+    # The bridge refuses non-prior-only content (no laundering into runtime).
+    assert result["added"] == ["prog-prior"]
+    assert result["activated"] == "prog-prior"
+    assert result["prior_only_ok"] is False
+    assert result["refused_non_prior_only"][0]["programme_id"] == "prog-launder"
+    active = store.active_programme()
+    assert active is not None
+    assert active.programme_id == "prog-prior"
+    assert active.content.authority == "prior_only"
+
+
+def test_bridge_active_segment_payload_reflects_prepped_artifact(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    prior = _phase_c_prepped_payload("prog-prior")
+    monkeypatch.setattr(prep, "load_prepped_programmes", lambda *a, **k: [prior])
+    store = ProgrammePlanStore(path=tmp_path / "programmes.jsonl")
+
+    prep.activate_selected_prepped_segment(store, prep_dir=tmp_path)
+    active = store.active_programme()
+    payload = programme_loop._active_segment_payload(active, active.role.value, 0)
+
+    # active-segment.json reflects a prepped artifact carrying prior_only + layout needs.
+    assert payload["prepared_artifact_ref"] is not None
+    assert payload["authority"] == "prior_only"
+    assert payload["current_beat_layout_intents"]
