@@ -133,6 +133,10 @@ PREP_DIAGNOSTIC_AUTHORITY = "diagnostic_only"
 PREP_DIAGNOSTIC_LEDGER_FILENAME = "prep-diagnostic-outcomes.jsonl"
 PREP_STATUS_VERSION = 1
 PREP_STATUS_FILENAME = "prep-status.json"
+# A3: per-day store for downstream council/disconfirmation substance rationale,
+# read by the NEXT batch invocation's planner so it re-authors informed by why
+# the last run's segments were found thin.
+PLANNER_SUBSTANCE_FEEDBACK_FILENAME = "planner-substance-feedback.txt"
 
 
 def _today_dir(base: Path) -> Path:
@@ -140,6 +144,57 @@ def _today_dir(base: Path) -> Path:
     d = base / today
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _read_prior_substance_feedback(today: Path) -> str | None:
+    """Read the prior batch invocation's persisted downstream substance rationale.
+
+    Within one run, planning (Step 1) precedes composition (Step 2), so a run's
+    OWN substance verdicts are not available while it plans. Segment prep runs in
+    repeated batch invocations, so the freshest substance signal available to the
+    planner is the PREVIOUS invocation's downstream refusals, persisted per-day by
+    ``_write_substance_feedback``. Returns ``None`` when there is no prior signal.
+    """
+    try:
+        text = (today / PLANNER_SUBSTANCE_FEEDBACK_FILENAME).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return text or None
+
+
+def _write_substance_feedback(today: Path, rationales: list[str]) -> None:
+    """Persist this run's downstream substance refusals for the next invocation.
+
+    Overwrite (never append) so the file always reflects the MOST RECENT run's
+    verdicts and never grows unbounded; an empty list clears the file so stale
+    rationale does not haunt later runs.
+    """
+    path = today / PLANNER_SUBSTANCE_FEEDBACK_FILENAME
+    try:
+        cleaned = [r.strip() for r in rationales if r and r.strip()]
+        if cleaned:
+            path.write_text("\n\n".join(cleaned) + "\n", encoding="utf-8")
+        elif path.exists():
+            path.unlink()
+    except OSError:
+        log.warning(
+            "daily_segment_prep: could not persist planner substance feedback", exc_info=True
+        )
+
+
+def _record_substance_feedback(
+    prep_session: dict[str, Any], programme_id: str, rationale: str
+) -> None:
+    """Accumulate one downstream substance verdict (A3) on the prep session.
+
+    Persisted per-day at run end and fed to the NEXT batch invocation's planner so
+    it re-authors a source-denser angle. Rationale TEXT only — never a score.
+    """
+    if not rationale or not rationale.strip():
+        return
+    prep_session.setdefault("planner_substance_feedback", []).append(
+        f"[{programme_id}] {rationale.strip()}"
+    )
 
 
 def _today_path(base: Path) -> Path:
@@ -1687,6 +1742,8 @@ def prep_segment(
                 prog_id,
             )
             seed = f"{seed}\n\n## Council Coherence Feedback\n{coherence_feedback}"
+            # A3: carry the coherence rationale to the next batch's planner too.
+            _record_substance_feedback(prep_session, prog_id, coherence_feedback)
     except Exception:
         log.warning("prep_segment: coherence check failed", exc_info=True)
 
@@ -1726,6 +1783,7 @@ def prep_segment(
     try:
         from shared.segment_disconfirmation import (
             apply_council_verdicts,
+            build_substance_gap_report,
             extract_claims,
             run_council_disconfirmation,
         )
@@ -1762,6 +1820,14 @@ def prep_segment(
                         "prep_segment: council refuted structural claim in %s — no candidate",
                         prog_id,
                     )
+                    # A3: this topic produced no viable segment — record WHY (the
+                    # strongest substance signal) so the next batch's planner
+                    # re-authors instead of re-proposing the same thin topic.
+                    _record_substance_feedback(
+                        prep_session,
+                        prog_id,
+                        build_substance_gap_report(council_verdicts, list(claim_map)),
+                    )
                     diagnostic_path = prep_dir / diagnostic_name
                     boundary = _diagnostic_boundary_contract()
                     diagnostic = {
@@ -1774,7 +1840,14 @@ def prep_segment(
                         **boundary,
                     }
                     _write_json_atomic(diagnostic_path, diagnostic)
-                    _append_to_candidate_ledger(prep_dir, prog_id, diagnostic_name, "no_candidate")
+                    # Pre-existing latent bug fixed in passing: a call here to
+                    # ``_append_to_candidate_ledger`` (a function that never
+                    # existed) raised NameError on EVERY genuine no-candidate
+                    # refusal, was swallowed by the broad ``except`` below, and the
+                    # segment silently fell THROUGH to composition instead of being
+                    # refused. The diagnostic dossier above is the record; the
+                    # candidate ledger is for manifest-ELIGIBLE artifacts, which a
+                    # refusal is not — so the refusal simply returns no candidate.
                     return None
                 refuted = council_disconfirmation_result.get("refuted_claims", [])
                 log.info(
@@ -1785,9 +1858,10 @@ def prep_segment(
                     len(refuted),
                 )
                 if len(refuted) > 2 and not getattr(programme, "_recomposed", False):
-                    from shared.segment_disconfirmation import build_substance_gap_report
-
                     gap_report = build_substance_gap_report(council_verdicts, list(claim_map))
+                    # A3: >2 claims refuted — carry the gap report to the next
+                    # batch's planner in addition to the in-segment recompose.
+                    _record_substance_feedback(prep_session, prog_id, gap_report)
                     log.warning(
                         "prep_segment: %d claims refuted — triggering recomposition for %s",
                         len(refuted),
@@ -2545,6 +2619,12 @@ def run_prep(
         log.error("daily_segment_prep: planner construction failed", exc_info=True)
         return saved
 
+    # A3: seed planning with the prior batch invocation's downstream substance
+    # rationale. Composition (Step 2) runs after planning, so a run cannot see its
+    # own substance verdicts; the previous invocation's persisted refusals are the
+    # freshest signal for re-authoring a source-denser angle.
+    prior_substance_feedback = _read_prior_substance_feedback(today)
+
     while len(segmented) < max_segments_for_run and plan_round < max_rounds:
         elapsed = time.monotonic() - start
         if elapsed >= PREP_BUDGET_S:
@@ -2576,6 +2656,7 @@ def run_prep(
                 show_id=show_id,
                 target_programmes=planner_target_programmes,
                 fore_understanding=recent_fore or None,
+                prior_substance_feedback=prior_substance_feedback,
             )
         except Exception as exc:
             _update_prep_status(
@@ -2606,14 +2687,10 @@ def run_prep(
             role_val = getattr(getattr(p, "role", None), "value", "")
             if role_val not in SEGMENTED_CONTENT_ROLES or pid in seen_ids:
                 continue
-            topic = _extract_topic_string(p)
-            if topic and not _council_topic_substance_gate(topic, pid):
-                log.warning(
-                    "daily_segment_prep: council rejected topic substance for %s: %s",
-                    pid,
-                    topic[:80],
-                )
-                continue
+            # A2: no anterior topic-substance gate here. Running the adversarial
+            # DisconfirmationRubric on a bare pre-source topic STRING structurally
+            # floored ~2.0 for any abstract topic. Substance is judged DOWNSTREAM
+            # on extracted claims + the composed script, where evidence exists.
             segmented.append(p)
             seen_ids.add(pid)
 
@@ -2691,6 +2768,10 @@ def run_prep(
                 saved_count=len(saved),
                 last_saved_path=str(path),
             )
+
+    # A3: persist this run's downstream substance refusals for the NEXT batch
+    # invocation's planner (overwrite/clear semantics — most-recent run only).
+    _write_substance_feedback(today, prep_session.get("planner_substance_feedback", []))
 
     _update_prep_status(prep_session, status="in_progress", phase="final_resident_model_check")
     try:
@@ -2803,58 +2884,6 @@ def _extract_topic_string(programme: Any) -> str | None:
     if isinstance(topic, str) and topic.strip():
         return topic.strip()
     return None
-
-
-def _council_topic_substance_gate(topic: str, programme_id: str) -> bool:
-    """Run the deliberative council on a topic to check argumentative substance.
-
-    Returns True if the topic has enough substance for a full segment.
-    Returns True (fail-open) if the council is unavailable.
-    """
-    try:
-        import asyncio
-
-        from agents.deliberative_council.engine import deliberate
-        from agents.deliberative_council.models import CouncilConfig, CouncilInput, CouncilMode
-        from agents.deliberative_council.rubrics import DisconfirmationRubric
-
-        council_input = CouncilInput(
-            text=topic,
-            source_ref=f"topic_substance_check:{programme_id}",
-            metadata={"check_type": "anterior_substance", "programme_id": programme_id},
-        )
-        config = CouncilConfig()
-        verdict = asyncio.run(
-            deliberate(council_input, CouncilMode.DISCONFIRMATION, DisconfirmationRubric(), config)
-        )
-        valid_scores = [s for s in verdict.scores.values() if s is not None]
-        if not valid_scores:
-            # Council degraded (no model produced a score). Fail-open per this
-            # gate's documented contract — a down council must not silently
-            # reject every topic. A genuine low score still rejects below.
-            log.warning(
-                "council_topic_substance_gate: council degraded (no scores), fail-open: %s",
-                topic[:80],
-            )
-            return True
-        mean_score = sum(valid_scores) / len(valid_scores)
-        if mean_score <= 2.0:
-            log.warning(
-                "council_topic_substance_gate: topic rejected (mean=%.1f, scores=%s): %s",
-                mean_score,
-                verdict.scores,
-                topic[:80],
-            )
-            return False
-        log.info(
-            "council_topic_substance_gate: topic accepted (mean=%.1f): %s",
-            mean_score,
-            topic[:80],
-        )
-        return True
-    except Exception:
-        log.warning("council_topic_substance_gate: council unavailable, fail-open", exc_info=True)
-        return True
 
 
 def _council_coherence_check(full_script: str, programme_id: str) -> tuple[bool, str]:

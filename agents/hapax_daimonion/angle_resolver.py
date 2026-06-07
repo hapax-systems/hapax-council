@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from dataclasses import dataclass
 
 from shared.source_packet import SourcePacket
@@ -113,26 +114,25 @@ def _gather_sources(topic: str, *, max_per_collection: int = 5) -> list[SourcePa
 
 
 def _web_supplement(topic: str, existing: list[SourcePacket]) -> list[SourcePacket]:
-    """Supplement sparse local sources with web search."""
-    try:
-        from agents.deliberative_council.tools import web_verify
+    """Web supplement is EXCISED — an explicit, logged no-op, not a silent one.
 
-        result = web_verify(None, topic)
-        if result and isinstance(result, str) and len(result) > 50:
-            h = hashlib.sha256(result.encode()).hexdigest()[:16]
-            existing.append(
-                SourcePacket(
-                    source_ref="web:perplexity-sonar",
-                    content_hash=h,
-                    snippet=result[:500],
-                    freshness="fresh",
-                    rights_status="web",
-                    source_consequence="without web context, only local knowledge is available",
-                )
-            )
-            log.info("angle_resolver: web supplement added 1 source")
-    except Exception:
-        log.debug("angle_resolver: web supplement failed", exc_info=True)
+    The only available web route was the council's ``async`` web-verify tool,
+    which the prior code called WITHOUT ``await``. A coroutine is never a
+    ``str``, so the result check always failed and the supplement silently added
+    nothing. The fix does NOT "add await": awaiting it routes to the
+    ``web-research`` LiteLLM alias the research found mis-routes to a non-grounded
+    model, which would launder ungrounded output as "web verification" —
+    converting a silent no-op into a silent FAILURE. Until a real grounded web
+    provider exists the supplement stays disabled and a sparse-source topic stays
+    sparse (``resolve_angle`` then honestly returns no angle rather than a
+    fabricated one). Loud here so the disablement is visible, not assumed.
+    """
+    log.warning(
+        "angle_resolver: web supplement DISABLED (no grounded web provider) — "
+        "%d local source(s) for topic stay un-supplemented: %s",
+        len(existing),
+        topic[:80],
+    )
     return existing
 
 
@@ -164,10 +164,18 @@ def _select_angle(topic: str, packets: list[SourcePacket]) -> AngleHypothesis:
         )
 
         response = litellm.completion(
-            model=MODELS.get("local-fast", "local-fast"),
+            # Route through the LiteLLM gateway with an explicit provider prefix +
+            # api_base. A bare model name (e.g. "local-fast") has no provider, so
+            # litellm raises "LLM Provider NOT provided" before any network I/O —
+            # which crashed every angle resolution into the degenerate ``except``
+            # fallback below (topic-as-thesis, no challenging sources). Mirrors the
+            # deployed ``_research_enrich_angle`` routing in daily_segment_prep.py.
+            model=f"openai/{MODELS.get('local-fast', 'local-fast')}",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=500,
             temperature=0.3,
+            api_base=os.environ.get("LITELLM_API_BASE", "http://127.0.0.1:4000"),
+            api_key=os.environ.get("LITELLM_API_KEY", "not-set"),
         )
         text = response.choices[0].message.content or ""
         return _parse_angle_response(topic, text, packets)
